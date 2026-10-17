@@ -1,0 +1,90 @@
+{
+  "format": "mitcad",
+  "version": 2,
+  "units": { "length": "mm", "angle": "deg" },
+  "parameters": [],
+  "features": [],
+  "library_sources": [
+    {
+      "id": "S1",
+      "library": { "library": "example-profiles", "url": "https://example.org/example-profiles.git",
+                   "rev": "1111111111111111111111111111111111111111", "label": "v1.0.0",
+                   "component": "p30", "path": "profiles/p30.mitcad", "license": "MIT",
+                   "designation": "Profile 30 L={L}" },
+      "name": "Profile 30",
+      "design": { "text": {
+        "format": "mitcad", "version": 2, "units": { "length": "mm", "angle": "deg" },
+        "parameters": [
+          { "name": "w", "expression": "30 mm", "unit": "mm" },
+          { "name": "L", "expression": "1000 mm", "unit": "mm" }
+        ],
+        "features": [
+          { "uid": "F1", "name": "Section", "type": "box", "plane": "xy", "corner": [-15, -15],
+            "length": "w", "width": "w", "height": "L", "operation": "new_body" },
+          { "uid": "F2", "name": "mount:end_a", "type": "joint_origin",
+            "geometry": { "origin": [0, 0, 0], "normal": [0, 0, -1], "x_axis": [1, 0, 0] } },
+          { "uid": "F3", "name": "mount:end_b", "type": "joint_origin",
+            "geometry": { "body": "F1.b0", "face": "F1:top" } },
+          { "uid": "F4", "name": "mount:slot_x+_1", "type": "joint_origin",
+            "geometry": { "origin": [15, 0, 0], "normal": [1, 0, 0], "x_axis": [0, 0, 1] } },
+          { "uid": "F5", "name": "mount:slot_x-_1", "type": "joint_origin",
+            "geometry": { "origin": [-15, 0, 0], "normal": [-1, 0, 0], "x_axis": [0, 0, 1] } },
+          { "uid": "F6", "name": "mount:slot_y+_1", "type": "joint_origin",
+            "geometry": { "origin": [0, 15, 0], "normal": [0, 1, 0], "x_axis": [0, 0, 1] } },
+          { "uid": "F7", "name": "mount:slot_y-_1", "type": "joint_origin",
+            "geometry": { "origin": [0, -15, 0], "normal": [0, -1, 0], "x_axis": [0, 0, 1] } }
+        ]
+      } },
+      "build": {
+        "role": "profile",
+        "system": { "type": "B", "slot": 8, "grid": 30 },
+        "length": { "parameter": "L", "min": "10 mm", "max": "6000 mm", "stock": ["6000 mm"] },
+        "section": { "width": "30 mm", "height": "30 mm" },
+        "slot": { "depth": "9 mm", "opening": "8.2 mm" },
+        "mass_per_metre": "0.9 kg",
+        "frames": [
+          { "name": "end_a", "kind": "end" }, { "name": "end_b", "kind": "end" },
+          { "name": "slot_x+_1", "kind": "slot" }, { "name": "slot_x-_1", "kind": "slot" },
+          { "name": "slot_y+_1", "kind": "slot" }, { "name": "slot_y-_1", "kind": "slot" }
+        ]
+      },
+      "supplier": "Example supplier",
+      "part_number": "P30"
+    },
+    {
+      "id": "S2",
+      "library": { "library": "example-profiles", "url": "https://example.org/example-profiles.git",
+                   "rev": "1111111111111111111111111111111111111111", "label": "v1.0.0",
+                   "component": "bracket30", "path": "connectors/bracket30.mitcad", "license": "MIT" },
+      "name": "Bracket 30",
+      "design": { "text": {
+        "format": "mitcad", "version": 2, "units": { "length": "mm", "angle": "deg" },
+        "parameters": [
+          { "name": "a", "expression": "40 mm", "unit": "mm" },
+          { "name": "b", "expression": "20 mm", "unit": "mm" }
+        ],
+        "features": [
+          { "uid": "F1", "name": "Block", "type": "box", "plane": "xy", "corner": [0, -10],
+            "length": "a", "width": "b", "height": "a", "operation": "new_body" },
+          { "uid": "F2", "name": "mount:mount_a", "type": "joint_origin",
+            "geometry": { "origin": [20, 0, 0], "normal": [0, 0, -1], "x_axis": [1, 0, 0] } },
+          { "uid": "F3", "name": "mount:mount_b", "type": "joint_origin",
+            "geometry": { "origin": [0, 0, 20], "normal": [-1, 0, 0], "x_axis": [0, 0, 1] } }
+        ]
+      } },
+      "build": {
+        "role": "connector",
+        "systems": [{ "type": "B", "slot": 8 }],
+        "frames": [{ "name": "mount_a", "kind": "face" }, { "name": "mount_b", "kind": "face" }],
+        "connector": {
+          "junctions": ["L", "T"],
+          "space": "inner_corner",
+          "mates": [{ "frame": "mount_a", "to": "slot" }, { "frame": "mount_b", "to": "slot" }],
+          "machining": [{ "on": "a", "frame": "end", "hole": { "diameter": "6.8 mm", "depth": "15 mm" } }]
+        }
+      },
+      "supplier": "Example supplier",
+      "part_number": "BR30"
+    }
+  ]
+}

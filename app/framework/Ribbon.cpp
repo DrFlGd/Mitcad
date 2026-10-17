@@ -2,6 +2,7 @@
 #include "Ribbon.hpp"
 
 #include <algorithm>
+#include <utility>
 #include <vector>
 
 #include <QAction>
@@ -15,6 +16,7 @@
 #include <QShowEvent>
 #include <QPainter>
 #include <QPainterPath>
+#include <QPointer>
 #include <QStackedWidget>
 #include <QStyleOptionToolButton>
 #include <QTabBar>
@@ -23,6 +25,8 @@
 #include <QtLogging>
 
 #include "CommandRegistry.hpp"
+#include "PlaceWatcher.hpp"
+#include "TestSync.hpp"
 #include "Theme.hpp"
 #include "WindowStyle.hpp"
 #include "platform/MacChrome.hpp"
@@ -32,6 +36,13 @@ namespace {
 
 const QString kSolid = QStringLiteral("SOLID");
 const QString kSketch = QStringLiteral("SKETCH");
+// Modular slot-profile assemblies (mitcad#375): a tab of its own beside
+// SOLID, always shown.
+const QString kBuild = QStringLiteral("BUILD");
+// The tabs' data: the index of their page.
+constexpr int kSolidPage = 0;
+constexpr int kSketchPage = 1;
+constexpr int kBuildPage = 2;
 constexpr int kIconSize = 28;
 
 QString key(const QString& tab, const QString& group) { return tab + QLatin1Char('/') + group; }
@@ -434,11 +445,30 @@ Ribbon::Ribbon(CommandRegistry& registry, Presentation presentation, QWidget* pa
     // The Docked chrome's pills (mitcad#251).
     m_tabs = new PillTabBar;
     layout->addWidget(m_tabs);
+    // In the toolbar the ribbon takes the width there is and clips the
+    // groups at its right rather than asking for all of them: a toolbar
+    // moves a widget that does not fit into its overflow menu, which hid
+    // the whole ribbon in a narrow window (mitcad#375, the Windows VM's).
+    setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    layout->setSizeConstraint(QLayout::SetNoConstraint);
   }
   layout->addWidget(m_pages);
   connect(m_tabs, &QTabBar::currentChanged, this, [this](int index) {
     if (index >= 0) {
       m_pages->setCurrentIndex(m_tabs->tabData(index).toInt());
+      // The shown page's group menus, for UI tests (BUILD, mitcad#375).
+      TestSync::singleShot(0, this, [this] { logLayout(); });
+    }
+  });
+  // The places logged again when the ribbon or the tab bar is shown or
+  // moves in the window (mitcad#375: the window shows after the start's
+  // log, a banner makes room, the title bar takes the tabs), when they
+  // changed.
+  new PlaceWatcher(this, [this] { logLayoutIfChanged(); });
+  // The title bar may take the tab bar (Floating) and outlive the ribbon.
+  new PlaceWatcher(m_tabs, [ribbon = QPointer<Ribbon>(this)] {
+    if (ribbon) {
+      ribbon->logLayoutIfChanged();
     }
   });
 }
@@ -454,6 +484,12 @@ const QStringList& Ribbon::groups(const QString& tab) {
                                      QStringLiteral("CONSTRAINTS"),  QStringLiteral("INSPECT"),
                                      QStringLiteral("INSERT"),       QStringLiteral("SELECT"),
                                      QStringLiteral("FINISH SKETCH")};
+  // mitcad#375: placing parts, connecting them, changing them, the lists.
+  static const QStringList build = {QStringLiteral("PROFILE"), QStringLiteral("CONNECT"), QStringLiteral("MODIFY"),
+                                    QStringLiteral("OUTPUT")};
+  if (tab == kBuild) {
+    return build;
+  }
   return tab == kSketch ? sketch : solid;
 }
 
@@ -468,9 +504,23 @@ void Ribbon::build() {
   m_pages->addWidget(createPage(kSolid));
   m_sketchPage = createPage(kSketch);
   m_pages->addWidget(m_sketchPage);
+  m_pages->addWidget(createPage(kBuild));
   const int solid = m_tabs->addTab(kSolid);
-  m_tabs->setTabData(solid, 0);
+  m_tabs->setTabData(solid, kSolidPage);
   m_tabs->setTabToolTip(solid, tr("Solid modelling"));
+  // BUILD (mitcad#375) beside SOLID; SKETCH comes after them while sketching.
+  const int build = m_tabs->addTab(kBuild);
+  m_tabs->setTabData(build, kBuildPage);
+  m_tabs->setTabToolTip(build, tr("Build: frames of slot profiles with their connectors, panels and linear parts"));
+}
+
+int Ribbon::tabOfPage(int page) const {
+  for (int i = 0; i < m_tabs->count(); ++i) {
+    if (m_tabs->tabData(i).toInt() == page) {
+      return i;
+    }
+  }
+  return -1;
 }
 
 QWidget* Ribbon::createPage(const QString& tab) {
@@ -645,6 +695,23 @@ QWidget* Ribbon::createGroup(const QString& tab, const QString& group, GroupInfo
   return widget;
 }
 
+QSize Ribbon::sizeHint() const {
+  const QSize content = QWidget::sizeHint();
+  if (m_presentation == Presentation::Mac) {
+    return content;
+  }
+  // The tabs' width at least; the toolbar gives it the rest (Expanding).
+  return QSize(std::max(m_tabs->sizeHint().width() + 8, 240), content.height());
+}
+
+QSize Ribbon::minimumSizeHint() const {
+  const QSize content = QWidget::minimumSizeHint();
+  if (m_presentation == Presentation::Mac) {
+    return content;
+  }
+  return QSize(std::max(m_tabs->sizeHint().width() + 8, 160), content.height());
+}
+
 void Ribbon::resizeEvent(QResizeEvent* event) {
   QWidget::resizeEvent(event);
   fitGroups();
@@ -686,8 +753,10 @@ void Ribbon::fitGroups() {
 
 void Ribbon::changeEvent(QEvent* event) {
   QWidget::changeEvent(event);
-  if (event->type() == QEvent::ApplicationPaletteChange && m_tabs != nullptr && m_tabs->count() > 1) {
-    m_tabs->setTabTextColor(1, accentColor(palette()));
+  if (event->type() == QEvent::ApplicationPaletteChange && m_tabs != nullptr) {
+    if (const int sketch = tabOfPage(kSketchPage); sketch >= 0) {
+      m_tabs->setTabTextColor(sketch, accentColor(palette()));
+    }
   }
 }
 
@@ -702,30 +771,41 @@ void Ribbon::paintEvent(QPaintEvent* event) {
 }
 
 void Ribbon::setSketchMode(bool sketching) {
-  const bool shown = m_tabs->count() > 1;
-  if (sketching && !shown) {
+  const int shown = tabOfPage(kSketchPage);
+  if (sketching && shown < 0) {
+    // Back to the tab the sketch started from afterwards (SOLID or BUILD).
+    m_pageBeforeSketch = m_tabs->tabData(m_tabs->currentIndex()).toInt();
     const int index = m_tabs->addTab(kSketch);
-    m_tabs->setTabData(index, 1);
+    m_tabs->setTabData(index, kSketchPage);
     m_tabs->setTabTextColor(index, accentColor(palette()));
     m_tabs->setTabToolTip(index, tr("Sketch: the tools of the sketch being edited"));
     m_tabs->setCurrentIndex(index);
     emit sketchModeChanged(true);
-  } else if (!sketching && shown) {
-    m_tabs->removeTab(1);
-    m_tabs->setCurrentIndex(0);
+  } else if (!sketching && shown >= 0) {
+    m_tabs->removeTab(shown);
+    const int back = tabOfPage(m_pageBeforeSketch);
+    m_tabs->setCurrentIndex(back >= 0 ? back : tabOfPage(kSolidPage));
     emit sketchModeChanged(false);
   }
 }
 
-void Ribbon::logLayout() const {
+QStringList Ribbon::layoutLines() const {
+  QStringList lines;
+  // The workspace tabs (mitcad#375: a click on BUILD), "Ribbon tab BUILD at
+  // x,y", wherever the tab bar is (the ribbon's, or the title bar's).
+  if (m_tabs->isVisible()) {
+    for (int i = 0; i < m_tabs->count(); ++i) {
+      const QPoint center = m_tabs->mapTo(m_tabs->window(), m_tabs->tabRect(i).center());
+      lines << QStringLiteral("Ribbon tab %1 at %2,%3").arg(m_tabs->tabText(i)).arg(center.x()).arg(center.y());
+    }
+  }
   for (auto it = m_groupButtons.cbegin(); it != m_groupButtons.cend(); ++it) {
     const QWidget* button = it.value();
     if (!button->isVisible()) {
       continue;
     }
     const QPoint center = button->mapTo(window(), button->rect().center());
-    qDebug().noquote()
-        << QStringLiteral("Ribbon %1 at %2,%3").arg(it.key()).arg(center.x()).arg(center.y());
+    lines << QStringLiteral("Ribbon %1 at %2,%3").arg(it.key()).arg(center.x()).arg(center.y());
   }
   // The split buttons' two parts (mitcad#222): "Ribbon split
   // SKETCH/CREATE/Circles at x,y" runs the default, "... arrow at x,y"
@@ -738,10 +818,22 @@ void Ribbon::logLayout() const {
     const int y = button->height() / 2;
     const QPoint direct = button->mapTo(window(), QPoint((button->width() - kSplitArrowWidth) / 2, y));
     const QPoint arrow = button->mapTo(window(), QPoint(button->width() - kSplitArrowWidth / 2 - 1, y));
-    qDebug().noquote()
-        << QStringLiteral("Ribbon split %1 at %2,%3").arg(it.key()).arg(direct.x()).arg(direct.y());
-    qDebug().noquote()
-        << QStringLiteral("Ribbon split %1 arrow at %2,%3").arg(it.key()).arg(arrow.x()).arg(arrow.y());
+    lines << QStringLiteral("Ribbon split %1 at %2,%3").arg(it.key()).arg(direct.x()).arg(direct.y());
+    lines << QStringLiteral("Ribbon split %1 arrow at %2,%3").arg(it.key()).arg(arrow.x()).arg(arrow.y());
+  }
+  return lines;
+}
+
+void Ribbon::logLayout() const {
+  m_loggedLayout = layoutLines();
+  for (const QString& line : std::as_const(m_loggedLayout)) {
+    qDebug().noquote() << line;
+  }
+}
+
+void Ribbon::logLayoutIfChanged() const {
+  if (layoutLines() != m_loggedLayout) {
+    logLayout();
   }
 }
 

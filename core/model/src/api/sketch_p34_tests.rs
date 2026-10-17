@@ -408,6 +408,124 @@ fn mirrored_copies_follow_the_original() {
 }
 
 #[test]
+fn offset_rebinding_keeps_shared_user_parameters() {
+    check_offset_rebinding(json!("w"));
+}
+
+#[test]
+fn offset_rebinding_keeps_shared_generated_parameters() {
+    check_offset_rebinding(json!(2));
+}
+
+fn check_offset_rebinding(distance: Value) {
+    for shape in ["rectangle", "circle", "arc"] {
+        let mut d = with_sketch();
+        for (name, value) in [("w", "2 mm"), ("t", "4 mm")] {
+            command(
+                &mut d,
+                json!({"cmd": "add_parameter", "name": name, "value": value}),
+            );
+        }
+        let source = match shape {
+            "rectangle" => json!({"cmd": "sketch.add_rectangle", "sketch": "F1",
+                                  "corner": [0, 0], "width": 40, "height": 20}),
+            "circle" => json!({"cmd": "sketch.circle", "sketch": "F1", "mode": "center",
+                               "center": [0, 0], "radius": 10}),
+            _ => json!({"cmd": "sketch.arc", "sketch": "F1", "mode": "three_point",
+                        "start": [10, 0], "through": [0, 10], "end": [-10, 0]}),
+        };
+        command(&mut d, source);
+        if shape != "rectangle" {
+            command(
+                &mut d,
+                json!({"cmd": "sketch.set_fixed", "sketch": "F1", "entities": ["c1"]}),
+            );
+        }
+        let curves = if shape == "rectangle" {
+            json!(["c1", "c2", "c3", "c4"])
+        } else {
+            json!(["c1"])
+        };
+        let offset = command(
+            &mut d,
+            json!({"cmd": "sketch.offset", "sketch": "F1",
+                                           "curves": curves, "distance": distance}),
+        );
+        let old = sketch(&d)["offsets"][0]["distance"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let offset_id = sketch(&d)["offsets"][0]["id"].clone();
+        let mut lines = Vec::new();
+        for y in [100, 102] {
+            let made = command(
+                &mut d,
+                json!({"cmd": "sketch.add_line", "sketch": "F1",
+                                             "start": [100, y], "end": [102, y]}),
+            );
+            lines.push(made["made"][0].as_str().unwrap().to_owned());
+        }
+        command(
+            &mut d,
+            json!({"cmd": "sketch.add_constraint", "sketch": "F1",
+                               "constraint": {"type": "parallel", "a": lines[0], "b": lines[1]}}),
+        );
+        let mut unrelated = Vec::new();
+        for dimension in [
+            json!({"type": "length", "line": lines[0]}),
+            json!({"type": "line_distance", "a": lines[0], "b": lines[1]}),
+        ] {
+            let made = command(
+                &mut d,
+                json!({"cmd": "sketch.add_dimension", "sketch": "F1",
+                                             "dimension": dimension, "value": old}),
+            );
+            unrelated.push(made["dimensions"][0].clone());
+        }
+        // Rebinding works for saved designs, without adding ownership fields.
+        let mut d = Document::from_json(&d.to_json(), MockKernel::default()).unwrap();
+        command(
+            &mut d,
+            json!({"cmd": "sketch.edit_offset", "sketch": "F1",
+                               "offset": offset_id, "distance": "t"}),
+        );
+        command(
+            &mut d,
+            json!({"cmd": "set_parameter", "name": old, "value": 3}),
+        );
+        let s = sketch(&d);
+        assert_eq!(s["offsets"][0]["distance"], "t");
+        for dimension in s["dimensions"].as_array().unwrap() {
+            if unrelated.contains(&dimension["id"]) {
+                assert_eq!(dimension["value"], old);
+                assert!(close(dimension["measured"].as_f64().unwrap(), 3.0, 1e-7));
+            } else if offset["dimensions"]
+                .as_array()
+                .unwrap()
+                .contains(&dimension["id"])
+            {
+                assert_eq!(dimension["value"], "t");
+                assert!(close(dimension["measured"].as_f64().unwrap(), 4.0, 1e-7));
+            }
+        }
+        let Curve2::Line { a, b } = curve(&s, &lines[0]) else {
+            panic!("a line");
+        };
+        assert!(close((a[0] - b[0]).hypot(a[1] - b[1]), 3.0, 1e-7));
+        if shape == "rectangle" {
+            assert!(close(areas(&d).iter().sum(), 48.0 * 28.0, 1e-7));
+        } else {
+            let result = offset["made"][0].as_str().unwrap();
+            let radius = match curve(&s, result) {
+                Curve2::Circle { radius, .. } | Curve2::Arc { radius, .. } => radius,
+                other => panic!("a circular offset: {other:?}"),
+            };
+            assert!(close(radius, 14.0, 1e-7), "{shape}: {radius}");
+        }
+    }
+}
+
+#[test]
 fn ellipse_and_spline_offsets_follow_their_source() {
     // An ellipse offset out by d: the area grows by P d + pi d^2 (Steiner),
     // P the ellipse's perimeter.
@@ -1059,4 +1177,239 @@ fn text_measured_by_its_capitals_and_outlines_in_a_frame() {
     let (s, t) = letters(corner([4.0, 30.0]), "OO", json!({}));
     let (_, second) = region(&s, &format!("r{{{t}.g1.c0}}"));
     assert!(near(second, [9.5, 26.5]), "{second:?}");
+}
+
+// --- A derived offset is closed by shared points only (mitcad#360)
+
+#[test]
+fn a_chain_whose_ends_only_lie_together_stays_open_in_a_derived_offset() {
+    let mut d = with_sketch();
+    let spline = command(
+        &mut d,
+        json!({"cmd": "sketch.spline", "sketch": "F1", "points": [[0, 0], [10, 5], [20, 0]]}),
+    );
+    let c1 = spline["made"][0].as_str().unwrap().to_owned();
+    let end = entity(&sketch(&d), &c1)["points"][2]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    // A second curve from the spline's end back to the spline's start
+    // position, but through a point of its own.
+    let line = command(
+        &mut d,
+        json!({"cmd": "sketch.add_line", "sketch": "F1", "start": end, "end": [0.0, 0.0]}),
+    );
+    let line = line["made"][0].as_str().unwrap().to_owned();
+    let made = command(
+        &mut d,
+        json!({"cmd": "sketch.offset", "sketch": "F1", "curves": [c1, line], "distance": 2}),
+    );
+    let offset = made["constraints"][0].as_str().unwrap().to_owned();
+    let before = sketch(&d);
+    assert_eq!(before["offsets"][0]["derived"], true, "{before}");
+    // Another edit solves again: the chain is still open, so the offset
+    // is made as before and the edit is not refused.
+    command(
+        &mut d,
+        json!({"cmd": "sketch.edit_offset", "sketch": "F1", "offset": offset, "distance": 1.5}),
+    );
+    let after = sketch(&d);
+    assert_eq!(
+        after["offsets"][0]["results"].as_array().unwrap().len(),
+        2,
+        "{after}"
+    );
+    assert_eq!(
+        after["offsets"][0]["corners"], before["offsets"][0]["corners"],
+        "{after}"
+    );
+    // The unjoined end is free: the spline's offset starts exactly the
+    // distance from the spline's start, not trimmed against the line.
+    let result = after["offsets"][0]["results"][0].as_str().unwrap();
+    let first = entity(&after, result)["control"][0]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let source_start = entity(&after, &c1)["points"][0]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let start = at(&after, &source_start);
+    let from = at(&after, &first);
+    assert!(
+        close((from[0] - start[0]).hypot(from[1] - start[1]), 1.5, 1e-6),
+        "{after}"
+    );
+}
+
+// --- A mirrored ellipse keeps its minor radius equal (mitcad#363)
+
+#[test]
+fn a_mirrored_ellipse_follows_the_minor_radius_of_the_original() {
+    let mut d = with_sketch();
+    command(
+        &mut d,
+        json!({"cmd": "sketch.add_line", "sketch": "F1", "start": [0, -20], "end": [0, 20],
+               "construction": true}),
+    );
+    let axis = "c1";
+    let made = command(
+        &mut d,
+        json!({"cmd": "sketch.ellipse", "sketch": "F1", "center": [20, 0], "major": [10, 0],
+               "minor_radius": 5}),
+    );
+    let original = made["made"][0].as_str().unwrap().to_owned();
+    let mirrored = command(
+        &mut d,
+        json!({"cmd": "sketch.mirror", "sketch": "F1", "entities": [original], "axis": axis}),
+    );
+    let copy = mirrored["made"][0].as_str().unwrap().to_owned();
+    command(
+        &mut d,
+        json!({"cmd": "sketch.add_dimension", "sketch": "F1",
+               "dimension": {"type": "minor_radius", "ellipse": original}, "value": 4}),
+    );
+    let s = sketch(&d);
+    let minor = |id: &str| match curve(&s, id) {
+        Curve2::Ellipse { minor, .. } => minor,
+        other => panic!("{id}: {other:?}"),
+    };
+    assert!(close(minor(&original), 4.0, 1e-9), "{s}");
+    assert!(close(minor(&copy), 4.0, 1e-9), "{s}");
+    assert_eq!(s["redundant"], json!([]), "{s}");
+}
+
+// --- Flipping an exact offset leaves nothing behind (mitcad#358)
+
+#[test]
+fn flipping_an_exact_offset_of_an_arc_removes_what_it_made_before() {
+    let mut d = with_sketch();
+    command(
+        &mut d,
+        json!({"cmd": "sketch.arc", "sketch": "F1", "mode": "three_point",
+               "start": [10, 0], "through": [0, 10], "end": [-10, 0]}),
+    );
+    command(
+        &mut d,
+        json!({"cmd": "sketch.offset", "sketch": "F1", "curves": ["c1"], "distance": 5}),
+    );
+    let offset = sketch(&d)["offsets"][0]["id"].as_str().unwrap().to_owned();
+    let counts = |s: &Value| {
+        [
+            s["entities"].as_array().unwrap().len(),
+            s["constraints"].as_array().unwrap().len(),
+            s["dimensions"].as_array().unwrap().len(),
+            s["dof"].as_u64().unwrap() as usize,
+        ]
+    };
+    let first = counts(&sketch(&d));
+    let mut removed_by_flip = 0;
+    for _ in 0..2 {
+        let flipped = command(
+            &mut d,
+            json!({"cmd": "sketch.edit_offset", "sketch": "F1", "offset": offset, "flip": true}),
+        );
+        removed_by_flip = flipped["removed"].as_array().map_or(0, Vec::len);
+        let s = sketch(&d);
+        assert_eq!(counts(&s), first, "{s}");
+        assert_eq!(s["redundant"], json!([]), "{s}");
+    }
+    // The helper construction line, its two points, and what hung on them.
+    assert!(removed_by_flip >= 3, "{removed_by_flip}");
+}
+
+// --- Trim and Extend against, and removing a part of, a derived offset
+// (mitcad#361)
+
+/// A spline with its derived offset by 2 and a vertical line across both
+/// (c<line>); returns the document, the line and the offset's result.
+fn spline_offset_and_a_line() -> (Document<MockKernel>, String, String) {
+    let mut d = with_sketch();
+    let spline = command(
+        &mut d,
+        json!({"cmd": "sketch.spline", "sketch": "F1", "points": [[0, 0], [10, 10], [20, 0]]}),
+    );
+    let spline = spline["made"][0].as_str().unwrap().to_owned();
+    let made = command(
+        &mut d,
+        json!({"cmd": "sketch.offset", "sketch": "F1", "curves": [spline], "distance": 2}),
+    );
+    let result = made["made"][0].as_str().unwrap().to_owned();
+    let line = command(
+        &mut d,
+        json!({"cmd": "sketch.add_line", "sketch": "F1", "start": [10, -10], "end": [10, 30]}),
+    );
+    (d, line["made"][0].as_str().unwrap().to_owned(), result)
+}
+
+#[test]
+fn a_line_trimmed_at_a_derived_offset_gets_a_plain_end() {
+    // The offset lies on one side of the spline: trimming from below and
+    // from above, one of them ends at it.
+    for at in [[10.0, -5.0], [10.0, 25.0]] {
+        let (mut d, line, result) = spline_offset_and_a_line();
+        command(
+            &mut d,
+            json!({"cmd": "sketch.trim", "sketch": "F1", "curve": line, "at": at}),
+        );
+        let s = sketch(&d);
+        assert_eq!(s["error"], Value::Null, "{s}");
+        assert_eq!(s["solved"], true, "{s}");
+        // No constraint holds a point on the derived offset.
+        let constraints = s["constraints"].as_array().unwrap();
+        assert!(
+            constraints.iter().all(|k| k["entity"] != result.as_str()),
+            "{s}"
+        );
+    }
+}
+
+#[test]
+fn a_line_extended_to_a_derived_offset_gets_a_plain_end() {
+    // The offset by 2 to the right of the spline lies below it: a stub
+    // under both, extended upward, reaches the offset first.
+    let (mut d, _, result) = spline_offset_and_a_line();
+    let stub = command(
+        &mut d,
+        json!({"cmd": "sketch.add_line", "sketch": "F1", "start": [14, -10], "end": [14, -4]}),
+    );
+    let stub = stub["made"][0].as_str().unwrap().to_owned();
+    command(
+        &mut d,
+        json!({"cmd": "sketch.extend", "sketch": "F1", "curve": stub, "at": [14, -5]}),
+    );
+    let s = sketch(&d);
+    assert_eq!(s["error"], Value::Null, "{s}");
+    assert_eq!(s["solved"], true, "{s}");
+    let end = entity(&s, &stub)["geometry"]["end"].clone();
+    assert!(
+        end[1].as_f64().unwrap() > 0.0,
+        "the stub reached a curve: {s}"
+    );
+    assert!(
+        s["constraints"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|k| k["entity"] != result.as_str()),
+        "no constraint holds a point on the derived offset: {s}"
+    );
+}
+
+#[test]
+fn a_part_of_a_derived_offset_cannot_be_removed_alone() {
+    let (mut d, _, result) = spline_offset_and_a_line();
+    let error = rejected(
+        &mut d,
+        json!({"cmd": "sketch.remove", "sketch": "F1", "items": [result]}),
+    );
+    assert!(error.contains("follows offset k"), "{error}");
+    // The source can go, and the offset with it.
+    let s = sketch(&d);
+    let source = s["offsets"][0]["curves"][0].as_str().unwrap().to_owned();
+    command(
+        &mut d,
+        json!({"cmd": "sketch.remove", "sketch": "F1", "items": [source]}),
+    );
+    assert_eq!(sketch(&d)["offsets"], json!([]));
 }

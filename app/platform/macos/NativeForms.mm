@@ -131,11 +131,14 @@ public:
     [spring setContentHuggingPriority:NSLayoutPriorityDefaultLow
                       forOrientation:NSLayoutConstraintOrientationHorizontal];
     [buttons addArrangedSubview:spring];
-    NSButton* cancel = button(QObject::tr("Cancel"), QStringLiteral("cancel"));
+    // A command that repeats (BUILD's Place, mitcad#375) keeps what it
+    // applied: its Cancel only closes it.
+    NSButton* cancel = button(m_def.repeats ? QObject::tr("Close") : QObject::tr("Cancel"), QStringLiteral("cancel"));
     cancel.accessibilityIdentifier = @"commandCancel";
     cancel.keyEquivalent = @"\033";
     [buttons addArrangedSubview:cancel];
-    m_ok = button(m_def.inspect             ? QObject::tr("Close")
+    m_ok = button(m_def.apply               ? (m_def.okLabel.isEmpty() ? QObject::tr("OK") : m_def.okLabel)
+                  : m_def.inspect           ? QObject::tr("Close")
                   : m_def.okLabel.isEmpty() ? QObject::tr("OK")
                                             : m_def.okLabel,
                   QStringLiteral("accept"));

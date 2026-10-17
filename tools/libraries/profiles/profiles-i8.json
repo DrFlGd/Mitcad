@@ -1,0 +1,1042 @@
+[
+  {
+    "id": "p20x55-i8",
+    "name": "Profile 20x55 I-type slot 8, Panel connection profile",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-20x55-I-Type-Slot-8-Panel-connection-profile/Motedis_Profile 20x55 I-Type Slot 8-Panel connection profile.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "I8 2055",
+    "supplier_url": "https://www.motedis.com/en/Profile-20x55-I-Type-Slot-8-Panel-connection-profile",
+    "designation": "Profile 20x55 I8 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"I","slot":8,"grid":40},
+      "length": {"parameter":"L","min":"50 mm","max":"6000 mm","stock":["6000 mm","1500 mm"]},
+      "section": {"width":"19.3 mm","height":"55.2 mm"},
+      "slot": {"depth":"12.25 mm","opening":"8.2 mm","inner_width":"20.2 mm"},
+      "mass_per_metre": "1.48 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"slot_x-_1","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "p20x152-i8",
+    "name": "Profile 20x152 I-type slot 8, Panel profile",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-20x152-I-Type-Slot-8-Panel-profile/Motedis Profile 20x152 I-Type Slot 8-Panel profile.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "I8 20152",
+    "supplier_url": "https://www.motedis.com/en/Profile-20x152-I-Type-Slot-8-Panel-profile",
+    "designation": "Profile 20x152 I8 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"I","slot":8,"grid":40},
+      "length": {"parameter":"L","min":"50 mm","max":"6000 mm","stock":["6000 mm","1980 mm"]},
+      "section": {"width":"20 mm","height":"152 mm"},
+      "slot": {"depth":"12.25 mm","opening":"8.2 mm","inner_width":"20.2 mm"},
+      "mass_per_metre": "4.93 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"slot_x+_1","kind":"slot"},
+        {"name":"slot_x+_2","kind":"slot"},
+        {"name":"slot_x+_3","kind":"slot"},
+        {"name":"slot_x-_1","kind":"slot"},
+        {"name":"slot_x-_2","kind":"slot"},
+        {"name":"slot_x-_3","kind":"slot"},
+        {"name":"slot_x-_4","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "p28x160-i8",
+    "name": "Profile 28x160 I-type slot 8, slot plate",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-28x160-I-Type-Slot-8/Motedis_Profile 28x160 I-Type Slot 8.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "I8 28160",
+    "supplier_url": "https://www.motedis.com/en/Profile-28x160-I-Type-Slot-8",
+    "designation": "Profile 28x160 I8 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"I","slot":8,"grid":40},
+      "length": {"parameter":"L","min":"50 mm","max":"6000 mm","stock":["6000 mm","1980 mm"]},
+      "section": {"width":"28 mm","height":"160 mm"},
+      "slot": {"depth":"12.25 mm","opening":"8.2 mm","inner_width":"20.2 mm"},
+      "mass_per_metre": "8.37 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"core_1","kind":"bore","diameter":"6.8 mm"},
+        {"name":"core_2","kind":"bore","diameter":"6.8 mm"},
+        {"name":"core_3","kind":"bore","diameter":"6.8 mm"},
+        {"name":"core_4","kind":"bore","diameter":"6.8 mm"},
+        {"name":"core_5","kind":"bore","diameter":"6.8 mm"},
+        {"name":"core_6","kind":"bore","diameter":"6.8 mm"},
+        {"name":"core_7","kind":"bore","diameter":"6.8 mm"},
+        {"name":"slot_x+_1","kind":"slot"},
+        {"name":"slot_x+_2","kind":"slot"},
+        {"name":"slot_x+_3","kind":"slot"},
+        {"name":"slot_x+_4","kind":"slot"},
+        {"name":"slot_x-_1","kind":"slot"},
+        {"name":"slot_x-_2","kind":"slot"},
+        {"name":"slot_x-_3","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "p28x200-i8",
+    "name": "Profile 28x200 I-type slot 8, slot plate",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-28x200-I-Type-Slot-8/Motedis_Profile 28x200 I-Type Slot 8.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "I8 28200",
+    "supplier_url": "https://www.motedis.com/en/Profile-28x200-I-Type-Slot-8",
+    "designation": "Profile 28x200 I8 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"I","slot":8,"grid":40},
+      "length": {"parameter":"L","min":"50 mm","max":"6000 mm","stock":["6000 mm","1980 mm"]},
+      "section": {"width":"28 mm","height":"200 mm"},
+      "slot": {"depth":"12 mm","opening":"8.2 mm","inner_width":"20.2 mm"},
+      "mass_per_metre": "10.33 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"core_1","kind":"bore","diameter":"6.8 mm"},
+        {"name":"core_2","kind":"bore","diameter":"6.8 mm"},
+        {"name":"core_3","kind":"bore","diameter":"6.8 mm"},
+        {"name":"core_4","kind":"bore","diameter":"6.8 mm"},
+        {"name":"core_5","kind":"bore","diameter":"6.8 mm"},
+        {"name":"core_6","kind":"bore","diameter":"6.8 mm"},
+        {"name":"core_7","kind":"bore","diameter":"6.8 mm"},
+        {"name":"core_8","kind":"bore","diameter":"6.8 mm"},
+        {"name":"core_9","kind":"bore","diameter":"6.8 mm"},
+        {"name":"slot_x+_1","kind":"slot"},
+        {"name":"slot_x+_2","kind":"slot"},
+        {"name":"slot_x+_3","kind":"slot"},
+        {"name":"slot_x+_4","kind":"slot"},
+        {"name":"slot_x+_5","kind":"slot"},
+        {"name":"slot_x-_1","kind":"slot"},
+        {"name":"slot_x-_2","kind":"slot"},
+        {"name":"slot_x-_3","kind":"slot"},
+        {"name":"slot_x-_4","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "p40x16s-i8",
+    "name": "Profile 40x16S I-type slot 8",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-40x16S-I-type-slot-8/Motedis_Profile 40x16S I-Type slot 8.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "022230",
+    "supplier_url": "https://www.motedis.com/en/Profile-40x16S-I-type-slot-8",
+    "designation": "Profile 40x16S I8 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"I","slot":8,"grid":40},
+      "length": {"parameter":"L","min":"50 mm","max":"6000 mm","stock":["6000 mm","1980 mm","1500 mm"]},
+      "section": {"width":"40 mm","height":"16 mm"},
+      "slot": {"depth":"12 mm","opening":"8.2 mm","inner_width":"20.2 mm"},
+      "mass_per_metre": "1.16 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"core_1","kind":"bore","diameter":"5 mm"},
+        {"name":"core_2","kind":"bore","diameter":"5 mm"},
+        {"name":"slot_y+_1","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "p40x40-1n-i8",
+    "name": "Profile 40x40 1N I-type slot 8",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-40x40-1N-I-Type-slot-8/Motedis_Profile 40x40 1N I-Type slot 8.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "13450",
+    "supplier_url": "https://www.motedis.com/en/Profile-40x40-1N-I-Type-slot-8",
+    "designation": "Profile 40x40 1N I8 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"I","slot":8,"grid":40},
+      "length": {"parameter":"L","min":"50 mm","max":"6000 mm","stock":["6000 mm","1980 mm","1500 mm"]},
+      "section": {"width":"40 mm","height":"40 mm"},
+      "slot": {"depth":"12.25 mm","opening":"8.2 mm","inner_width":"20.2 mm"},
+      "mass_per_metre": "1.89 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"core","kind":"bore","diameter":"6.8 mm"},
+        {"name":"slot_y+_1","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "p40x40-2n180g-i8",
+    "name": "Profile 40x40 2N180G I-type slot 8",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-40x40-2N180G-I-type-slot-8/Motedis_Profile 40x40 2N180 I-Type slot 8.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "13451",
+    "supplier_url": "https://www.motedis.com/en/Profile-40x40-2N180G-I-type-slot-8",
+    "designation": "Profile 40x40 2N180G I8 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"I","slot":8,"grid":40},
+      "length": {"parameter":"L","min":"50 mm","max":"6000 mm","stock":["6000 mm","1980 mm","1500 mm"]},
+      "section": {"width":"40 mm","height":"40 mm"},
+      "slot": {"depth":"12.25 mm","opening":"8.2 mm","inner_width":"20.2 mm"},
+      "mass_per_metre": "1.85 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"core","kind":"bore","diameter":"6.7 mm"},
+        {"name":"slot_y+_1","kind":"slot"},
+        {"name":"slot_y-_1","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "p40x40-2nvs-i8",
+    "name": "Profile 40x40 2NVS I-type slot 8",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-40x40-2NVS-I-Type-slot-8/Motedis_Profile 40x40 2NVS I-Type slot 8.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "019602",
+    "supplier_url": "https://www.motedis.com/en/Profile-40x40-2NVS-I-Type-slot-8",
+    "designation": "Profile 40x40 2NVS I8 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"I","slot":8,"grid":40},
+      "length": {"parameter":"L","min":"50 mm","max":"6000 mm","stock":["6000 mm","1980 mm","1500 mm"]},
+      "section": {"width":"40 mm","height":"40 mm"},
+      "slot": {"depth":"12 mm","opening":"8.2 mm","inner_width":"20.2 mm"},
+      "mass_per_metre": "1.85 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"core","kind":"bore","diameter":"6.7 mm"},
+        {"name":"slot_x-_1","kind":"slot"},
+        {"name":"slot_y+_1","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "p40x40-3n-i8",
+    "name": "Profile 40x40 3N I-type slot 8",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-40x40-3N-I-Type-slot-8/Motedis_Profile 40x40 3N I-Type slot 8.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "10414",
+    "supplier_url": "https://www.motedis.com/en/Profile-40x40-3N-I-Type-slot-8",
+    "designation": "Profile 40x40 3N I8 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"I","slot":8,"grid":40},
+      "length": {"parameter":"L","min":"50 mm","max":"6000 mm","stock":["6000 mm","1980 mm","1500 mm"]},
+      "section": {"width":"40 mm","height":"40 mm"},
+      "slot": {"depth":"12 mm","opening":"8.2 mm","inner_width":"20.2 mm"},
+      "mass_per_metre": "1.8 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"core","kind":"bore","diameter":"6.7 mm"},
+        {"name":"slot_x+_1","kind":"slot"},
+        {"name":"slot_x-_1","kind":"slot"},
+        {"name":"slot_y+_1","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "p40x40-lr-i8",
+    "name": "Profile 40x40 LR I-type slot 8",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-40x40-LR-I-Type-slot-8/Motedis_Profile 40x40 LR I-Type slot 8.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "10995",
+    "supplier_url": "https://www.motedis.com/en/Profile-40x40-LR-I-Type-slot-8",
+    "designation": "Profile 40x40 LR I8 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"I","slot":8,"grid":40},
+      "length": {
+        "parameter": "L",
+        "min": "50 mm",
+        "max": "6000 mm",
+        "stock": ["6000 mm","1980 mm","1500 mm","1000 mm"]
+      },
+      "section": {"width":"40 mm","height":"40 mm"},
+      "slot": {"depth":"12 mm","opening":"8.2 mm","inner_width":"20.2 mm"},
+      "mass_per_metre": "1.53 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"core","kind":"bore","diameter":"6.7 mm"},
+        {"name":"slot_x-_1","kind":"slot"},
+        {"name":"slot_y-_1","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "p40x40l-i8",
+    "name": "Profile 40x40L I-type slot 8",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-40x40L-I-Type-slot-8/P40L_N8_I.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "40x40L I-Typ Nut 8",
+    "supplier_url": "https://www.motedis.com/en/Profile-40x40L-I-Type-slot-8",
+    "designation": "Profile 40x40L I8 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"I","slot":8,"grid":40},
+      "length": {
+        "parameter": "L",
+        "min": "50 mm",
+        "max": "6000 mm",
+        "stock": ["6000 mm","1980 mm","1500 mm","1000 mm","500 mm"]
+      },
+      "section": {"width":"40 mm","height":"40 mm"},
+      "slot": {"depth":"12 mm","opening":"8.2 mm","inner_width":"20.2 mm"},
+      "mass_per_metre": "1.77 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"core","kind":"bore","diameter":"6.8 mm"},
+        {"name":"slot_x+_1","kind":"slot"},
+        {"name":"slot_x-_1","kind":"slot"},
+        {"name":"slot_y+_1","kind":"slot"},
+        {"name":"slot_y-_1","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "p40x80-ul-2n180g-i8",
+    "name": "Profile 40x80 UL 2N180G I-type slot 8",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-40x80-UL-2N180G-I-type-slot-8/Motedis-profile-40x80-UL-2N180-I-Type-slot-8/Motedis_profile 40x80 UL 2N180 I-Type slot 8.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "I8 4080E2NP",
+    "supplier_url": "https://www.motedis.com/en/Profile-40x80-UL-2N180G-I-type-slot-8",
+    "designation": "Profile 40x80 UL 2N180G I8 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"I","slot":8,"grid":40},
+      "length": {"parameter":"L","min":"50 mm","max":"1980 mm","stock":["1980 mm","1500 mm"]},
+      "section": {"width":"80 mm","height":"40 mm"},
+      "slot": {"depth":"12.25 mm","opening":"8.2 mm","inner_width":"20.2 mm"},
+      "mass_per_metre": "2.23 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"core_1","kind":"bore","diameter":"6.8 mm"},
+        {"name":"core_2","kind":"bore","diameter":"6.8 mm"},
+        {"name":"slot_x+_1","kind":"slot"},
+        {"name":"slot_x-_1","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"},
+    "place": {"z":[0,1,0],"x":[0,0,1]}
+  },
+  {
+    "id": "p40x80e-3n-i8",
+    "name": "Profile 40x80E 3N I-type slot 8",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-40x80E-3N-I-type-slot-8/Motedis_Profile_40x80E_3N_I-Type_Slot_8.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "10383",
+    "supplier_url": "https://www.motedis.com/en/Profile-40x80E-3N-I-type-slot-8",
+    "designation": "Profile 40x80E 3N I8 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"I","slot":8,"grid":40},
+      "length": {
+        "parameter": "L",
+        "min": "50 mm",
+        "max": "6000 mm",
+        "stock": ["6000 mm","1980 mm","1500 mm","1000 mm","500 mm"]
+      },
+      "section": {"width":"80 mm","height":"40 mm"},
+      "slot": {"depth":"12.25 mm","opening":"8.2 mm","inner_width":"20.2 mm"},
+      "mass_per_metre": "2.3 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"core_1","kind":"bore","diameter":"6.8 mm"},
+        {"name":"core_2","kind":"bore","diameter":"6.8 mm"},
+        {"name":"slot_x+_1","kind":"slot"},
+        {"name":"slot_y-_1","kind":"slot"},
+        {"name":"slot_y-_2","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"},
+    "place": {"z":[0,1,0],"x":[0,0,1]}
+  },
+  {
+    "id": "p40x80l-4n-i8",
+    "name": "Profile 40x80L 4N I-type slot 8",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-40x80L-4N-I-Type-slot-8/Motedis_Profile 40x80L 4N I-Type slot 8.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "10415",
+    "supplier_url": "https://www.motedis.com/en/Profile-40x80L-4N-I-Type-slot-8",
+    "designation": "Profile 40x80L 4N I8 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"I","slot":8,"grid":40},
+      "length": {
+        "parameter": "L",
+        "min": "50 mm",
+        "max": "6000 mm",
+        "stock": ["6000 mm","1980 mm","1500 mm","1000 mm"]
+      },
+      "section": {"width":"80 mm","height":"40 mm"},
+      "slot": {"depth":"12 mm","opening":"8.2 mm","inner_width":"20.2 mm"},
+      "mass_per_metre": "3.15 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"core_1","kind":"bore","diameter":"6.7 mm"},
+        {"name":"core_2","kind":"bore","diameter":"6.7 mm"},
+        {"name":"slot_x+_1","kind":"slot"},
+        {"name":"slot_x-_1","kind":"slot"},
+        {"name":"slot_y+_1","kind":"slot"},
+        {"name":"slot_y+_2","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "p40x80l-i8",
+    "name": "Profile 40x80L I-type slot 8",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-40x80L-I-type-slot-8/Motedis_Profile 40x80L I-Type slot 8.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "40x80L I-Typ Nut 8",
+    "supplier_url": "https://www.motedis.com/en/Profile-40x80L-I-type-slot-8",
+    "designation": "Profile 40x80L I8 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"I","slot":8,"grid":40},
+      "length": {
+        "parameter": "L",
+        "min": "50 mm",
+        "max": "6000 mm",
+        "stock": ["6000 mm","1980 mm","1500 mm","1000 mm","500 mm"]
+      },
+      "section": {"width":"80 mm","height":"40 mm"},
+      "slot": {"depth":"12 mm","opening":"8.2 mm","inner_width":"20.2 mm"},
+      "mass_per_metre": "3.06 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"core_1","kind":"bore","diameter":"6.7 mm"},
+        {"name":"core_2","kind":"bore","diameter":"6.7 mm"},
+        {"name":"slot_x+_1","kind":"slot"},
+        {"name":"slot_x-_1","kind":"slot"},
+        {"name":"slot_y+_1","kind":"slot"},
+        {"name":"slot_y+_2","kind":"slot"},
+        {"name":"slot_y-_1","kind":"slot"},
+        {"name":"slot_y-_2","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "p40x80x80e-4n-i8",
+    "name": "Profile 40x80x80E 4N I-type slot 8",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-40x80x80E-4N-I-type-slot-8/Motedis_Profile_40x80x80E_4N_I-Type_Slot_8.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "10381",
+    "supplier_url": "https://www.motedis.com/en/Profile-40x80x80E-4N-I-type-slot-8",
+    "designation": "Profile 40x80x80E 4N I8 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"I","slot":8,"grid":40},
+      "length": {
+        "parameter": "L",
+        "min": "50 mm",
+        "max": "6000 mm",
+        "stock": ["6000 mm","1980 mm","1500 mm","1000 mm","500 mm"]
+      },
+      "section": {"width":"80 mm","height":"80 mm"},
+      "slot": {"depth":"12.25 mm","opening":"8.2 mm","inner_width":"20.2 mm"},
+      "mass_per_metre": "3.22 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"core_1","kind":"bore","diameter":"6.8 mm"},
+        {"name":"core_2","kind":"bore","diameter":"6.8 mm"},
+        {"name":"slot_x-_1","kind":"slot"},
+        {"name":"slot_y+_1","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "p40x120l-i8",
+    "name": "Profile 40x120L I-type slot 8",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-40x120L-I-Type-slot-8/Motedis_Profile 40x120L I-Type slot 8.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "40x120L I-Typ Nut 8",
+    "supplier_url": "https://www.motedis.com/en/Profile-40x120L-I-Type-slot-8",
+    "designation": "Profile 40x120L I8 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"I","slot":8,"grid":40},
+      "length": {
+        "parameter": "L",
+        "min": "50 mm",
+        "max": "6000 mm",
+        "stock": ["6000 mm","1980 mm","1800 mm","1500 mm","1000 mm","500 mm"]
+      },
+      "section": {"width":"120 mm","height":"40 mm"},
+      "slot": {"depth":"12 mm","opening":"8.2 mm","inner_width":"20.2 mm"},
+      "mass_per_metre": "4.37 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"core_1","kind":"bore","diameter":"6.7 mm"},
+        {"name":"core_2","kind":"bore","diameter":"6.7 mm"},
+        {"name":"core_3","kind":"bore","diameter":"6.7 mm"},
+        {"name":"slot_x+_1","kind":"slot"},
+        {"name":"slot_x-_1","kind":"slot"},
+        {"name":"slot_y+_1","kind":"slot"},
+        {"name":"slot_y+_2","kind":"slot"},
+        {"name":"slot_y+_3","kind":"slot"},
+        {"name":"slot_y-_1","kind":"slot"},
+        {"name":"slot_y-_2","kind":"slot"},
+        {"name":"slot_y-_3","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "p40x160-l-6n-i8",
+    "name": "Profile 40x160 L 6N I-type slot 8",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-40x160-L-6N-I-type-slot-8/Motedis_P_40x160L_6N _IType_slot8.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "I8 40160L6N",
+    "supplier_url": "https://www.motedis.com/en/Profile-40x160-L-6N-I-type-slot-8",
+    "designation": "Profile 40x160 L 6N I8 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"I","slot":8,"grid":40},
+      "length": {"parameter":"L","min":"50 mm","max":"6000 mm","stock":["6000 mm","1980 mm","1500 mm"]},
+      "section": {"width":"160 mm","height":"40 mm"},
+      "slot": {"depth":"12 mm","opening":"8.2 mm","inner_width":"20.2 mm"},
+      "mass_per_metre": "5.67 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"core_1","kind":"bore","diameter":"6.7 mm"},
+        {"name":"core_2","kind":"bore","diameter":"6.7 mm"},
+        {"name":"core_3","kind":"bore","diameter":"6.7 mm"},
+        {"name":"core_4","kind":"bore","diameter":"6.7 mm"},
+        {"name":"slot_x+_1","kind":"slot"},
+        {"name":"slot_x-_1","kind":"slot"},
+        {"name":"slot_y+_1","kind":"slot"},
+        {"name":"slot_y+_2","kind":"slot"},
+        {"name":"slot_y+_3","kind":"slot"},
+        {"name":"slot_y+_4","kind":"slot"},
+        {"name":"slot_y-_1","kind":"slot"},
+        {"name":"slot_y-_2","kind":"slot"},
+        {"name":"slot_y-_3","kind":"slot"},
+        {"name":"slot_y-_4","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "p40x160e-4n-i8",
+    "name": "Profile 40x160E 4N I-type slot 8",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-40x160L-I-Type-slot-8-1/Motedis-40x160E-4N-I-Type-Slot-8/Profile_40x160E_4N_I-Type_Slot_8.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "40x160E 4N I-Typ Nut 8",
+    "supplier_url": "https://www.motedis.com/en/Profile-40x160L-I-Type-slot-8-1",
+    "designation": "Profile 40x160E 4N I8 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"I","slot":8,"grid":40},
+      "length": {
+        "parameter": "L",
+        "min": "50 mm",
+        "max": "6000 mm",
+        "stock": ["6000 mm","1980 mm","1500 mm","1000 mm","500 mm"]
+      },
+      "section": {"width":"160 mm","height":"40 mm"},
+      "slot": {"depth":"12.25 mm","opening":"8.2 mm","inner_width":"20.2 mm"},
+      "mass_per_metre": "3.06 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"core_1","kind":"bore","diameter":"6.8 mm"},
+        {"name":"core_2","kind":"bore","diameter":"6.8 mm"},
+        {"name":"slot_x+_1","kind":"slot"},
+        {"name":"slot_x-_1","kind":"slot"},
+        {"name":"slot_y+_1","kind":"slot"},
+        {"name":"slot_y+_2","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "p40x160l-i8",
+    "name": "Profile 40x160L I-type slot 8",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-40x160L-I-Type-slot-8/Motedis_Profile 40x160L I-Type slot 8.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "40x160L I-Typ Nut 8",
+    "supplier_url": "https://www.motedis.com/en/Profile-40x160L-I-Type-slot-8",
+    "designation": "Profile 40x160L I8 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"I","slot":8,"grid":40},
+      "length": {
+        "parameter": "L",
+        "min": "50 mm",
+        "max": "6000 mm",
+        "stock": ["6000 mm","1980 mm","1500 mm","1000 mm","700 mm"]
+      },
+      "section": {"width":"160 mm","height":"40 mm"},
+      "slot": {"depth":"12 mm","opening":"8.2 mm","inner_width":"20.2 mm"},
+      "mass_per_metre": "5.67 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"core_1","kind":"bore","diameter":"6.7 mm"},
+        {"name":"core_2","kind":"bore","diameter":"6.7 mm"},
+        {"name":"core_3","kind":"bore","diameter":"6.7 mm"},
+        {"name":"core_4","kind":"bore","diameter":"6.7 mm"},
+        {"name":"slot_x+_1","kind":"slot"},
+        {"name":"slot_x-_1","kind":"slot"},
+        {"name":"slot_y+_1","kind":"slot"},
+        {"name":"slot_y+_2","kind":"slot"},
+        {"name":"slot_y+_3","kind":"slot"},
+        {"name":"slot_y+_4","kind":"slot"},
+        {"name":"slot_y-_1","kind":"slot"},
+        {"name":"slot_y-_2","kind":"slot"},
+        {"name":"slot_y-_3","kind":"slot"},
+        {"name":"slot_y-_4","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "p80x16l-i8",
+    "name": "Profile 80x16L I-type slot 8",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-80x16L-I-Type-Slot-8/Motedis_profile_80x16E_I-Type_slot_8.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "I8 1680E",
+    "supplier_url": "https://www.motedis.com/en/Profile-80x16L-I-Type-Slot-8",
+    "designation": "Profile 80x16L I8 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"I","slot":8,"grid":40},
+      "length": {"parameter":"L","min":"50 mm","max":"1980 mm","stock":["1980 mm","1500 mm","1000 mm"]},
+      "section": {"width":"80 mm","height":"16 mm"},
+      "slot": {"depth":"12 mm","opening":"8.2 mm","inner_width":"20.2 mm"},
+      "mass_per_metre": "1.32 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"core_1","kind":"bore","diameter":"5 mm"},
+        {"name":"core_2","kind":"bore","diameter":"5 mm"},
+        {"name":"slot_y+_1","kind":"slot"},
+        {"name":"slot_y+_2","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "p80x16s-i8",
+    "name": "Profile 80x16S I-type slot 8",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-80x16S-I-type-slot-8/Motedis_Profile 80x16S I-Type slot 8.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "12012",
+    "supplier_url": "https://www.motedis.com/en/Profile-80x16S-I-type-slot-8",
+    "designation": "Profile 80x16S I8 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"I","slot":8,"grid":40},
+      "length": {"parameter":"L","min":"50 mm","max":"6000 mm","stock":["6000 mm","1980 mm"]},
+      "section": {"width":"80 mm","height":"16 mm"},
+      "slot": {"depth":"12.25 mm","opening":"8.2 mm","inner_width":"20.2 mm"},
+      "mass_per_metre": "2.13 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"core_1","kind":"bore","diameter":"5 mm"},
+        {"name":"core_2","kind":"bore","diameter":"5 mm"},
+        {"name":"slot_y+_1","kind":"slot"},
+        {"name":"slot_y+_2","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "p80x80-l-i8",
+    "name": "Profile 80x80 L I-type slot 8",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-80x80-L-I-type-slot-8/Motedis_Profile 80x80L I-Type slot 8.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "80x80L I-Typ Nut 8",
+    "supplier_url": "https://www.motedis.com/en/Profile-80x80-L-I-type-slot-8",
+    "designation": "Profile 80x80 L I8 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"I","slot":8,"grid":40},
+      "length": {
+        "parameter": "L",
+        "min": "50 mm",
+        "max": "6000 mm",
+        "stock": ["6000 mm","1980 mm","1500 mm","1000 mm","612 mm","500 mm","470 mm"]
+      },
+      "section": {"width":"80 mm","height":"80 mm"},
+      "slot": {"depth":"12 mm","opening":"8.2 mm","inner_width":"20.2 mm"},
+      "mass_per_metre": "5.34 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"core_1","kind":"bore","diameter":"6.7 mm"},
+        {"name":"core_2","kind":"bore","diameter":"6.7 mm"},
+        {"name":"core_3","kind":"bore","diameter":"6.7 mm"},
+        {"name":"core_4","kind":"bore","diameter":"6.7 mm"},
+        {"name":"slot_x+_1","kind":"slot"},
+        {"name":"slot_x+_2","kind":"slot"},
+        {"name":"slot_x-_1","kind":"slot"},
+        {"name":"slot_x-_2","kind":"slot"},
+        {"name":"slot_y+_1","kind":"slot"},
+        {"name":"slot_y+_2","kind":"slot"},
+        {"name":"slot_y-_1","kind":"slot"},
+        {"name":"slot_y-_2","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "p160x16-i8",
+    "name": "Profile 160x16 I-type slot 8, slot plate",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-160x16-I-type-slot-8/Motedis_Profile 160x16 I-Type slot 8.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "12764",
+    "supplier_url": "https://www.motedis.com/en/Profile-160x16-I-type-slot-8",
+    "designation": "Profile 160x16 I8 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"I","slot":8,"grid":40},
+      "length": {
+        "parameter": "L",
+        "min": "50 mm",
+        "max": "6000 mm",
+        "stock": ["6000 mm","1980 mm","1500 mm","1000 mm"]
+      },
+      "section": {"width":"16 mm","height":"160 mm"},
+      "slot": {"depth":"12.25 mm","opening":"8.2 mm","inner_width":"20.2 mm"},
+      "mass_per_metre": "3.73 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"slot_x-_1","kind":"slot"},
+        {"name":"slot_x-_2","kind":"slot"},
+        {"name":"slot_x-_3","kind":"slot"},
+        {"name":"slot_y+_1","kind":"slot"},
+        {"name":"slot_y-_1","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"},
+    "place": {"z":[0,1,0],"x":[0,0,1]}
+  },
+  {
+    "id": "pcsp-rail-i8",
+    "name": "Profile CSP Rail I-type slot 8",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-CSP-Rail-I-Type-Slot-8/Profile CSP Rail I-Type Slot 8.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "I8 CSP Schiene",
+    "supplier_url": "https://www.motedis.com/en/Profile-CSP-Rail-I-Type-Slot-8",
+    "designation": "Profile CSP Rail I8 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"I","slot":8,"grid":40},
+      "length": {"parameter":"L","min":"50 mm","max":"6000 mm","stock":["6000 mm","1980 mm","1500 mm"]},
+      "section": {"width":"38.8 mm","height":"92.7 mm"},
+      "slot": {"depth":"12.25 mm","opening":"8.2 mm","inner_width":"20.2 mm"},
+      "mass_per_metre": "2.92 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"slot_x+_1","kind":"slot"},
+        {"name":"slot_y-_1","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "pcsp-slide-i8",
+    "name": "Profile CSP Slide I-type slot 8",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-CSP-Slide-I-Type-Slot-8/Motedis_I8 CSP Schlitten.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "I8 CSP Schlitten",
+    "supplier_url": "https://www.motedis.com/en/Profile-CSP-Slide-I-Type-Slot-8",
+    "designation": "Profile CSP Slide I8 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"I","slot":8,"grid":40},
+      "length": {"parameter":"L","min":"50 mm","max":"6000 mm","stock":["6000 mm","1980 mm","1500 mm"]},
+      "section": {"width":"38.8 mm","height":"81.5 mm"},
+      "slot": {"depth":"12.25 mm","opening":"8.2 mm","inner_width":"20.2 mm"},
+      "mass_per_metre": "2.65 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"core_1","kind":"bore","diameter":"6.8 mm"},
+        {"name":"slot_x-_1","kind":"slot"},
+        {"name":"slot_y+_1","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "phinge-profile-e-i8",
+    "name": "Hinge profile E I-type slot 8",
+    "category": "profiles",
+    "source": "aluminium-profiles/Hinge-profile-E-I-type-slot-8/Motedis_Hinge profile E I-Typ Nut 8.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "I8 Scharnierprofil e",
+    "supplier_url": "https://www.motedis.com/en/Hinge-profile-E-I-type-slot-8",
+    "designation": "Profile Hinge profile E I8 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"I","slot":8,"grid":40},
+      "length": {
+        "parameter": "L",
+        "min": "50 mm",
+        "max": "3000 mm",
+        "stock": ["3000 mm","1980 mm","1500 mm","1000 mm"]
+      },
+      "section": {"width":"37.42 mm","height":"10.55 mm"},
+      "slot": {"depth":"12.25 mm","opening":"8.2 mm","inner_width":"20.2 mm"},
+      "mass_per_metre": "0.68 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"core_1","kind":"bore","diameter":"8 mm"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "phinge-profile-z-i8",
+    "name": "Hinge profile Z I-type slot 8",
+    "category": "profiles",
+    "source": "aluminium-profiles/Hinge-profile-Z-I-type-slot-8/Motedis_Hinge profile Z I-Typ Nut 8.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "I8 Scharnierprofil z",
+    "supplier_url": "https://www.motedis.com/en/Hinge-profile-Z-I-type-slot-8",
+    "designation": "Profile Hinge profile Z I8 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"I","slot":8,"grid":40},
+      "length": {"parameter":"L","min":"50 mm","max":"1500 mm","stock":["1500 mm"]},
+      "section": {"width":"35.63 mm","height":"7.49 mm"},
+      "slot": {"depth":"12.25 mm","opening":"8.2 mm","inner_width":"20.2 mm"},
+      "mass_per_metre": "0.67 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"core_1","kind":"bore","diameter":"8 mm"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "pr40-80-30g-i8",
+    "name": "Profile R40/80 30° I-type slot 8",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-8-R40-80-30G-I-Type-Slot-8/Motedis_40RR30 I-Type slot 8.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "506",
+    "supplier_url": "https://www.motedis.com/en/Profile-8-R40-80-30G-I-Type-Slot-8",
+    "designation": "Profile R40/80 30° I8 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"I","slot":8,"grid":40},
+      "length": {"parameter":"L","min":"50 mm","max":"6000 mm","stock":["6000 mm","1980 mm","1500 mm"]},
+      "section": {"width":"43.57 mm","height":"37.95 mm"},
+      "slot": {"depth":"12.25 mm","opening":"8.2 mm","inner_width":"20.2 mm"},
+      "mass_per_metre": "1.68 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"slot_y-_1","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "pr40-80-45g-i8",
+    "name": "Profile R40/80 45° I-type slot 8",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-8-R40-80-45G-I-Type-Slot-8/Motedis_40RR45 I-Type slot 8.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "I8 40RR45",
+    "supplier_url": "https://www.motedis.com/en/Profile-8-R40-80-45G-I-Type-Slot-8",
+    "designation": "Profile R40/80 45° I8 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"I","slot":8,"grid":40},
+      "length": {"parameter":"L","min":"50 mm","max":"6000 mm","stock":["6000 mm","1980 mm","1500 mm"]},
+      "section": {"width":"49.15 mm","height":"53.67 mm"},
+      "slot": {"depth":"12 mm","opening":"8.2 mm","inner_width":"20.2 mm"},
+      "mass_per_metre": "2.77 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"core_1","kind":"bore","diameter":"6.7 mm"},
+        {"name":"slot_y-_1","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "pr40-80-60g-i8",
+    "name": "Profile R40/80 60° I-type slot 8",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-8-R40-80-60G-I-Type-Slot-8/Motedis_40RR60 I-Type slot 8.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "I8 40RR60",
+    "supplier_url": "https://www.motedis.com/en/Profile-8-R40-80-60G-I-Type-Slot-8",
+    "designation": "Profile R40/80 60° I8 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"I","slot":8,"grid":40},
+      "length": {"parameter":"L","min":"50 mm","max":"6000 mm","stock":["6000 mm","1980 mm","1500 mm"]},
+      "section": {"width":"57.98 mm","height":"67.08 mm"},
+      "slot": {"depth":"12 mm","opening":"8.2 mm","inner_width":"20.2 mm"},
+      "mass_per_metre": "2.86 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"core_1","kind":"bore","diameter":"6.7 mm"},
+        {"name":"slot_y-_1","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "pr40-80-90g-i8",
+    "name": "Profile R40/80 90° I-type slot 8",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-8-R40-80-90G-I-Type-Slot-8/Motedis_40RR90 I-Type slot 8.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "I8 40RR90",
+    "supplier_url": "https://www.motedis.com/en/Profile-8-R40-80-90G-I-Type-Slot-8",
+    "designation": "Profile R40/80 90° I8 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"I","slot":8,"grid":40},
+      "length": {"parameter":"L","min":"50 mm","max":"6000 mm","stock":["6000 mm","1980 mm"]},
+      "section": {"width":"79.89 mm","height":"79.89 mm"},
+      "slot": {"depth":"12.25 mm","opening":"8.2 mm","inner_width":"20.2 mm"},
+      "mass_per_metre": "3.94 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"core_1","kind":"bore","diameter":"6.8 mm"},
+        {"name":"core_2","kind":"bore","diameter":"6.8 mm"},
+        {"name":"core_3","kind":"bore","diameter":"6.8 mm"},
+        {"name":"slot_x-_1","kind":"slot"},
+        {"name":"slot_y+_1","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  }
+]

@@ -569,7 +569,8 @@ pub enum ConstraintKind {
         #[serde(with = "curve_serde")]
         b: EntityUid,
     },
-    /// Equal length (lines) or radius (circles, arcs).
+    /// Equal length (lines), radius (circles, arcs) or minor radius
+    /// (ellipses and elliptical arcs).
     Equal {
         #[serde(with = "curve_serde")]
         a: EntityUid,

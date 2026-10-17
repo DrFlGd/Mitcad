@@ -21,6 +21,9 @@
 //! - **Resolver** ([`LibraryResolver`]): the model's
 //!   [`mitcad_model::LinkResolver`]: a component of a library at the commit
 //!   a design recorded for it.
+//! - **BUILD parts** ([`build`], mitcad#375): a component's `build` block
+//!   and supplier fields, their checks, and the fitting of parts to a
+//!   junction or a picker (`library_build_candidates`).
 //!
 //! Library content is data from elsewhere: repositories are opened with
 //! gix's isolated options (none of the user's or the system's git
@@ -32,6 +35,7 @@
 //! "Component libraries").
 
 pub mod api;
+pub mod build;
 pub mod manifest;
 mod publish;
 
@@ -103,6 +107,11 @@ impl std::fmt::Debug for LibraryRepo {
             .field("dir", &self.dir)
             .finish_non_exhaustive()
     }
+}
+
+/// A manifest's text field as the model records it: none when empty.
+fn non_empty(text: &str) -> Option<String> {
+    (!text.is_empty()).then(|| text.to_owned())
 }
 
 fn not_found(message: impl Into<String>) -> VcsError {
@@ -437,6 +446,10 @@ impl LibraryRepo {
             standard: item.standard.clone(),
             license: manifest.license_of(item).unwrap_or_default(),
             designation: item.designation.clone(),
+            supplier: non_empty(&item.supplier),
+            part_number: non_empty(&item.part_number),
+            supplier_url: non_empty(&item.supplier_url),
+            build: item.build.clone(),
             text,
         })
     }

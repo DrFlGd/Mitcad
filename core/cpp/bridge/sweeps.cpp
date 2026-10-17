@@ -50,6 +50,17 @@ geometry::PathCurve path_curve(const SweepCurve& input) {
     curve.weights.assign(input.weights.begin(), input.weights.end());
     curve.knots.assign(input.knots.begin(), input.knots.end());
     break;
+  case 3:
+    // A helix (mitcad#385): the radius as major, the pitch as minor.
+    curve.kind = geometry::ModelCurveKind::Helix;
+    curve.center = point(input.center);
+    curve.normal = direction(input.normal);
+    curve.x_axis = direction(input.x_axis);
+    curve.major = input.major;
+    curve.minor = input.minor;
+    curve.first = input.first;
+    curve.last = input.last;
+    break;
   default:
     throw std::invalid_argument("unknown path curve kind");
   }

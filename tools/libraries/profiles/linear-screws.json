@@ -1,0 +1,731 @@
+[
+  {
+    "id": "nut-8x1-5-red-bronze-with-aluminium-housing",
+    "name": "Trapezoidal lead screw nut 8x1,5 R red bronze with aluminium housing",
+    "category": "linear",
+    "source": "dynamic-m/Trapezoidal-lead-screw-nut-8x15-R-red-bronze-with-aluminum-housing/Motedis_Trapezoidal_lead_screw_nut_8x1.5_R_red_bronze_with_aluminium_housing.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "3741",
+    "supplier_url": "https://www.motedis.com/en/Trapezoidal-lead-screw-nut-8x15-R-red-bronze-with-aluminum-housing",
+    "designation": "Trapezoidal lead screw nut 8x1,5 R red bronze with aluminium housing",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
+      "linear": {"kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
+    },
+    "frames": [
+      {"name":"bore","origin":[0,15,10.15],"z":[0,0,1],"x":[1,0,0],"kind":"bore"},
+      {"name":"mount","origin":[0,15,20.3],"z":[0,0,1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "nut-10x2-red-bronze-cylindrical-long",
+    "name": "Trapezoidal lead screw nut 10x2 R Red bronze - cylindrical, long",
+    "category": "linear",
+    "source": "dynamic-m/Trapezoidal-lead-screw-nut-10x2-R-Red-bronze-cylindrical-long/Motedis_Trapezgewindemutter10x2R.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "3472",
+    "supplier_url": "https://www.motedis.com/en/Trapezoidal-lead-screw-nut-10x2-R-Red-bronze-cylindrical-long",
+    "designation": "Trapezoidal lead screw nut 10x2 R Red bronze - cylindrical, long",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,0,10],"z":[0,0,1],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "nut-10x4p2-red-bronze-cylindrical-long",
+    "name": "Trapezoidal lead screw nut 10x4P2 R Red bronze - cylindrical, long",
+    "category": "linear",
+    "source": "dynamic-m/Trapezoidal-lead-screw-nut-10x4P2-R-Red-bronze-cylindrical-long/MotedisRotguss_Trapezgewindemutter10x4P2D.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "5464",
+    "supplier_url": "https://www.motedis.com/en/Trapezoidal-lead-screw-nut-10x4P2-R-Red-bronze-cylindrical-long",
+    "designation": "Trapezoidal lead screw nut 10x4P2 R Red bronze - cylindrical, long",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,0,10],"z":[0,0,1],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "nut-12x3-red-bronze-cylindrical-long",
+    "name": "Trapezoidal lead screw nut 12x3 R Red bronze - cylindrical, long",
+    "category": "linear",
+    "source": "dynamic-m/Trapezoidal-lead-screw-nut-12x3-R-Red-bronze-cylindrical-long/Motedis_Trapezgewindemutter12x3R.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "3473",
+    "supplier_url": "https://www.motedis.com/en/Trapezoidal-lead-screw-nut-12x3-R-Red-bronze-cylindrical-long",
+    "designation": "Trapezoidal lead screw nut 12x3 R Red bronze - cylindrical, long",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,0,12],"z":[0,0,1],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "nut-12x3-red-bronze-with-aluminium-housing",
+    "name": "Trapezoidal lead screw nut 12x3 R red bronze with aluminium housing",
+    "category": "linear",
+    "source": "dynamic-m/Trapezoidal-lead-screw-nut-12x3-R-red-bronze-with-aluminum-housing/Motedis_Trapezoidal_lead_screw_nut_12x3_R_red_bronze_with_aluminium_housing.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "3743",
+    "supplier_url": "https://www.motedis.com/en/Trapezoidal-lead-screw-nut-12x3-R-red-bronze-with-aluminum-housing",
+    "designation": "Trapezoidal lead screw nut 12x3 R red bronze with aluminium housing",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
+      "linear": {"kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
+    },
+    "frames": [
+      {"name":"bore","origin":[0,0,12],"z":[0,0,1],"x":[1,0,0],"kind":"bore"},
+      {"name":"mount","origin":[0,0,24],"z":[0,0,1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "nut-12x6p3-red-bronze-cylindrical-long",
+    "name": "Trapezoidal lead screw nut 12x6P3 R Red bronze - cylindrical, long",
+    "category": "linear",
+    "source": "dynamic-m/Trapezoidal-lead-screw-nut-12x6P3-R-Red-bronze-cylindrical-long/Motedis_Trapezgewindemutter12x6P3.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "5445",
+    "supplier_url": "https://www.motedis.com/en/Trapezoidal-lead-screw-nut-12x6P3-R-Red-bronze-cylindrical-long",
+    "designation": "Trapezoidal lead screw nut 12x6P3 R Red bronze - cylindrical, long",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,0,12],"z":[0,0,1],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "nut-12x6p3-red-bronze-with-aluminium-housing",
+    "name": "Trapezoidal lead screw nut 12x6P3 R red bronze with aluminium housing",
+    "category": "linear",
+    "source": "dynamic-m/Trapezoidal-lead-screw-nut-12x6P3-R-red-bronze-with-aluminum-housing/Motedis_Trapezoidal_lead_screw_nut_12x6P3_R_red_bronze_with_aluminium_housing.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "5465",
+    "supplier_url": "https://www.motedis.com/en/Trapezoidal-lead-screw-nut-12x6P3-R-red-bronze-with-aluminum-housing",
+    "designation": "Trapezoidal lead screw nut 12x6P3 R red bronze with aluminium housing",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
+      "linear": {"kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
+    },
+    "frames": [
+      {"name":"bore","origin":[0,0,12],"z":[0,0,1],"x":[1,0,0],"kind":"bore"},
+      {"name":"mount","origin":[0,0,24],"z":[0,0,1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "nut-16x4-red-bronze-with-aluminium-housing",
+    "name": "Trapezoidal lead screw nut 16x4 R red bronze with aluminium housing",
+    "category": "linear",
+    "source": "dynamic-m/Trapezoidal-lead-screw-nut-16x4-R-red-bronze-with-aluminum-housing/Motedis_Trapezoidal_lead_screw_nut_16x4_R_red_bronze_with_aluminium_housing.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "1331",
+    "supplier_url": "https://www.motedis.com/en/Trapezoidal-lead-screw-nut-16x4-R-red-bronze-with-aluminum-housing",
+    "designation": "Trapezoidal lead screw nut 16x4 R red bronze with aluminium housing",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,0,16],"z":[0,0,1],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "nut-16x4-steel-cylindrical",
+    "name": "Trapezoidal lead screw nut 16X4 R steel - cylindrical",
+    "category": "linear",
+    "source": "dynamic-m/Trapezoidal-lead-screw-nut-16X4-R-steel-cylindrical/Motedis_Trapezgewindemutter16x4R.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "EKSM16X4D",
+    "supplier_url": "https://www.motedis.com/en/Trapezoidal-lead-screw-nut-16X4-R-steel-cylindrical",
+    "designation": "Trapezoidal lead screw nut 16X4 R steel - cylindrical",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,0,12],"z":[0,0,1],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "nut-anti-backlash-delrin-nut-m6",
+    "name": "Miniature Anti-backlash Delrin nut M6",
+    "category": "linear",
+    "source": "dynamic-m/Miniature-Anti-backlash-Delrin-nut-M6/M6 Miniature Leadnut.STEP",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "3818",
+    "supplier_url": "https://www.motedis.com/en/Miniature-Anti-backlash-Delrin-nut-M6",
+    "designation": "Miniature Anti-backlash Delrin nut M6",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
+      "linear": {"kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
+    },
+    "frames": [
+      {"name":"bore","origin":[0,-3,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"},
+      {"name":"mount","origin":[0,8.5,0],"z":[0,1,0],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "nut-anti-backlash-delrin-nut-m8",
+    "name": "Standard Anti-backlash Delrin nut M8",
+    "category": "linear",
+    "source": "dynamic-m/Standard-Anti-backlash-Delrin-nut-M8/Standard Anti-backlash Delrin nut.STEP",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "3710",
+    "supplier_url": "https://www.motedis.com/en/Standard-Anti-backlash-Delrin-nut-M8",
+    "designation": "Standard Anti-backlash Delrin nut M8",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
+      "linear": {"kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
+    },
+    "frames": [
+      {"name":"bore","origin":[0,-3,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"},
+      {"name":"mount","origin":[0,8.5,0],"z":[0,1,0],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "nut-anti-backlash-delrin-nut-m10",
+    "name": "Standard Anti backlash Delrin nut M10",
+    "category": "linear",
+    "source": "dynamic-m/Standard-Anti-backlash-Delrin-nut-M10/Motedis-Standard_Anti-Backlash_Delrin_Nut_M10.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "7894",
+    "supplier_url": "https://www.motedis.com/en/Standard-Anti-backlash-Delrin-nut-M10",
+    "designation": "Standard Anti backlash Delrin nut M10",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
+      "linear": {"kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
+    },
+    "frames": [
+      {"name":"bore","origin":[9.25,3.5,6.5],"z":[0,1,0],"x":[1,0,0],"kind":"bore"},
+      {"name":"mount","origin":[9.25,-12,6.5],"z":[0,-1,0],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "nut-anti-backlash-delrin-nut-t-8x1-5",
+    "name": "Standard Anti-backlash Delrin nut TR 8x1,5",
+    "category": "linear",
+    "source": "dynamic-m/Standard-Anti-backlash-Delrin-nut-TR-8x15/Motedis-Standard_Anti-Backlash_Delrin_Nut_TR8x1,5.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "3955",
+    "supplier_url": "https://www.motedis.com/en/Standard-Anti-backlash-Delrin-nut-TR-8x15",
+    "designation": "Standard Anti-backlash Delrin nut TR 8x1,5",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
+      "linear": {"kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
+    },
+    "frames": [
+      {"name":"bore","origin":[9.25,3.5,6.5],"z":[0,1,0],"x":[1,0,0],"kind":"bore"},
+      {"name":"mount","origin":[9.25,-12,6.5],"z":[0,-1,0],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "nut-anti-backlash-delrin-nut-t-10x2",
+    "name": "Standard Anti-backlash Delrin nut TR 10x2",
+    "category": "linear",
+    "source": "dynamic-m/Standard-Anti-backlash-Delrin-nut-TR-10x2/Motedis-Standard_Anti-Backlash_Delrin_Nut_TR10x2.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "3956",
+    "supplier_url": "https://www.motedis.com/en/Standard-Anti-backlash-Delrin-nut-TR-10x2",
+    "designation": "Standard Anti-backlash Delrin nut TR 10x2",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
+      "linear": {"kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
+    },
+    "frames": [
+      {"name":"bore","origin":[9.25,3.5,6.5],"z":[0,1,0],"x":[1,0,0],"kind":"bore"},
+      {"name":"mount","origin":[9.25,-12,6.5],"z":[0,-1,0],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "nut-anti-backlash-zedex-nut-t-10x2",
+    "name": "Anti-backlash Zedex nut TR 10x2",
+    "category": "linear",
+    "source": "dynamic-m/Anti-backlash-Zedex-nut-TR-10x2/Motedis_Anti-Backlash_Zedex_Nut_TR10x2r.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "5839",
+    "supplier_url": "https://www.motedis.com/en/Anti-backlash-Zedex-nut-TR-10x2",
+    "designation": "Anti-backlash Zedex nut TR 10x2",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
+      "linear": {"kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
+    },
+    "frames": [
+      {"name":"bore","origin":[9.25,3.5,6.5],"z":[0,1,0],"x":[1,0,0],"kind":"bore"},
+      {"name":"mount","origin":[9.25,-12,6.5],"z":[0,-1,0],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "nut-eskm-tr10x2-hexagonal-steel",
+    "name": "Trapezoidal leadscrew nut ESKM TR10x2 right - hexagonal steel",
+    "category": "linear",
+    "source": "dynamic-m/Trapezoidal-leadscrew-nut-ESKM-TR10x2-right-hexagonal-steel/Motedis_ESKMTR10x2.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "ESKM10x2D",
+    "supplier_url": "https://www.motedis.com/en/Trapezoidal-leadscrew-nut-ESKM-TR10x2-right-hexagonal-steel",
+    "designation": "Trapezoidal leadscrew nut ESKM TR10x2 right - hexagonal steel",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,0,7.5],"z":[0,0,1],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "nut-eskm-tr10x4p2-hexagonal-steel",
+    "name": "Trapezoidal leadscrew nut ESKM TR10x4P2 right - hexagonal steel",
+    "category": "linear",
+    "source": "dynamic-m/Trapezoidal-leadscrew-nut-ESKM-TR10x4P2-right-hexagonal-steel/Motedis_ESKM10x4P2D.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "ESKM10x4P2D",
+    "supplier_url": "https://www.motedis.com/en/Trapezoidal-leadscrew-nut-ESKM-TR10x4P2-right-hexagonal-steel",
+    "designation": "Trapezoidal leadscrew nut ESKM TR10x4P2 right - hexagonal steel",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,0,7.5],"z":[0,0,1],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "nut-eskm-tr12x3-hexagonal-steel",
+    "name": "Trapezoidal leadscrew nut ESKM TR12X3 right - hexagonal steel",
+    "category": "linear",
+    "source": "dynamic-m/Trapezoidal-leadscrew-nut-ESKM-TR12X3-right-hexagonal-steel/Motedis_ESKMTR12x3.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "ESKM12X3D",
+    "supplier_url": "https://www.motedis.com/en/Trapezoidal-leadscrew-nut-ESKM-TR12X3-right-hexagonal-steel",
+    "designation": "Trapezoidal leadscrew nut ESKM TR12X3 right - hexagonal steel",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,0,9],"z":[0,1,0],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "nut-eskm-tr12x6p3-hexagonal-steel",
+    "name": "Trapezoidal leadscrew nut ESKM TR12X6P3 right - hexagonal steel",
+    "category": "linear",
+    "source": "dynamic-m/Trapezoidal-leadscrew-nut-ESKM-TR12X6P3-right-hexagonal-steel/Motedis_ESKMTR12x6P3.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "ESKM12X6P3D",
+    "supplier_url": "https://www.motedis.com/en/Trapezoidal-leadscrew-nut-ESKM-TR12X6P3-right-hexagonal-steel",
+    "designation": "Trapezoidal leadscrew nut ESKM TR12X6P3 right - hexagonal steel",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,0,9],"z":[0,1,0],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "nut-eskm-tr16x4-hexagonal-steel",
+    "name": "Trapezoidal leadscrew nut ESKM TR16X4 right - hexagonal steel",
+    "category": "linear",
+    "source": "dynamic-m/Trapezoidal-leadscrew-nut-ESKM-TR16X4-right-hexagonal-steel/Motedis_ESKMTR16x4.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "ESKM16X4D",
+    "supplier_url": "https://www.motedis.com/en/Trapezoidal-leadscrew-nut-ESKM-TR16X4-right-hexagonal-steel",
+    "designation": "Trapezoidal leadscrew nut ESKM TR16X4 right - hexagonal steel",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,0,12],"z":[0,0,1],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "nut-flange-ebfm-12x3-gunmetal",
+    "name": "Trapezoidal leadscrew nut - flange EBFM 12x3 right gunmetal",
+    "category": "linear",
+    "source": "dynamic-m/Trapezoidal-leadscrew-nut-flange-EBFM-12x3-right-gunmetal/Motedis_EBFM12x3.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "3474",
+    "supplier_url": "https://www.motedis.com/en/Trapezoidal-leadscrew-nut-flange-EBFM-12x3-right-gunmetal",
+    "designation": "Trapezoidal leadscrew nut - flange EBFM 12x3 right gunmetal",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
+      "linear": {"kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
+    },
+    "frames": [
+      {"name":"bore","origin":[0,0,23.5],"z":[0,0,1],"x":[1,0,0],"kind":"bore"},
+      {"name":"mount","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "nut-flange-ebfm-12x6p3-gunmetal",
+    "name": "Trapezoidal leadscrew nut - flange EBFM 12x6P3 right gunmetal",
+    "category": "linear",
+    "source": "dynamic-m/Trapezoidal-leadscrew-nut-flange-EBFM-12x6P3-right-gunmetal/Motedis_EBFM12x6P3.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "5444",
+    "supplier_url": "https://www.motedis.com/en/Trapezoidal-leadscrew-nut-flange-EBFM-12x6P3-right-gunmetal",
+    "designation": "Trapezoidal leadscrew nut - flange EBFM 12x6P3 right gunmetal",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
+      "linear": {"kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
+    },
+    "frames": [
+      {"name":"bore","origin":[0,0,23.5],"z":[0,0,1],"x":[1,0,0],"kind":"bore"},
+      {"name":"mount","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "nut-flange-ebfm-16x4-gunmetal",
+    "name": "Trapezoidal leadscrew nut - flange EBFM 16x4 right gunmetal",
+    "category": "linear",
+    "source": "dynamic-m/Trapezoidal-leadscrew-nut-flange-EBFM-16x4-right-gunmetal/Motedis_EBFM16x4.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "1432",
+    "supplier_url": "https://www.motedis.com/en/Trapezoidal-leadscrew-nut-flange-EBFM-16x4-right-gunmetal",
+    "designation": "Trapezoidal leadscrew nut - flange EBFM 16x4 right gunmetal",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
+      "linear": {"kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
+    },
+    "frames": [
+      {"name":"bore","origin":[0,0,17.5],"z":[0,0,1],"x":[1,0,0],"kind":"bore"},
+      {"name":"mount","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "nut-jfrm-m-01-tr10x2",
+    "name": "Trapezoidal nut JFRM-M-01-TR10X2",
+    "category": "linear",
+    "source": "dynamic-m/Trapezoid-nuts-Igus-JFRM-M-01-TR10X2/JFRM_C_01_TR10X2.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "JFRM-M-01-TR10X2",
+    "supplier_url": "https://www.motedis.com/en/Trapezoid-nuts-Igus-JFRM-M-01-TR10X2",
+    "designation": "Trapezoidal nut JFRM-M-01-TR10X2",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
+      "linear": {"kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
+    },
+    "frames": [
+      {"name":"bore","origin":[0,0,10],"z":[0,0,1],"x":[1,0,0],"kind":"bore"},
+      {"name":"mount","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "nut-jsrm-2624-tr12x3",
+    "name": "Trapezoidal nut JSRM-2624 TR12x3",
+    "category": "linear",
+    "source": "dynamic-m/Trapezoid-nuts-Igus-JSRM-2624-TR12x3/JSRM-2624TR12X3.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "Igus JSRM-2624-TR12x3",
+    "supplier_url": "https://www.motedis.com/en/Trapezoid-nuts-Igus-JSRM-2624-TR12x3",
+    "designation": "Trapezoidal nut JSRM-2624 TR12x3",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
+      "linear": {"kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
+    },
+    "frames": [
+      {"name":"bore","origin":[0,0,12],"z":[0,0,1],"x":[1,0,0],"kind":"bore"},
+      {"name":"mount","origin":[0,0,24],"z":[0,0,1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "nut-rfrm-2020tr8x1-5",
+    "name": "Trapezoidal nut RFRM-2020TR8x1.5",
+    "category": "linear",
+    "source": "dynamic-m/Trapezoid-nuts-Igus-RFRM-2020TR8x15/RFRM-2020TR8x1-5-1/RFRM_2020TR8x1_5_1.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "RFRM-2020TR8x1.5",
+    "supplier_url": "https://www.motedis.com/en/Trapezoid-nuts-Igus-RFRM-2020TR8x15",
+    "designation": "Trapezoidal nut RFRM-2020TR8x1.5",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
+      "linear": {"kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
+    },
+    "frames": [
+      {"name":"bore","origin":[0,0,10],"z":[0,0,1],"x":[1,0,0],"kind":"bore"},
+      {"name":"mount","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "nut-rfrm-2835-tr16x4",
+    "name": "Trapezoidal nut RFRM-2835 TR16x4",
+    "category": "linear",
+    "source": "dynamic-m/Trapezoid-nuts-Igus-RFRM-2835-TR16x4/RFRM_2835TR16X4_2.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "RFRM-2835-TR16x4",
+    "supplier_url": "https://www.motedis.com/en/Trapezoid-nuts-Igus-RFRM-2835-TR16x4",
+    "designation": "Trapezoidal nut RFRM-2835 TR16x4",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
+      "linear": {"kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
+    },
+    "frames": [
+      {"name":"bore","origin":[0,0,17.5],"z":[0,0,1],"x":[1,0,0],"kind":"bore"},
+      {"name":"mount","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "nut-tr8x1-5-hexagonal-aluminium-beta",
+    "name": "Trapezoidal leadscrew nut TR8x1.5 right - hexagonal aluminium - beta",
+    "category": "linear",
+    "source": "dynamic-m/Trapezoidal-leadscrew-nut-TR8x15-right-hexagonal-aluminium/Motedis-HEXNUTTR8x1.5-1/Motedis_HEXNUTTR8x1.5.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "HEXNUTTR8x1.5",
+    "supplier_url": "https://www.motedis.com/en/Trapezoidal-leadscrew-nut-TR8x15-right-hexagonal-aluminium",
+    "designation": "Trapezoidal leadscrew nut TR8x1.5 right - hexagonal aluminium - beta",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,0,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "nut-tr10x3-hexagonal-aluminium-beta",
+    "name": "Trapezoidal leadscrew nut TR10x3 right - hexagonal aluminium - beta",
+    "category": "linear",
+    "source": "dynamic-m/Trapezoidal-leadscrew-nut-TR10x3-right-hexagonal-aluminium/Motedis-HEXNUTTR10x3/Motedis_HEXNUTTR10x3.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "HEXNUTTR10x3",
+    "supplier_url": "https://www.motedis.com/en/Trapezoidal-leadscrew-nut-TR10x3-right-hexagonal-aluminium",
+    "designation": "Trapezoidal leadscrew nut TR10x3 right - hexagonal aluminium - beta",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,0,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "nut-tr12x3-jsrm-with-aluminium-housing",
+    "name": "Trapezoidal lead screw nut TR12x3 R JSRM with aluminium housing",
+    "category": "linear",
+    "source": "dynamic-m/Trapezoidal-lead-screw-nut-TR12x3-R-JSRM-with-aluminum-housing/Motedis_Trapezoidal_lead_screw_nut_12x3_R_JSRM_with_aluminium_housing.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "9353",
+    "supplier_url": "https://www.motedis.com/en/Trapezoidal-lead-screw-nut-TR12x3-R-JSRM-with-aluminum-housing",
+    "designation": "Trapezoidal lead screw nut TR12x3 R JSRM with aluminium housing",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
+      "linear": {"kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
+    },
+    "frames": [
+      {"name":"bore","origin":[0,0,12],"z":[0,0,1],"x":[1,0,0],"kind":"bore"},
+      {"name":"mount","origin":[0,0,24],"z":[0,0,1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "screw-tr8x1-5",
+    "name": "Trapezoidal threaded spindle TR8x1.5 right-hand",
+    "category": "linear",
+    "source": "dynamic-m/Trapezoidal-threaded-spindle-RPTS-right-TR-8x15/RPTS-TR8x1.5r-1980mm.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "9708",
+    "supplier_url": "https://www.motedis.com/en/Trapezoidal-threaded-spindle-RPTS-right-TR-8x15",
+    "designation": "Spindle TR8x1.5 L={L}",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "length": {"parameter":"L","min":"20 mm","max":"1980 mm","stock":["1980 mm"]},
+      "frames": [{"name":"end_a","kind":"end"},{"name":"end_b","kind":"end"},{"name":"shaft","kind":"shaft"}],
+      "linear": {"kind":"screw"}
+    },
+    "frames": [
+      {"name":"end_a","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"end"},
+      {"name":"end_b","origin":[0,0,"L"],"z":[0,0,1],"x":[1,0,0],"kind":"end"},
+      {"name":"shaft","origin":[0,0,0],"z":[0,0,1],"x":[1,0,0],"kind":"shaft"}
+    ]
+  },
+  {
+    "id": "screw-tr10x2",
+    "name": "Trapezoidal threaded spindle TR10x2 right-hand",
+    "category": "linear",
+    "source": "dynamic-m/Trapezoidal-threaded-spindle-RPTS-right-TR-10x2/RPTS-TR10x2r-1980mm.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "9707",
+    "supplier_url": "https://www.motedis.com/en/Trapezoidal-threaded-spindle-RPTS-right-TR-10x2",
+    "designation": "Spindle TR10x2 L={L}",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "length": {"parameter":"L","min":"20 mm","max":"1000 mm","stock":["1000 mm"]},
+      "frames": [{"name":"end_a","kind":"end"},{"name":"end_b","kind":"end"},{"name":"shaft","kind":"shaft"}],
+      "linear": {"kind":"screw"}
+    },
+    "frames": [
+      {"name":"end_a","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"end"},
+      {"name":"end_b","origin":[0,0,"L"],"z":[0,0,1],"x":[1,0,0],"kind":"end"},
+      {"name":"shaft","origin":[0,0,0],"z":[0,0,1],"x":[1,0,0],"kind":"shaft"}
+    ]
+  },
+  {
+    "id": "screw-tr10x4p2",
+    "name": "Trapezoidal threaded spindle TR10x4P2 right-hand",
+    "category": "linear",
+    "source": "dynamic-m/TR-10x4P2-Trapezoidal-threaded-spindle-RPTS-right/Motedis_RPTS-TR10x4P2-1980mm.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "9709",
+    "supplier_url": "https://www.motedis.com/en/TR-10x4P2-Trapezoidal-threaded-spindle-RPTS-right",
+    "designation": "Spindle TR10x4P2 L={L}",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "length": {"parameter":"L","min":"20 mm","max":"1980 mm","stock":["1980 mm"]},
+      "frames": [{"name":"end_a","kind":"end"},{"name":"end_b","kind":"end"},{"name":"shaft","kind":"shaft"}],
+      "linear": {"kind":"screw"}
+    },
+    "frames": [
+      {"name":"end_a","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"end"},
+      {"name":"end_b","origin":[0,0,"L"],"z":[0,0,1],"x":[1,0,0],"kind":"end"},
+      {"name":"shaft","origin":[0,0,0],"z":[0,0,1],"x":[1,0,0],"kind":"shaft"}
+    ]
+  },
+  {
+    "id": "screw-tr12x3",
+    "name": "Trapezoidal threaded spindle TR12x3 right-hand",
+    "category": "linear",
+    "source": "dynamic-m/Trapezoidal-threaded-spindle-RPTS-right-TR-12x3/RPTS-TR12x3r-1980mm.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "9710",
+    "supplier_url": "https://www.motedis.com/en/Trapezoidal-threaded-spindle-RPTS-right-TR-12x3",
+    "designation": "Spindle TR12x3 L={L}",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "length": {"parameter":"L","min":"20 mm","max":"1000 mm","stock":["1000 mm"]},
+      "frames": [{"name":"end_a","kind":"end"},{"name":"end_b","kind":"end"},{"name":"shaft","kind":"shaft"}],
+      "linear": {"kind":"screw"}
+    },
+    "frames": [
+      {"name":"end_a","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"end"},
+      {"name":"end_b","origin":[0,0,"L"],"z":[0,0,1],"x":[1,0,0],"kind":"end"},
+      {"name":"shaft","origin":[0,0,0],"z":[0,0,1],"x":[1,0,0],"kind":"shaft"}
+    ]
+  },
+  {
+    "id": "screw-tr12x6p3",
+    "name": "Trapezoidal threaded spindle TR12x6P3 right-hand",
+    "category": "linear",
+    "source": "dynamic-m/TR-12x6-P3-Trapezoidal-threaded-spindle-RPTS-right/Motedis_RPTS-TR12x6-1980mm.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "9711",
+    "supplier_url": "https://www.motedis.com/en/TR-12x6-P3-Trapezoidal-threaded-spindle-RPTS-right",
+    "designation": "Spindle TR12x6P3 L={L}",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "length": {"parameter":"L","min":"20 mm","max":"1980 mm","stock":["1980 mm"]},
+      "frames": [{"name":"end_a","kind":"end"},{"name":"end_b","kind":"end"},{"name":"shaft","kind":"shaft"}],
+      "linear": {"kind":"screw"}
+    },
+    "frames": [
+      {"name":"end_a","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"end"},
+      {"name":"end_b","origin":[0,0,"L"],"z":[0,0,1],"x":[1,0,0],"kind":"end"},
+      {"name":"shaft","origin":[0,0,0],"z":[0,0,1],"x":[1,0,0],"kind":"shaft"}
+    ]
+  },
+  {
+    "id": "screw-tr16x4",
+    "name": "Trapezoidal threaded spindle TR16x4 right-hand",
+    "category": "linear",
+    "source": "dynamic-m/Trapezoidal-threaded-spindle-RPTS-right-TR-16x4/RPTS-TR16x4-1980mm.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "9712",
+    "supplier_url": "https://www.motedis.com/en/Trapezoidal-threaded-spindle-RPTS-right-TR-16x4",
+    "designation": "Spindle TR16x4 L={L}",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "length": {"parameter":"L","min":"20 mm","max":"500 mm","stock":["500 mm"]},
+      "frames": [{"name":"end_a","kind":"end"},{"name":"end_b","kind":"end"},{"name":"shaft","kind":"shaft"}],
+      "linear": {"kind":"screw"}
+    },
+    "frames": [
+      {"name":"end_a","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"end"},
+      {"name":"end_b","origin":[0,0,"L"],"z":[0,0,1],"x":[1,0,0],"kind":"end"},
+      {"name":"shaft","origin":[0,0,0],"z":[0,0,1],"x":[1,0,0],"kind":"shaft"}
+    ]
+  }
+]

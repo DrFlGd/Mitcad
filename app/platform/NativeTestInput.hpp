@@ -36,6 +36,7 @@ bool enabled(const QString& identifier, bool expected);
 bool visible(const QString& identifier, bool expected);
 bool present(const QString& identifier, bool expected);
 bool resizeDocument(int width, int height, QString& error);
+bool moveDocument(int x, int y, QString& error);
 bool setAppearance(const QString& name, QString& error);
 bool floatingLayout(QString& error);
 bool historyLayout(const QJsonObject& timeline, const QSet<QString>& filtered, const QStringList& selected,
@@ -75,6 +76,7 @@ inline bool enabled(const QString&, bool) { return false; }
 inline bool visible(const QString&, bool) { return false; }
 inline bool present(const QString&, bool) { return false; }
 inline bool resizeDocument(int, int, QString&) { return false; }
+inline bool moveDocument(int, int, QString&) { return false; }
 inline bool setAppearance(const QString&, QString&) { return false; }
 inline bool floatingLayout(QString&) { return false; }
 inline bool historyLayout(const QJsonObject&, const QSet<QString>&, const QStringList&, bool, QString&) { return false; }

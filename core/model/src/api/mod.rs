@@ -31,6 +31,8 @@ mod policy;
 pub mod classes;
 // Tangent chains of edges and faces, for the hover (mitcad#290).
 mod tangent_chains;
+// The BUILD tab: profile assemblies (mitcad#375).
+mod build;
 
 use std::fmt;
 
@@ -530,6 +532,13 @@ enum Query {
     TangentChains(tangent_chains::TangentChainsQuery),
     // A thread's default end chamfer (mitcad#304, `threads.rs`).
     ThreadChamfer(threads::ThreadChamferQuery),
+    // The BUILD tab (mitcad#375, `build.rs`): a preview of build_place's,
+    // build_panel's or build_connect's fields, the parts, the junctions
+    // and the cut list.
+    BuildPreview(serde_json::Map<String, Value>),
+    BuildParts,
+    BuildJunctions(build::JunctionsQuery),
+    BuildCutList(build::CutListQuery),
 }
 
 fn names(names: &[String]) -> Value {
@@ -593,6 +602,11 @@ impl<K: Kernel> Document<K> {
             .get("cmd")
             .and_then(Value::as_str)
             .is_some_and(|cmd| policy::COMMANDS.contains(&cmd));
+        // The BUILD tab (mitcad#375).
+        let is_build = value
+            .get("cmd")
+            .and_then(Value::as_str)
+            .is_some_and(|cmd| build::COMMANDS.contains(&cmd));
         let mut result = if let Some(rules) = inline_face_rules(&value) {
             self.add_face_with_rules_command(rules, &value)?
         } else if is_sketch {
@@ -608,6 +622,8 @@ impl<K: Kernel> Document<K> {
             self.run_move_command(parse(value, "command")?)?
         } else if is_policy {
             self.run_policy_command(parse(value, "command")?)?
+        } else if is_build {
+            self.run_build_command(parse(value, "command")?)?
         } else {
             self.run_document_command(parse(value, "command")?)?
         };
@@ -1281,6 +1297,11 @@ impl<K: Kernel> Document<K> {
             Query::TangentChains(query) => self.tangent_chains_json(&query)?,
             // A thread's default end chamfer (mitcad#304).
             Query::ThreadChamfer(query) => threads::thread_chamfer_json(&query)?,
+            // The BUILD tab (mitcad#375).
+            Query::BuildPreview(fields) => self.build_preview_json(fields)?,
+            Query::BuildParts => self.build_parts_json(),
+            Query::BuildJunctions(query) => self.build_junctions_json(&query)?,
+            Query::BuildCutList(query) => self.build_cut_list_json(&query)?,
         };
         Ok(result.to_string())
     }

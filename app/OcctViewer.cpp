@@ -133,8 +133,10 @@ const Quantity_Color kPlaneColor(0.95, 0.70, 0.35, Quantity_TOC_RGB);
 const Quantity_Color kAxisColor(0.85, 0.45, 0.10, Quantity_TOC_RGB);
 const Quantity_Color kHiddenEdgeColor(0.45, 0.48, 0.54, Quantity_TOC_RGB);
 // Section Analysis' caps: a colour bodies seldom have.
-const Quantity_Color kCapColor(0.95, 0.62, 0.10, Quantity_TOC_RGB);
-const Quantity_Color kCapHatchColor(0.55, 0.30, 0.02, Quantity_TOC_RGB);
+const QColor kCapColor(0xf2, 0x9e, 0x1a);
+// How far the hatch lines lie off the caps, of the caps' size (see hatchOf).
+constexpr double kHatchLift = 5e-3;
+constexpr double kHatchWidth = 1.5;
 // Cosmetic threads' rings: darker than the body, lighter than its edges.
 const Quantity_Color kThreadColor(0.30, 0.33, 0.40, Quantity_TOC_RGB);
 
@@ -265,6 +267,17 @@ QIcon overlayIcon(const QString& id, IconBackdrop backdrop) {
 
 Quantity_Color occtColor(const QColor& color) {
   return Quantity_Color(color.redF(), color.greenF(), color.blueF(), Quantity_TOC_sRGB);
+}
+
+// The hatch's colour on a cap of `color` (mitcad#382): a darker shade of the
+// cap's own, lighter than it instead when it is dark already.
+QColor capHatchColor(const QColor& color) {
+  float h = 0.0f;
+  float s = 0.0f;
+  float v = 0.0f;
+  color.getHsvF(&h, &s, &v);
+  v = v > 0.45f ? v * 0.45f : std::min(1.0f, v * 0.45f + 0.55f);
+  return QColor::fromHsvF(std::max(h, 0.0f), std::min(1.0f, s * 1.1f), v);
 }
 
 // The layout grid's colours over a background: lighter on a dark one,
@@ -670,27 +683,41 @@ QString cubeName(V3d_TypeOfOrientation orientation) {
   return parts.join(QLatin1Char('-'));
 }
 
-// A hatch over the section caps: lines at 45 degrees to the plane's x axis,
-// about 40 across the caps, lifted a little off them on the normal side
-// (the side the cut took away) so that they are drawn over the caps' fill.
-TopoDS_Shape hatchOf(const TopoDS_Shape& caps, const gp_Ax3& plane) {
+// A hatch over the section caps: lines at 45 degrees to the plane's x axis
+// (135 degrees when `mirrored`), lifted a little off the caps on the normal
+// side (the side the cut took away) so that they are drawn over the caps'
+// fill. Each cap face gets its own spacing: about eight lines across a
+// small face, but never closer than 40 lines across all the caps (a large
+// face does not turn into a solid colour) nor wider than a 400th of them.
+TopoDS_Shape hatchOf(const TopoDS_Shape& caps, const gp_Ax3& plane, bool mirrored) {
   Bnd_Box box;
   BRepBndLib::Add(caps, box, false);
   if (box.IsVoid()) {
     return TopoDS_Shape();
   }
   const double size = std::sqrt(box.SquareExtent());
-  const double spacing = size / 40.0;
   const gp_Vec x(plane.XDirection());
   const gp_Vec y(plane.YDirection());
-  const gp_Vec along = (x + y) / std::sqrt(2.0);
-  const gp_Vec across = (x - y) / std::sqrt(2.0);
+  const gp_Vec along = mirrored ? (x - y) / std::sqrt(2.0) : (x + y) / std::sqrt(2.0);
+  const gp_Vec across = mirrored ? (x + y) / std::sqrt(2.0) : (x - y) / std::sqrt(2.0);
   const gp_Pnt origin = plane.Location();
-  // Per line k at (k + 0.5) * spacing across: its pieces along, from every
-  // triangle of the caps it crosses.
-  std::map<long, std::vector<std::pair<double, double>>> pieces;
+  const gp_Vec lift = gp_Vec(plane.Direction()) * (size * kHatchLift);
+  TopoDS_Compound lines;
+  BRep_Builder builder;
+  builder.MakeCompound(lines);
+  bool any = false;
   for (TopExp_Explorer faces(caps, TopAbs_FACE); faces.More(); faces.Next()) {
     const TopoDS_Face& face = TopoDS::Face(faces.Current());
+    Bnd_Box faceBox;
+    BRepBndLib::Add(face, faceBox, false);
+    if (faceBox.IsVoid()) {
+      continue;
+    }
+    const double spacing =
+        std::max(size / 400.0, std::min(std::sqrt(faceBox.SquareExtent()) / 8.0, size / 40.0));
+    // Per line k at (k + 0.5) * spacing across: its pieces along, from every
+    // triangle of the face it crosses.
+    std::map<long, std::vector<std::pair<double, double>>> pieces;
     TopLoc_Location location;
     occ::handle<Poly_Triangulation> mesh = BRep_Tool::Triangulation(face, location);
     if (mesh.IsNull()) {
@@ -732,31 +759,26 @@ TopoDS_Shape hatchOf(const TopoDS_Shape& caps, const gp_Ax3& plane) {
         }
       }
     }
-  }
-  // Each line's pieces joined where they meet (neighbouring triangles).
-  const gp_Vec lift = gp_Vec(plane.Direction()) * (size * 1e-4);
-  TopoDS_Compound lines;
-  BRep_Builder builder;
-  builder.MakeCompound(lines);
-  bool any = false;
-  for (auto& [k, spans] : pieces) {
-    std::sort(spans.begin(), spans.end());
-    const gp_Pnt base = origin.Translated(across * ((static_cast<double>(k) + 0.5) * spacing) + lift);
-    const double gap = size * 1e-9;
-    for (std::size_t i = 0; i < spans.size();) {
-      double end = spans[i].second;
-      std::size_t next = i + 1;
-      while (next < spans.size() && spans[next].first <= end + gap) {
-        end = std::max(end, spans[next].second);
-        ++next;
+    // Each line's pieces joined where they meet (neighbouring triangles).
+    for (auto& [k, spans] : pieces) {
+      std::sort(spans.begin(), spans.end());
+      const gp_Pnt base = origin.Translated(across * ((static_cast<double>(k) + 0.5) * spacing) + lift);
+      const double gap = size * 1e-9;
+      for (std::size_t i = 0; i < spans.size();) {
+        double end = spans[i].second;
+        std::size_t next = i + 1;
+        while (next < spans.size() && spans[next].first <= end + gap) {
+          end = std::max(end, spans[next].second);
+          ++next;
+        }
+        if (end - spans[i].first > gap) {
+          builder.Add(lines, BRepBuilderAPI_MakeEdge(base.Translated(along * spans[i].first),
+                                                     base.Translated(along * end))
+                                 .Edge());
+          any = true;
+        }
+        i = next;
       }
-      if (end - spans[i].first > gap) {
-        builder.Add(lines, BRepBuilderAPI_MakeEdge(base.Translated(along * spans[i].first),
-                                                   base.Translated(along * end))
-                               .Edge());
-        any = true;
-      }
-      i = next;
     }
   }
   return any ? TopoDS_Shape(lines) : TopoDS_Shape();
@@ -1491,6 +1513,7 @@ void OcctViewer::setComponentColors(bool on) {
     return;
   }
   m_componentColors = on;
+  logSectionCaps();
   for (auto& [key, entry] : m_bodies) {
     removeBody(entry);
     showBody(entry);
@@ -1503,6 +1526,7 @@ void OcctViewer::setVisualStyle(VisualStyle style) {
     return;
   }
   m_visualStyle = style;
+  logSectionCaps();
   for (auto& [key, entry] : m_bodies) {
     removeBody(entry);
     showBody(entry);
@@ -3076,32 +3100,92 @@ void OcctViewer::updateGrid(bool force) {
   m_view->Invalidate();
 }
 
-void OcctViewer::setSectionCaps(const TopoDS_Shape& caps, const gp_Ax3& plane) {
-  for (occ::handle<AIS_Shape>* object : {&m_sectionCaps, &m_sectionHatch}) {
-    if (!object->IsNull()) {
-      m_context->Remove(*object, false);
-      object->Nullify();
-    }
+void OcctViewer::setSectionCaps(const std::vector<SectionCap>& caps, const gp_Ax3& plane) {
+  for (const occ::handle<AIS_Shape>& object : m_sectionCaps) {
+    m_context->Remove(object, false);
   }
-  if (!caps.IsNull()) {
-    m_sectionCaps = new AIS_Shape(caps);
-    m_sectionCaps->SetColor(kCapColor);
+  for (const occ::handle<AIS_Shape>& object : m_sectionHatches) {
+    m_context->Remove(object, false);
+  }
+  m_sectionCaps.clear();
+  m_sectionHatches.clear();
+  m_sectionLook.clear();
+  for (std::size_t i = 0; i < caps.size(); ++i) {
+    if (caps[i].faces.IsNull()) {
+      continue;
+    }
+    const QColor color = caps[i].color.isValid() ? caps[i].color : kCapColor;
+    const QColor hatchColor = capHatchColor(color);
+    // The components' caps hatch in turn at 45 and 135 degrees, as drawings do.
+    const bool mirrored = i % 2 == 1;
+    occ::handle<AIS_Shape> object = new AIS_Shape(caps[i].faces);
+    object->SetColor(occtColor(color));
+    // In the colour itself, as the timeline shows it: light does not darken
+    // it (a cap facing away from the light would hide its hatch).
+    object->SetMaterial(flatMaterial(0.0f));
     // Over the clipped body's own face on the plane (the same triangles),
     // under a sketch's profiles on it (Hide Above Sketch).
-    m_sectionCaps->Attributes()->ShadingAspect()->Aspect()->SetPolygonOffsets(Aspect_POM_Fill, -1.0f,
-                                                                              -1.0f);
-    const occ::handle<Prs3d_Drawer>& drawer = m_sectionCaps->Attributes();
+    object->Attributes()->ShadingAspect()->Aspect()->SetPolygonOffsets(Aspect_POM_Fill, -1.0f, -1.0f);
+    const occ::handle<Prs3d_Drawer>& drawer = object->Attributes();
     drawer->SetFaceBoundaryDraw(true);
     drawer->SetFaceBoundaryAspect(new Prs3d_LineAspect(kEdgeColor, Aspect_TOL_SOLID, 1.5));
-    m_context->Display(m_sectionCaps, AIS_Shaded, -1, false);
-    const TopoDS_Shape hatch = hatchOf(caps, plane);
+    m_context->Display(object, AIS_Shaded, -1, false);
+    m_sectionCaps.push_back(object);
+    int lines = 0;
+    const TopoDS_Shape hatch = hatchOf(caps[i].faces, plane, mirrored);
     if (!hatch.IsNull()) {
-      m_sectionHatch = new AIS_Shape(hatch);
-      setEdgeStyle(m_sectionHatch, kCapHatchColor, 1.0);
-      m_context->Display(m_sectionHatch, AIS_WireFrame, -1, false);
+      for (TopExp_Explorer edges(hatch, TopAbs_EDGE); edges.More(); edges.Next()) {
+        ++lines;
+      }
+      occ::handle<AIS_Shape> hatchObject = new AIS_Shape(hatch);
+      setEdgeStyle(hatchObject, occtColor(hatchColor), kHatchWidth);
+      // The layer of the edges in sight: after the caps' own layer, against
+      // their depth.
+      m_context->SetZLayer(hatchObject, m_edgeLayer);
+      m_context->Display(hatchObject, AIS_WireFrame, -1, false);
+      m_sectionHatches.push_back(hatchObject);
     }
+    m_sectionLook.append(QStringLiteral("%1 hatch %2 at %3 deg, %4 lines")
+                             .arg(color.name(), hatchColor.name())
+                             .arg(mirrored ? 135 : 45)
+                             .arg(lines));
   }
+  logSectionCaps();
   sceneChanged();
+}
+
+// For UI tests: what the caps look like, when it changes (a new cut or a
+// new visual style).
+void OcctViewer::logSectionCaps() {
+  if (m_sectionLook.isEmpty()) {
+    m_loggedSectionLook.clear();
+    return;
+  }
+  const char* style = "Shaded";
+  switch (m_visualStyle) {
+  case VisualStyle::Shaded:
+    break;
+  case VisualStyle::ShadedVisibleEdges:
+    style = "Shaded with Visible Edges Only";
+    break;
+  case VisualStyle::ShadedHiddenEdges:
+    style = "Shaded with Hidden Edges";
+    break;
+  case VisualStyle::Wireframe:
+    style = "Wireframe";
+    break;
+  case VisualStyle::WireframeHiddenEdges:
+    style = "Wireframe with Hidden Edges";
+    break;
+  }
+  const QString logged = QStringLiteral("Section caps: %1 colour(s) [%2] in %3, bodies in %4 colours")
+                             .arg(m_sectionLook.size())
+                             .arg(m_sectionLook.join(QStringLiteral("; ")), QString::fromLatin1(style),
+                                  m_componentColors ? QStringLiteral("component") : QStringLiteral("appearance"));
+  if (logged != m_loggedSectionLook) {
+    m_loggedSectionLook = logged;
+    qDebug().noquote() << logged;
+  }
 }
 
 void OcctViewer::setThreads(const TopoDS_Shape& rings) {

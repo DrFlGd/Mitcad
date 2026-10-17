@@ -5,10 +5,17 @@
 //! [`crate::ifc::build::Builder`] turns into sketches, extrusions and cuts.
 //!
 //! - A **wall**: its footprint ([`super::footprint::wall_footprint`])
-//!   extruded from its base by its height; the cut loops of the inserts it
+//!   extruded from its base by its height, its top and base attached to a
+//!   roof, floor, ceiling or reference plane following that element's
+//!   surface (mitcad#348: the prism runs on to the surface, the half spaces
+//!   beyond its planes cut away); the cut loops of the inserts it
 //!   hosts (doors, windows: their type's `m_pCutLoops` at the instance's
-//!   transform) cut through it along their cut direction; the elements
-//!   whose geometry cuts it (`CutPairGStep`) cut it with their own solids.
+//!   transform) cut through it along their cut direction, else their
+//!   type's void geometry (`m_complexCutGeoms`, mitcad#345); its opening
+//!   elements (a rectangular opening's rectangle, an opening's profile) cut
+//!   through it square to it; the elements whose geometry cuts it
+//!   (`CutPairGStep`) cut it with their own solids. An insert or opening
+//!   without a tool is listed with the reason ([`Plan::openings`]).
 //! - A **floor** (and a flat roof): its boundary loops extruded down from
 //!   its top by its thickness (`m_top - m_bottom`, else its type's width).
 //! - A **ceiling** (mitcad#333): as a floor, between its two horizontal
@@ -26,9 +33,9 @@
 //! Anything else (or a value that does not read) gives an error: the
 //! element then comes in as its phase-1 mesh or box, with the reason.
 
-use mitcad_ifc::geometry::{Area, BoolOp, Item, Path, Profile};
+use mitcad_ifc::geometry::{Area, BoolOp, Item, Path, Profile, Seg};
 use mitcad_ifc::math::{self, Matrix};
-use mitcad_rvt::building::{self, Building, Curve, Instance, P3, Slab, Wall};
+use mitcad_rvt::building::{self, Building, Curve, Instance, P3, Slab, Symbol, Wall};
 use mitcad_rvt::categories;
 use mitcad_rvt::elements::{Element, FOOT_MM, Model};
 
@@ -46,6 +53,13 @@ pub struct Plan {
     /// Further solids of its own, bodies apart from the first (a sweep's
     /// separate paths).
     pub more: Vec<Item>,
+    /// A wall's top and base attachments (mitcad#348), applied or not:
+    /// its body's heights are then checked both ways against its stored
+    /// box.
+    pub attached: Vec<String>,
+    /// A wall's openings (mitcad#345): every insert and opening element
+    /// that cuts it, its cuts among [`Plan::cuts`] or why it has none.
+    pub openings: Vec<WallOpening>,
     pub notes: Vec<String>,
     /// The material its appearance comes from.
     pub material: Option<i64>,
@@ -162,25 +176,399 @@ pub fn plan(model: &Model, e: &Element) -> Result<Plan, String> {
         "stair" => stair(model, e, b.stair_runs.get(&e.id).ok_or("no stair run")?),
         "mullion" => mullion(model, e, b.instances.get(&e.id).ok_or("no instance")?),
         "landing" => landing(model, e, b.landings.get(&e.id).ok_or("no landing")?),
-        "sweep" | "rail" => sweep(model, e, b.sweeps.get(&e.id).ok_or("no sweep")?),
+        "sweep" | "rail" => sweep(model, e, b.sweeps.get(&e.id).ok_or("no sweep")?, true),
         "panel" => panel(b, b.instances.get(&e.id).ok_or("no instance")?),
         other => Err(format!("{other}s are not built")),
     }
 }
 
-/// A wall's solid alone (also a cut tool of the elements it cuts).
-fn wall_solid(model: &Model, w: &Wall) -> Result<(Item, Vec<String>), String> {
+/// A wall's solid alone (also a cut tool of the elements it cuts), its
+/// notes and its attachments (mitcad#348: what its top and base are
+/// attached to, applied or not).
+fn wall_solid(model: &Model, w: &Wall) -> Result<(Item, Vec<String>, Vec<String>), String> {
     if w.steps.iter().any(|s| s == "ExtrusionGStep") {
-        return edited_wall(model, w);
+        let (item, mut notes) = edited_wall(model, w)?;
+        let attached = attachment_names(w);
+        if !attached.is_empty() {
+            notes.push(format!(
+                "{} not applied: its edited profile gives its shape",
+                attached.join(", ")
+            ));
+        }
+        return Ok((item, notes, attached));
     }
     let base = w.base.ok_or("no base height")?;
     let height = w.height.filter(|h| *h > 0.0).ok_or("no height")?;
-    let (path, notes) = footprint::wall_footprint(&model.building, w)?;
+    let (path, mut notes) = footprint::wall_footprint(&model.building, w)?;
+    let a = attach(model, w, &path, base, base + height);
+    notes.extend(a.notes);
     let profile = profile_mm(vec![Area {
         outer: path,
         holes: Vec::new(),
     }]);
-    Ok((extrusion(at_height(base), profile, true, height), notes))
+    let mut solid = extrusion(at_height(a.lo), profile, true, a.hi - a.lo);
+    for (n, offset, below) in a.cuts {
+        solid = Item::Boolean {
+            op: BoolOp::Difference,
+            first: Box::new(solid),
+            second: Box::new(half_space(n, offset, below)),
+        };
+    }
+    Ok((solid, notes, a.attached))
+}
+
+/// The half of space above a plane (feet: its unit normal and its offset
+/// along it), or below it.
+fn half_space(n: P3, offset: f64, below: bool) -> Item {
+    let origin = math::scale(n, offset * FOOT_MM);
+    let x = math::normalize(math::cross([0.0, 0.0, 1.0], n))
+        .or_else(|| math::normalize(math::cross([1.0, 0.0, 0.0], n)))
+        .unwrap_or([1.0, 0.0, 0.0]);
+    Item::HalfSpace {
+        plane: math::from_axes(origin, x, math::cross(n, x), n),
+        below,
+        boundary: None,
+    }
+}
+
+/// A wall's attachments by name: `its top attached to 243274`.
+fn attachment_names(w: &Wall) -> Vec<String> {
+    w.attachments
+        .iter()
+        .map(|a| {
+            format!(
+                "its {} attached to {}",
+                if a.top { "top" } else { "base" },
+                a.elements
+                    .iter()
+                    .map(i64::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        })
+        .collect()
+}
+
+/// What an attached end follows (mitcad#348), feet: the planes of the
+/// element's surface (each a unit normal pointing up and the offset along
+/// it; a roof's slopes) and the footprint they cover (None: a level or
+/// unbounded surface, which covers the wall wherever it is).
+struct Surface {
+    what: String,
+    planes: Vec<(P3, f64)>,
+    footprint: Option<Vec<Path>>,
+}
+
+/// A floor's, pad's or ceiling's top and bottom (feet): its own, else its
+/// horizontal reference faces', else its loops' height and its type's
+/// width (as [`slab`] builds it).
+fn level_slab_bounds(s: &Slab, width: Option<f64>) -> Result<(f64, f64), String> {
+    let level: Vec<f64> = s
+        .ref_faces
+        .iter()
+        .filter(|p| math::cross(p.x, p.y)[2].abs() > 1.0 - 1e-9)
+        .map(|p| p.origin[2])
+        .collect();
+    let loops_z = s
+        .loops
+        .first()
+        .and_then(|l| l.first())
+        .map(|c| c.start()[2]);
+    let top = s
+        .top
+        .or(level.iter().copied().reduce(f64::max))
+        .or(loops_z)
+        .ok_or("no top")?;
+    let bottom = s
+        .bottom
+        .or(level.iter().copied().reduce(f64::min).filter(|b| *b < top));
+    match bottom {
+        Some(b) if top > b => Ok((top, b)),
+        _ => Ok((top, top - width.ok_or("no thickness")?)),
+    }
+}
+
+/// The surface of the element a wall's top (its lower surface) or base
+/// (its upper surface) is attached to (mitcad#348).
+fn attached_surface(model: &Model, id: i64, top: bool) -> Result<Surface, String> {
+    let b = &model.building;
+    let level = |z: f64| vec![([0.0, 0.0, 1.0], z)];
+    if let Some(p) = b.ref_planes.get(&id) {
+        let mut n = math::normalize(math::cross(p.plane.x, p.plane.y))
+            .ok_or_else(|| format!("reference plane {id} has no normal"))?;
+        if n[2] < 0.0 {
+            n = math::scale(n, -1.0);
+        }
+        if n[2] < 1e-3 {
+            return Err(format!("reference plane {id} stands vertical"));
+        }
+        let name = if p.name.trim().is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", p.name.trim())
+        };
+        return Ok(Surface {
+            what: format!("reference plane {id}{name}"),
+            planes: vec![(n, math::dot(n, p.plane.origin))],
+            footprint: None,
+        });
+    }
+    let s = b.slabs.get(&id).ok_or_else(|| {
+        format!("element {id} is no roof, floor, ceiling or reference plane read")
+    })?;
+    let what = format!(
+        "{} {id}",
+        match s.class.as_str() {
+            "Floor" => "floor",
+            "BuildingPad" => "pad",
+            "Ceiling" => "ceiling",
+            _ => "roof",
+        }
+    );
+    if let Some(why) = b.unread.get(&id) {
+        return Err(format!("{what}'s parameters did not read: {why}"));
+    }
+    if s.shape_edited {
+        return Err(format!("{what}'s shape is edited, which is not read"));
+    }
+    let width = s.type_id.and_then(|t| b.width(t));
+    match s.class.as_str() {
+        "Floor" | "BuildingPad" | "Ceiling" => {
+            let (t, bottom) = level_slab_bounds(s, width).map_err(|e| format!("{what}: {e}"))?;
+            Ok(Surface {
+                what,
+                planes: level(if top { bottom } else { t }),
+                footprint: None,
+            })
+        }
+        "Roof" | "ProfileRoof" => {
+            let open_profile = s.class == "Roof" && s.extrusion.is_some();
+            let groups = slope_groups(s);
+            if groups.is_empty() {
+                return Err(format!("{what} has no layer faces"));
+            }
+            let layers = layer_widths(b, s.type_id);
+            let flat = groups.iter().all(|(n, _)| n[2] > 1.0 - 1e-6);
+            if flat && groups.len() > 1 {
+                // (Built from its loops up by its type's width.)
+                let z = s
+                    .loops
+                    .first()
+                    .and_then(|l| l.first())
+                    .map_or(0.0, |c| c.start()[2]);
+                let w = width.ok_or_else(|| format!("{what} has no thickness"))?;
+                return Ok(Surface {
+                    what,
+                    planes: level(if top { z } else { z + w }),
+                    footprint: None,
+                });
+            }
+            let mut planes = Vec::new();
+            for (n, list) in &groups {
+                if n[2] < 1e-3 {
+                    return Err(format!("{what} has a slope that stands vertical"));
+                }
+                let (t, bottom) =
+                    slope_bounds(list, width, &layers).map_err(|e| format!("{what}: {e}"))?;
+                planes.push((*n, if top { bottom } else { t }));
+            }
+            let footprint = if flat {
+                None
+            } else {
+                let areas = if open_profile {
+                    extrusion_span(s)
+                } else {
+                    slab_areas(s).map(|(a, _)| a)
+                };
+                let areas = areas.map_err(|e| format!("{what}'s footprint: {e}"))?;
+                Some(areas.into_iter().map(|a| a.outer).collect())
+            };
+            Ok(Surface {
+                what,
+                planes,
+                footprint,
+            })
+        }
+        other => Err(format!("{what}: the surface of a {other} is not read")),
+    }
+}
+
+/// A wall's heights with its attachments applied (mitcad#348), feet.
+struct Attached {
+    /// The prism's bottom and top: the wall's base and top, or beyond them
+    /// to the attached surfaces.
+    lo: f64,
+    hi: f64,
+    /// The half spaces cut from it: a plane (normal, offset) and whether
+    /// what lies below it (a base's) or above it (a top's) goes.
+    cuts: Vec<(P3, f64, bool)>,
+    notes: Vec<String>,
+    /// Its attachments by name, applied or not.
+    attached: Vec<String>,
+}
+
+/// A wall's attachments (mitcad#348): an attached top follows the lower
+/// surface of the elements it is attached to and a base their upper one,
+/// below or above the wall's own top or base: the wall's prism runs from
+/// its base to above the surface, and what lies above every plane of the
+/// surface goes (below every plane for a base, of one plane only). The
+/// surface is the elements' as the import builds them, a fixed cut: the
+/// features do not follow the roof when it changes. An attachment that
+/// cannot be applied leaves that end at the wall's own height, with a note
+/// naming it (the check against the reference or the stored box then
+/// tells whether the wall agrees).
+fn attach(model: &Model, w: &Wall, footprint: &Path, base: f64, top: f64) -> Attached {
+    let mut out = Attached {
+        lo: base,
+        hi: top,
+        cuts: Vec::new(),
+        notes: Vec::new(),
+        attached: attachment_names(w),
+    };
+    if w.attachments.is_empty() {
+        return out;
+    }
+    let points: Vec<P2> = footprint
+        .segments
+        .iter()
+        .flat_map(|s| s.sample(4))
+        .map(|p| [p[0], p[1]])
+        .collect();
+    let width = w
+        .type_id
+        .and_then(|t| model.building.width(t))
+        .unwrap_or(1.0);
+    let height_at = |(n, o): (P3, f64), p: P2| (o - n[0] * p[0] - n[1] * p[1]) / n[2];
+    for a in &w.attachments {
+        let end = if a.top { "top" } else { "base" };
+        let ids = a
+            .elements
+            .iter()
+            .map(i64::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
+        let not_applied =
+            |why: String| format!("its {end}'s attachment to {ids} is not applied: {why}");
+        let surfaces: Result<Vec<Surface>, String> = a
+            .elements
+            .iter()
+            .map(|id| attached_surface(model, *id, a.top))
+            .collect();
+        let mut surfaces = match surfaces {
+            Ok(s) => s,
+            Err(why) => {
+                out.notes.push(not_applied(why));
+                continue;
+            }
+        };
+        // Several elements: one level plane they share.
+        let surface = if surfaces.len() == 1 {
+            surfaces.remove(0)
+        } else {
+            let first = &surfaces[0];
+            let same = surfaces.iter().all(|s| {
+                s.footprint.is_none()
+                    && s.planes.len() == 1
+                    && first.planes.len() == 1
+                    && math::dot(s.planes[0].0, first.planes[0].0) > 1.0 - 1e-9
+                    && (s.planes[0].1 - first.planes[0].1).abs() < 1e-6
+            });
+            if !same {
+                out.notes.push(not_applied(format!(
+                    "the surfaces of its {} elements differ",
+                    surfaces.len()
+                )));
+                continue;
+            }
+            Surface {
+                what: surfaces
+                    .iter()
+                    .map(|s| s.what.clone())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                planes: first.planes.clone(),
+                footprint: None,
+            }
+        };
+        if !a.top && surface.planes.len() > 1 {
+            out.notes.push(not_applied(format!(
+                "a base on {} of {} slopes",
+                surface.what,
+                surface.planes.len()
+            )));
+            continue;
+        }
+        // A sloped roof covers the wall (its edge may run along the wall).
+        if let Some(fp) = &surface.footprint
+            && !points
+                .iter()
+                .all(|p| fp.iter().any(|l| footprint::covers(l, *p, width + 0.1)))
+        {
+            out.notes.push(not_applied(format!(
+                "the wall reaches out of {}'s footprint",
+                surface.what
+            )));
+            continue;
+        }
+        // The surface's heights over the wall: the highest and lowest of
+        // its planes, and (a top) the highest of the lowest at each point.
+        let zs: Vec<f64> = points
+            .iter()
+            .flat_map(|p| surface.planes.iter().map(|q| height_at(*q, *p)))
+            .collect();
+        let zmax = zs.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        let zmin = zs.iter().copied().fold(f64::INFINITY, f64::min);
+        if !zmax.is_finite() || !zmin.is_finite() {
+            out.notes
+                .push(not_applied("no point of the wall to place it at".into()));
+            continue;
+        }
+        if a.top {
+            let under = points
+                .iter()
+                .map(|p| {
+                    surface
+                        .planes
+                        .iter()
+                        .map(|q| height_at(*q, *p))
+                        .fold(f64::INFINITY, f64::min)
+                })
+                .fold(f64::NEG_INFINITY, f64::max);
+            if under <= out.lo + 1e-6 {
+                out.notes.push(not_applied(format!(
+                    "{}'s lower surface lies below its base",
+                    surface.what
+                )));
+                continue;
+            }
+            out.hi = out.hi.max(zmax) + 1.0;
+            out.cuts
+                .extend(surface.planes.iter().map(|(n, o)| (*n, *o, false)));
+            out.notes.push(format!(
+                "its top follows {}'s lower surface{}",
+                surface.what,
+                if surface.planes.len() > 1 {
+                    format!(" ({} slopes)", surface.planes.len())
+                } else {
+                    String::new()
+                }
+            ));
+        } else {
+            if zmin >= out.hi - 1e-6 {
+                out.notes.push(not_applied(format!(
+                    "{}'s upper surface lies above its top",
+                    surface.what
+                )));
+                continue;
+            }
+            out.lo = out.lo.min(zmin) - 1.0;
+            out.cuts
+                .extend(surface.planes.iter().map(|(n, o)| (*n, *o, true)));
+            out.notes
+                .push(format!("its base follows {}'s upper surface", surface.what));
+        }
+    }
+    out
 }
 
 /// A wall whose profile is edited: the profile's loops (in the wall's
@@ -256,28 +644,40 @@ fn wall(model: &Model, w: &Wall) -> Result<Plan, String> {
     if w.type_id.and_then(|t| b.structures.get(&t)).is_none() {
         return Err("its type has no layers (a curtain or stacked wall)".into());
     }
-    let (solid, mut notes) = wall_solid(model, w)?;
-    let width = w.type_id.and_then(|t| b.width(t)).unwrap_or(1.0);
+    let (solid, mut notes, attached) = wall_solid(model, w)?;
     let mut cuts = Vec::new();
-    // The inserts it hosts, and those whose cut it takes.
-    let mut inserts: Vec<i64> = b
-        .instances
-        .values()
-        .filter(|i| i.host == Some(w.id))
-        .map(|i| i.id)
-        .collect();
-    for c in &w.cutouts {
-        if !inserts.contains(c) {
-            inserts.push(*c);
+    // Its openings (mitcad#345): the inserts and opening elements that cut
+    // it, each with its tools or why it has none.
+    let (cutters, idle) = wall_openings(model, w);
+    let mut openings = Vec::new();
+    for c in cutters {
+        match c.tools {
+            Ok((tools, by)) => {
+                if by != "cut loops" {
+                    notes.push(format!("{} is cut by {by}", c.label));
+                }
+                cuts.extend(tools.into_iter().map(|t| (c.label.clone(), t)));
+                openings.push(WallOpening {
+                    id: c.id,
+                    label: c.label,
+                    missing: None,
+                });
+            }
+            Err(why) => {
+                notes.push(format!("{} is not cut: {why}", c.label));
+                openings.push(WallOpening {
+                    id: c.id,
+                    label: c.label,
+                    missing: Some(why),
+                });
+            }
         }
     }
-    inserts.sort_unstable();
-    for id in inserts {
-        match insert_cuts(b, id, width) {
-            Ok(tools) if tools.is_empty() => {}
-            Ok(tools) => cuts.extend(tools.into_iter().map(|t| (format!("insert {id}"), t))),
-            Err(why) => notes.push(format!("insert {id} is not cut: {why}")),
-        }
+    if idle > 0 {
+        notes.push(format!(
+            "{idle} elements it hosts cut nothing (no cut step of its, no cut loops, no void \
+             geometry)"
+        ));
     }
     for other in &w.cut_by {
         match tool(model, *other) {
@@ -290,24 +690,208 @@ fn wall(model: &Model, w: &Wall) -> Result<Plan, String> {
         solid,
         cuts,
         more: Vec::new(),
+        attached,
+        openings,
         notes,
         material: layer_material(b, w.type_id),
     })
 }
 
-/// The cut tools of an insert: its type's cut loops at its transform,
-/// through the host along the cut direction.
-fn insert_cuts(b: &Building, id: i64, host_width: f64) -> Result<Vec<Item>, String> {
-    let inst = b.instances.get(&id).ok_or("not an instance read")?;
-    let t = inst.transform.ok_or("no transform")?;
-    let symbol = [inst.symbol, inst.master]
+/// An opening of a wall in its plan (mitcad#345): the insert or opening
+/// element, the label of its cuts (`insert 47`, `opening 12`), and why it
+/// has no cut tool (None: its cuts are among the plan's).
+#[derive(Debug, Clone, PartialEq)]
+pub struct WallOpening {
+    pub id: i64,
+    pub label: String,
+    pub missing: Option<String>,
+}
+
+/// What opens a wall (mitcad#345): an insert or an opening element, its
+/// cut tools and what they are made of, or why it has none.
+#[derive(Debug, Clone)]
+pub struct Cutter {
+    pub id: i64,
+    pub label: String,
+    pub tools: Result<(Vec<Item>, &'static str), String>,
+}
+
+/// What opens a wall (mitcad#345): the inserts whose cut it takes (its
+/// `WallCutoutGStep`s and their kin), the doors and windows it hosts, the
+/// other elements it hosts whose types have cut loops or void geometry,
+/// and its opening elements (a rectangular wall opening, an opening of a
+/// profile); each with its tools or why it has none. Also how many other
+/// elements it hosts, which cut nothing (trims, muntins: no cut step of
+/// the wall's, no cut loops, no void geometry).
+pub fn wall_openings(model: &Model, w: &Wall) -> (Vec<Cutter>, usize) {
+    let b = &model.building;
+    let width = w.type_id.and_then(|t| b.width(t)).unwrap_or(1.0);
+    let mut ids: Vec<i64> = w.cutouts.clone();
+    let mut idle = 0;
+    for i in b.instances.values().filter(|i| i.host == Some(w.id)) {
+        if ids.contains(&i.id) {
+            continue;
+        }
+        let door_or_window = model
+            .element(i.id)
+            .and_then(|e| e.category)
+            .is_some_and(|c| c == categories::OST_DOORS || c == categories::OST_WINDOWS);
+        let cuts = [i.symbol, i.master]
+            .into_iter()
+            .flatten()
+            .filter_map(|s| b.symbols.get(&s))
+            .any(|s| !s.cut_loops.is_empty() || !s.cut_solids.is_empty());
+        if door_or_window || cuts {
+            ids.push(i.id);
+        } else {
+            idle += 1;
+        }
+    }
+    ids.sort_unstable();
+    let mut out: Vec<Cutter> = ids
+        .into_iter()
+        .map(|id| Cutter {
+            id,
+            label: format!("insert {id}"),
+            tools: insert_cuts(b, id, width),
+        })
+        .collect();
+    for o in b
+        .openings
+        .values()
+        .filter(|o| o.host == Some(w.id) && o.class != "ShaftOpening")
+    {
+        out.push(Cutter {
+            id: o.id,
+            label: format!("opening {}", o.id),
+            tools: opening_tool(w, o, width).map(|(t, by)| (vec![t], by)),
+        });
+    }
+    (out, idle)
+}
+
+/// A wall's opening element's cut tool (mitcad#345): a rectangular
+/// opening's rectangle between its two corners in the wall's plane, or an
+/// opening's profile loops, through the wall square to it.
+fn opening_tool(
+    w: &Wall,
+    o: &building::Opening,
+    host_width: f64,
+) -> Result<(Item, &'static str), String> {
+    let Curve::Line { start, end } = &w.curve else {
+        return Err("an opening in an arc wall is not built".into());
+    };
+    let d = math::normalize([end[0] - start[0], end[1] - start[1], 0.0])
+        .ok_or("its wall's location line has no length")?;
+    let up = [0.0, 0.0, 1.0];
+    let reach = host_width + 2.0;
+    if let Some([p, q]) = o.corners {
+        let along = math::dot(math::sub(q, p), d);
+        let (lo, hi) = (p[2].min(q[2]), p[2].max(q[2]));
+        if along.abs() < 1e-6 || hi - lo < 1e-6 {
+            return Err("its rectangle has no size".into());
+        }
+        let x = if along > 0.0 { d } else { math::scale(d, -1.0) };
+        let z = math::cross(x, up);
+        let origin = math::sub([p[0], p[1], lo], math::scale(z, reach));
+        let (u, v) = (along.abs(), hi - lo);
+        let tool = Item::Extrusion {
+            position: math::from_axes(mm(origin), x, up, z),
+            profile: profile_mm(areas(vec![polygon(&[
+                [0.0, 0.0],
+                [u, 0.0],
+                [u, v],
+                [0.0, v],
+            ])])),
+            direction: [0.0, 0.0, 1.0],
+            depth: 2.0 * reach * FOOT_MM,
+        };
+        return Ok((tool, "its rectangle"));
+    }
+    if o.loops.is_empty() {
+        return Err(format!("its boundary ({}) did not read", o.class));
+    }
+    let n = math::cross(d, up);
+    let back = math::scale(n, -reach);
+    let shift = [
+        1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, back[0], back[1], back[2],
+    ];
+    let loops: Vec<Vec<Curve>> = o
+        .loops
+        .iter()
+        .map(|l| l.iter().map(|c| c.transformed(&shift)).collect())
+        .collect();
+    prism(&loops, n, 2.0 * reach).map(|t| (t, "its profile"))
+}
+
+/// The cut tools of an insert (mitcad#345) and what they are made of: its
+/// type's cut loops at its transform, through the host along the cut
+/// direction; else its type's void geometry at its transform. An error
+/// says why it has none.
+fn insert_cuts(
+    b: &Building,
+    id: i64,
+    host_width: f64,
+) -> Result<(Vec<Item>, &'static str), String> {
+    let inst = b
+        .instances
+        .get(&id)
+        .ok_or("it is no family instance read")?;
+    let t = inst.transform.ok_or("it has no transform")?;
+    let symbols: Vec<&Symbol> = [inst.symbol, inst.master]
         .into_iter()
         .flatten()
         .filter_map(|s| b.symbols.get(&s))
-        .find(|s| !s.cut_loops.is_empty());
-    let Some(symbol) = symbol else {
-        return Ok(Vec::new());
-    };
+        .collect();
+    if let Some(symbol) = symbols.iter().find(|s| !s.cut_loops.is_empty()) {
+        return cut_loop_tools(symbol, &t, host_width).map(|tools| (tools, "cut loops"));
+    }
+    if let Some(symbol) = symbols.iter().find(|s| !s.cut_solids.is_empty()) {
+        return void_tools(symbol, &t).map(|tools| (tools, "its type's void geometry"));
+    }
+    if symbols.is_empty() {
+        return Err("its type is not read".into());
+    }
+    match symbols.iter().find_map(|s| s.cut_notes.first()) {
+        Some(n) => Err(format!("its type's void geometry did not read: {n}")),
+        None => Err("its type has neither cut loops nor void geometry".into()),
+    }
+}
+
+/// An insert type's void geometry at the instance's transform (mitcad#345):
+/// each body's closed triangle mesh as planar faces (model millimetres).
+fn void_tools(symbol: &Symbol, t: &[f64; 12]) -> Result<Vec<Item>, String> {
+    let det = t[0] * (t[4] * t[8] - t[5] * t[7]) - t[1] * (t[3] * t[8] - t[5] * t[6])
+        + t[2] * (t[3] * t[7] - t[4] * t[6]);
+    let mut tools = Vec::new();
+    for s in &symbol.cut_solids {
+        let (points, triangles) =
+            super::geometry::solid_mesh(s).map_err(|e| format!("its type's void geometry: {e}"))?;
+        let placed: Vec<P3> = points.iter().map(|p| mm(building::apply(t, *p))).collect();
+        let faces = triangles
+            .iter()
+            .map(|tr| {
+                let [a, b, c] = tr.map(|i| placed[i as usize]);
+                // (A mirroring transform turns the faces inside out.)
+                vec![if det < 0.0 {
+                    vec![a, c, b]
+                } else {
+                    vec![a, b, c]
+                }]
+            })
+            .collect();
+        tools.push(Item::Faceted {
+            faces,
+            closed: true,
+        });
+    }
+    Ok(tools)
+}
+
+/// An insert type's cut loops at the instance's transform, through the
+/// host along the type's cut direction.
+fn cut_loop_tools(symbol: &Symbol, t: &[f64; 12], host_width: f64) -> Result<Vec<Item>, String> {
+    let t = *t;
     let dir = symbol
         .cut_dirs
         .first()
@@ -357,7 +941,7 @@ fn transformed(c: &Curve, m: &Matrix) -> Curve {
 fn tool(model: &Model, id: i64) -> Result<Item, String> {
     let b = &model.building;
     if let Some(w) = b.walls.get(&id) {
-        return wall_solid(model, w).map(|(s, _)| s);
+        return wall_solid(model, w).map(|(s, _, _)| s);
     }
     if let Some(s) = b.slabs.get(&id) {
         let kind = match s.class.as_str() {
@@ -463,7 +1047,7 @@ fn slab(model: &Model, s: &Slab, kind: &'static str, with_cuts: bool) -> Result<
     // The inserts whose cut it takes (skylights, floor openings).
     for id in s.cutouts.iter().filter(|_| with_cuts) {
         match insert_cuts(b, *id, width.unwrap_or(1.0)) {
-            Ok(tools) => cuts.extend(tools.into_iter().map(|t| (format!("insert {id}"), t))),
+            Ok((tools, _)) => cuts.extend(tools.into_iter().map(|t| (format!("insert {id}"), t))),
             Err(why) => notes.push(format!("insert {id} is not cut: {why}")),
         }
     }
@@ -472,27 +1056,21 @@ fn slab(model: &Model, s: &Slab, kind: &'static str, with_cuts: bool) -> Result<
         solid,
         cuts,
         more: Vec::new(),
+        attached: Vec::new(),
+        openings: Vec::new(),
         notes,
         material: layer_material(b, s.type_id),
     })
 }
 
-/// A footprint roof: flat (its loops extruded up by its thickness), or the
-/// prism under its slopes' top planes less the prism under their bottom
-/// planes.
-fn roof_solid(
-    s: &Slab,
-    areas_ft: Vec<Area>,
-    loops_z: f64,
-    width: Option<f64>,
-    layers: &[f64],
-    notes: &mut Vec<String>,
-) -> Result<Item, String> {
-    let unit = |v: P3| math::normalize(v);
-    // The slopes: planes grouped by their normal (pointing up).
-    let mut groups: Vec<(P3, Vec<(f64, &building::Plane)>)> = Vec::new();
+/// A roof's slopes: its layer reference faces grouped by their normal
+/// (pointing up), each face with its offset along the normal.
+type SlopeGroups<'s> = Vec<(P3, Vec<(f64, &'s building::Plane)>)>;
+
+fn slope_groups(s: &Slab) -> SlopeGroups<'_> {
+    let mut groups: SlopeGroups<'_> = Vec::new();
     for p in &s.layer_faces {
-        let Some(mut n) = unit(math::cross(p.x, p.y)) else {
+        let Some(mut n) = math::normalize(math::cross(p.x, p.y)) else {
             continue;
         };
         if n[2] < 0.0 {
@@ -507,27 +1085,56 @@ fn roof_solid(
             None => groups.push((n, vec![(offset, p)])),
         }
     }
-    // A slope's top and bottom (offsets along its normal): its faces are
-    // the boundaries of its type's layers, the outer ones among them (one
-    // more than the layers) or not (one fewer: then the outer layers' widths
-    // beyond them).
-    let bounds = |list: &[(f64, &building::Plane)]| -> Result<(f64, f64), String> {
-        let top = list
-            .iter()
-            .map(|(o, _)| *o)
-            .fold(f64::NEG_INFINITY, f64::max);
-        let bottom = list.iter().map(|(o, _)| *o).fold(f64::INFINITY, f64::min);
-        let (k, l) = (list.len(), layers.len());
-        if l > 0 && k + 1 == l {
-            Ok((top + layers[0], bottom - layers[l - 1]))
-        } else if k == l + 1 && top - bottom > 1e-6 {
-            Ok((top, bottom))
-        } else if let Some(w) = width.filter(|_| k >= 1) {
-            Ok((top, top - w))
-        } else {
-            Err(format!("its {k} layer faces do not bound its {l} layers"))
-        }
-    };
+    groups
+}
+
+/// A slope's top and bottom (offsets along its normal): its faces are the
+/// boundaries of its type's layers, the outer ones among them (one more
+/// than the layers) or not (one fewer: then the outer layers' widths
+/// beyond them).
+fn slope_bounds(
+    list: &[(f64, &building::Plane)],
+    width: Option<f64>,
+    layers: &[f64],
+) -> Result<(f64, f64), String> {
+    let top = list
+        .iter()
+        .map(|(o, _)| *o)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let bottom = list.iter().map(|(o, _)| *o).fold(f64::INFINITY, f64::min);
+    let (k, l) = (list.len(), layers.len());
+    if l > 0 && k + 1 == l {
+        Ok((top + layers[0], bottom - layers[l - 1]))
+    } else if k == l + 1 && top - bottom > 1e-6 {
+        Ok((top, bottom))
+    } else if let Some(w) = width.filter(|_| k >= 1) {
+        Ok((top, top - w))
+    } else {
+        Err(format!("its {k} layer faces do not bound its {l} layers"))
+    }
+}
+
+/// The widths of a type's layers that have one, from the top.
+fn layer_widths(b: &Building, type_id: Option<i64>) -> Vec<f64> {
+    type_id
+        .and_then(|t| b.structures.get(&t))
+        .map(|l| l.iter().map(|l| l.width).filter(|w| *w > 1e-9).collect())
+        .unwrap_or_default()
+}
+
+/// A footprint roof: flat (its loops extruded up by its thickness), or the
+/// prism under its slopes' top planes less the prism under their bottom
+/// planes.
+fn roof_solid(
+    s: &Slab,
+    areas_ft: Vec<Area>,
+    loops_z: f64,
+    width: Option<f64>,
+    layers: &[f64],
+    notes: &mut Vec<String>,
+) -> Result<Item, String> {
+    let groups = slope_groups(s);
+    let bounds = |list: &[(f64, &building::Plane)]| slope_bounds(list, width, layers);
     let flat = groups.iter().all(|(n, _)| n[2] > 1.0 - 1e-6);
     if flat && groups.len() == 1 {
         let (top, bottom) = bounds(&groups[0].1)?;
@@ -586,22 +1193,11 @@ fn roof_solid(
         tops.push((*n, top));
         bottoms.push((*n, bottom));
     }
-    let above = |n: P3, offset: f64| {
-        let origin = math::scale(n, offset * FOOT_MM);
-        let x = math::normalize(math::cross([0.0, 0.0, 1.0], n))
-            .or_else(|| math::normalize(math::cross([1.0, 0.0, 0.0], n)))
-            .unwrap_or([1.0, 0.0, 0.0]);
-        Item::HalfSpace {
-            plane: math::from_axes(origin, x, math::cross(n, x), n),
-            below: false,
-            boundary: None,
-        }
-    };
     let under = |planes: &[(P3, f64)]| {
         planes.iter().fold(prism(), |acc, (n, o)| Item::Boolean {
             op: BoolOp::Difference,
             first: Box::new(acc),
-            second: Box::new(above(*n, *o)),
+            second: Box::new(half_space(*n, *o, false)),
         })
     };
     Ok(Item::Boolean {
@@ -842,6 +1438,8 @@ fn column(model: &Model, e: &Element, i: &Instance) -> Result<Plan, String> {
         solid,
         cuts,
         more: Vec::new(),
+        attached: Vec::new(),
+        openings: Vec::new(),
         notes,
         material,
     })
@@ -911,6 +1509,8 @@ fn beam(model: &Model, e: &Element, i: &Instance) -> Result<Plan, String> {
         solid: extrusion(position, profile, true, s1 - s0),
         cuts: Vec::new(),
         more: Vec::new(),
+        attached: Vec::new(),
+        openings: Vec::new(),
         notes,
         material,
     })
@@ -937,6 +1537,9 @@ fn extrusion_span(s: &Slab) -> Result<Vec<Area>, String> {
 /// from its bottom to its top, its treads' depths) down to the underside
 /// of its support, across its width (its start riser line).
 fn stair(model: &Model, e: &Element, r: &building::StairRun) -> Result<Plan, String> {
+    if r.spiral {
+        return spiral_run(model, e, r);
+    }
     let (monolithic, depth) = e
         .type_id
         .and_then(|t| model.building.run_types.get(&t).copied())
@@ -970,13 +1573,24 @@ fn stair(model: &Model, e: &Element, r: &building::StairRun) -> Result<Plan, Str
     if !monolithic {
         return stair_parts(model, e, r, n, h, a, b, w, x, width);
     }
-    let mut pts: Vec<P2> = vec![[0.0, 0.0]];
+    // (mitcad#340) The treads' depths run from nosing to nosing; a riser
+    // leans from its base, the nosing length behind its tread's front, up
+    // to that front.
+    let nosing = e
+        .type_id
+        .and_then(|t| model.building.stair_parts.get(&t))
+        .map_or(0.0, |p| p.nosing.max(0.0));
+    let run: f64 = r.treads.iter().take(n).sum();
+    let mut pts: Vec<P2> = vec![[nosing, 0.0]];
     let mut s = 0.0;
     for k in 0..n {
         pts.push([s, (k + 1) as f64 * h]);
         if let Some(d) = r.treads.get(k) {
             s += d;
-            pts.push([s, (k + 1) as f64 * h]);
+            // Its tread reaches the next riser's base (at most the run's
+            // end).
+            let back = (s + nosing).min(run);
+            pts.push([back, (k + 1) as f64 * h]);
         }
     }
     let length = s;
@@ -989,19 +1603,20 @@ fn stair(model: &Model, e: &Element, r: &building::StairRun) -> Result<Plan, Str
         return Err("its support's line runs across the run".into());
     }
     // (The support line runs along the nosings: the underside lies the
-    // support's depth below it, square to it.)
+    // support's depth, square to it, below the line through the risers'
+    // bases, a riser and the nosing's rise below the nosings.)
     let slope = (q[1] - p[1]) / (q[0] - p[0]);
     let drop = depth * (1.0 + slope * slope).sqrt();
-    let u = |s: f64| p[1] - drop + (s - p[0]) * slope;
+    let u = |s: f64| p[1] - h - nosing * slope - drop + (s - p[0]) * slope;
     if u(length) >= total - 1e-6 {
         return Err("its support's underside reaches above its top".into());
     }
     pts.push([length, u(length).max(0.0)]);
-    if u(0.0) > 0.0 {
-        pts.push([0.0, u(0.0).min(h)]);
+    if u(nosing) > 0.0 {
+        pts.push([nosing, u(nosing).min(h)]);
     } else {
-        let s0 = p[0] + (drop - p[1]) / slope;
-        pts.push([s0.clamp(0.0, length), 0.0]);
+        let s0 = p[0] + (h + nosing * slope + drop - p[1]) / slope;
+        pts.push([s0.clamp(nosing, length), 0.0]);
     }
     pts.dedup_by(|m, n| (m[0] - n[0]).hypot(m[1] - n[1]) < 1e-9);
     if pts.len() > 1
@@ -1022,6 +1637,8 @@ fn stair(model: &Model, e: &Element, r: &building::StairRun) -> Result<Plan, Str
         },
         cuts: Vec::new(),
         more: Vec::new(),
+        attached: Vec::new(),
+        openings: Vec::new(),
         notes: vec![format!("a run of {n} risers")],
         material: None,
     })
@@ -1090,6 +1707,9 @@ fn mullion(model: &Model, e: &Element, i: &Instance) -> Result<Plan, String> {
     if m.profile == "SysCustMullionProfile" {
         return custom_mullion(model, e, i, m);
     }
+    if m.profile == "SysVMullionProfile" {
+        return v_mullion(b, i, m);
+    }
     let quad = m.profile == "SysQuadMullionProfile";
     if m.profile != "SysRectMullionProfile" && !quad {
         return Err(format!(
@@ -1119,7 +1739,9 @@ fn mullion(model: &Model, e: &Element, i: &Instance) -> Result<Plan, String> {
         let (a0, a1) = if m.flags & 4 != 0 {
             (0.0, w0 + w1)
         } else {
-            (-w0, w1)
+            // (-1007300 towards `normal × path`, -1007301 the other way:
+            // the off-centre mullions, mitcad#340.)
+            (-w1, w0)
         };
         (
             a0,
@@ -1131,13 +1753,201 @@ fn mullion(model: &Model, e: &Element, i: &Instance) -> Result<Plan, String> {
     if a1 - a0 <= 1e-9 || n1 - n0 <= 1e-9 {
         return Err("a profile of no size".into());
     }
-    let at = |u: f64, v: f64| {
-        building::apply(
-            &t,
-            math::add(*start, math::add(math::scale(a, u), math::scale(n, v))),
+    let corners = [(a0, n0), (a1, n0), (a1, n1), (a0, n1)];
+    let offset = |u: f64, v: f64| math::add(math::scale(a, u), math::scale(n, v));
+    let (ends, end_note) = trimmed_ends(model, i, m, *start, d, length);
+    // How far the prism reaches past each end so that its cut there
+    // leaves no part of it short (the corner lines' crossings with the
+    // end's plane).
+    let reach = |k: usize| {
+        let Some((p, o)) = ends[k] else { return 0.0 };
+        corners
+            .iter()
+            .map(|&(u, v)| {
+                let c = math::add(*start, offset(u, v));
+                let s = math::dot(math::sub(p, c), o) / math::dot(d, o);
+                if k == 0 { -s } else { s - length }
+            })
+            .fold(0.0_f64, f64::max)
+            + (a1 - a0).max(n1 - n0)
+    };
+    let (before, after) = (reach(0), reach(1));
+    let base = math::sub(*start, math::scale(d, before));
+    let at = |u: f64, v: f64| building::apply(&t, math::add(base, offset(u, v)));
+    let outline = polyline(&corners.map(|(u, v)| at(u, v)));
+    let mut solid = prism(&[outline], building::turn(&t, d), before + length + after)?;
+    for (p, o) in ends.into_iter().flatten() {
+        let (p, o) = (building::apply(&t, p), building::turn(&t, o));
+        solid = Item::Boolean {
+            op: BoolOp::Difference,
+            first: Box::new(solid),
+            second: Box::new(half_space(o, math::dot(o, p), false)),
+        };
+    }
+    let material = i
+        .master
+        .and_then(|s| b.symbols.get(&s))
+        .and_then(|s| s.materials.first().copied());
+    Ok(Plan {
+        kind: "mullion",
+        solid,
+        cuts: Vec::new(),
+        more: Vec::new(),
+        attached: Vec::new(),
+        openings: Vec::new(),
+        notes: vec![format!(
+            "a {} mullion {:.0} × {:.0} mm",
+            if quad { "corner" } else { "rectangular" },
+            (a1 - a0) * FOOT_MM,
+            (n1 - n0) * FOOT_MM
+        )]
+        .into_iter()
+        .chain(end_note)
+        .collect(),
+        material,
+    })
+}
+
+/// The planes a trimmed mullion's ends are cut along (mitcad#385), in its
+/// symbol's coordinates: a point and the normal pointing out of the
+/// mullion, per end (`None`: square at its path's end). A mullion trimmed
+/// to its neighbours (`MullionTrimNeighbor`) stops at a neighbour's side,
+/// or meets it in a mitre, by rules of the trims' flags and the
+/// neighbours' types that are not decoded (the same flags give different
+/// cuts on the curtain walls of the corpus); its symbol's own stored
+/// geometry keeps the result, a planar end face per end, which gives the
+/// planes. With a note when they do not read.
+fn trimmed_ends(
+    model: &Model,
+    i: &Instance,
+    m: &building::MullionSym,
+    start: P3,
+    d: P3,
+    length: f64,
+) -> ([Option<(P3, P3)>; 2], Option<String>) {
+    if m.trims.is_empty() {
+        return ([None, None], None);
+    }
+    let not_read = |why: &str| {
+        (
+            [None, None],
+            Some(format!("its ends trimmed to its neighbours: {why}")),
         )
     };
-    let outline = polyline(&[at(a0, n0), at(a1, n0), at(a1, n1), at(a0, n1)]);
+    let Some(solid) =
+        i.symbol
+            .and_then(|s| model.geometry.get(&s))
+            .and_then(|g| match g.solids.as_slice() {
+                [one] => Some(one),
+                _ => None,
+            })
+    else {
+        return not_read("its symbol keeps no single body to take its end faces from");
+    };
+    let mut ends: [Vec<(P3, P3)>; 2] = [Vec::new(), Vec::new()];
+    for face in &solid.faces {
+        // (A face without loops bounds nothing: the stored bodies of trimmed
+        // mullions keep their square ends' planes so.)
+        let mitcad_rvt::brep::Surface::Plane { origin, x, y } = &face.surface else {
+            continue;
+        };
+        if face.loops.is_empty() {
+            continue;
+        }
+        let Some(normal) = math::normalize(math::cross(*x, *y)) else {
+            continue;
+        };
+        let along = math::dot(normal, d);
+        // (The sides run along the path.)
+        if along.abs() < 1e-3 {
+            continue;
+        }
+        let s = math::dot(math::sub(*origin, start), normal) / along;
+        let k = usize::from(s > length / 2.0);
+        let out = if (along > 0.0) == (k == 1) {
+            normal
+        } else {
+            math::scale(normal, -1.0)
+        };
+        ends[k].push((*origin, out));
+    }
+    let mut planes = [None, None];
+    for (k, faces) in ends.iter().enumerate() {
+        match faces.as_slice() {
+            [] => return not_read("an end of its stored body has no planar face"),
+            [(p, o)] => {
+                let at_end = if k == 0 {
+                    start
+                } else {
+                    math::add(start, math::scale(d, length))
+                };
+                let square = math::dot(*o, d).abs() > 1.0 - 1e-9;
+                if !square || math::dot(math::sub(*p, at_end), *o).abs() > 1e-6 {
+                    planes[k] = Some((*p, *o));
+                }
+            }
+            _ => return not_read("an end of its stored body has several faces"),
+        }
+    }
+    let note = planes.iter().any(Option::is_some).then(|| {
+        "its ends cut along its symbol's stored end faces (trimmed to its neighbours)".into()
+    });
+    (planes, note)
+}
+
+/// A V (corner) mullion (mitcad#340): two legs of its thickness, at right
+/// angles, running out along its corner angles' directions `e1`, `e2`
+/// (from `a = normal × path` towards the normal); each leg's middle line is
+/// its thickness away from the line through the path along it, on the far
+/// side from the other leg, and reaches its leg's length from where the
+/// middle lines meet (and half the thickness back past it, closing the
+/// corner): an L of six corners along its straight path, from its own
+/// symbol at the instance's transform.
+fn v_mullion(b: &Building, i: &Instance, m: &building::MullionSym) -> Result<Plan, String> {
+    let t = i.transform.ok_or("no transform")?;
+    let Some(Curve::Line { start, end }) = &m.path else {
+        return Err("a mullion along a curve".into());
+    };
+    let length = math::length(math::sub(*end, *start));
+    let d = math::normalize(math::sub(*end, *start)).ok_or("a path of no length")?;
+    let n = math::normalize(m.normal).ok_or("no normal")?;
+    let a = math::normalize(math::cross(n, d)).ok_or("a normal along the path")?;
+    let [t1, t2] = m.corner_angles;
+    let turn = (t2 - t1).rem_euclid(std::f64::consts::TAU);
+    if (turn - std::f64::consts::FRAC_PI_2).abs() > 1e-6
+        && (turn - 3.0 * std::f64::consts::FRAC_PI_2).abs() > 1e-6
+    {
+        return Err(format!(
+            "a V mullion whose legs meet at {:.1}° (only right angles are read)",
+            turn.to_degrees()
+        ));
+    }
+    if m.offset.abs() > 1e-9 {
+        return Err("a V mullion with an offset (not read)".into());
+    }
+    let th = m.thickness;
+    let [l1, l2] = m.legs;
+    if th <= 1e-9 || l1 <= 1e-9 || l2 <= 1e-9 {
+        return Err("a V mullion of no size".into());
+    }
+    let dir = |angle: f64| math::add(math::scale(a, angle.cos()), math::scale(n, angle.sin()));
+    let (e1, e2) = (dir(t1), dir(t2));
+    // (u along e2, w along e1; the middle lines meet at (-th, -th).)
+    let at = |u: f64, w: f64| {
+        building::apply(
+            &t,
+            math::add(*start, math::add(math::scale(e2, u), math::scale(e1, w))),
+        )
+    };
+    let (o, i_) = (-1.5 * th, -0.5 * th);
+    let outline = polyline(&[
+        at(o, o),
+        at(l2 - th, o),
+        at(l2 - th, i_),
+        at(i_, i_),
+        at(i_, l1 - th),
+        at(o, l1 - th),
+    ]);
     let solid = prism(&[outline], building::turn(&t, d), length)?;
     let material = i
         .master
@@ -1148,11 +1958,13 @@ fn mullion(model: &Model, e: &Element, i: &Instance) -> Result<Plan, String> {
         solid,
         cuts: Vec::new(),
         more: Vec::new(),
+        attached: Vec::new(),
+        openings: Vec::new(),
         notes: vec![format!(
-            "a {} mullion {:.0} × {:.0} mm",
-            if quad { "corner" } else { "rectangular" },
-            (a1 - a0) * FOOT_MM,
-            (n1 - n0) * FOOT_MM
+            "a V mullion, legs {:.0} and {:.0} mm, {:.0} mm thick",
+            l1 * FOOT_MM,
+            l2 * FOOT_MM,
+            th * FOOT_MM
         )],
         material,
     })
@@ -1207,6 +2019,8 @@ fn panel(b: &Building, i: &Instance) -> Result<Plan, String> {
         solid,
         cuts: Vec::new(),
         more: Vec::new(),
+        attached: Vec::new(),
+        openings: Vec::new(),
         notes: vec![format!("a panel {:.0} mm thick", p.thickness * FOOT_MM)],
         material,
     })
@@ -1287,9 +2101,207 @@ fn stair_parts(
         },
         cuts: Vec::new(),
         more: Vec::new(),
+        attached: Vec::new(),
+        openings: Vec::new(),
         notes: vec![format!("a run of {n} risers: {steps} treads and risers")],
         material: None,
     })
+}
+
+/// A spiral run of treads (mitcad#385): tread k's front on riser line k,
+/// its back on riser line k + 1 moved the nosing length on (the next tread
+/// overhangs it by the nosing), between the circles of the run's inner and
+/// outer radii about its centre; its top at its step's height, its
+/// thickness below. Under its front the type's nosing profile (a profile
+/// family's rectangle: its x into the tread, its y up from the tread's
+/// top) runs from circle to circle, joined to the tread.
+fn spiral_run(model: &Model, e: &Element, r: &building::StairRun) -> Result<Plan, String> {
+    let s = r
+        .layout
+        .as_ref()
+        .ok_or("a spiral run whose centre, radii and riser lines do not read")?;
+    let parts = e
+        .type_id
+        .and_then(|t| model.building.stair_parts.get(&t))
+        .ok_or("its run type's treads and risers are not read")?;
+    if parts.monolithic {
+        return Err("a monolithic spiral run (its support is not read)".into());
+    }
+    if parts.riser.is_some() {
+        return Err("a spiral run with risers (where they stand is not read)".into());
+    }
+    let tt = parts.tread.ok_or("a spiral run without treads")?;
+    let n = usize::try_from(r.risers).unwrap_or(0);
+    if n < 2 || s.risers.len() != n || r.top <= r.bottom {
+        return Err(format!(
+            "its {} riser lines do not match its {n} risers",
+            s.risers.len()
+        ));
+    }
+    let [r_in, r_out] = s.radii;
+    let nosing = parts.nosing.max(0.0);
+    if r_in <= nosing || r_out <= r_in {
+        return Err(format!(
+            "its radii {r_in:.3} and {r_out:.3} ft do not hold its nosing of {nosing:.3} ft"
+        ));
+    }
+    let up = [0.0, 0.0, 1.0];
+    let c = [s.center[0], s.center[1], 0.0];
+    let flat = |p: P3| [p[0], p[1], 0.0];
+    // Riser line k: the point of its line nearest to the centre and its
+    // direction outwards (in plan).
+    let line = |k: usize| -> Result<(P3, P3), String> {
+        let Curve::Line { start, end } = &s.risers[k] else {
+            return Err(format!("its riser {k} is not a line"));
+        };
+        let (a, b) = (flat(*start), flat(*end));
+        let mut d = math::normalize(math::sub(b, a)).ok_or("a riser line of no length")?;
+        let middle = math::scale(math::add(a, b), 0.5);
+        if math::dot(math::sub(middle, c), d) < 0.0 {
+            d = math::scale(d, -1.0);
+        }
+        let foot = math::add(a, math::scale(d, math::dot(math::sub(c, a), d)));
+        Ok((foot, d))
+    };
+    // The way the risers turn about the centre (+1 counter-clockwise).
+    let sense = math::cross(line(0)?.1, line(1)?.1)[2].signum();
+    if sense == 0.0 {
+        return Err("its first two riser lines are parallel".into());
+    }
+    // Where a line (its foot, its direction) meets a circle about the
+    // centre, outwards of its foot.
+    let meet = |foot: P3, d: P3, radius: f64| -> Result<P3, String> {
+        let q = radius * radius - math::dot(math::sub(foot, c), math::sub(foot, c));
+        if q <= 1e-12 {
+            return Err("a tread's side does not reach its inner circle".into());
+        }
+        Ok(math::add(foot, math::scale(d, q.sqrt())))
+    };
+    // The arc of a circle about the centre from a to b, turning `turn`.
+    let arc = |a: P3, b: P3, radius: f64, turn: f64| -> Result<Curve, String> {
+        let x = math::normalize(math::sub(a, c)).ok_or("a point at the centre")?;
+        let y = math::scale(math::cross(up, x), turn);
+        let v = math::sub(b, c);
+        let end = math::dot(v, y)
+            .atan2(math::dot(v, x))
+            .rem_euclid(std::f64::consts::TAU);
+        Ok(Curve::Arc {
+            center: c,
+            x_axis: x,
+            y_axis: y,
+            radius,
+            start: 0.0,
+            end,
+        })
+    };
+    // The region between two lines (feet, one direction each) from circle
+    // to circle, at a height: from the inner end of the first, out, round
+    // the outer circle (turning on), in along the second and back round the
+    // inner circle.
+    let between = |(f0, d0): (P3, P3), (f1, d1): (P3, P3), z: f64| -> Result<Vec<Curve>, String> {
+        let (a, b) = (meet(f0, d0, r_in)?, meet(f0, d0, r_out)?);
+        let (p, q) = (meet(f1, d1, r_out)?, meet(f1, d1, r_in)?);
+        let lift = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, z];
+        Ok([
+            Curve::Line { start: a, end: b },
+            arc(b, p, r_out, sense)?,
+            Curve::Line { start: p, end: q },
+            arc(q, a, r_in, -sense)?,
+        ]
+        .iter()
+        .map(|c| c.transformed(&lift))
+        .collect())
+    };
+    // The nosing profile: a rectangle (x0, x1) × (y0, y1).
+    let nosing_profile = match parts.nosing_profile {
+        Some(p) => Some(
+            rectangle(&profile_loops(model, p)?)
+                .ok_or("its nosing profile is not a rectangle (only rectangular ones are read)")?,
+        ),
+        None => None,
+    };
+    let h = (r.top - r.bottom) / n as f64;
+    let mut solids = Vec::new();
+    for k in 0..n - 1 {
+        let top = r.bottom + (k + 1) as f64 * h;
+        let front = line(k)?;
+        let (f1, d1) = line(k + 1)?;
+        let back = (
+            math::add(f1, math::scale(math::cross(up, d1), sense * nosing)),
+            d1,
+        );
+        let tread = prism(&[between(front, back, top - tt)?], up, tt)?;
+        let Some([x0, x1, y0, y1]) = nosing_profile else {
+            solids.push(tread);
+            continue;
+        };
+        // Under the tread's front, below the tread.
+        let (bottom, upto) = (top + y0, top + y1.min(-tt));
+        if upto - bottom <= 1e-9 {
+            solids.push(tread);
+            continue;
+        }
+        let (f0, d0) = front;
+        let into = math::scale(math::cross(up, d0), sense);
+        let strip = prism(
+            &[between(
+                (math::add(f0, math::scale(into, x0)), d0),
+                (math::add(f0, math::scale(into, x1)), d0),
+                bottom,
+            )?],
+            up,
+            upto - bottom,
+        )?;
+        solids.push(Item::Boolean {
+            op: BoolOp::Union,
+            first: Box::new(tread),
+            second: Box::new(strip),
+        });
+    }
+    let treads = solids.len();
+    let solid = solids.remove(0);
+    Ok(Plan {
+        kind: "stair",
+        solid,
+        cuts: Vec::new(),
+        more: solids,
+        attached: Vec::new(),
+        openings: Vec::new(),
+        notes: vec![format!(
+            "a spiral run of {n} risers: {treads} treads{} about its centre",
+            if nosing_profile.is_some() {
+                " with their nosings"
+            } else {
+                ""
+            }
+        )],
+        material: None,
+    })
+}
+
+/// A profile of one loop of lines that bound a rectangle along the axes:
+/// its x and y ranges.
+fn rectangle(loops: &[Vec<Curve>]) -> Option<[f64; 4]> {
+    let [l] = loops else { return None };
+    let mut points = Vec::new();
+    for c in l {
+        let Curve::Line { start, end } = c else {
+            return None;
+        };
+        if (start[0] - end[0]).abs() > 1e-9 && (start[1] - end[1]).abs() > 1e-9 {
+            return None;
+        }
+        points.push(*start);
+    }
+    let min = |k: usize| points.iter().map(|p| p[k]).fold(f64::INFINITY, f64::min);
+    let max = |k: usize| {
+        points
+            .iter()
+            .map(|p| p[k])
+            .fold(f64::NEG_INFINITY, f64::max)
+    };
+    let r = [min(0), max(0), min(1), max(1)];
+    (l.len() == 4 && r[1] - r[0] > 1e-9 && r[3] - r[2] > 1e-9).then_some(r)
 }
 
 /// A stair landing (mitcad#333): its boundary down from its top by its
@@ -1332,6 +2344,8 @@ fn landing(model: &Model, e: &Element, l: &building::Landing) -> Result<Plan, St
         solid: extrusion(at_height(l.top), profile_mm(areas(paths)), false, thickness),
         cuts: Vec::new(),
         more: Vec::new(),
+        attached: Vec::new(),
+        openings: Vec::new(),
         notes: vec![format!(
             "a {} landing {:.0} mm thick",
             if parts.monolithic {
@@ -1379,8 +2393,12 @@ fn sweep_kind(s: &building::Sweep) -> &'static str {
 }
 
 /// Curves joined end to start into open or closed chains (each turned as
-/// needed), in order.
-fn chains(curves: &[Curve], tolerance: f64) -> Vec<Vec<Curve>> {
+/// needed), in order. A curve's tag (a wall sweep's side: whether its
+/// profile is mirrored across it) turns with it, and a curve joins a chain
+/// only where their tags then agree; a chain carries its tag.
+type Chain = (Vec<Curve>, Option<bool>);
+
+fn chains(curves: &[(Curve, Option<bool>)], tolerance: f64) -> Vec<Chain> {
     let close = |a: P3, b: P3| math::length(math::sub(a, b)) <= tolerance;
     let reversed = |c: &Curve| match c {
         Curve::Line { start, end } => Curve::Line {
@@ -1402,42 +2420,85 @@ fn chains(curves: &[Curve], tolerance: f64) -> Vec<Vec<Curve>> {
             start: -end,
             end: -start,
         },
+        Curve::Ellipse {
+            center,
+            x_axis,
+            y_axis,
+            rx,
+            ry,
+            start,
+            end,
+        } => Curve::Ellipse {
+            center: *center,
+            x_axis: *x_axis,
+            y_axis: math::scale(*y_axis, -1.0),
+            rx: *rx,
+            ry: *ry,
+            start: -end,
+            end: -start,
+        },
+        // (The rise turns with the angles.)
+        Curve::Helix {
+            center,
+            x_axis,
+            y_axis,
+            z_axis,
+            radius,
+            rise,
+            start,
+            end,
+        } => Curve::Helix {
+            center: *center,
+            x_axis: *x_axis,
+            y_axis: math::scale(*y_axis, -1.0),
+            z_axis: math::scale(*z_axis, -1.0),
+            radius: *radius,
+            rise: *rise,
+            start: -end,
+            end: -start,
+        },
     };
-    let mut left: Vec<Curve> = curves.to_vec();
+    // A tag turns with its curve.
+    let turned = |(c, tag): &(Curve, Option<bool>)| (reversed(c), tag.map(|t| !t));
+    let mut left: Vec<(Curve, Option<bool>)> = curves.to_vec();
     let mut out = Vec::new();
     while !left.is_empty() {
-        let mut chain = vec![left.remove(0)];
+        let first = left.remove(0);
+        let tag = first.1;
+        let mut chain = vec![first.0];
         loop {
             let tail = chain.last().expect("one").end();
             let head = chain[0].start();
-            if let Some(i) = left
-                .iter()
-                .position(|c| close(c.start(), tail) || close(c.end(), tail))
-            {
+            let at_tail = |(c, t): &(Curve, Option<bool>)| {
+                (close(c.start(), tail) && *t == tag)
+                    || (close(c.end(), tail) && *t == tag.map(|g| !g))
+            };
+            let at_head = |(c, t): &(Curve, Option<bool>)| {
+                (close(c.end(), head) && *t == tag)
+                    || (close(c.start(), head) && *t == tag.map(|g| !g))
+            };
+            if let Some(i) = left.iter().position(at_tail) {
                 let c = left.remove(i);
-                chain.push(if close(c.start(), tail) {
-                    c
+                chain.push(if close(c.0.start(), tail) && c.1 == tag {
+                    c.0
                 } else {
-                    reversed(&c)
+                    turned(&c).0
                 });
-            } else if let Some(i) = left
-                .iter()
-                .position(|c| close(c.end(), head) || close(c.start(), head))
-            {
+            } else if let Some(i) = left.iter().position(at_head) {
                 let c = left.remove(i);
                 chain.insert(
                     0,
-                    if close(c.end(), head) {
-                        c
+                    if close(c.0.end(), head) && c.1 == tag {
+                        c.0
                     } else {
-                        reversed(&c)
+                        turned(&c).0
                     },
                 );
             } else {
                 break;
             }
         }
-        out.push(chain);
+        out.push((chain, tag));
     }
     out
 }
@@ -1450,11 +2511,15 @@ fn chain_lines(chain: &[Curve]) -> Vec<(P3, P3)> {
             Curve::Line { .. } => 1,
             Curve::Arc {
                 radius, start, end, ..
+            }
+            | Curve::Helix {
+                radius, start, end, ..
             } => {
                 let tol = 1.0 / FOOT_MM;
                 let step = 2.0 * (1.0 - tol / radius.max(tol)).clamp(-1.0, 1.0).acos();
                 (((end - start) / step.max(1e-3)).ceil() as usize).clamp(1, 256)
             }
+            Curve::Ellipse { .. } => 64,
         };
         for k in 0..n {
             let (a, b) = (c.at(k as f64 / n as f64), c.at((k + 1) as f64 / n as f64));
@@ -1466,13 +2531,20 @@ fn chain_lines(chain: &[Curve]) -> Vec<(P3, P3)> {
     out
 }
 
-/// A profile swept along paths (mitcad#333): the profile family's loops
-/// (its xy plane: x across the path, y along `up`, moved by the offsets)
-/// at right angles to the path, extruded along each of its lines (an arc's
-/// chords within a millimetre), each a body. Of the profile's four mirror
-/// images (and for a wall sweep, of its wall's faces) the one whose solid
-/// fits the element's stored box best.
-fn sweep(model: &Model, e: &Element, s: &building::Sweep) -> Result<Plan, String> {
+/// A profile swept along paths (mitcad#333, mitcad#340): the profile
+/// type's loops (its xy plane: x across the path, y along `up`, moved by
+/// the offsets) at right angles to the path, one solid along each chain of
+/// the paths ([`along_chain`]). A wall sweep's profile lies on the side of
+/// each path its step names (`m_side`: 1 mirrors its x) and below the
+/// path when it is flipped (`m_flipped`: its y mirrored); of another
+/// sweep's (a slab edge, a rail) four mirror images the one whose solid
+/// fits the element's stored box best. A wall sweep's ends are mitred where
+/// its returns turn and where it meets another sweep ([`with_returns`]).
+/// The elements joined to it that cut
+/// it (`CutPairGStep`: a coping where it meets another coping, mitcad#385)
+/// cut it with their own solids (`with_cuts`; the solid alone is another
+/// element's cutting tool).
+fn sweep(model: &Model, e: &Element, s: &building::Sweep, with_cuts: bool) -> Result<Plan, String> {
     let b = &model.building;
     let symbol = s
         .profile
@@ -1480,49 +2552,153 @@ fn sweep(model: &Model, e: &Element, s: &building::Sweep) -> Result<Plan, String
         .or_else(|| s.type_id.and_then(|t| b.profile_types.get(&t).copied()))
         .ok_or("no profile")?;
     let profile = profile_loops(model, symbol)?;
-    let paths: Vec<Vec<Curve>> = match s.path3d {
-        Some(p) => b.paths3d.get(&p).cloned().ok_or("its path is not read")?,
-        None => s.paths.clone(),
+    let tagged: Vec<(Curve, Option<bool>)> = match s.path3d {
+        Some(p) => b
+            .paths3d
+            .get(&p)
+            .ok_or("its path is not read")?
+            .iter()
+            .flatten()
+            .map(|c| (c.clone(), None))
+            .collect(),
+        None => s
+            .paths
+            .iter()
+            .enumerate()
+            .flat_map(|(k, path)| {
+                let side = s.sides.get(k).map(|side| *side == 1);
+                path.iter().map(move |c| (c.clone(), side))
+            })
+            .collect(),
     };
-    let all: Vec<Curve> = paths
+    let all: Vec<(Curve, Option<bool>)> = tagged
         .into_iter()
-        .flatten()
-        .filter(|c| c.length() > 1e-6)
+        .filter(|(c, _)| c.length() > 1e-6)
         .collect();
+    if let Some(why) = s.path3d.and_then(|p| b.paths3d_unread.get(&p)) {
+        return Err(format!(
+            "its path's curves do not all read ({})",
+            why.join(", ")
+        ));
+    }
     let chains = chains(&all, 1e-4);
     if chains.is_empty() {
         return Err("no path".into());
     }
     let up = s.up.and_then(math::normalize).unwrap_or([0.0, 0.0, 1.0]);
     let (h, v) = (s.offsets[0], s.offsets[1]);
-    // A wall sweep's path is its wall's location line: its profile at one
-    // of the wall's faces (their offsets from the line, either way).
-    let mut shifts = vec![0.0];
-    if let Some(w) = s.host.and_then(|h| b.walls.get(&h)) {
-        let faces = w.faces.or_else(|| {
-            let width = w.type_id.and_then(|t| b.width(t))?;
-            Some([-width / 2.0, width / 2.0])
+    let sided = chains.iter().all(|(_, side)| side.is_some());
+    let mirrors: &[(f64, f64)] = if sided && s.flipped {
+        &[(1.0, -1.0)]
+    } else if sided {
+        &[(1.0, 1.0)]
+    } else {
+        &[(1.0, 1.0), (-1.0, 1.0), (1.0, -1.0), (-1.0, -1.0)]
+    };
+    // The paths' ends with returns or joined to other sweeps, by their
+    // points (each once).
+    // (A path may hold curves of no length away from it, and pieces of it
+    // in any order, apart where an opening breaks it: its ends are the
+    // farthest back and on along its first curve's direction.)
+    let end_of = |path: &[Curve], end: u8| {
+        let curves: Vec<&Curve> = path.iter().filter(|c| c.length() > 1e-6).collect();
+        let d = math::sub(curves.first()?.end(), curves.first()?.start());
+        let at = |p: P3| math::dot(p, d);
+        if end == 0 {
+            curves
+                .iter()
+                .map(|c| c.start())
+                .min_by(|a, b| at(*a).total_cmp(&at(*b)))
+        } else {
+            curves
+                .iter()
+                .map(|c| c.end())
+                .max_by(|a, b| at(*a).total_cmp(&at(*b)))
+        }
+    };
+    let mut return_ends: Vec<(P3, EndAt)> = Vec::new();
+    let mut add_end = |at: P3, what: EndAt| {
+        if !return_ends
+            .iter()
+            .any(|(p, _)| math::length(math::sub(*p, at)) < 1e-4)
+        {
+            return_ends.push((at, what));
+        }
+    };
+    // (A sweep joined there decides the end before a return.)
+    for &(k, end, other) in &s.joined {
+        let Some(at) = s.paths.get(k).and_then(|p| end_of(p, end)) else {
+            continue;
+        };
+        // The other sweep's path leaving the point.
+        let close = |q: P3| math::length(math::sub(q, at)) < 1e-4;
+        // (Of its own paths, another one.)
+        let away = b.sweeps.get(&other).and_then(|o| {
+            o.paths
+                .iter()
+                .enumerate()
+                .filter(|(j, _)| other != s.id || *j != k)
+                .flat_map(|(_, p)| p)
+                .find_map(|c| {
+                    if c.length() <= 1e-6 {
+                        None
+                    } else if close(c.start()) {
+                        math::normalize(math::sub(c.at(1e-3), c.start()))
+                    } else if close(c.end()) {
+                        math::normalize(math::sub(c.at(1.0 - 1e-3), c.end()))
+                    } else {
+                        None
+                    }
+                })
         });
-        if let Some([lo, hi]) = faces {
-            shifts.extend([lo, hi, -lo, -hi]);
+        if let Some(away) = away {
+            add_end(at, EndAt::Joined(away));
+        }
+    }
+    // (An opening's returns before the wall end's at the same point.)
+    let mut returns: Vec<&building::SweepReturn> = s.returns.iter().collect();
+    returns.sort_by_key(|r| !r.at_opening);
+    for r in returns {
+        let Some(path) = s.paths.get(r.path) else {
+            continue;
+        };
+        let mut points = if r.at_opening {
+            opening_ends(path, r.end)
+        } else {
+            Vec::new()
+        };
+        if points.is_empty() {
+            points.extend(end_of(path, r.end));
+        }
+        for at in points {
+            add_end(
+                at,
+                EndAt::Return {
+                    angle: r.angle,
+                    length: r.length,
+                },
+            );
         }
     }
     let mut best: Option<(f64, Vec<Item>)> = None;
-    let mirrors = [(1.0, 1.0), (-1.0, 1.0), (1.0, -1.0), (-1.0, -1.0)];
-    for ((mx, my), shift) in mirrors
-        .iter()
-        .flat_map(|m| shifts.iter().map(move |s| (*m, *s)))
-    {
-        // The profile in its own plane, mirrored and moved (feet).
-        let flat = [mx, 0.0, 0.0, 0.0, my, 0.0, 0.0, 0.0, 1.0, h + shift, v, 0.0];
-        let profile2: Vec<Vec<Curve>> = profile
-            .iter()
-            .map(|l| l.iter().map(|c| c.transformed(&flat)).collect())
-            .collect();
+    for &(mx, my) in mirrors {
         let mut items = Vec::new();
         let mut lo = [f64::INFINITY; 3];
         let mut hi = [f64::NEG_INFINITY; 3];
-        for chain in &chains {
+        for (chain, side) in &chains {
+            let mx = match side {
+                Some(true) => -1.0,
+                Some(false) => 1.0,
+                None => mx,
+            };
+            // The profile in its own plane, mirrored and moved (feet).
+            let flat = [mx, 0.0, 0.0, 0.0, my, 0.0, 0.0, 0.0, 1.0, h, v, 0.0];
+            let profile2: Vec<Vec<Curve>> = profile
+                .iter()
+                .map(|l| l.iter().map(|c| c.transformed(&flat)).collect())
+                .collect();
+            let (chain, mitres) = with_returns(chain, &return_ends, &profile2, up);
+            let chain = &joined_lines(chain);
             let lines = chain_lines(chain);
             // Across: square to the first line that is not along `up`.
             let x0 = lines
@@ -1533,12 +2709,26 @@ fn sweep(model: &Model, e: &Element, s: &building::Sweep) -> Result<Plan, String
                 })
                 .ok_or("a path along its up direction")?;
             let mut last_x = x0;
+            // Along a planar chain the sweep keeps the profile's x at its
+            // angle to the plane, turning with the chain in it (the frames
+            // its solid is measured in); along another, x stays square to up.
+            let turning = chain_normal(chain).and_then(|n| {
+                let t0 = math::normalize(math::sub(lines[0].1, lines[0].0))?;
+                Some((n, math::dot(x0, n), math::dot(x0, math::cross(n, t0))))
+            });
             let mut prisms = Vec::new();
             for (a, z) in &lines {
                 let d = math::sub(*z, *a);
                 let length = math::length(d);
                 let t = math::scale(d, 1.0 / length);
-                let x = math::normalize(math::cross(up, t)).unwrap_or(last_x);
+                let x = match turning {
+                    Some((n, p, q)) => math::normalize(math::add(
+                        math::scale(n, p),
+                        math::scale(math::cross(n, t), q),
+                    )),
+                    None => math::normalize(math::cross(up, t)),
+                }
+                .unwrap_or(last_x);
                 last_x = x;
                 let y = math::cross(t, x);
                 let m = [
@@ -1561,9 +2751,24 @@ fn sweep(model: &Model, e: &Element, s: &building::Sweep) -> Result<Plan, String
                 }
                 prisms.push((placed, t, length));
             }
-            for (placed, t, length) in prisms {
-                items.push(prism(&placed, t, length)?);
+            let mut built = along_chain(chain, &profile2, x0, prisms)?;
+            for (end, q, n, back) in mitres {
+                let k = if end == 0 { 0 } else { built.len() - 1 };
+                let mut main = Item::Boolean {
+                    op: BoolOp::Difference,
+                    first: Box::new(built[k].clone()),
+                    second: Box::new(half_space(n, math::dot(n, q), false)),
+                };
+                if let Some(back) = back {
+                    main = Item::Boolean {
+                        op: BoolOp::Union,
+                        first: Box::new(main),
+                        second: Box::new(back),
+                    };
+                }
+                built[k] = main;
             }
+            items.extend(built);
         }
         let fit = e.bbox.map_or(0.0, |s| {
             (0..3)
@@ -1574,33 +2779,677 @@ fn sweep(model: &Model, e: &Element, s: &building::Sweep) -> Result<Plan, String
             best = Some((fit, items));
         }
     }
-    let (_, mut items) = best.expect("four candidates");
+    let (_, mut items) = best.expect("one candidate");
     let solid = items.remove(0);
+    let mut notes = vec![format!(
+        "its profile ({} loops) along {} paths",
+        profile.len(),
+        chains.len()
+    )];
+    let mut cuts = Vec::new();
+    let pieces: Vec<&Item> = std::iter::once(&solid).chain(&items).collect();
+    for other in s.cut_by.iter().filter(|_| with_cuts) {
+        match cutting_solids(model, *other, &pieces, CUT_DEPTH) {
+            Ok(tools) => cuts.extend(tools.into_iter().map(|t| (format!("element {other}"), t))),
+            Err(why) => notes.push(format!("the cut by element {other} is not made: {why}")),
+        }
+    }
     Ok(Plan {
         kind: sweep_kind(s),
         solid,
-        cuts: Vec::new(),
+        cuts,
         more: items,
-        notes: vec![format!(
-            "its profile ({} loops) along {} paths",
-            profile.len(),
-            chains.len()
-        )],
+        attached: Vec::new(),
+        openings: Vec::new(),
+        notes,
         material: None,
     })
+}
+
+/// An end of a chain cut at a mitre: the end (0, 1), its point, the
+/// mitre's normal out of the chain's solid and the return's solid, if any.
+type EndCut = (u8, P3, P3, Option<Item>);
+
+/// A chain with what meets its ends (mitcad#385, `ends` by their points):
+/// a wall sweep's return (`ReturnInfo`: the angle and the length) turns
+/// from the path by its angle about `up`, away from the side the profile
+/// (feet, its x across the path) lies on (around the wall's end), and runs
+/// on for its length; another sweep leaves the end in its own direction.
+/// The two meet in a mitre (the plane through the end square to the sum of
+/// the path's and the other's directions). The chain runs on past its end
+/// as far as the profile needs (to be cut at the mitre); per such end its
+/// [`EndCut`], with a return's solid: the profile along the return from
+/// behind the mitre to its length (none, or -1: the corner closed as a
+/// return would close it), less the chain's side of the mitre.
+fn with_returns(
+    chain: &[Curve],
+    ends: &[(P3, EndAt)],
+    profile: &[Vec<Curve>],
+    up: P3,
+) -> (Vec<Curve>, Vec<EndCut>) {
+    let close = |a: P3, b: P3| math::length(math::sub(a, b)) < 1e-4;
+    let mut chain = chain.to_vec();
+    let mut mitres = Vec::new();
+    let (Some(first), Some(last)) = (chain.first(), chain.last()) else {
+        return (chain, mitres);
+    };
+    let (head, tail) = (first.start(), last.end());
+    if ends.is_empty() || close(head, tail) {
+        return (chain, mitres);
+    }
+    let (xmin, xmax) = profile
+        .iter()
+        .flatten()
+        .flat_map(|c| (0..=8).map(move |k| c.at(f64::from(k) / 8.0)[0]))
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), x| {
+            (lo.min(x), hi.max(x))
+        });
+    if !xmin.is_finite() {
+        return (chain, mitres);
+    }
+    let side = if xmin + xmax >= 0.0 { 1.0 } else { -1.0 };
+    let reach = xmin.abs().max(xmax.abs());
+    for (end, at) in [(0u8, head), (1u8, tail)] {
+        let Some((_, what)) = ends.iter().find(|(p, _)| close(*p, at)) else {
+            continue;
+        };
+        let (angle, length, joined) = match *what {
+            EndAt::Return { angle, length } => (angle, length, None),
+            EndAt::Joined(away) => (0.0, 0.0, Some(away)),
+        };
+        // (A negative length, -1, closes the corner as one of no length
+        // does; of no length and no turn: the end as it is.)
+        let length = length.max(0.0);
+        if joined.is_none() && length < 1e-9 && angle.abs() < 1e-9 {
+            continue;
+        }
+        let lines = chain_lines(&chain);
+        let (Some(&(a, b)), Some(&(c, d))) = (lines.first(), lines.last()) else {
+            continue;
+        };
+        let along = if end == 0 {
+            math::normalize(math::sub(a, b))
+        } else {
+            math::normalize(math::sub(d, c))
+        };
+        let Some(out) = along else { continue };
+        let Some(x) = math::normalize(math::cross(up, out)) else {
+            continue;
+        };
+        // (`x` across the outward direction is the profile's x at a start
+        // turned round: its side flips there.)
+        let s = math::scale(x, if end == 0 { -side } else { side });
+        let (r, turn) = match joined {
+            // (Not back along itself.)
+            Some(away) if math::dot(away, out) > -0.99 => {
+                (away, math::dot(away, out).clamp(-1.0, 1.0).acos())
+            }
+            Some(_) => continue,
+            None => {
+                let turn = angle.abs();
+                let r = math::add(math::scale(out, turn.cos()), math::scale(s, -turn.sin()));
+                (r, turn)
+            }
+        };
+        // (A sweep running straight on meets it square.)
+        if joined.is_some() && turn < 1e-6 {
+            continue;
+        }
+        let Some(n) = math::normalize(math::add(out, r)) else {
+            continue;
+        };
+        // The path runs on past its end as far as the profile reaches past
+        // the mitre.
+        let run = reach * (turn / 2.0).tan() + reach;
+        let on = math::add(at, math::scale(out, run));
+        if end == 0 {
+            chain.insert(0, Curve::Line { start: on, end: at });
+        } else {
+            chain.push(Curve::Line { start: at, end: on });
+        }
+        if joined.is_some() {
+            // (The other sweep is the other side of the mitre.)
+            mitres.push((end, at, n, None));
+            continue;
+        }
+        // The return: the profile along it (in the direction the sweep runs)
+        // from behind the mitre to its length, its side of the mitre kept.
+        let (t, from) = if end == 0 {
+            (math::scale(r, -1.0), math::add(at, math::scale(r, length)))
+        } else {
+            (r, math::sub(at, math::scale(r, run)))
+        };
+        let Some(x) = math::normalize(math::cross(up, t)) else {
+            continue;
+        };
+        let y = math::cross(t, x);
+        let m = [
+            x[0], y[0], t[0], x[1], y[1], t[1], x[2], y[2], t[2], from[0], from[1], from[2],
+        ];
+        let placed: Vec<Vec<Curve>> = profile
+            .iter()
+            .map(|l| l.iter().map(|c| c.transformed(&m)).collect())
+            .collect();
+        let Ok(piece) = prism(&placed, t, run + length) else {
+            continue;
+        };
+        let piece = Item::Boolean {
+            op: BoolOp::Difference,
+            first: Box::new(piece),
+            second: Box::new(half_space(n, math::dot(n, at), true)),
+        };
+        mitres.push((end, at, n, Some(piece)));
+    }
+    (chain, mitres)
+}
+
+/// A chain with each run of lines that go straight on as one line
+/// (mitcad#385): two walls in line give a wall sweep a joint that is no
+/// corner, where the sweep would put an edge and a face of its own; a
+/// corner's mitre that reaches back past that joint (along a piece as
+/// short as the profile is wide) would leave that face with no area.
+fn joined_lines(chain: Vec<Curve>) -> Vec<Curve> {
+    let mut out: Vec<Curve> = Vec::with_capacity(chain.len());
+    for c in chain {
+        if let (Some(Curve::Line { start, end }), Curve::Line { start: s2, end: e2 }) =
+            (out.last_mut(), &c)
+        {
+            let (a, b) = (math::sub(*end, *start), math::sub(*e2, *s2));
+            let straight = math::length(math::sub(*end, *s2)) < 1e-9
+                && math::dot(a, b) > 0.0
+                && math::length(math::cross(a, b)) <= 1e-9 * math::length(a) * math::length(b);
+            if straight {
+                *end = *e2;
+                continue;
+            }
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Where openings break a wall sweep's path (mitcad#385): its pieces'
+/// starts (`end` 0) or ends (1) with another piece before or after them
+/// along it, apart from it; a piece of no length (the path's curves keep
+/// one where an opening's other side lies) counts touching.
+fn opening_ends(path: &[Curve], end: u8) -> Vec<P3> {
+    let tol = 1e-4;
+    let Some(first) = path.iter().find(|c| c.length() > 1e-6) else {
+        return Vec::new();
+    };
+    let d = math::sub(first.end(), first.start());
+    let Some(d) = math::normalize(d) else {
+        return Vec::new();
+    };
+    let at = |p: P3| math::dot(p, d);
+    let real: Vec<&Curve> = path.iter().filter(|c| c.length() > 1e-6).collect();
+    let points: Vec<P3> = path
+        .iter()
+        .filter(|c| c.length() <= 1e-6)
+        .map(Curve::start)
+        .collect();
+    real.iter()
+        .enumerate()
+        .filter_map(|(k, c)| {
+            let p = if end == 0 { c.start() } else { c.end() };
+            let other = real.iter().enumerate().any(|(j, q)| {
+                j != k
+                    && if end == 0 {
+                        at(q.end()) < at(p) - tol
+                    } else {
+                        at(q.start()) > at(p) + tol
+                    }
+            });
+            let point = points.iter().any(|q| {
+                if end == 0 {
+                    at(*q) <= at(p) + tol
+                } else {
+                    at(*q) >= at(p) - tol
+                }
+            });
+            (other || point).then_some(p)
+        })
+        .collect()
+}
+
+/// What meets a wall sweep's path's end (mitcad#385): its return (the
+/// angle it turns by, its length), or another sweep, leaving the end in a
+/// direction.
+#[derive(Debug, Clone, Copy)]
+enum EndAt {
+    Return { angle: f64, length: f64 },
+    Joined(P3),
+}
+
+/// How many elements deep a cutting sweep's own cuts are made.
+const CUT_DEPTH: usize = 8;
+
+/// Whether two items' boxes meet.
+fn boxes_meet(a: &Item, b: &Item) -> bool {
+    match (
+        crate::ifc::transform::bounds(a),
+        crate::ifc::transform::bounds(b),
+    ) {
+        (Some((lo, hi)), Some((l, h))) => (0..3).all(|k| l[k] <= hi[k] && h[k] >= lo[k]),
+        _ => true,
+    }
+}
+
+/// The solids an element cuts the pieces of another with (mitcad#385): a
+/// sweep's solids along its paths that reach one of the pieces (a cut by a
+/// solid that misses would fail), each less the solids of the elements
+/// that cut that sweep in turn (`depth` levels on: a coping cut by the
+/// coping it meets cuts the next one with what is left of it); another
+/// element's solid ([`tool`]).
+fn cutting_solids(
+    model: &Model,
+    id: i64,
+    pieces: &[&Item],
+    depth: usize,
+) -> Result<Vec<Item>, String> {
+    let b = &model.building;
+    let (Some(s), Some(e)) = (b.sweeps.get(&id), model.element(id)) else {
+        return tool(model, id).map(|t| vec![t]);
+    };
+    let p = sweep(model, e, s, false)?;
+    let mut out = Vec::new();
+    for mut solid in std::iter::once(p.solid).chain(p.more) {
+        if !pieces.iter().any(|piece| boxes_meet(piece, &solid)) {
+            continue;
+        }
+        if depth > 0 {
+            for other in &s.cut_by {
+                // (A cut of the cutter that does not read is left out.)
+                let Ok(tools) = cutting_solids(model, *other, &[&solid], depth - 1) else {
+                    continue;
+                };
+                for t in tools {
+                    solid = Item::Boolean {
+                        op: BoolOp::Difference,
+                        first: Box::new(solid),
+                        second: Box::new(t),
+                    };
+                }
+            }
+        }
+        out.push(solid);
+    }
+    Ok(out)
+}
+
+/// A curve as a piece of a path in model millimetres.
+fn seg_mm(c: &Curve) -> Seg {
+    match c {
+        Curve::Line { start, end } => Seg::Line {
+            start: mm(*start),
+            end: mm(*end),
+        },
+        Curve::Arc {
+            center,
+            x_axis,
+            y_axis,
+            radius,
+            start,
+            end,
+        } => Seg::Arc {
+            frame: math::from_axes(mm(*center), *x_axis, *y_axis, math::cross(*x_axis, *y_axis)),
+            radius: radius * FOOT_MM,
+            start: *start,
+            sweep: end - start,
+        },
+        Curve::Ellipse {
+            center,
+            x_axis,
+            y_axis,
+            rx,
+            ry,
+            start,
+            end,
+        } => Seg::Ellipse {
+            frame: math::from_axes(mm(*center), *x_axis, *y_axis, math::cross(*x_axis, *y_axis)),
+            a: rx * FOOT_MM,
+            b: ry * FOOT_MM,
+            start: *start,
+            sweep: end - start,
+        },
+        // (mitcad#385) Its rise along `x × y`, the frame's z.
+        Curve::Helix {
+            center,
+            x_axis,
+            y_axis,
+            z_axis,
+            radius,
+            rise,
+            start,
+            end,
+        } => {
+            let z = math::cross(*x_axis, *y_axis);
+            Seg::Helix {
+                frame: math::from_axes(mm(*center), *x_axis, *y_axis, z),
+                radius: radius * FOOT_MM,
+                pitch: rise * std::f64::consts::TAU * math::dot(*z_axis, z) * FOOT_MM,
+                start: *start,
+                sweep: end - start,
+            }
+        }
+    }
+}
+
+/// A profile (mm) swept along a helix (a spiral rail, mitcad#385): its ends
+/// cut by vertical planes through the helix's ends, square to it in plan,
+/// the helix running on past them as far as the profile, `reach` (mm) from
+/// it, can reach behind them. The profile's x lies across the helix,
+/// square to up.
+fn helical_rail(helix: Seg, profile: Profile, reach: f64) -> Result<Vec<Item>, String> {
+    let Seg::Helix {
+        frame,
+        radius,
+        pitch,
+        start,
+        sweep,
+    } = helix
+    else {
+        return Err("a path that is not a helix".into());
+    };
+    let up = [0.0, 0.0, 1.0];
+    let rise = pitch / std::f64::consts::TAU;
+    let speed = radius.hypot(rise);
+    let sign = sweep.signum();
+    let at = |t: f64| math::apply(&frame, [radius * t.cos(), radius * t.sin(), rise * t]);
+    let along = |t: f64| {
+        math::scale(
+            math::apply_vector(&frame, [-radius * t.sin(), radius * t.cos(), rise]),
+            sign / speed,
+        )
+    };
+    let level = |v: P3| math::normalize([v[0], v[1], 0.0]).ok_or("a helix that runs up its axis");
+    let (t0, t1) = (start, start + sweep);
+    let (n0, n1) = (level(along(t0))?, level(along(t1))?);
+    let slope = math::dot(along(t0), up).abs().min(1.0 - 1e-9);
+    let more = (reach * slope / (1.0 - slope * slope).sqrt() + 1.0) / speed;
+    let s0 = start - sign * more;
+    let x = math::normalize(math::cross(up, along(s0))).ok_or("a helix that runs up its axis")?;
+    let swept = Item::Sweep {
+        position: math::IDENTITY,
+        profile,
+        directrix: Path {
+            segments: vec![Seg::Helix {
+                frame,
+                radius,
+                pitch,
+                start: s0,
+                sweep: sweep + 2.0 * sign * more,
+            }],
+        },
+        reference: Some(x),
+    };
+    // Each cut only near its end, within a bar of the profile's reach about
+    // it, square to the plane: elsewhere the plane meets the helix's other
+    // turns.
+    let (wide, high) = (reach + 10.0, reach / (1.0 - slope * slope).sqrt() + 10.0);
+    let cut = |solid: Item, n: P3, p: P3, below: bool| {
+        let across = math::normalize(math::cross(up, n)).unwrap_or([1.0, 0.0, 0.0]);
+        let plane = math::from_axes(p, across, up, n);
+        Item::Boolean {
+            op: BoolOp::Difference,
+            first: Box::new(solid),
+            second: Box::new(Item::HalfSpace {
+                plane,
+                below,
+                boundary: Some((
+                    plane,
+                    polygon(&[[-wide, -high], [wide, -high], [wide, high], [-wide, high]]),
+                )),
+            }),
+        }
+    };
+    Ok(vec![cut(cut(swept, n0, at(t0), true), n1, at(t1), false)])
+}
+
+/// The helices of a chain as one helix (mitcad#385): each continuing the
+/// one before it about the same axis, at the same radius and pitch (a
+/// spiral rail's path, kept in pieces), within 0.01 mm.
+fn one_helix(chain: &[Curve]) -> Result<Seg, String> {
+    let segs: Vec<Seg> = chain.iter().map(seg_mm).collect();
+    let Some(Seg::Helix {
+        frame,
+        radius,
+        pitch,
+        start,
+        sweep,
+    }) = segs.first().cloned()
+    else {
+        return Err("a path that is not a helix".into());
+    };
+    let tau = std::f64::consts::TAU;
+    let (first, mut last) = (start, start + sweep);
+    let o = math::origin(&frame);
+    let (x, y, z) = (
+        math::column(&frame, 0),
+        math::column(&frame, 1),
+        math::column(&frame, 2),
+    );
+    let tolerance = 0.01;
+    for s in &segs[1..] {
+        let Seg::Helix {
+            frame: f,
+            radius: r,
+            pitch: p,
+            start: s0,
+            sweep: sw,
+        } = s
+        else {
+            return Err("a path of helices and other curves".into());
+        };
+        // Its angles in the first one's frame: turned by the angle of its x
+        // axis there (the other way round about a reversed axis), and by
+        // the whole turns its height on the axis gives. (A helix keeps its
+        // rise per turn about either way of its axis.)
+        let (fz, fo) = (math::column(f, 2), math::origin(f));
+        let same_way = math::dot(fz, z);
+        let height = math::dot(math::sub(fo, o), z);
+        let off_axis = math::length(math::sub(math::sub(fo, o), math::scale(z, height)));
+        if (same_way.abs() - 1.0).abs() > 1e-9
+            || off_axis > tolerance
+            || (r - radius).abs() > tolerance
+        {
+            return Err("a path of helices of other axes or radii".into());
+        }
+        if (p - pitch).abs() > tolerance {
+            return Err("a path of helices of other pitches".into());
+        }
+        let fx = math::column(f, 0);
+        let phi = math::dot(fx, y).atan2(math::dot(fx, x));
+        let k = ((height * tau / pitch - phi) / tau).round();
+        let to_first = |t: f64| phi + same_way.signum() * t + k * tau;
+        let (a, b) = (to_first(*s0), to_first(s0 + sw));
+        let at = |t: f64| {
+            math::add(
+                math::add(o, math::scale(x, radius * t.cos())),
+                math::add(
+                    math::scale(y, radius * t.sin()),
+                    math::scale(z, pitch * t / tau),
+                ),
+            )
+        };
+        if math::length(math::sub(at(a), s.start())) > tolerance
+            || math::length(math::sub(at(b), s.end())) > tolerance
+            || (a - last).abs() * radius > tolerance
+            || (b - a) * sweep <= 0.0
+        {
+            return Err("a path of helices that do not continue each other".into());
+        }
+        last = b;
+    }
+    Ok(Seg::Helix {
+        frame,
+        radius,
+        pitch,
+        start: first,
+        sweep: last - first,
+    })
+}
+
+/// A loop of the two halves of one ellipse (an elliptical handrail's
+/// profile) as the whole ellipse: one closed edge to sweep, no seams.
+fn whole_ellipse(path: Path) -> Path {
+    if let [
+        Seg::Ellipse {
+            frame,
+            a,
+            b,
+            start,
+            sweep,
+        },
+        Seg::Ellipse {
+            frame: f2,
+            a: a2,
+            b: b2,
+            sweep: s2,
+            ..
+        },
+    ] = path.segments.as_slice()
+        && frame == f2
+        && a == a2
+        && b == b2
+        && ((sweep + s2).abs() - std::f64::consts::TAU).abs() < 1e-9
+    {
+        return Path {
+            segments: vec![Seg::Ellipse {
+                frame: *frame,
+                a: *a,
+                b: *b,
+                start: *start,
+                sweep: sweep + s2,
+            }],
+        };
+    }
+    path
+}
+
+/// The normal of the plane a chain lies in, if it lies in one and is not
+/// straight.
+fn chain_normal(chain: &[Curve]) -> Option<P3> {
+    let path = Path {
+        segments: chain.iter().map(seg_mm).collect(),
+    };
+    let size = path
+        .segments
+        .iter()
+        .flat_map(|s| s.sample(2))
+        .map(math::length)
+        .fold(1.0, f64::max);
+    path.plane((size * 1e-9).max(1e-6))
+        .map(|p| math::column(&p, 2))
+}
+
+/// One solid of a profile along a chain of curves (mitcad#340): a straight
+/// chain as one extrusion of its whole length, a planar one (lines and
+/// arcs) as one sweep of the profile (its x along `x0`, across the
+/// chain's start square to its up direction, its y up), a chain that is not planar (a rail
+/// up a stair) as an extrusion along each of its lines (`prisms`: the
+/// profile placed at each line's start, its direction and length).
+fn along_chain(
+    chain: &[Curve],
+    profile: &[Vec<Curve>],
+    x0: P3,
+    prisms: Vec<(Vec<Vec<Curve>>, P3, f64)>,
+) -> Result<Vec<Item>, String> {
+    // A chain of helices (a spiral rail, mitcad#385): one sweep along the
+    // helix they make.
+    if chain.iter().any(|c| matches!(c, Curve::Helix { .. })) {
+        let paths: Vec<Path> = profile
+            .iter()
+            .map(|l| {
+                loop_path(l, 1e-4)
+                    .map(whole_ellipse)
+                    .ok_or("a profile loop that does not close")
+            })
+            .collect::<Result<_, _>>()?;
+        let reach = profile
+            .iter()
+            .flatten()
+            .flat_map(|c| (0..=16).map(move |k| c.at(f64::from(k) / 16.0)))
+            .map(|p| math::length(p) * FOOT_MM)
+            .fold(0.0, f64::max);
+        return helical_rail(one_helix(chain)?, profile_mm(areas(paths)), reach);
+    }
+    // A closed chain starts in the middle of its first line, not at a
+    // corner, where the profile would stand across a mitre.
+    let mut segments: Vec<Seg> = chain.iter().map(seg_mm).collect();
+    let closed = math::length(math::sub(chain[0].start(), chain[chain.len() - 1].end())) < 1e-4;
+    if let (true, Some(Seg::Line { start, end })) = (closed && chain.len() > 1, segments.first()) {
+        let (start, end) = (*start, *end);
+        let middle = math::scale(math::add(start, end), 0.5);
+        segments[0] = Seg::Line { start: middle, end };
+        segments.push(Seg::Line { start, end: middle });
+    }
+    let directrix = Path { segments };
+    let first = prisms.first().ok_or("a path of no length")?;
+    let straight = chain.iter().all(|c| matches!(c, Curve::Line { .. }))
+        && prisms
+            .iter()
+            .all(|(_, t, _)| math::length(math::cross(*t, first.1)) < 1e-9);
+    if straight {
+        let start = chain[0].start();
+        let end = chain[chain.len() - 1].end();
+        return Ok(vec![prism(
+            &first.0,
+            first.1,
+            math::length(math::sub(end, start)),
+        )?]);
+    }
+    let size = directrix
+        .segments
+        .iter()
+        .flat_map(|s| s.sample(2))
+        .map(math::length)
+        .fold(1.0, f64::max);
+    if directrix.plane((size * 1e-9).max(1e-6)).is_none() {
+        return prisms
+            .into_iter()
+            .map(|(placed, t, length)| prism(&placed, t, length))
+            .collect();
+    }
+    let paths: Vec<Path> = profile
+        .iter()
+        .map(|l| {
+            loop_path(l, 1e-4)
+                .map(whole_ellipse)
+                .ok_or("a profile loop that does not close")
+        })
+        .collect::<Result<_, _>>()?;
+    Ok(vec![Item::Sweep {
+        position: math::IDENTITY,
+        profile: profile_mm(areas(paths)),
+        directrix,
+        reference: Some(x0),
+    }])
 }
 
 /// A profile family type's closed loops (feet, the family's xy plane), the
 /// largest first (mitcad#333).
 fn profile_loops(model: &Model, symbol: i64) -> Result<Vec<Vec<Curve>>, String> {
-    let family = model
-        .element(symbol)
-        .and_then(|p| p.family_id)
-        .ok_or("its profile's family is not read")?;
-    let curves = model
-        .profiles
-        .get(&family)
-        .ok_or("its profile family's document gives no profile")?;
+    // The type's own profile (its dimensions), else its family's document's
+    // curves (the family's own dimensions, mitcad#340).
+    let own: Vec<Curve> = model
+        .building
+        .symbols
+        .get(&symbol)
+        .map(|s| s.profile_loops.concat())
+        .unwrap_or_default();
+    let curves = if own.is_empty() {
+        let family = model
+            .element(symbol)
+            .and_then(|p| p.family_id)
+            .ok_or("its profile's family is not read")?;
+        model
+            .profiles
+            .get(&family)
+            .ok_or("its profile family's document gives no profile")?
+    } else {
+        &own
+    };
     let mut loops: Vec<(f64, Vec<Curve>)> = split_loops(curves, 1e-6)
         .into_iter()
         .filter_map(|g| {
@@ -1712,6 +3561,8 @@ fn custom_mullion(
         solid,
         cuts: Vec::new(),
         more: Vec::new(),
+        attached: Vec::new(),
+        openings: Vec::new(),
         notes: vec![format!(
             "a mullion of a custom profile ({} loops)",
             profile.len()
@@ -1755,6 +3606,261 @@ mod tests {
         (model, e)
     }
 
+    /// A wall's solid taken apart: its prism's bottom and depth (mm) and
+    /// the half spaces cut from it (their planes, mm, and whether below).
+    fn prism_and_cuts(item: &Item) -> (f64, f64, Vec<(Matrix, bool)>) {
+        match item {
+            Item::Extrusion {
+                position, depth, ..
+            } => (math::origin(position)[2], *depth, Vec::new()),
+            Item::Boolean {
+                op: BoolOp::Difference,
+                first,
+                second,
+            } => {
+                let (z, d, mut cuts) = prism_and_cuts(first);
+                match second.as_ref() {
+                    Item::HalfSpace { plane, below, .. } => cuts.push((*plane, *below)),
+                    other => panic!("{other:?}"),
+                }
+                (z, d, cuts)
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// The top (feet) a wall's cuts leave at a point: the lowest of the
+    /// planes whose upper side is cut away.
+    fn top_at(cuts: &[(Matrix, bool)], x: f64, y: f64) -> f64 {
+        cuts.iter()
+            .filter(|(_, below)| !below)
+            .map(|(plane, _)| {
+                let n = math::column(plane, 2);
+                let o = math::dot(n, math::origin(plane));
+                (o - n[0] * x * FOOT_MM - n[1] * y * FOOT_MM) / n[2] / FOOT_MM
+            })
+            .fold(f64::INFINITY, f64::min)
+    }
+
+    #[test]
+    fn a_wall_attached_to_a_gable_roof_ends_under_both_slopes() {
+        // mitcad#348: the house's gable wall runs from its base to above
+        // the ridge and loses what lies above either slope's lower surface:
+        // its top rises from the eaves to the ridge under both slopes.
+        use mitcad_rvt::testfile::building as t;
+        let file = mitcad_rvt::RvtFile::parse(t::house()).unwrap();
+        let schema = file.schema().unwrap();
+        let model = Model::read(&file, &schema).unwrap();
+        let wall = model.element(t::WALL_C).unwrap();
+        let p = plan(&model, wall).unwrap();
+        assert!(
+            p.notes
+                .iter()
+                .any(|n| n == "its top follows roof 44's lower surface (2 slopes)"),
+            "{:?}",
+            p.notes
+        );
+        assert_eq!(p.attached, vec!["its top attached to 44"]);
+        let (bottom, depth, cuts) = prism_and_cuts(&p.solid);
+        assert!(bottom.abs() < 1e-9, "{bottom}");
+        assert!(depth > (t::HEIGHT + 6.0 * t::ROOF_PITCH) * FOOT_MM);
+        assert_eq!(cuts.len(), 2);
+        // Under the first slope, the second, and at the ridge.
+        let rise = t::ROOF_PITCH;
+        for (y, top) in [
+            (0.0, t::HEIGHT),
+            (3.0, t::HEIGHT + 3.0 * rise),
+            (6.0, t::HEIGHT + 6.0 * rise),
+            (9.0, t::HEIGHT + 3.0 * rise),
+            (12.0, t::HEIGHT),
+        ] {
+            let at = top_at(&cuts, 20.0, y);
+            assert!((at - top).abs() < 1e-6, "y {y}: {at} (not {top})");
+        }
+        // The walls that are not attached keep their heights.
+        let a = plan(&model, model.element(t::WALL_A).unwrap()).unwrap();
+        assert!(a.attached.is_empty());
+        let (bottom, depth, cuts) = prism_and_cuts(&a.solid);
+        assert!(cuts.is_empty() && bottom.abs() < 1e-9);
+        assert!((depth - t::HEIGHT * FOOT_MM).abs() < 1e-6);
+    }
+
+    #[test]
+    fn an_attachment_that_is_not_applied_says_why() {
+        // mitcad#348: a top attached to what the import does not read (a
+        // face roof, an element missing) stays at the wall's own height,
+        // with the attachment named.
+        use mitcad_rvt::testfile::building as t;
+        let file = mitcad_rvt::RvtFile::parse(t::house()).unwrap();
+        let schema = file.schema().unwrap();
+        let mut model = Model::read(&file, &schema).unwrap();
+        model
+            .building
+            .walls
+            .get_mut(&t::WALL_C)
+            .unwrap()
+            .attachments[0]
+            .elements = vec![999];
+        let p = plan(&model, model.element(t::WALL_C).unwrap()).unwrap();
+        assert!(
+            p.notes.iter().any(|n| n
+                == "its top's attachment to 999 is not applied: element 999 is no roof, floor, \
+                    ceiling or reference plane read"),
+            "{:?}",
+            p.notes
+        );
+        assert_eq!(p.attached, vec!["its top attached to 999"]);
+        let (_, depth, cuts) = prism_and_cuts(&p.solid);
+        assert!(cuts.is_empty());
+        assert!((depth - t::HEIGHT * FOOT_MM).abs() < 1e-6);
+    }
+
+    /// The house's model (mitcad#345, mitcad#348).
+    fn house() -> Model {
+        use mitcad_rvt::testfile::building as t;
+        let file = mitcad_rvt::RvtFile::parse(t::house()).unwrap();
+        let schema = file.schema().unwrap();
+        Model::read(&file, &schema).unwrap()
+    }
+
+    /// A cut's box (feet).
+    fn tool_box(item: &Item) -> ([f64; 3], [f64; 3]) {
+        let (lo, hi) = crate::ifc::transform::bounds(item).unwrap();
+        (lo.map(|v| v / FOOT_MM), hi.map(|v| v / FOOT_MM))
+    }
+
+    #[test]
+    fn a_door_cuts_its_opening_through_its_wall() {
+        // mitcad#345: the house's door, its type's cut loop at its
+        // transform, through the gable wall across it.
+        use mitcad_rvt::testfile::building as t;
+        let model = house();
+        let p = plan(&model, model.element(t::WALL_C).unwrap()).unwrap();
+        assert_eq!(
+            p.openings,
+            vec![WallOpening {
+                id: t::DOOR,
+                label: format!("insert {}", t::DOOR),
+                missing: None,
+            }]
+        );
+        let door: Vec<&Item> = p
+            .cuts
+            .iter()
+            .filter(|(what, _)| *what == format!("insert {}", t::DOOR))
+            .map(|(_, tool)| tool)
+            .collect();
+        assert_eq!(door.len(), 1);
+        let (lo, hi) = tool_box(door[0]);
+        let near = |a: f64, b: f64| (a - b).abs() < 1e-6;
+        assert!(near(lo[1], 1.5) && near(hi[1], 4.5), "{lo:?} {hi:?}");
+        assert!(
+            near(lo[2], 0.0) && near(hi[2], t::DOOR_HEIGHT),
+            "{lo:?} {hi:?}"
+        );
+        // Through the wall's width (x from 19.75 to 20.25) and beyond.
+        assert!(lo[0] < 19.75 && hi[0] > 20.25, "{lo:?} {hi:?}");
+    }
+
+    #[test]
+    fn an_insert_type_without_cut_loops_cuts_by_its_void_geometry_or_says_why() {
+        // mitcad#345: the house's window type has neither cut loops nor
+        // void geometry: wall B lists it with the reason. Given a void (a
+        // unit cube in the type's coordinates), the window cuts by it.
+        use mitcad_rvt::testfile::building as t;
+        let mut model = house();
+        let wall = model.element(t::WALL_B).unwrap().clone();
+        let p = plan(&model, &wall).unwrap();
+        let why = "its type has neither cut loops nor void geometry";
+        assert_eq!(
+            p.openings,
+            vec![WallOpening {
+                id: t::WINDOW,
+                label: format!("insert {}", t::WINDOW),
+                missing: Some(why.into()),
+            }]
+        );
+        assert!(
+            p.notes
+                .iter()
+                .any(|n| *n == format!("insert {} is not cut: {why}", t::WINDOW)),
+            "{:?}",
+            p.notes
+        );
+        assert!(p.cuts.is_empty());
+        model
+            .building
+            .symbols
+            .get_mut(&t::WINDOW_TYPE)
+            .unwrap()
+            .cut_solids = vec![crate::rvt::geometry::tests::cube()];
+        let p = plan(&model, &wall).unwrap();
+        assert_eq!(p.openings[0].missing, None);
+        assert!(
+            p.notes
+                .iter()
+                .any(|n| *n == format!("insert {} is cut by its type's void geometry", t::WINDOW)),
+            "{:?}",
+            p.notes
+        );
+        let [(_, tool)] = p.cuts.as_slice() else {
+            panic!("{:?}", p.cuts);
+        };
+        match tool {
+            Item::Faceted { faces, closed } => assert!(*closed && faces.len() == 12),
+            other => panic!("{other:?}"),
+        }
+        // The cube at the window's transform: x from -1 to 0 (its y turned
+        // onto -x), y from 6 to 7, z from 3 to 4.
+        let pts: Vec<[f64; 3]> = match tool {
+            Item::Faceted { faces, .. } => faces.iter().flatten().flatten().copied().collect(),
+            _ => unreachable!(),
+        };
+        let lo: Vec<f64> = (0..3)
+            .map(|k| pts.iter().map(|p| p[k]).fold(f64::INFINITY, f64::min) / FOOT_MM)
+            .collect();
+        let hi: Vec<f64> = (0..3)
+            .map(|k| pts.iter().map(|p| p[k]).fold(f64::NEG_INFINITY, f64::max) / FOOT_MM)
+            .collect();
+        let near = |a: f64, b: f64| (a - b).abs() < 1e-6;
+        assert!(near(lo[0], -1.0) && near(hi[0], 0.0), "{lo:?} {hi:?}");
+        assert!(near(lo[1], 6.0) && near(hi[1], 7.0), "{lo:?} {hi:?}");
+        assert!(near(lo[2], 3.0) && near(hi[2], 4.0), "{lo:?} {hi:?}");
+    }
+
+    #[test]
+    fn a_rectangular_wall_opening_cuts_through_its_wall() {
+        // mitcad#345: an opening element's rectangle between its corners.
+        use mitcad_rvt::testfile::building as t;
+        let mut model = house();
+        model.building.openings.insert(
+            77,
+            building::Opening {
+                id: 77,
+                class: "SWallRectOpening".into(),
+                host: Some(t::WALL_A),
+                loops: Vec::new(),
+                corners: Some([[8.0, 0.0, 4.0], [5.0, 0.0, 1.0]]),
+                base: None,
+                top: None,
+            },
+        );
+        let p = plan(&model, model.element(t::WALL_A).unwrap()).unwrap();
+        assert_eq!(
+            p.openings,
+            vec![WallOpening {
+                id: 77,
+                label: "opening 77".into(),
+                missing: None,
+            }]
+        );
+        let (lo, hi) = tool_box(&p.cuts[0].1);
+        let near = |a: f64, b: f64| (a - b).abs() < 1e-6;
+        assert!(near(lo[0], 5.0) && near(hi[0], 8.0), "{lo:?} {hi:?}");
+        assert!(near(lo[2], 1.0) && near(hi[2], 4.0), "{lo:?} {hi:?}");
+        assert!(lo[1] < -0.25 && hi[1] > 0.25, "{lo:?} {hi:?}");
+    }
+
     #[test]
     fn a_rectangular_mullion_along_its_path() {
         let m = MullionSym {
@@ -1770,6 +3876,9 @@ mod tests {
             }),
             normal: [0.0, 1.0, 0.0],
             flags: 4,
+            legs: [0.0; 2],
+            corner_angles: [0.0; 2],
+            trims: Vec::new(),
         };
         let (model, e) = with_symbol(Symbol {
             id: 1,
@@ -1785,6 +3894,72 @@ mod tests {
         // Along -z from the instance's origin.
         assert!((math::column(&position, 2)[2] + 1.0).abs() < 1e-9);
         assert!((math::origin(&position)[0] - 10.0 * FOOT_MM).abs() < 0.5 * FOOT_MM);
+    }
+
+    #[test]
+    fn a_trimmed_mullion_s_end_cut_along_its_stored_end_face() {
+        use mitcad_rvt::brep::{Face, GRep, Solid, Surface};
+        // (mitcad#385) A border mullion (x from -0.2 to 0) along -z, its
+        // start trimmed to a neighbour: its stored body's start face runs
+        // through (0, 0, -0.2) and (-0.2, 0, -0.4); its end is square at
+        // the path's end; a face without loops (the untrimmed start's
+        // plane) and the sides bound nothing at its ends.
+        let mut m = rect_mullion([0.1, 0.1], 4);
+        m.trims.push(building::MullionTrim {
+            end: 0,
+            path: line([-1.0, 0.0, 0.03], [0.0, 0.0, 0.0]),
+            flags: 3,
+            neighbour: Some(5),
+            normal: [0.0; 3],
+        });
+        let (mut model, e) = with_symbol(Symbol {
+            id: 1,
+            mullion: Some(m),
+            ..Symbol::default()
+        });
+        let s = std::f64::consts::FRAC_1_SQRT_2;
+        let face = |origin: P3, x: P3, y: P3, loops: bool| Face {
+            surface: Surface::Plane { origin, x, y },
+            loops: if loops {
+                vec![vec![(0, 0)]]
+            } else {
+                Vec::new()
+            },
+            material: None,
+        };
+        let solid = Solid {
+            faces: vec![
+                face([0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], false),
+                face([0.0, 0.0, -0.2], [s, 0.0, s], [0.0, 1.0, 0.0], true),
+                face([0.0, 0.0, -8.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], true),
+                face([0.0; 3], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0], true),
+            ],
+            edges: Vec::new(),
+        };
+        model.geometry.insert(
+            1,
+            GRep {
+                solids: vec![solid],
+                ..GRep::default()
+            },
+        );
+        let p = plan(&model, &e).unwrap();
+        assert!(p.notes.iter().any(|n| n.contains("stored end faces")));
+        let (z, depth, cuts) = prism_and_cuts(&p.solid);
+        // The prism reaches its widest side (0.4) past the cut start.
+        assert!((z - 0.4 * FOOT_MM).abs() < 1e-9, "{z}");
+        assert!((depth - 8.4 * FOOT_MM).abs() < 1e-9, "{depth}");
+        let [(plane, below)] = cuts.as_slice() else {
+            panic!("{cuts:?}")
+        };
+        assert!(!below);
+        // Its normal points out of the mullion, up and to -x.
+        let n = math::column(plane, 2);
+        assert!((n[0] + s).abs() < 1e-9 && (n[2] - s).abs() < 1e-9, "{n:?}");
+        // (Moved 10 ft along x by the instance.)
+        let o = math::origin(plane);
+        let at = [10.0 * FOOT_MM, 0.0, -0.2 * FOOT_MM];
+        assert!(math::dot(math::sub(o, at), n).abs() < 1e-6);
     }
 
     #[test]
@@ -1842,6 +4017,8 @@ mod tests {
                 end: [2.0, 4.0, 0.0],
             }),
             support: None,
+            spiral: false,
+            layout: None,
         };
         model.building.stair_runs.insert(5, run);
         model.building.run_types.insert(9, (false, 0.0));
@@ -1852,7 +4029,7 @@ mod tests {
                 tread: Some(0.1),
                 riser: Some(0.05),
                 nosing: 0.1,
-                thickness: 0.0,
+                ..StairParts::default()
             },
         );
         let e = Element {
@@ -1889,53 +4066,394 @@ mod tests {
         assert!((math::origin(&position)[2] - 3.0 * FOOT_MM).abs() < 1e-9);
     }
 
-    #[test]
-    fn a_profile_along_a_bent_path() {
-        // A 0.2 × 0.1 profile along an L of two lines: a body per line,
-        // the profile's mirror image the one that fits the stored box.
-        let mut model = Model::default();
-        let profile = polyline(&[
-            [0.0, 0.0, 0.0],
-            [0.2, 0.0, 0.0],
-            [0.2, 0.1, 0.0],
-            [0.0, 0.1, 0.0],
-        ]);
-        model.profiles.insert(70, profile);
+    /// A profile type (71, of family 70) whose family's document draws a
+    /// 0.2 × 0.1 rectangle while the type's own loops are 0.4 × 0.1.
+    fn profile_type(model: &mut Model) {
+        let rect = |w: f64| {
+            polyline(&[
+                [0.0, 0.0, 0.0],
+                [w, 0.0, 0.0],
+                [w, 0.1, 0.0],
+                [0.0, 0.1, 0.0],
+            ])
+        };
+        model.profiles.insert(70, rect(0.2));
         model.elements.push(Element {
             id: 71,
             family_id: Some(70),
             is_type: true,
             ..Element::default()
         });
-        let s = building::Sweep {
+        model.building.symbols.insert(
+            71,
+            Symbol {
+                id: 71,
+                profile_loops: vec![rect(0.4)],
+                ..Symbol::default()
+            },
+        );
+    }
+
+    fn sweep_of(paths: Vec<Vec<Curve>>, sides: Vec<u32>, flipped: bool) -> building::Sweep {
+        building::Sweep {
             id: 72,
-            class: "SweepHost".into(),
-            paths: vec![vec![
-                Curve::Line {
-                    start: [0.0, 0.0, 0.0],
-                    end: [5.0, 0.0, 0.0],
-                },
-                Curve::Line {
-                    start: [5.0, 0.0, 0.0],
-                    end: [5.0, 5.0, 0.0],
-                },
-            ]],
+            class: if sides.is_empty() {
+                "SweepHost"
+            } else {
+                "WallSweep"
+            }
+            .into(),
+            paths,
+            sides,
             path3d: None,
             profile: Some(71),
             type_id: None,
             up: Some([0.0, 0.0, 1.0]),
             offsets: [0.0, 0.0],
-            flipped: false,
+            flipped,
             host: None,
-        };
+            cut_by: Vec::new(),
+            returns: Vec::new(),
+            joined: Vec::new(),
+        }
+    }
+
+    fn line(start: P3, end: P3) -> Curve {
+        Curve::Line { start, end }
+    }
+
+    #[test]
+    fn a_profile_along_a_bent_path() {
+        // The type's 0.4 × 0.1 profile along an L of two lines: one sweep
+        // (mitcad#340), the profile's x across the first line, the mirror
+        // image that fits the stored box.
+        let mut model = Model::default();
+        profile_type(&mut model);
+        let s = sweep_of(
+            vec![vec![
+                line([0.0, 0.0, 0.0], [5.0, 0.0, 0.0]),
+                line([5.0, 0.0, 0.0], [5.0, 5.0, 0.0]),
+            ]],
+            Vec::new(),
+            false,
+        );
         model.building.sweeps.insert(72, s);
         let e = Element {
             id: 72,
-            bbox: Some([-0.2, -0.2, 0.0, 5.2, 5.0, 0.1]),
+            bbox: Some([-0.4, -0.4, 0.0, 5.4, 5.0, 0.1]),
             ..Element::default()
         };
         assert_eq!(kind_of(&model, &e), Some("sweep"));
         let p = plan(&model, &e).unwrap();
+        assert!(p.more.is_empty());
+        let Item::Sweep {
+            profile,
+            directrix,
+            reference,
+            ..
+        } = &p.solid
+        else {
+            panic!("{:?}", p.solid);
+        };
+        assert_eq!(directrix.segments.len(), 2);
+        let r = reference.unwrap();
+        assert!(
+            r[0].abs() < 1e-9 && (r[1].abs() - 1.0).abs() < 1e-9,
+            "{r:?}"
+        );
+        let pts: Vec<[f64; 3]> = profile.areas[0]
+            .outer
+            .segments
+            .iter()
+            .map(|s| s.start())
+            .collect();
+        let width = pts.iter().map(|p| p[0]).fold(f64::NEG_INFINITY, f64::max)
+            - pts.iter().map(|p| p[0]).fold(f64::INFINITY, f64::min);
+        assert!((width - 0.4 * FOOT_MM).abs() < 1e-6, "{width}");
+    }
+
+    #[test]
+    fn a_wall_sweep_lies_on_its_steps_sides() {
+        // Two straight paths along +x, one on side 0 (the profile's x to
+        // the left, +y), one on side 1 (mirrored, -y), flipped: below.
+        let mut model = Model::default();
+        profile_type(&mut model);
+        let s = sweep_of(
+            vec![
+                vec![line([0.0, 0.0, 1.0], [5.0, 0.0, 1.0])],
+                vec![line([0.0, 10.0, 1.0], [5.0, 10.0, 1.0])],
+            ],
+            vec![0, 1],
+            true,
+        );
+        model.building.sweeps.insert(72, s);
+        let e = Element {
+            id: 72,
+            ..Element::default()
+        };
+        let p = plan(&model, &e).unwrap();
         assert_eq!(p.more.len(), 1);
+        let ft = |v: f64| v / FOOT_MM;
+        let (lo, hi) = crate::ifc::transform::bounds(&p.solid).unwrap();
+        assert!(ft(lo[1]).abs() < 1e-9 && (ft(hi[1]) - 0.4).abs() < 1e-9);
+        assert!((ft(lo[2]) - 0.9).abs() < 1e-9 && (ft(hi[2]) - 1.0).abs() < 1e-9);
+        let (lo, hi) = crate::ifc::transform::bounds(&p.more[0]).unwrap();
+        assert!((ft(lo[1]) - 9.6).abs() < 1e-9 && (ft(hi[1]) - 10.0).abs() < 1e-9);
+        assert!((ft(lo[2]) - 0.9).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_wall_sweep_s_return_of_no_length_closes_its_corner() {
+        // (mitcad#385) A path along +x, the profile (0.4 wide) on its left
+        // (+y); a return at its end of a quarter turn and no length turns
+        // away from the profile (-y): the sweep runs on 0.8 past the end and
+        // is cut at the mitre x - 5 = y, the return's piece (along -y, from
+        // 0.8 behind the end) keeps the other side.
+        let mut model = Model::default();
+        profile_type(&mut model);
+        let mut s = sweep_of(
+            vec![vec![line([0.0, 0.0, 1.0], [5.0, 0.0, 1.0])]],
+            vec![0],
+            false,
+        );
+        s.returns.push(building::SweepReturn {
+            path: 0,
+            end: 1,
+            at_opening: false,
+            angle: std::f64::consts::FRAC_PI_2,
+            length: 0.0,
+        });
+        model.building.sweeps.insert(72, s);
+        let e = Element {
+            id: 72,
+            ..Element::default()
+        };
+        let p = plan(&model, &e).unwrap();
+        let Item::Boolean {
+            op: BoolOp::Union,
+            first,
+            second,
+        } = &p.solid
+        else {
+            panic!("{:?}", p.solid)
+        };
+        let ft = |v: f64| v / FOOT_MM;
+        let s = std::f64::consts::FRAC_1_SQRT_2;
+        let (_, depth, cuts) = prism_and_cuts(first);
+        assert!((ft(depth) - 5.8).abs() < 1e-9, "{depth}");
+        let [(plane, false)] = cuts.as_slice() else {
+            panic!("{cuts:?}")
+        };
+        let n = math::column(plane, 2);
+        assert!((n[0] - s).abs() < 1e-9 && (n[1] + s).abs() < 1e-9, "{n:?}");
+        let (_, depth, cuts) = prism_and_cuts(second);
+        assert!((ft(depth) - 0.8).abs() < 1e-9, "{depth}");
+        assert!(matches!(cuts.as_slice(), [(_, true)]), "{cuts:?}");
+        let (lo, hi) = crate::ifc::transform::bounds(second).unwrap();
+        assert!((ft(lo[0]) - 5.0).abs() < 1e-9 && (ft(hi[0]) - 5.4).abs() < 1e-9);
+        assert!(ft(lo[1]).abs() < 1e-9 && (ft(hi[1]) - 0.8).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_sweep_s_ends_meet_another_sweep_s_in_a_mitre() {
+        // (mitcad#385) Two sweeps' paths meet at (5, 0) at right angles,
+        // the first's end joined to the second: it is cut along the
+        // bisector, no piece added.
+        let mut model = Model::default();
+        profile_type(&mut model);
+        let mut s = sweep_of(
+            vec![vec![line([0.0, 0.0, 1.0], [5.0, 0.0, 1.0])]],
+            vec![0],
+            false,
+        );
+        s.joined.push((0, 1, 73));
+        model.building.sweeps.insert(72, s);
+        let mut other = sweep_of(
+            vec![vec![line([5.0, 0.0, 1.0], [5.0, 4.0, 1.0])]],
+            vec![0],
+            false,
+        );
+        other.id = 73;
+        model.building.sweeps.insert(73, other);
+        let e = Element {
+            id: 72,
+            ..Element::default()
+        };
+        let p = plan(&model, &e).unwrap();
+        let (_, depth, cuts) = prism_and_cuts(&p.solid);
+        assert!((depth / FOOT_MM - 5.8).abs() < 1e-9, "{depth}");
+        let [(plane, false)] = cuts.as_slice() else {
+            panic!("{cuts:?}")
+        };
+        // Out of the first along x + y.
+        let n = math::column(plane, 2);
+        let s = std::f64::consts::FRAC_1_SQRT_2;
+        assert!((n[0] - s).abs() < 1e-9 && (n[1] - s).abs() < 1e-9, "{n:?}");
+    }
+
+    #[test]
+    fn lines_straight_on_are_one_line_and_openings_break_paths() {
+        let joined = joined_lines(vec![
+            line([0.0; 3], [1.0, 0.0, 0.0]),
+            line([1.0, 0.0, 0.0], [3.0, 0.0, 0.0]),
+            line([3.0, 0.0, 0.0], [3.0, 1.0, 0.0]),
+        ]);
+        assert_eq!(
+            joined,
+            vec![
+                line([0.0; 3], [3.0, 0.0, 0.0]),
+                line([3.0, 0.0, 0.0], [3.0, 1.0, 0.0])
+            ]
+        );
+        // Two pieces with a gap from 2 to 5, and a curve of no length at
+        // 9 (an opening's far side past the second piece's end).
+        let path = vec![
+            line([5.0, 0.0, 0.0], [7.0, 0.0, 0.0]),
+            line([0.0; 3], [2.0, 0.0, 0.0]),
+            line([9.0, 0.0, 0.0], [9.0, 0.0, 0.0]),
+        ];
+        assert_eq!(opening_ends(&path, 0), vec![[5.0, 0.0, 0.0]]);
+        assert_eq!(
+            opening_ends(&path, 1),
+            vec![[7.0, 0.0, 0.0], [2.0, 0.0, 0.0]]
+        );
+    }
+
+    fn rect_mullion(widths: [f64; 2], flags: u64) -> MullionSym {
+        MullionSym {
+            profile: "SysRectMullionProfile".into(),
+            depths: [0.0; 2],
+            profile_id: None,
+            widths,
+            thickness: 0.4,
+            offset: 0.0,
+            path: Some(line([0.0, 0.0, 0.0], [0.0, 0.0, -8.0])),
+            normal: [0.0, 1.0, 0.0],
+            flags,
+            legs: [0.0; 2],
+            corner_angles: [0.0; 2],
+            trims: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn an_off_centre_mullion_s_widths() {
+        // (-1007300 towards normal × path: here -x.)
+        let (model, e) = with_symbol(Symbol {
+            id: 1,
+            mullion: Some(rect_mullion([0.1, 0.3], 0)),
+            ..Symbol::default()
+        });
+        let p = plan(&model, &e).unwrap();
+        let (lo, hi) = crate::ifc::transform::bounds(&p.solid).unwrap();
+        assert!((lo[0] / FOOT_MM - 9.9).abs() < 1e-9, "{lo:?}");
+        assert!((hi[0] / FOOT_MM - 10.3).abs() < 1e-9, "{hi:?}");
+    }
+
+    #[test]
+    fn a_v_mullion_as_an_l() {
+        // Legs of 5" and a thickness of 2.5" at right angles (the corner
+        // angles π/2 and π from normal × path), as the geometry the file
+        // keeps of such a mullion: x and y from -3.75" to 2.5".
+        let mut m = rect_mullion([0.0; 2], 174);
+        m.profile = "SysVMullionProfile".into();
+        m.thickness = 2.5 / 12.0;
+        m.legs = [5.0 / 12.0; 2];
+        m.corner_angles = [std::f64::consts::FRAC_PI_2, std::f64::consts::PI];
+        let (model, e) = with_symbol(Symbol {
+            id: 1,
+            mullion: Some(m),
+            ..Symbol::default()
+        });
+        let p = plan(&model, &e).unwrap();
+        let inch = FOOT_MM / 12.0;
+        let (lo, hi) = crate::ifc::transform::bounds(&p.solid).unwrap();
+        assert!(
+            (lo[0] - 10.0 * FOOT_MM + 3.75 * inch).abs() < 1e-6,
+            "{lo:?}"
+        );
+        assert!((hi[0] - 10.0 * FOOT_MM - 2.5 * inch).abs() < 1e-6, "{hi:?}");
+        assert!((lo[1] + 3.75 * inch).abs() < 1e-6 && (hi[1] - 2.5 * inch).abs() < 1e-6);
+        let Item::Extrusion { profile, .. } = &p.solid else {
+            panic!("{:?}", p.solid)
+        };
+        assert_eq!(profile.areas[0].outer.segments.len(), 6);
+        // Legs at another angle are not read.
+        let mut m = rect_mullion([0.0; 2], 0);
+        m.profile = "SysVMullionProfile".into();
+        m.thickness = 0.2;
+        m.legs = [0.4; 2];
+        m.corner_angles = [0.0, 2.0];
+        let (model, e) = with_symbol(Symbol {
+            id: 1,
+            mullion: Some(m),
+            ..Symbol::default()
+        });
+        assert!(plan(&model, &e).unwrap_err().contains("right angles"));
+    }
+
+    #[test]
+    fn a_monolithic_run_s_leaning_risers_and_underside() {
+        // Three risers of 1 ft, two treads of 2 ft, a nosing of 0.25 ft and
+        // a support 0.5 ft deep under the line through the risers' bases.
+        let mut model = Model::default();
+        let run = building::StairRun {
+            id: 5,
+            bottom: 0.0,
+            top: 3.0,
+            risers: 3,
+            treads: vec![2.0, 2.0],
+            start: Some(line([0.0, 0.0, 0.0], [0.0, 4.0, 0.0])),
+            end: Some(line([4.0, 0.0, 0.0], [4.0, 4.0, 0.0])),
+            // Along the nosings: (0, 1) to (4, 3).
+            support: Some(line([0.0, 0.0, 1.0], [4.0, 0.0, 3.0])),
+            spiral: false,
+            layout: None,
+        };
+        model.building.stair_runs.insert(5, run);
+        model.building.run_types.insert(9, (true, 0.5));
+        model.building.stair_parts.insert(
+            9,
+            StairParts {
+                monolithic: true,
+                nosing: 0.25,
+                ..StairParts::default()
+            },
+        );
+        let e = Element {
+            id: 5,
+            type_id: Some(9),
+            ..Element::default()
+        };
+        let p = plan(&model, &e).unwrap();
+        let Item::Extrusion { profile, .. } = &p.solid else {
+            panic!("{:?}", p.solid)
+        };
+        let pts: Vec<[f64; 2]> = profile.areas[0]
+            .outer
+            .segments
+            .iter()
+            .map(|s| s.start())
+            .map(|q| [q[0] / FOOT_MM, q[1] / FOOT_MM])
+            .collect();
+        let has = |x: f64, y: f64| {
+            pts.iter()
+                .any(|q| (q[0] - x).abs() < 1e-9 && (q[1] - y).abs() < 1e-9)
+        };
+        // The first riser leans from (0.25, 0) to (0, 1); a tread reaches
+        // the next riser's base; the run ends at 4 ft, 3 ft up.
+        assert!(has(0.25, 0.0) && has(0.0, 1.0) && has(2.25, 1.0) && has(2.0, 2.0));
+        assert!(has(4.0, 2.0) && has(4.0, 3.0), "{pts:?}");
+        assert!(!pts.iter().any(|q| q[0] > 4.0 + 1e-9), "{pts:?}");
+        // The underside: 0.5 × √1.25 below the line through (0.25, 0) of
+        // slope 0.5, from 4 ft back to the floor.
+        let drop = 0.5 * 1.25f64.sqrt();
+        assert!(has(4.0, 3.75 * 0.5 - drop), "{pts:?}");
+        assert!(has(0.25 + drop / 0.5, 0.0), "{pts:?}");
+        // A spiral run is not built straight.
+        let mut spiral = model.building.stair_runs[&5].clone();
+        spiral.spiral = true;
+        model.building.stair_runs.insert(5, spiral);
+        assert!(plan(&model, &e).unwrap_err().contains("spiral"));
     }
 }

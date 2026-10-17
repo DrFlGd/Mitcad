@@ -134,7 +134,6 @@ public:
   QString embeddingError() const;
   void show();
   void close();
-  void resize(int width, int height);
   void focusViewport();
 
   void setActions(const QList<NativeMacAction>& actions);

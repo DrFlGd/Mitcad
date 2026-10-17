@@ -245,7 +245,7 @@ fn equal_lengths_and_radii() {
     assert_eq!(
         s.add_constraint(Equal(a, circle)),
         Err(Error::Unsupported(
-            "equal needs two lines or two circles/arcs"
+            "equal needs two lines, two circles/arcs or two ellipses"
         ))
     );
 }
@@ -977,4 +977,33 @@ fn violated_names_the_constraints_the_geometry_does_not_satisfy() {
     // After the solve nothing is violated.
     solve_ok(&mut s);
     assert!(s.violated(1e-6).is_empty());
+}
+
+#[test]
+fn points_horizontal_and_vertical_to_each_other_coincide() {
+    // A point horizontal and vertical to another lies on it (a sketch of
+    // the `.ipt` import places its corner so, mitcad#235): no direction
+    // contradiction, also beside a line that is horizontal through it.
+    let mut s = System::new();
+    let a = s.add_point(1.0, 2.0);
+    let b = s.add_point(1.5, 2.5);
+    let c = s.add_point(5.0, 2.0);
+    let line = s.add_line(a, c).unwrap();
+    s.add_constraint(Horizontal(line)).unwrap();
+    s.add_constraint(HorizontalPoints(a, b)).unwrap();
+    s.add_constraint(VerticalPoints(b, a)).unwrap();
+    s.add_constraint(FixPoint(a)).unwrap();
+    solve_ok(&mut s);
+    assert_pt(&s, b, 1.0, 2.0);
+    // Two lines horizontal and vertical still contradict each other.
+    let mut s = System::new();
+    let p = s.add_point(0.0, 0.0);
+    let q = s.add_point(3.0, 1.0);
+    let l = s.add_line(p, q).unwrap();
+    s.add_constraint(Horizontal(l)).unwrap();
+    s.add_constraint(Vertical(l)).unwrap();
+    assert_eq!(
+        s.solve(&Default::default()).status,
+        mitcad_solver::SolveStatus::Conflicting
+    );
 }

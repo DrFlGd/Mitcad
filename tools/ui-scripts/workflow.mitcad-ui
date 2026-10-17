@@ -33,6 +33,24 @@ key Tab
 type 25
 key Return
 expect-log 'Added rectangle 40 x 25 mm at \(0, 0\)'
+
+# A panel command retires the Dimension tool and its pending value editor
+# (mitcad#351), including callbacks invoked after the panel is cancelled.
+mark
+capture-undo-depth beforeDimension
+command sketch.dimension
+sketch-click 20 0
+sketch-click 20 8
+expect-log 'Sketch value editor at'
+command sketch.offset
+expect-log 'Command Offset started'
+expect-log 'Sketch value editor closed'
+key Escape
+expect-log 'Command Offset cancelled'
+key Return
+sketch-click 25 10
+expect-no-log 'Added (driven )?dimension'
+expect-undo-depth ${beforeDimension} 0
 key ctrl+Return
 expect-log 'Sketch finished'
 

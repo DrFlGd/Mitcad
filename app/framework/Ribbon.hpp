@@ -22,7 +22,7 @@ namespace mitcad {
 
 class CommandRegistry;
 
-// The toolbar: workspace tabs (SOLID, and SKETCH while sketching),
+// The toolbar: workspace tabs (SOLID, BUILD, and SKETCH while sketching),
 // each with groups (CREATE, MODIFY, ...) of command buttons; the group's
 // name opens a menu of all its commands, a subgroup's (CommandDef::subgroup)
 // as a submenu whose pinned command is a split button (mitcad#222).
@@ -50,6 +50,9 @@ public:
   void setSketchMode(bool sketching);
   // Logs where the group menus are, for UI tests.
   void logLayout() const;
+  // As logLayout, only when the places changed since they were logged
+  // (the ribbon or its tab bar shown, moved, resized).
+  void logLayoutIfChanged() const;
 
   static const QStringList& groups(const QString& tab);
 
@@ -67,6 +70,14 @@ protected:
   void changeEvent(QEvent* event) override;
   void paintEvent(QPaintEvent* event) override;
   void resizeEvent(QResizeEvent* event) override;
+
+public:
+  // Classic (Docked): a width that always fits the toolbar (it expands to
+  // what is there); the height of its content.
+  QSize sizeHint() const override;
+  QSize minimumSizeHint() const override;
+
+protected:
   void showEvent(QShowEvent* event) override;
 
 private:
@@ -85,6 +96,10 @@ private:
 
   QWidget* createPage(const QString& tab);
   QWidget* createGroup(const QString& tab, const QString& group, GroupInfo* info);
+  // The tab that shows a page (SOLID 0, SKETCH 1, BUILD 2), or -1.
+  int tabOfPage(int page) const;
+  // The places logLayout logs: the tabs, the group menus, the split buttons.
+  QStringList layoutLines() const;
   // Mac presentation: when the groups do not fit the width, the ones at the
   // right show their names only; the names still open their menus.
   void fitGroups();
@@ -94,6 +109,8 @@ private:
   QTabBar* m_tabs = nullptr;
   QStackedWidget* m_pages = nullptr;
   QWidget* m_sketchPage = nullptr;
+  int m_pageBeforeSketch = 0; // the page Finish Sketch goes back to
+  mutable QStringList m_loggedLayout; // the places logged last
   QHash<QString, Extras> m_extras;   // by "tab/group"
   QHash<QString, QWidget*> m_groupButtons; // by "tab/group", for logLayout
   // The subgroups' split buttons (mitcad#222), by "tab/group/subgroup".

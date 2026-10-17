@@ -76,6 +76,12 @@ if(BUILD_TESTING)
   add_test(NAME cli.f6_components COMMAND mitcad-cli run "${scripts}/f6_components.json")
   # Derives: linked copies of other components' bodies (mitcad#324).
   add_test(NAME cli.f6_derive COMMAND mitcad-cli run "${scripts}/f6_derive.json")
+  # The BUILD tab (mitcad#375): profiles placed on sides and ends, bound,
+  # mitred and connected, from the synthetic sources of build_parts.mitcad.
+  foreach(script build_frame build_connect)
+    add_test(NAME cli.${script} COMMAND mitcad-cli run "${scripts}/${script}.json"
+                                          --open "${scripts}/build_parts.mitcad")
+  endforeach()
   # Explicit move destinations keep real OCCT geometry and external support
   # links in place across nested rotations, undo/redo and save/reopen (#201).
   set(move_destination "${CMAKE_CURRENT_BINARY_DIR}/move-destination.mitcad")
@@ -638,7 +644,24 @@ if(BUILD_TESTING)
               "-DPYTHON=${Python3_EXECUTABLE}"
               "-DGENERATOR=${PROJECT_SOURCE_DIR}/tools/libraries/make-fastener-library.py"
               "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/library" -P "${CMAKE_CURRENT_SOURCE_DIR}/library-test.cmake")
+    # Mitcad's profile library (mitcad#375): the generator on synthetic
+    # sections, a bracket and a panel made in the test; the library checked,
+    # fetched, searched and its connectors fitted to junctions.
+    add_test(NAME cli.profile-library
+      COMMAND "${CMAKE_COMMAND}" "-DCLI=$<TARGET_FILE:mitcad-cli>" "-DGIT=${GIT_EXECUTABLE}"
+              "-DPYTHON=${Python3_EXECUTABLE}"
+              "-DGENERATOR=${PROJECT_SOURCE_DIR}/tools/libraries/make-profile-library.py"
+              "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/profile-library"
+              -P "${CMAKE_CURRENT_SOURCE_DIR}/profile-library-test.cmake")
   endif()
+  # BUILD on the generated profile library (mitcad#376, mitcad#377): one
+  # profile of each system and slot width with its frames and mass per
+  # metre, and the linear parts on a small frame with their joints driven;
+  # skipped without MITCAD_PROFILES_LIBRARY (the generated library's folder).
+  add_test(NAME build.profiles
+    COMMAND "${CMAKE_COMMAND}" "-DCLI=$<TARGET_FILE:mitcad-cli>" "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/build-profiles"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/build-profiles-test.cmake")
+  set_tests_properties(build.profiles PROPERTIES SKIP_REGULAR_EXPRESSION "build profiles: skipped")
 endif()
 
 # Live updates (mitcad#89): mitcad-cli live test. Its tests need no broker:

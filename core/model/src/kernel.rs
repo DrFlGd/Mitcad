@@ -1043,6 +1043,21 @@ pub trait Kernel {
     ) -> Result<BooleanOutput<Self::Shape>, KernelError> {
         Err(KernelError::Unsupported("cuts within a tolerance"))
     }
+
+    // BUILD: the face names of derived parts (mitcad#375).
+
+    /// The shape with its faces renamed, its geometry shared: a face name
+    /// listed in `renames` takes the name it is paired with; every other
+    /// name `n` becomes `<prefix>(n)` (a prefix such as `F7:part`), or stays
+    /// when `prefix` is empty. Names are matched whole, `#k` included.
+    fn rename_faces(
+        &self,
+        _shape: &Self::Shape,
+        _prefix: &str,
+        _renames: &[(FaceName, FaceName)],
+    ) -> Result<Self::Shape, KernelError> {
+        Err(KernelError::Unsupported("renaming faces"))
+    }
 }
 
 /// How a tool lies against a body ([`Kernel::tool_contacts`]).
@@ -1178,6 +1193,19 @@ pub enum Curve3 {
         poles: Vec<[f64; 3]>,
         weights: Vec<f64>,
         knots: Vec<f64>,
+    },
+    /// A helix (a helical path, mitcad#385): `center + radius (cos t x_axis
+    /// + sin t (axis × x_axis)) + pitch t / 2π axis` for t from `start` to
+    /// `end` (`start < end`; a unit `axis`, `x_axis` at right angles to
+    /// it). `pitch` is the rise per turn, negative for a left-handed helix.
+    Helix {
+        center: [f64; 3],
+        axis: [f64; 3],
+        x_axis: [f64; 3],
+        radius: f64,
+        pitch: f64,
+        start: f64,
+        end: f64,
     },
 }
 

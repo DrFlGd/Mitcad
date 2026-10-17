@@ -8,6 +8,9 @@
 #include <string>
 #include <utility>
 
+#include <BRepAlgoAPI_Cut.hxx>
+#include <BRepPrimAPI_MakeCylinder.hxx>
+#include <gp_Ax2.hxx>
 #include <BRepAdaptor_Curve.hxx>
 #include <BRepAdaptor_Surface.hxx>
 #include <BRepClass_FaceClassifier.hxx>
@@ -68,6 +71,7 @@
 #include <gp_GTrsf.hxx>
 #include <gp_Trsf.hxx>
 
+#include "canonical.hpp"
 #include "history.hpp"
 #include "spine.hpp"
 #include "sweep.hpp"
@@ -676,7 +680,7 @@ ShapePtr sweep(const SweepSpec& spec) {
       if (on_surface) {
         result = guided_sweep(spec, faces, part, at - range.from, range);
       } else {
-        const PipeMode mode = detail::perpendicular_mode(path);
+        const PipeMode mode = detail::perpendicular_mode(path, spec.path);
         std::vector<ShapePtr> parts;
         for (const detail::SweepFace& face : faces) {
           const auto [first, last] = cap_order(range, detail::cap_names(spec.feature, "start", face),
@@ -798,7 +802,7 @@ ShapePtr pipe(const PipeSpec& spec) {
     const TopoDS_Wire part = path.part(range.from, range.to);
     const auto [first, last] =
         cap_order(range, {face_name(spec.feature, "start")}, {face_name(spec.feature, "end")});
-    const PipeMode mode = detail::perpendicular_mode(path);
+    const PipeMode mode = detail::perpendicular_mode(path, spec.path);
     ShapePtr result = detail::pipe_shell(outer, part, mode, first, last);
     if (spec.thickness > 0.0) {
       const NamedWire inner =
@@ -1448,6 +1452,9 @@ constexpr double kSpineTurns = 1.0 / 3.0;
 // often drawn a fraction of a micrometre off the cylinder they are cut
 // into, which the booleans fail on as they do on sides exactly on it.
 constexpr double kOnCylinder = 1.0e-3;
+// How far the helix's swept sides may lie from the analytic surfaces they
+// are taken as (the pipe's approximation tolerance, 1e-6 mm).
+constexpr double kSweepExact = 1.0e-6;
 
 // A cylinder of a body about the axis: its radius and its extent along
 // the axis (from the axis' location).
@@ -1497,6 +1504,21 @@ struct LoopEdge {
   gp_Pnt last;
   bool on_cylinder = false;
   bool touching = false; // on a cylinder and as long as the pitch
+  // The bodies' cylinders it lies on (touching sides).
+  std::vector<AxialCylinder> cylinders;
+};
+
+// A side moved off a cylinder (kOffCylinder): the cylinder's radius, the
+// way it was moved (towards the axis or away from it), the extents along
+// the axis of the bodies' faces on that cylinder, the side's name, the
+// direction from the axis to it and where it starts along the axis.
+struct MovedSide {
+  double radius = 0.0;
+  bool inwards = false;
+  std::vector<AxialCylinder> extents;
+  std::string name;
+  gp_Dir out;
+  double low = 0.0;
 };
 
 // The edge cut back from its end `at_last` (in the loop's order) to where
@@ -1547,9 +1569,11 @@ std::optional<std::pair<TopoDS_Edge, gp_Pnt>> cut_back(const LoopEdge& e, bool a
 // The loop of `face` with its sides on the cylinders that are as long as
 // the pitch moved off them (see kOffCylinder); the loop itself when there
 // are none. `on_cylinder` is set when any side lies on a cylinder. `rise`
-// is the helix's travel along the axis.
+// is the helix's travel along the axis. The sides moved are added to
+// `moved_sides`.
 NamedWire off_cylinders(const NamedWire& loop, const TopoDS_Face& face, const gp_Ax1& axis, double pitch,
-                        double rise, const std::vector<AxialCylinder>& cylinders, bool& on_cylinder) {
+                        double rise, const std::vector<AxialCylinder>& cylinders, bool& on_cylinder,
+                        std::vector<MovedSide>& moved_sides) {
   const gp_Lin line(axis);
   const gp_Vec along(axis.Direction());
   std::vector<LoopEdge> edges;
@@ -1578,6 +1602,7 @@ NamedWire off_cylinders(const NamedWire& loop, const TopoDS_Face& face, const gp
         if (std::abs(c.radius - radius) <= kOnCylinder && c.from < high - 1.0e-6 && c.to > low + 1.0e-6) {
           e.on_cylinder = true;
           e.touching = length >= pitch - 1.0e-6;
+          e.cylinders.push_back(c);
         }
       }
     } else if (curve.GetType() == GeomAbs_Circle) {
@@ -1627,6 +1652,7 @@ NamedWire off_cylinders(const NamedWire& loop, const TopoDS_Face& face, const gp
   std::vector<gp_Dir> away(n);
   std::vector<TopoDS_Edge> trimmed(n);
   std::vector<std::optional<gp_Pnt>> new_first(n), new_last(n);
+  std::vector<MovedSide> sides;
   for (std::size_t i = 0; i < n; ++i) {
     const LoopEdge& e = edges[i];
     if (!e.touching) {
@@ -1657,6 +1683,14 @@ NamedWire off_cylinders(const NamedWire& loop, const TopoDS_Face& face, const gp
     new_last[before] = a->second;
     trimmed[after] = b->first;
     new_first[after] = b->second;
+    const gp_Vec from_axis = gp_Vec(axis.Location(), e.first) - along * gp_Vec(axis.Location(), e.first).Dot(along);
+    if (from_axis.Magnitude() <= Precision::Confusion()) {
+      return loop;
+    }
+    const double low =
+        std::min(gp_Vec(axis.Location(), e.first).Dot(along), gp_Vec(axis.Location(), e.last).Dot(along));
+    sides.push_back({line.Distance(e.first), gp_Vec(away[i]).Dot(from_axis) < 0.0, e.cylinders, e.name,
+                     gp_Dir(from_axis), low});
   }
   BRepBuilderAPI_MakeWire wire;
   NamedWire moved;
@@ -1693,7 +1727,158 @@ NamedWire off_cylinders(const NamedWire& loop, const TopoDS_Face& face, const gp
     return loop;
   }
   moved.wire = wire.Wire();
+  moved_sides.insert(moved_sides.end(), sides.begin(), sides.end());
   return moved;
+}
+
+// How far the shapes reach along the axis (from its location): false when
+// there is nothing.
+bool axial_range(const std::vector<TopoDS_Shape>& shapes, const gp_Ax1& axis, double& from, double& to) {
+  gp_Trsf local;
+  local.SetTransformation(gp_Ax3(axis.Location(), axis.Direction()));
+  Bnd_Box box;
+  for (const TopoDS_Shape& shape : shapes) {
+    if (!shape.IsNull()) {
+      BRepBndLib::AddOptimal(BRepBuilderAPI_Transform(shape, local, true).Shape(), box, false, false);
+    }
+  }
+  if (box.IsVoid()) {
+    return false;
+  }
+  double x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+  box.Get(x0, y0, from, x1, y1, to);
+  return true;
+}
+
+// The helix with the slivers of its sides moved off the cylinders
+// (kOffCylinder) cut back to the cylinder beyond the extents of the bodies'
+// faces on it, where the bodies reach. A sliver lies in the void beyond the
+// face (a cut's) or in the material behind it (a join's) only along the
+// face: past a blind bore's bottom it cut a slot 0.1 um thick into the
+// material there (a thread running out into a bore's bottom, mitcad#235),
+// and past a shoulder of a rod it joined a skin 0.1 um thick to it. Beyond
+// the faces the sides lie on the cylinder, where none of the bodies' faces
+// coincides with them, and the turns stay apart there by the corners cut
+// back. The helix turns `sign` (+1 or -1) about the axis and rises `pitch`
+// a turn. `helix` is returned when there is nothing to cut back, and when
+// the cut does not leave one valid solid smaller than it.
+ShapePtr slivers_within_faces(const ShapePtr& helix, const std::vector<MovedSide>& sides, const gp_Ax1& axis,
+                              double pitch, double sign, const std::vector<ShapePtr>& bodies) {
+  if (sides.empty()) {
+    return helix;
+  }
+  double z0 = 0, z1 = 0, b0 = 0, b1 = 0;
+  std::vector<TopoDS_Shape> body_shapes;
+  for (const ShapePtr& body : bodies) {
+    if (body) {
+      body_shapes.push_back(body->occt());
+    }
+  }
+  if (!axial_range({helix->occt()}, axis, z0, z1) || !axial_range(body_shapes, axis, b0, b1)) {
+    return helix;
+  }
+  // The shells about the cylinders, ten times as wide as the slivers'
+  // reach, over the helix's and the bodies' extent less the faces'.
+  constexpr double kShell = 10.0 * kOffCylinder;
+  const double low = std::max(z0, b0) - 1.0;
+  const double high = std::min(z1, b1) + 1.0;
+  NCollection_List<TopoDS_Shape> tools;
+  std::vector<std::pair<TopoDS_Shape, std::string>> shells;
+  for (const MovedSide& side : sides) {
+    std::vector<std::pair<double, double>> along;
+    for (const AxialCylinder& c : side.extents) {
+      along.emplace_back(c.from, c.to);
+    }
+    std::sort(along.begin(), along.end());
+    std::vector<std::pair<double, double>> gaps;
+    double at = low;
+    for (const auto& [from, to] : along) {
+      if (from > at + Precision::Confusion()) {
+        gaps.emplace_back(at, std::min(from, high));
+      }
+      at = std::max(at, to);
+    }
+    if (high > at + Precision::Confusion()) {
+      gaps.emplace_back(at, high);
+    }
+    const double inner = side.inwards ? side.radius - kShell : side.radius;
+    const double outer = side.inwards ? side.radius : side.radius + kShell;
+    for (const auto& [from, to] : gaps) {
+      if (to <= std::max(z0, b0) || from >= std::min(z1, b1)) {
+        continue;
+      }
+      // The shell's seam half a turn from where its ends inside the helix
+      // cross the strips between the turns: OCCT's cut built no solid
+      // where the seam crossed the same piece of the helix's faces as such
+      // an end (the faces split there not used).
+      std::vector<double> crossings;
+      for (const double end : {from, to}) {
+        if (end > z0 && end < z1) {
+          const double turns = (end - side.low) / pitch;
+          crossings.push_back(kTwoPi * (turns - std::floor(turns)));
+        }
+      }
+      double seam = kPi;
+      if (crossings.size() == 1) {
+        seam = crossings.front() + kPi;
+      } else if (crossings.size() == 2) {
+        // Halfway round from both, on the side farther from them.
+        const double a = std::min(crossings[0], crossings[1]);
+        const double b = std::max(crossings[0], crossings[1]);
+        seam = b - a <= kPi ? (a + b) / 2.0 + kPi : (a + b) / 2.0;
+      }
+      gp_Ax2 place(axis.Location().Translated(gp_Vec(axis.Direction()) * from), axis.Direction(), side.out);
+      place.Rotate(axis, sign * seam);
+      BRepAlgoAPI_Cut ring(BRepPrimAPI_MakeCylinder(place, outer, to - from).Shape(),
+                           BRepPrimAPI_MakeCylinder(place, inner, to - from).Shape());
+      if (!ring.IsDone() || ring.HasErrors()) {
+        return helix;
+      }
+      tools.Append(ring.Shape());
+      shells.emplace_back(ring.Shape(), side.name);
+    }
+  }
+  if (tools.IsEmpty()) {
+    return helix;
+  }
+  BRepAlgoAPI_Cut cut;
+  NCollection_List<TopoDS_Shape> arguments;
+  arguments.Append(helix->occt());
+  cut.SetArguments(arguments);
+  cut.SetTools(tools);
+  cut.SetNonDestructive(true);
+  detail::build(cut);
+  if (!cut.IsDone() || cut.HasErrors() || cut.HasWarnings()) {
+    return helix;
+  }
+  int solids = 0;
+  for (TopExp_Explorer s(cut.Shape(), TopAbs_SOLID); s.More(); s.Next()) {
+    ++solids;
+  }
+  GProp_GProps before;
+  GProp_GProps after;
+  BRepGProp::VolumeProperties(helix->occt(), before, 1.0e-9);
+  BRepGProp::VolumeProperties(cut.Shape(), after, 1.0e-9);
+  if (solids != 1 || after.Mass() >= before.Mass() || !detail::is_valid(cut.Shape())) {
+    return helix;
+  }
+  detail::FaceNamer namer(cut.Shape());
+  namer.carry(cut, *helix);
+  // The faces the cut leaves on the cylinders are the sides'.
+  for (const auto& [shell, name] : shells) {
+    for (TopExp_Explorer f(shell, TopAbs_FACE); f.More(); f.Next()) {
+      NCollection_List<TopoDS_Shape> pieces = cut.Modified(f.Current());
+      if (pieces.IsEmpty()) {
+        pieces.Append(f.Current());
+      }
+      for (const TopoDS_Shape& piece : pieces) {
+        if (namer.contains(piece) && !namer.named(piece) && !name.empty()) {
+          namer.add(piece, name);
+        }
+      }
+    }
+  }
+  return namer.shape();
 }
 
 // How far the faces reach along the axis.
@@ -1874,12 +2059,13 @@ ShapePtr helix_sweep(const HelixSweepSpec& spec) {
     const std::vector<AxialCylinder> cylinders = axial_cylinders(spec.bodies, spec.axis);
     std::vector<std::vector<NamedWire>> face_loops;
     bool on_cylinder = false;
+    std::vector<MovedSide> moved_sides;
     for (const detail::SweepFace& face : faces) {
       std::vector<NamedWire> loops = detail::face_loops(face.face, face.edges);
       if (!cylinders.empty()) {
         for (NamedWire& loop : loops) {
           loop = off_cylinders(loop, face.face, spec.axis, spec.pitch, spec.pitch * spec.revolutions, cylinders,
-                               on_cylinder);
+                               on_cylinder, moved_sides);
         }
       }
       face_loops.push_back(std::move(loops));
@@ -1901,6 +2087,29 @@ ShapePtr helix_sweep(const HelixSweepSpec& spec) {
     // The turns where piece k starts.
     const auto turns_at = [&](int k) {
       return shifted ? cuts[static_cast<std::size_t>(k)] : spec.revolutions * k / count;
+    };
+    // A helix swept in pieces for the bodies' booleans has the sides that
+    // straight sides along the axis sweep as cylinders: the sweep gives
+    // them B-spline surfaces within its tolerance (kSweepExact) of their
+    // cylinders, which later booleans there meet as approximations (a cut
+    // across a thread beside its root's cylinder removed 0.02 mm^3 instead
+    // of the file's 4.6, mitcad#235). Pieces span less than a turn, so each
+    // such side is a patch of its cylinder.
+    const auto exact_sides = [&](ShapePtr shape) {
+      if (cylinders.empty() || count < 2) {
+        return shape;
+      }
+      if (ShapePtr analytic = detail::canonical_dressup(Shape(TopoDS_Shape()), *shape, kSweepExact)) {
+        return analytic;
+      }
+      return shape;
+    };
+    // The pieces fused, the slivers cut back beyond the bodies' faces and
+    // the sides made exact.
+    const auto helix_of = [&](const std::vector<ShapePtr>& pieces) {
+      const ShapePtr fused = slivers_within_faces(detail::fused(pieces, "the helix"), moved_sides, spec.axis,
+                                                  spec.pitch, spec.left_handed ? -1.0 : 1.0, spec.bodies);
+      return exact_sides(detail::finished(*fused, "the helix"));
     };
     const double length = spec.revolutions * direction.Magnitude();
     BRepBuilderAPI_MakeWire spine_wire;
@@ -1950,7 +2159,7 @@ ShapePtr helix_sweep(const HelixSweepSpec& spec) {
           parts.push_back(detail::with_holes(outer, holes, "the helix"));
         }
       }
-      return detail::finished(*detail::fused(parts, "the helix"), "the helix");
+      return helix_of(parts);
     }
     for (std::size_t f = 0; f < faces.size(); ++f) {
       const detail::SweepFace& face = faces[f];
@@ -1964,7 +2173,7 @@ ShapePtr helix_sweep(const HelixSweepSpec& spec) {
       }
       parts.push_back(detail::with_holes(outer, holes, "the helix"));
     }
-    return detail::finished(*detail::fused(parts, "the helix"), "the helix");
+    return helix_of(parts);
   });
 }
 

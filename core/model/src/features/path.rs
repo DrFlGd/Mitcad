@@ -269,6 +269,10 @@ impl CurvePath {
                     end: *end,
                 },
             }],
+            Self::Path(PathRef::Helix(helix)) => vec![PathCurve {
+                name: "helix".to_owned(),
+                curve: helix.curve()?,
+            }],
         };
         chain(pieces)
     }
@@ -447,6 +451,20 @@ fn conic_point(
     )
 }
 
+/// A point of a helix at parameter `t` (see [`Curve3::Helix`]).
+pub(crate) fn helix_point(
+    center: [f64; 3],
+    axis: [f64; 3],
+    x_axis: [f64; 3],
+    (radius, pitch): (f64, f64),
+    t: f64,
+) -> [f64; 3] {
+    add(
+        conic_point(center, axis, x_axis, (radius, radius), t),
+        scaled(axis, pitch * t / TAU),
+    )
+}
+
 /// A point of a B-spline with its full knot vector (de Boor, rational in
 /// homogeneous coordinates).
 fn bspline_point(
@@ -521,6 +539,18 @@ pub(crate) fn curve_ends(curve: &Curve3) -> Option<([f64; 3], [f64; 3])> {
             let size = poles.iter().flatten().fold(1.0_f64, |m, v| m.max(v.abs()));
             (distance(a, b) > 1e-9 * size).then_some((a, b))
         }
+        Curve3::Helix {
+            center,
+            axis,
+            x_axis,
+            radius,
+            pitch,
+            start,
+            end,
+        } => {
+            let at = |t| helix_point(*center, *axis, *x_axis, (*radius, *pitch), t);
+            Some((at(*start), at(*end)))
+        }
     }
 }
 
@@ -569,6 +599,25 @@ pub(crate) fn reversed(curve: Curve3) -> Curve3 {
                 knots,
             }
         }
+        // As a conic's: with the axis reversed the point at t is the old
+        // point at -t (the rise turns with the axis).
+        Curve3::Helix {
+            center,
+            axis,
+            x_axis,
+            radius,
+            pitch,
+            start,
+            end,
+        } => Curve3::Helix {
+            center,
+            axis: axis.map(|v| -v),
+            x_axis,
+            radius,
+            pitch,
+            start: -end,
+            end: -start,
+        },
     }
 }
 
@@ -835,7 +884,16 @@ mod tests {
             weights: vec![1.0, 2.0, 1.0, 1.0],
             knots: vec![0.0, 0.0, 0.0, 0.4, 1.0, 1.0, 1.0],
         };
-        for curve in [arc, spline] {
+        let helix = Curve3::Helix {
+            center: [1.0, 2.0, 3.0],
+            axis: [0.0, 0.0, 1.0],
+            x_axis: [0.0, 1.0, 0.0],
+            radius: 4.0,
+            pitch: -3.0,
+            start: -1.0,
+            end: 9.0,
+        };
+        for curve in [arc, spline, helix] {
             let (a, b) = curve_ends(&curve).unwrap();
             let (c, d) = curve_ends(&reversed(curve.clone())).unwrap();
             assert!(
@@ -851,5 +909,54 @@ mod tests {
         })
         .unwrap();
         assert_eq!(ends, ([0.0; 3], [4.0, 0.0, 0.0]));
+    }
+
+    #[test]
+    fn a_helix_path_runs_from_its_start_angle_to_its_end_angle() {
+        use super::super::geom_ref::HelixPath;
+        // A quarter turn more than one, rising 8 a turn about z through
+        // (1, 2, 3), from the x axis (made square to the axis).
+        let mut helix = HelixPath {
+            center: [1.0, 2.0, 3.0],
+            axis: [0.0, 0.0, 2.0],
+            x_axis: [1.0, 0.0, 0.5],
+            radius: 5.0,
+            pitch: 8.0,
+            start_angle: 0.0,
+            end_angle: 1.25 * TAU,
+        };
+        let close = |a: [f64; 3], b: [f64; 3]| distance(a, b) < 1e-9;
+        let (a, b) = curve_ends(&helix.curve().unwrap()).unwrap();
+        assert!(close(a, [6.0, 2.0, 3.0]), "{a:?}");
+        assert!(close(b, [1.0, 7.0, 13.0]), "{b:?}");
+        // The other way round: the same helix, from its end angle back.
+        std::mem::swap(&mut helix.start_angle, &mut helix.end_angle);
+        let curve = helix.curve().unwrap();
+        let Curve3::Helix { start, end, .. } = curve else {
+            panic!("{curve:?}")
+        };
+        assert!(start < end);
+        let (c, d) = curve_ends(&curve).unwrap();
+        assert!(close(c, b) && close(d, a), "{c:?} {d:?}");
+        // Left-handed: the same turn, below its axis' origin at 2.5π.
+        helix.pitch = -8.0;
+        let (_, d) = curve_ends(&helix.curve().unwrap()).unwrap();
+        assert!(close(d, [6.0, 2.0, 3.0]), "{d:?}");
+        let (c, _) = curve_ends(&helix.curve().unwrap()).unwrap();
+        assert!(close(c, [1.0, 7.0, -7.0]), "{c:?}");
+        // No pitch, no radius, an x axis along the axis: errors.
+        for (pitch, radius, x) in [
+            (0.0, 5.0, [1.0, 0.0, 0.0]),
+            (8.0, 0.0, [1.0, 0.0, 0.0]),
+            (8.0, 5.0, [0.0, 0.0, 1.0]),
+        ] {
+            let bad = HelixPath {
+                pitch,
+                radius,
+                x_axis: x,
+                ..helix.clone()
+            };
+            assert!(bad.check().is_err(), "{bad:?}");
+        }
     }
 }

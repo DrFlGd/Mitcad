@@ -37,8 +37,8 @@ further.
 | `brep` | The elements' geometry as the file keeps it: bodies (winged-edge B-reps in their faces' parameters) and placed types (mitcad#333). |
 | `building` | The building elements' parameters: walls, floors, roofs, family instances and types, stair runs, grids, links (mitcad#275). |
 | `categories` | Built-in categories' names and which are building elements; system families by type kind. |
-| `testfile` | A small project and family written by the writers (the tests', the CLI's and the UI test's), and a building project with a link. |
-| `bin/mitcad-rvt-inspect` | `list`, `info [--json]`, `stream <path> [--raw]`, `schema [<class>] [--json]`, `table`, `elements [--json\|--csv] [--all]`, `levels`, `materials`, `record <id> [--all]`, `records <class>[,…]`, `building`, `classes [<class>]`, `documents`, `geometry [<id>]`, `preview`, `write-test`. |
+| `testfile` | A small project and family written by the writers (the tests', the CLI's and the UI test's), and a building project with a link (and its house variant: a gable roof over a wall attached to it, mitcad#348, with a door in it and a window whose type cannot cut, mitcad#345). |
+| `bin/mitcad-rvt-inspect` | `list`, `info [--json]`, `stream <path> [--raw]`, `schema [<class>] [--json]`, `table`, `elements [--json\|--csv] [--all]`, `levels`, `materials`, `record <id> [--all]`, `records <class>[,…]`, `building`, `classes [<class>]`, `documents`, `geometry [<id>] [--points]`, `preview`, `write-test`. |
 
 ## The container
 
@@ -293,7 +293,16 @@ in feet:
   points `origin + t·dir`) and `GArc` (`m_center`, `m_radius`, `m_xVec`,
   `m_yVec`, `m_endParams`: the angles from the x vector towards the y
   vector) *(verified: the walls' and floors' curves of the MIT project
-  land on the IFC export's solids)*.
+  land on the IFC export's solids)*; `GEllipse` (`m_center`, `m_xVec`,
+  `m_yVec`, the radii `m_xLen` and `m_yLen`, `m_endParams` likewise:
+  mitcad#340) *(verified: the elliptical handrails' profiles, two halves
+  of 1.5 by 1.125 in)*; `GCylindricalHelix` (`m_basePnt`, `m_xVec`,
+  `m_yVec`, `m_zVec`, each an `XYZ` object's `m_xyz`, `m_radius`,
+  `m_pitchOver2PI` the rise per radian, `m_endParams` the angles from the
+  x vector towards the y vector: a spiral rail's path, mitcad#385)
+  *(verified: the 4 spiral rails of `33271010`, each two helices one
+  after the other about one axis; the stored tubes, Hermite surfaces, lie
+  within 1.4 mm of the exact ones)*.
 - **Walls** (`VWall`): the location curve (`m_pCurveDriver` → `m_pCrv`);
   the base and the height from the location reference face
   (`m_pRefFaces[0]`, a `Plane` whose envelope spans the curve's length
@@ -305,7 +314,9 @@ in feet:
   its ends, 2 and 3 its sides; `m_wallJoinType`); the elements cutting it
   (`CutPairGStep.m_otherId` of its geometry steps) and the inserts whose
   cut it takes (`WallCutoutGStep.m_instId`); an edited profile's loops
-  (`VWallExtrusionHelper.m_pCurveLoops`, in the wall's vertical plane).
+  (`VWallExtrusionHelper.m_pCurveLoops`, in the wall's vertical plane);
+  its top and base attachments (`JoinToRoofGStep`, see
+  [Wall attachments](#wall-attachments-mitcad348)).
   **Joins** *(verified on the MIT project's 360 walls)*: where walls meet
   end to end, the first listed runs on to the far face of the second
   (and stays at the joint when the second runs on in line), the others
@@ -333,7 +344,8 @@ in feet:
   sections' published dimensions)*), an insert type's cut loops and
   direction (`m_pCutLoops`, `m_cutDirs`: a door's opening, in the type's
   coordinates) *(verified: the MIT project's door openings are the IFC
-  export's)*.
+  export's)*, else its void geometry (`m_complexCutGeoms`, see
+  [Wall openings](#wall-openings-mitcad345)).
 - **Stair runs** (`StairsRun`): `m_bottomElevation`, `m_topElevation`,
   the risers (`m_topRiserIndex - m_baseRiserIndex`), the treads' depths
   (`m_stairsTreadInfoArr` → `m_actDepth`), the start and end riser lines,
@@ -354,6 +366,86 @@ in feet:
   last four bytes xor-ed with the element id, in IFC's base-64 form
   *(verified: every one of the 854 elements of the MIT project's IFC
   export)*.
+
+### Wall attachments (mitcad#348)
+
+A wall whose top or base is attached to other elements keeps a
+`JoinToRoofGStep` among its geometry steps (in `m_bRepAdjustGList`)
+*(seen: 45 walls of `c805df44`, 20 of `33271010`, 16 of `bb62c161`, 125 of
+`ff791052`)*:
+
+- `m_ids`: the elements it is attached to: footprint roofs (`Roof`,
+  `ProfileRoof`), face roofs (`FaceRoof`), floors and reference planes
+  (`RefPlane`) *(seen)*; several when the end runs under several
+  elements (two floors of one height in `c805df44`);
+- `m_baseOrTop`: 1 the top, 0 the base *(seen: every top-attached wall's
+  stored box reaches the attached element's lower surface, every
+  base-attached one's the upper surface; the base-attached walls of
+  `33271010` stand on a sloped reference plane and their boxes' bottoms
+  are the plane's lowest heights under them)*;
+- `m_leadingIdx`: 0 or all ones *(seen; not read)*.
+
+The wall's own base and height (its location face's envelope, the height
+parameter -1001101) stay those of its unattached top *(seen: the gable
+walls of `bb62c161` keep 9.84 ft while their stored boxes reach the ridge
+19.4 ft above their base)*. The attached end follows the element's
+surface wherever it lies, below or above the wall's own end: a gable wall
+reaches up into its gable *(seen in `bb62c161`)*, a wall under a lower
+roof stands lower. Where the surface is level at the wall's own top the
+two agree *(verified: the 45 walls of `c805df44` attached to floors end at
+the floors' `m_bottom`, and the project's IFC export clips none of its
+walls)*.
+
+A reference plane (`RefPlane`) is its `m_pSurface`, a `Plane` (`m_origin`,
+`m_xVec`, `m_yVec`), and its name `m_text` *(seen)*.
+
+The import (`mitcad_import::rvt::plan`) builds an attached wall from its
+base to above the surface and cuts away what lies beyond the surface's
+planes: a floor's or ceiling's bottom (top) or top (base), a footprint
+roof's slopes' lower (top) or upper (base) planes (its layer faces), a
+reference plane. A face roof's surface is not read.
+
+### Wall openings (mitcad#345)
+
+What opens a wall, by its records:
+
+- **Its cut steps.** A wall takes an insert's cut by a step of its own
+  (`WallCutoutGStepBase.m_instId`): `WallCutoutGStep` *(seen: 192 in
+  `c805df44`, 291 in `33271010`, 30 in `bb62c161`)*, and in the schema
+  `WallComplexCutoutGStep` and `FamilyHostCutoutGStep` *(none in the
+  corpus)*.
+- **The insert's type's cut loops** (`InsertableObj.m_pCutLoops`,
+  `m_cutDirs`, in the type's coordinates) *(seen: every door and window
+  of `c805df44`, 185 and 7; 227 of the 280 inserts with a cut step in
+  `33271010`)*.
+- **Else its type's void geometry**: the other 53 inserts of `33271010`
+  with a cut step (the windows of an opening family, specialty equipment)
+  have no cut loops, their own symbol and their type each a
+  `FamilySymbol.m_complexCutGeoms`: pointers to `Geometry` B-reps (the
+  family's void forms, in the type's coordinates; read as the
+  [geometry](#the-geometry-mitcad333)'s bodies), with `m_complexCutRefIds`
+  (0 or all ones; not read) *(seen)*.
+- **Elements it hosts that cut nothing**: trims and muntins (generic
+  models) and the doors of curtain walls have no cut step, no cut loops
+  and no void geometry *(seen: 160 and 7 in `33271010`)*.
+- **Rectangular wall openings** (`SWallRectOpening`): `m_hostId`, and
+  `m_oRectOpeningData` → `RectOpeningData`: `m_aPoint`, two opposite
+  corners in model coordinates (`m_lowerLeftCorner`, `m_upperRightCorner`
+  the same in the wall's face's (u, v)); the wall keeps a
+  `WallRectOpeningGStep` *(seen: 11 in `33271010`, 2 in `bb62c161`)*.
+- **Walls in walls**: `WallShadowCutoutGStep.m_otherWallId`, a wall
+  embedded in this one *(seen: 117 in `33271010`; not read)*.
+- **The geometry the file keeps** of a wall holds its openings *(seen: the
+  faces of a wall's cut-out snapshot, `m_bRepCutOutSnapshot`, run round
+  its insert's opening)*.
+
+The IFC export voids the walls with `IfcOpeningElement`s
+(`IfcRelVoidsElement`) that the doors and windows fill
+(`IfcRelFillsElement`) *(seen: 201 openings and 138 fillings in
+`bfdf36ff`)*. The import cuts each insert by its type's cut loops, else
+its void geometry, else (when the export is the import's reference) the
+IFC opening its GlobalId fills; a rectangular opening by its
+rectangle through the wall; the report says why an opening is missing.
 
 On the MIT project with its IFC export (`c805df44`, `bfdf36ff`) every
 wall (360), slab (80, and 20 floors the export names shading devices) and
@@ -409,14 +501,15 @@ end and reads, 13,979 elements of the MIT project, 11,644 of `33271010`)*:
   most)*. A surface of another class would take its faces' points from the
   neighbouring faces.
 
-### Curtain walls, railings, stairs, sweeps (mitcad#333)
+### Curtain walls, railings, stairs, sweeps (mitcad#333, mitcad#340)
 
 What the import rebuilds these from, read by the `building` module. Each
 built element is checked against the IFC export by GlobalId or its stored
 box, so a misread shows as a fallback with its reason; *(verified)* below
 means the built solids lie within 5 mm of the elements' stored boxes on
-the 2024 projects `c805df44` and `33271010` for the share given in the
-import report (see the ticket's numbers).
+the 2024 projects `c805df44` and `33271010` for the share given, and,
+where so said, that the geometry the file keeps of the element has the
+shape described (`mitcad-rvt-inspect geometry <id> --points`).
 
 - **Curtain panels and mullions** are family instances whose own symbol
   (`m_pInstanceInfo` → `m_symbolId`, a copy of the type per instance)
@@ -425,20 +518,40 @@ import report (see the ticket's numbers).
   - a mullion's `SysMullionFamSym` holds a `MullionSymFamRef`: its path
     (`m_pCurve`, a `GLine`), the normal its thickness runs along
     (`m_pathNorm`) and `m_flags`; its profile is `m_sysProfile`'s class
-    with the type's built-in parameters: `SysRectMullionProfile` widths
-    -1007300 and -1007301 on the two sides of the path across
-    (`m_pathNorm × path`), thickness -1007304 along the normal about the
-    offset -1007351; with flag 4 (a border mullion) both widths lie on one
-    side, from the path towards `m_pathNorm × path` *(verified with the
-    corner mullions: 1,404 of 1,425 mullions of `33271010`)*;
+    with the type's built-in parameters: `SysRectMullionProfile` width
+    -1007300 towards `m_pathNorm × path` and -1007301 the other way,
+    thickness -1007304 along the normal about the offset -1007351; with
+    flag 4 (a border mullion) both widths lie on one side, from the path
+    towards `m_pathNorm × path` *(verified with the stored geometry of
+    every rectangular mullion symbol of `33271010`, 311, the off-centre
+    ones among them)*;
     `SysQuadMullionProfile` (a corner
     mullion) a rectangle of its depths -1007357 and -1007358 about the
     path *(verified)*; `SysCustMullionProfile` the profile family type
     `m_profileId`, its profile's loops square to the path *(verified: every
     mullion of `c805df44`, 6,160; its orientation and side are taken from
-    the stored box)*; `SysVMullionProfile`
-    (parameters -1007354, -1007355, -1007304; corner angles
-    `m_cornerAngles`) is not read;
+    the stored box)*; `SysVMullionProfile` (a V corner mullion) two legs
+    of the thickness -1007304 at right angles, along the directions of
+    its corner angles `m_cornerAngles` (from `m_pathNorm × path` towards
+    `m_pathNorm`), each leg's middle line the thickness away from the line
+    through the path along it (away from the other leg), reaching its
+    length -1007354 or -1007355 from where the middle lines meet and half
+    the thickness back past it: an L *(verified: the 14 V mullions of
+    `33271010`, all of right angles, legs of 5 in, 2.5 in thick, offset
+    0; which length goes with which leg is not known, both being equal)*;
+  - a mullion's ends are trimmed to its neighbours (`m_trimEnd0`,
+    `m_trimEnd1`: `MullionTrimNeighbor`, its `m_trimPath` the neighbour's
+    path through the end, `m_nbrSymbolId` the neighbour's type, `m_flags`,
+    `m_trimPathNorm`, `m_direction`, `m_flip`, `m_cornerAngles`): the end
+    stops at the neighbour's side or meets it in a mitre, by rules not
+    decoded (flags 1, 2, 3, 6 and 7 against the types' widths and the
+    border flag give different cuts among the 14 trimmed symbols of
+    `33271010`, the same flags sometimes none); the symbol's stored
+    geometry keeps the result, one planar end face per end (and the
+    untrimmed ends' planes as faces without loops), and the import cuts
+    the mullion's prism along those faces' planes, mitcad#385 *(verified:
+    the 14 trimmed mullions of `33271010` within 1e-11 mm of their
+    stored boxes; `1447005`'s volume equal to its stored body's)*;
   - a panel's `SysPanelFamSym` holds a `CurtainCellSymFamRef`: its cell's
     loops (`m_pCurveLoops`) on its plane (`m_pSurf`), `m_flipped`, and the
     symbol's `m_thickness` and `m_offset`: the panel is the cell's loops
@@ -462,33 +575,93 @@ import report (see the ticket's numbers).
   `Path3d` element `m_oPathProvider.m_path3dId` (its `m_curveLoops`, model
   coordinates, the rail's extensions included), the profile the profile
   family type `m_profileData.m_profileFamSymId` (its type's `m_profileId`)
-  *(verified: 169 of 213 rails of `33271010`)*.
-- **Profile families** (category -2003000) keep no profile in the
-  project: their types' geometry is a box of reference lines *(seen)*.
-  The profile is in the family's document in its partition (the loaded
-  families' documents after the chains): the family's record's
-  `FamilyDocument.m_big2SmallMap2` maps project element ids to the
-  document's (`ForeignElemRef.m_id64`), and the document whose elements
-  hold all those ids is the family's; its `CurveElem`s' curves
-  (`m_pCurveDriver` → `m_pCrv`; an ellipse as 32 chords) are the profile,
-  in the family's xy plane
-  *(verified: the circular handrail's two arcs of radius 1/16 ft)*.
-- **Wall sweeps** (`WallSweep`): the path is the curves of the
-  `WallSweepCurveGStep` of its geometry steps (`m_curves`, its wall
-  `m_hostId`), the profile `m_wallSweepInfo.m_profileId`, its extents
-  `m_oProfileExtents` *(seen)*; the path runs along the wall's location
-  line and the profile stands at one of the wall's faces *(verified: 343
-  of 390 sweeps and slab edges of `33271010`)*.
+  swept along it as one sweep keeps it, square to the path and turning
+  with it in the path's plane (a post return's rail lies on the inside of
+  its folds) *(verified: 213 of 213 rails of `33271010`; the spiral
+  stair's 4 rails run along helices, mitcad#385: the profile swept along
+  the one helix their pieces make, its ends cut by vertical planes
+  through the helix's ends, square to it in plan, as the stored rails
+  end)*. An elliptical rail's stored body rounds its corners (surfaces of
+  revolution about each corner); the import mitres them *(seen: `1501328`
+  within 1e-5 mm of its stored box)*.
+- **Profile families** (category -2003000): each type keeps its profile
+  at its own dimensions in its record, `FamilySymbol.m_arrProfileLoops`
+  (`CurveLoop`s in the family's xy plane, its origin where the sweep's
+  path runs) *(verified: the copings' and rails' types of `33271010`,
+  whose family documents draw one type's dimensions)*; their types'
+  geometry is a box of reference lines *(seen)*. The family's own
+  document in its partition (the loaded families' documents after the
+  chains) holds its curves at the family's dimensions: the family's
+  record's `FamilyDocument.m_big2SmallMap2` maps project element ids to
+  the document's (`ForeignElemRef.m_id64`), and the document whose
+  elements hold all those ids is the family's; its `CurveElem`s' curves
+  (`m_pCurveDriver` → `m_pCrv`) are read where a type has no loops of its
+  own *(verified: the circular handrail's two arcs of radius 1/16 ft)*.
+- **Wall sweeps** (`WallSweep`): per wall a `WallSweepCurveGStep` of its
+  geometry steps (`m_hostId` the wall) gives a path, `m_offsetCurves`
+  (`m_curves` moved by `m_wallSweepInfo.m_wallOffset` from the wall) where
+  the profile's origin runs: at the wall's face, at the height
+  `m_distance` from the end `m_distanceMeasuredFrom` names, with the
+  pull-backs and extensions (`m_pullBackParam0`, `m_pullBackParam1`)
+  applied *(seen)*; the step's `m_side` puts the profile's x to the left
+  of the path (0: along `up × path`) or the right (1: mirrored), and
+  `m_wallSweepInfo.m_flipped` hangs it below the path (its y mirrored)
+  *(verified: 390 of the 390 sweeps and slab edges of `33271010` built
+  this way)*. Its ends (mitcad#385): the step's `m_pullBackParam0` (the
+  path's starts) and `m_pullBackParam1` (its ends) hold `PullBack`s
+  (`m_end` the wall's end pulled back from, 0xffffffff where an opening in
+  the wall breaks the path; `m_offsets`, already applied to the curves;
+  `m_returns`: `ReturnInfo`, `m_angle` and `m_length`). An opening's
+  return is at the ends of the path's pieces beside the gap (the path's
+  curves keep a curve of no length on the opening's far side), else at
+  the path's own end; the wall end's at the path's end. A return turns by
+  its angle away from the profile's side (round the wall's end) and runs
+  its length, mitred to the sweep; a length of 0 or -1 closes the corner
+  as a return of no length would (the mitre's wedge and the return's
+  triangle). `m_joinedSweeps` (`TagEnd.m_end`, `EndInfo.m_elemId`) names
+  the sweep (or its own other path) an end meets: the two are mitred
+  along the bisector of their directions there, before any return. The
+  sweeps a sweep is joined to cut it (`CutPairGStep.m_otherId`, as for
+  walls): a coping meeting another coping at a corner is cut by that
+  coping's solid as it is after its own cuts. Paths of two walls in line
+  are one line *(verified: the 66 of 290 sweeps with returns or joins
+  whose stored meshes measure within 0.2 % of their stored volumes,
+  `1966901` and `1968773` equal to theirs; a sample of 16 others against
+  their stored faces within 0.15 %)*. Not read: the extents
+  `m_oProfileExtents` (`ProfileExtents`: `m_in`, `m_out`, `m_left`,
+  `m_right`, the profile's reach about its path) *(seen)*.
 - **Slab edges, fascias, gutters** (`SweepHost`): the paths are the
   `m_pathLoop`s of its `SweepHostLoopData` with `m_driveVec` (the
   profile's up), the profile its type's `m_profileId`, the offsets the
-  parameters -1012825 (across) and -1012827 (up) *(verified as above)*.
+  parameters -1012825 (across) and -1012827 (up); which of the profile's
+  mirror images is taken from the stored box *(verified as above)*.
 - **Stair runs of treads and risers** (`StairsRun` of a
   non-monolithic `StairsRunType`): the type's `m_hasTread`,
   `m_treadThickness`, `m_hasRiser`, `m_riserThickness`, `m_nosingLength`;
   the treads' depths run from nosing to nosing, a riser stands the nosing
   length behind its tread's front edge *(verified: 40 of 43 runs of
   `33271010`)*.
+- **Monolithic runs**: the steps of the same depths, each riser leaning
+  from its base the nosing length behind its tread's front up to that
+  front, each tread reaching back to the next riser's base; the support
+  line (`m_oSupportPathCurveLoops`) runs along the nosings, the underside
+  the type's `m_structuralDepth` (square to it) below the line through the
+  risers' bases, a riser and the nosing's rise below the support line
+  *(verified: the geometry of two runs of `33271010`, 17 and 12 risers;
+  the stored box of the third reaches the support line's end, above the
+  run's top)*.
+- **Spiral runs** (a `StairsSpiralRunCell` among the run's objects;
+  `StairsRunInfo`: the centre `m_origin`, the radii `m_bndBox.m_corners`
+  0 and 2, per piece of the run; the riser lines in plan
+  `m_compatibleCrvInfo.m_orderedRisers` → `m_pRiserCurve`, the first at
+  the start) turn about their centre (mitcad#385): tread k's front on
+  riser line k, its back on riser line k + 1 moved on by the nosing
+  length, between the circles of the two radii, its top at its step's
+  height and its type's tread thickness below; the run type's nosing
+  profile (`m_nosingProfileTypeId`, a profile family type) runs under its
+  front from circle to circle *(verified: the 2 spiral runs of
+  `33271010`, open risers, within 1e-8 mm of their stored boxes and
+  0.17 % above their stored meshes' volumes, whose arcs are chords)*.
 - **Landings** (`StairsLanding`): the boundary `m_oBoundary` at the top
   `m_baseElevation`, down by its type's (`StairsLandingType`) `m_thickness`
   when monolithic, else its `m_treadThickness` *(verified: 17 of 17)*.
@@ -497,8 +670,18 @@ import report (see the ticket's numbers).
   every group type, placed or not, carry `m_unplacedOwnerId` *(verified on
   the MIT project's 11 groups)*.
 
+The import (`mitcad_import::rvt::plan`) sweeps a profile along each chain
+of its paths as one solid: a straight chain an extrusion of its length, a
+planar chain of lines and arcs one sweep (the profile square to the
+chain's start, its x across the path, `Item::Sweep` with the profile's
+frame as the sweep starts: no other placement, so the solid lies on the
+path; a closed chain starts in the middle of a line), a chain that is not
+planar (a rail up a stair) an extrusion per line, a chain of helices one
+sweep along a fixed helix path (mitcad#385).
+
 `mitcad-rvt-inspect geometry` counts the faces by surface and the seam
-gaps; with an element id it lists that element's bodies and placed types.
+gaps; with an element id it lists that element's bodies and placed types,
+and with `--points` each face's loops as points (feet).
 
 ## The test corpus
 

@@ -1163,6 +1163,14 @@ ShapePtr miter(const std::string& feature, const Shape& body, const std::vector<
     // Each group on a copy of its own: a chamfer changes its input.
     const ShapePtr own = detail::working_copy(body);
     BRepFilletAPI_MakeChamfer maker(own->occt());
+    // (Contours stop where their edges turn, as bevel's.)
+    NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> selected;
+    for (int edge = 0; edge < own->edge_count(); ++edge) {
+      if (owner[static_cast<std::size_t>(edge)] >= 0) {
+        selected.Add(own->edge(edge));
+      }
+    }
+    maker.StopChainsAtTurns(selected);
     add_chamfers(maker, *own, sets, owner, scale, &only);
     detail::build(maker);
     if (!maker.IsDone()) {
@@ -1439,6 +1447,17 @@ const char* corner_name(ChamferCorner corner) {
 ShapePtr bevel(const std::string& feature, const Shape& body, const std::vector<ChamferSet>& sets,
                const std::vector<int>& owner, ChamferCorner corner, double scale) {
   BRepFilletAPI_MakeChamfer maker(body.occt());
+  // As the fillets' (round_edges): OCCT's contours stop where their edges
+  // turn, unless the next edge is selected too, and a chamfer of exactly
+  // the selected edges ends there, its analytic blend running on past the
+  // vertex cut by the face beyond the crease (port patches 0180, 0531).
+  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> selected;
+  for (int edge = 0; edge < body.edge_count(); ++edge) {
+    if (owner[static_cast<std::size_t>(edge)] >= 0) {
+      selected.Add(body.edge(edge));
+    }
+  }
+  maker.StopChainsAtTurns(selected);
   add_chamfers(maker, body, sets, owner, scale);
   const std::vector<int> contour_sets = check_contours(maker, body, sets, owner);
   const std::vector<TopoDS_Shape> corners =
@@ -1470,7 +1489,7 @@ ShapePtr bevel(const std::string& feature, const Shape& body, const std::vector<
   if (!maker.IsDone()) {
     throw std::runtime_error("chamfer failed; the distance may be too large for the edges");
   }
-  ShapePtr result = name_result(maker, feature, "chamfer", body);
+  ShapePtr result = join_at_turn_stops(name_result(maker, feature, "chamfer", body), maker.ChainTurnStops());
   if (!setbacks.empty()) {
     return detail::setback_corners(feature, "chamfer", body, *result, setbacks);
   }

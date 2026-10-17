@@ -52,6 +52,8 @@ fn flatten(path: &mut Path) {
             }
             Seg::Spline { poles, .. } => poles.iter_mut().for_each(|p| p[2] = 0.0),
             Seg::Arc { frame, .. } | Seg::Ellipse { frame, .. } => frame[2][3] = 0.0,
+            // (No profile holds a helix.)
+            Seg::Helix { .. } => {}
         }
     }
 }

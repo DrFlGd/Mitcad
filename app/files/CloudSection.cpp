@@ -22,6 +22,7 @@
 #include <QPushButton>
 #include <QRadioButton>
 #include <QTimer>
+#include <QToolButton>
 #include <QUrl>
 #include <QVBoxLayout>
 #include <QtLogging>
@@ -95,6 +96,33 @@ void CloudSection::build() {
   column->setContentsMargins(0, 0, 0, 0);
   m_form = new QFormLayout;
   column->addLayout(m_form);
+  // The address comes first: it is what people have (the clone button of
+  // their server, the address bar of the repository's page) and paste;
+  // the fields under Details are derived from it and stay editable.
+  m_url = new QLineEdit;
+  m_url->setObjectName(QStringLiteral("cloudAddress"));
+  m_url->setMinimumWidth(380);
+  m_url->setPlaceholderText(tr("https://… or git@…:owner/repo.git"));
+  m_url->setToolTip(tr("The repository's address: paste the one your server shows (https://host/owner/repo.git, "
+                       "git@host:owner/repo.git, ssh://…, or the page's address), or a folder. The details "
+                       "below are read from it."));
+  m_form->addRow(tr("Repository addr&ess:"), m_url);
+  m_details = new QToolButton;
+  m_details->setObjectName(QStringLiteral("cloudDetails"));
+  m_details->setText(tr("Details"));
+  m_details->setCheckable(true);
+  m_details->setAutoRaise(true);
+  m_details->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+  m_details->setArrowType(Qt::RightArrow);
+  m_details->setToolTip(tr("Show or change the service, server, owner and repository the address is made of"));
+  m_summary = new QLabel;
+  m_summary->setObjectName(QStringLiteral("cloudSummary"));
+  m_summary->setTextFormat(Qt::PlainText);
+  m_summary->setWordWrap(true);
+  auto* detailsRow = new QHBoxLayout;
+  detailsRow->addWidget(m_details);
+  detailsRow->addWidget(m_summary, 1);
+  m_form->addRow(QString(), detailsRow);
   m_service = new QComboBox;
   for (const CloudService service : kServices) {
     m_service->addItem(cloudServiceName(service), static_cast<int>(service));
@@ -148,12 +176,7 @@ void CloudSection::build() {
   m_folderLabel = new QLabel(tr("Repository fol&der:"));
   m_folderLabel->setBuddy(m_folder);
   m_form->addRow(m_folderLabel, m_folderRow);
-  m_url = new QLineEdit;
-  m_url->setObjectName(QStringLiteral("cloudAddress"));
-  m_url->setMinimumWidth(380);
-  m_url->setToolTip(tr("The address git uses; type one, or let the fields above make it"));
-  m_form->addRow(tr("Addr&ess:"), m_url);
-  m_create = new QPushButton(tr("Create Repository in &Browser..."));
+  m_create =new QPushButton(tr("Create Repository in &Browser..."));
   m_create->setAutoDefault(false);
   m_create->setToolTip(tr("Make an empty repository on the service's page, then come back: the address is "
                           "checked again"));
@@ -193,12 +216,36 @@ void CloudSection::build() {
       fieldsChanged();
     }
   });
-  for (QLineEdit* edit : {m_server, m_owner, m_folder}) {
-    connect(edit, &QLineEdit::textEdited, this, [this] { fieldsChanged(); });
-  }
-  connect(m_repository, &QLineEdit::textEdited, this, [this] {
+  // A repository address pasted into the Server, Owner or Repository field
+  // is read as an address, not kept as a host name or a name.
+  connect(m_server, &QLineEdit::textEdited, this, [this](const QString& text) {
+    if (!addressPasted(m_server, text, true)) {
+      fieldsChanged();
+    }
+  });
+  connect(m_owner, &QLineEdit::textEdited, this, [this](const QString& text) {
+    if (!addressPasted(m_owner, text, false)) {
+      fieldsChanged();
+    }
+  });
+  connect(m_folder, &QLineEdit::textEdited, this, [this] { fieldsChanged(); });
+  connect(m_repository, &QLineEdit::textEdited, this, [this](const QString& text) {
+    if (addressPasted(m_repository, text, false)) {
+      return;
+    }
     m_repositoryTyped = true;
     fieldsChanged();
+  });
+  connect(m_details, &QToolButton::toggled, this, [this](bool open) {
+    m_detailsOpen = open;
+    showFields();
+    // The fields as they stand, for the owner's log.
+    qInfo().noquote() << QStringLiteral("Cloud section: details %1 (service %2, server %3, owner %4, repository %5)")
+                             .arg(open ? QStringLiteral("shown") : QStringLiteral("hidden"), m_service->currentText(),
+                                  m_server->text(), m_owner->text(), m_repository->text());
+    if (QWidget* top = window()) {
+      top->adjustSize();
+    }
   });
   connect(m_https, &QRadioButton::toggled, this, [this] {
     if (!m_updating) {
@@ -223,32 +270,51 @@ void CloudSection::build() {
 }
 
 QWidget* CloudSection::firstField() const {
-  switch (m_address.service) {
-  case CloudService::GitHub:
-  case CloudService::GitLab:
-    return m_owner;
-  case CloudService::Forgejo:
-    return m_server->text().isEmpty() ? m_server : m_owner;
-  case CloudService::SharedFolder:
-    return m_folder;
-  case CloudService::Other:
-    break;
-  }
+  // The address is what is pasted first; the details follow from it.
   return m_url;
 }
 
 void CloudSection::showFields() {
   const CloudService service = m_address.service;
   const bool known = knownService(service);
-  m_form->setRowVisible(m_serverLabel, service == CloudService::Forgejo);
-  m_form->setRowVisible(m_ownerLabel, known);
-  m_form->setRowVisible(m_connectLabel, known);
-  m_form->setRowVisible(m_folderLabel, service == CloudService::SharedFolder);
-  m_create->setVisible(known);
-  // A known service's address is made of the fields, but can be typed.
-  m_url->setPlaceholderText(service == CloudService::Other
-                                ? tr("ssh://server/project.git, https://server/project.git or a folder")
-                                : QString());
+  m_details->setArrowType(m_detailsOpen ? Qt::DownArrow : Qt::RightArrow);
+  m_form->setRowVisible(m_service, m_detailsOpen);
+  m_form->setRowVisible(m_serverLabel, m_detailsOpen && service == CloudService::Forgejo);
+  m_form->setRowVisible(m_ownerLabel, m_detailsOpen && known);
+  m_form->setRowVisible(m_connectLabel, m_detailsOpen && known);
+  m_form->setRowVisible(m_folderLabel, m_detailsOpen && service == CloudService::SharedFolder);
+  m_create->setVisible(m_detailsOpen && known);
+  updateSummary();
+}
+
+void CloudSection::updateSummary() {
+  const CloudAddress& a = m_address;
+  QString text;
+  switch (a.service) {
+  case CloudService::GitHub:
+  case CloudService::GitLab:
+  case CloudService::Forgejo:
+    if (!a.owner.isEmpty() || !a.repository.isEmpty()) {
+      const QString host = cloudServiceHost(a.service, a.server);
+      text = tr("%1%2: %3/%4 over %5")
+                 .arg(cloudServiceName(a.service), host.isEmpty() || a.service != CloudService::Forgejo
+                                                       ? QString()
+                                                       : QStringLiteral(" (%1)").arg(host),
+                      a.owner, a.repository, a.connect == CloudConnect::Ssh ? QStringLiteral("SSH") : QStringLiteral("HTTPS"));
+    }
+    break;
+  case CloudService::SharedFolder:
+    if (!a.folder.isEmpty()) {
+      text = tr("Shared folder: %1").arg(a.folder);
+    }
+    break;
+  case CloudService::Other:
+    if (!a.other.isEmpty()) {
+      text = tr("Other address, used as it is");
+    }
+    break;
+  }
+  m_summary->setText(text);
 }
 
 void CloudSection::setDefaultConnect(CloudConnect connect) {
@@ -267,27 +333,63 @@ void CloudSection::setFolderName(const QString& folderName) {
   fieldsChanged();
 }
 
-void CloudSection::setAddress(const QString& url) {
-  m_address = parseCloudAddress(url, m_server->text());
+void CloudSection::setField(QLineEdit* edit, const QString& text) {
+  edit->setText(text);
+  // What the field held when it was last set: a paste is a change by more
+  // than one character at once.
+  edit->setProperty("pasteBase", text);
+}
+
+// The controls from m_address (the address field not included).
+void CloudSection::showAddress() {
   m_updating = true;
   m_service->setCurrentIndex(m_service->findData(static_cast<int>(m_address.service)));
   if (knownService(m_address.service)) {
-    m_server->setText(m_address.server);
-    m_owner->setText(m_address.owner);
-    m_repository->setText(m_address.repository);
+    setField(m_server, m_address.server);
+    setField(m_owner, m_address.owner);
+    setField(m_repository, m_address.repository);
     m_https->setChecked(m_address.connect == CloudConnect::Https);
     m_ssh->setChecked(m_address.connect == CloudConnect::Ssh);
   }
   if (m_address.service == CloudService::SharedFolder) {
-    m_folder->setText(m_address.folder);
+    setField(m_folder, m_address.folder);
   }
   m_updating = false;
+}
+
+void CloudSection::setAddress(const QString& url) {
+  m_address = parseCloudAddress(url, m_server->text());
+  showAddress();
   m_repositoryTyped = !url.trimmed().isEmpty();
   showFields();
   m_url->setText(m_address.service == CloudService::SharedFolder ? QDir::toNativeSeparators(m_address.url())
                                                                  : m_address.url());
   scheduleCheck();
   emit addressChanged(this->url());
+}
+
+bool CloudSection::addressPasted(QLineEdit* edit, const QString& text, bool bareHost) {
+  const QString before = edit->property("pasteBase").toString();
+  edit->setProperty("pasteBase", text);
+  if (qAbs(text.size() - before.size()) < 2 || !looksLikeRepositoryAddress(text, bareHost)) {
+    return false;
+  }
+  // A whole address: read as the address field's own. The field gets what
+  // it held before back (or the part the address has for it).
+  const CloudAddress parsed = parseCloudAddress(text, edit == m_server ? QString() : m_server->text());
+  if (!knownService(parsed.service)) {
+    setField(edit, before);
+  }
+  m_address = parsed;
+  showAddress();
+  if (knownService(parsed.service)) {
+    m_repositoryTyped = true;
+  }
+  showFields();
+  m_url->setText(parsed.service == CloudService::SharedFolder ? QDir::toNativeSeparators(parsed.url()) : parsed.url());
+  scheduleCheck();
+  emit addressChanged(url());
+  return true;
 }
 
 void CloudSection::fieldsChanged() {
@@ -303,8 +405,12 @@ void CloudSection::fieldsChanged() {
     const QString made = m_address.url();
     m_url->setText(m_address.service == CloudService::SharedFolder ? QDir::toNativeSeparators(made) : made);
   } else {
-    m_address.other = m_url->text().trimmed();
+    // As the address field holds it, read the way git is given it (the
+    // command and quotes of a pasted line off, https:// for host/path).
+    const CloudAddress typed = parseCloudAddress(m_url->text(), m_server->text());
+    m_address.other = typed.service == CloudService::Other ? typed.other : m_url->text().trimmed();
   }
+  updateSummary();
   scheduleCheck();
   emit addressChanged(url());
 }
@@ -312,21 +418,11 @@ void CloudSection::fieldsChanged() {
 void CloudSection::addressEdited(const QString& text) {
   // A typed address fills the fields it can (another service's address
   // switches the service).
-  const CloudAddress parsed = parseCloudAddress(text, m_server->text());
-  m_address = parsed;
-  m_updating = true;
-  m_service->setCurrentIndex(m_service->findData(static_cast<int>(parsed.service)));
-  if (knownService(parsed.service)) {
-    m_server->setText(parsed.server);
-    m_owner->setText(parsed.owner);
-    m_repository->setText(parsed.repository);
-    m_https->setChecked(parsed.connect == CloudConnect::Https);
-    m_ssh->setChecked(parsed.connect == CloudConnect::Ssh);
+  m_address = parseCloudAddress(text, m_server->text());
+  showAddress();
+  if (knownService(m_address.service)) {
     m_repositoryTyped = true;
-  } else if (parsed.service == CloudService::SharedFolder) {
-    m_folder->setText(parsed.folder);
   }
-  m_updating = false;
   showFields();
   scheduleCheck();
   emit addressChanged(url());
@@ -397,6 +493,28 @@ void CloudSection::startCheck() {
     finishCheck(address, problem(QStringLiteral("invalid_url"),
                                  tr("The address holds a password or a token. Mitcad never gives them to git: use "
                                     "the address without it, and sign in with an SSH key or a credential helper.")));
+    return;
+  }
+  // The address as the fields read it (the owner's log shows what a pasted
+  // address made of them).
+  if (knownService(m_address.service)) {
+    qInfo().noquote() << QStringLiteral("Cloud address: service %1, server %2, owner %3, repository %4, %5")
+                             .arg(cloudServiceName(m_address.service),
+                                  m_address.service == CloudService::Forgejo ? m_address.server : QStringLiteral("-"),
+                                  m_address.owner, m_address.repository,
+                                  m_address.connect == CloudConnect::Ssh ? QStringLiteral("SSH") : QStringLiteral("HTTPS"));
+  } else {
+    qInfo().noquote() << QStringLiteral("Cloud address: service %1").arg(cloudServiceName(m_address.service));
+  }
+  // Before git is asked: what is no address at all is said so (git would
+  // read it as a path in the program's folder).
+  const QString invalid = m_address.service == CloudService::SharedFolder
+                              ? (QFileInfo(address).isAbsolute()
+                                     ? QString()
+                                     : tr("This is not a valid repository address: %1").arg(QDir::toNativeSeparators(address)))
+                              : repositoryAddressProblem(address);
+  if (!invalid.isEmpty()) {
+    finishCheck(address, problem(QStringLiteral("invalid_url"), invalid));
     return;
   }
   if (m_address.service == CloudService::SharedFolder) {

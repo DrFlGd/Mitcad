@@ -496,6 +496,7 @@ fn planar_curve(
     let vector = |v: V3| [dot(v, frame.x_axis), dot(v, frame.y_axis)];
     Ok(match curve {
         Curve3::Point(_) => return Err("a face's boundary has a degenerate edge".into()),
+        Curve3::Helix { .. } => return Err("a face's boundary has a helical edge".into()),
         Curve3::Line { start, end } => SegmentGeometry::Line {
             start: at(*start),
             end: at(*end),

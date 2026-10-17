@@ -197,3 +197,6 @@ pub use document::AutoOperation;
 pub use kernel::ToolContact;
 #[cfg(test)]
 mod auto_operation_tests;
+// The BUILD tab: library sources, derived parts, bound lengths and the
+// placement rules of slot-profile assemblies (mitcad#375).
+pub mod build;

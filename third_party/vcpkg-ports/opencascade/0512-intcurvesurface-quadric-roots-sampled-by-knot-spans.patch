@@ -1,0 +1,97 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+IntCurveSurface: the roots of a B-spline curve's distance to a quadric
+are looked for between samples at least as dense as its knot spans
+(mitcad#349).
+
+The exact intersection of a curve with a plane, cylinder, cone or sphere
+(IntCurveSurface_QuadricCurveExactInterUtils::PerformIntersection) samples
+the curve's distance to the quadric over each of the curve's C1 intervals
+and finds the roots between the samples (math_FunctionAllRoots). The
+number of samples comes from IntCurveSurface_TheHCurveTool::NbSamples,
+which for a B-spline is its knots times its degree, capped at 50 for the
+whole interval. A stored helix edge of a threaded hole runs 32 turns
+(a parameter range of about 205, 1563 knot spans): a sample came every
+4 units, two thirds of a turn, and where the helix dipped below a cylinder
+across the hole's end and rose again within one step, neither crossing
+was found. The edge/face intersection (IntTools_EdgeFace) found one of
+the three crossings of such an edge with the cylinder, the section curves
+on the hole's faces lost their ends there, and the face of the cylinder
+over the hole's opening was left whole with the section curves inside it
+as internal edges: the cut kept it as an internal face.
+
+For a B-spline curve the samples are now at least the curve's degree for
+each knot span in the interval (at most 100000); other curves and B-splines
+with fewer spans keep the count they had.
+
+--- a/src/ModelingAlgorithms/TKGeomAlgo/IntCurveSurface/IntCurveSurface_QuadricCurveExactInterUtils.pxx
++++ b/src/ModelingAlgorithms/TKGeomAlgo/IntCurveSurface/IntCurveSurface_QuadricCurveExactInterUtils.pxx
+@@ -15,7 +15,11 @@
+ #ifndef IntCurveSurface_QuadricCurveExactInterUtils_HeaderFile
+ #define IntCurveSurface_QuadricCurveExactInterUtils_HeaderFile
+ 
++#include <Adaptor3d_Curve.hxx>
++#include <GeomAbs_CurveType.hxx>
+ #include <GeomAbs_SurfaceType.hxx>
++#include <Geom_BSplineCurve.hxx>
++#include <algorithm>
+ #include <IntSurf_Quadric.hxx>
+ #include <NCollection_Array1.hxx>
+ #include <NCollection_Sequence.hxx>
+@@ -30,6 +34,44 @@ constexpr double EPSX    = 0.00000000000001;
+ constexpr double EPSDIST = 0.00000001;
+ constexpr double EPSNUL  = 0.00000001;
+ 
++//! Mitcad (mitcad#349): the fewest samples of a B-spline curve's distance
++//! to the quadric over [theU1, theU2] that the roots are looked for between:
++//! its degree for each of its knot spans there. The curve tool's sample
++//! count is capped at 50 for the whole range, so that on a helix of 32
++//! turns a sample came every two thirds of a turn and two roots within one
++//! step (where the helix dips below the quadric and rises again) were not
++//! found.
++inline int MinRootSamples(const occ::handle<Adaptor3d_Curve>& theCurve,
++                          const double                        theU1,
++                          const double                        theU2)
++{
++  if (theCurve.IsNull() || theCurve->GetType() != GeomAbs_BSplineCurve)
++  {
++    return 0;
++  }
++  const occ::handle<Geom_BSplineCurve> aBC = theCurve->BSpline();
++  if (aBC.IsNull())
++  {
++    return 0;
++  }
++  int aNbSpans = 0;
++  for (int i = aBC->FirstUKnotIndex(); i < aBC->LastUKnotIndex(); ++i)
++  {
++    if (aBC->Knot(i + 1) > theU1 && aBC->Knot(i) < theU2)
++    {
++      ++aNbSpans;
++    }
++  }
++  return std::min(aNbSpans * aBC->Degree() + 1, 100000);
++}
++
++//! Other curve types (a line) keep the curve tool's sample count.
++template <typename CurveType>
++int MinRootSamples(const CurveType&, const double, const double)
++{
++  return 0;
++}
++
+ //! Performs intersection of a curve with a quadric surface.
+ //! @tparam SurfaceType The surface type (occ::handle<Adaptor3d_Surface> or void*)
+ //! @tparam SurfaceTool The surface tool class
+@@ -96,7 +138,9 @@ void PerformIntersection(const SurfaceType&            theSurface,
+     double U1 = anIntervals.Value(ii);
+     double U2 = anIntervals.Value(ii + 1);
+ 
+-    math_FunctionSample   aSample(U1, U2, CurveTool::NbSamples(theCurve, U1, U2));
++    const int aNbSamples =
++      std::max(CurveTool::NbSamples(theCurve, U1, U2), MinRootSamples(theCurve, U1, U2));
++    math_FunctionSample   aSample(U1, U2, aNbSamples);
+     QuadCurvFuncType      aFunction(aQuadric, theCurve);
+     math_FunctionAllRoots aRoots(aFunction, aSample, EPSX, EPSDIST, EPSNUL);
+ 

@@ -873,8 +873,14 @@ private:
       const auto grey = [&](const std::string& file) {
         return blend(g, projection, images(g, projection, file, ccl::u_colorspace_data), false);
       };
+      // The colour image is sRGB: Cycles' scene linear (Rec.709) with the
+      // sRGB transfer function, which the kernel decodes per lookup. Not
+      // u_colorspace_srgb: Cycles 5.2 encodes such pixels to sRGB once more
+      // on loading, which renders them washed out (mitcad#386).
       ccl::ShaderOutput* color =
-          colorImage ? blend(g, projection, images(g, projection, m.texture, ccl::u_colorspace_srgb), false) : nullptr;
+          colorImage
+              ? blend(g, projection, images(g, projection, m.texture, ccl::u_colorspace_scene_linear_srgb), false)
+              : nullptr;
       if (occlusionImage) {
         auto* occluded = g.create_node<ccl::MixColorNode>();
         occluded->set_blend_type(ccl::NODE_MIX_MUL);

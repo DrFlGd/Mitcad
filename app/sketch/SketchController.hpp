@@ -466,6 +466,7 @@ private:
   QPointer<QLineEdit> m_editor;
   FieldSpec::Kind m_editorKind = FieldSpec::Kind::Length;
   std::function<void(const QString&)> m_editorAccept;
+  std::optional<int> m_editorToolSession; // a callback belonging to this tool session
   QPointer<QLabel> m_editorLabel; // "d3 =" before the editor (mitcad#231)
   QString m_editorDimension;       // the dimension it edits
   QString m_editorText;            // the text it opened with

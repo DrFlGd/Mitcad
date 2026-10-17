@@ -82,6 +82,25 @@ double screenDistance(const QPointF& a, const QPointF& b) {
 // a snap only places them.
 bool shares(const Snap& snap) { return snap.atPoint() || snap.kind == Snap::Kind::Origin; }
 
+// The point a command made at `at` (the nearest new one of `result`, where
+// it really is), held where `snap` put it, as the line tool does
+// (mitcad#353). `shared`: the command took an existing point for a click
+// that snapped onto one (pointInput), so there is nothing to hold; without
+// it (commands that take coordinates only) a snapped existing point gets a
+// coincident constraint.
+void holdPoint(SketchOp& op, const QJsonObject& result, const V2& at, const Snap& snap, bool shared) {
+  if (!snap.onGeometry() || (shared && shares(snap))) {
+    return;
+  }
+  const SketchModel& model = op.model();
+  const QString point = pointNear(model, result, at);
+  const auto where = model.pointAt(point);
+  if (point.isEmpty() || !where || dist(*where, at) > 1e-6) {
+    return;
+  }
+  op.constrain(point, snap);
+}
+
 // A snap at a position the tool moved the point to (typed values,
 // inference): no longer on what it snapped to.
 Snap at(const Snap& snap, const V2& position) {
@@ -1459,6 +1478,15 @@ protected:
       return;
     }
     const QString arc = made(result).value(0);
+    // The points clicked where the cursor snapped onto geometry are held
+    // there (mitcad#353); not when the auto constraints placed the arc.
+    if (!placed) {
+      const bool tangent = m_mode == QStringLiteral("tangent");
+      if (!tangent) {
+        holdPoint(op, result, click(0), snapOf(0), true);
+      }
+      holdPoint(op, result, click(1), snapOf(1), true);
+    }
     if (m_c.typed(QStringLiteral("radius"))) {
       op.addDimension({{QStringLiteral("type"), QStringLiteral("radius")}, {QStringLiteral("curve"), arc}},
                       m_c.fieldExpression(QStringLiteral("radius")));
@@ -1627,6 +1655,12 @@ protected:
       return;
     }
     const SketchModel& model = op.model();
+    if (m_mode == QStringLiteral("edge")) {
+      // The edge's two ends, where the cursor snapped onto geometry
+      // (mitcad#353): the polygon starts at the first click.
+      holdPoint(op, result, click(0), snapOf(0), false);
+      holdPoint(op, result, click(1), snapOf(1), false);
+    }
     if (m_mode != QStringLiteral("edge") && snapOf(0).onGeometry()) {
       // The polygon's construction circle has its centre.
       for (const QString& id : entities(result)) {
@@ -1862,6 +1896,14 @@ protected:
       refuse(m_c, op, name());
       return;
     }
+    // The end centres (and the first centre) clicked where the cursor
+    // snapped onto geometry are held there, an existing point by a
+    // coincident, as the slot command takes coordinates only (mitcad#353).
+    // An overall slot's ends are not its clicks.
+    if (m_mode != QStringLiteral("overall")) {
+      holdPoint(op, result, click(0), snapOf(0), false);
+      holdPoint(op, result, click(1), snapOf(1), false);
+    }
     op.commit();
     qDebug().noquote() << QStringLiteral("Added slot, width %1 mm [%2]")
                               .arg(w)
@@ -1880,6 +1922,17 @@ public:
   using StepTool::StepTool;
 
   QString name() const override { return QObject::tr("Ellipse"); }
+
+  void press(const Snap& snap) override {
+    // The major radius is typed in the second step; its fields are gone at
+    // the last click, so what was typed is kept for its dimension.
+    if (clicked() == 0) {
+      m_major.clear();
+    } else if (clicked() == 1) {
+      m_major = m_c.typed(QStringLiteral("major")) ? m_c.fieldExpression(QStringLiteral("major")) : QString();
+    }
+    StepTool::press(snap);
+  }
 
   void paint(ToolPreview& preview) const override {
     if (clicked() == 0) {
@@ -1967,17 +2020,34 @@ protected:
       return;
     }
     const QString id = made(result).value(0);
-    if (m_c.typed(QStringLiteral("major"))) {
-      op.addDimension({{QStringLiteral("type"), QStringLiteral("major_radius")}, {QStringLiteral("ellipse"), id}},
-                      m_c.fieldExpression(QStringLiteral("major")));
+    // The centre and the end of the major axis clicked where the cursor
+    // snapped onto geometry are held there (mitcad#353); a rim click
+    // farther than the major end turns the axes, and the clicked end is
+    // then the minor one.
+    const bool swapped = minor(click(2)) > dist(click(0), click(1));
+    holdPoint(op, result, click(0), snapOf(0), true);
+    if (!swapped) {
+      holdPoint(op, result, click(1), snapOf(1), false);
+    }
+    // A typed radius dimensions the axis it was typed for: the clicked
+    // major radius is the ellipse's minor one when the axes turned
+    // (mitcad#356).
+    if (!m_major.isEmpty()) {
+      op.addDimension({{QStringLiteral("type"), swapped ? QStringLiteral("minor_radius") : QStringLiteral("major_radius")},
+                       {QStringLiteral("ellipse"), id}},
+                      m_major);
     }
     if (m_c.typed(QStringLiteral("minor"))) {
-      op.addDimension({{QStringLiteral("type"), QStringLiteral("minor_radius")}, {QStringLiteral("ellipse"), id}},
+      op.addDimension({{QStringLiteral("type"), swapped ? QStringLiteral("major_radius") : QStringLiteral("minor_radius")},
+                       {QStringLiteral("ellipse"), id}},
                       m_c.fieldExpression(QStringLiteral("minor")));
     }
     op.commit();
     qDebug().noquote() << QStringLiteral("Added ellipse %1, radii %2 and %3 mm").arg(id).arg(e->radius).arg(e->minor);
   }
+
+private:
+  QString m_major; // the typed major radius, as typed
 };
 
 // ---------------------------------------------------------------------------
@@ -2066,10 +2136,16 @@ private:
     cmd.insert(QStringLiteral("construction"), m_c.construction());
     QJsonObject result;
     const std::size_t count = m_points.size();
+    const std::vector<Snap> snaps = std::move(m_points);
     m_points.clear();
     if (!op.run(cmd, &result)) {
       refuse(m_c, op, name());
       return;
+    }
+    // Points clicked where the cursor snapped onto geometry are held there
+    // (mitcad#353).
+    for (const Snap& s : snaps) {
+      holdPoint(op, result, s.at, s, true);
     }
     op.commit();
     qDebug().noquote() << QStringLiteral("Added spline %1 through %2 points").arg(made(result).value(0)).arg(count);
@@ -2115,6 +2191,22 @@ public:
   void press(const Snap& snap) override {
     if (snap.atPoint()) {
       return; // a point is there already
+    }
+    // The origin is one fixed point of the sketch, made when something
+    // first snaps there (mitcad#355): not a free point held on it.
+    if (snap.kind == Snap::Kind::Origin) {
+      if (!m_c.model().originPoint().isEmpty()) {
+        return; // the origin's point is there already
+      }
+      SketchOp op(m_c);
+      const QString point = op.pointInput(snap).toString();
+      if (point.isEmpty()) {
+        refuse(m_c, op, name());
+        return;
+      }
+      op.commit();
+      qDebug().noquote() << QStringLiteral("Added point %1 at %2").arg(point, text(snap.at));
+      return;
     }
     // A point already on the projected corner: nothing to add, as at a
     // point of the sketch.

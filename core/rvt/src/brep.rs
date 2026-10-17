@@ -766,6 +766,20 @@ impl<'a> Reader<'a> {
     }
 }
 
+/// The B-reps of the `Geometry` objects a record's pointers point at (a
+/// family type's void geometry, `FamilySymbol.m_complexCutGeoms`,
+/// mitcad#345), and what did not read.
+pub fn solids(schema: &Schema, record: &Record, values: &[Value]) -> (Vec<Solid>, Vec<String>) {
+    let r = Reader { schema, record };
+    let mut out = GRep::default();
+    for v in values {
+        if let Some(o) = record.deref(v) {
+            r.node(o, &mut out, 0);
+        }
+    }
+    (out.solids, out.notes)
+}
+
 /// An element's geometry from its `GElement` record.
 pub fn read(schema: &Schema, record: &Record) -> Option<GRep> {
     if schema.class_name(record.root.class) != "GElement" {

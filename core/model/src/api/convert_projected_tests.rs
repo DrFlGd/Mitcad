@@ -445,3 +445,46 @@ fn nothing_projected_is_refused_and_ordinary_geometry_is_left_alone() {
     );
     assert!(error.contains("convert them too"), "{error}");
 }
+
+// --- Projected curves keep their shape (mitcad#357)
+
+#[test]
+fn trim_extend_fillet_and_chamfer_refuse_projected_curves_until_converted() {
+    for linked in [true, false] {
+        let mut d = projected_block(square(60.0), linked);
+        let s = sketch(&d);
+        let bottom = line_id(&s, [0.0, 0.0], [60.0, 0.0]);
+        let right = line_id(&s, [60.0, 0.0], [60.0, 40.0]);
+        // A line of the user's across the bottom edge.
+        command(
+            &mut d,
+            json!({"cmd": "sketch.add_line", "sketch": "F3", "start": [30, -10], "end": [30, 10]}),
+        );
+        let attempts = [
+            json!({"cmd": "sketch.trim", "sketch": "F3", "curve": bottom, "at": [10, 0]}),
+            json!({"cmd": "sketch.extend", "sketch": "F3", "curve": bottom, "at": [59, 0]}),
+            json!({"cmd": "sketch.fillet", "sketch": "F3", "a": bottom, "b": right, "radius": 5}),
+            json!({"cmd": "sketch.chamfer", "sketch": "F3", "a": bottom, "b": right,
+                   "distance": 5}),
+        ];
+        let before = sketch(&d);
+        for attempt in attempts {
+            let error = rejected(&mut d, attempt.clone());
+            assert!(
+                error.contains("sketch.convert_projected"),
+                "{attempt}: {error}"
+            );
+        }
+        assert_eq!(
+            sketch(&d)["entities"],
+            before["entities"],
+            "nothing changed"
+        );
+        // Converted, the line is free geometry and trims.
+        convert(&mut d, &[&bottom]);
+        command(
+            &mut d,
+            json!({"cmd": "sketch.trim", "sketch": "F3", "curve": bottom, "at": [10, 0]}),
+        );
+    }
+}

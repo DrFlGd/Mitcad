@@ -592,12 +592,20 @@ QJsonObject MainWindow::mcpUiCommand(const QJsonObject& arguments) {
       result.insert(QStringLiteral("open"), true);
       return;
     }
+    const int appliedBefore = session->appliedCount();
     if (finish == QStringLiteral("cancel")) {
       session->cancel();
     } else {
       session->commit();
     }
     waitUntil([&ended, &session] { return ended() || !session || !session->scriptBusy(); }, 120000);
+    if (!ended() && session && session->appliedCount() > appliedBefore) {
+      // A command that repeats (BUILD's Place, mitcad#375) stays open after
+      // its OK: the agent's OK places one and closes it, keeping what it
+      // placed.
+      session->cancel();
+      waitUntil(ended, 60000);
+    }
     if (!ended() && session) {
       // OK was refused: the panel stays open with what it says.
       refuseWith(tr("OK of %1 was refused: %2")

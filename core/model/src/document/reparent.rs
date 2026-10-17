@@ -305,6 +305,11 @@ impl Rewrite<'_> {
                 changed |= self.unit(&mut j.a.occurrence.0)?;
                 changed |= self.unit(&mut j.b.occurrence.0)?;
             }
+            // BUILD's bound lengths (mitcad#375).
+            FeatureDef::BoundLength(b) => {
+                changed |= self.unit(&mut b.from.occurrence.0)?;
+                changed |= self.unit(&mut b.to.occurrence.0)?;
+            }
             FeatureDef::AsBuiltJoint(j) => {
                 changed |= self.unit(&mut j.a.0)?;
                 changed |= self.unit(&mut j.b.0)?;

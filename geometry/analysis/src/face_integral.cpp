@@ -50,12 +50,15 @@
 
 #include <Adaptor3d_Curve.hxx>
 #include <BRepAdaptor_Surface.hxx>
+#include <BndLib_Add2dCurve.hxx>
+#include <Bnd_Box2d.hxx>
 #include <BRep_Tool.hxx>
 #include <Geom2dAdaptor_Curve.hxx>
 #include <Geom2d_Curve.hxx>
 #include <Geom2d_Line.hxx>
 #include <Geom_BSplineSurface.hxx>
 #include <Geom_BezierSurface.hxx>
+#include <Geom_RectangularTrimmedSurface.hxx>
 #include <Geom_Surface.hxx>
 #include <NCollection_Array1.hxx>
 #include <Precision.hxx>
@@ -378,6 +381,7 @@ public:
     u_.last = surface_.LastUParameter();
     v_.first = surface_.FirstVParameter();
     v_.last = surface_.LastVParameter();
+    widen_past_trim();
   }
 
   bool finite() const {
@@ -456,6 +460,48 @@ public:
   }
 
 private:
+  // A face on a trimmed surface may run past the trim where its basis
+  // surface goes on (a fillet's corner extends a cone stored trimmed at its
+  // rim, OCCT port patch 0490, mitcad#236): the face's bounds then clip its
+  // boundary curves at the trim (BRepTools::UVBounds clips them to the
+  // surface's bounds), and the clamp below cut the face there. The bounds
+  // are widened to the boundary curves' extent within the basis surface's
+  // own bounds in each direction that is not periodic.
+  void widen_past_trim() {
+    TopLoc_Location location;
+    const occ::handle<Geom_RectangularTrimmedSurface> trimmed =
+        occ::down_cast<Geom_RectangularTrimmedSurface>(BRep_Tool::Surface(forward_, location));
+    if (trimmed.IsNull()) {
+      return;
+    }
+    Bnd_Box2d box;
+    for (TopExp_Explorer it(forward_, TopAbs_EDGE); it.More(); it.Next()) {
+      double first = 0.0;
+      double last = 0.0;
+      const occ::handle<Geom2d_Curve> curve =
+          BRep_Tool::CurveOnSurface(TopoDS::Edge(it.Current()), forward_, first, last);
+      if (!curve.IsNull()) {
+        BndLib_Add2dCurve::Add(curve, first, last, 0.0, box);
+      }
+    }
+    if (box.IsVoid()) {
+      return;
+    }
+    double umin = 0.0, vmin = 0.0, umax = 0.0, vmax = 0.0;
+    box.Get(umin, vmin, umax, vmax);
+    const occ::handle<Geom_Surface>& basis = trimmed->BasisSurface();
+    double bu1 = 0.0, bu2 = 0.0, bv1 = 0.0, bv2 = 0.0;
+    basis->Bounds(bu1, bu2, bv1, bv2);
+    if (!basis->IsUPeriodic()) {
+      u_.first = std::max(std::min(u_.first, umin), bu1);
+      u_.last = std::min(std::max(u_.last, umax), bu2);
+    }
+    if (!basis->IsVPeriodic()) {
+      v_.first = std::max(std::min(v_.first, vmin), bv1);
+      v_.last = std::min(std::max(v_.last, vmax), bv2);
+    }
+  }
+
   // Adds the integrand at the surface point (u, v), times `weight`.
   void add_point(double u, double v, double weight, Sums& sums) const {
     gp_Pnt point;

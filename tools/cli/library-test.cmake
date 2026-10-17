@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: MIT
-# Component libraries (mitcad#64, mitcad#63) through mitcad-cli: a small
-# metric fastener library made by the generator (tools/libraries) in a
-# folder of the build tree and recorded as v1.0.0, a head diameter changed
-# for v1.1.0, the library fetched from its folder into a cache, shown and
-# searched; parts inserted at v1.0.0 in sizes (linked and copied), the
+# Component libraries (mitcad#64, mitcad#63) through mitcad-cli: the
+# fasteners of a small parts library (mitcad-parts) made by the generator
+# (tools/libraries) in a folder of the build tree and recorded as v1.0.0, a
+# head diameter changed for v1.1.0, the library fetched from its folder
+# into a cache, shown and searched; parts inserted at v1.0.0 in sizes (linked and copied), the
 # parts list, the comparison of the versions, the design reopened at its
 # recorded version, then updated to v1.1.0 and to another size; the
 # library's index entry. Nothing goes over the network.
@@ -17,7 +17,7 @@ foreach(var CLI GIT PYTHON GENERATOR WORK)
   endif()
 endforeach()
 
-set(library "${WORK}/mitcad-fasteners")
+set(library "${WORK}/mitcad-parts")
 set(ENV{MITCAD_LIBRARIES_DIR} "${WORK}/cache")
 set(ENV{GIT_CONFIG_NOSYSTEM} 1)
 set(ENV{GIT_CONFIG_GLOBAL} "${WORK}/gitconfig")
@@ -59,9 +59,9 @@ execute_process(COMMAND "${PYTHON}" "${GENERATOR}" --cli "${CLI}" --out "${libra
 if(NOT status EQUAL 0)
   message(FATAL_ERROR "the generator failed (${status}):\n${out}${err}")
 endif()
-expect("mitcad-fasteners 1.0.0: 3 components" "the generator's summary")
+expect("mitcad-parts 1.0.0: 3 components" "the generator's summary")
 cli(ok library check "${library}")
-expect("mitcad-fasteners: 3 components, no errors" "the library's check")
+expect("mitcad-parts: 3 components, no errors" "the library's check")
 foreach(file mitcad-library.json LICENSE SOURCES.md README.md previews/iso4762.png .mitcad/project.json)
   if(NOT EXISTS "${library}/${file}")
     message(FATAL_ERROR "the generator wrote no ${file}")
@@ -69,8 +69,13 @@ foreach(file mitcad-library.json LICENSE SOURCES.md README.md previews/iso4762.p
 endforeach()
 file(READ "${library}/mitcad-library.json" manifest)
 string(JSON license GET "${manifest}" license)
-if(NOT license STREQUAL "CC0-1.0")
+if(NOT license STREQUAL "MIT")
   message(FATAL_ERROR "the library's licence: ${license}")
+endif()
+# The fasteners keep their own licence.
+string(JSON license GET "${manifest}" components 0 license)
+if(NOT license STREQUAL "CC0-1.0")
+  message(FATAL_ERROR "the fasteners' licence: ${license}")
 endif()
 
 # v1.1.0: the M5 screws' heads 8.7 mm wide.
@@ -85,24 +90,24 @@ git(tag v1.1.0)
 
 # Fetched from the folder, shown and searched.
 cli(ok library fetch "${library}")
-expect("Fetched library Mitcad metric fasteners \\(mitcad-fasteners\\)" "the fetch")
+expect("Fetched library Mitcad parts \\(mitcad-parts\\)" "the fetch")
 expect("Versions: v1.1.0 \\([0-9a-f]+\\), v1.0.0" "the versions after the fetch")
-cli(ok library show mitcad-fasteners --rev v1.0.0)
+cli(ok library show mitcad-parts --rev v1.0.0)
 expect("iso4762 Hexagon socket head cap screw \\(ISO 4762\\): screws/iso4762.mitcad, [0-9]+ sizes \\(default M5x16\\)"
        "the library's components")
 cli(ok library search "din 912" --license CC0-1.0)
-expect("mitcad-fasteners/iso4762" "the search for DIN 912")
+expect("mitcad-parts/iso4762" "the search for DIN 912")
 cli(ok library search washer --license CC-BY-4.0)
 if(out MATCHES "iso7089")
   message(FATAL_ERROR "the licence filter let a CC0 part through:\n${out}")
 endif()
 cli(ok library list --json)
-expect("\"id\":\"mitcad-fasteners\"" "the list of libraries")
+expect("\"id\":\"mitcad-parts\"" "the list of libraries")
 
 # Parts inserted at v1.0.0: a screw M5x16 and a washer M6 linked, a nut M5
 # copied.
 file(TO_CMAKE_PATH "${library}" url)
-set(part "\"id\": \"mitcad-fasteners\", \"url\": \"${url}\", \"rev\": \"v1.0.0\"")
+set(part "\"id\": \"mitcad-parts\", \"url\": \"${url}\", \"rev\": \"v1.0.0\"")
 file(WRITE "${WORK}/insert.json" "[
   {\"cmd\": \"insert_component\", \"library\": {${part}, \"component\": \"iso4762\", \"config\": \"M5x16\"}},
   {\"cmd\": \"insert_component\", \"library\": {${part}, \"component\": \"iso4032\", \"config\": \"M5\"},
@@ -114,12 +119,12 @@ file(WRITE "${WORK}/insert.json" "[
 ]")
 cli(ok run "${WORK}/insert.json" --save "${WORK}/assembly.mitcad")
 cli(ok parts "${WORK}/assembly.mitcad")
-expect("1  ISO 4762 M5x16  \\(mitcad-fasteners v1\\.0\\.0 \\([0-9a-f]+\\), CC0-1\\.0, linked\\)" "the parts list's screw")
-expect("1  ISO 4032 M5  \\(mitcad-fasteners v1\\.0\\.0 \\([0-9a-f]+\\), CC0-1\\.0, copy\\)" "the parts list's nut")
+expect("1  ISO 4762 M5x16  \\(mitcad-parts v1\\.0\\.0 \\([0-9a-f]+\\), CC0-1\\.0, linked\\)" "the parts list's screw")
+expect("1  ISO 4032 M5  \\(mitcad-parts v1\\.0\\.0 \\([0-9a-f]+\\), CC0-1\\.0, copy\\)" "the parts list's nut")
 expect("1  ISO 7089 M6  " "the parts list's washer")
 
 # What v1.1.0 changes for the screw.
-cli(ok library diff mitcad-fasteners v1.0.0 v1.1.0 --url "${url}" --part iso4762:M5x16 --part iso7089:M6)
+cli(ok library diff mitcad-parts v1.0.0 v1.1.0 --url "${url}" --part iso4762:M5x16 --part iso7089:M6)
 expect("iso4762 M5x16: M5x16: dk 8\\.5 mm -> 8\\.7 mm" "the comparison of the versions")
 expect("iso7089 M6: no changes" "the comparison of an unchanged part")
 
@@ -136,7 +141,7 @@ file(WRITE "${WORK}/update.json" "[
 ]")
 cli(ok run "${WORK}/update.json" --open "${WORK}/assembly.mitcad" --save "${WORK}/updated.mitcad")
 cli(ok parts "${WORK}/updated.mitcad")
-expect("1  ISO 4762 M6x20  \\(mitcad-fasteners v1\\.1\\.0" "the updated parts list")
+expect("1  ISO 4762 M6x20  \\(mitcad-parts v1\\.1\\.0" "the updated parts list")
 # A copied part does not follow the library.
 file(WRITE "${WORK}/copy.json" "[
   {\"cmd\": \"update_library_parts\", \"changes\": [{\"component\": \"ISO 4032 M5\", \"rev\": \"v1.1.0\"}]}
@@ -145,6 +150,6 @@ cli(fail run "${WORK}/copy.json" --open "${WORK}/assembly.mitcad")
 expect("is a copy of a library part" "an update of a copy")
 
 # The entry a community index takes for the library.
-cli(ok library index-entry "${library}" --url "https://example.org/mitcad-fasteners.git")
-expect("\"id\": \"mitcad-fasteners\"" "the index entry")
-expect("\"url\": \"https://example.org/mitcad-fasteners.git\"" "the index entry's URL")
+cli(ok library index-entry "${library}" --url "https://example.org/mitcad-parts.git")
+expect("\"id\": \"mitcad-parts\"" "the index entry")
+expect("\"url\": \"https://example.org/mitcad-parts.git\"" "the index entry's URL")

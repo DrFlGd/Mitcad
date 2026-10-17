@@ -1011,6 +1011,10 @@ fn remap_reference(text: &str, uids: &HashMap<String, String>) -> String {
     if text.parse::<FeatureUid>().is_ok() || text.parse::<BodyUid>().is_ok() {
         return remap_text(text, uids);
     }
+    // A derived part's mount frame, `F7:mount(slot_x+_1)` (mitcad#375).
+    if crate::features::geom_ref::parse_mount(text).is_ok() {
+        return remap_text(text, uids);
+    }
     if text.parse::<TopoName>().is_ok() {
         // Parsing again canonicalises nested edge/vertex face order after
         // renumbering (F9 sorts differently from F10).
@@ -1032,6 +1036,28 @@ fn remap_text(text: &str, uids: &HashMap<String, String>) -> String {
     let mut i = 0;
     let mut copied = 0;
     while i < bytes.len() {
+        // A derived part's face names its source's face in the source's
+        // own ids (mitcad#375): `:part(...)` is copied as it is.
+        if bytes[i..].starts_with(b":part(") {
+            let mut depth = 0usize;
+            let mut j = i + ":part".len();
+            while j < bytes.len() {
+                match bytes[j] {
+                    b'(' => depth += 1,
+                    b')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            j += 1;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+                j += 1;
+            }
+            i = j;
+            continue;
+        }
         if bytes[i] == b'F' && (i == 0 || !word(bytes[i - 1])) {
             let mut j = i + 1;
             while j < bytes.len() && bytes[j].is_ascii_digit() {

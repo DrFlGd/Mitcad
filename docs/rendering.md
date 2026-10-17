@@ -457,7 +457,12 @@ the body and of its faces.
   and roughness, emission colour and strength, alpha (opacity) map one to
   one; the specular weight scales the specular IOR level (0.5 is "as the
   IOR gives", so weight 1 is 0.5). A texture's image (an Image Texture
-  node in sRGB, linear interpolation, repeated) gives the base colour: the
+  node in sRGB, linear interpolation, repeated) gives the base colour. Its
+  colour space is `u_colorspace_scene_linear_srgb` (scene linear, Rec.709,
+  with the sRGB transfer function: the kernel decodes the 8-bit texels per
+  lookup), not Cycles' `u_colorspace_srgb`, which in Cycles 5.2 encodes
+  the pixels to sRGB once more on loading and renders the image washed
+  out (mitcad#386). The
   texture coordinates (`CyclesRenderer::projectionOf`) are Cycles'
   object coordinates, the body's own coordinates in mm, so the meshes need
   no UVs and a change of the texture (another image, size, rotation or
@@ -547,7 +552,9 @@ the body and of its faces.
   the dielectric (15.3), the dark roughness map against 0.502 on a metal
   (8.6) and a normal tilted along u (11.0) do; tilted along +u turned by
   half a turn renders as tilted along -u (0.09; +u against -u 8.2): the
-  frame follows the rotation. The renders are kept there
+  frame follows the rotation. A base colour image of one sRGB colour
+  (84, 74, 66) renders as the same colour without a texture (mitcad#386:
+  read as sRGB once). The renders are kept there
   (`maps-<name>.png`).
 - `ctest` `cli.render_texture_maps` (mitcad#314,
   `tools/cli/render-texture-maps-test.cmake`): `mitcad-cli render` on the

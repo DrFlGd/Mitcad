@@ -8,6 +8,7 @@
 #include <QStringList>
 
 class QDialog;
+class QFileDialog;
 class QMenu;
 class QAction;
 class QPoint;
@@ -27,6 +28,9 @@ void prepareModal(QDialog* dialog);
 // Shared dialog/menu dispatch. The native frontend uses AppKit controls;
 // the other frontends retain their existing Qt presentations.
 int execDialog(QDialog* dialog);
+// Call before selecting a file or name filter. AppKit panels read the
+// hidden widget presenter's initial values before QFileDialog is shown.
+void prepareFileDialog(QFileDialog* dialog);
 void showDialog(QWidget* widget);
 void waitDialogUntil(const std::function<bool()>& completed);
 // Call before setValue or the minimum-duration timer can show a progress

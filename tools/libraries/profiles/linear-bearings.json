@@ -1,0 +1,1244 @@
+[
+  {
+    "id": "collar-flat-8-d25",
+    "name": "Shaft collar Aluminium for flat-milled shafts ⌀8mm, D25L32",
+    "category": "linear",
+    "source": "dynamic-m/Shaft-collar-Aluminium-for-flat-milled-shafts-8mm-D25L32/Motedis-SC-FS-8x7/Motedis_SC-FS-8x7.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "SC-FS-8x7",
+    "supplier_url": "https://www.motedis.com/en/Shaft-collar-Aluminium-for-flat-milled-shafts-8mm-D25L32",
+    "designation": "Shaft collar Aluminium for flat-milled shafts ⌀8mm, D25L32",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"rigid"}}
+    },
+    "frames": [{"name":"bore","origin":[0,0,16],"z":[0,0,1],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "collar-flat-10-d25",
+    "name": "Shaft collar Aluminium for flat-milled shafts ⌀10mm, D25L32",
+    "category": "linear",
+    "source": "dynamic-m/Shaft-collar-Aluminium-for-flat-milled-shafts-10mm-D25L32/Motedis-SC-FS-10x9/Motedis_SC-FS-10x9.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "SC-FS-10x9",
+    "supplier_url": "https://www.motedis.com/en/Shaft-collar-Aluminium-for-flat-milled-shafts-10mm-D25L32",
+    "designation": "Shaft collar Aluminium for flat-milled shafts ⌀10mm, D25L32",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"rigid"}}
+    },
+    "frames": [{"name":"bore","origin":[0,0,16],"z":[0,0,1],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "collar-sheet-d25",
+    "name": "Shaft collars for sheet fixation d=25mm steel",
+    "category": "linear",
+    "source": "dynamic-m/Shaft-collars-for-sheet-fixation-d25mm-steel/Motedis_50505ST.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "50505ST",
+    "supplier_url": "https://www.motedis.com/en/Shaft-collars-for-sheet-fixation-d25mm-steel",
+    "designation": "Shaft collars for sheet fixation d=25mm steel",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"rigid"}}
+    },
+    "frames": [{"name":"bore","origin":[0,0,15],"z":[0,0,1],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "housing-floating-10",
+    "name": "Housing floating bearing for shaft 10mm, loose bearing",
+    "category": "linear",
+    "source": "dynamic-m/Housing-floating-bearing-for-shaft-10mm-loose-bearing/WJ200UM_01_10_LL.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "1269",
+    "supplier_url": "https://www.motedis.com/en/Housing-floating-bearing-for-shaft-10mm-loose-bearing",
+    "designation": "Housing floating bearing for shaft 10mm, loose bearing",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
+    },
+    "frames": [
+      {"name":"bore","origin":[0,14.5,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"},
+      {"name":"mount","origin":[0,14.5,8.8],"z":[0,0,1],"x":[0,1,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "housing-floating-16",
+    "name": "Housing plain bearing for shaft 16mm, loose bearing",
+    "category": "linear",
+    "source": "dynamic-m/Housing-floating-bearing-for-shaft-16mm-loose-bearing/WJ200UM_01_16_LL.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "2411",
+    "supplier_url": "https://www.motedis.com/en/Housing-floating-bearing-for-shaft-16mm-loose-bearing",
+    "designation": "Housing plain bearing for shaft 16mm, loose bearing",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
+    },
+    "frames": [
+      {"name":"bore","origin":[0,18,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"},
+      {"name":"mount","origin":[0,18,12.8],"z":[0,0,1],"x":[0,1,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "housing-plain-10",
+    "name": "Housing plain bearing for shaft 10mm",
+    "category": "linear",
+    "source": "dynamic-m/Housing-floating-bearing-for-shaft-10mm/WJ200UM_01_10.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "1270",
+    "supplier_url": "https://www.motedis.com/en/Housing-floating-bearing-for-shaft-10mm",
+    "designation": "Housing plain bearing for shaft 10mm",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
+    },
+    "frames": [
+      {"name":"bore","origin":[0,14.5,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"},
+      {"name":"mount","origin":[0,14.5,8.8],"z":[0,0,1],"x":[0,1,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "housing-plain-16",
+    "name": "Housing plain bearing for shaft 16 mm",
+    "category": "linear",
+    "source": "dynamic-m/Housing-floating-bearing-for-shaft-16mm/WJ200UM_01_16.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "2410",
+    "supplier_url": "https://www.motedis.com/en/Housing-floating-bearing-for-shaft-16mm",
+    "designation": "Housing plain bearing for shaft 16 mm",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
+    },
+    "frames": [
+      {"name":"bore","origin":[0,18,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"},
+      {"name":"mount","origin":[0,18,12.8],"z":[0,0,1],"x":[0,1,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "housing-plain-adjustable-10",
+    "name": "Housing plain bearing for shaft 10mm, adjustable clearance",
+    "category": "linear",
+    "source": "dynamic-m/Housing-floating-bearing-for-shaft-10mm-adjustable-clearance/Motedis_Housing_floating_bearing_for_shaft_10mm-adjustable clearance.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "1320",
+    "supplier_url": "https://www.motedis.com/en/Housing-floating-bearing-for-shaft-10mm-adjustable-clearance",
+    "designation": "Housing plain bearing for shaft 10mm, adjustable clearance",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
+    },
+    "frames": [
+      {"name":"bore","origin":[0,14.5,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"},
+      {"name":"mount","origin":[0,14.5,8.8],"z":[0,0,1],"x":[0,1,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "housing-plain-adjustable-16",
+    "name": "Housing plain bearing for shaft 16 mm, adjustable clearance",
+    "category": "linear",
+    "source": "dynamic-m/Housing-floating-bearing-for-shaft-16mm-adjustable-clearance/WJ200UME_01_16.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "2412",
+    "supplier_url": "https://www.motedis.com/en/Housing-floating-bearing-for-shaft-16mm-adjustable-clearance",
+    "designation": "Housing plain bearing for shaft 16 mm, adjustable clearance",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
+    },
+    "frames": [
+      {"name":"bore","origin":[0,18,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"},
+      {"name":"mount","origin":[0,18,12.8],"z":[0,0,1],"x":[0,1,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "housing-roller-1-10",
+    "name": "Housing roller bearing for shaft 10 mm, 1 roller",
+    "category": "linear",
+    "source": "dynamic-m/Housing-roller-bearings-for-shaft-10mm1-roller/WJRM_01_10.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "2413",
+    "supplier_url": "https://www.motedis.com/en/Housing-roller-bearings-for-shaft-10mm1-roller",
+    "designation": "Housing roller bearing for shaft 10 mm, 1 roller",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
+    },
+    "frames": [
+      {"name":"bore","origin":[0,17.5,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"},
+      {"name":"mount","origin":[0,17.5,8.8],"z":[0,0,1],"x":[0,1,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "housing-roller-1-16",
+    "name": "Housing roller bearing for shaft 16 mm, 1 roller",
+    "category": "linear",
+    "source": "dynamic-m/Housing-roller-bearings-for-shaft-16mm1-roller/WJRM_01_16.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "2414",
+    "supplier_url": "https://www.motedis.com/en/Housing-roller-bearings-for-shaft-16mm1-roller",
+    "designation": "Housing roller bearing for shaft 16 mm, 1 roller",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
+    },
+    "frames": [
+      {"name":"bore","origin":[0,24,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"},
+      {"name":"mount","origin":[0,24,12.8],"z":[0,0,1],"x":[0,1,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "housing-roller-2-10",
+    "name": "Housing roller bearings for shaft 10mm,2 rollers",
+    "category": "linear",
+    "source": "dynamic-m/Housing-roller-bearings-for-shaft-10mm2-rollers/WJRM_21_10.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "2416",
+    "supplier_url": "https://www.motedis.com/en/Housing-roller-bearings-for-shaft-10mm2-rollers",
+    "designation": "Housing roller bearings for shaft 10mm,2 rollers",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
+    },
+    "frames": [
+      {"name":"bore","origin":[0,17.5,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"},
+      {"name":"mount","origin":[0,17.5,19],"z":[0,0,1],"x":[0,1,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "housing-roller-2-16",
+    "name": "Housing roller bearing for shaft 16mm, 2 rollers",
+    "category": "linear",
+    "source": "dynamic-m/Housing-roller-bearings-for-shaft-16mm2-rollers/WJRM_21_16.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "2417",
+    "supplier_url": "https://www.motedis.com/en/Housing-roller-bearings-for-shaft-16mm2-rollers",
+    "designation": "Housing roller bearing for shaft 16mm, 2 rollers",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
+    },
+    "frames": [
+      {"name":"bore","origin":[0,24,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"},
+      {"name":"mount","origin":[0,24,27],"z":[0,0,1],"x":[0,1,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "kfl000",
+    "name": "Flange bearing KFL000, 10 mm",
+    "category": "linear",
+    "source": "dynamic-m/Flange-Bearing-10mm-die-cast-KFL000/Motedis_KFL000.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "KFL000",
+    "supplier_url": "https://www.motedis.com/en/Flange-Bearing-10mm-die-cast-KFL000",
+    "designation": "Flange bearing KFL000, 10 mm",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}}
+    },
+    "frames": [
+      {"name":"bore","origin":[0,0,7.75],"z":[0,0,1],"x":[1,0,0],"kind":"bore"},
+      {"name":"mount","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "kfl001",
+    "name": "Flange bearing KFL001, 12 mm",
+    "category": "linear",
+    "source": "dynamic-m/Flange-Bearing-12mm-die-cast-KFL001/Motedis_KFL001.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "KFL001",
+    "supplier_url": "https://www.motedis.com/en/Flange-Bearing-12mm-die-cast-KFL001",
+    "designation": "Flange bearing KFL001, 12 mm",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}}
+    },
+    "frames": [
+      {"name":"bore","origin":[0,0,8],"z":[0,0,1],"x":[1,0,0],"kind":"bore"},
+      {"name":"mount","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "kfl08",
+    "name": "Flange bearing KFL08, 8 mm",
+    "category": "linear",
+    "source": "dynamic-m/Flange-Bearing-8mm-die-cast-KFL08/Motedis_KFL08.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "KFL08",
+    "supplier_url": "https://www.motedis.com/en/Flange-Bearing-8mm-die-cast-KFL08",
+    "designation": "Flange bearing KFL08, 8 mm",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}}
+    },
+    "frames": [
+      {"name":"bore","origin":[0,0,6],"z":[0,0,1],"x":[1,0,0],"kind":"bore"},
+      {"name":"mount","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "kp000",
+    "name": "Pillow block KP000, 10 mm",
+    "category": "linear",
+    "source": "dynamic-m/Pillow-blocks-10mm-KP000/KP000.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "KP000",
+    "supplier_url": "https://www.motedis.com/en/Pillow-blocks-10mm-KP000",
+    "designation": "Pillow block KP000, 10 mm",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}}
+    },
+    "frames": [
+      {"name":"bore","origin":[5.3,18,-14.5],"z":[1,0,0],"x":[0,1,0],"kind":"bore"},
+      {"name":"mount","origin":[5.3,0,-14.5],"z":[0,-1,0],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "kp001",
+    "name": "Pillow block KP001, 12 mm",
+    "category": "linear",
+    "source": "dynamic-m/Pillow-blocks-12mm-KP001/Motedis_KP001.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "KP001",
+    "supplier_url": "https://www.motedis.com/en/Pillow-blocks-12mm-KP001",
+    "designation": "Pillow block KP001, 12 mm",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}}
+    },
+    "frames": [
+      {"name":"bore","origin":[5,18,-14.5],"z":[1,0,0],"x":[0,1,0],"kind":"bore"},
+      {"name":"mount","origin":[5,0,-14.5],"z":[0,-1,0],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "kp08",
+    "name": "Pillow block KP08, 8 mm",
+    "category": "linear",
+    "source": "dynamic-m/Pillow-blocks-8mm-KP08/Motedis_KP08.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "KP08",
+    "supplier_url": "https://www.motedis.com/en/Pillow-blocks-8mm-KP08",
+    "designation": "Pillow block KP08, 8 mm",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}}
+    },
+    "frames": [
+      {"name":"bore","origin":[-11.5,14.3,9],"z":[0,0,1],"x":[1,0,0],"kind":"bore"},
+      {"name":"mount","origin":[-11.5,0,9],"z":[0,-1,0],"x":[0,0,1],"kind":"face"}
+    ]
+  },
+  {
+    "id": "lm8uu",
+    "name": "Linear ball bearing LM8UU",
+    "category": "linear",
+    "source": "dynamic-m/Linear-bearing-8mm-LM8UU/Motedis_LM8-UU.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LM8UU",
+    "supplier_url": "https://www.motedis.com/en/Linear-bearing-8mm-LM8UU",
+    "designation": "Linear ball bearing LM8UU",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,0,12],"z":[0,0,1],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "lm10uu",
+    "name": "Linear ball bearing LM10UU",
+    "category": "linear",
+    "source": "dynamic-m/Linear-bearing-10mm-LM10UU/Motedis_LM10-UU.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LM10UU",
+    "supplier_url": "https://www.motedis.com/en/Linear-bearing-10mm-LM10UU",
+    "designation": "Linear ball bearing LM10UU",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,0,14.5],"z":[0,0,1],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "lm10uuaj",
+    "name": "Linear ball bearing LM10UUAJ, adjustable clearance",
+    "category": "linear",
+    "source": "dynamic-m/Linear-bearing-10mm-LM10UUAJ-with-adjustable-clearance/Motedis_LM10-UU.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LM10UUAJ",
+    "supplier_url": "https://www.motedis.com/en/Linear-bearing-10mm-LM10UUAJ-with-adjustable-clearance",
+    "designation": "Linear ball bearing LM10UUAJ, adjustable clearance",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,0,14.5],"z":[0,0,1],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "lm12uu",
+    "name": "Linear ball bearing LM12UU",
+    "category": "linear",
+    "source": "dynamic-m/Linear-bearing-12mm-LM12UU/Motedis_LM12-UU.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LM12UU",
+    "supplier_url": "https://www.motedis.com/en/Linear-bearing-12mm-LM12UU",
+    "designation": "Linear ball bearing LM12UU",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,0,15],"z":[0,0,1],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "lm16uu",
+    "name": "Linear ball bearing LM16UU",
+    "category": "linear",
+    "source": "dynamic-m/Linear-bearing-16mm-LM16UU/Motedis_LM16-UU.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LM16UU",
+    "supplier_url": "https://www.motedis.com/en/Linear-bearing-16mm-LM16UU",
+    "designation": "Linear ball bearing LM16UU",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,0,18.5],"z":[0,0,1],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "lm20uu",
+    "name": "Linear ball bearing LM20UU",
+    "category": "linear",
+    "source": "dynamic-m/Linear-bearing-20mm-LM20UU/Motedis_LM20-UU.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LM20UU",
+    "supplier_url": "https://www.motedis.com/en/Linear-bearing-20mm-LM20UU",
+    "designation": "Linear ball bearing LM20UU",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,0,21],"z":[0,0,1],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "lme8uu",
+    "name": "Linear ball bearing LME8UU",
+    "category": "linear",
+    "source": "dynamic-m/Linear-bearing-8mm-LME8UU/LME8-UU.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LME8UU",
+    "supplier_url": "https://www.motedis.com/en/Linear-bearing-8mm-LME8UU",
+    "designation": "Linear ball bearing LME8UU",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,0,12.5],"z":[0,0,1],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "lme10uu",
+    "name": "Linear ball bearing LME10UU",
+    "category": "linear",
+    "source": "dynamic-m/Linear-bearing-10mm-LME10UU/LME10-UU.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LME10UU",
+    "supplier_url": "https://www.motedis.com/en/Linear-bearing-10mm-LME10UU",
+    "designation": "Linear ball bearing LME10UU",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,0,14.5],"z":[0,0,1],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "lme12uu",
+    "name": "Linear ball bearing LME12UU",
+    "category": "linear",
+    "source": "dynamic-m/Linear-bearing-12mm-LME12UU/LME12-UU.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LME12UU",
+    "supplier_url": "https://www.motedis.com/en/Linear-bearing-12mm-LME12UU",
+    "designation": "Linear ball bearing LME12UU",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,0,16],"z":[0,0,1],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "lme16uu",
+    "name": "Linear ball bearing LME16UU",
+    "category": "linear",
+    "source": "dynamic-m/Linear-bearing-16mm-LME16UU/LME16-UU.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LME16UU",
+    "supplier_url": "https://www.motedis.com/en/Linear-bearing-16mm-LME16UU",
+    "designation": "Linear ball bearing LME16UU",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,0,18],"z":[0,0,1],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "lme20uu",
+    "name": "Linear ball bearing LME20UU",
+    "category": "linear",
+    "source": "dynamic-m/Linear-bearing-20mm-LME20UU/LME20-UU.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LME20UU",
+    "supplier_url": "https://www.motedis.com/en/Linear-bearing-20mm-LME20UU",
+    "designation": "Linear ball bearing LME20UU",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,0,22.5],"z":[0,0,1],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "lme25uu",
+    "name": "Linear ball bearing LME25UU",
+    "category": "linear",
+    "source": "dynamic-m/Linear-bearing-25mm-LME25UU/LME25-UU.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LME25UU",
+    "supplier_url": "https://www.motedis.com/en/Linear-bearing-25mm-LME25UU",
+    "designation": "Linear ball bearing LME25UU",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,0,29],"z":[0,0,1],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "rj4jp-01-10",
+    "name": "Linear plain bearing RJ4JP-01-10",
+    "category": "linear",
+    "source": "dynamic-m/Linear-plain-bearing-Igus-RJ4JP-01-10/Motedis_Linear_plain_bearing_IGUS_RJ4JP_01_10_2.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "RJ4JP-01-10",
+    "supplier_url": "https://www.motedis.com/en/Linear-plain-bearing-Igus-RJ4JP-01-10",
+    "designation": "Linear plain bearing RJ4JP-01-10",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,0,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "rj4jp-01-12",
+    "name": "Linear plain bearing RJ4JP-01-12",
+    "category": "linear",
+    "source": "dynamic-m/Linear-plain-bearing-Igus-RJ4JP-01-12/Motedis_Linear_plain_bearing_IGUS_RJ4JP_01_12_3.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "RJ4JP-01-12",
+    "supplier_url": "https://www.motedis.com/en/Linear-plain-bearing-Igus-RJ4JP-01-12",
+    "designation": "Linear plain bearing RJ4JP-01-12",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,0,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "rj4jp-01-16",
+    "name": "Linear plain bearing RJ4JP-01-16",
+    "category": "linear",
+    "source": "dynamic-m/Linear-plain-bearing-Igus-RJ4JP-01-16/Motedis_Linear_plain_bearing_IGUS_RJ4JP_01_16_4.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "RJ4JP-01-16",
+    "supplier_url": "https://www.motedis.com/en/Linear-plain-bearing-Igus-RJ4JP-01-16",
+    "designation": "Linear plain bearing RJ4JP-01-16",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,0,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "rj4jp-01-20",
+    "name": "Linear plain bearing RJ4JP-01-20",
+    "category": "linear",
+    "source": "dynamic-m/Linear-plain-bearing-Igus-RJ4JP-01-20/Motedis_Linear_plain_bearing_IGUS_RJ4JP_01_20_5.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "RJ4JP-01-20",
+    "supplier_url": "https://www.motedis.com/en/Linear-plain-bearing-Igus-RJ4JP-01-20",
+    "designation": "Linear plain bearing RJ4JP-01-20",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,0,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "rjmp-01-08",
+    "name": "Linear plain bearing RJMP-01-08",
+    "category": "linear",
+    "source": "dynamic-m/Linear-plain-bearing-Igus-RJMP-01-08/RJMP-01-08.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "RJMP-01-08",
+    "supplier_url": "https://www.motedis.com/en/Linear-plain-bearing-Igus-RJMP-01-08",
+    "designation": "Linear plain bearing RJMP-01-08",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,0,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "rjmp-01-10",
+    "name": "Linear plain bearing RJMP-01-10",
+    "category": "linear",
+    "source": "dynamic-m/Linear-plain-bearing-Igus-RJMP-01-10/RJMP-01-10.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "RJMP-01-10",
+    "supplier_url": "https://www.motedis.com/en/Linear-plain-bearing-Igus-RJMP-01-10",
+    "designation": "Linear plain bearing RJMP-01-10",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,0,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "rjmp-01-12",
+    "name": "Linear plain bearing RJMP-01-12",
+    "category": "linear",
+    "source": "dynamic-m/Linear-plain-bearing-Igus-RJMP-01-12/RJMP-01-12.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "RJMP-01-12",
+    "supplier_url": "https://www.motedis.com/en/Linear-plain-bearing-Igus-RJMP-01-12",
+    "designation": "Linear plain bearing RJMP-01-12",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,0,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "rjmp-01-16",
+    "name": "Linear plain bearing RJMP-01-16",
+    "category": "linear",
+    "source": "dynamic-m/Linear-plain-bearing-Igus-RJMP-01-16/RJMP-01-16.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "RJMP-01-16",
+    "supplier_url": "https://www.motedis.com/en/Linear-plain-bearing-Igus-RJMP-01-16",
+    "designation": "Linear plain bearing RJMP-01-16",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,0,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "rjmp-01-20",
+    "name": "Linear plain bearing RJMP-01-20",
+    "category": "linear",
+    "source": "dynamic-m/Linear-plain-bearing-Igus-RJMP-01-20/RJMP-01-20.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "RJMP-01-20",
+    "supplier_url": "https://www.motedis.com/en/Linear-plain-bearing-Igus-RJMP-01-20",
+    "designation": "Linear plain bearing RJMP-01-20",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,0,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "rjmp-01-25",
+    "name": "Linear plain bearing RJMP-01-25",
+    "category": "linear",
+    "source": "dynamic-m/Linear-plain-bearing-Igus-RJMP-01-25/RJMP-01-25.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "RJMP-01-25",
+    "supplier_url": "https://www.motedis.com/en/Linear-plain-bearing-Igus-RJMP-01-25",
+    "designation": "Linear plain bearing RJMP-01-25",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,0,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "rjmp-01-30",
+    "name": "Linear plain bearing RJMP-01-30",
+    "category": "linear",
+    "source": "dynamic-m/Linear-plain-bearing-Igus-RJMP-01-30/RJMP-01-30.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "RJMP-01-30",
+    "supplier_url": "https://www.motedis.com/en/Linear-plain-bearing-Igus-RJMP-01-30",
+    "designation": "Linear plain bearing RJMP-01-30",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,0,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "roller-lfr14",
+    "name": "Track roller with ground running radius, 14 mm",
+    "category": "linear",
+    "source": "dynamic-m/Roller-with-round-grinding-14mm/Motedis_Roller_with_round_grinding_14mm.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LFR 14",
+    "supplier_url": "https://www.motedis.com/en/Roller-with-round-grinding-14mm",
+    "designation": "Track roller with ground running radius, 14 mm",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[-27.31,-19.81,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "sbr20uu",
+    "name": "Linear bearing housing SBR20UU, open",
+    "category": "linear",
+    "source": "dynamic-m/Linear-bearing-20mm-SBR20UU-open/Motedis-1022/Motedis_1022.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "1022",
+    "supplier_url": "https://www.motedis.com/en/Linear-bearing-20mm-SBR20UU-open",
+    "designation": "Linear bearing housing SBR20UU, open",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
+    },
+    "frames": [
+      {"name":"bore","origin":[0,27,0],"z":[0,0,1],"x":[1,0,0],"kind":"bore"},
+      {"name":"mount","origin":[0,50,0],"z":[0,1,0],"x":[0,0,1],"kind":"face"}
+    ]
+  },
+  {
+    "id": "scj8uu",
+    "name": "Linear bearing housing SCJ8UU, adjustable clearance",
+    "category": "linear",
+    "source": "dynamic-m/Linear-bearing-8mm-SCJ8UU-adjustable-clearance/SC8AJUU.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "SC-AJ8",
+    "supplier_url": "https://www.motedis.com/en/Linear-bearing-8mm-SCJ8UU-adjustable-clearance",
+    "designation": "Linear bearing housing SCJ8UU, adjustable clearance",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
+    },
+    "frames": [
+      {"name":"bore","origin":[0,0,15],"z":[0,0,1],"x":[1,0,0],"kind":"bore"},
+      {"name":"mount","origin":[16.55,0,15],"z":[1,0,0],"x":[0,0,1],"kind":"face"}
+    ]
+  },
+  {
+    "id": "scj10uu",
+    "name": "Linear bearing housing SCJ10UU, adjustable clearance",
+    "category": "linear",
+    "source": "dynamic-m/Linear-bearing-10mm-SCJ10UU-adjustable-clearance/SC10AJUU.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "SC-AJ10",
+    "supplier_url": "https://www.motedis.com/en/Linear-bearing-10mm-SCJ10UU-adjustable-clearance",
+    "designation": "Linear bearing housing SCJ10UU, adjustable clearance",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
+    },
+    "frames": [
+      {"name":"bore","origin":[0,0,17.5],"z":[0,0,1],"x":[1,0,0],"kind":"bore"},
+      {"name":"mount","origin":[0,13,17.5],"z":[0,1,0],"x":[0,0,1],"kind":"face"}
+    ]
+  },
+  {
+    "id": "scj12uu",
+    "name": "Linear bearing housing SCJ12UU, adjustable clearance",
+    "category": "linear",
+    "source": "dynamic-m/Linear-bearing-12mm-SCJ12UU-adjustable-clearance/SC12AJUU.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "SC-AJ12",
+    "supplier_url": "https://www.motedis.com/en/Linear-bearing-12mm-SCJ12UU-adjustable-clearance",
+    "designation": "Linear bearing housing SCJ12UU, adjustable clearance",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
+    },
+    "frames": [
+      {"name":"bore","origin":[0,0,18],"z":[0,0,1],"x":[1,0,0],"kind":"bore"},
+      {"name":"mount","origin":[0,15,18],"z":[0,1,0],"x":[0,0,1],"kind":"face"}
+    ]
+  },
+  {
+    "id": "scj16uu",
+    "name": "Linear bearing housing SCJ16UU, adjustable clearance",
+    "category": "linear",
+    "source": "dynamic-m/Linear-bearing-16mm-SCJ16UU-adjustable-clearance/SC16AJUU.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "SC-AJ16",
+    "supplier_url": "https://www.motedis.com/en/Linear-bearing-16mm-SCJ16UU-adjustable-clearance",
+    "designation": "Linear bearing housing SCJ16UU, adjustable clearance",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
+    },
+    "frames": [
+      {"name":"bore","origin":[0,0,22],"z":[0,0,1],"x":[1,0,0],"kind":"bore"},
+      {"name":"mount","origin":[0,19,22],"z":[0,1,0],"x":[0,0,1],"kind":"face"}
+    ]
+  },
+  {
+    "id": "scj20uu",
+    "name": "Linear bearing housing SCJ20UU, adjustable clearance",
+    "category": "linear",
+    "source": "dynamic-m/Linear-bearing-20mm-SCJ20UU-adjustable-clearance/SC20AJUU.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "SC-AJ20",
+    "supplier_url": "https://www.motedis.com/en/Linear-bearing-20mm-SCJ20UU-adjustable-clearance",
+    "designation": "Linear bearing housing SCJ20UU, adjustable clearance",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
+    },
+    "frames": [
+      {"name":"bore","origin":[0,0,25],"z":[0,0,1],"x":[1,0,0],"kind":"bore"},
+      {"name":"mount","origin":[0,21,25],"z":[0,1,0],"x":[0,0,1],"kind":"face"}
+    ]
+  },
+  {
+    "id": "shf8",
+    "name": "Shaft support flange SHF8",
+    "category": "linear",
+    "source": "dynamic-m/Shaft-Supports-SHF8/Motedis-SHF8-3/Motedis_SHF8.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "SHF8",
+    "supplier_url": "https://www.motedis.com/en/Shaft-Supports-SHF8",
+    "designation": "Shaft support flange SHF8",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"rigid"}}
+    },
+    "frames": [
+      {"name":"bore","origin":[0,5,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"},
+      {"name":"mount","origin":[0,0,0],"z":[0,-1,0],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "shf10",
+    "name": "Shaft support flange SHF10",
+    "category": "linear",
+    "source": "dynamic-m/Shaft-Supports-SHF10/Motedis-SHF10-2/Motedis_SHF10.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "SHF10",
+    "supplier_url": "https://www.motedis.com/en/Shaft-Supports-SHF10",
+    "designation": "Shaft support flange SHF10",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"rigid"}}
+    },
+    "frames": [
+      {"name":"bore","origin":[0,5,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"},
+      {"name":"mount","origin":[0,0,0],"z":[0,-1,0],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "shf12",
+    "name": "Shaft support flange SHF12",
+    "category": "linear",
+    "source": "dynamic-m/Shaft-Supports-SHF12/Motedis-SHF12-3/Motedis_SHF12.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "SHF12",
+    "supplier_url": "https://www.motedis.com/en/Shaft-Supports-SHF12",
+    "designation": "Shaft support flange SHF12",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"rigid"}}
+    },
+    "frames": [
+      {"name":"bore","origin":[0,6.4,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"},
+      {"name":"mount","origin":[0,0,0],"z":[0,-1,0],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "shf16",
+    "name": "Shaft support flange SHF16",
+    "category": "linear",
+    "source": "dynamic-m/Shaft-Supports-SHF16/Motedis-SHF16-2/Motedis_SHF16.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "SHF16",
+    "supplier_url": "https://www.motedis.com/en/Shaft-Supports-SHF16",
+    "designation": "Shaft support flange SHF16",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"rigid"}}
+    },
+    "frames": [
+      {"name":"bore","origin":[0,8,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"},
+      {"name":"mount","origin":[0,0,0],"z":[0,-1,0],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "shf25",
+    "name": "Shaft support flange SHF25",
+    "category": "linear",
+    "source": "dynamic-m/Shaft-Supports-SHF25/Motedis-SHF25-1/Motedis_SHF25.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "SHF25",
+    "supplier_url": "https://www.motedis.com/en/Shaft-Supports-SHF25",
+    "designation": "Shaft support flange SHF25",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"rigid"}}
+    },
+    "frames": [
+      {"name":"bore","origin":[0,12.35,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"},
+      {"name":"mount","origin":[0,0,0],"z":[0,-1,0],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "shf30",
+    "name": "Shaft support flange SHF30",
+    "category": "linear",
+    "source": "dynamic-m/Shaft-Supports-SHF30/Motedis-SHF30-1/Motedis_SHF30.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "SHF30",
+    "supplier_url": "https://www.motedis.com/en/Shaft-Supports-SHF30",
+    "designation": "Shaft support flange SHF30",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"rigid"}}
+    },
+    "frames": [
+      {"name":"bore","origin":[0,15,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"},
+      {"name":"mount","origin":[0,0,0],"z":[0,-1,0],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "shf40",
+    "name": "Shaft support flange SHF40",
+    "category": "linear",
+    "source": "dynamic-m/Shaft-Supports-SHF40/Motedis-SHF40-1/Motedis_SHF40.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "SHF40",
+    "supplier_url": "https://www.motedis.com/en/Shaft-Supports-SHF40",
+    "designation": "Shaft support flange SHF40",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"rigid"}}
+    },
+    "frames": [
+      {"name":"bore","origin":[0,20,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"},
+      {"name":"mount","origin":[0,0,0],"z":[0,-1,0],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "sk8",
+    "name": "Shaft support SH8/SK8",
+    "category": "linear",
+    "source": "dynamic-m/Shaft-supports-SH8-SK8/Motedis_SH8.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "SH8/SK8",
+    "supplier_url": "https://www.motedis.com/en/Shaft-supports-SH8-SK8",
+    "designation": "Shaft support SH8/SK8",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"rigid"}}
+    },
+    "frames": [
+      {"name":"bore","origin":[0,20,7],"z":[0,0,1],"x":[1,0,0],"kind":"bore"},
+      {"name":"mount","origin":[0,0,7],"z":[0,-1,0],"x":[0,0,1],"kind":"face"}
+    ]
+  },
+  {
+    "id": "sk10",
+    "name": "Shaft support SH10/SK10",
+    "category": "linear",
+    "source": "dynamic-m/Shaft-supports-SH10-SK10/Motedis_SH10.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "SH10",
+    "supplier_url": "https://www.motedis.com/en/Shaft-supports-SH10-SK10",
+    "designation": "Shaft support SH10/SK10",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"rigid"}}
+    },
+    "frames": [
+      {"name":"bore","origin":[0,20,7],"z":[0,0,1],"x":[1,0,0],"kind":"bore"},
+      {"name":"mount","origin":[0,0,7],"z":[0,-1,0],"x":[0,0,1],"kind":"face"}
+    ]
+  },
+  {
+    "id": "sk12",
+    "name": "Shaft support SH12/SK12",
+    "category": "linear",
+    "source": "dynamic-m/Shaft-supports-SH12-SK12/Motedis_SH12.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "SH12/SK12",
+    "supplier_url": "https://www.motedis.com/en/Shaft-supports-SH12-SK12",
+    "designation": "Shaft support SH12/SK12",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"rigid"}}
+    },
+    "frames": [
+      {"name":"bore","origin":[0,23,7],"z":[0,0,1],"x":[1,0,0],"kind":"bore"},
+      {"name":"mount","origin":[0,0,7],"z":[0,-1,0],"x":[0,0,1],"kind":"face"}
+    ]
+  },
+  {
+    "id": "sk16",
+    "name": "Shaft support SH16/SK16",
+    "category": "linear",
+    "source": "dynamic-m/Shaft-supports-SH16-SK16/Motedis_SH16.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "SH16/SK16",
+    "supplier_url": "https://www.motedis.com/en/Shaft-supports-SH16-SK16",
+    "designation": "Shaft support SH16/SK16",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"rigid"}}
+    },
+    "frames": [
+      {"name":"bore","origin":[0,27,8],"z":[0,0,1],"x":[1,0,0],"kind":"bore"},
+      {"name":"mount","origin":[0,0,8],"z":[0,-1,0],"x":[0,0,1],"kind":"face"}
+    ]
+  },
+  {
+    "id": "sk25",
+    "name": "Shaft support SH25/SK25",
+    "category": "linear",
+    "source": "dynamic-m/Shaft-supports-SH25-SK25/Motedis_SH25.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "SH25/SK25",
+    "supplier_url": "https://www.motedis.com/en/Shaft-supports-SH25-SK25",
+    "designation": "Shaft support SH25/SK25",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"rigid"}}
+    },
+    "frames": [
+      {"name":"bore","origin":[0,35,12],"z":[0,0,1],"x":[1,0,0],"kind":"bore"},
+      {"name":"mount","origin":[0,0,12],"z":[0,-1,0],"x":[0,0,1],"kind":"face"}
+    ]
+  },
+  {
+    "id": "sk30",
+    "name": "Shaft support SH30/SK30",
+    "category": "linear",
+    "source": "dynamic-m/Shaft-supports-SH30-SK30/Motedis_SH30.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "SH30/SK30",
+    "supplier_url": "https://www.motedis.com/en/Shaft-supports-SH30-SK30",
+    "designation": "Shaft support SH30/SK30",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"rigid"}}
+    },
+    "frames": [
+      {"name":"bore","origin":[0,42,14],"z":[0,0,1],"x":[1,0,0],"kind":"bore"},
+      {"name":"mount","origin":[0,0,14],"z":[0,-1,0],"x":[0,0,1],"kind":"face"}
+    ]
+  },
+  {
+    "id": "sk40",
+    "name": "Shaft support SH40/SK40",
+    "category": "linear",
+    "source": "dynamic-m/Shaft-supports-SH40-SK40/Motedis_SH40.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "SH40/SK40",
+    "supplier_url": "https://www.motedis.com/en/Shaft-supports-SH40-SK40",
+    "designation": "Shaft support SH40/SK40",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"rigid"}}
+    },
+    "frames": [
+      {"name":"bore","origin":[0,50,18],"z":[0,0,1],"x":[1,0,0],"kind":"bore"},
+      {"name":"mount","origin":[0,0,18],"z":[0,-1,0],"x":[0,0,1],"kind":"face"}
+    ]
+  }
+]

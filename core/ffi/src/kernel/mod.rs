@@ -44,6 +44,8 @@ pub mod tangent_chain;
 pub mod boundary;
 // Contacts of a new Extrude's tool (mitcad#289).
 pub mod contact;
+// BUILD: the face names of derived parts (mitcad#375).
+pub mod build;
 
 use std::sync::Arc;
 
@@ -1547,6 +1549,19 @@ impl Kernel for OcctKernel {
                 .collect(),
             touched: (0..targets.len()).map(|i| result.touched(i)).collect(),
         })
+    }
+
+    // BUILD: the face names of derived parts (mitcad#375; build.rs).
+
+    fn rename_faces(
+        &self,
+        shape: &Self::Shape,
+        prefix: &str,
+        renames: &[(FaceName, FaceName)],
+    ) -> Result<Self::Shape, KernelError> {
+        let from: Vec<String> = renames.iter().map(|(f, _)| f.to_string()).collect();
+        let to: Vec<String> = renames.iter().map(|(_, t)| t.to_string()).collect();
+        build::ffi::rename_faces(occt(shape)?, prefix, &from, &to).map_err(failed)
     }
 }
 

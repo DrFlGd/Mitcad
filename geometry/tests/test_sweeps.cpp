@@ -1431,6 +1431,146 @@ void test_shifted_helix_pieces() {
   CHECK(throws_with([&] { helix_sweep(spec); }, "piece shift"));
 }
 
+// A helix swept in pieces on a body's cylinder has the sides its straight
+// sides along the axis sweep as cylinders (the sweep makes them B-splines
+// within its tolerance; mitcad#235: a cut across a thread beside its
+// root's cylinder removed almost nothing): the same solid, valid, cut from
+// the body as before.
+void test_helix_sides_on_cylinders_exact() {
+  Frame xz;
+  xz.x_axis = gp_Dir(1, 0, 0);
+  xz.y_axis = gp_Dir(0, 0, 1);
+  const auto cylinders = [](const Shape& shape) {
+    int count = 0;
+    for (TopExp_Explorer it(shape.occt(), TopAbs_FACE); it.More(); it.Next()) {
+      count += BRepAdaptor_Surface(TopoDS::Face(it.Current())).GetType() == GeomAbs_Cylinder ? 1 : 0;
+    }
+    return count;
+  };
+  // A thread on a nut's hole, its base (on the hole and outside it, 1 mm
+  // from the axis) swept in pieces of a third of a turn.
+  const ShapePtr nut = ring_body(5, 10, 0, 20);
+  HelixSweepSpec spec;
+  spec.feature = "F1";
+  spec.frame = xz;
+  spec.axis = gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1));
+  spec.pitch = 1.5;
+  spec.revolutions = 6;
+  spec.regions = {polygon({{5, 4}, {5.6, 4.5}, {5, 5}})};
+  const ShapePtr one = helix_sweep(spec);
+  spec.bodies = {nut};
+  const ShapePtr pieces = helix_sweep(spec);
+  CHECK(cylinders(*one) == 0);
+  CHECK_NEAR_TOL(cylinders(*pieces), 18, 0.0);
+  CHECK(BRepCheck_Analyzer(pieces->occt()).IsValid());
+  CHECK_NEAR_TOL(precise_volume(*pieces), precise_volume(*one), 1e-6);
+  const BooleanResult cut = boolean(BooleanOp::Cut, {nut.get()}, *pieces);
+  CHECK(cut.pieces.size() == 1);
+  if (cut.pieces.size() == 1) {
+    CHECK(detail::is_valid(cut.pieces.front().shape->occt()));
+    CHECK_NEAR_TOL(precise_volume(*cut.pieces.front().shape), precise_volume(*nut) - precise_volume(*one), 1e-6);
+  }
+}
+
+// A thread with touching turns cut into a blind bore and running out past
+// its bottom into the material there, and a ring joined over its end
+// (mitcad#235): the sides moved off the bore's cylinder (kOffCylinder)
+// leave the material inside the cylinder beyond the bore whole, so that
+// the ring fills the thread's end without a slot 0.1 um thick.
+void test_helix_slivers_within_the_bodies_faces() {
+  struct Case {
+    const char* what;
+    double bore;     // the bore's radius
+    double outer;    // the body's
+    double bottom;   // the bore from z = 0 to its bottom, the body to twice that
+    double start;    // the thread's base from z = start
+    double pitch;    // as long as the base
+    double depth;    // the thread's
+    double turns;
+    double ring_from; // the ring over the thread's end from z = ring_from to bottom + 5
+    bool yz;         // the profile in the YZ plane, else XZ
+    bool left;       // left-handed
+  };
+  const Case cases[] = {
+      {"a nut", 5, 10, 10, 4, 1.5, 0.6, 6, 9, false, false},
+      // The thread starting below the body and running out 2.6 mm past the
+      // bore's bottom, the ring from the bottom up.
+      {"a pipe's socket", 19.125, 23, 10, -2.1, 2.1, 2.1, 6, 10, false, false},
+      {"a pipe's socket sketched on YZ", 19.125, 23, 10, -2.1, 2.1, 2.1, 6, 10, true, false},
+      {"a left-handed thread in the socket", 19.125, 23, 10, -2.1, 2.1, 2.1, 6, 10, true, true},
+      // The thread ending 0.3 mm past the bottom, the ring from below it.
+      {"a short run-out", 8, 12, 10, 0.3, 1.25, 0.8, 7.6, 9.5, false, false},
+  };
+  for (const Case& c : cases) {
+    Frame xz;
+    xz.x_axis = c.yz ? gp_Dir(0, 1, 0) : gp_Dir(1, 0, 0);
+    xz.y_axis = gp_Dir(0, 0, 1);
+    const ShapePtr block = extrude("F1", {circle(1, 0, 0, c.outer)}, 0, 2 * c.bottom);
+    const ShapePtr bore = extrude("F2", {circle(2, 0, 0, c.bore)}, 0, c.bottom);
+    const BooleanResult blind = boolean(BooleanOp::Cut, {block.get()}, *bore);
+    CHECK(blind.pieces.size() == 1);
+    if (blind.pieces.size() != 1) {
+      continue;
+    }
+    const ShapePtr body = blind.pieces.front().shape;
+    HelixSweepSpec spec;
+    spec.feature = "F3";
+    spec.frame = xz;
+    spec.axis = gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1));
+    spec.pitch = c.pitch;
+    spec.revolutions = c.turns;
+    spec.left_handed = c.left;
+    spec.regions = {polygon(
+        {{c.bore, c.start}, {c.bore + c.depth, c.start + c.pitch / 2}, {c.bore, c.start + c.pitch}})};
+    spec.bodies = {body};
+    const ShapePtr helix = helix_sweep(spec);
+    CHECK(BRepCheck_Analyzer(helix->occt()).IsValid());
+    const BooleanResult cut = boolean(BooleanOp::Cut, {body.get()}, *helix);
+    CHECK(cut.pieces.size() == 1);
+    if (cut.pieces.size() != 1) {
+      continue;
+    }
+    const ShapePtr threaded = cut.pieces.front().shape;
+    CHECK(detail::is_valid(threaded->occt()));
+    // The material inside the bore's cylinder beyond its bottom.
+    const ShapePtr core = extrude("F4", {circle(3, 0, 0, c.bore)}, c.bottom, 2 * c.bottom);
+    const BooleanResult inside = boolean(BooleanOp::Intersect, {threaded.get()}, *core);
+    CHECK(inside.pieces.size() == 1);
+    if (inside.pieces.size() == 1) {
+      const double volume = precise_volume(*inside.pieces.front().shape);
+      if (!near(volume, kPi * c.bore * c.bore * c.bottom, 1e-8)) {
+        std::fprintf(stderr, "helix slivers, %s: inside the bore's cylinder %.9g, expected %.9g\n", c.what,
+                     volume, kPi * c.bore * c.bore * c.bottom);
+        ++failures;
+      }
+    }
+    // The ring over the thread's end fills it: the part from the bottom up
+    // is whole.
+    const double ring_to = c.bottom + 5;
+    const ShapePtr ring = ring_body(c.bore, c.outer, c.ring_from, ring_to);
+    const BooleanResult joined = boolean(BooleanOp::Join, {threaded.get()}, *ring);
+    CHECK(joined.pieces.size() == 1);
+    if (joined.pieces.size() != 1) {
+      continue;
+    }
+    CHECK(detail::is_valid(joined.pieces.front().shape->occt()));
+    const ShapePtr top = extrude("F5", {circle(4, 0, 0, c.outer)}, c.bottom, ring_to);
+    const BooleanResult filled = boolean(BooleanOp::Intersect, {joined.pieces.front().shape.get()}, *top);
+    CHECK(filled.pieces.size() == 1);
+    if (filled.pieces.size() == 1) {
+      const double volume = precise_volume(*filled.pieces.front().shape);
+      GProp_GProps area;
+      BRepGProp::SurfaceProperties(filled.pieces.front().shape->occt(), area, 1.0e-8);
+      const double r2 = c.outer * c.outer;
+      if (!near(volume, kPi * r2 * 5, 1e-8) || !near(area.Mass(), 2 * kPi * r2 + 2 * kPi * c.outer * 5, 1e-8)) {
+        std::fprintf(stderr, "helix slivers, %s: the ring's part %.9g mm3, %.9g mm2, expected %.9g, %.9g\n", c.what,
+                     volume, area.Mass(), kPi * r2 * 5, 2 * kPi * r2 + 2 * kPi * c.outer * 5);
+        ++failures;
+      }
+    }
+  }
+}
+
 void sweeps_tests() {
   guarded("sweeps", test_sweeps);
   guarded("backward sweeps", test_backward_sweeps);
@@ -1443,6 +1583,8 @@ void sweeps_tests() {
   guarded("helices with flat ends", test_helices_with_flat_ends);
   guarded("helices on cylinders", test_helices_on_cylinders);
   guarded("shifted helix pieces", test_shifted_helix_pieces);
+  guarded("helix sides on cylinders exact", test_helix_sides_on_cylinders_exact);
+  guarded("helix slivers within the bodies' faces", test_helix_slivers_within_the_bodies_faces);
   guarded("lofts", test_lofts);
   guarded("ribs", test_ribs);
   guarded("guide surfaces", test_guide_surfaces);

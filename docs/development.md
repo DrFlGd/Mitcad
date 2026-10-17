@@ -365,9 +365,11 @@ Run in the isolated environments:
   `mitcad-cli` scripts (`tools/cli/tests`), SPDX headers, dependency
   licences. `core.vcs.*` and `cli.remote` use a bare repository in a temp
   folder and a fake `ssh`; no network; skipped without git. `cli.library`
-  makes a small fastener library with
+  makes a small parts library of fasteners with
   `tools/libraries/make-fastener-library.py` in the build tree (needs git
-  and Python 3; skipped without them).
+  and Python 3; skipped without them); `cli.profile-library` likewise one
+  of BUILD parts with `tools/libraries/make-profile-library.py` from
+  sections it makes.
 - The crates' tests (`core.model`, `core.vcs.*`, ...): the fixtures
   `core.cargo_build` and `core.cargo_build_release` build every crate's
   test binaries in one cargo run (`cargo test --no-run`, one lock on the

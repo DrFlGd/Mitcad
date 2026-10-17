@@ -585,3 +585,29 @@ fn translated_copies_of_an_ellipse_keep_its_size() {
     let line = s.add_line(c, m).unwrap();
     assert!(s.add_constraint(EqualSize(e, line)).is_err());
 }
+
+#[test]
+fn equal_binds_the_minor_radii_of_two_ellipses() {
+    // Equal on ellipses (mitcad#363): the mirrored copy of an ellipse stays
+    // as thin as the original.
+    let mut s = System::new();
+    let c = s.add_point(0.0, 0.0);
+    let m = s.add_point(6.0, 0.0);
+    let e = s.add_ellipse(c, m, 3.0).unwrap();
+    let c2 = s.add_point(10.0, 0.0);
+    let m2 = s.add_point(16.0, 0.0);
+    let e2 = s.add_ellipse(c2, m2, 2.0).unwrap();
+    s.add_constraint(Equal(e, e2)).unwrap();
+    s.add_constraint(MinorRadius {
+        ellipse: e,
+        value: 2.5,
+    })
+    .unwrap();
+    solve_ok(&mut s);
+    assert!((s.minor_radius(e2).unwrap() - 2.5).abs() < 1e-9);
+    // An ellipse is not equal to a line or a circle.
+    let line = s.add_line(c, m).unwrap();
+    assert!(s.add_constraint(Equal(e, line)).is_err());
+    let circle = s.add_circle(c2, 1.0).unwrap();
+    assert!(s.add_constraint(Equal(e, circle)).is_err());
+}

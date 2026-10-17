@@ -110,4 +110,18 @@ impl<K: Kernel> Resolver for DocResolver<'_, K> {
             .map(|s| s.value.clone())
             .ok_or_else(|| format!("{} has no result at the timeline marker", self.name(uid)))
     }
+
+    fn mount(
+        &mut self,
+        feature: FeatureUid,
+        name: &str,
+    ) -> Result<crate::transform::Transform, String> {
+        let label = self.name(feature);
+        crate::features::derived_part::mount_frame(
+            &self.document.result.results,
+            feature,
+            name,
+            &label,
+        )
+    }
 }

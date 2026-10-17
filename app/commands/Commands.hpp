@@ -6,6 +6,7 @@
 
 #include <functional>
 
+#include <QString>
 #include <QStringList>
 
 #include "../framework/Selection.hpp"
@@ -16,6 +17,7 @@ namespace mitcad {
 
 class CommandContext;
 class CommandRegistry;
+class DocumentHost;
 struct CommandDef;
 
 namespace sketch {
@@ -54,6 +56,13 @@ QStringList sketchConstraintCommands();
 // Chamfer, Sheet Cut, Corner Relief, Unfold, Refold, Flat Pattern and Sheet Rules; the main
 // window adds Edit Sheet Rules, Show Flat Pattern and Export Flat Pattern.
 void registerSheetMetalCommands(CommandRegistry& registry, const CommandContext& context);
+
+// The BUILD tab (mitcad#375, BuildCommands.cpp): PROFILE (Profile, Panel,
+// Linear Part), CONNECT (Connector, Fasteners), MODIFY (Length, Ends, Flip,
+// Rotate 90 deg), OUTPUT (Cut List, Parts List). `host` runs their model
+// commands; the lists' dialogs open over `window` with the design's name.
+void registerBuildCommands(CommandRegistry& registry, const CommandContext& context, DocumentHost& host,
+                           QWidget* window, std::function<QString()> designName);
 
 // Equal spacing in sketches (mitcad#221, EqualSpacingCommands.cpp): Equal
 // Spacing, Equal Spacing Dimension and Edit Equal Spacing. Sketch Dimension

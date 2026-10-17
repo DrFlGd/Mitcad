@@ -140,6 +140,11 @@ std::optional<gp_Dir> guide_normal(const TopoDS_Shape& faces, const gp_Pnt& poin
 // normal of a planar spine, else the corrected Frenet frame.
 PipeMode perpendicular_mode(const Spine& spine);
 
+// The same for the spine of a path: along a lone helix (mitcad#385) the
+// helix's axis as the fixed binormal, so the section turns with the helix
+// about its axis (a screw motion) and keeps its angle to the axis.
+PipeMode perpendicular_mode(const Spine& spine, const Path& path);
+
 // The loop swept along the spine into a solid: sides named after its edges,
 // the cap at the spine's start `first` and at its end `last`. `tolerance`
 // bounds the approximation of the swept surfaces.

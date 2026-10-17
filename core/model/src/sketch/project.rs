@@ -182,6 +182,32 @@ pub fn project(curves: &[Curve3], frame: &SketchFrame) -> Vec<Projected> {
                     knots: knots.clone(),
                 })));
             }
+            // A helix seen along its axis is its circle (mitcad#385); seen
+            // otherwise it is no curve a sketch holds, and is left out.
+            Curve3::Helix {
+                center,
+                axis,
+                x_axis,
+                radius,
+                start,
+                end,
+                ..
+            } => {
+                let off = cross(*axis, frame.normal());
+                if dot(off, off).sqrt() <= 1e-9 {
+                    let circle = Curve3::Conic {
+                        center: *center,
+                        normal: *axis,
+                        x_axis: *x_axis,
+                        major: *radius,
+                        minor: *radius,
+                        start: *start,
+                        end: *end,
+                        closed: end - start >= std::f64::consts::TAU - 1e-12,
+                    };
+                    out.extend(project(&[circle], frame));
+                }
+            }
         }
     }
     out
@@ -414,6 +440,23 @@ pub fn transform_curve(t: &Transform, curve: &Curve3) -> Curve3 {
             poles: poles.iter().map(|p| t.apply_point(*p)).collect(),
             weights: weights.clone(),
             knots: knots.clone(),
+        },
+        Curve3::Helix {
+            center,
+            axis,
+            x_axis,
+            radius,
+            pitch,
+            start,
+            end,
+        } => Curve3::Helix {
+            center: t.apply_point(*center),
+            axis: t.apply_vector(*axis),
+            x_axis: t.apply_vector(*x_axis),
+            radius: *radius,
+            pitch: *pitch,
+            start: *start,
+            end: *end,
         },
     }
 }

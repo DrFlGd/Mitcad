@@ -41,7 +41,11 @@ impl LibraryInput {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ChangeInput {
-    component: String,
+    #[serde(default)]
+    component: Option<String>,
+    /// A BUILD library source instead of a component (mitcad#375).
+    #[serde(default)]
+    source: Option<crate::build::SourceId>,
     #[serde(default)]
     rev: Option<String>,
     #[serde(default)]
@@ -88,11 +92,31 @@ impl<K: Kernel> Document<K> {
                 json!({"changed": changed})
             }
             LibraryCommand::UpdateLibraryParts { changes } => {
+                // BUILD's library sources (mitcad#375).
+                if changes.iter().any(|c| c.source.is_some()) {
+                    let mut sources = Vec::new();
+                    for c in changes {
+                        let (Some(source), None, None) = (c.source, &c.component, &c.config) else {
+                            return Err(ApiError(
+                                "a change names a source or a component; a source's rows are its \
+                                 parts' own (build_edit's config)"
+                                    .to_owned(),
+                            ));
+                        };
+                        sources.push((source, c.rev));
+                    }
+                    let lines = self.update_library_sources(&sources)?;
+                    return Ok(json!({"changes": lines}));
+                }
                 let changes = changes
                     .into_iter()
                     .map(|c| {
+                        let component = c
+                            .component
+                            .as_deref()
+                            .ok_or_else(|| ApiError("a change names its component".to_owned()))?;
                         Ok(LibraryChange {
-                            component: self.component_ref(&c.component)?,
+                            component: self.component_ref(component)?,
                             rev: c.rev,
                             config: c.config,
                         })
@@ -135,6 +159,34 @@ impl<K: Kernel> Document<K> {
                 }))
             })
             .collect();
+        let mut parts = parts;
+        // BUILD's library sources (mitcad#375), with the derived parts
+        // made from them.
+        for source in self.state().library_sources.iter() {
+            let uses: Vec<crate::ids::FeatureUid> = self
+                .features()
+                .filter(|f| matches!(&f.def, crate::features::FeatureDef::DerivedPart(d) if d.source == source.id))
+                .map(|f| f.uid)
+                .collect();
+            let l = &source.library;
+            parts.push(json!({
+                "source": source.id,
+                "component": null,
+                "name": source.label(),
+                "library": l,
+                "url": crate::library::shown_url(&l.url),
+                "rev": l.rev,
+                "label": l.label,
+                "designation": l.designation,
+                "build": source.build,
+                "supplier": source.supplier,
+                "part_number": source.part_number,
+                "supplier_url": source.supplier_url,
+                "config": null,
+                "version": l.version_text(),
+                "uses": uses,
+            }));
+        }
         json!({"parts": parts})
     }
 
@@ -157,6 +209,9 @@ impl<K: Kernel> Document<K> {
                     "license": library.map(|l| l.license.clone()),
                     "authors": library.map(|l| l.authors.clone()),
                     "url": library.map(|l| crate::library::shown_url(&l.url)),
+                    "supplier": row.supplier,
+                    "part_number": row.part_number,
+                    "supplier_url": row.supplier_url,
                 })
             })
             .collect();

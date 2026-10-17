@@ -10,6 +10,7 @@
 #include <QByteArray>
 #include <QHash>
 #include <QJsonArray>
+#include <QLineEdit>
 #include <QList>
 #include <QObject>
 #include <QPointer>
@@ -214,12 +215,19 @@ public:
   bool scriptInputs(const QJsonObject& inputs, const ItemReader& read, QString& error);
   // A preview waits or computes, or OK or Cancel is under way.
   bool scriptBusy() const;
+  // How often OK applied a command that repeats (CommandDef::repeats,
+  // BUILD's Place): its panel stays open after each.
+  int appliedCount() const { return m_applied; }
   // The inputs as they are, whether OK can run (`ready`, else `message`),
   // the last preview's outcome and the panel's messages (shownState).
   QJsonObject scriptState();
 
 signals:
   void finished(bool committed);
+
+protected:
+  // Tab steps a choice with a cycle (InputDef::tabCycle, mitcad#375).
+  bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
   // An input as the panel shows it: one of the definition's, or an input
@@ -312,6 +320,24 @@ private:
   // OK of an application command (CommandDef::accept, mitcad#234): does
   // its work; false (the panel stays) when it could not.
   bool acceptCommand();
+  // OK of a command with its own model commands (CommandDef::apply,
+  // mitcad#375): runs them; one that repeats stays open for the next,
+  // another closes. False (the panel stays) when the model refused.
+  bool applyCommand();
+  // Whether a choice with a Tab cycle is shown (the filter is installed
+  // only for such commands) and steps it; false when there is none.
+  bool cycleChoice();
+  int m_applied = 0; // OKs of a command that repeats
+  // The box at the cursor of a value input with InputDef::cursorBox
+  // (mitcad#375): made with the panel, moved with the mouse over the view,
+  // its text in step with the input's (the report's "cursor" text while
+  // the input has none of its own typed).
+  void createCursorBox();
+  void updateCursorBox();
+  void moveCursorBox(const QPoint& at);
+  QPointer<QLineEdit> m_cursorBox;
+  QString m_cursorKey;
+  QString m_loggedCursorBox;
   // OK of a command that makes a component in a root with modelled bodies
   // (mitcad#171): asks whether the root's features move into a component
   // first. False when the user cancels; `done` when the move did the

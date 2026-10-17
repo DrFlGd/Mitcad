@@ -71,6 +71,29 @@ pub struct SketchStatus {
     pub redundant_sets: Vec<Vec<SolverItem>>,
 }
 
+impl SketchStatus {
+    /// The sketch warning about collapsed curves (mitcad#365), `None` when
+    /// none has collapsed. The palette shows it; [`degenerate`] names what
+    /// it is about.
+    ///
+    /// [`degenerate`]: SketchStatus::degenerate
+    pub fn degenerate_warning(&self) -> Option<String> {
+        if self.degenerate.is_empty() {
+            return None;
+        }
+        let names: Vec<String> = self
+            .degenerate
+            .iter()
+            .map(|id| Ref::Curve(*id).to_string())
+            .collect();
+        Some(format!(
+            "{} collapsed (a line of no length or a circle or arc of no radius) and makes no \
+             region",
+            names.join(", ")
+        ))
+    }
+}
+
 /// The solved sketch geometry.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Solved {
@@ -178,6 +201,8 @@ struct Built {
     anchors: BTreeMap<Ref, SolverAnchor>,
     /// The equal spacings, for their spacing dimensions.
     spacings: BTreeMap<ConstraintUid, (Vec<Ref>, SpacingMode, Option<EntityUid>)>,
+    /// The curves the last converged solve left collapsed.
+    degenerate: Vec<EntityId>,
 }
 
 fn list(items: &[SolverItem]) -> String {
@@ -312,6 +337,7 @@ impl Built {
             items: BTreeMap::new(),
             anchors,
             spacings,
+            degenerate: Vec::new(),
         };
         for e in entities.iter().filter(|e| e.fixed) {
             let c = if e.is_point() {
@@ -608,6 +634,7 @@ impl Built {
         }
         match result.status {
             SolveStatus::Converged => {
+                self.degenerate = result.degenerate.clone();
                 // A second, tighter pass so that curves meet their shared
                 // points within the geometry kernel's tolerance; if it does
                 // not converge, the first solution stays.
@@ -760,6 +787,11 @@ impl Built {
             self.points.iter().map(|(u, p)| (*p, *u)).collect();
         let by_curve: BTreeMap<EntityId, EntityUid> =
             self.curves.iter().map(|(u, c)| (*c, *u)).collect();
+        status.degenerate = self
+            .degenerate
+            .iter()
+            .filter_map(|e| by_curve.get(e).copied())
+            .collect();
         status.fully_constrained = a
             .fully_constrained_points
             .iter()

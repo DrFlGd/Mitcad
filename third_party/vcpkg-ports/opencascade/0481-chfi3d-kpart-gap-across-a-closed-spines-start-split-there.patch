@@ -1,0 +1,322 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Chamfers and fillets: a gap over the start of a closed spine, cut by the
+face beyond, split at the spine's start (mitcad#263).
+
+An analytic blend along a closed edge whose contact on one face leaves that
+face across an edge into a face beyond and comes back gets a piece cut by
+the face beyond over each such gap (0055, 0071, 0142; on a closed spine the
+gap from the last piece round to the first too, 0057, 0072, 0145). Where
+that gap holds the spine's start (a post on a plate, its foot chamfered so
+wide that the cone's contact on the plate runs past the plate's side where
+the post's seam is), the piece ran across the start: its other contact
+crossed the seam of the face closed round the spine (the post's cylinder,
+whose edge's vertex is on the seam) inside the piece. The topological build
+then took the contact's edges on that face for a wire of their own and kept
+the face whole, with its old edge at the spine: an invalid shape.
+
+- ChFi3d_SplitPieceAtSection (new): splits a piece of an analytic blend at
+  the section through a spine point (the plane square to the spine there),
+  both parts on the same blend surface (one face, as 0073's pieces), each
+  line cut where it crosses that plane; where a line is cut on an edge of
+  its face (the seam), both parts' points there are on that edge, on a seam
+  on the side each part runs into the face from (as ChFi3d_KPartCutPiece's
+  ends).
+- ChFi3d_FillKPartGaps: on a closed spine, once the gaps are filled and the
+  pieces' lines and p-curves taken into their periods, a piece holding the
+  spine's start is split there where a line crosses the seam of its face
+  there (a piece whose lines cross no seam there, e.g. a rounding's torus
+  over a gap, stays whole: its face's seam stays where it was); its part
+  before the start goes to the end of the period, the part after it to its
+  start, and the lines and p-curves are taken into their periods again.
+
+Upstream: new.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+index 8cda613..ef7b65e 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+@@ -6903,6 +6903,207 @@ static bool ChFi3d_KPartChainPieces(TopOpeBRepDS_DataStructure&
+   return true;
+ }
+ 
++//=======================================================================
++// function : ChFi3d_SplitPieceAtSection
++// purpose  : Splits piece Fd of an analytic blend at the section through
++//            the spine's point at Ws: Fd keeps the part before, the piece
++//            returned the part after. Both are on the same blend surface
++//            (one face, no section between them, ChFi3d_FilDS); each line
++//            is cut where it crosses the plane square to the spine at Ws.
++//            Null where a line does not cross it inside the piece, or,
++//            with OnSeamOnly, where no line crosses it on a seam of its
++//            face.
++//=======================================================================
++
++static occ::handle<ChFiDS_SurfData> ChFi3d_SplitPieceAtSection(TopOpeBRepDS_DataStructure&         DStr,
++                                                               const occ::handle<ChFiDS_Spine>&    Spine,
++                                                               const occ::handle<ChFiDS_SurfData>& Fd,
++                                                               const double                        Ws,
++                                                               const bool                          OnSeamOnly)
++{
++  const double W1 = Fd->FirstSpineParam(), W2 = Fd->LastSpineParam();
++  if (Ws <= W1 + Precision::PConfusion() || Ws >= W2 - Precision::PConfusion())
++  {
++    return occ::handle<ChFiDS_SurfData>();
++  }
++  gp_Pnt P;
++  gp_Vec T;
++  Spine->D1(Ws, P, T);
++  if (T.Magnitude() <= gp::Resolution())
++  {
++    return occ::handle<ChFiDS_SurfData>();
++  }
++  const occ::handle<Geom_Plane> aSection = new Geom_Plane(P, gp_Dir(T));
++  double                        t[3]     = {0., 0., 0.};
++  for (int s = 1; s <= 2; s++)
++  {
++    const ChFiDS_FaceInterference& FI = Fd->Interference(s);
++    if (FI.LineIndex() <= 0 || DStr.Curve(FI.LineIndex()).Curve().IsNull() || FI.PCurveOnSurf().IsNull())
++    {
++      return occ::handle<ChFiDS_SurfData>();
++    }
++    const occ::handle<Geom_Curve>& C  = DStr.Curve(FI.LineIndex()).Curve();
++    const double                   lo = std::min(FI.FirstParameter(), FI.LastParameter());
++    const double                   hi = std::max(FI.FirstParameter(), FI.LastParameter());
++    GeomAPI_IntCS                  anInter(C, aSection);
++    bool                           found = false;
++    double                         best  = RealLast();
++    for (int i = 1; anInter.IsDone() && i <= anInter.NbPoints(); i++)
++    {
++      double u = 0., v = 0., w = 0.;
++      anInter.Parameters(i, u, v, w);
++      if (C->IsPeriodic())
++      {
++        w = ElCLib::InPeriod(w, lo, lo + C->Period());
++      }
++      const double d = anInter.Point(i).Distance(P);
++      if (w > lo + Precision::PConfusion() && w < hi - Precision::PConfusion() && d < best)
++      {
++        best  = d;
++        t[s]  = w;
++        found = true;
++      }
++    }
++    if (!found)
++    {
++      return occ::handle<ChFiDS_SurfData>();
++    }
++  }
++  if (OnSeamOnly)
++  {
++    // (Only where a line crosses there the seam of its face.)
++    bool onSeam = false;
++    for (int s = 1; s <= 2 && !onSeam; s++)
++    {
++      if (Fd->Index(s) <= 0 || Fd->IsOnCurve(s))
++      {
++        continue;
++      }
++      const gp_Pnt PO  = DStr.Curve(Fd->Interference(s).LineIndex()).Curve()->Value(t[s]);
++      TopoDS_Face  FoF = TopoDS::Face(DStr.Shape(Fd->Index(s)));
++      FoF.Orientation(TopAbs_FORWARD);
++      for (TopExp_Explorer ex(FoF, TopAbs_EDGE); ex.More() && !onSeam; ex.Next())
++      {
++        const TopoDS_Edge& E = TopoDS::Edge(ex.Current());
++        double             f = 0., l = 0.;
++        if (BRep_Tool::Degenerated(E) || !BRep_Tool::IsClosed(E, FoF))
++        {
++          continue;
++        }
++        const occ::handle<Geom_Curve> aC = BRep_Tool::Curve(E, f, l);
++        if (aC.IsNull())
++        {
++          continue;
++        }
++        GeomAPI_ProjectPointOnCurve aPr(PO, aC, f, l);
++        onSeam = aPr.NbPoints() > 0 && aPr.LowerDistance() <= 10. * Precision::Confusion();
++      }
++    }
++    if (!onSeam)
++    {
++      return occ::handle<ChFiDS_SurfData>();
++    }
++  }
++  occ::handle<ChFiDS_SurfData> aNext = new ChFiDS_SurfData();
++  aNext->Copy(Fd);
++  aNext->SetIndexOfC1(Fd->IsOnCurve1() ? Fd->IndexOfC1() : 0);
++  aNext->SetIndexOfC2(Fd->IsOnCurve2() ? Fd->IndexOfC2() : 0);
++  for (int s = 1; s <= 2; s++)
++  {
++    ChFiDS_FaceInterference&      FI   = Fd->ChangeInterference(s);
++    ChFiDS_FaceInterference&      FI2  = aNext->ChangeInterference(s);
++    const occ::handle<Geom_Curve> aCrv = DStr.Curve(FI.LineIndex()).Curve();
++    const double                  aTol = DStr.Curve(FI.LineIndex()).Tolerance();
++    FI2.SetLineIndex(DStr.AddCurve(TopOpeBRepDS_Curve(occ::down_cast<Geom_Curve>(aCrv->Copy()), aTol)));
++    if (!FI.PCurveOnFace().IsNull())
++    {
++      FI2.ChangePCurveOnFace() = occ::down_cast<Geom2d_Curve>(FI.PCurveOnFace()->Copy());
++    }
++    FI2.ChangePCurveOnSurf() = occ::down_cast<Geom2d_Curve>(FI.PCurveOnSurf()->Copy());
++    const bool forward = FI.FirstParameter() <= FI.LastParameter();
++    FI.SetParameter(t[s], !forward);
++    FI2.SetParameter(t[s], forward);
++    ChFiDS_CommonPoint& CPl = Fd->ChangeVertex(false, s);
++    ChFiDS_CommonPoint& CPf = aNext->ChangeVertex(true, s);
++    CPl.Reset();
++    CPl.SetPoint(aCrv->Value(t[s]));
++    CPf = CPl;
++  }
++  Fd->LastSpineParam(Ws);
++  aNext->FirstSpineParam(Ws);
++  // Where a line is cut on an edge of its face (the seam of a face closed
++  // round the spine), both parts end on that edge, on a seam on its side
++  // the part runs into the face from (as KPartCutPiece's ends).
++  for (int s = 1; s <= 2; s++)
++  {
++    if (Fd->Index(s) <= 0 || Fd->IsOnCurve(s))
++    {
++      continue;
++    }
++    const ChFiDS_FaceInterference& FI  = Fd->Interference(s);
++    const occ::handle<Geom_Curve>& CL  = DStr.Curve(FI.LineIndex()).Curve();
++    const gp_Pnt                   PO  = CL->Value(t[s]);
++    TopoDS_Face                    FoF = TopoDS::Face(DStr.Shape(Fd->Index(s)));
++    FoF.Orientation(TopAbs_FORWARD);
++    for (int k = 0; k < 2; k++)
++    {
++      // (k 0: the start of aNext; k 1: the end of Fd.)
++      const occ::handle<ChFiDS_SurfData>& X  = k == 0 ? aNext : Fd;
++      const ChFiDS_FaceInterference&      FX = X->Interference(s);
++      const gp_Pnt PM = DStr.Curve(FX.LineIndex()).Curve()->Value(0.5 * (FX.FirstParameter() + FX.LastParameter()));
++      for (TopExp_Explorer ex(FoF, TopAbs_EDGE); ex.More(); ex.Next())
++      {
++        const TopoDS_Edge& E = TopoDS::Edge(ex.Current());
++        double             f = 0., l = 0.;
++        const occ::handle<Geom_Curve> aC = BRep_Tool::Degenerated(E) ? occ::handle<Geom_Curve>() : BRep_Tool::Curve(E, f, l);
++        if (aC.IsNull())
++        {
++          continue;
++        }
++        GeomAPI_ProjectPointOnCurve aPr(PO, aC, f, l);
++        if (aPr.NbPoints() == 0 || aPr.LowerDistance() > 10. * Precision::Confusion())
++        {
++          continue;
++        }
++        const double w = aPr.LowerDistanceParameter();
++        if (w <= f + Precision::PConfusion() || w >= l - Precision::PConfusion())
++        {
++          continue;
++        }
++        if (BRep_Tool::IsClosed(E, FoF))
++        {
++          gp_Pnt aP;
++          gp_Vec aT;
++          aC->D1(w, aP, aT);
++          if (E.Orientation() == TopAbs_REVERSED)
++          {
++            aT.Reverse();
++          }
++          GeomAPI_ProjectPointOnSurf aPrS(PO, BRep_Tool::Surface(FoF));
++          if (aPrS.NbPoints() == 0)
++          {
++            continue;
++          }
++          double us = 0., vs = 0.;
++          aPrS.LowerDistanceParameters(us, vs);
++          gp_Pnt aPs;
++          gp_Vec aDu, aDv;
++          BRep_Tool::Surface(FoF)->D1(us, vs, aPs, aDu, aDv);
++          if (aDu.Crossed(aDv).Crossed(aT).Dot(gp_Vec(PO, PM)) <= 0.)
++          {
++            continue;
++          }
++        }
++        const TopAbs_Orientation aTr = k == 0 ? TopAbs::Reverse(TopAbs::Compose(FI.Transition(), E.Orientation()))
++                                              : TopAbs::Compose(FI.Transition(), E.Orientation());
++        X->ChangeVertex(k == 0, s).SetArc(10. * Precision::Confusion(), E, w, aTr);
++        break;
++      }
++    }
++  }
++  return aNext;
++}
++
+ //=======================================================================
+ // function : ChFi3d_FillKPartGaps
+ // purpose  : Pieces of an analytic blend split by the domains of its
+@@ -7078,25 +7279,60 @@ static void ChFi3d_FillKPartGaps(TopOpeBRepDS_DataStructure&
+     // holds the end before the start (SplitKPart); the curves in the data
+     // structure need it after the start (with the gaps filled, the piece is
+     // no longer joined to a walked one that takes its ends as they come).
+-    for (int j = 1; j <= LSD.Length(); j++)
+-    {
+-      for (int s = 1; s <= 2; s++)
++    const auto aNormalise = [&]() {
++      for (int j = 1; j <= LSD.Length(); j++)
+       {
+-        ChFiDS_FaceInterference&       FI = LSD.ChangeValue(j)->ChangeInterference(s);
+-        const occ::handle<Geom_Curve>& Cl =
+-          FI.LineIndex() > 0 ? DStr.Curve(FI.LineIndex()).Curve() : occ::handle<Geom_Curve>();
+-        if (!Cl.IsNull() && Cl->IsPeriodic() && FI.LastParameter() < FI.FirstParameter())
+-        {
+-          FI.SetLastParameter(FI.LastParameter() + Cl->Period());
+-        }
+-        // (Its p-curve on a periodic face then lies a period on, past the
+-        // face's seam: it is taken back into the face's period.)
+-        const int iF = LSD.Value(j)->Index(s);
+-        if (iF > 0 && !LSD.Value(j)->IsOnCurve(s))
++        for (int s = 1; s <= 2; s++)
+         {
+-          ChFi3d_PCurveInFacePeriod(FI, TopoDS::Face(DStr.Shape(iF)));
++          ChFiDS_FaceInterference&       FI = LSD.ChangeValue(j)->ChangeInterference(s);
++          const occ::handle<Geom_Curve>& Cl =
++            FI.LineIndex() > 0 ? DStr.Curve(FI.LineIndex()).Curve() : occ::handle<Geom_Curve>();
++          if (!Cl.IsNull() && Cl->IsPeriodic() && FI.LastParameter() < FI.FirstParameter())
++          {
++            FI.SetLastParameter(FI.LastParameter() + Cl->Period());
++          }
++          // (Its p-curve on a periodic face then lies a period on, past the
++          // face's seam: it is taken back into the face's period.)
++          const int iF = LSD.Value(j)->Index(s);
++          if (iF > 0 && !LSD.Value(j)->IsOnCurve(s))
++          {
++            ChFi3d_PCurveInFacePeriod(FI, TopoDS::Face(DStr.Shape(iF)));
++          }
+         }
+       }
++    };
++    aNormalise();
++    // A piece filling the gap across the start of the spine is split
++    // there (ChFi3d_SplitPieceAtSection): the stripe starts and ends at the
++    // spine's start, where the other contact crosses the seam of the face
++    // closed round the spine (whose edge's vertex is on that seam). Its
++    // part before the start goes to the end of the period, the part after
++    // it to the start, as SplitKPart cuts its pieces at the spine's start.
++    const double w0 = Spine->FirstParameter(), aPer = Spine->Period();
++    for (int j = 1; j <= LSD.Length(); j++)
++    {
++      const occ::handle<ChFiDS_SurfData> G  = LSD.Value(j);
++      const double                       W1 = G->FirstSpineParam(), W2 = G->LastSpineParam();
++      const double                       ws = w0 + aPer * std::ceil((W1 - w0) / aPer);
++      if (ws <= W1 + Precision::PConfusion() || ws >= W2 - Precision::PConfusion())
++      {
++        continue;
++      }
++      const occ::handle<ChFiDS_SurfData> aAfter = ChFi3d_SplitPieceAtSection(DStr, Spine, G, ws, true);
++      if (aAfter.IsNull())
++      {
++        continue;
++      }
++      const double dG = ws - (w0 + aPer), dA = ws - w0;
++      G->FirstSpineParam(G->FirstSpineParam() - dG);
++      G->LastSpineParam(G->LastSpineParam() - dG);
++      aAfter->FirstSpineParam(aAfter->FirstSpineParam() - dA);
++      aAfter->LastSpineParam(aAfter->LastSpineParam() - dA);
++      LSD.Remove(j);
++      LSD.Append(G);
++      LSD.Prepend(aAfter);
++      aNormalise();
++      break;
+     }
+   }
+ }

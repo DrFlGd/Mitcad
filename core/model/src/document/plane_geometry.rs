@@ -63,6 +63,27 @@ fn distance_from_plane(curve: &Curve3, origin: [f64; 3], normal: [f64; 3]) -> f6
         // A B-spline lies in a plane exactly when its poles do (its basis
         // functions are independent; weights are positive).
         Curve3::BSpline { poles, .. } => poles.iter().map(|p| off(*p)).fold(0.0, f64::max),
+        // A helix that rises leaves every plane (mitcad#385): its points.
+        Curve3::Helix {
+            center,
+            axis,
+            x_axis,
+            radius,
+            pitch,
+            start,
+            end,
+        } => (0..=64)
+            .map(|i| {
+                let t = start + (end - start) * f64::from(i) / 64.0;
+                off(crate::features::path::helix_point(
+                    *center,
+                    *axis,
+                    *x_axis,
+                    (*radius, *pitch),
+                    t,
+                ))
+            })
+            .fold(0.0, f64::max),
     }
 }
 

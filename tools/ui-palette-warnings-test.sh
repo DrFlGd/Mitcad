@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 # check-all sources: app/sketch/PaletteWarnings.cpp app/sketch/PaletteWarnings.hpp app/sketch/SketchPalette.cpp
 # check-all sources: app/sketch/SketchReveal.cpp app/sketch/SketchModel.cpp app/view/ViewReveal.cpp
-# check-all sources: core/model/src/api/sketch.rs core/model/src/sketch tools/cli
+# check-all sources: core/model/src/api/sketch.rs core/model/src/sketch core/model/src/features/sketch.rs tools/cli
 # The Sketch Palette's warnings select what they are about (mitcad#264),
 # through the real UI:
 #   - A design (mitcad-cli): a 60 x 40 block 20 high, a fillet of 5 on its
@@ -16,6 +16,8 @@
 #   - The view zoomed in far from the sketch; a click on the warning selects
 #     the projection's 8 curves and points (the selection's count matches
 #     the warning's entities) and the view moves to them.
+#   - A line of the sketch that has no length (mitcad#365) is a second warning,
+#     also a link: its click selects that line.
 #   - A second click replaces the selection with the same; Delete takes the
 #     selection (Deleted ...), Undo brings it back.
 #
@@ -50,7 +52,10 @@ cat > "$WORK/model.json" << EOF
       {"id": "c8", "type": "line", "start": "p6", "end": "p1", "fixed": true, "reference": true},
       {"id": "p9", "type": "point", "at": [20, 0]},
       {"id": "p10", "type": "point", "at": [20, 40]},
-      {"id": "c11", "type": "line", "start": "p9", "end": "p10"}],
+      {"id": "c11", "type": "line", "start": "p9", "end": "p10"},
+      {"id": "p14", "type": "point", "at": [30, 20]},
+      {"id": "p15", "type": "point", "at": [30, 20]},
+      {"id": "c16", "type": "line", "start": "p14", "end": "p15"}],
     "constraints": [
       {"id": "k12", "type": "coincident", "point": "p9", "entity": "c3"},
       {"id": "k13", "type": "coincident", "point": "p10", "entity": "c7"}],
@@ -110,5 +115,11 @@ ui_mark
 ui_step "Undo (Ctrl+Z)"                  ui_key ctrl+z
 ui_expect_new "Undo: " "Undo brings them back"
 ui_expect_new "Palette warning 0 at" "the warning is back"
+
+echo "--- A collapsed line (mitcad#365)"
+ui_expect_log "Palette warning 1 at" "the collapsed line has a warning of its own"
+ui_mark
+ui_step "click the collapsed line's warning" ui_click_logged "Palette warning 1"
+ui_expect_new "Palette: warning 1 selects 1 entities: c16" "the click selects the collapsed line"
 
 ui_finish "UI palette warnings test"

@@ -660,6 +660,10 @@ pub fn family() -> Vec<u8> {
 /// walls meeting at a corner (the first listed at the joint runs on), a
 /// floor of a rectangle with a hole, a grid, a link to `linked.rvt` and a
 /// chair (a family instance known by its box only, mitcad#333).
+///
+/// [`house`] is the same project with a gable roof over a third wall whose
+/// top is attached to it (mitcad#348), a door in that wall and a window
+/// whose type cannot cut its wall (mitcad#345).
 pub mod building {
     use super::*;
 
@@ -698,6 +702,39 @@ pub mod building {
     pub const HEIGHT: f64 = 10.0;
     /// The linked file's name.
     pub const LINKED: &str = "linked.rvt";
+    /// The house's gable roof (a footprint roof of two slopes) and its type
+    /// (mitcad#348).
+    pub const ROOF_TYPE: i64 = 43;
+    pub const ROOF: i64 = 44;
+    /// The house's gable wall along x = 20 from y = 0 to 12, its top
+    /// attached to the roof: under the roof's lower surface, from the eaves
+    /// ([`HEIGHT`]) to the ridge (`HEIGHT + 6 ROOF_PITCH`).
+    pub const WALL_C: i64 = 45;
+    /// The roof's slopes' rise per foot and its thickness (feet, square to
+    /// a slope).
+    pub const ROOF_PITCH: f64 = 0.5;
+    pub const ROOF_THICKNESS: f64 = 0.5;
+    /// The house's door (mitcad#345): a door type whose cut loop is a
+    /// [`DOOR_WIDTH`] × [`DOOR_HEIGHT`] rectangle, its instance in the gable
+    /// wall at y = 3 (from y = 1.5 to 4.5).
+    pub const DOOR_TYPE: i64 = 46;
+    pub const DOOR: i64 = 47;
+    pub const DOOR_WIDTH: f64 = 3.0;
+    pub const DOOR_HEIGHT: f64 = 7.0;
+    /// A window type without cut loops or void geometry, its instance in
+    /// wall B: it cannot cut its wall, and says why.
+    pub const WINDOW_TYPE: i64 = 48;
+    pub const WINDOW: i64 = 49;
+    /// The house's element table's ids: the project's and its own.
+    pub const HOUSE: [i64; 7] = [
+        ROOF_TYPE,
+        ROOF,
+        WALL_C,
+        DOOR_TYPE,
+        DOOR,
+        WINDOW_TYPE,
+        WINDOW,
+    ];
 
     /// The classes' tags.
     struct Tags {
@@ -726,6 +763,12 @@ pub mod building {
         link_type: u16,
         instance: u16,
         elem_table: u16,
+        step_list: u16,
+        join_to_roof: u16,
+        roof_type: u16,
+        profile_roof: u16,
+        face: u16,
+        family_symbol: u16,
     }
 
     /// A container of owned pointers.
@@ -878,9 +921,39 @@ pub mod building {
                 ("m_WallAttributesId", eid()),
                 ("m_upToLevelId", eid()),
                 ("m_pCurveDriver", word(OWNED)),
+                ("m_geomSteps", word(OWNED)),
             ],
         );
         let wall = w.class("SWall", Some(vwall), &[]);
+        let step_list = w.class(
+            "GeomStepList",
+            None,
+            &[("m_bRepAdjustGList", word(POINTERS))],
+        );
+        let join_to_roof = w.class(
+            "JoinToRoofGStep",
+            None,
+            &[("m_ids", container_of(id)), ("m_baseOrTop", word(U32))],
+        );
+        let roof_type = w.class(
+            "RoofAttributes",
+            Some(symbol),
+            &[("m_pCompoundStructure", word(OWNED))],
+        );
+        let roof_base = w.class(
+            "RoofBase",
+            Some(element),
+            &[
+                ("m_roofAttributesId", eid()),
+                ("m_pRefLayerFaces", word(POINTERS)),
+            ],
+        );
+        let profile_roof = w.class(
+            "ProfileRoof",
+            Some(roof_base),
+            &[("m_curveLoops", word(POINTERS))],
+        );
+        let face = w.class("Face", None, &[("m_pSurf", word(OWNED))]);
         let curve_loop = w.class("CurveLoop", None, &[("m_curves", word(POINTERS))]);
         let helper = w.class(
             "FloorExtrusionHelper",
@@ -922,7 +995,28 @@ pub mod building {
         let instance = w.class(
             "FamilyInstance",
             Some(element),
-            &[("m_pInstanceInfo", word(OWNED))],
+            &[
+                ("m_pInstanceInfo", word(OWNED)),
+                ("m_masterSymbolId", eid()),
+                ("m_hostId", eid()),
+            ],
+        );
+        // An insert type: its cut loops and their direction (mitcad#345).
+        let family_symbol = w.class(
+            "FamilySymbol",
+            Some(symbol),
+            &[
+                ("m_pCutLoops", word(POINTERS)),
+                (
+                    "m_cutDirs",
+                    Type {
+                        word: 0x500d,
+                        count: None,
+                        inner: Some(Box::new(array(F64, 3))),
+                        class: None,
+                    },
+                ),
+            ],
         );
         let elem_rec = w.class(
             "ElemRec",
@@ -963,6 +1057,12 @@ pub mod building {
             link_type,
             instance,
             elem_table,
+            step_list,
+            join_to_roof,
+            roof_type,
+            profile_roof,
+            face,
+            family_symbol,
         };
         (w.finish(), tags)
     }
@@ -1005,38 +1105,174 @@ pub mod building {
     }
 
     /// A wall from `start` to `end` (feet, at height 0), joined at its
-    /// start with `corner` (elements and their ends, in order).
-    fn wall(t: &Tags, id: i64, start: [f64; 3], end: [f64; 3], corner: &[(i64, u32)]) -> Vec<u8> {
+    /// start with `corner` (elements and their ends, in order), its top
+    /// attached to `roof` (mitcad#348: a `JoinToRoofGStep`).
+    fn wall(
+        t: &Tags,
+        id: i64,
+        start: [f64; 3],
+        end: [f64; 3],
+        corner: &[(i64, u32)],
+        roof: Option<i64>,
+    ) -> Vec<u8> {
         let mut b = Bytes::new(8, t.wall);
         element(&mut b, t, true, id, LEVEL_GROUND);
         b.id(WALL_TYPE).id(LEVEL_UPPER).pointer(t.driver);
+        match roof {
+            Some(_) => b.pointer(t.step_list),
+            None => b.null(),
+        };
         // The parameter set: the height.
         b.u32(1).id(-1_001_101).f64s(&[HEIGHT]);
         // The driver: its join at the start, then its curve.
-        b.u32(1).u32(corner.len() as u32);
-        for (e, joined) in corner {
-            b.id(*e).u32(*joined);
+        if corner.is_empty() {
+            b.u32(0);
+        } else {
+            b.u32(1).u32(corner.len() as u32);
+            for (e, joined) in corner {
+                b.id(*e).u32(*joined);
+            }
+            b.u32(0).u32(0);
         }
-        b.u32(0).u32(0);
         b.pointer(t.line);
+        // Its geometry steps: the attachment (written after the curve's).
+        if roof.is_some() {
+            b.u32(1).pointer(t.join_to_roof);
+        }
         let d = [end[0] - start[0], end[1] - start[1], end[2] - start[2]];
         let l = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
         b.f64s(&start)
             .f64s(&[d[0] / l, d[1] / l, d[2] / l])
             .f64s(&[0.0, l]);
+        if let Some(roof) = roof {
+            // `m_ids`, then `m_baseOrTop` (1: its top).
+            b.u32(1).id(roof).u32(1);
+        }
         b.out
     }
 
     /// A line record's fields from `a` to `b` (at height 0).
     fn line(b: &mut Bytes, a: [f64; 2], c: [f64; 2]) {
+        line_at(b, a, c, 0.0);
+    }
+
+    /// A line record's fields from `a` to `b` at height `z`.
+    fn line_at(b: &mut Bytes, a: [f64; 2], c: [f64; 2], z: f64) {
         let d = [c[0] - a[0], c[1] - a[1]];
         let l = d[0].hypot(d[1]);
-        b.f64s(&[a[0], a[1], 0.0, d[0] / l, d[1] / l, 0.0])
+        b.f64s(&[a[0], a[1], z, d[0] / l, d[1] / l, 0.0])
             .f64s(&[0.0, l]);
+    }
+
+    /// A line record's fields from `a` to `c`.
+    fn line3(b: &mut Bytes, a: [f64; 3], c: [f64; 3]) {
+        let d = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+        let l = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+        b.f64s(&a)
+            .f64s(&[d[0] / l, d[1] / l, d[2] / l])
+            .f64s(&[0.0, l]);
+    }
+
+    /// An insert type (mitcad#345): its cut loop, a `width` × `height`
+    /// rectangle in its xz plane from its origin up (centred on it across),
+    /// cutting along its y axis; or none.
+    fn insert_type(t: &Tags, id: i64, name: &str, opening: Option<(f64, f64)>) -> Vec<u8> {
+        let mut b = Bytes::new(8, t.family_symbol);
+        element(&mut b, t, false, id, -1);
+        b.pointer(t.symbol_info);
+        match opening {
+            Some(_) => {
+                b.u32(1).pointer(t.curve_loop);
+                b.u32(1).f64s(&[0.0, 1.0, 0.0]);
+            }
+            None => {
+                b.u32(0).u32(0);
+            }
+        }
+        // Its name, then its loop and the loop's lines.
+        b.text(name);
+        if let Some((w, h)) = opening {
+            b.u32(4);
+            for _ in 0..4 {
+                b.pointer(t.line);
+            }
+            let c = [
+                [-w / 2.0, 0.0, 0.0],
+                [w / 2.0, 0.0, 0.0],
+                [w / 2.0, 0.0, h],
+                [-w / 2.0, 0.0, h],
+            ];
+            for i in 0..4 {
+                line3(&mut b, c[i], c[(i + 1) % 4]);
+            }
+        }
+        b.out
+    }
+
+    /// A family instance of `symbol` hosted by `host`, at a transform (the
+    /// 3×3 matrix by rows, then the origin).
+    fn insert(t: &Tags, id: i64, symbol: i64, host: i64, trf: [f64; 12]) -> Vec<u8> {
+        let mut b = Bytes::new(8, t.instance);
+        element(&mut b, t, false, id, LEVEL_GROUND);
+        b.pointer(t.instance_info).id(symbol).id(host);
+        b.f64s(&trf).id(symbol);
+        b.out
+    }
+
+    /// The gable roof over the house (mitcad#348): a footprint roof
+    /// (`ProfileRoof`) over [-1, 21] × [-1, 13] whose two slopes rise from
+    /// the eaves at y = 0 and y = 12 (height [`HEIGHT`]) to the ridge at
+    /// y = 6, the lower surface `HEIGHT + y / 2` and `HEIGHT + (12 - y) / 2`
+    /// ([`ROOF_PITCH`]), the upper [`ROOF_THICKNESS`] above it.
+    fn gable_roof(t: &Tags) -> Vec<u8> {
+        let mut b = Bytes::new(8, t.profile_roof);
+        element(&mut b, t, false, ROOF, LEVEL_UPPER);
+        b.id(ROOF_TYPE);
+        b.u32(4);
+        for _ in 0..4 {
+            b.pointer(t.face);
+        }
+        b.u32(1).pointer(t.curve_loop);
+        // The faces' planes, then the footprint's lines.
+        for _ in 0..4 {
+            b.pointer(t.plane);
+        }
+        b.u32(4);
+        for _ in 0..4 {
+            b.pointer(t.line);
+        }
+        let s5 = 5f64.sqrt();
+        for (eave, up) in [(0.0, 1.0), (12.0, -1.0)] {
+            // The slope's lower face through the eave, up the slope, and
+            // its upper face the roof's thickness along its normal.
+            let y = [0.0, 2.0 * up / s5, 1.0 / s5];
+            let n = [0.0, -up / s5, 2.0 / s5];
+            for shift in [0.0, ROOF_THICKNESS] {
+                b.f64s(&[0.0, eave + n[1] * shift, HEIGHT + n[2] * shift])
+                    .f64s(&[1.0, 0.0, 0.0])
+                    .f64s(&y)
+                    .f64s(&[-1.0, 0.0, 22.0, 7.0]);
+            }
+        }
+        let c = [[-1.0, -1.0], [21.0, -1.0], [21.0, 13.0], [-1.0, 13.0]];
+        for i in 0..4 {
+            line_at(&mut b, c[i], c[(i + 1) % 4], HEIGHT);
+        }
+        b.out
     }
 
     /// The building project (release 2024, ids of 8 bytes).
     pub fn project() -> Vec<u8> {
+        write(false)
+    }
+
+    /// The building project with the house's gable roof and the wall
+    /// attached to it (mitcad#348), its door and its window (mitcad#345).
+    pub fn house() -> Vec<u8> {
+        write(true)
+    }
+
+    fn write(house: bool) -> Vec<u8> {
         let (schema, t) = schema();
         let level = |id, name: &str, z: f64| {
             let mut b = Bytes::new(8, t.level);
@@ -1056,8 +1292,8 @@ pub mod building {
         // The corner at (0, 0): wall A along x, listed first, runs on to
         // wall B's far face.
         let corner = [(WALL_A, 0), (WALL_B, 0)];
-        let wall_a = wall(&t, WALL_A, [0.0, 0.0, 0.0], [20.0, 0.0, 0.0], &corner);
-        let wall_b = wall(&t, WALL_B, [0.0, 0.0, 0.0], [0.0, 12.0, 0.0], &corner);
+        let wall_a = wall(&t, WALL_A, [0.0, 0.0, 0.0], [20.0, 0.0, 0.0], &corner, None);
+        let wall_b = wall(&t, WALL_B, [0.0, 0.0, 0.0], [0.0, 12.0, 0.0], &corner, None);
         // The floor: a 20 × 12 rectangle with a 2 × 2 hole, its top at 0.
         let mut floor = Bytes::new(8, t.floor);
         element(&mut floor, &t, false, FLOOR, LEVEL_GROUND);
@@ -1096,13 +1332,13 @@ pub mod building {
             .id(LINK_TYPE);
         let mut chair = Bytes::new(8, t.instance);
         element(&mut chair, &t, false, CHAIR, LEVEL_GROUND);
-        chair.pointer(t.instance_info);
+        chair.pointer(t.instance_info).id(-1).id(-1);
         chair
             .f64s(&[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0])
             .f64s(&[3.0, 3.0, 0.0])
             .id(-1);
         let floors = crate::categories::OST_FLOORS;
-        let records = vec![
+        let mut records = vec![
             (
                 LEVEL_GROUND,
                 header(&t, OST_LEVELS, t.level, None),
@@ -1171,9 +1407,88 @@ pub mod building {
                 chair.out,
             ),
         ];
+        let mut declared = DECLARED.to_vec();
+        if house {
+            declared.extend(HOUSE);
+            // The roof's box: its eaves' lower edge to its ridge's top.
+            let ridge = HEIGHT + 6.0 * ROOF_PITCH + ROOF_THICKNESS * 5f64.sqrt() / 2.0;
+            records.extend([
+                (
+                    ROOF_TYPE,
+                    header(&t, crate::categories::OST_ROOFS, t.roof_type, None),
+                    layered_type(&t, t.roof_type, ROOF_TYPE, "Roof 6", ROOF_THICKNESS),
+                ),
+                (
+                    ROOF,
+                    header(
+                        &t,
+                        crate::categories::OST_ROOFS,
+                        t.profile_roof,
+                        Some([-1.0, -1.0, HEIGHT - ROOF_PITCH, 21.0, 13.0, ridge]),
+                    ),
+                    gable_roof(&t),
+                ),
+                (
+                    WALL_C,
+                    header(
+                        &t,
+                        OST_WALLS,
+                        t.wall,
+                        Some([19.75, 0.0, 0.0, 20.25, 12.0, HEIGHT + 6.0 * ROOF_PITCH]),
+                    ),
+                    wall(
+                        &t,
+                        WALL_C,
+                        [20.0, 0.0, 0.0],
+                        [20.0, 12.0, 0.0],
+                        &[],
+                        Some(ROOF),
+                    ),
+                ),
+            ]);
+            // The door and the window (mitcad#345), each turned a quarter
+            // about z: its type's x along its wall (y), its cut direction
+            // across it.
+            let doors = crate::categories::OST_DOORS;
+            let windows = crate::categories::OST_WINDOWS;
+            let turned =
+                |x: f64, y: f64, z: f64| [0.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, x, y, z];
+            records.extend([
+                (
+                    DOOR_TYPE,
+                    header(&t, doors, t.family_symbol, None),
+                    insert_type(&t, DOOR_TYPE, "Door 3 x 7", Some((DOOR_WIDTH, DOOR_HEIGHT))),
+                ),
+                (
+                    DOOR,
+                    header(
+                        &t,
+                        doors,
+                        t.instance,
+                        Some([19.75, 1.5, 0.0, 20.25, 4.5, DOOR_HEIGHT]),
+                    ),
+                    insert(&t, DOOR, DOOR_TYPE, WALL_C, turned(20.0, 3.0, 0.0)),
+                ),
+                (
+                    WINDOW_TYPE,
+                    header(&t, windows, t.family_symbol, None),
+                    insert_type(&t, WINDOW_TYPE, "Window without its cut", None),
+                ),
+                (
+                    WINDOW,
+                    header(
+                        &t,
+                        windows,
+                        t.instance,
+                        Some([-0.25, 5.0, 3.0, 0.25, 7.0, 6.0]),
+                    ),
+                    insert(&t, WINDOW, WINDOW_TYPE, WALL_B, turned(0.0, 6.0, 3.0)),
+                ),
+            ]);
+        }
         let mut table = Bytes::new(8, t.elem_table);
-        table.u32(DECLARED.len() as u32);
-        for id in DECLARED {
+        table.u32(declared.len() as u32);
+        for id in declared {
             table.id(id).id(-1);
         }
         table.flag(false).u32(0);

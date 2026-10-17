@@ -1005,7 +1005,7 @@ impl Kernel for MockKernel {
         if let Some(surface) = self.surfaces.borrow().get(&face.to_string()) {
             return Ok(surface.clone());
         }
-        if !matches!(face.role.as_str(), "end" | "start") {
+        if !matches!(plain_role(face), "end" | "start" | "end_a" | "end_b") {
             return Err(KernelError::Unsupported("face geometry"));
         }
         let plane = self.face_plane(shape, face)?;
@@ -1259,12 +1259,12 @@ impl Kernel for MockKernel {
                 z,
             ]
         };
-        match face.role.as_str() {
-            "end" => Ok(Plane {
+        match plain_role(face) {
+            "end" | "end_b" => Ok(Plane {
                 origin: middle(bounds.max[2]),
                 normal: [0.0, 0.0, 1.0],
             }),
-            "start" => Ok(Plane {
+            "start" | "end_a" => Ok(Plane {
                 origin: middle(bounds.min[2]),
                 normal: [0.0, 0.0, -1.0],
             }),
@@ -2100,6 +2100,80 @@ impl Kernel for MockKernel {
             .push(format!("cut within {tolerance}"));
         self.call("cut_within")?;
         self.boolean(BooleanOp::Cut, targets, tool)
+    }
+
+    /// Renames the faces (and the faces of the edges) as the OCCT facade
+    /// does; the prefix `F7:part` wraps a name n as `F7:part(n)`.
+    fn rename_faces(
+        &self,
+        shape: &MockShape,
+        prefix: &str,
+        renames: &[(FaceName, FaceName)],
+    ) -> Result<MockShape, KernelError> {
+        self.call("rename_faces")?;
+        let wrap = if prefix.is_empty() {
+            None
+        } else {
+            let (feature, role) = prefix
+                .split_once(':')
+                .ok_or_else(|| KernelError::failed(format!("invalid prefix {prefix}")))?;
+            let feature: FeatureUid = feature
+                .parse()
+                .map_err(|_| KernelError::failed(format!("invalid prefix {prefix}")))?;
+            Some((feature, role.to_owned()))
+        };
+        Ok(renamed(shape, &wrap, renames))
+    }
+}
+
+/// A mock shape with its faces renamed ([`MockKernel::rename_faces`]).
+fn renamed(
+    shape: &MockShape,
+    wrap: &Option<(FeatureUid, String)>,
+    renames: &[(FaceName, FaceName)],
+) -> MockShape {
+    let rename = |face: &FaceName| -> FaceName {
+        if let Some((_, to)) = renames.iter().find(|(from, _)| from == face) {
+            return to.clone();
+        }
+        match wrap {
+            Some((feature, role)) => {
+                FaceName::new(*feature, role, Some(RoleKey::Face(Box::new(face.clone()))))
+            }
+            None => face.clone(),
+        }
+    };
+    let mut faces: Vec<FaceName> = Vec::new();
+    for face in &shape.faces {
+        let new = rename(face);
+        if !faces.contains(&new) {
+            faces.push(new);
+        }
+    }
+    MockShape {
+        history: shape.history.clone(),
+        faces,
+        edges: shape
+            .edges
+            .iter()
+            .map(|(a, b)| (rename(a), rename(b)))
+            .collect(),
+        bounds: shape.bounds,
+        parts: shape
+            .parts
+            .iter()
+            .map(|p| renamed(p, wrap, renames))
+            .collect(),
+    }
+}
+
+/// The role a mock face's geometry follows: a derived part's face named
+/// after its source's (`F7:part(F2:end(…))`) is that face's; the end faces
+/// of derived parts are an extrusion's start and end.
+fn plain_role(face: &FaceName) -> &str {
+    match (face.role.as_str(), &face.key) {
+        ("part", Some(RoleKey::Face(inner))) => plain_role(inner),
+        (role, _) => role,
     }
 }
 

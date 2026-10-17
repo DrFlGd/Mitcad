@@ -72,9 +72,19 @@ QAction* MainWindow::createSketchFilterAction() {
   m_selectionFilterPanel = new SelectionFilterPanel([this] { return activeSelectionScope(); },
                                                     [this](const QString& what) { selectionScopeChanged(what); },
                                                     this);
-  auto* holder = new QWidgetAction(menu);
-  holder->setDefaultWidget(m_selectionFilterPanel);
-  menu->addAction(holder);
+  if (m_nativeUi) {
+    m_selectionFilterPanel->setParent(this);
+    m_selectionFilterPanel->hide();
+    for (int i = 0; i < kFilterRowCount; ++i) {
+      menu->addAction(m_selectionFilterPanel->rowAction(static_cast<FilterRow>(i)));
+    }
+    menu->addSeparator();
+    menu->addAction(m_selectionFilterPanel->resetAction());
+  } else {
+    auto* holder = new QWidgetAction(menu);
+    holder->setDefaultWidget(m_selectionFilterPanel);
+    menu->addAction(holder);
+  }
   m_sketchFilterAction = new QAction(themeIcon(QStringLiteral("filter")), tr("Selection Filter"), this);
   m_sketchFilterAction->setObjectName(QStringLiteral("sketchSelectionFilter"));
   m_sketchFilterAction->setMenu(menu);

@@ -91,6 +91,8 @@
 //                           "command_<id>": "sketch.create", "file.export")
 //   open-file <path>        open through the external-file document host
 //                           (Finder or drops), including save/lock questions
+//   file-dialog save|directory <initial> [filters] [selected-filter]
+//                           open a shared chooser with explicit initial state
 //   menu <Top>/<Item>[/...] trigger an entry of the main window's menu bar
 //                           ('&' and "..." in the names are ignored)
 //   popup <entry>           choose an entry of the open popup menu (a
@@ -124,6 +126,9 @@
 //                           AppKit requires actual user acceptance of its
 //                           separate-process chooser; no accept verb exists.
 //   native-resize <w> <h>   resize the native document content in points
+//   native-move <x> <y>     frame origin relative to the main screen's visible
+//                           origin; native.window.origin and native.window.size
+//                           expose the frame origin and content size as text
 //   native-appearance light|dark set this app's AppKit appearance and Qt
 //                           palette from real system colors, leaving OS
 //                           preferences untouched

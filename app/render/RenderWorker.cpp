@@ -744,8 +744,10 @@ int runUpdateTest() {
 // metalness 1), a flat normal map, a white occlusion map, and a map that
 // cannot be read (a warning; the rest still renders) do not; a normal map tilted
 // along the image's u turned by half a turn renders as one tilted the
-// other way (the tangent frame follows the texture's rotation). Prints a
-// line per comparison; 0 when all hold.
+// other way (the tangent frame follows the texture's rotation). A base
+// colour image of one sRGB colour renders as that colour as a plain base
+// colour (read as sRGB once, not washed out: mitcad#386). Prints a line
+// per comparison; 0 when all hold.
 int runMapsTest(const QString& folderPath) {
   QDir folder(folderPath);
   if (!folder.mkpath(QStringLiteral("."))) {
@@ -789,8 +791,12 @@ int runMapsTest(const QString& folderPath) {
     const int level = ((x / 16 + y / 16) % 2 == 0) ? 255 : 40;
     return qRgb(level, level, level);
   });
+  // A dark brown, far from its sRGB encoding applied twice.
+  static constexpr int kBrown[3] = {84, 74, 66};
+  const std::string brown =
+      write(QStringLiteral("base-brown.png"), [](int, int) { return qRgb(kBrown[0], kBrown[1], kBrown[2]); });
   for (const std::string* file : {&base, &flat, &ridges, &tiltPlus, &tiltMinus, &roughMid, &roughLow, &metal, &white,
-                                  &checker}) {
+                                  &checker, &brown}) {
     if (file->empty()) {
       std::fprintf(stderr, "render-failed cannot write the test images into %s\n", qPrintable(folderPath));
       return 3;
@@ -933,6 +939,18 @@ int runMapsTest(const QString& folderPath) {
   m.normalMap = tiltMinus;
   m.textureRotation = 0.0f;
   rendered = rendered && renderAs("normal-tilt-minus-u", m);
+  // The base colour image: the same as its colour without a texture (the
+  // material's colours are linear, as RenderBatch makes them).
+  m = plain;
+  m.texture = brown;
+  rendered = rendered && renderAs("base-brown-image", m);
+  m.texture.clear();
+  for (int i = 0; i < 3; ++i) {
+    const float srgb = static_cast<float>(kBrown[i]) / 255.0f;
+    m.baseColor[static_cast<std::size_t>(i)] =
+        srgb <= 0.04045f ? srgb / 12.92f : std::pow((srgb + 0.055f) / 1.055f, 2.4f);
+  }
+  rendered = rendered && renderAs("base-brown-colour", m);
   if (!rendered) {
     return 3;
   }
@@ -952,6 +970,7 @@ int runMapsTest(const QString& folderPath) {
   compare("normal-tilt-plus-u", "none", true);
   compare("normal-tilt-plus-u", "normal-tilt-minus-u", true);
   compare("normal-tilt-plus-u-turned", "normal-tilt-minus-u", false);
+  compare("base-brown-image", "base-brown-colour", false);
   std::printf("render-maps %s\n", failures == 0 ? "ok" : "FAILED");
   return failures == 0 ? 0 : 1;
 }

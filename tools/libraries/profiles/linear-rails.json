@@ -1,0 +1,345 @@
+[
+  {
+    "id": "rail-ar-hr15",
+    "name": "Linear guide rail AR/HR15-N",
+    "category": "linear",
+    "source": "dynamic-m/Rail-AR-HR15-N-L-600mm/Motedis_AR-HR15-N-600-Rail.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "AR-HR15-N-600",
+    "supplier_url": "https://www.motedis.com/en/Rail-AR-HR15-N-L-600mm",
+    "designation": "Rail AR/HR15-N L={L}",
+    "rows": [
+      {"name":"600","select":{"Stock":"600"},"values":{},"part_number":"AR-HR15-N-600"},
+      {"name":"960","select":{"Stock":"960"},"values":{},"part_number":"AR-HR15-N-960"},
+      {"name":"1320","select":{"Stock":"1320"},"values":{},"part_number":"AR-HR15-N-1320"},
+      {"name":"1980","select":{"Stock":"1980"},"values":{},"part_number":"AR-HR15-N-1980"}
+    ],
+    "build": {
+      "role": "linear",
+      "length": {
+        "parameter": "L",
+        "min": "40 mm",
+        "max": "1980 mm",
+        "stock": ["1980 mm","1320 mm","960 mm","600 mm"],
+        "pitch": {"distance":"60 mm","first":"30 mm"}
+      },
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"rail","kind":"rail"},
+        {"name":"base","kind":"face"}
+      ],
+      "linear": {"kind":"rail"}
+    },
+    "frames": [
+      {"name":"end_a","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"end"},
+      {"name":"end_b","origin":[0,0,"L"],"z":[0,0,1],"x":[1,0,0],"kind":"end"},
+      {"name":"rail","origin":[0,7.5,0],"z":[0,1,0],"x":[0,0,1],"kind":"rail"},
+      {"name":"base","origin":[0,-7.5,0],"z":[0,-1,0],"x":[0,0,1],"kind":"face"}
+    ]
+  },
+  {
+    "id": "rail-ar-hr20",
+    "name": "Linear guide rail AR/HR20-N",
+    "category": "linear",
+    "source": "dynamic-m/Linear-guide-rail-AR-HR20-N-L-600mm/Motedis-AR-HR20-N-600-Rail/Motedis_AR-HR20-N-600-Rail.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "AR-HR20-N-600",
+    "supplier_url": "https://www.motedis.com/en/Linear-guide-rail-AR-HR20-N-L-600mm",
+    "designation": "Rail AR/HR20-N L={L}",
+    "rows": [
+      {"name":"600","select":{"Stock":"600"},"values":{},"part_number":"AR-HR20-N-600"},
+      {"name":"960","select":{"Stock":"960"},"values":{},"part_number":"AR-HR20-N-960"},
+      {"name":"1320","select":{"Stock":"1320"},"values":{},"part_number":"AR-HR20-N-1320"},
+      {"name":"1980","select":{"Stock":"1980"},"values":{},"part_number":"AR-HR20-N-1980"}
+    ],
+    "build": {
+      "role": "linear",
+      "length": {
+        "parameter": "L",
+        "min": "40 mm",
+        "max": "1980 mm",
+        "stock": ["1980 mm","1320 mm","960 mm","600 mm"],
+        "pitch": {"distance":"60 mm","first":"30 mm"}
+      },
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"rail","kind":"rail"},
+        {"name":"base","kind":"face"}
+      ],
+      "linear": {"kind":"rail"}
+    },
+    "frames": [
+      {"name":"end_a","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"end"},
+      {"name":"end_b","origin":[0,0,"L"],"z":[0,0,1],"x":[1,0,0],"kind":"end"},
+      {"name":"rail","origin":[0,10,0],"z":[0,1,0],"x":[0,0,1],"kind":"rail"},
+      {"name":"base","origin":[0,-10,0],"z":[0,-1,0],"x":[0,0,1],"kind":"face"}
+    ]
+  },
+  {
+    "id": "rail-ar-hr25",
+    "name": "Linear guide rail AR/HR25-N",
+    "category": "linear",
+    "source": "dynamic-m/Linear-guide-rail-AR-HR25-N-L-600mm/AR-HR25-N,L=600mm.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "AR-HR25-N-600",
+    "supplier_url": "https://www.motedis.com/en/Linear-guide-rail-AR-HR25-N-L-600mm",
+    "designation": "Rail AR/HR25-N L={L}",
+    "rows": [
+      {"name":"600","select":{"Stock":"600"},"values":{},"part_number":"AR-HR25-N-600"},
+      {"name":"960","select":{"Stock":"960"},"values":{},"part_number":"AR-HR25-N-960"},
+      {"name":"1320","select":{"Stock":"1320"},"values":{},"part_number":"AR-HR25-N-1320"},
+      {"name":"1980","select":{"Stock":"1980"},"values":{},"part_number":"AR-HR25-N-1980"}
+    ],
+    "build": {
+      "role": "linear",
+      "length": {
+        "parameter": "L",
+        "min": "40 mm",
+        "max": "1980 mm",
+        "stock": ["1980 mm","1320 mm","960 mm","600 mm"],
+        "pitch": {"distance":"60 mm","first":"30 mm"}
+      },
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"rail","kind":"rail"},
+        {"name":"base","kind":"face"}
+      ],
+      "linear": {"kind":"rail"}
+    },
+    "place": {"z":[0,1,0],"x":[-1,0,0]},
+    "frames": [
+      {"name":"end_a","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"end"},
+      {"name":"end_b","origin":[0,0,"L"],"z":[0,0,1],"x":[1,0,0],"kind":"end"},
+      {"name":"rail","origin":[0,11.5,0],"z":[0,1,0],"x":[0,0,1],"kind":"rail"},
+      {"name":"base","origin":[0,-11.5,0],"z":[0,-1,0],"x":[0,0,1],"kind":"face"}
+    ]
+  },
+  {
+    "id": "rail-hgw15",
+    "name": "Linear guide rail HGW15",
+    "category": "linear",
+    "source": "dynamic-m/Linear-Guide-Rail-HGW15CA-L999mm/HGW15CA L=999mm.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "HGW15CA-RAIL",
+    "supplier_url": "https://www.motedis.com/en/Linear-Guide-Rail-HGW15CA-L999mm",
+    "designation": "Rail HGW15 L={L}",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "length": {
+        "parameter": "L",
+        "min": "40 mm",
+        "max": "999 mm",
+        "stock": ["999 mm"],
+        "pitch": {"distance":"60 mm","first":"20 mm"}
+      },
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"rail","kind":"rail"},
+        {"name":"base","kind":"face"}
+      ],
+      "linear": {"kind":"rail"}
+    },
+    "frames": [
+      {"name":"end_a","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"end"},
+      {"name":"end_b","origin":[0,0,"L"],"z":[0,0,1],"x":[1,0,0],"kind":"end"},
+      {"name":"rail","origin":[0,7.5,0],"z":[0,1,0],"x":[0,0,1],"kind":"rail"},
+      {"name":"base","origin":[0,-7.5,0],"z":[0,-1,0],"x":[0,0,1],"kind":"face"}
+    ]
+  },
+  {
+    "id": "rail-hgw20",
+    "name": "Linear guide rail HGW20",
+    "category": "linear",
+    "source": "dynamic-m/Linear-Guide-Rail-HGW20CA-L999mm/HGW20CA-RAIL.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "HGW20CA-RAIL",
+    "supplier_url": "https://www.motedis.com/en/Linear-Guide-Rail-HGW20CA-L999mm",
+    "designation": "Rail HGW20 L={L}",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "length": {
+        "parameter": "L",
+        "min": "40 mm",
+        "max": "999 mm",
+        "stock": ["999 mm"],
+        "pitch": {"distance":"60 mm","first":"20 mm"}
+      },
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"rail","kind":"rail"},
+        {"name":"base","kind":"face"}
+      ],
+      "linear": {"kind":"rail"}
+    },
+    "place": {"z":[0,1,0],"x":[-1,0,0]},
+    "frames": [
+      {"name":"end_a","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"end"},
+      {"name":"end_b","origin":[0,0,"L"],"z":[0,0,1],"x":[1,0,0],"kind":"end"},
+      {"name":"rail","origin":[0,8.75,0],"z":[0,1,0],"x":[0,0,1],"kind":"rail"},
+      {"name":"base","origin":[0,-8.75,0],"z":[0,-1,0],"x":[0,0,1],"kind":"face"}
+    ]
+  },
+  {
+    "id": "rail-hgw25",
+    "name": "Linear guide rail HGW25",
+    "category": "linear",
+    "source": "dynamic-m/Linear-Guide-Rail-HGW25CA-L999mm/HGW25CA-RAIL.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "HGW25CA-RAIL",
+    "supplier_url": "https://www.motedis.com/en/Linear-Guide-Rail-HGW25CA-L999mm",
+    "designation": "Rail HGW25 L={L}",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "length": {
+        "parameter": "L",
+        "min": "40 mm",
+        "max": "999 mm",
+        "stock": ["999 mm"],
+        "pitch": {"distance":"60 mm","first":"20 mm"}
+      },
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"rail","kind":"rail"},
+        {"name":"base","kind":"face"}
+      ],
+      "linear": {"kind":"rail"}
+    },
+    "place": {"z":[0,1,0],"x":[-1,0,0]},
+    "frames": [
+      {"name":"end_a","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"end"},
+      {"name":"end_b","origin":[0,0,"L"],"z":[0,0,1],"x":[1,0,0],"kind":"end"},
+      {"name":"rail","origin":[0,11,0],"z":[0,1,0],"x":[0,0,1],"kind":"rail"},
+      {"name":"base","origin":[0,-11,0],"z":[0,-1,0],"x":[0,0,1],"kind":"face"}
+    ]
+  },
+  {
+    "id": "rail-mgn12",
+    "name": "Linear guide rail miniature MGN12, chrome-plated steel",
+    "category": "linear",
+    "source": "dynamic-m/Linear-Guide-Rail-Miniature-MGN-12HA-CA-CS-L999mm-chrome-plated-steel/MGN_12HA&CA_CS_L=999mm.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "MGN 12HA-CA CS",
+    "supplier_url": "https://www.motedis.com/en/Linear-Guide-Rail-Miniature-MGN-12HA-CA-CS-L999mm-chrome-plated-steel",
+    "designation": "Rail miniature MGN12, chrome-plated steel L={L}",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "length": {
+        "parameter": "L",
+        "min": "40 mm",
+        "max": "999 mm",
+        "stock": ["999 mm"],
+        "pitch": {"distance":"25 mm","first":"12.5 mm"}
+      },
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"rail","kind":"rail"},
+        {"name":"base","kind":"face"}
+      ],
+      "linear": {"kind":"rail"}
+    },
+    "place": {"z":[0,1,0],"x":[-1,0,0]},
+    "frames": [
+      {"name":"end_a","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"end"},
+      {"name":"end_b","origin":[0,0,"L"],"z":[0,0,1],"x":[1,0,0],"kind":"end"},
+      {"name":"rail","origin":[0,4,0],"z":[0,1,0],"x":[0,0,1],"kind":"rail"},
+      {"name":"base","origin":[0,-4,0],"z":[0,-1,0],"x":[0,0,1],"kind":"face"}
+    ]
+  },
+  {
+    "id": "rail-mr12",
+    "name": "Linear guide rail miniature MR12M-N, stainless steel",
+    "category": "linear",
+    "source": "dynamic-m/Stainless-steel-linear-guide-rail-Miniature-MR12M-N-L-300mm/Motedis_MR12M-N-300-Rail.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "MR12M-N-300",
+    "supplier_url": "https://www.motedis.com/en/Stainless-steel-linear-guide-rail-Miniature-MR12M-N-L-300mm",
+    "designation": "Rail miniature MR12M-N, stainless steel L={L}",
+    "rows": [
+      {"name":"300","select":{"Stock":"300"},"values":{},"part_number":"MR12M-N-300"},
+      {"name":"400","select":{"Stock":"400"},"values":{},"part_number":"MR12M-N-400"},
+      {"name":"500","select":{"Stock":"500"},"values":{},"part_number":"MR12M-N-500"},
+      {"name":"600","select":{"Stock":"600"},"values":{},"part_number":"MR12M-N-600"}
+    ],
+    "build": {
+      "role": "linear",
+      "length": {
+        "parameter": "L",
+        "min": "40 mm",
+        "max": "600 mm",
+        "stock": ["600 mm","500 mm","400 mm","300 mm"],
+        "pitch": {"distance":"25 mm","first":"12.5 mm"}
+      },
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"rail","kind":"rail"},
+        {"name":"base","kind":"face"}
+      ],
+      "linear": {"kind":"rail"}
+    },
+    "frames": [
+      {"name":"end_a","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"end"},
+      {"name":"end_b","origin":[0,0,"L"],"z":[0,0,1],"x":[1,0,0],"kind":"end"},
+      {"name":"rail","origin":[0,3.75,0],"z":[0,1,0],"x":[0,0,1],"kind":"rail"},
+      {"name":"base","origin":[0,-3.75,0],"z":[0,-1,0],"x":[0,0,1],"kind":"face"}
+    ]
+  },
+  {
+    "id": "rail-sbs20",
+    "name": "Supported rail SBS20",
+    "category": "linear",
+    "source": "dynamic-m/Supported-Rail-SBS20-600mm/Motedis-SBS20-600/Motedis_SBS20-600.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "SBS20-600",
+    "supplier_url": "https://www.motedis.com/en/Supported-Rail-SBS20-600mm",
+    "designation": "Supported rail SBS20 L={L}",
+    "rows": [
+      {"name":"600","select":{"Stock":"600"},"values":{},"part_number":"SBS20-600"},
+      {"name":"800","select":{"Stock":"800"},"values":{},"part_number":"SBS20-800"},
+      {"name":"1000","select":{"Stock":"1000"},"values":{},"part_number":"SBS20-1000"}
+    ],
+    "build": {
+      "role": "linear",
+      "length": {
+        "parameter": "L",
+        "min": "40 mm",
+        "max": "1000 mm",
+        "stock": ["1000 mm","800 mm","600 mm"],
+        "pitch": {"distance":"150 mm","first":"75 mm"}
+      },
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"rail","kind":"rail"},
+        {"name":"base","kind":"face"}
+      ],
+      "linear": {"kind":"rail"}
+    },
+    "frames": [
+      {"name":"end_a","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"end"},
+      {"name":"end_b","origin":[0,0,"L"],"z":[0,0,1],"x":[1,0,0],"kind":"end"},
+      {"name":"rail","origin":[0,8.5,0],"z":[0,1,0],"x":[0,0,1],"kind":"rail"},
+      {"name":"base","origin":[0,-18.5,0],"z":[0,-1,0],"x":[0,0,1],"kind":"face"}
+    ]
+  }
+]

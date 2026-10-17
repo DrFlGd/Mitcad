@@ -138,7 +138,8 @@ sets ("autosave", "slicer", "git"), as *Preferences: Cache* and so on.
 | Rename | F2 | A browser row (on the timeline from the context menu) |
 | Search Timeline | Ctrl+F (Cmd+F) | Where the timeline or the browser has the keys: find features by name, type, component and status ([Timeline search](#browser-timeline-and-parameters)); also Edit › Search Timeline |
 
-Other commands of the SOLID tab, in menu order:
+The BUILD tab's commands (frames of slot profiles) are in [BUILD
+tab](#build-tab). Other commands of the SOLID tab, in menu order:
 
 - **CREATE:** Create Sketch, Extrude, Revolve, Sweep, Loft,
   Rib, Web, Hole, Thread, Box, Cylinder, Sphere, Torus, Coil, Helix, Pipe,
@@ -165,7 +166,10 @@ Other commands of the SOLID tab, in menu order:
   metalness, roughness, specular, transmission, index of refraction, coat,
   emission and opacity. New copies the selected appearance into the design,
   where its values can be changed; Assign gives the bodies it was opened
-  for the selected appearance. The shaded view shows an appearance's base
+  for the selected appearance. With faces selected, **Assign to N bodies** (next to
+  Assign) gives the appearance, as their body appearance, to the bodies
+  that own the selected faces (and the selected bodies), each once, in one
+  undo step; the faces' own appearances stay as they are. The shaded view shows an appearance's base
   colour; the rendered view uses all of its values. **Textures:** the
   selector above the list switches between the appearances and the
   texture sources: *Local Folders* are the folders added in Preferences ›
@@ -247,6 +251,16 @@ a circular edge also shows its radius and diameter. A selected face shows
 its area, and a body shows its area and volume. Values update after edits
 and undo. The card lists up to eight items; hover over the text for their
 full geometry references. Use Measure for distances and angles between items.
+
+**Section Analysis** (and Hide Above Sketch) draws every cut face as a cap
+over the cut, with thin parallel lines at 45 degrees over it. A cap takes the
+colour of the component its body belongs to, the same colour as that
+component's band in the Timeline, so the parts of an assembly can be told
+apart on the plane; the root component's caps are orange. The lines are a
+darker shade of the cap's own colour, alternating between 45 and 135 degrees
+from one component to the next, and they stay in every visual style and also
+when the bodies are drawn in Component Colors, by appearance or rendered.
+Small caps get fewer, closer lines, large ones are not filled with them.
 
 **Pattern at Points** repeats Features, Bodies or Components at sketch points,
 construction points or vertices. Select the source objects, then the Target
@@ -562,6 +576,8 @@ stays on for the next sketch.
 - Extend: an end that reaches another curve's end, or any existing point,
   joins it; reaching the middle of a curve, the end stays on it. A
   projected point holds the extended end with a coincident constraint.
+  The end keeps its point, its constraints and its dimensions (those of
+  its length do not stay): a distance to it measures the new place.
 - **Convert to Sketch Geometry** (MODIFY, and the context menu of
   projected geometry): the selected projected curves and points become
   ordinary sketch geometry, free and no longer following their source.
@@ -649,7 +665,11 @@ sketch.
   (undoable). A sketch hides by itself when a feature first uses it and
   shows again when the last such feature is deleted; the eye overrides
   that. The radio button after a component's name activates it; F2
-  renames. Context menu: Edit, Show/Hide, Isolate, New Component, Move
+  renames. In the view, the context menu of a face, edge,
+  vertex or body has **Hide** with **Hide Body** (the bodies of everything
+  selected) and **Hide Component** (the occurrences that place them, left
+  out for the root's bodies); the entries count when there are several
+  ("Hide 3 Bodies"), do what the eyes do and undo in one step. Context menu: Edit, Show/Hide, Isolate, New Component, Move
   Features into a Component, Copy, Paste, Paste New, Move to... (a
   component: another parent; the joints, constraints, rigid groups and
   moves that place it go with it), Ground, Create Components from Bodies,
@@ -704,6 +724,28 @@ sketch.
   apply (`fillet in:Cover is:warning`). Esc closes the search; clearing
   it brings back the scroll position and the selection from before it,
   unless something else was selected meanwhile.
+- **Find in Design:** the magnifier on the browser's title row (also
+  Edit › Find in Design and the command search) opens a window beside the
+  browser that finds components and bodies by name and acts on all the
+  matches at once, which is what designs with thousands of elements need.
+  The text is matched case-insensitively anywhere in a name; `*` stands
+  for any characters and `?` for one (`bracket*left`, `plat?`). Components
+  and Bodies choose what is listed, and "Visible only" or "Hidden only"
+  narrows it. The list follows the text as you type (after a short
+  pause) and the design as it changes; it shows the name, the kind and the
+  place in the assembly, and a count such as "238 bodies, 12 components".
+  It searches the design's names, not the browser's rows, so branches that
+  are folded or never opened are found too. A component placed twice
+  gives one row per place for each of its bodies; the body is one body,
+  so hiding it hides it in every place. Selecting rows selects them in
+  the view and the browser (Select All and Select None select the
+  list); a double-click reveals the row in the browser. The buttons act
+  on the selected rows, or on all when none is selected: **Show** and
+  **Hide** are what the browser's eyes do, all in one undo step;
+  **Appearance...** opens Edit Appearances with the bodies as the targets
+  (a component's targets are its bodies); **Select** makes the results
+  the selection, for every command that takes one. The debug log
+  records each action with its count, such as "hid 238 bodies".
 - **Change Parameters:** user and model parameters with expressions and
   comments; a refused change (a cycle, a wrong unit) stays in the cell in
   red with the reason. Renaming updates the expressions.
@@ -787,6 +829,92 @@ face changes or either component moves. Project in such a sketch, or in
 any sketch, also takes edges, faces and vertices of other components,
 linked when Projection Link is on. Features other than sketches still
 work only on their own component's bodies.
+
+### BUILD tab
+
+The **BUILD** tab, beside SOLID, builds frames of aluminium slot profiles
+with their connectors, panels and linear parts: pick a part, click where it
+goes, and its length, joints, mitres and connectors follow from the clicks.
+What it makes is ordinary design content: each placed part is a component
+of its own with its occurrence, its features and its joint on the
+timeline, editable with the SOLID tab's commands (a hole sketched on a
+profile, a cut), saved in the design and reopened as it was. The parts come
+from Mitcad's parts library (Tools › Libraries: add it and fetch it, or
+Update in Insert from Library); each lists its supplier and part number. A
+part placed once is kept in the design, so placing more of it needs no
+library.
+
+**PROFILE**
+
+- **Profile:** the panel's picker finds a profile by its name, size,
+  system, slots, supplier or part number (Search), and narrows to one
+  system (System: `B8 30` is B-type slot 8 on a 30 mm grid). The first
+  profile goes on a plane, a point or a face; later ones on a profile you
+  click: near an end on its side it goes on the side, along that slot, at
+  the click (or at an Offset from end A or B); on its end face it goes on
+  the end, along that profile or turned to an axis (**Direction**: a
+  corner, cut on the bisector with a Shared mitre). *Grounded at the
+  origin* places a first profile without a pick. Its **length** runs to the profile in its way and stays bound to
+  it: when that one moves, the length follows. The preview highlights that
+  profile's face and shows the length at the free end and in a box at the
+  cursor; **Tab** steps the length to the face, to the profile's centre or
+  through it, and typing a length (in the box at the cursor or in the
+  panel, or dragging its handle) makes it a plain number. **Mitre**: on an
+  end the existing profile, the new one or both (Shared, on the bisector)
+  are cut; on a side only the new one. **Rotate** turns it about its axis
+  in 90 degree steps, **Flip** puts its other end first. **Place** (Enter)
+  places it, and the panel stays open for the next one; **Close** (Esc)
+  ends, keeping what you placed.
+- **Panel:** click the inner face of a frame's profile and the panel fills
+  the frame in its slots, sized to the frame (a sheet sold in fixed widths
+  keeps its width and says when it does not fit); an outer face puts it on
+  the face, held by clamps. A generic panel takes any thickness.
+- **Linear Part:** rails (cut to length, their hole pitch kept from end A),
+  carriages (a carriage on its rail slides along it: drag it, or Animate
+  Joint), slot-mounted carriage mounts, bearings and motor plates.
+
+**CONNECT**
+
+- **Connector:** with the mouse over a profile, the places where it meets
+  others are marked (L, T, cross, inline; connected ones say so; *Show
+  All Junctions* marks every one). Click a profile near one, or choose it
+  in the list: the panel lists the connectors that fit its systems and the
+  room in the corner, each with its picture, supplier and part number,
+  and greys out those that nearly fit with the reason; the chosen
+  connector is previewed in
+  place with its nuts and screws, and choosing another one in the list
+  previews that one. **Connect** places the
+  chosen one with its nuts and screws and the end machining it needs (a
+  bore in the profile's end), and moves on to the next junction. Removing
+  a connector removes what it added.
+- **Fasteners:** a connector's nuts and screws in another size, taken off,
+  or added again.
+
+**MODIFY**
+
+- **Length:** a part's length bound to a face (to it, to the profile's
+  centre or through it) or detached as a number.
+- **Ends:** an end's mitre angle and the axis it turns about; *Also the
+  Part It Meets* cuts the end that meets it too. *End Machining*: a bore
+  in the end (its diameter, depth and thread, for a screw or an automatic
+  connector), or none; the other end's machining stays as it is.
+- **Flip** and **Rotate 90 deg** for the parts you pick (Enter turns them
+  again).
+
+**OUTPUT**
+
+- **Cut List:** the parts to cut, grouped where they are the same, with
+  their quantity, length, end angles, machining, supplier, part number and
+  mass, the stock lengths they come from (with the kerf, the saw cut's
+  width) and the other parts. **Copy as CSV** puts the tables on the
+  clipboard for a spreadsheet; **Save as PDF...** writes them with the
+  design's name and the date.
+- **Parts List:** every part with its quantity, supplier and part number,
+  also as CSV and PDF.
+
+The BUILD commands work through live MCP as the other panels do
+([docs/mcp.md](mcp.md)); the model's commands behind them are in
+commands.md, *BUILD: profile assemblies*.
 
 ### Long computations
 
@@ -1005,19 +1133,33 @@ folder. This needs the git program (Git for Windows on Windows).
   history; the dialog lists the authors whose names and email addresses
   the versions carry), or **File › Project › Open from Cloud…** to open
   one.
-- **The Cloud section:** the **Service** (GitHub, GitLab, Forgejo / Gitea
-  with its server, Shared folder, Other address), the **Owner** (you or an
-  organisation; on GitLab also a group with its subgroups, `group/sub`)
-  and the **Repository** (named after the project's folder until you type
-  one) and **HTTPS** or **SSH** make the **Address**; an address can also
-  be typed or pasted, and fills the fields it can
-  (`https://gitlab.com/group/sub/robot-arm.git` gives the owner
-  `group/sub`). GitHub and Forgejo / Gitea have one owner level; an
+- **The Cloud section:** paste the repository's address into **Repository
+  address**, the one your server's clone button shows
+  (`https://git.example.org/team/robot-arm.git`,
+  `git@git.example.org:team/robot-arm.git`, `ssh://git@git.example.org/team/robot-arm.git`),
+  or the address of the repository's page in the browser
+  (`https://git.example.org/team/robot-arm`, also with `/src/…` or
+  `/tree/…` after it), or the `git clone …` line, or a folder. Any server
+  works: an address on a host Mitcad does not know is taken as
+  `owner/repository` on a Forgejo / Gitea style server, and an address with
+  a port, another SSH user or a deeper path is used as it is (**Other
+  address**). A malformed address is refused at once ("This is not a valid
+  repository address") instead of being handed to git.
+  **Details** shows what the address was read as and lets you change it:
+  the **Service** (GitHub, GitLab, Forgejo / Gitea with its server, Shared
+  folder, Other address), the **Owner** (you or an organisation; on GitLab
+  also a group with its subgroups, `group/sub`), the **Repository** (named
+  after the project's folder until you type one) and **HTTPS** or
+  **SSH**; the address follows what you change there, and an address
+  pasted into the Server, Owner or Repository field is read like one
+  pasted into Repository address.
+  `https://gitlab.com/group/sub/robot-arm.git` gives the owner
+  `group/sub`. GitHub and Forgejo / Gitea have one owner level; an
   address with a part starting with `~` stays an Other address. **Create
-  Repository in Browser…** opens the service's page for a new repository
-  (GitHub's form filled in, also for an organisation; on GitLab and
-  Forgejo choose the owner on the page). A shared folder that is empty is
-  made a repository.
+  Repository in Browser…** (under Details) opens the service's page for a
+  new repository (GitHub's form filled in, also for an organisation; on
+  GitLab and Forgejo choose the owner on the page). A shared folder that
+  is empty is made a repository.
 - The address is checked as you type, and again when the dialog gets the
   focus back (after making the repository in the browser): empty and
   ready; files but no project (a README: the project goes beside them, its
@@ -1206,12 +1348,14 @@ that does not take such references (Project Settings says so) has none.
 
 Fasteners and other standard parts come from component libraries: git
 repositories of designs, each with a table of its sizes. Mitcad's own
-library has ISO metric screws (ISO 4762, ISO 4017, ISO 10642), nuts (ISO
-4032) and washers (ISO 7089) from M3 to M12. Libraries need the git
+library of parts has ISO metric screws (ISO 4762, ISO 4017, ISO 10642),
+nuts (ISO 4032) and washers (ISO 7089) from M3 to M12, and the BUILD
+tab's slot profiles, connectors and other parts. It was the fastener
+library up to its version 1.0.0; designs made with that keep their parts. Libraries need the git
 program to be fetched; parts already in a design need nothing.
 
 1. **Tools › Libraries › Libraries...** lists the libraries and
-   community indexes to use (Mitcad's fastener library and the community
+   community indexes to use (Mitcad's parts library and the community
    index to start with). Add a library by its URL or a folder, turn one
    off, and **Fetch** to get it or its newer versions. Nothing is fetched
    unless you ask.
@@ -1701,9 +1845,10 @@ and options.
   [--no-openings] [--no-occurrences]`: an IFC building model; the report
   has a line for every product of the file.
 - `import-rvt project.rvt --save project.mitcad [--report report.json]
-  [--report-only]`: an `.rvt` project's building elements, one component
-  per level (an `.rfa` family: its metadata); `--report-only` reads and
-  reports without importing.
+  [--report-only] [--elements <id>,...]`: an `.rvt` project's building
+  elements, one component per level (an `.rfa` family: its metadata);
+  `--report-only` reads and reports without importing, `--elements`
+  imports only the elements listed by id.
 - `export part.mitcad result.step [--bodies …] [--schema ap214|ap242]
   [--unit mm|in|…] [--refinement low|medium|high] [--ascii]`; a `.3mf`
   file holds the solid and mesh bodies as the parts of one object, a

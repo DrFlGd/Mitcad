@@ -687,14 +687,19 @@ pub(super) fn status_json(status: &SketchStatus, def: &SketchDef) -> Value {
         .iter()
         .filter_map(|uid| def.entity(*uid).map(|e| e.as_ref().to_string()))
         .collect();
-    json!({
+    let mut value = json!({
         "dof": status.dof,
         "fully_constrained": refs,
         "redundant": status.redundant.iter().map(item).collect::<Vec<_>>(),
         "conflicts": status.conflicts.iter()
             .map(|set| set.iter().map(item).collect::<Vec<_>>())
             .collect::<Vec<_>>(),
-    })
+    });
+    // Only when something collapsed (mitcad#365): the status stays as it was.
+    if !status.degenerate.is_empty() {
+        value["degenerate"] = degenerate_ids(status);
+    }
+    value
 }
 
 /// The result of an edit: what it made and the sketch's status.
@@ -2113,9 +2118,17 @@ impl<K: Kernel> Document<K> {
         // What each warning is about (mitcad#264): a linked projection's
         // warning carries its entities, the others none.
         let warnings = self.warnings(uid);
+        let collapsed = status.degenerate_warning();
         let warning_entities: Vec<Vec<String>> = warnings
             .iter()
             .map(|warning| {
+                if collapsed.as_deref() == Some(warning.as_str()) {
+                    return status
+                        .degenerate
+                        .iter()
+                        .map(|id| Ref::Curve(*id).to_string())
+                        .collect();
+                }
                 output
                     .and_then(|o| {
                         o.follow.iter().find_map(|report| {
@@ -2146,10 +2159,11 @@ impl<K: Kernel> Document<K> {
             "offsets": offsets,
             "regions": regions,
         });
-        let status = status_json(&status, def);
+        let value = status_json(&status, def);
         for key in ["dof", "fully_constrained", "redundant", "conflicts"] {
-            result[key] = status[key].clone();
+            result[key] = value[key].clone();
         }
+        result["degenerate"] = degenerate_ids(&status);
         Ok(result)
     }
 }
@@ -2244,4 +2258,15 @@ impl<K: Kernel> Document<K> {
             .collect();
         Ok(Value::Array(items))
     }
+}
+
+/// The curves a solve left collapsed, as ids (mitcad#365).
+fn degenerate_ids(status: &SketchStatus) -> Value {
+    json!(
+        status
+            .degenerate
+            .iter()
+            .map(|id| Ref::Curve(*id).to_string())
+            .collect::<Vec<_>>()
+    )
 }

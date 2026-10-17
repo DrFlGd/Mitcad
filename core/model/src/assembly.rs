@@ -46,6 +46,9 @@ pub struct ComponentDef {
     pub library: Option<crate::library::LibraryRef>,
     /// What may be created in and linked to and from it (mitcad#220).
     pub policy: Policy,
+    /// What the BUILD tab made it of (mitcad#375); None for other
+    /// components.
+    pub build: Option<crate::build::BuildRecord>,
 }
 
 /// A component linked from another design file: its bodies are the
@@ -237,6 +240,7 @@ impl Assembly {
             link: None,
             library: None,
             policy: Policy::GENERAL,
+            build: None,
         });
         uid
     }

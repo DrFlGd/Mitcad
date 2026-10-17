@@ -44,6 +44,7 @@
 #include "../MainWindow.hpp"
 #include "../browser/TimelineWidget.hpp"
 #include "GlassCard.hpp"
+#include "Dialogs.hpp"
 #include "mitcad/geometry/geometry.hpp"
 
 namespace mitcad {
@@ -102,6 +103,7 @@ const StepSpec kSpecs[] = {
     {"type-in", 2, 2, kInputOfMain},
     {"command", 1, 1, kInputOfMain},
     {"open-file", 1, 1, kInputOfMain},
+    {"file-dialog", 2, 4, kInputOfMain},
     {"menu", 1, 1, kInputOfMain},
     {"popup", 1, 1, kInputOfTarget},
     {"button", 1, 1, kInputOfTarget},
@@ -122,6 +124,7 @@ const StepSpec kSpecs[] = {
     {"native-file-directory", 1, 1, kInputOfTarget},
     {"native-file-cancel", 0, 0, kInputOfTarget},
     {"native-resize", 2, 2, kInputOfMain},
+    {"native-move", 2, 2, kInputOfMain},
     {"native-appearance", 1, 1, kInputOfMain},
     {"native-pinch", 3, 3, kInputOfMain},
     {"native-context-menu", 2, 2, kInputOfMain},
@@ -1609,6 +1612,18 @@ void TestDriver::run(const Step& step) {
       if (!mac::test::resizeDocument(int(width), int(height), error)) fail(line, error);
     });
     m_notBefore = std::max(m_notBefore, m_clock.elapsed() + 300);
+  } else if (name == QLatin1String("native-move")) {
+    if (!mac::test::active()) { fail(line, QStringLiteral("native-move requires the native macOS UI")); return; }
+    double x = 0;
+    double y = 0;
+    if (!toNumber(a.at(0), x) || !toNumber(a.at(1), y) || std::abs(x) > 10000 || std::abs(y) > 10000) {
+      fail(line, QStringLiteral("native-move expects offsets -10000..10000 from the main screen's visible origin"));
+      return;
+    }
+    queue([this, x, y, line] {
+      QString error;
+      if (!mac::test::moveDocument(qRound(x), qRound(y), error)) fail(line, error);
+    });
   } else if (name == QLatin1String("expect-native-layout")) {
     if (!mac::test::active()) { fail(line, QStringLiteral("expect-native-layout requires the native macOS UI")); return; }
     QString error;
@@ -1988,6 +2003,22 @@ void TestDriver::run(const Step& step) {
     queue([guard, path] {
       if (guard != nullptr) {
         guard->openExternalFile(path);
+      }
+    });
+  } else if (name == QLatin1String("file-dialog")) {
+    const QString mode = a.at(0);
+    if (mode != QLatin1String("save") && mode != QLatin1String("directory")) {
+      fail(line, QStringLiteral("file-dialog save|directory <initial> [filters] [selected-filter]"));
+      return;
+    }
+    const QPointer<QWidget> parent(mainWindow);
+    queue([parent, mode, a] {
+      if (!parent) return;
+      if (mode == QLatin1String("directory")) {
+        dialogDirectory(parent, QStringLiteral("File Dialog"), a.at(1));
+      } else {
+        QString selected = a.value(3);
+        dialogSaveFileName(parent, QStringLiteral("File Dialog"), a.at(1), a.value(2), &selected);
       }
     });
   } else if (name == QLatin1String("menu")) {

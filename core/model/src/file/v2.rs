@@ -87,6 +87,9 @@ struct FileOut<'a> {
     // The root component's policy (mitcad#220), when not the defaults.
     #[serde(skip_serializing_if = "Policy::is_default")]
     root_policy: Policy,
+    // The library parts BUILD placed (mitcad#375), when there are any.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    library_sources: Vec<crate::build::sources::SourceOut<'a>>,
 }
 
 /// A Flat Pattern: its body and settings.
@@ -124,6 +127,9 @@ struct ComponentOut<'a> {
     // Its policy (mitcad#220), when not the general defaults.
     #[serde(skip_serializing_if = "Policy::is_default")]
     policy: Policy,
+    // What BUILD made it of (mitcad#375).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    build: Option<&'a crate::build::BuildRecord>,
 }
 
 #[derive(Serialize)]
@@ -250,6 +256,7 @@ pub(super) fn save(state: &DocState) -> String {
                 link: c.link.as_ref(),
                 library: c.library.as_ref(),
                 policy: c.policy,
+                build: c.build.as_ref(),
             })
             .collect(),
         occurrences: assembly
@@ -317,6 +324,11 @@ pub(super) fn save(state: &DocState) -> String {
             .collect(),
         marker: (state.marker < state.features.len()).then_some(state.marker),
         root_policy: assembly.root_policy,
+        library_sources: state
+            .library_sources
+            .iter()
+            .map(crate::build::sources::SourceOut::of)
+            .collect(),
     };
     let mut json =
         serde_json::to_string_pretty(&file).expect("the design file schema always serializes");
@@ -506,6 +518,8 @@ struct ComponentIn {
     library: Option<crate::library::LibraryRef>,
     #[serde(default)]
     policy: Policy,
+    #[serde(default)]
+    build: Option<crate::build::BuildRecord>,
 }
 
 #[derive(Deserialize)]
@@ -541,7 +555,7 @@ struct FeatureIn {
     shapes: Option<Value>,
 }
 
-const TOP_FIELDS: [&str; 23] = [
+const TOP_FIELDS: [&str; 24] = [
     "format",
     "version",
     "units",
@@ -571,6 +585,8 @@ const TOP_FIELDS: [&str; 23] = [
     "root_policy",
     // Embedded images by digest (mitcad#313).
     "images",
+    // The library parts BUILD placed (mitcad#375).
+    "library_sources",
 ];
 
 fn schema(message: impl Into<String>) -> FileError {
@@ -694,6 +710,7 @@ fn assembly_in(top: &mut Map<String, Value>) -> Result<Assembly, FileError> {
             link: c.link,
             library: c.library,
             policy: c.policy,
+            build: c.build,
         });
     }
     for (i, o) in array(top, "occurrences", false)?.into_iter().enumerate() {
@@ -853,6 +870,24 @@ pub(super) fn load(value: Value) -> Result<(DocState, Vec<String>), FileError> {
                 .map_err(|e| schema(format!("flat_patterns[{i}]: {e}")))
         })
         .collect::<Result<Vec<_>, FileError>>()?;
+    let mut library_sources = crate::build::LibrarySources::default();
+    for (i, s) in array(&mut top, "library_sources", false)?
+        .into_iter()
+        .enumerate()
+    {
+        let s: crate::build::sources::SourceIn =
+            serde_json::from_value(s).map_err(|e| schema(format!("library_sources[{i}]: {e}")))?;
+        let source = s
+            .source()
+            .map_err(|e| invalid(format!("library_sources[{i}]: {e}")))?;
+        if library_sources.get(source.id).is_some() {
+            return Err(invalid(format!(
+                "library_sources[{i}]: source {} is listed more than once",
+                source.id
+            )));
+        }
+        library_sources.0.push(source);
+    }
     let marker = match top.remove("marker") {
         None => None,
         Some(value) => Some(
@@ -961,6 +996,18 @@ pub(super) fn load(value: Value) -> Result<(DocState, Vec<String>), FileError> {
             .and_then(|()| check_components(&assembly, &entries, entry))
             .map_err(|e| invalid(format!("features[{i}] ({}): {e}", entry.name)))?;
     }
+    // Derived parts are made from the file's sources (mitcad#375).
+    for (i, entry) in entries.iter().enumerate() {
+        if let FeatureDef::DerivedPart(part) = &entry.def
+            && library_sources.get(part.source).is_none()
+        {
+            return Err(invalid(format!(
+                "features[{i}] ({}): library source {} is not in the file",
+                entry.name, part.source
+            )));
+        }
+    }
+    state.library_sources = library_sources;
     state.features = entries;
     state.assembly = assembly;
 

@@ -1,0 +1,233 @@
+[
+  {
+    "id": "carriage-hgw15ca",
+    "name": "Guide carriage HGW15CA",
+    "category": "linear",
+    "source": "dynamic-m/Guide-Carriage-HGW15CA/HGW15CA.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "HGW15CA",
+    "supplier_url": "https://www.motedis.com/en/Guide-Carriage-HGW15CA",
+    "designation": "Guide carriage HGW15CA",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"rail","kind":"rail"},{"name":"top","kind":"face"}],
+      "linear": {"kind":"carriage","mate":{"frame":"rail","on":"rail","joint":"slider","axis":"x"}}
+    },
+    "frames": [
+      {"name":"rail","origin":[0,0,0],"z":[0,-1,0],"x":[1,0,0],"kind":"rail"},
+      {"name":"top","origin":[0,9,0],"z":[0,1,0],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "carriage-hgw20ca",
+    "name": "Guide carriage HGW20CA",
+    "category": "linear",
+    "source": "dynamic-m/Guide-Carriage-HGW20CA/HGW20CA.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "HGW20CA",
+    "supplier_url": "https://www.motedis.com/en/Guide-Carriage-HGW20CA",
+    "designation": "Guide carriage HGW20CA",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"rail","kind":"rail"},{"name":"top","kind":"face"}],
+      "linear": {"kind":"carriage","mate":{"frame":"rail","on":"rail","joint":"slider","axis":"x"}}
+    },
+    "frames": [
+      {"name":"rail","origin":[0,37.75,17.5],"z":[0,0,-1],"x":[0,1,0],"kind":"rail"},
+      {"name":"top","origin":[0,37.75,30],"z":[0,0,1],"x":[0,1,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "carriage-hgw25ca",
+    "name": "Guide carriage HGW25CA",
+    "category": "linear",
+    "source": "dynamic-m/Guide-Carriage-HGW25CA/HGW25CA.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "HGW25CA",
+    "supplier_url": "https://www.motedis.com/en/Guide-Carriage-HGW25CA",
+    "designation": "Guide carriage HGW25CA",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"rail","kind":"rail"},{"name":"top","kind":"face"}],
+      "linear": {"kind":"carriage","mate":{"frame":"rail","on":"rail","joint":"slider","axis":"x"}}
+    },
+    "frames": [
+      {"name":"rail","origin":[0,41,22],"z":[0,0,-1],"x":[0,1,0],"kind":"rail"},
+      {"name":"top","origin":[0,41,36],"z":[0,0,1],"x":[0,1,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "carriage-hrc15fn",
+    "name": "Guide carriage HRC15FN",
+    "category": "linear",
+    "source": "dynamic-m/Guide-Carriage-HRC15FN-SZ-V0-N-BLOCK/Motedis_HRC15FN-SZ-V0-N-BLOCK.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "7789",
+    "supplier_url": "https://www.motedis.com/en/Guide-Carriage-HRC15FN-SZ-V0-N-BLOCK",
+    "designation": "Guide carriage HRC15FN",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"rail","kind":"rail"},{"name":"top","kind":"face"}],
+      "linear": {"kind":"carriage","mate":{"frame":"rail","on":"rail","joint":"slider","axis":"x"}}
+    },
+    "frames": [
+      {"name":"rail","origin":[0,-8.7,0],"z":[0,-1,0],"x":[0,0,1],"kind":"rail"},
+      {"name":"top","origin":[0,0,0],"z":[0,1,0],"x":[0,0,1],"kind":"face"}
+    ]
+  },
+  {
+    "id": "carriage-hrc20fl",
+    "name": "Guide carriage flange HRC20FL",
+    "category": "linear",
+    "source": "dynamic-m/Guide-Carriage-flange-HRC20FL-SZ-V0-N/Motedis_HRC20FL-SZ-V0-N.STEP",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "6345",
+    "supplier_url": "https://www.motedis.com/en/Guide-Carriage-flange-HRC20FL-SZ-V0-N",
+    "designation": "Guide carriage flange HRC20FL",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"rail","kind":"rail"},{"name":"top","kind":"face"}],
+      "linear": {"kind":"carriage","mate":{"frame":"rail","on":"rail","joint":"slider","axis":"x"}}
+    },
+    "frames": [
+      {"name":"rail","origin":[0,-9.7,0],"z":[0,-1,0],"x":[0,0,1],"kind":"rail"},
+      {"name":"top","origin":[0,0,0],"z":[0,1,0],"x":[0,0,1],"kind":"face"}
+    ]
+  },
+  {
+    "id": "carriage-hrc20fn",
+    "name": "Guide carriage flange HRC20FN",
+    "category": "linear",
+    "source": "dynamic-m/Guide-Carriage-flange-HRC20FN-SZ-V0-N/Motedis_HRC20FN-SZ-V0-N.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "6114",
+    "supplier_url": "https://www.motedis.com/en/Guide-Carriage-flange-HRC20FN-SZ-V0-N",
+    "designation": "Guide carriage flange HRC20FN",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"rail","kind":"rail"},{"name":"top","kind":"face"}],
+      "linear": {"kind":"carriage","mate":{"frame":"rail","on":"rail","joint":"slider","axis":"x"}}
+    },
+    "frames": [
+      {"name":"rail","origin":[0,-9.7,0],"z":[0,-1,0],"x":[0,0,1],"kind":"rail"},
+      {"name":"top","origin":[0,0,0],"z":[0,1,0],"x":[0,0,1],"kind":"face"}
+    ]
+  },
+  {
+    "id": "carriage-hrc25fl",
+    "name": "Guide carriage HRC25FL",
+    "category": "linear",
+    "source": "dynamic-m/Guide-Carriage-HRC25FL-SZ-V0-N-BLOCK/Motedis_HRC25FL-SZ-V0-N.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "7791",
+    "supplier_url": "https://www.motedis.com/en/Guide-Carriage-HRC25FL-SZ-V0-N-BLOCK",
+    "designation": "Guide carriage HRC25FL",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"rail","kind":"rail"},{"name":"top","kind":"face"}],
+      "linear": {"kind":"carriage","mate":{"frame":"rail","on":"rail","joint":"slider","axis":"x"}}
+    },
+    "frames": [
+      {"name":"rail","origin":[0,6.3,43],"z":[0,-1,0],"x":[0,0,1],"kind":"rail"},
+      {"name":"top","origin":[0,18.8,43],"z":[0,1,0],"x":[0,0,1],"kind":"face"}
+    ]
+  },
+  {
+    "id": "carriage-hrc25fn",
+    "name": "Guide carriage HRC25FN",
+    "category": "linear",
+    "source": "dynamic-m/Guide-Carriage-HRC25FN-SZ-V0-N-BLOCK/Motedis_HRC25FN-SZ-V0-N.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "7790",
+    "supplier_url": "https://www.motedis.com/en/Guide-Carriage-HRC25FN-SZ-V0-N-BLOCK",
+    "designation": "Guide carriage HRC25FN",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"rail","kind":"rail"},{"name":"top","kind":"face"}],
+      "linear": {"kind":"carriage","mate":{"frame":"rail","on":"rail","joint":"slider","axis":"x"}}
+    },
+    "frames": [
+      {"name":"rail","origin":[0,6.3,31.1],"z":[0,-1,0],"x":[0,0,1],"kind":"rail"},
+      {"name":"top","origin":[0,18.8,31.1],"z":[0,1,0],"x":[0,0,1],"kind":"face"}
+    ]
+  },
+  {
+    "id": "carriage-mgn12ca",
+    "name": "Guide carriage miniature MGN12CA, stainless steel",
+    "category": "linear",
+    "source": "dynamic-m/Guide-Carriage-Miniature-MGN-12CA-Stainless-steel/MGN-12CA.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "MGN 12CA",
+    "supplier_url": "https://www.motedis.com/en/Guide-Carriage-Miniature-MGN-12CA-Stainless-steel",
+    "designation": "Guide carriage miniature MGN12CA, stainless steel",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"rail","kind":"rail"},{"name":"top","kind":"face"}],
+      "linear": {"kind":"carriage","mate":{"frame":"rail","on":"rail","joint":"slider","axis":"x"}}
+    },
+    "frames": [
+      {"name":"rail","origin":[0,17.35,8],"z":[0,0,-1],"x":[0,1,0],"kind":"rail"},
+      {"name":"top","origin":[0,17.35,13],"z":[0,0,1],"x":[0,1,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "carriage-mr12m",
+    "name": "Guide carriage miniature MR12M, chrome steel",
+    "category": "linear",
+    "source": "dynamic-m/MGN-12CA-Miniature-Trolley-Guide-chrome-steel/MGN-12CA_CS.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "MGN 12CA-CS",
+    "supplier_url": "https://www.motedis.com/en/MGN-12CA-Miniature-Trolley-Guide-chrome-steel",
+    "designation": "Guide carriage miniature MR12M, chrome steel",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"rail","kind":"rail"},{"name":"top","kind":"face"}],
+      "linear": {"kind":"carriage","mate":{"frame":"rail","on":"rail","joint":"slider","axis":"x"}}
+    },
+    "frames": [
+      {"name":"rail","origin":[0,17.35,8],"z":[0,0,-1],"x":[0,1,0],"kind":"rail"},
+      {"name":"top","origin":[0,17.35,13],"z":[0,0,1],"x":[0,1,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "carriage-mr12ml",
+    "name": "Guide carriage miniature MR12ML, stainless steel",
+    "category": "linear",
+    "source": "dynamic-m/Guide-Carriage-Miniature-MR12ML-SS-V0-N-stainless-steel/Motedis_MR12ML-SS-V0-N.STEP",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "6344",
+    "supplier_url": "https://www.motedis.com/en/Guide-Carriage-Miniature-MR12ML-SS-V0-N-stainless-steel",
+    "designation": "Guide carriage miniature MR12ML, stainless steel",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"rail","kind":"rail"},{"name":"top","kind":"face"}],
+      "linear": {"kind":"carriage","mate":{"frame":"rail","on":"rail","joint":"slider","axis":"x"}}
+    },
+    "frames": [
+      {"name":"rail","origin":[-50,7.5,0],"z":[0,-1,0],"x":[1,0,0],"kind":"rail"},
+      {"name":"top","origin":[-50,13,0],"z":[0,1,0],"x":[1,0,0],"kind":"face"}
+    ]
+  }
+]

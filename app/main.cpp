@@ -302,7 +302,9 @@ int main(int argc, char* argv[]) {
     return 2;
   }
   mitcad::MainWindow& window = *ownedWindow;
-  window.resize(1280, 800);
+  if (!nativeUiRequested) {
+    window.resize(1280, 800);
+  }
   if (hasStartFile) {
     const QString& path = startFile;
     QString error;

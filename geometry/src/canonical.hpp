@@ -20,7 +20,9 @@ namespace mitcad::geometry::detail {
 // faces that are lines or circles within it given that curve; the faces
 // keep their names, the shape its notes. Null when nothing converts, a face
 // of the result is closed on a seam, or a converted face does not check
-// valid (the result then stays as OCCT built it).
-ShapePtr canonical_dressup(const Shape& input, const Shape& result);
+// valid (the result then stays as OCCT built it). `exact` widens that
+// tolerance for shapes OCCT approximated more loosely (a helix's sweep,
+// path_sweep.cpp).
+ShapePtr canonical_dressup(const Shape& input, const Shape& result, double exact = 1e-7);
 
 } // namespace mitcad::geometry::detail

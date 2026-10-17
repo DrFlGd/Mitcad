@@ -81,9 +81,45 @@ its contacts reach it and 0401 splits a rounding's end cut where it
 crosses the seam's line of a periodic face at the end (mitcad#330), 0410
 ends a rounding whose end section lies in the face it runs into
 tangentially (mitcad#236), 0420 rounds a boss's rim on a cylinder whose
-seam runs in steps (mitcad#337), and 0440 builds chamfers and roundings
+seam runs in steps (mitcad#337), 0430 to 0432 let a rounding beside a
+face narrower than its radius roll on that face's far edge where its
+overflow would run across another rounding, and make the crease where two
+such roundings meet (mitcad#339), 0440 builds chamfers and roundings
 whose contact runs along a chain of edges of the face they consume
-(mitcad#334).
+(mitcad#334), 0450 ends a rounding whose face turns tangentially into the
+face at its end there (mitcad#341), 0460 ends a rounding on the end
+edge of a rounding of its radius beside it, consuming the corner face
+between them (mitcad#342), 0480 and 0481 keep the parts of an open
+intersection line beyond its vertices and split a blend's piece over a gap
+at the start of a closed spine (mitcad#263), 0490 ends a rounding at a
+face whose trimmed surface its opposite contact crosses only past the
+trimmed bounds (mitcad#236), 0500 to 0502 make the rounding between a
+cylinder and a cone about one axis a torus, cut it round flats under an
+overhanging rim it passes below, and cut a rounding whose contact runs off
+its face over a gap by the face at its end (mitcad#237), 0503 joins
+two roundings at a corner along their intersection where their ends meet
+on an edge within its tolerance (mitcad#378), 0510 to 0512
+let booleans cut stored faces and edges that run many turns (a threaded
+hole's cylinders, flanks and helices): new curves are put into the copy of
+the period inside such a face, points are classified at every copy of them
+in its range, and a long B-spline's roots on a quadric are sampled by its
+knot spans (mitcad#349), 0530 and 0531 keep a walked chamfer's guide on
+its edges beside analytic blends, build a chamfer wider than a face of its
+edges along part of its chain, the faces beyond that face growing down to
+it, and end a chamfer stopped where its edges turn by its blend run on past
+the vertex (mitcad#263), 0540 ends a rounding that runs on into an earlier
+rounding of its radius with the section they share (mitcad#236), 0550 ends
+a rounding over pieces cut by the face at the end where that face's edge
+is in two pieces at a vertex no other
+edge meets (mitcad#343), 0560 checks a curve moved on a face spanning
+many periods where it is moved to, so that a second boolean cuts the pieces
+a first one left of such a face (mitcad#380), and 0580 and 0581 round a
+pocket's walls over ribs up to blocks flush with the contact: a contact line
+along a concave edge of its face is off that face, and roundings joined over
+a rib whose sides cut them along sections meet inside the piece over the
+rib's end (mitcad#343), and 0600 ends a rounding at a vertex where a wall
+starts by its blend run on past the vertex along its other face up to the
+wall's edge with that face, cut by the wall along its side (mitcad#343).
 
 - `0006-shapeupgrade-unifysamedomain-seam-search-by-vertex.patch`: the face
   merge after booleans (`ShapeUpgrade_UnifySameDomain`) looks up the edges
@@ -1458,6 +1494,51 @@ alone.
   the cylinder keeps one of the step's two uses, and the result does not
   check valid (it failed before; the dressup rejects it as before).
 
+The patches 0430 to 0432 come from the fillets left failing at a vertex
+after mitcad#323 (mitcad#339, `core/import/README.md`, *Fillet corners
+left after mitcad#323*): roundings beside faces narrower than their radius
+whose overflow (0011) ran across another rounding.
+
+- `0430-chfi3d-rounding-rolls-before-another-roundings-face.patch`: the
+  two vertical edges at the end of a window through a wall 3.54 thick
+  rounded with 2, the end split into a strip 0.5 wide and the rest, which
+  meets the strip at 0.35 degrees. The rounding beside the strip ran over
+  it onto the other face (0011; at 0.35 degrees OCCT also takes the two
+  faces for tangent), up to 2 from its edge, across the other rounding's
+  contact there, and the corners at the window's top and bottom failed
+  ("fillets have too big radiuses"). The stored designs' rounding rolls on
+  the strip's far edge. `ChFi3d_Builder::RollsInsteadOfOverflow`, once the
+  stripes are computed: a side on a face reached across a narrow face of its
+  edge, whose contact there lies nearer another stripe's edge than that
+  stripe's own contact, may not overflow onto that face; the stripe is
+  computed again (as before where that fails), its start found as an
+  overflow's, and that side rolls on the edge before the face (also where
+  the two faces only nearly continue each other: their normals more than
+  1e-4 apart, and before a sliver it passed).
+- `0431-chfi3d-rolled-onsame-end-at-the-end-of-its-contact-curve.patch`:
+  the OnSame end of such a blend rolling on an edge up to where the edge
+  ends on the face at the end: the intersection of its contact curve with
+  that face came out 6e-15 past the curve's bounds, was not taken, and the
+  corner failed ("bouchon non ecrit"). It is now taken within the curve's
+  parametric resolution, at the bound.
+- `0432-chfi3d-roundings-crease-over-a-narrow-common-face.patch`: a box's
+  rim with an inner lip whose bottom edge, lines and corner arcs meeting at
+  53 degrees, is rounded with 4 over a ring 1 wide under the lip and a
+  chamfer beyond it. Each rounding ran over the ring onto the chamfer, the
+  lines' onto its planes and the arcs' onto its cones, and at each corner
+  the two had no face in common ("Trying to check orientation of NULL
+  face", "Failed to find edge"). The stored designs' roundings roll on the
+  ring's far edges and meet in a crease. `RollsInsteadOfOverflow` also lets
+  two stripes meeting at a vertex roll before the different faces beyond
+  their consumed common face; `ChFi3d_IsInFront` no longer takes two sides
+  on no face for a common face; `ChFi3d_FilBuilder::PerformTwoRolledCorner`
+  makes the crease (the blends' intersection from their point on the pivot
+  edge to the rolled edges' common vertex, the stripes ending on it as in
+  the bevel of `PerformTwoCornerbyInter`), and a walked blend rolling on a
+  circle about the axis of the cylinder or plane it touches becomes the
+  torus it is (`ChFi3d_ExactRollOnCircle`, a B-spline patch of it in the
+  walked surface's layout), which reaches the crease past the walk's end.
+
 The patch 0440 goes on with 0148 and 0351 for chamfers and roundings that
 consume a strip beside their edges (mitcad#334): a boss on a slab 2 wider,
 the boss's foot chamfered by 2 along three sides and its corner arcs, the
@@ -1476,6 +1557,384 @@ slab's top going on along the fourth side.
   their wires were not closed. That end is now the vertex, as for a contact
   along a whole edge. Before, the results were invalid; fillets likewise.
 
+The patch 0450 comes from the fillets left failing at a vertex after
+mitcad#339 (mitcad#341): a rounding ending where one of its faces turns
+tangentially into the face at the end.
+
+- `0450-chfi3d-rounding-face-turning-tangentially-into-the-end-face.patch`:
+  a rounding ends at the spine's end vertex, where one of its faces (an
+  earlier rounding) runs on tangentially into the face at the end and the
+  other meets that face at a sharp edge. At the end of the walk both
+  contacts reach an edge of their faces; the sharp one ends the walk, the
+  tangent one did not, and `ComputeData` walked that side on along the
+  face at the end while the other lay on a tangent plane past its edge:
+  the pieces at the end were not as `PerformMoreSurfdata` expects, or the
+  corner was invalid. Where one side's edge goes on tangentially into a
+  face that holds the spine's end vertex and that the other side's sharp
+  edge bounds too, that face is now the face at the end on both sides
+  (`TangentIntoEndFace`): the walk ends there and the corner cuts the blend
+  with it, the cap running from one contact's crossing of the tangent edge
+  to the other's crossing of the sharp edge. The tangent side often
+  reaches its edge past the spine's end, where 0077 cut the walk at twice
+  the contacts' speed at the spine's end, short of that edge: a line that
+  ends on an edge is kept up to it while its contacts run less than four
+  times as fast (`ChFi3d_RegularUpToArc`), and the ends above are taken
+  only where that holds; past it the sections get singular, and such ends
+  fail at the corner as before.
+
+The patch 0460 goes on with 0410 for the corners where a rounding ends
+(mitcad#342): a rounding that ends on the end edge of a rounding of its own
+radius beside it.
+
+- `0460-chfi3d-onsame-end-on-an-edge-of-a-consumed-corner-face.patch`: a
+  boss 1.5 high on a wall, its long top edges rounded with 2 (rolling on the
+  foot edges), the feet of those roundings with 2 and the ends' edges with
+  the roundings with 1.5; then the ends' feet are rounded with 2. At each
+  corner the ball fits the foot rounding beside it, so the end section is
+  that rounding's end arc, from the corner's vertex to the arc's other end,
+  where the opposite contact ends; the corner torus between them (0.5 wide)
+  lies wholly between the contacts. OCCT took the torus for the face at the
+  end of its OnSame corner and intersected the blend with it, tangent to it
+  all along the arc ("echec calcul intersection").
+  `ChFi3d_EndSectionAlongEdge` recognises such an end (the points at the
+  vertices of the edge to prolong, the section on its curve, the face at
+  the end bounded otherwise by the spine and the opposite face): the face
+  beyond that edge becomes the face at the end, and the end is built as
+  0410's end section lying in its face, the cap the edge's own curve,
+  taking the edge's place there; the consumed face's edges off the spine are cut
+  at their vertices, so that the builder drops it (as
+  `ChFi3d_CutConsumedFaces` drops consumed strips). No prolongation of the
+  opposite contact is made: it ends at the edge's vertex.
+
+The patches 0480 and 0481 go on with 0140 to 0149 and 0380 for chamfers
+(mitcad#263): a post's foot on a plate chamfered so wide that the cone's
+contact on the plate runs past the plate's outline, the outline's faces
+growing up to the cone (0142), where the gaps hold the post's seam.
+
+- `0480-geomint-open-line-parts-beyond-its-vertices.patch` (`TKGeomAlgo`):
+  `GeomInt_LineConstructor` kept of an analytic open line (a line, parabola
+  or hyperbola of two surfaces) with two or more vertices only the parts
+  between them, dropping those before the first and after the last although
+  they lie in both domains. A cone meets a plane parallel to its axis in a
+  hyperbola whose asymptotes are the generatrices parallel to the plane;
+  with the cone's seam one of them within rounding (8.6e-9 rad off a wall
+  square to it), the hyperbola crosses the seam twice some 1e8 mm away and
+  only a piece of no length between those crossings was left, so the
+  chamfer found no cut of its cone by the wall and failed. Those outer parts
+  are now tested and kept as the inner ones are, and parts that meet are
+  joined (a line wholly in both domains is one part, as with no vertices).
+- `0481-chfi3d-kpart-gap-across-a-closed-spines-start-split-there.patch`:
+  the piece cut by the face beyond over the gap that holds the start of a
+  closed spine ran across that start, its other contact crossing inside it
+  the seam of the face closed round the spine (the post's cylinder, whose
+  edge's vertex is on the seam). The topological build took the contact's
+  edges on the cylinder for a wire of their own and kept the cylinder
+  whole: an invalid shape. `ChFi3d_FillKPartGaps` now splits such a piece
+  at the spine's start where a line crosses its face's seam there
+  (`ChFi3d_SplitPieceAtSection`: both parts on one blend surface, each line
+  cut at the plane square to the spine there, the points on the seam on
+  each part's side of it), the part before the start at the period's end
+  and the part after it at its start, as `SplitKPart` cuts its own pieces.
+  A piece whose lines cross no seam there (a rounding's torus over a gap)
+  stays whole, its face's seam where it was: split, a later rounding along
+  that torus's edges failed in a corpus design.
+
+The patch 0490 goes on with the corners where a rounding ends (mitcad#236,
+seventh round): the face at an OnSame end on a trimmed surface.
+
+- `0490-chfi3d-onsame-end-on-a-trimmed-face-past-its-bounds.patch`: a
+  plate's bottom edge rounded with 3 up to a conical foot below the plate
+  (the foot's rim on the bottom, the cone cut flush with the plate's side).
+  The cone is the face at the end of the OnSame corner, which intersects
+  the opposite contact (on the side, 3 above the bottom) with that face
+  extended and caps the blend there. The cone continued above its rim
+  crosses that contact before the edge's end, but stored bodies carry the
+  cone on a surface trimmed at the face's bounds, which
+  `ChFi3d_ExtendSurface` (B-splines and Beziers only) left bounded: no
+  intersection, no cap ("OneCorner : bouchon non ecrit"). Where that
+  intersection fails, the face at the end is now taken as its basis surface
+  continues (`ChFi3d_UntrimmedEndSurface`: an elementary basis, unbounded
+  where not periodic, one period from the trimmed start where periodic, the
+  face's own parameters); the cap and the prolonged edge are built there,
+  and the face keeps its surface (a new surface given to the face lost its
+  seam's second p-curve in the topological build). Ends whose bounded face
+  is crossed are unchanged.
+
+The patches 0500 to 0502 go on with 0170 to 0172 and 0390 to 0391
+(mitcad#237): a rounding between a cylinder and a cone about one axis whose
+contact passes below a ledge over flats cut into the cylinder, which in the
+files is not a ball rolling on the ledge's edge but the torus of the
+cylinder and the cone, cut round each flat; and a thin rim's outer edge
+rounded wider than the rim, which in the files is the outer wall's rounding
+cut by the rim's round end caps; `geometry/tests/test_fillet_rolling_ball.cpp`
+checks all three with OCCT alone, and each check fails without its patch.
+0503 (mitcad#378) mends the corners where 0500's torus meets the next
+edge's analytic rounding; its check there fails without it.
+
+- `0500-chfikpart-fillet-between-coaxial-surfaces-of-revolution.patch`: the
+  constant-radius fillet between a cylinder and a cone, or two cones, about
+  one axis, along a circle about it, is an analytic blend, the torus its
+  ball sweeps (`ChFiKPart_MakeFilletCoaxial`, `ChFi3d_KParticular`). OCCT
+  had analytic blends only with a plane among the faces; this one was walked
+  as a B-spline, and where its contact passed over a cut-out of its face
+  the walk rolled on the cut-out's edge and failed. In the meridian
+  half-plane the ball's centre lies at the radius from both profiles; the
+  section runs from the contact on the first face to the one on the second
+  with the torus's v rising, as the other analytic fillets have it. The
+  convex and concave roundings of a post's conical top or flare and of two
+  cones, whole and part revolutions, agree with the walked ones within the
+  walk's approximation (2 · 10⁻⁵ of volume).
+- `0501-chfi3d-kpart-cut-round-a-cut-out-under-an-overhanging-rim.patch`:
+  an analytic blend whose contact passes below a ledge over a flat cut into
+  its face (a post's rim overhanging ten flats, rounded with 0.9 where it
+  meets the flare above: the contact 0.073 below the ledge) is cut round
+  the flat in turn: up the flat's plane, along the ledge (grown out to the
+  cut) and down the flat again (`ChFi3d_KPartCutChain` round from the flat
+  back to it, crossings on the prolongations of the edge between the flat
+  and the ledge beyond both its ends, 0142). Those crossings lie just beyond
+  the gap (0.01 along the spine): the pieces are kept within the gap, the
+  ones between its ends and the crossings of no length along the spine,
+  their cut on the flat their only side; the cut's arc of the ledge's
+  circle is the one round the piece, and a gap across a closed spine's
+  start is split there, its closing section the torus's seam. The same
+  across the spine's edges (the circle in two edges, its vertices at a
+  flat's corner and mid-flat: `ChFi3d_FillKPartRoundGapsAcrossEdges`, the
+  pieces at the edges' ends given the arcs SplitKPart leaves them without),
+  and the torus is one face round the whole circle: the edges' tori are
+  parametrized alike and the pieces that are one face (0073) join across
+  the edges (`ChFi3d_JoinKPartRunsAcrossEdges`). Before, the stripe failed
+  ("the ball's piece at a concave turn not made", 0390's rolling on the
+  ledge's edge); now the result is the post rounded without the flats, the
+  flats cut from it after, as the bodies stored in the files are (Mitcad's
+  dressup built that with the flats cleared and cut again, mitcad#311).
+- `0502-chfi3d-kpart-cut-by-the-end-face-over-a-gap.patch`: an analytic
+  blend near an open spine's end whose contact runs off its face N over a
+  gap and comes back into N only where the face at the end already cuts
+  the blend (a thin rim between an outer wall and a pocket, its ends round
+  caps, the outer top edge rounded with 1.2, wider than the rim: the
+  contact on the top lies over the pocket and comes back into the top
+  inside the cap) is cut by the end face from where the other contact
+  reaches the end face's edge to where the blend, the gap's wall and the
+  end face meet, and by the gap's wall from there to the first piece whose
+  contact comes back (`ChFi3d_KPartCutToEndOverGap`, where 0059's cut at the
+  end does not apply); the end face grows up to its cut (its edge with N
+  prolonged beyond the spine's end vertex), a new edge bounds it and the
+  gap's wall, and the pieces are one face with the rest. Before, the
+  stripe failed; now the result is the outer wall rounded alone, the ring
+  it loses taken off the rim outside the caps, as the files' bodies are.
+- `0503-chfi3d-two-roundings-meeting-on-an-edge-within-its-tolerance.patch`
+  (mitcad#378, a regression of 0500): two roundings meeting at a vertex of
+  four sharp edges whose ends lie on the same two points are joined along
+  their intersection (`PerformTwoCornerSameExt`); the many-edge corner
+  took that path only where the ends agreed within 1e-7, and now also
+  where both ends are common points on one edge within that edge's
+  tolerance (`SameEndPoint`). A slot through a round boss, its rim
+  chamfered and the chamfer's lower edges rounded with 1: at each corner
+  the wall's rounding (a cylinder) meets 0500's torus round the boss, and
+  both end on the crease between the chamfer's plane and cone. On a stored
+  body that crease's curves on the two faces differ within its tolerance
+  (1e-4) and the ends lay 1.6e-7 apart: the corner was a plate of no width
+  whose edges reached tolerances of 0.4, and Mitcad's check found a
+  self-intersecting wire once the vertex tolerances were cut down. Walked
+  roundings end further apart there, so 0500 exposed it; now the corner is
+  the two roundings' intersection, as in the files' bodies.
+
+The patches 0510 to 0512 let booleans cut stored bodies whose faces and
+edges run many turns (mitcad#349): a stored body can keep a threaded hole's
+minor and major cylinders as one face each between helices running tens of
+turns (the face's u range spans as many periods), its flanks as one ruled
+B-spline face each, and the helices as one B-spline edge each.
+
+- `0510-boptools-pcurve-into-the-period-inside-a-face-spanning-many.patch`:
+  `BOPTools_AlgoTools2D::AdjustPCurveOnSurf` moves a boolean's new curve on
+  such a face into the first period of the range and, when the classifier
+  finds its middle outside the face, by one period up or down; at a given
+  height only one copy of an angle lies inside the face, often many periods
+  away. A box cut across the thread got its section curves on the cylinders
+  outside the face; the result was invalid and its volume wrong. When the
+  curve's middle is outside the face, every copy by whole periods within
+  the range is now classified and the curve moved into the first one inside
+  the face; the one-period shift remains only when none is.
+- `0511-inttools-fclass2d-every-copy-on-a-face-spanning-many-periods.patch`:
+  `IntTools_FClass2d::Perform` and `TestOnRestriction` try a point's copies
+  upwards from where `GeomInt::AdjustPeriodic` put it, which leaves a point
+  already in the face's range where it is; the copies below it were never
+  tried. A section curve's point in the surface's first period lay in the
+  range of the 32-turn face, the copy inside the face 16 periods below: it
+  was classified outside and the parts of section curves on the face were
+  dropped (the box cut removed nothing). The copies now start at the first
+  one at or above the range's start, as `BRepTopAdaptor_FClass2d` does.
+- `0512-intcurvesurface-quadric-roots-sampled-by-knot-spans.patch`
+  (`TKGeomAlgo`): the exact intersection of a curve with a plane, cylinder,
+  cone or sphere samples its distance to the quadric
+  `IntCurveSurface_TheHCurveTool::NbSamples` times, at most 50 for the
+  whole curve: every two thirds of a turn on a helix edge of 32 turns, and
+  where the helix dips below a cylinder across the hole's end and rises
+  again within one step neither crossing was found (`IntTools_EdgeFace`
+  found one of three). The section curves on the hole's faces lost their
+  ends, and the tool's face over the hole's opening was left whole with
+  them inside as internal edges: the cut kept it as an internal face. A
+  B-spline is now sampled at least its degree times for each knot span in
+  the interval (at most 100000); other curves keep their count.
+- `0560-boptools-pcurve-checked-at-its-own-copy-in-the-face.patch`:
+  `AdjustPCurveOnSurf` called `GeomInt::AdjustPeriodic` with the curve's
+  middle u as both its input and its output, so the classifier of a face
+  spanning more than one period (0510's) checked the point moved twice, and
+  the shift was corrected from there. After a cross hole splits a 32-turn
+  cylinder face into pieces on the one surface, the piece below it lies 16
+  periods below the surface's first period: a box cut's section curves on it
+  were checked 32 periods down and placed a period above their first one,
+  outside the piece, and the cut removed nothing and was invalid. u now
+  keeps the curve's own value, so the point checked is where the curve
+  goes; faces of at most one period, and curves the shift into the range
+  does not move, are not affected (mitcad#380).
+
+The patches 0530 and 0531 build chamfers wider than a face of their
+edges along part of the chain (mitcad#263):
+
+- `0530-chfi3d-chamfer-guide-keeps-to-its-edges-at-the-blends-beside.patch`:
+  a walked chamfer's guide takes the tangents of the analytic blends before
+  and after it (the cones of arcs, meeting the stretch between at a slight
+  angle) within the chamfer's smallest distance of each end only
+  (`ChFi3d_AdjustGuideEndsLocally`); before, the adjustment deformed the
+  whole guide, up to 0.11 mm off a stretch of 16.6 mm, and the chamfer's
+  contacts moved with it. Other blends are unchanged.
+- `0531-chfi3d-chamfer-wider-than-a-narrow-face-cut-by-the-faces-beyond.patch`:
+  a chamfer whose contact on a face B runs off B across one of B's edges
+  into a face beyond at an angle (a fin's tip chamfered wider than the
+  strip of its side left by the fin's foot chamfer) is computed again with
+  B's surface unbounded (`ChamferOverNarrowFace`) and cut by the faces
+  beyond B (`ChamferCutByFacesBeyond`): the material it takes away is kept
+  outside those faces' material, their surfaces extended, so the chamfer
+  is cut by such a face from where its contact leaves B back across it to
+  its other contact, nothing of it is left where its section lies wholly
+  inside, and there the faces beyond grow down to the chamfer's other face
+  (new curves of them with it and with each other, prolonging their common
+  edge; B's and the spine's edges under it bound no face). The parts left
+  are stripes of their own ending in points. A chamfer whose contour is
+  stopped where its edges turn (`StopChainsAtTurns`, now offered by
+  `BRepFilletAPI_MakeChamfer` too) ends there with the end edge's analytic
+  blend run on past the vertex, cut by the face beyond the crease, up to
+  where its other contact reaches that face (`ChamferEndPastTurnStop`).
+  Before, the walk would roll on B's edge, which chamfers do not ("PerformSurf
+  Not Implemented"). Only chamfers that failed so, or whose walk left a face
+  mid-spine, take the new paths.
+
+The patch 0550 comes from the fillet corners left after mitcad#341
+(mitcad#343): a rounding whose end lies over two pieces, where the edge of
+the face at the end is in two pieces.
+
+- `0550-chfi3d-end-over-pieces-where-the-end-faces-edge-is-in-two.patch`:
+  a bar joined to a cylinder, its long top and bottom edges chamfered and
+  the chamfers' edges with its side rounded; the side's concave edge with
+  the cylinder is rounded with 3, on tangentially over the bar's roundings
+  and chamfers up to the caps. Near each cap the cylinder's contact
+  reaches the cap first; the walk goes on until the other contact crosses
+  from the bar's rounding onto the chamfer, and its extension over the
+  chamfer (the cylinder's side given up) reaches the chamfer's edge with
+  the cap: the end lies over two pieces, both cut by the cap
+  (`PerformMoreSurfdata`). That end is taken where the piece before the
+  last ends on an edge of the face at the end at the vertex; the cap's edge
+  with the cylinder is in two pieces here (the profile's vertex where the
+  bar's side met the cylinder stays on it after the chamfer and the
+  rounding took the side's top away, with only those two pieces at it),
+  and the point lies on the piece away from the vertex. The end was not
+  taken, `PerformOneCorner` dropped the extension and failed in
+  `PerformIntersectionAtEnd`, whose walk round the bar's rounding, a face
+  without the vertex, did not come back ("the max number of faces
+  reached"). An edge now counts as the arc at the vertex where it goes on
+  from it between the same two faces through vertices no other edge meets
+  (`ChFi3d_ArcGoesOnAs`, in `MoreSurfdata` and `PerformMoreSurfdata`). The
+  result is the one built where the cap's edge is one piece, as the bodies
+  stored in the files are (0.3 µm from them in a stored design).
+
+The patches 0580 and 0581 come from the same round (mitcad#343): a pocket's
+ceiling rounded with its walls (radius 8), the walls' edges broken by ribs
+1 thick standing out 6 from them, the roundings ending at blocks whose side
+lies where they touch the ceiling. The bodies stored in the files have one
+cylinder along each wall, cut by the ribs and ended by the blocks.
+
+- `0580-chfi3d-kpart-contact-along-a-concave-edge-off-its-face.patch`: past
+  a rounding's end the ceiling's contact line runs along the block's
+  concave edge with the ceiling. `SplitKPart` hatches the line on its face,
+  and the hatcher took that stretch as inside the face or outside it as the
+  line lay a rounding error (1e-14) to one side of the edge or the other: on
+  one wall the line's domain ended at the block and the corner cut the
+  blend with the face at the end, on the mirrored wall it ran on to the
+  ceiling's rim, 21.6 past the end, and the corner failed or built faces of
+  reversed orientation. No ball of the blend touches a face along a concave
+  edge of it (the face beyond rises into the ball), so a straight contact
+  line along such an edge is hatched moved off the face across it by the
+  shift `HatchOnBoundary` uses, its ends near a vertex snapped to the
+  vertex (`HatchOffConcaveEdges`).
+- `0581-chfi3d-roundings-joined-across-a-rib-with-square-sides.patch`: 0241's
+  `ChFi3d_JoinAcrossNotches` joins the roundings on either side of a rib,
+  one stripe's blend running on over the gap cut by the rib's faces. The
+  rib's sides cut the blend along sections and give no piece, so the piece
+  on the rib's end starts where the blend crosses that face's far edge, not
+  at the other stripe's end point, and the stripes met at that point: the
+  piece's edge on the rib's end started there, the rib's side lost its edge
+  with the blend and the shell was open. The piece is now split at its
+  middle, its half at the other stripe's end goes to that stripe, and the
+  stripes meet at the split, a whole section on one face; the rest of the
+  end section is the side's edge with the blend, which `ChFi3d_FilDS` makes
+  between two pieces of one stripe (`PartSection`). Only where the blends
+  are one surface with the same sides and the stripes run the same way at
+  the gap. And where a stripe joined before is joined again (three edges,
+  two ribs), every surface data on the old surface takes the new one, not
+  only the extended stripe's: the stripe joined first was left a face of
+  its own with no edge at the section between them.
+
+The patch 0600 comes from the next round (mitcad#343): a convex edge
+between a band N and a cone Fo rounded with 1, ending at a vertex V where a
+notch wall B (a plane at 8 degrees to the edge) starts. Past V, N goes on as
+a narrower tongue between the notch walls and Fo goes on beside B (B's edge
+with N convex, with Fo concave: an OnSame end). The bodies stored in the
+files run the blend on past V along Fo until its contact on Fo reaches B's
+edge with Fo (5.9 past V), and B cuts it along its side from there back to
+where its contact on N crosses B's plane (4 before V); B grows up to the
+cut.
+
+- `0600-chfi3d-onsame-end-cut-along-its-side-by-the-face-at-the-end.patch`:
+  OCCT walked on past V until the contact on N left the tongue across its
+  edge with a face tangent to it (4 past V, the contact on Fo still short
+  of B), and the corner took that edge's face for the face at the end: an
+  invalid result (faces of reversed orientation) or two roundings that
+  cross. `ChFi3d_Builder::WalkedOnSameToEndFace` now finds such an end
+  after the stripe is walked (OnSame, a vertex of three edges, the last
+  SurfData past V with its contact on N on an edge that is not B's and its
+  contact on Fo inside Fo) and walks that SurfData again from its other
+  end, N's surface unbounded and the guide run on past its end, up to where
+  the contact on Fo reaches B's edge with Fo; that SurfData replaces the
+  last one, and `PerformOneCorner`'s OnSame corner cuts it by B and
+  prolongs B's edge with N up to the contact on N, as at an ordinary OnSame
+  end. The stripe is left as it was where that walk does not reach the
+  edge; analytic blends (not walked) are not changed.
+
+The patch 0540 goes on with the corners where a rounding ends (mitcad#236,
+eighth round): a rounding that runs on into an earlier rounding's tube.
+
+- `0540-chfi3d-rounding-running-on-into-an-earlier-roundings-tube.patch`: a
+  wall's foot rounded with the radius of an earlier rounding round the
+  wall's end, whose tube leaves the wall's side tangentially (its spine
+  curving away from the side's foot) and was cut back to the wall's plane,
+  where its floor contact crosses it: the new rounding's spine ends at that
+  crossing, and its section where the two spines are tangent lies in the
+  earlier tube. At that OnSame end the earlier rounding is the face at the
+  end; the corner intersected the opposite contact with it, which it only
+  touches, and the blend with it, tangent to it all along the section ("OneCorner
+  : bouchon non ecrit", "OneCorner : echec calcul intersection"). Now
+  `PerformOneCorner` takes the point where the contact touches the face's
+  surface within the tolerance, the blend tangent to the face there
+  (`ChFi3d_ContactTouchesEndFace`), caps the blend with its end section
+  where that lies in the face's surface, tangent to it (as an end section
+  lying in a face at the end is since 0410), and prolongs the earlier
+  rounding's edge with the opposite face along the iso of the face's
+  surface the edge runs on where the edge's curve ends at the vertex (a
+  stored B-spline; `ChFi3d_ProlongTangentEdgeAlongIso`, as
+  `ChFi3d_ProlongTangentEdge` does with a curve that goes on past it). The
+  earlier rounding grows up to the section, as in the files' bodies.
+
 Each patch has a report for OCCT, with a reproduction that uses OCCT alone
 and measurements: mitcad#84 (0006), mitcad#90 (0007), mitcad#91 (0008) and
 mitcad#92 (0009); for 0010 to 0019 and 0050 to 0077, mitcad#121 and the tests in
@@ -1491,16 +1950,17 @@ without the patch; for 0090 and 0091, mitcad#160 and
 `geometry/tests/test_chamfer_kernel.cpp`, which aborts without them; for
 0120 and 0121, mitcad#119 and `geometry/tests/test_large_bodies.cpp`, whose
 statuses are OCCT's without them; for 0130 to 0139, 0210 to 0219,
-0280 to 0289, 0290 to 0299, 0340 to 0349 and 0410 to 0419, mitcad#236 and `geometry/tests/test_fillet_corners.cpp`,
-whose tests of 0280 to 0283, 0290, 0291, 0340 to 0342 and 0410 each fail without their patch; for 0360, mitcad#235 and
+0280 to 0289, 0290 to 0299, 0340 to 0349 and 0410 to 0419, mitcad#236, for 0430 to 0432, mitcad#339, and for 0450, mitcad#341, and `geometry/tests/test_fillet_corners.cpp`,
+whose tests of 0280 to 0283, 0290, 0291, 0340 to 0342, 0410, 0430 to 0432 and 0450 each fail without their patch; for 0360, mitcad#235 and
 the split by tangent curves in `geometry/tests/test_boolean.cpp`, which fails without it; for 0140 to 0149, mitcad#240, mitcad#263 and
 `geometry/tests/test_chamfer_overflow.cpp`; for 0380 and 0381, mitcad#263
 and the rounded crease in `geometry/tests/test_chamfer_overflow.cpp`,
 which fails without either; for 0150 to 0159, mitcad#239
 and `geometry/tests/test_fillet_results.cpp`; for 0160, mitcad#238 and the
 rounded-rim tests in `geometry/tests/test_fillet_overflow.cpp`, which fail
-without it; for 0170 to 0179 and 0390 to 0399, mitcad#237
-and `geometry/tests/test_fillet_rolling_ball.cpp`, which fails without them;
+without it; for 0170 to 0179, 0390 to 0399 and 0500 to 0509, mitcad#237
+(0503: mitcad#378) and `geometry/tests/test_fillet_rolling_ball.cpp`, which
+fails without them;
 for 0180, mitcad#241 and `geometry/tests/test_fillet_chains.cpp`; for 0190,
 mitcad#261 and the turned-disc test in
 `geometry/tests/test_fillet_overflow.cpp`, which fails without it; for
@@ -1539,8 +1999,33 @@ gable's ridge ending on a cylinder's seam in
 `geometry/tests/test_fillet_corners.cpp`; for 0420, mitcad#337 and the
 boss's rim rounded across a stepped seam in
 `geometry/tests/test_fillet_kernel.cpp`; for 0440, mitcad#334 and the
-boss on a slab in `geometry/tests/test_chamfer_overflow.cpp`; each fails
-without its patch.
+boss on a slab in `geometry/tests/test_chamfer_overflow.cpp`; for 0460,
+mitcad#342 and the boss's foot rounding ending on a rounding of its radius
+in `geometry/tests/test_fillet_corners.cpp`; for 0480 and 0481, mitcad#263
+and the post beyond a square plate in
+`geometry/tests/test_chamfer_overflow.cpp` (its turned plate fails without
+0480, every seam in a gap without 0481); for 0490, mitcad#236 and the
+plate on a conical foot with a trimmed cone in
+`geometry/tests/test_fillet_corners.cpp`; for 0540, mitcad#236 and the
+wall's foot rounded on into its end's earlier rounding (its floor edges as
+circles and as B-splines) in the same file; for 0510 to 0512, mitcad#349
+and the threaded block whose cylinders, flanks and helices run 32 turns in
+`geometry/tests/test_multi_turn_faces.cpp` (its box cuts fail without 0510
+or 0511; its cross hole checks the helices' crossings that 0512 finds);
+for 0530 and 0531, mitcad#263 and the fin whose side strip is narrower
+than its tip's chamfer in `geometry/tests/test_chamfer_overflow.cpp` (the
+chamfer's volume from its sections, cut by the foot's chamfer, swept along
+the edge); for 0550, mitcad#343 and the bar on a cylinder rounded where the
+cap's edge is in two pieces in `geometry/tests/test_fillet_corners.cpp`;
+for 0560, mitcad#380 and the box cuts on the threaded block's cross-holed
+result in `geometry/tests/test_multi_turn_faces.cpp`; for 0580 and 0581,
+mitcad#343 and the pocket rounded over ribs up to flush blocks in
+`geometry/tests/test_fillet_corners.cpp` (the volume added against the
+rounding's section); for 0600, mitcad#343 and the plate with an overhanging
+tongue in `geometry/tests/test_fillet_corners.cpp` (the tongue's left edge
+rounded so that the contact runs off it, against a tongue wide enough for
+the contact); each
+fails without its patch.
 Sending them upstream is the
 maintainers' step. When the
 baseline moves to a newer OCCT, check which of the changes OCCT has made;

@@ -32,6 +32,18 @@ int execDialog(QDialog* dialog) {
   return dialog->exec();
 }
 
+void prepareFileDialog(QFileDialog* dialog) {
+#ifdef MITCAD_MACOS_NATIVE_UI
+  if (nativeDialogsActive()) {
+    // Qt's Cocoa helper has no selected files before show().
+    // Keep those values in the widget presenter used by our AppKit panel.
+    dialog->setOption(QFileDialog::DontUseNativeDialog);
+  }
+#else
+  Q_UNUSED(dialog);
+#endif
+}
+
 void showDialog(QWidget* widget) {
 #ifdef MITCAD_MACOS_NATIVE_UI
   if (nativeDialogsActive() && qobject_cast<QFileDialog*>(widget) == nullptr) {
@@ -142,6 +154,7 @@ namespace {
 QString fileNameDialog(QWidget* parent, const QString& title, const QString& directory,
                        const QString& filter, QString* selectedFilter, QFileDialog::AcceptMode mode) {
   QFileDialog dialog(parent, title, directory, filter);
+  prepareFileDialog(&dialog);
   dialog.setAcceptMode(mode);
   dialog.setFileMode(mode == QFileDialog::AcceptSave ? QFileDialog::AnyFile : QFileDialog::ExistingFile);
   if (selectedFilter && !selectedFilter->isEmpty()) {
@@ -179,6 +192,7 @@ QString dialogSaveFileName(QWidget* parent, const QString& title, const QString&
 QString dialogChooseFile(QWidget* parent, const QString& title, const QString& directory, const QString& filter,
                          const QString& acceptLabel, const QString& rejectLabel) {
   QFileDialog dialog(parent, title, directory, filter);
+  prepareFileDialog(&dialog);
   dialog.setAcceptMode(QFileDialog::AcceptOpen);
   dialog.setFileMode(QFileDialog::ExistingFile);
   dialog.setLabelText(QFileDialog::Accept, acceptLabel);
@@ -200,6 +214,7 @@ QString dialogChooseFile(QWidget* parent, const QString& title, const QString& d
 
 QString dialogDirectory(QWidget* parent, const QString& title, const QString& directory) {
   QFileDialog dialog(parent, title, directory);
+  prepareFileDialog(&dialog);
   dialog.setFileMode(QFileDialog::Directory);
   dialog.setOption(QFileDialog::ShowDirsOnly);
   if (execDialog(&dialog) != QDialog::Accepted) {

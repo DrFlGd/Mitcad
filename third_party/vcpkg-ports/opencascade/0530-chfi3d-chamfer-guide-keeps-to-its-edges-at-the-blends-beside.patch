@@ -1,0 +1,131 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Chamfers: a walked chamfer's guide keeps to its edges where it takes the
+tangents of the analytic blends before and after it (mitcad#263).
+
+The case: a chain of edges joined at slight angles (1.4 degrees), arcs
+between curved stretches, its arcs chamfered as cones (ChFiKPart) and its
+stretches walked. ChFi3d_PerformElSpine makes the guide of a stretch start
+and end with the tangents of the cones' end sections (GeomLib's
+AdjustExtremity), which deformed the whole curve: on a stretch of 16.6 mm
+the guide ran up to 0.11 mm off its edge, and a chamfer's contacts, at its
+distances from the guide, moved with it (a chamfer of 0.263 became one of
+0.18 in the middle of the stretch).
+
+- For a chamfer (whose guide may be deformed by a hundredth of its distance
+  at most, 0381), the guide takes those tangents within its smallest
+  distance of each end only (ChFi3d_AdjustGuideEndsLocally): knots are
+  inserted there and the two poles at the end moved, the tangent's length
+  kept. Elsewhere it is the edge's curve as before the adjustment. Other
+  blends, and ends extended past the spine, are unchanged.
+
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
+index 575db839..4c26d653 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
+@@ -6496,6 +6496,64 @@ static double ChFi3d_ChamferGuideDeformation(const occ::handle<ChFiDS_Spine>& Sp
+   return aDist > 0. ? 0.01 * aDist : RealLast();
+ }
+ 
++//=======================================================================
++// function : ChFi3d_AdjustGuideEndsLocally
++// purpose  : Gives guide BS the point and tangent of the blends before
++//            and after it at its ends (WF, WL), changing it within Length
++//            of each end only: knots are inserted there and the two poles
++//            at the end are moved (the tangent's length kept).
++//=======================================================================
++
++static void ChFi3d_AdjustGuideEndsLocally(occ::handle<Geom_BSplineCurve>& BS,
++                                          const double                    WF,
++                                          const double                    WL,
++                                          const bool                      AtDeb,
++                                          const gp_Pnt&                   PDeb,
++                                          const gp_Vec&                   VDeb,
++                                          const bool                      AtFin,
++                                          const gp_Pnt&                   PFin,
++                                          const gp_Vec&                   VFin,
++                                          const double                    Length)
++{
++  const int    aDeg  = BS->Degree();
++  const double aSpan = std::min(Length, 0.25 * (WL - WF));
++  if (aSpan <= Precision::PConfusion())
++  {
++    return;
++  }
++  for (const bool atStart : {true, false})
++  {
++    const double W0    = atStart ? WF : WL;
++    const double Wend  = atStart ? BS->FirstParameter() : BS->LastParameter();
++    const gp_Pnt& Pref = atStart ? PDeb : PFin;
++    const gp_Vec& Vref = atStart ? VDeb : VFin;
++    if (!(atStart ? AtDeb : AtFin) || std::abs(W0 - Wend) > 1.e-12 || Vref.Magnitude() <= gp::Resolution())
++    {
++      continue; // (an end extended past the spine's end keeps its own tangent)
++    }
++    gp_Pnt P;
++    gp_Vec V;
++    BS->D1(W0, P, V);
++    if (V.Magnitude() <= gp::Resolution()
++        || (P.Distance(Pref) < Precision::Confusion() && V.Normalized().Dot(Vref.Normalized()) > 0.9999999))
++    {
++      continue;
++    }
++    for (int i = 1; i <= aDeg; i++)
++    {
++      const double u = atStart ? WF + aSpan * i / aDeg : WL - aSpan * i / aDeg;
++      BS->InsertKnot(u, 1, Precision::PConfusion(), false);
++    }
++    const int    n   = BS->NbPoles();
++    const int    i1  = atStart ? 1 : n;
++    const int    i2  = atStart ? 2 : n - 1;
++    const double len = BS->Pole(i1).Distance(BS->Pole(i2));
++    const gp_Vec d   = gp_Vec(gp_Dir(Vref)) * (atStart ? len : -len);
++    BS->SetPole(i1, Pref);
++    BS->SetPole(i2, Pref.Translated(d));
++  }
++}
++
+ //=================================================================================================
+ 
+ Standard_EXPORT void ChFi3d_PerformElSpine(occ::handle<ChFiDS_ElSpine>& HES,
+@@ -6993,7 +7051,7 @@ Standard_EXPORT void ChFi3d_PerformElSpine(occ::handle<ChFiDS_ElSpine>& HES,
+   {
+     // Otherwise is it necessary to move the poles to adapt
+     // them to new tangents ?
+-    bool   adjust = false;
++    bool   adjust = false, adjustDeb = false, adjustFin = false;
+     gp_Pnt P1, P2;
+     gp_Vec V1, V2;
+     BSpline->D1(WF, P1, V1);
+@@ -7004,7 +7062,7 @@ Standard_EXPORT void ChFi3d_PerformElSpine(occ::handle<ChFiDS_ElSpine>& HES,
+     if ((std::abs(WF - LocalWF) < 1.e-12) && ((scaldeb <= 0.9999999) || disdeb >= tol))
+     {
+       // Yes if there was no extension and the tangent is not the good one.
+-      adjust = true;
++      adjust = adjustDeb = true;
+     }
+     BSpline->D1(WL, P2, V2);
+     V2.Normalize();
+@@ -7014,9 +7072,19 @@ Standard_EXPORT void ChFi3d_PerformElSpine(occ::handle<ChFiDS_ElSpine>& HES,
+     if ((std::abs(WL - LocalWL) < 1.e-12) && ((scalfin <= 0.9999999) || disfin >= tol))
+     {
+       // the same at the end
+-      adjust = true;
++      adjust = adjustFin = true;
+     }
+-    if (adjust)
++    if (adjust && aMaxDeform < RealLast() && !BSpline->IsRational())
++    {
++      // (A chamfer's contacts lie at its distances from the guide: the
++      // guide takes the tangents of the blends before and after it near
++      // its ends only, within its smallest distance of each end, and keeps
++      // to its edges elsewhere. Adjusting the whole curve moved it by up to
++      // half the chamfer off the edges between two edges' analytic blends
++      // meeting it at a slight angle.)
++      ChFi3d_AdjustGuideEndsLocally(BSpline, WF, WL, adjustDeb, PDeb, VrefDeb, adjustFin, PFin, VrefFin, 100. * aMaxDeform);
++    }
++    else if (adjust)
+     {
+       occ::handle<Geom_BoundedCurve> anExtCurve = BSpline;
+       GeomLib::AdjustExtremity(anExtCurve, PDeb, PFin, VrefDeb, VrefFin);

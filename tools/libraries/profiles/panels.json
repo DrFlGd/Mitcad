@@ -1,0 +1,200 @@
+[
+  {
+    "id": "panel-multiwall-8",
+    "name": "Macrolon multi-wall sheet 8 mm",
+    "category": "panels",
+    "make": "model",
+    "dimensions": {
+      "shape": "plate",
+      "width": "W",
+      "thickness": "8 mm",
+      "length": "L",
+      "parameters": {"W":"169 mm","L":"1000 mm"}
+    },
+    "supplier": "Motedis",
+    "part_number": "Plate 169x1964 racking",
+    "supplier_url": "https://www.motedis.com/en/Macrolon-multi-wall-sheet-169x1964x8mm",
+    "designation": "Multi-wall sheet {Width}x{L}x8",
+    "rows": [
+      {
+        "name": "169",
+        "select": {"Width":"169"},
+        "values": {"W":"169 mm"},
+        "part_number": "Plate 169x1964 racking"
+      },
+      {
+        "name": "269",
+        "select": {"Width":"269"},
+        "values": {"W":"269 mm"},
+        "part_number": "Plate 269x1964 racking"
+      },
+      {
+        "name": "369",
+        "select": {"Width":"369"},
+        "values": {"W":"369 mm"},
+        "part_number": "Plate 369x1964 racking"
+      }
+    ],
+    "build": {
+      "role": "panel",
+      "systems": [{"type":"B","slot":8},{"type":"I","slot":8},{"type":"B","slot":10}],
+      "length": {"parameter":"L","min":"50 mm","max":"1964 mm","stock":["1964 mm"]},
+      "panel": {
+        "mount": "slot",
+        "thickness": "8 mm",
+        "height": "L",
+        "clearance": "0.5 mm",
+        "clamp": {"library":"mitcad-parts","component":"clamp25-i8"}
+      },
+      "frames": [{"name":"end_a","kind":"end"},{"name":"face","kind":"face"}]
+    },
+    "frames": [
+      {"name":"end_a","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"end"},
+      {"name":"face","origin":[0,0,0],"z":[0,-1,0],"x":[0,0,1],"kind":"face"}
+    ]
+  },
+  {
+    "id": "panel-alu-4",
+    "name": "Aluminium plate 4 mm",
+    "category": "panels",
+    "make": "model",
+    "dimensions": {
+      "shape": "plate",
+      "width": "W",
+      "thickness": "4 mm",
+      "length": "L",
+      "parameters": {"W":"80 mm","L":"500 mm"}
+    },
+    "supplier": "Motedis",
+    "part_number": "Alu DIN/EN-Platte (5083) 4mm - Breite 80",
+    "supplier_url": "https://www.motedis.com/en/Aluminium-plate-4x80-mm",
+    "designation": "Aluminium plate 4x{Width} L={L}",
+    "rows": [
+      {
+        "name": "80",
+        "select": {"Width":"80"},
+        "values": {"W":"80 mm"},
+        "part_number": "Alu DIN/EN-Platte (5083) 4mm - Breite 80"
+      },
+      {
+        "name": "90",
+        "select": {"Width":"90"},
+        "values": {"W":"90 mm"},
+        "part_number": "Alu DIN/EN-Platte (5083) 4mm - Breite 90"
+      },
+      {
+        "name": "100",
+        "select": {"Width":"100"},
+        "values": {"W":"100 mm"},
+        "part_number": "Alu DIN/EN-Platte (5083) 4mm - Breite 100"
+      },
+      {
+        "name": "120",
+        "select": {"Width":"120"},
+        "values": {"W":"120 mm"},
+        "part_number": "Alu DIN/EN-Platte (5083) 4mm - Breite 120"
+      },
+      {
+        "name": "160",
+        "select": {"Width":"160"},
+        "values": {"W":"160 mm"},
+        "part_number": "Alu DIN/EN-Platte (5083) 4mm - Breite 160"
+      },
+      {
+        "name": "200",
+        "select": {"Width":"200"},
+        "values": {"W":"200 mm"},
+        "part_number": "Alu DIN/EN-Platte (5083) 4mm - Breite 200"
+      }
+    ],
+    "build": {
+      "role": "panel",
+      "systems": [
+        {"type":"I","slot":5},
+        {"type":"B","slot":6},
+        {"type":"I","slot":6},
+        {"type":"B","slot":8},
+        {"type":"I","slot":8},
+        {"type":"B","slot":10}
+      ],
+      "length": {"parameter":"L","min":"50 mm","max":"1490 mm","stock":["1490 mm","740 mm","490 mm"]},
+      "panel": {
+        "mount": "slot",
+        "thickness": "4 mm",
+        "height": "L",
+        "clearance": "0.5 mm",
+        "clamp": {"library":"mitcad-parts","component":"clamp25-i8"}
+      },
+      "frames": [{"name":"end_a","kind":"end"},{"name":"face","kind":"face"}]
+    },
+    "frames": [
+      {"name":"end_a","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"end"},
+      {"name":"face","origin":[0,0,0],"z":[0,-1,0],"x":[0,0,1],"kind":"face"}
+    ]
+  },
+  {
+    "id": "panel-generic",
+    "name": "Panel (any material and thickness)",
+    "category": "panels",
+    "make": "model",
+    "dimensions": {
+      "shape": "plate",
+      "width": "W",
+      "thickness": "T",
+      "length": "H",
+      "parameters": {"W":"300 mm","H":"300 mm","T":"3 mm"}
+    },
+    "designation": "Panel {W}x{H}x{T}",
+    "rows": [],
+    "build": {
+      "role": "panel",
+      "systems": [
+        {"type":"I","slot":5},
+        {"type":"B","slot":6},
+        {"type":"I","slot":6},
+        {"type":"B","slot":8},
+        {"type":"I","slot":8},
+        {"type":"B","slot":10}
+      ],
+      "panel": {
+        "mount": "slot",
+        "thickness": "T",
+        "width": "W",
+        "height": "H",
+        "clearance": "0.5 mm",
+        "clamp": {"library":"mitcad-parts","component":"clamp25-i8"}
+      },
+      "frames": [{"name":"end_a","kind":"end"},{"name":"face","kind":"face"}]
+    },
+    "frames": [
+      {"name":"end_a","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"end"},
+      {"name":"face","origin":[0,0,0],"z":[0,-1,0],"x":[0,0,1],"kind":"face"}
+    ]
+  },
+  {
+    "id": "clamp25-i8",
+    "name": "Clamping angle 25 I-type slot 8, panel mounting",
+    "category": "panels",
+    "make": "model",
+    "dimensions": {"shape":"angle","legs":["25 mm","25 mm"],"width":"20 mm","thickness":"3 mm"},
+    "supplier": "Motedis",
+    "part_number": "10446",
+    "supplier_url": "https://www.motedis.com/en/Clamping-Angle-25-I-Type-slot-8-panel-mounting",
+    "designation": "Clamping angle 25 I8",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":8,"grid":40}],
+      "frames": [{"name":"mount_a","kind":"slot"},{"name":"mount_b","kind":"face"}],
+      "connector": {
+        "junctions": ["surface"],
+        "space": "outer",
+        "mates": [{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"face"}]
+      }
+    },
+    "frames": [
+      {"name":"mount_a","origin":[0,0,12.5],"z":[0,-1,0],"x":[0,0,1],"kind":"slot"},
+      {"name":"mount_b","origin":[0,12.5,3],"z":[0,0,1],"x":[0,1,0],"kind":"face"}
+    ]
+  }
+]

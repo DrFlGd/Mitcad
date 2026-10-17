@@ -72,8 +72,14 @@ fn validate_command(request: &Value) -> Result<(), String> {
     }
     let kind = string(request, "cmd")?;
     // By the command's class (mitcad#265): the model's own commands only.
-    match classes::command_class(kind) {
+    match classes::command_class_with(request) {
         Some(ApiClass::Model) => {}
+        Some(ApiClass::FileIo) if classes::file_path_read(request).is_some() => {
+            let path = classes::file_path_read(request).unwrap_or_default();
+            return Err(format!(
+                "command '{kind}' is not available through MCP: it would read the file '{path}'; embed the image with \"data\" (base64) or leave the file out"
+            ));
+        }
         Some(class) => {
             return Err(format!(
                 "command '{kind}' is not available through MCP: it is a {} command; use document_save or model_export for output",

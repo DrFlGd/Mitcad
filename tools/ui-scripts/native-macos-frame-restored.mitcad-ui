@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: MIT
+# The panel workflow saved an off-centre frame in its preceding process.
+expect-ever 'Native UI: AppKit shell with embedded OCCT viewport'
+sleep 800
+expect-native-text native.window.origin '^35,45$'
+expect-native-text native.window.size '^900x600$'
+expect-never 'TestDriver: FAIL|Native Mac canvas:|OCCT view event failed'

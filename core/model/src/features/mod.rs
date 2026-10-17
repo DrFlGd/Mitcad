@@ -90,6 +90,11 @@ pub use remove_body::RemoveBodyDef;
 // Bodies of other components copied, linked to them (mitcad#324).
 pub mod derive;
 pub use derive::DeriveDef;
+// BUILD: derived parts and bound lengths (mitcad#375).
+pub mod bound_length;
+pub mod derived_part;
+pub use bound_length::BoundLengthDef;
+pub use derived_part::DerivedPartDef;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -306,6 +311,8 @@ feature_types! {
     SheetCornerRelief(SheetCornerReliefDef),
     // Bodies of other components copied, linked to them (mitcad#324).
     Derive(DeriveDef),
+    // BUILD: derived parts and bound lengths (mitcad#375).
+    DerivedPart(DerivedPartDef), BoundLength(BoundLengthDef),
 }
 
 /// Brings a feature definition in an earlier form up to date before it is
@@ -458,6 +465,12 @@ pub struct FeatureOutput<S> {
     pub datum: Option<Datum>,
     /// Occurrences it moves (F6).
     pub placements: Vec<PlacementChange>,
+    /// A derived part's mount frames by name, in its component's
+    /// coordinates (mitcad#375).
+    pub mounts: BTreeMap<String, Transform>,
+    /// The values of reference parameters the feature measured (a bound
+    /// length, mitcad#375): the features after it use them.
+    pub measured: Vec<(ParamId, f64)>,
 }
 
 impl<S> Default for FeatureOutput<S> {
@@ -471,6 +484,8 @@ impl<S> Default for FeatureOutput<S> {
             tool: None,
             datum: None,
             placements: Vec::new(),
+            mounts: BTreeMap::new(),
+            measured: Vec::new(),
         }
     }
 }
@@ -583,6 +598,8 @@ pub(crate) struct Env<'a, S> {
     /// The document's join tolerance (`DocState::join_tolerance`,
     /// mitcad#298), read through [`EvalContext::join`].
     pub join_tolerance: Option<f64>,
+    /// The design's library sources, read by derived parts (mitcad#375).
+    pub sources: &'a crate::build::LibrarySources,
 }
 
 /// Inputs of an evaluating feature. Every read is recorded, so the

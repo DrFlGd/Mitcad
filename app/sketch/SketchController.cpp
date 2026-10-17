@@ -641,7 +641,6 @@ void SketchController::logView() {
 
 void SketchController::startTool(std::unique_ptr<SketchTool> tool) {
   stopTool();
-  closeEditor();
   m_tool = std::move(tool);
   m_viewer.setSketchInput(true, m_toolIcons.value(m_tool->name()));
   ++m_toolSession; // the body geometry is read again for it
@@ -661,6 +660,9 @@ void SketchController::startTool(std::unique_ptr<SketchTool> tool) {
 }
 
 void SketchController::stopTool() {
+  // An editor's accept callback can capture the tool. Retire it before
+  // releasing the tool, including a controller-owned dimension editor.
+  closeEditor();
   if (!m_tool) {
     return;
   }
@@ -705,8 +707,13 @@ bool SketchController::cancel() {
     return false;
   }
   if (m_editor) {
+    // An editor the tool opened (the Dimension tool's value) sends the tool
+    // back a step; one opened from a context menu (Edit Dimension, with
+    // the id of its dimension) is only closed, and a running tool keeps
+    // its state (mitcad#354).
+    const bool openedByTool = m_editorDimension.isEmpty();
     closeEditor();
-    if (m_tool) {
+    if (openedByTool && m_tool) {
       m_tool->cancel();
     }
     m_overlay->update();
@@ -2161,6 +2168,7 @@ void SketchController::openValueEditor(const QPointF& at, const QString& text, F
   m_editorKind = kind;
   m_editorText = text;
   m_editorAccept = std::move(accept);
+  m_editorToolSession = m_tool ? std::optional<int>(m_toolSession) : std::nullopt;
   const QPoint corner = m_viewer.mapTo(m_viewer.window(), edit->geometry().center());
   qDebug().noquote() << QStringLiteral("Sketch value editor at %1,%2 with %3%4")
                             .arg(corner.x())
@@ -2185,6 +2193,12 @@ void SketchController::insertIntoEditor(const QString& name) {
 
 void SketchController::acceptEditor() {
   if (!m_editor) {
+    return;
+  }
+  // A tool is retired before its deferred deletion, so checking only its
+  // lifetime would still allow a callback into a tool that has ended.
+  if (m_editorToolSession && (!m_tool || *m_editorToolSession != m_toolSession)) {
+    closeEditor();
     return;
   }
   QString text = m_editor->text().trimmed();
@@ -2222,7 +2236,9 @@ void SketchController::acceptEditor() {
   if (accept) {
     accept(expression);
   }
-  if (!rename.isEmpty() && editor && editor == m_editor) {
+  // Only an existing dimension's editor knows its dimension: the Dimension
+  // tool adds one and leaves no id here (mitcad#352).
+  if (!rename.isEmpty() && !dimension.isEmpty() && editor && editor == m_editor) {
     const DimensionData* d = m_model.dimension(dimension);
     if (d == nullptr || d->parameter != rename) {
       m_editorAccept = std::move(accept);
@@ -2251,8 +2267,10 @@ void SketchController::closeEditor() {
     m_editor->deleteLater();
     m_editor = nullptr;
     m_viewer.setFocus();
+    qDebug().noquote() << QStringLiteral("Sketch value editor closed");
   }
   m_editorAccept = nullptr;
+  m_editorToolSession.reset();
   m_editorDimension.clear();
   m_editorLabel = nullptr;
 }

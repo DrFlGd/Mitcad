@@ -1,0 +1,429 @@
+[
+  {
+    "id": "plate-nema17-t3",
+    "name": "Engine mount plate NEMA 17, t=3 mm",
+    "category": "linear",
+    "source": "dynamic-m/Plate-engine-mount-NEMA-17-Laser-cut-t3mm/MOTEDIS Plate NEMA 17.STEP",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "Plate NEMA 17",
+    "supplier_url": "https://www.motedis.com/en/Plate-engine-mount-NEMA-17-Laser-cut-t3mm",
+    "designation": "Engine mount plate NEMA 17, t=3 mm",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"mount","kind":"slot"},{"name":"motor","kind":"face"}],
+      "linear": {"kind":"plate","mate":{"frame":"mount","on":"slot","joint":"slider","axis":"x"}}
+    },
+    "frames": [
+      {"name":"mount","origin":[22.25,0,-1.5],"z":[0,0,-1],"x":[1,0,0],"kind":"slot"},
+      {"name":"motor","origin":[-19.75,0,1.5],"z":[0,0,1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "plate-nema23-t5",
+    "name": "Engine mount plate NEMA 23, t=5 mm",
+    "category": "linear",
+    "source": "dynamic-m/Plate-engine-mount-NEMA-23-t5mm-Laser-cut/MOTEDIS Plate NEMA 23 t5mm.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "Plate NEMA 23 t5mm",
+    "supplier_url": "https://www.motedis.com/en/Plate-engine-mount-NEMA-23-t5mm-Laser-cut",
+    "designation": "Engine mount plate NEMA 23, t=5 mm",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"mount","kind":"slot"},{"name":"motor","kind":"face"}],
+      "linear": {"kind":"plate","mate":{"frame":"mount","on":"slot","joint":"slider","axis":"x"}}
+    },
+    "frames": [
+      {"name":"mount","origin":[59.3,0,-1.5],"z":[0,0,-1],"x":[1,0,0],"kind":"slot"},
+      {"name":"motor","origin":[0,0,3.5],"z":[0,0,1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "roller-block-hs-5",
+    "name": "Roller mounting block horizontal, slot 5",
+    "category": "linear",
+    "source": "dynamic-m/Roller-mounting-block-slot-3DP/Motedis-RMBS/Motedis_RMBSHS5/Motedis_RMBSHS5.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "RMBSHS5",
+    "supplier_url": "https://www.motedis.com/en/Roller-mounting-block-slot-3DP",
+    "designation": "Roller mounting block horizontal, slot 5",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [
+        {"name":"slot_a","kind":"slot"},
+        {"name":"slot_b","kind":"slot"},
+        {"name":"roller","kind":"shaft"}
+      ],
+      "linear": {"kind":"plate","mate":{"frame":"slot_a","on":"slot","joint":"slider","axis":"x"}}
+    },
+    "frames": [
+      {"name":"slot_a","origin":[0,0,-3.5],"z":[0,0,-1],"x":[1,0,0],"kind":"slot"},
+      {"name":"slot_b","origin":[0,0,3.5],"z":[0,0,1],"x":[1,0,0],"kind":"slot"},
+      {"name":"roller","origin":[16,0,0],"z":[0,0,1],"x":[1,0,0],"kind":"shaft"}
+    ]
+  },
+  {
+    "id": "roller-block-hs-5-6",
+    "name": "Roller mounting block horizontal, slot 5/6",
+    "category": "linear",
+    "source": "dynamic-m/Roller-mounting-block-slot-3DP/Motedis-RMBS/Motedis_RMBSHS5-6/Motedis_RMBSHS5-6.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "RMBSHS5-6",
+    "supplier_url": "https://www.motedis.com/en/Roller-mounting-block-slot-3DP",
+    "designation": "Roller mounting block horizontal, slot 5/6",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [
+        {"name":"slot_a","kind":"slot"},
+        {"name":"slot_b","kind":"slot"},
+        {"name":"roller","kind":"shaft"}
+      ],
+      "linear": {"kind":"plate","mate":{"frame":"slot_a","on":"slot","joint":"slider","axis":"x"}}
+    },
+    "frames": [
+      {"name":"slot_a","origin":[0,0,-3.5],"z":[0,0,-1],"x":[1,0,0],"kind":"slot"},
+      {"name":"slot_b","origin":[0,0,3.5],"z":[0,0,1],"x":[1,0,0],"kind":"slot"},
+      {"name":"roller","origin":[16,0,0],"z":[0,0,1],"x":[1,0,0],"kind":"shaft"}
+    ]
+  },
+  {
+    "id": "roller-block-hs-6",
+    "name": "Roller mounting block horizontal, slot 6",
+    "category": "linear",
+    "source": "dynamic-m/Roller-mounting-block-slot-3DP/Motedis-RMBS/Motedis_RMBSHS6/Motedis_RMBSHS6.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "RMBSHS6",
+    "supplier_url": "https://www.motedis.com/en/Roller-mounting-block-slot-3DP",
+    "designation": "Roller mounting block horizontal, slot 6",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [
+        {"name":"slot_a","kind":"slot"},
+        {"name":"slot_b","kind":"slot"},
+        {"name":"roller","kind":"shaft"}
+      ],
+      "linear": {"kind":"plate","mate":{"frame":"slot_a","on":"slot","joint":"slider","axis":"x"}}
+    },
+    "frames": [
+      {"name":"slot_a","origin":[0,0,-3.5],"z":[0,0,-1],"x":[1,0,0],"kind":"slot"},
+      {"name":"slot_b","origin":[0,0,3.5],"z":[0,0,1],"x":[1,0,0],"kind":"slot"},
+      {"name":"roller","origin":[16,0,0],"z":[0,0,1],"x":[1,0,0],"kind":"shaft"}
+    ]
+  },
+  {
+    "id": "roller-block-hs-6-8",
+    "name": "Roller mounting block horizontal, slot 6/8",
+    "category": "linear",
+    "source": "dynamic-m/Roller-mounting-block-slot-3DP/Motedis-RMBS/Motedis_RMBSHS6-8/Motedis_RMBSHS6-8.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "RMBSHS6-8",
+    "supplier_url": "https://www.motedis.com/en/Roller-mounting-block-slot-3DP",
+    "designation": "Roller mounting block horizontal, slot 6/8",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [
+        {"name":"slot_a","kind":"slot"},
+        {"name":"slot_b","kind":"slot"},
+        {"name":"roller","kind":"shaft"}
+      ],
+      "linear": {"kind":"plate","mate":{"frame":"slot_a","on":"slot","joint":"slider","axis":"x"}}
+    },
+    "frames": [
+      {"name":"slot_a","origin":[0,0,-3.5],"z":[0,0,-1],"x":[1,0,0],"kind":"slot"},
+      {"name":"slot_b","origin":[0,0,3.5],"z":[0,0,1],"x":[1,0,0],"kind":"slot"},
+      {"name":"roller","origin":[16,0,0],"z":[0,0,1],"x":[1,0,0],"kind":"shaft"}
+    ]
+  },
+  {
+    "id": "roller-block-hs-8",
+    "name": "Roller mounting block horizontal, slot 8",
+    "category": "linear",
+    "source": "dynamic-m/Roller-mounting-block-slot-3DP/Motedis-RMBS/Motedis_RMBSHS8/Motedis_RMBSHS8.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "RMBSHS8",
+    "supplier_url": "https://www.motedis.com/en/Roller-mounting-block-slot-3DP",
+    "designation": "Roller mounting block horizontal, slot 8",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [
+        {"name":"slot_a","kind":"slot"},
+        {"name":"slot_b","kind":"slot"},
+        {"name":"roller","kind":"shaft"}
+      ],
+      "linear": {"kind":"plate","mate":{"frame":"slot_a","on":"slot","joint":"slider","axis":"x"}}
+    },
+    "frames": [
+      {"name":"slot_a","origin":[0,0,-3.5],"z":[0,0,-1],"x":[1,0,0],"kind":"slot"},
+      {"name":"slot_b","origin":[0,0,3.5],"z":[0,0,1],"x":[1,0,0],"kind":"slot"},
+      {"name":"roller","origin":[16,0,0],"z":[0,0,1],"x":[1,0,0],"kind":"shaft"}
+    ]
+  },
+  {
+    "id": "roller-block-hs-8-10",
+    "name": "Roller mounting block horizontal, slot 8/10",
+    "category": "linear",
+    "source": "dynamic-m/Roller-mounting-block-slot-3DP/Motedis-RMBS/Motedis_RMBSHS8-10/Motedis_RMBSHS8-10.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "RMBSHS8-10",
+    "supplier_url": "https://www.motedis.com/en/Roller-mounting-block-slot-3DP",
+    "designation": "Roller mounting block horizontal, slot 8/10",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [
+        {"name":"slot_a","kind":"slot"},
+        {"name":"slot_b","kind":"slot"},
+        {"name":"roller","kind":"shaft"}
+      ],
+      "linear": {"kind":"plate","mate":{"frame":"slot_a","on":"slot","joint":"slider","axis":"x"}}
+    },
+    "frames": [
+      {"name":"slot_a","origin":[0,0,-3.5],"z":[0,0,-1],"x":[1,0,0],"kind":"slot"},
+      {"name":"slot_b","origin":[0,0,3.5],"z":[0,0,1],"x":[1,0,0],"kind":"slot"},
+      {"name":"roller","origin":[16,0,0],"z":[0,0,1],"x":[1,0,0],"kind":"shaft"}
+    ]
+  },
+  {
+    "id": "roller-block-hs-10",
+    "name": "Roller mounting block horizontal, slot 10",
+    "category": "linear",
+    "source": "dynamic-m/Roller-mounting-block-slot-3DP/Motedis-RMBS/Motedis_RMBSHS10/Motedis_RMBSHS10.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "RMBSHS10",
+    "supplier_url": "https://www.motedis.com/en/Roller-mounting-block-slot-3DP",
+    "designation": "Roller mounting block horizontal, slot 10",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [
+        {"name":"slot_a","kind":"slot"},
+        {"name":"slot_b","kind":"slot"},
+        {"name":"roller","kind":"shaft"}
+      ],
+      "linear": {"kind":"plate","mate":{"frame":"slot_a","on":"slot","joint":"slider","axis":"x"}}
+    },
+    "frames": [
+      {"name":"slot_a","origin":[0,0,-3.5],"z":[0,0,-1],"x":[1,0,0],"kind":"slot"},
+      {"name":"slot_b","origin":[0,0,3.5],"z":[0,0,1],"x":[1,0,0],"kind":"slot"},
+      {"name":"roller","origin":[16,0,0],"z":[0,0,1],"x":[1,0,0],"kind":"shaft"}
+    ]
+  },
+  {
+    "id": "roller-block-vs-5",
+    "name": "Roller mounting block vertical, slot 5",
+    "category": "linear",
+    "source": "dynamic-m/Roller-mounting-block-slot-3DP/Motedis-RMBS/Motedis_RMBSVS5/Motedis_RMBSVS5.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "RMBSVS5",
+    "supplier_url": "https://www.motedis.com/en/Roller-mounting-block-slot-3DP",
+    "designation": "Roller mounting block vertical, slot 5",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [
+        {"name":"slot_a","kind":"slot"},
+        {"name":"slot_b","kind":"slot"},
+        {"name":"roller","kind":"shaft"}
+      ],
+      "linear": {"kind":"plate","mate":{"frame":"slot_a","on":"slot","joint":"slider","axis":"x"}}
+    },
+    "frames": [
+      {"name":"slot_a","origin":[0,0,-3.5],"z":[0,0,-1],"x":[1,0,0],"kind":"slot"},
+      {"name":"slot_b","origin":[0,0,3.5],"z":[0,0,1],"x":[1,0,0],"kind":"slot"},
+      {"name":"roller","origin":[21,0,0],"z":[0,0,1],"x":[1,0,0],"kind":"shaft"}
+    ]
+  },
+  {
+    "id": "roller-block-vs-5-6",
+    "name": "Roller mounting block vertical, slot 5/6",
+    "category": "linear",
+    "source": "dynamic-m/Roller-mounting-block-slot-3DP/Motedis-RMBS/Motedis_RMBSVS5-6/Motedis_RMBSVS5-6.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "RMBSVS5-6",
+    "supplier_url": "https://www.motedis.com/en/Roller-mounting-block-slot-3DP",
+    "designation": "Roller mounting block vertical, slot 5/6",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [
+        {"name":"slot_a","kind":"slot"},
+        {"name":"slot_b","kind":"slot"},
+        {"name":"roller","kind":"shaft"}
+      ],
+      "linear": {"kind":"plate","mate":{"frame":"slot_a","on":"slot","joint":"slider","axis":"x"}}
+    },
+    "frames": [
+      {"name":"slot_a","origin":[0,0,-3.5],"z":[0,0,-1],"x":[1,0,0],"kind":"slot"},
+      {"name":"slot_b","origin":[0,0,3.5],"z":[0,0,1],"x":[1,0,0],"kind":"slot"},
+      {"name":"roller","origin":[21,0,0],"z":[0,0,1],"x":[1,0,0],"kind":"shaft"}
+    ]
+  },
+  {
+    "id": "roller-block-vs-6",
+    "name": "Roller mounting block vertical, slot 6",
+    "category": "linear",
+    "source": "dynamic-m/Roller-mounting-block-slot-3DP/Motedis-RMBS/Motedis_RMBSVS6/Motedis_RMBSVS6.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "RMBSVS6",
+    "supplier_url": "https://www.motedis.com/en/Roller-mounting-block-slot-3DP",
+    "designation": "Roller mounting block vertical, slot 6",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [
+        {"name":"slot_a","kind":"slot"},
+        {"name":"slot_b","kind":"slot"},
+        {"name":"roller","kind":"shaft"}
+      ],
+      "linear": {"kind":"plate","mate":{"frame":"slot_a","on":"slot","joint":"slider","axis":"x"}}
+    },
+    "frames": [
+      {"name":"slot_a","origin":[0,0,-3.5],"z":[0,0,-1],"x":[1,0,0],"kind":"slot"},
+      {"name":"slot_b","origin":[0,0,3.5],"z":[0,0,1],"x":[1,0,0],"kind":"slot"},
+      {"name":"roller","origin":[21,0,0],"z":[0,0,1],"x":[1,0,0],"kind":"shaft"}
+    ]
+  },
+  {
+    "id": "roller-block-vs-6-8",
+    "name": "Roller mounting block vertical, slot 6/8",
+    "category": "linear",
+    "source": "dynamic-m/Roller-mounting-block-slot-3DP/Motedis-RMBS/Motedis_RMBSVS6-8/Motedis_RMBSVS6-8.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "RMBSVS6-8",
+    "supplier_url": "https://www.motedis.com/en/Roller-mounting-block-slot-3DP",
+    "designation": "Roller mounting block vertical, slot 6/8",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [
+        {"name":"slot_a","kind":"slot"},
+        {"name":"slot_b","kind":"slot"},
+        {"name":"roller","kind":"shaft"}
+      ],
+      "linear": {"kind":"plate","mate":{"frame":"slot_a","on":"slot","joint":"slider","axis":"x"}}
+    },
+    "frames": [
+      {"name":"slot_a","origin":[0,0,-3.5],"z":[0,0,-1],"x":[1,0,0],"kind":"slot"},
+      {"name":"slot_b","origin":[0,0,3.5],"z":[0,0,1],"x":[1,0,0],"kind":"slot"},
+      {"name":"roller","origin":[21,0,0],"z":[0,0,1],"x":[1,0,0],"kind":"shaft"}
+    ]
+  },
+  {
+    "id": "roller-block-vs-8",
+    "name": "Roller mounting block vertical, slot 8",
+    "category": "linear",
+    "source": "dynamic-m/Roller-mounting-block-slot-3DP/Motedis-RMBS/Motedis_RMBSVS8/Motedis_RMBSVS8.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "RMBSVS8",
+    "supplier_url": "https://www.motedis.com/en/Roller-mounting-block-slot-3DP",
+    "designation": "Roller mounting block vertical, slot 8",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [
+        {"name":"slot_a","kind":"slot"},
+        {"name":"slot_b","kind":"slot"},
+        {"name":"roller","kind":"shaft"}
+      ],
+      "linear": {"kind":"plate","mate":{"frame":"slot_a","on":"slot","joint":"slider","axis":"x"}}
+    },
+    "frames": [
+      {"name":"slot_a","origin":[0,0,-3.5],"z":[0,0,-1],"x":[1,0,0],"kind":"slot"},
+      {"name":"slot_b","origin":[0,0,3.5],"z":[0,0,1],"x":[1,0,0],"kind":"slot"},
+      {"name":"roller","origin":[21,0,0],"z":[0,0,1],"x":[1,0,0],"kind":"shaft"}
+    ]
+  },
+  {
+    "id": "roller-block-vs-8-10",
+    "name": "Roller mounting block vertical, slot 8/10",
+    "category": "linear",
+    "source": "dynamic-m/Roller-mounting-block-slot-3DP/Motedis-RMBS/Motedis_RMBSVS8-10/Motedis_RMBSVS8-10.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "RMBSVS8-10",
+    "supplier_url": "https://www.motedis.com/en/Roller-mounting-block-slot-3DP",
+    "designation": "Roller mounting block vertical, slot 8/10",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [
+        {"name":"slot_a","kind":"slot"},
+        {"name":"slot_b","kind":"slot"},
+        {"name":"roller","kind":"shaft"}
+      ],
+      "linear": {"kind":"plate","mate":{"frame":"slot_a","on":"slot","joint":"slider","axis":"x"}}
+    },
+    "frames": [
+      {"name":"slot_a","origin":[0,0,-3.5],"z":[0,0,-1],"x":[1,0,0],"kind":"slot"},
+      {"name":"slot_b","origin":[0,0,3.5],"z":[0,0,1],"x":[1,0,0],"kind":"slot"},
+      {"name":"roller","origin":[21,0,0],"z":[0,0,1],"x":[1,0,0],"kind":"shaft"}
+    ]
+  },
+  {
+    "id": "roller-block-vs-10",
+    "name": "Roller mounting block vertical, slot 10",
+    "category": "linear",
+    "source": "dynamic-m/Roller-mounting-block-slot-3DP/Motedis-RMBS/Motedis_RMBSVS10/Motedis_RMBSVS10.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "RMBSVS10",
+    "supplier_url": "https://www.motedis.com/en/Roller-mounting-block-slot-3DP",
+    "designation": "Roller mounting block vertical, slot 10",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [
+        {"name":"slot_a","kind":"slot"},
+        {"name":"slot_b","kind":"slot"},
+        {"name":"roller","kind":"shaft"}
+      ],
+      "linear": {"kind":"plate","mate":{"frame":"slot_a","on":"slot","joint":"slider","axis":"x"}}
+    },
+    "frames": [
+      {"name":"slot_a","origin":[0,0,-3.5],"z":[0,0,-1],"x":[1,0,0],"kind":"slot"},
+      {"name":"slot_b","origin":[0,0,3.5],"z":[0,0,1],"x":[1,0,0],"kind":"slot"},
+      {"name":"roller","origin":[21,0,0],"z":[0,0,1],"x":[1,0,0],"kind":"shaft"}
+    ]
+  },
+  {
+    "id": "slider-b8-hgw15ca",
+    "name": "Slider B-type slot 8, carriage mount for HGW15CA",
+    "category": "linear",
+    "source": "dynamic-m/Slider-B-Type-slot-8-Carriage-Mount-3DP-HGW15CA/Motedis-Slider-B-Type-slot-8-Carriage-Mount-3DP-HGW15CA/Motedis_Slider B-Type slot 8 - Carriage Mount - 3DP - HGW15CA.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "Slider B-Type slot 8 - Carriage Mount - 3DP - HGW15CA",
+    "supplier_url": "https://www.motedis.com/en/Slider-B-Type-slot-8-Carriage-Mount-3DP-HGW15CA",
+    "designation": "Slider B-type slot 8, carriage mount for HGW15CA",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"slot","kind":"slot"},{"name":"carriage","kind":"face"}],
+      "linear": {"kind":"plate","mate":{"frame":"slot","on":"slot","joint":"slider","axis":"x"}}
+    },
+    "frames": [
+      {"name":"slot","origin":[0,5,0],"z":[0,1,0],"x":[0,0,1],"kind":"slot"},
+      {"name":"carriage","origin":[0,0,0],"z":[0,-1,0],"x":[0,0,1],"kind":"face"}
+    ]
+  }
+]

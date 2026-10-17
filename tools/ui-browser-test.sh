@@ -9,6 +9,9 @@
 #     radio button right after its name.
 #   - Light bulbs hide and show a body, a sketch, a plane and an occurrence;
 #     the project file keeps them, undo takes them back.
+#   - Five light bulbs clicked quickly, faster than the double-click interval,
+#     the mouse moving a little during each press (mitcad#344): each row
+#     toggles once and the selection does not change.
 #   - Rename in place (double-click, the context menu; a component's only,
 #     default-named body is renamed with it, mitcad#291), activate a
 #     component with its radio button.
@@ -134,6 +137,47 @@ for step in "Hide Component1:1" "Hide Plane1" "Show Sketch1" "Hide Body1"; do
   ui_expect_new "Undo: $step" "undo: $step"
 done
 ui_expect_new "Bodies shown: F2.b0, F3.b0 in O1" "both bodies shown again"
+
+echo "--- Quick clicks on light bulbs (mitcad#344)"
+# Five light bulbs clicked one after the other, faster than the double-click
+# interval, the mouse moving a little while each button is down. Each click
+# toggles its row once and the selection stays what it was: the view's pressed
+# row (the Body1 row clicked first) must not start a range selection.
+ui_step "select the Body1 row"           ui_click_logged "Browser Root/Bodies/Body1"
+ui_expect_new "Browser selected: Root/Bodies/Body1" "the Body1 row selected"
+quick_paths="Root/Bodies/Body1 Root/Sketches/Sketch1 Root/Construction/Plane1 Root/Component1:1 Root/Component1:1/Construction/Plane2"
+quick_eyes() {
+  local path ex ey cmd=()
+  for path in $quick_paths; do
+    read -r ex ey <<< "$(ui_logged_at "Browser eye $path")"
+    cmd+=(mousemove "$ex" "$ey" mousedown 1 mousemove_relative -- 2 1 mouseup 1)
+  done
+  xdotool "${cmd[@]}"
+}
+selected_before=$(grep "^Browser selected: " "$UI_LOG" | tail -1)
+ui_mark
+ui_step "click five light bulbs quickly"  quick_eyes
+ui_wait_idle
+for path in $quick_paths; do
+  ui_expect_new "Visibility $path: " "$path toggled"
+done
+toggles=$(tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -c "^Visibility ")
+[ "$toggles" = 5 ] || ui_fail "five quick clicks gave $toggles visibility changes"
+clicks=$(tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -c "^Eye click .* (press)$")
+[ "$clicks" = 5 ] || ui_fail "five quick clicks were logged as $clicks eye clicks"
+echo "ok   each light bulb toggled once ($toggles changes, $clicks eye clicks)"
+selected_after=$(grep "^Browser selected: " "$UI_LOG" | tail -1)
+[ "$selected_after" = "$selected_before" ] || ui_fail "the selection changed: '$selected_before' -> '$selected_after'"
+echo "ok   the selection is unchanged ($selected_after)"
+ui_mark
+ui_step "click them again quickly"        quick_eyes
+ui_wait_idle
+toggles=$(tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -c "^Visibility .*: shown")
+[ "$toggles" -ge 4 ] || ui_fail "the second round showed only $toggles of 5"
+selected_after=$(grep "^Browser selected: " "$UI_LOG" | tail -1)
+[ "$selected_after" = "$selected_before" ] || ui_fail "the selection changed in the second round"
+echo "ok   a second round toggles them back, the selection still unchanged"
+ui_expect_log "Bodies shown: F2.b0, F3.b0 in O1" "both bodies shown again"
 
 echo "--- Rename and activate"
 ui_mark

@@ -1,0 +1,1042 @@
+[
+  {
+    "id": "belt-gt2-6-200",
+    "name": "Closed timing belt GT2 6 mm wide, 200 mm",
+    "category": "linear",
+    "source": "dynamic-m/200mm-closed-GT2-toothed-belt-100-teeth/Motedis-TB-GT2-6-200mm/Motedis_TB-GT2-6-200mm.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "TB-GT2-6-200mm",
+    "supplier_url": "https://www.motedis.com/en/200mm-closed-GT2-toothed-belt-100-teeth",
+    "designation": "Closed timing belt GT2 6 mm wide, 200 mm",
+    "rows": [],
+    "build": {"role":"linear","frames":[{"name":"end","kind":"end"}],"linear":{"kind":"belt"}},
+    "frames": [{"name":"end","origin":[3,0.13,-1],"z":[0,0,-1],"x":[1,0,0],"kind":"end"}]
+  },
+  {
+    "id": "belt-gt2-6-280",
+    "name": "Closed timing belt GT2 6 mm wide, 280 mm",
+    "category": "linear",
+    "source": "dynamic-m/280mm-closed-GT2-toothed-belt-140-teeth/Motedis-TB-GT2-6-280mm/Motedis_TB-GT2-6-280mm.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "TB-GT2-6-280mm",
+    "supplier_url": "https://www.motedis.com/en/280mm-closed-GT2-toothed-belt-140-teeth",
+    "designation": "Closed timing belt GT2 6 mm wide, 280 mm",
+    "rows": [],
+    "build": {"role":"linear","frames":[{"name":"end","kind":"end"}],"linear":{"kind":"belt"}},
+    "frames": [{"name":"end","origin":[3,0.13,-1],"z":[0,0,-1],"x":[1,0,0],"kind":"end"}]
+  },
+  {
+    "id": "belt-gt2-6-400",
+    "name": "Closed timing belt GT2 6 mm wide, 400 mm",
+    "category": "linear",
+    "source": "dynamic-m/400mm-closed-GT2-toothed-belt-200-teeth/Motedis-TB-GT2-6-400mm/Motedis_TB-GT2-6-400mm.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "TB-GT2-6-400mm",
+    "supplier_url": "https://www.motedis.com/en/400mm-closed-GT2-toothed-belt-200-teeth",
+    "designation": "Closed timing belt GT2 6 mm wide, 400 mm",
+    "rows": [],
+    "build": {"role":"linear","frames":[{"name":"end","kind":"end"}],"linear":{"kind":"belt"}},
+    "frames": [{"name":"end","origin":[3,0.13,-1],"z":[0,0,-1],"x":[1,0,0],"kind":"end"}]
+  },
+  {
+    "id": "belt-gt2-6-852",
+    "name": "Closed timing belt GT2 6 mm wide, 852 mm",
+    "category": "linear",
+    "source": "dynamic-m/852mm-closed-GT2-toothed-belt-426-teeth/Motedis-TB-GT2-6-852mm/Motedis_TB-GT2-6-852mm.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "TB-GT2-6-852mm",
+    "supplier_url": "https://www.motedis.com/en/852mm-closed-GT2-toothed-belt-426-teeth",
+    "designation": "Closed timing belt GT2 6 mm wide, 852 mm",
+    "rows": [],
+    "build": {"role":"linear","frames":[{"name":"end","kind":"end"}],"linear":{"kind":"belt"}},
+    "frames": [{"name":"end","origin":[3,0.13,-1],"z":[0,0,-1],"x":[1,0,0],"kind":"end"}]
+  },
+  {
+    "id": "belt-gt2-6-grey",
+    "name": "Endless timing belt GT2 6 mm wide, grey, by the metre",
+    "category": "linear",
+    "source": "dynamic-m/Endless-timing-belt-GT2-6mm-wide-1000mm-Grey/Motedis-TB-GT2-6-1/Motedis_TB-GT2-6.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "TB-GT2-6-SR",
+    "supplier_url": "https://www.motedis.com/en/Endless-timing-belt-GT2-6mm-wide-1000mm-Grey",
+    "designation": "Timing belt GT2 6 mm L={L}",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "length": {"parameter":"L","min":"50 mm","max":"1000 mm","stock":["1000 mm"]},
+      "frames": [{"name":"end_a","kind":"end"},{"name":"end_b","kind":"end"}],
+      "linear": {"kind":"belt"}
+    },
+    "frames": [
+      {"name":"end_a","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"end"},
+      {"name":"end_b","origin":[0,0,"L"],"z":[0,0,1],"x":[1,0,0],"kind":"end"}
+    ]
+  },
+  {
+    "id": "belt-gt2-6-open",
+    "name": "Open timing belt GT2 6 mm wide, by the metre",
+    "category": "linear",
+    "source": "dynamic-m/GT2-Open-Timing-Belt-6mm-1000mm/Motedis-TB-GT2-6/Motedis_TB-GT2-6.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "TB-GT2-6",
+    "supplier_url": "https://www.motedis.com/en/GT2-Open-Timing-Belt-6mm-1000mm",
+    "designation": "Timing belt GT2 6 mm L={L}",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "length": {"parameter":"L","min":"50 mm","max":"1000 mm","stock":["1000 mm"]},
+      "frames": [{"name":"end_a","kind":"end"},{"name":"end_b","kind":"end"}],
+      "linear": {"kind":"belt"}
+    },
+    "frames": [
+      {"name":"end_a","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"end"},
+      {"name":"end_b","origin":[0,0,"L"],"z":[0,0,1],"x":[1,0,0],"kind":"end"}
+    ]
+  },
+  {
+    "id": "belt-htd-3m-9",
+    "name": "Endless timing belt HTD 3M 9 mm wide, by the metre",
+    "category": "linear",
+    "source": "dynamic-m/Endless-timing-belt-HTD3M-9mm-wide-1000mm/Motedis-TB-HTD3M-9/Motedis_TB-HTD3M-9.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "TB-HTD3M-9",
+    "supplier_url": "https://www.motedis.com/en/Endless-timing-belt-HTD3M-9mm-wide-1000mm",
+    "designation": "Timing belt HTD 3M 9 mm L={L}",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "length": {"parameter":"L","min":"50 mm","max":"1000 mm","stock":["1000 mm"]},
+      "frames": [{"name":"end_a","kind":"end"},{"name":"end_b","kind":"end"}],
+      "linear": {"kind":"belt"}
+    },
+    "frames": [
+      {"name":"end_a","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"end"},
+      {"name":"end_b","origin":[0,0,"L"],"z":[0,0,1],"x":[1,0,0],"kind":"end"}
+    ]
+  },
+  {
+    "id": "belt-htd-3m-9-255",
+    "name": "Closed timing belt HTD 3M 9 mm wide, 255 mm",
+    "category": "linear",
+    "source": "dynamic-m/255mm-closed-HTD-3M-toothed-belt-85-teeth-9mm-wide/Motedis-TB-HTD3M-9-255mm/Motedis_TB-HTD3M-9-255mm.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "TB-HTD3M-9-255mm",
+    "supplier_url": "https://www.motedis.com/en/255mm-closed-HTD-3M-toothed-belt-85-teeth-9mm-wide",
+    "designation": "Closed timing belt HTD 3M 9 mm wide, 255 mm",
+    "rows": [],
+    "build": {"role":"linear","frames":[{"name":"end","kind":"end"}],"linear":{"kind":"belt"}},
+    "frames": [{"name":"end","origin":[-3,-1.2,-6],"z":[0,0,-1],"x":[1,0,0],"kind":"end"}]
+  },
+  {
+    "id": "belt-htd-3m-9-351",
+    "name": "Closed timing belt HTD 3M 9 mm wide, 351 mm",
+    "category": "linear",
+    "source": "dynamic-m/351mm-closed-HDT-3M-toothed-belt-177-teeth-9mm-wide/Motedis-TB-HTD3M-9-351mm/Motedis_TB-HTD3M-9-351mm.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "TB-HTD3M-9-351mm",
+    "supplier_url": "https://www.motedis.com/en/351mm-closed-HDT-3M-toothed-belt-177-teeth-9mm-wide",
+    "designation": "Closed timing belt HTD 3M 9 mm wide, 351 mm",
+    "rows": [],
+    "build": {"role":"linear","frames":[{"name":"end","kind":"end"}],"linear":{"kind":"belt"}},
+    "frames": [{"name":"end","origin":[-3,-1.2,-6],"z":[0,0,-1],"x":[1,0,0],"kind":"end"}]
+  },
+  {
+    "id": "belt-htd-3m-9-grey",
+    "name": "Endless timing belt HTD 3M 9 mm wide, grey, by the metre",
+    "category": "linear",
+    "source": "dynamic-m/Endless-timing-belt-3M-9mm-wide-1000mm-Grey/Motedis-TB-HTD3M-9-1/Motedis_TB-HTD3M-9.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "TB-3M-9-SR",
+    "supplier_url": "https://www.motedis.com/en/Endless-timing-belt-3M-9mm-wide-1000mm-Grey",
+    "designation": "Timing belt HTD 3M 9 mm L={L}",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "length": {"parameter":"L","min":"50 mm","max":"1000 mm","stock":["1000 mm"]},
+      "frames": [{"name":"end_a","kind":"end"},{"name":"end_b","kind":"end"}],
+      "linear": {"kind":"belt"}
+    },
+    "frames": [
+      {"name":"end_a","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"end"},
+      {"name":"end_b","origin":[0,0,"L"],"z":[0,0,1],"x":[1,0,0],"kind":"end"}
+    ]
+  },
+  {
+    "id": "belt-htd-3m-15-225",
+    "name": "Closed timing belt HTD 3M 15 mm wide, 225 mm",
+    "category": "linear",
+    "source": "dynamic-m/225mm-closed-HTD-3M-toothed-belt-75-teeth-15mm-wide/Motedis-TB-HTD3M-15-225mm/Motedis_TB-HTD3M-15-225mm.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "TB-HTD3M-15-225mm",
+    "supplier_url": "https://www.motedis.com/en/225mm-closed-HTD-3M-toothed-belt-75-teeth-15mm-wide",
+    "designation": "Closed timing belt HTD 3M 15 mm wide, 225 mm",
+    "rows": [],
+    "build": {"role":"linear","frames":[{"name":"end","kind":"end"}],"linear":{"kind":"belt"}},
+    "frames": [{"name":"end","origin":[-6,-1.2,-6],"z":[0,0,-1],"x":[1,0,0],"kind":"end"}]
+  },
+  {
+    "id": "belt-htd-3m-20-grey",
+    "name": "Endless timing belt HTD 3M 20 mm wide, grey, by the metre",
+    "category": "linear",
+    "source": "dynamic-m/Endless-timing-belt-HTD3M-20mm-wide-1000mm-Grey/Motedis-TB-HTD3M-20-SR/Motedis_TB-HTD3M-20-SR.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "TB-HTD3M-20-SR",
+    "supplier_url": "https://www.motedis.com/en/Endless-timing-belt-HTD3M-20mm-wide-1000mm-Grey",
+    "designation": "Timing belt HTD 3M 20 mm L={L}",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "length": {"parameter":"L","min":"50 mm","max":"1000 mm","stock":["1000 mm"]},
+      "frames": [{"name":"end_a","kind":"end"},{"name":"end_b","kind":"end"}],
+      "linear": {"kind":"belt"}
+    },
+    "frames": [
+      {"name":"end_a","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"end"},
+      {"name":"end_b","origin":[0,0,"L"],"z":[0,0,1],"x":[1,0,0],"kind":"end"}
+    ]
+  },
+  {
+    "id": "belt-htd-5m-15",
+    "name": "Endless timing belt HTD 5M 15 mm wide, by the metre",
+    "category": "linear",
+    "source": "dynamic-m/Endless-timing-belt-HTD-5M-15mm-wide-1000mm/Motedis-TB-HTD5M-15/Motedis_TB-HTD5M-15.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "TB-HTD5M-15",
+    "supplier_url": "https://www.motedis.com/en/Endless-timing-belt-HTD-5M-15mm-wide-1000mm",
+    "designation": "Timing belt HTD 5M 15 mm L={L}",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "length": {"parameter":"L","min":"50 mm","max":"1000 mm","stock":["1000 mm"]},
+      "frames": [{"name":"end_a","kind":"end"},{"name":"end_b","kind":"end"}],
+      "linear": {"kind":"belt"}
+    },
+    "frames": [
+      {"name":"end_a","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"end"},
+      {"name":"end_b","origin":[0,0,"L"],"z":[0,0,1],"x":[1,0,0],"kind":"end"}
+    ]
+  },
+  {
+    "id": "belt-htd-5m-15-255",
+    "name": "Closed timing belt HTD 5M 15 mm wide, 255 mm",
+    "category": "linear",
+    "source": "dynamic-m/255mm-closed-5M-toothed-belt-15mm-wide/Motedis-TB-5M-15-255mm/Motedis_TB-5M-15-255mm.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "TB-5M-15-255mm",
+    "supplier_url": "https://www.motedis.com/en/255mm-closed-5M-toothed-belt-15mm-wide",
+    "designation": "Closed timing belt HTD 5M 15 mm wide, 255 mm",
+    "rows": [],
+    "build": {"role":"linear","frames":[{"name":"end","kind":"end"}],"linear":{"kind":"belt"}},
+    "frames": [{"name":"end","origin":[-12.5,-1.9,-10],"z":[0,0,-1],"x":[1,0,0],"kind":"end"}]
+  },
+  {
+    "id": "belt-htd-5m-15-355",
+    "name": "Closed timing belt HTD 5M 15 mm wide, 355 mm",
+    "category": "linear",
+    "source": "dynamic-m/355mm-closed-5M-toothed-belt-15mm-wide/Motedis-TB-5M-15-355mm/Motedis_TB-5M-15-355mm.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "TB-5M-15-355mm",
+    "supplier_url": "https://www.motedis.com/en/355mm-closed-5M-toothed-belt-15mm-wide",
+    "designation": "Closed timing belt HTD 5M 15 mm wide, 355 mm",
+    "rows": [],
+    "build": {"role":"linear","frames":[{"name":"end","kind":"end"}],"linear":{"kind":"belt"}},
+    "frames": [{"name":"end","origin":[-12.5,-1.9,-10],"z":[0,0,-1],"x":[1,0,0],"kind":"end"}]
+  },
+  {
+    "id": "belt-htd-5m-15-575",
+    "name": "Closed timing belt HTD 5M 15 mm wide, 575 mm",
+    "category": "linear",
+    "source": "dynamic-m/575mm-closed-5M-toothed-belt-15mm-wide/Motedis-TB-5M-15-575mm/Motedis_TB-5M-15-575mm.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "TB-5M-15-575mm",
+    "supplier_url": "https://www.motedis.com/en/575mm-closed-5M-toothed-belt-15mm-wide",
+    "designation": "Closed timing belt HTD 5M 15 mm wide, 575 mm",
+    "rows": [],
+    "build": {"role":"linear","frames":[{"name":"end","kind":"end"}],"linear":{"kind":"belt"}},
+    "frames": [{"name":"end","origin":[-12.5,-1.9,-10],"z":[0,0,-1],"x":[1,0,0],"kind":"end"}]
+  },
+  {
+    "id": "belt-tensioner-gt2",
+    "name": "Belt Tensioner for timing belt GT2 (3D printed)",
+    "category": "linear",
+    "source": "dynamic-m/Belt-Tensioner-for-timing-belt-GT2-3DP/Motedis_3DPBT6MMGT21.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "3DPBT6MMGT21",
+    "supplier_url": "https://www.motedis.com/en/Belt-Tensioner-for-timing-belt-GT2-3DP",
+    "designation": "Belt Tensioner for timing belt GT2 (3D printed)",
+    "rows": [],
+    "build": {"role":"linear","frames":[{"name":"mount","kind":"face"}],"linear":{"kind":"belt"}},
+    "frames": [{"name":"mount","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"face"}]
+  },
+  {
+    "id": "belt-tensioner-pu-t10-25mm",
+    "name": "Belt Tensioner for timing belt PU T10 25mm (3D printed)",
+    "category": "linear",
+    "source": "dynamic-m/Belt-Tensioner-for-timing-belt-PU-T10-25mm-3DP/Motedis_3DPBT25MMPUT101.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "3DPBT25MMPUT101",
+    "supplier_url": "https://www.motedis.com/en/Belt-Tensioner-for-timing-belt-PU-T10-25mm-3DP",
+    "designation": "Belt Tensioner for timing belt PU T10 25mm (3D printed)",
+    "rows": [],
+    "build": {"role":"linear","frames":[{"name":"mount","kind":"face"}],"linear":{"kind":"belt"}},
+    "frames": [{"name":"mount","origin":[0,11,20],"z":[0,1,0],"x":[1,0,0],"kind":"face"}]
+  },
+  {
+    "id": "belt-tensioner-pu-t10-25mm-locknut",
+    "name": "Belt Tensioner for timing belt PU T10 25mm (locknut) (3D printed)",
+    "category": "linear",
+    "source": "dynamic-m/Belt-Tensioner-for-timing-belt-PU-T10-25mm-locknut-3DP/Motedis_3DPBT25MMPUT103.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "3DPBT25MMPUT103",
+    "supplier_url": "https://www.motedis.com/en/Belt-Tensioner-for-timing-belt-PU-T10-25mm-locknut-3DP",
+    "designation": "Belt Tensioner for timing belt PU T10 25mm (locknut) (3D printed)",
+    "rows": [],
+    "build": {"role":"linear","frames":[{"name":"mount","kind":"face"}],"linear":{"kind":"belt"}},
+    "frames": [{"name":"mount","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"face"}]
+  },
+  {
+    "id": "belt-tensor-gt2-wedge",
+    "name": "Belt Tensor for timing belt GT2 (wedge) (3D printed)",
+    "category": "linear",
+    "source": "dynamic-m/Belt-Tensor-for-timing-belt-GT2-wedge-3DP/Motedis_3DPBT6MMGT22.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "3DPBT6MMGT22",
+    "supplier_url": "https://www.motedis.com/en/Belt-Tensor-for-timing-belt-GT2-wedge-3DP",
+    "designation": "Belt Tensor for timing belt GT2 (wedge) (3D printed)",
+    "rows": [],
+    "build": {"role":"linear","frames":[{"name":"mount","kind":"face"}],"linear":{"kind":"belt"}},
+    "frames": [{"name":"mount","origin":[-3.1,-1.54,5],"z":[-1,0,0],"x":[0,1,0],"kind":"face"}]
+  },
+  {
+    "id": "belt-tensor-pu-t10-25mm-wedge",
+    "name": "Belt Tensor for timing belt PU T10 25mm (wedge) (3D printed)",
+    "category": "linear",
+    "source": "dynamic-m/Belt-Tensor-for-timing-belt-PU-T10-25mm-wedge-3DP/Motedis_3DPBT25MMPUT102.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "3DPBT25MMPUT102",
+    "supplier_url": "https://www.motedis.com/en/Belt-Tensor-for-timing-belt-PU-T10-25mm-wedge-3DP",
+    "designation": "Belt Tensor for timing belt PU T10 25mm (wedge) (3D printed)",
+    "rows": [],
+    "build": {"role":"linear","frames":[{"name":"mount","kind":"face"}],"linear":{"kind":"belt"}},
+    "frames": [{"name":"mount","origin":[41.62,0,-12.5],"z":[0,-1,0],"x":[1,0,0],"kind":"face"}]
+  },
+  {
+    "id": "idler-gt2-20t-w6-b5",
+    "name": "Idler wheel GT2 20 teeth 5mm bore for 6mm belt",
+    "category": "linear",
+    "source": "dynamic-m/Idler-wheel-GT2-20-teeth-5mm-bore-for-6mm-belt/Motedis-IW-GT2-6-20T-5B-WB/Motedis_IW-GT2-6-20T-5B-WB.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "IW-GT2-6-20T-5B-WB",
+    "supplier_url": "https://www.motedis.com/en/Idler-wheel-GT2-20-teeth-5mm-bore-for-6mm-belt",
+    "designation": "Idler wheel GT2 20 teeth 5mm bore for 6mm belt",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"pulley","mate":{"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,4.15,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "idler-htd-3m-24t-w9-b5",
+    "name": "Idler wheel 3M 24 teeth 5mm bore for 9mm belt",
+    "category": "linear",
+    "source": "dynamic-m/Idler-wheel-3M-24-teeth-5mm-bore-for-9mm-belt/Motedis-IW-3M-9-24T-5B-WB/Motedis_IW-3M-9-24T-5B-WB.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "IW-3M-9-24T-5B-WB",
+    "supplier_url": "https://www.motedis.com/en/Idler-wheel-3M-24-teeth-5mm-bore-for-9mm-belt",
+    "designation": "Idler wheel 3M 24 teeth 5mm bore for 9mm belt",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"pulley","mate":{"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,7.1,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "idler-plain-w6-b5",
+    "name": "Idler wheel for 6mm wide belt",
+    "category": "linear",
+    "source": "dynamic-m/Idler-wheel-for-6mm-wide-belt/Motedis-IW-6-5B-WB/Motedis_IW-6-5B-WB.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "IW-6-5B-WB",
+    "supplier_url": "https://www.motedis.com/en/Idler-wheel-for-6mm-wide-belt",
+    "designation": "Idler wheel for 6mm wide belt",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"pulley","mate":{"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,4.65,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "idler-plain-w9-b5",
+    "name": "Idler wheel for 9mm wide belt",
+    "category": "linear",
+    "source": "dynamic-m/Idler-wheel-for-9mm-wide-belt/Motedis-IW-9-5B-WB/Motedis_IW-9-5B-WB.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "IW-9-5B-WB",
+    "supplier_url": "https://www.motedis.com/en/Idler-wheel-for-9mm-wide-belt",
+    "designation": "Idler wheel for 9mm wide belt",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"pulley","mate":{"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,5.7,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "l-shaped-s8b-slider-pu-t10-25mm",
+    "name": "L Shaped S8B Slider PU T10 25mm (3D printed)",
+    "category": "linear",
+    "source": "dynamic-m/L-Shaped-S8B-Slider-PU-T10-25mm-3DP/Motedis_3DPBT25MMPUT10LSS.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "3DPBT25MMPUT10LSS8B",
+    "supplier_url": "https://www.motedis.com/en/L-Shaped-S8B-Slider-PU-T10-25mm-3DP",
+    "designation": "L Shaped S8B Slider PU T10 25mm (3D printed)",
+    "rows": [],
+    "build": {"role":"linear","frames":[{"name":"mount","kind":"face"}],"linear":{"kind":"belt"}},
+    "frames": [{"name":"mount","origin":[30,-42.5,-47.5],"z":[1,0,0],"x":[0,1,0],"kind":"face"}]
+  },
+  {
+    "id": "pulley-gt2-20t-w6-b5",
+    "name": "GT2 pulley 20 teeth 5mm bore for 6mm belt",
+    "category": "linear",
+    "source": "dynamic-m/GT2-pulley-20-teeth-5mm-bore-for-6mm-belt/Motedis-TP-GT2-6-20T-5B/Motedis_TP-GT2-6-20T-5B.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "TP-GT2-6-20T-5B",
+    "supplier_url": "https://www.motedis.com/en/GT2-pulley-20-teeth-5mm-bore-for-6mm-belt",
+    "designation": "GT2 pulley 20 teeth 5mm bore for 6mm belt",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"pulley","mate":{"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,8,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "pulley-gt2-20t-w6-b6-35",
+    "name": "GT2 pulley 20 teeth 6.35mm bore for 6mm belt",
+    "category": "linear",
+    "source": "dynamic-m/GT2-pulley-20-teeth-635mm-bore-for-6mm-belt/Motedis-TP-GT2-6-20T-6.35B/Motedis_TP-GT2-6-20T-6.35B.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "TP-GT2-6-20T-6.35B",
+    "supplier_url": "https://www.motedis.com/en/GT2-pulley-20-teeth-635mm-bore-for-6mm-belt",
+    "designation": "GT2 pulley 20 teeth 6.35mm bore for 6mm belt",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"pulley","mate":{"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,8,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "pulley-gt2-20t-w6-b8",
+    "name": "GT2 pulley 20 teeth 8mm bore for 6mm belt",
+    "category": "linear",
+    "source": "dynamic-m/GT2-pulley-20-teeth-8mm-bore-for-6mm-belt/Motedis-TP-GT2-6-20T-8B/Motedis_TP-GT2-6-20T-8B.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "TP-GT2-6-20T-8B",
+    "supplier_url": "https://www.motedis.com/en/GT2-pulley-20-teeth-8mm-bore-for-6mm-belt",
+    "designation": "GT2 pulley 20 teeth 8mm bore for 6mm belt",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"pulley","mate":{"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,8,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "pulley-gt2-40t-w6-b8",
+    "name": "GT2 pulley 40 teeth 8mm bore for 6mm belt",
+    "category": "linear",
+    "source": "dynamic-m/GT2-pulley-40-teeth-8mm-bore-for-6mm-belt/Motedis_TP-GT2-6-40T-8B.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "TP-GT2-6-40T-8B",
+    "supplier_url": "https://www.motedis.com/en/GT2-pulley-40-teeth-8mm-bore-for-6mm-belt",
+    "designation": "GT2 pulley 40 teeth 8mm bore for 6mm belt",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"pulley","mate":{"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,8.5,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "pulley-gt2-50t-w6-b5",
+    "name": "GT2 pulley 50 teeth 5 bore for 6mm belt",
+    "category": "linear",
+    "source": "dynamic-m/GT2-pulley-50-teeth-5-bore-for-6mm-belt/Motedis_TP-GT2-6-50T-5B.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "TP-GT2-6-50T-5B",
+    "supplier_url": "https://www.motedis.com/en/GT2-pulley-50-teeth-5-bore-for-6mm-belt",
+    "designation": "GT2 pulley 50 teeth 5 bore for 6mm belt",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"pulley","mate":{"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,8.75,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "pulley-gt2-50t-w6-b6-35",
+    "name": "GT2 pulley 50 teeth 6,35mm bore for 6mm belt",
+    "category": "linear",
+    "source": "dynamic-m/GT2-pulley-50-teeth-635mm-bore-for-6mm-belt/Motedis_TP-GT2-6-50T-6.35B.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "TP-GT2-6-50T-6.35B",
+    "supplier_url": "https://www.motedis.com/en/GT2-pulley-50-teeth-635mm-bore-for-6mm-belt",
+    "designation": "GT2 pulley 50 teeth 6,35mm bore for 6mm belt",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"pulley","mate":{"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,8.75,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "pulley-gt2-50t-w6-b8",
+    "name": "GT2 pulley 50 teeth 8mm bore for 6mm belt",
+    "category": "linear",
+    "source": "dynamic-m/GT2-pulley-50-teeth-8mm-bore-for-6mm-belt/Motedis_TP-GT2-6-50T-8B.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "TP-GT2-6-50T-8B",
+    "supplier_url": "https://www.motedis.com/en/GT2-pulley-50-teeth-8mm-bore-for-6mm-belt",
+    "designation": "GT2 pulley 50 teeth 8mm bore for 6mm belt",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"pulley","mate":{"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,8.75,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "pulley-htd-3m-16t-w9-b5",
+    "name": "Timing belt pulley 3M 16 tooth for 9mm wide belt, NEMA17",
+    "category": "linear",
+    "source": "dynamic-m/Timing-belt-pulley-3M-16-tooth-for-9mm-wide-belt-NEMA17/Motedis_TP-3M-9-16T-5B.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "TP-3M-9-16T-5B",
+    "supplier_url": "https://www.motedis.com/en/Timing-belt-pulley-3M-16-tooth-for-9mm-wide-belt-NEMA17",
+    "designation": "Timing belt pulley 3M 16 tooth for 9mm wide belt, NEMA17",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"pulley","mate":{"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,12,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "pulley-htd-3m-16t-w9-b6-35",
+    "name": "Timing belt pulley 3M 16 tooth for 9mm wide belt, NEMA 23",
+    "category": "linear",
+    "source": "dynamic-m/Timing-belt-pulley-3M-16-tooth-for-9mm-wide-belt-NEMA-23/Motedis_TP-3M-9-16T-6.35B.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "TP-3M-9-16T-6.35B",
+    "supplier_url": "https://www.motedis.com/en/Timing-belt-pulley-3M-16-tooth-for-9mm-wide-belt-NEMA-23",
+    "designation": "Timing belt pulley 3M 16 tooth for 9mm wide belt, NEMA 23",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"pulley","mate":{"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,12,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "pulley-htd-3m-16t-w15-b8",
+    "name": "Timing belt pulley 3M 16 tooth for 15mm wide belt, drill hole 8mm",
+    "category": "linear",
+    "source": "dynamic-m/Timing-belt-pulley-3M-16-tooth-for-15mm-wide-belt-drill-hole-8mm/Motedis_TP-3M-15-16T-8B.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "TP-3M-15-16T-8B",
+    "supplier_url": "https://www.motedis.com/en/Timing-belt-pulley-3M-16-tooth-for-15mm-wide-belt-drill-hole-8mm",
+    "designation": "Timing belt pulley 3M 16 tooth for 15mm wide belt, drill hole 8mm",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"pulley","mate":{"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,10,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "pulley-htd-3m-24t-w9-b5",
+    "name": "Timing belt pulley 3M 24 tooth for 9mm wide belt, NEMA17",
+    "category": "linear",
+    "source": "dynamic-m/Timing-belt-pulley-3M-24-tooth-for-9mm-wide-belt-NEMA17/Motedis_TP-3M-9-24T-5B.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "TP-3M-9-24T-5B",
+    "supplier_url": "https://www.motedis.com/en/Timing-belt-pulley-3M-24-tooth-for-9mm-wide-belt-NEMA17",
+    "designation": "Timing belt pulley 3M 24 tooth for 9mm wide belt, NEMA17",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"pulley","mate":{"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,12,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "pulley-htd-3m-24t-w9-b6-35",
+    "name": "Timing belt pulley 3M 24 tooth for 9mm wide belt, NEMA 23",
+    "category": "linear",
+    "source": "dynamic-m/Timing-belt-pulley-3M-24-tooth-for-9mm-wide-belt-NEMA-23/Motedis_TP-3M-9-24T-6.35B.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "TP-3M-9-24T-6.35B",
+    "supplier_url": "https://www.motedis.com/en/Timing-belt-pulley-3M-24-tooth-for-9mm-wide-belt-NEMA-23",
+    "designation": "Timing belt pulley 3M 24 tooth for 9mm wide belt, NEMA 23",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"pulley","mate":{"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,12,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "pulley-htd-3m-24t-w9-b8",
+    "name": "Timing belt pulley 3M 24 tooth for 9mm wide belt, drill hole 8mm",
+    "category": "linear",
+    "source": "dynamic-m/Timing-belt-pulley-3M-24-tooth-for-9mm-wide-belt-drill-hole-8mm/Motedis_TP-3M-9-24T-8B.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "TP-3M-9-24T-8B",
+    "supplier_url": "https://www.motedis.com/en/Timing-belt-pulley-3M-24-tooth-for-9mm-wide-belt-drill-hole-8mm",
+    "designation": "Timing belt pulley 3M 24 tooth for 9mm wide belt, drill hole 8mm",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"pulley","mate":{"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,12,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "pulley-htd-3m-24t-w9-b12",
+    "name": "Timing belt pulley 3M 24 tooth for 9mm wide belt, drill hole 12mm",
+    "category": "linear",
+    "source": "dynamic-m/Timing-belt-pulley-3M-24-tooth-for-9mm-wide-belt-drill-hole-12mm/Motedis-TP-3M-9-24T-12B/Motedis_TP-3M-9-24T-12B.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "TP-3M-9-24T-12B",
+    "supplier_url": "https://www.motedis.com/en/Timing-belt-pulley-3M-24-tooth-for-9mm-wide-belt-drill-hole-12mm",
+    "designation": "Timing belt pulley 3M 24 tooth for 9mm wide belt, drill hole 12mm",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"pulley","mate":{"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,11.5,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "pulley-htd-3m-24t-w20-b6-35",
+    "name": "Timing belt pulley 3M 24 tooth for 20mm wide belt, NEMA23",
+    "category": "linear",
+    "source": "dynamic-m/Timing-belt-pulley-3M-24-tooth-for-20mm-wide-belt-NEMA23/Motedis-TP-3M-20-24T-6.35B/Motedis_TP-3M-20-24T-6.35B.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "TP-3M-20-24T-6.35B",
+    "supplier_url": "https://www.motedis.com/en/Timing-belt-pulley-3M-24-tooth-for-20mm-wide-belt-NEMA23",
+    "designation": "Timing belt pulley 3M 24 tooth for 20mm wide belt, NEMA23",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"pulley","mate":{"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,12,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "pulley-htd-3m-32t-w9-b5",
+    "name": "Timing belt pulley HTD3M 32 tooth for 9mm wide belt, NEMA17",
+    "category": "linear",
+    "source": "dynamic-m/Timing-belt-pulley-HTD3M-32-tooth-for-9mm-wide-belt-NEMA17/Motedis_TP-HTD3M-9-32T-5B.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "TP-HTD3M-9-32T-5B",
+    "supplier_url": "https://www.motedis.com/en/Timing-belt-pulley-HTD3M-32-tooth-for-9mm-wide-belt-NEMA17",
+    "designation": "Timing belt pulley HTD3M 32 tooth for 9mm wide belt, NEMA17",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"pulley","mate":{"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,12.5,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "pulley-htd-3m-32t-w9-b6-35",
+    "name": "Timing belt pulley HTD3M 32 tooth for 9mm wide belt, NEMA 23",
+    "category": "linear",
+    "source": "dynamic-m/Timing-belt-pulley-HTD3M-32-tooth-for-9mm-wide-belt-NEMA-23/Motedis_TP-HTD3M-9-32T-6.35B.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "TP-HTD3M-9-32T-6.35B",
+    "supplier_url": "https://www.motedis.com/en/Timing-belt-pulley-HTD3M-32-tooth-for-9mm-wide-belt-NEMA-23",
+    "designation": "Timing belt pulley HTD3M 32 tooth for 9mm wide belt, NEMA 23",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"pulley","mate":{"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,12.5,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "pulley-htd-3m-48t-w9-b5",
+    "name": "Timing belt pulley HTD3M 48 tooth for 9mm wide belt, NEMA17",
+    "category": "linear",
+    "source": "dynamic-m/Timing-belt-pulley-HTD3M-48-tooth-for-9mm-wide-belt-NEMA17/Motedis_TP-HTD3M-9-48T-5B.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "TP-HTD3M-9-48T-5B",
+    "supplier_url": "https://www.motedis.com/en/Timing-belt-pulley-HTD3M-48-tooth-for-9mm-wide-belt-NEMA17",
+    "designation": "Timing belt pulley HTD3M 48 tooth for 9mm wide belt, NEMA17",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"pulley","mate":{"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,12.5,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "pulley-htd-3m-48t-w9-b6-35",
+    "name": "Timing belt pulley HTD3M 48 tooth for 9mm wide belt, NEMA 23",
+    "category": "linear",
+    "source": "dynamic-m/Timing-belt-pulley-HTD3M-48-tooth-for-9mm-wide-belt-NEMA-23/Motedis_TP-HTD3M-9-48T-6.35B.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "TP-HTD3M-9-48T-6.35B",
+    "supplier_url": "https://www.motedis.com/en/Timing-belt-pulley-HTD3M-48-tooth-for-9mm-wide-belt-NEMA-23",
+    "designation": "Timing belt pulley HTD3M 48 tooth for 9mm wide belt, NEMA 23",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"pulley","mate":{"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,12.5,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "pulley-htd-3m-48t-w9-b8",
+    "name": "Timing belt pulley HTD3M 48 tooth for 9mm wide belt, drill hole 8 mm",
+    "category": "linear",
+    "source": "dynamic-m/Timing-belt-pulley-HTD3M-48-tooth-for-9mm-wide-belt-drill-hole-8-mm/Motedis_TP-HTD3M-9-48T-8B.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "TP-HTD3M-9-48T-8B",
+    "supplier_url": "https://www.motedis.com/en/Timing-belt-pulley-HTD3M-48-tooth-for-9mm-wide-belt-drill-hole-8-mm",
+    "designation": "Timing belt pulley HTD3M 48 tooth for 9mm wide belt, drill hole 8 mm",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"pulley","mate":{"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,12.5,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "pulley-htd-3m-48t-w9-b12",
+    "name": "Timing belt pulley HTD3M 48 tooth for 9mm wide belt, drill hole 12 mm",
+    "category": "linear",
+    "source": "dynamic-m/Timing-belt-pulley-HTD3M-48-tooth-for-9mm-wide-belt-drill-hole-12-mm/Motedis_TP-HTD3M-9-48T-12B.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "TP-HTD3M-9-48T-12B",
+    "supplier_url": "https://www.motedis.com/en/Timing-belt-pulley-HTD3M-48-tooth-for-9mm-wide-belt-drill-hole-12-mm",
+    "designation": "Timing belt pulley HTD3M 48 tooth for 9mm wide belt, drill hole 12 mm",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"pulley","mate":{"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,12.5,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "pulley-htd-3m-48t-w9-b14",
+    "name": "Timing belt pulley HTD3M 48 tooth for 9mm wide belt, drill hole 14mm",
+    "category": "linear",
+    "source": "dynamic-m/Timing-belt-pulley-HTD3M-48-tooth-for-9mm-wide-belt-drill-hole-14mm/Motedis_TP-HTD3M-9-48T-14B.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "TP-HTD3M-9-48T-14B",
+    "supplier_url": "https://www.motedis.com/en/Timing-belt-pulley-HTD3M-48-tooth-for-9mm-wide-belt-drill-hole-14mm",
+    "designation": "Timing belt pulley HTD3M 48 tooth for 9mm wide belt, drill hole 14mm",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"pulley","mate":{"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,12.5,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "pulley-htd-3m-48t-w15-b22",
+    "name": "Timing belt pulley HTD3M 48 tooth for 15mm wide belt, drill hole 22mm",
+    "category": "linear",
+    "source": "dynamic-m/Timing-belt-pulley-HTD3M-48-tooth-for-15mm-wide-belt-drill-hole-22mm/Motedis_TP-HTD3M-15-48T-22B.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "TP-HTD3M-15-48T-22B",
+    "supplier_url": "https://www.motedis.com/en/Timing-belt-pulley-HTD3M-48-tooth-for-15mm-wide-belt-drill-hole-22mm",
+    "designation": "Timing belt pulley HTD3M 48 tooth for 15mm wide belt, drill hole 22mm",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"pulley","mate":{"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,9,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "pulley-htd-3m-48t-w20-b6-35",
+    "name": "Timing belt pulley 3M 48 tooth for 20mm wide belt, NEMA23",
+    "category": "linear",
+    "source": "dynamic-m/Timing-belt-pulley-3M-48-tooth-for-20mm-wide-belt-NEMA23/Motedis-TP-3M-20-48T-6.35B/Motedis_TP-3M-20-48T-6.35B.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "TP-3M-20-48T-6.35B",
+    "supplier_url": "https://www.motedis.com/en/Timing-belt-pulley-3M-48-tooth-for-20mm-wide-belt-NEMA23",
+    "designation": "Timing belt pulley 3M 48 tooth for 20mm wide belt, NEMA23",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"pulley","mate":{"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,12.5,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "pulley-htd-5m-10t-w15-b5",
+    "name": "Timing belt pulley HTD 5M 10 tooth for 15mm wide belt, NEMA17",
+    "category": "linear",
+    "source": "dynamic-m/Timing-belt-pulley-HTD-5M-10-tooth-for-15mm-wide-belt-NEMA17/Motedis_TP-HTD5M-15-10T-5B.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "TP-HTD5M-15-10T-5B",
+    "supplier_url": "https://www.motedis.com/en/Timing-belt-pulley-HTD-5M-10-tooth-for-15mm-wide-belt-NEMA17",
+    "designation": "Timing belt pulley HTD 5M 10 tooth for 15mm wide belt, NEMA17",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"pulley","mate":{"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,13.5,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "pulley-htd-5m-10t-w15-b8",
+    "name": "Timing belt pulley HTD 5M 10 tooth for 15mm wide belt, 8mm hole",
+    "category": "linear",
+    "source": "dynamic-m/Timing-belt-pulley-HTD-5M-10-tooth-for-15mm-wide-belt-8mm-hole/Motedis_TP-HTD5M-15-10T-8B.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "TP-HTD5M-15-10T-8B",
+    "supplier_url": "https://www.motedis.com/en/Timing-belt-pulley-HTD-5M-10-tooth-for-15mm-wide-belt-8mm-hole",
+    "designation": "Timing belt pulley HTD 5M 10 tooth for 15mm wide belt, 8mm hole",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"pulley","mate":{"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,13.5,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "pulley-htd-5m-14t-w15-b5",
+    "name": "Timing belt pulley HTD 5M 14 tooth for 15mm wide belt, NEMA17",
+    "category": "linear",
+    "source": "dynamic-m/Timing-belt-pulley-HTD-5M-14-tooth-for-15mm-wide-belt-NEMA17/Motedis-TP-HTD5M-15-14T-5B/Motedis_TP-HTD5M-15-14T-5B.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "TP-HTD5M-15-14T-5B",
+    "supplier_url": "https://www.motedis.com/en/Timing-belt-pulley-HTD-5M-14-tooth-for-15mm-wide-belt-NEMA17",
+    "designation": "Timing belt pulley HTD 5M 14 tooth for 15mm wide belt, NEMA17",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"pulley","mate":{"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,13.5,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "pulley-htd-5m-14t-w15-b6-35",
+    "name": "Timing belt pulley HTD 5M 14 tooth for 15mm wide belt, NEMA23",
+    "category": "linear",
+    "source": "dynamic-m/Timing-belt-pulley-HTD-5M-14-tooth-for-15mm-wide-belt-NEMA23/Motedis-TP-HTD5M-15-14T-6.35B/Motedis_TP-HTD5M-15-14T-6.35B.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "TP-HTD5M-15-14T-6.35B",
+    "supplier_url": "https://www.motedis.com/en/Timing-belt-pulley-HTD-5M-14-tooth-for-15mm-wide-belt-NEMA23",
+    "designation": "Timing belt pulley HTD 5M 14 tooth for 15mm wide belt, NEMA23",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"pulley","mate":{"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,13.5,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "pulley-htd-5m-14t-w15-b8",
+    "name": "Timing belt pulley HTD 5M 14 tooth for 15mm wide belt, 8mm hole",
+    "category": "linear",
+    "source": "dynamic-m/Timing-belt-pulley-HTD-5M-14-tooth-for-15mm-wide-belt-8mm-hole/Motedis-TP-HTD5M-15-14T-8B/Motedis_TP-HTD5M-15-14T-8B.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "TP-HTD5M-15-14T-8B",
+    "supplier_url": "https://www.motedis.com/en/Timing-belt-pulley-HTD-5M-14-tooth-for-15mm-wide-belt-8mm-hole",
+    "designation": "Timing belt pulley HTD 5M 14 tooth for 15mm wide belt, 8mm hole",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"pulley","mate":{"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,13.5,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "pulley-htd-5m-15t-w15-b6-35",
+    "name": "Timing belt pulley HTD 5M 15 tooth for 15mm wide belt, NEMA23",
+    "category": "linear",
+    "source": "dynamic-m/Timing-belt-pulley-HTD-5M-15-tooth-for-15mm-wide-belt-NEMA23/Motedis-TP-HTD5M-15-15T-6.35B/Motedis_TP-HTD5M-15-15T-6.35B.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "TP-HTD5M-15-15T-6.35B",
+    "supplier_url": "https://www.motedis.com/en/Timing-belt-pulley-HTD-5M-15-tooth-for-15mm-wide-belt-NEMA23",
+    "designation": "Timing belt pulley HTD 5M 15 tooth for 15mm wide belt, NEMA23",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"pulley","mate":{"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,9.75,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "pulley-htd-5m-40t-w12-b30",
+    "name": "Timing belt pulley HTD 5M 40 tooth for 12-15mm wide belt",
+    "category": "linear",
+    "source": "dynamic-m/Timing-belt-pulley-HTD-5M-40-tooth-for-12-15mm-wide-belt/Motedis_TP-HTD5M-12to15-40T.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "TP-HTD5M-12to15-40T",
+    "supplier_url": "https://www.motedis.com/en/Timing-belt-pulley-HTD-5M-40-tooth-for-12-15mm-wide-belt",
+    "designation": "Timing belt pulley HTD 5M 40 tooth for 12-15mm wide belt",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"pulley","mate":{"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,4.75,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "pulley-twin-gt2-20t-w6-b5",
+    "name": "GT2 Twin pulley 20 teeth 5mm bore for 6mm belt",
+    "category": "linear",
+    "source": "dynamic-m/GT2-Twin-pulley-20-teeth-5mm-bore-for-6mm-belt/Motedis_TWTP-GT2-6-20T-5B.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "TWTP-GT2-6-20T-5B",
+    "supplier_url": "https://www.motedis.com/en/GT2-Twin-pulley-20-teeth-5mm-bore-for-6mm-belt",
+    "designation": "GT2 Twin pulley 20 teeth 5mm bore for 6mm belt",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"pulley","mate":{"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,13.8,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "pulley-twin-gt2-20t-w6-b6-35",
+    "name": "GT2 Twin pulley 20 teeth 6.35mm bore for 6mm belt",
+    "category": "linear",
+    "source": "dynamic-m/GT2-Twin-pulley-20-teeth-635mm-bore-for-6mm-belt/Motedis_TWTP-GT2-6-20T-6.35B.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "TWTP-GT2-6-20T-6.35B",
+    "supplier_url": "https://www.motedis.com/en/GT2-Twin-pulley-20-teeth-635mm-bore-for-6mm-belt",
+    "designation": "GT2 Twin pulley 20 teeth 6.35mm bore for 6mm belt",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"pulley","mate":{"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,13.8,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "pulley-twin-gt2-20t-w6-b8",
+    "name": "GT2 Twin pulley 20 teeth 8mm bore for 6mm belt",
+    "category": "linear",
+    "source": "dynamic-m/GT2-Twin-pulley-20-teeth-8mm-bore-for-6mm-belt/Motedis_TWTP-GT2-6-20T-8B.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "TWTP-GT2-6-20T-8B",
+    "supplier_url": "https://www.motedis.com/en/GT2-Twin-pulley-20-teeth-8mm-bore-for-6mm-belt",
+    "designation": "GT2 Twin pulley 20 teeth 8mm bore for 6mm belt",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"pulley","mate":{"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,13.8,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"}]
+  }
+]

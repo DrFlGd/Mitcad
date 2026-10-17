@@ -24,7 +24,7 @@ use crate::file::MemoryStore;
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LibraryRef {
-    /// The library's id (`mitcad-fasteners`).
+    /// The library's id (`mitcad-parts`).
     pub library: String,
     /// Where the library was fetched from (never with credentials).
     pub url: String,
@@ -49,6 +49,14 @@ pub struct LibraryRef {
     /// The name a bill of materials gives the part (`ISO 4762 M5x16`).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub designation: String,
+    /// Who sells the part, the supplier's article number (the row's own
+    /// first) and its product page, as the library gives them (mitcad#375).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub supplier: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub part_number: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub supplier_url: String,
 }
 
 impl LibraryRef {
@@ -102,6 +110,14 @@ pub struct LibrarySource {
     pub standard: String,
     pub license: String,
     pub designation: String,
+    /// The manifest's `supplier`, `part_number` and `supplier_url` of the
+    /// component (empty when it has none), and its `build` block as it is
+    /// written there (None for a part the BUILD tab does not place;
+    /// mitcad#375, `docs/libraries.md`, "BUILD parts").
+    pub supplier: Option<String>,
+    pub part_number: Option<String>,
+    pub supplier_url: Option<String>,
+    pub build: Option<serde_json::Value>,
 }
 
 /// Reads library components for the model (the application and

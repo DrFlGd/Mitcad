@@ -576,3 +576,106 @@ fn a_merge_that_would_not_solve_is_refused() {
     assert_eq!(count(&s, "point"), 4);
     assert_eq!(entity(&s, "c4")["end"], "p6");
 }
+
+// --- Mutually coincident point pairs after a merge (mitcad#366)
+
+#[test]
+fn a_merge_keeps_one_of_two_coincidences_that_mean_the_same() {
+    // a = p1 and b = p3 end two lines, x = p5 is a lone point with
+    // Coincident{a, x} and Coincident{x, b}. Merging b into a turns the
+    // second into Coincident{x, a}: the first one the other way round.
+    let mut d = Document::new(MockKernel::default());
+    command(
+        &mut d,
+        json!({"cmd": "add_feature", "def": {"type": "sketch", "plane": "xy", "entities": [
+            {"id": "p1", "type": "point", "at": [0.0, 0.0]},
+            {"id": "p2", "type": "point", "at": [10.0, 0.0]},
+            {"id": "c3", "type": "line", "start": "p1", "end": "p2"},
+            {"id": "p4", "type": "point", "at": [0.0, 0.0]},
+            {"id": "p5", "type": "point", "at": [0.0, 10.0]},
+            {"id": "c6", "type": "line", "start": "p4", "end": "p5"},
+            {"id": "p7", "type": "point", "at": [0.0, 0.0]}],
+            "constraints": [
+                {"id": "k8", "type": "coincident", "point": "p1", "entity": "p7"},
+                {"id": "k9", "type": "coincident", "point": "p7", "entity": "p4"}]}}),
+    );
+    let result = coincident(&mut d, "p1", "p4");
+    assert_eq!(
+        result["merged"],
+        json!({"kept": "p1", "removed": "p4"}),
+        "{result}"
+    );
+    let s = sketch(&d);
+    assert_eq!(constraints_of(&s, "coincident").len(), 1, "{s}");
+    assert!(
+        s["redundant"].as_array().is_none_or(|r| r.is_empty()),
+        "{s}"
+    );
+}
+
+// --- Extend keeps what is on the end it moves (mitcad#362)
+
+#[test]
+fn an_extended_end_keeps_its_point_its_constraints_and_its_dimension() {
+    let mut d = with_sketch();
+    line(&mut d, json!([0, 0]), json!([10, 0])); // c1: p2, p3
+    line(&mut d, json!([25, -5]), json!([25, 5])); // c4: p5, p6
+    let lone = command(
+        &mut d,
+        json!({"cmd": "sketch.add_point", "sketch": "F1", "at": [10, -8]}),
+    );
+    let lone = lone["entities"][0].as_str().unwrap().to_owned(); // p7
+    let gap = command(
+        &mut d,
+        json!({"cmd": "sketch.add_dimension", "sketch": "F1",
+               "dimension": {"type": "distance", "a": "p3", "b": lone}, "value": 8}),
+    );
+    let gap = gap["dimensions"][0].as_str().unwrap().to_owned();
+    let before = sketch(&d);
+    let parameter = before["dimensions"][0]["value"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let result = extend(&mut d, "c1", [9.0, 0.0]);
+    assert!(result.get("joined").is_none(), "{result}");
+    let removed = result["removed"].as_array().cloned().unwrap_or_default();
+    assert!(!removed.contains(&json!("p3")), "{result}");
+    assert!(!removed.contains(&json!(gap)), "{result}");
+    let s = sketch(&d);
+    // The end is the same point, now on c4.
+    assert_eq!(entity(&s, "c1")["end"], "p3", "{s}");
+    assert!(near(&entity(&s, "p3")["at"], [25.0, 0.0]), "{s}");
+    let on = constraints_of(&s, "coincident");
+    assert_eq!(on.len(), 1, "{s}");
+    assert_eq!(on[0]["point"], "p3");
+    assert_eq!(on[0]["entity"], "c4");
+    // The distance stays a dimension of its parameter, which measures the
+    // new place.
+    let kept = s["dimensions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|k| k["id"] == gap.as_str())
+        .unwrap_or_else(|| panic!("the dimension is gone: {s}"));
+    assert_eq!(kept["value"], parameter.as_str(), "{s}");
+    assert!(close(kept["measured"].as_f64().unwrap(), 17.0), "{s}");
+    assert!(close(
+        entity(&s, "c1")["geometry"]["end"][0].as_f64().unwrap(),
+        25.0
+    ));
+}
+
+#[test]
+fn an_extension_keeps_the_extent_constraints_out() {
+    // The line's length dimension is the extent that changes: it goes.
+    let mut d = with_sketch();
+    line(&mut d, json!([0, 0]), json!([10, 0])); // c1: p2, p3
+    line(&mut d, json!([25, -5]), json!([25, 5])); // c4
+    command(
+        &mut d,
+        json!({"cmd": "sketch.add_dimension", "sketch": "F1",
+               "dimension": {"type": "length", "line": "c1"}, "value": 10}),
+    );
+    extend(&mut d, "c1", [9.0, 0.0]);
+    assert_eq!(sketch(&d)["dimensions"], json!([]));
+}

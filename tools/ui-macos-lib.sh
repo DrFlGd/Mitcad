@@ -113,6 +113,8 @@ ui_init() {
   export MITCAD_LOG_VOLUMES=1
   # What typed-in text fields hold ("File dialog Save As: <path>").
   export MITCAD_LOG_TYPED_TEXT=1
+  # An update banner can move the view between a logged pick and its click.
+  export MITCAD_NO_UPDATE_CHECK=1
   # Git's configuration of our own (empty), as in ui-test-lib.sh.
   : > "$UI_ROOT/gitconfig"
   export GIT_CONFIG_GLOBAL=$UI_ROOT/gitconfig

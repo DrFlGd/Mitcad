@@ -10,13 +10,16 @@
 #include "../framework/HybridAssembly.hpp"
 #include "BrowserPanel.hpp"
 #include "DocumentSnapshot.hpp"
+#include "FindInDesign.hpp"
 
+class QEvent;
 class QToolButton;
 class QWidget;
 
 namespace mitcad {
 
 class AppearanceDialog;
+class FindDialog;
 class DocumentHost;
 class ParametersDialog;
 class TimelineWidget;
@@ -61,8 +64,40 @@ public:
   void openPolicy(const QString& component);
   // Find in Browser for an item picked in the view (a face finds its body).
   void findInBrowser(const SelectionItem& item);
+  // The view's context menu Hide submenu (mitcad#347): the bodies (uids) and
+  // the occurrences (paths) of the faces, edges, vertices and bodies of the
+  // selection, each once; no occurrence for the root component's bodies.
+  static QStringList hideableBodies(const Selection& items);
+  static QStringList hideableOccurrences(const Selection& items);
+  // Hide Body and Hide Component: the same visibility commands as the light
+  // bulbs, one undo step.
+  void hideBodies(const Selection& items);
+  void hideOccurrences(const Selection& items);
+  // Find in Design (mitcad#350): the window that finds components and
+  // bodies by name and shows, hides, selects or gives them an appearance
+  // all at once; opened by the magnifier button (on the browser's title
+  // row) or the command.
+  QToolButton* findButton() const { return m_findButton; }
+  void openFind();
+
+protected:
+  // Logs where the magnifier button is, for UI tests.
+  bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
+  // What the window's buttons do with its targets (selected results, or all).
+  void findVisibility(bool show);
+  void findShow();
+  void findHide();
+  void findAppearance();
+  void findSelect();
+  void findPicked();
+  void findReveal();
+  // The items of results: bodies by uid and occurrence, components by their
+  // occurrence.
+  static Selection findItems(const QVector<FindResult>& results);
+  void logFindButton();
+
   // Connects a signal of the browser or the timeline to a slot, queued:
   // the slot may change the model, which rebuilds the widget that emitted
   // it. A call that comes while a job computes the model (P7: posted before
@@ -139,6 +174,9 @@ private:
   QToolButton* m_warnings = nullptr;
   QPointer<ParametersDialog> m_parameters;
   QPointer<AppearanceDialog> m_appearances;
+  QPointer<FindDialog> m_find;
+  QToolButton* m_findButton = nullptr;
+  QString m_loggedFindButton;
   DocumentSnapshot m_snapshot;
   bool m_shown = false;      // something was shown
   bool m_originShown = false; // as the browser shows it

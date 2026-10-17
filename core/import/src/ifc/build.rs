@@ -259,6 +259,34 @@ fn curve3(seg: &Seg) -> mitcad_model::Curve3 {
             weights: weights.clone(),
             knots: mitcad_ifc::geometry::full_knots(knots, multiplicities),
         },
+        Seg::Helix {
+            frame,
+            radius,
+            pitch,
+            start,
+            sweep,
+        } => helix3(frame, *radius, *pitch, *start, *sweep),
+    }
+}
+
+/// A helix as the model's curve (mitcad#385), its parameter increasing
+/// along it: run backwards, about the reversed axis from the negated
+/// angles.
+fn helix3(frame: &Matrix, radius: f64, pitch: f64, start: f64, sweep: f64) -> mitcad_model::Curve3 {
+    let axis = math::column(frame, 2);
+    let (axis, s, e) = if sweep < 0.0 {
+        (math::scale(axis, -1.0), -start, -(start + sweep))
+    } else {
+        (axis, start, start + sweep)
+    };
+    mitcad_model::Curve3::Helix {
+        center: math::origin(frame),
+        axis,
+        x_axis: math::column(frame, 0),
+        radius,
+        pitch,
+        start: s,
+        end: e,
     }
 }
 
@@ -722,7 +750,26 @@ impl<'b, 'a> Builder<'b, 'a> {
                 reference,
                 ..
             } => {
-                let (path_uid, curves) = self.path(directrix)?;
+                // A helix (the `.rvt` import's spiral rails, mitcad#385) is a
+                // helical path of its own; another directrix a path sketch.
+                let path = match directrix.segments.as_slice() {
+                    [
+                        Seg::Helix {
+                            frame,
+                            radius,
+                            pitch,
+                            start,
+                            sweep,
+                        },
+                    ] => json!({"helix": {
+                        "center": math::origin(frame), "axis": math::column(frame, 2),
+                        "x_axis": math::column(frame, 0), "radius": radius, "pitch": pitch,
+                        "start_angle": start, "end_angle": start + sweep}}),
+                    _ => {
+                        let (path_uid, curves) = self.path(directrix)?;
+                        json!({"sketch": path_uid.to_string(), "curves": curves})
+                    }
+                };
                 let start = directrix.start().ok_or("an empty directrix")?;
                 let tangent = start_tangent(directrix).ok_or("the directrix has no tangent")?;
                 let plane_normal = directrix
@@ -743,8 +790,7 @@ impl<'b, 'a> Builder<'b, 'a> {
                 let regions = sketch.regions.clone();
                 let s = self.sketch(sketch, "profile")?;
                 let mut def = json!({"type": "sweep", "profiles": Self::profiles(s, &regions),
-                    "path": {"sketch": path_uid.to_string(), "curves": curves},
-                    "orientation": "perpendicular"});
+                    "path": path, "orientation": "perpendicular"});
                 op.fields(&mut def);
                 let label = self.label.clone();
                 let uid = self.add(def, &label)?;
@@ -790,6 +836,7 @@ impl<'b, 'a> Builder<'b, 'a> {
                 }
                 Seg::Spline { poles, .. } => poles.iter_mut().for_each(|p| p[2] = 0.0),
                 Seg::Arc { frame, .. } | Seg::Ellipse { frame, .. } => frame[2][3] = 0.0,
+                Seg::Helix { .. } => return Err("a helix is not planar".to_owned()),
             }
         }
         let sketch = path_sketch(&plane, &local)?;
@@ -822,6 +869,20 @@ fn start_tangent(path: &Path) -> Option<[f64; 3]> {
                 .iter()
                 .skip(1)
                 .find_map(|p| math::normalize(math::sub(*p, p0)))
+        }
+        Seg::Helix {
+            frame,
+            radius,
+            pitch,
+            start,
+            sweep,
+        } => {
+            let d = [
+                -radius * start.sin(),
+                radius * start.cos(),
+                pitch / std::f64::consts::TAU,
+            ];
+            math::normalize(math::scale(math::apply_vector(frame, d), sweep.signum()))
         }
         other => {
             let pts = other.sample(1000);

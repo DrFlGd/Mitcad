@@ -58,6 +58,10 @@ struct Options {
     /// Every element as its saved mesh or box (no features).
     #[serde(default)]
     mesh_only: bool,
+    /// Only these elements of the project (by id; mitcad#385): the others
+    /// are left out. Empty: every element.
+    #[serde(default)]
+    elements: Vec<i64>,
 }
 
 fn file_name(path: &str) -> &str {
@@ -294,6 +298,18 @@ fn summary(report: &Value) -> String {
                 text += &format!("    {}\n", line.as_str().unwrap_or_default());
             }
         }
+        // The walls' openings (mitcad#345).
+        let missing: u64 = import["openings_missing"]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .filter_map(|(_, n)| n.as_u64())
+            .sum();
+        text += &format!(
+            "  walls' openings: {} cut, {missing} missing ({})\n",
+            import["openings_cut"],
+            counts(&import["openings_missing"]),
+        );
         text += &format!(
             "  {} level planes, {} grid axes, {} grid arcs, {} appearances\n",
             import["level_planes"], import["grid_axes"], import["grid_arcs"], import["appearances"]
@@ -373,8 +389,10 @@ pub(crate) fn rvt_write_test_file(path: &str, family: bool) -> Result<(), String
 
 /// The solids of an IFC export, by GlobalId: each product's volume and
 /// box (mm, the design's coordinates), imported with the kernel into a
-/// document of their own (its type's maps copied into each element).
-fn ifc_reference(path: &str) -> Result<mitcad_import::rvt::Reference, String> {
+/// document of their own (its type's maps copied into each element); and
+/// its openings by the GlobalIds of the elements filling them (mitcad#345,
+/// [`mitcad_import::rvt::reference_openings`]).
+fn ifc_reference(path: &str) -> Result<(mitcad_import::rvt::Reference, IfcOpenings), String> {
     use mitcad_ifc::{IfcFile, ReadOptions};
     let name = file_name(path).to_string();
     let file = IfcFile::open_with(Path::new(path), &ReadOptions::import())
@@ -440,8 +458,15 @@ fn ifc_reference(path: &str) -> Result<mitcad_import::rvt::Reference, String> {
             },
         );
     }
-    Ok(mitcad_import::rvt::Reference { file: name, solids })
+    let openings = mitcad_import::rvt::reference_openings(&file);
+    Ok((
+        mitcad_import::rvt::Reference { file: name, solids },
+        openings,
+    ))
 }
+
+/// An IFC export's openings' items by GlobalId (mitcad#345).
+type IfcOpenings = std::collections::HashMap<String, Vec<mitcad_ifc::geometry::Item>>;
 
 /// Where a link's file is: the file given for it, else next to the
 /// project (by its name, then by the path the project stores), else in
@@ -500,14 +525,22 @@ impl Document {
             }
             None => (None, false),
         };
-        let reference = match &reference_path {
-            Some(r) => Some(ifc_reference(r)?),
-            None => None,
+        let (reference, openings) = match &reference_path {
+            Some(r) => {
+                let (reference, openings) = ifc_reference(r)?;
+                (Some(reference), openings)
+            }
+            None => (None, IfcOpenings::new()),
         };
         let mut import_options = mitcad_import::rvt::RvtOptions {
             progress: Some(progress),
             reference: reference.as_ref(),
             mesh_only: options.mesh_only,
+            only: (!options.elements.is_empty())
+                .then(|| options.elements.iter().copied().collect()),
+            // The export's openings cut the inserts without a cut tool of
+            // their own (mitcad#345).
+            openings,
             ..Default::default()
         };
         for link in &model.building.links {

@@ -137,6 +137,10 @@ impl LinkResolver for Library {
             standard: "TP 1".to_owned(),
             license: "CC0-1.0".to_owned(),
             designation: String::new(),
+            supplier: None,
+            part_number: None,
+            supplier_url: None,
+            build: None,
         })
     }
 }

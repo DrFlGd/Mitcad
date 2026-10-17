@@ -6,11 +6,12 @@
 //! answer with `error` (`class`, `message`, `detail`) and `log`, as the
 //! remote commands give; other failures are errors.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use gix::ObjectId;
 use serde_json::{Value, json};
 
+use super::build::{self, Fit, Picker, System};
 use super::manifest::{
     ACCEPTED_LICENSES, IndexEntry, Manifest, ManifestComponent, license_note, matches, search_words,
 };
@@ -65,10 +66,11 @@ pub fn command(
         "library_search" => search(cache, &command)?,
         "library_preview" => preview(cache, &command)?,
         "library_diff" => diff(cache, &command)?,
-        "library_check" => publish::check_command(&command)?,
+        "library_check" => publish::check_command(&command, Some(cache))?,
         "library_init" => publish::init_command(&command)?,
         "library_add" => publish::add_command(&command)?,
         "index_entry" => publish::index_entry_command(&command)?,
+        "library_build_candidates" => build_candidates(cache, &command)?,
         other => return Err(invalid(format!("unknown library command '{other}'"))),
     };
     Ok(answer.to_string())
@@ -166,11 +168,33 @@ fn list(cache: &LibraryCache) -> Value {
     json!({"root": cache.root.to_string_lossy(), "libraries": libraries})
 }
 
-/// A component's design's configuration table at a commit, if it has one.
-fn component_table(repo: &LibraryRepo, commit: ObjectId, path: &str) -> Option<Configurations> {
+/// A component's design at a commit, as JSON.
+fn component_design(repo: &LibraryRepo, commit: ObjectId, path: &str) -> Option<Value> {
     let data = repo.read(commit, path).ok()??;
-    let value: Value = serde_json::from_slice(&data).ok()?;
-    serde_json::from_value(value.get("configurations")?.clone()).ok()
+    serde_json::from_slice(&data).ok()
+}
+
+/// A design's configuration table, if it has one. Row fields the table
+/// does not hold (a row's `part_number`, mitcad#375) are read apart, with
+/// [`build::rows`].
+fn design_table(design: &Value) -> Option<Configurations> {
+    let mut table = design.get("configurations")?.clone();
+    if let Some(rows) = table.get_mut("rows").and_then(Value::as_array_mut) {
+        for row in rows.iter_mut().filter_map(Value::as_object_mut) {
+            row.retain(|key, _| {
+                matches!(key.as_str(), "name" | "select" | "values" | "designation")
+            });
+        }
+    }
+    serde_json::from_value(table).ok()
+}
+
+/// A design's rows' own part numbers, by row.
+fn row_part_numbers(design: &Value) -> BTreeMap<String, String> {
+    build::rows(design)
+        .into_iter()
+        .filter_map(|row| Some((row.name, row.part_number?)))
+        .collect()
 }
 
 fn component_json(
@@ -193,14 +217,36 @@ fn component_json(
         "license_note": license.as_deref().and_then(license_note),
         "preview": !component.preview.is_empty(),
         "designation": component.designation,
+        "supplier": component.supplier,
+        "part_number": component.part_number,
+        "supplier_url": component.supplier_url,
+        "build": component.build,
     });
-    if tables && let Some(table) = component_table(repo, commit, &component.path) {
+    if tables
+        && let Some(design) = component_design(repo, commit, &component.path)
+        && let Some(table) = design_table(&design)
+    {
+        let own: BTreeMap<String, build::Row> = build::rows(&design)
+            .into_iter()
+            .map(|row| (row.name.clone(), row))
+            .collect();
         value["configurations"] = json!({
             "selectors": table.selectors,
             "selector_values": table.selector_values(),
             "default": table.default_row().map(|r| r.name.clone()),
-            "rows": table.rows.iter().map(|r| json!({"name": r.name, "select": r.select}))
-                .collect::<Vec<_>>(),
+            "rows": table.rows.iter().map(|r| {
+                let mut row = json!({"name": r.name, "select": r.select});
+                if let Some(number) = own.get(&r.name).and_then(|o| o.part_number.as_ref()) {
+                    row["part_number"] = json!(number);
+                }
+                if let Some(url) = own.get(&r.name).and_then(|o| o.supplier_url.as_ref()) {
+                    row["supplier_url"] = json!(url);
+                }
+                if let Some(designation) = &r.designation {
+                    row["designation"] = json!(designation);
+                }
+                row
+            }).collect::<Vec<_>>(),
         });
     }
     value
@@ -275,9 +321,87 @@ fn license_passes(
     }
 }
 
+/// The libraries a command limits itself to (`libraries`: ids or URLs).
+fn libraries_filter(command: &Value) -> Option<BTreeSet<String>> {
+    command.get("libraries").and_then(Value::as_array).map(|a| {
+        a.iter()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect()
+    })
+}
+
+/// What a command asks of BUILD parts: `role`, `system` (`{"type",
+/// "slot", "grid"}` or `B/8/30`), a linear part's `kind` and `size`.
+fn picker_fields(command: &Value) -> Result<Picker<'_>, VcsError> {
+    Ok(Picker {
+        role: optional(command, "role"),
+        system: command
+            .get("system")
+            .filter(|v| !v.is_null())
+            .map(System::from_value)
+            .transpose()
+            .map_err(invalid)?,
+        kind: optional(command, "kind"),
+        size: command.get("size").filter(|v| !v.is_null()),
+    })
+}
+
+/// The texts a component's search words match: its name, id, standard,
+/// description, category, supplier, part number, keywords and library.
+fn component_texts<'a>(manifest: &'a Manifest, c: &'a ManifestComponent) -> Vec<&'a str> {
+    let mut texts = vec![
+        c.name.as_str(),
+        c.id.as_str(),
+        c.standard.as_str(),
+        c.description.as_str(),
+        c.category.as_str(),
+        c.supplier.as_str(),
+        c.part_number.as_str(),
+        manifest.name.as_str(),
+        manifest.id.as_str(),
+    ];
+    texts.extend(c.keywords.iter().map(String::as_str));
+    texts
+}
+
+/// A found component with its library's fields.
+fn found_json(
+    repo: &LibraryRepo,
+    commit: ObjectId,
+    manifest: &Manifest,
+    c: &ManifestComponent,
+    url: &str,
+    version: &LibraryVersion,
+) -> Value {
+    let mut item = component_json(repo, commit, manifest, c, false);
+    item["library"] = json!(manifest.id);
+    item["library_name"] = json!(manifest.name);
+    item["url"] = json!(url);
+    item["rev"] = json!(version.rev);
+    item["version"] = json!(version.text());
+    item["authors"] = json!(manifest.authors);
+    item
+}
+
+/// Whether a component has `number` as its part number or one of its
+/// rows' (compared without case).
+fn has_part_number(
+    repo: &LibraryRepo,
+    commit: ObjectId,
+    c: &ManifestComponent,
+    number: &str,
+) -> bool {
+    let same = |other: &str| other.trim().eq_ignore_ascii_case(number.trim());
+    same(&c.part_number)
+        || component_design(repo, commit, &c.path)
+            .is_some_and(|design| row_part_numbers(&design).values().any(|n| same(n)))
+}
+
 /// `library_search`: the components of every fetched library (at its
 /// newest version) and the libraries the fetched indexes list, by words,
-/// licence and category. Items without a licence only with `unlicensed`.
+/// licence and category; BUILD parts also by `role`, `system`, `supplier`
+/// and `part_number`. Items without a licence only with `unlicensed`.
 fn search(cache: &LibraryCache, command: &Value) -> Result<Value, VcsError> {
     let words = search_words(optional(command, "text").unwrap_or(""));
     let filter = license_filter(command);
@@ -286,13 +410,11 @@ fn search(cache: &LibraryCache, command: &Value) -> Result<Value, VcsError> {
         .and_then(Value::as_bool)
         .unwrap_or(false);
     let category = optional(command, "category");
-    let only: Option<BTreeSet<String>> =
-        command.get("libraries").and_then(Value::as_array).map(|a| {
-            a.iter()
-                .filter_map(Value::as_str)
-                .map(str::to_owned)
-                .collect()
-        });
+    let only = libraries_filter(command);
+    let picker = picker_fields(command)?;
+    let supplier = optional(command, "supplier");
+    let part_number = optional(command, "part_number");
+    let build_only = !picker.is_empty();
     let mut components = Vec::new();
     let mut libraries = Vec::new();
     let mut fetched_ids = BTreeSet::new();
@@ -327,32 +449,23 @@ fn search(cache: &LibraryCache, command: &Value) -> Result<Value, VcsError> {
                     if category.is_some_and(|wanted| wanted != c.category) {
                         continue;
                     }
-                    let keywords: Vec<&str> = c.keywords.iter().map(String::as_str).collect();
-                    let mut texts = vec![
-                        c.name.as_str(),
-                        c.id.as_str(),
-                        c.standard.as_str(),
-                        c.description.as_str(),
-                        c.category.as_str(),
-                        manifest.name.as_str(),
-                        manifest.id.as_str(),
-                    ];
-                    texts.extend(keywords);
-                    if !matches(&words, &texts) {
+                    if build_only && !matches!(build::fit_picker(c, &picker), Fit::Fits(_)) {
+                        continue;
+                    }
+                    if supplier.is_some_and(|s| !c.supplier.trim().eq_ignore_ascii_case(s.trim())) {
+                        continue;
+                    }
+                    if !matches(&words, &component_texts(&manifest, c)) {
+                        continue;
+                    }
+                    if part_number.is_some_and(|n| !has_part_number(&repo, commit, c, n)) {
                         continue;
                     }
                     if !license_passes(license.as_deref(), &filter, unlicensed) {
                         hidden += 1;
                         continue;
                     }
-                    let mut item = component_json(&repo, commit, &manifest, c, false);
-                    item["library"] = json!(manifest.id);
-                    item["library_name"] = json!(manifest.name);
-                    item["url"] = json!(url);
-                    item["rev"] = json!(version.rev);
-                    item["version"] = json!(version.text());
-                    item["authors"] = json!(manifest.authors);
-                    components.push(item);
+                    components.push(found_json(&repo, commit, &manifest, c, &url, &version));
                 }
             }
             RepoKind::Index => indexes.push((repo, head, url)),
@@ -380,6 +493,90 @@ fn search(cache: &LibraryCache, command: &Value) -> Result<Value, VcsError> {
         }
     }
     Ok(json!({"components": components, "libraries": libraries, "hidden": hidden}))
+}
+
+/// `library_build_candidates` (mitcad#375): the BUILD parts of the fetched
+/// libraries (at their newest versions) that fit a junction of two
+/// profiles (a connector's `junctions`, `systems` and `space` against the
+/// junction's), or a picker's `role`, `system`, `kind` and `size`; best first, and apart
+/// the parts that nearly fit with the reason, for greyed rows.
+fn build_candidates(cache: &LibraryCache, command: &Value) -> Result<Value, VcsError> {
+    let junction = command.get("junction").filter(|j| j.is_object());
+    let picker = picker_fields(command)?;
+    if junction.is_none() && picker.role.is_none() {
+        return Err(invalid(
+            "library_build_candidates needs a junction, or a role (and a system, kind or size)              for a picker",
+        ));
+    }
+    let words = search_words(optional(command, "text").unwrap_or(""));
+    let filter = license_filter(command);
+    let unlicensed = command
+        .get("unlicensed")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let only = libraries_filter(command);
+    let mut fits: Vec<(u32, String, Value)> = Vec::new();
+    let mut refused = Vec::new();
+    let mut hidden = 0;
+    for dir in cache.repos() {
+        let Ok(repo) = LibraryRepo::open(&dir) else {
+            continue;
+        };
+        let Ok(Some(head)) = repo.head() else {
+            continue;
+        };
+        if repo.kind(head) != RepoKind::Library {
+            continue;
+        }
+        let Some(version) = repo.newest()? else {
+            continue;
+        };
+        let commit = repo.resolve(&version.rev)?;
+        let Ok(manifest) = repo.manifest(commit) else {
+            continue;
+        };
+        let url = repo.url().unwrap_or_default();
+        if only
+            .as_ref()
+            .is_some_and(|set| !set.contains(&manifest.id) && !set.contains(&url))
+        {
+            continue;
+        }
+        for c in &manifest.components {
+            let fit = match junction {
+                Some(junction) => build::fit_junction(c, junction),
+                None => build::fit_picker(c, &picker),
+            };
+            if fit == Fit::No || !matches(&words, &component_texts(&manifest, c)) {
+                continue;
+            }
+            if !license_passes(manifest.license_of(c).as_deref(), &filter, unlicensed) {
+                hidden += 1;
+                continue;
+            }
+            match fit {
+                Fit::Fits(score) => fits.push((
+                    score,
+                    c.name.to_lowercase(),
+                    found_json(&repo, commit, &manifest, c, &url, &version),
+                )),
+                // A greyed row: which part, and why.
+                Fit::Near(reason) => refused.push(json!({
+                    "id": c.id,
+                    "name": c.name,
+                    "library": manifest.id,
+                    "reason": reason,
+                })),
+                Fit::No => {}
+            }
+        }
+    }
+    fits.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    Ok(json!({
+        "components": fits.into_iter().map(|(_, _, item)| item).collect::<Vec<_>>(),
+        "refused": refused,
+        "hidden": hidden,
+    }))
 }
 
 fn entry_matches(entry: &IndexEntry, words: &[String]) -> bool {
@@ -702,11 +899,20 @@ pub fn describe(command: &str, answer: &str) -> Result<String, VcsError> {
                 }
             }
         }
-        "library_search" => {
+        "library_search" | "library_build_candidates" => {
+            let supplier = |c: &Value| {
+                let (who, number) = (s(&c["supplier"]), s(&c["part_number"]));
+                match (who.is_empty(), number.is_empty()) {
+                    (true, true) => String::new(),
+                    (false, true) => format!("  {who}"),
+                    (true, false) => format!("  {number}"),
+                    (false, false) => format!("  {who} {number}"),
+                }
+            };
             for c in answer["components"].as_array().into_iter().flatten() {
                 let _ = writeln!(
                     out,
-                    "{}/{}  {}{}  {}  {}",
+                    "{}/{}  {}{}{}  {}  {}",
                     s(&c["library"]),
                     s(&c["id"]),
                     s(&c["name"]),
@@ -715,8 +921,19 @@ pub fn describe(command: &str, answer: &str) -> Result<String, VcsError> {
                     } else {
                         format!(" ({})", s(&c["standard"]))
                     },
+                    supplier(c),
                     c["license"].as_str().unwrap_or("no licence"),
                     s(&c["version"])
+                );
+            }
+            for c in answer["refused"].as_array().into_iter().flatten() {
+                let _ = writeln!(
+                    out,
+                    "not {}/{}  {}: {}",
+                    s(&c["library"]),
+                    s(&c["id"]),
+                    s(&c["name"]),
+                    s(&c["reason"])
                 );
             }
             for l in answer["libraries"].as_array().into_iter().flatten() {

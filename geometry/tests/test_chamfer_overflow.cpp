@@ -23,6 +23,7 @@
 #include <BRepBuilderAPI_MakePolygon.hxx>
 #include <BRepBuilderAPI_MakeVertex.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
+#include <BRepBuilderAPI_Transform.hxx>
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepFilletAPI_MakeChamfer.hxx>
 #include <BRepFilletAPI_MakeFillet.hxx>
@@ -36,7 +37,9 @@
 #include <GProp_GProps.hxx>
 #include <Geom2d_Curve.hxx>
 #include <Geom_Curve.hxx>
+#include <Geom_BSplineCurve.hxx>
 #include <Geom_Surface.hxx>
+#include <NCollection_Array1.hxx>
 #include <NCollection_IndexedMap.hxx>
 #include <NCollection_List.hxx>
 #include <Standard_ErrorHandler.hxx>
@@ -1003,6 +1006,218 @@ void test_chamfer_consuming_a_strip_along_a_chain_of_edges(bool split, bool spli
 
 } // namespace
 
+// A post of radius 10 (z 10..30) on a square plate 30 wide (z 0..10); the
+// post's foot chamfered 6, so that the cone's contact on the plate (radius
+// 16) runs past the plate's sides around their middles, and the sides grow
+// up to the cone there (0142). The post's seam at `seam` degrees: inside a
+// side's gap (0, 10, 90) or where the contact lies on the plate (45). The
+// cone's piece over a gap holding the seam, the spine's start, ran across
+// it (patch 0481): the post's cylinder was kept whole, an invalid shape.
+// With the plate turned by `turn` radians (1e-8), the sides parallel to the
+// seam's direction are so nearly parallel to it that the cone meets them in
+// hyperbolas crossing the seam far away twice, and the surfaces'
+// intersection kept only a piece of no length between those crossings
+// (patch 0480): the chamfer failed. The ring of the chamfer (legs 6 from
+// radius 10) less the parts beyond the four sides, each the integral over
+// the cone's radius R from 15 to 16 of the circular segment beyond the side.
+void test_chamfer_of_a_post_beyond_a_square_plate(double seam, double turn) {
+  TopoDS_Shape plate = BRepPrimAPI_MakeBox(gp_Pnt(-15, -15, 0), gp_Pnt(15, 15, 10)).Shape();
+  if (turn != 0.0) {
+    gp_Trsf rotation;
+    rotation.SetRotation(gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)), turn);
+    plate = BRepBuilderAPI_Transform(plate, rotation, true).Shape();
+  }
+  const double a = seam * kPi / 180.0;
+  const TopoDS_Shape post =
+      BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(0, 0, 10), gp_Dir(0, 0, 1), gp_Dir(std::cos(a), std::sin(a), 0)), 10.0, 20.0)
+          .Shape();
+  const TopoDS_Shape body = fuse(plate, post);
+  const std::vector<TopoDS_Edge> foot = edges_where(body, [](const gp_Pnt& p) {
+    return std::abs(p.Z() - 10.0) < 1e-6 && std::abs(std::hypot(p.X(), p.Y()) - 10.0) < 1e-6;
+  });
+  CHECK(foot.size() == 1u);
+  const TopoDS_Shape result = chamfered(body, foot, 6.0);
+  CHECK(!result.IsNull());
+  if (result.IsNull()) {
+    return;
+  }
+  CHECK(BRepCheck_Analyzer(result).IsValid());
+  CHECK(pcurves_fit(result));
+  const double ring = kPi * 36.0 * (10.0 + 6.0 / 3.0);
+  double beyond = 0.0;
+  const int n = 2000;
+  for (int i = 0; i <= n; ++i) {
+    const double r = 15.0 + 1.0 * i / n;
+    const double segment = r * r * std::acos(15.0 / r) - 15.0 * std::sqrt(std::max(0.0, r * r - 225.0));
+    beyond += (i == 0 || i == n ? 1.0 : (i % 2 == 1 ? 4.0 : 2.0)) * segment;
+  }
+  beyond *= 4.0 / n / 3.0;
+  CHECK_NEAR_TOL(exact_volume_of(result) - exact_volume_of(body), ring - beyond, 1e-8);
+}
+
+// A fin 1 thick (x in [-0.5, 0.5]) on a plate, its tip a cubic B-spline
+// profile (y in [-4, 4], 3.64 high at the ends, flat there, dipping to
+// `dip` in the middle) extruded along x, the foot of its side x = 0.5
+// chamfered 2.6 up the side and 2 along the plate. The strip of the side
+// between that chamfer and the tip is 1.04 high at the ends and narrower in
+// the middle than the tip's chamfer of 0.6 (`by_angle`: 0.6 on the side at
+// 45 degrees) along the side's tip edge (patch 0531). The material the
+// chamfer takes away is its section's triangle less the part inside the
+// foot's chamfer extended (z <= 2.6 - 1.3 (x - 0.5)): where the strip is
+// wider, the chamfer as usual; in the middle no chamfer face, the foot's
+// chamfer running on up to the tip; between them the chamfer cut by the
+// foot's plane across its width. Its volume: the clipped triangles of the
+// sections square to the edge, swept along it with the edge's curvature
+// (Pappus). Before, the walk reached the strip's far edge and would roll on
+// it, which chamfers do not ("PerformSurf Not Implemented").
+void test_chamfer_wider_than_a_fin_side_strip(double dip, bool by_angle) {
+  const double high = 3.64;
+  NCollection_Array1<gp_Pnt> poles(1, 6);
+  poles(1) = gp_Pnt(-0.5, -4, high);
+  poles(2) = gp_Pnt(-0.5, -2.5, high);
+  poles(3) = gp_Pnt(-0.5, -1, dip);
+  poles(4) = gp_Pnt(-0.5, 1, dip);
+  poles(5) = gp_Pnt(-0.5, 2.5, high);
+  poles(6) = gp_Pnt(-0.5, 4, high);
+  NCollection_Array1<double> knots(1, 4);
+  NCollection_Array1<int> mults(1, 4);
+  for (int i = 1; i <= 4; ++i) {
+    knots(i) = i - 1;
+    mults(i) = i == 1 || i == 4 ? 4 : 1;
+  }
+  const occ::handle<Geom_BSplineCurve> tip = new Geom_BSplineCurve(poles, knots, mults, 3);
+  BRepBuilderAPI_MakeWire wire;
+  wire.Add(BRepBuilderAPI_MakeEdge(gp_Pnt(-0.5, -4, -1), gp_Pnt(-0.5, 4, -1)).Edge());
+  wire.Add(BRepBuilderAPI_MakeEdge(gp_Pnt(-0.5, 4, -1), gp_Pnt(-0.5, 4, high)).Edge());
+  wire.Add(TopoDS::Edge(BRepBuilderAPI_MakeEdge(tip).Edge().Reversed()));
+  wire.Add(BRepBuilderAPI_MakeEdge(gp_Pnt(-0.5, -4, high), gp_Pnt(-0.5, -4, -1)).Edge());
+  const TopoDS_Shape fin =
+      BRepPrimAPI_MakePrism(BRepBuilderAPI_MakeFace(wire.Wire(), true).Face(), gp_Vec(1, 0, 0)).Shape();
+  TopoDS_Shape body = fuse(BRepPrimAPI_MakeBox(gp_Pnt(-10, -10, -5), gp_Pnt(10, 10, 0)).Shape(), fin);
+  TopoDS_Face side;
+  for (TopExp_Explorer ex(body, TopAbs_FACE); ex.More(); ex.Next()) {
+    BRepAdaptor_Surface surface(TopoDS::Face(ex.Current()));
+    if (surface.GetType() == GeomAbs_Plane && std::abs(std::abs(surface.Plane().Axis().Direction().X()) - 1) < 1e-9 &&
+        std::abs(surface.Plane().Location().X() - 0.5) < 1e-9) {
+      side = TopoDS::Face(ex.Current());
+    }
+  }
+  CHECK(!side.IsNull());
+  const std::vector<TopoDS_Edge> foot = edges_where(body, [](const gp_Pnt& p) {
+    return std::abs(p.X() - 0.5) < 1e-6 && std::abs(p.Z()) < 1e-6;
+  });
+  CHECK(foot.size() == 1u);
+  if (side.IsNull() || foot.size() != 1u) {
+    return;
+  }
+  BRepFilletAPI_MakeChamfer foot_chamfer(body);
+  foot_chamfer.Add(2.6, 2.0, foot.front(), side);
+  foot_chamfer.Build();
+  CHECK(foot_chamfer.IsDone());
+  if (!foot_chamfer.IsDone()) {
+    return;
+  }
+  body = foot_chamfer.Shape();
+  const std::vector<TopoDS_Edge> top = edges_where(body, [](const gp_Pnt& p) {
+    return std::abs(p.X() - 0.5) < 1e-6 && p.Z() > 2.65;
+  });
+  std::vector<TopoDS_Edge> tip_edge;
+  for (const TopoDS_Edge& edge : top) {
+    if (BRepAdaptor_Curve(edge).GetType() != GeomAbs_Line) {
+      tip_edge.push_back(edge);
+    }
+  }
+  CHECK(tip_edge.size() == 1u);
+  if (tip_edge.size() != 1u) {
+    return;
+  }
+  TopoDS_Shape result;
+  if (by_angle) {
+    TopoDS_Face wall;
+    for (TopExp_Explorer ex(body, TopAbs_FACE); ex.More(); ex.Next()) {
+      BRepAdaptor_Surface surface(TopoDS::Face(ex.Current()));
+      if (surface.GetType() == GeomAbs_Plane &&
+          std::abs(std::abs(surface.Plane().Axis().Direction().X()) - 1) < 1e-9 &&
+          std::abs(surface.Plane().Location().X() - 0.5) < 1e-9) {
+        wall = TopoDS::Face(ex.Current());
+      }
+    }
+    BRepFilletAPI_MakeChamfer maker(body);
+    maker.AddDA(0.6, kPi / 4.0, tip_edge.front(), wall);
+    try {
+      OCC_CATCH_SIGNALS
+      maker.Build();
+    } catch (const Standard_Failure& failure) {
+      std::fprintf(stderr, "chamfer overflow test: %s\n", failure.what());
+    }
+    if (maker.IsDone()) {
+      result = maker.Shape();
+    }
+  } else {
+    result = chamfered(body, tip_edge, 0.6);
+  }
+  CHECK(!result.IsNull());
+  if (result.IsNull()) {
+    return;
+  }
+  CHECK(BRepCheck_Analyzer(result).IsValid());
+  CHECK(pcurves_fit(result));
+  // The sections square to the edge E(u) = (0.5, tip(u)): the triangle of
+  // legs 0.6 along -x (on the tip) and m (in the side, square to the edge,
+  // downward), less its part inside the foot's chamfer extended.
+  const auto removed = [](const gp_Pnt& E, const gp_Vec& m, double& cu, double& cw) {
+    const auto f = [&](double u, double w) {
+      const gp_Pnt P = E.Translated(gp_Vec(-u, 0, 0) + m * w);
+      return P.Z() - (2.6 - 1.3 * (P.X() - 0.5));
+    };
+    const std::pair<double, double> corners[3] = {{0, 0}, {0.6, 0}, {0, 0.6}};
+    std::vector<std::pair<double, double>> kept;
+    for (int i = 0; i < 3; ++i) {
+      const auto a = corners[i], b = corners[(i + 1) % 3];
+      const double fa = f(a.first, a.second), fb = f(b.first, b.second);
+      if (fa >= 0) {
+        kept.push_back(a);
+      }
+      if ((fa >= 0) != (fb >= 0)) {
+        const double t = fa / (fa - fb);
+        kept.push_back({a.first + t * (b.first - a.first), a.second + t * (b.second - a.second)});
+      }
+    }
+    double area = 0.0, sx = 0.0, sy = 0.0;
+    for (std::size_t i = 0; i < kept.size(); ++i) {
+      const auto a = kept[i], b = kept[(i + 1) % kept.size()];
+      const double cross = a.first * b.second - b.first * a.second;
+      area += 0.5 * cross;
+      sx += (a.first + b.first) * cross;
+      sy += (a.second + b.second) * cross;
+    }
+    cu = area != 0.0 ? sx / (6.0 * area) : 0.0;
+    cw = area != 0.0 ? sy / (6.0 * area) : 0.0;
+    return std::abs(area);
+  };
+  const int n = 6000;
+  double expected = 0.0;
+  for (int i = 0; i <= n; ++i) {
+    const double u = 3.0 * i / n;
+    gp_Pnt E;
+    gp_Vec d1, d2;
+    tip->D2(u, E, d1, d2);
+    E.SetX(0.5);
+    const gp_Vec t = d1.Normalized();
+    gp_Vec m = gp_Vec(1, 0, 0).Crossed(t);
+    if (m.Z() > 0) {
+      m.Reverse();
+    }
+    double cu = 0.0, cw = 0.0;
+    const double area = removed(E, m, cu, cw);
+    const gp_Vec curvature = (d2 - t * d2.Dot(t)) / d1.SquareMagnitude();
+    const double weight = (i == 0 || i == n) ? 1.0 : (i % 2 == 1 ? 4.0 : 2.0);
+    expected += weight / 3.0 * area * (1.0 - curvature.Dot(gp_Vec(-cu, 0, 0) + m * cw)) * d1.Magnitude() * 3.0 / n;
+  }
+  // (The chamfer's surface is walked: within its approximation.)
+  CHECK_NEAR_TOL(exact_volume_of(body) - exact_volume_of(result), expected, 1e-4);
+}
+
 void chamfer_overflow_tests() {
   guarded("test_chamfer_as_wide_as_a_step_ring", test_chamfer_as_wide_as_a_step_ring);
   // (The lug's ends away from the bore's seam, its end and its start on it.)
@@ -1065,6 +1280,24 @@ void chamfer_overflow_tests() {
             [&, split = split, split_side = split_side, fillet = fillet] {
               test_chamfer_consuming_a_strip_along_a_chain_of_edges(split, split_side, fillet);
             });
+  }
+  // (seam in degrees, the plate's turn in radians)
+  for (const auto& [seam, turn] : {std::pair<double, double>{0.0, 0.0},
+                                   {10.0, 0.0},
+                                   {90.0, 0.0},
+                                   {45.0, 0.0},
+                                   {0.0, 1e-8},
+                                   {90.0, 1e-8}}) {
+    guarded("test_chamfer_of_a_post_beyond_a_square_plate", [&, seam = seam, turn = turn] {
+      test_chamfer_of_a_post_beyond_a_square_plate(seam, turn);
+    });
+  }
+  // (the tip's dip, the chamfer by distance and angle)
+  for (const double dip : {2.8, 2.6}) {
+    for (const bool by_angle : {false, true}) {
+      guarded("test_chamfer_wider_than_a_fin_side_strip",
+              [&] { test_chamfer_wider_than_a_fin_side_strip(dip, by_angle); });
+    }
   }
 }
 

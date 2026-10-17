@@ -426,7 +426,9 @@ impl<K: crate::ImportKernel> crate::Importer<'_, K> {
     /// `current`), is taken by the volume it adds or removes (`own`, the
     /// file's change for it, against its state `target`): within
     /// [`history::UNSETTLED`] of the file's change it is, beyond
-    /// [`history::DIFFERENT`] it is not; between them its faces decide
+    /// [`history::DIFFERENT`] it is not (unless the changed faces' slack
+    /// brings it within, [`crate::Importer::changed_faces`]); between them
+    /// its faces decide
     /// ([`crate::Importer::geometric`], with the replay's bodies `before` it
     /// and the file's `states`), and where they cannot be asked, the
     /// volumes within [`history::CHANGE`]. Err: why it is not.
@@ -446,21 +448,32 @@ impl<K: crate::ImportKernel> crate::Importer<'_, K> {
         if o <= history::UNSETTLED {
             return Ok(Taken { off, faces: None });
         }
-        if o > history::DIFFERENT {
-            return Err(crate::changes_otherwise(&change, current));
-        }
         // How far its change is from the file's: as the faces each side
         // changed bound them, where the kernel tells (a face the change
         // left alone then adds none of its integration's noise: a loft's
         // spline face came out 0.3 mm³ different in two measures of one
         // shape, mitcad#235), less what the changed faces' edge tolerances
         // leave open; else by the bodies' volumes.
-        let volume = states
-            .and_then(|s| self.changed_faces(name, before, s))
-            .map_or_else(
-                || change.difference_volume(current),
-                |(ours, theirs, slack)| ((ours - theirs).abs() - slack).max(0.0),
-            );
+        let changed = states.and_then(|s| self.changed_faces(name, before, s));
+        let volume = changed.map_or_else(
+            || change.difference_volume(current),
+            |(ours, theirs, slack)| ((ours - theirs).abs() - slack).max(0.0),
+        );
+        // Beyond DIFFERENT by the bodies' volumes, unless the changed faces'
+        // edge tolerances leave the volumes that open: a stored rounding is
+        // the file's approximation of its surface, its edges up to their
+        // tolerance off its faces, and a boundary not closed by that much
+        // has no exact volume (a rounding of a thread's crest whose edges
+        // lie 2 um off its faces: its state removes 25.23 mm³ where the
+        // rolling ball of its radius removes 20.6; a corner rounding of
+        // 0.11 mm³ in the file, 0.14 in the replay, its faces' slack
+        // 100 mm³, mitcad#235). The faces then decide.
+        let open = changed.is_some_and(|(ours, theirs, _)| {
+            volume <= history::DIFFERENT * ours.abs().max(theirs.abs())
+        });
+        if o > history::DIFFERENT && !open {
+            return Err(crate::changes_otherwise(&change, current));
+        }
         let verdict = states.and_then(|s| self.geometric(name, before, s, volume));
         match verdict {
             Some(Verdict::Agrees(why)) => Ok(Taken {

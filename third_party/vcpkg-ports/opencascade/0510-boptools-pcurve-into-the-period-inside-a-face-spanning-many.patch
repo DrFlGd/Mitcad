@@ -1,0 +1,121 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+BOPTools_AlgoTools2D: a curve's pcurve on a face whose parameter range
+spans many periods is put into the copy of the period inside the face
+(mitcad#349).
+
+AdjustPCurveOnSurf moves a new pcurve (a section edge's, or an edge's
+taken over onto a face) by whole periods of a periodic surface into the
+face's parameter range: first into the period at the range's start
+(GeomInt::AdjustPeriodic), then, when the range is longer than a period
+and the classifier finds the curve's middle outside the face, by one
+period up or down. A stored body can keep a threaded hole's minor and
+major cylinders as one face each between helices running tens of turns:
+the face's u range spans 32 periods and, at a given height, only one of
+those copies of an angle lies inside the face. A box cutting the thread
+got its section curves on the cylinders in the first period or the one
+next to it, outside the face; the face's split took them for curves
+outside it, the cut's result was invalid and its volume wrong.
+
+When the curve's middle is outside the face, each other copy of it by
+whole periods within the face's range is now classified, and the curve
+is moved into the first one inside the face. Only when none is inside
+does the shift by one period remain as before. Faces whose range spans
+at most one period, and curves already inside, are not affected.
+
+--- a/src/ModelingAlgorithms/TKBO/BOPTools/BOPTools_AlgoTools2D.cxx
++++ b/src/ModelingAlgorithms/TKBO/BOPTools/BOPTools_AlgoTools2D.cxx
+@@ -41,10 +41,56 @@
+ #include <TopoDS_Edge.hxx>
+ #include <TopoDS_Face.hxx>
+ 
++#include <cmath>
++
+ static double MaxToleranceEdge(const TopoDS_Face&);
+ 
+ //=================================================================================================
+ 
++// Mitcad (mitcad#349): the shift by whole periods (other than none) that
++// puts the point (theU, theV) inside a face whose parameter range in that
++// direction (theMin to theMax) spans more than one period, such as a
++// thread's cylinder between helices running many turns; false when no copy
++// of the point in the range is inside it.
++static bool ShiftIntoFace(const TopoDS_Face& theF,
++                          const double       theU,
++                          const double       theV,
++                          const bool         theAlongU,
++                          const double       theMin,
++                          const double       theMax,
++                          const double       thePeriod,
++                          const double       theDelta,
++                          double&            theShift)
++{
++  const double aValue = theAlongU ? theU : theV;
++  const double aFirst = std::ceil((theMin - theDelta - aValue) / thePeriod);
++  const double aLast  = std::floor((theMax + theDelta - aValue) / thePeriod);
++  if (aLast - aFirst > 1000.)
++  {
++    return false;
++  }
++  BRepClass_FaceClassifier aClassifier;
++  for (double k = aFirst; k <= aLast; k += 1.)
++  {
++    if (k == 0.)
++    {
++      continue;
++    }
++    const double aShift = k * thePeriod;
++    aClassifier.Perform(theF,
++                        theAlongU ? gp_Pnt2d(theU + aShift, theV) : gp_Pnt2d(theU, theV + aShift),
++                        theDelta);
++    if (aClassifier.State() == TopAbs_IN)
++    {
++      theShift = aShift;
++      return true;
++    }
++  }
++  return false;
++}
++
++//=================================================================================================
++
+ void BOPTools_AlgoTools2D::BuildPCurveForEdgeOnFace(const TopoDS_Edge&                   aE,
+                                                     const TopoDS_Face&                   aF,
+                                                     const occ::handle<IntTools_Context>& theContext)
+@@ -360,7 +406,17 @@
+           TopAbs_State Status = aClassifier.State();
+           if (Status == TopAbs_OUT)
+           {
+-            du += (u > (UMin + aDelta + aUPeriod)) ? -aUPeriod : aUPeriod;
++            // A face spanning many periods: the copy inside it, which may
++            // be more than one period away (mitcad#349).
++            double aShift = 0.;
++            if (ShiftIntoFace(aF, u, v, true, UMin, UMax, aUPeriod, aDelta, aShift))
++            {
++              du += aShift;
++            }
++            else
++            {
++              du += (u > (UMin + aDelta + aUPeriod)) ? -aUPeriod : aUPeriod;
++            }
+           }
+         }
+       }
+@@ -379,7 +435,15 @@
+           TopAbs_State Status = aClassifier.State();
+           if (Status == TopAbs_OUT)
+           {
+-            dv += (v > (VMin + aDelta + aVPeriod)) ? -aVPeriod : aVPeriod;
++            double aShift = 0.;
++            if (ShiftIntoFace(aF, u, v, false, VMin, VMax, aVPeriod, aDelta, aShift))
++            {
++              dv += aShift;
++            }
++            else
++            {
++              dv += (v > (VMin + aDelta + aVPeriod)) ? -aVPeriod : aVPeriod;
++            }
+           }
+         }
+       }

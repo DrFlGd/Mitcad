@@ -14,8 +14,11 @@
 //!   type (`m_WallAttributesId`, its `CompoundStructure` layers), the joins
 //!   at the two ends (`m_controlJoinsSet`: per end, the joined walls in
 //!   order; the first one extends to the far face of the others), the
-//!   walls joining its sides (`m_sideJoins`), and the elements cutting it
-//!   (`CutPairGStep.m_otherId` of its geometry steps).
+//!   walls joining its sides (`m_sideJoins`), the elements cutting it
+//!   (`CutPairGStep.m_otherId` of its geometry steps), and its top and base
+//!   attachments (`JoinToRoofGStep`: `m_ids`, `m_baseOrTop`, mitcad#348).
+//! - **Reference planes** (`RefPlane`: `m_pSurface`, `m_text`), which walls
+//!   attach to.
 //! - **Floors and roofs** (`Floor`, `Roof`, ...): the curve loops of their
 //!   extrusion helper cell (`FloorExtrusionHelper`, `RoofExtrusionHelper`:
 //!   `m_pCurveLoops`, at the top of the slab), the top and bottom
@@ -29,7 +32,11 @@
 //! - **Family types** (`FamilySymbol`): the parameters (`m_pParams` →
 //!   `NamedParam`: id, value), the cut loops an insert cuts its host with
 //!   (`m_pCutLoops`, in the type's coordinates) and their direction
-//!   (`m_cutDirs`), and the geometry's materials (`m_geomTag2MaterialId`).
+//!   (`m_cutDirs`), else its void geometry (`m_complexCutGeoms`, B-reps,
+//!   mitcad#345), and the geometry's materials (`m_geomTag2MaterialId`).
+//! - **Openings** (`Opening`, `SWallRectOpening`, `ShaftOpening`): the
+//!   host, the loops, a rectangular wall opening's corners
+//!   (`m_oRectOpeningData` → `m_aPoint`, mitcad#345).
 //! - **Parameter names**: a family parameter's element
 //!   (`ParamElemFamily`, ...) → `m_pParamDef` → `m_caption`.
 //! - **Grids** (`Grid`): the name (`m_text`) and the vertical surface its
@@ -62,6 +69,30 @@ pub enum Curve {
         x_axis: P3,
         y_axis: P3,
         radius: f64,
+        start: f64,
+        end: f64,
+    },
+    /// An elliptical arc (`GEllipse`, mitcad#340): `center + rx cos t x_axis
+    /// + ry sin t y_axis` for t from `start` to `end` (`end > start`).
+    Ellipse {
+        center: P3,
+        x_axis: P3,
+        y_axis: P3,
+        rx: f64,
+        ry: f64,
+        start: f64,
+        end: f64,
+    },
+    /// A helix (`GCylindricalHelix`, mitcad#385): `center + radius (cos t
+    /// x_axis + sin t y_axis) + rise t z_axis` for t from `start` to `end`
+    /// (`end > start`; `rise` per radian, `m_pitchOver2PI`).
+    Helix {
+        center: P3,
+        x_axis: P3,
+        y_axis: P3,
+        z_axis: P3,
+        radius: f64,
+        rise: f64,
         start: f64,
         end: f64,
     },
@@ -109,6 +140,43 @@ impl Curve {
                     ),
                 )
             }
+            Curve::Ellipse {
+                center,
+                x_axis,
+                y_axis,
+                rx,
+                ry,
+                start,
+                end,
+            } => {
+                let t = start + (end - start) * f;
+                add(
+                    *center,
+                    add(scale(*x_axis, rx * t.cos()), scale(*y_axis, ry * t.sin())),
+                )
+            }
+            Curve::Helix {
+                center,
+                x_axis,
+                y_axis,
+                z_axis,
+                radius,
+                rise,
+                start,
+                end,
+            } => {
+                let t = start + (end - start) * f;
+                add(
+                    *center,
+                    add(
+                        add(
+                            scale(*x_axis, radius * t.cos()),
+                            scale(*y_axis, radius * t.sin()),
+                        ),
+                        scale(*z_axis, rise * t),
+                    ),
+                )
+            }
         }
     }
 
@@ -129,6 +197,20 @@ impl Curve {
             Curve::Arc {
                 radius, start, end, ..
             } => radius * (end - start),
+            Curve::Helix {
+                radius,
+                rise,
+                start,
+                end,
+                ..
+            } => radius.hypot(*rise) * (end - start),
+            // (Summed over chords: a length to compare, not a measure.)
+            Curve::Ellipse { .. } => (0..64)
+                .map(|k| {
+                    let (a, b) = (self.at(k as f64 / 64.0), self.at((k + 1) as f64 / 64.0));
+                    ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2) + (b[2] - a[2]).powi(2)).sqrt()
+                })
+                .sum(),
         }
     }
 
@@ -151,6 +233,42 @@ impl Curve {
                 x_axis: turn(t, *x_axis),
                 y_axis: turn(t, *y_axis),
                 radius: *radius,
+                start: *start,
+                end: *end,
+            },
+            Curve::Ellipse {
+                center,
+                x_axis,
+                y_axis,
+                rx,
+                ry,
+                start,
+                end,
+            } => Curve::Ellipse {
+                center: apply(t, *center),
+                x_axis: turn(t, *x_axis),
+                y_axis: turn(t, *y_axis),
+                rx: *rx,
+                ry: *ry,
+                start: *start,
+                end: *end,
+            },
+            Curve::Helix {
+                center,
+                x_axis,
+                y_axis,
+                z_axis,
+                radius,
+                rise,
+                start,
+                end,
+            } => Curve::Helix {
+                center: apply(t, *center),
+                x_axis: turn(t, *x_axis),
+                y_axis: turn(t, *y_axis),
+                z_axis: turn(t, *z_axis),
+                radius: *radius,
+                rise: *rise,
                 start: *start,
                 end: *end,
             },
@@ -222,6 +340,28 @@ pub struct Wall {
     /// An edited profile: the loops of its extrusion helper cell
     /// (`VWallExtrusionHelper.m_pCurveLoops`), in the wall's vertical plane.
     pub profile: Vec<Vec<Curve>>,
+    /// Its top and base attached to other elements (mitcad#348).
+    pub attachments: Vec<Attachment>,
+}
+
+/// A wall's top or base attached to roofs, floors, ceilings or reference
+/// planes (mitcad#348): a `JoinToRoofGStep` of its geometry steps
+/// (`m_baseOrTop`: 1 its top, 0 its base; `m_ids`: the elements). The
+/// attached end follows the elements' surface (a top their lower one, a
+/// base their upper one), below or above the wall's own top or base.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Attachment {
+    pub top: bool,
+    pub elements: Vec<i64>,
+}
+
+/// A reference plane (`RefPlane`, mitcad#348): its plane (`m_pSurface`)
+/// and name (`m_text`).
+#[derive(Debug, Clone, Serialize)]
+pub struct RefPlane {
+    pub id: i64,
+    pub name: String,
+    pub plane: Plane,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -299,12 +439,24 @@ pub struct Symbol {
     /// and the directions it cuts in.
     pub cut_loops: Vec<Vec<Curve>>,
     pub cut_dirs: Vec<P3>,
+    /// The void geometry an insert cuts its host with when it has no cut
+    /// loops (`m_complexCutGeoms`: B-reps in the type's coordinates,
+    /// mitcad#345), and what of it did not read.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub cut_solids: Vec<crate::brep::Solid>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub cut_notes: Vec<String>,
     /// Its geometry's materials.
     pub materials: Vec<i64>,
     /// A curtain mullion's own symbol: its profile and path (mitcad#333).
     pub mullion: Option<MullionSym>,
     /// A curtain panel's own symbol: its cell and thickness.
     pub panel: Option<PanelSym>,
+    /// A profile family type's own profile (`m_arrProfileLoops`, in the
+    /// family's xy plane, feet; mitcad#340): the family's curves at the
+    /// type's dimensions.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub profile_loops: Vec<Vec<Curve>>,
 }
 
 /// A curtain mullion's own symbol (`SysMullionFamSym` with a
@@ -327,6 +479,31 @@ pub struct MullionSym {
     pub path: Option<Curve>,
     pub normal: P3,
     pub flags: u64,
+    /// A V (corner) mullion's two legs (-1007354, -1007355) and the
+    /// angles they run at (`m_cornerAngles`, from `normal × path` towards
+    /// `normal`; mitcad#340).
+    pub legs: [f64; 2],
+    pub corner_angles: [f64; 2],
+    /// How its ends are trimmed to the mullions there (`m_trimEnd0`,
+    /// `m_trimEnd1`: `MullionTrimNeighbor`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub trims: Vec<MullionTrim>,
+}
+
+/// How a mullion's end meets a neighbouring mullion (`MullionTrimNeighbor`,
+/// mitcad#385): the neighbour's path (`m_trimPath`, its first curve, in the
+/// trimmed mullion's symbol's coordinates), `m_flags` (1: the end stops at
+/// the neighbour's side; 2: the two meet in a mitre), the neighbour's type
+/// (`m_nbrSymbolId`) and the normal its thickness runs along
+/// (`m_trimPathNorm`).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct MullionTrim {
+    /// 0 the path's start, 1 its end.
+    pub end: u8,
+    pub path: Curve,
+    pub flags: u64,
+    pub neighbour: Option<i64>,
+    pub normal: P3,
 }
 
 /// A curtain panel's own symbol (`SysPanelFamSym` with a
@@ -382,13 +559,34 @@ pub struct StairRun {
     pub start: Option<Curve>,
     pub end: Option<Curve>,
     pub support: Option<Curve>,
+    /// A spiral run (its record holds a `StairsSpiralRunCell`, mitcad#340):
+    /// its risers turn about its centre.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub spiral: bool,
+    /// A spiral run's layout (mitcad#385), when it reads.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub layout: Option<SpiralLayout>,
+}
+
+/// A spiral run's layout (mitcad#385): its centre and its inner and outer
+/// radii (the first `StairsRunInfo`: `m_origin`, the radii of
+/// `m_bndBox`'s corners) and its riser lines in plan, at its bottom
+/// (`m_compatibleCrvInfo.m_orderedRisers` → `m_pRiserCurve`), the first
+/// the start riser's.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct SpiralLayout {
+    pub center: P3,
+    pub radii: [f64; 2],
+    pub risers: Vec<Curve>,
 }
 
 /// A stair run's or landing's type's parts (`StairsRunType`,
 /// `StairsLandingType`, mitcad#333): treads and risers (`m_hasTread`,
 /// `m_hasRiser`; their thicknesses `m_treadThickness`, `m_riserThickness`;
 /// the treads reach `m_nosingLength` over the riser below), a landing's
-/// thickness (`m_thickness`) and whether it is monolithic.
+/// thickness (`m_thickness`) and whether it is monolithic; a run type's
+/// nosing profile (`m_nosingProfileTypeId`, a profile family type,
+/// mitcad#385).
 #[derive(Debug, Clone, Copy, Default, Serialize)]
 pub struct StairParts {
     pub monolithic: bool,
@@ -396,6 +594,8 @@ pub struct StairParts {
     pub riser: Option<f64>,
     pub nosing: f64,
     pub thickness: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nosing_profile: Option<i64>,
 }
 
 /// A stair landing (`StairsLanding`, mitcad#333): its boundary
@@ -421,6 +621,11 @@ pub struct Sweep {
     pub id: i64,
     pub class: String,
     pub paths: Vec<Vec<Curve>>,
+    /// A wall sweep's paths' sides (`WallSweepCurveGStep.m_side`, one per path,
+    /// mitcad#340): 0 its profile's x across the path to the left of it
+    /// (up × the path's direction), 1 mirrored to the right.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub sides: Vec<u32>,
     pub path3d: Option<i64>,
     /// The profile family's type, else the type that names one.
     pub profile: Option<i64>,
@@ -429,10 +634,45 @@ pub struct Sweep {
     pub up: Option<P3>,
     /// Offsets across and up (feet).
     pub offsets: [f64; 2],
+    /// A slab edge's `m_flipped`; a wall sweep's `WallSweepInfo.m_flipped`
+    /// (mitcad#340: its profile's y mirrored, hanging down from its path).
     pub flipped: bool,
     /// A wall sweep's wall (`WallSweepCurveGStep.m_hostId`): its path runs
     /// along the wall's location line, its profile at a face.
     pub host: Option<i64>,
+    /// The elements whose geometry cuts it (`CutPairGStep`, mitcad#385:
+    /// copings joined to the copings they meet).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub cut_by: Vec<i64>,
+    /// A wall sweep's returns at its paths' free ends (mitcad#385).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub returns: Vec<SweepReturn>,
+    /// The wall sweeps its paths' ends meet (mitcad#385:
+    /// `WallSweepCurveGStep.m_joinedSweeps`, each a `TagEnd` with its end
+    /// `m_end` and an `EndInfo` naming the other sweep, `m_elemId`): the
+    /// path, its end (0, 1) and the other sweep.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub joined: Vec<(usize, u8, i64)>,
+}
+
+/// A wall sweep's return at an end of one of its paths (mitcad#385):
+/// `WallSweepCurveGStep.m_pullBackParam0` (at starts) and
+/// `m_pullBackParam1` (at ends) hold `PullBack`s (`m_end`: the wall's end
+/// pulled back from, or 0xffffffff where an opening in the wall breaks the
+/// path; the pull-backs `m_offsets` already applied to its curves;
+/// `m_returns`), each `ReturnInfo` the angle the return turns by
+/// (`m_angle`) and its length (`m_length`; 0 and -1: the corner closed as
+/// a return of no length would close it).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct SweepReturn {
+    /// The path (an index into [`Sweep::paths`]) and its end (0 its
+    /// pieces' starts, 1 their ends).
+    pub path: usize,
+    pub end: u8,
+    /// At an opening (`m_end` 0xffffffff), not at the wall's end.
+    pub at_opening: bool,
+    pub angle: f64,
+    pub length: f64,
 }
 
 /// An opening element (a wall or floor opening, a shaft).
@@ -472,8 +712,10 @@ pub(crate) enum Raw {
     StairParts(StairParts),
     Landing(Box<Landing>),
     Sweep(Box<Sweep>),
-    Path3d(Vec<Vec<Curve>>),
+    Path3d(Vec<Vec<Curve>>, Vec<String>),
     ProfileType(i64),
+    /// A reference plane (mitcad#348).
+    RefPlane(Box<RefPlane>),
     /// A building element of one of these kinds whose parameters did not
     /// read: why.
     Unread(String),
@@ -502,12 +744,18 @@ pub struct Building {
     pub sweeps: BTreeMap<i64, Sweep>,
     /// 3D paths (`Path3d`: a rail's path).
     pub paths3d: BTreeMap<i64, Vec<Vec<Curve>>>,
+    /// The curves of a 3D path that did not read, and why (mitcad#340; a
+    /// helix, `GCylindricalHelix`, reads since mitcad#385).
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub paths3d_unread: BTreeMap<i64, Vec<String>>,
     /// Types' profiles (`m_profileId`: a profile family's type).
     pub profile_types: BTreeMap<i64, i64>,
     /// Family parameters' names.
     pub param_names: BTreeMap<i64, String>,
     /// Elements of these kinds whose parameters did not read, and why.
     pub unread: BTreeMap<i64, String>,
+    /// Reference planes (walls attach to them, mitcad#348).
+    pub ref_planes: BTreeMap<i64, RefPlane>,
 }
 
 impl Building {
@@ -547,8 +795,11 @@ impl Building {
             Raw::Sweep(s) => {
                 self.sweeps.insert(id, *s);
             }
-            Raw::Path3d(p) => {
+            Raw::Path3d(p, unread) => {
                 self.paths3d.insert(id, p);
+                if !unread.is_empty() {
+                    self.paths3d_unread.insert(id, unread);
+                }
             }
             Raw::ProfileType(p) => {
                 self.profile_types.insert(id, p);
@@ -561,6 +812,9 @@ impl Building {
             }
             Raw::Unread(why) => {
                 self.unread.insert(id, why);
+            }
+            Raw::RefPlane(p) => {
+                self.ref_planes.insert(id, *p);
             }
         }
     }
@@ -701,6 +955,65 @@ impl<'a> Reader<'a> {
                     end: t[1],
                 })
             }
+            "GEllipse" => {
+                let (Some(center), Some(x_axis), Some(y_axis), Some(rx), Some(ry)) = (
+                    self.vec3(o, "m_center"),
+                    self.vec3(o, "m_xVec"),
+                    self.vec3(o, "m_yVec"),
+                    self.f64(o, "m_xLen"),
+                    self.f64(o, "m_yLen"),
+                ) else {
+                    return Err("an ellipse without its centre, axes or radii".into());
+                };
+                let t = self.floats(o, "m_endParams");
+                if t.len() != 2 || t[1] <= t[0] {
+                    return Err("an ellipse without its end parameters".into());
+                }
+                Ok(Curve::Ellipse {
+                    center,
+                    x_axis,
+                    y_axis,
+                    rx,
+                    ry,
+                    start: t[0],
+                    end: t[1],
+                })
+            }
+            // (mitcad#385: its points and vectors are `XYZ` objects.)
+            "GCylindricalHelix" => {
+                let xyz = |name: &str| {
+                    self.get(o, name)
+                        .and_then(Value::as_object)
+                        .and_then(|v| self.vec3(v, "m_xyz"))
+                };
+                let (Some(center), Some(x_axis), Some(y_axis), Some(z_axis)) = (
+                    xyz("m_basePnt"),
+                    xyz("m_xVec"),
+                    xyz("m_yVec"),
+                    xyz("m_zVec"),
+                ) else {
+                    return Err("a helix without its base point or axes".into());
+                };
+                let (Some(radius), Some(rise)) =
+                    (self.f64(o, "m_radius"), self.f64(o, "m_pitchOver2PI"))
+                else {
+                    return Err("a helix without its radius or pitch".into());
+                };
+                let t = self.floats(o, "m_endParams");
+                if t.len() != 2 || t[1] <= t[0] {
+                    return Err("a helix without its end parameters".into());
+                }
+                Ok(Curve::Helix {
+                    center,
+                    x_axis,
+                    y_axis,
+                    z_axis,
+                    radius,
+                    rise,
+                    start: t[0],
+                    end: t[1],
+                })
+            }
             other => Err(format!("a curve of class {other}")),
         }
     }
@@ -776,8 +1089,11 @@ impl<'a> Reader<'a> {
                             cut_by.push(other);
                         }
                     }
-                    "WallCutoutGStep" => {
-                        if let Some(inst) = self.id(step, "m_instId") {
+                    // (Of a family's void geometry too, mitcad#345.)
+                    "WallCutoutGStep" | "WallComplexCutoutGStep" | "FamilyHostCutoutGStep" => {
+                        if let Some(inst) = self.id(step, "m_instId")
+                            && !cutouts.contains(&inst)
+                        {
                             cutouts.push(inst);
                         }
                     }
@@ -786,6 +1102,42 @@ impl<'a> Reader<'a> {
             }
         }
         (classes, cut_by, cutouts)
+    }
+
+    /// Its top and base attachments (`JoinToRoofGStep` of its geometry
+    /// steps, mitcad#348).
+    fn attachments(&self, root: &'a Object) -> Vec<Attachment> {
+        let mut out = Vec::new();
+        let Some(list) = self.obj(root, "m_geomSteps") else {
+            return out;
+        };
+        for field in [
+            "m_bRepFormGList",
+            "m_bRepAdjustGList",
+            "m_bRepCutOutGList",
+            "m_bRepPostCutOutGList",
+            "m_bRepTweakGList",
+        ] {
+            for s in self.list(list, field) {
+                let Some(step) = self.deref(s) else { continue };
+                if self.class(step) != "JoinToRoofGStep" {
+                    continue;
+                }
+                let elements: Vec<i64> = self
+                    .list(step, "m_ids")
+                    .iter()
+                    .filter_map(Value::as_id)
+                    .filter(|id| *id > 0)
+                    .collect();
+                if !elements.is_empty() {
+                    out.push(Attachment {
+                        top: self.u64(step, "m_baseOrTop").unwrap_or(1) != 0,
+                        elements,
+                    });
+                }
+            }
+        }
+        out
     }
 
     /// A join's ends (`CDJoinInfo.m_info`).
@@ -922,6 +1274,19 @@ impl<'a> Reader<'a> {
             cut_by,
             cutouts,
             profile: self.helper_loops(root, &mut Vec::new()).unwrap_or_default(),
+            attachments: self.attachments(root),
+        })
+    }
+
+    fn ref_plane(&self, id: i64, root: &'a Object) -> Option<RefPlane> {
+        Some(RefPlane {
+            id,
+            name: self
+                .get(root, "m_text")
+                .and_then(Value::as_text)
+                .unwrap_or_default()
+                .to_string(),
+            plane: self.plane(self.obj(root, "m_pSurface")?)?,
         })
     }
 
@@ -1073,6 +1438,7 @@ impl<'a> Reader<'a> {
         }
         let mut unread = Vec::new();
         s.cut_loops = self.loops(self.list(root, "m_pCutLoops"), &mut unread);
+        s.profile_loops = self.loops(self.list(root, "m_arrProfileLoops"), &mut unread);
         s.cut_dirs = self
             .list(root, "m_cutDirs")
             .iter()
@@ -1080,6 +1446,13 @@ impl<'a> Reader<'a> {
             .filter(|v| v.len() == 3)
             .map(|v| [v[0], v[1], v[2]])
             .collect();
+        let (solids, notes) = crate::brep::solids(
+            self.schema,
+            self.record,
+            self.list(root, "m_complexCutGeoms"),
+        );
+        s.cut_solids = solids;
+        s.cut_notes = notes;
         s.materials = self
             .list(root, "m_geomTag2MaterialId")
             .iter()
@@ -1117,6 +1490,34 @@ impl<'a> Reader<'a> {
             path: self.obj(r, "m_pCurve").and_then(|c| self.curve(c).ok()),
             normal: self.vec3(r, "m_pathNorm")?,
             flags: self.u64(r, "m_flags").unwrap_or(0),
+            legs: [p(-1_007_354).unwrap_or(0.0), p(-1_007_355).unwrap_or(0.0)],
+            corner_angles: {
+                let a = self.floats(r, "m_cornerAngles");
+                if a.len() == 2 {
+                    [a[0], a[1]]
+                } else {
+                    [0.0, 0.0]
+                }
+            },
+            trims: ["m_trimEnd0", "m_trimEnd1"]
+                .iter()
+                .zip(0u8..)
+                .filter_map(|(f, end)| {
+                    let n = self.obj(r, f)?;
+                    let path = self
+                        .obj(n, "m_trimPath")
+                        .and_then(|l| self.list(l, "m_curves").first())
+                        .and_then(|c| self.deref(c))
+                        .and_then(|c| self.curve(c).ok())?;
+                    Some(MullionTrim {
+                        end,
+                        path,
+                        flags: self.u64(n, "m_flags").unwrap_or(0),
+                        neighbour: self.id(n, "m_nbrSymbolId"),
+                        normal: self.vec3(n, "m_trimPathNorm").unwrap_or([0.0; 3]),
+                    })
+                })
+                .collect(),
         })
     }
 
@@ -1279,6 +1680,11 @@ impl<'a> Reader<'a> {
                     .and_then(|c| self.curve(c).ok())
             });
         let index = |field: &str| self.u64(root, field).unwrap_or(0);
+        let spiral = self
+            .record
+            .pointees
+            .iter()
+            .any(|p| self.class(p) == "StairsSpiralRunCell");
         StairRun {
             id,
             bottom: self.f64(root, "m_bottomElevation").unwrap_or(0.0),
@@ -1288,13 +1694,58 @@ impl<'a> Reader<'a> {
             start: line("m_oStartRiser"),
             end: line("m_oEndRiser"),
             support,
+            spiral,
+            layout: if spiral {
+                self.spiral_layout(root)
+            } else {
+                None
+            },
         }
+    }
+
+    /// A spiral run's centre, radii and riser lines (mitcad#385).
+    fn spiral_layout(&self, root: &'a Object) -> Option<SpiralLayout> {
+        let info = self
+            .list(root, "m_stairsRunInfoArr")
+            .iter()
+            .filter_map(|i| self.deref(i))
+            .next()?;
+        let center = self.vec3(info, "m_origin")?;
+        let corners = self
+            .get(info, "m_bndBox")
+            .and_then(Value::as_object)
+            .map(|b| self.floats(b, "m_corners"))
+            .unwrap_or_default();
+        if corners.len() != 4 {
+            return None;
+        }
+        let risers = self
+            .get(root, "m_compatibleCrvInfo")
+            .and_then(Value::as_object)
+            .map(|l| self.list(l, "m_orderedRisers"))
+            .unwrap_or(&[])
+            .iter()
+            .map(|r| {
+                let r = self.deref(r).or_else(|| r.as_object())?;
+                self.obj(r, "m_pRiserCurve")
+                    .and_then(|c| self.curve(c).ok())
+            })
+            .collect::<Option<Vec<Curve>>>()?;
+        Some(SpiralLayout {
+            center,
+            radii: [corners[0], corners[2]],
+            risers,
+        })
     }
 
     fn sweep(&self, id: i64, root: &'a Object) -> Sweep {
         let mut paths = Vec::new();
         let mut host = None;
         let mut up = None;
+        let mut sides = Vec::new();
+        let mut returns = Vec::new();
+        let mut joined = Vec::new();
+        let mut flipped = false;
         let mut profile = None;
         let class = self.class(root).to_string();
         // A wall sweep's curves.
@@ -1303,20 +1754,71 @@ impl<'a> Reader<'a> {
                 let Some(step) = self.deref(s) else { continue };
                 if self.class(step) == "WallSweepCurveGStep" {
                     host = host.or_else(|| self.id(step, "m_hostId"));
-                    let curves: Vec<Curve> = self
-                        .list(step, "m_curves")
-                        .iter()
-                        .filter_map(|c| self.deref(c))
-                        .filter_map(|c| self.curve(c).ok())
-                        .collect();
+                    // (Its curves moved by the sweep's offset from the wall,
+                    // `m_offsetCurves`, mitcad#340; else its curves.)
+                    let read = |field: &str| -> Vec<Curve> {
+                        self.list(step, field)
+                            .iter()
+                            .filter_map(|c| self.deref(c))
+                            .filter_map(|c| self.curve(c).ok())
+                            .collect()
+                    };
+                    let mut curves = read("m_offsetCurves");
+                    if curves.is_empty() {
+                        curves = read("m_curves");
+                    }
                     if !curves.is_empty() {
+                        for (end, field) in [(0, "m_pullBackParam0"), (1, "m_pullBackParam1")] {
+                            for pair in self.list(step, field) {
+                                let Some(pull) = pair
+                                    .as_object()
+                                    .and_then(|p| self.get(p, "second"))
+                                    .and_then(Value::as_object)
+                                else {
+                                    continue;
+                                };
+                                let Some(r) = self
+                                    .list(pull, "m_returns")
+                                    .first()
+                                    .and_then(Value::as_object)
+                                else {
+                                    continue;
+                                };
+                                returns.push(SweepReturn {
+                                    path: paths.len(),
+                                    end,
+                                    at_opening: self.u64(pull, "m_end")
+                                        == Some(u64::from(u32::MAX)),
+                                    angle: self.f64(r, "m_angle").unwrap_or(0.0),
+                                    length: self.f64(r, "m_length").unwrap_or(0.0),
+                                });
+                            }
+                        }
+                        for pair in self.list(step, "m_joinedSweeps") {
+                            let Some(pair) = pair.as_object() else {
+                                continue;
+                            };
+                            let end = self
+                                .get(pair, "first")
+                                .and_then(Value::as_object)
+                                .and_then(|t| self.u64(t, "m_end"));
+                            let other = self
+                                .get(pair, "second")
+                                .and_then(Value::as_object)
+                                .and_then(|i| self.id(i, "m_elemId"));
+                            if let (Some(end), Some(other)) = (end, other) {
+                                joined.push((paths.len(), end.min(1) as u8, other));
+                            }
+                        }
                         paths.push(curves);
+                        sides.push(self.u64(step, "m_side").unwrap_or(0) as u32);
                     }
                 }
             }
         }
         if let Some(info) = self.get(root, "m_wallSweepInfo").and_then(Value::as_object) {
             profile = self.id(info, "m_profileId");
+            flipped = self.bool(info, "m_flipped").unwrap_or(false);
         }
         // A slab edge's loops.
         for d in self
@@ -1356,13 +1858,17 @@ impl<'a> Reader<'a> {
             id,
             class,
             paths,
+            sides,
             path3d,
             profile,
             type_id: self.id(root, "m_typeId"),
             up,
             offsets: [p(-1_012_825), p(-1_012_827)],
-            flipped: self.bool(root, "m_flipped").unwrap_or(false),
+            flipped: flipped || self.bool(root, "m_flipped").unwrap_or(false),
             host,
+            cut_by: self.steps(root).1,
+            returns,
+            joined,
         }
     }
 
@@ -1375,6 +1881,7 @@ impl<'a> Reader<'a> {
             riser: size("m_riserThickness").filter(|_| has("m_hasRiser")),
             nosing: self.f64(root, "m_nosingLength").unwrap_or(0.0),
             thickness: self.f64(root, "m_thickness").unwrap_or(0.0),
+            nosing_profile: self.id(root, "m_nosingProfileTypeId").filter(|p| *p > 0),
         }
     }
 
@@ -1430,9 +1937,15 @@ impl<'a> Reader<'a> {
                 }
             }
         }
+        // A rectangular wall opening's corners: `RectOpeningData.m_aPoint`
+        // (mitcad#345, model coordinates).
         let corners = match (self.vec3(root, "m_pt1"), self.vec3(root, "m_pt2")) {
             (Some(a), Some(b)) => Some([a, b]),
-            _ => None,
+            _ => self.obj(root, "m_oRectOpeningData").and_then(|d| {
+                let v = self.floats(d, "m_aPoint");
+                (v.len() == 6 && v.iter().all(|x| x.is_finite()))
+                    .then(|| [[v[0], v[1], v[2]], [v[3], v[4], v[5]]])
+            }),
         };
         Opening {
             id,
@@ -1449,8 +1962,8 @@ impl<'a> Reader<'a> {
 }
 
 /// A curve element's curve (`CurveElem.m_pCurveDriver` → `m_pCrv`), of
-/// some length: a line or an arc, an ellipse (`GEllipse`: `m_center`,
-/// `m_xVec`, `m_yVec`, `m_xLen`, `m_yLen`, `m_endParams`) as 32 chords.
+/// some length: a line, an arc or an elliptical arc (`GEllipse`:
+/// `m_center`, `m_xVec`, `m_yVec`, `m_xLen`, `m_yLen`, `m_endParams`).
 pub(crate) fn curve_elem(schema: &Schema, record: &Record) -> Vec<Curve> {
     let r = Reader { schema, record };
     let Some(c) = r
@@ -1459,29 +1972,6 @@ pub(crate) fn curve_elem(schema: &Schema, record: &Record) -> Vec<Curve> {
     else {
         return Vec::new();
     };
-    if r.class(c) == "GEllipse" {
-        let (Some(o), Some(x), Some(y), Some(a), Some(b)) = (
-            r.vec3(c, "m_center"),
-            r.vec3(c, "m_xVec"),
-            r.vec3(c, "m_yVec"),
-            r.f64(c, "m_xLen"),
-            r.f64(c, "m_yLen"),
-        ) else {
-            return Vec::new();
-        };
-        let t = r.floats(c, "m_endParams");
-        if t.len() != 2 {
-            return Vec::new();
-        }
-        let at = |s: f64| add(o, add(scale(x, a * s.cos()), scale(y, b * s.sin())));
-        let n = 32;
-        return (0..n)
-            .map(|k| Curve::Line {
-                start: at(t[0] + (t[1] - t[0]) * k as f64 / n as f64),
-                end: at(t[0] + (t[1] - t[0]) * (k + 1) as f64 / n as f64),
-            })
-            .collect();
-    }
     r.curve(c)
         .ok()
         .filter(|c| c.length() > 1e-9)
@@ -1524,9 +2014,8 @@ pub(crate) fn read(schema: &Schema, record: &Record, id: i64) -> Option<Raw> {
     }
     if class == "Path3d" {
         let mut unread = Vec::new();
-        return Some(Raw::Path3d(
-            r.loops(r.list(root, "m_curveLoops"), &mut unread),
-        ));
+        let loops = r.loops(r.list(root, "m_curveLoops"), &mut unread);
+        return Some(Raw::Path3d(loops, unread));
     }
     if is("Symbol") && root.get(schema, "m_pCompoundStructure").is_some() {
         return r.structure(root).map(Raw::Structure);
@@ -1548,6 +2037,7 @@ pub(crate) fn read(schema: &Schema, record: &Record, id: i64) -> Option<Raw> {
         "Opening" | "SWallRectOpening" | "ShaftOpening" => {
             return Some(Raw::Opening(Box::new(r.opening(id, root))));
         }
+        "RefPlane" => return r.ref_plane(id, root).map(|p| Raw::RefPlane(Box::new(p))),
         _ => {}
     }
     if class.starts_with("ParamElem") {
@@ -1586,6 +2076,23 @@ mod tests {
         }
         .transformed(&t);
         assert_eq!(line.end(), [10.0, 1.0, 0.0]);
+        // Half an ellipse of radii 2 and 1 (mitcad#340).
+        let half = Curve::Ellipse {
+            center: [0.0, 0.0, 0.0],
+            x_axis: [1.0, 0.0, 0.0],
+            y_axis: [0.0, 1.0, 0.0],
+            rx: 2.0,
+            ry: 1.0,
+            start: 0.0,
+            end: std::f64::consts::PI,
+        };
+        let (m, e) = (half.at(0.5), half.end());
+        assert!(m[0].abs() < 1e-12 && (m[1] - 1.0).abs() < 1e-12);
+        assert!((e[0] + 2.0).abs() < 1e-12 && e[1].abs() < 1e-12);
+        // (Half the perimeter, about 4.844.)
+        assert!((half.length() - 4.844).abs() < 1e-2, "{}", half.length());
+        let moved = half.transformed(&t);
+        assert!((moved.start()[0] - 10.0).abs() < 1e-12 && (moved.start()[1] - 2.0).abs() < 1e-12);
     }
 
     #[test]
@@ -1625,5 +2132,58 @@ mod tests {
         assert_eq!(b.links.len(), 1);
         assert_eq!(b.links[0].file.as_deref(), Some(t::LINKED));
         assert_eq!(b.links[0].transform.unwrap()[9], 100.0);
+        assert!(wall.attachments.is_empty());
+    }
+
+    #[test]
+    fn the_house_reads_its_roof_and_the_wall_attached_to_it() {
+        // mitcad#348: a gable roof (two slopes, two layer faces each) and
+        // a wall whose top is attached to it.
+        use crate::testfile::building as t;
+        let file = crate::RvtFile::parse(t::house()).unwrap();
+        let schema = file.schema().unwrap();
+        let model = crate::elements::Model::read(&file, &schema).unwrap();
+        assert_eq!(model.header_errors + model.object_errors, 0);
+        let b = &model.building;
+        assert!(b.unread.is_empty(), "{:?}", b.unread);
+        assert_eq!(
+            b.walls[&t::WALL_C].attachments,
+            vec![Attachment {
+                top: true,
+                elements: vec![t::ROOF]
+            }]
+        );
+        assert!(b.walls[&t::WALL_A].attachments.is_empty());
+        let roof = &b.slabs[&t::ROOF];
+        assert_eq!(roof.class, "ProfileRoof");
+        assert_eq!(roof.type_id, Some(t::ROOF_TYPE));
+        assert_eq!(roof.layer_faces.len(), 4);
+        assert_eq!(roof.loops.iter().map(Vec::len).collect::<Vec<_>>(), vec![4]);
+        assert_eq!(b.width(t::ROOF_TYPE), Some(t::ROOF_THICKNESS));
+        // The lower face of the first slope passes through the eave.
+        let p = &roof.layer_faces[0];
+        assert_eq!(p.origin, [0.0, 0.0, t::HEIGHT]);
+        // mitcad#345: the door in the gable wall, its type's cut loop and
+        // direction; the window's type without either.
+        let door = &b.instances[&t::DOOR];
+        assert_eq!(door.host, Some(t::WALL_C));
+        assert_eq!(
+            (door.symbol, door.master),
+            (Some(t::DOOR_TYPE), Some(t::DOOR_TYPE))
+        );
+        assert_eq!(door.transform.unwrap()[9..], [20.0, 3.0, 0.0]);
+        let door_type = &b.symbols[&t::DOOR_TYPE];
+        assert_eq!(
+            door_type.cut_loops.iter().map(Vec::len).collect::<Vec<_>>(),
+            vec![4]
+        );
+        assert_eq!(door_type.cut_dirs, vec![[0.0, 1.0, 0.0]]);
+        assert_eq!(
+            door_type.cut_loops[0][2].end(),
+            [-t::DOOR_WIDTH / 2.0, 0.0, t::DOOR_HEIGHT]
+        );
+        let window_type = &b.symbols[&t::WINDOW_TYPE];
+        assert!(window_type.cut_loops.is_empty() && window_type.cut_solids.is_empty());
+        assert_eq!(b.instances[&t::WINDOW].host, Some(t::WALL_B));
     }
 }

@@ -53,7 +53,9 @@ const COMMANDS: &[(&str, ApiClass)] = &[
     ("insert_component", FileIo),
     ("update_links", FileIo),
     ("sketch.import_dxf", FileIo),
-    // A texture or an environment image may be read from its path.
+    // A texture or an environment image may be read from its path: these
+    // are the model's own when the call names no file, see
+    // `command_class_with` (mitcad#383).
     ("create_appearance", FileIo),
     ("edit_appearance", FileIo),
     ("set_render_settings", FileIo),
@@ -173,6 +175,13 @@ const COMMANDS: &[(&str, ApiClass)] = &[
     ("sketch.clean_up_projections", Model),
     ("sketch.clean_up_stale_projections", Model),
     ("sketch.convert_projected", Model),
+    // The BUILD tab (mitcad#375): placing reads a new source from a library
+    // (with `part.source` it does not: [`command_class_with`]).
+    ("build_place", Remote),
+    ("build_connect", Remote),
+    ("build_panel", Remote),
+    ("build_edit", Model),
+    ("build_remove", Model),
 ];
 
 /// Every query (its `query`) with its class. A `cache` query with `disk`
@@ -242,6 +251,11 @@ const QUERIES: &[(&str, ApiClass)] = &[
     ("tangent_chains", Model),
     // A thread's default end chamfer (mitcad#304).
     ("thread_chamfer", Model),
+    // The BUILD tab (mitcad#375).
+    ("build_preview", Model),
+    ("build_parts", Model),
+    ("build_junctions", Model),
+    ("build_cut_list", Model),
 ];
 
 fn class_in(table: &[(&str, ApiClass)], name: &str) -> Option<ApiClass> {
@@ -254,6 +268,78 @@ fn class_in(table: &[(&str, ApiClass)], name: &str) -> Option<ApiClass> {
 /// The class of a command (its `cmd`), or None for a name the API lacks.
 pub fn command_class(name: &str) -> Option<ApiClass> {
     class_in(COMMANDS, name)
+}
+
+/// The maps of an appearance texture besides its base colour image.
+const TEXTURE_MAPS: [&str; 4] = ["normal", "roughness", "metalness", "occlusion"];
+
+/// The first file path a texture of a command would be read from: an
+/// image (the base colour's or a map's) that is neither embedded (`data`)
+/// nor kept from the design (`"embedded": true`). A texture that is null
+/// or left out reads nothing.
+fn texture_path(texture: Option<&serde_json::Value>) -> Option<String> {
+    let texture = texture?.as_object()?;
+    let reads = |slot: &serde_json::Map<String, serde_json::Value>| {
+        slot.get("data").is_none_or(serde_json::Value::is_null)
+            && slot.get("embedded").and_then(serde_json::Value::as_bool) != Some(true)
+    };
+    let path_of = |slot: &serde_json::Map<String, serde_json::Value>| {
+        slot.get("path")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_owned()
+    };
+    if reads(texture) {
+        return Some(path_of(texture));
+    }
+    TEXTURE_MAPS
+        .iter()
+        .filter_map(|map| texture.get(*map)?.as_object())
+        .find(|slot| reads(slot))
+        .map(path_of)
+}
+
+/// The file a call would read, when its class depends on it (mitcad#383):
+/// the texture path of `create_appearance` and `edit_appearance` (an image
+/// not embedded) and the `environment.image` path of `set_render_settings`.
+/// None for every other call, and for these when they name no file.
+pub fn file_path_read(request: &serde_json::Value) -> Option<String> {
+    match request.get("cmd")?.as_str()? {
+        "create_appearance" | "edit_appearance" => texture_path(request.get("texture")),
+        "set_render_settings" => request
+            .pointer("/environment/image")?
+            .as_str()
+            .map(str::to_owned),
+        _ => None,
+    }
+}
+
+/// The class of a command with its fields: a BUILD command that places a
+/// part from a source the design has (`part.source`) reads no library and
+/// is the model's own (mitcad#375); `create_appearance`, `edit_appearance`
+/// and `set_render_settings` are the model's own unless the call names a
+/// file to read ([`file_path_read`], mitcad#383); others as
+/// [`command_class`].
+pub fn command_class_with(request: &serde_json::Value) -> Option<ApiClass> {
+    let name = request.get("cmd")?.as_str()?;
+    if matches!(
+        name,
+        "create_appearance" | "edit_appearance" | "set_render_settings"
+    ) {
+        return Some(if file_path_read(request).is_some() {
+            FileIo
+        } else {
+            Model
+        });
+    }
+    if matches!(name, "build_place" | "build_connect" | "build_panel")
+        && request
+            .pointer("/part/source")
+            .is_some_and(serde_json::Value::is_string)
+    {
+        return Some(Model);
+    }
+    command_class(name)
 }
 
 /// The class of a query (its `query`), or None for a name the API lacks.
@@ -322,6 +408,7 @@ mod tests {
             &crate::api::libraries::COMMANDS[..],
             &crate::api::move_features::COMMANDS[..],
             &crate::api::policy::COMMANDS[..],
+            &crate::api::build::COMMANDS[..],
         ] {
             names.extend(list.iter().map(|name| (*name).to_owned()));
         }
@@ -380,6 +467,83 @@ mod tests {
         assert_eq!(unique.len(), QUERIES.len(), "a query classified twice");
         assert_eq!(command_class("no_such_command"), None);
         assert_eq!(query_class("no_such_query"), None);
+    }
+
+    fn class_of(request: serde_json::Value) -> Option<ApiClass> {
+        command_class_with(&request)
+    }
+
+    #[test]
+    fn appearance_calls_without_a_file_are_the_models_own() {
+        // The acceptance example of mitcad#383: parameters, no texture.
+        assert_eq!(
+            class_of(json!({"cmd": "create_appearance", "id": "led_red",
+                "name": "LED red", "based_on": "emissive_white",
+                "base_color": [1, 0.1, 0.08], "emission_color": [1, 0.1, 0.05],
+                "emission": 5})),
+            Some(Model)
+        );
+        assert_eq!(
+            class_of(json!({"cmd": "edit_appearance", "id": "led_red", "roughness": 0.3})),
+            Some(Model)
+        );
+        // No texture, or a removed one.
+        assert_eq!(
+            class_of(json!({"cmd": "edit_appearance", "id": "a", "texture": null})),
+            Some(Model)
+        );
+        // Embedded images: bytes, or kept from the design.
+        assert_eq!(
+            class_of(json!({"cmd": "create_appearance", "texture": {
+                "path": "oak.png", "data": "iVBORw0K",
+                "normal": {"path": "n.png", "data": "iVBORw0K"},
+                "roughness": {"path": "r.png", "embedded": true,
+                    "image_sha256": "ab"}}})),
+            Some(Model)
+        );
+        assert_eq!(
+            class_of(json!({"cmd": "edit_appearance", "id": "a", "texture": {
+                "path": "oak.png", "embedded": true, "size": [50, 50]}})),
+            Some(Model)
+        );
+        assert_eq!(file_path_read(&json!({"cmd": "create_appearance"})), None);
+    }
+
+    #[test]
+    fn appearance_calls_that_read_a_file_stay_file_io() {
+        // A texture by path, also with a null `data`.
+        for request in [
+            json!({"cmd": "create_appearance", "texture": {"path": "/etc/x.png"}}),
+            json!({"cmd": "edit_appearance", "id": "a",
+                "texture": {"path": "/etc/x.png", "data": null}}),
+            json!({"cmd": "edit_appearance", "id": "a",
+                "texture": {"path": "/etc/x.png", "embedded": false}}),
+        ] {
+            assert_eq!(class_of(request.clone()), Some(FileIo), "{request}");
+            assert_eq!(file_path_read(&request).as_deref(), Some("/etc/x.png"));
+        }
+        // A map by path beside an embedded base colour.
+        let request = json!({"cmd": "create_appearance", "texture": {
+            "path": "oak.png", "data": "iVBORw0K",
+            "normal": {"path": "/etc/n.png"}}});
+        assert_eq!(class_of(request.clone()), Some(FileIo));
+        assert_eq!(file_path_read(&request).as_deref(), Some("/etc/n.png"));
+    }
+
+    #[test]
+    fn render_settings_are_the_models_own_unless_they_name_an_image() {
+        for request in [
+            json!({"cmd": "set_render_settings", "environment": {"preset": "outdoor"}}),
+            json!({"cmd": "set_render_settings", "output": {"width": 800}}),
+            // null: the field's default, no file.
+            json!({"cmd": "set_render_settings", "environment": {"image": null}}),
+        ] {
+            assert_eq!(class_of(request.clone()), Some(Model), "{request}");
+        }
+        let request = json!({"cmd": "set_render_settings",
+            "environment": {"preset": "image", "image": "/env/sky.hdr"}});
+        assert_eq!(class_of(request.clone()), Some(FileIo));
+        assert_eq!(file_path_read(&request).as_deref(), Some("/env/sky.hdr"));
     }
 
     #[test]

@@ -210,6 +210,9 @@ NSImage* actionImage(const NativeMacAction& action) {
 QString actionMenuPath(const NativeMacAction& item) {
   if (!item.menu.isEmpty()) return item.menu;
   const bool sketch = item.workspace.compare(QStringLiteral("SKETCH"), Qt::CaseInsensitive) == 0;
+  // The BUILD tab's commands (mitcad#375) in a menu of their own; this
+  // frontend has no workspace for them on its toolbar.
+  if (item.workspace.compare(QStringLiteral("BUILD"), Qt::CaseInsensitive) == 0) return QStringLiteral("Build");
   // Menu-only commands can retain the default CREATE group. Without an
   // explicit menu or CAD workspace they belong to command search only.
   if (!sketch && item.workspace.compare(QStringLiteral("SOLID"), Qt::CaseInsensitive) != 0) return QString();
@@ -374,6 +377,7 @@ struct NativeMacWindowState {
   bool sketching = false;
   bool updatingSelection = false;
   bool closing = false;
+  bool frameInitialized = false;
   bool layingOut = false;
   QPointer<QWidget> gestureReceiver;
   unsigned gestureKinds = 0;
@@ -849,7 +853,7 @@ struct NativeMacWindowState {
   }
 
   void buildWindow() {
-    window = [[MITCADDocumentWindow alloc] initWithContentRect:NSMakeRect(0, 0, 1280, 820)
+    window = [[MITCADDocumentWindow alloc] initWithContentRect:NSMakeRect(0, 0, 1280, 800)
                                        styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
                                                  NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable
                                          backing:NSBackingStoreBuffered defer:NO];
@@ -858,14 +862,16 @@ struct NativeMacWindowState {
     window.delegate = delegate;
     window.title = @"Untitled";
     window.identifier = @"native.documentWindow";
+    // The document and frame have their own recovery. An older system UI
+    // snapshot must not overwrite the current frame autosave at launch.
+    window.restorable = NO;
     window.minSize = NSMakeSize(820, 560);
     window.tabbingMode = NSWindowTabbingModeDisallowed;
     window.collectionBehavior = NSWindowCollectionBehaviorFullScreenPrimary;
     window.toolbarStyle = NSWindowToolbarStyleUnifiedCompact;
-    [window setFrameAutosaveName:@"MitcadNativeDocumentWindow"];
-    [window center];
 
-    canvasRoot = [[MITCADCanvasRoot alloc] initWithFrame:NSMakeRect(0, 0, 1280, 820)];
+    const NSSize contentSize = [window contentRectForFrameRect:window.frame].size;
+    canvasRoot = [[MITCADCanvasRoot alloc] initWithFrame:NSMakeRect(0, 0, contentSize.width, contentSize.height)];
     canvasRoot->state = this;
     window.contentView = canvasRoot;
     viewportHost = [[MITCADViewportHost alloc] initWithFrame:canvasRoot.bounds];
@@ -1760,14 +1766,22 @@ void NativeMacWindow::show() {
   [m_state->window makeKeyAndOrderFront:nil];
   [NSApp activate];
   [m_state->window.contentView layoutSubtreeIfNeeded];
+  if (!m_state->frameInitialized) {
+    // The first presentation settles AppKit's toolbar and title geometry.
+    // Restore afterwards, before enabling automatic frame saves.
+    const BOOL restoredFrame = [m_state->window setFrameUsingName:@"MitcadNativeDocumentWindow"];
+    if (!restoredFrame) {
+      [m_state->window setContentSize:NSMakeSize(1280, 800)];
+      [m_state->window center];
+    }
+    [m_state->window setFrameAutosaveName:@"MitcadNativeDocumentWindow"];
+    m_state->frameInitialized = true;
+    [m_state->window.contentView layoutSubtreeIfNeeded];
+  }
   m_state->syncViewport();
   focusViewport();
 }
 void NativeMacWindow::close() { [m_state->window performClose:nil]; }
-void NativeMacWindow::resize(int width, int height) {
-  [m_state->window setContentSize:NSMakeSize(std::max(width, 820), std::max(height, 520))];
-  m_state->syncViewport();
-}
 void NativeMacWindow::focusViewport() {
   if (m_state->viewport) {
     m_state->viewport->setFocus(Qt::OtherFocusReason);

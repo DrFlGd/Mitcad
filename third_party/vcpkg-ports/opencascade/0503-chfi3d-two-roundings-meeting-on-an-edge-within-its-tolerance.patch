@@ -1,0 +1,138 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: two roundings meeting at a vertex of four sharp edges whose ends
+meet on the same points, within the tolerance of the edges they lie on,
+are joined along their intersection (mitcad#378, with 0500).
+
+The case: a slot through a round boss, its rim chamfered and the
+chamfer's lower edges rounded. At each corner where a straight wall meets
+the boss's cylinder, the rounding of a straight edge (a cylinder between
+two planes) meets the rounding of an arc (since 0500 the torus between the
+chamfer's cone and the boss's cylinder). Both are analytic: their contacts
+reach the crease between the chamfer's plane and cone, and the vertical
+crease between the walls, at the same two points, and the corner is their
+intersection curve between those points (PerformTwoCornerSameExt), as in
+the bodies stored in the files. PerformMoreThreeCorner took that path only
+where the ends' points agree within 1e-7. On a stored body the crease's
+curves on the plane and the cone differ within its tolerance (1e-4), and
+the two ends, each computed on its own face's curve, lay 1.6e-7 apart: the
+gap was filled with a plate of no width whose edges reached tolerances of
+0.3 to 0.4, and the result failed the check (a self-intersecting wire)
+once its vertex tolerances were cut down. Walked roundings, approximated,
+end further apart there and are not affected.
+
+- SameEndPoint: two ends are one point within Precision::Confusion(), as
+  before, or, where both are common points on one arc, within that arc's
+  tolerance.
+
+Upstream: changes only corners whose ends were within an arc's tolerance
+but more than 1e-7 apart; PerformTwoCornerSameExt checks its intersection
+against the ends as before and leaves the plate where it fails.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_CnCrn.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_CnCrn.cxx
+index 555f978..c7a31b9 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_CnCrn.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_CnCrn.cxx
+@@ -45,6 +45,7 @@
+ #include <BRepLib_MakeEdge.hxx>
+ #include <BRepLib_MakeFace.hxx>
+ #include <BRepTools.hxx>
++#include <BRep_Tool.hxx>
+ #include <ChFi3d_Builder.hxx>
+ #include <ChFi3d_Builder_0.hxx>
+ #include <ChFiDS_CommonPoint.hxx>
+@@ -1183,6 +1184,60 @@ static int IndexOfSurfDataAtEnd(const occ::handle<ChFiDS_Stripe>& theStripe, con
+   return theSens == 1 ? 1 : theStripe->SetOfSurfData()->Length();
+ }
+ 
++//=======================================================================
++// function : CommonPointAtEnd
++// purpose  : The common point at the end <theSens> of surface data
++//           <theIndex> of a stripe that lies at <thePnt>, none if neither.
++//=======================================================================
++
++static const ChFiDS_CommonPoint* CommonPointAtEnd(const occ::handle<ChFiDS_Stripe>& theStripe,
++                                                  const int                         theIndex,
++                                                  const int                         theSens,
++                                                  const gp_Pnt&                     thePnt)
++{
++  const occ::handle<ChFiDS_SurfData>& aSD = theStripe->SetOfSurfData()->Value(theIndex);
++  for (int j = 1; j <= 2; j++)
++  {
++    const ChFiDS_CommonPoint& aCP = aSD->Vertex(theSens == 1, j);
++    if (aCP.Point().Distance(thePnt) <= Precision::Confusion())
++    {
++      return &aCP;
++    }
++  }
++  return nullptr;
++}
++
++//=======================================================================
++// function : SameEndPoint
++// purpose  : Whether two stripes' ends meet at one point: within
++//           Precision::Confusion(), or, where both ends are common points
++//           on one arc, within that arc's tolerance. Two analytic blends
++//           (a torus between coaxial faces of revolution and the cylinder
++//           of the next edge) end on the edge between their faces at the
++//           same point, each computed on its own face's curve of the edge,
++//           which differ within the edge's tolerance.
++//=======================================================================
++
++static bool SameEndPoint(const gp_Pnt&                     theP1,
++                         const occ::handle<ChFiDS_Stripe>& theStripe1,
++                         const int                         theIndex1,
++                         const int                         theSens1,
++                         const gp_Pnt&                     theP2,
++                         const occ::handle<ChFiDS_Stripe>& theStripe2,
++                         const int                         theIndex2,
++                         const int                         theSens2)
++{
++  const double aDist = theP1.Distance(theP2);
++  if (aDist <= Precision::Confusion())
++  {
++    return true;
++  }
++  const ChFiDS_CommonPoint* aCP1 = CommonPointAtEnd(theStripe1, theIndex1, theSens1, theP1);
++  const ChFiDS_CommonPoint* aCP2 = CommonPointAtEnd(theStripe2, theIndex2, theSens2, theP2);
++  return aCP1 != nullptr && aCP2 != nullptr && aCP1->IsOnArc() && aCP2->IsOnArc()
++         && aCP1->Arc().IsSame(aCP2->Arc()) && aDist <= BRep_Tool::Tolerance(aCP1->Arc());
++}
++
+ //=======================================================================
+ // function : PlateOrientation
+ // purpose  : Define Plate orientation compared to <theRefDir> previewing
+@@ -2696,6 +2751,7 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
+     }
+     jfp = 3 - jf.Value(ic1);
+     Indices(nedge, ic1, icplus, icmoins);
++    const int is1 = i.Value(ic1, icmoins), is2 = i.Value(ic1, icplus);
+     Calcul_P2dOnSurf(CD.Value(ic1), jfp, i.Value(ic1, icmoins), p.Value(ic1, icmoins), p2);
+     indice = SurfIndex(CD, ic1, i.Value(ic1, icmoins), ChFiSURFACE);
+     DStr.Surface(indice).Surface()->D0(p2.X(), p2.Y(), P1);
+@@ -2706,6 +2762,7 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
+ 
+     jfp = 3 - jf.Value(ic2);
+     Indices(nedge, ic2, icplus, icmoins);
++    const int is3 = i.Value(ic2, icmoins), is4 = i.Value(ic2, icplus);
+     Calcul_P2dOnSurf(CD.Value(ic2), jfp, i.Value(ic2, icmoins), p.Value(ic2, icmoins), p2);
+     indice = SurfIndex(CD, ic2, i.Value(ic2, icmoins), ChFiSURFACE);
+     DStr.Surface(indice).Surface()->D0(p2.X(), p2.Y(), P3);
+@@ -2713,8 +2770,15 @@ void ChFi3d_Builder::PerformMoreThreeCorner(const int Jndex, const int nconges)
+     Calcul_P2dOnSurf(CD.Value(ic2), jf.Value(ic2), i.Value(ic2, icplus), p.Value(ic2, icplus), p2);
+     indice = SurfIndex(CD, ic2, i.Value(ic2, icplus), ChFiSURFACE);
+     DStr.Surface(indice).Surface()->D0(p2.X(), p2.Y(), P4);
+-    intersection = (P1.Distance(P4) <= 1.e-7 || P1.Distance(P3) <= 1.e-7)
+-                   && (P2.Distance(P4) <= 1.e-7 || P2.Distance(P3) <= 1.e-7);
++    // (The ends' common points on one arc are one point within the arc's
++    // tolerance.)
++    const occ::handle<ChFiDS_Stripe>& st1 = CD.Value(ic1);
++    const occ::handle<ChFiDS_Stripe>& st2 = CD.Value(ic2);
++    const int                         s1 = sens.Value(ic1), s2 = sens.Value(ic2);
++    intersection = (SameEndPoint(P1, st1, is1, s1, P4, st2, is4, s2)
++                    || SameEndPoint(P1, st1, is1, s1, P3, st2, is3, s2))
++                   && (SameEndPoint(P2, st1, is2, s1, P4, st2, is4, s2)
++                       || SameEndPoint(P2, st1, is2, s1, P3, st2, is3, s2));
+     if (intersection)
+     {
+       PerformTwoCornerSameExt(DStr,

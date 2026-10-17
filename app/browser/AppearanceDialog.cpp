@@ -217,14 +217,18 @@ AppearanceDialog::AppearanceDialog(DocumentHost& host, QWidget* parent) : QDialo
   m_delete = new QPushButton(themeIcon(QStringLiteral("delete")), tr("Delete"));
   m_delete->setToolTip(tr("Delete the selected appearance of this design; its bodies get the default look"));
   m_assign = new QPushButton(themeIcon(QStringLiteral("appearance")), tr("Assign"));
+  m_assignBodies = new QPushButton(themeIcon(QStringLiteral("appearance")), tr("Assign to Bodies"));
+  m_assignBodies->setToolTip(tr("Give the appearance to the bodies the selected faces belong to"));
+  m_assignBodies->setVisible(false); // only while the selection holds faces (mitcad#346)
   m_close = new QPushButton(tr("Close"));
-  for (QPushButton* button : {m_new, m_delete, m_assign, m_close}) {
+  for (QPushButton* button : {m_new, m_delete, m_assign, m_assignBodies, m_close}) {
     button->setAutoDefault(false);
   }
   buttons->addWidget(m_new);
   buttons->addWidget(m_delete);
   buttons->addStretch(1);
   buttons->addWidget(m_assign);
+  buttons->addWidget(m_assignBodies);
   buttons->addWidget(m_close);
   layout->addLayout(buttons);
 
@@ -232,6 +236,7 @@ AppearanceDialog::AppearanceDialog(DocumentHost& host, QWidget* parent) : QDialo
   connect(m_new, &QPushButton::clicked, this, &AppearanceDialog::newAppearance);
   connect(m_delete, &QPushButton::clicked, this, &AppearanceDialog::deleteAppearance);
   connect(m_assign, &QPushButton::clicked, this, &AppearanceDialog::assign);
+  connect(m_assignBodies, &QPushButton::clicked, this, &AppearanceDialog::assignToBodies);
   connect(m_list, &QListWidget::currentItemChanged, this, [this](QListWidgetItem* item) {
     if (m_building || item == nullptr || item->data(kIdRole).toString().isEmpty()) {
       return;
@@ -624,6 +629,11 @@ void AppearanceDialog::setTargets(const Selection& targets) {
       bodies << item.owner;
     }
   }
+  // Assign to N bodies: the bodies that own the selected faces and the selected
+  // bodies, each once (mitcad#346); shown while the selection holds faces.
+  const QStringList owners = targetBodies();
+  m_assignBodies->setVisible(!faces.isEmpty());
+  m_assignBodies->setText(owners.size() == 1 ? tr("Assign to 1 body") : tr("Assign to %1 bodies").arg(owners.size()));
   if (targets.isEmpty()) {
     m_assign->setText(tr("Assign"));
     m_assign->setEnabled(false);
@@ -973,6 +983,31 @@ void AppearanceDialog::assign() {
   refresh();
 }
 
+void AppearanceDialog::assignToBodies() {
+  const Appearance* a = current();
+  if (a == nullptr || m_targets.isEmpty() || !canChange()) {
+    return;
+  }
+  // Copies: the model's sync during runModelCommands refreshes the dialog and
+  // replaces m_appearances, so `a` dangles afterwards (mitcad#384).
+  const QString id = a->id;
+  const QString name = a->name;
+  const QStringList bodies = targetBodies();
+  QJsonArray commands;
+  for (const QString& uid : bodies) {
+    commands.append(QJsonObject{{QStringLiteral("cmd"), QStringLiteral("set_body_appearance")},
+                                {QStringLiteral("uid"), uid},
+                                {QStringLiteral("appearance"), id}});
+  }
+  if (!m_host.runModelCommands(commands, tr("Appearance"))) {
+    m_message->setText(m_host.lastError());
+    return;
+  }
+  m_message->clear();
+  qDebug().noquote() << QStringLiteral("Appearance %1 assigned to %2 bodies (from faces)").arg(name).arg(bodies.size());
+  refresh();
+}
+
 QStringList AppearanceDialog::targetBodies() const {
   QStringList bodies;
   for (const SelectionItem& item : m_targets) {
@@ -1319,9 +1354,16 @@ void AppearanceDialog::logLayout() {
   for (const auto& [name, button] : {std::pair<const char*, QPushButton*>{"new", m_new},
                                      {"delete", m_delete},
                                      {"assign", m_assign},
+                                     {"assign_bodies", m_assignBodies},
                                      {"clear_faces", m_clearFaces},
                                      {"close", m_close}}) {
+    if (!button->isVisibleTo(this)) {
+      continue; // Assign to N bodies shows only for faces (mitcad#346)
+    }
     lines << QStringLiteral("Appearances %1 at %2").arg(QString::fromLatin1(name), at(button, button->rect().center()));
+  }
+  if (m_assignBodies->isVisibleTo(this)) {
+    lines << QStringLiteral("Appearances assign_bodies label: %1").arg(m_assignBodies->text());
   }
   const QString logged = lines.join(QLatin1Char('\n'));
   if (logged != m_logged) {

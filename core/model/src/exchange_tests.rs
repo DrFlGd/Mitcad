@@ -370,6 +370,59 @@ fn import_file_command_makes_a_base_feature() {
 }
 
 #[test]
+fn import_file_leaves_out_empty_bodies_with_a_warning() {
+    let mut doc = Document::new(MockKernel::default());
+    doc.kernel().files.borrow_mut().insert(
+        "support.step".to_owned(),
+        vec![
+            body(Some("Support"), "support", 6),
+            body(Some("Screw"), "screw", 0),
+            body(None, "nut", 0),
+        ],
+    );
+    doc.kernel().files.borrow_mut().insert(
+        "nothing.step".to_owned(),
+        vec![body(Some("Screw"), "screw", 0)],
+    );
+    let result = command(
+        &mut doc,
+        json!({"cmd": "import_file", "path": "support.step"}),
+    )
+    .unwrap();
+    assert_eq!(
+        result,
+        json!({"uid": "F1", "name": "Base1", "bodies": [
+            {"uid": "F1.b0", "name": "Support", "kind": "solid"}],
+            "warnings": ["body 1 (Screw) is empty: left out", "body 2 is empty: left out"],
+            "recomputed": 1, "error": null})
+    );
+    assert_eq!(histories(&doc).len(), 1);
+    assert_eq!(doc.undo_label(), Some("Import support.step"));
+
+    let error = command(
+        &mut doc,
+        json!({"cmd": "import_file", "path": "nothing.step"}),
+    )
+    .unwrap_err();
+    assert!(
+        error.contains("nothing.step has only empty bodies (1)"),
+        "{error}"
+    );
+    assert_eq!(histories(&doc).len(), 1);
+
+    // The shape API keeps refusing an empty body: its body options and an
+    // importer's `replaces` count the shapes by index.
+    let error = doc
+        .add_base_feature(BaseInput::new(vec![
+            body(Some("Support"), "support", 6),
+            body(Some("Screw"), "screw", 0),
+        ]))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("body 1 is empty"), "{error}");
+}
+
+#[test]
 fn export_writes_bodies_with_names_and_imported_colours() {
     let mut b = block();
     let mut part = body(Some("Part"), "part", 6);

@@ -312,6 +312,18 @@ struct TestKernel {
     /// (as `skew` for extrusions): an approximation of the file's own kind
     /// that the bodies after them carry (mitcad#283).
     skew_fillets: bool,
+    /// Whether this kernel's fillets carry a marker (`≈` in their history)
+    /// that makes them measure `fillet_noise` mm³ more than they bound, as
+    /// a stored rounding whose edges lie off its faces measures
+    /// (mitcad#235).
+    noisy_fillets: bool,
+    /// mm³ this kernel's fillets take from their body, where given (else
+    /// their volume comes from their history as other solids').
+    fillet_takes: Option<f64>,
+    fillet_noise: f64,
+    /// The slack `Kernel::changed_volume` gives, where it measures at all:
+    /// the change as the bodies' volumes, noise left out.
+    change_slack: Option<f64>,
     /// Runs in each kernel call of this name ("extrude_feature",
     /// "offset_faces", "mass_properties") before it is made: a call that
     /// blocks or takes long (mitcad#68, mitcad#69, mitcad#71, mitcad#82).
@@ -357,6 +369,23 @@ impl TestKernel {
         {
             hook(&self.mock);
         }
+    }
+
+    /// The volume of a solid of the fingerprint `f` (see `mass_properties`):
+    /// the last `[=v]` in it (`fillet_takes`), else its hash; `~` scales it
+    /// by 1.0003, `≈` adds `fillet_noise`.
+    fn volume_of(&self, f: &str) -> f64 {
+        let scale = if f.contains('~') { 1.0003 } else { 1.0 };
+        let noise = if f.contains('≈') {
+            self.fillet_noise
+        } else {
+            0.0
+        };
+        let given = f.rfind("[=").and_then(|at| {
+            let rest = &f[at + 2..];
+            rest[..rest.find(']')?].parse::<f64>().ok()
+        });
+        given.unwrap_or_else(|| hash(&f.replace(['~', '≈'], ""), 1)) * scale + noise
     }
 }
 
@@ -509,6 +538,13 @@ impl Kernel for TestKernel {
         if self.skew_fillets {
             shape.history.push('~');
         }
+        if let Some(takes) = self.fillet_takes {
+            let base = self.volume_of(&self.fingerprint(body));
+            shape.history.push_str(&format!("[={}]", base - takes));
+        }
+        if self.noisy_fillets {
+            shape.history.push('≈');
+        }
         Ok(shape)
     }
 
@@ -602,12 +638,29 @@ impl Kernel for TestKernel {
                 center: [0.0; 3],
             });
         }
-        let scale = if f.contains('~') { 1.0003 } else { 1.0 };
         Ok(MassProperties {
-            volume: hash(&f.replace('~', ""), 1) * scale,
-            area: hash(&f.replace('~', ""), 2),
+            volume: self.volume_of(&f),
+            area: hash(&f.replace(['~', '≈'], ""), 2),
             center: [0.0; 3],
         })
+    }
+
+    // The bodies' volumes, where `change_slack` is set.
+    fn changed_volume(
+        &self,
+        before: &[&MockShape],
+        after: &[&MockShape],
+    ) -> Result<(f64, f64), KernelError> {
+        let slack = self
+            .change_slack
+            .ok_or(KernelError::Unsupported("changed volume"))?;
+        let total = |shapes: &[&MockShape]| -> f64 {
+            shapes
+                .iter()
+                .map(|s| self.volume_of(&self.fingerprint(s)))
+                .sum()
+        };
+        Ok((total(after) - total(before), slack))
     }
 
     // Replace face (P5): the faces go, a replace(<first>) face comes.
@@ -838,6 +891,10 @@ impl Kernel for TestKernel {
             alike: self.alike,
             lists_new_faces: self.lists_new_faces,
             skew_fillets: self.skew_fillets,
+            noisy_fillets: self.noisy_fillets,
+            fillet_takes: self.fillet_takes,
+            fillet_noise: self.fillet_noise,
+            change_slack: self.change_slack,
             on_call: Default::default(),
             out_of_memory: Default::default(),
             slow: self.slow,

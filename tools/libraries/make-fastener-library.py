@@ -1,14 +1,18 @@
 # SPDX-License-Identifier: MIT
-"""Builds Mitcad's library of metric fasteners (mitcad#64) from the
+"""Builds the metric fasteners of Mitcad's parts library (mitcad-parts;
+mitcad#64; the fastener library mitcad-fasteners until 2.0.0) from the
 standards' dimension tables: one Mitcad design per standard, made with
 mitcad-cli from commands, with a configuration table of its sizes; preview
-images; the library's manifest, licence note, sources and README. With
---commit the folder becomes a git repository with the version recorded and
-tagged.
+images; the library's manifest, licence note, sources and README. The
+fasteners are CC0-1.0 (each component's own licence), the library MIT.
+With --merge the library's other parts already in the manifest (the
+profile generator's; tools/libraries/make-parts-library.py runs both) stay.
+With --commit the folder becomes a git repository with the version recorded
+and tagged.
 
     python3 make-fastener-library.py --cli build/dev/tools/cli/mitcad-cli \
-        --out ../libraries/mitcad-fasteners [--sizes M3,M5] \
-        [--standards iso4762,iso4032] [--version 1.0.0] [--commit]
+        --out ../libraries/mitcad-parts [--sizes M3,M5] \
+        [--standards iso4762,iso4032] [--version 1.0.0] [--merge] [--commit]
 
 The geometry is simplified for assemblies: heads, shanks, sockets and hex
 flats at their nominal sizes, no threads, chamfers or fillets. Lengths are
@@ -25,7 +29,12 @@ import sys
 import tempfile
 import zlib
 
-LIBRARY_ID = "mitcad-fasteners"
+LIBRARY_ID = "mitcad-parts"
+LIBRARY_NAME = "Mitcad parts"
+LIBRARY_DESCRIPTION = ("Mitcad's parts: ISO metric screws, nuts and washers, and slot profiles, connectors, nuts, "
+                       "caps, panels and linear parts for the BUILD tab.")
+# The library's licence; the fasteners' own is LICENSE.
+LIBRARY_LICENSE = "MIT"
 LICENSE = "CC0-1.0"
 
 # Dimension tables, millimetres. Head and nut sizes are the standards'
@@ -410,6 +419,60 @@ repository.
 """
 
 
+LICENSE_TEXT = f"""Mitcad parts: licences
+
+The library as a whole, and every part without a licence of its own, is
+licensed under the MIT licence:
+
+Copyright (c) 2026 Mitcad contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+The fasteners (the screws, nuts and washers to ISO standards in screws/,
+nuts/iso*.mitcad and washers/: their designs, tables and images) name
+{LICENSE} as their own licence: they are dedicated to the public domain
+under Creative Commons Zero v1.0 Universal.
+{LICENSE}'s text: https://creativecommons.org/publicdomain/zero/1.0/legalcode
+"""
+
+
+def merged(out, components, categories, sources):
+    """This run's components, categories and sources, then those of the
+    manifest in `out` that this run does not make."""
+    path = os.path.join(out, "mitcad-library.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            old = json.load(f)
+    except (OSError, ValueError):
+        return components, categories, sources
+    if not isinstance(old, dict):
+        return components, categories, sources
+    made = {c["id"] for c in components}
+    kept = [c for c in old.get("components") or [] if isinstance(c, dict) and c.get("id") not in made]
+    used = {c.get("category") for c in kept}
+    names = {c["id"] for c in categories}
+    more = [c for c in old.get("categories") or []
+            if isinstance(c, dict) and c.get("id") in used and c.get("id") not in names]
+    extra = [s for s in old.get("sources") or [] if s not in sources]
+    return components + kept, categories + more, sources + extra
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--cli", required=True, help="mitcad-cli")
@@ -420,6 +483,8 @@ def main():
     parser.add_argument("--commit", action="store_true",
                         help="record the folder as a git version and tag it v<version>")
     parser.add_argument("--work", help="folder for intermediate files (default: next to --out)")
+    parser.add_argument("--merge", action="store_true",
+                        help="keep the library's other parts of the manifest in --out (the profile generator's)")
     args = parser.parse_args()
 
     sizes = [s.strip() for s in args.sizes.split(",") if s.strip()]
@@ -457,33 +522,35 @@ def main():
             components.append({
                 "id": item["id"], "path": item["path"], "category": item["category"], "name": item["name"],
                 "standard": item["standard"], "keywords": item["keywords"], "preview": preview_path,
-                "designation": item["designation"],
+                "license": LICENSE, "designation": item["designation"],
                 "description": f"{len(item['rows'])} sizes, {item['rows'][0]['name']} to {item['rows'][-1]['name']}.",
             })
+    made = len(components)
     categories = [c for c in [{"id": "screws", "name": "Screws"}, {"id": "nuts", "name": "Nuts"},
                               {"id": "washers", "name": "Washers"}]
                   if any(item["category"] == c["id"] for item in components)]
+    sources = ["ISO 4762", "ISO 4017", "ISO 10642", "ISO 4032", "ISO 7089", "ISO 261", "ISO 724",
+               "Tabulated for this library; see SOURCES.md"]
+    if args.merge:
+        # The library's other parts stay: those of the manifest there that
+        # this run does not make, with their categories and sources.
+        components, categories, sources = merged(out, components, categories, sources)
     manifest = {
         "format": "mitcad-library", "version": 1, "id": LIBRARY_ID,
-        "name": "Mitcad metric fasteners",
-        "description": f"ISO metric screws, nuts and washers, {sizes[0]} to {sizes[-1]}, simplified for assemblies.",
-        "library_version": args.version, "license": LICENSE, "authors": ["Mitcad contributors"],
-        "sources": ["ISO 4762", "ISO 4017", "ISO 10642", "ISO 4032", "ISO 7089", "ISO 261", "ISO 724",
-                    "Tabulated for this library; see SOURCES.md"],
-        "units": "mm", "categories": categories, "components": components,
+        "name": LIBRARY_NAME, "description": LIBRARY_DESCRIPTION,
+        "library_version": args.version, "license": LIBRARY_LICENSE, "authors": ["Mitcad contributors"],
+        "sources": sources, "units": "mm", "categories": categories, "components": components,
     }
     write(os.path.join(out, "mitcad-library.json"), json.dumps(manifest, indent=2) + "\n")
-    write(os.path.join(out, "LICENSE"),
-          f"The designs, tables and images of this library are dedicated to the public domain\n"
-          f"under {LICENSE} (Creative Commons Zero v1.0 Universal).\n"
-          f"The licence's text: https://creativecommons.org/publicdomain/zero/1.0/legalcode\n")
+    write(os.path.join(out, "LICENSE"), LICENSE_TEXT)
     write(os.path.join(out, "SOURCES.md"), SOURCES)
     write(os.path.join(out, "README.md"),
-          "# Mitcad metric fasteners\n\n"
+          f"# {LIBRARY_NAME}\n\n"
           "ISO metric screws, nuts and washers for Mitcad's assemblies: each standard is one design\n"
           "with a table of its sizes. In Mitcad: Libraries, add this repository's URL, Fetch, then\n"
           "Insert Component from Library. Designs record the version they use.\n\n"
-          f"Licence: {LICENSE} (LICENSE). Sources of the dimensions: SOURCES.md.\n")
+          f"Licence: {LIBRARY_LICENSE}, the fasteners {LICENSE} (LICENSE). Sources of the dimensions: "
+          "SOURCES.md.\n")
     if args.commit:
         identity = ["-c", "user.name=Mitcad library generator", "-c", "user.email=libraries@mitcad.invalid"]
         if not os.path.isdir(os.path.join(out, ".git")):
@@ -491,10 +558,10 @@ def main():
         run(["git", "-C", out, "add", "-A"])
         status = run(["git", "-C", out, "status", "--porcelain"])
         if status.strip():
-            run(["git", "-C", out] + identity + ["commit", "-q", "-m", f"Mitcad metric fasteners {args.version}"])
+            run(["git", "-C", out] + identity + ["commit", "-q", "-m", f"{LIBRARY_NAME} {args.version}"])
         run(["git", "-C", out] + identity + ["tag", "-a", "-f", f"v{args.version}", "-m",
-                                              f"Mitcad metric fasteners {args.version}"])
-    print(f"{LIBRARY_ID} {args.version}: {len(components)} components in {out}")
+                                              f"{LIBRARY_NAME} {args.version}"])
+    print(f"{LIBRARY_ID} {args.version}: {made} components in {out}")
 
 
 if __name__ == "__main__":

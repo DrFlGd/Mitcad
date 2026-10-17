@@ -1,0 +1,22 @@
+[
+  {"comment": "BUILD (mitcad#375), opened on build_parts.mitcad: T (O1, F1) at the origin, P (O2, F2) on T's x+ slot 500 up, 300 long: a T junction of P's end A on T's side."},
+  {"cmd": "build_place", "part": {"source": "S1"}, "at": {"point": [0, 0, 0]}, "length": 1000},
+  {"cmd": "build_place", "part": {"source": "S1"},
+   "at": {"occurrence": "O1", "geometry": {"mount": "F1:mount(slot_x+_1)"}, "offset": 500}, "length": 300},
+  {"expect": {"query": {"query": "build_junctions"},
+              "result": {"junctions": [{"id": "C2:end_a|C1:slot_x+_1", "kind": "T"}]}}},
+
+  {"comment": "The bracket S2 at the junction, without fasteners (no library here): it machines a 6.8 mm hole 15 deep into P's end A (Hole F6)."},
+  {"cmd": "build_connect", "junction": "C2:end_a|C1:slot_x+_1", "part": {"source": "S2"}, "fasteners": false},
+  {"expect": {"feature": "F4", "status": "ok"}},
+  {"expect": {"feature": "F5", "status": "ok"}},
+  {"expect": {"feature": "F6", "status": "ok"}},
+  {"expect": {"body": "F2.b0", "volume": 269430.517, "tolerance": 1e-5}},
+  {"expect": {"query": {"query": "build_junctions"},
+              "result": {"junctions": [{"connectors": ["C3"]}]}}},
+
+  {"comment": "Removing the bracket removes its hole."},
+  {"cmd": "build_remove", "component": "C3"},
+  {"expect": {"body": "F2.b0", "volume": 270000}},
+  {"expect": {"bodies": 2}}
+]

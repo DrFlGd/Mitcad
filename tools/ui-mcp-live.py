@@ -291,6 +291,17 @@ def run_flow(bridge, design, say=print):
     check(finished["mode"] == "idle", "Finish Sketch: " + repr(finished))
     say("ok   ui_command finished the sketch")
 
+    # An appearance that reads no file is allowed, a texture by path is not
+    # (mitcad#383).
+    made = bridge.tool("model_command", {"document": document, "command": {
+        "cmd": "create_appearance", "id": "led_red", "name": "LED red", "based_on": "emissive_white",
+        "base_color": [1, 0.1, 0.08], "emission_color": [1, 0.1, 0.05], "emission": 5}})
+    check(made["applied"] is True, "create_appearance: " + repr(made)[:2000])
+    refused = bridge.tool("model_command", {"document": document, "command": {
+        "cmd": "create_appearance", "id": "wood", "texture": {"path": "/etc/wood.png"}}}, error=True)
+    check("/etc/wood.png" in refused["error"], "create_appearance by path: " + repr(refused))
+    say("ok   create_appearance without a file ran, a texture by path was refused")
+
     written = os.stat(design).st_mtime_ns
     time.sleep(0.05)
     saved = bridge.tool("document_save", {"document": document})

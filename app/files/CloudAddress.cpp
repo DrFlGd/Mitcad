@@ -93,6 +93,92 @@ QString localPath(const QString& text) {
   return text;
 }
 
+// "git clone <address> [folder]" as copied from a page: the address.
+// Surrounding quotes or <> are dropped.
+QString withoutCommand(const QString& pasted) {
+  QString text = pasted.trimmed();
+  if (text.startsWith(QLatin1String("git clone "), Qt::CaseInsensitive)) {
+    text.clear();
+    for (const QString& word : pasted.trimmed().mid(10).split(QLatin1Char(' '), Qt::SkipEmptyParts)) {
+      if (!word.startsWith(QLatin1Char('-'))) {
+        text = word;
+        break;
+      }
+    }
+  }
+  if (text.size() >= 2) {
+    const QChar first = text.front();
+    const QChar last = text.back();
+    if ((first == QLatin1Char('"') && last == QLatin1Char('"')) || (first == QLatin1Char('\'') && last == QLatin1Char('\'')) ||
+        (first == QLatin1Char('<') && last == QLatin1Char('>'))) {
+      text = text.mid(1, text.size() - 2).trimmed();
+    }
+  }
+  return text;
+}
+
+// host/owner/repository without a scheme (git.example.org/team/parts.git):
+// a host name with a dot (or localhost), then a path; no user, port or
+// colon, which would make it another form.
+bool isBareHostPath(const QString& text) {
+  if (text.contains(QStringLiteral("://")) || text.contains(QLatin1Char(' ')) || text.contains(QLatin1Char('\\')) ||
+      text.contains(QLatin1Char('@')) || text.contains(QLatin1Char(':'))) {
+    return false;
+  }
+  const qsizetype slash = text.indexOf(QLatin1Char('/'));
+  if (slash <= 0) {
+    return false;
+  }
+  const QString host = text.left(slash);
+  if (host != QLatin1String("localhost") && (!host.contains(QLatin1Char('.')) || host.startsWith(QLatin1Char('.')) ||
+                                             host.endsWith(QLatin1Char('.')))) {
+    return false;
+  }
+  for (const QChar c : host) {
+    if (!(c.isLetterOrNumber() || c == QLatin1Char('.') || c == QLatin1Char('-') || c == QLatin1Char('_'))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// What was typed or pasted as an address, ready to be read: the command
+// and quotes taken off, a bare host/path given https://.
+QString pastedAddress(const QString& typed) {
+  const QString text = withoutCommand(typed);
+  if (!isLocalPath(text) && isBareHostPath(text)) {
+    return QStringLiteral("https://") + text;
+  }
+  return text;
+}
+
+// The words after owner/repository in the address of a repository's page
+// in a browser (https://host/owner/repo/src/branch/main).
+bool isPageWord(const QString& word) {
+  static const char* const words[] = {"src",     "tree",     "blob",    "raw",  "commits",       "commit",  "issues",
+                                      "pulls",   "pull",     "releases", "wiki", "actions",       "branches", "tags",
+                                      "compare", "activity", "graphs",  "settings", "merge_requests"};
+  for (const char* candidate : words) {
+    if (word == QLatin1String(candidate)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool validHostName(const QString& host) {
+  if (host.isEmpty()) {
+    return false;
+  }
+  for (const QChar c : host) {
+    if (!(c.isLetterOrNumber() || c == QLatin1Char('.') || c == QLatin1Char('-') || c == QLatin1Char('_') ||
+          c == QLatin1Char('[') || c == QLatin1Char(']') || c == QLatin1Char(':'))) {
+      return false;
+    }
+  }
+  return true;
+}
+
 } // namespace
 
 QString cloudServiceName(CloudService service) {
@@ -223,7 +309,7 @@ QString CloudAddress::sshKeysPage() const {
 
 CloudAddress parseCloudAddress(const QString& url, const QString& forgejoServer) {
   CloudAddress address;
-  const QString text = url.trimmed();
+  QString text = pastedAddress(url);
   if (text.isEmpty()) {
     return address;
   }
@@ -238,8 +324,28 @@ CloudAddress parseCloudAddress(const QString& url, const QString& forgejoServer)
   if (!parsed) {
     return address;
   }
-  const QString path = repositoryPath(parsed->path);
-  const QStringList parts = path.split(QLatin1Char('/'));
+  const QString host = parsed->host;
+  QStringList parts = repositoryPath(parsed->path).split(QLatin1Char('/'));
+  // The address of a repository's page in a browser
+  // (https://host/owner/repo/src/branch/main, GitLab's .../-/tree/main) is
+  // the repository's: the page part is dropped.
+  bool gitlabPage = false;
+  if (!parsed->ssh && text.contains(QStringLiteral("://"))) {
+    qsizetype cut = -1;
+    const qsizetype dash = parts.indexOf(QStringLiteral("-"));
+    if (dash > 0) {
+      cut = dash;
+      gitlabPage = host != QLatin1String("gitlab.com");
+    } else if (host != QLatin1String("gitlab.com") && parts.size() > 2 && isPageWord(parts.at(2))) {
+      cut = 2;
+    }
+    if (cut > 0) {
+      parts = parts.mid(0, cut);
+      const QUrl pageUrl(text);
+      address.other = QStringLiteral("%1://%2/%3").arg(pageUrl.scheme(), pageUrl.authority(), parts.join(QLatin1Char('/')));
+      text = address.other;
+    }
+  }
   // Known services' addresses are <owner>/<repository>; on GitLab the owner
   // can be a group with subgroups (group/sub/repository). An empty part, or
   // one starting with '~' (a user's home on a server), stays another
@@ -252,17 +358,18 @@ CloudAddress parseCloudAddress(const QString& url, const QString& forgejoServer)
       return address;
     }
   }
-  // An https:// address with a port or a user, or ssh:// with a port, is
-  // not one the fields compose.
+  // An https:// address with a port or a user, or ssh:// with a port or
+  // another user than git (the fields compose git@), is not one the fields
+  // compose.
   if (text.contains(QStringLiteral("://"))) {
     const QUrl parsedUrl(text);
-    if (parsedUrl.port() != -1 || (!parsed->ssh && !parsedUrl.userName().isEmpty())) {
+    if (parsedUrl.port() != -1 || (!parsed->ssh && !parsedUrl.userName().isEmpty()) ||
+        (parsed->ssh && parsedUrl.userName() != QLatin1String("git"))) {
       return address;
     }
   } else if (!text.startsWith(QLatin1String("git@"))) {
     return address;
   }
-  const QString host = parsed->host;
   CloudService service = CloudService::Other;
   if (host == QLatin1String("github.com")) {
     service = CloudService::GitHub;
@@ -270,6 +377,11 @@ CloudAddress parseCloudAddress(const QString& url, const QString& forgejoServer)
     service = CloudService::GitLab;
   } else if (host == QLatin1String("codeberg.org") ||
              (!forgejoServer.trimmed().isEmpty() && host == forgejoServer.trimmed().toLower())) {
+    service = CloudService::Forgejo;
+  } else if (parts.size() == 2 && !gitlabPage) {
+    // Any other server (a self-hosted one): the address is owner/repository
+    // on it, as Forgejo and Gitea (and GitLab) have it; the fields then
+    // make the same address. Nothing is asked of the Server field first.
     service = CloudService::Forgejo;
   } else {
     return address;
@@ -287,6 +399,47 @@ CloudAddress parseCloudAddress(const QString& url, const QString& forgejoServer)
   address.owner = parts.mid(0, parts.size() - 1).join(QLatin1Char('/'));
   address.repository = parts.constLast();
   return address;
+}
+
+QString repositoryAddressProblem(const QString& typed) {
+  const QString text = pastedAddress(typed);
+  if (text.isEmpty() || isLocalPath(text)) {
+    return {};
+  }
+  const QString bad = tr("This is not a valid repository address: %1").arg(typed.trimmed());
+  if (text.contains(QStringLiteral("://"))) {
+    const QUrl parsed(text);
+    const QString scheme = parsed.scheme().toLower();
+    const bool known = scheme == QLatin1String("https") || scheme == QLatin1String("http") ||
+                       scheme == QLatin1String("ssh") || scheme == QLatin1String("git") ||
+                       scheme == QLatin1String("git+ssh") || scheme == QLatin1String("ssh+git");
+    if (!parsed.isValid() || !known || !validHostName(parsed.host()) || repositoryPath(parsed.path()).isEmpty()) {
+      return bad;
+    }
+    return {};
+  }
+  // [user@]host:path, as git reads it; a '/' before the first ':' makes it
+  // a path.
+  const std::optional<HostPath> parsed = hostPath(text);
+  if (!parsed || !validHostName(parsed->host) || parsed->path.trimmed().isEmpty()) {
+    return bad;
+  }
+  return {};
+}
+
+bool looksLikeRepositoryAddress(const QString& typed, bool bareHost) {
+  const QString text = withoutCommand(typed);
+  if (isLocalPath(text)) {
+    return false;
+  }
+  if (text.contains(QStringLiteral("://")) || text.contains(QLatin1Char('@'))) {
+    const std::optional<HostPath> parsed = hostPath(text);
+    return parsed && repositoryPath(parsed->path).contains(QLatin1Char('/'));
+  }
+  if (bareHost && isBareHostPath(text)) {
+    return repositoryPath(text.mid(text.indexOf(QLatin1Char('/')))).contains(QLatin1Char('/'));
+  }
+  return false;
 }
 
 QString repositoryNameFor(const QString& folderName) {

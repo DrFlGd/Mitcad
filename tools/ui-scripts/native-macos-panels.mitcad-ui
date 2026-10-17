@@ -14,12 +14,32 @@ focus-main
 
 menu 'File/Save As'
 focus-dialog '^Save As$'
+expect-native-text native.file.name '^Untitled\.mitcad$'
 native-file-directory '${MITCAD_TEST_WORK}'
 native-file-name 'native-panel'
 expect-native-text native.file.directory '${MITCAD_TEST_WORK}$'
 expect-native-text native.file.name '^native-panel$'
 native-file-cancel
 expect-native-dialog-gone '^Save As$'
+focus-main
+
+# The shared helpers receive a filename in their initial directory argument
+# and a remembered second filter. Assert them before changing any panel state.
+file-dialog save '${MITCAD_TEST_WORK}/suggested.txt' 'JSON (*.json);;Text (*.txt)' 'Text (*.txt)'
+focus-dialog '^File Dialog$'
+expect-native-text native.file.directory '^${MITCAD_TEST_WORK:re}$'
+expect-native-text native.file.name '^suggested\.txt$'
+expect-native-text native.file.filter '^Text \(\*\.txt\)$'
+native-file-cancel
+expect-native-dialog-gone '^File Dialog$'
+focus-main
+
+# A directory selection is the directory itself, never its parent.
+file-dialog directory '${MITCAD_TEST_WORK}'
+focus-dialog '^File Dialog$'
+expect-native-text native.file.directory '^${MITCAD_TEST_WORK:re}$'
+native-file-cancel
+expect-native-dialog-gone '^File Dialog$'
 focus-main
 
 # A file chooser opened by Diagnostics is a native sheet on Diagnostics,
@@ -47,4 +67,11 @@ focus-dialog '^Settings$'
 key Ctrl+w
 expect-native-dialog-gone '^Settings$'
 focus-main
+
+# A second process checks that the actual AppKit autosave restores this
+# non-default size and offset, instead of centring or resizing on startup.
+native-resize 900 600
+native-move 35 45
+expect-native-text native.window.origin '^35,45$'
+expect-native-text native.window.size '^900x600$'
 expect-never 'TestDriver: FAIL|Native Mac canvas:|OCCT view event failed'

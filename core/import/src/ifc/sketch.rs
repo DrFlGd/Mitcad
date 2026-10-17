@@ -197,6 +197,10 @@ impl Builder {
                 self.entities.push(e);
                 Some((id, true, false))
             }
+            Seg::Helix { .. } => {
+                notes.push("a helix is no sketch curve: it is left out".to_owned());
+                None
+            }
         }
     }
 

@@ -656,6 +656,38 @@ fn bounding_curves(
                             .then_some((s.min(t) - 1e-6, s.max(t) + 1e-6))
                     })
                     .collect();
+                if spans.is_empty() {
+                    return false;
+                }
+                // The parts of it the loops' edges run along, clipped to
+                // it: each must lie along another line. A part shorter
+                // than the samples' spacing (a corner of a profile 0.25 mm
+                // long on a line of 370 mm, beside a short line of the
+                // sketch along it, mitcad#235) has no sample on it.
+                let mut pieces: Vec<(f64, f64)> = Vec::new();
+                for (_, o) in &mine {
+                    for i in 0..o.len() {
+                        let ((s, h1), (t, h2)) = (at(o[i]), at(o[(i + 1) % o.len()]));
+                        let (lo, hi) = (s.min(t).max(0.0), s.max(t).min(l));
+                        if h1.abs() < tolerance && h2.abs() < tolerance && hi - lo > 1e-6 {
+                            pieces.push((lo, hi));
+                        }
+                    }
+                }
+                if !pieces.is_empty() {
+                    let mut spans = spans.clone();
+                    spans.sort_by(|a, b| a.0.total_cmp(&b.0));
+                    return pieces.iter().all(|&(lo, hi)| {
+                        // Walk the spans from the piece's start.
+                        let mut reach = lo;
+                        for &(s, t) in &spans {
+                            if s <= reach && t > reach {
+                                reach = t;
+                            }
+                        }
+                        reach >= hi
+                    });
+                }
                 // Its samples on the selected loops, each along another
                 // line.
                 let on_loops: Vec<f64> = points
@@ -773,6 +805,18 @@ fn draws_undecoded(item: &Value) -> bool {
         .any(|t| t.starts_with("NotDecoded") && UNDECODED_DRAWINGS.iter().any(|k| t.contains(k)))
 }
 
+/// Whether a sketch item draws only construction geometry, so that the
+/// profiles features selected in it are bounded by what it does not keep
+/// (a circle of the model's hole the selection holds, its sketch only
+/// construction lines about it: `01fb13c9` Extrusion8, mitcad#235).
+fn draws_only_construction(item: &Value) -> bool {
+    item["detail"]["curves"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .all(|c| c["isConstruction"] == true)
+}
+
 /// The curves of the profiles features selected in a sketch that left out
 /// what it draws (texts, splines through points: their geometry is not
 /// decoded, and a text's needs its font): the edges of the selections'
@@ -862,9 +906,42 @@ fn outline_curves(
                 };
                 format!("p{}", first_point + k)
             };
-            let (start, end) = (point_of(at[0]), point_of(at[4]));
             let id = format!("c{}", first_curve + new_curves.len());
+            if let OutlineEdge::Arc {
+                center,
+                radius,
+                start,
+                sweep,
+            } = e
+            {
+                // Counterclockwise from its start to its end; a whole turn
+                // a circle.
+                let middle = point_of(*center);
+                let geometry = |kind: &str| {
+                    json!({"type": kind, "center": [center[0], center[1], 0.0],
+                        "normal": [0.0, 0.0, 1.0], "radius": radius})
+                };
+                if sweep.abs() >= std::f64::consts::TAU - 1e-9 {
+                    new_curves.push(json!({"id": id, "type": "SketchCircle", "isFixed": true,
+                        "centerSketchPoint": middle, "radius": radius,
+                        "geometry": geometry("Circle3D")}));
+                    continue;
+                }
+                let (from, to) = if *sweep >= 0.0 { (0, 4) } else { (4, 0) };
+                let (first, last) = (point_of(at[from]), point_of(at[to]));
+                let low = start + sweep.min(0.0);
+                let mut arc = geometry("Arc3D");
+                arc["referenceVector"] = json!([1.0, 0.0, 0.0]);
+                arc["startAngle"] = json!(low);
+                arc["endAngle"] = json!(low + sweep.abs());
+                new_curves.push(json!({"id": id, "type": "SketchArc", "isFixed": true,
+                    "startSketchPoint": first, "endSketchPoint": last,
+                    "centerSketchPoint": middle, "radius": radius, "geometry": arc}));
+                continue;
+            }
+            let (start, end) = (point_of(at[0]), point_of(at[4]));
             new_curves.push(match e {
+                OutlineEdge::Arc { .. } => continue,
                 OutlineEdge::Line(a, b) => json!({"id": id, "type": "SketchLine", "isFixed": true,
                     "startSketchPoint": start, "endSketchPoint": end,
                     "geometry": {"type": "Line3D", "startPoint": [a[0], a[1], 0.0],
@@ -1309,8 +1386,9 @@ pub fn design_of_file(
         &profiles.borrow().outlines,
     );
     // The outlines of what sketches draw that is not decoded (texts,
-    // splines through points and their offsets), from the profiles the
-    // features selected in them (mitcad#235).
+    // splines through points and their offsets) or do not keep (sketches
+    // of construction geometry only), from the profiles the features
+    // selected in them (mitcad#235).
     let outlines: Vec<(usize, Vec<crate::profile::OutlineEdge>)> = {
         let mut p = profiles.borrow_mut();
         let selected = p.selected.clone();
@@ -1320,7 +1398,7 @@ pub fn design_of_file(
                 sketch_items
                     .get(s)
                     .and_then(|(i, _)| items.get(*i as usize))
-                    .is_some_and(draws_undecoded)
+                    .is_some_and(|i| draws_undecoded(i) || draws_only_construction(i))
             })
             .filter_map(|&(s, selection, m)| Some((s, p.outline_edges(dc, selection, &m)?)))
             .collect()
@@ -1439,6 +1517,67 @@ mod tests {
             c["geometry"]["nurbs"]["controlPoints"][1],
             json!([1.0, 3.0, 0.0])
         );
+    }
+
+    #[test]
+    fn outlines_in_sketches_of_construction_geometry_come_in_as_arcs_and_circles() {
+        use crate::profile::OutlineEdge;
+        // A sketch of construction lines only, in which an extrusion
+        // selected the circle of a hole (its wire body's edge): the sketch
+        // keeps nothing of it (mitcad#235).
+        let mut items = vec![json!({"objectType": "Sketch", "detail": {
+            "points": [{"id": "p0", "xyz": [0.0, 0.0, 0.0]}, {"id": "p1", "xyz": [1.0, 0.0, 0.0]}],
+            "curves": [{"id": "c0", "type": "SketchLine", "isConstruction": true,
+                        "startSketchPoint": "p0", "endSketchPoint": "p1", "geometry": {"type": "Line3D",
+                        "startPoint": [0.0, 0.0, 0.0], "endPoint": [1.0, 0.0, 0.0]}}],
+            "constraints": [], "counts": {"points": 2, "curves": 1}}})];
+        assert!(draws_only_construction(&items[0]) && !draws_undecoded(&items[0]));
+        let mut drawn = items[0].clone();
+        drawn["detail"]["curves"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("isConstruction");
+        assert!(!draws_only_construction(&drawn));
+        let circle = OutlineEdge::Arc {
+            center: [0.2, 0.3],
+            radius: 0.15,
+            start: 1.0,
+            sweep: std::f64::consts::TAU,
+        };
+        // A quarter clockwise: counterclockwise from its end.
+        let arc = OutlineEdge::Arc {
+            center: [2.0, 0.0],
+            radius: 0.5,
+            start: 0.0,
+            sweep: -std::f64::consts::FRAC_PI_2,
+        };
+        let sketches = HashMap::from([(7, (0, "Sketch1".to_owned()))]);
+        outline_curves(&mut items, &sketches, &[(7, vec![circle, arc])]);
+        let d = &items[0]["detail"];
+        let c = &d["curves"][1];
+        assert_eq!(c["type"], "SketchCircle");
+        assert_eq!(c["isFixed"], true);
+        assert_eq!(c["geometry"]["center"], json!([0.2, 0.3, 0.0]));
+        assert_eq!(c["radius"], 0.15);
+        let a = &d["curves"][2];
+        assert_eq!(a["type"], "SketchArc");
+        let g = &a["geometry"];
+        assert!((g["startAngle"].as_f64().unwrap() + std::f64::consts::FRAC_PI_2).abs() < 1e-12);
+        assert!(g["endAngle"].as_f64().unwrap().abs() < 1e-12);
+        let point = |id: &Value| {
+            d["points"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|p| p["id"] == *id)
+                .unwrap()["xyz"]
+                .clone()
+        };
+        let start = point(&a["startSketchPoint"]);
+        assert!((start[0].as_f64().unwrap() - 2.0).abs() < 1e-12);
+        assert!((start[1].as_f64().unwrap() + 0.5).abs() < 1e-12);
+        assert_eq!(point(&a["centerSketchPoint"]), json!([2.0, 0.0, 0.0]));
+        assert_eq!(d["_ipt_outline_curves"], 2);
     }
 
     #[test]
@@ -2088,6 +2227,51 @@ mod tests {
             .map(|c| c["isConstruction"] == true)
             .collect();
         assert_eq!(construction, [false, false]);
+    }
+
+    #[test]
+    fn a_flagged_line_that_alone_bounds_a_short_part_of_a_profile_bounds_it() {
+        // A slanted strip (its bottom 0.4 mm long on y = 0) whose bottom
+        // runs along a long flagged line c0, a short line of the sketch c1
+        // covering only its right end: c0 bounds the strip's bottom left
+        // of c1, between two of its samples (mitcad#235).
+        let line = |id: &str, a: [f64; 2], b: [f64; 2], flagged: bool| {
+            json!({"id": id, "type": "SketchLine", "isConstruction": flagged,
+                   "geometry": {"type": "Line3D", "startPoint": [a[0], a[1], 0.0],
+                                "endPoint": [b[0], b[1], 0.0]}})
+        };
+        let mut items = vec![
+            json!({"index": 0, "objectType": "Sketch", "detail": {"curves": [
+                line("c0", [0.0, 0.0], [37.02, 0.0], true),
+                line("c1", [37.006, 0.0], [37.02, 0.0], false),
+            ]}}),
+        ];
+        let sketches = HashMap::from([(7, (0, "Sketch1".to_owned()))]);
+        let flagged = HashMap::from([(7, vec!["c0".into()])]);
+        let outlines = vec![(
+            7,
+            1,
+            vec![
+                [37.02, 0.0],
+                [38.448, -2.02],
+                [38.4226, -2.0382],
+                [36.981, 0.0],
+            ],
+        )];
+        bounding_curves(&mut items, &sketches, &flagged, &outlines);
+        assert_eq!(
+            items[0]["detail"]["curves"][0]["isConstruction"],
+            json!(null)
+        );
+        // With c1 along the whole bottom, c0 adds nothing.
+        let mut items = vec![
+            json!({"index": 0, "objectType": "Sketch", "detail": {"curves": [
+                line("c0", [0.0, 0.0], [37.02, 0.0], true),
+                line("c1", [36.981, 0.0], [37.02, 0.0], false),
+            ]}}),
+        ];
+        bounding_curves(&mut items, &sketches, &flagged, &outlines);
+        assert_eq!(items[0]["detail"]["curves"][0]["isConstruction"], true);
     }
 
     #[test]

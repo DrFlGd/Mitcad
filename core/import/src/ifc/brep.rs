@@ -412,7 +412,7 @@ fn surface(s: &Surface) -> Result<BoundarySurface, String> {
 /// B-spline of degree 1.
 fn whole_curve(path: &Path) -> Result<BoundaryCurve, String> {
     match path.segments.as_slice() {
-        [one] => Ok(seg_curve(one).0),
+        [one] => Ok(seg_curve(one)?.0),
         many if many.iter().all(|s| matches!(s, Seg::Line { .. })) => {
             let mut poles = vec![many[0].start()];
             poles.extend(many.iter().map(Seg::end));
@@ -438,9 +438,10 @@ fn whole_curve(path: &Path) -> Result<BoundaryCurve, String> {
 }
 
 /// A piece's curve, and its parameters at the piece's start and end (the
-/// end's greater for conics and B-splines run their own way).
-fn seg_curve(seg: &Seg) -> (BoundaryCurve, [f64; 2]) {
-    match seg {
+/// end's greater for conics and B-splines run their own way); a helix
+/// (no IFC curve) is no boundary's curve.
+fn seg_curve(seg: &Seg) -> Result<(BoundaryCurve, [f64; 2]), String> {
+    Ok(match seg {
         Seg::Line { start, end } => (
             BoundaryCurve::Line {
                 origin: *start,
@@ -481,7 +482,8 @@ fn seg_curve(seg: &Seg) -> (BoundaryCurve, [f64; 2]) {
                 [lo, hi],
             )
         }
-    }
+        Seg::Helix { .. } => return Err("a helix is no boundary curve".to_owned()),
+    })
 }
 
 /// A conic run counter-clockwise about its normal: a clockwise one gets
@@ -844,7 +846,7 @@ pub fn advanced(faces: &[AdvancedFace]) -> Result<BoundaryBody, String> {
                             [0.0, math::length(math::sub(b, a))],
                         ),
                         Seg::Arc { .. } | Seg::Ellipse { .. } => {
-                            let (curve, own_range) = seg_curve(seg);
+                            let (curve, own_range) = seg_curve(seg)?;
                             let BoundaryCurve::Ellipse {
                                 center,
                                 normal,
@@ -880,7 +882,7 @@ pub fn advanced(faces: &[AdvancedFace]) -> Result<BoundaryBody, String> {
                             knots,
                             multiplicities,
                         } => {
-                            let (curve, _) = seg_curve(seg);
+                            let (curve, _) = seg_curve(seg)?;
                             let full = full_knots(knots, multiplicities);
                             let (lo, hi) = spline_domain(*degree, poles.len(), &full);
                             let ends_at = |p: [f64; 3], q: [f64; 3]| {
@@ -905,6 +907,9 @@ pub fn advanced(faces: &[AdvancedFace]) -> Result<BoundaryBody, String> {
                                 return Err("an edge runs against its B-spline".to_owned());
                             }
                             (curve, [t0, t1])
+                        }
+                        Seg::Helix { .. } => {
+                            return Err("a helix is no boundary curve".to_owned());
                         }
                     };
                     body.curves.push(curve);

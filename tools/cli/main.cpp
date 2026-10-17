@@ -198,6 +198,7 @@ const char* const kUsage = R"(usage:
   mitcad-cli import-rvt <file.rvt|file.rfa> [--save <out.mitcad>] [--report <report.json>]
                         [--reference-ifc <export.ifc>] [--link-folder <dir>]
                         [--report-only] [--mesh-only] [--no-reference-ifc] [--json]
+                        [--elements <id>,...]
       Imports an .rvt project's building elements: one component per level
       with its construction plane, the grids as construction axes; walls,
       floors, roofs, ceilings, columns and beams as features rebuilt from
@@ -214,7 +215,8 @@ const char* const kUsage = R"(usage:
       family file gives its metadata only. Prints the import report and
       the document report; --report writes the import report as JSON,
       --report-only reads and reports without importing, --mesh-only
-      builds no features.
+      builds no features, --elements imports only the elements listed
+      (by id) and leaves the others out.
   mitcad-cli export <file.mitcad> <out> [--bodies <b>,...] [--schema ap214|ap242]
                     [--unit mm|cm|m|in|ft] [--refinement low|medium|high]
                     [--deviation MM --angle DEG] [--ascii]

@@ -296,12 +296,14 @@ impl<K: Kernel> Document<K> {
                 .features
                 .iter()
                 .any(|f| matches!(f.def, FeatureDef::Base(_)))
+            && state.library_sources.is_empty()
         {
             return Ok(v2::save(state));
         }
         let mut written = HashSet::new();
         let mut referring = state.clone();
         referring.display = DisplayState::default();
+        referring.library_sources = state.library_sources.to_references(store)?;
         for entry in &mut referring.features {
             let FeatureDef::Base(base) = &entry.def else {
                 continue;
@@ -530,6 +532,8 @@ pub fn brep_references(json: &str) -> Result<BTreeSet<Sha256>, FileError> {
         version: Option<serde_json::Value>,
         #[serde(default)]
         features: Vec<serde_json::Value>,
+        #[serde(default)]
+        library_sources: Vec<serde_json::Value>,
     }
     let json = json.strip_prefix('\u{feff}').unwrap_or(json);
     let head: Head = serde_json::from_str(json).map_err(|e| FileError::Syntax(e.to_string()))?;
@@ -561,6 +565,24 @@ pub fn brep_references(json: &str) -> Result<BTreeSet<Sha256>, FileError> {
             out.insert(sha256);
         }
     }
+    // Library sources kept in the store (mitcad#375).
+    for (i, source) in head.library_sources.iter().enumerate() {
+        if source.pointer("/design/text").is_some() {
+            continue;
+        }
+        let Some(sha256) = source.pointer("/design/sha256") else {
+            continue;
+        };
+        let sha256 = sha256
+            .as_str()
+            .and_then(|text| text.parse().ok())
+            .ok_or_else(|| {
+                FileError::Invalid(format!(
+                    "library_sources[{i}]: design: sha256 is not a SHA-256"
+                ))
+            })?;
+        out.insert(sha256);
+    }
     Ok(out)
 }
 
@@ -569,7 +591,13 @@ pub(crate) fn has_references(state: &DocState) -> bool {
     state.features.iter().any(|f| match &f.def {
         FeatureDef::Base(base) => base.bodies.iter().any(|b| b.brep.is_reference()),
         _ => false,
-    })
+    }) || state.library_sources.has_references()
+}
+
+/// A definition state as a single-file design (version 2), its data
+/// inside (a library source of BUILD, mitcad#375).
+pub(crate) fn single_file(state: &DocState) -> String {
+    v2::save(state)
 }
 
 /// The design file of a new, empty design (what
@@ -585,6 +613,8 @@ pub fn empty_design() -> String {
 /// after, leaves the reference (its base feature fails) and adds a warning.
 /// Bodies with the same data share it.
 fn resolve(state: &mut DocState, store: &dyn BlobStore, warnings: &mut Vec<String>) {
+    // Library sources' designs (mitcad#375).
+    state.library_sources.resolve(store, warnings);
     let mut found: HashMap<Sha256, Option<Brep>> = HashMap::new();
     for (i, entry) in state.features.iter_mut().enumerate() {
         let FeatureDef::Base(base) = &entry.def else {

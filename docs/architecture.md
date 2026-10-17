@@ -329,6 +329,27 @@ design in a project.
   New Body with the bodies; the app takes the answer into the panel until
   the user picks an operation ([commands.md](../core/model/src/api/commands.md),
   "Extrude's automatic operation").
+- **BUILD** (mitcad#375, `core/model/src/build/`): the library parts the
+  BUILD tab places are kept once as the design's **library sources**
+  (`library_sources`: the library record, the design's text, inside a
+  single file or in a project's store, and the manifest's `build`
+  block). A placed part is a component whose first body is a
+  `derived_part` (`features/derived_part.rs`): the source's design
+  evaluated inside the feature with its row and values (a recompute of
+  its own, with the document's kernel), its visible bodies copied and
+  renamed `<F>:part(<source face>)` (`Kernel::rename_faces`), its ends
+  cut through their centres by booleans with a box (`<F>:end_a`,
+  `<F>:end_b`), and its `mount:<name>` joint origins published as frames
+  that joints and other features name (`{"mount": "F7:mount(end_b)"}`,
+  `Resolver::mount`). A `bound_length` measures a ray from one part's
+  frame to another's face or frame and sets its reference parameter as
+  driven dimensions do, before the derived part that takes it as its
+  length. The rules that place, mitre, connect, size panels and list cuts
+  plan everything against the document and make it in one undo step;
+  components record what BUILD made (`build`). Everything else treats
+  them as ordinary components, features, joints and parameters
+  ([commands.md](../core/model/src/api/commands.md), "BUILD: profile
+  assemblies").
 
 ### Units
 
@@ -967,8 +988,10 @@ component filter while preserving model indices; playback skips boundaries
 inside hidden feature runs. The native toolbar presents the shared project,
 live-update and edit-lock status and opens the shared project menu.
 The menu bar, application delegate, Finder open requests, document edited
-indicator, Services, text editing and window actions are AppKit's. System
-controls, semantic colours, fonts and sidebar material follow the running
+indicator, Services, text editing and window actions are AppKit's. The saved
+document frame restores both its origin and size; only a window without a
+saved frame starts centred with the default content size. System controls,
+semantic colours, fonts and sidebar material follow the running
 macOS version and accessibility settings. The toolbar changes in sketch
 mode; command definitions and saved shortcuts remain shared.
 
@@ -988,8 +1011,10 @@ from controls. `NativeForms` builds real AppKit inputs from `InputDef`;
 a command. Secondary dialogs and Settings use `NativeDialogs`, which binds
 the existing hidden Qt presenter models and signals to AppKit controls.
 Those widgets initialize their existing workflows but are never drawn.
-File and colour panels use explicit AppKit sheet hosts. Native alerts
-and secondary modal sheets preserve existing synchronous result semantics;
+File and colour panels use explicit AppKit sheet hosts. File presenters
+select widget-backed storage before setting their initial file and filter,
+so AppKit can read them without showing a Qt chooser. Native alerts and
+secondary modal sheets preserve existing synchronous result semantics;
 native command previews, inspections and commits use the asynchronous model API.
 
 The viewport alone remains Qt/OCCT content. A standalone viewport host is
@@ -1008,7 +1033,11 @@ The following layouts describe the retained Qt frontend.
 **Docked** (Windows and Linux: the ribbon in a toolbar, the panels in docks)
 or **Floating** (the default on macOS; `--chrome=docked|floating` overrides
 it). `MainWindow` builds either from the same panels, so object names and
-the positions the UI tests click are the same in both.
+the positions the UI tests click are the same in both. The ribbon's
+workspace tabs are SOLID and BUILD (mitcad#375: slot-profile assemblies,
+whose commands call only the model's BUILD commands and queries;
+app/COMMANDS.md, *BUILD*), with SKETCH after them while a sketch is
+edited; the AppKit frontend lists BUILD's commands in a menu.
 
 Docked has a look of its own, `WindowStyle` (`app/framework/WindowStyle`,
 mitcad#251), the same on every platform and in both themes: the docks and
@@ -1329,7 +1358,11 @@ just made).
   composed of owner (a user or an organisation; on GitLab also a group
   with subgroups, `group/sub`), repository and HTTPS or SSH
   (`files/CloudAddress`,
-  plain Qt Core, unit-tested; a typed address fills the fields back), and
+  plain Qt Core, unit-tested; the address field comes first and a typed or
+  pasted address of any common form (https, `git@host:owner/repo.git`,
+  `ssh://`, a browser page's address, `git clone …`) fills the fields back,
+  an unknown host as `owner/repository` on a generic server; an address
+  that is none is refused before the check, `repositoryAddressProblem`), and
   the check of the address while typing (after a pause), again when the
   dialog gets the focus back, on a thread of its own; its failures get
   their fixes (Copy Public Key and the SSH keys page, a credential helper's
@@ -1611,6 +1644,15 @@ expressions). Formats: [libraries.md](libraries.md).
 - **Publishing:** a library of one's own is a Mitcad project folder with
   version history; the library commands write its manifest and items, and
   the version history and remote commands record and push it.
+- **BUILD parts** (mitcad#375, `core/vcs/src/library/build.rs`): a
+  component's `build` block (role, slot systems, length, mount frames,
+  connector, panel and linear data) and its supplier fields are kept in
+  the manifest as written; `library check` holds them and the design
+  against the rules of [libraries.md](libraries.md#build-parts), and
+  `library_build_candidates` fits connectors to a junction the model
+  found (`build_junctions`) and parts to a picker's role and system. The
+  model never reads a library for this: the app asks the library side for
+  candidates and passes the chosen part to the BUILD commands.
 
 In the app (`app/files/MainWindowLibraries.cpp`, `LibraryDialogs.cpp`)
 fetches run as `RemoteTask`s on their own thread with Cancel; the other

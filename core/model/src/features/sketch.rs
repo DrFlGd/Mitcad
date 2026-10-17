@@ -1079,6 +1079,11 @@ impl<K: Kernel> Evaluate<K> for SketchDef {
             ),
         }
         .map_err(|e| e.message)?;
+        // A line or round curve the constraints collapsed leaves no region
+        // (mitcad#365).
+        if let Some(warning) = solved.status.degenerate_warning() {
+            ctx.warn(warning);
+        }
         // Where linked projections and what hangs on them are now.
         let moved = match &followed {
             None => Vec::new(),

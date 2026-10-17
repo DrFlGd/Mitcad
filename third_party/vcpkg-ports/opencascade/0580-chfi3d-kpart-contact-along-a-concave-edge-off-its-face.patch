@@ -1,0 +1,193 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: an analytic blend's contact running along a concave edge of its
+face is off that face there (mitcad#343).
+
+A pocket's ceiling rounded with a wall (radius 8) up to a block at the
+rounding's end whose side lies exactly where the rounding touches the
+ceiling: past the end the ceiling's contact line runs along the block's
+concave edge with the ceiling. SplitKPart hatches the line on the ceiling;
+the hatcher took that part as inside the ceiling or outside it as the line
+lay a rounding error (1e-14) to one side of the edge or the other. On one
+side of a stored design the line's domain ended at the block, the corner
+cut the blend with the face at the end and the result was the bodies
+stored in the file; on the mirrored side it ran on past the block to the
+ceiling's rim (21.6 further), the end's contact did not reach the face at
+the end, and the corner failed or built faces of reversed orientation.
+
+No ball of the blend touches the face along a concave edge of it (the
+face beyond rises into the ball), so HatchOffConcaveEdges hatches such a
+line moved off the face across those edges, by the shift HatchOnBoundary
+uses, and its ends found near a vertex are snapped to the vertex as
+HatchOnBoundary's are. Straight lines only; without such an edge nothing
+changes.
+
+Upstream: new.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_SpKP.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_SpKP.cxx
+index 691d31e..a5c0d7b 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_SpKP.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_SpKP.cxx
+@@ -15,6 +15,11 @@
+ // commercial license or contractual agreement.
+ 
+ #include <Adaptor2d_Curve2d.hxx>
++#include <BRepAdaptor_Curve2d.hxx>
++#include <BRepAdaptor_Surface.hxx>
++#include <ChFi3d.hxx>
++#include <ChFiDS_Map.hxx>
++#include <gp_Lin2d.hxx>
+ #include <Blend_CurvPointFuncInv.hxx>
+ #include <Blend_FuncInv.hxx>
+ #include <BRepBlend_Line.hxx>
+@@ -790,6 +795,116 @@ static int HatchOnBoundary(Geom2dHatch_Hatcher&                    H,
+   return 0;
+ }
+ 
++//=======================================================================
++// function : HatchOffConcaveEdges
++// purpose  : A tangency line (a straight one) running in part along a
++//            concave edge of its face F (a block whose side is flush with
++//            the contact, the face beyond rising into the blend): the
++//            hatcher takes that part as inside F or outside it as the line
++//            lies a rounding error to one side of the edge or the other.
++//            No ball of the blend touches F there (the face beyond cuts
++//            it), so the domains are those of the line moved off F across
++//            those edges by Shift (their ends near a vertex then are at the
++//            vertex, SnapToVertex). Replaces the hatching iH of H by that
++//            one and returns the number of domains; 0 where the line runs
++//            along no such edge.
++//=======================================================================
++
++static int HatchOffConcaveEdges(Geom2dHatch_Hatcher&                    H,
++                                int&                                    iH,
++                                const occ::handle<Geom2d_Curve>&        C,
++                                const occ::handle<Adaptor3d_TopolTool>& I,
++                                const occ::handle<Adaptor3d_Surface>&   S,
++                                const ChFiDS_Map&                       EFMap,
++                                const double                            Shift)
++{
++  occ::handle<Geom2d_Curve> aBasis = C;
++  if (const occ::handle<Geom2d_TrimmedCurve> aTrim = occ::down_cast<Geom2d_TrimmedCurve>(C))
++  {
++    aBasis = aTrim->BasisCurve();
++  }
++  const occ::handle<Geom2d_Line>         aLine = occ::down_cast<Geom2d_Line>(aBasis);
++  const occ::handle<BRepAdaptor_Surface> aBS   = occ::down_cast<BRepAdaptor_Surface>(S);
++  if (aLine.IsNull() || aBS.IsNull())
++  {
++    return 0;
++  }
++  const gp_Lin2d aL = aLine->Lin2d();
++  const gp_Vec2d aN(-aL.Direction().Y(), aL.Direction().X());
++  const TopoDS_Face& F    = aBS->Face();
++  double             aDir = 0.;
++  for (I->Init(); I->More(); I->Next())
++  {
++    const occ::handle<BRepAdaptor_Curve2d> Bc = occ::down_cast<BRepAdaptor_Curve2d>(I->Value());
++    if (Bc.IsNull() || Bc->GetType() != GeomAbs_Line || !EFMap.Contains(Bc->Edge()))
++    {
++      continue;
++    }
++    const TopoDS_Edge& E   = Bc->Edge();
++    const double       Tol = std::max(BRep_Tool::Tolerance(E), Precision::Confusion());
++    const double       a = Bc->FirstParameter(), b = Bc->LastParameter();
++    bool               along = b - a > 10. * Shift;
++    for (int k = 0; k <= 2 && along; k++)
++    {
++      const gp_Pnt2d p = Bc->Value(a + (b - a) * k / 2.);
++      const gp_Pnt2d q = ElCLib::Value(ElCLib::Parameter(aL, p), aL);
++      along            = S->Value(p.X(), p.Y()).Distance(S->Value(q.X(), q.Y())) <= Tol;
++    }
++    if (!along)
++    {
++      continue;
++    }
++    TopoDS_Face Fb;
++    for (NCollection_List<TopoDS_Shape>::Iterator it(EFMap(E)); it.More(); it.Next())
++    {
++      if (!it.Value().IsSame(F))
++      {
++        Fb = TopoDS::Face(it.Value());
++      }
++    }
++    if (Fb.IsNull() || ChFi3d::DefineConnectType(E, F, Fb, Precision::Angular(), false) != ChFiDS_Concave)
++    {
++      continue;
++    }
++    // (Off F: the side of the line where F is not, beside the edge's middle.)
++    const gp_Pnt2d m = Bc->Value(0.5 * (a + b));
++    double         d = 0.;
++    for (const double aSide : {1., -1.})
++    {
++      if (I->Classify(m.Translated(aN * (aSide * Shift)), Precision::PConfusion(), false) == TopAbs_OUT)
++      {
++        d = aSide;
++      }
++    }
++    if (d == 0. || d * aDir < 0.)
++    {
++      return 0;
++    }
++    aDir = d;
++  }
++  if (aDir == 0.)
++  {
++    return 0;
++  }
++  const occ::handle<Geom2d_Curve> aCs = occ::down_cast<Geom2d_Curve>(C->Translated(aN * (aDir * Shift)));
++  if (aCs.IsNull())
++  {
++    return 0;
++  }
++  Geom2dAdaptor_Curve aLs(aCs);
++  const int           iHs = H.Trim(aLs);
++  H.ComputeDomains(iHs);
++  const int aNb = H.IsDone(iHs) ? H.NbDomains(iHs) : 0;
++  if (aNb == 0)
++  {
++    H.RemHatching(iHs);
++    return 0;
++  }
++  H.RemHatching(iH);
++  iH = iHs;
++  return aNb;
++}
++
+ //=======================================================================
+ // function : LineOnBoundary
+ // purpose  : Whether a bounded tangency line lies on the boundary of its
+@@ -1212,6 +1327,16 @@ bool ChFi3d_Builder::SplitKPart(const occ::handle<ChFiDS_SurfData>&
+       Nb1   = HatchOnBoundary(H1, iH1, C1, I1, aShift);
+       snap1 = Nb1 > 0 ? 100. * aShift : 0.;
+     }
++    if (Nb1 > 0 && snap1 == 0.)
++    {
++      // (A line running along a concave edge of its face: off the face there.)
++      const int aNb = HatchOffConcaveEdges(H1, iH1, C1, I1, S1, myEFMap, aShift);
++      if (aNb > 0)
++      {
++        Nb1   = aNb;
++        snap1 = 100. * aShift;
++      }
++    }
+     if (Nb1 == 0)
+     {
+ #ifdef OCCT_DEBUG
+@@ -1266,6 +1391,16 @@ bool ChFi3d_Builder::SplitKPart(const occ::handle<ChFiDS_SurfData>&
+       Nb2   = HatchOnBoundary(H2, iH2, C2, I2, aShift);
+       snap2 = Nb2 > 0 ? 100. * aShift : 0.;
+     }
++    if (Nb2 > 0 && snap2 == 0.)
++    {
++      // (A line running along a concave edge of its face: off the face there.)
++      const int aNb = HatchOffConcaveEdges(H2, iH2, C2, I2, S2, myEFMap, aShift);
++      if (aNb > 0)
++      {
++        Nb2   = aNb;
++        snap2 = 100. * aShift;
++      }
++    }
+     if (Nb2 == 0)
+     {
+ #ifdef OCCT_DEBUG

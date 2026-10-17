@@ -60,6 +60,23 @@ QString cloudServiceHost(CloudService service, const QString& server = QString()
 // Forgejo fields hold, whose addresses are then read as Forgejo's.
 CloudAddress parseCloudAddress(const QString& url, const QString& forgejoServer = QString());
 
+// Why a typed or pasted address cannot be a repository's, or empty when it
+// can: an https://, http://, ssh:// or git:// address with a host and a
+// path, git's short form [user@]host:path, a local path or file:// address,
+// or "host/owner/repo" (https:// is assumed); also the text of "git clone
+// <address>". Anything else, such as the malformed
+// "git@host/owner/repo.git:owner/repo.git", gets "This is not a valid
+// repository address: ..." rather than a path made of the program's folder.
+// It does not look at the network nor at whether a folder exists.
+QString repositoryAddressProblem(const QString& typed);
+
+// Whether text typed into a single field (Server, Owner, Repository) is a
+// whole repository address pasted there, to be read as one: with a scheme
+// or a user@host:owner/repo form and an owner and a repository in its path;
+// `bareHost` also host/owner/repo (for the Server field, where
+// "git.example.org/team/parts.git" is no host name).
+bool looksLikeRepositoryAddress(const QString& typed, bool bareHost);
+
 // The repository's name a folder's name suggests: lowercase, spaces and
 // other characters a repository's name cannot have as '-' ("Robot arm" ->
 // "robot-arm").

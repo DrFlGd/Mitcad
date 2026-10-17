@@ -1,0 +1,382 @@
+[
+  {
+    "id": "cap20x20-i5",
+    "name": "Cover cap 20x20 I-type slot 5",
+    "category": "caps",
+    "source": "slot-profile-accessories/Cover-Cap-20-I-Type-slot-5/Motedis_PTS5I20x20.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "PTS5I20x20",
+    "supplier_url": "https://www.motedis.com/en/Cover-Cap-20-I-Type-slot-5",
+    "designation": "Cover cap 20x20 I5",
+    "rows": [],
+    "build": {
+      "role": "cap",
+      "systems": [{"type":"I","slot":5,"grid":20}],
+      "section": {"width":"20 mm","height":"20 mm"},
+      "frames": [{"name":"end","kind":"end","accepts":["profile"]}]
+    },
+    "frames": [{"name":"end","origin":[0,0,2.5],"z":[0,0,1],"x":[1,0,0],"kind":"end"}]
+  },
+  {
+    "id": "cap20x10-i5",
+    "name": "Cover cap 20x10 I-type slot 5",
+    "category": "caps",
+    "source": "slot-profile-accessories/Cover-Cap-20x10-I-Type-slot-5/Motedis-771/Motedis_771.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "771",
+    "supplier_url": "https://www.motedis.com/en/Cover-Cap-20x10-I-Type-slot-5",
+    "designation": "Cover cap 20x10 I5",
+    "rows": [],
+    "build": {
+      "role": "cap",
+      "systems": [{"type":"I","slot":5,"grid":20}],
+      "section": {"width":"20 mm","height":"10 mm"},
+      "frames": [{"name":"end","kind":"end","accepts":["profile"]}]
+    },
+    "frames": [{"name":"end","origin":[0,0,3],"z":[0,0,1],"x":[0,1,0],"kind":"end"}]
+  },
+  {
+    "id": "cap20x40-i5",
+    "name": "Cover cap 20x40 I-type slot 5",
+    "category": "caps",
+    "source": "slot-profile-accessories/Cover-Cap-20x40-I-Type-slot-5/Motedis_PTS5I20x40.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "PTS5I20x40",
+    "supplier_url": "https://www.motedis.com/en/Cover-Cap-20x40-I-Type-slot-5",
+    "designation": "Cover cap 20x40 I5",
+    "rows": [],
+    "build": {
+      "role": "cap",
+      "systems": [{"type":"I","slot":5,"grid":20}],
+      "section": {"width":"40 mm","height":"20 mm"},
+      "frames": [{"name":"end","kind":"end","accepts":["profile"]}]
+    },
+    "frames": [{"name":"end","origin":[10,0,2.5],"z":[0,0,1],"x":[1,0,0],"kind":"end"}]
+  },
+  {
+    "id": "cap20x60-i5",
+    "name": "Cover cap 20x60 I-type slot 5",
+    "category": "caps",
+    "source": "slot-profile-accessories/Cover-Cap-20x60-I-Type-slot-5/Motedis_091183.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "091183",
+    "supplier_url": "https://www.motedis.com/en/Cover-Cap-20x60-I-Type-slot-5",
+    "designation": "Cover cap 20x60 I5",
+    "rows": [],
+    "build": {
+      "role": "cap",
+      "systems": [{"type":"I","slot":5,"grid":20}],
+      "section": {"width":"60 mm","height":"20 mm"},
+      "frames": [{"name":"end","kind":"end","accepts":["profile"]}]
+    },
+    "frames": [{"name":"end","origin":[0,0,2.5],"z":[0,0,1],"x":[1,0,0],"kind":"end"}]
+  },
+  {
+    "id": "cap20x20-b6",
+    "name": "Cover cap 20x20 B-type slot 6",
+    "category": "caps",
+    "source": "slot-profile-accessories/Cover-Cap-20-B-Type-slot-6/Motedis_PTS6B20x20.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "PTS6B20x20",
+    "supplier_url": "https://www.motedis.com/en/Cover-Cap-20-B-Type-slot-6",
+    "designation": "Cover cap 20x20 B6",
+    "rows": [],
+    "build": {
+      "role": "cap",
+      "systems": [{"type":"B","slot":6,"grid":20}],
+      "section": {"width":"20 mm","height":"20 mm"},
+      "frames": [{"name":"end","kind":"end","accepts":["profile"]}]
+    },
+    "frames": [{"name":"end","origin":[0,0,2.5],"z":[0,0,1],"x":[1,0,0],"kind":"end"}]
+  },
+  {
+    "id": "cap20x40-b6",
+    "name": "Cover cap 20x40 B-type slot 6",
+    "category": "caps",
+    "source": "slot-profile-accessories/Cover-Cap-20x40-B-Type-slot-6/Motedis-PTS6B20x40/Motedis_PTS6B20x40.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "PTS6B20x40",
+    "supplier_url": "https://www.motedis.com/en/Cover-Cap-20x40-B-Type-slot-6",
+    "designation": "Cover cap 20x40 B6",
+    "rows": [],
+    "build": {
+      "role": "cap",
+      "systems": [{"type":"B","slot":6,"grid":20}],
+      "section": {"width":"40 mm","height":"20 mm"},
+      "frames": [{"name":"end","kind":"end","accepts":["profile"]}]
+    },
+    "frames": [{"name":"end","origin":[-0.66,1.38,-1.25],"z":[0,0,1],"x":[1,0,0],"kind":"end"}]
+  },
+  {
+    "id": "cap30x30-i6",
+    "name": "Cover cap 30x30 I-type slot 6",
+    "category": "caps",
+    "source": "slot-profile-accessories/Cover-Cap-30-I-Type-slot-6/Motedis_PTS6I30x30.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "PTS6I30x30",
+    "supplier_url": "https://www.motedis.com/en/Cover-Cap-30-I-Type-slot-6",
+    "designation": "Cover cap 30x30 I6",
+    "rows": [],
+    "build": {
+      "role": "cap",
+      "systems": [{"type":"I","slot":6,"grid":30}],
+      "section": {"width":"30 mm","height":"30 mm"},
+      "frames": [{"name":"end","kind":"end","accepts":["profile"]}]
+    },
+    "frames": [{"name":"end","origin":[0,0,3],"z":[0,0,1],"x":[1,0,0],"kind":"end"}]
+  },
+  {
+    "id": "cap30x60-i6",
+    "name": "Cover cap 30x60 I-type slot 6",
+    "category": "caps",
+    "source": "slot-profile-accessories/Cover-Cap-30x60-I-Type-slot-6/Motedis_1219.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "1219",
+    "supplier_url": "https://www.motedis.com/en/Cover-Cap-30x60-I-Type-slot-6",
+    "designation": "Cover cap 30x60 I6",
+    "rows": [],
+    "build": {
+      "role": "cap",
+      "systems": [{"type":"I","slot":6,"grid":30}],
+      "section": {"width":"60 mm","height":"30 mm"},
+      "frames": [{"name":"end","kind":"end","accepts":["profile"]}]
+    },
+    "frames": [{"name":"end","origin":[15,0,3],"z":[0,0,1],"x":[1,0,0],"kind":"end"}]
+  },
+  {
+    "id": "cap30x30-b8",
+    "name": "Cover cap 30x30 B-type slot 8",
+    "category": "caps",
+    "source": "slot-profile-accessories/Cover-Cap-30-B-Typ-slot-8/Motedis_PTS8B30x30.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "PTS8B30x30",
+    "supplier_url": "https://www.motedis.com/en/Cover-Cap-30-B-Typ-slot-8",
+    "designation": "Cover cap 30x30 B8",
+    "rows": [],
+    "build": {
+      "role": "cap",
+      "systems": [{"type":"B","slot":8,"grid":30}],
+      "section": {"width":"30 mm","height":"30 mm"},
+      "frames": [{"name":"end","kind":"end","accepts":["profile"]}]
+    },
+    "frames": [{"name":"end","origin":[0,0,4],"z":[0,0,1],"x":[1,0,0],"kind":"end"}]
+  },
+  {
+    "id": "cap30x60-b8",
+    "name": "Cover cap 30x60 B-type slot 8",
+    "category": "caps",
+    "source": "slot-profile-accessories/Cover-Cap-30x60-B-Typ-slot-8/Motedis_PTS8B30x60.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "PTS8B30x60",
+    "supplier_url": "https://www.motedis.com/en/Cover-Cap-30x60-B-Typ-slot-8",
+    "designation": "Cover cap 30x60 B8",
+    "rows": [],
+    "build": {
+      "role": "cap",
+      "systems": [{"type":"B","slot":8,"grid":30}],
+      "section": {"width":"60 mm","height":"30 mm"},
+      "frames": [{"name":"end","kind":"end","accepts":["profile"]}]
+    },
+    "frames": [{"name":"end","origin":[15,0,4],"z":[0,0,1],"x":[1,0,0],"kind":"end"}]
+  },
+  {
+    "id": "cap40x40-i8",
+    "name": "Cover cap 40x40 I-type slot 8",
+    "category": "caps",
+    "source": "slot-profile-accessories/Cover-Caps-40x40-I-Type-Slot-8/Motedis-PTS8I40x40/Motedis_PTS8I40x40.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "PTS8I40x40",
+    "supplier_url": "https://www.motedis.com/en/Cover-Caps-40x40-I-Type-Slot-8",
+    "designation": "Cover cap 40x40 I8",
+    "rows": [],
+    "build": {
+      "role": "cap",
+      "systems": [{"type":"I","slot":8,"grid":40}],
+      "section": {"width":"40 mm","height":"40 mm"},
+      "frames": [{"name":"end","kind":"end","accepts":["profile"]}]
+    },
+    "frames": [{"name":"end","origin":[0,0,4],"z":[0,0,1],"x":[1,0,0],"kind":"end"}]
+  },
+  {
+    "id": "cap40x80-i8",
+    "name": "Cover cap 40x80 I-type slot 8",
+    "category": "caps",
+    "source": "slot-profile-accessories/Cover-Caps-40x80-I-Type-slot-8/Motedis-PTS8I40x80/Motedis_PTS8I40x80.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "PTS8I40x80",
+    "supplier_url": "https://www.motedis.com/en/Cover-Caps-40x80-I-Type-slot-8",
+    "designation": "Cover cap 40x80 I8",
+    "rows": [],
+    "build": {
+      "role": "cap",
+      "systems": [{"type":"I","slot":8,"grid":40}],
+      "section": {"width":"80 mm","height":"40 mm"},
+      "frames": [{"name":"end","kind":"end","accepts":["profile"]}]
+    },
+    "frames": [{"name":"end","origin":[20,0,4],"z":[0,0,1],"x":[1,0,0],"kind":"end"}]
+  },
+  {
+    "id": "cap40x120-i8",
+    "name": "Cover cap 40x120 I-type slot 8",
+    "category": "caps",
+    "source": "slot-profile-accessories/Cover-Caps-40x120-I-Type-slot-8/Motedis-PTS8I40x120/Motedis_PTS8I40x120.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "PTS8I40x120",
+    "supplier_url": "https://www.motedis.com/en/Cover-Caps-40x120-I-Type-slot-8",
+    "designation": "Cover cap 40x120 I8",
+    "rows": [],
+    "build": {
+      "role": "cap",
+      "systems": [{"type":"I","slot":8,"grid":40}],
+      "section": {"width":"120 mm","height":"40 mm"},
+      "frames": [{"name":"end","kind":"end","accepts":["profile"]}]
+    },
+    "frames": [{"name":"end","origin":[0,0,4],"z":[0,0,1],"x":[1,0,0],"kind":"end"}]
+  },
+  {
+    "id": "cap40x160-i8",
+    "name": "Cover cap 40x160 I-type slot 8",
+    "category": "caps",
+    "source": "slot-profile-accessories/Cover-Caps-40x160-I-Type-slot-8/Motedis-PTS8I40x160/Motedis_PTS8I40x160.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "PTS8I40x160",
+    "supplier_url": "https://www.motedis.com/en/Cover-Caps-40x160-I-Type-slot-8",
+    "designation": "Cover cap 40x160 I8",
+    "rows": [],
+    "build": {
+      "role": "cap",
+      "systems": [{"type":"I","slot":8,"grid":40}],
+      "section": {"width":"160 mm","height":"40 mm"},
+      "frames": [{"name":"end","kind":"end","accepts":["profile"]}]
+    },
+    "frames": [{"name":"end","origin":[0,0,4],"z":[0,0,1],"x":[1,0,0],"kind":"end"}]
+  },
+  {
+    "id": "cap40x16-i8",
+    "name": "Cover cap 40x16 I-type slot 8",
+    "category": "caps",
+    "source": "slot-profile-accessories/Cover-Caps-40x16-I-Type-slot-8/Motedis-PTS8I40x16/Motedis_PTS8I40x16.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "PTS8I40x16",
+    "supplier_url": "https://www.motedis.com/en/Cover-Caps-40x16-I-Type-slot-8",
+    "designation": "Cover cap 40x16 I8",
+    "rows": [],
+    "build": {
+      "role": "cap",
+      "systems": [{"type":"I","slot":8,"grid":40}],
+      "section": {"width":"40 mm","height":"16 mm"},
+      "frames": [{"name":"end","kind":"end","accepts":["profile"]}]
+    },
+    "frames": [{"name":"end","origin":[0,0,4],"z":[0,0,1],"x":[0,1,0],"kind":"end"}]
+  },
+  {
+    "id": "cap80x16-i8",
+    "name": "Cover cap 80x16 I-type slot 8",
+    "category": "caps",
+    "source": "slot-profile-accessories/Cover-Caps-80x16-I-Type-slot-8/Motedis-746/Motedis_746.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "746",
+    "supplier_url": "https://www.motedis.com/en/Cover-Caps-80x16-I-Type-slot-8",
+    "designation": "Cover cap 80x16 I8",
+    "rows": [],
+    "build": {
+      "role": "cap",
+      "systems": [{"type":"I","slot":8,"grid":40}],
+      "section": {"width":"80 mm","height":"16 mm"},
+      "frames": [{"name":"end","kind":"end","accepts":["profile"]}]
+    },
+    "frames": [{"name":"end","origin":[0,0,4],"z":[0,0,1],"x":[0,1,0],"kind":"end"}]
+  },
+  {
+    "id": "cap80x80-i8",
+    "name": "Cover cap 80x80 I-type slot 8",
+    "category": "caps",
+    "source": "slot-profile-accessories/Cover-Caps-80x80-I-Type-slot-8/Motedis_PTS8I80x80.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "PTS8I80x80",
+    "supplier_url": "https://www.motedis.com/en/Cover-Caps-80x80-I-Type-slot-8",
+    "designation": "Cover cap 80x80 I8",
+    "rows": [],
+    "build": {
+      "role": "cap",
+      "systems": [{"type":"I","slot":8,"grid":40}],
+      "section": {"width":"80 mm","height":"80 mm"},
+      "frames": [{"name":"end","kind":"end","accepts":["profile"]}]
+    },
+    "frames": [{"name":"end","origin":[0,0,4],"z":[0,0,1],"x":[1,0,0],"kind":"end"}]
+  },
+  {
+    "id": "cap45x45-b10",
+    "name": "Cover cap 45x45 B-type slot 10",
+    "category": "caps",
+    "source": "slot-profile-accessories/Cover-caps-45x45-B-Type-slot-10/Motedis-PTS10B45x45/Motedis_PTS10B45x45.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "PTS10B45x45",
+    "supplier_url": "https://www.motedis.com/en/Cover-caps-45x45-B-Type-slot-10",
+    "designation": "Cover cap 45x45 B10",
+    "rows": [],
+    "build": {
+      "role": "cap",
+      "systems": [{"type":"B","slot":10,"grid":45}],
+      "section": {"width":"45 mm","height":"45 mm"},
+      "frames": [{"name":"end","kind":"end","accepts":["profile"]}]
+    },
+    "frames": [{"name":"end","origin":[0,0,4],"z":[0,0,1],"x":[1,0,0],"kind":"end"}]
+  },
+  {
+    "id": "cap45x90-b10",
+    "name": "Cover cap 45x90 B-type slot 10",
+    "category": "caps",
+    "source": "slot-profile-accessories/Cover-Caps-45x90-B-Type-slot-10/Motedis_PTS10B45x90.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "PTS10B45x90",
+    "supplier_url": "https://www.motedis.com/en/Cover-Caps-45x90-B-Type-slot-10",
+    "designation": "Cover cap 45x90 B10",
+    "rows": [],
+    "build": {
+      "role": "cap",
+      "systems": [{"type":"B","slot":10,"grid":45}],
+      "section": {"width":"90 mm","height":"45 mm"},
+      "frames": [{"name":"end","kind":"end","accepts":["profile"]}]
+    },
+    "frames": [{"name":"end","origin":[22.5,0,4],"z":[0,0,1],"x":[1,0,0],"kind":"end"}]
+  },
+  {
+    "id": "cap90x90-b10",
+    "name": "Cover cap 90x90L B-type slot 10",
+    "category": "caps",
+    "source": "slot-profile-accessories/Cover-Caps-90x90-L-B-Type-slot-10/091030.step",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "PTS10B90x90",
+    "supplier_url": "https://www.motedis.com/en/Cover-Caps-90x90-L-B-Type-slot-10",
+    "designation": "Cover cap 90x90 B10",
+    "rows": [],
+    "build": {
+      "role": "cap",
+      "systems": [{"type":"B","slot":10,"grid":45}],
+      "section": {"width":"90 mm","height":"90 mm"},
+      "frames": [{"name":"end","kind":"end","accepts":["profile"]}]
+    },
+    "frames": [{"name":"end","origin":[0,0,4],"z":[0,0,1],"x":[1,0,0],"kind":"end"}]
+  }
+]

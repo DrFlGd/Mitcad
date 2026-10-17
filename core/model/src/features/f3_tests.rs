@@ -142,6 +142,29 @@ fn sweeps_follow_their_paths_to_the_kernel() {
 }
 
 #[test]
+fn a_profile_sweeps_along_a_helix_path() {
+    // (mitcad#385) A fixed helix of three turns about the x axis through
+    // the profile's centre's circle: the kernel gets one helix.
+    let (mut b, _) = with_path();
+    let helix = |pitch: f64| {
+        json!({"helix": {"center": [0, -20, 0], "axis": [1, 0, 0], "x_axis": [0, 1, 0],
+            "radius": 20, "pitch": pitch, "start_angle": 0, "end_angle": 3.0 * std::f64::consts::TAU}})
+    };
+    let uid = add(&mut b.doc, sweep(&[], json!({"path": helix(15.0)}))).unwrap();
+    assert_eq!(status(&b.doc, uid), FeatureStatus::Ok);
+    assert_eq!(
+        last_spec(&b.doc),
+        "sweep F5 path helix extents 1 1 Perpendicular twist 0 taper 0 rail none"
+    );
+    // A helix that does not rise is refused.
+    let refused = b
+        .doc
+        .edit_feature(uid, &def(sweep(&[], json!({"path": helix(0.0)}))))
+        .unwrap_err();
+    assert!(refused.to_string().contains("pitch"), "{refused}");
+}
+
+#[test]
 fn sweep_paths_and_values_are_checked() {
     let (mut b, _) = with_path();
     for (value, expected) in [

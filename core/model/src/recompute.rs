@@ -142,6 +142,10 @@ pub(crate) struct Output<S> {
     pub datum: Option<Versioned<Datum>>,
     /// Occurrences the feature moves (F6).
     pub placements: Vec<PlacementChange>,
+    /// A derived part's mount frames (mitcad#375).
+    pub mounts: Option<crate::features::derived_part::Mounts>,
+    /// Reference parameters it measured (a bound length, mitcad#375).
+    pub measured: Vec<(ParamId, f64)>,
 }
 
 pub(crate) struct FeatureResult<S> {
@@ -203,6 +207,8 @@ pub(crate) enum Read {
     /// The document's join tolerance (as bits), None without one
     /// (mitcad#298).
     JoinTolerance(Option<u64>),
+    /// A library source of the design (mitcad#375), None when missing.
+    Source(crate::build::SourceId, Option<Version>),
 }
 
 /// A placement's matrix as bits, for [`Read::Placement`].
@@ -258,6 +264,7 @@ impl Read {
             Self::Placement(uid, bits) => env.placements.get(uid).map(placement_bits) == *bits,
             Self::Assembly(key) => crate::features::extrude_scope::assembly_key(env) == *key,
             Self::JoinTolerance(bits) => env.join_tolerance.map(f64::to_bits) == *bits,
+            Self::Source(id, version) => env.sources.version(*id) == *version,
         }
     }
 
@@ -327,6 +334,7 @@ impl Read {
                     f.u64(b);
                 });
             }
+            Self::Source(id, v) => version(fingerprint.u8(13).u32(id.0), *v),
         }
     }
 }
@@ -864,6 +872,7 @@ pub(crate) fn recompute<K: Kernel>(
             placements: &done.placements,
             written_from: &written_from,
             join_tolerance: state.join_tolerance,
+            sources: &state.library_sources,
         };
         let output = match cache.lookup(entry, &env) {
             Some(output) => output,
@@ -958,6 +967,16 @@ pub(crate) fn recompute<K: Kernel>(
             }
             if let Some(datum) = &output.datum {
                 done.datums.insert(entry.uid, datum.clone());
+            }
+            // A bound length's measured value (mitcad#375) sizes what follows.
+            if status.is_ok() {
+                for (id, value) in &output.measured {
+                    if params.value(*id).map(f64::to_bits) != Some(value.to_bits())
+                        && params.to_mut().set_measured(*id, *value).is_ok()
+                    {
+                        done.measured.push((*id, *value));
+                    }
+                }
             }
             // Bodies the feature sets go to the component it made, if any.
             let target = assembly.created_by(entry.uid).unwrap_or(entry.component);
@@ -1155,6 +1174,8 @@ fn evaluate<K: Kernel>(
                 value: datum,
             }),
             placements: produced.placements,
+            mounts: (!produced.mounts.is_empty()).then(|| std::sync::Arc::new(produced.mounts)),
+            measured: produced.measured,
         },
         Err(message) => Output {
             sheet_rules: None,
@@ -1176,6 +1197,8 @@ fn evaluate<K: Kernel>(
             tool: None,
             datum: None,
             placements: Vec::new(),
+            mounts: None,
+            measured: Vec::new(),
         },
     };
     Arc::new(output)

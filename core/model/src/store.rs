@@ -208,6 +208,7 @@ enum StoredRead {
     Placement(OccurrenceUid, Option<[u64; 12]>),
     Assembly(Hex),
     JoinTolerance(Option<u64>),
+    Source(crate::build::SourceId, Option<Hex>),
 }
 
 impl StoredRead {
@@ -232,6 +233,7 @@ impl StoredRead {
             Read::Placement(uid, bits) => Self::Placement(*uid, *bits),
             Read::Assembly(key) => Self::Assembly(Hex(*key)),
             Read::JoinTolerance(bits) => Self::JoinTolerance(*bits),
+            Read::Source(id, v) => Self::Source(*id, hex(v)),
         }
     }
 
@@ -258,6 +260,7 @@ impl StoredRead {
             Self::Placement(uid, bits) => Read::Placement(*uid, *bits),
             Self::Assembly(key) => Read::Assembly(key.0),
             Self::JoinTolerance(bits) => Read::JoinTolerance(*bits),
+            Self::Source(id, v) => Read::Source(*id, version(v)),
         })
     }
 }
@@ -353,6 +356,8 @@ pub(crate) fn storable(def: &FeatureDef) -> bool {
         | FeatureDef::RigidGroup(_) => false,
         // Assembly constraints (mitcad#148).
         FeatureDef::ConstraintSet(_) => false,
+        // BUILD (mitcad#375): mount frames and measured lengths are not stored.
+        FeatureDef::DerivedPart(_) | FeatureDef::BoundLength(_) => false,
         FeatureDef::Base(base) => {
             !matches!(base.operation, Operation::NewBody | Operation::NewComponent)
         }
@@ -636,6 +641,8 @@ fn restore<K: Kernel>(
         tool: head.tool.map(shape).transpose()?,
         datum: None,
         placements: Vec::new(),
+        mounts: None,
+        measured: Vec::new(),
     })
 }
 

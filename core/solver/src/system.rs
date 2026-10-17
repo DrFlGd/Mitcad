@@ -870,6 +870,13 @@ impl System {
         ))
     }
 
+    fn is_ellipse(&self, e: EntityId) -> Result<bool, Error> {
+        Ok(matches!(
+            self.ent(e)?,
+            EntityData::Ellipse { .. } | EntityData::EllipticalArc { .. }
+        ))
+    }
+
     fn round(&self, e: EntityId) -> Result<(usize, f64), Error> {
         match *self.ent(e)? {
             EntityData::Circle { c, r } => Ok((c, self.params[r])),
@@ -979,9 +986,10 @@ impl System {
             Equal(a, b) => {
                 let la = matches!(self.ent(a)?, EntityData::Line { .. });
                 let lb = matches!(self.ent(b)?, EntityData::Line { .. });
-                if la != lb || (!la && !(self.is_round(a)? && self.is_round(b)?)) {
+                let ellipses = self.is_ellipse(a)? && self.is_ellipse(b)?;
+                if la != lb || (!la && !ellipses && !(self.is_round(a)? && self.is_round(b)?)) {
                     return Err(Error::Unsupported(
-                        "equal needs two lines or two circles/arcs",
+                        "equal needs two lines, two circles/arcs or two ellipses",
                     ));
                 }
             }

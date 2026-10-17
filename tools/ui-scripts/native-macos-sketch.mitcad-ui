@@ -53,6 +53,25 @@ screenshot '${MITCAD_TEST_WORK}/native-macos-sketch-fields.png'
 key Return
 expect-log 'Added rectangle 40\.5 x 25 mm at \(0, 0\)' 30
 expect-log 'Sketch Sketch1: 0 DOF' 30
+
+# Starting a panel command closes the Dimension tool's native inline
+# editor before retiring the tool (mitcad#351). Neither confirmation nor
+# a click after Cancel may invoke the pending dimension callback.
+mark
+capture-undo-depth beforeDimension
+native-action sketch.dimension
+sketch-click 20 0
+sketch-click 20 8
+expect-log 'Sketch value editor at'
+native-click native.ribbon.sketch.offset
+expect-log 'Command Offset started'
+expect-log 'Sketch value editor closed'
+native-click commandCancel
+expect-log 'Command Offset cancelled'
+key Return
+sketch-click 25 10
+expect-no-log 'Added (driven )?dimension'
+expect-undo-depth ${beforeDimension} 0
 native-click native.ribbon.sketch.finish
 expect-log 'Sketch finished' 30
 

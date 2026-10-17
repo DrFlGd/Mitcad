@@ -15,6 +15,7 @@
 
 #include <QColor>
 #include <QHash>
+#include <QImage>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QKeySequence>
@@ -173,9 +174,24 @@ struct InputDef {
   // Choice: options that follow other inputs (a thread's sizes follow its
   // standard, P9); `choices` when unset.
   std::function<QVector<QPair<QString, QString>>(const CommandState&)> choicesFor;
-  // Called after the user changed a choice: sets the inputs that follow it
-  // (a new thread size takes its coarse designation).
+  // Called after the user changed a choice, a value (typed, or dragged by
+  // its handle) or a text: sets the inputs that follow it (a new thread
+  // size takes its coarse designation; a length typed in BUILD detaches it
+  // from its auto length, a search text narrows its picker).
   std::function<void(CommandState&, const CommandContext&)> onChange;
+  // Choice: Tab, while the main window has the keyboard and the input is
+  // shown, steps the choice to the next of these values (BUILD's auto
+  // length: face, centre, through; mitcad#375). Shift+Tab still moves the
+  // keyboard between the fields.
+  QStringList tabCycle;
+  // Choice: a picture for each option (by its value) beside its label;
+  // a null image for none (BUILD's connectors: the library's previews).
+  std::function<QImage(const QString&)> choiceImage;
+  // Value: also a box at the cursor in the view (BUILD's length), in step
+  // with the panel's field: what is typed in either is the input's text.
+  // The shown inspection's report may give the box another text while the
+  // input's own is not typed: {"cursor": {"<key>": "742.5 mm"}}.
+  bool cursorBox = false;
 
   // Check and Flip.
   bool defaultChecked = false;
@@ -254,6 +270,18 @@ struct InputDef {
   }
   InputDef& withOnChange(std::function<void(CommandState&, const CommandContext&)> call) {
     onChange = std::move(call);
+    return *this;
+  }
+  InputDef& withTabCycle(const QStringList& values) {
+    tabCycle = values;
+    return *this;
+  }
+  InputDef& withChoiceImages(std::function<QImage(const QString&)> image) {
+    choiceImage = std::move(image);
+    return *this;
+  }
+  InputDef& withCursorBox() {
+    cursorBox = true;
     return *this;
   }
 
@@ -378,6 +406,12 @@ struct Inspection {
   TopoDS_Shape shape; // drawn over the view (overlaps, the section plane)
   bool red = false;   // the shape is a problem (interference)
   QJsonValue section; // a plane reference: the bodies are shown cut there
+  // Items highlighted besides the inputs' (orange; a component's bodies for
+  // a Component item): BUILD's auto-length target (mitcad#375).
+  Selection highlights;
+  // Given to the definition's previewMarkers for labelled points over the
+  // view (BUILD: the junctions, the new part's length at its free end).
+  QJsonObject report;
 };
 
 struct CommandDef {
@@ -446,6 +480,15 @@ struct CommandDef {
   std::function<bool(const CommandState&, const CommandContext&)> accept;
   // The OK button's text when it is not "OK" (3D Print: Send).
   QString okLabel;
+  // Commands that run model commands of their own (BUILD, mitcad#375),
+  // with `inspect` as their preview: OK (Enter) calls `apply`, which runs
+  // them through the main window (each its own undo step, or one step for
+  // several) and may change the inputs; false when the model refused (the
+  // panel shows the reason and stays). With `repeats` the panel then stays
+  // open for the next one (BUILD's Place, the next profile), its Cancel
+  // named Close: what was applied stays; else it closes.
+  std::function<bool(CommandState&, const CommandContext&)> apply;
+  bool repeats = false;
   QVector<InputDef> inputs;
   // Fills the inputs from the selection made before the command, instead
   // of each item going to the first input that takes it (3D Print: a face
@@ -457,6 +500,14 @@ struct CommandDef {
   std::function<void(CommandState&, const CommandContext&)> init;
   std::function<Built(const CommandState&, const CommandContext&)> build;
   std::function<std::vector<PreviewMarker>(const QJsonObject&)> previewMarkers;
+  // As previewMarkers, with the inputs' state (in its place when set): the
+  // markers may follow the hover (BUILD's junctions of the profile under
+  // the mouse, mitcad#375).
+  std::function<std::vector<PreviewMarker>(const QJsonObject&, const CommandState&)> previewMarkersIn;
+  // The mouse moved onto another item of the view (an invalid one: off the
+  // bodies); true when it changed the state, so that the markers are drawn
+  // again (no preview is computed for it).
+  std::function<bool(const SelectionItem&, CommandState&, const CommandContext&)> hover;
   // Fills the inputs from a definition to edit: the `feature` query's def,
   // with the feature's "uid" added (see CommandContext::valueText).
   std::function<void(const QJsonObject&, CommandState&, const CommandContext&)> load;

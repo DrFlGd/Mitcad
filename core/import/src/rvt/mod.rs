@@ -12,7 +12,9 @@
 //!   project when one is given ([`Reference`], by the element's GlobalId:
 //!   its volume within 1 % and its box within 5 mm), else against its
 //!   stored box. An element whose features fail or disagree is undone and
-//!   comes in as below, with the reason on its report line.
+//!   comes in as below, with the reason on its report line. A wall's
+//!   openings (mitcad#345) are counted: cut, held by its fallback body (the
+//!   geometry the file keeps, the reference's body), or missing and why.
 //! - **Every other element** comes in as a body named `Family:Type:Id`
 //!   (or by its class and id) of its level's base feature, from the first
 //!   source that gives one (mitcad#333): a mesh of the geometry the file
@@ -202,6 +204,14 @@ pub struct Report {
     /// Elements left out because the process ran low on memory.
     pub memory_low: usize,
     pub warnings: Vec<String>,
+    /// The walls' openings (mitcad#345): the inserts and opening elements
+    /// cut from their walls built as features, or whose walls' bodies hold
+    /// them (the geometry the file keeps, the reference's body); those
+    /// without their opening, by reason, and each of them (`insert 47 in
+    /// wall 31: why`, at most 200).
+    pub openings_cut: usize,
+    pub openings_missing: BTreeMap<String, usize>,
+    pub openings_missing_lines: Vec<String>,
     /// A line for every element imported.
     pub elements: Vec<ElementLine>,
 }
@@ -479,6 +489,62 @@ pub struct RvtOptions<'a> {
     pub ifc_links: Vec<IfcLink>,
     /// Every element as its mesh or box (phase 1), no features.
     pub mesh_only: bool,
+    /// Only these elements of the project (mitcad#385): the others are
+    /// left out (`not among the elements asked for`).
+    pub only: Option<HashSet<i64>>,
+    /// The IFC export's openings (mitcad#345, [`reference_openings`]): an
+    /// insert whose type gives no cut tool is cut by the opening of its
+    /// GlobalId.
+    pub openings: HashMap<String, Vec<mitcad_ifc::geometry::Item>>,
+}
+
+/// The openings of an IFC export (mitcad#345): each `IfcOpeningElement`'s
+/// body items in the project's coordinates (mm), by its own GlobalId and
+/// by those of the elements that fill it (`IfcRelFillsElement`), for
+/// [`RvtOptions::openings`].
+pub fn reference_openings(
+    file: &mitcad_ifc::IfcFile,
+) -> HashMap<String, Vec<mitcad_ifc::geometry::Item>> {
+    use mitcad_ifc::geometry::{Decoder, Item};
+    use mitcad_ifc::math;
+    let model = mitcad_ifc::model::Model::read(file);
+    let decoder = Decoder::new(file, &model.units);
+    let place = |item: &Item, m: &math::Matrix| crate::ifc::transform::transformed(item, m).ok();
+    let mut out = HashMap::new();
+    for p in model.products.values() {
+        if &*p.kind != "IFCOPENINGELEMENT" {
+            continue;
+        }
+        let Some(rep) = model.body(file, p) else {
+            continue;
+        };
+        let mut items = Vec::new();
+        for i in rep.items {
+            match decoder.item(i) {
+                Item::Mapped { map, transform } => {
+                    let m = math::mul(&p.placement, &transform);
+                    if let Some(r) = model.map_representation(file, map) {
+                        items.extend(
+                            r.items
+                                .into_iter()
+                                .filter_map(|j| place(&decoder.item(j), &m)),
+                        );
+                    }
+                }
+                other => items.extend(place(&other, &p.placement)),
+            }
+        }
+        if items.is_empty() {
+            continue;
+        }
+        for f in &p.fillings {
+            if let Some(filling) = model.products.get(f) {
+                out.insert(filling.global_id.clone(), items.clone());
+            }
+        }
+        out.insert(p.global_id.clone(), items);
+    }
+    out
 }
 
 /// Fraction of the reference volume the built volume may differ by.
@@ -506,17 +572,29 @@ struct Pending<'m> {
     solid: Node,
     more: Vec<Node>,
     cuts: Vec<(String, Node)>,
+    /// A wall's attachments (mitcad#348): its heights are checked both
+    /// ways.
+    attached: Vec<String>,
+    /// A wall's openings (mitcad#345).
+    openings: Vec<plan::WallOpening>,
 }
 
-/// An element's features and notes in a batch, or why they did not build.
-type Built = Result<(Vec<FeatureUid>, Vec<String>), String>;
+/// An element's features and notes in a batch, or why they did not build;
+/// and its cuts: what (`insert 47`), their features, and whether they were
+/// made.
+type Built = Result<(Vec<FeatureUid>, Vec<String>, Vec<CutMade>), String>;
+
+/// A cut of an element in a batch: what, its features, whether it was
+/// made (mitcad#345).
+type CutMade = (String, Vec<FeatureUid>, bool);
 
 /// Elements built in one command.
 const BATCH: usize = 64;
 
-/// An element of a batch: what it was checked against, its features and
-/// its cuts that remove nothing, or why it is not built.
-type Verdict = Result<(&'static str, Vec<FeatureUid>, Vec<FeatureUid>), String>;
+/// An element of a batch: what it was checked against, its features, its
+/// cuts that remove nothing and its cuts (mitcad#345), or why it is not
+/// built.
+type Verdict = Result<(&'static str, Vec<FeatureUid>, Vec<FeatureUid>, Vec<CutMade>), String>;
 
 /// A level's component, its report and the bodies of its base feature.
 struct LevelGroup<S> {
@@ -634,6 +712,53 @@ fn check(
     Ok("stored box")
 }
 
+/// The openings of a wall whose plan failed (mitcad#345): what would cut
+/// it, for its fallback body to hold or to miss (none for a curtain wall,
+/// whose parts are its shape).
+fn expected_openings(
+    model: &Model,
+    e: &Element,
+    curtain_hosts: &HashSet<i64>,
+) -> Vec<plan::WallOpening> {
+    let Some(w) = model.building.walls.get(&e.id) else {
+        return Vec::new();
+    };
+    if curtain_hosts.contains(&e.id) {
+        return Vec::new();
+    }
+    plan::wall_openings(model, w)
+        .0
+        .into_iter()
+        .map(|c| plan::WallOpening {
+            id: c.id,
+            label: c.label,
+            missing: c.tools.err(),
+        })
+        .collect()
+}
+
+/// An attached wall's heights against its stored box, both ways
+/// (mitcad#348): checked against the stored box alone, a wall too low
+/// (its top not reaching its roof) would pass.
+fn check_heights(e: &Element, bbox: Option<Bbox>, attached: &[String]) -> Result<(), String> {
+    let (Some(bbox), Some(stored)) = (bbox, e.bbox) else {
+        return Ok(());
+    };
+    let (lo, hi) = (stored[2] * FOOT_MM, stored[5] * FOOT_MM);
+    let d = (bbox.0[2] - lo).abs().max((bbox.1[2] - hi).abs());
+    if d > BOX_TOLERANCE_MM {
+        return Err(format!(
+            "its heights {:.0} to {:.0} mm lie {d:.1} mm from its stored box's ({:.0} to {:.0} mm; {})",
+            bbox.0[2],
+            bbox.1[2],
+            lo,
+            hi,
+            attached.join(", ")
+        ));
+    }
+    Ok(())
+}
+
 /// What the import does, over the project and its linked models.
 struct Importer<'r, 'o, K: Kernel> {
     document: &'r mut Document<K>,
@@ -655,6 +780,9 @@ struct Importer<'r, 'o, K: Kernel> {
     /// The model's railing parts: balusters, rails and the rails' types,
     /// left out of their railings' meshes.
     parts: HashSet<i64>,
+    /// The model's inserts without their openings (mitcad#345): insert,
+    /// wall, why; noted on the inserts' lines at the end.
+    missing: Vec<(i64, i64, String)>,
 }
 
 impl<K: Kernel> Importer<'_, '_, K> {
@@ -757,6 +885,8 @@ impl<K: Kernel> Importer<'_, '_, K> {
             label,
             appearance,
             body_name,
+            attached: plan.attached,
+            openings: plan.openings,
             solid: crate::ifc::build::prepare(kernel, plan.solid),
             more: plan
                 .more
@@ -812,11 +942,15 @@ impl<K: Kernel> Importer<'_, '_, K> {
                         continue;
                     }
                     let mut notes = Vec::new();
+                    let mut cuts = Vec::new();
                     for (what, tool) in &p.cuts {
                         b.label = format!("{} cut", p.label);
-                        if let Err(why) = b.node(tool, Op::With("cut", bodies.clone())) {
+                        let before = b.features.len();
+                        let made = b.node(tool, Op::With("cut", bodies.clone()));
+                        if let Err(why) = &made {
                             notes.push(format!("the cut of {what} is not made: {why}"));
                         }
+                        cuts.push((what.clone(), b.features[before..].to_vec(), made.is_ok()));
                     }
                     for (k, body) in bodies.iter().enumerate() {
                         let name = if k == 0 {
@@ -830,7 +964,7 @@ impl<K: Kernel> Importer<'_, '_, K> {
                         }
                     }
                     notes.extend(b.notes.iter().cloned());
-                    out.push(Ok((b.features.clone(), notes)));
+                    out.push(Ok((b.features.clone(), notes, cuts)));
                 }
                 Ok(out)
             })
@@ -845,6 +979,7 @@ impl<K: Kernel> Importer<'_, '_, K> {
         e: &Element,
         features: &[FeatureUid],
         line: &mut ElementLine,
+        attached: &[String],
     ) -> Result<(&'static str, Vec<FeatureUid>), String> {
         // A cut that removes nothing stays, suppressed; another failing
         // feature fails the element.
@@ -865,7 +1000,11 @@ impl<K: Kernel> Importer<'_, '_, K> {
         let (volume, bbox, bodies) = measure(self.document, features);
         line.volume = volume;
         line.bodies = bodies;
-        check(line, e, self.options.reference, volume, bbox).map(|a| (a, misses))
+        let against = check(line, e, self.options.reference, volume, bbox)?;
+        if against == "stored box" && !attached.is_empty() {
+            check_heights(e, bbox, attached)?;
+        }
+        Ok((against, misses))
     }
 
     /// Builds the pending elements' plans in one command (mitcad#333: one
@@ -894,10 +1033,10 @@ impl<K: Kernel> Importer<'_, '_, K> {
                 .zip(items.iter())
                 .zip(lines.iter_mut())
                 .map(|((b, p), line)| {
-                    let (features, notes) = b?;
+                    let (features, notes, cuts) = b?;
                     line.notes.extend(notes);
-                    let (against, misses) = self.judge(p.e, &features, line)?;
-                    Ok((against, features, misses))
+                    let (against, misses) = self.judge(p.e, &features, line, &p.attached)?;
+                    Ok((against, features, misses, cuts))
                 })
                 .collect(),
             Err(why) => items.iter().map(|_| Err(why.clone())).collect(),
@@ -918,7 +1057,7 @@ impl<K: Kernel> Importer<'_, '_, K> {
                                 continue;
                             }
                             match b {
-                                Ok((features, _)) => {
+                                Ok((features, _, cuts)) => {
                                     let misses = features
                                         .iter()
                                         .copied()
@@ -929,8 +1068,8 @@ impl<K: Kernel> Importer<'_, '_, K> {
                                                 .is_some()
                                         })
                                         .collect();
-                                    if let Ok((against, _, _)) = &verdicts[k] {
-                                        verdicts[k] = Ok((against, features, misses));
+                                    if let Ok((against, _, _, _)) = &verdicts[k] {
+                                        verdicts[k] = Ok((against, features, misses, cuts));
                                     }
                                 }
                                 Err(why) => verdicts[k] = Err(why),
@@ -946,7 +1085,7 @@ impl<K: Kernel> Importer<'_, '_, K> {
             }
         }
         for (verdict, line) in verdicts.iter().zip(lines.iter_mut()) {
-            if let Ok((_, _, misses)) = verdict {
+            if let Ok((_, _, misses, _)) = verdict {
                 for uid in misses {
                     if self.document.set_suppressed(*uid, true).is_ok() {
                         line.notes
@@ -958,7 +1097,8 @@ impl<K: Kernel> Importer<'_, '_, K> {
         self.document.merge_undo(self.depth, &self.label);
         for ((p, verdict), mut line) in items.iter().zip(verdicts).zip(lines) {
             match verdict {
-                Ok((against, features, _)) => {
+                Ok((against, features, misses, cuts)) => {
+                    self.openings_built(p, &line, &misses, &cuts);
                     line.checked_against = Some(against.to_string());
                     line.features = features.len();
                     line.outcome = "features".into();
@@ -971,7 +1111,162 @@ impl<K: Kernel> Importer<'_, '_, K> {
                 Err(why) => {
                     line.notes.push(format!("not built as features: {why}"));
                     self.body_names.remove(&p.body_name);
-                    self.fail(model, p.e, p.kind, &mut levels[p.slot], line, curtain_hosts);
+                    self.fail(
+                        model,
+                        p.e,
+                        p.kind,
+                        &mut levels[p.slot],
+                        line,
+                        curtain_hosts,
+                        &p.openings,
+                    );
+                }
+            }
+        }
+    }
+
+    /// The openings of a plan without a cut tool of their own, cut by the
+    /// IFC export's opening of the insert's GlobalId when the options give
+    /// one (mitcad#345, [`RvtOptions::openings`]).
+    fn reference_cuts(&self, p: &mut Plan, global_ids: &HashMap<i64, String>) {
+        if self.options.openings.is_empty() {
+            return;
+        }
+        for o in &mut p.openings {
+            let Some(why) = o.missing.clone() else {
+                continue;
+            };
+            let items = global_ids
+                .get(&o.id)
+                .and_then(|g| self.options.openings.get(g))
+                .filter(|items| !items.is_empty());
+            let Some(items) = items else {
+                o.missing = Some(format!(
+                    "{why}, and the reference has no opening of its GlobalId"
+                ));
+                continue;
+            };
+            p.cuts
+                .extend(items.iter().cloned().map(|i| (o.label.clone(), i)));
+            p.notes.push(format!(
+                "{} is cut by the reference's opening of its GlobalId ({why})",
+                o.label
+            ));
+            o.missing = None;
+        }
+    }
+
+    /// A wall built as features (mitcad#345): each of its openings is cut
+    /// when one of its cuts was made and removes something; else it is
+    /// missing, with why.
+    fn openings_built(
+        &mut self,
+        p: &Pending<'_>,
+        line: &ElementLine,
+        misses: &[FeatureUid],
+        cuts: &[CutMade],
+    ) {
+        for o in &p.openings {
+            if let Some(why) = &o.missing {
+                self.opening_missing(p.e.id, &o.label, why.clone(), why.clone());
+                continue;
+            }
+            let mine: Vec<&CutMade> = cuts.iter().filter(|(w, _, _)| *w == o.label).collect();
+            let cut = mine.iter().any(|(_, uids, made)| {
+                *made && !uids.is_empty() && !uids.iter().any(|u| misses.contains(u))
+            });
+            if cut {
+                self.report.openings_cut += 1;
+            } else if mine.iter().any(|(_, _, made)| !made) {
+                let prefix = format!("the cut of {} is not made: ", o.label);
+                let why = line
+                    .notes
+                    .iter()
+                    .find_map(|n| n.strip_prefix(&prefix))
+                    .unwrap_or("?");
+                self.opening_missing(
+                    p.e.id,
+                    &o.label,
+                    "its cut failed".into(),
+                    format!("its cut failed: {why}"),
+                );
+            } else if mine.is_empty() {
+                self.opening_missing(
+                    p.e.id,
+                    &o.label,
+                    "its cut is not made".into(),
+                    "its cut is not made".into(),
+                );
+            } else {
+                self.opening_missing(
+                    p.e.id,
+                    &o.label,
+                    "its cut removes nothing (suppressed)".into(),
+                    "its cut removes nothing (suppressed)".into(),
+                );
+            }
+        }
+    }
+
+    /// An opening that its wall does not have (mitcad#345): counted by
+    /// reason, listed, and noted on the insert's line at the end of the
+    /// model's import.
+    fn opening_missing(&mut self, wall: i64, label: &str, reason: String, why: String) {
+        *self.report.openings_missing.entry(reason).or_default() += 1;
+        if self.report.openings_missing_lines.len() < 200 {
+            self.report
+                .openings_missing_lines
+                .push(format!("{label} in wall {wall}: {why}"));
+        }
+        if let Some(id) = label.rsplit(' ').next().and_then(|s| s.parse::<i64>().ok()) {
+            self.missing.push((id, wall, why));
+        }
+    }
+
+    /// The openings of a wall that is not built as features (mitcad#345):
+    /// a body of the geometry the file keeps, or the reference's, holds
+    /// them; a saved mesh or a box does not.
+    fn openings_fallen_back(
+        &mut self,
+        e: &Element,
+        line: &mut ElementLine,
+        openings: &[plan::WallOpening],
+    ) {
+        if openings.is_empty() {
+            return;
+        }
+        let kept = match line.outcome.as_str() {
+            "reference body" => Some("the reference's body"),
+            "mesh"
+                if line
+                    .notes
+                    .iter()
+                    .any(|n| n.starts_with("its geometry as the file keeps it")) =>
+            {
+                Some("the geometry the file keeps")
+            }
+            _ => None,
+        };
+        match kept {
+            Some(body) => {
+                self.report.openings_cut += openings.len();
+                line.notes
+                    .push(format!("its {} openings are in {body}", openings.len()));
+            }
+            None => {
+                let what = match line.outcome.as_str() {
+                    "mesh" => "its saved mesh",
+                    "box" => "its box",
+                    "parts" => "its parts",
+                    _ => "no body",
+                };
+                for o in openings {
+                    self.opening_missing(
+                        e.id,
+                        &o.label,
+                        format!("its wall came in as {what}"),
+                        format!("its wall came in as {what}"),
+                    );
                 }
             }
         }
@@ -979,6 +1274,7 @@ impl<K: Kernel> Importer<'_, '_, K> {
 
     /// An element of a kind built as features that is not: a curtain wall
     /// has its panels and mullions; another comes in as its mesh or box.
+    #[allow(clippy::too_many_arguments)]
     fn fail(
         &mut self,
         model: &Model,
@@ -987,6 +1283,7 @@ impl<K: Kernel> Importer<'_, '_, K> {
         group: &mut LevelGroup<K::Shape>,
         mut line: ElementLine,
         curtain_hosts: &HashSet<i64>,
+        openings: &[plan::WallOpening],
     ) {
         // A curtain wall: its panels and mullions are its shape, elements
         // of their own (mitcad#333).
@@ -1001,6 +1298,7 @@ impl<K: Kernel> Importer<'_, '_, K> {
         }
         *self.report.fallbacks.entry(kind.to_string()).or_default() += 1;
         self.fallback(model, e, plan::structural(kind), group, &mut line);
+        self.openings_fallen_back(e, &mut line, openings);
         self.report.elements.push(line);
     }
 
@@ -1348,7 +1646,7 @@ impl<K: Kernel> Importer<'_, '_, K> {
                             Err(e) => warnings.push(format!("grid {}: {e}", grid.name)),
                         }
                     }
-                    Some(arc @ Curve::Arc { .. }) => {
+                    Some(arc) => {
                         let z = arc.start()[2] * FOOT_MM;
                         let frame = mitcad_ifc::math::from_axes(
                             [0.0, 0.0, z],
@@ -1452,6 +1750,17 @@ impl<K: Kernel> Importer<'_, '_, K> {
                 *self.report.left_out.entry(why).or_default() += 1;
                 continue;
             }
+            if link.is_none()
+                && let Some(only) = &self.options.only
+                && !only.contains(&e.id)
+            {
+                *self
+                    .report
+                    .left_out
+                    .entry("not among the elements asked for".into())
+                    .or_default() += 1;
+                continue;
+            }
             let level = level_of(model, e);
             if level.is_some_and(|(_, by_elevation)| by_elevation) {
                 self.report.by_elevation += 1;
@@ -1542,7 +1851,10 @@ impl<K: Kernel> Importer<'_, '_, K> {
                     .or_default() += 1;
                 if let Some(kind) = kind {
                     match plan::plan(model, e) {
-                        Ok(p) => {
+                        Ok(mut p) => {
+                            if link.is_none() {
+                                self.reference_cuts(&mut p, &global_ids);
+                            }
                             line.notes.extend(p.notes.iter().cloned());
                             let ready =
                                 self.prepare(model_key, model, e, kind, p, component, slot, line);
@@ -1553,7 +1865,16 @@ impl<K: Kernel> Importer<'_, '_, K> {
                         }
                         Err(why) => {
                             line.notes.push(format!("not built as features: {why}"));
-                            self.fail(model, e, kind, &mut levels[slot], line, &curtain_hosts);
+                            let openings = expected_openings(model, e, &curtain_hosts);
+                            self.fail(
+                                model,
+                                e,
+                                kind,
+                                &mut levels[slot],
+                                line,
+                                &curtain_hosts,
+                                &openings,
+                            );
                         }
                     }
                     continue;
@@ -1727,6 +2048,19 @@ impl<K: Kernel> Importer<'_, '_, K> {
             }
             self.document.merge_undo(self.depth, &self.label);
         }
+        // The inserts without their openings, on their own lines
+        // (mitcad#345).
+        for (insert, wall, why) in std::mem::take(&mut self.missing) {
+            if let Some(l) = self
+                .report
+                .elements
+                .iter_mut()
+                .find(|l| l.id == insert && l.link == link)
+            {
+                l.notes
+                    .push(format!("its opening in wall {wall} is not cut: {why}"));
+            }
+        }
         self.report.bodies = self.report.meshes
             + self.report.geometry_meshes
             + self.report.reference_bodies
@@ -1777,6 +2111,7 @@ pub fn import_rvt<K: Kernel>(
         notes: Vec::new(),
         tess: geometry::Cache::new(),
         parts: HashSet::new(),
+        missing: Vec::new(),
     };
     importer.import_model(0, file, model, ComponentUid::ROOT, None)?;
 
@@ -2050,6 +2385,126 @@ mod tests {
             import_rvt(&mut document, "project.rvt", &model, &RvtOptions::default()).unwrap();
         assert_eq!(again.levels[0].name, "Story (3)");
         assert_eq!(document.features().count(), 12);
+    }
+
+    #[test]
+    fn the_house_wall_attached_to_its_roof_names_it() {
+        // mitcad#348: the gable wall's line says what its top follows; the
+        // walls that are not attached keep their heights.
+        use mitcad_rvt::testfile::building as t;
+        let file = RvtFile::parse(t::house()).unwrap();
+        let schema = file.schema().unwrap();
+        let model = Model::read(&file, &schema).unwrap();
+        let kernel = MockKernel::default();
+        kernel.measures.set(true);
+        let mut document = Document::new(kernel);
+        let report =
+            import_rvt(&mut document, "house.rvt", &model, &RvtOptions::default()).unwrap();
+        let line = |id| {
+            report
+                .elements
+                .iter()
+                .find(|l| l.id == id && l.link.is_none())
+                .unwrap()
+        };
+        let c = line(t::WALL_C);
+        assert_eq!(c.kind, "wall");
+        assert!(
+            c.notes
+                .iter()
+                .any(|n| n == "its top follows roof 44's lower surface (2 slopes)"),
+            "{c:?}"
+        );
+        assert_eq!(line(t::ROOF).kind, "roof");
+        for id in [t::WALL_A, t::WALL_B] {
+            let l = line(id);
+            assert_eq!(l.outcome, "features", "{l:?}");
+        }
+        let bodies = document.bodies();
+        let a = bodies
+            .iter()
+            .find(|b| b.name.starts_with("Basic Wall:Brick 6:30"))
+            .unwrap()
+            .shape;
+        let a = document.kernel().bounding_box(a).unwrap().unwrap();
+        assert!((a.max[2] - t::HEIGHT * FOOT_MM).abs() < 1e-6, "{a:?}");
+
+        // mitcad#345: the openings the report counts. The window's type
+        // cannot cut wall B (built as features), the reason on the window's
+        // line; the gable wall comes in as its box (the mock kernel's boxes
+        // of cuts hold their tools), which holds no opening of its door.
+        let why = "its type has neither cut loops nor void geometry";
+        assert_eq!(report.openings_missing.get(why), Some(&1), "{report:?}");
+        assert_eq!(
+            report.openings_missing.get("its wall came in as its box"),
+            Some(&1),
+            "{:?}",
+            report.openings_missing
+        );
+        assert_eq!(report.openings_cut, 0);
+        assert!(
+            report.openings_missing_lines.contains(&format!(
+                "insert {} in wall {}: {why}",
+                t::WINDOW,
+                t::WALL_B
+            )),
+            "{:?}",
+            report.openings_missing_lines
+        );
+        let window = line(t::WINDOW);
+        assert!(
+            window.notes.contains(&format!(
+                "its opening in wall {} is not cut: {why}",
+                t::WALL_B
+            )),
+            "{window:?}"
+        );
+        assert_eq!(line(t::WALL_C).outcome, "box", "{:?}", line(t::WALL_C));
+        let door = line(t::DOOR);
+        assert!(
+            door.notes.contains(&format!(
+                "its opening in wall {} is not cut: its wall came in as its box",
+                t::WALL_C
+            )),
+            "{door:?}"
+        );
+
+        // With the IFC export's openings given, an insert without a tool of
+        // its own is looked up by its GlobalId (the test project has none).
+        let kernel = MockKernel::default();
+        kernel.measures.set(true);
+        let mut document = Document::new(kernel);
+        let options = RvtOptions {
+            openings: reference_openings(
+                &mitcad_ifc::IfcFile::parse(mitcad_ifc::testdata::BUILDING).unwrap(),
+            ),
+            ..RvtOptions::default()
+        };
+        let report = import_rvt(&mut document, "house.rvt", &model, &options).unwrap();
+        let reason = format!("{why}, and the reference has no opening of its GlobalId");
+        assert!(
+            report.openings_missing.contains_key(&reason),
+            "{:?}",
+            report.openings_missing
+        );
+    }
+
+    #[test]
+    fn an_ifc_export_s_openings_by_their_fillings() {
+        // mitcad#345: the IFC test building's opening, by its own GlobalId
+        // and its window's, in the project's coordinates.
+        let file = mitcad_ifc::IfcFile::parse(mitcad_ifc::testdata::BUILDING).unwrap();
+        let openings = reference_openings(&file);
+        for gid in ["1OPEN00000000000000000", "1WIN000000000000000000"] {
+            let items = &openings[gid];
+            assert_eq!(items.len(), 1, "{gid}");
+            let (lo, hi) = crate::ifc::transform::bounds(&items[0]).unwrap();
+            let near = |a: [f64; 3], b: [f64; 3]| (0..3).all(|k| (a[k] - b[k]).abs() < 1e-6);
+            assert!(
+                near(lo, [2000.0, -200.0, 1000.0]) && near(hi, [3000.0, 200.0, 2000.0]),
+                "{lo:?} {hi:?}"
+            );
+        }
     }
 
     #[test]

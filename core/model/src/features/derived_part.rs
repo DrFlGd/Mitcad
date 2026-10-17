@@ -1,0 +1,636 @@
+// SPDX-License-Identifier: MIT
+//! Derived part (mitcad#375, `commands.md`, "BUILD: profile assemblies"):
+//! the first body of a component the BUILD tab placed, made from one of
+//! the design's library sources (`crate::build::LibrarySources`). The
+//! source's design is evaluated with the configuration row `config` and
+//! the `parameters` set, its visible bodies are copied in (`<F>.b<i>`, in
+//! the source's order, faces `<F>:part(<the source's face>)`), and a
+//! cut-to-length part's ends are cut: end A at z = 0 and end B at z = L,
+//! each through the centre of the section there, by `angle` from square
+//! about the section axis `tilt`. The end faces are always `<F>:end_a` and
+//! `<F>:end_b`, cut or not. Every `mount:<name>` joint origin of the
+//! source becomes a frame of the feature, `<F>:mount(<name>)`, which
+//! joints and other features name as `{"mount": ...}`.
+//!
+//! An angled end needs material beyond its centre on the side the cut
+//! leans away from: the source is evaluated again that much longer and
+//! moved back, the frames staying those of the length itself.
+
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
+use serde::{Deserialize, Serialize};
+
+use super::extrude::Operation;
+use super::{BodyChange, CheckContext, EvalContext, Evaluate, FeatureInfo, FeatureOutput};
+use super::{FeatureDef, References};
+use crate::build::{BuildMeta, LibrarySourceDef, SourceId};
+use crate::datum::Datum;
+use crate::document::DocState;
+use crate::ids::{BodyUid, ComponentUid, FeatureUid, OccurrenceUid};
+use crate::kernel::{BooleanOp, BoundingBox, Kernel};
+use crate::parameters::ParamId;
+use crate::profile::SketchFrame;
+use crate::recompute::{Cache, FeatureResult, Read};
+use crate::topo::{FaceName, RoleKey};
+use crate::transform::{PrimitiveShape, PrimitiveSpec, Transform};
+
+/// The section axis an end's cut turns about; the cut's outward normal
+/// leans towards +y (`x`), −y (`-x`), +x (`y`) or −x (`-y`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Tilt {
+    #[default]
+    #[serde(rename = "x")]
+    X,
+    #[serde(rename = "-x")]
+    MinusX,
+    #[serde(rename = "y")]
+    Y,
+    #[serde(rename = "-y")]
+    MinusY,
+}
+
+impl Tilt {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::X => "x",
+            Self::MinusX => "-x",
+            Self::Y => "y",
+            Self::MinusY => "-y",
+        }
+    }
+
+    /// The direction in the section the cut's normal leans towards.
+    pub fn lean(self) -> [f64; 3] {
+        match self {
+            Self::X => [0.0, 1.0, 0.0],
+            Self::MinusX => [0.0, -1.0, 0.0],
+            Self::Y => [1.0, 0.0, 0.0],
+            Self::MinusY => [-1.0, 0.0, 0.0],
+        }
+    }
+
+    /// The tilt whose lean is nearest to a direction in the section (its
+    /// x and y; z is left out); None for one along the axis.
+    pub fn towards(direction: [f64; 3]) -> Option<Self> {
+        let [x, y, _] = direction;
+        if x.abs() < 1e-9 && y.abs() < 1e-9 {
+            return None;
+        }
+        Some(if y.abs() >= x.abs() {
+            if y > 0.0 { Self::X } else { Self::MinusX }
+        } else if x > 0.0 {
+            Self::Y
+        } else {
+            Self::MinusY
+        })
+    }
+}
+
+/// One end's cut: its angle from square (radians, below 90 degrees) and
+/// the axis it turns about.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EndCut<P = ParamId> {
+    pub angle: P,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tilt: Option<Tilt>,
+}
+
+/// The cuts of a cut-to-length part's ends; a missing end is square.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Ends<P = ParamId> {
+    #[serde(default = "no_cut", skip_serializing_if = "Option::is_none")]
+    pub a: Option<EndCut<P>>,
+    #[serde(default = "no_cut", skip_serializing_if = "Option::is_none")]
+    pub b: Option<EndCut<P>>,
+}
+
+fn no_cut<P>() -> Option<EndCut<P>> {
+    None
+}
+
+fn square<P>() -> Ends<P> {
+    Ends { a: None, b: None }
+}
+
+impl<P> Ends<P> {
+    pub fn is_square(&self) -> bool {
+        self.a.is_none() && self.b.is_none()
+    }
+
+    pub fn end(&self, b: bool) -> Option<&EndCut<P>> {
+        if b { self.b.as_ref() } else { self.a.as_ref() }
+    }
+}
+
+fn new_body() -> Operation {
+    Operation::NewBody
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DerivedPartDef<P = ParamId> {
+    pub source: SourceId,
+    /// The source's configuration row; its default row when left out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config: Option<String>,
+    /// Values of the source's user parameters, by their names.
+    #[serde(default = "BTreeMap::new", skip_serializing_if = "BTreeMap::is_empty")]
+    pub parameters: BTreeMap<String, P>,
+    #[serde(default = "square", skip_serializing_if = "Ends::is_square")]
+    pub ends: Ends<P>,
+    #[serde(default = "new_body")]
+    pub operation: Operation,
+}
+
+impl<P> DerivedPartDef<P> {
+    pub const TYPE: &'static str = "derived_part";
+    pub const BASE_NAME: &'static str = "Part";
+
+    pub fn map_params<Q, E>(
+        &self,
+        f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
+    ) -> Result<DerivedPartDef<Q>, E> {
+        let mut parameters = BTreeMap::new();
+        for (name, value) in &self.parameters {
+            parameters.insert(name.clone(), f(&format!("parameters.{name}"), value)?);
+        }
+        let mut end = |key: &str, cut: &Option<EndCut<P>>| -> Result<Option<EndCut<Q>>, E> {
+            match cut {
+                Some(cut) => Ok(Some(EndCut {
+                    angle: f(&format!("ends.{key}.angle"), &cut.angle)?,
+                    tilt: cut.tilt,
+                })),
+                None => Ok(None),
+            }
+        };
+        let ends = Ends {
+            a: end("a", &self.ends.a)?,
+            b: end("b", &self.ends.b)?,
+        };
+        Ok(DerivedPartDef {
+            source: self.source,
+            config: self.config.clone(),
+            parameters,
+            ends,
+            operation: self.operation,
+        })
+    }
+}
+
+impl FeatureInfo for DerivedPartDef {
+    fn references(&self) -> References {
+        References::default()
+    }
+
+    fn check(&self, _ctx: &CheckContext<'_>) -> Result<(), String> {
+        if self.operation != Operation::NewBody {
+            return Err("a derived part makes new bodies (operation new_body)".to_owned());
+        }
+        if let Some(name) = self
+            .parameters
+            .keys()
+            .find(|n| !crate::expr::is_valid_name(n))
+        {
+            return Err(format!("'{name}' is no parameter name"));
+        }
+        Ok(())
+    }
+
+    fn check_values(&self, value: &dyn Fn(ParamId) -> f64) -> Result<(), String> {
+        for (key, cut) in [("a", &self.ends.a), ("b", &self.ends.b)] {
+            if let Some(cut) = cut {
+                check_angle(key, value(cut.angle))?;
+            }
+        }
+        Ok(())
+    }
+
+    fn creates_bodies(&self) -> bool {
+        true
+    }
+}
+
+/// An end's angle: from 0 up to (not including) 90 degrees.
+fn check_angle(end: &str, angle: f64) -> Result<(), String> {
+    if !(0.0..89.0_f64.to_radians()).contains(&angle) {
+        return Err(format!(
+            "end {end}: the cut's angle is {} degrees; it is from 0 up to 89",
+            crate::build::round(angle.to_degrees())
+        ));
+    }
+    Ok(())
+}
+
+impl<'a, K: Kernel> EvalContext<'a, K> {
+    /// A library source of the design (mitcad#375), read for the cache.
+    pub(crate) fn source(&mut self, id: SourceId) -> Result<&'a LibrarySourceDef, String> {
+        let sources: &'a crate::build::LibrarySources = self.env.sources;
+        let found = sources.get(id);
+        self.reads
+            .push(Read::Source(id, found.and_then(LibrarySourceDef::version)));
+        found.ok_or_else(|| format!("library source {id} is not in the design"))
+    }
+}
+
+/// A source's design evaluated: its visible bodies placed in its
+/// coordinates, their names, and its mount frames.
+pub(crate) struct Evaluated<S> {
+    pub bodies: Vec<S>,
+    pub mounts: BTreeMap<String, Transform>,
+}
+
+/// The source's state with the row and the parameters applied.
+pub(crate) fn configured(
+    source: &LibrarySourceDef,
+    config: Option<&str>,
+    values: &[(String, f64)],
+) -> Result<DocState, String> {
+    let design = source.design.state()?;
+    let mut state = (*design).clone();
+    let table = state.configurations.clone();
+    let row = match config {
+        Some(name) => Some(
+            table
+                .row(name)
+                .cloned()
+                .ok_or_else(|| format!("{} has no configuration {name}", source.label()))?,
+        ),
+        None => table.default_row().cloned(),
+    };
+    if let Some(row) = &row {
+        crate::configurations::apply_values(&mut state.parameters, row)
+            .map_err(|e| format!("{} {}: {e}", source.label(), row.name))?;
+    }
+    for (name, value) in values {
+        let id = state
+            .parameters
+            .find(name)
+            .ok_or_else(|| format!("{} has no parameter {name}", source.label()))?;
+        state
+            .parameters
+            .set_value(id, *value)
+            .map_err(|e| format!("{name}: {e}"))?;
+    }
+    Ok(state)
+}
+
+/// Evaluates a source's state with the kernel.
+pub(crate) fn evaluate_source<K: Kernel>(
+    kernel: &K,
+    state: &DocState,
+) -> Result<Evaluated<K::Shape>, String> {
+    let result = crate::recompute::recompute(kernel, state, &mut Cache::default(), None)
+        .map_err(|e| e.to_string())?;
+    let assembly = state.assembly.at_placements(&result.placements);
+    let placement = |o: OccurrenceUid| {
+        result
+            .placements
+            .get(&o)
+            .copied()
+            .unwrap_or(Transform::IDENTITY)
+    };
+    let owned = |c: ComponentUid| {
+        result
+            .owners
+            .iter()
+            .filter(|(_, owner)| **owner == c)
+            .map(|(b, _)| *b)
+            .collect::<Vec<_>>()
+    };
+    let mut bodies = Vec::new();
+    for instance in assembly.instances(&placement, &owned) {
+        let shown = state
+            .body_attributes
+            .get(&instance.body)
+            .is_none_or(|b| b.visible);
+        if !(instance.visible && shown) {
+            continue;
+        }
+        let Some(shape) = result.bodies.get(&instance.body) else {
+            continue;
+        };
+        bodies.push(if instance.transform.is_identity() {
+            shape.value.clone()
+        } else {
+            kernel
+                .transform_shape(&shape.value, &instance.transform, None)
+                .map_err(|e| e.to_string())?
+        });
+    }
+    if bodies.is_empty() {
+        let failed = result.results.iter().find_map(|r| {
+            let entry = state.entry(r.uid)?;
+            r.status.error().map(|e| format!("{}: {e}", entry.name))
+        });
+        return Err(match failed {
+            Some(failure) => format!("its design builds no bodies ({failure})"),
+            None => "its design has no bodies to show".to_owned(),
+        });
+    }
+    let mut mounts = BTreeMap::new();
+    for entry in &state.features {
+        let Some(name) = entry.name.strip_prefix("mount:") else {
+            continue;
+        };
+        if !matches!(entry.def, FeatureDef::JointOrigin(_)) {
+            continue;
+        }
+        let Some(Datum::Plane(plane)) = result.datums.get(&entry.uid).map(|d| d.value) else {
+            continue;
+        };
+        let local = crate::joints::frame(plane.origin, plane.x_axis, plane.normal());
+        let at = if entry.component.is_root() {
+            local
+        } else {
+            match assembly.paths_to(entry.component).first() {
+                Some(path) => path
+                    .iter()
+                    .fold(Transform::IDENTITY, |t, o| t.after(&placement(*o)))
+                    .after(&local),
+                None => continue,
+            }
+        };
+        mounts.insert(name.to_owned(), at);
+    }
+    Ok(Evaluated { bodies, mounts })
+}
+
+/// A derived part's mount frame in a recompute's results (for joints and
+/// the document's queries).
+pub(crate) fn mount_frame<S>(
+    history: &[FeatureResult<S>],
+    feature: FeatureUid,
+    name: &str,
+    label: &str,
+) -> Result<Transform, String> {
+    let result = history
+        .iter()
+        .find(|r| r.uid == feature)
+        .ok_or_else(|| format!("{label} has no result at this point of the timeline"))?;
+    if !result.status.is_ok() {
+        return Err(format!("{label} has no frames: it failed"));
+    }
+    result
+        .output
+        .as_ref()
+        .and_then(|o| o.mounts.as_ref())
+        .and_then(|m| m.get(name))
+        .copied()
+        .ok_or_else(|| format!("{label} has no frame {name}"))
+}
+
+/// The box of all the shapes, None when the kernel cannot tell.
+fn bounds_of<K: Kernel>(kernel: &K, shapes: &[K::Shape]) -> Option<BoundingBox> {
+    let mut all: Option<BoundingBox> = None;
+    for shape in shapes {
+        let b = kernel.bounding_box(shape).ok()??;
+        all = Some(match all {
+            Some(a) => a.union(&b),
+            None => b,
+        });
+    }
+    all
+}
+
+/// The faces of `shape` on the plane at height `z` facing `normal` (+z or
+/// −z): a square end's faces.
+fn end_faces<K: Kernel>(kernel: &K, shape: &K::Shape, z: f64, up: bool) -> Vec<FaceName> {
+    let Ok(faces) = kernel.faces(shape) else {
+        return Vec::new();
+    };
+    let tolerance = 1e-6 * z.abs().max(1.0);
+    let sign = if up { 1.0 } else { -1.0 };
+    let mut out = Vec::new();
+    for info in faces {
+        for text in &info.names {
+            let Ok(name) = text.parse::<FaceName>() else {
+                continue;
+            };
+            if let Ok(crate::datum::SurfaceGeometry::Plane { origin, normal }) =
+                kernel.face_geometry(shape, &name)
+                && normal[2] * sign > 1.0 - 1e-9
+                && (origin[2] - z).abs() <= tolerance
+            {
+                out.push(name);
+            }
+        }
+    }
+    out
+}
+
+impl<K: Kernel> Evaluate<K> for DerivedPartDef {
+    fn evaluate(&self, ctx: &mut EvalContext<'_, K>) -> Result<FeatureOutput<K::Shape>, String> {
+        let source = ctx.source(self.source)?;
+        let meta = match &source.build {
+            Some(build) => BuildMeta::read(build)?,
+            None => BuildMeta::default(),
+        };
+        let length_name = meta
+            .length
+            .as_ref()
+            .map(|l| l.parameter.clone())
+            .filter(|p| !p.is_empty());
+        let mut values = Vec::with_capacity(self.parameters.len());
+        for (name, id) in &self.parameters {
+            values.push((name.clone(), ctx.param(*id)?));
+        }
+        let mut angles = [0.0; 2];
+        let mut tilts = [Tilt::X; 2];
+        for (i, (key, cut)) in [("a", &self.ends.a), ("b", &self.ends.b)]
+            .into_iter()
+            .enumerate()
+        {
+            if let Some(cut) = cut {
+                angles[i] = ctx.param(cut.angle)?;
+                check_angle(key, angles[i])?;
+                tilts[i] = cut.tilt.unwrap_or_default();
+            }
+        }
+        let angled = angles.map(|a| a > 1e-12);
+        if (angled[0] || angled[1]) && length_name.is_none() {
+            return Err(format!(
+                "{} is not cut to length: its ends cannot be cut",
+                source.label()
+            ));
+        }
+        let label = format!("{} ({})", source.label(), source.id);
+        let state = configured(source, self.config.as_deref(), &values)
+            .map_err(|e| format!("{label}: {e}"))?;
+        let length = match &length_name {
+            Some(name) => {
+                let id = state.parameters.find(name).ok_or_else(|| {
+                    format!("{label}: its length parameter {name} does not exist")
+                })?;
+                let length = state.parameters.value(id).unwrap_or(f64::NAN);
+                if let Some(problem) = meta.length.as_ref().and_then(|l| l.outside(length)) {
+                    ctx.warn(problem);
+                }
+                Some((id, length))
+            }
+            None => None,
+        };
+        let kernel = ctx.kernel;
+        let at_length = evaluate_source(kernel, &state).map_err(|e| format!("{label}: {e}"))?;
+        let mut bodies = at_length.bodies;
+        if let Some((id, length)) = length
+            && (angled[0] || angled[1])
+        {
+            // The material beyond each angled end's centre.
+            let bounds = bounds_of(kernel, &bodies).unwrap_or(BoundingBox {
+                min: [-length; 3],
+                max: [length; 3],
+            });
+            let reach = |tilt: Tilt| {
+                let lean = tilt.lean();
+                let (low, high) = if lean[0] != 0.0 {
+                    (bounds.min[0], bounds.max[0])
+                } else {
+                    (bounds.min[1], bounds.max[1])
+                };
+                low.abs().max(high.abs())
+            };
+            let extra = |i: usize| {
+                if angled[i] {
+                    reach(tilts[i]) * angles[i].tan() + 1.0
+                } else {
+                    0.0
+                }
+            };
+            let (extra_a, extra_b) = (extra(0), extra(1));
+            let mut longer = state.clone();
+            longer
+                .parameters
+                .set_value(id, length + extra_a + extra_b)
+                .map_err(|e| format!("{label}: {e}"))?;
+            let evaluated =
+                evaluate_source(kernel, &longer).map_err(|e| format!("{label}: {e}"))?;
+            let back = Transform::translation([0.0, 0.0, -extra_a]);
+            bodies = evaluated
+                .bodies
+                .iter()
+                .map(|b| kernel.transform_shape(b, &back, None))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| format!("{label}: {e}"))?;
+        }
+        let uid = ctx.uid;
+        let prefix = format!("{uid}:part");
+        let end_name = |b: bool| FaceName::new(uid, if b { "end_b" } else { "end_a" }, None);
+        let mut changes = Vec::with_capacity(bodies.len());
+        for (i, body) in bodies.iter().enumerate() {
+            // Square ends take the end names; angled ones get them from
+            // their cuts.
+            let mut renames = Vec::new();
+            if let Some((_, length)) = length {
+                for (b, z) in [(false, 0.0), (true, length)] {
+                    if !angled[usize::from(b)] {
+                        for face in end_faces(kernel, body, z, b) {
+                            renames.push((face, end_name(b)));
+                        }
+                    }
+                }
+            }
+            let mut shape = kernel
+                .rename_faces(body, &prefix, &renames)
+                .map_err(|e| format!("{label}: {e}"))?;
+            if let Some((_, length)) = length {
+                for b in [false, true] {
+                    let end = usize::from(b);
+                    if !angled[end] {
+                        continue;
+                    }
+                    shape = cut_end(ctx, &shape, b, length, angles[end], tilts[end])?;
+                }
+            }
+            changes.push(BodyChange::Set(BodyUid::new(uid, i as u32), shape));
+        }
+        Ok(FeatureOutput {
+            changes,
+            mounts: at_length.mounts,
+            ..FeatureOutput::default()
+        })
+    }
+}
+
+/// Cuts end B (`b`) or A of a body by the plane through the end's centre,
+/// its outward normal leaning by `angle` towards the tilt's side; the cut
+/// face is the end's face.
+fn cut_end<K: Kernel>(
+    ctx: &mut EvalContext<'_, K>,
+    body: &K::Shape,
+    b: bool,
+    length: f64,
+    angle: f64,
+    tilt: Tilt,
+) -> Result<K::Shape, String> {
+    use crate::build::{add, cross, norm, perpendicular, scale, unit};
+    let uid = ctx.uid;
+    let key = if b { "b" } else { "a" };
+    let centre = [0.0, 0.0, if b { length } else { 0.0 }];
+    let axis = [0.0, 0.0, if b { 1.0 } else { -1.0 }];
+    let normal = unit(add(
+        scale(axis, angle.cos()),
+        scale(tilt.lean(), angle.sin()),
+    ))
+    .ok_or("the cut has no normal")?;
+    let size = 4.0 * (length.abs() + 1000.0);
+    let u = perpendicular(normal);
+    let v = cross(normal, u);
+    let corner = add(centre, add(scale(u, -size / 2.0), scale(v, -size / 2.0)));
+    debug_assert!(norm(v) > 0.5);
+    let spec = PrimitiveSpec {
+        feature: uid,
+        frame: SketchFrame {
+            origin: corner,
+            x_axis: u,
+            y_axis: v,
+        },
+        shape: PrimitiveShape::Box {
+            length: size,
+            width: size,
+            height: size,
+        },
+    };
+    let kernel = ctx.kernel;
+    let failed = |e: crate::kernel::KernelError| format!("end {key}: {e}");
+    let tool = kernel.primitive(&spec).map_err(failed)?;
+    let end = FaceName::new(uid, if b { "end_b" } else { "end_a" }, None);
+    let tool = kernel
+        .rename_faces(
+            &tool,
+            &format!("{uid}:cut_{key}"),
+            &[(FaceName::new(uid, "bottom", None), end)],
+        )
+        .map_err(failed)?;
+    let output = ctx
+        .boolean(BooleanOp::Cut, &[body], &tool)
+        .map_err(failed)?;
+    if !output.touched.first().copied().unwrap_or(false) {
+        ctx.warn(format!("end {key}: the cut does not meet the part"));
+        return Ok(body.clone());
+    }
+    let mut pieces = output
+        .pieces
+        .into_iter()
+        .filter(|p| p.sources.contains(&0))
+        .map(|p| p.shape);
+    let first = pieces
+        .next()
+        .ok_or_else(|| format!("end {key}: the cut leaves nothing of the part"))?;
+    if pieces.next().is_some() {
+        ctx.warn(format!(
+            "end {key}: the cut parts the body; its first piece is kept"
+        ));
+    }
+    Ok(first)
+}
+
+/// The name a derived part gives a face of its source.
+pub fn part_face(feature: FeatureUid, source_face: FaceName) -> FaceName {
+    FaceName::new(feature, "part", Some(RoleKey::Face(Box::new(source_face))))
+}
+
+/// The mount frames of a derived part, shared by the results.
+pub(crate) type Mounts = Arc<BTreeMap<String, Transform>>;

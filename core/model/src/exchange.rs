@@ -376,6 +376,8 @@ pub struct ImportedBody {
 pub struct Imported {
     pub feature: Added,
     pub bodies: Vec<ImportedBody>,
+    /// What the import left out ([`Document::import_file`]: empty bodies).
+    pub warnings: Vec<String>,
 }
 
 fn invalid(message: impl Into<String>) -> ModelError {
@@ -512,14 +514,19 @@ impl<K: Kernel> Document<K> {
                     kind: self.kernel().body_kind(body.shape).map_err(kernel_error)?,
                 });
             }
-            result.push(Imported { feature, bodies });
+            result.push(Imported {
+                feature,
+                bodies,
+                warnings: Vec::new(),
+            });
         }
         Ok(result)
     }
 
     /// Imports a STEP, IGES, BRep, STL or OBJ file as a base feature: one
     /// body per part or solid (STEP, IGES, BRep) or object (OBJ), a mesh
-    /// body for STL.
+    /// body for STL. Empty bodies (a part without geometry) are left out
+    /// with a warning; a file of only empty bodies is refused.
     pub fn import_file(
         &mut self,
         path: &str,
@@ -539,14 +546,42 @@ impl<K: Kernel> Document<K> {
         if bodies.is_empty() {
             return Err(invalid(format!("{path} has no bodies")));
         }
+        // Here, unlike in base_bodies, an empty body is no error: nothing
+        // refers to the file's bodies by index yet.
+        let count = bodies.len();
+        let mut kept = Vec::with_capacity(count);
+        let mut warnings = Vec::new();
+        for (i, body) in bodies.into_iter().enumerate() {
+            let kind = self
+                .kernel()
+                .body_kind(&body.shape)
+                .map_err(|e| invalid(format!("body {i}: {e}")))?;
+            if kind == BodyKind::Empty {
+                let named = match body.name.as_deref().map(str::trim) {
+                    Some(name) if !name.is_empty() => format!("body {i} ({name})"),
+                    _ => format!("body {i}"),
+                };
+                warnings.push(format!("{named} is empty: left out"));
+            } else {
+                kept.push(body);
+            }
+        }
+        if kept.is_empty() {
+            return Err(invalid(format!(
+                "{path} has only empty bodies ({count}): nothing to import"
+            )));
+        }
         let source = file_name(path);
         let base = BaseInput {
             name: name.map(str::to_owned),
             source: Some(source.clone()),
-            ..BaseInput::new(bodies)
+            ..BaseInput::new(kept)
         };
-        let mut imported = self.add_base_features(&format!("Import {source}"), vec![base])?;
-        Ok(imported.remove(0))
+        let mut imported = self
+            .add_base_features(&format!("Import {source}"), vec![base])?
+            .remove(0);
+        imported.warnings = warnings;
+        Ok(imported)
     }
 
     /// Writes bodies at the marker to a file; all bodies when `bodies` is

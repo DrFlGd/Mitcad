@@ -1,4 +1,4 @@
-(cascaded combo boxes per selector, `SizeChooser`), linked or a copy; **Update** fetches every enabled source (as Fetch All, one warning for the failures) and searches again, keeping the selected item; while no enabled source is fetched the empty list says to press Update (mitcad#317) | `library_search`, `library_show`, `library_preview`, `library_list`, `library_fetch`; then `insert_component` with `library` |# Commands in the Mitcad application
+# Commands in the Mitcad application
 
 How to add or change UI commands, sketch tools and panels, the UI
 framework's conventions, and the log lines UI tests read. A feature
@@ -16,7 +16,7 @@ CommandDef chamfer(const CommandContext& context) {
   def.icon = "chamfer";                // app/icons/chamfer.svg
   def.tooltip = QObject::tr("Bevels edges; a face bevels all its edges");
   def.shortcut = QKeySequence();       // none by default
-  def.tab = "SOLID";                   // SOLID or SKETCH; empty: menus only
+  def.tab = "SOLID";                   // SOLID, BUILD or SKETCH; empty: menus only
   def.group = "MODIFY";                // see Ribbon::groups()
   def.pinned = true;                   // a button besides the group menu entry
   def.subgroup = "";                   // a submenu of the group's menu, see below
@@ -105,8 +105,30 @@ Modifiers:
   an extra entry. `withOnChange(call)`: called after the user changed a
   choice, to set dependent inputs (a new size takes its coarse
   designation); shown values it leaves NaN (`state.setValue(id, NaN)`)
-  are evaluated again (Drive Joint's value of another motion).
-- `withConvert(form)`: the form a pick is kept in (Pattern's Features
+  are evaluated again (Drive Joint's value of another motion). A value's
+  or a text's `onChange` runs when it is typed (a value's also when its
+  handle drags it): BUILD's typed length detaches the auto length, its
+  search narrows the picker.
+- `withTabCycle(values)`: a choice that Tab steps through these values
+  while the main window has the keyboard and the choice is shown (BUILD's
+  auto length: face, centre, through); the session filters the
+  application's key presses while such a command runs (Shift+Tab still
+  moves between the fields), logged `<command>: Tab steps <label>`.
+- `withChoiceImages(image)`: a choice whose options (from `withChoices`)
+  each have a picture beside the label, `image(value)` (a null image for
+  none; 48 px in the drop-down). Logged `Panel <command> option pictures
+  <key>: <n> of <m>` with the options. BUILD's connectors show the
+  library's preview images.
+- `withCursorBox()`: a value input also as a box at the cursor in the
+  view, as a sketch tool's value boxes are (mitcad#375: BUILD's length).
+  It follows the mouse over the view once it has moved there, and is
+  shown while the input is; its text is the input's, or the shown
+  inspection's `report.cursor.<key>` (the auto length) while that gives
+  one. Typing in the box, or a number typed while the view has the
+  keyboard (it goes into the box), is the input's text as typing in the
+  panel's field is, and the field shows it; Enter confirms, Esc closes.
+  Not in the AppKit frontend. Logged `Cursor box <command> <key>: <text>
+  at x,y` when its text changes. the form a pick is kept in (Pattern's Features
   keeps the feature that made a face; Move/Copy's Components the
   occurrence that places a body).
 - `withOnPick(call, keep)`: called after a pick, with `item.at` where the
@@ -237,7 +259,27 @@ Three other kinds of panels:
   its own section (`CommandHost::showSection`); otherwise
   `MainWindow::m_section` follows the model's shown analysis
   (`MainWindow::followAnalyses` in `refreshScene`). Inspections draw with
-  `setPreview`, so a command started during one ends it.
+  `setPreview`, so a command started during one ends it. An inspection's
+  `highlights` are drawn orange besides the inputs' (a Component item: the
+  bodies of its occurrence), and its `report` goes to the definition's
+  `previewMarkers` for labelled points over the view (`previewMarkersIn`
+  gets the state too). `hover(item, state, context)` is called when the
+  mouse moves onto another item of the view (an invalid item: off the
+  bodies); true when it changed the state redraws the markers, nothing
+  is computed (BUILD's Connector: the junctions of the profile under the
+  mouse).
+- `apply(state, context)` with `inspect` (mitcad#375, BUILD): a panel with
+  model commands of its own. The inspection is the preview; OK (its
+  `okLabel`, Place) is refused while the inspection failed, else calls
+  `apply`, which runs its commands through the main window
+  (`DocumentHost::runModelCommand`, each its own undo step, or
+  `runModelCommands` for one) and may change the inputs; false (the model
+  refused: its reason is shown) keeps the panel as it is. Without
+  `repeats` the panel then closes (`Done <command>`); with `repeats` it
+  stays open for the next one (`Applied <command> (<n>)`), its first
+  needed selection active again, and its Cancel is **Close**: what was
+  applied stays (`Closed <command> after <n>`, also in the AppKit
+  frontend, whose checkpoint is then kept).
 
 References (`commands/CommandSupport`):
 
@@ -399,7 +441,13 @@ split buttons and Sketch Dimension (`tools/ui-sketch-create-menu-test.sh`).
   `fieldValue`/`fieldExpression` give a typed one (evaluated by the
   model's `evaluate` query).
 - `confirm()` (Enter) and `cancel()` (Esc: one step back; false at the
-  start ends the tool).
+  start ends the tool). Esc in the value editor of the Dimension tool also
+  steps the tool back; in an editor opened from the context menu (Edit
+  Dimension) it only closes the editor and a running tool keeps its state
+  (mitcad#354). `name = value` in the Dimension tool's editor adds the
+  dimension with that parameter name and closes the editor (mitcad#352);
+  when editing an existing dimension the editor stays open if the model
+  refuses the name.
 - `SketchOp op(controller)` is one undo step of model commands:
   `op.run(cmd)` (refusals keep the model's reason for `refuse`),
   `op.pointInput(snap)` (an existing point where it snapped, the origin's
@@ -408,7 +456,12 @@ split buttons and Sketch Dimension (`tools/ui-sketch-create-menu-test.sh`).
   new point), `op.addConstraint`, `op.addDimension(def, typed)` (refusals
   only logged), `op.commit()` (merges the steps, refreshes) or
   `op.rollback()`.
-- Typed values become dimensions; snapped points get constraints; the
+- Typed values become dimensions; snapped points get constraints (every
+  drawing tool: a point that snapped onto geometry is held there, mitcad#353;
+  the Point tool on the origin makes the sketch's one fixed origin point and
+  no constraint, mitcad#355); an Ellipse whose rim click is farther than its
+  major end turns its axes, and a typed major radius then dimensions the
+  minor one (mitcad#356); the
   line tool infers horizontal, vertical, perpendicular, parallel (to the
   line last passed over) and tangent within a few pixels.
 
@@ -846,6 +899,33 @@ computing`. Tests: `tools/ui-visibility-test.sh`,
   selection, both come back and `searchRestored` makes the controller
   pick its kept selection again (outside commands). Test:
   `tools/ui-timeline-search-test.sh` (both layouts).
+- **Find in Design** (mitcad#350): `view.find_in_design` (Edit › Find in
+  Design..., the command search) and the magnifier button
+  (`BrowserController::findButton`) on the browser's title row (in the
+  floating layout the first widget of the card's header; in the docked
+  one a title bar of the dock's own, `MainWindow::createPanels`) call
+  `BrowserController::openFind`: `FindDialog` (`browser/FindDialog.*`), a
+  non-modal window over the main window. The search is
+  `findInDesign` (`browser/FindInDesign.*`, plain Qt Core) on the
+  `DocumentSnapshot` (occurrences, components, bodies and their names), not
+  on the browser's rows: the root's bodies, then each occurrence with its
+  bodies and children; a body of a component placed twice is a result per
+  place (`FindResult::key`). `NameMatcher`: a case-insensitive substring,
+  `*` and `?` as wildcards (still unanchored). Text, kinds and visibility
+  filter the results after a 150 ms pause (`TestSync::watch`'d timer); the
+  window keeps the selected results through a re-search
+  (`BrowserController::refresh` calls `setSnapshot`, which ignores an equal
+  snapshot key). The buttons act on the selected rows, or on all:
+  Show and Hide run `set_body_visible` per body uid and
+  `set_occurrence_visible` per occurrence path, each once, through
+  `DocumentHost::runVisibilityCommands` as one undo step ("Show Found
+  Items" / "Hide Found Items"); Appearance... calls `openAppearances` with
+  the bodies (a component's: its definition's bodies); Select and
+  selecting rows call `DocumentHost::pickItems` with body items (uid and
+  occurrence) and component items (the component and its occurrence; not
+  during a command); a double-click calls `findInBrowser`. All of them
+  wait for a running job (`whenIdle`). Test:
+  `tools/ui-find-in-design-test.sh`.
 - **Analysis folder** (mitcad#41): the analyses kept in the document (the
   `analyses` query, `DocumentSnapshot::analyses`), after the root's other
   rows. Light bulb: `set_analysis_visible`; showing one hides the others,
@@ -878,7 +958,10 @@ computing`. Tests: `tools/ui-visibility-test.sh`,
   bodies it was opened for (the selection's) as one undo step, and
   `set_face_appearance` for its faces (mitcad#53: the dialog opened on
   selected faces assigns to them; on edges and vertices, to their
-  bodies). The texture (mitcad#53): Image (typed, or Choose... with a file
+  bodies). Assign to N bodies (mitcad#346), shown beside Assign while the
+  selection holds faces: `set_body_appearance` for each body that owns a
+  selected face or is selected, once, as one undo step; the faces' own
+  appearances are untouched. The texture (mitcad#53): Image (typed, or Choose... with a file
   dialog; made relative to the design's folder when it is saved), Size,
   Rotation (degrees), Projection (Box, Planar), Embed the image in the
   design (reads the file into `data`; off again needs the file at its
@@ -1154,6 +1237,103 @@ Chamfer in the Floating layout, Corner Relief (also of flanges on different
 panels), Sheet Cut across a bend, Unfold and Refold, each with its picks,
 preview, analytic volumes or flat areas, an edit from the timeline and Undo).
 
+## BUILD
+
+The BUILD tab (mitcad#375, `commands/BuildCommands.cpp`, `build/`; the
+model's side in commands.md, "BUILD: profile assemblies"; the parts'
+`build` blocks in [docs/libraries.md](../docs/libraries.md#build-parts))
+builds frames of slot profiles with their connectors, panels and linear
+parts. It is a tab of its own beside SOLID (`Ribbon::groups("BUILD")`:
+PROFILE, CONNECT, MODIFY, OUTPUT), in both chrome styles; SKETCH comes
+after it while a sketch is edited, and Finish Sketch goes back to the tab
+the sketch started from. The AppKit frontend has no workspace for it: its
+commands are in a Build menu there. Everything BUILD makes is ordinary
+design content (components, occurrences, features, joints), so SOLID's
+commands edit it as any other.
+
+The commands are panels of the framework with their own model commands
+(`CommandDef::apply`, `inspect` as their preview, [Glue](#glue)): the app
+calls only the model's `build_place`, `build_edit`, `build_connect`,
+`build_panel`, `build_remove` and the queries `build_preview`,
+`build_parts`, `build_junctions`, `build_cut_list`, `library_parts`,
+`components`, and the library commands `library_build_candidates`,
+`library_search`, `library_show`. Live MCP fills them as any panel
+(`ui_command` with `inputs`); an agent's OK of a command that repeats
+places one and closes it.
+
+| Command | Panel | Model |
+|---|---|---|
+| `build.profile` Profile | the picker (Search, System, Part); Place On (a plane, a point or a face for the first part; then a profile's side near an end, or its end face); Placement (Automatic, On the Side, On the End, Grounded at the origin: no pick, no `at.geometry`); Direction (on an end: along the part it meets, or turned to ±X, ±Y, ±Z of the active component, `at.direction`: a corner, with a shared mitre); Offset from an End (Offset, From A/B); Length (Auto: to the face, to the centre, through; Typed length) and Typed Length, also a box at the cursor (`withCursorBox`: the auto length while bound, what is typed there or in the panel in step) and a handle at the free end; Mitre (None, Cut the new part, the existing part, Shared) and Mitre Angle; Rotate (0, 90, 180, 270 deg); Flip. **Place** (Enter) places it and the panel stays for the next one; **Close** (Esc) keeps what was placed | `build_preview` while the inputs change, `build_place` on Place |
+| `build.panel` Panel | the picker (panels); Frame Face (an inner face of a frame puts it in the slots, an outer face on the surface with clamps); Thickness when the panel's thickness is a parameter. Place repeats | `build_preview`, `build_panel`; `fits` false is shown with its reason, not refused |
+| `build.linear` Linear Part | as Profile without the mitre (rails are cut to length; a carriage on its rail gets the joint its `mate` says) | `build_preview`, `build_place` |
+| `build.connector` Connector | Near (a click on a profile chooses the nearest junction), Junction (every junction, `L junction of Part1 and Part2`, `, connected`), Connector (the parts that fit, best first, each with the library's picture of it (`library_preview`, `withChoiceImages`), its supplier and part number), With Nuts and Screws, With End Machining, Show All Junctions. The junctions of the profile under the mouse are marked in the view at their `at_frame` (`L`, `T (connected)`; `CommandDef::hover`, `previewMarkersIn`), the chosen one always (`> L`), every one with Show All Junctions; the panel lists the fitting connectors and, greyed, those that nearly fit with the reason; the two profiles are highlighted. The chosen connector is previewed where it goes (`build_preview` with `build_connect`'s fields; its shape `analysis_shape` `{"shape": "build_preview", "junction", "part", ...}`), its fasteners as markers, the machining it needs in the panel; choosing another in the list previews that one. **Connect** repeats and moves on to the nearest junction not connected | `build_junctions`, `library_build_candidates` with the junction, `build_preview`, `build_connect` |
+| `build.fasteners` Fasteners | Connector (a connector, or one of its nuts or screws), With Nuts and Screws, Fastener (the kinds it has), Size (the rows of its library component, `library_show`) | `build_edit` with `config`; off: `build_remove` of each; on for a connector without them: `build_remove` and `build_connect` again with them; one undo step `Fasteners of <name>` |
+| `build.length` Length | Part, Length (Detached: this length, Bound: to the face, to the centre, through), Value, Bound To (none: the face it is bound to now); the bound target highlighted | `build_edit` with `length` (a value detaches, a `bind` binds) |
+| `build.ends` Ends | Part (the end nearer the click; an end face by its name), End, Angle, About (x, -x, y, -y), Also the Part It Meets (a shared mitre: the end that meets this one in an `L` or `inline` junction); End Machining (As it is, A bore: Diameter, Depth, Thread; None takes the part's end machining away) | `build_edit` with `ends` and `machining`, the part's whole list (`[{end, hole: {diameter, depth, thread}}]`): `build_parts`' list with this end's entries replaced by the bore, or left out for None; one undo step for both parts |
+| `build.flip` Flip, `build.rotate` Rotate 90 deg | Parts (any number); Rotate repeats (Enter turns them again) | `build_edit` with `flip` / `rotate`, one undo step |
+| `build.cut_list` Cut List, `build.parts_list` Parts List | an action: `BuildListsDialog` (`build/BuildLists.cpp`) with the tabs Cut List (Kerf; the cut parts grouped as the model groups them: quantity, part, length, end A and B, machining, own features, supplier, part number, mass each; the stock: pieces in cutting order, stock pieces, offcut; the other parts) and Parts List (`parts_list`: quantity, part, supplier, part number, library, version, licence); **Copy as CSV** (Alt+C) copies the shown tab's tables, **Save as PDF...** (Alt+P) writes them with `QPdfWriter` (Qt Gui; A4 landscape) under the list's title and the design's name with the date | `build_cut_list` (`kerf`), `parts_list` |
+
+- **The picker** (`build/BuildCatalog`): the parts of the role from
+  `library_build_candidates` (`library_search` with the `role` when the
+  former is refused), each configuration row an entry, and the design's
+  sources (`library_parts` entries with `source`), so that a part placed
+  once is placed again from its source (`part.source`) without its
+  library. Read when the command starts and after each placement. Search
+  words must all be in the name, designation, ids, supplier, part number,
+  system (`B8 30`), size (`30x30`) or slots (`4 slots`); System narrows to
+  one system. The part chosen stays in the list; the part placed last is
+  the next start's.
+- **Where a pick is:** `withOnPick` keeps the click in the design (`at`
+  is in the item's component; `build::recordPick`); an item given
+  otherwise (live MCP) stands for its middle. `at.occurrence` is the
+  item's path from the active component, `at.point` in the active
+  component's coordinates.
+- **Auto length:** the preview without a length names the face the ray
+  meets (`length.target`); the panel then binds to it (`{"bind": target,
+  "mode", "add": 0}`) and previews again. Nothing in the way (the first
+  part): the typed length. **Tab** steps face, centre, through wherever
+  the main window has the keyboard (`InputDef::tabCycle`); typing a length
+  or dragging its handle switches to Typed length (`onChange`), and
+  switching to it starts from the auto length shown.
+- **The preview:** the new part's shape is `analysis_shape` `{"shape":
+  "build_preview", ...}` (`build_place`'s fields); without one, the
+  section along `frame`'s z for `length` (`build::boxAlong`). The target
+  face is highlighted orange (`Inspection::highlights`); the length is a
+  label at the free end and the slot's `snaps` are markers
+  (`Inspection::report`, `previewMarkers`). `frame` is `{"origin",
+  "x_axis", "y_axis", "z_axis"}` in the design, the new part's own axes at end A
+  with z from end A to end B (the junctions' frames too). The replies'
+  lengths are millimetres and their angles radians.
+- **Enabled:** Profile, Panel, Linear Part and Parts List always (an empty
+  picker says to fetch the parts library); the others while
+  `build_parts` lists parts.
+
+Logs: `BUILD parts <role>: <n> (<m> in the design)`, `BUILD connectors for
+junction <id> (<kind>): <n> fit, <m> nearly`, `Inspect Profile: place
+side, length 742.50 mm (bound, auto: to the face to F8:part(...) of
+Part5), square ends`, `Placed <part> as <name> (<occurrence>), length
+<how>`, `Applied Profile (2)`, `Closed Profile after 2`, `Profile: Tab
+steps Length`, `BUILD length typed: detached from the auto length`,
+`Cursor box Profile length: 742.5 mm at x,y` (the box's text, when it
+changes while shown), `Inspect Connector: junction J3 (L): 1 fit, 0
+nearly, preview <connector> with 2 fastener(s), machining D6.8 x 15 M8
+at end a`,
+`Preview marker Connector > L world x,y,z at x,y` (a junction's marker,
+the chosen one with `> `; `Preview marker Profile 742.5 mm ...` the
+length at the free end), `Placed panel <part> as <name> (<occurrence>), fits; 0
+clamp(s)` (`, does not fit: <reason>`), `Connected <part> at junction <id>
+(<kind>) as <component>: <n> added`, `Fasteners of <name>: <n>
+command(s)`, `Length of <name>: <value>` (`bound, face`), `Ends of <name>:
+end a 45 deg about x, shared, machining D6.8 mm x 15 mm M8 at end a`, `Flip <names>`, `Rotate <names> 90 deg`,
+`Cut list row: 2 x <part>, 500.0 mm, A 45 deg (x), B square`, `Cut list
+stock: <part>, 6000.0 mm stock x 1, pieces 500.0, ..., offcut <mm>`, `Cut
+list: <n> row(s), <n> stock, <n> other part(s), kerf 3 mm`, `Build parts
+list: <n> row(s)`, `Build list CSV: <line>`, `Build list copied as CSV:
+<n> line(s)`, `Build list PDF written: <path> (<bytes> bytes; Cut list of
+<design>, <date>)`, `Ribbon tab BUILD at x,y`. Tests:
+`tools/ui-build-test.sh`, `tools/ui-windows-build-test.ps1` (ctest
+`app.ui-windows-build`).
+
 ## The view
 
 `ViewController` (`view/`) registers the view commands and keeps display
@@ -1220,14 +1400,27 @@ settings in the user's settings (`ViewSettings`, group `view`);
 - **Section Analysis** and **Hide Above Sketch:** the cut faces are drawn
   as caps (`MainWindow::showSectionCaps`: the clipped bodies' faces in the
   plane, without those the whole body has there, as under a sketch on a
-  body's face), hatched at 45 degrees to the plane's x axis (the sketch's
-  in Hide Above Sketch; `OcctViewer::setSectionCaps`, the lines lifted off
-  the caps toward the removed side so that they are drawn over them); the
-  clip is the model's `analysis_shape {"shape": "clip"}`. What is left of
+  body's face), one group per component, in the component's timeline colour
+  (mitcad#382: `componentColor` / `componentColorIndex` in
+  `browser/ComponentColors.hpp`, shared with the timeline; the root's bodies
+  keep the default orange) in every visual style, however the bodies
+  themselves are coloured. `OcctViewer::setSectionCaps` takes the groups
+  (`OcctViewer::SectionCap`) and hatches each over its fill at 45 degrees
+  to the plane's x axis (the sketch's in Hide Above Sketch), the next group
+  at 135, in a darker shade of its own colour (`capHatchColor`), 1.5 px
+  wide, with a spacing per cap face (about eight lines across a small
+  face, at most 40 across all the caps of a group, at least 400th of
+  them); the lines lie off the caps toward the removed side, in the layer of
+  the edges in sight, so that they are drawn over the fill. The clip is the
+  model's `analysis_shape {"shape": "clip"}`. What is left of
   the bodies keeps their names, so its faces, edges and vertices are picked
   as the bodies' own (Project while Hide Above Sketch is on, also the face
   the sketch lies on, which stays whole); the caps cannot be picked
-  (mitcad#233). Test: `tools/ui-windows-section-pick-test.ps1` (ctest
+  (mitcad#233). The viewer logs `Section caps: 3 colour(s) [#e0892a hatch
+  #4b2d0b at 135 deg, 12 lines; ...] in <style>, bodies in <component|appearance> colours`
+  (again when the style or Component Colors change). Tests:
+  `tools/ui-section-caps-test.sh` (the colours per component and the
+  hatch from the log), `tools/ui-windows-section-pick-test.ps1` (ctest
   `app.ui-windows-section-pick`).
 
 - **Rendered** (`view.rendered`, in View > Visual Style; only when the
@@ -1437,6 +1630,8 @@ UI thread.
 | `MainWindowJoints.cpp` | dragging components the joints move, Animate Joint |
 | `commands/SheetCommands.cpp` | `registerSheetMetalCommands`: the SHEET METAL group (mitcad#210): Face, Flange, Bend, Fold, Corner Round, Corner Chamfer, Sheet Cut, Corner Relief, Unfold, Refold, Flat Pattern, Sheet Rules |
 | `MainWindowSheet.cpp` | Edit Sheet Rules, Show Flat Pattern, Export Flat Pattern and its dialog |
+| `commands/BuildCommands.cpp` | `registerBuildCommands`: the BUILD tab (mitcad#375, [BUILD](#build)): Profile, Panel, Linear Part, Connector, Fasteners, Length, Ends, Flip, Rotate 90 deg, Cut List, Parts List |
+| `build/BuildCatalog.*`, `build/BuildModel.*`, `build/BuildLists.*` | BUILD's parts for the pickers (library commands, the design's sources); what it reads of the model (paths, placements, picks as `at`, BUILD parts, junctions, preview frames); the Cut List and Parts List dialog with CSV and PDF |
 | `commands/SketchCommands.cpp` | the SKETCH tab: drawing tools, Sketch Dimension, constraints, Offset, Mirror, patterns, Project, sketch Fillet and Chamfer, Move/Copy, Trim, Extend, Construction, Convert to Sketch Geometry, Delete |
 | `sketch/SketchController.*` | sketch mode: mouse and keys, typed values, drags, `SketchOp` |
 | `sketch/SketchTool.hpp`, `DrawTools.cpp`, `EditTools.cpp` | the tools (`SketchTool`) and their factories |
@@ -1821,7 +2016,8 @@ Project submenu (mitcad#175); Open Read-Only is in the File menu itself.
 | `git_info` (`credential_helper`, `author`) | HTTPS or SSH by default; the author New Project offers; Cloud off without git |
 | `ssh_public_key`, `host_keys`, `trust_host_key` | Copy Public Key; Trust This Server |
 
-Tests: `tools/ui-project-test.sh`, `tools/ui-cloud-test.sh`, `tools/ui-sync-test.sh`,
+Tests: `tools/ui-project-test.sh`, `tools/ui-cloud-test.sh`,
+`tools/ui-cloud-address-test.sh` (a pasted git address), `tools/ui-sync-test.sh`,
 `tools/ui-version-test.sh`, the Windows and macOS workflow tests.
 
 ### Projects panel
@@ -2076,7 +2272,7 @@ SOLID tab's ASSEMBLE group.
 
 | Command | What it does | Model command / bridge |
 |---|---|---|
-| `insert.library_component` Insert from Library | `LibraryBrowser`: search (words, a licence filter, items without a licence only when asked), previews, details with the licence and the attribution, the version (newest first) and the size (cascaded combo boxes per selector, `SizeChooser`), linked or a copy | `library_search`, `library_show`, `library_preview`; then `insert_component` with `library` |
+| `insert.library_component` Insert from Library | `LibraryBrowser`: search (words, a licence filter, items without a licence only when asked), previews, details with the licence and the attribution, the version (newest first) and the size (cascaded combo boxes per selector, `SizeChooser`), linked or a copy; **Update** fetches every enabled source (as Fetch All, one warning for the failures) and searches again, keeping the selected item; while no enabled source is fetched the empty list says to press Update (mitcad#317) | `library_search`, `library_show`, `library_preview`, `library_list`, `library_fetch`; then `insert_component` with `library` |
 | `tools.library_parts` Library Parts... | `LibraryPartsDialog`: each part's recorded version and size, another version or size, Show Changes, Update; Check for Newer Versions and Get Missing Libraries fetch (the latter after showing the addresses, which come from the design); the Parts List tab (Copy as CSV) | `library_parts`, `parts_list`, `library_show`, `library_diff`, `library_fetch`; then `update_library_parts` |
 | `tools.libraries` Libraries... | `LibrariesDialog`: the sources (settings `libraries/sources`: URL or folder, on or off; the defaults are Mitcad's fastener library and the community index), Add URL, Add Folder, Remove, Fetch Selected, Fetch All | `library_list`, `library_fetch` |
 | `tools.community_library` Community Library... | the browser with the indexes' libraries first; Get Library adds a library an index lists to the sources and fetches it after a question with its address and licence | as Insert from Library |
@@ -2376,7 +2572,7 @@ connected", its menu offering Disconnect Agent.
 | Line | When |
 |---|---|
 | `View area x y w h` | the 3D view's place in the window (`ui_view_click`) |
-| `Ribbon SOLID/CREATE at x,y` | group menus (`ui_click_logged`) |
+| `Ribbon SOLID/CREATE at x,y`, `Ribbon tab BUILD at x,y` | group menus and the workspace tabs (wherever the tab bar is: the ribbon's, the title bar's), when the ribbon or its tab bar is shown, moves or is resized (`PlaceWatcher`, when the places changed), and when another tab is shown (`ui_click_logged`) |
 | `Ribbon split SKETCH/CREATE/Circles at x,y`, `Ribbon split SKETCH/CREATE/Circles arrow at x,y` | a subgroup's split button: the part that starts its default, the arrow that opens the submenu (mitcad#222; logged with the group menus) |
 | `Ribbon menu SKETCH/CREATE: Line \| Rectangles > [2-Point Rectangle \| …] \| … \| Sketch Dimension`, `Ribbon menu SKETCH/CREATE/Circles: Center Diameter Circle \| …` | a group menu or a subgroup's submenu as it opens (`-` a separator, a submenu as `Name > [its entries]`) |
 | `Panel <command> input <id> at x,y [(hidden)]`, `Panel <command> OK at x,y` | a panel opened |
@@ -2394,6 +2590,9 @@ connected", its menu offering Disconnect Agent.
 | `Sketches shown: F1, …` | the sketches the view shows |
 | `Timing refresh: 36.5 ms`, `Timing display: 1093 ms, 166 bodies, 166 new`, `Timing hover: …`, `Timing frame: …`, `Timing open: …` | with `MITCAD_LOG_TIMING=1` (`framework/Diagnostics.hpp`): how long the steps take, for `tools/perf-measure.sh` |
 | `Selected: 1 face [face F2:end(…) of F2.b0]`, `Context menu: A \| B` | outside commands |
+| `Eye click Root/Bodies/Body1 (press)` (`(double-click)`) | a click on a light bulb in the browser, before its `Visibility …` line; the press, its moves and its release belong to the light bulb and never reach the tree's selection (mitcad#344; `tools/ui-browser-test.sh`, `tools/ui-windows-browser-test.ps1`) |
+| `Context menu Hide: Hide Body \| Hide Component` (`Hide 2 Bodies`, `Hide 2 Components`; the submenu of the view's context menu, mitcad#347), `Hid body Body2`, `Hid component Component1:1` | Hide > Hide Body / Hide Component: `set_body_visible` for the bodies of the selected faces, edges, vertices and bodies, `set_occurrence_visible` for their occurrences (none for the root's bodies, so no Hide Component), each once, as the browser's light bulbs do (`BrowserController::hideBodies`, `hideOccurrences`), one undo step; `tools/ui-hide-menu-test.sh` |
+| `Find in Design opened`, `Find in Design found: 5 bodies, 0 components`, `Find in Design: hid 3 bodies` (`showed`, `1 component`; `selected …`, `appearance for N bodies`), `Find in Design button at x,y`, `Find in Design field\|components\|bodies\|visibility\|show\|hide\|appearance\|select\|all\|none\|close at x,y`, `Find in Design row N at x,y` | the Find in Design window (mitcad#350): the results after each search, what each button did (bodies by uid and components by occurrence, each once), and where the controls and the rows in sight are; the field is also logged as `Dialog field Find in Design: <text>`; `tools/ui-find-in-design-test.sh` |
 | `Create Sketch: select a plane`, `Create Sketch: origin planes shown` (`not shown (the design has components)`), `Create Sketch picked …`, `Sketch started on xy, origin (0, 0, 0)`, `Editing sketch F1 (Sketch1)`, `Sketch finished` | sketch mode |
 | `Sketch view x0,y0 x1,y1 x2,y2` | where sketch points (0, 0), (100, 0), (0, 100) are in the window, when it changed (`ui_sketch_click x y`) |
 | `Sketch origin at 0.00, 0.00, 20.00 mm in the design; the design origin at x 0.00, y 0.00 mm in the sketch` | a sketch edit started: where its origin lies in the design and where the design origin lies on its plane, in the document's length unit (mitcad#254) |
@@ -2458,6 +2657,7 @@ connected", its menu offering Disconnect Agent.
 | `Rendered view on`/`off`, `No render worker (mitcad-render) next to the application: no rendered view`, `Render worker started (pid <n>): <path of mitcad-render>`, `Render frame memory 1: 910 x 735` (debug; the frame memory's id and capacity), `Render worker ready: Cycles 5.3.0 on <CPU>`, `Render scene 1: 2 bodies, 1 meshes sent (F4.b0), 1 meshed, 0 released`, `Render scene 1 applied in 2.1 ms: received F4.b0; added -; changed F4.b0; moved -; removed -; kept 1; meshes 3; instanced 0`, `Render view 3: orthographic 728 x 588` (debug; a view sent to the worker, once a navigation of the view ends, mitcad#214), `Render view 3: first frame (145 x 117) after 26 ms`, `Render view 3: first denoised frame (145 x 117, 1 samples) after 60 ms`, `Render frame view 3 728x588 samples 4 denoised covers x0,y0 x1,y1` (debug; what the frame's alpha covers, in view pixels; `denoised` for a denoised frame), `Render image dropped: camera moved` (debug; `size changed`, `animation`: the view draws the bodies shaded from this frame, once per navigation, mitcad#216), `Render view 3: 64 samples in 2.91 s`, `Render mesh F2.b0: 12 of 12 triangles turned to face outwards` (debug; a triangulation wound inwards, mitcad#319), `Render material swap F2.b0: default (transmission 0, opacity 1) -> glass_clear (transmission 1, opacity 1); mesh reused (the worker holds it)` (debug; `meshed again`, `sent again`), `Render brightness view 3 samples 16: 0.412 over 5321 pixels` (debug; the mean linear brightness of what the frame covers, `tools/ui-render-glass-test.sh`), `Render worker: render-ground off: the camera looks at the ground from below` (debug; `render-ground on: the camera is above the ground again`: the ground dropped and built again as the camera crosses its plane, mitcad#320, `tools/ui-render-ground-test.sh`), `Render worker stopped: <reason>`, `View message: <text>`, `Render worker ended` | View > Rendered (`tools/ui-render-test.sh`) |
 | `Preferences opened: General, 640 x 330` (the page shown and the size the window asks for), `Preferences: navigation middle-orbit, zoom to cursor on, …, autosave every 5 min` (or `…, autosave off`), `Shortcut overview: 23 command shortcuts` | the dialogs |
 | `Section caps: 2 face(s) at {"normal":[1,0,0],"origin":[30,…]}`, `Section caps: none` | the caps of Section Analysis or Hide Above Sketch drawn (when they change), and gone again (the bodies whole) |
+| `Section caps: 3 colour(s) [#e0892a hatch #4b2d0b at 135 deg, 12 lines; …] in Shaded, bodies in appearance colours` | the viewer's caps (mitcad#382): per colour group the cap colour (the component's timeline colour, the default orange for the root), the hatch's colour, direction and line count; again when the visual style or Component Colors change |
 | `Hide Above Sketch on`/`off`, `In front of the sketch plane: F2.b0 5.0, F5.b0 10.0` | the sketch palette's option; in sketch mode (also while a sketch command's panel is open), how far each shown body reaches in front of the sketch plane (mm, when it changes; 0 or less once cut, a body cut away entirely is left out) |
 | `Exported <path>: dxf flat pattern of Body1, 5 entities (CUT_OUTER 4, BEND_DOWN 1), mm`, `Export of the flat pattern of Body1 refused: <reasons>`, `Flat pattern of Body1 shown` (`folded`), `Flat pattern of Body1: valid, area 1086.39 mm2, 1 bend(s)`, `Deleted the flat pattern of Body1`, `Added sheet face of 1 profile(s), new rules, thickness 2`, `Added flange, length 15 (tangent), angle 90 deg`, `Sheet rules: thickness …` | sheet metal (mitcad#210): the Flat Pattern's export, display and item, the commands' describe lines |
 | `Export dialog: STEP AP214 (*.step) to <path>`, `Exported <path>: step, 1 body(ies), mm` (with occurrences `…, mm, design coordinates` or `component coordinates`), `Exported <path>: usdz, 1 body(ies), 1 material(s)`, `Exported <path>: dxf, 4 entities` | export |
@@ -2478,7 +2678,7 @@ connected", its menu offering Disconnect Agent.
 | `Diagnostics: memory 307830 of 8101298176 bytes (11 results), disk 11238 bytes (4 files), process 355545088 bytes; last recompute 5 evaluated, 0 from the store, 1 cached`, `Diagnostics: cleared memory: 7 results, 120000 bytes`, `Diagnostics: cleared disk: 4 files, 11238 bytes`, `Diagnostics report written to <path>` | Help › Diagnostics: shown or refreshed, Clear Memory, Clear Disk, Export Report |
 | `Version recorded: part.mitcad abc1234 v3: <summary>`, `Version unchanged: part.mitcad (v3)`, `Version not recorded: <why>`, `Version failed: <error>`, `Version warning: <warning>`, `Version status: bracket, main, v3` (`…, no version`; `none` outside projects with history; when it changes), `Version author: Name <email> (git)` (or `(settings)`), `Version author dialog: git has none` (an older project without an author), `Version author dialog cancelled`, `Save with Description dialog: <automatic message's summary>`, `Save with Description cancelled`, `Save with Description: no version history for part.mitcad`, `Save conflict: <path> changed outside Mitcad (the file)` (or `(a newer version)`), `Save conflict: compare: <the diff's lines joined by " \| ">`, `Save conflict: new version` (`save as`, `cancelled`), `Renamed from a.mitcad: its display state moved along` | saving versions: a commit and what it did, the indicator's version (`Version status`), the author, Save with Description, a change outside Mitcad before Save, a rename followed at opening |
 | `Version History dialog: part.mitcad, reading its versions`, `Version History: 3 versions of part.mitcad: v3 abc1234 <summary> \| v2 … (renamed from a.mitcad)` (at most 30), `Version History changes: v3 <changes> \| v2 … \| v1 first version`, `Version History selected v2 (abc1234): preview` (or `no preview`), `Version History compare v2 with v1: <heading and text joined by " \| ">` (`with the open design`), `Version History geometry v2 with v1: computing`, `…: <text>`, `…: cancelled`, `Version History open v2 (abc1234)`, `Version History restore v2 (abc1234)`, `Version History save copy v2 (abc1234)`, `Version History closed`, `Version History failed: <error>`, `Version History: no version history for part.mitcad`, `Restore dialog: v2 (abc1234) of part.mitcad` (` (unsaved changes)`), `Restore cancelled`, `Restore: the unsaved changes dropped`, `Version restored: part.mitcad v2 (abc1234) as v4 (def5678)`, `Opened version v2 (abc1234) of part.mitcad as part v2`, `Save Copy As dialog: part v2.mitcad`, `Save Copy As cancelled`, `Saved a copy of part.mitcad v2 (abc1234) as <path>`, `Version preview saved: <blob's 7 digits> (256 x 160)` | Version History: the list, the changes, the selection and its comparison, the geometry, the choice; Restore, Open and Save Copy As; a version's preview |
-| `Appearances dialog opened`, `Appearances for bodies: F1.b0 (custom1)` (the bodies' shared appearance; `none` without bodies), `Appearances item chrome at x,y` (the list's rows in sight), `Appearances field roughness at x,y` (also `name`, `base_color`, `emission_color`: their text fields), `Appearances new at x,y` (`delete`, `assign`, `close`), `Appearance selected: chrome`, `Created appearance custom1 (Chrome Copy) from chrome`, `Appearance custom1 roughness = 0.35` (`base_color = #d02020`; `… refused: <why>`), `Assigned appearance custom1 to F1.b0` (faces: `F1.b0 F1:top`), `Deleted appearance custom1`; mitcad#53: `Appearances for faces: F1.b0 F1:top (paint_red)`, `Appearances field texture_path at x,y` (also `texture_width`, `texture_height`, `texture_rotation`, `texture_projection`, `texture_embed`, `texture_remove`), `Appearances face F1.b0 F1:top paint_red at x,y` (the listed face appearances), `Appearances clear_faces at x,y`, `Cleared face appearances of F1.b0 F1:top`, `Appearance checker texture embedded` (`not embedded`, `removed`, `path <path>`, `size [...]`), `Appearance lost texture missing: <why>` | Edit Appearances (`tools/ui-appearance-test.sh`, `tools/ui-render-faces-test.sh`); places in the main window's coordinates |
+| `Appearances dialog opened`, `Appearances for bodies: F1.b0 (custom1)` (the bodies' shared appearance; `none` without bodies), `Appearances item chrome at x,y` (the list's rows in sight), `Appearances field roughness at x,y` (also `name`, `base_color`, `emission_color`: their text fields), `Appearances new at x,y` (`delete`, `assign`, `close`), `Appearance selected: chrome`, `Created appearance custom1 (Chrome Copy) from chrome`, `Appearance custom1 roughness = 0.35` (`base_color = #d02020`; `… refused: <why>`), `Assigned appearance custom1 to F1.b0` (faces: `F1.b0 F1:top`), `Appearances assign_bodies at x,y` and `Appearances assign_bodies label: Assign to 2 bodies` (the button next to Assign, only while the selection holds faces; `Assign to 1 body`), `Appearance Red Copy assigned to 2 bodies (from faces)` (mitcad#346), `Deleted appearance custom1`; mitcad#53: `Appearances for faces: F1.b0 F1:top (paint_red)`, `Appearances field texture_path at x,y` (also `texture_width`, `texture_height`, `texture_rotation`, `texture_projection`, `texture_embed`, `texture_remove`), `Appearances face F1.b0 F1:top paint_red at x,y` (the listed face appearances), `Appearances clear_faces at x,y`, `Cleared face appearances of F1.b0 F1:top`, `Appearance checker texture embedded` (`not embedded`, `removed`, `path <path>`, `size [...]`), `Appearance lost texture missing: <why>` | Edit Appearances (`tools/ui-appearance-test.sh`, `tools/ui-appearance-bodies-test.sh`, `tools/ui-render-faces-test.sh`); places in the main window's coordinates |
 | `Render body F1.b0: appearance plastic_red` (`default`; with faces of their own `…, 1 faces paint_red`), `Render textures not drawn: <appearance>: <why>, its base colour is shown` (a map of its set, mitcad#314: `<appearance>: the normal map is left out, <why>`) | the rendered view's scene: each body's appearance and its faces' (`tools/ui-render-materials-test.sh`, `tools/ui-render-faces-test.sh`) |
 | `Appearances texture sources: folder, polyhaven (1 folders)`, `Appearances source at x,y` (also `search`, `category`; with a texture source `resolution`, `use`), `Appearances source: folder` (`appearances`), `Appearances filtered "brick" (All Categories): 2 shown`, `Texture search folder "brick" (all categories): 1 found` (`…: <error>`), `Appearances texture Red bricks at x,y` (the grid's tiles in sight), `Texture thumbnail Red bricks shown`, `Texture selected: Red bricks (2k)`, `Texture fetching folder red_bricks 2k`, `Texture used: folder red_bricks 2k as custom1 (3 maps; 3 images embedded, 0 shared)`, `Texture not used: <why>`, `Appearance custom1 texture: embedded, maps normal roughness, source folder red_bricks 2k`, `Appearances: texture sources on the internet allowed`, `Preferences texture folder at x,y`, `Preferences: texture folders <folders>` (`none`) | texture sources in Edit Appearances and Preferences › Textures (mitcad#315, `tools/ui-appearance-textures-test.sh`) |
 | `Texture source polyhaven attribution: Powered by …`, `Texture request https://api.polyhaven.com/assets?t=textures` (every request of an online source; `Texture request refused: <why>`, `Texture request <host> failed: <why> (HTTP <status>)`), `Texture details: Red Tiles 01: 1k 292 bytes, 2k 1.2 kB`, `Poly Haven: 2 textures` (`… from the cache`; `the cached list of textures, as <error>`), `Poly Haven: red_tiles_01 2k in the cache (3 maps)` | Poly Haven as a texture source (mitcad#313, `tools/ui-appearance-polyhaven-test.sh`) |

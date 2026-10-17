@@ -26,6 +26,8 @@ mod projects;
 mod locks;
 // A project's folders and designs (mitcad#144).
 mod folders;
+// BUILD parts of component libraries (mitcad#375).
+mod library_build;
 
 /// A fresh folder in the temporary directory, removed afterwards.
 struct Scratch(PathBuf);

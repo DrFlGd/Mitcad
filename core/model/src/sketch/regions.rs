@@ -24,7 +24,8 @@ use std::collections::BTreeMap;
 use std::f64::consts::TAU;
 
 use super::geometry::{
-    Curve2, P2, add, cross, dist, norm, polygon_area, polygon_centroid, polygon_contains, scale,
+    Curve2, P2, add, cross, dist, dot, norm, polygon_area, polygon_centroid, polygon_contains,
+    scale, sub,
 };
 use super::intersect::intersections;
 use crate::profile::{ProfileLoop, ProfileRegion, ProfileSegment, SegmentGeometry};
@@ -824,6 +825,62 @@ impl<'a> Arrangement<'a> {
         keys
     }
 
+    /// Whether the point `probe` is inside the loop of half-edges (mitcad#364),
+    /// decided on the loop's curves and not on its display samples: where the
+    /// probe lies within the chord error of a sample segment, that segment
+    /// is split (by halving its parameter range) until the chord no longer
+    /// reaches the probe, so a loop near a curved boundary is on the side
+    /// it really is.
+    fn contains(&self, halves: &[usize], probe: P2) -> bool {
+        /// How often a segment near the probe is halved: the chord error
+        /// falls with the square of the length.
+        const DEPTH: u32 = 24;
+
+        fn refine(
+            arrangement: &Arrangement<'_>,
+            e: usize,
+            from: (f64, P2),
+            to: (f64, P2),
+            probe: P2,
+            depth: u32,
+            out: &mut Vec<P2>,
+        ) {
+            let (ta, pa) = from;
+            let (tb, pb) = to;
+            let tm = (ta + tb) / 2.0;
+            let pm = arrangement.eval(e, tm)[0];
+            // The chord's error at the middle, doubled: the most the curve
+            // lies from the chord between them.
+            let slack = 2.0 * dist(pm, scale(add(pa, pb), 0.5));
+            out.push(pa);
+            if depth == 0 || segment_distance(pa, pb, probe) > slack {
+                return;
+            }
+            out.pop();
+            refine(arrangement, e, from, (tm, pm), probe, depth - 1, out);
+            refine(arrangement, e, (tm, pm), to, probe, depth - 1, out);
+        }
+
+        let mut points = Vec::new();
+        for &h in halves {
+            let e = h / 2;
+            let edge = &self.edges[e];
+            let params = self.curve(e).sample_params(edge.t0, edge.t1);
+            let at: Vec<(f64, P2)> = params.iter().map(|&t| (t, self.eval(e, t)[0])).collect();
+            let mut forward = Vec::new();
+            for w in at.windows(2) {
+                refine(self, e, w[0], w[1], probe, DEPTH, &mut forward);
+            }
+            forward.push(at[at.len() - 1].1);
+            if h % 2 == 1 {
+                forward.reverse();
+            }
+            forward.pop();
+            points.extend(forward);
+        }
+        polygon_contains(&points, probe)
+    }
+
     /// The loop's points, sampled in its direction.
     fn outline(&self, halves: &[usize]) -> Vec<P2> {
         let mut points = Vec::new();
@@ -914,6 +971,8 @@ impl<'a> Arrangement<'a> {
         struct Loop {
             segments: Vec<ProfileSegment>,
             outline: Vec<P2>,
+            /// The half-edges of the loop, for the exact containment test.
+            halves: Vec<usize>,
             /// Signed area and first moments (counter-clockwise positive).
             area: f64,
             moments: [f64; 2],
@@ -955,6 +1014,7 @@ impl<'a> Arrangement<'a> {
                         area: m[0],
                         moments: [m[1], m[2]],
                         outline,
+                        halves: part.clone(),
                         component,
                     }
                 })
@@ -1002,16 +1062,17 @@ impl<'a> Arrangement<'a> {
                     geometry,
                 })
                 .collect();
-            let (ccw, cw) = if m[0] >= 0.0 {
-                (outline, reversed)
+            let ((ccw, ccw_half), (cw, cw_half)) = if m[0] >= 0.0 {
+                ((outline, 2 * e), (reversed, 2 * e + 1))
             } else {
                 m = m.map(|v| -v);
-                (reversed, outline)
+                ((reversed, 2 * e + 1), (outline, 2 * e))
             };
             faces.push((loops.len(), Vec::new()));
             loops.push(Loop {
                 segments: seg.clone(),
                 outline: ccw,
+                halves: vec![ccw_half],
                 area: m[0],
                 moments: [m[1], m[2]],
                 component: first_isolated + e,
@@ -1019,6 +1080,7 @@ impl<'a> Arrangement<'a> {
             loops.push(Loop {
                 segments: seg,
                 outline: cw,
+                halves: vec![cw_half],
                 area: -m[0],
                 moments: [-m[1], -m[2]],
                 component: first_isolated + e,
@@ -1043,7 +1105,7 @@ impl<'a> Arrangement<'a> {
                 .copied()
                 .filter(|&f| {
                     loops[f].component != loops[i].component
-                        && polygon_contains(&loops[f].outline, probe)
+                        && self.contains(&loops[f].halves, probe)
                 })
                 .min_by(|a, b| loops[*a].area.total_cmp(&loops[*b].area));
             if let Some(face) = around {
@@ -1129,4 +1191,16 @@ pub fn best_match<'a>(regions: &'a [Region], key: &RegionKey) -> Option<&'a Regi
                 .then_with(|| b.3.profile.key.cmp(&a.3.profile.key))
         })
         .map(|(.., r)| r)
+}
+
+/// The distance from `p` to the segment `a`-`b`.
+fn segment_distance(a: P2, b: P2, p: P2) -> f64 {
+    let ab = sub(b, a);
+    let len2 = dot(ab, ab);
+    let t = if len2 > 0.0 {
+        (dot(sub(p, a), ab) / len2).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    dist(p, add(a, scale(ab, t)))
 }

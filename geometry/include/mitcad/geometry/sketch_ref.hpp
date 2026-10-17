@@ -15,11 +15,14 @@
 
 namespace mitcad::geometry {
 
-enum class ModelCurveKind { Point, Line, Conic, BSpline };
+enum class ModelCurveKind { Point, Line, Conic, BSpline, Helix };
 
 // A curve in model space. A conic is center + major cos(t) x_axis + minor
 // sin(t) (normal × x_axis) for t from first to last (a circle when major ==
-// minor); a B-spline has its full knot vector (poles + degree + 1 knots).
+// minor); a B-spline has its full knot vector (poles + degree + 1 knots); a
+// helix (a path, mitcad#385) is center + major (cos(t) x_axis + sin(t)
+// (normal × x_axis)) + minor t / 2π normal for t from first to last: its
+// radius is `major`, its rise per turn `minor` (negative: left-handed).
 struct ModelCurve {
   ModelCurveKind kind = ModelCurveKind::Line;
   gp_Pnt start; // Point, Line

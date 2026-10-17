@@ -4,8 +4,10 @@
 
 #[cxx::bridge(namespace = "mitcad::bridge")]
 pub mod ffi {
-    /// A path curve with its name: `kind` 0 line, 1 conic, 2 B-spline; only
-    /// the fields of its kind are used (see `mitcad_model::Curve3`).
+    /// A path curve with its name: `kind` 0 line, 1 conic, 2 B-spline, 3
+    /// helix (its radius as `major`, its pitch as `minor`, its axis as
+    /// `normal`); only the fields of its kind are used (see
+    /// `mitcad_model::Curve3`).
     #[derive(Clone, Debug)]
     struct SweepCurve {
         name: String,
@@ -241,6 +243,25 @@ fn curve(piece: &PathCurve) -> ffi::SweepCurve {
             input.poles = poles.iter().flatten().copied().collect();
             input.weights = weights.clone();
             input.knots = knots.clone();
+        }
+        // A helix (mitcad#385): the radius as `major`, the pitch as `minor`.
+        Curve3::Helix {
+            center,
+            axis,
+            x_axis,
+            radius,
+            pitch,
+            start,
+            end,
+        } => {
+            input.kind = 3;
+            input.center = *center;
+            input.normal = *axis;
+            input.x_axis = *x_axis;
+            input.major = *radius;
+            input.minor = *pitch;
+            input.first = *start;
+            input.last = *end;
         }
     }
     input

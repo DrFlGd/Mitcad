@@ -1,0 +1,134 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: an OnSame end whose face at the end lies on a trimmed surface
+crossed by the opposite contact only past its bounds (mitcad#236).
+
+A plate's bottom edge is rounded with 3 up to a conical foot below the
+plate (the foot's rim on the plate's bottom, the cone cut flush with the
+plate's side). At the edge's end the cone is the face at the end (OnSame):
+the corner intersects the opposite contact, on the side 3 above the
+bottom, with the face at the end extended, and caps the blend with its
+intersection with that face, the cone/side edge prolonged up to the cap.
+The cone continued above its rim crosses the side's contact before the
+edge's end, but stored bodies carry the cone on a surface trimmed at the
+face's bounds (Geom_RectangularTrimmedSurface); ChFi3d_ExtendSurface
+extends only B-spline and Bezier surfaces, so the intersection was sought
+on the cone below its rim, found nothing, and the corner failed ("OneCorner
+: bouchon non ecrit"). The same body with an untrimmed cone builds.
+
+Where that intersection fails, ChFi3d_Builder::PerformOneCorner now tries
+the face at the end extended as its basis surface is
+(ChFi3d_UntrimmedEndSurface: an elementary basis, unbounded where it is not
+periodic, one period from the trimmed start where it is, so that the face's
+own curves keep their parameters). When the contact meets it there, the cap
+and the prolonged edge are built on it; the face keeps its surface (a new
+surface given to the face lost the second p-curve of its seam in the
+topological build), its new curves lying past the trimmed bounds on the
+same parameters. Where the trimmed surface is crossed, nothing changes.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
+index 567517c..25e11c8 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
+@@ -124,6 +124,7 @@ extern void   ChFi3d_ResultChron(OSD_Chronometer& ch, double& time);
+ #include <IntRes2d_IntersectionSegment.hxx>
+ #include <Geom_BezierCurve.hxx>
+ #include <Geom_BoundedSurface.hxx>
++#include <Geom_ElementarySurface.hxx>
+ 
+ static double recadre(const double p,
+                       const double ref,
+@@ -492,6 +493,50 @@ static void ChFi3d_ExtendSurface(occ::handle<Geom_Surface>& S, int& prol)
+   S = aBS;
+ }
+ 
++//=======================================================================
++// function : ChFi3d_UntrimmedEndSurface
++// purpose  : The face at an OnSame end on a trimmed elementary surface (a
++//           cone bounded at the face's rim, as stored bodies have them),
++//           extended as its basis surface is: unbounded where that is not
++//           periodic, one period from the trimmed start where it is, so
++//           that the parameters of the face's own curves stay as they are.
++//           Null for any other surface.
++//=======================================================================
++
++static occ::handle<Geom_Surface> ChFi3d_UntrimmedEndSurface(const occ::handle<Geom_Surface>& theS)
++{
++  occ::handle<Geom_RectangularTrimmedSurface> aTr = occ::down_cast<Geom_RectangularTrimmedSurface>(theS);
++  if (aTr.IsNull())
++  {
++    return occ::handle<Geom_Surface>();
++  }
++  occ::handle<Geom_Surface> aBasis = aTr->BasisSurface();
++  if (!aBasis->IsKind(STANDARD_TYPE(Geom_ElementarySurface)))
++  {
++    return occ::handle<Geom_Surface>();
++  }
++  double aU1, aU2, aV1, aV2;
++  aTr->Bounds(aU1, aU2, aV1, aV2);
++  const bool isU = aBasis->IsUPeriodic(), isV = aBasis->IsVPeriodic();
++  if (isU && isV)
++  {
++    return new Geom_RectangularTrimmedSurface(aBasis,
++                                              aU1,
++                                              aU1 + aBasis->UPeriod(),
++                                              aV1,
++                                              aV1 + aBasis->VPeriod());
++  }
++  if (isU)
++  {
++    return new Geom_RectangularTrimmedSurface(aBasis, aU1, aU1 + aBasis->UPeriod(), true);
++  }
++  if (isV)
++  {
++    return new Geom_RectangularTrimmedSurface(aBasis, aV1, aV1 + aBasis->VPeriod(), false);
++  }
++  return aBasis;
++}
++
+ //=======================================================================
+ // function : ComputeCurve2d
+ // purpose  : calculate the 2d of the curve Ct on face Face
+@@ -2668,6 +2713,42 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
+                                 CPopArc,
+                                 p2dbout,
+                                 wop); // out
++    // The opposite contact meets the face at the end only past the bounds
++    // of its trimmed surface (a plate's edge rounded up to a conical foot
++    // below the plate: the side's contact, above the plate's bottom, crosses
++    // the foot's cone above its rim): that face extended as its basis
++    // surface is. The extension has the face's own parameters, so the cap
++    // and the prolonged edge lie on the face's surface past its trimmed
++    // bounds; the face keeps its surface (a new one would lose the second
++    // p-curve of its seam in the topological build).
++    if (!inters && !isRolledEnd && !isRolledPast)
++    {
++      const occ::handle<Geom_Surface> aSx = ChFi3d_UntrimmedEndSurface(BRep_Tool::Surface(Fv));
++      if (!aSx.IsNull())
++      {
++        TopoDS_Face  aFx;
++        BRep_Builder aBx;
++        aBx.MakeFace(aFx, aSx, BRep_Tool::Tolerance(Fv));
++        HBs->Initialize(aFx, false);
++        inters = IntersUpdateOnSame(HGs,
++                                    HBs,
++                                    c3df,
++                                    Fop,
++                                    Fv,
++                                    Arcprol,
++                                    Vtx,
++                                    isfirst,
++                                    10 * tolapp3d,
++                                    FiopArc,
++                                    CPopArc,
++                                    p2dbout,
++                                    wop);
++        if (!inters)
++        {
++          HBs->Initialize(Fv, false);
++        }
++      }
++    }
+ 
+     if (isRolledEnd)
+     {

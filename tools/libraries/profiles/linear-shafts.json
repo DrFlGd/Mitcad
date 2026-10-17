@@ -1,0 +1,48 @@
+[
+  {
+    "id": "bar-hex-sw19",
+    "name": "Aluminium hexagon bar SW19",
+    "category": "linear",
+    "source": "dynamic-m/Aluminium-hexagon-SW19-length-1980-mm/Motedis-AHSW19-1980/Motedis_AHSW19-1980.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "AHSW19-1980",
+    "supplier_url": "https://www.motedis.com/en/Aluminium-hexagon-SW19-length-1980-mm",
+    "designation": "Hexagon bar SW19 L={L}",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "length": {"parameter":"L","min":"10 mm","max":"1980 mm","stock":["1980 mm"]},
+      "frames": [{"name":"end_a","kind":"end"},{"name":"end_b","kind":"end"},{"name":"shaft","kind":"shaft"}],
+      "linear": {"kind":"shaft"}
+    },
+    "frames": [
+      {"name":"end_a","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"end"},
+      {"name":"end_b","origin":[0,0,"L"],"z":[0,0,1],"x":[1,0,0],"kind":"end"},
+      {"name":"shaft","origin":[0,0,0],"z":[0,0,1],"x":[1,0,0],"kind":"shaft"}
+    ]
+  },
+  {
+    "id": "shaft-splined-t10-15",
+    "name": "Splined shaft T10, 15 teeth",
+    "category": "linear",
+    "source": "dynamic-m/Splined-shaft-T10-with-15-teeth-L160mm/Motedis-10367-2/Motedis_10367.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "10367",
+    "supplier_url": "https://www.motedis.com/en/Splined-shaft-T10-with-15-teeth-L160mm",
+    "designation": "Splined shaft T10 L={L}",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "length": {"parameter":"L","min":"10 mm","max":"160 mm","stock":["160 mm"]},
+      "frames": [{"name":"end_a","kind":"end"},{"name":"end_b","kind":"end"},{"name":"shaft","kind":"shaft"}],
+      "linear": {"kind":"shaft"}
+    },
+    "frames": [
+      {"name":"end_a","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"end"},
+      {"name":"end_b","origin":[0,0,"L"],"z":[0,0,1],"x":[1,0,0],"kind":"end"},
+      {"name":"shaft","origin":[0,0,0],"z":[0,0,1],"x":[1,0,0],"kind":"shaft"}
+    ]
+  }
+]

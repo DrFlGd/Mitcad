@@ -257,6 +257,9 @@ impl FaceName {
         match &self.key {
             Some(RoleKey::Edge(edge)) => edge.collect_features(features),
             Some(RoleKey::Vertex(vertex)) => vertex.collect_features(features),
+            // A derived part's face is named after a face of its source,
+            // in the source's own ids (mitcad#375): no features here.
+            Some(RoleKey::Face(_)) if self.role == "part" => {}
             Some(RoleKey::Face(face)) => face.collect_features(features),
             _ => {}
         }

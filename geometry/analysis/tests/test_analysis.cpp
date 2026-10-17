@@ -52,6 +52,7 @@
 #include <Geom_CylindricalSurface.hxx>
 #include <Geom_Line.hxx>
 #include <Geom_Plane.hxx>
+#include <Geom_RectangularTrimmedSurface.hxx>
 #include <TopoDS_Edge.hxx>
 #include <TopoDS_Face.hxx>
 #include <TopoDS_Vertex.hxx>
@@ -657,6 +658,63 @@ void test_boundary_gap_bridged_by_a_vertex() {
   CHECK(near(mitcad::analysis::area(square), 1.0, 1e-12));
 }
 
+// A face on a trimmed surface whose boundary runs past the trim (a fillet's
+// corner extends a cone stored trimmed at its rim, mitcad#236): the face is
+// measured as its boundary bounds it. A cylinder of radius 2 about the z
+// axis from z = 0 up to the plane z = 2 + x / 2, whose side lies on its
+// surface trimmed at z = 1.5: every edge of the side that reaches above the
+// trim crosses it (the top ellipse, from z = 1 to 3, and the seam), so the
+// face's parameter bounds stop there.
+void test_face_past_its_trimmed_surface() {
+  gp_Trsf tilt;
+  tilt.SetRotation(gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 1, 0)), -std::atan(0.5));
+  gp_Trsf lift;
+  lift.SetTranslation(gp_Vec(0, 0, 2));
+  const TopoDS_Shape above =
+      BRepBuilderAPI_Transform(BRepPrimAPI_MakeBox(gp_Pnt(-10, -10, 0), gp_Pnt(10, 10, 10)).Shape(), lift * tilt).Shape();
+  const TopoDS_Shape solid =
+      BRepBuilderAPI_Copy(BRepAlgoAPI_Cut(BRepPrimAPI_MakeCylinder(2.0, 6.0).Shape(), above).Shape()).Shape();
+  BRep_Builder       builder;
+  int                trimmed = 0;
+  for (TopExp_Explorer f(solid, TopAbs_FACE); f.More(); f.Next()) {
+    const TopoDS_Face face = TopoDS::Face(f.Current().Oriented(TopAbs_FORWARD));
+    TopLoc_Location   location;
+    const occ::handle<Geom_Surface> surface = BRep_Tool::Surface(face, location);
+    if (BRepAdaptor_Surface(face).GetType() != GeomAbs_Cylinder) {
+      continue;
+    }
+    struct Curves {
+      TopoDS_Edge               edge;
+      occ::handle<Geom2d_Curve> c1, c2;
+      double                    first = 0.0, last = 0.0;
+    };
+    std::vector<Curves> curves;
+    for (TopExp_Explorer e(face, TopAbs_EDGE); e.More(); e.Next()) {
+      Curves c;
+      c.edge = TopoDS::Edge(e.Current().Oriented(TopAbs_FORWARD));
+      c.c1   = BRep_Tool::CurveOnSurface(c.edge, face, c.first, c.last);
+      if (BRep_Tool::IsClosed(c.edge, face)) {
+        c.c2 = BRep_Tool::CurveOnSurface(TopoDS::Edge(c.edge.Reversed()), face, c.first, c.last);
+      }
+      curves.push_back(c);
+    }
+    builder.UpdateFace(face, new Geom_RectangularTrimmedSurface(surface, 0.0, 2.0 * M_PI, 0.0, 1.5), location,
+                       BRep_Tool::Tolerance(face));
+    for (const Curves& c : curves) {
+      if (c.c2.IsNull()) {
+        builder.UpdateEdge(c.edge, c.c1, face, BRep_Tool::Tolerance(c.edge));
+      } else {
+        builder.UpdateEdge(c.edge, c.c1, c.c2, face, BRep_Tool::Tolerance(c.edge));
+      }
+      builder.Range(c.edge, face, c.first, c.last);
+    }
+    CHECK(near(mitcad::analysis::area(face), 8.0 * M_PI, 1e-9));
+    ++trimmed;
+  }
+  CHECK(trimmed == 1);
+  CHECK(near(mitcad::analysis::volume_properties(solid).Mass(), 8.0 * M_PI, 1e-9));
+}
+
 void test_products_and_several_bodies() {
   // Two 2 mm cubes centred at (5, 5, 0) and (-5, -5, 0): Ixy = -sum x y m.
   const TopoDS_Shape c1 = box(4, 4, -1, 2, 2, 2);
@@ -957,6 +1015,7 @@ int main() {
     test_spline_bounded_properties();
     test_span_by_span_properties();
     test_boundary_gap_bridged_by_a_vertex();
+    test_face_past_its_trimmed_surface();
     test_products_and_several_bodies();
     test_distances();
     test_angles();

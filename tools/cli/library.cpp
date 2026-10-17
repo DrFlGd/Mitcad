@@ -24,10 +24,22 @@ const char* const kLibraryUsage = R"(  mitcad-cli library fetch <url> [--librari
   mitcad-cli library show <url|id> [--rev R] [--libraries DIR] [--json]
       A fetched library at a version (default the newest): its components
       with their sizes, licence and versions; an index's libraries.
-  mitcad-cli library search [<words>] [--license SPDX]... [--unlicensed] [--libraries DIR] [--json]
+  mitcad-cli library search [<words>] [--license SPDX]... [--unlicensed] [--role R] [--system T/S/G]
+                            [--kind K] [--size S] [--supplier S] [--part-number N] [--libraries DIR] [--json]
       Components of the fetched libraries and libraries the fetched
-      indexes list, by words, with the given licences; items without a
-      licence only with --unlicensed.
+      indexes list, by words (also suppliers and part numbers), with the
+      given licences; items without a licence only with --unlicensed.
+      BUILD parts by their role (profile, connector, fastener, panel,
+      linear, cap), slot system (B/8/30: type, slot width, series; B/8 any
+      series), a linear part's kind (carriage, nut, ...) and size (what it
+      goes with: a rail's size, a shaft's diameter), supplier and part
+      number (also a size's own).
+  mitcad-cli library candidates [<words>] (--junction <junction.json> | --role R [--system T/S/G] [--kind K] [--size S])
+                                [--libraries DIR] [--json]
+      The BUILD parts that fit a junction of two profiles (an entry of the
+      build_junctions query, as JSON in a file), or a role with a slot
+      system, kind or size, best first; then those that nearly fit, with
+      the reason.
   mitcad-cli library diff <id> <from> <to> [--url URL] [--part <component>[:<size>]]... [--json]
       What changes for library parts from one version to another.
   mitcad-cli library init <folder> --id ID --name NAME [--license SPDX] [--author NAME]...
@@ -214,12 +226,13 @@ int library(const std::vector<std::string>& args) {
   std::string error;
   if (!parse(args, 1,
              {"--libraries", "--rev", "--url", "--part", "--license", "--id", "--name", "--author", "--description",
-              "--category", "--standard", "--keyword", "--designation", "--preview"},
+              "--category", "--standard", "--keyword", "--designation", "--preview", "--role", "--system", "--supplier",
+              "--part-number", "--junction", "--kind", "--size"},
              {"--json", "--unlicensed"}, a, error)) {
     return problem(error);
   }
   if (a.positional.empty()) {
-    return problem("library needs fetch, list, show, search, diff, init, add, check or index-entry");
+    return problem("library needs fetch, list, show, search, candidates, diff, init, add, check or index-entry");
   }
   std::string root;
   if (const std::string* libraries = a.one("--libraries")) {
@@ -256,6 +269,28 @@ int library(const std::vector<std::string>& args) {
     if (a.flag("--unlicensed")) {
       command += R"(, "unlicensed": true)";
     }
+    command += optional("--role", "role") + optional("--system", "system") + optional("--kind", "kind") +
+               optional("--size", "size") + optional("--supplier", "supplier") +
+               optional("--part-number", "part_number");
+    return run(command + "}", json);
+  }
+  if (what == "candidates" && count <= 2) {
+    std::string command =
+        R"({"cmd": "library_build_candidates", "text": )" + json_text(count == 2 ? a.positional[1] : "");
+    if (const std::string* junction = a.one("--junction")) {
+      std::string text;
+      if (!read_text(*junction, text)) {
+        std::cerr << "mitcad-cli: cannot read " << *junction << "\n";
+        return 1;
+      }
+      // The file's JSON goes into the command as it is; the command
+      // reads and checks it.
+      command += R"(, "junction": )" + text;
+    } else if (a.one("--role") == nullptr) {
+      return problem("library candidates needs --junction or --role");
+    }
+    command += optional("--role", "role") + optional("--system", "system") + optional("--kind", "kind") +
+               optional("--size", "size");
     return run(command + "}", json);
   }
   if (what == "diff" && count == 4) {

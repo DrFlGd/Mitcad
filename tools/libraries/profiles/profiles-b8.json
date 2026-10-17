@@ -1,0 +1,517 @@
+[
+  {
+    "id": "p11x20-b8",
+    "name": "Profile 11x20 B-type slot 8",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-11x20-B-Type-Slot-8/Motedis_16730.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "16730",
+    "supplier_url": "https://www.motedis.com/en/Profile-11x20-B-Type-Slot-8",
+    "designation": "Profile 11x20 B8 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"B","slot":8,"grid":30},
+      "length": {
+        "parameter": "L",
+        "min": "50 mm",
+        "max": "6000 mm",
+        "stock": ["6000 mm","1980 mm","1500 mm","1000 mm"]
+      },
+      "section": {"width":"20 mm","height":"11 mm"},
+      "slot": {"depth":"9 mm","opening":"8 mm","inner_width":"16.5 mm"},
+      "mass_per_metre": "0.28 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"slot_y+_1","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "p19x30-b8",
+    "name": "Profile 19x30 B-type slot 8",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-19x30-B-Type-Slot-8/Motedis_14577.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "14577",
+    "supplier_url": "https://www.motedis.com/en/Profile-19x30-B-Type-Slot-8",
+    "designation": "Profile 19x30 B8 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"B","slot":8,"grid":30},
+      "length": {"parameter":"L","min":"50 mm","max":"6000 mm","stock":["6000 mm","1980 mm"]},
+      "section": {"width":"19 mm","height":"30 mm"},
+      "slot": {"depth":"9 mm","opening":"8 mm","inner_width":"16.5 mm"},
+      "mass_per_metre": "0.61 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"slot_y+_1","kind":"slot"},
+        {"name":"slot_y-_1","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "p30x30-1n-b8",
+    "name": "Profile 30x30 1N B-type slot 8",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-30x30-1N-B-Type-slot-8/Motedis_Profile 30x30 1N B-Type slot 8.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "13755",
+    "supplier_url": "https://www.motedis.com/en/Profile-30x30-1N-B-Type-slot-8",
+    "designation": "Profile 30x30 1N B8 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"B","slot":8,"grid":30},
+      "length": {"parameter":"L","min":"50 mm","max":"1980 mm","stock":["1980 mm","1000 mm"]},
+      "section": {"width":"30 mm","height":"30 mm"},
+      "slot": {"depth":"9 mm","opening":"8 mm","inner_width":"16.5 mm"},
+      "mass_per_metre": "1 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"slot_y+_1","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "p30x30-2n180g-b8",
+    "name": "Profile 30x30 2N180G B-type slot 8",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-30x30-2N180G-B-Type-slot-8/Motedis_Profile 30x30 2N180 B-Type slot 8.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "13481",
+    "supplier_url": "https://www.motedis.com/en/Profile-30x30-2N180G-B-Type-slot-8",
+    "designation": "Profile 30x30 2N180G B8 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"B","slot":8,"grid":30},
+      "length": {
+        "parameter": "L",
+        "min": "50 mm",
+        "max": "1980 mm",
+        "stock": ["1980 mm","1500 mm","1000 mm","500 mm"]
+      },
+      "section": {"width":"30 mm","height":"30 mm"},
+      "slot": {"depth":"9 mm","opening":"8 mm","inner_width":"16.5 mm"},
+      "mass_per_metre": "0.95 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"slot_x+_1","kind":"slot"},
+        {"name":"slot_x-_1","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "p30x30-2nvs-b8",
+    "name": "Profile 30x30 2NVS B-type slot 8",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-30x30-2NVS-B-Type-Slot-8/Motedis_Profile 30x30 2NVS B-Type slot 8.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "11061",
+    "supplier_url": "https://www.motedis.com/en/Profile-30x30-2NVS-B-Type-Slot-8",
+    "designation": "Profile 30x30 2NVS B8 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"B","slot":8,"grid":30},
+      "length": {
+        "parameter": "L",
+        "min": "50 mm",
+        "max": "1980 mm",
+        "stock": ["1980 mm","1500 mm","1000 mm","500 mm"]
+      },
+      "section": {"width":"30 mm","height":"30 mm"},
+      "slot": {"depth":"9 mm","opening":"8 mm","inner_width":"16.5 mm"},
+      "mass_per_metre": "0.95 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"slot_x-_1","kind":"slot"},
+        {"name":"slot_y+_1","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "p30x30-3n-b8",
+    "name": "Profile 30x30 3N B-type slot 8",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-30x30-3N-B-Type-slot-8/Motedis_Profile 30x30 3N B-Type slot 8.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "10994",
+    "supplier_url": "https://www.motedis.com/en/Profile-30x30-3N-B-Type-slot-8",
+    "designation": "Profile 30x30 3N B8 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"B","slot":8,"grid":30},
+      "length": {
+        "parameter": "L",
+        "min": "50 mm",
+        "max": "1980 mm",
+        "stock": ["1980 mm","1500 mm","1000 mm","500 mm"]
+      },
+      "section": {"width":"30 mm","height":"30 mm"},
+      "slot": {"depth":"9 mm","opening":"8 mm","inner_width":"16.5 mm"},
+      "mass_per_metre": "0.9 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"slot_x+_1","kind":"slot"},
+        {"name":"slot_x-_1","kind":"slot"},
+        {"name":"slot_y+_1","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "p30x30-b8",
+    "name": "Profile 30x30 B-type slot 8",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-30x30-B-Type-Slot-8/P30_N8_B.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "30x30 B-Typ Nut 8",
+    "supplier_url": "https://www.motedis.com/en/Profile-30x30-B-Type-Slot-8",
+    "designation": "Profile 30x30 B8 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"B","slot":8,"grid":30},
+      "length": {
+        "parameter": "L",
+        "min": "50 mm",
+        "max": "6000 mm",
+        "stock": ["6000 mm","1980 mm","1500 mm","1000 mm","500 mm"]
+      },
+      "section": {"width":"30 mm","height":"30 mm"},
+      "slot": {"depth":"9 mm","opening":"8 mm","inner_width":"16.5 mm"},
+      "mass_per_metre": "0.85 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"core","kind":"bore","diameter":"6.8 mm"},
+        {"name":"slot_x+_1","kind":"slot"},
+        {"name":"slot_x-_1","kind":"slot"},
+        {"name":"slot_y+_1","kind":"slot"},
+        {"name":"slot_y-_1","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "p30x30-lr-b8",
+    "name": "Profile 30x30 LR B-type slot 8",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-30x30-LR-B-Type-slot-8/Motedis_Profile 30x30 LR B-Type slot 8.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "12378",
+    "supplier_url": "https://www.motedis.com/en/Profile-30x30-LR-B-Type-slot-8",
+    "designation": "Profile 30x30 LR B8 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"B","slot":8,"grid":30},
+      "length": {
+        "parameter": "L",
+        "min": "50 mm",
+        "max": "1980 mm",
+        "stock": ["1980 mm","1500 mm","1000 mm","500 mm"]
+      },
+      "section": {"width":"30 mm","height":"30 mm"},
+      "slot": {"depth":"9 mm","opening":"8 mm","inner_width":"16.5 mm"},
+      "mass_per_metre": "0.78 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"core","kind":"bore","diameter":"6.8 mm"},
+        {"name":"slot_x+_1","kind":"slot"},
+        {"name":"slot_y-_1","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "p30x45-b8",
+    "name": "Profile 30x45 B-type slot 8/10",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-30x45-slot-8-10-B-Type/Motedis_Profile 30x45 slot 8-10 B-Type.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "B830453N",
+    "supplier_url": "https://www.motedis.com/en/Profile-30x45-slot-8-10-B-Type",
+    "designation": "Profile 30x45 B8 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"B","slot":8,"grid":30},
+      "length": {"parameter":"L","min":"50 mm","max":"6000 mm","stock":["6000 mm","1980 mm"]},
+      "section": {"width":"45 mm","height":"30 mm"},
+      "slot": {"depth":"9 mm","opening":"8 mm","inner_width":"16.5 mm"},
+      "mass_per_metre": "1.07 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"slot_x+_1","kind":"slot"},
+        {"name":"slot_x-_1","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "p30x60-4n-b8",
+    "name": "Profile 30x60 4N B-type slot 8",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-30x60-4-slots-B-type-slot-8/Motedis_Profile_30x60_4_slots_B-type_slot_8.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "15640",
+    "supplier_url": "https://www.motedis.com/en/Profile-30x60-4-slots-B-type-slot-8",
+    "designation": "Profile 30x60 4N B8 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"B","slot":8,"grid":30},
+      "length": {
+        "parameter": "L",
+        "min": "50 mm",
+        "max": "1980 mm",
+        "stock": ["1980 mm","1500 mm","1000 mm","500 mm"]
+      },
+      "section": {"width":"30 mm","height":"60 mm"},
+      "slot": {"depth":"9 mm","opening":"8 mm","inner_width":"16.5 mm"},
+      "mass_per_metre": "1.59 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"slot_x+_1","kind":"slot"},
+        {"name":"slot_x+_2","kind":"slot"},
+        {"name":"slot_y+_1","kind":"slot"},
+        {"name":"slot_y-_1","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "p30x60-b8",
+    "name": "Profile 30x60 B-type slot 8",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-30x60-B-Type-Slot-8/Motedis_Profile_30x60_B-Type_slot_8.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "30x60 B-Typ Nut 8",
+    "supplier_url": "https://www.motedis.com/en/Profile-30x60-B-Type-Slot-8",
+    "designation": "Profile 30x60 B8 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"B","slot":8,"grid":30},
+      "length": {
+        "parameter": "L",
+        "min": "50 mm",
+        "max": "6000 mm",
+        "stock": ["6000 mm","1980 mm","1500 mm","1000 mm","500 mm"]
+      },
+      "section": {"width":"60 mm","height":"30 mm"},
+      "slot": {"depth":"9 mm","opening":"8 mm","inner_width":"16.5 mm"},
+      "mass_per_metre": "1.49 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"slot_x+_1","kind":"slot"},
+        {"name":"slot_x-_1","kind":"slot"},
+        {"name":"slot_y+_1","kind":"slot"},
+        {"name":"slot_y+_2","kind":"slot"},
+        {"name":"slot_y-_1","kind":"slot"},
+        {"name":"slot_y-_2","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "p30x60x60l-4n-b8",
+    "name": "Profile 30x60x60L 4N B-type slot 8",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-30x60x60L-4N-B-Type-Slot-8/Motedis_Profile_30x60x60_4N_B-Type_Slot_8.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "10379",
+    "supplier_url": "https://www.motedis.com/en/Profile-30x60x60L-4N-B-Type-Slot-8",
+    "designation": "Profile 30x60x60L 4N B8 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"B","slot":8,"grid":30},
+      "length": {
+        "parameter": "L",
+        "min": "50 mm",
+        "max": "6000 mm",
+        "stock": ["6000 mm","1980 mm","1500 mm","1000 mm","500 mm"]
+      },
+      "section": {"width":"60 mm","height":"60 mm"},
+      "slot": {"depth":"9 mm","opening":"8 mm","inner_width":"16.5 mm"},
+      "mass_per_metre": "2.07 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"slot_x+_1","kind":"slot"},
+        {"name":"slot_y+_1","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"},
+    "place": {"z":[0,1,0],"x":[0,0,1]}
+  },
+  {
+    "id": "p30x90x90l-6n-b8",
+    "name": "Profile 30x90x90L 6N B-type slot 8",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-30x90x90L-6N-B-type-slot-8/Motedis_Profile_30x90x90_6N_B-Type_Slot_8.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "10380",
+    "supplier_url": "https://www.motedis.com/en/Profile-30x90x90L-6N-B-type-slot-8",
+    "designation": "Profile 30x90x90L 6N B8 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"B","slot":8,"grid":30},
+      "length": {
+        "parameter": "L",
+        "min": "50 mm",
+        "max": "6000 mm",
+        "stock": ["6000 mm","1980 mm","1500 mm","1000 mm","500 mm"]
+      },
+      "section": {"width":"90 mm","height":"90 mm"},
+      "slot": {"depth":"9 mm","opening":"8 mm","inner_width":"16.5 mm"},
+      "mass_per_metre": "3.35 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"slot_x-_1","kind":"slot"},
+        {"name":"slot_y+_1","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "p60x60-8n-b8",
+    "name": "Profile 60x60 8N B-type slot 8",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-60x60-8N-B-Type-Slot-8/Profile_60x60_8N_B-Type_Slot_8.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "60x60 nut 8",
+    "supplier_url": "https://www.motedis.com/en/Profile-60x60-8N-B-Type-Slot-8",
+    "designation": "Profile 60x60 8N B8 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"B","slot":8,"grid":30},
+      "length": {"parameter":"L","min":"50 mm","max":"1980 mm","stock":["1980 mm","1500 mm"]},
+      "section": {"width":"60 mm","height":"60 mm"},
+      "slot": {"depth":"9 mm","opening":"8 mm","inner_width":"16.5 mm"},
+      "mass_per_metre": "2.6 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"slot_x+_1","kind":"slot"},
+        {"name":"slot_x+_2","kind":"slot"},
+        {"name":"slot_x-_1","kind":"slot"},
+        {"name":"slot_x-_2","kind":"slot"},
+        {"name":"slot_y+_1","kind":"slot"},
+        {"name":"slot_y+_2","kind":"slot"},
+        {"name":"slot_y-_1","kind":"slot"},
+        {"name":"slot_y-_2","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "p70x90-b8",
+    "name": "Profile 70x90 B-type slot 8",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-70x90-Type-B-slot-8/Motedis_Profile_70x90_8N_B-Type_Slot_8.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "70x90 B-Typ Nut 8",
+    "supplier_url": "https://www.motedis.com/en/Profile-70x90-Type-B-slot-8",
+    "designation": "Profile 70x90 B8 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"B","slot":8,"grid":30},
+      "length": {
+        "parameter": "L",
+        "min": "50 mm",
+        "max": "6000 mm",
+        "stock": ["6000 mm","1980 mm","1500 mm","1000 mm","500 mm"]
+      },
+      "section": {"width":"70 mm","height":"90 mm"},
+      "slot": {"depth":"9 mm","opening":"8 mm","inner_width":"16.5 mm"},
+      "mass_per_metre": "3.08 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"slot_x+_1","kind":"slot"},
+        {"name":"slot_x+_2","kind":"slot"},
+        {"name":"slot_x-_1","kind":"slot"},
+        {"name":"slot_x-_2","kind":"slot"},
+        {"name":"slot_y+_1","kind":"slot"},
+        {"name":"slot_y+_2","kind":"slot"},
+        {"name":"slot_y-_1","kind":"slot"},
+        {"name":"slot_y-_2","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "p90x90-8n-b8",
+    "name": "Profile 90x90 8N B-type slot 8",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-90x90-8N-B-Type-Slot-8-1/Profile_90x90_8N_B-Type_Slot_8.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "90x90 nut 8",
+    "supplier_url": "https://www.motedis.com/en/Profile-90x90-8N-B-Type-Slot-8-1",
+    "designation": "Profile 90x90 8N B8 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"B","slot":8,"grid":30},
+      "length": {"parameter":"L","min":"50 mm","max":"1980 mm","stock":["1980 mm","1500 mm","1000 mm"]},
+      "section": {"width":"90 mm","height":"90 mm"},
+      "slot": {"depth":"9 mm","opening":"8 mm","inner_width":"16.5 mm"},
+      "mass_per_metre": "3.31 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"slot_x+_1","kind":"slot"},
+        {"name":"slot_x+_2","kind":"slot"},
+        {"name":"slot_x-_1","kind":"slot"},
+        {"name":"slot_x-_2","kind":"slot"},
+        {"name":"slot_y+_1","kind":"slot"},
+        {"name":"slot_y+_2","kind":"slot"},
+        {"name":"slot_y-_1","kind":"slot"},
+        {"name":"slot_y-_2","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  }
+]

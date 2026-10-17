@@ -1432,3 +1432,38 @@ fn a_constraint_the_others_imply_in_full_is_still_refused() {
         "nothing removed"
     );
 }
+
+// --- A collapsed curve is a sketch warning (mitcad#365)
+
+#[test]
+fn a_line_collapsed_by_a_constraint_is_a_warning_naming_it() {
+    let mut d = doc();
+    command(&mut d, json!({"cmd": "sketch.create"}));
+    command(
+        &mut d,
+        json!({"cmd": "sketch.add_line", "sketch": "F1", "start": [0, 0], "end": [10, 0]}),
+    ); // c1: p2, p3
+    command(
+        &mut d,
+        json!({"cmd": "sketch.add_line", "sketch": "F1", "start": [20, 0], "end": [20, 10]}),
+    ); // c4: p5, p6
+    let s = sketch(&d, "F1");
+    assert_eq!(s["degenerate"], json!([]), "{s}");
+    assert_eq!(s["warnings"], json!([]), "{s}");
+    command(
+        &mut d,
+        json!({"cmd": "sketch.add_constraint", "sketch": "F1",
+               "constraint": {"type": "coincident", "point": "p2", "entity": "p3"}}),
+    );
+    let s = sketch(&d, "F1");
+    assert_eq!(s["degenerate"], json!(["c1"]), "{s}");
+    let warnings = s["warnings"].as_array().unwrap();
+    assert_eq!(warnings.len(), 1, "{s}");
+    assert!(warnings[0].as_str().unwrap().contains("c1"), "{s}");
+    assert_eq!(s["warning_entities"], json!([["c1"]]), "{s}");
+    // Pulling the ends apart again clears it.
+    command(&mut d, json!({"cmd": "undo"}));
+    let s = sketch(&d, "F1");
+    assert_eq!(s["degenerate"], json!([]), "{s}");
+    assert_eq!(s["warnings"], json!([]), "{s}");
+}

@@ -1300,6 +1300,86 @@ void cloudAddressTests() {
   parsed = parseCloudAddress(QStringLiteral("file:///srv/git/bracket.git"));
   CHECK(parsed.service == CloudService::SharedFolder && parsed.url() == QStringLiteral("/srv/git/bracket.git"));
 
+  // A pasted git address (mitcad#381): a self-hosted server needs no Server
+  // field first; its owner and repository are read from the path.
+  parsed = parseCloudAddress(QStringLiteral("https://git.example.org/team/parts.git"));
+  CHECK(parsed.service == CloudService::Forgejo && parsed.server == QStringLiteral("git.example.org"));
+  CHECK(parsed.owner == QStringLiteral("team") && parsed.repository == QStringLiteral("parts"));
+  CHECK(parsed.connect == CloudConnect::Https && parsed.url() == QStringLiteral("https://git.example.org/team/parts.git"));
+  parsed = parseCloudAddress(QStringLiteral("git@git.example.org:team/parts.git"));
+  CHECK(parsed.service == CloudService::Forgejo && parsed.server == QStringLiteral("git.example.org"));
+  CHECK(parsed.connect == CloudConnect::Ssh && parsed.owner == QStringLiteral("team") &&
+        parsed.repository == QStringLiteral("parts"));
+  CHECK(parsed.url() == QStringLiteral("git@git.example.org:team/parts.git"));
+  parsed = parseCloudAddress(QStringLiteral("ssh://git@git.example.org/team/parts"));
+  CHECK(parsed.service == CloudService::Forgejo && parsed.connect == CloudConnect::Ssh);
+  CHECK(parsed.url() == QStringLiteral("git@git.example.org:team/parts.git"));
+  // Another user, a port or a deeper path: used as it is.
+  parsed = parseCloudAddress(QStringLiteral("ssh://git@git.example.org:2222/team/parts.git"));
+  CHECK(parsed.service == CloudService::Other && parsed.url() == QStringLiteral("ssh://git@git.example.org:2222/team/parts.git"));
+  parsed = parseCloudAddress(QStringLiteral("ssh://me@git.example.org/team/parts.git"));
+  CHECK(parsed.service == CloudService::Other && parsed.url() == QStringLiteral("ssh://me@git.example.org/team/parts.git"));
+  parsed = parseCloudAddress(QStringLiteral("https://git.example.org/a/b/parts.git"));
+  CHECK(parsed.service == CloudService::Other && parsed.url() == QStringLiteral("https://git.example.org/a/b/parts.git"));
+  // The address of a repository's page in a browser.
+  parsed = parseCloudAddress(QStringLiteral("https://git.example.org/team/parts"));
+  CHECK(parsed.service == CloudService::Forgejo && parsed.url() == QStringLiteral("https://git.example.org/team/parts.git"));
+  parsed = parseCloudAddress(QStringLiteral("https://git.example.org/team/parts/src/branch/main/README.md"));
+  CHECK(parsed.service == CloudService::Forgejo && parsed.owner == QStringLiteral("team") &&
+        parsed.repository == QStringLiteral("parts"));
+  parsed = parseCloudAddress(QStringLiteral("https://github.com/acme/bracket/tree/main/docs"));
+  CHECK(parsed.service == CloudService::GitHub && parsed.owner == QStringLiteral("acme") &&
+        parsed.repository == QStringLiteral("bracket"));
+  parsed = parseCloudAddress(QStringLiteral("https://gitlab.com/group/sub/bracket/-/tree/main"));
+  CHECK(parsed.service == CloudService::GitLab && parsed.owner == QStringLiteral("group/sub") &&
+        parsed.repository == QStringLiteral("bracket"));
+  // A self-hosted GitLab's page: its address, cut at the page, as it is.
+  parsed = parseCloudAddress(QStringLiteral("https://git.example.org/team/parts/-/blob/main/a.txt"));
+  CHECK(parsed.service == CloudService::Other && parsed.url() == QStringLiteral("https://git.example.org/team/parts"));
+  // No scheme, or the command a page shows.
+  parsed = parseCloudAddress(QStringLiteral("git.example.org/team/parts.git"));
+  CHECK(parsed.service == CloudService::Forgejo && parsed.url() == QStringLiteral("https://git.example.org/team/parts.git"));
+  parsed = parseCloudAddress(QStringLiteral("  git clone https://git.example.org/team/parts.git  "));
+  CHECK(parsed.service == CloudService::Forgejo && parsed.repository == QStringLiteral("parts"));
+  parsed = parseCloudAddress(QStringLiteral("git clone git@github.com:acme/bracket.git bracket"));
+  CHECK(parsed.service == CloudService::GitHub && parsed.connect == CloudConnect::Ssh);
+  // One path part, or the malformed git@host/owner/repo.git:owner/repo.git
+  // (a path to git), stay another address.
+  parsed = parseCloudAddress(QStringLiteral("https://git.example.org/parts.git"));
+  CHECK(parsed.service == CloudService::Other);
+  parsed = parseCloudAddress(QStringLiteral("git@git.example.org/team/parts.git:team/parts.git"));
+  CHECK(parsed.service == CloudService::Other);
+
+  // Pasted into one field: a whole address, or not.
+  CHECK(looksLikeRepositoryAddress(QStringLiteral("https://git.example.org/team/parts.git"), false));
+  CHECK(looksLikeRepositoryAddress(QStringLiteral("git@git.example.org:team/parts.git"), false));
+  CHECK(looksLikeRepositoryAddress(QStringLiteral("git.example.org/team/parts.git"), true));
+  CHECK(!looksLikeRepositoryAddress(QStringLiteral("git.example.org/team/parts.git"), false));
+  CHECK(!looksLikeRepositoryAddress(QStringLiteral("git.example.org"), true));
+  CHECK(!looksLikeRepositoryAddress(QStringLiteral("git.example.org/"), true));
+  CHECK(!looksLikeRepositoryAddress(QStringLiteral("https://"), false));
+  CHECK(!looksLikeRepositoryAddress(QStringLiteral("group/sub"), true));
+  CHECK(!looksLikeRepositoryAddress(QStringLiteral("/srv/git/team/parts.git"), true));
+
+  // What is no address: said before git is asked.
+  const QString invalid = QStringLiteral("This is not a valid repository address: ");
+  CHECK(repositoryAddressProblem(QString()).isEmpty());
+  CHECK(repositoryAddressProblem(QStringLiteral("https://git.example.org/team/parts.git")).isEmpty());
+  CHECK(repositoryAddressProblem(QStringLiteral("git@git.example.org:team/parts.git")).isEmpty());
+  CHECK(repositoryAddressProblem(QStringLiteral("ssh://git@git.example.org:2222/team/parts.git")).isEmpty());
+  CHECK(repositoryAddressProblem(QStringLiteral("git.example.org/team/parts.git")).isEmpty());
+  CHECK(repositoryAddressProblem(QStringLiteral("/srv/git/parts.git")).isEmpty());
+  CHECK(repositoryAddressProblem(QStringLiteral("C:\\shared\\parts.git")).isEmpty());
+  CHECK(repositoryAddressProblem(QStringLiteral("file:///srv/git/parts.git")).isEmpty());
+  CHECK(repositoryAddressProblem(QStringLiteral("git@git.example.org/team/parts.git:team/parts.git")) ==
+        invalid + QStringLiteral("git@git.example.org/team/parts.git:team/parts.git"));
+  CHECK(repositoryAddressProblem(QStringLiteral("parts")) == invalid + QStringLiteral("parts"));
+  CHECK(repositoryAddressProblem(QStringLiteral("team/parts.git")) == invalid + QStringLiteral("team/parts.git"));
+  CHECK(!repositoryAddressProblem(QStringLiteral("https://")).isEmpty());
+  CHECK(!repositoryAddressProblem(QStringLiteral("https://git.example.org")).isEmpty());
+  CHECK(!repositoryAddressProblem(QStringLiteral("ftp://git.example.org/team/parts.git")).isEmpty());
+  CHECK(!repositoryAddressProblem(QStringLiteral("git@git.example.org:")).isEmpty());
+
   CHECK(repositoryNameFor(QStringLiteral("Robot arm")) == QStringLiteral("robot-arm"));
   CHECK(repositoryNameFor(QStringLiteral("  My  Part (v2) ")) == QStringLiteral("my-part-v2"));
   CHECK(repositoryNameOf(QStringLiteral("git@github.com:me/bracket.git")) == QStringLiteral("bracket"));

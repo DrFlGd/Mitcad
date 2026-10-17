@@ -464,12 +464,19 @@ impl Profiles {
     }
 }
 
-/// An edge of a profile's outline in its sketch (cm): a line, or a NURBS
-/// curve clamped at its ends (knots in full, one weight per control point
-/// when rational).
+/// An edge of a profile's outline in its sketch (cm): a line, a circle's
+/// arc (from the angle `start` by `sweep`, radians, counterclockwise when
+/// positive), or a NURBS curve clamped at its ends (knots in full, one
+/// weight per control point when rational).
 #[derive(Clone, Debug, PartialEq)]
 pub enum OutlineEdge {
     Line([f64; 2], [f64; 2]),
+    Arc {
+        center: [f64; 2],
+        radius: f64,
+        start: f64,
+        sweep: f64,
+    },
     Nurbs {
         degree: usize,
         knots: Vec<f64>,
@@ -484,6 +491,15 @@ impl OutlineEdge {
     pub fn at(&self, s: f64) -> [f64; 2] {
         match self {
             OutlineEdge::Line(a, b) => [a[0] + s * (b[0] - a[0]), a[1] + s * (b[1] - a[1])],
+            OutlineEdge::Arc {
+                center,
+                radius,
+                start,
+                sweep,
+            } => {
+                let a = start + s * sweep;
+                [center[0] + radius * a.cos(), center[1] + radius * a.sin()]
+            }
             OutlineEdge::Nurbs {
                 degree,
                 knots,
@@ -573,6 +589,28 @@ fn outline_edge(
             minor,
         } => {
             let v = cross3(*normal, *major_dir);
+            // A circle in the sketch's plane: its arc as one (a profile's
+            // hole edge, which a taper needs as an arc, mitcad#235).
+            if (major - minor).abs() <= 1e-9 * major.abs() {
+                let c = to(*center)?;
+                let point = |a: f64| curve.eval(a);
+                let (p0, p1) = (to(point(t0))?, to(point(t1))?);
+                let step = to(point(t0 + ((t1 - t0) / 4.0).min(0.1)))?;
+                let radius = (p0[0] - c[0]).hypot(p0[1] - c[1]);
+                let round = [p1, step, to(point(0.5 * (t0 + t1)))?]
+                    .iter()
+                    .all(|p| ((p[0] - c[0]).hypot(p[1] - c[1]) - radius).abs() <= 1e-9 * radius);
+                if round && radius > 0.0 {
+                    let ccw =
+                        (p0[0] - c[0]) * (step[1] - c[1]) - (p0[1] - c[1]) * (step[0] - c[0]) > 0.0;
+                    return Some(OutlineEdge::Arc {
+                        center: c,
+                        radius,
+                        start: (p0[1] - c[1]).atan2(p0[0] - c[0]),
+                        sweep: if ccw { t1 - t0 } else { t0 - t1 },
+                    });
+                }
+            }
             let at = |a: f64, r: f64| {
                 [
                     center[0] + r * (major * a.cos() * major_dir[0] + minor * a.sin() * v[0]),
@@ -1031,6 +1069,32 @@ mod tests {
         let (a, b) = (e.at(0.0), e.at(1.0));
         assert!((a[0] - (1.0 + 3.0 * 0.3f64.cos())).abs() < 1e-12);
         assert!((b[1] - (2.0 + 2.0 * 2.2f64.sin())).abs() < 1e-12);
+        // A circle's arc as an arc, either way round in the sketch (here the
+        // circle's normal against the sketch's: clockwise).
+        let circle = Curve::Ellipse {
+            center: [1.0, 2.0, 0.0],
+            normal: [0.0, 0.0, -1.0],
+            major_dir: [1.0, 0.0, 0.0],
+            major: 2.0,
+            minor: 2.0,
+        };
+        let e = outline_edge(&circle, [0.0, 1.0], &flat).unwrap();
+        let OutlineEdge::Arc {
+            center,
+            radius,
+            start,
+            sweep,
+        } = e
+        else {
+            panic!("{e:?}")
+        };
+        assert_eq!((center, radius, start), ([1.0, 2.0], 2.0, 0.0));
+        assert!((sweep + 1.0).abs() < 1e-12);
+        for k in 0..=4 {
+            let t = f64::from(k) / 4.0;
+            let (p, q) = (e.at(t), circle.eval(t));
+            assert!((p[0] - q[0]).hypot(p[1] - q[1]) < 1e-12, "{p:?} {q:?}");
+        }
         // A rational cubic B-spline's piece between two interior
         // parameters, one of them a knot: the same points.
         let b = BSplineCurve {

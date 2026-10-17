@@ -105,6 +105,22 @@ pub struct ManifestComponent {
     /// How a bill of materials names a part (`ISO 4762 {config}`).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub designation: String,
+    /// Who sells the part (mitcad#375); shown where it is chosen and
+    /// listed.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub supplier: String,
+    /// The supplier's article number; a configuration row's own
+    /// `part_number` comes first.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub part_number: String,
+    /// The supplier's product page (https).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub supplier_url: String,
+    /// What the BUILD tab needs to place the part (`docs/libraries.md`,
+    /// "BUILD parts"), kept as written so that newer fields survive; read
+    /// with [`super::build::BuildPart`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build: Option<serde_json::Value>,
 }
 
 /// `mitcad-library.json`.
@@ -218,11 +234,11 @@ impl Problems {
         self.errors.is_empty()
     }
 
-    fn error(&mut self, text: impl Into<String>) {
+    pub(crate) fn error(&mut self, text: impl Into<String>) {
         self.errors.push(text.into());
     }
 
-    fn warn(&mut self, text: impl Into<String>) {
+    pub(crate) fn warn(&mut self, text: impl Into<String>) {
         self.warnings.push(text.into());
     }
 }
@@ -371,6 +387,18 @@ impl Manifest {
                     "{label}: the licence {license} is not one a community index accepts"
                 ));
             }
+            if !c.supplier_url.is_empty() && !c.supplier_url.starts_with("https://") {
+                out.error(format!(
+                    "{label}: the supplier_url '{}' is no https:// address",
+                    c.supplier_url
+                ));
+            }
+            if !c.part_number.trim().is_empty() && c.supplier.trim().is_empty() {
+                out.warn(format!(
+                    "{label}: a part number without a supplier says nothing about where to buy it"
+                ));
+            }
+            super::build::check_component(self, c, &label, &mut out);
         }
         out
     }

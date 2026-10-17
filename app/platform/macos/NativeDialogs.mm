@@ -1569,7 +1569,10 @@ public:
     const QStringList selected = dialog->selectedFiles();
     if (!selected.isEmpty()) {
       const QFileInfo initial(selected.first());
-      if (initial.isAbsolute()) { m_panel.directoryURL = [NSURL fileURLWithPath:ns(initial.absolutePath()) isDirectory:YES]; }
+      if (initial.isAbsolute()) {
+        const QString directory = initial.isDir() ? initial.absoluteFilePath() : initial.absolutePath();
+        m_panel.directoryURL = [NSURL fileURLWithPath:ns(directory) isDirectory:YES];
+      }
       if (!initial.isDir()) { m_panel.nameFieldStringValue = ns(initial.fileName()); }
     }
     if ([m_panel isKindOfClass:NSOpenPanel.class]) {

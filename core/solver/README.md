@@ -74,7 +74,7 @@ they do not change the DOF count.
 | `Parallel(a, b)`, `Perpendicular(a, b)` | `unit(a) x b`, `unit(a) . b` |
 | `Tangent(a, b)` | line-circle/arc: signed centre distance `= side * r`; circle/arc-circle/arc: `|c1-c2| = r1 + r2` or `side (r1 - r2)`; at a shared/coincident/point-on-curve contact point: line perpendicular to the radius, or centres collinear with the point (G1 join); line, arc or spline at a spline end: end leg parallel/perpendicular; line or circle/arc inside a spline: contact point `C(t)` on the curve and `C'(t)` tangent (2, internal `t`) |
 | `Smooth(a, b)` (G2) | spline end joined to a line, arc or spline: G1 plus equal signed curvature |
-| `Equal(a, b)` | lines: equal length; circles/arcs: equal radius |
+| `Equal(a, b)` | lines: equal length; circles/arcs: equal radius; ellipses and elliptical arcs: equal minor radius |
 | `FixPoint`, `FixEntity` | unknowns stay at their value when the solve starts (as many equations as the entity has DOF) |
 | `Midpoint(p, e)` | line: `2p - a - b` (2); arc: `p = c + r unit(rot_cw(e - s))` (2) |
 | `Concentric(a, b)` | centres coincide (2) |
@@ -160,7 +160,9 @@ to all equations.
   angle constraints are also checked exactly on a graph of line directions
   (angles modulo pi, union-find with offsets). This catches contradictions
   whose polynomial equations still have a degenerate solution (a line that is
-  both horizontal and vertical collapses to a point).
+  both horizontal and vertical collapses to a point). Two points both
+  horizontal and vertical to each other only coincide: their pair gives no
+  direction (mitcad#235).
 - **Fully constrained.** An unknown is determined when its unit vector lies in
   the row space of `J`: the Schur complement `1 - b^T G^-1 b` of its column
   is zero (below `1e-8`). A point is fully constrained when both coordinates

@@ -1,0 +1,43 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+BOPTools_AlgoTools2D: a new pcurve on a face spanning more than one period
+is checked where it is moved to, not twice as far (mitcad#380).
+
+AdjustPCurveOnSurf moves a curve by whole periods of a periodic surface
+into the face's parameter range: GeomInt::AdjustPeriodic gives the shift
+du from the curve's middle u2 into the range. It was called with u2 as
+both the input and the output, so u2 came back already moved; then, on a
+face whose range spans more than one period, the classifier checked the
+point u2 + du, the curve moved twice, and the shift was corrected from
+there (by one period, or since 0510 to the copy inside the face): the
+curve itself, moved by du only, ended up that far outside the face.
+
+A threaded hole's cylinders, kept as one face each between helices
+running 32 turns, are split into pieces on the one surface by a cross
+hole at mid-height; the piece below the hole has a range of 16 periods
+lying wholly below the surface's first period. A box cut on that piece
+got its section curves (in the first period) moved 16 periods down,
+checked 32 periods down, and placed a period above the first one: the
+piece's split took them for curves outside it, the cut removed nothing
+and its result was invalid.
+
+u2 now keeps the curve's own value, so that the point checked is the one
+the curve is moved to. Nothing changes where AdjustPeriodic does not move
+the curve, or on faces spanning at most one period, where the check is
+not made.
+
+--- a/src/ModelingAlgorithms/TKBO/BOPTools/BOPTools_AlgoTools2D.cxx
++++ b/src/ModelingAlgorithms/TKBO/BOPTools/BOPTools_AlgoTools2D.cxx
+@@ -333,7 +333,10 @@ void BOPTools_AlgoTools2D::AdjustPCurveOnSurf(const BRepAdaptor_Surface&       a
+       u2 = UMin + aUPeriod;
+     }
+     // b. compute du again using clarified value of u2
+-    GeomInt::AdjustPeriodic(u2, UMin, UMax, aUPeriod, u2, du, 0.);
++    // u2 stays the curve's own value: the point checked below is u2 + du
++    // (mitcad#380).
++    double aU2Adjusted = u2;
++    GeomInt::AdjustPeriodic(u2, UMin, UMax, aUPeriod, aU2Adjusted, du, 0.);
+     //
+     if (du == 0.)
+     {

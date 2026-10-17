@@ -1,0 +1,185 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: an end over pieces whose face at the end has its edge in two
+pieces (mitcad#343).
+
+A concave rounding between a bar's side and a cylinder it joins runs on
+tangentially over the bar's rounded and chamfered top edge and ends at the
+vertex where the chamfer, the cylinder and the cap meet. Its contact on
+the cylinder reaches the cap first; the walk goes on past it until the
+other contact crosses from the bar's rounding onto the chamfer, and its
+extension over the chamfer (the cylinder's side given up, ChFi3d_Purge)
+reaches the chamfer's edge with the cap: the end lies over two pieces,
+both cut by the cap, as the bodies stored in the .f3d files have it.
+
+MoreSurfdata takes such an end (PerformMoreSurfdata) where the point of
+the piece before the last lies on an edge of the face at the end at the
+vertex. Here the cap's edge with the cylinder is in two pieces: the
+profile's vertex where the bar's side met the cylinder stays on it after
+the chamfer and the rounding took the side's top away, with only those
+two pieces at it. The point lies on the piece away from the vertex, the
+end was not taken, and PerformOneCorner dropped the extension and failed
+in PerformIntersectionAtEnd, whose walk round the bar's rounding, a face
+without the vertex, did not come back ("the max number of faces reached").
+
+ChFi3d_ArcGoesOnAs: an edge counts as the arc at the vertex where it goes
+on from it between the same two faces through vertices where no other
+edge meets; MoreSurfdata and PerformMoreSurfdata take it so.
+
+Upstream: new.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
+index 25e11c80..4c55507a 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
+@@ -7538,6 +7538,110 @@ static bool ChFi3d_ContinuesCurve(const gp_Pnt& theA0,
+          <= std::min(theA0.Distance(theB0), theA1.Distance(theB1));
+ }
+ 
++//=======================================================================
++// function : ChFi3d_ArcGoesOnAs
++// purpose  : Whether edge E is the arc Arc of the vertex V or goes on from
++//            it between the same two faces through vertices where no other
++//            edge meets: an edge of the face at the end left in pieces at a
++//            vertex an earlier operation kept (a profile's vertex whose
++//            other edges a chamfer or rounding took away).
++//=======================================================================
++
++static bool ChFi3d_ArcGoesOnAs(const TopoDS_Edge&   E,
++                               const TopoDS_Edge&   Arc,
++                               const TopoDS_Vertex& V,
++                               const ChFiDS_Map&    VEMap,
++                               const ChFiDS_Map&    EFMap)
++{
++  if (E.IsNull() || Arc.IsNull())
++  {
++    return false;
++  }
++  if (E.IsSame(Arc))
++  {
++    return true;
++  }
++  if (!EFMap.Contains(Arc) || !EFMap.Contains(E))
++  {
++    return false;
++  }
++  NCollection_List<TopoDS_Shape> aFaces;
++  for (NCollection_List<TopoDS_Shape>::Iterator anIt(EFMap(Arc)); anIt.More(); anIt.Next())
++  {
++    bool isNew = true;
++    for (NCollection_List<TopoDS_Shape>::Iterator anItF(aFaces); anItF.More() && isNew; anItF.Next())
++    {
++      isNew = !anItF.Value().IsSame(anIt.Value());
++    }
++    if (isNew)
++    {
++      aFaces.Append(anIt.Value());
++    }
++  }
++  if (aFaces.Extent() != 2)
++  {
++    return false;
++  }
++  TopoDS_Edge   aCur  = Arc;
++  TopoDS_Vertex aFrom = V;
++  for (int aStep = 0; aStep < 8; aStep++)
++  {
++    TopoDS_Vertex aV1, aV2;
++    TopExp::Vertices(aCur, aV1, aV2);
++    TopoDS_Vertex aNext;
++    if (aV1.IsSame(aFrom))
++    {
++      aNext = aV2;
++    }
++    else if (aV2.IsSame(aFrom))
++    {
++      aNext = aV1;
++    }
++    if (aNext.IsNull() || aNext.IsSame(aFrom) || !VEMap.Contains(aNext))
++    {
++      return false;
++    }
++    // The one other edge at the next vertex.
++    TopoDS_Edge anOther;
++    for (NCollection_List<TopoDS_Shape>::Iterator anIt(VEMap(aNext)); anIt.More(); anIt.Next())
++    {
++      const TopoDS_Edge& anE = TopoDS::Edge(anIt.Value());
++      if (BRep_Tool::Degenerated(anE) || anE.IsSame(aCur) || (!anOther.IsNull() && anE.IsSame(anOther)))
++      {
++        continue;
++      }
++      if (!anOther.IsNull())
++      {
++        return false;
++      }
++      anOther = anE;
++    }
++    if (anOther.IsNull() || !EFMap.Contains(anOther))
++    {
++      return false;
++    }
++    for (NCollection_List<TopoDS_Shape>::Iterator anItF(aFaces); anItF.More(); anItF.Next())
++    {
++      bool isOn = false;
++      for (NCollection_List<TopoDS_Shape>::Iterator anIt(EFMap(anOther)); anIt.More() && !isOn; anIt.Next())
++      {
++        isOn = anIt.Value().IsSame(anItF.Value());
++      }
++      if (!isOn)
++      {
++        return false;
++      }
++    }
++    if (anOther.IsSame(E))
++    {
++      return true;
++    }
++    aFrom = aNext;
++    aCur  = anOther;
++  }
++  return false;
++}
++
+ //  Modified by Sergey KHROMOV - Thu Apr 11 12:23:40 2002 Begin
+ 
+ //=======================================================================
+@@ -7636,13 +7740,17 @@ void ChFi3d_Builder::PerformMoreSurfdata(const int Index)
+   aCP1      = aSurfData->Vertex(isFirst, 1);
+   aCP2      = aSurfData->Vertex(isFirst, 2);
+ 
+-  if (aCP1.IsOnArc() && (aCP1.Arc().IsSame(anArc1) || aCP1.Arc().IsSame(anArc2)))
++  if (aCP1.IsOnArc()
++      && (ChFi3d_ArcGoesOnAs(aCP1.Arc(), anArc1, aVtx, myVEMap, myEFMap)
++          || ChFi3d_ArcGoesOnAs(aCP1.Arc(), anArc2, aVtx, myVEMap, myEFMap)))
+   {
+     aCP2onArc     = aCP1;
+     aCP2NotonArc  = aCP2;
+     is2ndCP1OnArc = true;
+   }
+-  else if (aCP2.IsOnArc() && (aCP2.Arc().IsSame(anArc1) || aCP2.Arc().IsSame(anArc2)))
++  else if (aCP2.IsOnArc()
++           && (ChFi3d_ArcGoesOnAs(aCP2.Arc(), anArc1, aVtx, myVEMap, myEFMap)
++               || ChFi3d_ArcGoesOnAs(aCP2.Arc(), anArc2, aVtx, myVEMap, myEFMap)))
+   {
+     aCP2onArc     = aCP2;
+     aCP2NotonArc  = aCP1;
+@@ -8577,7 +8685,8 @@ bool ChFi3d_Builder::MoreSurfdata(const int Index) const
+     // the last one.)
+     if (CV3.IsOnArc())
+     {
+-      if (CV3.Arc().IsSame(arc1) || CV3.Arc().IsSame(arc2))
++      if (ChFi3d_ArcGoesOnAs(CV3.Arc(), arc1, Vtx, myVEMap, myEFMap)
++          || ChFi3d_ArcGoesOnAs(CV3.Arc(), arc2, Vtx, myVEMap, myEFMap))
+       {
+         if (CV1.Point().Distance(CV3.Point()) < 1.e-4
+             || CV2.Point().Distance(CV3.Point()) < 1.e-4)
+@@ -8593,7 +8702,8 @@ bool ChFi3d_Builder::MoreSurfdata(const int Index) const
+       {
+         oksurf = true;
+       }
+-      else if (CV4.Arc().IsSame(arc1) || CV4.Arc().IsSame(arc2))
++      else if (ChFi3d_ArcGoesOnAs(CV4.Arc(), arc1, Vtx, myVEMap, myEFMap)
++               || ChFi3d_ArcGoesOnAs(CV4.Arc(), arc2, Vtx, myVEMap, myEFMap))
+       {
+         if (CV2.Point().Distance(CV4.Point()) < 1.e-4)
+         {

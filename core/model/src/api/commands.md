@@ -205,6 +205,7 @@ plane or point along a path) is a `PathRef`:
 | `{"sketch": "F1", "curve": "c1"}` | one curve; a circle starts at its `start_angle` (the sketch x axis by default) and runs counter-clockwise |
 | `{"body": "F2.b0", "edges": ["E{…}", …]}` | connected edges of a body, in order; each name must name one edge |
 | `{"start": [x, y, z], "end": [x, y, z]}` | a fixed line |
+| `{"helix": {"center": [x, y, z], "axis": [x, y, z], "x_axis": [x, y, z], "radius": r, "pitch": p, "start_angle": a, "end_angle": b}}` | a fixed helix (mitcad#385): the points `center + r (cos t x + sin t (axis × x)) + p t / 2π axis` (`x` is `x_axis` made square to the axis) for `t` from `start_angle` to `end_angle` (radians, either way round: the path runs from the first to the second); `p`, the rise per turn counter-clockwise about the axis, is negative for a left-handed helix |
 
 A path runs from the free end of the first listed curve or edge when it
 ends the chain, else along the first listed curve's own direction (a
@@ -294,7 +295,8 @@ millimetres, angles radians. Build sketches with the
   ends instead, see [Points that become one](#points-that-become-one)),
   `horizontal`/`vertical` (`line`),
   `horizontal_points`/`vertical_points` (`a`, `b` points), `parallel`,
-  `perpendicular`, `collinear`, `tangent`, `smooth` (G2), `equal`,
+  `perpendicular`, `collinear`, `tangent`, `smooth` (G2), `equal` (lines; circles and arcs;
+  ellipses by their minor radius),
   `concentric` (`a`, `b` curves), `midpoint` (`point`, `curve`),
   `symmetric` (`a`, `b`: points or curves, `axis`: a line),
   `equal_spacing` (`anchors`, `mode`, `direction`; see [Equal spacing in
@@ -366,6 +368,9 @@ millimetres, angles radians. Build sketches with the
   - A chain of lines and arcs, or a circle, is offset exactly by
     constraints: the results are ordinary curves, and dragging one drags
     the source along (the distance dimension drives).
+    The construction lines across the gap of its arcs and circles are
+    listed as `helpers` (mitcad#358) and go with the results when
+    `sketch.edit_offset` flips the side and makes them again.
   - A chain with an ellipse, an elliptical arc or a spline is `derived`:
     its curves are computed from the solved source after every solve
     (lines and arcs exactly, an ellipse or spline as a C1 cubic B-spline
@@ -373,6 +378,9 @@ millimetres, angles radians. Build sketches with the
     and trimmed inner corners. Constraints cannot refer to them;
     `sketch.drag` or `sketch.move` of them moves the whole source chain
     by the same motion.
+    A chain is closed by a shared point only, not by ends that lie at the
+    same place (mitcad#360), when it is made and at every later solve; a
+    curve of it is removed with the offset, not alone (mitcad#361).
   - The distance changes only in `sketch.edit_offset`. The source's
     constraints apply (a fixed source holds its offset). A copy
     (`sketch.move` with `copy`) is an ordinary curve that no longer
@@ -844,17 +852,19 @@ form lists edge sets:
   The kernel stops where a third sharp edge meets the vertex (a ring
   that two chamfers split into two arcs); Mitcad's chain does not. Where
   the kernel cannot build Mitcad's chain, the set takes the kernel's
-  chain alone, with a warning. A fillet's kernel chain also stops where
-  its edges turn (by 0.01 rad or more) although the faces go on
-  tangentially across a shallow crease there (a wall drafted by a few
-  degrees above a vertical one), unless the next edge is rounded too
-  (OCCT port patch 0180, mitcad#241): the rounding ends at that vertex,
-  cut by the face beyond the crease, where the crease is concave; at a
-  convex crease that end is not built and the fillet fails. Elsewhere the
-  kernel follows its own chains, so a set without `tangent_chain` whose
-  kernel chain reaches an unselected edge is unsupported, and edges the
-  kernel chains beyond Mitcad's chain stay rounded (chamfers: also past
-  such turns).
+  chain alone, with a warning. The kernel chain of a fillet or a chamfer
+  also stops where its edges turn (by 0.01 rad or more) although the faces
+  go on tangentially across a shallow crease there (a wall drafted by a
+  few degrees above a vertical one), unless the next edge is bevelled too
+  (OCCT port patches 0180, mitcad#241, and 0531, mitcad#263): a rounding
+  ends at that vertex, cut by the face beyond the crease, where the crease
+  is concave (at a convex crease that end is not built and the fillet
+  fails); a chamfer's analytic blend (a cone along an arc) runs on past
+  the vertex, cut by the face beyond the crease, up to where its other
+  contact reaches that face. Elsewhere the kernel follows its own chains,
+  so a set without `tangent_chain` whose kernel chain reaches an
+  unselected edge is unsupported, and edges the kernel chains beyond
+  Mitcad's chain stay bevelled.
 - A rolling ball rounding of constant radius whose chain ends at a small
   notch in the rim it rounds (edges not rounded, each within the rounding's
   contact on the face the notch breaks and within the ball's diameter of
@@ -1126,7 +1136,17 @@ revolutions and loft weights are unitless values. Examples:
   profile's plane (the crossing nearest to the profile), or at the path's
   point nearest to the profile; a profile beside the path is swept as it
   is placed against it.
-- `path`: a [path](#paths).
+- `path`: a [path](#paths). Along a fixed helix (a spiral stair's rail,
+  mitcad#385) a perpendicular profile keeps its angle to the helix's axis
+  as it turns about it (`tools/cli/tests/f3_sweep.json`, Sweep6); the
+  helix and coil features instead keep their section in a plane through
+  the axis.
+- Where a path turns at a corner, the sides of the swept profile run on
+  until they meet (a mitre); a profile of one closed edge whose mitres do
+  not build from its seam is swept as its two halves (mitcad#385: an
+  ellipse whose seam lies along the normal of the path's plane), and a
+  swept solid must enclose a positive volume (a mitre whose sides fold
+  through each other can pass the shape check).
 - `orientation`: `perpendicular` (default; the profile keeps its angle to
   the path, without twisting about it) or `parallel` (it keeps its
   direction and only moves; where the path turns back through the
@@ -1453,6 +1473,22 @@ whose result the geometry kernel's checker finds invalid, is tried once
 more with the seams shifted by a sixth of a turn, and the feature then has
 a warning that says so; a helix whose boolean works is built once, as
 before.
+
+A helix swept in pieces for the booleans with its bodies (a side of a
+profile on one of their cylinders about the axis, or shifted seams) has
+the sides that straight sides along the axis sweep as exact cylinders
+(the sweep approximates them within 1e-6 mm): a later boolean with a
+cylinder or a cut across the thread there meets an exact surface
+(mitcad#235).
+
+A side as long as the pitch that is moved 0.1 µm off its cylinder (so
+that the turns do not touch) is moved off only along the bodies' faces
+on that cylinder: beyond them, within the bodies' reach, the sliver is
+cut back to the cylinder (a thread running out past a blind bore's
+bottom no longer cuts a slot 0.1 µm thick into the material inside the
+bore's cylinder there, which a ring joined over the thread's end left as
+a gap; mitcad#235). Where that cut does not give one valid solid, the
+helix keeps its slivers.
 
 Faces: `side(<segment>)`, `start(<region>)` at the profile and
 `end(<region>)` (`geometry/src/path_sweep.cpp`).
@@ -2632,19 +2668,19 @@ made, in order) and `status` (as the `sketch` query: `dof`,
 | `sketch.set_dimension` | `dimension` (`k3`), `value` | a number or an expression changes the dimension's own parameter; a parameter name makes the dimension use that parameter; `name = expression` renames its parameter and sets it (see [Values](#values)); a driven dimension becomes driving (its reference parameter becomes its parameter, under the same name) |
 | `sketch.set_driven` | `dimension`, `driven` (default true) | driving again keeps the measured value; driven, its own parameter becomes its reference parameter |
 | `sketch.set_dimension_text` | `dimension` (`k3`), `text` [x, y] | where the value is shown; undo step `Move Dimension in Sketch1` |
-| `sketch.remove` | `items`: `p3`, `c4`, `t5`, `k6` | a point takes the curves that use it, a curve its points no other curve uses; constraints and dimensions on removed entities go too |
+| `sketch.remove` | `items`: `p3`, `c4`, `t5`, `k6` | a point takes the curves that use it, a curve its points no other curve uses; constraints and dimensions on removed entities go too; a curve or point a derived offset computes (a spline or ellipse chain's) is refused, its source goes with the offset (mitcad#361) |
 | `sketch.set_construction` | `curves`, `construction` (default true) | |
 | `sketch.set_centerline` | `lines`, `centerline` (default true) | |
 | `sketch.set_fixed` | `entities`, `fixed` (default true) | |
 | `sketch.drag` | `entity`: a point with `to` [x, y], or a curve with `by` [dx, dy] or `radius` | pulls as far as the constraints allow; a derived offset's curve or point pulls its source chain by as much |
 | `sketch.move` | `entities`, `by` [dx, dy] or `rotate` {`center` (point input), `angle`}, `copy` | a move keeps the constraints (the points are dragged); a copy copies the constraints among the entities; a derived offset's curves move their source chain, their copies are ordinary curves; `made` lists the copies |
-| `sketch.trim` | `curve`, `at` [x, y] | removes the piece around `at` between the curves crossing it; a curve nothing crosses is deleted |
+| `sketch.trim` | `curve`, `at` [x, y] | removes the piece around `at` between the curves crossing it; a curve nothing crosses is deleted; refused for a projected curve (linked or not: `sketch.convert_projected` first, mitcad#357, also for `sketch.extend`, `sketch.fillet` and `sketch.chamfer`) and for a curve a derived offset computes; a trim or an extension that ends on a derived offset's curve ends in a plain point, since its curves take no constraints (mitcad#361) |
 | `sketch.extend` | `curve`, `at` | extends the end nearest `at` (a line or an arc) to the next curve; an arc extended all the way round becomes a circle; reaching an existing point joins it (a shared end; a projected or computed point holds the end with a point-to-point `coincident` instead), elsewhere the end lies on the curve; result `joined`: the point reached, when it joined one (see [Points that become one](#points-that-become-one)) |
 | `sketch.fillet` | `a`, `b` (lines), `radius` (value) | a tangent arc with a radius dimension; the corner stays as a point on both lines, and a length dimension of either line becomes a distance to it, so dimensions keep their meaning |
 | `sketch.chamfer` | `a`, `b`, `distance`, and `distance2` or `angle` (values) | a line and its distance (and distance or angle) dimensions from the kept corner |
 | `sketch.offset` | `curves` (a chain of joined curves, or one closed curve), `distance` (value) | to the right of the chain direction (a closed curve: positive is out); one parameter for the distance; an `offsets` record (derived with ellipses and splines); result `constraints` [the offset's id] |
 | `sketch.edit_offset` | `offset` (`k8`), `distance` (value), `flip` | the distance changes, `flip` moves it to the other side; the curves keep their ids |
-| `sketch.mirror` | `entities`, `axis` (a line) | copies with symmetric constraints; points on the axis are shared |
+| `sketch.mirror` | `entities`, `axis` (a line) | copies with symmetric constraints (an ellipse copy also keeps an equal minor radius); points on the axis are shared |
 | `sketch.circular_pattern` | `entities`, `center` (point input; a new point is fixed), `count` (originals included), `angle` (value, default a full turn) | a `patterns` record; result `constraints` [the pattern's id] |
 | `sketch.rectangular_pattern` | `entities`, `direction` (default [1, 0]), `count` [n1, n2], `spacing` [s1, s2] (values), `symmetric` ([bool, bool], default none: per direction the originals are the middle instance, an odd count, and the copies lie on both sides) | as above |
 | `sketch.edit_pattern` | `pattern` (`k5`), and any of `count` (n, or [n1, n2]), `angle`, `spacing`, `direction`, `center`, `entities` (the originals) | the copies follow |
@@ -2665,7 +2701,10 @@ The `sketch` query (`{"query": "sketch", "uid": "F1"}`) returns:
   the order of `warnings`, of what the warning is about, so that a client
   need not read the text: a linked projection's warning lists all of its
   entities when it is `kept` or `lost`, else its `stale` curves when it has
-  any, else its `unfollowed` entities; a warning about anything else (a
+  any, else its `unfollowed` entities; the warning about collapsed curves
+  (mitcad#365: a line of no length, a circle or arc of no radius, which make
+  no region) lists those curves, also as `degenerate` beside `dof` and
+  `redundant`; a warning about anything else (a
   font replaced) has an empty list. The `warnings` entries stay strings
   (the `timeline` and `feature` queries' are the same strings), so their
   readers are unchanged;
@@ -2769,9 +2808,17 @@ point-to-point `coincident` are two ends. So (mitcad#259, mitcad#260,
   becomes that point: a point of the curve reached first, else any other
   (the lower id), never one of the extended curve. A projected point, or
   one a derived offset computes or a pattern makes, is the model's: the
-  end is a new point with a point-to-point `coincident` to it. A hit in
-  the middle of a curve (a T junction) is a new point on that curve, which
-  is not split; collinear lines stay two lines.
+  end is a new point with a point-to-point `coincident` to it. Elsewhere
+  the end point stays (mitcad#362): when only the extended curve ends it
+  and it is not fixed, projected, computed or a pattern's, it moves onto
+  the curve reached and keeps its id, its constraints and its dimensions
+  (the extent constraints of the curve, its length, arc length and
+  midpoints, go), and a `coincident` holds it on the curve; a dimension on
+  it whose parameter is a plain number of its own takes the value it now
+  measures, one with an expression or a shared parameter keeps its value
+  and holds. Any other end is a new point on the curve reached. A hit in
+  the middle of a curve (a T junction) is not a split; collinear lines
+  stay two lines.
 - `sketch.add_constraint` with a `coincident` between two points that are
   both ends of curves (lines, arcs, elliptical arcs, spline ends) merges
   them: one is kept (a fixed point over a free one, else the one more
@@ -3320,7 +3367,7 @@ constraints.
 
 | Command | Fields | Result |
 |---|---|---|
-| `import_file` | `path` (.step/.stp, .iges/.igs, .brep/.brp, .stl, .obj), `name` (of the feature, optional), `unit_mm` (STL and OBJ: mm per file unit, default 1) | `uid`, `name`, `bodies`: `uid`, `name`, `kind` |
+| `import_file` | `path` (.step/.stp, .iges/.igs, .brep/.brp, .stl, .obj), `name` (of the feature, optional), `unit_mm` (STL and OBJ: mm per file unit, default 1) | `uid`, `name`, `bodies`: `uid`, `name`, `kind`; `warnings` when empty bodies were left out |
 | `export` | `path`, `bodies` (uids or names; all at the marker when left out), `format` (by extension when left out: `step`, `iges`, `stl`, `obj`, `brep`, `3mf`, `usdz`), `schema` (`ap214` default, `ap242`), `unit` (STEP, IGES: `mm` default, `cm`, `m`, `in`, `ft`), `refinement` (STL, OBJ, 3MF, USDZ: `low`, `medium` default, `high` or `{"deviation": mm, "angle": radians}`), `ascii` (STL), `colors` (body uid or name: sRGB in [0, 1]), `coordinates` (`design` default, `component`), `occurrence` (a path), `design_folder` (USDZ: the folder relative texture paths are relative to, the design file's) | `path`, `format`, `bodies` (uids); 3MF also `meshes`, `skipped`; USDZ also `materials`, `skipped`, `warnings` |
 | `export_sketch` | `sketch` (uid or name), `path` (.dxf), `version` (`r2000` default, `r12`) | `path`, `entities` |
 
@@ -3328,6 +3375,12 @@ constraints.
   IGES solid, BRep compound member or OBJ object, one mesh body for STL.
   Bodies keep the file's names and colours; `source` is the file name.
   One undo step (`Import bracket.step`).
+  Empty bodies (a part without geometry) are left out, each with a
+  warning that names it (`body 1 (Screw) is empty: left out`, counting
+  the file's bodies from 0); a file of only empty bodies is refused
+  (`… has only empty bodies (n): nothing to import`). The
+  [shape API](#base-features-from-shapes) and the importers' fallbacks
+  still refuse an empty body, as their bodies are counted by index.
 - `export` writes the bodies with their display names and colours
   (`colors`, else the colours of imported bodies; for STEP, IGES, OBJ,
   3MF; USDZ writes the bodies' appearances, [USDZ](#usdz)). Mesh bodies go
@@ -4316,6 +4369,37 @@ forms are a later ticket).
   geometry cuts it. Their bodies are named `Family:Type:Id` and take the
   appearance of their material (a layered type's exterior layer's, a
   family type's first).
+- **Attached walls** (mitcad#348): a wall whose top (or base) is attached
+  to a roof, floor, ceiling or reference plane follows that element's
+  lower (or upper) surface, below or above its own top (or base): its
+  prism runs from its base to above the surface, and the half spaces above
+  the surface's planes are cut away (a roof's slopes: above each slope's
+  lower plane; a base below its one plane), its line noting `its top
+  follows roof 44's lower surface (2 slopes)`. The cut is fixed: the
+  features do not follow the roof when it is changed later. An attachment
+  the import cannot apply (a face roof's surface, several elements of
+  different heights, a sloped roof whose footprint does not cover the
+  wall, a base on several slopes) leaves the wall at its own height and
+  its line names it (`its top's attachment to … is not applied: …`). An
+  attached wall checked against its stored box is checked both ways
+  there in height (its top must reach the box's, not only lie within it).
+- **Openings** (mitcad#345): every insert that opens a wall (the inserts
+  whose cut the wall takes, the doors and windows it hosts, the other
+  elements it hosts whose types have cut loops or void geometry) cuts it
+  by its type's cut loops, else by its type's void geometry (its family's
+  void forms as faceted bodies at the instance's transform), else by the
+  IFC export's opening its GlobalId fills when the export is the
+  reference (`reference_ifc`, or found next to the project;
+  `mitcad_import::rvt::reference_openings`); a
+  rectangular wall opening cuts its rectangle through the wall. An
+  opening without a tool is named on the wall's line (`insert 47 is not
+  cut: …`); a wall that comes in as the geometry the file keeps or the
+  reference's body holds its openings, as a saved mesh or a box it does
+  not. The report counts them (and its text summary: `walls'
+  openings: N cut, M missing (…)`): `openings_cut`, `openings_missing` (by
+  reason) and `openings_missing_lines` (`insert 47 in wall 31: …`), and
+  the insert's own line says it (`its opening in wall 31 is not cut: …`).
+  Elements a wall hosts that cut nothing (trims) are counted on its line.
 - Each element built is checked: against the IFC export given as
   `reference_ifc`, or found next to the project as `<name>.ifc` (unless
   `no_reference_ifc`), by its GlobalId (which the import derives from the
@@ -4355,10 +4439,14 @@ forms are a later ticket).
   ceilings like floors (their boundary loops between their two horizontal
   reference faces, else down by their type's width); curtain panels (a
   system panel's cell extruded by its thickness) and mullions (a
-  rectangular, corner or custom profile along the mullion's path); stair
-  runs of treads and risers and landings; wall sweeps, slab edges,
-  fascias, gutters and rails (their profile family's profile along their
-  path, a body per line). A curtain wall and a railing whose geometry is
+  rectangular, corner or custom profile along the mullion's path; a
+  trimmed mullion's ends cut along its symbol's stored end faces,
+  mitcad#385); stair runs of treads and risers (spiral ones about their
+  centre, mitcad#385) and landings; wall sweeps, slab edges, fascias,
+  gutters and rails (their profile family's profile along their path, a
+  body per line; a spiral rail along a fixed helix; a wall sweep's ends
+  mitred where its returns turn and where it meets another sweep, and cut
+  by the sweeps joined to cut it, mitcad#385). A curtain wall and a railing whose geometry is
   their parts' have no body of their own (`outcome` `parts`;
   `curtain_walls`, `railings`); the balusters and posts come in as family
   instances. The batch of elements built in one command is 64 elements;
@@ -4399,12 +4487,13 @@ One undo step (`Import project.rvt`). A job does not cancel it.
 | `text` | `import_rvt` returns a readable report |
 | `report_path` | also write the JSON report to this file |
 | `report_only` | read and report; import no elements |
-| `reference_ifc` | the IFC export of the same project to check the features (and meshes) against, and whose bodies stand in for elements without geometry |
+| `reference_ifc` | the IFC export of the same project to check the features (and meshes) against, whose bodies stand in for elements without geometry, and whose openings cut the inserts without a cut tool of their own |
 | `no_reference_ifc` | do not take an IFC export next to the project as the reference |
 | `link_files` | linked models' files by the links' file names (`{"linked.rvt": "C:/…/linked.rvt"}`; the application's file dialogs) |
 | `link_folder` | a folder to look for linked models in, besides the project's |
 | `list_links` | only list the links and where their files are: `{"links": [{"id", "file", "stored_path", "found"}]}` |
 | `mesh_only` | every element as its mesh or box, no features |
+| `elements` | only these elements (ids; mitcad#385: checking a few elements of a large project), the others left out |
 
 The command's result: `file`, `design` (the family's name, else the
 file's), `bodies` and `report`: `format` (`rvt` or `rfa`), `kind`
@@ -4427,7 +4516,8 @@ with, and why), `bodies`, `meshes`, `oriented_boxes`, `boxes`,
 `left_out`, `by_elevation`, `not_built`, `memory_low`, `warnings`, and
 `geometry_meshes` and `geometry_triangles` (meshes of the geometry the
 file keeps), `reference_bodies`, `hidden_boxes`, `curtain_walls`,
-`railings`, `group_copies`, and `elements`: a line
+`railings`, `group_copies`, `openings_cut`, `openings_missing`,
+`openings_missing_lines`, and `elements`: a line
 per element (`id`, `link`, `global_id`, `kind`, `category`, `name`,
 `level`, `outcome` (`features`, `mesh`, `reference body`, `box`,
 `parts`, `not built`), `features`, `bodies`, `volume`, `checked_against`,
@@ -4438,7 +4528,11 @@ per element (`id`, `link`, `global_id`, `kind`, `category`, `name`,
 Tests: `core/rvt` (`core.rvt`, no OCCT; its corpus test reads
 `MITCAD_RVT_CORPUS`), `core/import/src/rvt` (mock kernel: the reader's
 building test project's walls, floor, grid, link and its chair's hidden
-box; the mesh of a placed type's B-rep), `core.exchange`
+box; the mesh of a placed type's B-rep; the house variant of the project
+with a gable roof over a wall attached to it, its top under both slopes,
+a door's opening and a window type that cannot cut, counted in the
+report),
+`core.exchange`
 (`core/tests/test_exchange.cpp`), `cli.import_rvt`, `cli.import_rfa`,
 `cli.import_rvt_building`, `rvt.corpus` (`MITCAD_RVT_CORPUS`, with
 `MITCAD_IFC_CORPUS` the IFC export of the MIT-licensed project: every
@@ -5639,29 +5733,37 @@ with `error` (`class`, `message`, `detail`, as the remote commands') and
 |---|---|---|
 | `library_fetch` | `url` (https, ssh, a file:// URL or a folder; never with credentials) | `kind` (`library`, `index`), `id`, `name`, `url`, `dir`, `cloned`, `head`, `versions`, `problems` (`errors`, `warnings`), `error`, `log`: a bare clone into the cache (`git clone --bare`), or new branches and tags fetched into it; a repository that is neither, or larger than 200 MB, is refused and leaves nothing |
 | `library_list` | | `root`, `libraries`: `dir`, `url`, `kind`, `versions`, and a library's `id`, `name`, `description`, `license`, `authors`, `components` (count), `problems`, an index's `name`, `entries` |
-| `library_show` | `url` or `id`, `rev` (default: the newest version) | `dir`, `url`, `rev`, `labels`, `versions`; a library's `manifest`, `problems` and `components` (`id`, `name`, `path`, `category`, `standard`, `description`, `keywords`, `license`, `license_note`, `preview`, `designation`, `configurations`: `selectors`, `selector_values`, `default`, `rows` with `name` and `select`); an index's `name`, `description`, `entries` |
-| `library_search` | `text` (words that must all match name, id, standard, description, category, keywords, the library), `licenses` (SPDX ids an item may have; left out: any), `unlicensed` (default false: items without a licence are hidden), `category`, `libraries` (ids or URLs) | `components` (of fetched libraries at their newest versions: as `library_show`'s with `library`, `library_name`, `url`, `rev`, `version`, `authors`), `libraries` (index entries with `index`, `index_url`, `fetched`, `license_note`), `hidden` (left out for their licence) |
+| `library_show` | `url` or `id`, `rev` (default: the newest version) | `dir`, `url`, `rev`, `labels`, `versions`; a library's `manifest`, `problems` and `components` (`id`, `name`, `path`, `category`, `standard`, `description`, `keywords`, `license`, `license_note`, `preview`, `designation`, `supplier`, `part_number`, `supplier_url`, `build` (as the manifest has it, or null), `configurations`: `selectors`, `selector_values`, `default`, `rows` with `name`, `select` and, when the row has them, its own `part_number`, `supplier_url` and `designation`); an index's `name`, `description`, `entries` |
+| `library_search` | `text` (words that must all match name, id, standard, description, category, keywords, supplier, part number, the library), `role` and `system` (BUILD parts only, [BUILD parts](../../../../docs/libraries.md#build-parts): the role, and the slot system as `{"type", "slot", "grid"}` or text `B/8/30`, a series left out matching any; a linear part's `kind` and `size`), `supplier` (the same, without case), `part_number` (the component's or a row's own, without case), `licenses` (SPDX ids an item may have; left out: any), `unlicensed` (default false: items without a licence are hidden), `category`, `libraries` (ids or URLs) | `components` (of fetched libraries at their newest versions: as `library_show`'s with `library`, `library_name`, `url`, `rev`, `version`, `authors`), `libraries` (index entries with `index`, `index_url`, `fetched`, `license_note`), `hidden` (left out for their licence) |
 | `library_preview` | `url` or `id`, `rev`, `component` | `png` (base64) or null |
 | `library_diff` | `id`, `url`, `from`, `to`, `parts` ([{`component`, `config`}]) | `from`, `to` (commits), `from_labels`, `to_labels`, `library` (licence and version changes), `parts`: `changed`, `missing` (the component or row is not in `to`), `lines` (the row's value changes), `text`, `design` (the comparison of the design without its table) |
-| `library_check` | `dir` (a library folder) | `id`, `components`, `ok`, `errors`, `warnings`: the manifest, the files it names (there, no symbolic links, designs that open and link no other files, PNG previews of at most 512 KB), a licence file |
+| `library_check` | `dir` (a library folder) | `id`, `components`, `ok`, `errors`, `warnings`: the manifest, the files it names (there, no symbolic links, designs that open and link no other files, PNG previews of at most 512 KB), a licence file; for BUILD parts the block's rules ([BUILD parts](../../../../docs/libraries.md#build-parts)), the design's parameters and `mount:<name>` joint origins, a profile's layout, and library references that resolve (in the folder, else in the fetched libraries; one not fetched is a warning) |
 | `library_init` | `dir`, `id`, `name`, `description`, `license`, `authors`, `homepage` | `dir`, `id`, `written`: the manifest, a `LICENSE` note naming the licence, a README, and a Mitcad project with a git repository (no version yet) |
-| `library_add` | `dir`, `text` (a single-file design), `id`, `name`, `category`, `category_name`, `standard`, `description`, `keywords`, `license`, `designation`, `preview` (a PNG, base64), `path` (default `<category>/<id>.mitcad`) | `component`, `written`, `errors`, `warnings` (a check of the folder); a component of the same id is replaced |
+| `library_add` | `dir`, `text` (a single-file design), `id`, `name`, `category`, `category_name`, `standard`, `description`, `keywords`, `license`, `designation`, `preview` (a PNG, base64), `path` (default `<category>/<id>.mitcad`), `supplier`, `part_number`, `supplier_url`, `build` (left out: those of the component it replaces) | `component`, `written`, `errors`, `warnings` (a check of the folder); a component of the same id is replaced |
 | `index_entry` | `dir`, `url` (where the library is published), `rev` (default HEAD) | `path` (`libraries/<id>.json`), `rev`, `labels`, `entry`, `text` |
 | `licenses` | | `licenses`: the SPDX ids a community index accepts with a `note` for users |
+| `library_build_candidates` | `junction` (one of the `build_junctions` query's: `kind`, `systems` of its profiles, `space`), or `role` with `system` (for Profile, Panel and Linear Part pickers; a part made for no system fits any) with a linear part's `kind` and `size` (a carriage for a rail's size; a part without a size fits any), `text`, `libraries`, `licenses`, `unlicensed` | `components` (as `library_search`'s, with `build`, `supplier`, `part_number`, `supplier_url`) that fit, best first: a connector's `junctions`, `systems` and `space` against the junction's ([BUILD](#build-profile-assemblies)); `refused` (those that nearly fit, one thing wrong, for the picker's greyed rows: each `{"id", "name", "library", "reason"}`), `hidden`. A connector fits more closely when it names the profiles' series and goes on one junction kind only; a connector with an `envelope` needs that room in the junction's inner corner |
 
-`mitcad-cli library fetch|list|show|search|diff|init|add|check|index-entry`
+`mitcad-cli library fetch|list|show|search|candidates|diff|init|add|check|index-entry`
 and `mitcad-cli parts <file>` (the parts list); inserting and updating
 parts are the commands above in a script (`run --open --save`). The
-metric fastener library is made by
-`tools/libraries/make-fastener-library.py`.
+parts library (`mitcad-parts`, the fastener library `mitcad-fasteners`
+up to 1.0.0) is made by `tools/libraries/make-parts-library.py`, which
+runs `tools/libraries/make-fastener-library.py` and
+`tools/libraries/make-profile-library.py` (mitcad#375).
 
 Tests: `core/model/src/library_tests.rs` (tables, parts with a resolver
 in memory: versions kept, explicit updates, copies, the parts list),
 `core/model/src/configurations.rs`, `core/vcs/src/tests/library.rs`
 (libraries made, tagged and fetched from folders and file:// URLs,
-versions, the resolver, comparisons, checks, an index; skipped without
-git), ctest `cli.library` (`tools/cli/library-test.cmake`: the generator,
-fetch, insert, parts list, diff, update; needs git and Python) and
+versions, the resolver, comparisons, checks, an index, parts recorded
+under a library's old id and address; skipped without git), ctest `cli.library` (`tools/cli/library-test.cmake`: the generator,
+fetch, insert, parts list, diff, update; needs git and Python),
+`core/vcs/src/tests/library_build.rs` (BUILD parts: the manifest's fields,
+the checks, the BUILD search and `library_build_candidates`), ctest
+`cli.profile-library` (`tools/cli/profile-library-test.cmake`: the
+BUILD parts' generator on sections made in the test, its frames,
+fetch, search and candidates; needs git and Python) and
 `tools/ui-library-test.sh`.
 
 ## Progress and cancellation
@@ -7121,9 +7223,20 @@ class and refuses the others.
 | Class | What | Commands and queries |
 |---|---|---|
 | model | the document's own data | every feature type (`add_feature`, `edit_feature`), the sketch commands but `sketch.import_dxf`, parameters, bodies' attributes, components, joints, configurations, views, analyses, groups, policy, `undo`, `redo`, `merge_undo`, `recompute`; every query but those below |
-| file IO | reads or writes files | `import_file`, `export`, `export_sketch`, `export_flat_pattern_dxf`, `sketch.import_dxf`, `insert_component`, `update_links`, `create_appearance` and `edit_appearance` (a texture by path), `set_render_settings` (an environment image), `mark_saved` (the design file's saved state); the queries `dxf_info` and `compare_step` |
+| file IO | reads or writes files | `import_file`, `export`, `export_sketch`, `export_flat_pattern_dxf`, `sketch.import_dxf`, `insert_component`, `update_links`, `mark_saved` (the design file's saved state); the queries `dxf_info` and `compare_step` |
 | remote | the library resolver's repositories | `update_library_parts` |
 | internal | the application's own workflows | `begin_command`, `restore_command`, `discard_command` (a command panel's checkpoints), `clear_cache` |
+
+Three commands are classified per call (`classes::command_class_with`,
+mitcad#383): `create_appearance`, `edit_appearance` and
+`set_render_settings` are file IO by name, because a texture or an
+environment image may be read from its path, but a call that names no
+file is the model's own and MCP runs it. A texture reads a file when its
+base colour image or one of its maps has neither `data` nor
+`"embedded": true`; a texture that is null or left out reads none;
+`set_render_settings` reads a file when `environment.image` is a path
+(null clears it). `classes::file_path_read(request)` gives the path, which
+the MCP server names in its refusal.
 
 `api::classes::command_class(name)`, `query_class(name)` and
 `feature_class(type)` give the class (none for a name the API lacks);
@@ -7343,3 +7456,421 @@ and a point inside each solid of the tool classified against the body.
 Only `add_feature` previews of extrusions answer it (other features and
 `edit_feature` have no `auto_operation`); the stored definition is always
 the one committed, so editing an Extrude never changes its operation.
+
+## BUILD: profile assemblies
+
+The BUILD tab (mitcad#375; the app: `app/COMMANDS.md`, *BUILD*) places
+library parts with a `build` block ([docs/libraries.md](../../../../docs/libraries.md#build-parts)):
+slot profiles, connectors and their nuts and screws, panels and linear
+parts. Everything it makes is ordinary design content: components,
+occurrences, features, joints and parameters on the one timeline,
+editable with every other command. What is new is a part's **source**,
+kept once in the design; the **derived part** a placed part's body is
+made from; the **bound length**; and the commands and queries below.
+Code: `core/model/src/build/` (placement rules, junctions, cut list),
+`features/derived_part.rs`, `features/bound_length.rs`, `api/build.rs`;
+tests `core/model/src/build/*_tests.rs`, `tools/cli/tests/build_*.json`,
+`tools/ui-build-test.sh`, and on the generated parts library the ctest
+`build.profiles` (`tools/cli/build-profiles-test.cmake`, with
+`MITCAD_PROFILES_LIBRARY`).
+
+### Sources
+
+```json
+"library_sources": [
+  {"id": "S1",
+   "library": {"library": "mitcad-parts", "url": "...", "rev": "<commit>", "label": "v1.0.0",
+               "component": "p30x30-b8", "path": "profiles/p30x30-b8.mitcad",
+               "license": "MIT", "authors": ["Mitcad contributors"]},
+   "design": {"sha256": "..."},
+   "build": {"role": "profile"},
+   "supplier": "Motedis", "part_number": "P30_N8_B", "supplier_url": "https://..."}]
+```
+
+A design's top-level `library_sources` (left out when empty) holds each
+library part that BUILD placed, once, whatever its configuration row or
+length. Each source has:
+
+- its `id` (`S1`);
+- the library record (as a component's `library`, [Library parts](#library-parts));
+  its `designation` is the library's pattern (`{L}` and the source's other
+  parameters in braces are replaced by each part's values in mm), its
+  `config` is left out (each derived part has its own row);
+- `name` and `standard`, the component's in the library;
+- the part's design text (in a project, a reference into the project's
+  store, like a base feature's B-rep, `{"sha256"}`; inline `{"sha256",
+  "text"}` in a single-file design). A hand-written file may give the
+  design itself as an object in `text` and leave out `sha256`; a design
+  whose B-rep data was in the library's store is written as a single file
+  with its data inside;
+- the manifest's `build`, `supplier`, `part_number` and `supplier_url` as
+  they were at that version.
+
+A part without `build` can be a source too: the nuts, screws and clamps a
+connector or a panel brings are derived parts of their own sources.
+
+A source is read from the library when it is first used (class `remote`,
+as `insert_component` with `library`). After that the design needs no
+library to open or recompute. A source that no derived part uses any more
+is removed with the last one, in the same edit; a source no derived part
+has used yet (one a file brings along) stays until one uses it and that
+one goes.
+
+`update_library_parts` takes `{"source": "S1", "rev": "..."}` in its
+`changes`. The source takes the other version's design and `build`, and
+every derived part made from it recomputes, in one undo step (`Update
+Profile 30x30 B8 to v1.1.0`). A change names a source or a component, not
+both; one command changes sources or components, not both; a source's
+rows are its parts' own (`build_edit`'s `config`). The `library_parts`
+query lists each source as an entry of `parts` with `source`, `component`
+(null), `name`, `library` (the record: `library`, `url`, `rev`,
+`component`, `label`, ...), `url`, `rev`, `label`, `designation` (the
+pattern), `build`, `supplier`, `part_number`, `supplier_url`, `config`
+(null), `version` and `uses` (the derived parts).
+
+The parts list (`parts_list`) has `supplier`, `part_number` and
+`supplier_url` in every row: a BUILD part's from its source (the row's
+own `part_number` first) and its designation with its values; an
+inserted library part's as the library gave them when it was inserted
+(a component's `library` record keeps them). A configuration row may
+have its own `part_number` and `supplier_url`.
+
+### derived_part
+
+```json
+{"type": "derived_part", "source": "S1", "config": "M6",
+ "parameters": {"L": "d12"},
+ "ends": {"a": {"angle": "45 deg", "tilt": "x"}, "b": {"angle": 0}},
+ "operation": "new_body"}
+```
+
+The first body of a placed part's component (named `Part<n>`). To make
+it, the model:
+
+1. evaluates the source's design with the configuration row `config`
+   (the source's default when left out) and `parameters` set ({the
+   source's user parameter: a [value](#values)}; a cut-to-length part
+   always lists its length parameter);
+2. copies its visible bodies in;
+3. cuts its ends.
+
+- **Ends** (cut-to-length parts only):
+  - `angle` is the cut's angle from square, from 0 up to (not including)
+    90°.
+  - `tilt` is the section axis the cut turns about: `x` or `y` of the
+    source's section, the cut leaning towards +y or +x; `-x` and `-y`
+    lean the other way.
+  - End A is cut at z = 0 and end B at z = L, each through the centre of
+    the section at that end. So the length is measured along the axis
+    between the two ends' centres, as a mitre is set out. For an angled
+    end the source is evaluated that much longer (the material beyond the
+    centre on the long side) and cut back; its frames stay those of the
+    length itself.
+  - The cut is made inside the feature, not as a cut feature of its own,
+    so the cut list reads it from the definition.
+- **Names.**
+  - The bodies are `<feature>.b<i>`, in the source's order.
+  - A face of the source is `<feature>:part(<the source's face name>)`.
+  - The end faces are always `<feature>:end_a` and `<feature>:end_b`,
+    cut or not, so a sketch or hole on an end stays on it when its mitre
+    changes.
+  - The source's names do not change with its parameters (a profile's
+    side faces are named after its section's curves). So sketches, holes
+    and cuts on the part keep their place when the length or a mitre
+    changes.
+  - The face in `part(...)` is named in the source's own ids: they are no
+    features of the design (references to `F7:part(F2:side(c1))` depend
+    on F7 only, and copies leave the inner name as it is).
+  - A square end's faces are the source's planar faces at z = 0 facing −z
+    (z = L facing +z); the faces of the kernel's other names are kept.
+- **Frames.**
+  - Every `mount:<name>` joint origin of the source becomes a frame of
+    the feature, `<feature>:mount(<name>)`, moved with the part's
+    parameters (`end_b` follows the length).
+  - A joint origin's `geometry` may name one: `{"mount":
+    "F7:mount(slot_x+_1)"}` ([Kinds and frames](#kinds-and-frames)). Its
+    origin and axes are then the frame's, not a face's middle.
+- **Editing.**
+  - The component can be activated and given features like any other
+    component: a sketch on `F7:part(...)` and a hole, a cut.
+  - Paste New copies the derived part with its own `parameters`. Move to
+    Component and Move to... keep it.
+  - Results are cached by the source's digest, the row, the parameters'
+    values and the ends; they are not kept in the result store (the
+    source is evaluated again when the design opens).
+  - `parameters` take lengths (a number is millimetres). A length outside
+    the `build` block's limits is a warning of the feature (the commands
+    refuse it).
+
+### bound_length
+
+```json
+{"type": "bound_length", "parameter": "d12",
+ "from": {"occurrence": "O3", "geometry": {"mount": "F5:mount(slot_y+_1)"},
+          "shift": {"x": "d9", "y": 0, "z": 0}},
+ "direction": "z",
+ "to": {"occurrence": "O4", "geometry": {"body": "F8.b0", "face": "F8:part(...)"}},
+ "mode": "face", "add": 0}
+```
+
+`BoundLength<n>` is a feature of the component that places both parts:
+the BUILD commands make it in the parent of the two occurrences. It owns
+`parameter`, a **reference parameter** (kind `reference`, like a driven
+dimension's, [Values](#values)). Its value is a length measured at the
+feature's point of the timeline:
+
+- The ray starts at `from`'s frame, an origin as for a joint, taken in
+  the feature's component through the occurrences' placements there.
+- The start is shifted along that frame's axes by `shift`, a set of
+  values. BUILD writes there the parameters of the joint that slides the
+  new part along a slot, so the ray follows the part when it is moved
+  along the slot.
+- The ray runs along the frame's `direction` (`z`, the default, `-z`,
+  `x`, ...), or a vector `[x, y, z]` in the frame's coordinates (a part
+  turned at an end).
+- It ends on `to`, a planar face or a frame (the plane through its origin
+  across its z axis). `mode` decides where:
+  - `face`: the distance to the face;
+  - `centre`: to the middle of the profile the face belongs to, half its
+    section further;
+  - `through`: to its far side.
+
+  (The part is the body of the face, or of the derived part the frame is
+  of; its far side is the farthest corner of its box along the ray.)
+- `add` is added to the result: an overlap or a gap, and may be negative.
+
+**Timeline order.** BUILD always puts the three features in this order:
+
+1. the `bound_length`;
+2. the derived part whose length the parameter sets;
+3. the joint that places that part.
+
+The ray never depends on the part it sizes. So moving the target
+(dragging its joint), or moving the part along its slot, recomputes the
+length.
+
+**Failures and detaching.**
+
+- A ray that meets nothing (its target behind the start or along the
+  ray), a length of zero or less, or a target that is gone, fails the
+  feature with the reason, and the reference keeps its last value.
+- Two lengths bound to each other (each part's ray ends on the other)
+  make a cycle, and the second one is refused when it is made. A length
+  is bound only to a part placed before it in the timeline (its joint
+  before the part's derived part): one placed later is refused too.
+- **Detaching** (`build_edit` with a length value) replaces the reference
+  with a dimension parameter of the same name, keeps its last value, and
+  deletes the feature; the value given is then the length.
+- A new bound length's `parameter` is given as a number, its first value:
+  it becomes the feature's own reference parameter.
+
+### Placement
+
+A placed part is one component with one occurrence in the active
+component. With it come:
+
+- its `derived_part`;
+- the joint that places it;
+- its `bound_length` features, when its length or size is bound.
+
+The component records what BUILD made, in the design file too:
+
+```json
+"build": {"role": "profile", "source": "S1", "part": "F7", "joint": "F9",
+          "bound": ["F6"], "added_by": null, "adds": []}
+```
+
+- `added_by` is the connector component that added this one (a nut, a
+  screw).
+- `adds` lists the components and features a connector added (`"C5"`,
+  `"F12"`): its fasteners, and the holes it machined into the profiles; a
+  panel's clamps; a part's own end machining (`build_edit`'s
+  `machining`).
+- `junction` (a connector's only) is the `build_junctions` id it was
+  placed at.
+- `bound` lists the part's bound lengths (a panel has one per size).
+- BUILD reads these records. Other commands treat the component as any
+  other, and a component without `build` is not a BUILD part.
+
+**Joints BUILD makes.** Two frames that mate face each other: their z
+axes are opposite, so every joint BUILD makes between two frames is
+flipped (`flip: true`, `docs/libraries.md`, *Which way a frame's z
+points*).
+
+- **A profile on another profile's side** gets a `slider` joint along the
+  slot (`slide_axis` `x`, the slot's direction). The joint is between the
+  new profile's `end_a` frame (`end_b` with `flip`) and the slot frame,
+  flipped:
+  - its `position.tx` is the offset from the target's end A: the "offset
+    from the end" the user types, or `L - offset` (an expression of the
+    target's length parameter) when measured from end B;
+  - its `angle` is the rotation about the axis: 0, 90, 180 or 270°;
+  - the part can be dragged along the slot, as on a T-nut.
+  - A part that is not a profile (a rail, a plate) mounts with its first
+    frame of kind `slot`, `face` or `hole` the same way.
+- **A profile on an end** gets a `rigid` joint between its `end_a` (or
+  `end_b`) and the target's end frame, flipped. Its `angle` is the
+  rotation. Without `at.direction` the new profile continues the target
+  on its axis; with it, the target's frame has a `frame_override` whose z
+  is that direction (in the target's coordinates) and whose x is the end
+  frame's: the new profile turns at the end, the two axes meeting at the
+  end's centre (a corner).
+- **The first part,** on a plane, a point or a face, gets a `rigid` joint
+  to that geometry, flipped, with a `frame_override` origin at `point`;
+  without `at.geometry` it has no joint and is grounded at `at.point`
+  (the origin when left out), along the active component's +Z.
+- **A part that moves on another** (`linear.mate`: a carriage on its
+  rail) gets the `mate`'s joint (`joint`, `axis`; slider by default)
+  between its `mate.frame` and the target's first frame of kind
+  `mate.on`, flipped, its slide at `at.offset` (along x from end A, as on
+  a side). A cap gets a `rigid` joint between its first `end` (or `face`)
+  frame and the picked end, flipped.
+- **A connector** gets a `slider` joint between its first mate's frame and
+  profile a's frame of the mate's kind (`to`) that faces the inner corner
+  (the one turned most towards b), at the distance from a's meeting end
+  that the second mate's frame lies from the first one's plane, turned
+  about z so that its second arm lies towards b. Its fasteners (`nut`,
+  `screw`, `washer`) get `rigid` joints, flipped, between their first
+  `slot`, `hole` or `face` frame (their design's XY when they have none)
+  and the connector's fastener frame.
+- **A panel** gets a `rigid` joint (not flipped) between its design's XY
+  frame and the picked profile's slot frame with a `frame_override` that
+  puts the middle of the design's box at the panel's middle: its x along
+  that profile, its z across the frame's plane. A panel design has its
+  width along X, its height along Y and its thickness along Z (centred on
+  its XY origin, or drawn from its corner and extruded from XY: its box
+  says where it is).
+
+### Commands
+
+| Command | Fields | Result |
+|---|---|---|
+| `build_place` | `part` (`{"library", "url", "rev", "component", "config"}`, or `{"source": "S1", "config"}` to reuse a source), `at` (below), `rotate` (an angle: 0, 90, 180 or 270 deg; a number is radians), `flip` (true: the other end first), `length` (a value, or `{"bind": {"occurrence", "geometry"}, "mode": "face"/"centre"/"through", "add"}`; left out: the source's default), `mitre` (`{"angle", "cut": "new"/"existing"/"shared"}`), `parameters` (other source parameters), `name` | `component`, `occurrence`, `name`, `features` (everything it added), `joint`, `bound`, `adds`, `warnings`, `place` (`side`, `end`, `frame`, `geometry` or `grounded`); undo step `Place <designation>` |
+| `build_edit` | `component`, and any of `at.offset`, `at.from`, `rotate`, `flip` (true or false: which end meets), `length` (a value detaches, a `bind` binds), `ends` (`{"a": {"angle", "tilt"}, "b": ...}`; null squares an end), `config`, `parameters`, `machining` (`[{"end": "a"/"b", "hole": {"diameter", "depth", "thread"}}]`: the part's own end machining, not a connector's; it replaces the whole list, an empty list takes it away) | `changed` (`offset`, `rotate`, `flip`, `detached`, `length`, `bound`, `ends`, `config`, `parameters`, `machining`); undo step `Edit <name>` |
+| `build_connect` | `junction` (an id from `build_junctions`), `part` (as `build_place`'s), `fasteners` (default true), `machining` (default true), `name` | `component`, `occurrence`, `adds`, `warnings` (a fastener that cannot be read is left out with a warning); undo step `Connect <designation>` |
+| `build_panel` | `at` (`{"occurrence", "geometry", "point"}`: a face or a slot frame of one of the frame's profiles), `part`, `thickness` (for a part whose thickness is a parameter), `parameters`, `name` | `component`, `occurrence`, `bound`, `fits` (false, with `reason`, when a fixed-width sheet is too narrow or too wide), `adds` (the clamps of a surface panel); undo step `Place <designation>` |
+| `build_remove` | `component` | `removed`: `components` (it and what it `adds`), `features` (its bound lengths, its holes in other parts, and what depends on them) and `detached` (the bound lengths of other parts that end on it or start from it, detached first, so those parts keep their lengths); the parts placed on it keep where they are; undo step `Remove <name>` |
+
+`at` says where the part goes: `{"occurrence", "geometry", "point",
+"place", "offset", "from", "direction"}`.
+
+- `occurrence` is a path from the active component (uids or names).
+- `geometry` is what was picked: a face or a frame of a placed part, or,
+  for the first part, a plane, a point or a face. Without it the part is
+  grounded at `point`.
+- `point` is where it was picked, in the active component's coordinates.
+- `place` is `auto` (the default), `side` or `end`. With `auto`, the
+  click decides:
+  - a pick on a profile's end face (`<F>:end_a`, `<F>:end_b`) or end
+    frame is `end`;
+  - a pick on a side face is `side`: at the slot of that side nearest to
+    `point` (of the slots on the face's plane when the kernel tells the
+    face's plane; none there is a closed side), at `point`'s distance
+    along the profile;
+  - a slot frame is `side` at that slot; another frame (a rail's) is a
+    mate.
+- `offset` replaces that distance, measured `from` end `a` (the default)
+  or end `b`.
+- `direction` (an end only): the new part's axis in the active
+  component's coordinates; along the target's axis when left out.
+
+**Mitres.**
+
+- On an `end` placement, `cut` decides which ends are cut:
+  - `existing` cuts the target's end by `angle` and leaves the new part
+    square;
+  - `shared` cuts both on the bisector, each by half the angle between
+    their axes (45° each for two profiles at 90°; `angle` is not needed);
+  - `new` cuts only the new part (the default `cut`).
+- On a `side` placement only `new` is accepted.
+- The cut's `tilt` comes from the two axes at the moment of placing and
+  is stored in each part's `ends`: the target's end leans towards the new
+  part's axis, the new part's end towards the target's. On a side the new
+  part's end leans along the slot. Later rotations do not change it;
+  `build_edit` does.
+- Only cut-to-length parts have mitres.
+
+**Refusals.** The command changes nothing when:
+
+- the part has no `build`;
+- the role cannot go there (a panel, a connector or a fastener through
+  `build_place`: they have `build_panel`, `build_connect` and their
+  connector);
+- the side has no slot frame (a closed side);
+- the systems do not fit (a B-type slot 8 connector on an I-type slot 5
+  profile), or the frame does not take the role (its `accepts`);
+- the placement does not allow the mitre's `cut`;
+- a bound length would make a cycle, or ends on a part placed later;
+- the length is outside the part's limits;
+- the rotation is not a quarter turn.
+
+### Queries
+
+Frames in answers are `{"origin", "x_axis", "y_axis", "z_axis"}` in the
+design's coordinates; lengths are numbers in mm and angles numbers in
+radians, as joints have them.
+
+| Query | Fields | Result |
+|---|---|---|
+| `build_preview` | `build_place`'s, `build_panel`'s or `build_connect`'s fields | what the command would do, without changing anything. A placing: `frame` (the new part's own axes at its end A, z running from A to B), `place` (`side`, `end`, `frame`, `geometry` or `grounded`, as `auto` decided), `length` (`value`: the length given, else what the part's ray gives in `mode`, else the source's default; `default`; `target`: what the ray meets first, `{occurrence, geometry}` with a frame of another BUILD part facing it, or the `bind` given, null when nothing; and `mode`), `ends` (`a`, `b`: `{angle, tilt}` or null; `target`: the target's end cut), `snaps` (on a side: `{offset, point}` at the slot's ends, middle and grid points along it), `designation`, `warnings`. A panel: `frame`, `fits`, `reason`, `width`, `height`, `bound`. A connector: `frame`, `junction`, `fasteners` (`{frame, at}`), `fastener_parts`, `machining` (`{component, at, point, diameter, depth, thread}`). All: `body` (`"see analysis_shape"`) and `problems` (the refusal the command would give, then nothing else) |
+| `build_parts` | | `parts`: for each BUILD component, `component`, `name`, `role`, `source`, `part`, `joint`, `designation`, `supplier`, `part_number`, `config`, `length`, `ends`, `bound` (`{feature, parameter, to: {occurrence, geometry}, mode}`, or null), `flip`, `rotate`, `machining` (its own, as `build_edit` takes it), `added_by`, `adds`, `junction` |
+| `build_junctions` | `components` (optional: only the junctions of these) | `junctions`: `id` (`<a's component>:<a's at>\|<b's component>:<b's at>`, stable while the two parts and their meeting stay), `kind` (`L`, `T`, `cross`, `inline`), `a` and `b` (`component`, `occurrence`, `at` (`end_a`, `end_b`, the slot frame, or `side` on a closed side), `frame` (the part's own axes at its end A), `at_frame` (the `at` frame)), `angle` (between the axes), `systems` (`B8/30`), `space` (the free room in the inner corner: `{"x", "y", "z"}`: along a, along b to its farther end, across), `connectors` (components already there) |
+| `build_cut_list` | `kerf` (optional, default 3 mm) | `rows`, one per group of identical results (source, row, length, ends, machining and own features the same): `source`, `designation`, `supplier`, `part_number`, `config`, `length`, `ends` (`a`, `b`: `{angle, tilt}` or null), `machining` (`{at, diameter, depth, thread, connector}`: holes from connectors, and the part's own, `connector` null), `features` (how many own features the part has: holes, cuts), `quantity`, `mass` (each, kg), `components`. `stock`: per source, cut from its longest stock length, `{"source", "designation", "stock_length", "pieces": [lengths in cutting order], "bars" (where each stock piece's cuts end in `pieces`), "needed", "offcut", "too_long"}`, longest pieces first into the first stock piece they fit (a kerf after each). `kerf`. `other`: the parts list's rows for everything else |
+
+`analysis_shape` with `{"shape": "build_preview", ...}` and the same
+fields gives the new part's bodies (a connector's, a panel's) in the
+design's coordinates, as other analysis shapes, for the view to show
+while a command is open.
+
+**How junctions are found.** From the derived parts' frames and boxes at
+the marker: two profiles meet when their boxes touch or overlap within
+the model's tolerance (0.001 mm). Then:
+
+- an end on a side face (on a slot frame's plane, facing it, or on a
+  closed side of the box) is `T`, or `L` when it is within the section's
+  size of that side's end;
+- two ends at one point are `L` (axes at an angle) or `inline` (on one
+  axis);
+- two sides crossing are `cross`.
+
+`a` is the part whose end meets; of two ends, and of two sides, the
+newer part.
+
+A connector fits a junction when its `junctions`, `systems` and `space`
+match the junction. The list of fitting library parts comes from the
+library side (`library_build_candidates` in [Library
+commands](#library-commands), given the junction), since the model knows
+no library. `build_connect` refuses a connector whose `junctions` or
+`systems` do not fit, or whose `envelope` is larger than the junction's
+`space`.
+
+**Panels.** A panel in slots is placed from a picked inner face (or slot
+frame) of a frame's profile: the slot there, the profile across the
+frame whose slot faces it in the same plane, and those beside to the left
+and right along the picked profile. Its height is the room across plus
+twice the slot's depth less the clearance, its width the room between
+the profiles beside likewise; bound lengths keep both so (from the
+picked slot to the one across, from the left slot to the right). A size
+that is no parameter of the panel (a sheet sold in widths) keeps its
+value: it fits when it reaches into both slots and is no wider than
+their depth less the clearance. A face with no profile across is refused
+(`not inside a frame`). A surface panel (`mount: "surface"`) lies on the
+picked outer face, its back on it. Where its width and height are
+parameters it covers the frame around the face: across from the outer
+side of the picked profile to that of the profile whose slot faces the
+picked one's inner side, along between the outer sides of the profiles
+beside (without them, the picked profile's length, with a warning);
+bound lengths in `through` mode keep both so. Without a profile across it
+keeps its size (a warning). Its clamps slide in the picked slot at the
+panel's two ends, kept on the profile and inset by their own reach along
+the slot (one in the middle when there is no room for two); they are its
+`adds`, and `build_remove` takes them with it.
+
+### Classes
+
+- `build_place`, `build_connect` and `build_panel` read a new source from
+  a library, so they are class `remote` (as `update_library_parts`).
+  With `part.source` (a source already in the design) they need no
+  library, and the MCP server allows them (`classes::command_class_with`,
+  which looks at the fields).
+- `build_edit`, `build_remove` and the queries are class `model`.

@@ -87,5 +87,31 @@
     "path": {"sketch": "F14", "curves": ["c4"]}, "guide_surfaces": [{"body": "F13.b0", "face": "F13:side(c1)"}],
     "operation": "new_body"}},
   {"expect": {"feature": "Sweep5", "status": "ok", "body": "F16.b0", "volume": 160, "tolerance": 1e-6,
-    "min": [0, 10, -1], "max": [40, 12, 1]}}
+    "min": [0, 10, -1], "max": [40, 12, 1]}},
+
+  {"comment": "A helical path (mitcad#385): three turns of radius 20 about the Z axis, rising 10 a turn, from (20, 0, 0). A plane at its start square to it (Plane1, F17), a 4 mm circle there (Sketch10, F18) swept along it (Sweep6, F19): a tube of 3 * 2 pi * sqrt(20^2 + (10 / 2 pi)^2) = 378.18 long, V = 4 pi * 378.18."},
+  {"cmd": "add_feature", "def": {"type": "construction_plane", "definition": {"type": "along_path",
+    "path": {"helix": {"center": [0, 0, 0], "axis": [0, 0, 1], "x_axis": [1, 0, 0], "radius": 20, "pitch": 10,
+      "start_angle": 0, "end_angle": 18.84955592153876}}, "distance": 0}}},
+  {"cmd": "sketch.create", "plane": "F17"},
+  {"cmd": "sketch.add_circle", "sketch": "F18", "center": [0, 0], "diameter": 4},
+  {"cmd": "add_feature", "def": {"type": "sweep", "profiles": [{"sketch": "F18", "region": "r{c1}"}],
+    "path": {"helix": {"center": [0, 0, 0], "axis": [0, 0, 1], "x_axis": [1, 0, 0], "radius": 20, "pitch": 10,
+      "start_angle": 0, "end_angle": 18.84955592153876}}, "operation": "new_body"}},
+  {"expect": {"feature": "Sweep6", "status": "ok", "body": "F19.b0", "volume": 4752.3864402645, "tolerance": 1e-5,
+    "has_face": "F19:side(c1)"}},
+  {"comment": "Run from its end angle back to its start (left-handed about the reversed axis): the same tube."},
+  {"cmd": "edit_feature", "uid": "F19", "def": {"type": "sweep", "profiles": [{"sketch": "F18", "region": "r{c1}"}],
+    "path": {"helix": {"center": [0, 0, 0], "axis": [0, 0, 1], "x_axis": [1, 0, 0], "radius": 20, "pitch": 10,
+      "start_angle": 18.84955592153876, "end_angle": 0}}, "operation": "new_body"}},
+  {"expect": {"feature": "Sweep6", "status": "ok", "body": "F19.b0", "volume": 4752.3864402645, "tolerance": 1e-5}},
+
+  {"comment": "An ellipse of 76.2 by 57.15 (one closed edge, its seam at an end of its major axis, along the normal of the path's plane) swept along seven lines folded in a plane, as an import places them (mitcad#385). The mitres do not build from that seam: they build from the ellipse as two halves. Mitred corners: 3420.3 * 5791 plus the mitres' share."},
+  {"cmd": "add_feature", "def": {"entities":[{"at":[0.0,0.0],"id":"p1","type":"point"},{"at":[298.4499999999998,0.0],"id":"p2","type":"point"},{"end":"p2","id":"c3","start":"p1","type":"line"},{"at":[298.4499999999998,-457.2],"id":"p4","type":"point"},{"end":"p4","id":"c5","start":"p2","type":"line"},{"at":[-6.349999999999909,-457.2],"id":"p6","type":"point"},{"end":"p6","id":"c7","start":"p4","type":"line"},{"at":[-3663.9500000000003,-762.0],"id":"p8","type":"point"},{"end":"p8","id":"c9","start":"p6","type":"line"},{"at":[-3968.75,-762.0],"id":"p10","type":"point"},{"end":"p10","id":"c11","start":"p8","type":"line"},{"at":[-3968.75,-304.8],"id":"p12","type":"point"},{"end":"p12","id":"c13","start":"p10","type":"line"},{"at":[-3670.3,-304.8],"id":"p14","type":"point"},{"end":"p14","id":"c15","start":"p12","type":"line"}],
+    "frame":{"origin":[739.7750000000924,3816.349999999757,-596.8999999999996],"x_axis":[3.047393874260097E-15,1.0,-2.2452312994939266E-29],"y_axis":[-7.367709564747568E-15,0.0,-1.0]},"plane":"xy","type":"sketch"}},
+  {"cmd": "add_feature", "def": {"entities":[{"at":[-4.816106945763149E-19,-4.665904304751417E-15],"id":"p1","type":"point"},{"at":[-38.1,-7.888609052210118E-31],"id":"p2","type":"point"},{"center":"p1","id":"c3","major":"p2","minor_radius":28.575000000000003,"type":"ellipse"}],
+    "frame":{"origin":[739.7750000000924,3816.349999999757,-596.8999999999996],"x_axis":[-1.0,1.9046211714125635E-15,0.0],"y_axis":[0.0,-0.0,1.0]},"plane":"xy","type":"sketch"}},
+  {"cmd": "add_feature", "def": {"type": "sweep", "operation": "new_body", "profiles": [{"sketch": "F21", "region": "r{c3}"}],
+    "path": {"sketch": "F20", "curves": ["c3", "c5", "c7", "c9", "c11", "c13", "c15"]}}},
+  {"expect": {"feature": "Sweep7", "status": "ok", "body": "F22.b0", "volume": 19807424.2306, "tolerance": 1e-5}}
 ]

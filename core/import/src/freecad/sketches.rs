@@ -1214,6 +1214,23 @@ pub(super) fn transform_curve(c: &Curve3, t: &Transform) -> Curve3 {
             weights: weights.clone(),
             knots: knots.clone(),
         },
+        Curve3::Helix {
+            center,
+            axis,
+            x_axis,
+            radius,
+            pitch,
+            start,
+            end,
+        } => Curve3::Helix {
+            center: t.apply_point(*center),
+            axis: t.apply_vector(*axis),
+            x_axis: t.apply_vector(*x_axis),
+            radius: *radius,
+            pitch: *pitch,
+            start: *start,
+            end: *end,
+        },
     }
 }
 

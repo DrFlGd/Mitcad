@@ -9,6 +9,9 @@
 #   3. Body1 clicked at the top, the rows scrolled down with the wheel until
 #      Body1 is out of sight, Body60 Ctrl+clicked: both bodies selected and
 #      the scroll position stays where it was.
+#   4. Five light bulbs clicked quickly with a small mouse move during each
+#      press (mitcad#344): each toggles once and the selection is unchanged
+#      (the Linux test is a part of tools/ui-browser-test.sh).
 #
 # Usage: powershell -ExecutionPolicy Bypass -File tools\ui-windows-browser-test.ps1 [-App build\dev\mitcad.exe] [-Out dir] [-QtBin dir]
 param(
@@ -105,6 +108,36 @@ Browser-Reveal 'Browser Root/Bodies/Body1' 3
 Ui-Mark
 Ui-Step 'click Body1'                    { Ui-ClickLogged 'Browser Root/Bodies/Body1' }
 Ui-ExpectNew 'Selected: 1 body [body F2.b0]' 'Body1 selected'
+Write-Host '--- Quick clicks on light bulbs (mitcad#344)'
+# Five light bulbs clicked one after the other with no pause, the mouse
+# moving a little while each button is down: each toggles its row once and
+# the selection stays Body1 (the view's pressed row must not start a range).
+function Quick-Eyes([string[]]$Paths) {
+  $places = @()
+  foreach ($path in $Paths) { $places += , (Ui-LoggedAt "Browser eye $path") }
+  foreach ($p in $places) {
+    [UiInput]::Move($script:UiWindow, $p[0], $p[1], 0)
+    [UiInput]::Button($script:UiWindow, 0x201, $p[0], $p[1], 0x01)
+    [UiInput]::Move($script:UiWindow, $p[0] + 2, $p[1] + 1, 0x01)
+    [UiInput]::Button($script:UiWindow, 0x202, $p[0] + 2, $p[1] + 1, 0)
+  }
+  Ui-Sync
+}
+$quick = @('Root/Bodies/Body2', 'Root/Bodies/Body3', 'Root/Bodies/Body4', 'Root/Bodies/Body5', 'Root/Bodies/Body6')
+$selected = Ui-LastMatch '^Browser selected: (.*)$'
+Ui-Mark
+Ui-Step 'click five light bulbs quickly' { Quick-Eyes $quick }
+foreach ($path in $quick) { Ui-ExpectNew "Visibility ${path}: hidden" "$path hidden" }
+$new = @(Ui-LogLines | Select-Object -Skip $script:UiMark)
+$toggles = @($new | Where-Object { $_.StartsWith('Visibility ') }).Count
+if ($toggles -ne 5) { Ui-Fail "five quick clicks gave $toggles visibility changes" }
+if ((Ui-LastMatch '^Browser selected: (.*)$') -ne $selected) { Ui-Fail 'the quick clicks changed the selection' }
+Write-Host "ok   each light bulb toggled once, the selection is unchanged ($selected)"
+Ui-Mark
+Ui-Step 'click them again' { Quick-Eyes $quick }
+foreach ($path in $quick) { Ui-ExpectNew "Visibility ${path}: shown" "$path shown again" }
+if ((Ui-LastMatch '^Browser selected: (.*)$') -ne $selected) { Ui-Fail 'the second round changed the selection' }
+
 Browser-Reveal 'Browser Root/Bodies/Body60' -3
 if (Place-Valid 'Browser Root/Bodies/Body1') { Ui-Fail 'Body1''s row is still in sight' }
 $before = Browser-Scroll

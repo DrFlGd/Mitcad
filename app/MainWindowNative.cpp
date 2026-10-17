@@ -513,7 +513,9 @@ void MainWindow::refreshNativeActions() {
   // SELECT uses shared actions added to the ribbon rather than registry
   // commands. Keep its pinned filter icon and its actual checked submenu
   // available in both native workspaces.
-  if (auto* select = m_ribbon->findChild<QToolButton*>(QStringLiteral("ribbonMenu_SOLID/SELECT"))) {
+  const QString selectWorkspace = m_sketch->isActive() ? QStringLiteral("SKETCH") : QStringLiteral("SOLID");
+  if (auto* select = m_ribbon->findChild<QToolButton*>(QStringLiteral("ribbonMenu_") + selectWorkspace +
+                                                   QStringLiteral("/SELECT"))) {
     if (QMenu* menu = select->menu()) {
       for (QAction* action : menu->actions()) {
         if (!action->isVisible()) {
@@ -522,6 +524,7 @@ void MainWindow::refreshNativeActions() {
         append(action, QStringLiteral("Select"));
         auto& item = actions.last();
         item.group = QStringLiteral("SELECT");
+        item.workspace = selectWorkspace;
         item.toolbarOrder = order++;
         if (QMenu* submenu = action->menu()) {
           item.toolbarPinned = true;

@@ -218,6 +218,8 @@ pub struct DocState {
     /// by an importer whose bodies match a file's only within its
     /// geometric tolerance; None (exact joins) for the model's own designs.
     pub(crate) join_tolerance: Option<f64>,
+    /// The library parts BUILD placed, each kept once (mitcad#375).
+    pub(crate) library_sources: crate::build::LibrarySources,
 }
 
 impl Default for DocState {
@@ -243,6 +245,7 @@ impl Default for DocState {
             import_notes: BTreeMap::new(),
             flat_patterns: BTreeMap::new(),
             join_tolerance: None,
+            library_sources: Default::default(),
         }
     }
 }
@@ -386,6 +389,11 @@ impl DocState {
             .map_err(invalid)?;
             created.extend(new);
         }
+        // A bound length's parameter is its own reference (mitcad#375).
+        if let FeatureDef::BoundLength(bound) = &resolved {
+            crate::features::bound_length::settle_parameter(params, bound.parameter, owner)
+                .map_err(invalid)?;
+        }
         // A growing helix without a construction keeps the one it had, else
         // it is Mitcad's (mitcad#83).
         if let FeatureDef::Helix(helix) = &mut resolved {
@@ -465,6 +473,8 @@ impl DocState {
                 Some(FeatureDef::Sketch(def)) => {
                     def.dimensions.iter().filter_map(|d| d.reference).collect()
                 }
+                // A bound length keeps its own reference (mitcad#375).
+                Some(FeatureDef::BoundLength(def)) => BTreeSet::from([def.parameter]),
                 _ => BTreeSet::new(),
             };
             for id in self.parameters.owned_by(owner) {
@@ -1788,6 +1798,8 @@ impl<K: Kernel> Document<K> {
     ) -> Result<T, ModelError> {
         let mut next = self.state.clone();
         let (label, value, recompute) = edit(&mut next)?;
+        // A library source goes with its last derived part (mitcad#375).
+        next.prune_library_sources(&self.state);
         // Configurations follow renames, also those a value slot's
         // `name = expression` made (mitcad#231).
         if next.parameters != self.state.parameters {

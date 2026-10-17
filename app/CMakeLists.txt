@@ -21,11 +21,17 @@ qt_add_executable(mitcad
   browser/DocumentSnapshot.hpp
   browser/AppearanceDialog.cpp
   browser/AppearanceDialog.hpp
+  # Find in Design (mitcad#350).
+  browser/FindDialog.cpp
+  browser/FindDialog.hpp
+  browser/FindInDesign.cpp
+  browser/FindInDesign.hpp
   browser/ParametersDialog.cpp
   browser/ParametersDialog.hpp
   # Design policy of components (mitcad#220).
   browser/PolicyDialog.cpp
   browser/PolicyDialog.hpp
+  browser/ComponentColors.hpp
   browser/TimelineWidget.cpp
   browser/TimelineWidget.hpp
   browser/TimelineSearch.cpp
@@ -826,3 +832,14 @@ if(BUILD_TESTING)
                  materials/TextureFetcher.cpp materials/TextureFetcher.hpp)
   target_link_libraries(test_app PRIVATE Qt6::Network)
 endif()
+# The BUILD tab: frames of slot profiles with their connectors, panels and
+# linear parts, the cut list and the parts list (mitcad#375, app/COMMANDS.md
+# "BUILD"); QPdfWriter of Qt Gui writes the lists' PDFs.
+target_sources(mitcad PRIVATE
+  build/BuildCatalog.cpp
+  build/BuildCatalog.hpp
+  build/BuildLists.cpp
+  build/BuildLists.hpp
+  build/BuildModel.cpp
+  build/BuildModel.hpp
+  commands/BuildCommands.cpp)

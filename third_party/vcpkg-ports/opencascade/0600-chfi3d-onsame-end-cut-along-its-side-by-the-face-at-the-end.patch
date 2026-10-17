@@ -1,0 +1,337 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: an OnSame end whose blend runs on past the vertex along its
+other face, cut along its side by the face at the end (mitcad#343).
+
+A convex edge between a band N and a cone Fo rounded with 1, ending at a
+vertex V where a notch wall B (a plane at 8 degrees to the edge) starts:
+past V, N goes on as a narrower tongue between the notch walls and Fo
+goes on beside B (B's edge with N convex, with Fo concave: an OnSame end).
+The bodies stored in the files run the blend on past V along Fo until its
+contact on Fo reaches B's edge with Fo (5.9 past V), and B cuts it along
+its side from there back to where its contact on N crosses B's plane (4
+before V); B grows up to the cut. OCCT walked on past V until the contact
+on N left the tongue across its edge with a face tangent to it (4 past V,
+the contact on Fo still short of B), and the corner took that edge's face
+for the face at the end: an invalid result (faces of reversed orientation)
+or two roundings that cross.
+
+Now ChFi3d_Builder::WalkedOnSameToEndFace, after the stripe is walked,
+finds such an end (OnSame, a vertex of three edges, the last SurfData past
+V with its contact on N on an edge that is not B's and its contact on Fo
+inside Fo) and walks that SurfData again from its other end, N's surface
+unbounded and the guide run on past its end (the same curve), up to where
+the contact on Fo reaches B's edge with Fo; that SurfData replaces the
+last one. PerformOneCorner's OnSame corner then cuts it by B and prolongs
+B's edge with N up to the contact on N, as for an ordinary OnSame end. The
+stripe is left as it was where the walk does not reach that edge. Analytic
+blends (not walked) are not changed.
+
+Upstream: new.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.hxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.hxx
+index 085bb4e..2d690e9 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.hxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.hxx
+@@ -1116,6 +1116,15 @@ private:
+   //! piece is cut by the face beyond; the stripe ends in a point there.
+   Standard_EXPORT bool RolledCutToEnd(const occ::handle<ChFiDS_Stripe>& Stripe, const bool isFirst);
+ 
++  //! An OnSame end at a vertex of three edges whose walk past the vertex
++  //! stopped where the contact on one face left it across an edge away from
++  //! the face at the end, the other contact short of its edge with that
++  //! face: the blend is walked again with the first face's surface
++  //! unbounded, up to where the other contact reaches that edge, so that the
++  //! corner cuts it by the face at the end. Returns true when the stripe was
++  //! changed.
++  Standard_EXPORT bool WalkedOnSameToEndFace(const occ::handle<ChFiDS_Stripe>& Stripe, const bool isFirst);
++
+   //! A stripe of one blend rolling on an edge of its face from one OnSame end
+   //! of the spine to the other, whose walk stopped on the seam of the other
+   //! side's face short of where the ball comes tangent to the edge's face at
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+index 8e8e15a..26d16b7 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+@@ -12350,6 +12350,271 @@ bool ChFi3d_Builder::RolledEndToEndAcrossSeam(const occ::handle<ChFiDS_Stripe>&
+   return true;
+ }
+ 
++//=======================================================================
++// function : WalkedOnSameToEndFace
++// purpose  : An OnSame end at a vertex V of three edges (the spine's
++//            between faces N and Fo, En between N and the face at the
++//            end B, Eq between Fo and B): the walk past V stopped where
++//            the contact on N left N across an edge E that is not B's
++//            (a narrower part of N beyond V, its edge with a face tangent
++//            to it), the contact on Fo still short of Eq. The corner
++//            needs a blend whose contact on Fo reaches Eq, cut by B along
++//            its side from there back to where its contact on N crosses
++//            B's surface (En prolonged, PerformOneCorner). The last
++//            surfdata is walked again from its other end with N's
++//            surface unbounded, on the same guide run on past its end, up
++//            to where the contact on Fo reaches Eq.
++//=======================================================================
++
++bool ChFi3d_Builder::WalkedOnSameToEndFace(const occ::handle<ChFiDS_Stripe>& Stripe, const bool isFirst)
++{
++  const occ::handle<ChFiDS_Spine>& Spine = Stripe->Spine();
++  if (Spine.IsNull() || Spine->IsPeriodic() || Stripe->SetOfSurfData().IsNull()
++      || Stripe->SetOfSurfData()->IsEmpty() || Spine->ChangeElSpines().IsEmpty())
++  {
++    return false;
++  }
++  if ((isFirst ? Spine->FirstStatus() : Spine->LastStatus()) != ChFiDS_OnSame)
++  {
++    return false;
++  }
++  const occ::handle<ChFiDS_FilSpine> fsp = occ::down_cast<ChFiDS_FilSpine>(Spine);
++  if (fsp.IsNull() || !fsp->IsConstant())
++  {
++    return false;
++  }
++  TopOpeBRepDS_DataStructure& DStr = myDS->ChangeDS();
++  const TopoDS_Vertex         V    = isFirst ? Spine->FirstVertex() : Spine->LastVertex();
++  if (V.IsNull() || !myVFMap.Contains(V) || !myVEMap.Contains(V))
++  {
++    return false;
++  }
++  NCollection_Sequence<occ::handle<ChFiDS_SurfData>>& aSeq = Stripe->ChangeSetOfSurfData()->ChangeSequence();
++  const int                                           iP   = isFirst ? 1 : aSeq.Length();
++  const occ::handle<ChFiDS_SurfData>                  P    = aSeq.Value(iP);
++  if (P->Index(1) <= 0 || P->Index(2) <= 0)
++  {
++    return false;
++  }
++  // P walked past V.
++  const double WP   = isFirst ? P->FirstSpineParam() : P->LastSpineParam();
++  const double WS   = isFirst ? P->LastSpineParam() : P->FirstSpineParam();
++  const double WEnd = isFirst ? Spine->FirstParameter(1) : Spine->LastParameter(Spine->NbEdges());
++  if ((isFirst ? WEnd - WP : WP - WEnd) <= 10. * tolesp || (isFirst ? WS - WEnd : WEnd - WS) <= 10. * tolesp)
++  {
++    return false;
++  }
++  // The side whose contact left its face N across an edge E, the other
++  // inside its face.
++  int ons = 0;
++  for (int s = 1; s <= 2 && ons == 0; s++)
++  {
++    const ChFiDS_CommonPoint& CPs = P->Vertex(isFirst, s);
++    const ChFiDS_CommonPoint& CPo = P->Vertex(isFirst, 3 - s);
++    if (CPs.IsOnArc() && !CPs.IsVertex() && !CPo.IsOnArc() && myEFMap.Contains(CPs.Arc()))
++    {
++      ons = s;
++    }
++  }
++  if (ons == 0)
++  {
++    return false;
++  }
++  const int         opp = 3 - ons;
++  const TopoDS_Edge E   = TopoDS::Edge(P->Vertex(isFirst, ons).Arc());
++  const TopoDS_Face N   = TopoDS::Face(DStr.Shape(P->Index(ons)));
++  const TopoDS_Face Fo  = TopoDS::Face(DStr.Shape(P->Index(opp)));
++  if (N.IsSame(Fo))
++  {
++    return false;
++  }
++  // V: three sharp edges and three faces, N, Fo and B.
++  if (ChFi3d_NumberOfSharpEdges(V, myVEMap, myEFMap) != 3)
++  {
++    return false;
++  }
++  TopoDS_Face B;
++  int         nbF = 0;
++  {
++    NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aFaces;
++    for (NCollection_List<TopoDS_Shape>::Iterator it(myVFMap(V)); it.More(); it.Next())
++    {
++      if (!aFaces.Add(it.Value()))
++      {
++        continue;
++      }
++      nbF++;
++      if (!it.Value().IsSame(N) && !it.Value().IsSame(Fo))
++      {
++        B = TopoDS::Face(it.Value());
++      }
++    }
++  }
++  if (nbF != 3 || B.IsNull())
++  {
++    return false;
++  }
++  // The edges at V between Fo and B, and between N and B; E is not B's.
++  const auto anEdgeAtV = [&](const TopoDS_Face& F1, const TopoDS_Face& F2) {
++    for (NCollection_List<TopoDS_Shape>::Iterator it(myVEMap(V)); it.More(); it.Next())
++    {
++      const TopoDS_Edge& Ec = TopoDS::Edge(it.Value());
++      if (BRep_Tool::Degenerated(Ec) || !myEFMap.Contains(Ec))
++      {
++        continue;
++      }
++      bool on1 = false, on2 = false;
++      for (NCollection_List<TopoDS_Shape>::Iterator itf(myEFMap(Ec)); itf.More(); itf.Next())
++      {
++        on1 = on1 || itf.Value().IsSame(F1);
++        on2 = on2 || itf.Value().IsSame(F2);
++      }
++      if (on1 && on2)
++      {
++        return Ec;
++      }
++    }
++    return TopoDS_Edge();
++  };
++  const TopoDS_Edge Eq = anEdgeAtV(Fo, B);
++  const TopoDS_Edge En = anEdgeAtV(N, B);
++  if (Eq.IsNull() || En.IsNull() || E.IsSame(En) || E.IsSame(Eq))
++  {
++    return false;
++  }
++  for (NCollection_List<TopoDS_Shape>::Iterator itf(myEFMap(E)); itf.More(); itf.Next())
++  {
++    if (itf.Value().IsSame(B))
++    {
++      return false;
++    }
++  }
++  NCollection_List<occ::handle<ChFiDS_ElSpine>>::Iterator anItGuide(Spine->ChangeElSpines());
++  if (!isFirst)
++  {
++    for (int k = 1; k < Spine->ChangeElSpines().Extent(); k++)
++    {
++      anItGuide.Next();
++    }
++  }
++  occ::handle<ChFiDS_ElSpine>& HGuide0 = anItGuide.ChangeValue();
++  // The start: P's section at its other end.
++  const double W0 = WS;
++  if (HGuide0.IsNull() || W0 < HGuide0->FirstParameter() || W0 > HGuide0->LastParameter())
++  {
++    return false;
++  }
++  // The guide prolonged past V by the spine's length at least (the walk
++  // ends where the contact on Fo reaches Eq).
++  const double aLength = Spine->LastParameter(Spine->NbEdges()) - Spine->FirstParameter(1);
++  const double WFar    = isFirst ? std::min(HGuide0->FirstParameter(), WEnd - 2. * aLength)
++                                 : std::max(HGuide0->LastParameter(), WEnd + 2. * aLength);
++  // (The same curve, its last span's polynomial run on past the end, so
++  // that the sections up to there are P's.)
++  occ::handle<ChFiDS_ElSpine> HGuide = occ::down_cast<ChFiDS_ElSpine>(HGuide0->ShallowCopy());
++  if (HGuide.IsNull())
++  {
++    return false;
++  }
++  if (isFirst)
++  {
++    HGuide->FirstParameter(WFar);
++  }
++  else
++  {
++    HGuide->LastParameter(WFar);
++  }
++  const ChFiDS_FaceInterference& FI1 = P->Interference(1);
++  const ChFiDS_FaceInterference& FI2 = P->Interference(2);
++  if (FI1.PCurveOnFace().IsNull() || FI2.PCurveOnFace().IsNull())
++  {
++    return false;
++  }
++  const occ::handle<Geom_Surface> SN = BRep_Tool::Surface(N);
++  if (SN.IsNull())
++  {
++    return false;
++  }
++  TopoDS_Face NF = BRepLib_MakeFace(SN, Precision::Confusion());
++  if (NF.IsNull())
++  {
++    return false;
++  }
++  NF.Orientation(N.Orientation());
++  occ::handle<BRepAdaptor_Surface>      HSN = new BRepAdaptor_Surface(NF);
++  occ::handle<BRepAdaptor_Surface>      HSO = new BRepAdaptor_Surface(Fo);
++  occ::handle<BRepAdaptor_Surface>      HS1 = ons == 1 ? HSN : HSO;
++  occ::handle<BRepAdaptor_Surface>      HS2 = ons == 1 ? HSO : HSN;
++  occ::handle<BRepTopAdaptor_TopolTool> It1 = new BRepTopAdaptor_TopolTool(HS1);
++  occ::handle<BRepTopAdaptor_TopolTool> It2 = new BRepTopAdaptor_TopolTool(HS2);
++  TopAbs_Orientation                    Or1 = HS1->Face().Orientation();
++  TopAbs_Orientation                    Or2 = HS2->Face().Orientation();
++  const int                             Choix =
++    ChFi3d::NextSide(Or1, Or2, Stripe->OrientationOnFace1(), Stripe->OrientationOnFace2(), Stripe->Choix());
++  math_Vector    Soldep(1, 4);
++  const gp_Pnt2d uv1 = FI1.PCurveOnFace()->Value(W0);
++  const gp_Pnt2d uv2 = FI2.PCurveOnFace()->Value(W0);
++  Soldep(1)          = uv1.X();
++  Soldep(2)          = uv1.Y();
++  Soldep(3)          = uv2.X();
++  Soldep(4)          = uv2.Y();
++  NCollection_Sequence<occ::handle<ChFiDS_SurfData>> SeqSD;
++  SeqSD.Append(new ChFiDS_SurfData());
++  // (A walk from P's other end on to Eq.)
++  double                   First = W0, Last = isFirst ? HGuide->FirstParameter() : HGuide->LastParameter();
++  int                      intf = 0, intl = 0;
++  const int                nbed     = Spine->NbEdges();
++  const double             MaxStep  = 0.05 * (Spine->LastParameter(nbed) - Spine->FirstParameter(1)) / nbed;
++  const double             Fleche   = (HGuide->LastParameter() - HGuide->FirstParameter()) * fleche;
++  bool                     walked   = false;
++  const bool               doneSave = done;
++  const ChFiDS_ErrorStatus stSave   = Spine->ErrorStatus();
++  try
++  {
++    OCC_CATCH_SIGNALS
++    walked = PerformSurf(SeqSD, HGuide, Spine, Choix, HS1, It1, HS2, It2, MaxStep, Fleche, tolesp, First, Last,
++                         false, false, !isFirst, false, false, Soldep, intf, intl);
++  }
++  catch (Standard_Failure const&)
++  {
++    walked = false;
++  }
++  done = doneSave;
++  Spine->SetErrorStatus(stSave);
++  if (!walked || SeqSD.Length() != 1)
++  {
++    return false;
++  }
++  occ::handle<ChFiDS_SurfData> X = SeqSD.First();
++  X->ChangeIndexOfS1(P->IndexOfS1());
++  X->ChangeIndexOfS2(P->IndexOfS2());
++  // The other end as P's, this end on Eq with the contact on N inside.
++  const double WX = isFirst ? X->LastSpineParam() : X->FirstSpineParam();
++  if (std::abs(WX - WS) > 10. * tolesp)
++  {
++    return false;
++  }
++  const ChFiDS_CommonPoint& CPq = X->Vertex(isFirst, opp);
++  if (!CPq.IsOnArc() || !CPq.Arc().IsSame(Eq) || X->Vertex(isFirst, ons).IsOnArc())
++  {
++    return false;
++  }
++  // (Its start is P's section: P's points there.)
++  X->ChangeVertex(!isFirst, 1) = P->Vertex(!isFirst, 1);
++  X->ChangeVertex(!isFirst, 2) = P->Vertex(!isFirst, 2);
++  aSeq.ChangeValue(iP) = X;
++  HGuide0              = HGuide;
++  if (isFirst)
++  {
++    Spine->SetFirstParameter(std::min(Spine->FirstParameter(), WFar));
++  }
++  else
++  {
++    Spine->SetLastParameter(std::max(Spine->LastParameter(), WFar));
++  }
++  return true;
++}
++
+ // The face holding vertices V and A other than the faces given, or null.
+ static TopoDS_Face ChFi3d_FaceAtBoth(const ChFiDS_Map&    VFMap,
+                                      const TopoDS_Vertex& V,
+@@ -14892,7 +15157,8 @@ void ChFi3d_Builder::PerformSetOfSurf(occ::handle<ChFiDS_Stripe>& Stripe, const
+     {
+       // (A try that fails leaves the stripe as it was.)
+       const bool aDone = done;
+-      if (!aPointEnd(isFirst) && !WalkedCutToEnd(Stripe, isFirst) && !RolledCutToEnd(Stripe, isFirst))
++      if (!aPointEnd(isFirst) && !WalkedCutToEnd(Stripe, isFirst) && !RolledCutToEnd(Stripe, isFirst)
++          && !WalkedOnSameToEndFace(Stripe, isFirst))
+       {
+         if (aNarrowCut)
+         {

@@ -1,0 +1,512 @@
+[
+  {
+    "id": "p15x22-5-b10",
+    "name": "Profile 15x22.5 B-type slot 10",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-15x225-B-Type-slot-10/Motedis_Profile 15x22,5 B-Type slot 10.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "16731",
+    "supplier_url": "https://www.motedis.com/en/Profile-15x225-B-Type-slot-10",
+    "designation": "Profile 15x22.5 B10 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"B","slot":10,"grid":45},
+      "length": {
+        "parameter": "L",
+        "min": "50 mm",
+        "max": "6000 mm",
+        "stock": ["6000 mm","1980 mm","1500 mm","1000 mm","500 mm"]
+      },
+      "section": {"width":"22.5 mm","height":"15 mm"},
+      "slot": {"depth":"13 mm","opening":"10 mm","inner_width":"23.5 mm"},
+      "mass_per_metre": "0.33 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"slot_y+_1","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "p40x40-b10",
+    "name": "Profile 40x40 B-type slot 10",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-40x40-B-type-slot-10/Motedis_Profile 40x40 B-Type slot 10.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "022667",
+    "supplier_url": "https://www.motedis.com/en/Profile-40x40-B-type-slot-10",
+    "designation": "Profile 40x40 B10 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"B","slot":10,"grid":40},
+      "length": {
+        "parameter": "L",
+        "min": "50 mm",
+        "max": "6000 mm",
+        "stock": ["6000 mm","1980 mm","1500 mm","1000 mm","500 mm"]
+      },
+      "section": {"width":"40 mm","height":"40 mm"},
+      "slot": {"depth":"12 mm","opening":"10 mm","inner_width":"23.5 mm"},
+      "mass_per_metre": "1.51 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"core","kind":"bore","diameter":"10.2 mm"},
+        {"name":"slot_x+_1","kind":"slot"},
+        {"name":"slot_x-_1","kind":"slot"},
+        {"name":"slot_y+_1","kind":"slot"},
+        {"name":"slot_y-_1","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "p40x80-b10",
+    "name": "Profile 40x80 B-type slot 10",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-40x80-B-type-slot-10/Motedis_022668.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "022668",
+    "supplier_url": "https://www.motedis.com/en/Profile-40x80-B-type-slot-10",
+    "designation": "Profile 40x80 B10 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"B","slot":10,"grid":40},
+      "length": {"parameter":"L","min":"50 mm","max":"6000 mm","stock":["6000 mm","1980 mm","1500 mm"]},
+      "section": {"width":"40 mm","height":"80 mm"},
+      "slot": {"depth":"12 mm","opening":"10 mm","inner_width":"23.5 mm"},
+      "mass_per_metre": "2.66 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"slot_x+_1","kind":"slot"},
+        {"name":"slot_x+_2","kind":"slot"},
+        {"name":"slot_x-_1","kind":"slot"},
+        {"name":"slot_x-_2","kind":"slot"},
+        {"name":"slot_y+_1","kind":"slot"},
+        {"name":"slot_y-_1","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "p45x45-1n-b10",
+    "name": "Profile 45x45 1N B-type slot 10",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-45x45-1N-B-Type-slot-10/Motedis_Profile 45x45 1N B-Type slot 10.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "13754",
+    "supplier_url": "https://www.motedis.com/en/Profile-45x45-1N-B-Type-slot-10",
+    "designation": "Profile 45x45 1N B10 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"B","slot":10,"grid":45},
+      "length": {
+        "parameter": "L",
+        "min": "50 mm",
+        "max": "6000 mm",
+        "stock": ["6000 mm","1980 mm","1500 mm","1000 mm"]
+      },
+      "section": {"width":"45 mm","height":"45 mm"},
+      "slot": {"depth":"14 mm","opening":"10 mm","inner_width":"23.5 mm"},
+      "mass_per_metre": "1.69 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"core","kind":"bore","diameter":"10.2 mm"},
+        {"name":"slot_y+_1","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "p45x45-2n180g-b10",
+    "name": "Profile 45x45 2N180G B-type slot 10",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-45x45-2N180G-B-Type-slot-10/Motedis_Profile 45x45 2N180 B-Type slot 10.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "13448",
+    "supplier_url": "https://www.motedis.com/en/Profile-45x45-2N180G-B-Type-slot-10",
+    "designation": "Profile 45x45 2N180G B10 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"B","slot":10,"grid":45},
+      "length": {
+        "parameter": "L",
+        "min": "50 mm",
+        "max": "6000 mm",
+        "stock": ["6000 mm","1980 mm","1500 mm","1000 mm"]
+      },
+      "section": {"width":"45 mm","height":"45 mm"},
+      "slot": {"depth":"14 mm","opening":"10 mm","inner_width":"23.5 mm"},
+      "mass_per_metre": "1.64 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"core","kind":"bore","diameter":"10.2 mm"},
+        {"name":"slot_y+_1","kind":"slot"},
+        {"name":"slot_y-_1","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "p45x45-2nvs-b10",
+    "name": "Profile 45x45 2NVS B-type slot 10",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-45x45-2NVS-B-Type-slot-10/Motedis_Profile 45x45 2NVS B-Type slot 10.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "11772",
+    "supplier_url": "https://www.motedis.com/en/Profile-45x45-2NVS-B-Type-slot-10",
+    "designation": "Profile 45x45 2NVS B10 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"B","slot":10,"grid":45},
+      "length": {
+        "parameter": "L",
+        "min": "50 mm",
+        "max": "6000 mm",
+        "stock": ["6000 mm","1980 mm","1500 mm","1000 mm"]
+      },
+      "section": {"width":"45 mm","height":"45 mm"},
+      "slot": {"depth":"14 mm","opening":"10 mm","inner_width":"23.5 mm"},
+      "mass_per_metre": "1.64 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"slot_x+_1","kind":"slot"},
+        {"name":"slot_y+_1","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "p45x45-3n-b10",
+    "name": "Profile 45x45 3N B-type slot 10",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-45x45-3N-B-Type-slot-10/Motedis_Profile 45x45 3N B-Type slot 10.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "022020",
+    "supplier_url": "https://www.motedis.com/en/Profile-45x45-3N-B-Type-slot-10",
+    "designation": "Profile 45x45 3N B10 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"B","slot":10,"grid":45},
+      "length": {
+        "parameter": "L",
+        "min": "50 mm",
+        "max": "6000 mm",
+        "stock": ["6000 mm","1980 mm","1500 mm","1000 mm"]
+      },
+      "section": {"width":"45 mm","height":"45 mm"},
+      "slot": {"depth":"14 mm","opening":"10 mm","inner_width":"23.5 mm"},
+      "mass_per_metre": "1.57 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"core","kind":"bore","diameter":"10.2 mm"},
+        {"name":"slot_x+_1","kind":"slot"},
+        {"name":"slot_x-_1","kind":"slot"},
+        {"name":"slot_y+_1","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "p45x45-lr-b10",
+    "name": "Profile 45x45 LR B-type slot 10",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-45x45-LR-B-Type-slot-10/Motedis_10861.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "10861",
+    "supplier_url": "https://www.motedis.com/en/Profile-45x45-LR-B-Type-slot-10",
+    "designation": "Profile 45x45 LR B10 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"B","slot":10,"grid":45},
+      "length": {
+        "parameter": "L",
+        "min": "50 mm",
+        "max": "6000 mm",
+        "stock": ["6000 mm","1980 mm","1500 mm","1000 mm"]
+      },
+      "section": {"width":"45 mm","height":"45 mm"},
+      "slot": {"depth":"14 mm","opening":"10 mm","inner_width":"23.5 mm"},
+      "mass_per_metre": "1.27 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"slot_x+_1","kind":"slot"},
+        {"name":"slot_y-_1","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "p45x45l-b10",
+    "name": "Profile 45x45L B-type slot 10",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-45x45L-B-Type-slot-10/P45L_N10_B.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "45x45L B-Typ Nut 10",
+    "supplier_url": "https://www.motedis.com/en/Profile-45x45L-B-Type-slot-10",
+    "designation": "Profile 45x45L B10 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"B","slot":10,"grid":45},
+      "length": {
+        "parameter": "L",
+        "min": "50 mm",
+        "max": "6000 mm",
+        "stock": ["6000 mm","1980 mm","1500 mm","1000 mm","700 mm","500 mm"]
+      },
+      "section": {"width":"45 mm","height":"45 mm"},
+      "slot": {"depth":"14 mm","opening":"10 mm","inner_width":"23.5 mm"},
+      "mass_per_metre": "1.55 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"core","kind":"bore","diameter":"10.2 mm"},
+        {"name":"slot_x+_1","kind":"slot"},
+        {"name":"slot_x-_1","kind":"slot"},
+        {"name":"slot_y+_1","kind":"slot"},
+        {"name":"slot_y-_1","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "p45x45s-b10",
+    "name": "Profile 45x45S B-type slot 10",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-45x45S-B-Type-slot-10/Motedis_Profile 45x45S B-Type slot 10.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "019611",
+    "supplier_url": "https://www.motedis.com/en/Profile-45x45S-B-Type-slot-10",
+    "designation": "Profile 45x45S B10 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"B","slot":10,"grid":45},
+      "length": {
+        "parameter": "L",
+        "min": "50 mm",
+        "max": "6000 mm",
+        "stock": ["6000 mm","1980 mm","1500 mm","1000 mm"]
+      },
+      "section": {"width":"45 mm","height":"45 mm"},
+      "slot": {"depth":"12 mm","opening":"10 mm","inner_width":"23.5 mm"},
+      "mass_per_metre": "2.03 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"core","kind":"bore","diameter":"10.2 mm"},
+        {"name":"slot_x+_1","kind":"slot"},
+        {"name":"slot_x-_1","kind":"slot"},
+        {"name":"slot_y+_1","kind":"slot"},
+        {"name":"slot_y-_1","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "p45x60-b10",
+    "name": "Profile 45x60 B-type slot 10",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-45x60-B-Type-slot-10/Motedis_Profile 45x60 B-Type slot 10.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "019610",
+    "supplier_url": "https://www.motedis.com/en/Profile-45x60-B-Type-slot-10",
+    "designation": "Profile 45x60 B10 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"B","slot":10,"grid":45},
+      "length": {
+        "parameter": "L",
+        "min": "50 mm",
+        "max": "6000 mm",
+        "stock": ["6000 mm","1980 mm","1500 mm","1000 mm"]
+      },
+      "section": {"width":"45 mm","height":"60 mm"},
+      "slot": {"depth":"14 mm","opening":"10 mm","inner_width":"23.5 mm"},
+      "mass_per_metre": "2.96 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"slot_x+_1","kind":"slot"},
+        {"name":"slot_x-_1","kind":"slot"},
+        {"name":"slot_y+_1","kind":"slot"},
+        {"name":"slot_y-_1","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "p45x90l-b10",
+    "name": "Profile 45x90L B-type slot 10",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-45x90L-B-Type-slot-10/45x90L_N10_B.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "45x90L B-Typ Nut 10",
+    "supplier_url": "https://www.motedis.com/en/Profile-45x90L-B-Type-slot-10",
+    "designation": "Profile 45x90L B10 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"B","slot":10,"grid":45},
+      "length": {
+        "parameter": "L",
+        "min": "50 mm",
+        "max": "6000 mm",
+        "stock": ["6000 mm","1980 mm","1500 mm","1000 mm","500 mm"]
+      },
+      "section": {"width":"90 mm","height":"45 mm"},
+      "slot": {"depth":"14 mm","opening":"10 mm","inner_width":"23.5 mm"},
+      "mass_per_metre": "3.05 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"slot_x+_1","kind":"slot"},
+        {"name":"slot_x-_1","kind":"slot"},
+        {"name":"slot_y+_1","kind":"slot"},
+        {"name":"slot_y+_2","kind":"slot"},
+        {"name":"slot_y-_1","kind":"slot"},
+        {"name":"slot_y-_2","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "p45x90s-b10",
+    "name": "Profile 45x90S B-type slot 10",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-45x90S-B-Type-slot-10/Motedis_Profile 45x90S B-Type slot 10.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "021203",
+    "supplier_url": "https://www.motedis.com/en/Profile-45x90S-B-Type-slot-10",
+    "designation": "Profile 45x90S B10 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"B","slot":10,"grid":45},
+      "length": {
+        "parameter": "L",
+        "min": "50 mm",
+        "max": "6000 mm",
+        "stock": ["6000 mm","1980 mm","1500 mm","1000 mm"]
+      },
+      "section": {"width":"90 mm","height":"45 mm"},
+      "slot": {"depth":"12 mm","opening":"10 mm","inner_width":"23.5 mm"},
+      "mass_per_metre": "4.11 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"slot_x+_1","kind":"slot"},
+        {"name":"slot_x-_1","kind":"slot"},
+        {"name":"slot_y+_1","kind":"slot"},
+        {"name":"slot_y+_2","kind":"slot"},
+        {"name":"slot_y-_1","kind":"slot"},
+        {"name":"slot_y-_2","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "p45x180l-flat-b10",
+    "name": "Profile 45x180L flat B-type slot 10",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-45x180L-flat-B-Type-slot-10/P45x180L_glatt_N10B.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "022536",
+    "supplier_url": "https://www.motedis.com/en/Profile-45x180L-flat-B-Type-slot-10",
+    "designation": "Profile 45x180L flat B10 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"B","slot":10,"grid":45},
+      "length": {"parameter":"L","min":"50 mm","max":"6000 mm","stock":["6000 mm","1980 mm","1500 mm"]},
+      "section": {"width":"45 mm","height":"180 mm"},
+      "slot": {"depth":"13 mm","opening":"10 mm","inner_width":"23.5 mm"},
+      "mass_per_metre": "6.4 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"slot_x+_1","kind":"slot"},
+        {"name":"slot_x+_2","kind":"slot"},
+        {"name":"slot_x+_3","kind":"slot"},
+        {"name":"slot_x+_4","kind":"slot"},
+        {"name":"slot_x-_1","kind":"slot"},
+        {"name":"slot_x-_2","kind":"slot"},
+        {"name":"slot_x-_3","kind":"slot"},
+        {"name":"slot_x-_4","kind":"slot"},
+        {"name":"slot_y+_1","kind":"slot"},
+        {"name":"slot_y-_1","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "p90x90-l-b10",
+    "name": "Profile 90x90 L B-type slot 10",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-90x90-L-B-Type-slot-10/Motedis_Profile 90x90L B-Type slot 10.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "90x90 L B-Typ Nut 10",
+    "supplier_url": "https://www.motedis.com/en/Profile-90x90-L-B-Type-slot-10",
+    "designation": "Profile 90x90 L B10 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"B","slot":10,"grid":45},
+      "length": {
+        "parameter": "L",
+        "min": "50 mm",
+        "max": "6000 mm",
+        "stock": ["6000 mm","1980 mm","1500 mm","1000 mm"]
+      },
+      "section": {"width":"90 mm","height":"90 mm"},
+      "slot": {"depth":"14 mm","opening":"10 mm","inner_width":"23.5 mm"},
+      "mass_per_metre": "6.33 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"core","kind":"bore","diameter":"10.2 mm"},
+        {"name":"slot_x+_1","kind":"slot"},
+        {"name":"slot_x+_2","kind":"slot"},
+        {"name":"slot_x-_1","kind":"slot"},
+        {"name":"slot_x-_2","kind":"slot"},
+        {"name":"slot_y+_1","kind":"slot"},
+        {"name":"slot_y+_2","kind":"slot"},
+        {"name":"slot_y-_1","kind":"slot"},
+        {"name":"slot_y-_2","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  }
+]

@@ -81,7 +81,7 @@ Write-Host '--- 1. Libraries: only the block library, not fetched'
 Ui-Mark
 Ui-Step 'Libraries (F8)'                 { Ui-Key 'F8' }
 Ui-FocusDialog '^Libraries$'
-Ui-ExpectNew 'Library source https://github.com/mitcad/fasteners.git (on): not fetched' 'the default sources listed'
+Ui-ExpectNew 'Library source https://github.com/mitcad/parts.git (on): not fetched' 'the default sources listed'
 Ui-Step 'remove a default (Alt+R)'       { Ui-Key 'alt+r' }
 Ui-Step 'and the other (Alt+R)'          { Ui-Key 'alt+r' }
 Ui-ExpectNew 'Library source removed: https://github.com/mitcad/community-index.git' 'the defaults removed'

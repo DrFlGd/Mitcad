@@ -1,0 +1,402 @@
+[
+  {
+    "id": "p20x10-i5",
+    "name": "Profile 20x10 I-type slot 5",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-20x10-I-Type-slot-5/P10x20_N5_I.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "PR20X10I",
+    "supplier_url": "https://www.motedis.com/en/Profile-20x10-I-Type-slot-5",
+    "designation": "Profile 20x10 I5 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"I","slot":5,"grid":20},
+      "length": {
+        "parameter": "L",
+        "min": "50 mm",
+        "max": "1980 mm",
+        "stock": ["1980 mm","1500 mm","1143 mm","1000 mm","635 mm","500 mm"]
+      },
+      "section": {"width":"20 mm","height":"10 mm"},
+      "slot": {"depth":"6.35 mm","opening":"5.2 mm","inner_width":"11.2 mm"},
+      "mass_per_metre": "0.35 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"core_1","kind":"bore","diameter":"3.3 mm"},
+        {"name":"core_2","kind":"bore","diameter":"3.3 mm"},
+        {"name":"slot_y+_1","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "p20x20-1n-i5",
+    "name": "Profile 20x20 1N I-type slot 5",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-20x20-1N-I-Type-slot-5/Motedis_Profile 20x20 1N I-Type Slot 5.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "I520201N",
+    "supplier_url": "https://www.motedis.com/en/Profile-20x20-1N-I-Type-slot-5",
+    "designation": "Profile 20x20 1N I5 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"I","slot":5,"grid":20},
+      "length": {"parameter":"L","min":"50 mm","max":"1980 mm","stock":["1980 mm","1000 mm","500 mm"]},
+      "section": {"width":"20 mm","height":"20 mm"},
+      "slot": {"depth":"6.35 mm","opening":"5.2 mm","inner_width":"11.2 mm"},
+      "mass_per_metre": "0.52 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"core","kind":"bore","diameter":"4.3 mm"},
+        {"name":"slot_y-_1","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "p20x20-2n180g-i5",
+    "name": "Profile 20x20 2N180G I-type slot 5",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-20x20-2N180G-I-Type-slot-5/Motedis_Profile 20x20 2N180 I-Type Slot 5.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "I520202NP",
+    "supplier_url": "https://www.motedis.com/en/Profile-20x20-2N180G-I-Type-slot-5",
+    "designation": "Profile 20x20 2N180G I5 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"I","slot":5,"grid":20},
+      "length": {"parameter":"L","min":"50 mm","max":"1980 mm","stock":["1980 mm","1500 mm","1000 mm"]},
+      "section": {"width":"20 mm","height":"20 mm"},
+      "slot": {"depth":"6.35 mm","opening":"5.2 mm","inner_width":"11.2 mm"},
+      "mass_per_metre": "0.51 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"core","kind":"bore","diameter":"4.3 mm"},
+        {"name":"slot_y+_1","kind":"slot"},
+        {"name":"slot_y-_1","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "p20x20-2nvs-i5",
+    "name": "Profile 20x20 2NVS I-type slot 5",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-20x20-2NVS-I-Typ-slot-5/Motedis_Profile 20x20 2NVS I-Type slot 5.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "019595",
+    "supplier_url": "https://www.motedis.com/en/Profile-20x20-2NVS-I-Typ-slot-5",
+    "designation": "Profile 20x20 2NVS I5 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"I","slot":5,"grid":20},
+      "length": {"parameter":"L","min":"50 mm","max":"1980 mm","stock":["1980 mm","1500 mm","1000 mm"]},
+      "section": {"width":"20 mm","height":"20 mm"},
+      "slot": {"depth":"6.35 mm","opening":"5.2 mm","inner_width":"11.2 mm"},
+      "mass_per_metre": "0.54 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"core","kind":"bore","diameter":"4.3 mm"},
+        {"name":"slot_x-_1","kind":"slot"},
+        {"name":"slot_y+_1","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "p20x20-i5",
+    "name": "Profile 20x20 I-type slot 5",
+    "category": "profiles",
+    "source": "aluminium-profiles/Aluminium-Profile-20x20-I-Typ-slot-5/Motedis_Profile 20x20 I-Type slot 5.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "20x20 I-Typ Nut 5",
+    "supplier_url": "https://www.motedis.com/en/Aluminium-Profile-20x20-I-Typ-slot-5",
+    "designation": "Profile 20x20 I5 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"I","slot":5,"grid":20},
+      "length": {
+        "parameter": "L",
+        "min": "50 mm",
+        "max": "6000 mm",
+        "stock": ["6000 mm","1980 mm","1500 mm","1000 mm","500 mm"]
+      },
+      "section": {"width":"20 mm","height":"20 mm"},
+      "slot": {"depth":"6.35 mm","opening":"5.2 mm","inner_width":"11.2 mm"},
+      "mass_per_metre": "0.49 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"core","kind":"bore","diameter":"4.3 mm"},
+        {"name":"slot_x+_1","kind":"slot"},
+        {"name":"slot_x-_1","kind":"slot"},
+        {"name":"slot_y+_1","kind":"slot"},
+        {"name":"slot_y-_1","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "p20x20-lr-i5",
+    "name": "Profile 20x20 LR I-type slot 5",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-20x20-LR-I-Type-slot-5/Motedis_Profile 20x20 LR I-Type slot 5.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "I520R90",
+    "supplier_url": "https://www.motedis.com/en/Profile-20x20-LR-I-Type-slot-5",
+    "designation": "Profile 20x20 LR I5 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"I","slot":5,"grid":20},
+      "length": {"parameter":"L","min":"50 mm","max":"1500 mm","stock":["1500 mm"]},
+      "section": {"width":"20 mm","height":"20 mm"},
+      "slot": {"depth":"6.35 mm","opening":"5.2 mm","inner_width":"11.2 mm"},
+      "mass_per_metre": "0.46 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"core","kind":"bore","diameter":"4.3 mm"},
+        {"name":"slot_x-_1","kind":"slot"},
+        {"name":"slot_y-_1","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "p20x40-4n-i5",
+    "name": "Profile 20x40 4N I-type slot 5",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-20x40-4N-I-Type-slot-5/Motedis_Profile 20x40 4N I-Type Slot 5.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "I520404N",
+    "supplier_url": "https://www.motedis.com/en/Profile-20x40-4N-I-Type-slot-5",
+    "designation": "Profile 20x40 4N I5 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"I","slot":5,"grid":20},
+      "length": {"parameter":"L","min":"50 mm","max":"1980 mm","stock":["1980 mm","1000 mm"]},
+      "section": {"width":"20 mm","height":"40 mm"},
+      "slot": {"depth":"6.35 mm","opening":"5.2 mm","inner_width":"11.2 mm"},
+      "mass_per_metre": "0.91 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"core_1","kind":"bore","diameter":"4.3 mm"},
+        {"name":"core_2","kind":"bore","diameter":"4.3 mm"},
+        {"name":"slot_x+_1","kind":"slot"},
+        {"name":"slot_x+_2","kind":"slot"},
+        {"name":"slot_y+_1","kind":"slot"},
+        {"name":"slot_y-_1","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "p20x40-i5",
+    "name": "Profile 20x40 I-type slot 5",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-20x40-I-Type-slot-5/Motedis_Profile 20x40 I-Type slot 5.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "20x40 I-Typ Nut 5",
+    "supplier_url": "https://www.motedis.com/en/Profile-20x40-I-Type-slot-5",
+    "designation": "Profile 20x40 I5 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"I","slot":5,"grid":20},
+      "length": {
+        "parameter": "L",
+        "min": "50 mm",
+        "max": "1980 mm",
+        "stock": ["1980 mm","1500 mm","1143 mm","1000 mm","635 mm","500 mm"]
+      },
+      "section": {"width":"40 mm","height":"20 mm"},
+      "slot": {"depth":"6.35 mm","opening":"5.2 mm","inner_width":"11.2 mm"},
+      "mass_per_metre": "0.89 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"core_1","kind":"bore","diameter":"4.3 mm"},
+        {"name":"core_2","kind":"bore","diameter":"4.3 mm"},
+        {"name":"slot_x+_1","kind":"slot"},
+        {"name":"slot_x-_1","kind":"slot"},
+        {"name":"slot_y+_1","kind":"slot"},
+        {"name":"slot_y+_2","kind":"slot"},
+        {"name":"slot_y-_1","kind":"slot"},
+        {"name":"slot_y-_2","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "p20x60-i5",
+    "name": "Profile 20x60 I-type slot 5",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-20x60-I-Type-slot-5/Motedis_Profile 20x60 I-Type slot 5.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "20x60 I-Typ Nut 5",
+    "supplier_url": "https://www.motedis.com/en/Profile-20x60-I-Type-slot-5",
+    "designation": "Profile 20x60 I5 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"I","slot":5,"grid":20},
+      "length": {
+        "parameter": "L",
+        "min": "50 mm",
+        "max": "1980 mm",
+        "stock": ["1980 mm","1500 mm","1000 mm","500 mm"]
+      },
+      "section": {"width":"60 mm","height":"20 mm"},
+      "slot": {"depth":"6.35 mm","opening":"5.2 mm","inner_width":"11.2 mm"},
+      "mass_per_metre": "1.28 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"core_1","kind":"bore","diameter":"4.3 mm"},
+        {"name":"core_2","kind":"bore","diameter":"4.3 mm"},
+        {"name":"core_3","kind":"bore","diameter":"4.3 mm"},
+        {"name":"slot_x+_1","kind":"slot"},
+        {"name":"slot_x-_1","kind":"slot"},
+        {"name":"slot_y+_1","kind":"slot"},
+        {"name":"slot_y+_2","kind":"slot"},
+        {"name":"slot_y+_3","kind":"slot"},
+        {"name":"slot_y-_1","kind":"slot"},
+        {"name":"slot_y-_2","kind":"slot"},
+        {"name":"slot_y-_3","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "p20x80-i5",
+    "name": "Profile 20x80 I-type slot 5",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-20x80-I-Type-slot-5/Motedis_20x80 I-Typ Nut 5.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "20x80 I-Typ Nut 5",
+    "supplier_url": "https://www.motedis.com/en/Profile-20x80-I-Type-slot-5",
+    "designation": "Profile 20x80 I5 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"I","slot":5,"grid":20},
+      "length": {
+        "parameter": "L",
+        "min": "50 mm",
+        "max": "1980 mm",
+        "stock": ["1980 mm","1500 mm","1000 mm","500 mm"]
+      },
+      "section": {"width":"80 mm","height":"20 mm"},
+      "slot": {"depth":"6.35 mm","opening":"5.2 mm","inner_width":"11.2 mm"},
+      "mass_per_metre": "1.69 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"core_1","kind":"bore","diameter":"4.3 mm"},
+        {"name":"core_2","kind":"bore","diameter":"4.3 mm"},
+        {"name":"core_3","kind":"bore","diameter":"4.3 mm"},
+        {"name":"core_4","kind":"bore","diameter":"4.3 mm"},
+        {"name":"slot_x+_1","kind":"slot"},
+        {"name":"slot_x-_1","kind":"slot"},
+        {"name":"slot_y+_1","kind":"slot"},
+        {"name":"slot_y+_2","kind":"slot"},
+        {"name":"slot_y+_3","kind":"slot"},
+        {"name":"slot_y+_4","kind":"slot"},
+        {"name":"slot_y-_1","kind":"slot"},
+        {"name":"slot_y-_2","kind":"slot"},
+        {"name":"slot_y-_3","kind":"slot"},
+        {"name":"slot_y-_4","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "p40x10-i5",
+    "name": "Profile 40x10 I-type slot 5",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-40x10-I-Type-slot-5/Motedis-profile-40x10-I-Type-slot-5/Motedis_profile 40x10 I-Type slot 5.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "10x40 nut 5",
+    "supplier_url": "https://www.motedis.com/en/Profile-40x10-I-Type-slot-5",
+    "designation": "Profile 40x10 I5 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"I","slot":5,"grid":20},
+      "length": {"parameter":"L","min":"50 mm","max":"1980 mm","stock":["1980 mm","1500 mm","1000 mm"]},
+      "section": {"width":"10 mm","height":"40 mm"},
+      "slot": {"depth":"6.35 mm","opening":"5.2 mm","inner_width":"11.2 mm"},
+      "mass_per_metre": "0.65 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"core_1","kind":"bore","diameter":"3.3 mm"},
+        {"name":"core_2","kind":"bore","diameter":"3.3 mm"},
+        {"name":"slot_x+_1","kind":"slot"},
+        {"name":"slot_x+_2","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"},
+    "place": {"z":[0,1,0],"x":[0,0,1]}
+  },
+  {
+    "id": "p40x40-i5",
+    "name": "Profile 40x40 I-type slot 5",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-40x40-I-Type-Slot-5/Motedis_Profile 40x40 I-Type slot 5.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "I5 4040",
+    "supplier_url": "https://www.motedis.com/en/Profile-40x40-I-Type-Slot-5",
+    "designation": "Profile 40x40 I5 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"I","slot":5,"grid":20},
+      "length": {"parameter":"L","min":"50 mm","max":"1980 mm","stock":["1980 mm","1500 mm"]},
+      "section": {"width":"40 mm","height":"40 mm"},
+      "slot": {"depth":"6.35 mm","opening":"5.2 mm","inner_width":"11.2 mm"},
+      "mass_per_metre": "1.38 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"core_1","kind":"bore","diameter":"4.3 mm"},
+        {"name":"core_2","kind":"bore","diameter":"4.3 mm"},
+        {"name":"core_3","kind":"bore","diameter":"4.3 mm"},
+        {"name":"core_4","kind":"bore","diameter":"4.3 mm"},
+        {"name":"slot_x+_1","kind":"slot"},
+        {"name":"slot_x+_2","kind":"slot"},
+        {"name":"slot_x-_1","kind":"slot"},
+        {"name":"slot_x-_2","kind":"slot"},
+        {"name":"slot_y+_1","kind":"slot"},
+        {"name":"slot_y+_2","kind":"slot"},
+        {"name":"slot_y-_1","kind":"slot"},
+        {"name":"slot_y-_2","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  }
+]

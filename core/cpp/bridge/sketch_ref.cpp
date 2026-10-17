@@ -3,6 +3,7 @@
 
 #include <array>
 #include <cstdint>
+#include <stdexcept>
 #include <string>
 
 #include "mitcad/geometry/sketch_ref.hpp"
@@ -30,6 +31,10 @@ ModelCurve convert(const geometry::ModelCurve& c) {
   case geometry::ModelCurveKind::BSpline:
     out.kind = ModelCurveKind::BSpline;
     break;
+  case geometry::ModelCurveKind::Helix:
+    // (Helices are paths only, mitcad#385: a shape's edges come as
+    // B-splines.)
+    throw std::invalid_argument("a helix is not an edge's curve");
   }
   out.start = xyz(c.start);
   out.end = xyz(c.end);

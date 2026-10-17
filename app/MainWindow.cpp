@@ -67,6 +67,7 @@
 
 #include "AboutDialog.hpp"
 #include "browser/BrowserController.hpp"
+#include "browser/ComponentColors.hpp"
 #include "browser/TimelineWidget.hpp"
 #include "commands/Commands.hpp"
 #include "files/Autosave.hpp"
@@ -316,6 +317,15 @@ MainWindow::MainWindow(bool demo, QWidget* parent, bool nativeUi)
     // Raised panels, their titles, one accent colour, the Windows 11 frame
     // (mitcad#251).
     WindowStyle::install(this);
+    // The magnifier on the Browser's title row, before its float and close
+    // buttons (mitcad#350: Find in Design).
+    if (auto* dock = findChild<QDockWidget*>(QStringLiteral("browserDock"), Qt::FindDirectChildrenOnly)) {
+      if (auto* bar = qobject_cast<PanelTitleBar*>(dock->titleBarWidget())) {
+        QToolButton* find = m_controller->findButton();
+        find->setIconSize(QSize(14, 14));
+        bar->addButton(find);
+      }
+    }
   } else if (auto* titleBar = findChild<TitleBar*>()) {
     // Beside the document's name in the title bar row.
     titleBar->setIndicator(m_indicator);
@@ -384,7 +394,6 @@ MainWindow::~MainWindow() {
 void MainWindow::present() {
 #ifdef MITCAD_MACOS_NATIVE_UI
   if (m_nativeWindow) {
-    m_nativeWindow->resize(width(), height());
     m_nativeWindow->show();
     return;
   }
@@ -431,6 +440,8 @@ void MainWindow::registerCommands() {
   registerConstructCommands(*m_registry, *this);
   registerInspectCommands(*m_registry, *this, this, [this] { return m_selection; });
   registerSketchCommands(*m_registry, *m_sketch);
+  // The BUILD tab (mitcad#375).
+  registerBuildCommands(*m_registry, *this, *this, this, [this] { return documentName(); });
 
   CommandDef removeDef =
       action("inspect.remove_section", tr("Remove Section Analysis"), "section-analysis",
@@ -547,6 +558,18 @@ void MainWindow::registerCommands() {
   timelineSearch.duringCommands = true;
   timelineSearch.enabled = [this] { return m_controller != nullptr; };
   m_registry->add(timelineSearch);
+  // Find in Design (mitcad#350): components and bodies by name, and what
+  // to do with all of them; also the magnifier on the browser's title row.
+  CommandDef findInDesign = action("view.find_in_design", tr("Find in Design..."), "search", CommandDef::Mode::Any,
+                                   [this] { m_controller->openFind(); });
+  findInDesign.tooltip = tr("Finds components and bodies by name, and shows, hides, selects them or gives them "
+                            "an appearance all at once");
+  findInDesign.keywords = {QStringLiteral("find"), QStringLiteral("body"), QStringLiteral("component"),
+                           QStringLiteral("name"), QStringLiteral("hide"), QStringLiteral("show"),
+                           QStringLiteral("wildcard")};
+  findInDesign.duringCommands = true;
+  findInDesign.enabled = [this] { return m_controller != nullptr; };
+  m_registry->add(findInDesign);
 
   CommandDef shortcuts = action("tools.shortcuts", tr("Keyboard Shortcuts..."), "keyboard",
                                 CommandDef::Mode::Any, [this] { editShortcuts(); });
@@ -630,6 +653,7 @@ void MainWindow::createMenus() {
   edit->addSeparator();
   edit->addAction(m_registry->action(QStringLiteral("solid.parameters")));
   edit->addAction(m_registry->action(QStringLiteral("view.search_timeline")));
+  edit->addAction(m_registry->action(QStringLiteral("view.find_in_design")));
   QMenu* view = menuBar()->addMenu(tr("&View"));
   view->setObjectName(QStringLiteral("viewMenu"));
   view->addAction(m_registry->action(QStringLiteral("view.fit")));
@@ -880,6 +904,11 @@ void MainWindow::createFloatingPanels() {
   browserCard->setObjectName(QStringLiteral("browserDock"));
   browserCard->setTitle(tr("Browser"));
   browserCard->setCollapsible(true);
+  // The magnifier first (mitcad#350): Find in Design.
+  QToolButton* find = m_controller->findButton();
+  find->setIconSize(QSize(14, 14));
+  browserCard->addHeaderWidget(find);
+  find->show();
   // The failed features' badge, in the header: red, small, a capsule.
   QToolButton* failures = m_controller->failures();
   setErrorStyleSheet(failures, QStringLiteral("QToolButton { color: %1; border: 1px solid %1; "
@@ -1552,7 +1581,7 @@ QJsonValue MainWindow::cutPlane() const {
 void MainWindow::showSectionCaps(const std::vector<BodyDisplay>& bodies) {
   const QJsonValue cut = cutPlane();
   if (cut.isNull()) {
-    m_viewer->setSectionCaps(TopoDS_Shape(), gp_Ax3());
+    m_viewer->setSectionCaps({}, gp_Ax3());
     // For UI tests: the caps gone (the bodies whole again).
     if (!m_loggedCaps.isEmpty()) {
       qDebug().noquote() << QStringLiteral("Section caps: none");
@@ -1567,7 +1596,7 @@ void MainWindow::showSectionCaps(const std::vector<BodyDisplay>& bodies) {
   const gp_Pnt origin = pointOf(plane.value(QStringLiteral("origin")));
   const gp_Vec normal = vectorOf(plane.value(QStringLiteral("normal")));
   if (normal.Magnitude() < 1e-12) {
-    m_viewer->setSectionCaps(TopoDS_Shape(), gp_Ax3());
+    m_viewer->setSectionCaps({}, gp_Ax3());
     return;
   }
   const gp_Dir n(normal);
@@ -1596,10 +1625,11 @@ void MainWindow::showSectionCaps(const std::vector<BodyDisplay>& bodies) {
     return found;
   };
   // The caps: the clipped bodies' faces in the plane, but not those the
-  // whole body has there too (a sketch on a body's face).
-  TopoDS_Compound caps;
+  // whole body has there too (a sketch on a body's face). One compound per
+  // component, in the component's timeline colour (mitcad#382); the root's
+  // keep the default colour.
+  std::map<int, TopoDS_Compound> groups;
   BRep_Builder builder;
-  builder.MakeCompound(caps);
   int count = 0;
   const occ::handle<IntTools_Context> context = new IntTools_Context();
   for (const BodyDisplay& body : bodies) {
@@ -1618,12 +1648,22 @@ void MainWindow::showSectionCaps(const std::vector<BodyDisplay>& bodies) {
             return context->IsValidPointForFace(inside, mine, 1e-6);
           });
       if (!original) {
-        builder.Add(caps, face.Moved(body.placement));
+        const int colour = componentColorIndex(m_snapshot.components, QString::fromStdString(body.component));
+        auto group = groups.find(colour);
+        if (group == groups.end()) {
+          group = groups.emplace(colour, TopoDS_Compound()).first;
+          builder.MakeCompound(group->second);
+        }
+        builder.Add(group->second, face.Moved(body.placement));
         ++count;
       }
     }
   }
-  m_viewer->setSectionCaps(count > 0 ? TopoDS_Shape(caps) : TopoDS_Shape(), axes);
+  std::vector<OcctViewer::SectionCap> caps;
+  for (const auto& [colour, faces] : groups) {
+    caps.push_back({faces, colour >= 0 ? componentColor(colour) : QColor()});
+  }
+  m_viewer->setSectionCaps(caps, axes);
   const QString logged = QStringLiteral("Section caps: %1 face(s) at %2")
                              .arg(count)
                              .arg(QString::fromUtf8(compactJson(plane)));
@@ -3249,6 +3289,30 @@ void MainWindow::showContextMenu(const QPoint& globalPosition, const SelectionIt
         addCall(QStringLiteral("appearance"), tr("Appearance..."),
                 [this, targets] { m_controller->openAppearances(targets); });
       }
+      // Hide Body and Hide Component: the bodies of the faces, edges, vertices
+      // and bodies selected, and the occurrences that place them (mitcad#347).
+      const Selection hiding = m_selection;
+      const QStringList hideBodies = BrowserController::hideableBodies(hiding);
+      const QStringList hideComponents = BrowserController::hideableOccurrences(hiding);
+      if (!hideBodies.isEmpty()) {
+        QMenu* hide = new QMenu(tr("Hide"), &menu);
+        QStringList hideEntries;
+        const auto addHide = [hide, &hideEntries](const QString& text, std::function<void()> call) {
+          QAction* action = hide->addAction(text);
+          connect(action, &QAction::triggered, hide, std::move(call));
+          hideEntries << text;
+        };
+        addHide(hideBodies.size() == 1 ? tr("Hide Body") : tr("Hide %1 Bodies").arg(hideBodies.size()),
+                [this, hiding] { m_controller->hideBodies(hiding); });
+        if (!hideComponents.isEmpty()) {
+          addHide(hideComponents.size() == 1 ? tr("Hide Component")
+                                             : tr("Hide %1 Components").arg(hideComponents.size()),
+                  [this, hiding] { m_controller->hideOccurrences(hiding); });
+        }
+        menu.addMenu(hide);
+        entries << hide->title();
+        qDebug().noquote() << QStringLiteral("Context menu Hide: %1").arg(hideEntries.join(QStringLiteral(" | ")));
+      }
       // A feature selected as its faces (mitcad#28) has no row of its own.
       if (m_selection.size() == 1 && first.kind != SelectKind::Feature &&
           (onBody || !first.creatingFeature().isEmpty())) {
@@ -3817,6 +3881,7 @@ bool MainWindow::saveAs() {
   }
   QFileDialog dialog(this, tr("Save As"), fileDialogDirectory(),
                      tr("Mitcad designs (*.%1)").arg(kFileSuffix));
+  prepareFileDialog(&dialog);
   dialog.setAcceptMode(QFileDialog::AcceptSave);
   dialog.setDefaultSuffix(kFileSuffix);
   dialog.selectFile(m_filePath.isEmpty() ? documentName() + QLatin1Char('.') + kFileSuffix

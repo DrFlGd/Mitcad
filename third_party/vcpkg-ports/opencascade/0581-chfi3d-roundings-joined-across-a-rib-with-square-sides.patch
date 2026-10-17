@@ -1,0 +1,156 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: roundings joined across a rib or a notch whose sides are square
+to the spine, and joins chained over several stripes (mitcad#343).
+
+A pocket's ceiling rounded with its wall (radius 8), the wall's edge broken
+by ribs 1 thick standing out 6 from the wall: the edge chain stops at each
+rib, and the bodies stored in the files have one cylinder over the whole
+wall, cut by the ribs. ChFi3d_JoinAcrossNotches (0241) joins the ends on
+either side of a rib: one stripe's blend runs on over the gap, cut by the
+rib's faces in turn. The rib's sides cut the blend along sections, so they
+give no piece, and the piece on the rib's end face starts where the blend
+crosses that face's far edge, not at the other stripe's end point. The
+stripes then met at that end point while the first piece started
+elsewhere: the piece's edge on the rib's end ran from the other stripe's
+point, the rib's side lost its edge with the blend, and the shell was open.
+Now that piece is split at its middle (ChFi3d_SplitPieceAtSection), its
+half at the other stripe's end goes to that stripe, after its end piece,
+and the stripes meet at the split, a whole section on one face; the part
+of the end section on the rib's side is that face's edge with the blend,
+which ChFi3d_FilDS makes between two pieces of one stripe (PartSection).
+Only where the blends are one surface, with the same sides, and the
+stripes run the same way at the gap; elsewhere the join is as before.
+
+Where a stripe joined to another before is joined again (three edges, two
+ribs), the join gave the other stripe's surface only to the SurfData of
+the stripe it extends, so the one joined before kept the old surface and
+was a face of its own with no edge at the section between them. Now every
+SurfData on that surface, in any stripe, takes the new one.
+
+Upstream: new.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+index ebea22f..8e8e15a 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+@@ -15499,6 +15499,64 @@ void ChFi3d_JoinAcrossNotches(TopOpeBRepDS_DataStructure&
+             {
+               aPieces.ChangeValue(i)->ChangeSurf(aSurfA);
+             }
++            // (The chain's face at B's end cutting the blend along B's end
++            // section, a notch or a rib with sides square to the spine: no
++            // piece on it, the piece after it starting where the blend
++            // crosses that face's far edge, not at B's end point. Between
++            // those two points the section is that face's edge with the
++            // blend, which ChFi3d_FilDS makes between two SurfData of one
++            // stripe (PartSection). That piece is split at its middle, its
++            // half at B's end going to B after B's end piece, and the two
++            // stripes meet at the split, a whole section on one face.)
++            occ::handle<ChFiDS_SurfData> aToB;
++            if (aMerge && SA != SB && aFirst != bFirst && (oppB == 1) == (opp == 1))
++            {
++              occ::handle<ChFiDS_SurfData>& G = aFirst ? aPieces.ChangeFirst() : aPieces.ChangeLast();
++              if (G->Vertex(aFirst, ons).Point().Distance(CPb.Point()) > 100. * tol3d)
++              {
++                const double                       Wm  = 0.5 * (G->FirstSpineParam() + G->LastSpineParam());
++                const occ::handle<ChFiDS_SurfData> aG0 = new ChFiDS_SurfData();
++                aG0->Copy(G);
++                const occ::handle<ChFiDS_SurfData> aRest = ChFi3d_SplitPieceAtSection(DStr, spA, G, Wm, false);
++                // B's spine parameters of B's end section and of the split.
++                double       tE = 0., tM = 0., WE = 0., WM = 0.;
++                const double WBin  = bFirst ? FdB->LastSpineParam() : FdB->FirstSpineParam();
++                const double WBout = bFirst ? FdB->FirstSpineParam() - aLen : FdB->LastSpineParam() + aLen;
++                const bool   ok =
++                  !aRest.IsNull() && ChFi3d_KPartLineParam(DStr, FdB, oppB, FdB->Vertex(bFirst, oppB).Point(), tE)
++                  && ChFi3d_KPartLineParam(DStr, FdB, oppB, aRest->Vertex(true, opp).Point(), tM)
++                  && ChFi3d_KPartSpineParamOf(DStr, spB, FdB, oppB, tE, WBin, WBout, WE)
++                  && ChFi3d_KPartSpineParamOf(DStr, spB, FdB, oppB, tM, WBin, WBout, WM)
++                  && (bFirst ? WM < WE : WM > WE);
++                if (!ok)
++                {
++                  // (As it was: the piece whole, the meeting at B's end.)
++                  G->Copy(aG0);
++                }
++                else if (aFirst)
++                {
++                  aToB = G;
++                  G    = aRest;
++                }
++                else
++                {
++                  aToB = aRest;
++                }
++                if (!aToB.IsNull())
++                {
++                  aToB->FirstSpineParam(bFirst ? WM : WE);
++                  aToB->LastSpineParam(bFirst ? WE : WM);
++                  if (bFirst)
++                  {
++                    FdB->FirstSpineParam(WE);
++                  }
++                  else
++                  {
++                    FdB->LastSpineParam(WE);
++                  }
++                }
++              }
++            }
+             NCollection_Sequence<occ::handle<ChFiDS_SurfData>>& aSeqA = SA->ChangeSetOfSurfData()->ChangeSequence();
+             for (int i = aPieces.Length(); i >= 1 && aFirst; i--)
+             {
+@@ -15508,20 +15566,48 @@ void ChFi3d_JoinAcrossNotches(TopOpeBRepDS_DataStructure&
+             {
+               aSeqA.Append(aPieces.Value(i));
+             }
++            if (!aToB.IsNull())
++            {
++              NCollection_Sequence<occ::handle<ChFiDS_SurfData>>& aSeqB =
++                SB->ChangeSetOfSurfData()->ChangeSequence();
++              if (bFirst)
++              {
++                aSeqB.Prepend(aToB);
++              }
++              else
++              {
++                aSeqB.Append(aToB);
++              }
++            }
+             // The meeting section's points, shared by both ends.
+-            const int Iopp = ChFi3d_IndexPointInDS(FdB->Vertex(bFirst, oppB), DStr);
+-            const int Ions = ChFi3d_IndexPointInDS(CPb, DStr);
++            const int Iopp = aToB.IsNull() ? ChFi3d_IndexPointInDS(FdB->Vertex(bFirst, oppB), DStr)
++                                           : ChFi3d_IndexPointInDS(aToB->Vertex(!bFirst, oppB), DStr);
++            const int Ions = aToB.IsNull() ? ChFi3d_IndexPointInDS(CPb, DStr)
++                                           : ChFi3d_IndexPointInDS(aToB->Vertex(!bFirst, onsB), DStr);
+             SB->SetIndexPoint(Iopp, bFirst, oppB);
+             SB->SetIndexPoint(Ions, bFirst, onsB);
+             SA->SetIndexPoint(Iopp, aFirst, opp);
+             SA->SetIndexPoint(Ions, aFirst, ons);
+             if (aMerge)
+             {
+-              // One surface, one face: A's run on its surface takes B's.
+-              for (int i = 1; i <= aSeqA.Length(); i++)
++              // One surface, one face: A's run on its surface takes B's, and
++              // so does every SurfData on A's surface, in any stripe (those
++              // of a stripe joined to A before, and the half piece given to
++              // B).
++              NCollection_Sequence<occ::handle<ChFiDS_SurfData>> aOnA;
++              for (NCollection_List<occ::handle<ChFiDS_Stripe>>::Iterator itS(Stripes); itS.More(); itS.Next())
++              {
++                const occ::handle<NCollection_HSequence<occ::handle<ChFiDS_SurfData>>>& aSet =
++                  itS.Value()->SetOfSurfData();
++                for (int i = 1; !aSet.IsNull() && i <= aSet->Length(); i++)
++                {
++                  aOnA.Append(aSet->Value(i));
++                }
++              }
++              for (int i = 1; i <= aOnA.Length(); i++)
+               {
+-                const occ::handle<ChFiDS_SurfData>& D = aSeqA.ChangeValue(i);
+-                if (D->Surf() != aSurfA)
++                const occ::handle<ChFiDS_SurfData>& D = aOnA.Value(i);
++                if (D.IsNull() || D->Surf() != aSurfA)
+                 {
+                   continue;
+                 }

@@ -91,6 +91,18 @@ QString menuEntries(const QMenu* menu, const QMenu* collapsed) {
   return entries.join(QStringLiteral(" | "));
 }
 
+// The hint after an import_file; the bodies it left out (empty ones) go to
+// the log.
+QString importedHint(const QString& name, const QJsonObject& result) {
+  const QJsonArray warnings = result.value(QStringLiteral("warnings")).toArray();
+  for (const QJsonValue warning : warnings) {
+    qWarning().noquote() << QStringLiteral("Import of %1: %2").arg(name, warning.toString());
+  }
+  return warnings.isEmpty()
+             ? QObject::tr("Imported %1.").arg(name)
+             : QObject::tr("Imported %1; %2 empty body(ies) left out.").arg(name).arg(warnings.size());
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -411,7 +423,7 @@ bool MainWindow::startImportedDocument(const QString& path, QString& error) {
     qInfo().noquote() << QStringLiteral("Imported %1 as %2: %3 body(ies)")
                              .arg(name, result.value(QStringLiteral("name")).toString())
                              .arg(result.value(QStringLiteral("bodies")).toArray().size());
-    showHint(tr("Imported %1.").arg(name));
+    showHint(importedHint(name, result));
   }
   return true;
 }
@@ -551,7 +563,7 @@ bool MainWindow::importCad(const QString& path, double unitMillimetres, QString*
   qInfo().noquote() << QStringLiteral("Imported %1 as %2: %3 body(ies)")
                            .arg(QFileInfo(path).fileName(), result.value(QStringLiteral("name")).toString())
                            .arg(bodies.size());
-  showHint(tr("Imported %1.").arg(QFileInfo(path).fileName()));
+  showHint(importedHint(QFileInfo(path).fileName(), result));
   m_viewer->fitAll();
   return true;
 }

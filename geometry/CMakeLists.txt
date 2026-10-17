@@ -173,6 +173,10 @@ target_sources(mitcad_geometry PRIVATE
 target_sources(mitcad_geometry PRIVATE
   src/canonical.cpp
   src/canonical.hpp)
+# BUILD: the face names of derived parts (mitcad#375).
+target_sources(mitcad_geometry PRIVATE
+  src/build.cpp
+  include/mitcad/geometry/build.hpp)
 target_include_directories(mitcad_geometry PUBLIC include)
 # Volumes and areas come from the analysis library's integrals, so that
 # every reported volume agrees (query.cpp, brep_import.cpp).
@@ -276,6 +280,10 @@ if(BUILD_TESTING)
   add_executable(test_sheet_bend_graph tests/test_sheet_bend_graph.cpp)
   target_link_libraries(test_sheet_bend_graph PRIVATE mitcad_geometry mitcad_warnings)
   add_test(NAME geometry.sheet_bend_graph COMMAND test_sheet_bend_graph)
+  # Booleans on stored faces that run many turns (threaded holes, mitcad#349).
+  add_executable(test_multi_turn_faces tests/test_multi_turn_faces.cpp)
+  target_link_libraries(test_multi_turn_faces PRIVATE mitcad_geometry mitcad_warnings)
+  add_test(NAME geometry.multi_turn_faces COMMAND test_multi_turn_faces)
   # OCCT's crash handlers next to the application's crash report (mitcad#62).
   if(NOT WIN32)
     add_executable(test_guard tests/test_guard.cpp)

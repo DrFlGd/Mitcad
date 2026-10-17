@@ -74,6 +74,50 @@ fn wrap_pi(x: f64) -> f64 {
     x - PI * (x / PI).round()
 }
 
+/// `classes` with the classes of every two points that are both
+/// horizontal and vertical to each other merged.
+fn coincident_by_directions(sys: &System, classes: &[usize]) -> Vec<usize> {
+    use std::collections::HashSet;
+    let mut horizontal = HashSet::new();
+    let mut vertical = Vec::new();
+    for (_, rec) in sys.live_constraints() {
+        match rec.def {
+            Constraint::HorizontalPoints(p, q) => {
+                let (a, b) = (classes[p.index()], classes[q.index()]);
+                horizontal.insert((a.min(b), a.max(b)));
+            }
+            Constraint::VerticalPoints(p, q) => {
+                let (a, b) = (classes[p.index()], classes[q.index()]);
+                vertical.push((a.min(b), a.max(b)));
+            }
+            _ => {}
+        }
+    }
+    let both: Vec<(usize, usize)> = vertical
+        .into_iter()
+        .filter(|pair| pair.0 != pair.1 && horizontal.contains(pair))
+        .collect();
+    if both.is_empty() {
+        return classes.to_vec();
+    }
+    // Union-find over the classes.
+    let mut parent: Vec<usize> = (0..=classes.iter().copied().max().unwrap_or(0)).collect();
+    fn root(parent: &mut [usize], mut i: usize) -> usize {
+        while parent[i] != i {
+            parent[i] = parent[parent[i]];
+            i = parent[i];
+        }
+        i
+    }
+    for (a, b) in both {
+        let (ra, rb) = (root(&mut parent, a), root(&mut parent, b));
+        if ra != rb {
+            parent[ra] = rb;
+        }
+    }
+    classes.iter().map(|&c| root(&mut parent, c)).collect()
+}
+
 /// Returns the contradicting and the redundant direction constraints.
 pub(crate) fn check(sys: &System, classes: &[usize]) -> (Vec<Dependency>, Vec<Dependency>) {
     let mut g = Graph {
@@ -82,6 +126,10 @@ pub(crate) fn check(sys: &System, classes: &[usize]) -> (Vec<Dependency>, Vec<De
         adj: Vec::new(),
     };
     let x_axis = g.node();
+    // Two points both horizontal and vertical to each other coincide: they
+    // give no direction, and their pair is no line that both cannot hold (a
+    // sketch places a point so on another one's projection, mitcad#235).
+    let classes = coincident_by_directions(sys, classes);
     let mut nodes: HashMap<(usize, usize), usize> = HashMap::new();
     let mut node_of = |g: &mut Graph, p: usize, q: usize| -> Option<usize> {
         let (a, b) = (classes[p], classes[q]);

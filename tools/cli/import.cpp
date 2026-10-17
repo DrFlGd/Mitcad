@@ -16,6 +16,10 @@
 #include <sstream>
 #include <thread>
 
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+
 #include "mitcad/geometry/persist.hpp"
 
 namespace mitcad::cli {
@@ -148,7 +152,12 @@ int import(const std::vector<std::string>& args) {
   command += "}";
   rust::Box<mitcad::Document> document =
       a.flag("--open") ? open_document(*a.option("--open")) : mitcad::new_document();
-  document->command(command);
+  const std::string reply(document->command(command));
+  // What the import left out (empty bodies).
+  const QJsonObject answer = QJsonDocument::fromJson(QByteArray::fromStdString(reply)).object();
+  for (const QJsonValue warning : answer.value(QStringLiteral("warnings")).toArray()) {
+    std::cerr << "warning: " << warning.toString().toStdString() << "\n";
+  }
   if (const std::string* save = a.option("--save")) {
     save_document(*document, *save);
   }
@@ -535,7 +544,7 @@ int import_ifc(const std::vector<std::string>& args) {
 int import_rvt(const std::vector<std::string>& args) {
   Arguments a;
   std::string problem;
-  if (!parse_arguments(args, {"--save", "--report", "--reference-ifc", "--link-folder"},
+  if (!parse_arguments(args, {"--save", "--report", "--reference-ifc", "--link-folder", "--elements"},
                        {"--json", "--report-only", "--mesh-only", "--no-reference-ifc"}, a, problem)) {
     return usage(problem);
   }
@@ -561,6 +570,23 @@ int import_rvt(const std::vector<std::string>& args) {
   }
   if (const std::string* path = a.option("--report")) {
     options += R"(, "report_path": )" + json_string(*path);
+  }
+  // Only these elements (ids separated by commas, mitcad#385).
+  if (const std::string* ids = a.option("--elements")) {
+    std::string list;
+    std::string id;
+    for (const char c : *ids + ",") {
+      if (c != ',') {
+        if (c < '0' || c > '9') {
+          return usage("--elements takes element ids separated by commas");
+        }
+        id += c;
+      } else if (!id.empty()) {
+        list += (list.empty() ? "" : ", ") + id;
+        id.clear();
+      }
+    }
+    options += R"(, "elements": [)" + list + "]";
   }
   options += "}";
   rust::Box<mitcad::Document> document = mitcad::new_document();

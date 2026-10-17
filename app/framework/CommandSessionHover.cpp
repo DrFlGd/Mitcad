@@ -30,6 +30,11 @@ void CommandSession::hovered(const SelectionItem& item) {
   }
   m_hovered = item;
   updateHoverChain();
+  // What the command shows for the hover (mitcad#375: BUILD's junctions
+  // of the profile under the mouse): its markers again.
+  if (m_def.hover && m_def.hover(item, m_state, m_host)) {
+    updateManipulators();
+  }
 }
 
 QStringList CommandSession::hoverChain(const SelectionItem& item) {

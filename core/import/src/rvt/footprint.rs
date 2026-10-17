@@ -105,7 +105,7 @@ fn wall_line(wall: &Wall, near: P2) -> Option<Line> {
             p: xy(*start),
             d: unit(sub(xy(*end), xy(*start)))?,
         }),
-        arc @ Curve::Arc { .. } => {
+        arc @ (Curve::Arc { .. } | Curve::Ellipse { .. } | Curve::Helix { .. }) => {
             let (s, e) = (xy(arc.start()), xy(arc.end()));
             let f = if dot(sub(near, s), sub(near, s)) <= dot(sub(near, e), sub(near, e)) {
                 0.0
@@ -348,6 +348,8 @@ pub fn wall_footprint(building: &Building, wall: &Wall) -> Result<(Path, Vec<Str
             ];
             Ok((Path { segments }, notes))
         }
+        Curve::Ellipse { .. } => Err("an elliptical wall".into()),
+        Curve::Helix { .. } => Err("a helical wall".into()),
     }
 }
 
@@ -378,6 +380,46 @@ pub fn seg(curve: &Curve) -> Seg {
             radius,
             start,
             end,
+        } => Seg::Arc {
+            frame: math::from_axes(
+                [center[0], center[1], 0.0],
+                *x_axis,
+                *y_axis,
+                math::cross(*x_axis, *y_axis),
+            ),
+            radius: *radius,
+            start: *start,
+            sweep: end - start,
+        },
+        Curve::Ellipse {
+            center,
+            x_axis,
+            y_axis,
+            rx,
+            ry,
+            start,
+            end,
+        } => Seg::Ellipse {
+            frame: math::from_axes(
+                [center[0], center[1], 0.0],
+                *x_axis,
+                *y_axis,
+                math::cross(*x_axis, *y_axis),
+            ),
+            a: *rx,
+            b: *ry,
+            start: *start,
+            sweep: end - start,
+        },
+        // (A helix in plan: its circle seen along its axis.)
+        Curve::Helix {
+            center,
+            x_axis,
+            y_axis,
+            radius,
+            start,
+            end,
+            ..
         } => Seg::Arc {
             frame: math::from_axes(
                 [center[0], center[1], 0.0],
@@ -446,6 +488,29 @@ fn inside(path: &Path, p: [f64; 3]) -> bool {
         }
     }
     c
+}
+
+/// Whether a point (its x and y) lies in a closed path, or within
+/// `tolerance` of it (mitcad#348: a wall under a roof's edge).
+pub fn covers(path: &Path, p: P2, tolerance: f64) -> bool {
+    let q = [p[0], p[1], 0.0];
+    if inside(path, q) {
+        return true;
+    }
+    let pts: Vec<[f64; 3]> = path.segments.iter().flat_map(|s| s.sample(16)).collect();
+    let n = pts.len();
+    (0..n).any(|i| {
+        let (a, b) = (xy(pts[i]), xy(pts[(i + 1) % n]));
+        let ab = sub(b, a);
+        let l = dot(ab, ab);
+        let t = if l > 1e-18 {
+            (dot(sub(p, a), ab) / l).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let d = sub(p, add(a, mul(ab, t)));
+        dot(d, d).sqrt() <= tolerance
+    })
 }
 
 /// Loops as profile areas: each loop inside an odd number of others is a
@@ -575,6 +640,7 @@ mod tests {
             cutouts: Vec::new(),
             profile: Vec::new(),
             faces: None,
+            attachments: Vec::new(),
         }
     }
 

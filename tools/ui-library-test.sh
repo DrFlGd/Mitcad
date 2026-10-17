@@ -7,7 +7,7 @@
 #      own (made, recorded as a version), pushed to a bare repository, and
 #      its entry for a community index.
 #   2. Libraries: the default sources removed (they are not fetched), a
-#      fastener library made by the generator (v1.0.0, then v1.1.0 with
+#      parts library's fasteners made by the generator (v1.0.0, then v1.1.0 with
 #      wider M5 heads) and a community index added by URL, not fetched.
 #   2b. Insert from Library (mitcad#317): empty, its text says to press
 #      Update; Update fetches both sources and lists the parts.
@@ -47,7 +47,7 @@ MINE=$WORK/mine
 BARE=$WORK/mine-remote.git
 g() { git -C "$1" -c user.name=T -c user.email=t@example.invalid "${@:2}" > /dev/null; }
 
-# The fastener library: v1.0.0, then v1.1.0 with the M5 heads 8.7 mm wide.
+# The parts library's fasteners: v1.0.0, then v1.1.0 with the M5 heads 8.7 mm wide.
 python3 "$ROOT/tools/libraries/make-fastener-library.py" --cli "$CLI" --out "$LIB" --sizes M5,M6 \
   --standards iso4762,iso4032 --version 1.0.0 --commit > /dev/null || ui_fail "the generator failed"
 sed -i 's/"dk": "8.5 mm"/"dk": "8.7 mm"/' "$LIB/screws/iso4762.mitcad"
@@ -59,10 +59,10 @@ g "$LIB" tag v1.1.0
   --category brackets > /dev/null || ui_fail "library add"
 g "$OTHER" add -A
 g "$OTHER" commit -q -m "Brackets"
-# The community index: the fastener library and the brackets.
+# The community index: the parts library and the brackets.
 mkdir -p "$INDEX/libraries"
 printf '{"format": "mitcad-index", "version": 1, "name": "Test index"}\n' > "$INDEX/mitcad-index.json"
-"$CLI" library index-entry "$LIB" --url "$LIB" > "$INDEX/libraries/mitcad-fasteners.json" || ui_fail "index entry"
+"$CLI" library index-entry "$LIB" --url "$LIB" > "$INDEX/libraries/mitcad-parts.json" || ui_fail "index entry"
 printf '{"format": "mitcad-index-entry", "version": 1, "id": "test-brackets", "name": "Test brackets",
   "url": "%s", "tags": ["bracket"], "components": [{"id": "boss-bracket", "name": "Boss bracket"}]}\n' \
   "$OTHER" > "$INDEX/libraries/test-brackets.json"
@@ -105,7 +105,7 @@ echo "--- 2. Libraries"
 ui_mark
 ui_step "Libraries (command search)"       ui_command "Libraries..."
 ui_focus_dialog '^Libraries$'
-ui_expect_new "Library source https://github.com/mitcad/fasteners.git (on): not fetched" "the default sources listed"
+ui_expect_new "Library source https://github.com/mitcad/parts.git (on): not fetched" "the default sources listed"
 ui_step "remove the defaults (Alt+R twice)" eval 'ui_key alt+r; ui_sync; ui_key alt+r'
 ui_expect_new "Library source removed: https://github.com/mitcad/community-index.git" "the defaults removed"
 for url in "$LIB" "$INDEX"; do
@@ -127,11 +127,11 @@ ui_expect_new "Library browser empty: nothing fetched yet, press Update" "the em
 ui_mark
 ui_step "Update (Alt+U)"                   ui_key alt+u
 ui_expect_new "Library browser update: 2 enabled source(s)" "Update fetches the enabled sources"
-ui_expect_new "Library fetched: library Mitcad metric fasteners (mitcad-fasteners) from $LIB; versions v1.1.0 (" \
-  "the fastener library fetched" 30
+ui_expect_new "Library fetched: library Mitcad parts (mitcad-parts) from $LIB; versions v1.1.0 (" \
+  "the parts library fetched" 30
 ui_expect_new "Library fetched: index Test index () from $INDEX" "the index fetched" 30
 ui_expect_new "Library fetch of 2 source(s): 0 failed" "no failures"
-ui_expect_new "Library browser selected mitcad-fasteners/" "the results list the library's parts"
+ui_expect_new "Library browser selected mitcad-parts/" "the results list the library's parts"
 tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -qE "^Library search '': [1-9][0-9]* components" ||
   ui_fail "no components listed after Update"
 echo "ok   the search ran again with the parts"
@@ -144,30 +144,30 @@ ui_step "Insert from Library (command search)" ui_command "Insert from Library"
 ui_focus_dialog '^Insert from Library$'
 ui_step "search 4762"                      xdotool type --delay 40 "4762"
 ui_expect_new "Library search '4762': 1 components" "the search"
-ui_expect_new "Library browser selected mitcad-fasteners/iso4762: version v1.1.0 (" "the newest version first"
+ui_expect_new "Library browser selected mitcad-parts/iso4762: version v1.1.0 (" "the newest version first"
 ui_expect_new ", size M5x16, licence CC0-1.0" "the default size and the licence"
 ui_step "the older version (Alt+V, Down)"  eval 'ui_key alt+v; ui_sync; ui_key Down'
-ui_expect_new "Library browser selected mitcad-fasteners/iso4762: version v1.0.0 (" "v1.0.0 chosen"
+ui_expect_new "Library browser selected mitcad-parts/iso4762: version v1.0.0 (" "v1.0.0 chosen"
 ui_step "Insert (Alt+I)"                   ui_key alt+i
 ui_focus_main
-ui_expect_new "Inserted component ISO 4762 M5x16 (linked) from mitcad-fasteners v1.0.0 (" "the screw inserted, linked"
+ui_expect_new "Inserted component ISO 4762 M5x16 (linked) from mitcad-parts v1.0.0 (" "the screw inserted, linked"
 ui_expect_volume "New body ISO 4762 M5x16 ([^)]*): volume \([0-9.]*\) mm3" 563.2433357349299 "the screw at v1.0.0"
 ui_mark
 ui_step "Insert from Library again"        ui_command "Insert from Library"
 ui_focus_dialog '^Insert from Library$'
 ui_step "search nut"                       xdotool type --delay 40 "hexagon nut"
-ui_expect_new "Library browser selected mitcad-fasteners/iso4032: version v1.1.0 (" "the nut"
+ui_expect_new "Library browser selected mitcad-parts/iso4032: version v1.1.0 (" "the nut"
 ui_step "a copy (Alt+P), Insert (Alt+I)"   eval 'ui_key alt+p; ui_sync; ui_key alt+i'
 ui_focus_main
-ui_expect_new "Inserted component ISO 4032 M5 (copy) from mitcad-fasteners v1.1.0 (" "the nut copied"
+ui_expect_new "Inserted component ISO 4032 M5 (copy) from mitcad-parts v1.1.0 (" "the nut copied"
 
 echo "--- 4. Library Parts"
 ui_mark
 ui_step "Library Parts (command search)"   ui_command "Library Parts"
 ui_focus_dialog '^Library Parts$'
-ui_expect_new "Library part ISO 4762 M5x16: mitcad-fasteners v1.0.0 (" "the screw's recorded version"
+ui_expect_new "Library part ISO 4762 M5x16: mitcad-parts v1.0.0 (" "the screw's recorded version"
 ui_expect_new "size M5x16, a newer version is fetched" "a newer version is there, not taken"
-ui_expect_new "Library part ISO 4032 M5: mitcad-fasteners v1.1.0 (" "the nut"
+ui_expect_new "Library part ISO 4032 M5: mitcad-parts v1.1.0 (" "the nut"
 ui_expect_new "a copy: does not follow the library" "the copy does not follow"
 ui_step "v1.1.0 (Alt+V, Up)"               eval 'ui_key alt+v; ui_sync; ui_key Up'
 ui_expect_new "size M5x16, to update" "the change waits"
@@ -191,8 +191,8 @@ ui_expect_volume "ISO 4762 M6x20 ([^)]*): volume [0-9.]* -> \([0-9.]*\) mm3" 971
 ui_mark
 ui_step "Library Parts: the parts list"    ui_command "Library Parts"
 ui_focus_dialog '^Library Parts$'
-ui_expect_new "Parts list row: 1 x ISO 4762 M6x20 (mitcad-fasteners v1.1.0 (" "the parts list's screw"
-ui_expect_new "Parts list row: 1 x ISO 4032 M5 (mitcad-fasteners v1.1.0 (" "the parts list's nut"
+ui_expect_new "Parts list row: 1 x ISO 4762 M6x20 (mitcad-parts v1.1.0 (" "the parts list's screw"
+ui_expect_new "Parts list row: 1 x ISO 4032 M5 (mitcad-parts v1.1.0 (" "the parts list's nut"
 ui_step "close (Escape)"                   ui_key Escape
 ui_focus_main
 
@@ -231,7 +231,7 @@ ui_expect_new "Library source added: $BROKEN" "the broken source added"
 ui_step "Fetch All (Alt+F)"                ui_key alt+f
 ui_expect_new "Library fetch failed: $BROKEN: " "its fetch fails" 30
 ui_expect_new "Library fetch of 4 source(s): 1 failed" "the others fetched" 30
-ui_expect_new "Library source $LIB (on): Mitcad metric fasteners (mitcad-fasteners); versions v1.1.0" \
+ui_expect_new "Library source $LIB (on): Mitcad parts (mitcad-parts); versions v1.1.0" \
   "the sources shown again"
 ui_focus_dialog '^Fetch Libraries$'
 ui_step "close the warning (Return)"       ui_key Return
@@ -242,7 +242,7 @@ ui_mark
 ui_step "Insert from Library (command search)" ui_command "Insert from Library"
 ui_focus_dialog '^Insert from Library$'
 ui_step "search 4762"                      xdotool type --delay 40 "4762"
-ui_expect_new "Library browser selected mitcad-fasteners/iso4762: version v1.1.0 (" "the screw selected"
+ui_expect_new "Library browser selected mitcad-parts/iso4762: version v1.1.0 (" "the screw selected"
 ui_mark
 ui_step "Update (Alt+U)"                   ui_key alt+u
 ui_expect_new "Library browser update: 4 enabled source(s)" "Update fetches every enabled source"

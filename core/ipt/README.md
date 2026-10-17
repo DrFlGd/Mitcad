@@ -462,7 +462,13 @@ as the items whose definitions gave no state do.
   geometry *(seen)*. A line flagged 0x40 along an edge of a profile's
   loop with the profiles on one side only is that profile's side even
   where it runs on through another profile (a circle across it whose
-  parts one feature takes, a circle it runs into) *(seen)*.
+  parts one feature takes, a circle it runs into) *(seen)*. Whether
+  other lines of the sketch already bound a flagged line's part of a
+  loop is decided from the loop's edges along it, not from samples of
+  the line: a corner of a profile 0.25 mm long on a flagged line of
+  370 mm, beside a short sketch line along its other end, lay between
+  two samples, and the region stayed open (mitcad#235: `8d946c8f`
+  Extrusion6, and Extrusion9 after it).
 - **Sketch blocks**: a placed block (`4c12f14c…`) is an entity of the
   sketch that refers to its definition (`c4aaa486…`, laid out as a sketch
   without a transform) and ends with the placement, two rows of three
@@ -547,11 +553,15 @@ as the items whose definitions gave no state do.
   each region's boundary exactly (a glyph's B-spline pieces, an offset
   spline), and their edges that lie on none of the sketch's lines, arcs
   and circles become fixed curves (lines, and B-splines trimmed to the
-  edges' ranges; an ellipse's arc as rational quadratic pieces) through
+  edges' ranges; a circle's arc or a whole circle as an arc or circle, an
+  ellipse's arc as rational quadratic pieces) through
   fixed points, each shared edge once. The features then find their
   profiles (*seen: a text cut 0.1 mm deep and a pocket bounded by an
   offset spline, both verified against their history states*); a text no
-  feature selects stays out.
+  feature selects stays out. A sketch that draws only construction
+  geometry gets the same (`01fb13c9` Extrusion8: construction lines about
+  a hole whose circle the selection holds, cut with a 45° taper; the
+  circle comes in as a fixed circle, verified).
 - **Splines** (`d42f37f9…`) *(seen: projected from the model, in 8 parts
   of the older corpus)*: the entity's list of its two end points (one, where it starts and ends, for a closed spline, whose first and last poles are that point), other
   lists, then its NURBS data twice: u32 degree, f64 tolerance, the knots
@@ -1117,6 +1127,56 @@ whole and adds the tool's reversed, a zero-thickness double layer of 1060
 mm², the volume right; the same with every fuzzy value up to 0.01 mm);
 `5e552aad` Extrusion10 and Extrusion11 and `d9aec91e` Extrusion5
 unchanged.
+
+A thread running out past a blind bore's bottom (dev build, 2026-10-16,
+mitcad#235, the part run alone): `d9aec91e` Coil1 cuts an internal
+thread whose base is as long as the pitch into a 38.25 mm bore 10 mm
+deep, from 2.1 mm below the part to 2.6 mm past the bore's bottom, and
+Extrusion5 joins a ring over the thread's end. Mitcad's helix moves such
+a base 0.1 µm off the bore's cylinder into the bore's void so that its
+turns do not touch (the helix section of the model's `commands.md`);
+past the bottom that sliver lay in the material inside the cylinder and
+the coil cut a slot 0.1 µm thick there (0.024 mm³, two faces of 186 mm²),
+which the ring left as a gap (+372 mm² against the file's state). The
+fuzzy joins of the round before closed it only in part: the slot was the
+coil's, not the join's. The sliver is now cut back to the cylinder beyond
+the bodies' faces on it; Extrusion5 is verified (39 → 40 of 46). The
+root of the thread keeps the 1 µm ridge the turns are kept apart by
+(the file's turns meet in a sharp edge): a helix whose turns overlap in
+the void instead gives the file's edge but takes over 20 s a coil and
+did not bring Fillet1 in (on the file's own state before it, Mitcad's
+0.2 mm rounding of the thread's crest removes 20.66 mm³, the rolling
+ball's value for its 53° crest over 573 mm, against the file's 25.23).
+
+What the file's rounding of that crest is (2026-10-16, mitcad#235): a
+constant-radius rolling ball of 0.2 mm, as decoded. Its stored surface is
+a rolling-ball blend whose two supports are offset by -0.2 mm (the convex
+side), fitted within 7.6 µm; its sections are circles of 0.2 mm (the
+contact lines at 19.4828 mm from the axis, its middle at 19.3722, both
+the analytic values for the 53.13° crest at 19.125); and the area the
+state changes, -203.97 mm², is the 0.2 mm ball's (-204; a 0.222 mm ball
+would change it by -227). The 25.23 mm³ is not the rounding's: the
+stored blend's edges lie up to 1.9 µm off its faces, and a boundary not
+closed by that much has no exact volume (Mitcad's rounding of the file's
+own state before it, by face: flanks 1186.31 mm² against the state's
+1187.12, the rounding 257.25 against 256.61, all other faces equal; the
+replay of Fillet2 on the root shows the same, 51.19 against 56.16). The
+import's change check now lets the faces judge a change that the changed
+faces' edge slack brings within its limit instead of rejecting it by the
+volumes alone (`d9aec91e` Fillet10, 0.14 mm³ against the file's 0.11, its
+faces' slack 100 mm³: parametric and verified). Fillet1 itself still
+fails earlier: on Mitcad's thread the crest is not an edge but the strip
+of the bore's cylinder 0.2 µm wide that keeps the turns apart (with the
+0.03 mm faces the moved base's corners leave beside it), and no ball of
+0.2 mm touches both sides of it. A sharp crest needs the turns to touch
+on the cylinder: swept as separate pieces and fused with a tube in the
+bore's void the cut gives it (4 s for 6 turns), but rounding it then
+fails at the pieces' joints and the part's bottom face; a construction
+whose turns meet in one edge is what is left to do. The same strips
+stop `01fb13c9` Combine2: the join of the file's bodies before it is
+valid, with Mitcad's thread insert (487 faces, the file's 10) the union
+is invalid (a self-intersecting wire), the insert's helical slot lying
+on the hole's wall.
 
 ### What the files do not tell (feasibility)
 

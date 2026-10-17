@@ -11,11 +11,12 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
+use super::build::{self, Resolved};
 use super::manifest::{
     ENTRY_FORMAT, IndexComponent, IndexEntry, LIBRARY_FORMAT, LIBRARY_MANIFEST, MAX_COMPONENT,
     MAX_PREVIEW, Manifest, ManifestComponent, Problems, read_json, valid_id, valid_path,
 };
-use super::{LibraryRepo, read_file};
+use super::{LibraryCache, LibraryRepo, read_file};
 use crate::api::{optional, text};
 use crate::transaction::FileTransaction;
 use crate::{ProjectRepo, VcsError};
@@ -72,10 +73,15 @@ fn has_links(text: &str) -> bool {
 
 /// `library_check`: what is wrong with a library folder as it is now (its
 /// manifest and the files it names), before it is recorded and pushed.
-pub(super) fn check_command(command: &Value) -> Result<Value, VcsError> {
+/// BUILD parts' references to parts of other libraries are checked
+/// against the fetched ones in `cache`.
+pub(super) fn check_command(
+    command: &Value,
+    cache: Option<&LibraryCache>,
+) -> Result<Value, VcsError> {
     let dir = folder(command)?;
     let manifest = read_manifest(&dir)?;
-    let problems = check_folder(&dir, &manifest);
+    let problems = check_folder(&dir, &manifest, cache);
     Ok(json!({
         "dir": dir.to_string_lossy(),
         "id": manifest.id,
@@ -86,8 +92,10 @@ pub(super) fn check_command(command: &Value) -> Result<Value, VcsError> {
     }))
 }
 
-/// The manifest's problems and those of the files it names.
-pub fn check_folder(dir: &Path, manifest: &Manifest) -> Problems {
+/// The manifest's problems and those of the files it names: the designs,
+/// the previews, and for BUILD parts (mitcad#375) the frames and
+/// parameters of their designs and the library parts they refer to.
+pub fn check_folder(dir: &Path, manifest: &Manifest, cache: Option<&LibraryCache>) -> Problems {
     let mut out = manifest.problems();
     if !dir.join("LICENSE").is_file() && !dir.join("LICENSE.md").is_file() {
         out.warnings
@@ -104,6 +112,12 @@ pub fn check_folder(dir: &Path, manifest: &Manifest) -> Problems {
                     Ok(text) => {
                         if let Err(e) = mitcad_model::diff::read_design(&text) {
                             out.errors.push(format!("{}: {}: {e}", c.id, c.path));
+                        }
+                        if c.build.is_some()
+                            && let Ok(design) =
+                                serde_json::from_str::<Value>(text.trim_start_matches('\u{feff}'))
+                        {
+                            build::check_design(c, &c.id, &design, &mut out);
                         }
                         if has_links(&text) {
                             out.errors.push(format!(
@@ -142,7 +156,71 @@ pub fn check_folder(dir: &Path, manifest: &Manifest) -> Problems {
             out.warnings.push(format!("{}: no preview image", c.id));
         }
     }
+    let mut resolve =
+        |library: &str, id: &str| resolve_reference(dir, manifest, cache, library, id);
+    for c in &manifest.components {
+        build::check_references(c, &c.id, &mut resolve, &mut out);
+    }
     out
+}
+
+/// The row names of a design's text; none when it cannot be read.
+fn row_names(text: &str) -> Vec<String> {
+    serde_json::from_str::<Value>(text.trim_start_matches('\u{feff}'))
+        .map(|design| {
+            build::rows(&design)
+                .into_iter()
+                .map(|row| row.name)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// What a BUILD part's reference to component `id` of `library` finds:
+/// in this library's folder, else in the newest version of a fetched one.
+fn resolve_reference(
+    dir: &Path,
+    manifest: &Manifest,
+    cache: Option<&LibraryCache>,
+    library: &str,
+    id: &str,
+) -> Resolved {
+    if library == manifest.id {
+        return match manifest.component(id) {
+            None => Resolved::Missing,
+            Some(other) if valid_path(&other.path) => Resolved::Found(
+                fs::read_to_string(dir.join(&other.path))
+                    .map(|text| row_names(&text))
+                    .unwrap_or_default(),
+            ),
+            Some(_) => Resolved::Found(Vec::new()),
+        };
+    }
+    let Some(repo) = cache.and_then(|cache| cache.open_id(library)) else {
+        return Resolved::Unknown;
+    };
+    let Some(commit) = repo
+        .newest()
+        .ok()
+        .flatten()
+        .and_then(|version| repo.resolve(&version.rev).ok())
+    else {
+        return Resolved::Unknown;
+    };
+    let Ok(other) = repo.manifest(commit) else {
+        return Resolved::Unknown;
+    };
+    match other.component(id) {
+        None => Resolved::Missing,
+        Some(item) => Resolved::Found(
+            repo.read(commit, &item.path)
+                .ok()
+                .flatten()
+                .and_then(|data| String::from_utf8(data).ok())
+                .map(|text| row_names(&text))
+                .unwrap_or_default(),
+        ),
+    }
 }
 
 /// `library_init`: makes `dir` a library: its manifest, a licence note, a
@@ -285,6 +363,14 @@ pub(super) fn add_command(command: &Value) -> Result<Value, VcsError> {
                 .to_owned(),
         });
     }
+    // The supplier and BUILD fields (mitcad#375): the command's, else those
+    // of the component it replaces.
+    let old = manifest.component(&id).cloned().unwrap_or_default();
+    let kept = |key: &str, old: String| {
+        optional(command, key)
+            .map(|v| v.trim().to_owned())
+            .unwrap_or(old)
+    };
     let component = ManifestComponent {
         id: id.clone(),
         path,
@@ -296,6 +382,14 @@ pub(super) fn add_command(command: &Value) -> Result<Value, VcsError> {
         preview,
         license: optional(command, "license").map(str::to_owned),
         designation: optional(command, "designation").unwrap_or("").to_owned(),
+        supplier: kept("supplier", old.supplier),
+        part_number: kept("part_number", old.part_number),
+        supplier_url: kept("supplier_url", old.supplier_url),
+        build: command
+            .get("build")
+            .filter(|b| !b.is_null())
+            .cloned()
+            .or(old.build),
     };
     match manifest.components.iter_mut().find(|c| c.id == id) {
         Some(old) => *old = component.clone(),
@@ -323,7 +417,7 @@ pub(super) fn add_command(command: &Value) -> Result<Value, VcsError> {
     let mut transaction = FileTransaction::prepare(&dir, &files)?;
     transaction.apply()?;
     written.push(LIBRARY_MANIFEST.to_owned());
-    let mut problems = check_folder(&dir, &manifest);
+    let mut problems = check_folder(&dir, &manifest, None);
     problems.warnings.extend(transaction.commit());
     Ok(json!({
         "dir": dir.to_string_lossy(),

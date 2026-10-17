@@ -471,7 +471,14 @@ protected:
   void mousePressEvent(QMouseEvent* event) override {
     cancelSlowClick();
     const QPoint at = event->position().toPoint();
-    if (event->button() == Qt::LeftButton && clickPart(at)) {
+    m_partPress = false;
+    if (event->button() == Qt::LeftButton && clickPart(at, false)) {
+      // The press is consumed here, so its moves and its release must not
+      // reach the view either: its pressed index would still be an earlier
+      // row, and a small move or the release would select a range from it
+      // (mitcad#344).
+      m_partPress = true;
+      event->accept();
       return;
     }
     // A press on the name of the row already selected and current, without
@@ -484,7 +491,22 @@ protected:
     QTreeWidget::mousePressEvent(event);
   }
 
+  void mouseMoveEvent(QMouseEvent* event) override {
+    if (m_partPress) {
+      event->accept();
+      return;
+    }
+    QTreeWidget::mouseMoveEvent(event);
+  }
+
   void mouseReleaseEvent(QMouseEvent* event) override {
+    if (m_partPress) {
+      if (event->button() == Qt::LeftButton) {
+        m_partPress = false;
+      }
+      event->accept();
+      return;
+    }
     const bool slowClick = m_renamePress && event->button() == Qt::LeftButton;
     m_renamePress = false;
     QTreeWidget::mouseReleaseEvent(event);
@@ -502,7 +524,9 @@ protected:
     // A double-click keeps its own action: no slow second click.
     cancelSlowClick();
     // A quick second click on a light bulb is a click of its own.
-    if (event->button() == Qt::LeftButton && clickPart(event->position().toPoint())) {
+    if (event->button() == Qt::LeftButton && clickPart(event->position().toPoint(), true)) {
+      m_partPress = true;
+      event->accept();
       return;
     }
     QTreeWidgetItem* item = itemAt(event->position().toPoint());
@@ -540,7 +564,7 @@ protected:
 private:
   // Clicks the light bulb or the radio button at a point; false when there
   // is none.
-  bool clickPart(const QPoint& at) {
+  bool clickPart(const QPoint& at, bool doubleClick) {
     QTreeWidgetItem* item = itemAt(at);
     if (item == nullptr) {
       return false;
@@ -548,6 +572,9 @@ private:
     const BrowserNode node = m_panel.nodeOf(item);
     const BrowserDelegate::Parts parts = partsOf(item);
     if (node.hasEye && parts.eye.contains(at)) {
+      qDebug().noquote() << QStringLiteral("Eye click %1 (%2)")
+                                .arg(node.path.isEmpty() ? node.name : node.path,
+                                     doubleClick ? QStringLiteral("double-click") : QStringLiteral("press"));
       emit m_panel.eyeClicked(node);
       return true;
     }
@@ -560,6 +587,9 @@ private:
 
   BrowserPanel& m_panel;
   BrowserDelegate* m_delegate;
+  // A press (or double-click) consumed by a light bulb or radio button: its
+  // moves and release are consumed too (mitcad#344).
+  bool m_partPress = false;
   // A slow second click (mitcad#177): the press that may be one, where it
   // was, and the row it renames when the timer fires.
   bool m_renamePress = false;

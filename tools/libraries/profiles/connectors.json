@@ -1,0 +1,865 @@
+[
+  {
+    "id": "bracket20-i5",
+    "name": "Bracket 20x20 I-type slot 5",
+    "category": "connectors",
+    "source": "slot-profile-accessories/Bracket-20x20-I-type-Slot-5/Motedis-S5IBR2020-1/Motedis_S5IBR2020.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "S5IBR2020",
+    "supplier_url": "https://www.motedis.com/en/Bracket-20x20-I-type-Slot-5",
+    "designation": "Bracket 20x20 I-type slot 5",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":5,"grid":20}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {
+        "junctions": ["L","T"],
+        "space": "inner_corner",
+        "mates": [{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],
+        "fasteners": [
+          {
+            "frame": "mount_a",
+            "nut": {"library":"mitcad-parts","component":"tnut-i5-spring","config":"M4"},
+            "screw": {"library":"mitcad-parts","component":"iso4762","config":"M4x8"}
+          },
+          {
+            "frame": "mount_b",
+            "nut": {"library":"mitcad-parts","component":"tnut-i5-spring","config":"M4"},
+            "screw": {"library":"mitcad-parts","component":"iso4762","config":"M4x8"}
+          }
+        ]
+      }
+    },
+    "frames": [
+      {"name":"mount_a","origin":[0,9,0],"z":[1,0,0],"x":[0,1,0],"kind":"face"},
+      {"name":"mount_b","origin":[-9,0,0],"z":[0,-1,0],"x":[-1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "bracket30-b8",
+    "name": "Bracket 30 B-type slot 8",
+    "category": "connectors",
+    "source": "slot-profile-accessories/Bracket-30-B-Type-slot-8/Motedis-S8BBR30/Motedis_S8BBR30.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "S8BBR30",
+    "supplier_url": "https://www.motedis.com/en/Bracket-30-B-Type-slot-8",
+    "designation": "Bracket 30 B-type slot 8",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"B","slot":8,"grid":30}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {
+        "junctions": ["L","T"],
+        "space": "inner_corner",
+        "mates": [{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],
+        "fasteners": [
+          {
+            "frame": "mount_a",
+            "nut": {"library":"mitcad-parts","component":"tnut-b8","config":"M6"},
+            "screw": {"library":"mitcad-parts","component":"iso4762","config":"M6x12"}
+          },
+          {
+            "frame": "mount_b",
+            "nut": {"library":"mitcad-parts","component":"tnut-b8","config":"M6"},
+            "screw": {"library":"mitcad-parts","component":"iso4762","config":"M6x12"}
+          }
+        ]
+      }
+    },
+    "frames": [
+      {"name":"mount_a","origin":[0,13.5,0],"z":[1,0,0],"x":[0,1,0],"kind":"face"},
+      {"name":"mount_b","origin":[-13.5,0,0],"z":[0,-1,0],"x":[-1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "bracket40-i8",
+    "name": "Bracket 40 I-type slot 8",
+    "category": "connectors",
+    "source": "slot-profile-accessories/Bracket-40-I-Type-slot-8/Motedis-S8IBR40-1/Motedis_S8IBR40.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "S8IBR40",
+    "supplier_url": "https://www.motedis.com/en/Bracket-40-I-Type-slot-8",
+    "designation": "Bracket 40 I-type slot 8",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":8,"grid":40}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {
+        "junctions": ["L","T"],
+        "space": "inner_corner",
+        "mates": [{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],
+        "fasteners": [
+          {
+            "frame": "mount_a",
+            "nut": {"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},
+            "screw": {"library":"mitcad-parts","component":"iso4762","config":"M8x16"}
+          },
+          {
+            "frame": "mount_b",
+            "nut": {"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},
+            "screw": {"library":"mitcad-parts","component":"iso4762","config":"M8x16"}
+          }
+        ]
+      }
+    },
+    "frames": [
+      {"name":"mount_a","origin":[0,18,0],"z":[1,0,0],"x":[0,1,0],"kind":"face"},
+      {"name":"mount_b","origin":[-18,0,0],"z":[0,-1,0],"x":[-1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "angle45-30-b8",
+    "name": "Angle connector 45° 30 B-type slot 8",
+    "category": "connectors",
+    "source": "slot-profile-accessories/Angle-Connector-45G-30-B-Type-slot-8/Motedis-ALUCON3030/Motedis_ALUCON3030.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "ALUCON3030",
+    "supplier_url": "https://www.motedis.com/en/Angle-Connector-45G-30-B-Type-slot-8",
+    "designation": "Angle connector 45° 30 B-type slot 8",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"B","slot":8,"grid":30}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {
+        "junctions": ["T","L"],
+        "space": "inner_corner",
+        "mates": [{"frame":"mount_a","to":"end"},{"frame":"mount_b","to":"slot"}],
+        "fasteners": [
+          {
+            "frame": "mount_a",
+            "screw": {"library":"mitcad-parts","component":"iso4762","config":"M8x25"}
+          },
+          {
+            "frame": "mount_b",
+            "screw": {"library":"mitcad-parts","component":"iso4762","config":"M8x12"}
+          }
+        ],
+        "machining": [{"on":"a","frame":"end","hole":{"diameter":"6.8 mm","depth":"25 mm","thread":"M8"}}]
+      }
+    },
+    "frames": [
+      {"name":"mount_a","origin":[0,-7.87,15.13],"z":[0,-0.7071,0.7071],"x":[1,0,0],"kind":"face"},
+      {"name":"mount_b","origin":[0,0,0],"z":[0,0,-1],"x":[0,1,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "angle45-40-i8",
+    "name": "Angle connector 45° 40 I-type slot 8",
+    "category": "connectors",
+    "source": "slot-profile-accessories/Angle-Connector-45G-40-I-Typ-slot-8/Motedis-S8IALUCON45/Motedis_S8IALUCON45.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "S8IALUCON45",
+    "supplier_url": "https://www.motedis.com/en/Angle-Connector-45G-40-I-Typ-slot-8",
+    "designation": "Angle connector 45° 40 I-type slot 8",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":8,"grid":40}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {
+        "junctions": ["T","L"],
+        "space": "inner_corner",
+        "mates": [{"frame":"mount_a","to":"end"},{"frame":"mount_b","to":"slot"}],
+        "fasteners": [
+          {
+            "frame": "mount_a",
+            "screw": {"library":"mitcad-parts","component":"iso4762","config":"M8x30"}
+          },
+          {
+            "frame": "mount_b",
+            "nut": {"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},
+            "screw": {"library":"mitcad-parts","component":"iso4762","config":"M8x16"}
+          }
+        ],
+        "machining": [{"on":"a","frame":"end","hole":{"diameter":"6.8 mm","depth":"30 mm","thread":"M8"}}]
+      }
+    },
+    "frames": [
+      {"name":"mount_a","origin":[0,22.63,-5.66],"z":[0,0.7071,0.7071],"x":[1,0,0],"kind":"face"},
+      {"name":"mount_b","origin":[0,0,-42.67],"z":[0,-1,0],"x":[0,0,1],"kind":"face"}
+    ]
+  },
+  {
+    "id": "inner-bracket-zamak-b8-i8",
+    "name": "Inner bracket zamak 30 B-type / 40 I-type slot 8 M6",
+    "category": "connectors",
+    "source": "slot-profile-accessories/Inner-bracket-zamak-30-B-Type-40-I-Type-Slot-8-M6/Motedis-S8IBIBM6-1/Motedis_S8IBIBM6.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "S8IBIBM6",
+    "supplier_url": "https://www.motedis.com/en/Inner-bracket-zamak-30-B-Type-40-I-Type-Slot-8-M6",
+    "designation": "Inner bracket zamak 30 B-type / 40 I-type slot 8 M6",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"B","slot":8,"grid":30},{"type":"I","slot":8,"grid":40}],
+      "frames": [{"name":"mount_a","kind":"slot"},{"name":"mount_b","kind":"slot"}],
+      "connector": {
+        "junctions": ["L","T"],
+        "space": "inner_corner",
+        "mates": [{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}]
+      }
+    },
+    "frames": [
+      {"name":"mount_a","origin":[0,9,21],"z":[0,-1,0],"x":[0,0,1],"kind":"slot"},
+      {"name":"mount_b","origin":[0,15,9],"z":[0,0,-1],"x":[0,1,0],"kind":"slot"}
+    ]
+  },
+  {
+    "id": "cutting-sleeve-b8",
+    "name": "Cutting sleeve for automatic connector B-type slot 8",
+    "category": "connectors",
+    "source": "slot-profile-accessories/Cutting-sleeve-for-automatic-connector-B-Type-slot-8-new-version/Motedis-S8BCSFAnew/Motedis_S8BCSFAnew.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "S8BCSFAnew",
+    "supplier_url": "https://www.motedis.com/en/Cutting-sleeve-for-automatic-connector-B-Type-slot-8-new-version",
+    "designation": "Cutting sleeve for automatic connector B-type slot 8",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"B","slot":8,"grid":30}],
+      "frames": [{"name":"mount_a","kind":"end"},{"name":"mount_b","kind":"slot"}],
+      "connector": {
+        "junctions": ["T","L"],
+        "space": "end",
+        "mates": [{"frame":"mount_a","to":"end"},{"frame":"mount_b","to":"slot"}],
+        "fasteners": [
+          {
+            "frame": "mount_b",
+            "nut": {"library":"mitcad-parts","component":"tnut-b8","config":"M5"},
+            "screw": {"library":"mitcad-parts","component":"iso4762","config":"M5x35"}
+          }
+        ],
+        "machining": [{"on":"a","frame":"end","hole":{"diameter":"11 mm","depth":"20 mm"}}]
+      }
+    },
+    "frames": [
+      {"name":"mount_a","origin":[0,20,0],"z":[0,-1,0],"x":[1,0,0],"kind":"end"},
+      {"name":"mount_b","origin":[0,20,0],"z":[0,1,0],"x":[0,0,1],"kind":"slot"}
+    ]
+  },
+  {
+    "id": "cube2d-30-b8",
+    "name": "Cube connector 30 2D B-type slot 8",
+    "category": "connectors",
+    "source": "slot-profile-accessories/Cube-connector-30-B-type-slot-8/Motedis-S8BCC2D30/Motedis_S8BCC2D30.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "S8BCC2D30",
+    "supplier_url": "https://www.motedis.com/en/Cube-connector-30-B-type-slot-8",
+    "designation": "Cube connector 30 2D B-type slot 8",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"B","slot":8,"grid":30}],
+      "frames": [{"name":"mount_a","kind":"end"},{"name":"mount_b","kind":"end"}],
+      "connector": {
+        "junctions": ["L"],
+        "space": "through",
+        "mates": [{"frame":"mount_a","to":"end"},{"frame":"mount_b","to":"end"}],
+        "fasteners": [
+          {
+            "frame": "mount_a",
+            "screw": {"library":"mitcad-parts","component":"iso10642","config":"M8x25"}
+          },
+          {
+            "frame": "mount_b",
+            "screw": {"library":"mitcad-parts","component":"iso10642","config":"M8x25"}
+          }
+        ],
+        "machining": [
+          {"on":"a","frame":"end","hole":{"diameter":"6.8 mm","depth":"20 mm","thread":"M8"}},
+          {"on":"b","frame":"end","hole":{"diameter":"6.8 mm","depth":"20 mm","thread":"M8"}}
+        ]
+      }
+    },
+    "frames": [
+      {"name":"mount_a","origin":[0,15,0],"z":[0,1,0],"x":[1,0,0],"kind":"end"},
+      {"name":"mount_b","origin":[0,0,-15],"z":[0,0,-1],"x":[1,0,0],"kind":"end"}
+    ]
+  },
+  {
+    "id": "cube3d-30-b8",
+    "name": "Cube connector 30 3D B-type slot 8",
+    "category": "connectors",
+    "source": "slot-profile-accessories/Cube-connector-30-B-type-slot-8/Motedis-S8BCC3D30/Motedis_S8BCC3D30.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "S8BCC3D30",
+    "supplier_url": "https://www.motedis.com/en/Cube-connector-30-B-type-slot-8",
+    "designation": "Cube connector 30 3D B-type slot 8",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"B","slot":8,"grid":30}],
+      "frames": [
+        {"name":"mount_a","kind":"end"},
+        {"name":"mount_b","kind":"end"},
+        {"name":"mount_c","kind":"end"}
+      ],
+      "connector": {
+        "junctions": ["L"],
+        "space": "through",
+        "mates": [{"frame":"mount_a","to":"end"},{"frame":"mount_b","to":"end"}],
+        "fasteners": [
+          {
+            "frame": "mount_a",
+            "screw": {"library":"mitcad-parts","component":"iso10642","config":"M8x25"}
+          },
+          {
+            "frame": "mount_b",
+            "screw": {"library":"mitcad-parts","component":"iso10642","config":"M8x25"}
+          },
+          {
+            "frame": "mount_c",
+            "screw": {"library":"mitcad-parts","component":"iso10642","config":"M8x25"}
+          }
+        ],
+        "machining": [
+          {"on":"a","frame":"end","hole":{"diameter":"6.8 mm","depth":"20 mm","thread":"M8"}},
+          {"on":"b","frame":"end","hole":{"diameter":"6.8 mm","depth":"20 mm","thread":"M8"}}
+        ]
+      }
+    },
+    "frames": [
+      {"name":"mount_a","origin":[0,15,0],"z":[0,1,0],"x":[1,0,0],"kind":"end"},
+      {"name":"mount_b","origin":[0,0,-15],"z":[0,0,-1],"x":[1,0,0],"kind":"end"},
+      {"name":"mount_c","origin":[15,0,0],"z":[1,0,0],"x":[0,1,0],"kind":"end"}
+    ]
+  },
+  {
+    "id": "corner3d-30-b8",
+    "name": "Corner connector 3D 30x30 B-type slot 8 with screw M6x8",
+    "category": "connectors",
+    "source": "slot-profile-accessories/Corner-connector-3D-30x30-with-M68-screw/Motedis-CC3D30x30M6x8/Motedis_CC3D30x30M6x8.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "CC3D30x30M6x8",
+    "supplier_url": "https://www.motedis.com/en/Corner-connector-3D-30x30-with-M68-screw",
+    "designation": "Corner connector 3D 30x30 B-type slot 8 with screw M6x8",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"B","slot":8,"grid":30}],
+      "frames": [
+        {"name":"mount_a","kind":"slot"},
+        {"name":"mount_b","kind":"slot"},
+        {"name":"mount_c","kind":"slot"}
+      ],
+      "connector": {
+        "junctions": ["L"],
+        "space": "inner_corner",
+        "mates": [{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}]
+      }
+    },
+    "frames": [
+      {"name":"mount_a","origin":[26,6,0],"z":[0,-1,0],"x":[1,0,0],"kind":"slot"},
+      {"name":"mount_b","origin":[0,6,26],"z":[0,-1,0],"x":[0,0,1],"kind":"slot"},
+      {"name":"mount_c","origin":[-15,18,0],"z":[1,0,0],"x":[0,1,0],"kind":"slot"}
+    ]
+  },
+  {
+    "id": "lplate58-30",
+    "name": "L connector plate 58x58x3, 3 holes, 30 series",
+    "category": "connectors",
+    "source": "slot-profile-accessories/L-connector-plate-lasered-58x58x3-3-hole-30s/Motedis-LP30107/Motedis_LP30107.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP30107",
+    "supplier_url": "https://www.motedis.com/en/L-connector-plate-lasered-58x58x3-3-hole-30s",
+    "designation": "L connector plate 58x58x3, 3 holes, 30 series",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"B","slot":8,"grid":30},{"type":"I","slot":6,"grid":30}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {
+        "junctions": ["L"],
+        "space": "outer",
+        "mates": [{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],
+        "fasteners": [
+          {
+            "frame": "mount_a",
+            "nut": {"library":"mitcad-parts","component":"tnut-b8","config":"M6"},
+            "screw": {"library":"mitcad-parts","component":"iso4762","config":"M6x10"}
+          },
+          {
+            "frame": "mount_b",
+            "nut": {"library":"mitcad-parts","component":"tnut-b8","config":"M6"},
+            "screw": {"library":"mitcad-parts","component":"iso4762","config":"M6x10"}
+          }
+        ]
+      }
+    },
+    "frames": [
+      {"name":"mount_a","origin":[14,44,0],"z":[0,0,-1],"x":[0,1,0],"kind":"face"},
+      {"name":"mount_b","origin":[44,14,0],"z":[0,0,-1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "tplate58-20",
+    "name": "T connector plate 58x58x3, 5 holes, 20 series",
+    "category": "connectors",
+    "source": "slot-profile-accessories/T-connector-plate-58x58x3-Laser-cut-20-series/Motedis-LP20111/Motedis_LP20111.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP20111",
+    "supplier_url": "https://www.motedis.com/en/T-connector-plate-58x58x3-Laser-cut-20-series",
+    "designation": "T connector plate 58x58x3, 5 holes, 20 series",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":5,"grid":20},{"type":"B","slot":6,"grid":20}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {
+        "junctions": ["T"],
+        "space": "outer",
+        "mates": [{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],
+        "fasteners": [
+          {
+            "frame": "mount_a",
+            "nut": {"library":"mitcad-parts","component":"tnut-i5-spring-guided","config":"M5"},
+            "screw": {"library":"mitcad-parts","component":"iso4762","config":"M5x8"}
+          },
+          {
+            "frame": "mount_b",
+            "nut": {"library":"mitcad-parts","component":"tnut-i5-spring-guided","config":"M5"},
+            "screw": {"library":"mitcad-parts","component":"iso4762","config":"M5x8"}
+          }
+        ]
+      }
+    },
+    "frames": [
+      {"name":"mount_a","origin":[0,39,0],"z":[0,0,-1],"x":[0,1,0],"kind":"face"},
+      {"name":"mount_b","origin":[0,9,0],"z":[0,0,-1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "bracket20-b6",
+    "name": "Bracket 20x20 B-type slot 6",
+    "category": "connectors",
+    "source": "slot-profile-accessories/Bracket-20x20-B-type-slot-6/Motedis_S6BBR20.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "S6BBR20",
+    "supplier_url": "https://www.motedis.com/en/Bracket-20x20-B-type-slot-6",
+    "designation": "Bracket 20x20 B-type slot 6",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"B","slot":6,"grid":20}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {
+        "junctions": ["L","T"],
+        "space": "inner_corner",
+        "mates": [{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],
+        "fasteners": [
+          {
+            "frame": "mount_a",
+            "nut": {"library":"mitcad-parts","component":"tnut-b6","config":"M5"},
+            "screw": {"library":"mitcad-parts","component":"iso4762","config":"M5x10"}
+          },
+          {
+            "frame": "mount_b",
+            "nut": {"library":"mitcad-parts","component":"tnut-b6","config":"M5"},
+            "screw": {"library":"mitcad-parts","component":"iso4762","config":"M5x10"}
+          }
+        ]
+      }
+    },
+    "frames": [
+      {"name":"mount_a","origin":[0,9,0],"z":[1,0,0],"x":[0,1,0],"kind":"face"},
+      {"name":"mount_b","origin":[-9,0,0],"z":[0,-1,0],"x":[-1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "bracket20x40-i5",
+    "name": "Bracket 20x40 I-type slot 5",
+    "category": "connectors",
+    "source": "slot-profile-accessories/Bracket-20x40-I-Type-slot-5/Motedis-S5IBR2040/Motedis_S5IBR2040.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "S5IBR2040",
+    "supplier_url": "https://www.motedis.com/en/Bracket-20x40-I-Type-slot-5",
+    "designation": "Bracket 20x40 I-type slot 5",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":5,"grid":20}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {
+        "junctions": ["L","T"],
+        "space": "inner_corner",
+        "mates": [{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],
+        "fasteners": [
+          {
+            "frame": "mount_a",
+            "nut": {"library":"mitcad-parts","component":"tnut-i5-spring","config":"M4"},
+            "screw": {"library":"mitcad-parts","component":"iso4762","config":"M4x8"}
+          },
+          {
+            "frame": "mount_b",
+            "nut": {"library":"mitcad-parts","component":"tnut-i5-spring","config":"M4"},
+            "screw": {"library":"mitcad-parts","component":"iso4762","config":"M4x8"}
+          }
+        ]
+      }
+    },
+    "frames": [
+      {"name":"mount_a","origin":[0,19,0],"z":[1,0,0],"x":[0,1,0],"kind":"face"},
+      {"name":"mount_b","origin":[-19,0,0],"z":[0,-1,0],"x":[-1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "bracket20x40-b6",
+    "name": "Bracket 20x40 B-type slot 6",
+    "category": "connectors",
+    "source": "slot-profile-accessories/Bracket-20x40-B-type-slot-6/Motedis-S6BBR2040/Motedis_S6BBR2040.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "S6BBR2040",
+    "supplier_url": "https://www.motedis.com/en/Bracket-20x40-B-type-slot-6",
+    "designation": "Bracket 20x40 B-type slot 6",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"B","slot":6,"grid":20}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {
+        "junctions": ["L","T"],
+        "space": "inner_corner",
+        "mates": [{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],
+        "fasteners": [
+          {
+            "frame": "mount_a",
+            "nut": {"library":"mitcad-parts","component":"tnut-b6","config":"M5"},
+            "screw": {"library":"mitcad-parts","component":"iso4762","config":"M5x10"}
+          },
+          {
+            "frame": "mount_b",
+            "nut": {"library":"mitcad-parts","component":"tnut-b6","config":"M5"},
+            "screw": {"library":"mitcad-parts","component":"iso4762","config":"M5x10"}
+          }
+        ]
+      }
+    },
+    "frames": [
+      {"name":"mount_a","origin":[0,0,19],"z":[0,-1,0],"x":[0,0,1],"kind":"face"},
+      {"name":"mount_b","origin":[0,19,0],"z":[0,0,-1],"x":[0,1,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "bracket30-i6",
+    "name": "Bracket 30 I-type slot 6",
+    "category": "connectors",
+    "source": "slot-profile-accessories/Bracket-30-I-type-slot-6/Motedis-S6IBR30/Motedis_S6IBR30.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "S6IBR30",
+    "supplier_url": "https://www.motedis.com/en/Bracket-30-I-type-slot-6",
+    "designation": "Bracket 30 I-type slot 6",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":6,"grid":30}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {
+        "junctions": ["L","T"],
+        "space": "inner_corner",
+        "mates": [{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],
+        "fasteners": [
+          {
+            "frame": "mount_a",
+            "nut": {"library":"mitcad-parts","component":"tnut-i6-spring-guided","config":"M6"},
+            "screw": {"library":"mitcad-parts","component":"iso4762","config":"M6x12"}
+          },
+          {
+            "frame": "mount_b",
+            "nut": {"library":"mitcad-parts","component":"tnut-i6-spring-guided","config":"M6"},
+            "screw": {"library":"mitcad-parts","component":"iso4762","config":"M6x12"}
+          }
+        ]
+      }
+    },
+    "frames": [
+      {"name":"mount_a","origin":[0,13.6,0],"z":[1,0,0],"x":[0,1,0],"kind":"face"},
+      {"name":"mount_b","origin":[-13.6,0,0],"z":[0,-1,0],"x":[-1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "bracket30x60-b8",
+    "name": "Bracket 30x60 B-type slot 8",
+    "category": "connectors",
+    "source": "slot-profile-accessories/Bracket-30x60-B-Typ-slot-8/Motedis-S8BBR3060/Motedis_S8BBR3060.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "S8BBR3060",
+    "supplier_url": "https://www.motedis.com/en/Bracket-30x60-B-Typ-slot-8",
+    "designation": "Bracket 30x60 B-type slot 8",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"B","slot":8,"grid":30}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {
+        "junctions": ["L","T"],
+        "space": "inner_corner",
+        "mates": [{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],
+        "fasteners": [
+          {
+            "frame": "mount_a",
+            "nut": {"library":"mitcad-parts","component":"tnut-b8","config":"M6"},
+            "screw": {"library":"mitcad-parts","component":"iso4762","config":"M6x12"}
+          },
+          {
+            "frame": "mount_b",
+            "nut": {"library":"mitcad-parts","component":"tnut-b8","config":"M6"},
+            "screw": {"library":"mitcad-parts","component":"iso4762","config":"M6x12"}
+          }
+        ]
+      }
+    },
+    "frames": [
+      {"name":"mount_a","origin":[0,0,28.5],"z":[0,-1,0],"x":[0,0,1],"kind":"face"},
+      {"name":"mount_b","origin":[0,28.5,0],"z":[0,0,-1],"x":[0,1,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "bracket40x80-i8",
+    "name": "Bracket 40x80 I-type slot 8",
+    "category": "connectors",
+    "source": "slot-profile-accessories/Bracket-40x80-I-Type-slot-8/Motedis-S8IBR4080/Motedis_S8IBR4080.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "S8IBR4080",
+    "supplier_url": "https://www.motedis.com/en/Bracket-40x80-I-Type-slot-8",
+    "designation": "Bracket 40x80 I-type slot 8",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":8,"grid":40}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {
+        "junctions": ["L","T"],
+        "space": "inner_corner",
+        "mates": [{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],
+        "fasteners": [
+          {
+            "frame": "mount_a",
+            "nut": {"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},
+            "screw": {"library":"mitcad-parts","component":"iso4762","config":"M8x16"}
+          },
+          {
+            "frame": "mount_b",
+            "nut": {"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},
+            "screw": {"library":"mitcad-parts","component":"iso4762","config":"M8x16"}
+          }
+        ]
+      }
+    },
+    "frames": [
+      {"name":"mount_a","origin":[0,39.5,0],"z":[1,0,0],"x":[0,1,0],"kind":"face"},
+      {"name":"mount_b","origin":[-39.5,0,0],"z":[0,-1,0],"x":[-1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "bracket40-b10",
+    "name": "Bracket 40 B-type slot 10",
+    "category": "connectors",
+    "source": "slot-profile-accessories/Bracket-40-B-Type-slot-10/Motedis-S10BBR40/Motedis_S10BBR40.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "S10BBR40",
+    "supplier_url": "https://www.motedis.com/en/Bracket-40-B-Type-slot-10",
+    "designation": "Bracket 40 B-type slot 10",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"B","slot":10,"grid":40}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {
+        "junctions": ["L","T"],
+        "space": "inner_corner",
+        "mates": [{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],
+        "fasteners": [
+          {
+            "frame": "mount_a",
+            "nut": {"library":"mitcad-parts","component":"tnut-b10","config":"M8"},
+            "screw": {"library":"mitcad-parts","component":"iso4762","config":"M8x16"}
+          },
+          {
+            "frame": "mount_b",
+            "nut": {"library":"mitcad-parts","component":"tnut-b10","config":"M8"},
+            "screw": {"library":"mitcad-parts","component":"iso4762","config":"M8x16"}
+          }
+        ]
+      }
+    },
+    "frames": [
+      {"name":"mount_a","origin":[0,0,18],"z":[0,-1,0],"x":[0,0,1],"kind":"face"},
+      {"name":"mount_b","origin":[0,18,0],"z":[0,0,-1],"x":[0,1,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "bracket40x80-b10",
+    "name": "Bracket 40x80 B-type slot 10",
+    "category": "connectors",
+    "source": "slot-profile-accessories/Bracket-40x80-B-Type-slot-10/Motedis-S10BBR4080/Motedis_S10BBR4080.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "S10BBR4080",
+    "supplier_url": "https://www.motedis.com/en/Bracket-40x80-B-Type-slot-10",
+    "designation": "Bracket 40x80 B-type slot 10",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"B","slot":10,"grid":40}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {
+        "junctions": ["L","T"],
+        "space": "inner_corner",
+        "mates": [{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],
+        "fasteners": [
+          {
+            "frame": "mount_a",
+            "nut": {"library":"mitcad-parts","component":"tnut-b10","config":"M8"},
+            "screw": {"library":"mitcad-parts","component":"iso4762","config":"M8x16"}
+          },
+          {
+            "frame": "mount_b",
+            "nut": {"library":"mitcad-parts","component":"tnut-b10","config":"M8"},
+            "screw": {"library":"mitcad-parts","component":"iso4762","config":"M8x16"}
+          }
+        ]
+      }
+    },
+    "frames": [
+      {"name":"mount_a","origin":[0,0,38],"z":[0,-1,0],"x":[0,0,1],"kind":"face"},
+      {"name":"mount_b","origin":[0,38,0],"z":[0,0,-1],"x":[0,1,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "bracket45-b10",
+    "name": "Bracket 45 B-type slot 10",
+    "category": "connectors",
+    "source": "slot-profile-accessories/Bracket-45-B-Type-slot-10/Motedis-S10BBR45/Motedis_S10BBR45.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "S10BBR45",
+    "supplier_url": "https://www.motedis.com/en/Bracket-45-B-Type-slot-10",
+    "designation": "Bracket 45 B-type slot 10",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"B","slot":10,"grid":45}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {
+        "junctions": ["L","T"],
+        "space": "inner_corner",
+        "mates": [{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],
+        "fasteners": [
+          {
+            "frame": "mount_a",
+            "nut": {"library":"mitcad-parts","component":"tnut-b10","config":"M8"},
+            "screw": {"library":"mitcad-parts","component":"iso4762","config":"M8x16"}
+          },
+          {
+            "frame": "mount_b",
+            "nut": {"library":"mitcad-parts","component":"tnut-b10","config":"M8"},
+            "screw": {"library":"mitcad-parts","component":"iso4762","config":"M8x16"}
+          }
+        ]
+      }
+    },
+    "frames": [
+      {"name":"mount_a","origin":[0,20.65,0],"z":[1,0,0],"x":[0,1,0],"kind":"face"},
+      {"name":"mount_b","origin":[-20.65,0,0],"z":[0,-1,0],"x":[-1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "bracket45x90-b10",
+    "name": "Bracket 45x90 B-type slot 10",
+    "category": "connectors",
+    "source": "slot-profile-accessories/Bracket-45x90-B-type-slot-10/Motedis-S10BBR4590/Motedis_S10BBR4590.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "S10BBR4590",
+    "supplier_url": "https://www.motedis.com/en/Bracket-45x90-B-type-slot-10",
+    "designation": "Bracket 45x90 B-type slot 10",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"B","slot":10,"grid":45}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {
+        "junctions": ["L","T"],
+        "space": "inner_corner",
+        "mates": [{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],
+        "fasteners": [
+          {
+            "frame": "mount_a",
+            "nut": {"library":"mitcad-parts","component":"tnut-b10","config":"M8"},
+            "screw": {"library":"mitcad-parts","component":"iso4762","config":"M8x16"}
+          },
+          {
+            "frame": "mount_b",
+            "nut": {"library":"mitcad-parts","component":"tnut-b10","config":"M8"},
+            "screw": {"library":"mitcad-parts","component":"iso4762","config":"M8x16"}
+          }
+        ]
+      }
+    },
+    "frames": [
+      {"name":"mount_a","origin":[0,43,0],"z":[1,0,0],"x":[0,1,0],"kind":"face"},
+      {"name":"mount_b","origin":[-43,0,0],"z":[0,-1,0],"x":[-1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "bracket90-b10",
+    "name": "Bracket 90 B-type slot 10",
+    "category": "connectors",
+    "source": "slot-profile-accessories/Bracket-90-B-type-slot-10/Motedis-S10BBR90/Motedis_S10BBR90.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "S10BBR90",
+    "supplier_url": "https://www.motedis.com/en/Bracket-90-B-type-slot-10",
+    "designation": "Bracket 90 B-type slot 10",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"B","slot":10,"grid":45}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {
+        "junctions": ["L","T"],
+        "space": "inner_corner",
+        "mates": [{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],
+        "fasteners": [
+          {
+            "frame": "mount_a",
+            "nut": {"library":"mitcad-parts","component":"tnut-b10","config":"M8"},
+            "screw": {"library":"mitcad-parts","component":"iso4762","config":"M8x16"}
+          },
+          {
+            "frame": "mount_b",
+            "nut": {"library":"mitcad-parts","component":"tnut-b10","config":"M8"},
+            "screw": {"library":"mitcad-parts","component":"iso4762","config":"M8x16"}
+          }
+        ]
+      }
+    },
+    "frames": [
+      {"name":"mount_a","origin":[0,43,0],"z":[1,0,0],"x":[0,1,0],"kind":"face"},
+      {"name":"mount_b","origin":[-43,0,0],"z":[0,-1,0],"x":[-1,0,0],"kind":"face"}
+    ]
+  }
+]

@@ -31,7 +31,7 @@ QJsonObject failed(const QString& message) {
 QList<LibrarySource> defaultLibrarySources() {
   // Where Mitcad's own repositories are published; fetched only when the
   // user asks.
-  return {{QStringLiteral("https://github.com/mitcad/fasteners.git"), true},
+  return {{QStringLiteral("https://github.com/mitcad/parts.git"), true},
           {QStringLiteral("https://github.com/mitcad/community-index.git"), true}};
 }
 

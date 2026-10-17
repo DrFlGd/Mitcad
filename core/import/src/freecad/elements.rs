@@ -475,6 +475,25 @@ pub(super) fn key_points(c: &Curve3) -> Vec<[f64; 3]> {
             vec![*center, at(*start), at((start + end) / 2.0), at(*end)]
         }
         Curve3::BSpline { poles, .. } => poles.clone(),
+        Curve3::Helix {
+            center,
+            axis,
+            x_axis,
+            radius,
+            pitch,
+            start,
+            end,
+        } => {
+            let y = cross(*axis, *x_axis);
+            let at = |t: f64| -> [f64; 3] {
+                std::array::from_fn(|i| {
+                    center[i]
+                        + radius * (t.cos() * x_axis[i] + t.sin() * y[i])
+                        + pitch * t / std::f64::consts::TAU * axis[i]
+                })
+            };
+            vec![*center, at(*start), at((start + end) / 2.0), at(*end)]
+        }
     }
 }
 

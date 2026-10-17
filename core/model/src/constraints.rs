@@ -167,6 +167,7 @@ pub(crate) fn resolve_geo(r: &mut impl Resolver, origin: &JointOrigin) -> Result
         }
         GeomRef::FixedPlane { .. } => (GeoKind::Plane, 0.0),
         GeomRef::FixedAxis { .. } => (GeoKind::Axis, 0.0),
+        GeomRef::Mount { .. } => (GeoKind::Plane, 0.0),
         GeomRef::Vertex { .. } | GeomRef::SketchPoint { .. } | GeomRef::FixedPoint(_) => {
             (GeoKind::Point, 0.0)
         }

@@ -123,7 +123,30 @@ vcpkg_from_github(
         0401-chfi3d-end-cut-across-the-seam-line-of-a-periodic-face.patch
         0410-chfi3d-rounding-ending-in-the-face-it-runs-into.patch
         0420-chfi3d-kpart-round-a-closed-edge-on-a-face-with-a-stepped-seam.patch
+        0430-chfi3d-rounding-rolls-before-another-roundings-face.patch
+        0431-chfi3d-rolled-onsame-end-at-the-end-of-its-contact-curve.patch
+        0432-chfi3d-roundings-crease-over-a-narrow-common-face.patch
         0440-chfi3d-contact-along-a-chain-of-edges-of-a-consumed-strip.patch
+        0450-chfi3d-rounding-face-turning-tangentially-into-the-end-face.patch
+        0460-chfi3d-onsame-end-on-an-edge-of-a-consumed-corner-face.patch
+        0480-geomint-open-line-parts-beyond-its-vertices.patch
+        0481-chfi3d-kpart-gap-across-a-closed-spines-start-split-there.patch
+        0490-chfi3d-onsame-end-on-a-trimmed-face-past-its-bounds.patch
+        0500-chfikpart-fillet-between-coaxial-surfaces-of-revolution.patch
+        0501-chfi3d-kpart-cut-round-a-cut-out-under-an-overhanging-rim.patch
+        0502-chfi3d-kpart-cut-by-the-end-face-over-a-gap.patch
+        0503-chfi3d-two-roundings-meeting-on-an-edge-within-its-tolerance.patch
+        0510-boptools-pcurve-into-the-period-inside-a-face-spanning-many.patch
+        0511-inttools-fclass2d-every-copy-on-a-face-spanning-many-periods.patch
+        0512-intcurvesurface-quadric-roots-sampled-by-knot-spans.patch
+        0530-chfi3d-chamfer-guide-keeps-to-its-edges-at-the-blends-beside.patch
+        0531-chfi3d-chamfer-wider-than-a-narrow-face-cut-by-the-faces-beyond.patch
+        0540-chfi3d-rounding-running-on-into-an-earlier-roundings-tube.patch
+        0550-chfi3d-end-over-pieces-where-the-end-faces-edge-is-in-two.patch
+        0560-boptools-pcurve-checked-at-its-own-copy-in-the-face.patch
+        0580-chfi3d-kpart-contact-along-a-concave-edge-off-its-face.patch
+        0581-chfi3d-roundings-joined-across-a-rib-with-square-sides.patch
+        0600-chfi3d-onsame-end-cut-along-its-side-by-the-face-at-the-end.patch
 )
 
 if (VCPKG_LIBRARY_LINKAGE STREQUAL "dynamic")

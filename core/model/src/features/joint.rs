@@ -175,6 +175,7 @@ fn check_geometry(ctx: &CheckContext<'_>, geometry: &GeomRef) -> Result<(), Stri
         GeomRef::FixedPlane { .. } => geometry.check(ctx, Want::Plane),
         GeomRef::FixedAxis { .. } => geometry.check(ctx, Want::Axis),
         GeomRef::Origin(_) => Ok(()),
+        GeomRef::Mount { .. } => geometry.check(ctx, Want::Plane),
         GeomRef::Vertex { .. } | GeomRef::SketchPoint { .. } | GeomRef::FixedPoint(_) => {
             geometry.check(ctx, Want::Point)
         }

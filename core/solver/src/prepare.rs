@@ -821,6 +821,17 @@ fn constraint_equations(
                         b2: x.p(v, b2),
                     }
                 });
+            } else if let (
+                EntityData::Ellipse { b: s1, .. } | EntityData::EllipticalArc { b: s1, .. },
+                EntityData::Ellipse { b: s2, .. } | EntityData::EllipticalArc { b: s2, .. },
+            ) = (ent(e1), ent(e2))
+            {
+                // Ellipses are equal in their minor radius.
+                let (s1, s2) = (*s1, *s2);
+                b.push(z, |v, _| EqKind::RadDiff {
+                    a: Rad::Param(v.v(s1)),
+                    b: Rad::Param(v.v(s2)),
+                });
             } else {
                 b.push(z, |v, x| EqKind::RadDiff {
                     a: x.rad(v, e1.index()),

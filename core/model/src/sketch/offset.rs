@@ -30,7 +30,9 @@ use super::geometry::{
     Curve2, Nurbs, P2, add, angle_after, cross, dist, dot, norm, perp, scale, sub, unit,
 };
 use super::solve::Solved;
-use super::{ConstraintUid, Entity, EntityIndex, EntityKind, is_false};
+use super::{
+    ConstraintKind, ConstraintUid, DimensionKind, Entity, EntityIndex, EntityKind, Ref, is_false,
+};
 use crate::document::resolve_value;
 use crate::features::ValueInput;
 use crate::ids::{EntityUid, curve_serde};
@@ -74,6 +76,16 @@ pub struct SketchOffset<P> {
     /// Round corners of a derived offset.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub corners: Vec<OffsetCorner>,
+    /// The construction lines an exact offset of arcs and circles holds
+    /// its distance with (across the gap, on a radius; mitcad#358), with
+    /// the points they join: edits that make the offset again remove them
+    /// with the results.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        with = "super::curves_serde"
+    )]
+    pub helpers: Vec<EntityUid>,
     /// Computed after every solve (chains with ellipses or splines).
     #[serde(default, skip_serializing_if = "is_false")]
     pub derived: bool,
@@ -95,6 +107,7 @@ impl<P> SketchOffset<P> {
             left: self.left,
             results: self.results.clone(),
             corners: self.corners.clone(),
+            helpers: self.helpers.clone(),
             derived: self.derived,
         })
     }
@@ -640,20 +653,27 @@ fn sources(
 ) -> Result<(Vec<(Curve2, bool)>, bool), String> {
     let forward = chain_directions(&offset.curves, index);
     let mut out = Vec::new();
-    for (id, fwd) in offset.curves.iter().zip(forward) {
+    for (id, fwd) in offset.curves.iter().zip(forward.iter().copied()) {
         let c = curves
             .get(id)
             .cloned()
             .ok_or_else(|| format!("{}: c{} has no geometry", offset.id, id.0))?;
         out.push((c, fwd));
     }
-    let closed = match (
-        out.first()
-            .and_then(|(c, f)| c.ends().map(|(s, e)| if *f { s } else { e })),
-        out.last()
-            .and_then(|(c, f)| c.ends().map(|(s, e)| if *f { e } else { s })),
-    ) {
-        (Some(start), Some(end)) => out.len() > 1 && dist(start, end) <= 1e-9 * (1.0 + norm(start)),
+    // Curves join only through shared points, as when the offset was made
+    // (mitcad#360): ends that merely lie at the same place do not close it.
+    let end = |curve: EntityUid, forward: bool, last: bool| {
+        index
+            .get(curve)
+            .and_then(|e| e.kind.ends())
+            .map(|(s, e)| if forward != last { s } else { e })
+    };
+    let closed = match (offset.curves.first(), offset.curves.last()) {
+        (Some(first), Some(last)) if offset.curves.len() > 1 => {
+            let (ff, fl) = (forward[0], forward[offset.curves.len() - 1]);
+            let (start, finish) = (end(*first, ff, false), end(*last, fl, true));
+            start.is_some() && start == finish
+        }
         _ => false,
     };
     Ok((out, closed))
@@ -902,6 +922,7 @@ impl SketchEdit<'_> {
             left: d < 0.0,
             results: ids.clone(),
             corners,
+            helpers: Vec::new(),
             derived: true,
         });
         self.report.constraints.push(id);
@@ -929,6 +950,53 @@ impl SketchEdit<'_> {
         Ok(param)
     }
 
+    /// Finds an exact offset's distance dimensions from its curve pairs.
+    /// Older designs have the same structure, without stored dimension ids.
+    fn offset_dimensions(&self, offset: &SketchOffset<ParamId>) -> BTreeSet<ConstraintUid> {
+        let on = |point, curve| {
+            self.def.constraints.iter().any(|c| {
+                c.kind
+                    == ConstraintKind::Coincident {
+                        point,
+                        entity: Ref::Curve(curve),
+                    }
+            })
+        };
+        self.def
+            .dimensions
+            .iter()
+            .filter(|d| {
+                offset
+                    .curves
+                    .iter()
+                    .zip(&offset.results)
+                    .any(|(&a, &b)| match d.kind {
+                        DimensionKind::LineDistance { a: x, b: y } => {
+                            (x == a && y == b) || (x == b && y == a)
+                        }
+                        DimensionKind::Length { line } => {
+                            let Some(e) = self.def.entity(line) else {
+                                return false;
+                            };
+                            let EntityKind::Line { start, end, .. } = e.kind else {
+                                return false;
+                            };
+                            let Some(
+                                EntityKind::Arc { center, .. } | EntityKind::Circle { center, .. },
+                            ) = self.def.entity(a).map(|e| &e.kind)
+                            else {
+                                return false;
+                            };
+                            on(*center, line)
+                                && ((on(start, a) && on(end, b)) || (on(end, a) && on(start, b)))
+                        }
+                        _ => false,
+                    })
+            })
+            .map(|d| d.id)
+            .collect()
+    }
+
     /// Changes an offset's distance (a number or an expression sets its
     /// parameter, a name uses that parameter) or side.
     pub fn edit_offset(
@@ -952,9 +1020,10 @@ impl SketchEdit<'_> {
             }
             let param = self.offset_param(id, v, Some(offset.distance))?;
             if param != offset.distance && !offset.derived {
-                // The dimensions of an exact offset use its parameter.
+                // Other dimensions may deliberately share the old parameter.
+                let dimensions = self.offset_dimensions(&offset);
                 for d in &mut self.def.dimensions {
-                    if d.value == Some(offset.distance) {
+                    if dimensions.contains(&d.id) && d.value == Some(offset.distance) {
                         d.value = Some(param);
                     }
                 }
@@ -986,7 +1055,12 @@ impl SketchEdit<'_> {
                 self.reuse.clear();
                 self.renumber_offset(made?.0, id);
             } else {
-                let made: BTreeSet<EntityUid> = offset.results.iter().copied().collect();
+                let made: BTreeSet<EntityUid> = offset
+                    .results
+                    .iter()
+                    .chain(&offset.helpers)
+                    .copied()
+                    .collect();
                 let name = self.params.name(offset.distance);
                 let value = self
                     .params
@@ -1150,6 +1224,31 @@ impl SketchEdit<'_> {
             Some(e) => Ok(e.kind.points()),
             None => Err(format!("entity {} does not exist", id.0)),
         }
+    }
+
+    /// Refuses a change of the shape of a curve a derived offset computes
+    /// and of a projected one (mitcad#357): a
+    /// trim, an extension, a fillet or a chamfer would stretch it back to
+    /// its source at the next evaluation or leave a fixed piece. Convert
+    /// it to sketch geometry first.
+    pub(crate) fn shape_editable(&self, id: EntityUid) -> Result<(), String> {
+        self.editable(id)?;
+        let Some(e) = self.def.entity(id) else {
+            return Ok(());
+        };
+        let listed = self
+            .def
+            .projections
+            .iter()
+            .any(|p| p.entities.contains(&Ref::Curve(id)));
+        if e.reference || listed {
+            return Err(format!(
+                "{} is projected and keeps the shape of its source; convert it to sketch \
+                 geometry first (sketch.convert_projected)",
+                e.as_ref()
+            ));
+        }
+        Ok(())
     }
 
     /// Refuses an edit of a curve or point a derived offset computes.

@@ -1,0 +1,374 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: an OnSame end where the rounding runs on into an earlier rounding
+of its radius, its end section lying in that rounding's tube (mitcad#236).
+
+A wall's foot is rounded with the radius of an earlier rounding round the
+wall's end: that rounding's tube leaves the wall's side tangentially (its
+spine curving away from the side's foot), its floor contact crossing the
+wall's plane at the vertex where the new rounding's spine ends, and the
+earlier rounding was cut back to the wall's plane there. At that OnSame
+end the earlier rounding is the face at the end; the new blend's section
+where its spine is tangent to the earlier rounding's lies in that tube, the
+two surfaces tangent along it, and the prolonged edge is the earlier
+rounding's tangent contact with the floor. The corner intersected the
+opposite contact with the face at the end, which it only touches ("OneCorner
+: bouchon non ecrit" where no point was found), and then the blend with that
+face, tangent to it all along the section ("OneCorner : echec calcul
+intersection"); a stored body's earlier rounding, a B-spline whose contact
+edge ends at the vertex, also left the prolonged edge without a curve past
+the vertex.
+
+ChFi3d_Builder::PerformOneCorner, at an OnSame end:
+- where the opposite contact does not cross the face at the end, takes the
+  point where it touches the face's surface within the tolerance, the blend
+  tangent to the face there (ChFi3d_ContactTouchesEndFace);
+- where the blend's end section lies in the face's surface, tangent to it
+  along the section, caps the blend with that section, as an end section
+  lying in a face at the end already is (0410);
+- where the prolonged edge's own curve ends at the vertex but the edge runs
+  along an iso of the face's surface, prolongs it along that iso
+  (ChFi3d_ProlongTangentEdgeAlongIso, as ChFi3d_ProlongTangentEdge does with
+  the edge's curve where that goes on past the vertex).
+The face at the end grows up to the section, as the bodies stored in the
+files have it; other ends are unchanged.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
+index 25e11c8..0a0fd55 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
+@@ -125,6 +125,8 @@ extern void   ChFi3d_ResultChron(OSD_Chronometer& ch, double& time);
+ #include <Geom_BezierCurve.hxx>
+ #include <Geom_BoundedSurface.hxx>
+ #include <Geom_ElementarySurface.hxx>
++#include <Extrema_ExtCS.hxx>
++#include <Extrema_POnSurf.hxx>
+ 
+ static double recadre(const double p,
+                       const double ref,
+@@ -1020,6 +1022,92 @@ static bool ChFi3d_ObstacleVertexOnEndFace(const TopOpeBRepDS_DataStructure&   D
+   return false;
+ }
+ 
++//=======================================================================
++// function : ChFi3d_ContactTouchesEndFace
++// purpose  : OnSame end whose opposite contact C (on the blend HGs, with
++//            the interference FI) touches the surface of the face at the
++//            end HBs without crossing it, the blend tangent to that surface
++//            there (a rounding running on into an earlier rounding of its
++//            radius, whose tube is tangent to the opposite face along the
++//            prolonged edge): the point where they touch within Tol, the
++//            one nearest the parameter W. Updates FI, CP, the point's
++//            parameters UV on the face and W as IntersUpdateOnSame does.
++//=======================================================================
++
++static bool ChFi3d_ContactTouchesEndFace(const occ::handle<Geom_Curve>&          C,
++                                         const occ::handle<GeomAdaptor_Surface>& HGs,
++                                         const occ::handle<BRepAdaptor_Surface>& HBs,
++                                         const bool                              isFirst,
++                                         const double                            Tol,
++                                         ChFiDS_FaceInterference&                FI,
++                                         ChFiDS_CommonPoint&                     CP,
++                                         gp_Pnt2d&                               UV,
++                                         double&                                 W)
++{
++  if (C.IsNull() || HGs.IsNull() || HBs.IsNull() || FI.PCurveOnSurf().IsNull())
++  {
++    return false;
++  }
++  const double      uf = std::min(FI.FirstParameter(), FI.LastParameter());
++  const double      ul = std::max(FI.FirstParameter(), FI.LastParameter());
++  GeomAdaptor_Curve aC(C, uf, ul);
++  Extrema_ExtCS     anExt(aC, *HBs, Precision::PConfusion(), Precision::PConfusion());
++  if (!anExt.IsDone() || anExt.IsParallel())
++  {
++    return false;
++  }
++  int    iBest = 0;
++  double dBest = RealLast();
++  for (int i = 1; i <= anExt.NbExt(); i++)
++  {
++    if (anExt.SquareDistance(i) > Tol * Tol)
++    {
++      continue;
++    }
++    Extrema_POnCurv aPC;
++    Extrema_POnSurf aPS;
++    anExt.Points(i, aPC, aPS);
++    const double d = std::abs(aPC.Parameter() - W);
++    if (d < dBest)
++    {
++      dBest = d;
++      iBest = i;
++    }
++  }
++  if (iBest == 0)
++  {
++    return false;
++  }
++  Extrema_POnCurv aPC;
++  Extrema_POnSurf aPS;
++  anExt.Points(iBest, aPC, aPS);
++  const double w = aPC.Parameter();
++  double       u = 0., v = 0.;
++  aPS.Parameter(u, v);
++  // The blend tangent to the face there.
++  const gp_Pnt2d uvB = FI.PCurveOnSurf()->Value(w);
++  gp_Pnt         p1, p2;
++  gp_Vec         du1, dv1, du2, dv2;
++  HGs->D1(uvB.X(), uvB.Y(), p1, du1, dv1);
++  HBs->D1(u, v, p2, du2, dv2);
++  const gp_Vec n1 = du1.Crossed(dv1), n2 = du2.Crossed(dv2);
++  if (n1.Magnitude() < gp::Resolution() || n2.Magnitude() < gp::Resolution())
++  {
++    return false;
++  }
++  const double a = n1.Angle(n2);
++  if (std::min(a, M_PI - a) > 0.01)
++  {
++    return false;
++  }
++  FI.SetParameter(w, isFirst);
++  CP.Reset();
++  CP.SetPoint(C->Value(w));
++  UV.SetCoord(u, v);
++  W = w;
++  return true;
++}
++
+ //=======================================================================
+ // function : ChFi3d_CapAcrossFaceBeyond
+ // purpose  : OnSame end of a blend whose contact on the side away from the
+@@ -1339,6 +1427,127 @@ static bool ChFi3d_ProlongTangentEdge(const TopoDS_Edge&                    E,
+   return true;
+ }
+ 
++//=======================================================================
++// function : ChFi3d_ProlongTangentEdgeAlongIso
++// purpose  : As ChFi3d_ProlongTangentEdge where E's curve ends at V but
++//            E runs along an iso of Fv's surface SV that goes on past V
++//            to the point P (Fv an earlier rounding tangent to Fop along
++//            E, trimmed at V by the blend's face; its surface continues
++//            past its edge there): the prolongation is that iso from V to
++//            P, on Fop within Tol.
++//=======================================================================
++
++static bool ChFi3d_ProlongTangentEdgeAlongIso(const TopoDS_Edge&                    E,
++                                              const TopoDS_Face&                    Fop,
++                                              const TopoDS_Face&                    Fv,
++                                              const occ::handle<Geom_Surface>&      SV,
++                                              const occ::handle<Adaptor3d_Surface>& HSop,
++                                              const occ::handle<Adaptor3d_Surface>& HSv,
++                                              const TopoDS_Vertex&                  V,
++                                              const gp_Pnt&                         P,
++                                              const double                          Tol,
++                                              occ::handle<Geom_Curve>&              C3d,
++                                              occ::handle<Geom2d_Curve>&            PcOp,
++                                              occ::handle<Geom2d_Curve>&            PcV,
++                                              double&                               tolreached)
++{
++  if (SV.IsNull() || BRep_Tool::Degenerated(E) || !ChFi3d::IsTangentFaces(E, Fop, Fv))
++  {
++    return false;
++  }
++  double                          f = 0., l = 0.;
++  const occ::handle<Geom2d_Curve> pc = BRep_Tool::CurveOnSurface(E, Fv, f, l);
++  if (pc.IsNull())
++  {
++    return false;
++  }
++  const double   tV = BRep_Tool::Parameter(V, E);
++  const gp_Pnt2d a  = pc->Value(f), b = pc->Value(l), m = pc->Value(0.5 * (f + l));
++  const gp_Pnt2d uvV = pc->Value(tV);
++  // E along an iso: one of the parameters the same along it.
++  const double tolU = std::max(1.e-9, HSv->UResolution(Tol)), tolV = std::max(1.e-9, HSv->VResolution(Tol));
++  const bool   alongV = std::abs(a.X() - b.X()) <= tolU && std::abs(a.X() - m.X()) <= tolU;
++  const bool   alongU = std::abs(a.Y() - b.Y()) <= tolV && std::abs(a.Y() - m.Y()) <= tolV;
++  if (alongU == alongV)
++  {
++    return false;
++  }
++  GeomAPI_ProjectPointOnSurf aPr(P, SV);
++  if (aPr.NbPoints() == 0 || aPr.LowerDistance() > Tol)
++  {
++    return false;
++  }
++  double uP = 0., vP = 0.;
++  aPr.LowerDistanceParameters(uP, vP);
++  // P on the iso, past V away from the edge's other end (its parameters
++  // in the periods of the iso and of V on a periodic surface).
++  const double iso  = alongV ? uvV.X() : uvV.Y();
++  const double wV   = alongV ? uvV.Y() : uvV.X();
++  double       onP  = alongV ? uP : vP;
++  double       wP   = alongV ? vP : uP;
++  const double wFar = alongV ? (std::abs(a.Y() - wV) > std::abs(b.Y() - wV) ? a.Y() : b.Y())
++                             : (std::abs(a.X() - wV) > std::abs(b.X() - wV) ? a.X() : b.X());
++  if (alongV ? SV->IsUPeriodic() : SV->IsVPeriodic())
++  {
++    const double T = alongV ? SV->UPeriod() : SV->VPeriod();
++    onP            = ElCLib::InPeriod(onP, iso - 0.5 * T, iso + 0.5 * T);
++  }
++  if (alongV ? SV->IsVPeriodic() : SV->IsUPeriodic())
++  {
++    const double T = alongV ? SV->VPeriod() : SV->UPeriod();
++    wP             = ElCLib::InPeriod(wP, wV - 0.5 * T, wV + 0.5 * T);
++  }
++  if (std::abs(onP - iso) > (alongV ? tolU : tolV) * 10. || (wP - wV) * (wFar - wV) >= 0.
++      || std::abs(wP - wV) <= Precision::PConfusion())
++  {
++    return false;
++  }
++  const occ::handle<Geom_Curve> anIso = alongV ? SV->UIso(iso) : SV->VIso(iso);
++  if (anIso.IsNull())
++  {
++    return false;
++  }
++  occ::handle<Geom_Curve> aC = new Geom_TrimmedCurve(anIso, std::min(wV, wP), std::max(wV, wP));
++  if (wP < wV)
++  {
++    aC->Reverse();
++  }
++  // On Fop too, within Tol.
++  const occ::handle<Geom_Surface> SOp = BRep_Tool::Surface(Fop);
++  if (SOp.IsNull())
++  {
++    return false;
++  }
++  for (int k = 0; k <= 4; k++)
++  {
++    const gp_Pnt Q = aC->Value(aC->FirstParameter() + 0.25 * k * (aC->LastParameter() - aC->FirstParameter()));
++    GeomAPI_ProjectPointOnSurf aPq(Q, SOp);
++    if (aPq.NbPoints() == 0 || aPq.LowerDistance() > Tol)
++    {
++      return false;
++    }
++  }
++  const occ::handle<Geom2d_Curve> aPcOp =
++    GeomProjLib::Curve2d(aC, aC->FirstParameter(), aC->LastParameter(), SOp);
++  if (aPcOp.IsNull())
++  {
++    return false;
++  }
++  // The curve on SV: the iso's line, parametrized as the 3d curve.
++  const gp_Pnt2d p1 = alongV ? gp_Pnt2d(iso, wV) : gp_Pnt2d(wV, iso);
++  const gp_Pnt2d p2 = alongV ? gp_Pnt2d(iso, wP) : gp_Pnt2d(wP, iso);
++  occ::handle<Geom2d_Curve> aPcV =
++    new Geom2d_Line(p1, gp_Dir2d(gp_Vec2d(p1, p2)));
++  aPcV = new Geom2d_TrimmedCurve(aPcV, 0., p1.Distance(p2));
++  aPcV = Geom2dConvert::CurveToBSplineCurve(aPcV);
++  ChFi3d_ReparamPcurv(aC->FirstParameter(), aC->LastParameter(), aPcV);
++  C3d        = aC;
++  PcOp       = aPcOp;
++  PcV        = aPcV;
++  tolreached = std::max(BRep_Tool::Tolerance(E), ChFi3d_EvalTolReached(HSop, PcOp, HSv, PcV, C3d));
++  return true;
++}
++
+ //=======================================================================
+ // function : ChFi3d_CutSeamAlongCurve
+ // purpose  : Where the curve C on [U1, U2], from the corner's vertex V to
+@@ -2749,6 +2958,23 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
+         }
+       }
+     }
++    // The opposite contact touches the face at the end without crossing it:
++    // a rounding running on into an earlier rounding of its radius, whose
++    // tube is tangent to the opposite face along the prolonged edge, meets
++    // that tube's own contact there. The point where the contact touches
++    // the face's surface within the tolerance, the blend tangent to it.
++    if (!inters && !isRolledEnd && !isRolledPast)
++    {
++      inters = ChFi3d_ContactTouchesEndFace(c3df,
++                                            HGs,
++                                            HBs,
++                                            isfirst,
++                                            10 * tolapp3d,
++                                            FiopArc,
++                                            CPopArc,
++                                            p2dbout,
++                                            wop);
++    }
+ 
+     if (isRolledEnd)
+     {
+@@ -2959,6 +3185,37 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
+     double uu1, uu2, vv1, vv2;
+     ChFi3d_Boite(pfac1, pfac2, uu1, uu2, vv1, vv2);
+     ChFi3d_BoundFac(Bs, uu1, uu2, vv1, vv2);
++    // OnSame: the blend's end section lies in the surface of the face at
++    // the end, the two tangent along it (a rounding running on into an
++    // earlier rounding of its radius whose tube continues it there, past
++    // that rounding's edge with the blend's face): the cap is that section,
++    // as where the end section lies in the face at the end below, not the
++    // intersection of two surfaces tangent along it.
++    bool isSectionInFv = false;
++    if (onsame && !isEndAlongEdge && !isEndOnFace && !isRolledEnd && !isRolledPast)
++    {
++      const occ::handle<Geom_Surface> aSv = BRep_Tool::Surface(Bs.Face());
++      isSectionInFv                       = !aSv.IsNull();
++      for (int k = 1; k <= 3 && isSectionInFv; k++)
++      {
++        const gp_Pnt2d             uv = pfil1.XY() + (pfil2.XY() - pfil1.XY()) * (0.25 * k);
++        GeomAPI_ProjectPointOnSurf aPr(HGs->Value(uv.X(), uv.Y()), aSv);
++        isSectionInFv = aPr.NbPoints() > 0 && aPr.LowerDistance() <= 10. * tolapp3d;
++        if (isSectionInFv)
++        {
++          // Tangent there: the normals along one line.
++          double u = 0., v = 0.;
++          aPr.LowerDistanceParameters(u, v);
++          gp_Pnt pB, pV;
++          gp_Vec duB, dvB, duV, dvV;
++          HGs->D1(uv.X(), uv.Y(), pB, duB, dvB);
++          aSv->D1(u, v, pV, duV, dvV);
++          const gp_Vec nB = duB.Crossed(dvB), nV = duV.Crossed(dvV);
++          isSectionInFv = nB.Magnitude() > gp::Resolution() && nV.Magnitude() > gp::Resolution()
++                          && std::min(nB.Angle(nV), M_PI - nB.Angle(nV)) <= 0.01;
++        }
++      }
++    }
+ 
+     if (isEndAlongEdge)
+     {
+@@ -3013,7 +3270,7 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
+       tolreached = std::max(tolreached, tolr);
+       Cc         = new Geom_TrimmedCurve(C3d, w1, w2);
+     }
+-    else if (isEndOnFace)
++    else if (isEndOnFace || isSectionInFv)
+     {
+       // The cap is the blend's end section, which lies in the face at the
+       // end: on the blend from one contact's end to the other's, on the face
+@@ -3041,7 +3298,7 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
+                           pfac1,
+                           CV2,
+                           pfac2,
+-                          BRep_Tool::Surface(Fv),
++                          isEndOnFace ? BRep_Tool::Surface(Fv) : BRep_Tool::Surface(Bs.Face()),
+                           C3d,
+                           Pc,
+                           pd,
+@@ -3976,7 +4233,23 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
+                                                                  zob2dop,
+                                                                  zob2dv,
+                                                                  tolreached);
+-    if (!isTangentProlonged
++    // (Or that edge's iso on Fv's surface continued, where the edge's curve
++    // ends at the vertex.)
++    const bool isIsoProlonged = !cutArcop && !isTangentProlonged
++                                && ChFi3d_ProlongTangentEdgeAlongIso(Arcprol,
++                                                                     Fzob,
++                                                                     Fv,
++                                                                     BRep_Tool::Surface(Bs.Face()),
++                                                                     HBop,
++                                                                     HBs,
++                                                                     Vtx,
++                                                                     Fd->Vertex(isfirst, IFopArc).Point(),
++                                                                     10 * tolapp3d,
++                                                                     zob3d,
++                                                                     zob2dop,
++                                                                     zob2dv,
++                                                                     tolreached);
++    if (!isTangentProlonged && !isIsoProlonged
+         && !ChFi3d_ComputeCurves(HBop,
+                                  HBs,
+                                  Pardeb,

@@ -63,10 +63,26 @@ pub enum Seg {
         knots: Vec<f64>,
         multiplicities: Vec<u32>,
     },
+    /// A helix about `frame`'s z axis (no IFC curve: the `.rvt` import's
+    /// spiral rails, mitcad#385): `(radius cos t, radius sin t, pitch t /
+    /// 2π)` in the frame from angle `start` through `sweep`; `pitch` is
+    /// the rise per turn counter-clockwise about z (negative: a
+    /// left-handed helix).
+    Helix {
+        frame: Matrix,
+        radius: f64,
+        pitch: f64,
+        start: f64,
+        sweep: f64,
+    },
 }
 
 fn on_conic(frame: &Matrix, a: f64, b: f64, t: f64) -> [f64; 3] {
     math::apply(frame, [a * t.cos(), b * t.sin(), 0.0])
+}
+
+fn on_helix(frame: &Matrix, radius: f64, pitch: f64, t: f64) -> [f64; 3] {
+    math::apply(frame, [radius * t.cos(), radius * t.sin(), pitch * t / TAU])
 }
 
 impl Seg {
@@ -89,6 +105,13 @@ impl Seg {
                 multiplicities,
                 degree,
             } => spline_point(*degree, poles, weights, knots, multiplicities, true),
+            Seg::Helix {
+                frame,
+                radius,
+                pitch,
+                start,
+                ..
+            } => on_helix(frame, *radius, *pitch, *start),
         }
     }
 
@@ -115,6 +138,13 @@ impl Seg {
                 multiplicities,
                 degree,
             } => spline_point(*degree, poles, weights, knots, multiplicities, false),
+            Seg::Helix {
+                frame,
+                radius,
+                pitch,
+                start,
+                sweep,
+            } => on_helix(frame, *radius, *pitch, start + sweep),
         }
     }
 
@@ -165,6 +195,19 @@ impl Seg {
                     multiplicities: multiplicities.iter().rev().copied().collect(),
                 }
             }
+            Seg::Helix {
+                frame,
+                radius,
+                pitch,
+                start,
+                sweep,
+            } => Seg::Helix {
+                frame: *frame,
+                radius: *radius,
+                pitch: *pitch,
+                start: start + sweep,
+                sweep: -sweep,
+            },
         }
     }
 
@@ -203,6 +246,35 @@ impl Seg {
                 knots: knots.clone(),
                 multiplicities: multiplicities.clone(),
             },
+            // A helix keeps its shape under a similarity (scaled by its
+            // factor; a mirror turns its hand); other maps keep the frame's
+            // first column's scale.
+            Seg::Helix {
+                frame,
+                radius,
+                pitch,
+                start,
+                sweep,
+            } => {
+                let f = math::mul(m, frame);
+                let (x, y, z) = (
+                    math::column(&f, 0),
+                    math::column(&f, 1),
+                    math::column(&f, 2),
+                );
+                let s = math::length(x);
+                let mirrored = math::dot(math::cross(x, y), z) < 0.0;
+                let (xa, ya) = (math::scale(x, 1.0 / s), math::scale(y, 1.0 / s));
+                let za = math::cross(xa, ya);
+                let rise = if mirrored { -pitch } else { *pitch };
+                Seg::Helix {
+                    frame: math::from_axes(math::origin(&f), xa, ya, za),
+                    radius: radius * s,
+                    pitch: rise * math::length(z),
+                    start: *start,
+                    sweep: *sweep,
+                }
+            }
         }
     }
 
@@ -249,6 +321,15 @@ impl Seg {
                     })
                     .collect()
             }
+            Seg::Helix {
+                frame,
+                radius,
+                pitch,
+                start,
+                sweep,
+            } => (0..=n)
+                .map(|i| on_helix(frame, *radius, *pitch, start + sweep * i as f64 / n as f64))
+                .collect(),
         }
     }
 

@@ -1,0 +1,369 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: two roundings at the ends of a face too narrow for both, one of
+them beside a strip narrower than its radius (mitcad#339): e.g. the two
+vertical edges of a window through a wall 3.54 thick rounded with 2, the
+window's end split into a strip 0.5 wide on one side and the rest, which
+meets the strip at 0.35 degrees. The rounding beside the strip overflowed
+it onto the face beyond (0011's edge overflow; at 0.35 degrees OCCT also
+takes the two faces for tangent), up to 2 from its edge, across the other
+rounding's contact on that face; their ends on the faces at the ends then
+crossed ("fillets have too big radiuses"). The stored designs' blend rolls
+on the strip's far edge instead, its ball tangent to its other face (the
+cylinder 0331 builds), and the other rounding keeps its face.
+
+- ChFi3d_Builder::RollsInsteadOfOverflow, once the stripes are computed:
+  a stripe's side on a face it reached across a narrow face of its edge (no
+  edge of its spine bounds that face), whose contact there lies nearer to
+  another stripe's edge than that stripe's contact on the face (the edge
+  of its spine on that face, else the one nearest to its contact), may not
+  overflow onto that face (myRollStripes, RollsBefore). The stripe is
+  computed again; where that fails, as before.
+- Such a stripe's start is sought as an overflow's (StartSolOverflow, not
+  StartSol, whose search of the neighbouring faces takes nearly tangent
+  ones as tangent): the side that reaches that face rolls on the edge before
+  it, also where the faces only nearly continue each other (sharpAt: their
+  normals apart by more than 1e-4, as convexAt's tangency) and where it
+  passed a sliver on the way (the edge before the sliver, 0013's fallback).
+  Two stripes overflowing onto the same face across each other's contacts
+  both roll.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.cxx
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.cxx
+@@ -627,6 +627,113 @@ TopoDS_Edge ChFi3d_Builder::OverlapEdge(const occ::handle<ChFiDS_Stripe>& S,
+   return TopoDS_Edge();
+ }
+ 
++// The edge of spine Sp nearest to point P (within its bounds), or a null
++// edge.
++static TopoDS_Edge nearestSpineEdge(const occ::handle<ChFiDS_Spine>& Sp, const gp_Pnt& P)
++{
++  TopoDS_Edge aBest;
++  double      aBestD = RealLast();
++  for (int i = 1; i <= Sp->NbEdges(); i++)
++  {
++    const double d = distanceToEdge(P, Sp->Edges(i));
++    if (d < aBestD)
++    {
++      aBestD = d;
++      aBest  = Sp->Edges(i);
++    }
++  }
++  return aBest;
++}
++
++NCollection_List<occ::handle<ChFiDS_Stripe>> ChFi3d_Builder::RollsInsteadOfOverflow()
++{
++  NCollection_List<occ::handle<ChFiDS_Stripe>> again;
++  const TopOpeBRepDS_DataStructure&            DStr = myDS->DS();
++  const double                                 tol  = 10. * tolapp3d;
++  for (NCollection_List<occ::handle<ChFiDS_Stripe>>::Iterator itA(myListStripe); itA.More();
++       itA.Next())
++  {
++    const occ::handle<ChFiDS_Stripe>& A = itA.Value();
++    if (A->SetOfSurfData().IsNull() || occ::down_cast<ChFiDS_FilSpine>(A->Spine()).IsNull())
++    {
++      continue;
++    }
++    for (int i = 1; i <= A->SetOfSurfData()->Length(); i++)
++    {
++      const occ::handle<ChFiDS_SurfData>& a = A->SetOfSurfData()->Value(i);
++      for (int ka = 1; ka <= 2; ka++)
++      {
++        if (a->Index(ka) <= 0 || a->IsOnCurve(ka))
++        {
++          continue;
++        }
++        // (Only a face A reached across a narrow face of its edge.)
++        const TopoDS_Face F = TopoDS::Face(DStr.Shape(a->Index(ka)));
++        if (!spineEdgeOf(A->Spine(), F).IsNull() || RollsBefore(A, F))
++        {
++          continue;
++        }
++        bool across = false;
++        for (NCollection_List<occ::handle<ChFiDS_Stripe>>::Iterator itB(myListStripe);
++             itB.More() && !across;
++             itB.Next())
++        {
++          const occ::handle<ChFiDS_Stripe>& B = itB.Value();
++          if (B == A || B->SetOfSurfData().IsNull())
++          {
++            continue;
++          }
++          for (int j = 1; j <= B->SetOfSurfData()->Length() && !across; j++)
++          {
++            const occ::handle<ChFiDS_SurfData>& b = B->SetOfSurfData()->Value(j);
++            for (int kb = 1; kb <= 2 && !across; kb++)
++            {
++              if (b->Index(kb) != a->Index(ka) || b->IsOnCurve(kb))
++              {
++                continue;
++              }
++              // B's edge: the one of its spine on F, else the one nearest to
++              // B's contact there.
++              TopoDS_Edge EB = spineEdgeOf(B->Spine(), F);
++              if (EB.IsNull())
++              {
++                const gp_Pnt Pb = b->Vertex(true, kb).Point().Translated(
++                  0.5 * gp_Vec(b->Vertex(true, kb).Point(), b->Vertex(false, kb).Point()));
++                EB = nearestSpineEdge(B->Spine(), Pb);
++              }
++              across = !EB.IsNull() && contactBeyond(DStr, a, ka, b, kb, EB, tol);
++            }
++          }
++        }
++        if (across)
++        {
++          myRollStripes.Append(A);
++          myRollFaces.Append(F);
++          if (!again.Contains(A))
++          {
++            again.Append(A);
++          }
++        }
++      }
++    }
++  }
++  return again;
++}
++
++bool ChFi3d_Builder::RollsBefore(const occ::handle<ChFiDS_Stripe>& S, const TopoDS_Shape& F) const
++{
++  NCollection_List<occ::handle<ChFiDS_Stripe>>::Iterator itS(myRollStripes);
++  NCollection_List<TopoDS_Shape>::Iterator               itF(myRollFaces);
++  for (; itS.More(); itS.Next(), itF.Next())
++  {
++    if (itS.Value() == S && itF.Value().IsSame(F))
++    {
++      return true;
++    }
++  }
++  return false;
++}
++
+ void ChFi3d_Builder::RemoveCoincidentStripes()
+ {
+   TopOpeBRepDS_DataStructure&  DStr = myDS->ChangeDS();
+@@ -1779,6 +1886,67 @@ void ChFi3d_Builder::Compute()
+     done = true;
+   }
+   done = (badstripes.IsEmpty());
++  // Stripes whose blends ran over a narrow face of their edge onto a face
++  // where another stripe's contact lies are computed again rolling on the
++  // edge before that face (where the faces there are not exactly tangent);
++  // as they were where that fails.
++  if (done)
++  {
++    const NCollection_List<occ::handle<ChFiDS_Stripe>> rolling = RollsInsteadOfOverflow();
++    for (NCollection_List<occ::handle<ChFiDS_Stripe>>::Iterator it(rolling); it.More(); it.Next())
++    {
++      occ::handle<ChFiDS_Stripe> st = it.Value();
++      st->Reset();
++      st->Spine()->SetErrorStatus(ChFiDS_Ok);
++      bool aComputed = true;
++      try
++      {
++        OCC_CATCH_SIGNALS
++        PerformSetOfSurf(st);
++      }
++      catch (Standard_Failure const&)
++      {
++        aComputed = false;
++      }
++      if (aComputed && st->Spine()->ErrorStatus() == ChFiDS_Ok)
++      {
++        continue;
++      }
++      // (The overflow as before.)
++      NCollection_List<occ::handle<ChFiDS_Stripe>>::Iterator itR(myRollStripes);
++      NCollection_List<TopoDS_Shape>::Iterator               itRF(myRollFaces);
++      while (itR.More())
++      {
++        if (itR.Value() == st)
++        {
++          myRollStripes.Remove(itR);
++          myRollFaces.Remove(itRF);
++        }
++        else
++        {
++          itR.Next();
++          itRF.Next();
++        }
++      }
++      st->Reset();
++      st->Spine()->SetErrorStatus(ChFiDS_Ok);
++      try
++      {
++        OCC_CATCH_SIGNALS
++        PerformSetOfSurf(st);
++      }
++      catch (Standard_Failure const&)
++      {
++        badstripes.Append(st);
++        if (st->Spine()->ErrorStatus() == ChFiDS_Ok)
++        {
++          st->Spine()->SetErrorStatus(ChFiDS_Error);
++        }
++        noteFailure(st, blendFailure(st));
++      }
++    }
++    done = badstripes.IsEmpty();
++  }
+   // Stripes whose blends overlap all along on a face between their edges
+   // are computed again overflowing that face; stripes that then make the
+   // blend of another are dropped with their corners.
+@@ -3007,6 +3175,8 @@ void ChFi3d_Builder::Reset()
+   myRideFaces.Clear();
+   myRideEdges.Clear();
+   myRideSupports.Clear();
++  myRollStripes.Clear();
++  myRollFaces.Clear();
+ 
+   NCollection_List<occ::handle<ChFiDS_Stripe>>::Iterator itel;
+   for (itel.Initialize(myListStripe); itel.More();)
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.hxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.hxx
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.hxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.hxx
+@@ -872,6 +872,11 @@ protected:
+   NCollection_List<TopoDS_Shape>                                                    myRideFaces;
+   NCollection_List<TopoDS_Shape>                                                    myRideEdges;
+   NCollection_List<TopoDS_Shape>                                                    myRideSupports;
++  //! Stripes whose side may not overflow onto a face (RollsInsteadOfOverflow):
++  //! that side rolls on the edge before the face (the stripe and the face,
++  //! in parallel lists).
++  NCollection_List<occ::handle<ChFiDS_Stripe>>                                      myRollStripes;
++  NCollection_List<TopoDS_Shape>                                                    myRollFaces;
+ 
+ private:
+   Standard_EXPORT bool FaceTangency(const TopoDS_Edge&   E0,
+@@ -1011,6 +1016,18 @@ private:
+                                      const occ::handle<ChFiDS_Stripe>& B,
+                                      const TopoDS_Face&                F);
+ 
++  //! Finds the stripes whose side overflowed a narrow face of their edge
++  //! onto a face beyond and whose contact there lies across another
++  //! stripe's contact on that face (nearer to that stripe's edge than its
++  //! own contact): the two blends would run into each other there. Each
++  //! such side rolls on the edge before that face instead (myRollStripes).
++  //! Returns the stripes to compute again.
++  Standard_EXPORT NCollection_List<occ::handle<ChFiDS_Stripe>> RollsInsteadOfOverflow();
++
++  //! Whether stripe S's side may not overflow onto face F
++  //! (RollsInsteadOfOverflow).
++  Standard_EXPORT bool RollsBefore(const occ::handle<ChFiDS_Stripe>& S, const TopoDS_Shape& F) const;
++
+   //! Once the corners are computed: each stripe that rolls on another's
+   //! contact line (RideOnOverlap) and that other meet on the line, their
+   //! sides on each other's surface; the face they shared is left without
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+@@ -1428,6 +1428,41 @@ static bool convexAt(const TopoDS_Edge& E, const TopoDS_Face& F1, const TopoDS_F
+   return T.Dot(Pro) > 0.;
+ }
+ 
++// Whether the faces F1 and F2 of edge E meet at an angle at its parameter W
++// (their normals apart by more than convexAt's tangency, and not folded
++// back): a ball can roll on the edge there.
++static bool sharpAt(const TopoDS_Edge& E, const TopoDS_Face& F1, const TopoDS_Face& F2, const double W)
++{
++  double                          f, l;
++  const occ::handle<Geom2d_Curve> C1 = BRep_Tool::CurveOnSurface(E, F1, f, l);
++  const occ::handle<Geom2d_Curve> C2 = BRep_Tool::CurveOnSurface(E, F2, f, l);
++  if (C1.IsNull() || C2.IsNull() || F1.IsSame(F2))
++  {
++    return false;
++  }
++  gp_Vec N[2];
++  for (int k = 0; k < 2; k++)
++  {
++    const TopoDS_Face&              F  = k == 0 ? F1 : F2;
++    const gp_Pnt2d                  uv = (k == 0 ? C1 : C2)->Value(W);
++    const occ::handle<Geom_Surface> S  = BRep_Tool::Surface(F);
++    gp_Pnt                          P;
++    gp_Vec                          DU, DV;
++    S->D1(uv.X(), uv.Y(), P, DU, DV);
++    N[k] = DU.Crossed(DV);
++    if (N[k].SquareMagnitude() <= gp::Resolution())
++    {
++      return false;
++    }
++    N[k].Normalize();
++    if (F.Orientation() == TopAbs_REVERSED)
++    {
++      N[k].Reverse();
++    }
++  }
++  return N[0].Crossed(N[1]).Magnitude() >= 1.e-4;
++}
++
+ // Whether a rolling ball of radius R that touches face F at P (the common
+ // point of the blend's section on F, the other contact at Po) cannot touch
+ // face Fv at its point uv (its face beyond F across a tangent edge): Fv bends
+@@ -1699,6 +1734,9 @@ int ChFi3d_Builder::StartSolOverflow(const occ::handle<ChFiDS_Stripe>&      Stri
+     bool                           movedNow[2] = {false, false};
+     // Whether the last edge a side crossed is a sharp convex edge.
+     bool                           convex[2] = {false, false};
++    // Whether a side reached a face it may not overflow onto, where another
++    // stripe's blend lies (RollsInsteadOfOverflow).
++    bool                           mustRoll[2] = {false, false};
+     bool                           failed    = false;
+     math_Vector                    Sol(1, 4);
+     TopAbs_State                   pos[2] = {TopAbs_UNKNOWN, TopAbs_UNKNOWN};
+@@ -1759,6 +1797,8 @@ int ChFi3d_Builder::StartSolOverflow(const occ::handle<ChFiDS_Stripe>&      Stri
+       lastMoved   = k;
+       movedNow[k] = true;
+       convex[k]   = false;
++      // (A face this side may not overflow onto: it rolls before it.)
++      mustRoll[k] = mustRoll[k] || RollsBefore(Stripe, Fn);
+       return true;
+     };
+     // Where side k rolls if the faces beyond a face its ball touches at no
+@@ -1777,7 +1817,11 @@ int ChFi3d_Builder::StartSolOverflow(const occ::handle<ChFiDS_Stripe>&      Stri
+         entry[k]  = fbEntry[k];
+         went[k]   = fbWent[k];
+       }
+-      if (before[k].IsNull() || ChFi3d::IsTangentFaces(entry[k], before[k], face[k]))
++      // (Before a face it may not overflow onto, a side rolls also where the
++      // faces only nearly continue each other.)
++      if (before[k].IsNull()
++          || (mustRoll[k] ? !sharpAt(entry[k], before[k], face[k], went[k])
++                          : ChFi3d::IsTangentFaces(entry[k], before[k], face[k])))
+       {
+         failed = true;
+         return;
+@@ -1792,6 +1836,17 @@ int ChFi3d_Builder::StartSolOverflow(const occ::handle<ChFiDS_Stripe>&      Stri
+     bool elsewhere = false;
+     for (int iter = 0; iter < 8 && !failed && !rolls[0] && !rolls[1]; iter++)
+     {
++      if (mustRoll[0] || mustRoll[1])
++      {
++        for (int k = 0; k < 2; k++)
++        {
++          if (mustRoll[k])
++          {
++            roll(k);
++          }
++        }
++        break;
++      }
+       if (!section(false))
+       {
+         // Tangent to no point of the last face's surface (a sliver): the
+@@ -4108,10 +4163,13 @@ void ChFi3d_Builder::PerformSetOfSurfOnElSpine(const occ::handle<ChFiDS_ElSpine>
+     try
+     {
+       OCC_CATCH_SIGNALS
+-      if (myOverlapStripes.Contains(Stripe) || myRideStripes.Contains(Stripe))
++      if (myOverlapStripes.Contains(Stripe) || myRideStripes.Contains(Stripe)
++          || myRollStripes.Contains(Stripe))
+       {
+         // (A face between this edge and another stripe's narrower than both
+-        // roundings: the start overflows it.)
++        // roundings: the start overflows it. A side that may not overflow
++        // onto a face, also one continuing its face nearly tangentially,
++        // rolls before it: the start is found as for an overflow.)
+         throw Standard_Failure("overlapping roundings");
+       }
+       StartSol(Stripe, HGuide, HS1, HS2, It1, It2, pp1, pp2, First);

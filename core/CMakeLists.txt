@@ -57,7 +57,9 @@ corrosion_add_cxxbridge(mitcad_bridge CRATE mitcad_ffi FILES
   # The tangent chains of a body's edges and faces, for the hover (mitcad#290).
   kernel/tangent_chain.rs
   # Contacts of a new Extrude's tool (mitcad#289).
-  kernel/contact.rs)
+  kernel/contact.rs
+  # BUILD: the face names of derived parts (mitcad#375).
+  kernel/build.rs)
 target_sources(mitcad_bridge PRIVATE
   cpp/bridge/boolean.cpp
   cpp/bridge/boolean.hpp
@@ -135,6 +137,10 @@ target_sources(mitcad_bridge PRIVATE
 target_sources(mitcad_bridge PRIVATE
   cpp/bridge/contact.cpp
   cpp/bridge/contact.hpp)
+# BUILD: the face names of derived parts (mitcad#375).
+target_sources(mitcad_bridge PRIVATE
+  cpp/bridge/build.cpp
+  cpp/bridge/build.hpp)
 target_include_directories(mitcad_bridge PUBLIC cpp)
 target_link_libraries(mitcad_bridge PUBLIC mitcad_geometry)
 # The bridge and the Rust library call each other, and a single-pass

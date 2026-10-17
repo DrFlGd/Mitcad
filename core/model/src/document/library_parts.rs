@@ -54,6 +54,10 @@ pub struct PartsListRow {
     pub quantity: usize,
     pub linked: bool,
     pub library: Option<LibraryRef>,
+    /// Who sells it, the article number and the product page (mitcad#375).
+    pub supplier: String,
+    pub part_number: String,
+    pub supplier_url: String,
 }
 
 /// New bodies of a linked component: the component, its link, the new
@@ -473,18 +477,39 @@ impl<K: Kernel> Document<K> {
         let mut memo = BTreeMap::new();
         a.components
             .iter()
-            .map(|c| PartsListRow {
-                component: c.uid,
-                name: c.name.clone(),
-                designation: c
-                    .library
+            .map(|c| {
+                // A BUILD part (mitcad#375): its source's record.
+                let build = self.build_list_entry(c.uid);
+                let library = build
                     .as_ref()
-                    .map(|l| l.designation.clone())
-                    .filter(|d| !d.is_empty())
-                    .unwrap_or_else(|| c.name.clone()),
-                quantity: placed(a, c.uid, &mut memo, 0),
-                linked: c.link.is_some(),
-                library: c.library.clone(),
+                    .map(|b| b.library.clone())
+                    .or_else(|| c.library.clone());
+                PartsListRow {
+                    component: c.uid,
+                    name: c.name.clone(),
+                    designation: build
+                        .as_ref()
+                        .map(|b| b.designation.clone())
+                        .or_else(|| c.library.as_ref().map(|l| l.designation.clone()))
+                        .filter(|d| !d.is_empty())
+                        .unwrap_or_else(|| c.name.clone()),
+                    quantity: placed(a, c.uid, &mut memo, 0),
+                    linked: c.link.is_some(),
+                    supplier: library
+                        .as_ref()
+                        .map(|l| l.supplier.clone())
+                        .unwrap_or_default(),
+                    part_number: build
+                        .as_ref()
+                        .map(|b| b.part_number.clone())
+                        .or_else(|| library.as_ref().map(|l| l.part_number.clone()))
+                        .unwrap_or_default(),
+                    supplier_url: library
+                        .as_ref()
+                        .map(|l| l.supplier_url.clone())
+                        .unwrap_or_default(),
+                    library,
+                }
             })
             .collect()
     }
@@ -528,6 +553,15 @@ fn library_ref(
         license: source.license.clone(),
         authors: source.authors.clone(),
         designation: designation.to_owned(),
+        supplier: source.supplier.clone().unwrap_or_default(),
+        part_number: row
+            .and_then(|r| r.part_number.clone())
+            .or_else(|| source.part_number.clone())
+            .unwrap_or_default(),
+        supplier_url: row
+            .and_then(|r| r.supplier_url.clone())
+            .or_else(|| source.supplier_url.clone())
+            .unwrap_or_default(),
     }
 }
 

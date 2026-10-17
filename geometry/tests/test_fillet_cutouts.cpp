@@ -4,11 +4,13 @@
 // degrees, ten flats cut into the pole whose tops lie 0.3 below the edge
 // between the bevel and the pole. A rounding of that edge with radius 0.9
 // touches the pole 0.373 below the edge (r tan 22.5 degrees), over each
-// flat below its top: OCCT's rolling ball fails there. The bodies stored in
+// flat below its top: OCCT's rolling ball failed there. The bodies stored in
 // .f3d files keep the rounding on the pole's surface across the flats, one
 // torus round the whole edge, trimmed by the flats' tops, which grow out to
 // meet it: the rounding of the pole without the flats, with the flats cut
-// from it afterwards. The same with lugs standing out of a face.
+// from it afterwards. With the port's patches 0500 and 0501 (mitcad#237)
+// OCCT builds that itself. The same with lugs standing out of a face, which
+// the dressup builds with the lugs cleared and joined again.
 
 #include <cmath>
 #include <string>
@@ -124,7 +126,9 @@ void test_rounding_over_flats_is_the_poles_with_the_flats_cut_again() {
   CHECK(!bevel.empty());
   const ShapePtr rounded = fillet("F2", *body, {bevel}, 0.9);
   CHECK(detail::is_valid(rounded->occt()));
-  CHECK(rounded->notes().size() == 1);
+  // The geometry kernel builds it itself (port patches 0500 and 0501,
+  // mitcad#237: the torus cut round each flat), with no note.
+  CHECK(rounded->notes().empty());
   // The pole rounded without the flats, the flats cut from it after.
   const TopoDS_Shape plain = pole();
   BRepFilletAPI_MakeFillet whole(plain);

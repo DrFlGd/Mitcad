@@ -384,3 +384,83 @@ fn an_item_that_failed_in_the_file_keeps_the_bodies_within_the_tolerance() {
     assert!(bases_replace(&doc).is_empty(), "{text}");
     assert!(extrusion_kept(&report), "{text}");
 }
+
+/// A block and Fillet1 on one of its edges, which takes 1 mm³ from it, its
+/// stored state measuring `noise` mm³ less (as a stored rounding whose edges
+/// lie off its faces measures, mitcad#235), imported on a kernel that lists
+/// new faces and measures changes by their faces with `slack` mm³, where
+/// given.
+fn noisy_rounding(noise: f64, slack: Option<f64>) -> DesignReport {
+    let mut items = vec![
+        rectangle_sketch(0),
+        extrude(1, 0, "NewBodyFeatureOperation", "d2"),
+    ];
+    let exact = || TestKernel {
+        edge_points: true,
+        fillet_takes: Some(1.0),
+        ..TestKernel::default()
+    };
+    let mut reference = Document::new(exact());
+    import_design(
+        &mut reference,
+        &timeline_dump(items.clone()),
+        &mut NoGeometry,
+        &Options::default(),
+    );
+    let block = shapes(&reference);
+    let (a, b) = block[0].edges[0].clone();
+    let edge = EdgeName::new(a.clone(), b.clone());
+    let set = FilletSet {
+        edges: std::slice::from_ref(&edge),
+        faces: &[],
+        size: FilletSize::Constant { radius: 2.0 },
+        tangent_chain: true,
+        curvature: false,
+        weight: 0.0,
+    };
+    let stored = TestKernel {
+        noisy_fillets: true,
+        ..exact()
+    }
+    .fillet(FeatureUid(3), &block[0], &[set], true)
+    .unwrap();
+    items.push(fillet_on(2, "Fillet1", &a, &b));
+    let mut geometry = TestGeometry {
+        states: vec![Vec::new(), block, vec![stored]],
+        items: HashMap::from([(1, 1), (2, 2)]),
+        ..TestGeometry::default()
+    };
+    let mut doc = Document::new(TestKernel {
+        lists_new_faces: true,
+        fillet_noise: -noise,
+        change_slack: slack,
+        ..exact()
+    });
+    import_design(
+        &mut doc,
+        &timeline_dump(items),
+        &mut geometry,
+        &Options::default(),
+    )
+}
+
+#[test]
+fn a_roundings_change_beyond_the_volumes_but_within_its_faces_slack_is_its_faces_to_judge() {
+    // The stored state removes 30 % more than the rounding: by the bodies'
+    // volumes that is another result, but the changed faces' edge
+    // tolerances leave twice that open, so its faces decide; they lie on
+    // the file's.
+    let report = noisy_rounding(0.3, Some(0.6));
+    let text = report.text();
+    assert_eq!(report.items[2].outcome, Outcome::Parametric, "{text}");
+    assert_eq!(report.items[2].verified, Some(true), "{text}");
+    // Without the faces' measure, or with a slack that leaves the
+    // difference beyond DIFFERENT, the volumes decide.
+    for slack in [None, Some(0.1)] {
+        let report = noisy_rounding(0.3, slack);
+        let text = report.text();
+        assert_ne!(report.items[2].outcome, Outcome::Parametric, "{text}");
+        let note = report.items[2].note.clone().unwrap_or_default();
+        assert!(note.contains("off the file's"), "{text}");
+    }
+}

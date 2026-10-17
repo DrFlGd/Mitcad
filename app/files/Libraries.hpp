@@ -36,7 +36,7 @@ struct LibrarySettings {
   bool add(const QString& url);
 };
 
-// The default sources: Mitcad's fastener library and the community index.
+// The default sources: Mitcad's parts library and the community index.
 QList<LibrarySource> defaultLibrarySources();
 
 // Where fetched libraries are kept: MITCAD_LIBRARIES_DIR, else

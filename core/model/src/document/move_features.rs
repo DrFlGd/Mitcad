@@ -118,7 +118,10 @@ fn stays(def: &FeatureDef) -> bool {
 fn has_origins(def: &FeatureDef) -> bool {
     matches!(
         def,
-        FeatureDef::Joint(_) | FeatureDef::AsBuiltJoint(_) | FeatureDef::ConstraintSet(_)
+        FeatureDef::Joint(_)
+            | FeatureDef::AsBuiltJoint(_)
+            | FeatureDef::ConstraintSet(_)
+            | FeatureDef::BoundLength(_)
     )
 }
 
@@ -1003,6 +1006,17 @@ fn follow_references(
                 for origin in [&mut joint.a, &mut joint.b] {
                     follow_origin(origin, component, &ends_in_source, moved, occurrence);
                 }
+            }
+            // BUILD's bound lengths (mitcad#375).
+            FeatureDef::BoundLength(bound) => {
+                let [mut from, mut to] = bound.origins();
+                for origin in [&mut from, &mut to] {
+                    follow_origin(origin, component, &ends_in_source, moved, occurrence);
+                }
+                bound.from.occurrence = from.occurrence;
+                bound.from.geometry = from.geometry;
+                bound.to.occurrence = to.occurrence;
+                bound.to.geometry = to.geometry;
             }
             FeatureDef::AsBuiltJoint(joint) => {
                 if let Some(origin) = joint.origin.as_mut() {

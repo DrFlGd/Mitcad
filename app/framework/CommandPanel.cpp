@@ -11,10 +11,13 @@
 #include <QFormLayout>
 #include <QFrame>
 #include <QHBoxLayout>
+#include <QIcon>
+#include <QImage>
 #include <QLabel>
 #include <QLineEdit>
 #include <QStyle>
 #include <QListWidget>
+#include <QPixmap>
 #include <QPushButton>
 #include <QScrollBar>
 #include <QSignalBlocker>
@@ -267,7 +270,9 @@ CommandPanel::CommandPanel(const CommandDef& def, const CommandState& state, boo
   auto* buttons = new QHBoxLayout;
   m_ok = new QPushButton(def.okLabel.isEmpty() ? tr("OK") : def.okLabel);
   m_ok->setObjectName(QStringLiteral("commandOk"));
-  auto* cancel = new QPushButton(tr("Cancel"));
+  // A command that repeats (BUILD's Place, mitcad#375) keeps what it
+  // applied: its Cancel only closes it.
+  auto* cancel = new QPushButton(def.repeats ? tr("Close") : tr("Cancel"));
   cancel->setObjectName(QStringLiteral("commandCancel"));
   for (QPushButton* button : {m_ok, cancel}) {
     // The keyboard stays in the value fields; Enter and Esc work anywhere.
@@ -276,10 +281,11 @@ CommandPanel::CommandPanel(const CommandDef& def, const CommandState& state, boo
   }
   // In a floating card OK is the accent-coloured default button.
   m_ok->setDefault(chromeStyle() == ChromeStyle::Floating);
-  m_ok->setToolTip(def.inspect             ? tr("Close (Enter)")
-                   : def.okLabel.isEmpty() ? tr("Create the feature (Enter)")
-                                           : tr("%1 (Enter)").arg(def.okLabel));
-  cancel->setToolTip(tr("Close without changes (Esc)"));
+  m_ok->setToolTip(def.apply                 ? tr("%1 (Enter)").arg(def.okLabel.isEmpty() ? tr("OK") : def.okLabel)
+                   : def.inspect             ? tr("Close (Enter)")
+                   : def.okLabel.isEmpty()   ? tr("Create the feature (Enter)")
+                                             : tr("%1 (Enter)").arg(def.okLabel));
+  cancel->setToolTip(def.repeats ? tr("Close; what was placed stays (Esc)") : tr("Close without changes (Esc)"));
   connect(m_ok, &QPushButton::clicked, this, &CommandPanel::accepted);
   connect(cancel, &QPushButton::clicked, this, &CommandPanel::rejected);
   buttons->addStretch();
@@ -432,6 +438,9 @@ CommandPanel::Row* CommandPanel::createRow(const InputDef& input, const QString&
     // typed value goes.
     row.combo->setFocusPolicy(Qt::NoFocus);
     row.combo->setToolTip(input.tooltip);
+    if (input.choiceImage) {
+      row.combo->setIconSize(QSize(48, 48)); // the options' pictures
+    }
     // Options that follow other inputs are filled by refreshRow.
     if (!input.choicesFor) {
       for (const auto& [value, label] : input.choices) {
@@ -744,8 +753,16 @@ void CommandPanel::refreshRow(Row& row, const CommandState& scope, const Command
       }
       if (!same) {
         row.combo->clear();
+        int pictures = 0;
         for (const auto& [value, label] : options) {
-          row.combo->addItem(label, value);
+          // A picture beside each option that has one (InputDef::choiceImage).
+          const QImage image = input.choiceImage ? input.choiceImage(value) : QImage();
+          if (image.isNull()) {
+            row.combo->addItem(label, value);
+          } else {
+            row.combo->addItem(QIcon(QPixmap::fromImage(image)), label, value);
+            ++pictures;
+          }
         }
         QStringList labels;
         for (const auto& option : options) {
@@ -753,6 +770,12 @@ void CommandPanel::refreshRow(Row& row, const CommandState& scope, const Command
         }
         qDebug().noquote() << QStringLiteral("Panel %1 options %2: %3")
                                   .arg(m_def.name, row.key, labels.join(QStringLiteral(" | ")));
+        if (input.choiceImage) {
+          qDebug().noquote() << QStringLiteral("Panel %1 option pictures %2: %3 of %4")
+                                    .arg(m_def.name, row.key)
+                                    .arg(pictures)
+                                    .arg(options.size());
+        }
       }
     }
     row.combo->setCurrentIndex(qMax(0, row.combo->findData(scope.choice(id))));

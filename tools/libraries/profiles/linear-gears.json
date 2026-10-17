@@ -1,0 +1,212 @@
+[
+  {
+    "id": "gear-m1-15t-3-pa",
+    "name": "PA spur gear module 1, 15 teeth, bore 3 mm",
+    "category": "linear",
+    "source": "dynamic-m/PA-Spur-gear-Module-1-15-teeth-with-15mm-width-Bore-3-mm/Motedis-PNM1-15/Motedis_PNM1-15.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "PNM1-15",
+    "supplier_url": "https://www.motedis.com/en/PA-Spur-gear-Module-1-15-teeth-with-15mm-width-Bore-3-mm",
+    "designation": "PA spur gear module 1, 15 teeth, bore 3 mm",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"gear","mate":{"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,10,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "gear-m1-15t-6-35",
+    "name": "Spur gear module 1, 15 teeth, bore 6.35 mm",
+    "category": "linear",
+    "source": "dynamic-m/Spur-gear-Module-1-15-teeth-with-15mm-width-drilling-635mm/Motedis_Spur_Gear-Module_1-15_teeth_with_15mm_width-drilling_6.35.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "5425",
+    "supplier_url": "https://www.motedis.com/en/Spur-gear-Module-1-15-teeth-with-15mm-width-drilling-635mm",
+    "designation": "Spur gear module 1, 15 teeth, bore 6.35 mm",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"gear","mate":{"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,0,5],"z":[0,0,1],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "gear-m1-20t-8",
+    "name": "Spur gear module 1, 20 teeth, bore 8 mm",
+    "category": "linear",
+    "source": "dynamic-m/Spur-gear-Module-1-20-teeth-with-15mm-width/Motedis_Spur_Gear-Module_1-20_teeth_with_15mm_width.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "5073",
+    "supplier_url": "https://www.motedis.com/en/Spur-gear-Module-1-20-teeth-with-15mm-width",
+    "designation": "Spur gear module 1, 20 teeth, bore 8 mm",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"gear","mate":{"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,0,5],"z":[0,0,1],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "gear-m3-20t-10-pa",
+    "name": "PA spur gear module 3, 20 teeth, bore 10 mm",
+    "category": "linear",
+    "source": "dynamic-m/PA-Spur-gear-Module-3-20-teeth-with-30mm-width-Bore-10-mm/Motedis-PNM3-20/Motedis_PNM3-20.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "PNM3-20",
+    "supplier_url": "https://www.motedis.com/en/PA-Spur-gear-Module-3-20-teeth-with-30mm-width-Bore-10-mm",
+    "designation": "PA spur gear module 3, 20 teeth, bore 10 mm",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"gear","mate":{"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,20,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "gear-m3-20t-15",
+    "name": "Spur gear module 3, 20 teeth, bore 15 mm",
+    "category": "linear",
+    "source": "dynamic-m/Spur-gear-Module-3-20-teeth-with-30mm-width/Motedis_Spur_Gear-Module_3-20_teeth_with_30mm_width.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "5475",
+    "supplier_url": "https://www.motedis.com/en/Spur-gear-Module-3-20-teeth-with-30mm-width",
+    "designation": "Spur gear module 3, 20 teeth, bore 15 mm",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"gear","mate":{"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,0,10],"z":[0,0,1],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "gear-m3-36t-20",
+    "name": "Spur gear module 3, 36 teeth, bore 20 mm",
+    "category": "linear",
+    "source": "dynamic-m/Spur-gear-Module-3-36-teeth-with-30mm-width/Motedis_Spur_Gear-Module_3-36_teeth_with_30mm_width.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "5476",
+    "supplier_url": "https://www.motedis.com/en/Spur-gear-Module-3-36-teeth-with-30mm-width",
+    "designation": "Spur gear module 3, 36 teeth, bore 20 mm",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"gear","mate":{"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,0,10],"z":[0,0,1],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "gear-m4-20t-10-pa",
+    "name": "PA spur gear module 4, 20 teeth, bore 10 mm",
+    "category": "linear",
+    "source": "dynamic-m/PA-Spur-gear-Module-4-20-teeth-with-40mm-width-Bore-10-mm/Motedis-PNM4-20/Motedis_PNM4-20.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "PNM4-20",
+    "supplier_url": "https://www.motedis.com/en/PA-Spur-gear-Module-4-20-teeth-with-40mm-width-Bore-10-mm",
+    "designation": "PA spur gear module 4, 20 teeth, bore 10 mm",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"gear","mate":{"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,25,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "rack-m1-15-999-holes",
+    "name": "Gear rack 15x15, Module 1, 999mm with bore holes",
+    "category": "linear",
+    "source": "dynamic-m/Gear-rack-15x15-Module-1-999mm-with-bore-holes/Motedis_9775.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "9775",
+    "supplier_url": "https://www.motedis.com/en/Gear-rack-15x15-Module-1-999mm-with-bore-holes",
+    "designation": "Gear rack 15x15, Module 1, 999mm with bore holes",
+    "rows": [],
+    "build": {"role":"linear","frames":[{"name":"rack","kind":"rail"}],"linear":{"kind":"rack"}},
+    "frames": [{"name":"rack","origin":[0,14,0],"z":[0,1,0],"x":[1,0,0],"kind":"rail"}]
+  },
+  {
+    "id": "rack-m1-15-1000-pa",
+    "name": "PA Gear rack 15x15, Module 1, 1000mm",
+    "category": "linear",
+    "source": "dynamic-m/PA-Gear-rack-15x15-Module-1-1000mm/Motedis-RNM1-15/Motedis_RNM1-15.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "RNM1-15",
+    "supplier_url": "https://www.motedis.com/en/PA-Gear-rack-15x15-Module-1-1000mm",
+    "designation": "PA Gear rack 15x15, Module 1, 1000mm",
+    "rows": [],
+    "build": {"role":"linear","frames":[{"name":"rack","kind":"rail"}],"linear":{"kind":"rack"}},
+    "frames": [{"name":"rack","origin":[0,14,0],"z":[0,1,0],"x":[1,0,0],"kind":"rail"}]
+  },
+  {
+    "id": "rack-m3-30-999-holes",
+    "name": "Gear rack 30x30, Module 3, 999mm with bore holes",
+    "category": "linear",
+    "source": "dynamic-m/Gear-rack-30x30-Module-3-999mm-with-bore-holes/Motedis_Gear_Rack_30x30-Module_3-999mm_drilled.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "9774",
+    "supplier_url": "https://www.motedis.com/en/Gear-rack-30x30-Module-3-999mm-with-bore-holes",
+    "designation": "Gear rack 30x30, Module 3, 999mm with bore holes",
+    "rows": [],
+    "build": {"role":"linear","frames":[{"name":"rack","kind":"rail"}],"linear":{"kind":"rack"}},
+    "frames": [{"name":"rack","origin":[0,27,0],"z":[0,1,0],"x":[1,0,0],"kind":"rail"}]
+  },
+  {
+    "id": "rack-m3-30-1000-pa",
+    "name": "PA Gear rack 30x30, Module 3, 1000mm",
+    "category": "linear",
+    "source": "dynamic-m/PA-Gear-rack-30x30-Module-3-1000mm/Motedis-RNM3-30/Motedis_RNM3-30.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "RNM3-30",
+    "supplier_url": "https://www.motedis.com/en/PA-Gear-rack-30x30-Module-3-1000mm",
+    "designation": "PA Gear rack 30x30, Module 3, 1000mm",
+    "rows": [],
+    "build": {"role":"linear","frames":[{"name":"rack","kind":"rail"}],"linear":{"kind":"rack"}},
+    "frames": [{"name":"rack","origin":[3.48,27,0],"z":[0,1,0],"x":[1,0,0],"kind":"rail"}]
+  },
+  {
+    "id": "rack-m3-30-1980",
+    "name": "Gear rack 30x30, Module 3, 1980mm",
+    "category": "linear",
+    "source": "dynamic-m/Gear-rack-30x30-Module-3-1980mm/Motedis_Gear Rack 30x30 - Module 3 -1980mm.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "Gear Rack 30x30 - Module 3 -1980mm",
+    "supplier_url": "https://www.motedis.com/en/Gear-rack-30x30-Module-3-1980mm",
+    "designation": "Gear rack 30x30, Module 3, 1980mm",
+    "rows": [],
+    "build": {"role":"linear","frames":[{"name":"rack","kind":"rail"}],"linear":{"kind":"rack"}},
+    "frames": [{"name":"rack","origin":[0,27,0],"z":[0,1,0],"x":[1,0,0],"kind":"rail"}]
+  },
+  {
+    "id": "rack-m4-40-1000-pa",
+    "name": "PA Gear rack 40x40, Module 4, 1000mm",
+    "category": "linear",
+    "source": "dynamic-m/PA-Gear-rack-40x40-Module-4-1000mm/Motedis-RNM4-40/Motedis_RNM4-40.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "RNM4-40",
+    "supplier_url": "https://www.motedis.com/en/PA-Gear-rack-40x40-Module-4-1000mm",
+    "designation": "PA Gear rack 40x40, Module 4, 1000mm",
+    "rows": [],
+    "build": {"role":"linear","frames":[{"name":"rack","kind":"rail"}],"linear":{"kind":"rack"}},
+    "frames": [{"name":"rack","origin":[1.91,36,0],"z":[0,1,0],"x":[1,0,0],"kind":"rail"}]
+  }
+]

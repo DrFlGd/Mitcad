@@ -35,6 +35,7 @@
 #include <QTreeWidget>
 #include <QtLogging>
 
+#include "ComponentColors.hpp"
 #include "TimelineSearch.hpp"
 #include "../framework/ChromeStyle.hpp"
 #include "../framework/Dialogs.hpp"
@@ -121,12 +122,6 @@ StripColors stripColors(const QPalette& palette) {
           kFoundBorder};
 }
 
-// Component colours; the root has none.
-const QColor kComponentColors[] = {
-    QColor(0xe0, 0x89, 0x2a), QColor(0x3a, 0xa3, 0x5b), QColor(0x8e, 0x5b, 0xd0),
-    QColor(0x2a, 0xa7, 0xa7), QColor(0xc9, 0x48, 0x3f), QColor(0x9a, 0x9a, 0x2a),
-    QColor(0xc4, 0x5a, 0x9a), QColor(0x3d, 0x8b, 0xd9)};
-
 // The colours that follow the theme (mitcad#14): a dark theme's palette
 // has light text on a dark window, where the light theme's dark marker and
 // glyphs would disappear.
@@ -176,7 +171,7 @@ class TimelineStrip : public QWidget {
 public:
   struct Item {
     DocumentSnapshot::Feature feature;
-    int colour = -1; // index into kComponentColors, -1 for the root
+    int colour = -1; // index into the component colours (ComponentColors.hpp), -1 for the root
     int group = -1;  // index into the groups
     bool filtered = false; // a feature the filter hides (mitcad#98)
   };
@@ -529,7 +524,7 @@ protected:
       painter.setBrush(fill);
       painter.drawRoundedRect(rect, 4, 4);
       if (item.colour >= 0) {
-        const QColor colour = kComponentColors[item.colour % 8];
+        const QColor colour = componentColor(item.colour);
         painter.setPen(Qt::NoPen);
         painter.setBrush(colour);
         painter.drawRoundedRect(QRectF(rect.left() + 4, kBandTop, kItem - 8, kBand - 0.5), 1.5, 1.5);
@@ -1596,7 +1591,7 @@ void TimelineWidget::fillSearchList() {
     auto* row = new QTreeWidgetItem(m_searchList, {feature->name, m_snapshot.componentName(feature->component)});
     row->setIcon(0, themeIcon(featureIcon(feature->type)));
     const int colour = colours.value(feature->component, -1);
-    row->setIcon(1, swatchIcon(colour >= 0 ? kComponentColors[colour % 8] : QColor(Qt::transparent)));
+    row->setIcon(1, swatchIcon(colour >= 0 ? componentColor(colour) : QColor(Qt::transparent)));
     row->setData(0, Qt::UserRole, uid);
     QString state;
     if (feature->status == QStringLiteral("error") || feature->status == QStringLiteral("warning")) {

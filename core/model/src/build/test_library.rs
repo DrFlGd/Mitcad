@@ -1,0 +1,587 @@
+// SPDX-License-Identifier: MIT
+//! A small library of synthetic BUILD parts for the model tests: square
+//! slot profiles of three systems (made as the profile layout says: a
+//! section on XY extruded by `L`, `mount:` frames at its ends and slots),
+//! a profile with closed sides, a cap, a bracket with its nut and screw,
+//! panels sized by parameters or fixed, and a rail with its carriage. A
+//! resolver in memory serves them at two versions.
+
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
+use serde_json::{Value, json};
+
+use crate::document_tests::def;
+use crate::features::SketchPlane;
+use crate::file::MemoryStore;
+use crate::ids::{ComponentUid, FeatureUid, OccurrenceUid};
+use crate::library::{LibraryRequest, LibrarySource, LinkResolver};
+use crate::testing::MockKernel;
+use crate::transform::Transform;
+use crate::{Document, ValueInput};
+
+pub(crate) const V1: &str = "1111111111111111111111111111111111111111";
+pub(crate) const V2: &str = "2222222222222222222222222222222222222222";
+pub(crate) const LIBRARY: &str = "test-profiles";
+pub(crate) const URL: &str = "https://example.org/test-profiles.git";
+
+pub(crate) fn command(doc: &mut Document<MockKernel>, command: Value) -> Result<Value, String> {
+    doc.command(&command.to_string())
+        .map(|text| serde_json::from_str(&text).unwrap())
+        .map_err(|e| e.to_string())
+}
+
+pub(crate) fn query(doc: &Document<MockKernel>, query: Value) -> Value {
+    serde_json::from_str(&doc.query(&query.to_string()).unwrap()).unwrap()
+}
+
+/// A frame of a design: a joint origin named `mount:<name>` on a fixed
+/// plane.
+fn fixed_frame(
+    doc: &mut Document<MockKernel>,
+    name: &str,
+    origin: [f64; 3],
+    z: [f64; 3],
+    x: [f64; 3],
+) {
+    doc.add_feature(
+        &def(json!({"type": "joint_origin",
+                    "geometry": {"origin": origin, "normal": z, "x_axis": x}})),
+        Some(&format!("mount:{name}")),
+    )
+    .unwrap();
+}
+
+/// A square profile `w` wide, `L` long (1000 mm), its slot frames on the
+/// sides `open` lists (`x+`, `x-`, `y+`, `y-`).
+pub(crate) fn profile_design(w: f64, open: &[&str]) -> String {
+    let mut doc = Document::new(MockKernel::default());
+    command(
+        &mut doc,
+        json!({"cmd": "add_parameter", "name": "L", "expression": "1000 mm"}),
+    )
+    .unwrap();
+    let sketch = doc.add_sketch(SketchPlane::Xy).unwrap().uid;
+    let region = doc
+        .add_rectangle(
+            sketch,
+            [-w / 2.0, -w / 2.0],
+            &ValueInput::Number(w),
+            &ValueInput::Number(w),
+        )
+        .unwrap()
+        .region;
+    let extrude = doc
+        .add_feature(
+            &def(
+                json!({"type": "extrude", "profiles": [{"sketch": sketch, "region": region}],
+                        "extent": {"type": "distance", "distance": "L"}, "operation": "new_body"}),
+            ),
+            None,
+        )
+        .unwrap()
+        .uid;
+    fixed_frame(
+        &mut doc,
+        "end_a",
+        [0.0; 3],
+        [0.0, 0.0, -1.0],
+        [1.0, 0.0, 0.0],
+    );
+    doc.add_feature(
+        &def(json!({"type": "joint_origin",
+                    "geometry": {"body": format!("{extrude}.b0"),
+                                 "face": format!("{extrude}:end({region})")}})),
+        Some("mount:end_b"),
+    )
+    .unwrap();
+    let h = w / 2.0;
+    for side in open {
+        let (origin, z) = match *side {
+            "x+" => ([h, 0.0, 0.0], [1.0, 0.0, 0.0]),
+            "x-" => ([-h, 0.0, 0.0], [-1.0, 0.0, 0.0]),
+            "y+" => ([0.0, h, 0.0], [0.0, 1.0, 0.0]),
+            _ => ([0.0, -h, 0.0], [0.0, -1.0, 0.0]),
+        };
+        fixed_frame(
+            &mut doc,
+            &format!("slot_{side}_1"),
+            origin,
+            z,
+            [0.0, 0.0, 1.0],
+        );
+    }
+    doc.recompute();
+    doc.to_json()
+}
+
+/// A guide rail 15 x 15, `L` long (1000 mm): the ends of a profile with no
+/// slots, its carriage's frame `rail` on its top and its face frame `base`
+/// on its bottom (z down, x along the rail).
+fn rail_design() -> String {
+    let mut doc: Document<MockKernel> =
+        Document::from_json(&profile_design(15.0, &[]), MockKernel::default()).unwrap();
+    fixed_frame(
+        &mut doc,
+        "rail",
+        [0.0, 7.5, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 0.0, 1.0],
+    );
+    fixed_frame(
+        &mut doc,
+        "base",
+        [0.0, -7.5, 0.0],
+        [0.0, -1.0, 0.0],
+        [0.0, 0.0, 1.0],
+    );
+    doc.recompute();
+    doc.to_json()
+}
+
+pub(crate) const ALL_SIDES: [&str; 4] = ["x+", "x-", "y+", "y-"];
+
+/// A profile's `build` block.
+pub(crate) fn profile_build(kind: &str, slot: f64, grid: f64, open: &[&str]) -> Value {
+    let mut frames = vec![
+        json!({"name": "end_a", "kind": "end"}),
+        json!({"name": "end_b", "kind": "end"}),
+    ];
+    for side in open {
+        frames.push(json!({"name": format!("slot_{side}_1"), "kind": "slot"}));
+    }
+    json!({
+        "role": "profile",
+        "system": {"type": kind, "slot": slot, "grid": grid},
+        "length": {"parameter": "L", "min": "10 mm", "max": "6000 mm", "stock": ["6000 mm"]},
+        "section": {"width": format!("{grid} mm"), "height": format!("{grid} mm")},
+        "slot": {"depth": "9 mm", "opening": "8.2 mm"},
+        "mass_per_metre": "0.9 kg",
+        "frames": frames,
+    })
+}
+
+/// A frame: (name, origin, z, x).
+type Frame<'a> = (&'a str, [f64; 3], [f64; 3], [f64; 3]);
+
+/// A block part with frames given as (name, origin, z, x).
+fn block_design(size: [f64; 3], corner: [f64; 2], frames: &[Frame<'_>]) -> String {
+    let mut doc = Document::new(MockKernel::default());
+    let sketch = doc.add_sketch(SketchPlane::Xy).unwrap().uid;
+    let region = doc
+        .add_rectangle(
+            sketch,
+            corner,
+            &ValueInput::Number(size[0]),
+            &ValueInput::Number(size[1]),
+        )
+        .unwrap()
+        .region;
+    doc.add_feature(
+        &def(
+            json!({"type": "extrude", "profiles": [{"sketch": sketch, "region": region}],
+                    "extent": {"type": "distance", "distance": size[2]}, "operation": "new_body"}),
+        ),
+        None,
+    )
+    .unwrap();
+    for (name, origin, z, x) in frames {
+        fixed_frame(&mut doc, name, *origin, *z, *x);
+    }
+    doc.recompute();
+    doc.to_json()
+}
+
+/// A panel `W` x `H` x `t` (parameters, or `W` fixed).
+fn panel_design(fixed_width: Option<f64>) -> String {
+    let mut doc = Document::new(MockKernel::default());
+    for (name, value) in [("W", "200 mm"), ("H", "200 mm"), ("t", "8 mm")] {
+        command(
+            &mut doc,
+            json!({"cmd": "add_parameter", "name": name, "expression": value}),
+        )
+        .unwrap();
+    }
+    let sketch = doc.add_sketch(SketchPlane::Xy).unwrap().uid;
+    let width = match fixed_width {
+        Some(w) => ValueInput::Number(w),
+        None => ValueInput::Name("W".into()),
+    };
+    let region = doc
+        .add_rectangle(sketch, [0.0, 0.0], &width, &ValueInput::Name("H".into()))
+        .unwrap()
+        .region;
+    doc.add_feature(
+        &def(
+            json!({"type": "extrude", "profiles": [{"sketch": sketch, "region": region}],
+                    "extent": {"type": "distance", "distance": "t"}, "operation": "new_body"}),
+        ),
+        None,
+    )
+    .unwrap();
+    doc.recompute();
+    doc.to_json()
+}
+
+/// One component of the library: its design, build block, supplier and
+/// article number.
+#[derive(Clone)]
+pub(crate) struct Part {
+    pub text: String,
+    pub build: Option<Value>,
+    pub part_number: String,
+    pub name: String,
+    pub designation: String,
+}
+
+/// The library in memory: each component at V1, some changed at V2.
+#[derive(Default)]
+pub(crate) struct TestLibrary {
+    pub parts: BTreeMap<(String, String), Part>,
+}
+
+impl TestLibrary {
+    pub fn new() -> Arc<Self> {
+        let mut library = Self::default();
+        let mut add = |component: &str, rev: &str, part: Part| {
+            library
+                .parts
+                .insert((component.to_owned(), rev.to_owned()), part);
+        };
+        let profile =
+            |w: f64, kind: &str, slot: f64, open: &[&str], number: &str, name: &str| Part {
+                text: profile_design(w, open),
+                build: Some(profile_build(kind, slot, w, open)),
+                part_number: number.to_owned(),
+                name: name.to_owned(),
+                designation: format!("{name} L={{L}}"),
+            };
+        for rev in [V1, V2] {
+            add(
+                "p30",
+                rev,
+                profile(30.0, "B", 8.0, &ALL_SIDES, "P30_N8_B", "Profile 30x30 B8"),
+            );
+            add(
+                "p20",
+                rev,
+                profile(20.0, "I", 5.0, &ALL_SIDES, "P20_N5_I", "Profile 20x20 I5"),
+            );
+            add(
+                "p40",
+                rev,
+                profile(40.0, "I", 8.0, &ALL_SIDES, "P40_N8_I", "Profile 40x40 I8"),
+            );
+            add(
+                "p30-2n",
+                rev,
+                profile(
+                    30.0,
+                    "B",
+                    8.0,
+                    &["x+", "x-"],
+                    "P30_2N",
+                    "Profile 30x30 B8 2N",
+                ),
+            );
+        }
+        // At V2 the 30 profile is 32 wide (another section).
+        add(
+            "p30",
+            V2,
+            profile(
+                32.0,
+                "B",
+                8.0,
+                &ALL_SIDES,
+                "P30_N8_B_V2",
+                "Profile 30x30 B8",
+            ),
+        );
+        // A cap for B8/30 ends: its frame on its face at z = 0, pointing out
+        // of it towards the end it covers.
+        add(
+            "cap30",
+            V1,
+            Part {
+                text: block_design(
+                    [30.0, 30.0, 4.0],
+                    [-15.0, -15.0],
+                    &[("end", [0.0; 3], [0.0, 0.0, -1.0], [1.0, 0.0, 0.0])],
+                ),
+                build: Some(
+                    json!({"role": "cap", "systems": [{"type": "B", "slot": 8, "grid": 30}],
+                                   "frames": [{"name": "end", "kind": "end"}]}),
+                ),
+                part_number: "CAP30".to_owned(),
+                name: "Cover cap 30 B8".to_owned(),
+                designation: String::new(),
+            },
+        );
+        // An angle bracket: arm a on the profile whose end meets, arm b on
+        // the other; mount_a 20 mm from the corner.
+        add(
+            "bracket30",
+            V1,
+            Part {
+                text: block_design(
+                    [40.0, 20.0, 40.0],
+                    [0.0, -10.0],
+                    &[
+                        (
+                            "mount_a",
+                            [20.0, 0.0, 0.0],
+                            [0.0, 0.0, -1.0],
+                            [1.0, 0.0, 0.0],
+                        ),
+                        (
+                            "mount_b",
+                            [0.0, 0.0, 20.0],
+                            [-1.0, 0.0, 0.0],
+                            [0.0, 0.0, 1.0],
+                        ),
+                    ],
+                ),
+                build: Some(json!({
+                    "role": "connector",
+                    "systems": [{"type": "B", "slot": 8}],
+                    "frames": [{"name": "mount_a", "kind": "face"}, {"name": "mount_b", "kind": "face"}],
+                    "connector": {
+                        "junctions": ["L", "T"],
+                        "space": "inner_corner",
+                        "mates": [{"frame": "mount_a", "to": "slot"}, {"frame": "mount_b", "to": "slot"}],
+                        "fasteners": [{"frame": "mount_a",
+                                       "nut": {"library": LIBRARY, "component": "tnut8"},
+                                       "screw": {"library": "test-fasteners", "component": "screw6"}}],
+                        "machining": [{"on": "a", "frame": "end",
+                                       "hole": {"diameter": "6.8 mm", "depth": "15 mm"}}]
+                    }
+                })),
+                part_number: "BR30".to_owned(),
+                name: "Bracket 30 B8".to_owned(),
+                designation: String::new(),
+            },
+        );
+        add(
+            "tnut8",
+            V1,
+            Part {
+                text: block_design(
+                    [10.0, 16.0, 4.0],
+                    [-5.0, -8.0],
+                    &[("slot", [0.0; 3], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0])],
+                ),
+                build: Some(
+                    json!({"role": "fastener", "systems": [{"type": "B", "slot": 8}],
+                                   "frames": [{"name": "slot", "kind": "slot"}]}),
+                ),
+                part_number: "TN8".to_owned(),
+                name: "T-nut B8 M6".to_owned(),
+                designation: String::new(),
+            },
+        );
+        add(
+            "screw6",
+            V1,
+            Part {
+                text: block_design([6.0, 6.0, 12.0], [-3.0, -3.0], &[]),
+                build: None,
+                part_number: String::new(),
+                name: "Screw M6x12".to_owned(),
+                designation: String::new(),
+            },
+        );
+        // Panels: sized by W and H, or 300 mm wide.
+        add(
+            "panel",
+            V1,
+            Part {
+                text: panel_design(None),
+                build: Some(json!({"role": "panel",
+                                   "panel": {"mount": "slot", "thickness": "t", "width": "W",
+                                             "height": "H", "clearance": "0.5 mm"}})),
+                part_number: String::new(),
+                name: "Panel".to_owned(),
+                designation: "Panel {W}x{H}".to_owned(),
+            },
+        );
+        add(
+            "sheet300",
+            V1,
+            Part {
+                text: panel_design(Some(300.0)),
+                build: Some(json!({"role": "panel",
+                                   "panel": {"mount": "slot", "thickness": "t", "height": "H"}})),
+                part_number: "SHEET300".to_owned(),
+                name: "Sheet 300".to_owned(),
+                designation: String::new(),
+            },
+        );
+        // A panel on the outer faces of a frame, held by clamps: a block
+        // 20 long along its slot frame's x axis.
+        add(
+            "surface-panel",
+            V1,
+            Part {
+                text: panel_design(None),
+                build: Some(json!({"role": "panel",
+                                   "panel": {"mount": "surface", "thickness": "t", "width": "W",
+                                             "height": "H",
+                                             "clamp": {"library": LIBRARY, "component": "clamp30"}}})),
+                part_number: "SP".to_owned(),
+                name: "Surface panel".to_owned(),
+                designation: "Surface panel {W}x{H}".to_owned(),
+            },
+        );
+        add(
+            "clamp30",
+            V1,
+            Part {
+                text: block_design(
+                    [20.0, 12.0, 6.0],
+                    [-10.0, -6.0],
+                    &[
+                        ("mount_a", [0.0; 3], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]),
+                        ("mount_b", [0.0, 0.0, 6.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]),
+                    ],
+                ),
+                build: Some(
+                    json!({"role": "connector", "systems": [{"type": "B", "slot": 8}],
+                                   "frames": [{"name": "mount_a", "kind": "slot"},
+                                              {"name": "mount_b", "kind": "face"}],
+                                   "connector": {"junctions": ["surface"], "space": "outer",
+                                                 "mates": [{"frame": "mount_a", "to": "slot"},
+                                                           {"frame": "mount_b", "to": "face"}]}}),
+                ),
+                part_number: "CL30".to_owned(),
+                name: "Clamp 30 B8".to_owned(),
+                designation: String::new(),
+            },
+        );
+        add(
+            "rail15",
+            V1,
+            Part {
+                text: rail_design(),
+                build: Some(json!({
+                    "role": "linear",
+                    "length": {"parameter": "L", "min": "40 mm", "max": "1000 mm"},
+                    "frames": [{"name": "end_a", "kind": "end"}, {"name": "end_b", "kind": "end"},
+                               {"name": "rail", "kind": "rail"}, {"name": "base", "kind": "face"}],
+                    "linear": {"kind": "rail"}
+                })),
+                part_number: "R15".to_owned(),
+                name: "Rail 15".to_owned(),
+                designation: "Rail 15 L={L}".to_owned(),
+            },
+        );
+        Arc::new(library)
+    }
+}
+
+impl LinkResolver for TestLibrary {
+    fn library_source(&self, request: &LibraryRequest) -> Result<LibrarySource, String> {
+        let rev = match request.rev.as_str() {
+            "v1.0.0" | "HEAD" | "" => V1,
+            "v1.1.0" => V2,
+            other => other,
+        };
+        let part = self
+            .parts
+            .get(&(request.component.clone(), rev.to_owned()))
+            .cloned()
+            .ok_or_else(|| format!("{} is not in the library at {rev}", request.component))?;
+        Ok(LibrarySource {
+            text: part.text,
+            store: MemoryStore::new(),
+            rev: rev.to_owned(),
+            label: if rev == V1 { "v1.0.0" } else { "v1.1.0" }.to_owned(),
+            library: request.library.clone(),
+            url: URL.to_owned(),
+            library_name: "Test profiles".to_owned(),
+            component: request.component.clone(),
+            authors: vec!["Profile makers".to_owned()],
+            path: format!("parts/{}.mitcad", request.component),
+            name: part.name,
+            standard: String::new(),
+            license: "MIT".to_owned(),
+            designation: part.designation,
+            supplier: Some("Test supplier".to_owned()),
+            part_number: Some(part.part_number).filter(|p| !p.is_empty()),
+            supplier_url: Some("https://example.org/shop".to_owned()),
+            build: part.build,
+        })
+    }
+}
+
+/// A design with the test library set up.
+pub(crate) fn design() -> Document<MockKernel> {
+    let mut doc = Document::new(MockKernel::default());
+    doc.set_link_resolver(Some(TestLibrary::new()));
+    doc
+}
+
+/// A library part input of the test library.
+pub(crate) fn part(component: &str) -> Value {
+    json!({"library": LIBRARY, "url": URL, "rev": "v1.0.0", "component": component})
+}
+
+/// Places a part; returns the answer.
+pub(crate) fn place(doc: &mut Document<MockKernel>, fields: Value) -> Value {
+    let mut command_value = fields;
+    command_value["cmd"] = json!("build_place");
+    command(doc, command_value).unwrap_or_else(|e| panic!("build_place: {e}"))
+}
+
+pub(crate) fn component(answer: &Value) -> ComponentUid {
+    answer["component"].as_str().unwrap().parse().unwrap()
+}
+
+pub(crate) fn occurrence(answer: &Value) -> OccurrenceUid {
+    answer["occurrence"].as_str().unwrap().parse().unwrap()
+}
+
+/// The derived part of a component.
+pub(crate) fn derived(doc: &Document<MockKernel>, component: ComponentUid) -> FeatureUid {
+    doc.assembly()
+        .component(component)
+        .and_then(|c| c.build.as_ref())
+        .and_then(|b| b.part)
+        .unwrap()
+}
+
+pub(crate) fn close(a: [f64; 3], b: [f64; 3]) -> bool {
+    (0..3).all(|i| (a[i] - b[i]).abs() < 1e-6)
+}
+
+/// An occurrence's placement at the marker.
+pub(crate) fn placed(doc: &Document<MockKernel>, occurrence: OccurrenceUid) -> Transform {
+    doc.placement(occurrence).unwrap()
+}
+
+/// Asserts that every feature succeeded.
+pub(crate) fn all_ok(doc: &Document<MockKernel>) {
+    for item in doc.timeline() {
+        assert!(
+            item.status.is_some_and(|s| s.is_ok()),
+            "{} ({}): {:?} {:?}",
+            item.entry.name,
+            item.entry.uid,
+            item.status,
+            item.message()
+        );
+    }
+}
+
+/// A grounded first profile at a point, along +Z.
+pub(crate) fn first(
+    doc: &mut Document<MockKernel>,
+    component: &str,
+    at: [f64; 3],
+    length: f64,
+) -> Value {
+    place(
+        doc,
+        json!({"part": part(component), "at": {"point": at}, "length": length}),
+    )
+}

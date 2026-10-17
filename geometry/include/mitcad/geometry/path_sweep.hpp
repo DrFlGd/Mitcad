@@ -141,7 +141,8 @@ ShapePtr coil(const CoilSpec& spec);
 // same shape, which the booleans with those bodies handle; a straight
 // side as long as the pitch is also moved 0.1 um off the cylinder, into
 // the void a cut's profile faces or the material a join's faces, so that
-// the turns do not touch in an edge on it.
+// the turns do not touch in an edge on it; beyond the bodies' faces on the
+// cylinder (where the bodies reach) that sliver is cut back to it.
 //
 // Ends (mitcad#235; angles in radians, none by default): over a
 // `*_transition` the pitch changes linearly between zero at the outer end

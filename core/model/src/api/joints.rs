@@ -444,7 +444,8 @@ impl<K: Kernel> Document<K> {
             ),
             GeomRef::Datum(uid)
             | GeomRef::SketchCurves { sketch: uid, .. }
-            | GeomRef::SketchPoint { sketch: uid, .. } => Some(
+            | GeomRef::SketchPoint { sketch: uid, .. }
+            | GeomRef::Mount { feature: uid, .. } => Some(
                 self.feature(*uid)
                     .ok_or_else(|| ApiError(format!("feature {uid} does not exist")))?
                     .component,

@@ -131,7 +131,8 @@ pub enum Constraint {
     /// another spline at a shared end point: tangent there and with equal
     /// curvature (zero for a line). The splines need clamped knots.
     Smooth(EntityId, EntityId),
-    /// Equal length (lines) or equal radius (circles and arcs).
+    /// Equal length (lines), equal radius (circles and arcs) or equal minor
+    /// radius (ellipses and elliptical arcs).
     Equal(EntityId, EntityId),
     /// The point does not move (its position at the start of each solve).
     FixPoint(PointId),

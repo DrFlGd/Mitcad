@@ -96,7 +96,18 @@ impl SketchEdit<'_> {
             ids.len() < refs.len()
         };
         let mut gone: BTreeSet<ConstraintUid> = BTreeSet::new();
-        let mut seen: Vec<&ConstraintKind> = Vec::new();
+        // Two points coincident say the same either way round.
+        let normal = |kind: &ConstraintKind| match *kind {
+            ConstraintKind::Coincident {
+                point: p,
+                entity: Ref::Point(q),
+            } if q < p => ConstraintKind::Coincident {
+                point: q,
+                entity: Ref::Point(p),
+            },
+            ref other => other.clone(),
+        };
+        let mut seen: Vec<ConstraintKind> = Vec::new();
         for c in &self.def.constraints {
             let refs = c.kind.refs();
             if !on_point(&refs) {
@@ -104,10 +115,11 @@ impl SketchEdit<'_> {
             }
             let own = matches!(c.kind, ConstraintKind::Coincident { point: p, entity: Ref::Curve(on) }
                 if index.get(on).is_some_and(|e| e.kind.points().contains(&p)));
-            if twice(&refs) || own || seen.contains(&&c.kind) {
+            let kind = normal(&c.kind);
+            if twice(&refs) || own || seen.contains(&kind) {
                 gone.insert(c.id);
             } else {
-                seen.push(&c.kind);
+                seen.push(kind);
             }
         }
         for d in &self.def.dimensions {

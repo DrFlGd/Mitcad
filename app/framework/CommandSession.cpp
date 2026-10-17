@@ -9,9 +9,14 @@
 
 #include <BRepBuilderAPI_Copy.hxx>
 
+#include <QApplication>
+#include <QEvent>
 #include <QJsonArray>
+#include <QKeyEvent>
+#include <QMouseEvent>
 #include <QRegularExpression>
 #include <QSet>
+#include <QWidget>
 #include <QtLogging>
 
 #include "Diagnostics.hpp"
@@ -469,8 +474,20 @@ void CommandSession::setPresenter(CommandPresenter& presenter) {
     const auto slot = slotOf(key);
     if (slot && slot->def->type == InputDef::Type::Value) {
       evaluate(key);
+      if (slot->def->onChange) {
+        // A typed value sets the inputs that follow it (mitcad#375: a
+        // length typed in BUILD detaches it from its auto length).
+        slot->def->onChange(m_state, m_host);
+        if (m_presenter) {
+          m_presenter->refresh(m_state);
+        }
+      }
     } else if (slot) {
       qDebug().noquote() << QStringLiteral("%1 %2: %3").arg(m_def.name, slot->def->label, text);
+      if (slot->def->onChange) {
+        // A typed text too (mitcad#375: BUILD's search narrows its picker).
+        slot->def->onChange(m_state, m_host);
+      }
     }
     inputsChanged();
   };
@@ -687,7 +704,7 @@ void CommandSession::setPresenter(CommandPresenter& presenter) {
   if (m_def.inspect) {
     m_sectionBefore = m_host.section();
   }
-  bool handles = static_cast<bool>(m_def.previewMarkers);
+  bool handles = static_cast<bool>(m_def.previewMarkers) || static_cast<bool>(m_def.previewMarkersIn);
   for (const Slot& slot : slotsOf(false)) {
     handles = handles || static_cast<bool>(slot.def->manipulator) || static_cast<bool>(slot.def->toggles);
   }
@@ -697,6 +714,16 @@ void CommandSession::setPresenter(CommandPresenter& presenter) {
             &CommandSession::manipulatorDragged);
     connect(m_manipulators, &ManipulatorOverlay::toggled, this, &CommandSession::toggleElement);
   }
+  // Tab steps a choice with a cycle wherever the window has the keyboard
+  // (mitcad#375: BUILD's auto length).
+  // The box at the cursor of a value (mitcad#375) follows the mouse too.
+  if (std::any_of(m_def.inputs.begin(), m_def.inputs.end(),
+                  [](const InputDef& input) { return !input.tabCycle.isEmpty() || input.cursorBox; })) {
+    if (auto* application = QCoreApplication::instance()) {
+      application->installEventFilter(this);
+    }
+  }
+  createCursorBox();
   updateHighlights();
   updateManipulators();
   if (isEditing()) {
@@ -1127,6 +1154,7 @@ void CommandSession::inputsChanged() {
   updateManipulators();
   schedulePreview();
   updateHoverChain(); // Tangent Chain turned on or off (mitcad#290)
+  updateCursorBox();  // its input shown or hidden, its text (mitcad#375)
 }
 
 void CommandSession::updateManipulators() {
@@ -1138,8 +1166,10 @@ void CommandSession::updateManipulators() {
     return;
   }
   std::vector<ManipulatorOverlay::Handle> handles;
-  if (m_def.previewMarkers && !m_shownReport.isEmpty()) {
-    for (const PreviewMarker& marker : m_def.previewMarkers(m_shownReport)) {
+  if ((m_def.previewMarkers || m_def.previewMarkersIn) && !m_shownReport.isEmpty()) {
+    const std::vector<PreviewMarker> markers =
+        m_def.previewMarkersIn ? m_def.previewMarkersIn(m_shownReport, m_state) : m_def.previewMarkers(m_shownReport);
+    for (const PreviewMarker& marker : markers) {
       Manipulator point;
       point.kind = Manipulator::Kind::Marker;
       point.origin = marker.point;
@@ -1201,6 +1231,10 @@ void CommandSession::manipulatorDragged(const QString& key, double value) {
   }
   m_state.setText(key, text);
   evaluate(key);
+  if (slot->def->onChange) {
+    // As a typed value (mitcad#375).
+    slot->def->onChange(m_state, m_host);
+  }
   inputsChanged();
 }
 
@@ -1269,9 +1303,15 @@ void CommandSession::runInspection() {
     m_presenter->setResult(QString());
     m_presenter->setMessage(message, error);
     m_host.viewer().setPreview(TopoDS_Shape());
+    if (!m_shownReport.isEmpty()) {
+      m_shownReport = {};
+      updateManipulators();
+    }
     m_previewOk = true; // OK closes it anyway
     m_shownKey = QByteArrayLiteral("inspection");
-    m_presenter->setOkEnabled(true);
+    // A command with its own model commands (mitcad#375) has nothing to
+    // apply yet: OK says what is missing.
+    m_presenter->setOkEnabled(!m_def.apply);
     return;
   }
   if (m_host.asynchronousCommands()) {
@@ -1358,7 +1398,15 @@ void CommandSession::acceptInspection(const Inspection& result) {
                                                       : result.log);
   m_previewOk = true;
   m_shownKey = QByteArrayLiteral("inspection");
-  m_presenter->setOkEnabled(true);
+  // Commands with their own model commands (mitcad#375): OK applies only
+  // what the model would take.
+  m_presenter->setOkEnabled(!m_def.apply || !m_failed);
+  // What the inspection points at (BUILD's auto-length target), and its
+  // labelled points through previewMarkers (the junctions).
+  m_previewHighlights = result.highlights;
+  m_shownReport = result.report;
+  updateManipulators();
+  updateCursorBox();
   updateHighlights();
 }
 
@@ -2206,6 +2254,9 @@ bool CommandSession::commitAsync() {
     finish(true);
     return true;
   }
+  if (m_def.apply) {
+    return applyCommand(); // mitcad#375
+  }
   if (m_def.accept) {
     return acceptCommand();
   }
@@ -2398,6 +2449,12 @@ void CommandSession::finishAsyncCancel() {
     return;
   }
   if (m_checkpoint.isString()) {
+    if (m_applied > 0) {
+      // What a command that repeats applied stays (mitcad#375).
+      qDebug().noquote() << QStringLiteral("Closed %1 after %2").arg(m_def.name).arg(m_applied);
+      finish(true);
+      return;
+    }
     qDebug().noquote() << QStringLiteral("Command %1 cancelled").arg(m_def.name);
     finish(false);
     return;
@@ -2421,7 +2478,7 @@ void CommandSession::finishAsyncCancel() {
       }
       if (m_def.inspect) { m_host.showSection(m_sectionBefore); }
       qDebug().noquote() << QStringLiteral("Command %1 cancelled").arg(m_def.name);
-      finish(false);
+      finish(m_applied > 0);
     });
   };
   if (depth >= 0) {
@@ -2440,6 +2497,9 @@ bool CommandSession::commit() {
   }
   if (m_previewTimer.isActive() || m_shownKey.isEmpty()) {
     runPreview();
+  }
+  if (m_def.apply) {
+    return applyCommand(); // mitcad#375
   }
   if (m_def.inspect) {
     if (m_def.keepsSection && m_def.build) {
@@ -2638,6 +2698,177 @@ bool CommandSession::acceptCommand() {
   return true;
 }
 
+bool CommandSession::applyCommand() {
+  QString message;
+  bool error = false;
+  if (!previewReady(message, error)) {
+    m_presenter->setMessage(message, error);
+    qDebug().noquote() << QStringLiteral("%1: OK refused: %2").arg(m_def.name, message);
+    return false;
+  }
+  if (m_failed) {
+    // The inspection showed what the model would refuse.
+    qDebug().noquote() << QStringLiteral("%1: OK refused").arg(m_def.name);
+    return false;
+  }
+  if (!m_def.apply(m_state, m_host)) {
+    qDebug().noquote() << QStringLiteral("%1: OK not done").arg(m_def.name);
+    if (m_presenter) {
+      m_presenter->refresh(m_state);
+    }
+    return false;
+  }
+  if (m_def.describe) {
+    qDebug().noquote() << m_def.describe(m_state, m_host);
+  }
+  if (!m_def.repeats) {
+    qDebug().noquote() << QStringLiteral("Done %1").arg(m_def.name);
+    finish(true);
+    return true;
+  }
+  // The next one, with the inputs as `apply` left them.
+  ++m_applied;
+  ++m_generation;
+  qDebug().noquote() << QStringLiteral("Applied %1 (%2)").arg(m_def.name).arg(m_applied);
+  m_shownKey.clear();
+  m_failed = false;
+  m_host.viewer().setPreview(TopoDS_Shape());
+  for (const Slot& slot : slotsOf(false)) {
+    if (slot.def->type == InputDef::Type::Value && std::isnan(m_state.value(slot.key))) {
+      evaluate(slot.key);
+    }
+  }
+  activateFirstNeeded();
+  inputsChanged();
+  return true;
+}
+
+bool CommandSession::cycleChoice() {
+  if (m_done || m_presenter == nullptr || !m_presenter->actions().choiceChanged) {
+    return false;
+  }
+  for (const Slot& slot : slotsOf(true)) {
+    const InputDef& input = *slot.def;
+    if (input.type != InputDef::Type::Choice || input.tabCycle.isEmpty() || !m_presenter->inputEnabled(slot.key)) {
+      continue;
+    }
+    const qsizetype at = input.tabCycle.indexOf(m_state.choice(slot.key));
+    const QString next = input.tabCycle.at((at + 1) % input.tabCycle.size());
+    qDebug().noquote() << QStringLiteral("%1: Tab steps %2").arg(m_def.name, input.label);
+    m_presenter->actions().choiceChanged(slot.key, next);
+    return true;
+  }
+  return false;
+}
+
+bool CommandSession::eventFilter(QObject* watched, QEvent* event) {
+  if (m_done) {
+    return QObject::eventFilter(watched, event);
+  }
+  QWidget* viewer = &m_host.viewer();
+  if (event->type() == QEvent::MouseMove && m_cursorBox && watched == viewer) {
+    // The value box follows the cursor over the view (mitcad#375).
+    moveCursorBox(static_cast<const QMouseEvent*>(event)->position().toPoint());
+  }
+  if (event->type() == QEvent::KeyPress) {
+    const auto* key = static_cast<const QKeyEvent*>(event);
+    auto* widget = qobject_cast<QWidget*>(watched);
+    const Qt::KeyboardModifiers modifiers = key->modifiers() & ~Qt::KeyboardModifiers(Qt::KeypadModifier);
+    if (key->key() == Qt::Key_Tab && modifiers == Qt::KeyboardModifiers() &&
+        widget != nullptr && widget->window() == viewer->window() &&
+        QApplication::activePopupWidget() == nullptr && QApplication::activeModalWidget() == nullptr &&
+        cycleChoice()) {
+      return true;
+    }
+    // A number typed while the view has the keyboard goes into the box at
+    // the cursor, as a sketch tool's value boxes take it.
+    const QString typed = key->text();
+    if (m_cursorBox && m_cursorBox->isVisible() && watched == viewer && typed.size() == 1 &&
+        (typed.at(0).isDigit() || typed == QStringLiteral(".") || typed == QStringLiteral(",") ||
+         typed == QStringLiteral("-")) &&
+        m_presenter != nullptr && m_presenter->actions().textEdited) {
+      m_cursorBox->setFocus();
+      m_cursorBox->setText(typed);
+      m_presenter->actions().textEdited(m_cursorKey, typed);
+      return true;
+    }
+  }
+  return QObject::eventFilter(watched, event);
+}
+
+void CommandSession::createCursorBox() {
+  if (m_host.asynchronousCommands()) {
+    return; // the AppKit frontend: its own controls only
+  }
+  for (const Slot& slot : slotsOf(false)) {
+    if (slot.def->type == InputDef::Type::Value && slot.def->cursorBox) {
+      m_cursorKey = slot.key;
+      break;
+    }
+  }
+  if (m_cursorKey.isEmpty()) {
+    return;
+  }
+  auto* box = new QLineEdit(&m_host.viewer());
+  box->setObjectName(QStringLiteral("cursorValueBox"));
+  box->setFixedWidth(120);
+  if (const auto slot = slotOf(m_cursorKey)) {
+    box->setToolTip(tr("%1: type a value; Enter confirms, Esc closes").arg(slot->def->label));
+  }
+  box->hide();
+  connect(box, &QLineEdit::textEdited, this, [this](const QString& text) {
+    if (!m_done && m_presenter != nullptr && m_presenter->actions().textEdited) {
+      m_presenter->actions().textEdited(m_cursorKey, text);
+    }
+  });
+  m_cursorBox = box;
+}
+
+void CommandSession::moveCursorBox(const QPoint& at) {
+  if (!m_cursorBox) {
+    return;
+  }
+  const QWidget* viewer = &m_host.viewer();
+  const QSize size = m_cursorBox->sizeHint().expandedTo(QSize(m_cursorBox->width(), 0));
+  const int x = std::clamp(at.x() + 18, 0, std::max(0, viewer->width() - size.width()));
+  const int y = std::clamp(at.y() + 18, 0, std::max(0, viewer->height() - size.height()));
+  m_cursorBox->move(x, y);
+  m_cursorBox->setProperty("placed", true);
+  updateCursorBox();
+}
+
+void CommandSession::updateCursorBox() {
+  if (!m_cursorBox || m_done) {
+    return;
+  }
+  const auto slot = slotOf(m_cursorKey);
+  const bool shown = slot && isShown(*slot) && m_cursorBox->property("placed").toBool();
+  QString text = m_state.text(m_cursorKey);
+  const QString reported =
+      m_shownReport.value(QStringLiteral("cursor")).toObject().value(m_cursorKey).toString();
+  if (!reported.isEmpty()) {
+    text = reported;
+  }
+  if (!m_cursorBox->hasFocus() && m_cursorBox->text() != text) {
+    m_cursorBox->setText(text);
+  }
+  if (m_cursorBox->isVisible() != shown) {
+    m_cursorBox->setVisible(shown);
+    if (shown) {
+      m_cursorBox->raise();
+    }
+  }
+  const QString logged = shown ? m_cursorBox->text() : QString();
+  if (shown && logged != m_loggedCursorBox) {
+    const QPoint at = m_cursorBox->mapTo(m_cursorBox->window(), m_cursorBox->rect().center());
+    qDebug().noquote() << QStringLiteral("Cursor box %1 %2: %3 at %4,%5")
+                              .arg(m_def.name, m_cursorKey, logged)
+                              .arg(at.x())
+                              .arg(at.y());
+  }
+  m_loggedCursorBox = logged;
+}
+
 bool CommandSession::keepAnalysis() {
   const Built built = m_def.build(m_state, m_host);
   if (!built.error.isEmpty()) {
@@ -2681,6 +2912,12 @@ void CommandSession::cancel() {
   takeBackSketchPreview();
   if (m_def.inspect) {
     m_host.showSection(m_sectionBefore);
+  }
+  if (m_applied > 0) {
+    // Close of a command that repeats (mitcad#375): what it applied stays.
+    qDebug().noquote() << QStringLiteral("Closed %1 after %2").arg(m_def.name).arg(m_applied);
+    finish(true);
+    return;
   }
   qDebug().noquote() << QStringLiteral("Command %1 cancelled").arg(m_def.name);
   finish(false);
@@ -2771,6 +3008,13 @@ void CommandSession::finish(bool committed) {
   }
   m_done = true;
   m_previewTimer.stop();
+  if (auto* application = QCoreApplication::instance()) {
+    application->removeEventFilter(this); // a Tab cycle's (mitcad#375)
+  }
+  if (m_cursorBox) {
+    m_cursorBox->hide();
+    m_cursorBox->deleteLater();
+  }
   m_host.clearModelPreview();
   if (m_manipulators) {
     m_manipulators->hide();

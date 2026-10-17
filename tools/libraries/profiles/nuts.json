@@ -1,0 +1,199 @@
+[
+  {
+    "id": "tnut-b6",
+    "name": "T-nut B-type slot 6",
+    "category": "nuts",
+    "source": "slot-profile-accessories/T-nut-B-type-slot-6-M5/Motedis-S6BHASNM5/Motedis_S6BHASNM5.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "S6BHASNM5",
+    "supplier_url": "https://www.motedis.com/en/T-nut-B-type-slot-6-M5",
+    "designation": "T-nut B-type slot 6 {Thread}",
+    "rows": [
+      {"name":"M3","select":{"Thread":"M3"},"values":{},"part_number":"S6BHASNM3"},
+      {"name":"M4","select":{"Thread":"M4"},"values":{},"part_number":"S6BHASNM4"},
+      {"name":"M5","select":{"Thread":"M5"},"values":{},"part_number":"S6BHASNM5"}
+    ],
+    "build": {"role":"fastener","systems":[{"type":"B","slot":6}],"frames":[{"name":"slot","kind":"slot"}]},
+    "frames": [{"name":"slot","origin":[0,0,4.2],"z":[0,0,-1],"x":[0,1,0],"kind":"slot"}]
+  },
+  {
+    "id": "tnut-b6-heavy",
+    "name": "T-nut heavy duty steel B-type slot 6",
+    "category": "nuts",
+    "source": "slot-profile-accessories/T-nut-heavy-duty-steel-B-Type-slot-6-M5/Motedis-S6BHESNM5/Motedis_S6BHESNM5.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "S6BHESNM5",
+    "supplier_url": "https://www.motedis.com/en/T-nut-heavy-duty-steel-B-Type-slot-6-M5",
+    "designation": "T-nut heavy duty steel B-type slot 6 {Thread}",
+    "rows": [
+      {"name":"M4","select":{"Thread":"M4"},"values":{},"part_number":"S6BHESNM4"},
+      {"name":"M5","select":{"Thread":"M5"},"values":{},"part_number":"S6BHESNM5"},
+      {"name":"M6","select":{"Thread":"M6"},"values":{},"part_number":"S6BHESNM6"}
+    ],
+    "build": {"role":"fastener","systems":[{"type":"B","slot":6}],"frames":[{"name":"slot","kind":"slot"}]},
+    "frames": [{"name":"slot","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"slot"}]
+  },
+  {
+    "id": "tnut-b8",
+    "name": "T-nut B-type slot 8",
+    "category": "nuts",
+    "source": "slot-profile-accessories/T-nut-B-type-slot-8-M6/Motedis-S8BHASNM6-1/Motedis_S8BHASNM6.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "S8BHASNM6",
+    "supplier_url": "https://www.motedis.com/en/T-nut-B-type-slot-8-M6",
+    "designation": "T-nut B-type slot 8 {Thread}",
+    "rows": [
+      {"name":"M4","select":{"Thread":"M4"},"values":{},"part_number":"S8BHASNM4"},
+      {"name":"M5","select":{"Thread":"M5"},"values":{},"part_number":"S8BHASNM5"},
+      {"name":"M6","select":{"Thread":"M6"},"values":{},"part_number":"S8BHASNM6"}
+    ],
+    "build": {"role":"fastener","systems":[{"type":"B","slot":8}],"frames":[{"name":"slot","kind":"slot"}]},
+    "frames": [{"name":"slot","origin":[0,0,6],"z":[0,0,-1],"x":[0,1,0],"kind":"slot"}]
+  },
+  {
+    "id": "tnut-i8",
+    "name": "T-nut I-type slot 8",
+    "category": "nuts",
+    "source": "slot-profile-accessories/T-nut-I-type-slot-8-M6/Motedis-S8IHASNM6/Motedis_S8IHASNM6.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "S8IHASNM6",
+    "supplier_url": "https://www.motedis.com/en/T-nut-I-type-slot-8-M6",
+    "designation": "T-nut I-type slot 8 {Thread}",
+    "rows": [
+      {"name":"M4","select":{"Thread":"M4"},"values":{},"part_number":"S8IHASNM4"},
+      {"name":"M5","select":{"Thread":"M5"},"values":{},"part_number":"S8IHASNM5"},
+      {"name":"M6","select":{"Thread":"M6"},"values":{},"part_number":"S8IHASNM6"}
+    ],
+    "build": {"role":"fastener","systems":[{"type":"I","slot":8}],"frames":[{"name":"slot","kind":"slot"}]},
+    "frames": [{"name":"slot","origin":[0,0,7.5],"z":[0,0,-1],"x":[0,1,0],"kind":"slot"}]
+  },
+  {
+    "id": "tnut-i8-guided",
+    "name": "T-nut guided I-type slot 8",
+    "category": "nuts",
+    "source": "slot-profile-accessories/T-nut-guided-I-type-slot-8-M6/Motedis-S8ISMONM6/Motedis_S8ISMONM6.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "S8ISMONM6",
+    "supplier_url": "https://www.motedis.com/en/T-nut-guided-I-type-slot-8-M6",
+    "designation": "T-nut guided I-type slot 8 {Thread}",
+    "rows": [
+      {"name":"M4","select":{"Thread":"M4"},"values":{},"part_number":"S8ISMONM4"},
+      {"name":"M5","select":{"Thread":"M5"},"values":{},"part_number":"S8ISMONM5"},
+      {"name":"M6","select":{"Thread":"M6"},"values":{},"part_number":"S8ISMONM6"},
+      {"name":"M8","select":{"Thread":"M8"},"values":{},"part_number":"S8ISMONM8"}
+    ],
+    "build": {"role":"fastener","systems":[{"type":"I","slot":8}],"frames":[{"name":"slot","kind":"slot"}]},
+    "frames": [{"name":"slot","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"slot"}]
+  },
+  {
+    "id": "tnut-i5-spring",
+    "name": "T-nut with spring ball I-type slot 5",
+    "category": "nuts",
+    "source": "slot-profile-accessories/T-Nut-with-spring-ball-without-guidance-I-Type-slot-5-M4/Motedis-S5ISMONM4-1/Motedis_S5ISMONM4.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "S5ISMONM4",
+    "supplier_url": "https://www.motedis.com/en/T-Nut-with-spring-ball-without-guidance-I-Type-slot-5-M4",
+    "designation": "T-nut with spring ball I-type slot 5 {Thread}",
+    "rows": [
+      {"name":"M3","select":{"Thread":"M3"},"values":{},"part_number":"S5ISMONM3"},
+      {"name":"M4","select":{"Thread":"M4"},"values":{},"part_number":"S5ISMONM4"},
+      {"name":"M5","select":{"Thread":"M5"},"values":{},"part_number":"S5ISMONM5"}
+    ],
+    "build": {"role":"fastener","systems":[{"type":"I","slot":5}],"frames":[{"name":"slot","kind":"slot"}]},
+    "frames": [{"name":"slot","origin":[0,1.8,6],"z":[0,-1,0],"x":[0,0,1],"kind":"slot"}]
+  },
+  {
+    "id": "tnut-i5-spring-guided",
+    "name": "T-nut with spring ball, guided, I-type slot 5",
+    "category": "nuts",
+    "source": "slot-profile-accessories/T-nut-with-spring-ball-with-guidance-I-Type-slot-5-M4/Motedis-S5ISMONM4G-1/Motedis_S5ISMONM4G.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "S5ISMONM4G",
+    "supplier_url": "https://www.motedis.com/en/T-nut-with-spring-ball-with-guidance-I-Type-slot-5-M4",
+    "designation": "T-nut with spring ball, guided, I-type slot 5 {Thread}",
+    "rows": [
+      {"name":"M3","select":{"Thread":"M3"},"values":{},"part_number":"S5ISMONM3G"},
+      {"name":"M4","select":{"Thread":"M4"},"values":{},"part_number":"S5ISMONM4G"},
+      {"name":"M5","select":{"Thread":"M5"},"values":{},"part_number":"S5ISMONM5G"}
+    ],
+    "build": {"role":"fastener","systems":[{"type":"I","slot":5}],"frames":[{"name":"slot","kind":"slot"}]},
+    "frames": [{"name":"slot","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"slot"}]
+  },
+  {
+    "id": "tnut-i6-spring-guided",
+    "name": "T-nut with spring ball, guided, I-type slot 6",
+    "category": "nuts",
+    "source": "slot-profile-accessories/T-nut-with-spring-ball-with-guidance-I-Type-slot-6-M5/Motedis-S6ISMONM5G/Motedis_S6ISMONM5G.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "S6ISMONM5G",
+    "supplier_url": "https://www.motedis.com/en/T-nut-with-spring-ball-with-guidance-I-Type-slot-6-M5",
+    "designation": "T-nut with spring ball, guided, I-type slot 6 {Thread}",
+    "rows": [
+      {"name":"M3","select":{"Thread":"M3"},"values":{},"part_number":"S6ISMONM3G"},
+      {"name":"M4","select":{"Thread":"M4"},"values":{},"part_number":"S6ISMONM4G"},
+      {"name":"M5","select":{"Thread":"M5"},"values":{},"part_number":"S6ISMONM5G"},
+      {"name":"M6","select":{"Thread":"M6"},"values":{},"part_number":"S6ISMONM6G"}
+    ],
+    "build": {"role":"fastener","systems":[{"type":"I","slot":6}],"frames":[{"name":"slot","kind":"slot"}]},
+    "frames": [{"name":"slot","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"slot"}]
+  },
+  {
+    "id": "tnut-b10",
+    "name": "T-nut B-type slot 10",
+    "category": "nuts",
+    "source": "slot-profile-accessories/T-nut-B-Type-slot-10-M6/Motedis-S10BHASNM6/Motedis_S10BHASNM6.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "S10BHASNM6",
+    "supplier_url": "https://www.motedis.com/en/T-nut-B-Type-slot-10-M6",
+    "designation": "T-nut B-type slot 10 {Thread}",
+    "rows": [
+      {"name":"M4","select":{"Thread":"M4"},"values":{},"part_number":"S10BHASNM4"},
+      {"name":"M5","select":{"Thread":"M5"},"values":{},"part_number":"S10BHASNM5"},
+      {"name":"M6","select":{"Thread":"M6"},"values":{},"part_number":"S10BHASNM6"},
+      {"name":"M8","select":{"Thread":"M8"},"values":{},"part_number":"S10BHASNM8"}
+    ],
+    "build": {"role":"fastener","systems":[{"type":"B","slot":10}],"frames":[{"name":"slot","kind":"slot"}]},
+    "frames": [{"name":"slot","origin":[0,8.8,0],"z":[0,-1,0],"x":[1,0,0],"kind":"slot"}]
+  },
+  {
+    "id": "tnut-b10-heavy",
+    "name": "Heavy slot nut B-type slot 10",
+    "category": "nuts",
+    "source": "slot-profile-accessories/Heavy-Slot-Nut-B-Type-Slot-10-M6/Motedis-S10BHESNM6/Motedis_S10BHESNM6.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "S10BHESNM6",
+    "supplier_url": "https://www.motedis.com/en/Heavy-Slot-Nut-B-Type-Slot-10-M6",
+    "designation": "Heavy slot nut B-type slot 10 {Thread}",
+    "rows": [
+      {"name":"M4","select":{"Thread":"M4"},"values":{},"part_number":"S10BHESNM4"},
+      {"name":"M5","select":{"Thread":"M5"},"values":{},"part_number":"S10BHESNM5"},
+      {"name":"M6","select":{"Thread":"M6"},"values":{},"part_number":"S10BHESNM6"}
+    ],
+    "build": {"role":"fastener","systems":[{"type":"B","slot":10}],"frames":[{"name":"slot","kind":"slot"}]},
+    "frames": [{"name":"slot","origin":[0,10.6,10],"z":[0,-1,0],"x":[0,0,1],"kind":"slot"}]
+  },
+  {
+    "id": "snut-b10",
+    "name": "Square nut B-type slot 10",
+    "category": "nuts",
+    "source": "slot-profile-accessories/Square-Nut-Channel-10mm-M5/Motedis_4544.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "4544",
+    "supplier_url": "https://www.motedis.com/en/Square-Nut-Channel-10mm-M5",
+    "designation": "Square nut B-type slot 10 {Thread}",
+    "rows": [{"name":"M5","select":{"Thread":"M5"},"values":{},"part_number":"4544"}],
+    "build": {"role":"fastener","systems":[{"type":"B","slot":10}],"frames":[{"name":"slot","kind":"slot"}]},
+    "frames": [{"name":"slot","origin":[0,8,0],"z":[0,-1,0],"x":[1,0,0],"kind":"slot"}]
+  }
+]

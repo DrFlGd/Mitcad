@@ -891,3 +891,51 @@ fn an_angle_dimensions_side_is_the_sector_of_a_point() {
     .unwrap();
     assert_eq!(given.angle_side(), Some([false, true]));
 }
+
+// --- Holes near curved boundaries (mitcad#364)
+
+#[test]
+fn a_hole_within_the_chord_error_of_a_circle_is_still_a_hole() {
+    // The inner circle lies wholly inside the outer one, 0.011 mm from it
+    // (less than the 9.5e-4 r the 5 degree chords of the outer circle
+    // leave), and does not touch it.
+    let mut b = Builder::new();
+    b.circle([0.0, 0.0], 50.0); // c1
+    b.circle([39.9669, -1.3083], 10.0); // c2
+    let regions = b.regions();
+    assert_eq!(keys(&regions), ["r{c1}", "r{c2}"]);
+    let plate = &regions[0];
+    assert_eq!(plate.profile.loops.len(), 2, "{:?}", keys(&regions));
+    assert_eq!(plate.holes.len(), 1);
+    assert!(close(plate.area, PI * 2400.0, 2e-3), "{}", plate.area);
+    assert!(regions[1].holes.is_empty());
+}
+
+#[test]
+fn a_loop_just_outside_a_concave_arc_is_no_hole() {
+    // A face with a concave left side: an arc of a circle of radius 200
+    // around (-250, 0), bulging into it. A small circle just inside that
+    // big circle (0.02 mm from the arc, at the middle of a sample segment
+    // of the arc) lies outside the face, but inside the face's sampled
+    // outline.
+    let r: f64 = 200.0;
+    let centre = [-250.0, 0.0];
+    let corner = (r * r - 50.0 * 50.0).sqrt() + centre[0];
+    let mut b = Builder::new();
+    b.line([corner, -50.0], [50.0, -50.0]); // c1
+    b.line([50.0, -50.0], [50.0, 50.0]); // c2
+    b.line([50.0, 50.0], [corner, 50.0]); // c3
+    b.arc(centre, [corner, -50.0], [corner, 50.0]); // c4
+    // The arc is split in six: the middle of a piece is at 2.413 degrees.
+    let (sin, cos) = 2.413f64.to_radians().sin_cos();
+    let (small, gap) = (5.0, 0.02);
+    let from = r - small - gap;
+    b.circle([centre[0] + from * cos, centre[1] + from * sin], small); // c5
+    let regions = b.regions();
+    let face = regions
+        .iter()
+        .find(|r| r.profile.loops[0].segments.len() == 4)
+        .unwrap_or_else(|| panic!("no face in {:?}", keys(&regions)));
+    assert_eq!(face.profile.loops.len(), 1, "{:?}", keys(&regions));
+    assert!(face.holes.is_empty());
+}

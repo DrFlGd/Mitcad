@@ -121,6 +121,29 @@ pub fn element_mesh(
     Some(Ok(out))
 }
 
+/// A body's triangles (feet, its own coordinates), facing out (mitcad#345:
+/// a family type's void geometry, cut from its host); an error when a face
+/// is left out or the triangles do not close.
+pub fn solid_mesh(s: &Solid) -> Result<(Vec<P3>, Vec<[u32; 3]>), String> {
+    let g = GRep {
+        solids: vec![s.clone()],
+        ..GRep::default()
+    };
+    let tess = tessellate(&g);
+    if tess.left_out > 0 {
+        return Err(tess
+            .notes
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "a face is left out".to_string()));
+    }
+    let (points, triangles) = tess.bodies.into_iter().next().ok_or("it has no faces")?;
+    if !mesh_closed(&points, &triangles) {
+        return Err("its faces do not close".into());
+    }
+    Ok((points, triangles))
+}
+
 /// A geometry's own bodies triangulated (feet, its own coordinates), each
 /// body's triangles facing out where it is closed.
 #[derive(Debug, Default)]
@@ -496,12 +519,12 @@ fn band(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use mitcad_rvt::brep::{Edge, Face};
 
     /// A unit cube as the file keeps one: six planes, twelve edges.
-    fn cube() -> Solid {
+    pub(crate) fn cube() -> Solid {
         // Faces: 0 bottom (z=0), 1 top (z=1), 2 y=0, 3 x=1, 4 y=1, 5 x=0;
         // each plane's (u, v) its model x and y, x and y, x and z, y and
         // z, x and z, y and z.
@@ -641,6 +664,17 @@ mod tests {
                 .unwrap()
                 .is_err()
         );
+    }
+
+    #[test]
+    fn a_body_s_closed_mesh() {
+        // mitcad#345: a void's body as a cut tool: closed, facing out.
+        let (points, triangles) = solid_mesh(&cube()).unwrap();
+        assert_eq!(triangles.len(), 12);
+        assert!(mesh_measures(&points, &triangles).0 > 0.0);
+        let mut open = cube();
+        open.faces.pop();
+        assert!(solid_mesh(&open).is_err());
     }
 
     #[test]

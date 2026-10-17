@@ -79,7 +79,12 @@ pub(super) fn imported_json(imported: &Imported) -> Value {
         .iter()
         .map(|b| json!({"uid": b.uid, "name": b.name, "kind": b.kind.as_str()}))
         .collect();
-    json!({"uid": imported.feature.uid, "name": imported.feature.name, "bodies": bodies})
+    let mut out =
+        json!({"uid": imported.feature.uid, "name": imported.feature.name, "bodies": bodies});
+    if !imported.warnings.is_empty() {
+        out["warnings"] = json!(imported.warnings);
+    }
+    out
 }
 
 impl<K: Kernel> Document<K> {

@@ -42,14 +42,16 @@ const USAGE: &str = "usage: mitcad-rvt-inspect <command> ...
                                   those classes, one JSON line each
   building <file>                 the building elements' parameters (walls,
                                   floors, roofs, instances, types, grids,
-                                  links) and GlobalIds as JSON
+                                  links), GlobalIds and the profile families'
+                                  curves as JSON
   documents <file> [<partition> [<doc> [<class>|@geometry]]]
                                   the documents a partition carries (its own,
                                   the loaded families'): classes counted, or
                                   one document's records as JSON lines
-  geometry <file> [<id>] [--all|--bounds]
+  geometry <file> [<id>] [--all|--bounds|--points]
                                   the geometry the file keeps: faces by
                                   surface, seam gaps; one element's bodies
+                                  (--points: each face's loops in feet)
   preview <file> <out.png>        the preview image
   write-test <out> [family]       a test project (or family) of the writers";
 
@@ -528,8 +530,10 @@ fn cmd_building(path: &str) -> Result<(), String> {
     let ids: std::collections::BTreeMap<i64, String> = model.global_ids().into_iter().collect();
     println!(
         "{}",
-        serde_json::to_string(&json!({"building": model.building, "global_ids": ids}))
-            .expect("serializes")
+        serde_json::to_string(
+            &json!({"building": model.building, "global_ids": ids, "profiles": model.profiles})
+        )
+        .expect("serializes")
     );
     Ok(())
 }
@@ -669,7 +673,13 @@ fn cmd_documents(
 /// The geometry the file keeps (`GElement`s): per element (or the one
 /// asked for) its bodies' faces by surface, how far apart the two sides of
 /// their edges land (feet), its placed types; `--all` with the B-reps.
-fn cmd_geometry(path: &str, id: Option<i64>, all: bool, bounds: bool) -> Result<(), String> {
+fn cmd_geometry(
+    path: &str,
+    id: Option<i64>,
+    all: bool,
+    bounds: bool,
+    points: bool,
+) -> Result<(), String> {
     let f = open(path)?;
     let schema = schema_of(&f)?;
     let model = model_of(&f, &schema)?;
@@ -737,6 +747,25 @@ fn cmd_geometry(path: &str, id: Option<i64>, all: bool, bounds: bool) -> Result<
             );
             if all {
                 println!("{}", serde_json::to_string(&g.solids).expect("serializes"));
+            }
+            if points {
+                // Each face's loops as points (feet), one line per loop.
+                for (k, s) in g.solids.iter().enumerate() {
+                    for (f, face) in s.faces.iter().enumerate() {
+                        for l in 0..face.loops.len() {
+                            let pts: Vec<Option<[f64; 3]>> = s
+                                .loop_uv(f, l)
+                                .into_iter()
+                                .map(|uv| face.surface.at(uv))
+                                .collect();
+                            println!(
+                                "{}",
+                                json!({"solid": k, "face": f, "loop": l,
+                                    "surface": face.surface.class(), "points": pts})
+                            );
+                        }
+                    }
+                }
             }
         }
     }
@@ -818,6 +847,7 @@ fn run(args: &[String]) -> Result<(), String> {
             args.get(3).and_then(|a| a.parse().ok()),
             flag("--all"),
             flag("--bounds"),
+            flag("--points"),
         ),
         "documents" => cmd_documents(
             arg(2)?,

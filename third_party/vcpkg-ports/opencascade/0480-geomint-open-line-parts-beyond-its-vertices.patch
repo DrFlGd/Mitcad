@@ -1,0 +1,91 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Surface intersection: the parts of an open line beyond its vertices
+(mitcad#263).
+
+GeomInt_LineConstructor splits an analytic line of two surfaces (a line,
+parabola or hyperbola) at its vertices and keeps the parts between them
+that lie in both surfaces' domains. A line with no vertex is kept whole;
+with two or more, the parts before the first vertex and after the last were
+dropped although they lie in both domains (on unbounded surfaces always).
+A cone and a plane parallel to its axis meet in a hyperbola whose asymptotes
+are the cone's generatrices parallel to the plane: where the cone's seam is
+one of them within rounding (a chamfer's cone with its seam 8.6e-9 rad off
+the direction of a wall square to it), the hyperbola crosses the seam twice
+some 1e8 mm away, and of the branch through the wall only a piece of no
+length between those two vertices was left. The chamfer then found no cut
+of its cone by the wall and failed (it went on to a walking that chamfers
+do not implement).
+
+- GeomInt_LineConstructor::Perform, for such open lines with vertices: the
+  part from the line's start to its first vertex and from its last vertex
+  to its end are tested at a point inside them (one unit from the vertex on
+  an unbounded side) as the parts between vertices are, and kept when in
+  both domains; parts that meet are joined, so that a line wholly in both
+  domains comes out as one part (the whole line, as with no vertices).
+
+Upstream: new.
+diff --git a/src/ModelingAlgorithms/TKGeomAlgo/GeomInt/GeomInt_LineConstructor.cxx b/src/ModelingAlgorithms/TKGeomAlgo/GeomInt/GeomInt_LineConstructor.cxx
+--- a/src/ModelingAlgorithms/TKGeomAlgo/GeomInt/GeomInt_LineConstructor.cxx
++++ b/src/ModelingAlgorithms/TKGeomAlgo/GeomInt/GeomInt_LineConstructor.cxx
+@@ -373,6 +373,59 @@
+       }
+     }
+     //
++    if (intrvtested && (typl == IntPatch_Lin || typl == IntPatch_Parabola || typl == IntPatch_Hyperbola))
++    {
++      // An open line: its parts before its first vertex and after its last
++      // one (e.g. vertices where it crosses a seam far away) are kept where
++      // they lie in both domains, as the parts between its vertices are;
++      // parts that meet are joined.
++      double vmin = RealLast(), vmax = RealFirst();
++      for (i = 1; i <= nbvtx; ++i)
++      {
++        const double w = GeomInt_LineTool::Vertex(L, i).ParameterOnLine();
++        vmin           = std::min(vmin, w);
++        vmax           = std::max(vmax, w);
++      }
++      const double lf = GeomInt_LineTool::FirstParameter(L), ll = GeomInt_LineTool::LastParameter(L);
++      const auto   inBoth = [&](const double w) {
++        gp_Pnt P;
++        GLinePoint(typl, GLine, w, P);
++        Parameters(myHS1, myHS2, P, u1, v1, u2, v2);
++        AdjustPeriodic(myHS1, myHS2, u1, v1, u2, v2);
++        return myDom1->Classify(gp_Pnt2d(u1, v1), Tol) != TopAbs_OUT
++               && myDom2->Classify(gp_Pnt2d(u2, v2), Tol) != TopAbs_OUT;
++      };
++      NCollection_Sequence<double> aParts;
++      if (vmin - lf > Precision::PConfusion()
++          && inBoth(Precision::IsInfinite(lf) ? vmin - 1. : 0.5 * (lf + vmin)))
++      {
++        aParts.Append(lf);
++        aParts.Append(vmin);
++      }
++      for (int k = 1; k <= seqp.Length(); k++)
++      {
++        aParts.Append(seqp(k));
++      }
++      if (ll - vmax > Precision::PConfusion()
++          && inBoth(Precision::IsInfinite(ll) ? vmax + 1. : 0.5 * (vmax + ll)))
++      {
++        aParts.Append(vmax);
++        aParts.Append(ll);
++      }
++      seqp.Clear();
++      for (int k = 1; k + 1 <= aParts.Length(); k += 2)
++      {
++        if (!seqp.IsEmpty() && std::abs(seqp.Last() - aParts(k)) <= Precision::PConfusion())
++        {
++          seqp.ChangeLast() = aParts(k + 1);
++        }
++        else
++        {
++          seqp.Append(aParts(k));
++          seqp.Append(aParts(k + 1));
++        }
++      }
++    }
+     if (!intrvtested)
+     {
+       // Keep a priori. A point 2d on each

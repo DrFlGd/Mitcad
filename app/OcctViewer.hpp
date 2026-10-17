@@ -251,9 +251,15 @@ public:
   // The grid's minor step now (mm), shown or not: what sketch points snap to.
   double gridStep() const;
   // The faces where Section Analysis or Hide Above Sketch cuts the bodies
-  // (caps), drawn over the cut and hatched along `plane`'s axes; null
-  // clears them.
-  void setSectionCaps(const TopoDS_Shape& caps, const gp_Ax3& plane);
+  // (caps), drawn over the cut and hatched along `plane`'s axes. One group
+  // per colour (mitcad#382: the timeline colour of the bodies' component; an
+  // invalid colour is the default one), each hatched in a darker shade of
+  // its own; none clears them.
+  struct SectionCap {
+    TopoDS_Shape faces;
+    QColor color = QColor();
+  };
+  void setSectionCaps(const std::vector<SectionCap>& caps, const gp_Ax3& plane);
   // Cosmetic threads: rings on the threaded faces, drawn over the bodies
   // and not pickable; null clears them.
   void setThreads(const TopoDS_Shape& rings);
@@ -754,8 +760,11 @@ private:
   Graphic3d_ZLayerId m_edgeLayer = Graphic3d_ZLayerId_UNKNOWN;
   // Sketch entities' halos, just before the top layer (mitcad#302).
   Graphic3d_ZLayerId m_sketchHaloLayer = Graphic3d_ZLayerId_UNKNOWN;
-  occ::handle<AIS_Shape> m_sectionCaps;
-  occ::handle<AIS_Shape> m_sectionHatch;
+  std::vector<occ::handle<AIS_Shape>> m_sectionCaps;
+  std::vector<occ::handle<AIS_Shape>> m_sectionHatches;
+  QStringList m_sectionLook;      // per cap group: colour, hatch colour, direction, lines
+  QString m_loggedSectionLook;
+  void logSectionCaps();
   occ::handle<AIS_Shape> m_threads;
   QColor m_paper = QColor(0xd8, 0xdc, 0xe2); // the hidden-line style's faces
   bool m_gridShown = true;

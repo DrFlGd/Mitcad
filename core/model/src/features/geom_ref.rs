@@ -14,6 +14,7 @@
 //! | `{"origin": [x, y, z], "normal": [...], "x_axis": [...]}` | a fixed plane (`x_axis` optional) |
 //! | `{"origin": [x, y, z], "direction": [...]}` | a fixed axis |
 //! | `{"point": [x, y, z]}` | a fixed point |
+//! | `{"mount": "F7:mount(slot_x+_1)"}` | a derived part's mount frame (mitcad#375): a plane, an axis (its z) or a point (its origin) |
 //!
 //! A path is `{"body": "F2.b0", "edges": [...]}` (connected edges in
 //! order), `{"sketch": "F1", "curve": "c4"}` (a line, arc or circle in its
@@ -60,6 +61,7 @@ use crate::profile::{SegmentGeometry, dot};
 use crate::recompute::Read;
 use crate::sketch::geometry::Curve2;
 use crate::topo::{EdgeName, FaceName, VertexName};
+use crate::transform::Transform;
 
 /// A geometric input of a feature (see the module documentation).
 #[derive(Debug, Clone, PartialEq)]
@@ -101,6 +103,12 @@ pub enum GeomRef {
         direction: Vec3,
     },
     FixedPoint(Vec3),
+    /// A mount frame of a derived part (mitcad#375): its `mount:<name>`
+    /// joint origin of the source, `F7:mount(slot_x+_1)`.
+    Mount {
+        feature: FeatureUid,
+        name: String,
+    },
 }
 
 /// A path: connected edges of one body in order (the path runs from the
@@ -128,6 +136,75 @@ pub enum PathRef {
         sketch: FeatureUid,
         curves: Vec<EntityUid>,
     },
+    /// A fixed helix (mitcad#385).
+    Helix(HelixPath),
+}
+
+/// A fixed helical path (mitcad#385): the points `center + radius (cos t
+/// x + sin t (axis × x)) + pitch t / 2π axis` (`x` is `x_axis` made square
+/// to the axis) for t from `start_angle` to `end_angle` (radians, either
+/// way round: the path runs from the first to the second). `pitch` is the
+/// rise along the axis per turn counter-clockwise about it, negative for a
+/// left-handed helix.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HelixPath {
+    pub center: Vec3,
+    pub axis: Vec3,
+    pub x_axis: Vec3,
+    pub radius: f64,
+    pub pitch: f64,
+    pub start_angle: f64,
+    pub end_angle: f64,
+}
+
+impl HelixPath {
+    pub fn check(&self) -> Result<(), String> {
+        finite(
+            "helix",
+            &[
+                &self.center[..],
+                &self.axis[..],
+                &self.x_axis[..],
+                &[self.radius, self.pitch, self.start_angle, self.end_angle],
+            ]
+            .concat(),
+        )?;
+        self.curve().map(|_| ())
+    }
+
+    /// The helix as a kernel curve running along the path (its parameter
+    /// increasing).
+    pub fn curve(&self) -> Result<crate::kernel::Curve3, String> {
+        let axis = unit(self.axis).ok_or("the helix's axis has no length")?;
+        let x = unit(sub(self.x_axis, scale(axis, dot(self.x_axis, axis))))
+            .ok_or("the helix's x axis runs along its axis")?;
+        if self.radius <= LINEAR {
+            return Err("the helix's radius must be positive".to_owned());
+        }
+        if self.pitch.abs() <= LINEAR {
+            return Err("the helix's pitch must not be zero".to_owned());
+        }
+        let turn = self.end_angle - self.start_angle;
+        let speed = self.radius.hypot(self.pitch / std::f64::consts::TAU);
+        if turn.abs() * speed <= LINEAR {
+            return Err("the helix path has no length".to_owned());
+        }
+        let helix = crate::kernel::Curve3::Helix {
+            center: self.center,
+            axis,
+            x_axis: x,
+            radius: self.radius,
+            pitch: self.pitch,
+            start: self.start_angle.min(self.end_angle),
+            end: self.start_angle.max(self.end_angle),
+        };
+        Ok(if turn > 0.0 {
+            helix
+        } else {
+            super::path::reversed(helix)
+        })
+    }
 }
 
 /// What a reference must be.
@@ -214,6 +291,10 @@ impl Want {
                 Self::Plane | Self::Tool | Self::Surface | Self::FaceOrPlane
             ),
             G::FixedAxis { .. } => matches!(self, Self::Line | Self::Axis),
+            G::Mount { .. } => matches!(
+                self,
+                Self::Plane | Self::Line | Self::Axis | Self::Point | Self::FaceOrPlane
+            ),
         }
     }
 }
@@ -227,6 +308,34 @@ fn article(kind: DatumKind) -> &'static str {
 
 fn point_name(point: EntityUid) -> String {
     format!("p{}", point.0)
+}
+
+/// Whether `name` can name a mount frame: ASCII letters, digits and `_`,
+/// `+`, `-` and `.` (`slot_x+_1`).
+pub(crate) fn valid_mount_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "_+-.".contains(c))
+}
+
+/// Reads a mount frame's reference, `F7:mount(slot_x+_1)`.
+pub(crate) fn parse_mount(text: &str) -> Result<(FeatureUid, String), String> {
+    let bad = || {
+        format!(
+            "invalid mount frame '{text}': expected a derived part's frame like \"F7:mount(end_a)\""
+        )
+    };
+    let (feature, rest) = text.trim().split_once(':').ok_or_else(bad)?;
+    let name = rest
+        .strip_prefix("mount(")
+        .and_then(|r| r.strip_suffix(')'))
+        .ok_or_else(bad)?;
+    let feature = feature.parse::<FeatureUid>().map_err(|_| bad())?;
+    if !valid_mount_name(name) {
+        return Err(bad());
+    }
+    Ok((feature, name.to_owned()))
 }
 
 impl fmt::Display for GeomRef {
@@ -252,6 +361,7 @@ impl fmt::Display for GeomRef {
             Self::FixedPlane { .. } => f.write_str("the fixed plane"),
             Self::FixedAxis { .. } => f.write_str("the fixed axis"),
             Self::FixedPoint(_) => f.write_str("the fixed point"),
+            Self::Mount { feature, name } => write!(f, "frame {feature}:mount({name})"),
         }
     }
 }
@@ -272,6 +382,9 @@ impl GeomRef {
             Self::FixedPoint(_) => {}
             Self::Datum(uid) => {
                 references.features.insert(*uid);
+            }
+            Self::Mount { feature, .. } => {
+                references.features.insert(*feature);
             }
             Self::Face { body, face } => {
                 references.body(*body);
@@ -373,6 +486,19 @@ impl GeomRef {
                     .ok_or_else(|| "the axis direction is zero".to_owned());
             }
             Self::FixedPoint(point) => return finite("point", point),
+            Self::Mount { feature, name } => {
+                let entry = ctx.feature(*feature)?;
+                return match &entry.def {
+                    super::FeatureDef::DerivedPart(_) if valid_mount_name(name) => Ok(()),
+                    super::FeatureDef::DerivedPart(_) => {
+                        Err(format!("'{name}' is no name of a mount frame"))
+                    }
+                    _ => Err(format!(
+                        "{} ({feature}) is not a derived part: it has no mount frames",
+                        entry.name
+                    )),
+                };
+            }
         };
         for feature in features {
             ctx.feature(feature).map_err(|e| format!("{self}: {e}"))?;
@@ -447,7 +573,7 @@ impl PathRef {
             Self::SketchCurve { sketch, .. } | Self::SketchCurves { sketch, .. } => {
                 references.features.insert(*sketch);
             }
-            Self::Line { .. } => {}
+            Self::Line { .. } | Self::Helix(_) => {}
         }
     }
 
@@ -502,6 +628,7 @@ impl PathRef {
                     Err("the path has no length".to_owned())
                 }
             }
+            Self::Helix(helix) => helix.check(),
         }
     }
 }
@@ -523,6 +650,14 @@ pub(crate) trait Resolver {
     /// change (`renamed.rs`, mitcad#272): a feature warns; `maker` made
     /// the renamed face.
     fn renamed(&mut self, _what: &str, _stored: &str, _found: &str, _maker: FeatureUid) {}
+    /// A derived part's mount frame (mitcad#375), in the coordinates of its
+    /// component.
+    fn mount(&mut self, feature: FeatureUid, name: &str) -> Result<Transform, String> {
+        Err(format!(
+            "the frame {name} of {} is not available here",
+            self.name(feature)
+        ))
+    }
 }
 
 fn not_a(resolver: &impl Resolver, uid: FeatureUid, datum: &Datum, wanted: &str) -> String {
@@ -581,6 +716,14 @@ pub(crate) fn resolve_plane(
             let normal = unit(*normal).ok_or("the plane's normal is zero")?;
             return Ok(DatumPlane::from_normal(*origin, normal, *x_axis));
         }
+        GeomRef::Mount { feature, name } => {
+            let [origin, x_axis, y_axis, _] = crate::joints::frame_parts(&r.mount(*feature, name)?);
+            return Ok(DatumPlane {
+                origin,
+                x_axis,
+                y_axis,
+            });
+        }
         _ => return Err(format!("{reference} is not a plane")),
     };
     match (datum, reference) {
@@ -634,6 +777,10 @@ pub(crate) fn resolve_axis(
                 origin: *origin,
                 direction: unit(*direction).ok_or("the axis direction is zero")?,
             });
+        }
+        GeomRef::Mount { feature, name } => {
+            let [origin, _, _, direction] = crate::joints::frame_parts(&r.mount(*feature, name)?);
+            return Ok(DatumAxis { origin, direction });
         }
         _ => return Err(format!("{reference} is not an axis")),
     };
@@ -713,6 +860,7 @@ pub(crate) fn resolve_point(r: &mut impl Resolver, reference: &GeomRef) -> Resul
                 .ok_or_else(|| format!("{} has no point {}", r.name(*sketch), point_name(*point)));
         }
         GeomRef::FixedPoint(point) => return Ok(*point),
+        GeomRef::Mount { feature, name } => return Ok(r.mount(*feature, name)?.translation),
         _ => return Err(format!("{reference} is not a point")),
     };
     match (datum, reference) {
@@ -893,6 +1041,7 @@ fn chain_point(chain: &[PathCurve], at: PathParameter) -> PathPoint {
 pub(crate) fn path_curve(r: &mut impl Resolver, path: &PathRef) -> Result<PathCurve, String> {
     let (sketch, curve) = match path {
         PathRef::Line { start, end } => return PathCurve::line(*start, *end),
+        PathRef::Helix(helix) => return PathCurve::helix(helix),
         PathRef::SketchCurve { sketch, curve } => (*sketch, *curve),
         PathRef::Edges { .. } => {
             return Err("a path of edges has no analytic curve".to_owned());
@@ -961,9 +1110,48 @@ pub(crate) enum PathCurve {
         radius: f64,
         sweep: f64,
     },
+    /// A helix (mitcad#385): [`crate::kernel::Curve3::Helix`] from its
+    /// parameter `start` to `end`.
+    Helix {
+        center: Vec3,
+        axis: Vec3,
+        x: Vec3,
+        radius: f64,
+        pitch: f64,
+        start: f64,
+        end: f64,
+    },
 }
 
 impl PathCurve {
+    fn helix(helix: &HelixPath) -> Result<Self, String> {
+        match helix.curve()? {
+            crate::kernel::Curve3::Helix {
+                center,
+                axis,
+                x_axis,
+                radius,
+                pitch,
+                start,
+                end,
+            } => Ok(Self::Helix {
+                center,
+                axis,
+                x: x_axis,
+                radius,
+                pitch,
+                start,
+                end,
+            }),
+            _ => unreachable!("a helix path's curve is a helix"),
+        }
+    }
+
+    /// A helix's arc length per unit of its parameter.
+    fn speed(radius: f64, pitch: f64) -> f64 {
+        radius.hypot(pitch / std::f64::consts::TAU)
+    }
+
     fn line(start: Vec3, end: Vec3) -> Result<Self, String> {
         let delta = sub(end, start);
         let direction = unit(delta).ok_or("the path has no length")?;
@@ -978,6 +1166,13 @@ impl PathCurve {
         match self {
             Self::Line { length, .. } => *length,
             Self::Arc { radius, sweep, .. } => radius * sweep,
+            Self::Helix {
+                radius,
+                pitch,
+                start,
+                end,
+                ..
+            } => (end - start) * Self::speed(*radius, *pitch),
         }
     }
 
@@ -1001,6 +1196,21 @@ impl PathCurve {
                     add(scale(*x, radius * t.cos()), scale(*y, radius * t.sin())),
                 )
             }
+            Self::Helix {
+                center,
+                axis,
+                x,
+                radius,
+                pitch,
+                start,
+                ..
+            } => super::path::helix_point(
+                *center,
+                *axis,
+                *x,
+                (*radius, *pitch),
+                start + s / Self::speed(*radius, *pitch),
+            ),
         }
     }
 
@@ -1011,6 +1221,23 @@ impl PathCurve {
             Self::Arc { x, y, radius, .. } => {
                 let t = s / radius;
                 add(scale(*x, -t.sin()), scale(*y, t.cos()))
+            }
+            Self::Helix {
+                axis,
+                x,
+                radius,
+                pitch,
+                start,
+                ..
+            } => {
+                let speed = Self::speed(*radius, *pitch);
+                let t = start + s / speed;
+                let y = crate::profile::cross(*axis, *x);
+                let d = add(
+                    add(scale(*x, -radius * t.sin()), scale(y, radius * t.cos())),
+                    scale(*axis, pitch / std::f64::consts::TAU),
+                );
+                scale(d, 1.0 / speed)
             }
         }
     }
@@ -1064,6 +1291,27 @@ impl PathCurve {
                     ends[1]
                 }
             }
+            // The nearest of points a degree of turn apart, then narrowed
+            // down between its neighbours.
+            Self::Helix { start, end, .. } => {
+                let total = self.length();
+                let steps = (((end - start) / 1f64.to_radians()).ceil() as usize).clamp(8, 100_000);
+                let distance = |s: f64| norm(sub(self.point(s), p));
+                let at = |i: usize| total * i as f64 / steps as f64;
+                let best = (0..=steps)
+                    .min_by(|a, b| distance(at(*a)).total_cmp(&distance(at(*b))))
+                    .unwrap_or(0);
+                let (mut lo, mut hi) = (at(best.saturating_sub(1)), at((best + 1).min(steps)));
+                for _ in 0..100 {
+                    let (a, b) = (lo + (hi - lo) / 3.0, hi - (hi - lo) / 3.0);
+                    if distance(a) <= distance(b) {
+                        hi = b;
+                    } else {
+                        lo = a;
+                    }
+                }
+                (lo + hi) / 2.0
+            }
         }
     }
 }
@@ -1103,6 +1351,10 @@ impl<K: Kernel> Resolver for EvalContext<'_, K> {
     fn renamed(&mut self, what: &str, stored: &str, found: &str, maker: FeatureUid) {
         self.found_renamed(what, &stored, &found, maker);
     }
+
+    fn mount(&mut self, feature: FeatureUid, name: &str) -> Result<Transform, String> {
+        EvalContext::mount(self, feature, name)
+    }
 }
 
 /// References for features: every read is recorded for the recompute
@@ -1115,6 +1367,27 @@ impl<K: Kernel> EvalContext<'_, K> {
         output
             .map(|d| d.value)
             .ok_or_else(|| format!("{} has no result", self.feature_name(uid)))
+    }
+
+    /// A mount frame of a derived part before this one (mitcad#375), in
+    /// the coordinates of that part's component.
+    pub fn mount(&mut self, feature: FeatureUid, name: &str) -> Result<Transform, String> {
+        let result = self.env.history.iter().find(|r| r.uid == feature);
+        let output = result.and_then(|r| r.output.clone());
+        self.reads
+            .push(Read::Output(feature, output.as_ref().map(|o| o.version)));
+        let failed = result.is_some_and(|r| !r.status.is_ok());
+        let frames = output.as_ref().and_then(|o| o.mounts.clone());
+        match frames {
+            Some(frames) if !failed => frames
+                .get(name)
+                .copied()
+                .ok_or_else(|| format!("{} has no frame {name}", self.feature_name(feature))),
+            _ => Err(format!(
+                "{} has no frames at this point of the timeline",
+                self.feature_name(feature)
+            )),
+        }
     }
 
     /// The plane of a construction plane feature (a sketch plane).
@@ -1166,7 +1439,7 @@ impl<K: Kernel> EvalContext<'_, K> {
 const EXPECTED: &str = "an origin datum (xy, xz, yz, x, y, z, origin), a construction feature \
                         like \"F5\", {\"body\": ...} with an optional \"face\", \"edge\" or \
                         \"vertex\", {\"sketch\": ...} with \"curve\", \"curves\" or \"point\", or \
-                        a fixed plane, axis or point";
+                        a fixed plane, axis or point, or {\"mount\": \"F7:mount(end_a)\"}";
 
 fn vec3(v: &Vec3) -> Value {
     Value::from(v.to_vec())
@@ -1225,6 +1498,9 @@ impl Serialize for GeomRef {
                 put("direction", vec3(direction));
             }
             Self::FixedPoint(point) => put("point", vec3(point)),
+            Self::Mount { feature, name } => {
+                put("mount", format!("{feature}:mount({name})").into())
+            }
         }
         map.serialize(serializer)
     }
@@ -1260,6 +1536,12 @@ impl Serialize for PathRef {
                 map.insert(
                     "curves".to_owned(),
                     curves.iter().map(|c| Value::from(c.curve_name())).collect(),
+                );
+            }
+            Self::Helix(helix) => {
+                map.insert(
+                    "helix".to_owned(),
+                    serde_json::to_value(helix).map_err(serde::ser::Error::custom)?,
                 );
             }
         }
@@ -1415,6 +1697,10 @@ impl GeomRef {
         if let Some(point) = f.take::<Vec3>("point")? {
             return f.done(Self::FixedPoint(point));
         }
+        if let Some(text) = f.take::<String>("mount")? {
+            let (feature, name) = parse_mount(&text)?;
+            return f.done(Self::Mount { feature, name });
+        }
         match f.0.keys().next() {
             Some(key) => Err(format!(
                 "invalid reference: unexpected field `{key}`, expected {EXPECTED}"
@@ -1502,7 +1788,8 @@ impl PathRef {
         let Value::Object(map) = value else {
             return Err(format!(
                 "invalid path {value}: expected {{\"body\": ..., \"edges\": [...]}}, \
-                 {{\"sketch\": ..., \"curve\": ...}} or {{\"start\": [...], \"end\": [...]}}"
+                 {{\"sketch\": ..., \"curve\": ...}}, {{\"start\": [...], \"end\": [...]}} \
+                 or {{\"helix\": {{...}}}}"
             ));
         };
         let mut f = Fields(map);
@@ -1520,6 +1807,7 @@ impl PathRef {
                 curves: f.curves("curves")?.unwrap_or_default(),
             },
             None if f.has("sketch") => Self::sketch_curve(&mut f)?,
+            None if f.has("helix") => Self::Helix(f.need("helix", "a helix path")?),
             None => Self::line(&mut f)?,
         };
         f.done(path)
@@ -1678,6 +1966,38 @@ mod tests {
         let path: PathRef = serde_json::from_value(value.clone()).unwrap();
         assert!(matches!(&path, PathRef::SketchCurves { curves, .. } if curves.len() == 3));
         assert_eq!(serde_json::to_value(&path).unwrap(), value);
+    }
+
+    #[test]
+    fn a_helix_path_round_trips_and_gives_points_along_it() {
+        // (mitcad#385) Two turns of radius 10 about z, rising 5 a turn.
+        let value = json!({"helix": {"center": [0.0, 0.0, 0.0], "axis": [0.0, 0.0, 1.0],
+            "x_axis": [1.0, 0.0, 0.0], "radius": 10.0, "pitch": 5.0,
+            "start_angle": 0.0, "end_angle": 4.0 * std::f64::consts::PI}});
+        let path: PathRef = serde_json::from_value(value.clone()).unwrap();
+        assert!(matches!(&path, PathRef::Helix(h) if h.radius == 10.0));
+        assert_eq!(serde_json::to_value(&path).unwrap(), value);
+        let curve = PathCurve::helix(match &path {
+            PathRef::Helix(h) => h,
+            _ => unreachable!(),
+        })
+        .unwrap();
+        let tau = std::f64::consts::TAU;
+        let speed = 10f64.hypot(5.0 / tau);
+        assert!((curve.length() - 2.0 * tau * speed).abs() < 1e-9);
+        // Half way: a turn round, 5 up; its tangent along y and rising.
+        let half = curve.path_point(PathParameter::Fraction(0.5));
+        assert!(norm(sub(half.point, [10.0, 0.0, 5.0])) < 1e-9, "{half:?}");
+        let rise = 5.0 / tau / speed;
+        assert!(norm(sub(half.tangent, [0.0, 10.0 / speed, rise])) < 1e-9);
+        // The nearest point to one beside the first turn's quarter.
+        let near = curve.path_point(PathParameter::Near([0.0, 12.0, 1.25]));
+        assert!(norm(sub(near.point, [0.0, 10.0, 1.25])) < 1e-6, "{near:?}");
+        // Unknown fields and a helix of no pitch are refused.
+        let bad = json!({"helix": {"center": [0.0, 0.0, 0.0], "axis": [0.0, 0.0, 1.0],
+            "x_axis": [1.0, 0.0, 0.0], "radius": 10.0, "pitch": 5.0,
+            "start_angle": 0.0, "end_angle": 1.0, "turns": 2}});
+        assert!(serde_json::from_value::<PathRef>(bad).is_err());
     }
 
     #[test]

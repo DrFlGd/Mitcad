@@ -33,7 +33,14 @@
 #include <GProp_GProps.hxx>
 #include <GeomAdaptor_Curve.hxx>
 #include <Geom2d_Curve.hxx>
+#include <Geom2d_Line.hxx>
+#include <Geom_CylindricalSurface.hxx>
+#include <gp_Ax3.hxx>
+#include <gp_Dir2d.hxx>
+#include <gp_Vec2d.hxx>
 #include <Geom_BSplineCurve.hxx>
+#include <Geom_Curve.hxx>
+#include <TopLoc_Location.hxx>
 #include <Geom_Surface.hxx>
 #include <ShapeConstruct_ProjectCurveOnSurface.hxx>
 #include <Standard_Failure.hxx>
@@ -142,6 +149,24 @@ TopoDS_Edge model_edge(const ModelCurve& c) {
     }
     BRepBuilderAPI_MakeEdge maker(curve);
     return edge_of(maker);
+  }
+  case ModelCurveKind::Helix: {
+    // (mitcad#385) On the unrolled cylinder of its radius about its axis
+    // the helix is a line, rising a pitch per turn; its 3D curve is
+    // approximated from that within 1e-7 mm.
+    require_positive("helix radius", c.major);
+    if (!(std::abs(c.minor) > Precision::Confusion()) || !(c.last > c.first)) {
+      throw std::invalid_argument("a path helix needs a pitch and a turn");
+    }
+    const occ::handle<Geom_Surface> surface = new Geom_CylindricalSurface(gp_Ax3(c.center, c.normal, c.x_axis), c.major);
+    const gp_Vec2d direction(1.0, c.minor / kTwoPi);
+    const occ::handle<Geom2d_Line> line =
+        new Geom2d_Line(gp_Pnt2d(c.first, c.minor * c.first / kTwoPi), gp_Dir2d(direction));
+    BRepBuilderAPI_MakeEdge maker(line, surface, 0.0, (c.last - c.first) * direction.Magnitude());
+    TopoDS_Edge edge = edge_of(maker);
+    const int samples = std::max(32, static_cast<int>(std::ceil((c.last - c.first) / kTwoPi * 32.0)));
+    BRepLib::BuildCurves3d(edge, 1.0e-7, GeomAbs_C1, 14, samples);
+    return edge;
   }
   case ModelCurveKind::Point:
     break;
@@ -512,6 +537,16 @@ PipeMode perpendicular_mode(const Spine& spine) {
   return mode;
 }
 
+PipeMode perpendicular_mode(const Spine& spine, const Path& path) {
+  if (path.size() == 1 && path.front().curve.kind == ModelCurveKind::Helix) {
+    PipeMode mode;
+    mode.kind = PipeMode::Kind::Binormal;
+    mode.binormal = path.front().curve.normal;
+    return mode;
+  }
+  return perpendicular_mode(spine);
+}
+
 namespace {
 
 // The curve on the face's surface that the 3D curve lies on within
@@ -819,6 +854,70 @@ ShapePtr pipe_shell_with(const NamedWire& loop, const TopoDS_Wire& spine, const 
   return namer.shape();
 }
 
+// A valid solid that encloses a volume (mitcad#385: corners whose sides
+// fold through each other can pass the shape check, the solid then
+// enclosing a negative volume once oriented).
+bool sound(const Shape& shape) {
+  if (!is_valid(shape.occt())) {
+    return false;
+  }
+  GProp_GProps props;
+  BRepGProp::VolumeProperties(shape.occt(), props);
+  return props.Mass() > 0.0;
+}
+
+// The loop of one closed edge on a periodic curve as two halves of it,
+// their joints a quarter of the period on from its seam, each half with
+// the edge's name; none for another loop.
+std::optional<NamedWire> halved(const NamedWire& loop) {
+  std::vector<TopoDS_Edge> edges;
+  for (TopExp_Explorer e(loop.wire, TopAbs_EDGE); e.More(); e.Next()) {
+    edges.push_back(TopoDS::Edge(e.Current()));
+  }
+  if (edges.size() != 1) {
+    return std::nullopt;
+  }
+  TopLoc_Location location;
+  double from = 0.0;
+  double to = 0.0;
+  occ::handle<Geom_Curve> curve = BRep_Tool::Curve(edges.front(), location, from, to);
+  if (curve.IsNull() || !curve->IsPeriodic() || std::abs(to - from - curve->Period()) > 1.0e-9) {
+    return std::nullopt;
+  }
+  if (!location.IsIdentity()) {
+    curve = occ::handle<Geom_Curve>::DownCast(curve->Transformed(location.Transformation()));
+  }
+  // Two halves from a quarter of the period on: the ends of their shared
+  // vertices off the seam's line.
+  const double quarter = curve->Period() / 4.0;
+  BRepBuilderAPI_MakeEdge one(curve, from + quarter, from + 3.0 * quarter);
+  if (!one.IsDone()) {
+    return std::nullopt;
+  }
+  BRepBuilderAPI_MakeEdge two(curve, one.Vertex2(), one.Vertex1(), from + 3.0 * quarter, to + quarter);
+  if (!two.IsDone()) {
+    return std::nullopt;
+  }
+  BRepBuilderAPI_MakeWire wire(one.Edge(), two.Edge());
+  if (!wire.IsDone()) {
+    return std::nullopt;
+  }
+  NamedWire out;
+  out.wire = wire.Wire();
+  if (edges.front().Orientation() == TopAbs_REVERSED) {
+    out.wire.Reverse();
+  }
+  for (const auto& [old, name] : loop.edges) {
+    if (old.IsSame(edges.front())) {
+      out.edges.emplace_back(one.Edge(), name);
+      out.edges.emplace_back(two.Edge(), name);
+    } else {
+      out.edges.emplace_back(old, name);
+    }
+  }
+  return out;
+}
+
 } // namespace
 
 ShapePtr pipe_shell(const NamedWire& loop, const TopoDS_Wire& spine, const PipeMode& mode,
@@ -837,7 +936,7 @@ ShapePtr pipe_shell(const NamedWire& loop, const TopoDS_Wire& spine, const PipeM
   std::exception_ptr error;
   try {
     mitred = pipe_shell_with(loop, spine, mode, first, last, tolerance, BRepBuilderAPI_RightCorner);
-    if (is_valid(mitred->occt())) {
+    if (sound(*mitred)) {
       return mitred;
     }
   } catch (const Cancelled&) {
@@ -846,11 +945,27 @@ ShapePtr pipe_shell(const NamedWire& loop, const TopoDS_Wire& spine, const PipeM
     throw_if_cancelled();
     error = std::current_exception();
   }
+  // (mitcad#385) The mitres of a section of one closed edge can fail to
+  // build from it (an ellipse whose seam vertex, at an end of its major
+  // axis, lies along the normal of the path's plane): the same section as
+  // two halves joined a quarter turn from that seam builds them.
+  if (const std::optional<NamedWire> other = halved(loop)) {
+    try {
+      ShapePtr again = pipe_shell_with(*other, spine, mode, first, last, tolerance, BRepBuilderAPI_RightCorner);
+      if (sound(*again)) {
+        return again;
+      }
+    } catch (const Cancelled&) {
+      throw;
+    } catch (...) {
+      throw_if_cancelled();
+    }
+  }
   for (const BRepBuilderAPI_TransitionMode transition :
        {BRepBuilderAPI_RoundCorner, BRepBuilderAPI_Transformed}) {
     try {
       ShapePtr other = pipe_shell_with(loop, spine, mode, first, last, tolerance, transition);
-      if (is_valid(other->occt())) {
+      if (sound(*other)) {
         return other;
       }
     } catch (const Cancelled&) {

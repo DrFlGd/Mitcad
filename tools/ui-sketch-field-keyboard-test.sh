@@ -15,6 +15,8 @@
 #   3. A drawing tool already has the keyboard in its first on-canvas
 #      field: the circle's centre clicked, "30" typed and Enter (no click)
 #      adds a circle of diameter 30.
+#   4. Starting and cancelling Offset retires the Dimension tool's value
+#      editor: a later Enter and view click cannot add a dimension.
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
 # Usage: tools/ui-sketch-field-keyboard-test.sh [screenshot.png]
@@ -63,6 +65,25 @@ ui_expect_log "Editing sketch F1 (Sketch1)" "Sketch1 is edited"
 ui_step "fit (F6)"                       ui_key F6
 ui_sync
 ui_step "show the line and room around"  zoom_to_show -20 -30 60 30
+
+echo "--- Dimension editor ends when a panel command starts (mitcad#351)"
+ui_mark
+ui_step "sketch dimension (D)"           ui_key d
+ui_step "pick the line"                  ui_sketch_click 20 0
+ui_step "place its value"                ui_sketch_click 20 10
+ui_expect_new "Sketch value editor at" "the dimension editor opened"
+ui_step "open MODIFY from the ribbon"    ui_click_logged "Ribbon SKETCH/MODIFY"
+ui_step "choose Offset"                  ui_key Down Down Down Down Down Return
+ui_expect_new "Command Offset started" "Offset started from the ribbon"
+ui_expect_new "Sketch value editor closed" "the retired tool's editor closed"
+ui_step "cancel Offset (Esc)"            ui_key Escape
+ui_expect_new "Command Offset cancelled" "Offset cancelled"
+ui_step "Enter after the tool ended"     ui_key Return
+ui_step "click after the tool ended"     ui_sketch_click 25 15
+if tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -Eq "Added (driven )?dimension"; then
+  ui_fail "a retired Dimension tool added a dimension"
+fi
+echo "ok   no dimension accepted after its tool ended"
 
 echo "--- 1. Offset: pick the curve, type the distance with keys only"
 ui_mark

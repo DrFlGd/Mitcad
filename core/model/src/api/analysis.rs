@@ -841,7 +841,14 @@ impl<K: Kernel> Document<K> {
     /// overlap of two bodies (see `commands.md`). None when there is none
     /// (an empty section or no overlap).
     pub fn analysis_shape(&self, json: &str) -> Result<Option<K::Shape>, ApiError> {
-        let request: ShapeRequest = parse(read_json(json)?, "shape request")?;
+        let value = read_json(json)?;
+        // A BUILD part before it is placed (mitcad#375).
+        if value.get("shape").and_then(Value::as_str) == Some("build_preview")
+            && let Value::Object(fields) = value
+        {
+            return self.build_preview_shape(fields);
+        }
+        let request: ShapeRequest = parse(value, "shape request")?;
         let kernel = self.kernel();
         match request {
             ShapeRequest::Datum { uid, size } => {

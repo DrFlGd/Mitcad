@@ -323,6 +323,19 @@ PanelTitleBar::PanelTitleBar(QDockWidget* dock) : QWidget(dock), m_dock(dock) {
   updateButtons();
 }
 
+void PanelTitleBar::addButton(QAbstractButton* button) {
+  button->setParent(this);
+  button->setFixedSize(kButton, kButton);
+  if (auto* row = qobject_cast<QBoxLayout*>(layout()); row != nullptr && !vertical()) {
+    // After the stretch, before the float and close buttons.
+    row->insertWidget(row->count() - 2, button, 0, Qt::AlignCenter);
+    m_extraWidth += kButton + 2;
+    updateGeometry();
+    update();
+  }
+  button->show();
+}
+
 bool PanelTitleBar::vertical() const { return m_dock->features().testFlag(QDockWidget::DockWidgetVerticalTitleBar); }
 
 QSize PanelTitleBar::sizeHint() const {
@@ -330,7 +343,7 @@ QSize PanelTitleBar::sizeHint() const {
     return QSize(panel::kStripWidth, 2 * kButton + 2 + 2 * panel::kGap);
   }
   const QFontMetrics metrics(panelTitleFont(font()));
-  return QSize(kTitleLeft + metrics.horizontalAdvance(m_dock->windowTitle().toUpper()) + 8 + 2 * kButton + 2 + kTitleRight,
+  return QSize(kTitleLeft + metrics.horizontalAdvance(m_dock->windowTitle().toUpper()) + 8 + 2 * kButton + 2 + m_extraWidth + kTitleRight,
                panel::kTitleHeight);
 }
 
@@ -338,7 +351,7 @@ QSize PanelTitleBar::minimumSizeHint() const {
   if (vertical()) {
     return QSize(panel::kStripWidth, kButton + 2 * panel::kGap);
   }
-  return QSize(kTitleLeft + 2 * kButton + 2 + kTitleRight, panel::kTitleHeight);
+  return QSize(kTitleLeft + 2 * kButton + 2 + m_extraWidth + kTitleRight, panel::kTitleHeight);
 }
 
 void PanelTitleBar::updateButtons() {
@@ -377,7 +390,7 @@ void PanelTitleBar::paintEvent(QPaintEvent*) {
   QPainter painter(this);
   painter.setFont(panelTitleFont(font()));
   painter.setPen(windowColors(palette()).titleText);
-  const QRect area(kTitleLeft, 0, std::max(0, width() - kTitleLeft - kTitleRight - 2 * kButton - 2 - 8), height());
+  const QRect area(kTitleLeft, 0, std::max(0, width() - kTitleLeft - kTitleRight - 2 * kButton - 2 - m_extraWidth - 8), height());
   const QString text =
       painter.fontMetrics().elidedText(m_dock->windowTitle().toUpper(), Qt::ElideRight, area.width());
   painter.drawText(area, Qt::AlignLeft | Qt::AlignVCenter, text);

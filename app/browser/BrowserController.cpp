@@ -6,6 +6,7 @@
 #include <tuple>
 #include <utility>
 
+#include <QEvent>
 #include <QInputDialog>
 #include <QJsonArray>
 #include <QLineEdit>
@@ -24,6 +25,7 @@
 #include "../framework/Theme.hpp"
 #include "DocumentHost.hpp"
 #include "AppearanceDialog.hpp"
+#include "FindDialog.hpp"
 #include "ParametersDialog.hpp"
 #include "PolicyDialog.hpp"
 #include "TimelineWidget.hpp"
@@ -99,6 +101,15 @@ BrowserController::BrowserController(DocumentHost& host, QWidget* window)
   m_warnings->setIcon(themeIcon(QStringLiteral("warning")));
   setWarningStyleSheet(m_warnings, QStringLiteral("QToolButton { color: %1; }"));
   m_warnings->hide();
+  // The magnifier on the browser's title row (mitcad#350): Find in Design.
+  m_findButton = new QToolButton(window);
+  m_findButton->setObjectName(QStringLiteral("findInDesignButton"));
+  m_findButton->setAutoRaise(true);
+  m_findButton->setFocusPolicy(Qt::NoFocus);
+  m_findButton->setIcon(themeIcon(QStringLiteral("search")));
+  m_findButton->setToolTip(tr("Find in Design: components and bodies by name"));
+  m_findButton->installEventFilter(this);
+  connect(m_findButton, &QToolButton::clicked, this, &BrowserController::openFind);
 
   follow(m_browser, &BrowserPanel::itemsPicked, &BrowserController::pickItems);
   follow(m_browser, &BrowserPanel::rowsPicked, &BrowserController::pickRows);
@@ -171,6 +182,9 @@ void BrowserController::refresh(const DocumentSnapshot& snapshot) {
   }
   if (m_appearances && m_appearances->isVisible()) {
     m_appearances->refresh();
+  }
+  if (m_find) {
+    m_find->setSnapshot(m_snapshot);
   }
 }
 
@@ -1434,6 +1448,237 @@ void BrowserController::findInBrowser(const SelectionItem& item) {
     qDebug().noquote() << QStringLiteral("Found %1 in the browser").arg(item.describe());
   } else {
     m_host.showStatus(tr("Nothing in the browser stands for it."), false);
+  }
+}
+
+QStringList BrowserController::hideableBodies(const Selection& items) {
+  QStringList bodies;
+  for (const SelectionItem& item : items) {
+    const bool onBody = item.kind == SelectKind::Face || item.kind == SelectKind::Edge ||
+                        item.kind == SelectKind::Vertex || item.kind == SelectKind::Body;
+    if (onBody && !item.owner.isEmpty() && !bodies.contains(item.owner)) {
+      bodies << item.owner;
+    }
+  }
+  return bodies;
+}
+
+QStringList BrowserController::hideableOccurrences(const Selection& items) {
+  QStringList occurrences;
+  for (const SelectionItem& item : items) {
+    const bool onBody = item.kind == SelectKind::Face || item.kind == SelectKind::Edge ||
+                        item.kind == SelectKind::Vertex || item.kind == SelectKind::Body;
+    if (onBody && !item.occurrence.isEmpty() && !occurrences.contains(item.occurrence)) {
+      occurrences << item.occurrence;
+    }
+  }
+  return occurrences;
+}
+
+void BrowserController::hideBodies(const Selection& items) {
+  const QStringList bodies = hideableBodies(items);
+  if (bodies.isEmpty()) {
+    return;
+  }
+  QJsonArray commands;
+  QStringList names;
+  for (const QString& uid : bodies) {
+    commands.append(cmd("set_body_visible", {{QStringLiteral("uid"), uid}, {QStringLiteral("visible"), false}}));
+    names << m_host.model().bodyName(uid);
+  }
+  if (m_host.runVisibilityCommands(commands, bodies.size() == 1 ? QString() : tr("Hide Bodies"))) {
+    qDebug().noquote() << QStringLiteral("Hid body %1").arg(names.join(QStringLiteral(", ")));
+  }
+}
+
+void BrowserController::hideOccurrences(const Selection& items) {
+  const QStringList occurrences = hideableOccurrences(items);
+  if (occurrences.isEmpty()) {
+    return;
+  }
+  QJsonArray commands;
+  QStringList names;
+  for (const QString& path : occurrences) {
+    commands.append(
+        cmd("set_occurrence_visible", {{QStringLiteral("occurrence"), path}, {QStringLiteral("visible"), false}}));
+    const DocumentSnapshot::Occurrence* found = occurrence(path);
+    names << (found != nullptr ? found->name : path);
+  }
+  if (m_host.runVisibilityCommands(commands, occurrences.size() == 1 ? QString() : tr("Hide Components"))) {
+    qDebug().noquote() << QStringLiteral("Hid component %1").arg(names.join(QStringLiteral(", ")));
+  }
+}
+
+bool BrowserController::eventFilter(QObject* watched, QEvent* event) {
+  if (watched == m_findButton &&
+      (event->type() == QEvent::Show || event->type() == QEvent::Resize || event->type() == QEvent::Move)) {
+    TestSync::singleShot(0, this, [this] { logFindButton(); });
+  }
+  return QObject::eventFilter(watched, event);
+}
+
+void BrowserController::logFindButton() {
+  if (m_findButton == nullptr || !m_findButton->isVisible() || m_window == nullptr) {
+    return;
+  }
+  const QPoint origin = m_window->window()->mapToGlobal(QPoint(0, 0));
+  const QPoint global = m_findButton->mapToGlobal(m_findButton->rect().center()) - origin;
+  const QString line = QStringLiteral("Find in Design button at %1,%2").arg(global.x()).arg(global.y());
+  if (line != m_loggedFindButton) {
+    m_loggedFindButton = line;
+    qDebug().noquote() << line;
+  }
+}
+
+void BrowserController::openFind() {
+  if (!m_find) {
+    m_find = new FindDialog(m_window);
+    // The window's buttons act on the model, which rebuilds the rows: queued,
+    // and after a job that computes the model.
+    const auto later = [this](void (BrowserController::*action)()) {
+      return [this, action] {
+        if (!m_host.modelBusy()) {
+          (this->*action)();
+        } else {
+          m_host.whenIdle(this, [this, action] { (this->*action)(); });
+        }
+      };
+    };
+    connect(m_find, &FindDialog::showRequested, this, later(&BrowserController::findShow), Qt::QueuedConnection);
+    connect(m_find, &FindDialog::hideRequested, this, later(&BrowserController::findHide), Qt::QueuedConnection);
+    connect(m_find, &FindDialog::appearanceRequested, this, later(&BrowserController::findAppearance),
+            Qt::QueuedConnection);
+    connect(m_find, &FindDialog::selectRequested, this, later(&BrowserController::findSelect), Qt::QueuedConnection);
+    connect(m_find, &FindDialog::selectionPicked, this, later(&BrowserController::findPicked), Qt::QueuedConnection);
+    connect(m_find, &FindDialog::revealRequested, this, later(&BrowserController::findReveal), Qt::QueuedConnection);
+  }
+  m_find->setSnapshot(m_snapshot);
+  showDialog(m_find);
+  if (!m_find->testAttribute(Qt::WA_DontShowOnScreen)) {
+    m_find->raise();
+    m_find->activateWindow();
+  }
+  m_find->focusSearch();
+  qDebug().noquote() << "Find in Design opened";
+}
+
+Selection BrowserController::findItems(const QVector<FindResult>& results) {
+  Selection items;
+  for (const FindResult& result : results) {
+    SelectionItem item;
+    item.kind = result.kind == FindResult::Kind::Body ? SelectKind::Body : SelectKind::Component;
+    item.owner = result.uid;
+    item.occurrence = result.occurrence;
+    items.append(item);
+  }
+  return items;
+}
+
+namespace {
+QString countedKinds(int bodies, int components) {
+  QStringList parts;
+  if (bodies > 0) {
+    parts << (bodies == 1 ? QStringLiteral("1 body") : QStringLiteral("%1 bodies").arg(bodies));
+  }
+  if (components > 0) {
+    parts << (components == 1 ? QStringLiteral("1 component") : QStringLiteral("%1 components").arg(components));
+  }
+  return parts.join(QStringLiteral(", "));
+}
+} // namespace
+
+void BrowserController::findVisibility(bool show) {
+  if (!m_find) {
+    return;
+  }
+  // The bodies by uid and the components by occurrence, each once: the same
+  // commands as the light bulbs, in one undo step.
+  QStringList bodies;
+  QStringList occurrences;
+  QJsonArray commands;
+  for (const FindResult& result : m_find->targets()) {
+    if (result.kind == FindResult::Kind::Body) {
+      if (!bodies.contains(result.uid)) {
+        bodies << result.uid;
+        commands.append(
+            cmd("set_body_visible", {{QStringLiteral("uid"), result.uid}, {QStringLiteral("visible"), show}}));
+      }
+    } else if (!occurrences.contains(result.occurrence)) {
+      occurrences << result.occurrence;
+      commands.append(cmd("set_occurrence_visible",
+                          {{QStringLiteral("occurrence"), result.occurrence}, {QStringLiteral("visible"), show}}));
+    }
+  }
+  if (commands.isEmpty() || !canChange(true)) {
+    return;
+  }
+  const QString counts = countedKinds(static_cast<int>(bodies.size()), static_cast<int>(occurrences.size()));
+  if (m_host.runVisibilityCommands(commands, show ? tr("Show Found Items") : tr("Hide Found Items"))) {
+    qDebug().noquote() << QStringLiteral("Find in Design: %1 %2").arg(show ? QStringLiteral("showed") : QStringLiteral("hid"), counts);
+  }
+}
+
+void BrowserController::findShow() { findVisibility(true); }
+
+void BrowserController::findHide() { findVisibility(false); }
+
+void BrowserController::findAppearance() {
+  if (!m_find) {
+    return;
+  }
+  // The bodies of the results; of a component, the bodies of its definition.
+  Selection targets;
+  QStringList uids;
+  const auto add = [&targets, &uids](const QString& uid) {
+    if (!uids.contains(uid)) {
+      uids << uid;
+      targets.append(SelectionItem{SelectKind::Body, uid, QString(), QString()});
+    }
+  };
+  for (const FindResult& result : m_find->targets()) {
+    if (result.kind == FindResult::Kind::Body) {
+      add(result.uid);
+    } else if (const DocumentSnapshot::Component* component = m_snapshot.component(result.component)) {
+      for (const QString& uid : component->bodies) {
+        add(uid);
+      }
+    }
+  }
+  if (targets.isEmpty()) {
+    m_host.showStatus(tr("The results have no bodies to give an appearance."), false);
+    return;
+  }
+  qDebug().noquote() << QStringLiteral("Find in Design: appearance for %1").arg(countedKinds(static_cast<int>(uids.size()), 0));
+  openAppearances(targets);
+}
+
+void BrowserController::findSelect() {
+  if (!m_find || !m_host.canChangeModel()) {
+    return;
+  }
+  const QVector<FindResult> targets = m_find->targets();
+  int bodies = 0;
+  for (const FindResult& result : targets) {
+    bodies += result.kind == FindResult::Kind::Body ? 1 : 0;
+  }
+  pick(findItems(targets), QStringList());
+  qDebug().noquote() << QStringLiteral("Find in Design: selected %1")
+                            .arg(countedKinds(bodies, static_cast<int>(targets.size()) - bodies));
+}
+
+void BrowserController::findPicked() {
+  // Selecting rows selects them in the view and the browser; not while a
+  // command or a sketch takes the picks.
+  if (!m_find || !m_host.canChangeModel()) {
+    return;
+  }
+  pick(findItems(m_find->selected()), QStringList());
+}
+
+void BrowserController::findReveal() {
+  FindResult result;
+  if (m_find && m_find->current(&result)) {
+    findInBrowser(findItems({result}).first());
   }
 }
 

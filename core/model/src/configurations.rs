@@ -54,6 +54,13 @@ pub struct ConfigurationRow {
     /// (`ISO 4762 M5x16`), when it differs from the library's pattern.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub designation: Option<String>,
+    /// The supplier's article number of a part made in this row, when it
+    /// differs from the library's (mitcad#375).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub part_number: Option<String>,
+    /// The supplier's product page of the row (https), when it has its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supplier_url: Option<String>,
 }
 
 impl Configurations {

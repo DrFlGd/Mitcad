@@ -464,6 +464,7 @@ pub(crate) fn origin_frame(r: &mut impl Resolver, geometry: &GeomRef) -> Result<
         GeomRef::Vertex { .. } | GeomRef::SketchPoint { .. } | GeomRef::FixedPoint(_) => {
             Ok(identity_at(geom_ref::resolve_point(r, geometry)?))
         }
+        GeomRef::Mount { feature, name } => r.mount(*feature, name),
         GeomRef::Body(_) | GeomRef::SketchCurves { .. } => Err(format!(
             "{geometry} gives no frame for a joint (a face, an edge, a point, a plane or an axis)"
         )),
@@ -565,6 +566,10 @@ pub(crate) fn check_components(
             None => Ok(()),
         },
         FeatureDef::RigidGroup(_) => Ok(()),
+        FeatureDef::BoundLength(b) => {
+            let [from, to] = b.origins();
+            check_origin("from", &from).and_then(|()| check_origin("to", &to))
+        }
         FeatureDef::ConstraintSet(set) => set.rows.iter().enumerate().try_for_each(|(i, row)| {
             row.origins().try_for_each(|(key, origin)| {
                 check_origin(&format!("{}: {key}", row_label(i, row.kind)), origin)
@@ -617,6 +622,8 @@ pub(crate) fn occurrences_used(def: &FeatureDef) -> Vec<OccurrenceUid> {
             .flat_map(|row| row.origins().map(|(_, o)| o.occurrence.0.clone()))
             .flatten()
             .collect(),
+        // BUILD's bound lengths (mitcad#375).
+        FeatureDef::BoundLength(b) => [&b.from.occurrence.0[..], &b.to.occurrence.0[..]].concat(),
         _ => Vec::new(),
     }
 }
@@ -704,6 +711,10 @@ pub(crate) fn remap_occurrences(
             }
         }
         FeatureDef::RigidGroup(g) => path(&mut g.occurrences),
+        FeatureDef::BoundLength(b) => {
+            path(&mut b.from.occurrence.0);
+            path(&mut b.to.occurrence.0);
+        }
         FeatureDef::ConstraintSet(set) => {
             for row in &mut set.rows {
                 for origin in [&mut row.a, &mut row.b]
@@ -885,6 +896,8 @@ pub(crate) struct StepResolver<'a, K: Kernel> {
     pub datums: &'a BTreeMap<FeatureUid, Versioned<Datum>>,
     pub sketches: &'a BTreeMap<FeatureUid, Versioned<Arc<SketchOutput>>>,
     pub features: &'a [Arc<FeatureEntry>],
+    /// The results so far, for derived parts' mount frames (mitcad#375).
+    pub history: &'a [crate::recompute::FeatureResult<K::Shape>],
     /// Warnings of names found after a sketch change (mitcad#272).
     pub renamed: Vec<String>,
 }
@@ -935,6 +948,11 @@ impl<K: Kernel> Resolver for StepResolver<'_, K> {
         if !self.renamed.contains(&message) {
             self.renamed.push(message);
         }
+    }
+
+    fn mount(&mut self, feature: FeatureUid, name: &str) -> Result<Transform, String> {
+        let label = self.name(feature);
+        crate::features::derived_part::mount_frame(self.history, feature, name, &label)
     }
 }
 
@@ -1034,6 +1052,7 @@ pub(crate) fn apply<K: Kernel>(
             datums: &done.datums,
             sketches: &done.sketches,
             features: &state.features,
+            history: &done.results,
             renamed: Vec::new(),
         };
         let frame = origin_frame(&mut resolver, &origin.geometry);
@@ -1060,6 +1079,7 @@ pub(crate) fn apply<K: Kernel>(
                     datums: &done.datums,
                     sketches: &done.sketches,
                     features: &state.features,
+                    history: &done.results,
                     renamed: Vec::new(),
                 };
                 let resolved = resolve_geo(&mut resolver, origin);

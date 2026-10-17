@@ -6,7 +6,9 @@
 //! it, in the component of the level the reference names; its doors,
 //! windows, curtain panels and mullions and furniture as features or
 //! meshes of the geometry the file keeps (mitcad#333), every box with its
-//! reason.
+//! reason. On the 2024 architectural sample (`33271010`), the plans of the
+//! walls attached to roofs, floors and reference planes (mitcad#348); on
+//! both, the walls' openings in their plans (mitcad#345).
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -18,15 +20,145 @@ use mitcad_rvt::elements::Model;
 
 const PROJECT: &str = "c805df44";
 
+/// The 2024 architectural sample with roofs, walls attached to them and
+/// openings of several kinds (mitcad#345, mitcad#348).
+const SAMPLE: &str = "33271010";
+
 fn project() -> Option<(PathBuf, String)> {
+    corpus_file(PROJECT)
+}
+
+/// A corpus file by its content id: the corpus folder and its path there.
+fn corpus_file(id: &str) -> Option<(PathBuf, String)> {
     let dir = PathBuf::from(std::env::var_os("MITCAD_RVT_CORPUS")?);
     let index = std::fs::read_to_string(dir.join("index.tsv")).ok()?;
     let path = index.lines().find_map(|line| {
         let mut cols = line.split('\t');
         let path = cols.next()?;
-        cols.next()?.starts_with(PROJECT).then(|| path.to_string())
+        cols.next()?.starts_with(id).then(|| path.to_string())
     })?;
     dir.join(&path).is_file().then_some((dir, path))
+}
+
+/// The walls' openings in their plans (mitcad#345): every door and window
+/// a wall built as features hosts is among its openings, and every opening
+/// has its cut tools or a reason. Returns the openings with tools, those
+/// cut by void geometry, and the reasons of those without, counted.
+fn openings_of(id: &str, model: &Model) -> (usize, usize, HashMap<String, usize>) {
+    use mitcad_rvt::categories::{OST_DOORS, OST_WINDOWS};
+    let b = &model.building;
+    let (mut with_tools, mut by_void) = (0, 0);
+    let mut missing: HashMap<String, usize> = HashMap::new();
+    for (wid, wall) in &b.walls {
+        let Some(e) = model.element(*wid) else {
+            continue;
+        };
+        let Ok(p) = mitcad_import::rvt::plan::plan(model, e) else {
+            continue;
+        };
+        for o in &p.openings {
+            match &o.missing {
+                None => with_tools += 1,
+                Some(why) => {
+                    eprintln!("{id}: {} in wall {wid}: {why}", o.label);
+                    *missing.entry(why.clone()).or_default() += 1;
+                }
+            }
+        }
+        by_void += p
+            .notes
+            .iter()
+            .filter(|n| n.ends_with("is cut by its type's void geometry"))
+            .count();
+        for i in b.instances.values().filter(|i| i.host == Some(wall.id)) {
+            let category = model.element(i.id).and_then(|e| e.category);
+            if matches!(category, Some(OST_DOORS | OST_WINDOWS)) {
+                assert!(
+                    p.openings.iter().any(|o| o.id == i.id),
+                    "{id}: insert {} of wall {wid} is not among its openings",
+                    i.id
+                );
+            }
+        }
+    }
+    eprintln!(
+        "{id}: {with_tools} openings with their tools ({by_void} by void geometry), without: {missing:?}"
+    );
+    (with_tools, by_void, missing)
+}
+
+#[test]
+fn the_walls_openings_have_their_tools_or_say_why() {
+    // mitcad#345: on the MIT project every door and window of a wall has
+    // its type's cut loops; on the architectural sample the inserts whose
+    // types cut by their void geometry cut by it, and the rest say why.
+    for id in [PROJECT, SAMPLE] {
+        let Some((dir, path)) = corpus_file(id) else {
+            eprintln!("MITCAD_RVT_CORPUS has no {id}: skipped");
+            continue;
+        };
+        let file = RvtFile::open(&dir.join(&path)).unwrap();
+        let schema = file.schema().unwrap();
+        let model = Model::read(&file, &schema).unwrap();
+        let (with_tools, by_void, missing) = openings_of(id, &model);
+        assert!(with_tools > 0, "{id}");
+        if id == PROJECT {
+            assert!(missing.is_empty(), "{id}: {missing:?}");
+            assert!(with_tools >= 192, "{id}: {with_tools}");
+        } else {
+            assert!(by_void > 0, "{id}: no insert cut by its void geometry");
+        }
+    }
+}
+
+#[test]
+fn the_sample_s_attached_walls_follow_their_roofs_or_say_why() {
+    // mitcad#348: every wall attached to a roof, floor or reference plane
+    // follows its surface, or its plan names the attachment it does not
+    // apply, or the wall is not built as features (with the reason).
+    let Some((dir, path)) = corpus_file(SAMPLE) else {
+        eprintln!("MITCAD_RVT_CORPUS has no {SAMPLE}: skipped");
+        return;
+    };
+    let file = RvtFile::open(&dir.join(&path)).unwrap();
+    let schema = file.schema().unwrap();
+    let model = Model::read(&file, &schema).unwrap();
+    let (mut applied, mut not_applied, mut not_built) = (0, 0, 0);
+    for (id, wall) in &model.building.walls {
+        if wall.attachments.is_empty() {
+            continue;
+        }
+        let Some(e) = model.element(*id) else {
+            continue;
+        };
+        match mitcad_import::rvt::plan::plan(&model, e) {
+            Ok(p) => {
+                assert!(!p.attached.is_empty(), "wall {id}");
+                for a in &p.attached {
+                    eprintln!("{SAMPLE}: wall {id}: {a}");
+                }
+                let follows = p.notes.iter().filter(|n| n.contains(" follows ")).count();
+                let skipped = p
+                    .notes
+                    .iter()
+                    .filter(|n| n.contains("is not applied"))
+                    .count()
+                    + usize::from(p.notes.iter().any(|n| n.contains("its edited profile")));
+                assert!(follows + skipped >= 1, "wall {id}: {:?}", p.notes);
+                applied += follows;
+                not_applied += skipped;
+            }
+            Err(why) => {
+                eprintln!("{SAMPLE}: wall {id} not built as features: {why}");
+                not_built += 1;
+            }
+        }
+    }
+    eprintln!(
+        "{SAMPLE}: {applied} attachments applied, {not_applied} not applied (named), \
+         {not_built} attached walls not built as features"
+    );
+    assert!(applied > 0, "no attachment applied");
 }
 
 #[test]

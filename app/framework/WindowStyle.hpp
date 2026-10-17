@@ -128,6 +128,10 @@ class PanelTitleBar : public QWidget {
 public:
   explicit PanelTitleBar(QDockWidget* dock);
 
+  // A button of the panel's own before the float and close buttons, always
+  // shown (the browser's magnifier, mitcad#350); the title bar takes it over.
+  void addButton(QAbstractButton* button);
+
   QSize sizeHint() const override;
   QSize minimumSizeHint() const override;
 
@@ -145,6 +149,7 @@ private:
   QAbstractButton* m_float = nullptr;
   QAbstractButton* m_close = nullptr;
   bool m_hovered = false;
+  int m_extraWidth = 0; // the buttons added by addButton
 };
 
 // Applies the look to a Docked main window and keeps it in step with the

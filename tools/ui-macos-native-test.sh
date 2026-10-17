@@ -62,7 +62,36 @@ if command -v launchctl > /dev/null; then
   fi
 fi
 
-if [ "$scenario" = replacement ]; then
+if [ "$scenario" = panels ]; then
+  # NSWindow's frame uses Cocoa defaults, independently of the isolated
+  # QSettings directory. Restore this one preference when the test exits.
+  UI_PANEL_DOMAIN=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$(dirname "$(dirname "$UI_APP")")/Info.plist") || exit 1
+  UI_PANEL_FRAME_KEY='NSWindow Frame MitcadNativeDocumentWindow'
+  UI_PANEL_FRAME_PRESENT=0
+  UI_PANEL_FRAME=""
+  if UI_PANEL_FRAME=$(defaults read "$UI_PANEL_DOMAIN" "$UI_PANEL_FRAME_KEY" 2> /dev/null); then
+    UI_PANEL_FRAME_PRESENT=1
+  fi
+  ui_panels_cleanup() {
+    ui_cleanup
+    if [ "$UI_PANEL_FRAME_PRESENT" = 1 ]; then
+      defaults write "$UI_PANEL_DOMAIN" "$UI_PANEL_FRAME_KEY" -string "$UI_PANEL_FRAME"
+    else
+      defaults delete "$UI_PANEL_DOMAIN" "$UI_PANEL_FRAME_KEY" > /dev/null 2>&1 || true
+    fi
+  }
+  trap ui_panels_cleanup EXIT
+  for mode in native no-native; do
+    panel_args=(--ui=native --no-recovery)
+    if [ "$mode" = no-native ]; then panel_args+=(--no-native-dialogs); fi
+    MITCAD_TEST_INPUT=$here/ui-scripts/$script \
+      ui_run_app "panels-$mode" "${panel_args[@]}"
+    ui_expect_log 'TestDriver: done' "native panels completed ($mode)"
+    MITCAD_TEST_INPUT=$here/ui-scripts/native-macos-frame-restored.mitcad-ui \
+      ui_run_app "frame-restored-$mode" "${panel_args[@]}"
+    ui_expect_log 'TestDriver: done' "native frame restored after relaunch ($mode)"
+  done
+elif [ "$scenario" = replacement ]; then
   # shellcheck source=tools/ui-macos-replacement-fixture.sh
   . "$here/ui-macos-replacement-fixture.sh"
   if ! ui_replacement_prepare; then

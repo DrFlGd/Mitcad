@@ -493,6 +493,20 @@ bool nativeFocused() {
 bool controlExists(const QString& identifier) { return active() && findControl(identifier) != nil; }
 
 bool textOf(const QString& identifier, QString& value) {
+  if (identifier == QStringLiteral("native.window.origin") || identifier == QStringLiteral("native.window.size")) {
+    NSWindow* window = documentWindow();
+    if (!window) return false;
+    if (identifier == QStringLiteral("native.window.origin")) {
+      const NSPoint origin = window.frame.origin;
+      const NSPoint screen = NSScreen.mainScreen.visibleFrame.origin;
+      value = QStringLiteral("%1,%2").arg(qRound(origin.x - screen.x)).arg(qRound(origin.y - screen.y));
+    } else {
+      const NSSize size = window.contentView.frame.size;
+      value = QStringLiteral("%1x%2").arg(qRound(size.width)).arg(qRound(size.height));
+    }
+    qDebug().noquote() << identifier << value;
+    return true;
+  }
   if (identifier == QStringLiteral("native.file.name") || identifier == QStringLiteral("native.file.directory")) {
     NSSavePanel* panel = filePanel();
     if (!panel) return false;
@@ -544,6 +558,18 @@ bool resizeDocument(int width, int height, QString& error) {
   }
   [window setContentSize:NSMakeSize(width, height)];
   [window.contentView layoutSubtreeIfNeeded];
+  return true;
+}
+
+bool moveDocument(int x, int y, QString& error) {
+  NSWindow* window = documentWindow();
+  NSScreen* screen = NSScreen.mainScreen;
+  if (!window || !screen) {
+    error = QStringLiteral("native-move requires a document and a screen");
+    return false;
+  }
+  const NSPoint origin = screen.visibleFrame.origin;
+  [window setFrameOrigin:NSMakePoint(origin.x + x, origin.y + y)];
   return true;
 }
 

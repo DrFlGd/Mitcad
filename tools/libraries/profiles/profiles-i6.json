@@ -1,0 +1,175 @@
+[
+  {
+    "id": "p30x12l-i6",
+    "name": "Profile 30x12L I-type slot 6",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-30x120L-I-Type-Slot-6-Copy/Motedis-profile-30x12-I-Type-slot-6/Motedis_profile 30x12 I-Type slot 6.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "12x30 nut 6",
+    "supplier_url": "https://www.motedis.com/en/Profile-30x120L-I-Type-Slot-6-Copy",
+    "designation": "Profile 30x12L I6 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"I","slot":6,"grid":30},
+      "length": {"parameter":"L","min":"50 mm","max":"1980 mm","stock":["1980 mm","1500 mm","1000 mm"]},
+      "section": {"width":"12 mm","height":"30 mm"},
+      "slot": {"depth":"9.9 mm","opening":"6.4 mm","inner_width":"16.4 mm"},
+      "mass_per_metre": "0.43 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"slot_x+_1","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"},
+    "place": {"z":[0,1,0],"x":[0,0,1]}
+  },
+  {
+    "id": "p30x30l-i6",
+    "name": "Profile 30x30L I-type slot 6",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-30x30L-I-Type-Slot-6/Motedis_019597.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "019597",
+    "supplier_url": "https://www.motedis.com/en/Profile-30x30L-I-Type-Slot-6",
+    "designation": "Profile 30x30L I6 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"I","slot":6,"grid":30},
+      "length": {
+        "parameter": "L",
+        "min": "50 mm",
+        "max": "6000 mm",
+        "stock": ["6000 mm","1980 mm","1500 mm","1000 mm","500 mm"]
+      },
+      "section": {"width":"30 mm","height":"30 mm"},
+      "slot": {"depth":"9.9 mm","opening":"6.4 mm","inner_width":"16.4 mm"},
+      "mass_per_metre": "0.91 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"core","kind":"bore","diameter":"4.9 mm"},
+        {"name":"slot_x+_1","kind":"slot"},
+        {"name":"slot_x-_1","kind":"slot"},
+        {"name":"slot_y+_1","kind":"slot"},
+        {"name":"slot_y-_1","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "p30x60l-i6",
+    "name": "Profile 30x60L I-type slot 6",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-30x60L-I-Type-Slot-6/Motedis_019598.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "019598",
+    "supplier_url": "https://www.motedis.com/en/Profile-30x60L-I-Type-Slot-6",
+    "designation": "Profile 30x60L I6 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"I","slot":6,"grid":30},
+      "length": {
+        "parameter": "L",
+        "min": "50 mm",
+        "max": "6000 mm",
+        "stock": ["6000 mm","1980 mm","1500 mm","1000 mm","500 mm"]
+      },
+      "section": {"width":"60 mm","height":"30 mm"},
+      "slot": {"depth":"9.9 mm","opening":"6.4 mm","inner_width":"16.4 mm"},
+      "mass_per_metre": "1.61 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"core_1","kind":"bore","diameter":"4.9 mm"},
+        {"name":"core_2","kind":"bore","diameter":"4.9 mm"},
+        {"name":"slot_x+_1","kind":"slot"},
+        {"name":"slot_x-_1","kind":"slot"},
+        {"name":"slot_y+_1","kind":"slot"},
+        {"name":"slot_y+_2","kind":"slot"},
+        {"name":"slot_y-_1","kind":"slot"},
+        {"name":"slot_y-_2","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  },
+  {
+    "id": "p60x12l-i6",
+    "name": "Profile 60x12L I-type slot 6",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-60x12L-I-Type-Slot-6/Motedis-profile-60x12-I-Type-slot-6/Motedis_profile 60x12 I-Type slot 6.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "12x60 nut 6",
+    "supplier_url": "https://www.motedis.com/en/Profile-60x12L-I-Type-Slot-6",
+    "designation": "Profile 60x12L I6 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"I","slot":6,"grid":30},
+      "length": {"parameter":"L","min":"50 mm","max":"1980 mm","stock":["1980 mm","1500 mm","1000 mm"]},
+      "section": {"width":"12 mm","height":"60 mm"},
+      "slot": {"depth":"9.9 mm","opening":"6.4 mm","inner_width":"16.4 mm"},
+      "mass_per_metre": "0.81 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"slot_x+_1","kind":"slot"},
+        {"name":"slot_x+_2","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"},
+    "place": {"z":[0,1,0],"x":[0,0,1]}
+  },
+  {
+    "id": "p60x120l-i6",
+    "name": "Profile 60x120L I-type slot 6",
+    "category": "profiles",
+    "source": "aluminium-profiles/Profile-60x120L-I-Type-Slot-6/Motedis_Profile P60x120L I-Type Slot 6.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "17161",
+    "supplier_url": "https://www.motedis.com/en/Profile-60x120L-I-Type-Slot-6",
+    "designation": "Profile 60x120L I6 L={L}",
+    "rows": [],
+    "build": {
+      "role": "profile",
+      "system": {"type":"I","slot":6,"grid":30},
+      "length": {"parameter":"L","min":"50 mm","max":"1980 mm","stock":["1980 mm","1500 mm","1000 mm"]},
+      "section": {"width":"60 mm","height":"120 mm"},
+      "slot": {"depth":"9.8 mm","opening":"6.4 mm","inner_width":"16.4 mm"},
+      "mass_per_metre": "4.88 kg",
+      "frames": [
+        {"name":"end_a","kind":"end"},
+        {"name":"end_b","kind":"end"},
+        {"name":"core_1","kind":"bore","diameter":"5 mm"},
+        {"name":"core_2","kind":"bore","diameter":"5 mm"},
+        {"name":"core_3","kind":"bore","diameter":"5 mm"},
+        {"name":"core_4","kind":"bore","diameter":"5 mm"},
+        {"name":"core_5","kind":"bore","diameter":"5 mm"},
+        {"name":"core_6","kind":"bore","diameter":"5 mm"},
+        {"name":"core_7","kind":"bore","diameter":"5 mm"},
+        {"name":"core_8","kind":"bore","diameter":"5 mm"},
+        {"name":"slot_x+_1","kind":"slot"},
+        {"name":"slot_x+_2","kind":"slot"},
+        {"name":"slot_x+_3","kind":"slot"},
+        {"name":"slot_x+_4","kind":"slot"},
+        {"name":"slot_x-_1","kind":"slot"},
+        {"name":"slot_x-_2","kind":"slot"},
+        {"name":"slot_x-_3","kind":"slot"},
+        {"name":"slot_x-_4","kind":"slot"},
+        {"name":"slot_y+_1","kind":"slot"},
+        {"name":"slot_y+_2","kind":"slot"},
+        {"name":"slot_y-_1","kind":"slot"},
+        {"name":"slot_y-_2","kind":"slot"}
+      ]
+    },
+    "frames": {"auto":"profile"}
+  }
+]

@@ -514,3 +514,63 @@ fn a_community_index_lists_libraries_to_fetch() {
     let repo = LibraryRepo::open(&cache.dir_for(&url)).unwrap();
     assert_eq!(repo.versions().unwrap().len(), 2);
 }
+
+/// A library whose id changed in a later version (Mitcad's fastener
+/// library became the parts library at 2.0.0, its repository renamed): a
+/// design that recorded the old id at an old commit, with the old URL,
+/// still finds its part in a clone fetched under the new URL, because the
+/// manifest at that commit has the old id.
+#[test]
+fn parts_keep_resolving_after_their_library_is_renamed() {
+    let Some(cli) = system_git() else {
+        return;
+    };
+    let scratch = Scratch::new("library-renamed");
+    let cache = LibraryCache::new(scratch.join("cache"));
+    let source = make_library(&scratch, &cache);
+    let v1 = tip(&source, "v1.0.0^{}");
+    // Version 2.0.0: the same repository with another id.
+    let manifest = source.join("mitcad-library.json");
+    let mut value: Value = serde_json::from_str(&fs::read_to_string(&manifest).unwrap()).unwrap();
+    value["id"] = json!("test-parts");
+    value["name"] = json!("Test parts");
+    fs::write(&manifest, value.to_string()).unwrap();
+    git(&source, &["commit", "-q", "-am", "One library of parts"]).unwrap();
+    git(&source, &["tag", "v2.0.0"]).unwrap();
+    // Fetched under its new address only.
+    let fetched = library_command(
+        &cache,
+        Some(&cli),
+        json!({"cmd": "library_fetch", "url": file_url(&source)}),
+    );
+    assert_eq!(fetched["id"], "test-parts", "{fetched}");
+    let old_url = "https://example.org/test/pins.git";
+    let (_, commit) = cache.find("test-pins", old_url, &v1).unwrap();
+    assert_eq!(commit.to_string(), v1);
+    let (_, commit) = cache.find("test-pins", old_url, "v1.0.0").unwrap();
+    assert_eq!(commit.to_string(), v1);
+    // The new id is not the library's at the old commit.
+    assert!(cache.find("test-parts", old_url, &v1).is_err());
+    assert!(cache.find("test-parts", old_url, "v2.0.0").is_ok());
+
+    // A design that recorded the part under the old id and address opens
+    // with it from the renamed library.
+    let resolver = Arc::new(LibraryResolver::new(cache.clone()));
+    let mut doc = Document::new(MockKernel::default());
+    doc.set_link_resolver(Some(resolver.clone()));
+    let part = LibraryPart {
+        library: "test-pins".to_owned(),
+        url: old_url.to_owned(),
+        rev: v1.clone(),
+        component: "pin".to_owned(),
+        config: Some("M4x16".to_owned()),
+    };
+    let (component, _) = doc
+        .insert_library_component(&part, &InsertOptions::default())
+        .unwrap();
+    assert!((height_of(&doc, component) - 16.0).abs() < 1e-9);
+    let saved = doc.to_json();
+    let mut reopened = Document::from_json(&saved, MockKernel::default()).unwrap();
+    reopened.set_link_resolver(Some(resolver));
+    assert_eq!(reopened.update_links(None).unwrap(), Vec::<String>::new());
+}

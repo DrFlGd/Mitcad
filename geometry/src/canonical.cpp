@@ -12,6 +12,7 @@
 #include <BRepTools.hxx>
 #include <BRepTools_Modification.hxx>
 #include <BRepTools_Modifier.hxx>
+#include <BRep_Builder.hxx>
 #include <BRep_Tool.hxx>
 #include <GeomAPI_ProjectPointOnSurf.hxx>
 #include <GeomConvert_CurveToAnaCurve.hxx>
@@ -23,6 +24,7 @@
 #include <Geom_BezierSurface.hxx>
 #include <Geom_ElementarySurface.hxx>
 #include <Geom_RectangularTrimmedSurface.hxx>
+#include <Geom_Surface.hxx>
 #include <Geom_TrimmedCurve.hxx>
 #include <Geom2d_Curve.hxx>
 #include <NCollection_DataMap.hxx>
@@ -185,7 +187,7 @@ public:
 };
 
 // The analytic surface of a B-spline face, or none.
-std::optional<Canonical::Face> analytic_face(const TopoDS_Face& face) {
+std::optional<Canonical::Face> analytic_face(const TopoDS_Face& face, double exact) {
   for (TopExp_Explorer edges(face, TopAbs_EDGE); edges.More(); edges.Next()) {
     if (BRep_Tool::IsClosed(TopoDS::Edge(edges.Current()), face)) {
       return std::nullopt;
@@ -203,8 +205,8 @@ std::optional<Canonical::Face> analytic_face(const TopoDS_Face& face) {
     return std::nullopt;
   }
   GeomConvert_SurfToAnaSurf convert(surface);
-  const occ::handle<Geom_Surface> analytic = convert.ConvertToAnalytical(kExact);
-  if (analytic.IsNull() || !analytic->IsKind(STANDARD_TYPE(Geom_ElementarySurface)) || convert.Gap() > kExact) {
+  const occ::handle<Geom_Surface> analytic = convert.ConvertToAnalytical(exact);
+  if (analytic.IsNull() || !analytic->IsKind(STANDARD_TYPE(Geom_ElementarySurface)) || convert.Gap() > exact) {
     return std::nullopt;
   }
   // Which way the new surface's normal points, at the face's middle.
@@ -219,7 +221,7 @@ std::optional<Canonical::Face> analytic_face(const TopoDS_Face& face) {
   surface->D1((u0 + u1) / 2, (v0 + v1) / 2, point, du, dv);
   const gp_Vec normal = du.Crossed(dv);
   GeomAPI_ProjectPointOnSurf projection(point, analytic);
-  if (projection.NbPoints() == 0 || projection.LowerDistance() > kExact * 10) {
+  if (projection.NbPoints() == 0 || projection.LowerDistance() > exact * 10) {
     return std::nullopt;
   }
   double u = 0.0;
@@ -248,7 +250,7 @@ std::optional<Canonical::Face> analytic_face(const TopoDS_Face& face) {
 }
 
 // The line or circle of a B-spline edge, or none.
-std::optional<Canonical::Edge> analytic_edge(const TopoDS_Edge& edge) {
+std::optional<Canonical::Edge> analytic_edge(const TopoDS_Edge& edge, double exact) {
   if (BRep_Tool::Degenerated(edge)) {
     return std::nullopt;
   }
@@ -263,8 +265,8 @@ std::optional<Canonical::Edge> analytic_edge(const TopoDS_Edge& edge) {
   GeomConvert_CurveToAnaCurve convert(curve);
   occ::handle<Geom_Curve> analytic;
   Canonical::Edge out;
-  if (!convert.ConvertToAnalytical(kExact, analytic, first, last, out.first, out.last) || analytic.IsNull() ||
-      convert.Gap() > kExact || spline_curve(analytic) || !(out.first < out.last)) {
+  if (!convert.ConvertToAnalytical(exact, analytic, first, last, out.first, out.last) || analytic.IsNull() ||
+      convert.Gap() > exact || spline_curve(analytic) || !(out.first < out.last)) {
     return std::nullopt;
   }
   // The ends where the vertices are.
@@ -274,7 +276,7 @@ std::optional<Canonical::Edge> analytic_edge(const TopoDS_Edge& edge) {
   if (start.IsNull() || end.IsNull() || start.IsSame(end)) {
     return std::nullopt;
   }
-  const double tolerance = std::max(BRep_Tool::Tolerance(start), BRep_Tool::Tolerance(end)) + kExact;
+  const double tolerance = std::max(BRep_Tool::Tolerance(start), BRep_Tool::Tolerance(end)) + exact;
   if (analytic->Value(out.first).Distance(BRep_Tool::Pnt(start)) > tolerance ||
       analytic->Value(out.last).Distance(BRep_Tool::Pnt(end)) > tolerance) {
     return std::nullopt;
@@ -291,7 +293,7 @@ bool elementary(const TopoDS_Face& face) {
 
 } // namespace
 
-ShapePtr canonical_dressup(const Shape& input, const Shape& result) {
+ShapePtr canonical_dressup(const Shape& input, const Shape& result, double exact) {
   try {
     OCC_CATCH_SIGNALS
     const occ::handle<Canonical> modification = new Canonical();
@@ -301,7 +303,7 @@ ShapePtr canonical_dressup(const Shape& input, const Shape& result) {
       if (input.face_index(face) >= 0) {
         continue;
       }
-      if (std::optional<Canonical::Face> analytic = analytic_face(face)) {
+      if (std::optional<Canonical::Face> analytic = analytic_face(face, exact)) {
         modification->faces.Bind(face, *analytic);
         changed.push_back(i);
       }
@@ -323,15 +325,15 @@ ShapePtr canonical_dressup(const Shape& input, const Shape& result) {
         if (index == 0) {
           continue;
         }
-        bool exact = true;
+        bool all_analytic = true;
         for (const TopoDS_Shape& face : faces_of(index)) {
-          exact = exact && !BRep_Tool::IsClosed(edge, TopoDS::Face(face)) &&
-                  (modification->faces.IsBound(face) || elementary(TopoDS::Face(face)));
+          all_analytic = all_analytic && !BRep_Tool::IsClosed(edge, TopoDS::Face(face)) &&
+                         (modification->faces.IsBound(face) || elementary(TopoDS::Face(face)));
         }
-        if (!exact) {
+        if (!all_analytic) {
           continue;
         }
-        if (std::optional<Canonical::Edge> analytic = analytic_edge(edge)) {
+        if (std::optional<Canonical::Edge> analytic = analytic_edge(edge, exact)) {
           modification->edges.Bind(edge, *analytic);
         }
       }
@@ -340,9 +342,74 @@ ShapePtr canonical_dressup(const Shape& input, const Shape& result) {
     if (!modifier.IsDone()) {
       return nullptr;
     }
+    // A new edge's tolerance covers how far it lies from its faces' surfaces:
+    // an unchanged face's surface can lie off the exact curve by more than
+    // the old edge's tolerance (mitcad#339: a stored cone 2.3e-7 off a ring's
+    // exact circle, the edge's tolerance 1.7e-7; the cone no longer checked
+    // valid).
+    {
+      NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher> new_faces_of;
+      TopExp::MapShapesAndUniqueAncestors(modifier.ModifiedShape(result.occt()), TopAbs_EDGE, TopAbs_FACE,
+                                          new_faces_of);
+      BRep_Builder builder;
+      for (int i = 1; i <= faces_of.Extent(); ++i) {
+        // With a wider tolerance (a sweep's sides) also the edges kept on
+        // the changed faces: their new pcurves lie as far off their curves
+        // as the sweep's surfaces lay off the analytic ones.
+        const bool kept_on_changed =
+            exact > kExact && std::any_of(faces_of(i).begin(), faces_of(i).end(), [&](const TopoDS_Shape& face) {
+              return modification->faces.IsBound(face);
+            });
+        if (!modification->edges.IsBound(faces_of.FindKey(i)) && !kept_on_changed) {
+          continue;
+        }
+        const TopoDS_Edge edge = TopoDS::Edge(modifier.ModifiedShape(faces_of.FindKey(i)));
+        const int index = new_faces_of.FindIndex(edge);
+        if (index == 0) {
+          continue;
+        }
+        double first = 0.0;
+        double last = 0.0;
+        const occ::handle<Geom_Curve> curve = BRep_Tool::Curve(edge, first, last);
+        if (curve.IsNull()) {
+          continue;
+        }
+        double deviation = 0.0;
+        for (const TopoDS_Shape& face : new_faces_of(index)) {
+          double f = 0.0;
+          double l = 0.0;
+          const occ::handle<Geom2d_Curve> pcurve = BRep_Tool::CurveOnSurface(edge, TopoDS::Face(face), f, l);
+          const occ::handle<Geom_Surface> surface = BRep_Tool::Surface(TopoDS::Face(face));
+          if (pcurve.IsNull() || surface.IsNull()) {
+            continue;
+          }
+          for (int k = 0; k <= 20; ++k) {
+            const double t = first + (last - first) * k / 20.0;
+            const gp_Pnt2d uv = pcurve->Value(t);
+            deviation = std::max(deviation, surface->Value(uv.X(), uv.Y()).Distance(curve->Value(t)));
+          }
+        }
+        // (The edge is the modifier's new one; its vertices may be the
+        // input's, and are left as they are.)
+        if (1.1 * deviation > BRep_Tool::Tolerance(edge)) {
+          builder.UpdateEdge(edge, 1.1 * deviation);
+        }
+      }
+    }
     for (const int i : changed) {
       if (!BRepCheck_Analyzer(modifier.ModifiedShape(result.face(i))).IsValid()) {
         return nullptr;
+      }
+    }
+    // The other faces of the new edges too (their pcurves are new).
+    for (int i = 1; i <= faces_of.Extent(); ++i) {
+      if (!modification->edges.IsBound(faces_of.FindKey(i))) {
+        continue;
+      }
+      for (const TopoDS_Shape& face : faces_of(i)) {
+        if (!modification->faces.IsBound(face) && !BRepCheck_Analyzer(modifier.ModifiedShape(face)).IsValid()) {
+          return nullptr;
+        }
       }
     }
     std::vector<Shape::NamedFace> named;

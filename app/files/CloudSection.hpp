@@ -34,6 +34,7 @@ class QLineEdit;
 class QPushButton;
 class QRadioButton;
 class QTimer;
+class QToolButton;
 
 namespace mitcad {
 
@@ -85,7 +86,7 @@ public:
   void setStatus(const QString& text, bool problem);
   // Ends a running check (the dialog closes or creates).
   void stopCheck();
-  // The first field to type into.
+  // The first field to type into: the repository address.
   QWidget* firstField() const;
 
 signals:
@@ -99,6 +100,12 @@ private:
   void fieldsChanged();
   void addressEdited(const QString& text);
   void showFields();
+  void showAddress();
+  void updateSummary();
+  void setField(QLineEdit* edit, const QString& text);
+  // The text just typed into `edit` is a whole address pasted there: read
+  // as the address (true), not kept in the field.
+  bool addressPasted(QLineEdit* edit, const QString& text, bool bareHost);
   void scheduleCheck();
   void startCheck();
   void finishCheck(const QString& url, const QJsonObject& answer);
@@ -112,6 +119,9 @@ private:
   CloudAddress m_address;
   bool m_repositoryTyped = false;
   bool m_updating = false;
+  bool m_detailsOpen = false;
+  QToolButton* m_details = nullptr;
+  QLabel* m_summary = nullptr;
   QComboBox* m_service = nullptr;
   QLabel* m_serverLabel = nullptr;
   QLineEdit* m_server = nullptr;

@@ -42,6 +42,8 @@ class TextureBrowser;
 // Assign gives the bodies and faces the dialog was opened for the selected
 // appearance. The faces of those bodies with appearances of their own are
 // listed, and Clear gives the selected ones their body's again.
+// With faces selected, Assign to N bodies gives the bodies that own them (and
+// the selected bodies) the appearance as their body appearance (mitcad#346).
 //
 // Texture sources (mitcad#315): a selector above the list chooses between
 // the appearances (the library and the design's) and the texture sources
@@ -87,6 +89,9 @@ private:
   void newAppearance();
   void deleteAppearance();
   void assign();
+  // Gives the bodies of the selected faces (and the selected bodies) the
+  // appearance as their own (mitcad#346).
+  void assignToBodies();
   // The texture (mitcad#53): a new image file (typed or chosen), a change
   // of the current one's fields, embedding it or not, removing it.
   void setTexturePath(const QString& path);
@@ -139,6 +144,7 @@ private:
   QPushButton* m_new = nullptr;
   QPushButton* m_delete = nullptr;
   QPushButton* m_assign = nullptr;
+  QPushButton* m_assignBodies = nullptr;
   QPushButton* m_close = nullptr;
   bool m_building = false;
   QString m_logged; // the logged places

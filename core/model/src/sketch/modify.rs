@@ -12,7 +12,7 @@ use super::edit::DRIVEN_SUFFIX;
 use super::edit::{PointInput, SketchEdit};
 use super::geometry::{Curve2, P2, add, cross, dist, dot, norm, perp, scale, sub, unit};
 use super::intersect::intersections;
-use super::solve::{Goal, measure_in};
+use super::solve::{Goal, Solved, measure_in};
 use super::{
     Constraint, ConstraintKind, ConstraintUid, DimensionKind, Entity, EntityKind, Ref, SpacingMode,
 };
@@ -141,6 +141,9 @@ impl SketchEdit<'_> {
             match item {
                 Item::Entity(r) => {
                     let e = self.entity(r.uid())?;
+                    // A part of a derived offset goes only with the offset
+                    // (mitcad#361).
+                    self.editable(r.uid())?;
                     if e.is_point() != r.is_point() {
                         return Err(format!("{r} is a {}", e.kind.type_name()));
                     }
@@ -285,6 +288,7 @@ impl SketchEdit<'_> {
         // Offsets forget removed results; one whose sources are gone goes.
         for offset in &mut self.def.offsets {
             offset.results.retain(|r| !entities.contains(r));
+            offset.helpers.retain(|h| !entities.contains(h));
             if offset.curves.iter().any(|c| entities.contains(c)) || offset.results.is_empty() {
                 gone.insert(offset.id);
             }
@@ -683,6 +687,17 @@ impl SketchEdit<'_> {
                             });
                         }
                     }
+                    // The points leave an ellipse's minor radius free: the
+                    // copy keeps it equal to the original's (mitcad#363).
+                    if matches!(
+                        other,
+                        EntityKind::Ellipse { .. } | EntityKind::EllipticalArc { .. }
+                    ) {
+                        self.add_constraint(ConstraintKind::Equal {
+                            a: original,
+                            b: copy,
+                        });
+                    }
                 }
             }
             made.push(self.entity(copy)?.as_ref());
@@ -732,6 +747,65 @@ impl SketchEdit<'_> {
         p
     }
 
+    /// A new point where a trim or an extension meets the curve `on`: held
+    /// on it, unless a derived offset computes the curve, whose curves
+    /// take no constraints (mitcad#361): then it is a plain point.
+    fn point_on_crossing(&mut self, at: P2, on: EntityUid) -> EntityUid {
+        if self.computing_offset(on).is_some() {
+            self.add_point(at)
+        } else {
+            self.point_on(at, on)
+        }
+    }
+
+    /// After the end of a curve moved, the dimensions on that point measure
+    /// the new place (mitcad#362): a distance keeps its parameter and takes
+    /// the new value, so that the end is not pulled back to what it
+    /// measured before. A parameter that has an expression or is shared
+    /// (with a dimension, an offset or an expression) keeps its value, and
+    /// the dimension holds.
+    fn remeasure_dimensions_on(&mut self, point: EntityUid, after: &Solved) {
+        let ids: Vec<ConstraintUid> = self
+            .def
+            .dimensions
+            .iter()
+            .filter(|d| d.kind.refs().contains(&Ref::Point(point)))
+            .map(|d| d.id)
+            .collect();
+        for id in ids {
+            let Some(d) = self.def.dimensions.iter().find(|d| d.id == id) else {
+                continue;
+            };
+            let Some(param) = d.value else {
+                continue;
+            };
+            let plain = self
+                .params
+                .get(param)
+                .is_some_and(|p| p.dependencies().is_empty());
+            let shared = self
+                .def
+                .dimensions
+                .iter()
+                .filter(|o| o.value == Some(param))
+                .count()
+                > 1
+                || self.def.offsets.iter().any(|o| o.distance == param)
+                || self
+                    .params
+                    .iter()
+                    .any(|p| p.dependencies().contains(&param));
+            if !plain || shared {
+                continue;
+            }
+            let Some(value) = measure_in(&d.kind, after, &self.def.constraints) else {
+                continue;
+            };
+            // A value the parameter cannot take leaves the dimension as it is.
+            let _ = self.set_dimension(id, &ValueInput::Number(value));
+        }
+    }
+
     /// Removes the dimensions that measure a curve's extent and the
     /// midpoint constraints on it, which a trim or an extend changes.
     fn drop_extent_constraints(&mut self, curve: EntityUid) {
@@ -767,6 +841,7 @@ impl SketchEdit<'_> {
     /// Trims the piece of a curve around `at` between the curves that cross
     /// it (Trim). A curve nothing crosses is deleted.
     pub fn trim(&mut self, id: EntityUid, at: P2) -> Result<(), String> {
+        self.shape_editable(id)?;
         let (curve, cuts) = self.crossings(id)?;
         let kind = self.curve(id)?.kind.clone();
         let (t_at, _) = curve.closest(at);
@@ -780,8 +855,8 @@ impl SketchEdit<'_> {
             let before = (after + cuts.len() - 1) % cuts.len();
             let (t_end, c_end) = cuts[before];
             let (t_start, c_start) = cuts[after];
-            let start = self.point_on(curve.point(t_start), c_start);
-            let end = self.point_on(curve.point(t_end), c_end);
+            let start = self.point_on_crossing(curve.point(t_start), c_start);
+            let end = self.point_on_crossing(curve.point(t_end), c_end);
             self.drop_extent_constraints(id);
             let e = self.def.entity_mut(id).expect("a curve");
             e.kind = match kind {
@@ -809,19 +884,19 @@ impl SketchEdit<'_> {
             (None, None) => return self.remove(&[Item::Entity(Ref::Curve(id))]),
             (None, Some((t, c))) => {
                 // Cut off the start.
-                let p = self.point_on(curve.point(t), c);
+                let p = self.point_on_crossing(curve.point(t), c);
                 self.reshape(id, &curve, t, hi, Some(p), None)?;
                 self.drop_if_unused(old_start);
             }
             (Some((t, c)), None) => {
-                let p = self.point_on(curve.point(t), c);
+                let p = self.point_on_crossing(curve.point(t), c);
                 self.reshape(id, &curve, lo, t, None, Some(p))?;
                 self.drop_if_unused(old_end);
             }
             (Some((t0, c0)), Some((t1, c1))) => {
                 // Keep both ends: this curve up to t0, a new one from t1.
-                let p0 = self.point_on(curve.point(t0), c0);
-                let p1 = self.point_on(curve.point(t1), c1);
+                let p0 = self.point_on_crossing(curve.point(t0), c0);
+                let p1 = self.point_on_crossing(curve.point(t1), c1);
                 let copy = self.id();
                 let mut second = self.curve(id)?.clone();
                 second.id = copy;
@@ -935,6 +1010,7 @@ impl SketchEdit<'_> {
     /// (see `points.rs`); returns that point. Elsewhere the end is a new
     /// point on the curve reached.
     pub fn extend(&mut self, id: EntityUid, at: P2) -> Result<Option<EntityUid>, String> {
+        self.shape_editable(id)?;
         let solved = self.solved()?;
         let curve = solved
             .curves
@@ -1041,17 +1117,49 @@ impl SketchEdit<'_> {
             return Ok(None);
         }
         let reached = self.point_reached(point, &solved.points, target, id, tol * 10.0);
+        // The end point stays, with the constraints and dimensions on it
+        // (mitcad#362), when this curve alone uses it and the extension
+        // joins no existing point; only the extent constraints went above.
+        let keeps = !matches!(reached, Some((_, true)))
+            && self.users(moved) == [id]
+            && self.mergeable_point(moved)
+            && self.def.entity(moved).is_some_and(|e| !e.fixed);
+        if keeps {
+            if let Some(e) = self.def.entity_mut(moved) {
+                e.kind = EntityKind::Point { at: point };
+            }
+            let on = match reached {
+                Some((q, _)) => self.computing_offset(q).is_none().then_some(Ref::Point(q)),
+                None => (self.computing_offset(target).is_none()).then_some(Ref::Curve(target)),
+            };
+            if let Some(entity) = on {
+                self.add_constraint(ConstraintKind::Coincident {
+                    point: moved,
+                    entity,
+                });
+            }
+            // Dimensions of the moved end measure the new place.
+            let mut after = solved.clone();
+            after.points.insert(moved, point);
+            if let Some(Curve2::Line { a, b }) = after.curves.get_mut(&id) {
+                *(if at_end { b } else { a }) = point;
+            }
+            self.remeasure_dimensions_on(moved, &after);
+            return Ok(reached.map(|(q, _)| q));
+        }
         let p = match reached {
             Some((q, true)) => q,
             Some((q, false)) => {
                 let p = self.add_point(point);
-                self.add_constraint(ConstraintKind::Coincident {
-                    point: p,
-                    entity: Ref::Point(q),
-                });
+                if self.computing_offset(q).is_none() {
+                    self.add_constraint(ConstraintKind::Coincident {
+                        point: p,
+                        entity: Ref::Point(q),
+                    });
+                }
                 p
             }
-            None => self.point_on(point, target),
+            None => self.point_on_crossing(point, target),
         };
         let (s, e) = if at_end {
             (None, Some(p))
@@ -1180,6 +1288,8 @@ impl SketchEdit<'_> {
         b: EntityUid,
         radius: &ValueInput,
     ) -> Result<EntityUid, String> {
+        self.shape_editable(a)?;
+        self.shape_editable(b)?;
         let r = self.value_of(radius, crate::expr::Unit::MM)?;
         if !(r.is_finite() && r > 0.0) {
             return Err(format!("the fillet radius must be positive, got {r}"));
@@ -1238,6 +1348,8 @@ impl SketchEdit<'_> {
         second: Option<&ValueInput>,
         angle: Option<&ValueInput>,
     ) -> Result<EntityUid, String> {
+        self.shape_editable(a)?;
+        self.shape_editable(b)?;
         let value = |v: &ValueInput, unit| self.value_of(v, unit);
         let d1 = value(distance, crate::expr::Unit::MM)?;
         let corner = self.corner(a, b)?;
@@ -1423,6 +1535,7 @@ impl SketchEdit<'_> {
             });
         }
         let n = pieces.len();
+        let mut helpers = Vec::new();
         let ids = self.ids(n);
         // Corner points where neighbouring offset curves meet.
         let mut corners: Vec<Option<EntityUid>> = vec![None; n + 1];
@@ -1505,6 +1618,7 @@ impl SketchEdit<'_> {
                     let p0 = self.point_on(Offset::at(*center, old_radius, angle), original);
                     let p1 = self.point_on(Offset::at(*center, *radius, angle), ids[i]);
                     let across = self.id();
+                    helpers.push(across);
                     let mut line = Entity::new(
                         across,
                         EntityKind::Line {
@@ -1536,6 +1650,7 @@ impl SketchEdit<'_> {
             left: d < 0.0,
             results: ids.clone(),
             corners: Vec::new(),
+            helpers,
             derived: false,
         });
         self.report.constraints.push(id);

@@ -1,0 +1,473 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: the constant-radius fillet between a cylinder and a cone, or two
+cones, about one axis, along a circle about that axis, is an analytic
+blend, a torus about the axis (mitcad#237).
+
+OCCT's analytic blends need a plane among their faces (plane/plane,
+plane/cylinder, plane/cone); between two coaxial surfaces of revolution
+the blend was walked and approximated by a B-spline surface, and where its
+contact passes over a cut-out of its face the walk rolled on the cut-out's
+edge (the rim of a post that overhangs flats cut into it, the post rounded
+up into a flaring underside) and failed.
+
+- ChFiKPart_ComputeData_FilCoaxial (new): ChFiKPart_IsCoaxialPair tells
+  such a pair, ChFiKPart_MakeFilletCoaxial makes the blend: in the
+  meridian half-plane of the spine's point the ball's centre lies at the
+  radius from both profiles along their normals oriented by Or1 and Or2,
+  the torus is the circle its centre sweeps, and the section is the arc of
+  the ball facing the edge, running from the contact on S1 to the contact
+  on S2 with the torus's v rising (as the other analytic fillets have it;
+  the torus's axis is turned to make it so). The contacts' circles, their
+  p-curves on both faces and on the torus, the transitions and the blend's
+  orientation follow the plane/cylinder fillet's rules.
+- ChFi3d_KParticular: such a fillet (constant radius, no chamfer) is a
+  particular case; ChFiKPart_ComputeData::Compute dispatches it.
+
+Upstream: new code for a case that was walked before; the results agree
+with the walked ones within the walk's approximation (the convex and
+concave roundings of a post's conical top or flare, two cones, a bore's
+countersink, whole and part revolutions).
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
+index 08b22a2..575db83 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
+@@ -30,6 +30,7 @@
+ #include <ChFi3d.hxx>
+ #include <ChFiDS_ChamfSpine.hxx>
+ #include <ChFiDS_FilSpine.hxx>
++#include <ChFiKPart_ComputeData_FilCoaxial.hxx>
+ #include <ElCLib.hxx>
+ #include <ElSLib.hxx>
+ #include <Extrema_LocateExtCC.hxx>
+@@ -631,6 +632,16 @@ bool ChFi3d_KParticular(const occ::handle<ChFiDS_Spine>& Spine,
+   bIsPlane2 = (aST2 == GeomAbs_Plane);
+   if (!(bIsPlane1 || bIsPlane2))
+   {
++    // A fillet between a cylinder and a cone or two cones about one axis,
++    // along a circle about it: a torus.
++    if (!fs.IsNull())
++    {
++      const BRepAdaptor_Curve& aC = Spine->CurrentElementarySpine(IE);
++      if (aC.GetType() == GeomAbs_Circle && ChFiKPart_IsCoaxialPair(S1, S2, aC.Circle()))
++      {
++        return bRet;
++      }
++    }
+     return !bRet;
+   }
+   //
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFiKPart/ChFiKPart_ComputeData.cxx b/src/ModelingAlgorithms/TKFillet/ChFiKPart/ChFiKPart_ComputeData.cxx
+index fa63593..48c3e0d 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFiKPart/ChFiKPart_ComputeData.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFiKPart/ChFiKPart_ComputeData.cxx
+@@ -28,6 +28,7 @@
+ #include <ChFiKPart_ComputeData_ChPlnPln.hxx>
+ #include <ChFiKPart_ComputeData_CS.hxx>
+ #include <ChFiKPart_ComputeData_Fcts.hxx>
++#include <ChFiKPart_ComputeData_FilCoaxial.hxx>
+ #include <ChFiKPart_ComputeData_FilPlnCon.hxx>
+ #include <ChFiKPart_ComputeData_FilPlnCyl.hxx>
+ #include <ChFiKPart_ComputeData_FilPlnPln.hxx>
+@@ -206,6 +207,19 @@ bool ChFiKPart_ComputeData::Compute(TopOpeBRepDS_DataStructure&           DStr,
+                                     OrFace2,
+                                     false);
+     }
++    else if (ctyp == GeomAbs_Circle && ChFiKPart_IsCoaxialPair(*S1, *S2, Spine->Circle()))
++    {
++      surfok = ChFiKPart_MakeFilletCoaxial(DStr,
++                                           Data,
++                                           *S1,
++                                           *S2,
++                                           Or1,
++                                           Or2,
++                                           Radius,
++                                           Spine->Circle(),
++                                           Wref,
++                                           OrFace1);
++    }
+     else
+     {
+       throw Standard_NotImplemented("particular case not written");
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFiKPart/ChFiKPart_ComputeData_FilCoaxial.cxx b/src/ModelingAlgorithms/TKFillet/ChFiKPart/ChFiKPart_ComputeData_FilCoaxial.cxx
+new file mode 100644
+index 0000000..6324b73
+--- /dev/null
++++ b/src/ModelingAlgorithms/TKFillet/ChFiKPart/ChFiKPart_ComputeData_FilCoaxial.cxx
+@@ -0,0 +1,316 @@
++// This file is part of Open CASCADE Technology software library.
++//
++// This library is free software; you can redistribute it and/or modify it under
++// the terms of the GNU Lesser General Public License version 2.1 as published
++// by the Free Software Foundation, with special exception defined in the file
++// OCCT_LGPL_EXCEPTION.txt. Consult the file LICENSE_LGPL_21.txt included in OCCT
++// distribution for complete text of the license and disclaimer of any warranty.
++
++#include <ChFiKPart_ComputeData_FilCoaxial.hxx>
++
++#include <ChFiKPart_ComputeData_Fcts.hxx>
++#include <cmath>
++#include <ElCLib.hxx>
++#include <ElSLib.hxx>
++#include <Geom2d_Line.hxx>
++#include <Geom_Circle.hxx>
++#include <Geom_ToroidalSurface.hxx>
++#include <gp.hxx>
++#include <gp_Ax2.hxx>
++#include <gp_Ax3.hxx>
++#include <gp_Cone.hxx>
++#include <gp_Cylinder.hxx>
++#include <gp_Dir2d.hxx>
++#include <gp_Lin.hxx>
++#include <gp_Lin2d.hxx>
++#include <gp_Pnt2d.hxx>
++#include <gp_Vec.hxx>
++#include <Precision.hxx>
++#include <TopOpeBRepDS_DataStructure.hxx>
++
++namespace
++{
++// The axis of a cylinder or a cone.
++bool revolutionAxis(const Adaptor3d_Surface& S, gp_Ax1& Axis)
++{
++  switch (S.GetType())
++  {
++    case GeomAbs_Cylinder:
++      Axis = S.Cylinder().Axis();
++      return true;
++    case GeomAbs_Cone:
++      Axis = S.Cone().Axis();
++      return true;
++    default:
++      return false;
++  }
++}
++
++// The parameters of P on a cylinder or a cone, its natural derivatives
++// there.
++void revolutionD1(const Adaptor3d_Surface& S,
++                  const gp_Pnt&            P,
++                  double&                  U,
++                  double&                  V,
++                  gp_Vec&                  DU,
++                  gp_Vec&                  DV)
++{
++  gp_Pnt PP;
++  if (S.GetType() == GeomAbs_Cylinder)
++  {
++    const gp_Cylinder aCyl = S.Cylinder();
++    ElSLib::Parameters(aCyl, P, U, V);
++    ElSLib::D1(U, V, aCyl, PP, DU, DV);
++  }
++  else
++  {
++    const gp_Cone aCone = S.Cone();
++    ElSLib::Parameters(aCone, P, U, V);
++    ElSLib::D1(U, V, aCone, PP, DU, DV);
++  }
++}
++
++// A U parameter in the range of a face's surface, as the plane/cylinder
++// fillet takes it (ChFiKPart_ComputeData_FilPlnCyl).
++double uInRange(const double U, const double fu, const double lu, const bool Reversed)
++{
++  const double tol           = Precision::PConfusion();
++  const bool   careaboutsens = std::abs(lu - fu - 2 * M_PI) < tol;
++  double       u             = U;
++  if (u >= fu - tol && u < fu)
++  {
++    u = fu;
++  }
++  if (u <= lu + tol && u > lu)
++  {
++    u = lu;
++  }
++  if (u < fu || u > lu)
++  {
++    u = ChFiKPart_InPeriod(u, fu, fu + 2 * M_PI, tol);
++  }
++  if (Reversed)
++  {
++    if (careaboutsens && std::abs(fu - u) < tol)
++    {
++      u = lu;
++    }
++  }
++  else if (careaboutsens && std::abs(lu - u) < tol)
++  {
++    u = fu;
++  }
++  return u;
++}
++} // namespace
++
++//=================================================================================================
++
++bool ChFiKPart_IsCoaxialPair(const Adaptor3d_Surface& S1,
++                             const Adaptor3d_Surface& S2,
++                             const gp_Circ&           Spine)
++{
++  if (S1.GetType() == GeomAbs_Cylinder && S2.GetType() == GeomAbs_Cylinder)
++  {
++    return false;
++  }
++  gp_Ax1 A1, A2;
++  if (!revolutionAxis(S1, A1) || !revolutionAxis(S2, A2))
++  {
++    return false;
++  }
++  const double aTolA = Precision::Angular();
++  const double aTol  = Precision::Confusion();
++  const gp_Lin aLin(A1);
++  return A1.IsParallel(A2, aTolA) && aLin.Distance(A2.Location()) <= aTol
++         && A1.IsParallel(Spine.Axis(), aTolA) && aLin.Distance(Spine.Location()) <= aTol;
++}
++
++//=======================================================================
++// function : ChFiKPart_MakeFilletCoaxial
++// purpose  : The ball rolls round the common axis: its centre lies in the
++//            meridian half-plane of the spine's point, at the radius from
++//            both profiles along their normals oriented by Or1 and Or2
++//            (towards the ball), and the fillet is the torus that its
++//            centre's circle sweeps.
++//=======================================================================
++
++bool ChFiKPart_MakeFilletCoaxial(TopOpeBRepDS_DataStructure&         DStr,
++                                 const occ::handle<ChFiDS_SurfData>& Data,
++                                 const Adaptor3d_Surface&            S1,
++                                 const Adaptor3d_Surface&            S2,
++                                 const TopAbs_Orientation            Or1,
++                                 const TopAbs_Orientation            Or2,
++                                 const double                        Radius,
++                                 const gp_Circ&                      Spine,
++                                 const double                        First,
++                                 const TopAbs_Orientation            OrFace1)
++{
++  gp_Ax1 anAxis;
++  if (!ChFiKPart_IsCoaxialPair(S1, S2, Spine) || !revolutionAxis(S1, anAxis))
++  {
++    return false;
++  }
++  const gp_Pnt O = anAxis.Location();
++  const gp_Dir D = anAxis.Direction();
++
++  gp_Pnt PtSp;
++  gp_Vec DSp;
++  ElCLib::D1(First, Spine, PtSp, DSp);
++  const gp_Dir Dy(DSp);
++  const gp_Vec OE(O, PtSp);
++  const double zE = OE.Dot(gp_Vec(D));
++  const gp_Vec aRad = OE - gp_Vec(D) * zE;
++  const double rhoE = aRad.Magnitude();
++  if (rhoE <= Precision::Confusion())
++  {
++    return false;
++  }
++  const gp_Dir Dx(aRad);
++
++  // The profiles' normals towards the ball in the meridian (Dx, D).
++  const Adaptor3d_Surface* S[2]  = {&S1, &S2};
++  const TopAbs_Orientation Or[2] = {Or1, Or2};
++  double                   ax[2], ay[2];
++  for (int i = 0; i < 2; i++)
++  {
++    double u = 0., v = 0.;
++    gp_Vec du, dv;
++    revolutionD1(*S[i], PtSp, u, v, du, dv);
++    gp_Vec N = du.Crossed(dv);
++    if (N.Magnitude() <= gp::Resolution())
++    {
++      return false;
++    }
++    N.Normalize();
++    if (Or[i] == TopAbs_REVERSED)
++    {
++      N.Reverse();
++    }
++    ax[i] = N.Dot(gp_Vec(Dx));
++    ay[i] = N.Dot(gp_Vec(D));
++  }
++  const double det = ax[0] * ay[1] - ay[0] * ax[1];
++  if (std::abs(det) <= 1.e-9)
++  {
++    return false;
++  }
++  // The ball's centre, relative to the spine's point.
++  const double cx    = Radius * (ay[1] - ay[0]) / det;
++  const double cy    = Radius * (ax[0] - ax[1]) / det;
++  const double rhoC  = rhoE + cx;
++  const double zC    = zE + cy;
++  if (rhoC <= Precision::Confusion())
++  {
++    return false;
++  }
++  const gp_Pnt C = O.Translated(gp_Vec(D) * zC + gp_Vec(Dx) * rhoC);
++  gp_Pnt       P[2];
++  for (int i = 0; i < 2; i++)
++  {
++    P[i] = C.Translated(-(gp_Vec(Dx) * ax[i] + gp_Vec(D) * ay[i]) * Radius);
++  }
++
++  const gp_Vec CE(C, PtSp);
++  if (CE.Magnitude() <= Precision::Confusion())
++  {
++    return false;
++  }
++  const gp_Pnt Pe = C.Translated(CE.Normalized() * Radius);
++
++  // The torus about the axis, its parameter u along the spine; its axis
++  // the way that makes the section, the arc of the ball facing the edge,
++  // run from the contact on S1 to the contact on S2 with v rising (as the
++  // other analytic fillets have it).
++  gp_Ax3 FilAx3;
++  double v[2] = {0., 0.};
++  bool   found = false;
++  for (const double aSense : {1., -1.})
++  {
++    gp_Dir Dz = D;
++    if (aSense < 0.)
++    {
++      Dz.Reverse();
++    }
++    FilAx3 = gp_Ax3(O.Translated(gp_Vec(D) * zC), Dz, Dx);
++    if (FilAx3.YDirection().Dot(Dy) <= 0.)
++    {
++      FilAx3.YReverse();
++    }
++    double u = 0., ve = 0.;
++    for (int i = 0; i < 2; i++)
++    {
++      ElSLib::TorusParameters(FilAx3, rhoC, Radius, P[i], u, v[i]);
++    }
++    ElSLib::TorusParameters(FilAx3, rhoC, Radius, Pe, u, ve);
++    v[0] = ElCLib::InPeriod(v[0], 0., 2 * M_PI);
++    v[1] = ElCLib::InPeriod(v[1], v[0], v[0] + 2 * M_PI);
++    ve   = ElCLib::InPeriod(ve, v[0], v[0] + 2 * M_PI);
++    if (ve < v[1])
++    {
++      found = true;
++      break;
++    }
++  }
++  if (!found)
++  {
++    return false;
++  }
++  occ::handle<Geom_ToroidalSurface> gtor = new Geom_ToroidalSurface(FilAx3, rhoC, Radius);
++  Data->ChangeSurf(ChFiKPart_IndexSurfaceInDS(gtor, DStr));
++
++  gp_Ax2 circAx2 = FilAx3.Ax2();
++  for (int i = 0; i < 2; i++)
++  {
++    gp_Pnt PP;
++    gp_Vec deru, derv;
++    ElSLib::TorusD1(0., v[i], FilAx3, rhoC, Radius, PP, deru, derv);
++    const gp_Vec norFil = deru.Crossed(derv);
++
++    double us = 0., vs = 0.;
++    gp_Vec dus, dvs;
++    revolutionD1(*S[i], P[i], us, vs, dus, dvs);
++    const gp_Vec norS     = dus.Crossed(dvs);
++    const bool   reversed = dus.Dot(gp_Vec(Dy)) < 0.;
++    us                    = uInRange(us, S[i]->FirstUParameter(), S[i]->LastUParameter(), reversed);
++    gp_Dir2d d2dS = gp::DX2d();
++    if (reversed)
++    {
++      d2dS.Reverse();
++    }
++    occ::handle<Geom2d_Line> GLin2dS   = new Geom2d_Line(gp_Lin2d(gp_Pnt2d(us, vs), d2dS));
++    occ::handle<Geom2d_Line> GLin2dFil = new Geom2d_Line(gp_Lin2d(gp_Pnt2d(0., v[i]), gp::DX2d()));
++
++    const gp_Vec OP(O, P[i]);
++    const double zP = OP.Dot(gp_Vec(D));
++    circAx2.SetLocation(O.Translated(gp_Vec(D) * zP));
++    const double rhoP = (OP - gp_Vec(D) * zP).Magnitude();
++    occ::handle<Geom_Circle> GCirc = new Geom_Circle(gp_Circ(circAx2, rhoP));
++
++    if (i == 0)
++    {
++      // The fillet's orientation: its normal along the face's outward
++      // normal at the contact.
++      gp_Vec Df = norS;
++      if (OrFace1 == TopAbs_REVERSED)
++      {
++        Df.Reverse();
++      }
++      Data->ChangeOrientation() = norFil.Dot(Df) <= 0. ? TopAbs_REVERSED : TopAbs_FORWARD;
++      const TopAbs_Orientation trans = norFil.Dot(norS) <= 0. ? TopAbs_FORWARD : TopAbs_REVERSED;
++      Data->ChangeInterferenceOnS1().SetInterference(ChFiKPart_IndexCurveInDS(GCirc, DStr),
++                                                     trans,
++                                                     GLin2dS,
++                                                     GLin2dFil);
++    }
++    else
++    {
++      const TopAbs_Orientation trans = norFil.Dot(norS) <= 0. ? TopAbs_REVERSED : TopAbs_FORWARD;
++      Data->ChangeInterferenceOnS2().SetInterference(ChFiKPart_IndexCurveInDS(GCirc, DStr),
++                                                     trans,
++                                                     GLin2dS,
++                                                     GLin2dFil);
++    }
++  }
++  return true;
++}
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFiKPart/ChFiKPart_ComputeData_FilCoaxial.hxx b/src/ModelingAlgorithms/TKFillet/ChFiKPart/ChFiKPart_ComputeData_FilCoaxial.hxx
+new file mode 100644
+index 0000000..b34d6ff
+--- /dev/null
++++ b/src/ModelingAlgorithms/TKFillet/ChFiKPart/ChFiKPart_ComputeData_FilCoaxial.hxx
+@@ -0,0 +1,40 @@
++// This file is part of Open CASCADE Technology software library.
++//
++// This library is free software; you can redistribute it and/or modify it under
++// the terms of the GNU Lesser General Public License version 2.1 as published
++// by the Free Software Foundation, with special exception defined in the file
++// OCCT_LGPL_EXCEPTION.txt. Consult the file LICENSE_LGPL_21.txt included in OCCT
++// distribution for complete text of the license and disclaimer of any warranty.
++
++#ifndef ChFiKPart_ComputeData_FilCoaxial_HeaderFile
++#define ChFiKPart_ComputeData_FilCoaxial_HeaderFile
++
++#include <Adaptor3d_Surface.hxx>
++#include <ChFiDS_SurfData.hxx>
++#include <TopAbs_Orientation.hxx>
++#include <gp_Circ.hxx>
++
++class TopOpeBRepDS_DataStructure;
++
++//! Whether two surfaces, each a cylinder or a cone and not both
++//! cylinders, share their axis, and the circle lies about that axis: the
++//! constant-radius fillet of their edge is then a torus about the axis.
++bool ChFiKPart_IsCoaxialPair(const Adaptor3d_Surface& S1,
++                             const Adaptor3d_Surface& S2,
++                             const gp_Circ&           Spine);
++
++//! The torus of a constant-radius fillet between two coaxial surfaces of
++//! revolution (a cylinder and a cone, or two cones) along a circle about
++//! their axis.
++bool ChFiKPart_MakeFilletCoaxial(TopOpeBRepDS_DataStructure&         DStr,
++                                 const occ::handle<ChFiDS_SurfData>& Data,
++                                 const Adaptor3d_Surface&            S1,
++                                 const Adaptor3d_Surface&            S2,
++                                 const TopAbs_Orientation            Or1,
++                                 const TopAbs_Orientation            Or2,
++                                 const double                        Radius,
++                                 const gp_Circ&                      Spine,
++                                 const double                        First,
++                                 const TopAbs_Orientation            OrFace1);
++
++#endif
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFiKPart/FILES.cmake b/src/ModelingAlgorithms/TKFillet/ChFiKPart/FILES.cmake
+index 7c6d67d..5fe5a06 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFiKPart/FILES.cmake
++++ b/src/ModelingAlgorithms/TKFillet/ChFiKPart/FILES.cmake
+@@ -20,6 +20,8 @@ set(OCCT_ChFiKPart_FILES
+   ChFiKPart_ComputeData_CS.hxx
+   ChFiKPart_ComputeData_Fcts.cxx
+   ChFiKPart_ComputeData_Fcts.hxx
++  ChFiKPart_ComputeData_FilCoaxial.cxx
++  ChFiKPart_ComputeData_FilCoaxial.hxx
+   ChFiKPart_ComputeData_FilPlnCon.cxx
+   ChFiKPart_ComputeData_FilPlnCon.hxx
+   ChFiKPart_ComputeData_FilPlnCyl.cxx

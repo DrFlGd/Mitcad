@@ -1,0 +1,34 @@
+[
+  {
+    "id": "tnut-b8-m6-a2",
+    "name": "T-nut B-type slot 8 M6, stainless steel",
+    "category": "nuts",
+    "source": "solar/T-nut-B-type-slot-8-M6-stainless-steel/Motedis-S8BHASNM6/Motedis_S8BHASNM6.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "S8BHASNM6-A2",
+    "supplier_url": "https://www.motedis.com/en/T-nut-B-type-slot-8-M6-stainless-steel",
+    "designation": "T-nut B-type slot 8 M6, stainless steel A2",
+    "rows": [],
+    "build": {"role":"fastener","systems":[{"type":"B","slot":8}],"frames":[{"name":"slot","kind":"slot"}]},
+    "frames": [{"name":"slot","origin":[0,0,6],"z":[0,0,-1],"x":[0,1,0],"kind":"slot"}]
+  },
+  {
+    "id": "square-nut-spring-s8-m5",
+    "name": "Square nut with spring, type O, slot 8, M5",
+    "category": "nuts",
+    "source": "uncategorized/Square-nut-with-spring-type-O-M5/Motedis-SLOTSWBM5/Motedis_SLOTSWBM5.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "SLOTSWBM5",
+    "supplier_url": "https://www.motedis.com/en/Square-nut-with-spring-type-O-M5",
+    "designation": "Square nut with spring, type O, slot 8, M5",
+    "rows": [],
+    "build": {
+      "role": "fastener",
+      "systems": [{"type":"B","slot":8},{"type":"I","slot":8}],
+      "frames": [{"name":"slot","kind":"slot"}]
+    },
+    "frames": [{"name":"slot","origin":[0,0,0],"z":[0,1,0],"x":[1,0,0],"kind":"slot"}]
+  }
+]

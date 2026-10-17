@@ -840,6 +840,10 @@ lint use half the cores unless `CMAKE_BUILD_PARALLEL_LEVEL` /
   runs on Windows, Linux and macOS.
 - Every source file starts with an SPDX line (`// SPDX-License-Identifier:
   MIT` or `# ...`), checked by `tools/check-spdx.sh`.
+- Narrow strings (`std::string`, `char*`, paths) are UTF-8 on every
+  platform. On Windows a new executable gets the UTF-8 code page with
+  `mitcad_utf8_code_page(<target>)` (`cmake/Utf8CodePage.cmake`), so that
+  its `argv` and file names are UTF-8 too.
 - Match the surrounding style and comment density.
 - Metric defaults everywhere ([architecture](architecture.md#units)).
 - New geometry operation: a `Kernel` method with a default

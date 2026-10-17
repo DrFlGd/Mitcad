@@ -2935,7 +2935,14 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             // along the flank to find it).
             let mut exact: Vec<Option<f64>> = vec![None; segments.len()];
             let mut crossed_by = vec![0usize; segments.len()];
-            for (body, _) in state {
+            // Only the bodies of the thread's own component: another
+            // component's in the same place (a nut's internal thread round
+            // a bolt's, its mate) would fill the groove (mitcad#379).
+            let component = self.component;
+            let own = state
+                .iter()
+                .filter(|(body, _)| self.components.of_body(body.component) == component);
+            for (body, _) in own {
                 // Where the segments cross the body's faces (mitcad#68: a
                 // classifier of every point took seconds on a stored
                 // thread's spline faces), else the points classified.

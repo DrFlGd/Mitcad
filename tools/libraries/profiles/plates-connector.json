@@ -1,0 +1,1537 @@
+[
+  {
+    "id": "plate18x40-20",
+    "name": "Connector plate 18x40x3, 20 series",
+    "category": "connectors",
+    "source": "slot-profile-accessories/Connector-plate-18x40x3-Laser-cut/Motedis-LP20102/20-V-18x40 [Alu 3 mm].stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP20102",
+    "supplier_url": "https://www.motedis.com/en/Connector-plate-18x40x3-Laser-cut",
+    "designation": "Connector plate 18x40x3, 20 series",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":5,"grid":20},{"type":"B","slot":6,"grid":20}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["inline"],"space":"outer","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],"fasteners":[{"frame":"mount_a","nut":{"library":"mitcad-parts","component":"tnut-i5-spring-guided","config":"M5"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M5x8"}},{"frame":"mount_b","nut":{"library":"mitcad-parts","component":"tnut-i5-spring-guided","config":"M5"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M5x8"}}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[0,-10,0],"z":[0,0,-1],"x":[0,-1,0],"kind":"face"},
+      {"name":"mount_b","origin":[0,10,0],"z":[0,0,-1],"x":[0,1,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "plate20x40-20",
+    "name": "Connector plate 20x40x3, 2 holes, 20 series",
+    "category": "connectors",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/Connector-plate-aluminum-steel-lasered-20x40x3-2-hole-20s/Motedis-LP20103/20-V-20x40 [Alu 3 mm].stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP20103",
+    "supplier_url": "https://www.motedis.com/en/Connector-plate-aluminum-steel-lasered-20x40x3-2-hole-20s",
+    "designation": "Connector plate 20x40x3, 2 holes, 20 series",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":5,"grid":20},{"type":"B","slot":6,"grid":20}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["inline"],"space":"outer","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],"fasteners":[{"frame":"mount_a","nut":{"library":"mitcad-parts","component":"tnut-i5-spring-guided","config":"M5"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M5x8"}},{"frame":"mount_b","nut":{"library":"mitcad-parts","component":"tnut-i5-spring-guided","config":"M5"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M5x8"}}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[10,10.5,0],"z":[0,0,-1],"x":[-1,0,0],"kind":"face"},
+      {"name":"mount_b","origin":[30,10.5,0],"z":[0,0,-1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "plate20x60-20",
+    "name": "Connector plate 20x60x3, 3 holes, 20 series",
+    "category": "connectors",
+    "source": "slot-profile-accessories/Connector-plate-aluminum-steel-lasered-20x60x3-3-hole-20s/Motedis-LP20104/20-V-20x60 [Alu 3 mm].stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP20104",
+    "supplier_url": "https://www.motedis.com/en/Connector-plate-aluminum-steel-lasered-20x60x3-3-hole-20s",
+    "designation": "Connector plate 20x60x3, 3 holes, 20 series",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":5,"grid":20},{"type":"B","slot":6,"grid":20}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["inline"],"space":"outer","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],"fasteners":[{"frame":"mount_a","nut":{"library":"mitcad-parts","component":"tnut-i5-spring-guided","config":"M5"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M5x8"}},{"frame":"mount_b","nut":{"library":"mitcad-parts","component":"tnut-i5-spring-guided","config":"M5"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M5x8"}}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[0,10,10.5],"z":[-1,0,0],"x":[0,-1,0],"kind":"face"},
+      {"name":"mount_b","origin":[0,50,10.5],"z":[-1,0,0],"x":[0,1,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "plate20x80-20",
+    "name": "Connector plate 20x80x3, 20 series",
+    "category": "connectors",
+    "source": "slot-profile-accessories/Connector-plate-20x80x3-Lasercut/Motedis-LP20105/20-V-20x80 [Alu 3 mm].stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP20105",
+    "supplier_url": "https://www.motedis.com/en/Connector-plate-20x80x3-Lasercut",
+    "designation": "Connector plate 20x80x3, 20 series",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":5,"grid":20},{"type":"B","slot":6,"grid":20}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["inline"],"space":"outer","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],"fasteners":[{"frame":"mount_a","nut":{"library":"mitcad-parts","component":"tnut-i5-spring-guided","config":"M5"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M5x8"}},{"frame":"mount_b","nut":{"library":"mitcad-parts","component":"tnut-i5-spring-guided","config":"M5"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M5x8"}}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[20,10.5,0],"z":[0,0,-1],"x":[-1,0,0],"kind":"face"},
+      {"name":"mount_b","origin":[60,10.5,0],"z":[0,0,-1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "plate28x58-30",
+    "name": "Connector plate 28x58x3, 30 series",
+    "category": "connectors",
+    "source": "slot-profile-accessories/Connector-plate-28x58x3-Laser-cut/Motedis-LP30101/Motedis-LP30101.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP30101",
+    "supplier_url": "https://www.motedis.com/en/Connector-plate-28x58x3-Laser-cut",
+    "designation": "Connector plate 28x58x3, 30 series, {Material}",
+    "rows": [
+      {"name":"Aluminium","select":{"Material":"Aluminium"},"values":{},"part_number":"LP30101"},
+      {"name":"Steel","select":{"Material":"Steel"},"values":{},"part_number":"LP30101SB"}
+    ],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"B","slot":8,"grid":30},{"type":"I","slot":6,"grid":30}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["inline"],"space":"outer","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],"fasteners":[{"frame":"mount_a","nut":{"library":"mitcad-parts","component":"tnut-b8","config":"M6"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M6x10"}},{"frame":"mount_b","nut":{"library":"mitcad-parts","component":"tnut-b8","config":"M6"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M6x10"}}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[0,-15,0],"z":[0,0,-1],"x":[0,-1,0],"kind":"face"},
+      {"name":"mount_b","origin":[0,15,0],"z":[0,0,-1],"x":[0,1,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "plate30x90-30",
+    "name": "Connector plate 30x90x3, 30 series",
+    "category": "connectors",
+    "source": "slot-profile-accessories/Connector-plate-30x90x3-Laser-cut/Motedis-LP30103/Motedis-LP30103.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP30103",
+    "supplier_url": "https://www.motedis.com/en/Connector-plate-30x90x3-Laser-cut",
+    "designation": "Connector plate 30x90x3, 30 series",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"B","slot":8,"grid":30},{"type":"I","slot":6,"grid":30}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["inline"],"space":"outer","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],"fasteners":[{"frame":"mount_a","nut":{"library":"mitcad-parts","component":"tnut-b8","config":"M6"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M6x10"}},{"frame":"mount_b","nut":{"library":"mitcad-parts","component":"tnut-b8","config":"M6"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M6x10"}}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[0,15,15],"z":[-1,0,0],"x":[0,-1,0],"kind":"face"},
+      {"name":"mount_b","origin":[0,75,15],"z":[-1,0,0],"x":[0,1,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "plate30x120-30",
+    "name": "Connector plate 30x120x3, 30 series",
+    "category": "connectors",
+    "source": "slot-profile-accessories/Connector-plate-30x120x3-Laser-cut/Motedis-LP30102/Motedis-LP30102.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP30102",
+    "supplier_url": "https://www.motedis.com/en/Connector-plate-30x120x3-Laser-cut",
+    "designation": "Connector plate 30x120x3, 30 series",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"B","slot":8,"grid":30},{"type":"I","slot":6,"grid":30}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["inline"],"space":"outer","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],"fasteners":[{"frame":"mount_a","nut":{"library":"mitcad-parts","component":"tnut-b8","config":"M6"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M6x10"}},{"frame":"mount_b","nut":{"library":"mitcad-parts","component":"tnut-b8","config":"M6"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M6x10"}}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[0,30,15],"z":[-1,0,0],"x":[0,-1,0],"kind":"face"},
+      {"name":"mount_b","origin":[0,90,15],"z":[-1,0,0],"x":[0,1,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "plate34x74-40",
+    "name": "Connector plate 74x34x5, 40 series",
+    "category": "connectors",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/Connector-plate-74x34x5-Laser-cut-series-40/Motedis-LP40101/Motedis_LP40101.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP40101",
+    "supplier_url": "https://www.motedis.com/en/Connector-plate-74x34x5-Laser-cut-series-40",
+    "designation": "Connector plate 74x34x5, 40 series",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":8,"grid":40},{"type":"B","slot":10,"grid":40}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["inline"],"space":"outer","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],"fasteners":[{"frame":"mount_a","nut":{"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M8x16"}},{"frame":"mount_b","nut":{"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M8x16"}}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[0,-20,0],"z":[0,0,-1],"x":[0,-1,0],"kind":"face"},
+      {"name":"mount_b","origin":[0,20,0],"z":[0,0,-1],"x":[0,1,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "plate40x120-40",
+    "name": "Connector plate 40x120x5, 40 series",
+    "category": "connectors",
+    "source": "slot-profile-accessories/Connector-plate-40x120x5-Laser-cut/Motedis_LP40103.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP40103",
+    "supplier_url": "https://www.motedis.com/en/Connector-plate-40x120x5-Laser-cut",
+    "designation": "Connector plate 40x120x5, 40 series",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":8,"grid":40},{"type":"B","slot":10,"grid":40}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["inline"],"space":"outer","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],"fasteners":[{"frame":"mount_a","nut":{"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M8x16"}},{"frame":"mount_b","nut":{"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M8x16"}}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[0,20,20],"z":[-1,0,0],"x":[0,-1,0],"kind":"face"},
+      {"name":"mount_b","origin":[0,100,20],"z":[-1,0,0],"x":[0,1,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "plate40x160-40",
+    "name": "Connector plate 40x160x5, 40 series",
+    "category": "connectors",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/Connector-plate-40x160x5-Laser-cut/Motedis_LP40104.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP40104",
+    "supplier_url": "https://www.motedis.com/en/Connector-plate-40x160x5-Laser-cut",
+    "designation": "Connector plate 40x160x5, 40 series",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":8,"grid":40},{"type":"B","slot":10,"grid":40}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["inline"],"space":"outer","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],"fasteners":[{"frame":"mount_a","nut":{"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M8x16"}},{"frame":"mount_b","nut":{"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M8x16"}}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[0,40,20],"z":[-1,0,0],"x":[0,-1,0],"kind":"face"},
+      {"name":"mount_b","origin":[0,120,20],"z":[-1,0,0],"x":[0,1,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "plate39x84-45",
+    "name": "Connector plate 84x39x5, 45 series",
+    "category": "connectors",
+    "source": "slot-profile-accessories/Connector-plate-84x39x5-Laser-cut-series-45/Motedis-LP45101/Motedis_LP45101.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP45101",
+    "supplier_url": "https://www.motedis.com/en/Connector-plate-84x39x5-Laser-cut-series-45",
+    "designation": "Connector plate 84x39x5, 45 series",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"B","slot":10,"grid":45}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["inline"],"space":"outer","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],"fasteners":[{"frame":"mount_a","nut":{"library":"mitcad-parts","component":"tnut-b10","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M8x16"}},{"frame":"mount_b","nut":{"library":"mitcad-parts","component":"tnut-b10","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M8x16"}}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[0,-22.5,0],"z":[0,0,-1],"x":[0,-1,0],"kind":"face"},
+      {"name":"mount_b","origin":[0,22.5,0],"z":[0,0,-1],"x":[0,1,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "plate-double38x78-20",
+    "name": "Connector plate double 38x78x3, 20 series",
+    "category": "connectors",
+    "source": "slot-profile-accessories/Connector-plate-double-38x78x3-lasercut/Motedis_LP20107.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP20107",
+    "supplier_url": "https://www.motedis.com/en/Connector-plate-double-38x78x3-lasercut",
+    "designation": "Connector plate double 38x78x3, 20 series",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":5,"grid":20},{"type":"B","slot":6,"grid":20}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["inline"],"space":"outer","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],"fasteners":[{"frame":"mount_a","nut":{"library":"mitcad-parts","component":"tnut-i5-spring-guided","config":"M5"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M5x8"}},{"frame":"mount_b","nut":{"library":"mitcad-parts","component":"tnut-i5-spring-guided","config":"M5"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M5x8"}}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[0,-20,0],"z":[0,0,-1],"x":[0,-1,0],"kind":"face"},
+      {"name":"mount_b","origin":[0,20,0],"z":[0,0,-1],"x":[0,1,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "plate-double58x118-30",
+    "name": "Connector plate double 58x118x3, 30 series",
+    "category": "connectors",
+    "source": "slot-profile-accessories/Connector-plate-double-58x118x3-lasercut/Motedis-LP30104/Motedis-LP30104.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP30104",
+    "supplier_url": "https://www.motedis.com/en/Connector-plate-double-58x118x3-lasercut",
+    "designation": "Connector plate double 58x118x3, 30 series",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"B","slot":8,"grid":30},{"type":"I","slot":6,"grid":30}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["inline"],"space":"outer","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],"fasteners":[{"frame":"mount_a","nut":{"library":"mitcad-parts","component":"tnut-b8","config":"M6"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M6x10"}},{"frame":"mount_b","nut":{"library":"mitcad-parts","component":"tnut-b8","config":"M6"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M6x10"}}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[0,-30,0],"z":[0,0,-1],"x":[0,-1,0],"kind":"face"},
+      {"name":"mount_b","origin":[0,30,0],"z":[0,0,-1],"x":[0,1,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "plate-double78x156-40-t5",
+    "name": "Connector plate double 156x78x5, 40 series",
+    "category": "connectors",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/Connector-plate-double-156x78x5-lasercut/Motedis_LP40106.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP40106",
+    "supplier_url": "https://www.motedis.com/en/Connector-plate-double-156x78x5-lasercut",
+    "designation": "Connector plate double 156x78x5, 40 series",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":8,"grid":40},{"type":"B","slot":10,"grid":40}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["inline"],"space":"outer","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],"fasteners":[{"frame":"mount_a","nut":{"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M8x16"}},{"frame":"mount_b","nut":{"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M8x16"}}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[39,38,0],"z":[0,0,-1],"x":[0,-1,0],"kind":"face"},
+      {"name":"mount_b","origin":[39,118,0],"z":[0,0,-1],"x":[0,1,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "plate-double78x156-40-t3-steel",
+    "name": "Connector plate double 156x78x3 steel, 40 series",
+    "category": "connectors",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/Connector-plate-double-156x78x3-lasercut-STEEL/Motedis_LP40106SB.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP40106SB",
+    "supplier_url": "https://www.motedis.com/en/Connector-plate-double-156x78x3-lasercut-STEEL",
+    "designation": "Connector plate double 156x78x3 steel, 40 series",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":8,"grid":40},{"type":"B","slot":10,"grid":40}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["inline"],"space":"outer","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],"fasteners":[{"frame":"mount_a","nut":{"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M8x12"}},{"frame":"mount_b","nut":{"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M8x12"}}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[39,38,0],"z":[0,0,-1],"x":[0,-1,0],"kind":"face"},
+      {"name":"mount_b","origin":[39,118,0],"z":[0,0,-1],"x":[0,1,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "plate-square38-20",
+    "name": "Square connector plate 38x38x3, 20 series",
+    "category": "connectors",
+    "source": "slot-profile-accessories/Square-connector-plate-38x38x3-Lasercut/Motedis-LP20106/20-V-38x38 [Alu 3 mm].stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP20106",
+    "supplier_url": "https://www.motedis.com/en/Square-connector-plate-38x38x3-Lasercut",
+    "designation": "Square connector plate 38x38x3, 20 series",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":5,"grid":20},{"type":"B","slot":6,"grid":20}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["inline"],"space":"outer","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],"fasteners":[{"frame":"mount_a","nut":{"library":"mitcad-parts","component":"tnut-i5-spring-guided","config":"M5"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M5x8"}},{"frame":"mount_b","nut":{"library":"mitcad-parts","component":"tnut-i5-spring-guided","config":"M5"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M5x8"}}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[0,-10,0],"z":[0,0,-1],"x":[0,-1,0],"kind":"face"},
+      {"name":"mount_b","origin":[0,10,0],"z":[0,0,-1],"x":[0,1,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "plate-square58-30",
+    "name": "Square connector plate 58x58x3, 30 series",
+    "category": "connectors",
+    "source": "slot-profile-accessories/Square-connector-plate-58x58x3-Lasercut/Motedis-LP30105/Motedis_LP30105.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP30105",
+    "supplier_url": "https://www.motedis.com/en/Square-connector-plate-58x58x3-Lasercut",
+    "designation": "Square connector plate 58x58x3, 30 series",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"B","slot":8,"grid":30},{"type":"I","slot":6,"grid":30}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["inline"],"space":"outer","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],"fasteners":[{"frame":"mount_a","nut":{"library":"mitcad-parts","component":"tnut-b8","config":"M6"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M6x10"}},{"frame":"mount_b","nut":{"library":"mitcad-parts","component":"tnut-b8","config":"M6"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M6x10"}}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[29,14,0],"z":[0,0,-1],"x":[0,-1,0],"kind":"face"},
+      {"name":"mount_b","origin":[29,44,0],"z":[0,0,-1],"x":[0,1,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "plate-square58-30-steel",
+    "name": "Square connector plate 58x58x3 steel, 30 series",
+    "category": "connectors",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/Square-connector-plate-58x58x3-Lasercut-STEEL/Motedis-LP30105SB/Motedis_LP30105SB.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP30105SB",
+    "supplier_url": "https://www.motedis.com/en/Square-connector-plate-58x58x3-Lasercut-STEEL",
+    "designation": "Square connector plate 58x58x3 steel, 30 series",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"B","slot":8,"grid":30},{"type":"I","slot":6,"grid":30}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["inline"],"space":"outer","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],"fasteners":[{"frame":"mount_a","nut":{"library":"mitcad-parts","component":"tnut-b8","config":"M6"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M6x10"}},{"frame":"mount_b","nut":{"library":"mitcad-parts","component":"tnut-b8","config":"M6"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M6x10"}}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[0,-15,0],"z":[0,0,-1],"x":[0,-1,0],"kind":"face"},
+      {"name":"mount_b","origin":[0,15,0],"z":[0,0,-1],"x":[0,1,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "plate-square76-40-t5",
+    "name": "Square connector plate 76x76x5, 40 series",
+    "category": "connectors",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/Square-connector-plate-76x76x5-Lasercut/Motedis_LP40105.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP40105",
+    "supplier_url": "https://www.motedis.com/en/Square-connector-plate-76x76x5-Lasercut",
+    "designation": "Square connector plate 76x76x5, 40 series",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":8,"grid":40},{"type":"B","slot":10,"grid":40}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["inline"],"space":"outer","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],"fasteners":[{"frame":"mount_a","nut":{"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M8x16"}},{"frame":"mount_b","nut":{"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M8x16"}}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[38,18,0],"z":[0,0,-1],"x":[0,-1,0],"kind":"face"},
+      {"name":"mount_b","origin":[38,58,0],"z":[0,0,-1],"x":[0,1,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "plate-square76-40-t3-steel",
+    "name": "Square connector plate 76x76x3 steel, 40 series",
+    "category": "connectors",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/Square-connector-plate-76x76x3-Lasercut-STEEL/Motedis_LP40105SB.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP40105SB",
+    "supplier_url": "https://www.motedis.com/en/Square-connector-plate-76x76x3-Lasercut-STEEL",
+    "designation": "Square connector plate 76x76x3 steel, 40 series",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":8,"grid":40},{"type":"B","slot":10,"grid":40}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["inline"],"space":"outer","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],"fasteners":[{"frame":"mount_a","nut":{"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M8x12"}},{"frame":"mount_b","nut":{"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M8x12"}}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[38,18,0],"z":[0,0,-1],"x":[0,-1,0],"kind":"face"},
+      {"name":"mount_b","origin":[38,58,0],"z":[0,0,-1],"x":[0,1,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "plate-square84-45",
+    "name": "Square connector plate 84x84x5, 45 series",
+    "category": "connectors",
+    "source": "slot-profile-accessories/Square-connector-plate-84x84x5-Lasercut/I-CONN SQR [ 84 84 5] 45 H4 D 8-5.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "I-CONN SQR 84x84x5 45",
+    "supplier_url": "https://www.motedis.com/en/Square-connector-plate-84x84x5-Lasercut",
+    "designation": "Square connector plate 84x84x5, 45 series",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"B","slot":10,"grid":45}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["inline"],"space":"outer","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],"fasteners":[{"frame":"mount_a","nut":{"library":"mitcad-parts","component":"tnut-b10","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M8x16"}},{"frame":"mount_b","nut":{"library":"mitcad-parts","component":"tnut-b10","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M8x16"}}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[0,-22.5,0],"z":[0,0,-1],"x":[0,-1,0],"kind":"face"},
+      {"name":"mount_b","origin":[0,22.5,0],"z":[0,0,-1],"x":[0,1,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "lplate38-20",
+    "name": "L connector plate 38x38x3, 20 series",
+    "category": "connectors",
+    "source": "slot-profile-accessories/L-connector-plate-38x38x3-Laser-cut/Motedis-LP20108/20-VL-38 [Alu 3 mm].stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP20108",
+    "supplier_url": "https://www.motedis.com/en/L-connector-plate-38x38x3-Laser-cut",
+    "designation": "L connector plate 38x38x3, 20 series",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":5,"grid":20},{"type":"B","slot":6,"grid":20}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["L"],"space":"outer","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],"fasteners":[{"frame":"mount_a","nut":{"library":"mitcad-parts","component":"tnut-i5-spring-guided","config":"M5"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M5x8"}},{"frame":"mount_b","nut":{"library":"mitcad-parts","component":"tnut-i5-spring-guided","config":"M5"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M5x8"}}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[9,29,0],"z":[0,0,-1],"x":[0,1,0],"kind":"face"},
+      {"name":"mount_b","origin":[29,9,0],"z":[0,0,-1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "lplate78-20",
+    "name": "L connector plate 78x78x3, 20 series (2 to 2)",
+    "category": "connectors",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/L-connector-plate-78x78x3-Laser-cut-STEEL/Motedis-LP20110SB/Motedis_LP20110.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP20110SB",
+    "supplier_url": "https://www.motedis.com/en/L-connector-plate-78x78x3-Laser-cut-STEEL",
+    "designation": "L connector plate 78x78x3, 20 series, {Material}",
+    "rows": [
+      {"name":"Steel","select":{"Material":"Steel"},"values":{},"part_number":"LP20110SB"},
+      {"name":"Aluminium","select":{"Material":"Aluminium"},"values":{},"part_number":"LP20110","supplier_url":"https://www.motedis.com/en/L-connector-plate-78x78x3-Laser-cut"}
+    ],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":5,"grid":20},{"type":"B","slot":6,"grid":20}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["L"],"space":"outer","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],"fasteners":[{"frame":"mount_a","nut":{"library":"mitcad-parts","component":"tnut-i5-spring-guided","config":"M5"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M5x8"}},{"frame":"mount_b","nut":{"library":"mitcad-parts","component":"tnut-i5-spring-guided","config":"M5"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M5x8"}}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[19,59,0],"z":[0,0,-1],"x":[0,1,0],"kind":"face"},
+      {"name":"mount_b","origin":[59,19,0],"z":[0,0,-1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "lplate58-30-steel",
+    "name": "L connector plate 58x58x3 steel, 3 holes, 30 series",
+    "category": "connectors",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/Connector-plate-lasered-58x58x3-L-3-hole-30s-STEEL/Motedis-LP30107SB/Motedis_LP30107SB.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP30107SB",
+    "supplier_url": "https://www.motedis.com/en/Connector-plate-lasered-58x58x3-L-3-hole-30s-STEEL",
+    "designation": "L connector plate 58x58x3 steel, 3 holes, 30 series",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"B","slot":8,"grid":30},{"type":"I","slot":6,"grid":30}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["L"],"space":"outer","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],"fasteners":[{"frame":"mount_a","nut":{"library":"mitcad-parts","component":"tnut-b8","config":"M6"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M6x10"}},{"frame":"mount_b","nut":{"library":"mitcad-parts","component":"tnut-b8","config":"M6"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M6x10"}}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[14,44,0],"z":[0,0,-1],"x":[0,1,0],"kind":"face"},
+      {"name":"mount_b","origin":[44,14,0],"z":[0,0,-1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "lplate88-30",
+    "name": "L connector plate 88x88x3, 5 holes, 30 series",
+    "category": "connectors",
+    "source": "slot-profile-accessories/L-Connector-plate-aluminum-lasered-88x88x3-5-hole-30s/Motedis-LP30108/Motedis_LP30108.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP30108",
+    "supplier_url": "https://www.motedis.com/en/L-Connector-plate-aluminum-lasered-88x88x3-5-hole-30s",
+    "designation": "L connector plate 88x88x3, 5 holes, 30 series",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"B","slot":8,"grid":30},{"type":"I","slot":6,"grid":30}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["L"],"space":"outer","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],"fasteners":[{"frame":"mount_a","nut":{"library":"mitcad-parts","component":"tnut-b8","config":"M6"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M6x10"}},{"frame":"mount_b","nut":{"library":"mitcad-parts","component":"tnut-b8","config":"M6"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M6x10"}}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[14,59,-1.5],"z":[0,0,-1],"x":[0,1,0],"kind":"face"},
+      {"name":"mount_b","origin":[59,14,-1.5],"z":[0,0,-1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "lplate118-30",
+    "name": "L connector plate 118x118x3, 30 series (2 to 2)",
+    "category": "connectors",
+    "source": "slot-profile-accessories/L-connector-plate-118x118x3-Laser-cut/Motedis_LP30106.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP30106",
+    "supplier_url": "https://www.motedis.com/en/L-connector-plate-118x118x3-Laser-cut",
+    "designation": "L connector plate 118x118x3, 30 series (2 to 2)",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"B","slot":8,"grid":30},{"type":"I","slot":6,"grid":30}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["L"],"space":"outer","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],"fasteners":[{"frame":"mount_a","nut":{"library":"mitcad-parts","component":"tnut-b8","config":"M6"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M6x10"}},{"frame":"mount_b","nut":{"library":"mitcad-parts","component":"tnut-b8","config":"M6"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M6x10"}}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[29,89,0],"z":[0,0,-1],"x":[0,1,0],"kind":"face"},
+      {"name":"mount_b","origin":[89,29,0],"z":[0,0,-1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "lplate76-40-t5",
+    "name": "L connector plate 76x76x5, 40 series",
+    "category": "connectors",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/L-connector-plate-76x76-Laser-cut/Motedis-LP40110/Motedis_LP40110.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP40110",
+    "supplier_url": "https://www.motedis.com/en/L-connector-plate-76x76-Laser-cut",
+    "designation": "L connector plate 76x76x5, 40 series",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":8,"grid":40},{"type":"B","slot":10,"grid":40}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["L"],"space":"outer","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],"fasteners":[{"frame":"mount_a","nut":{"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M8x16"}},{"frame":"mount_b","nut":{"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M8x16"}}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[18,58,0],"z":[0,0,-1],"x":[0,1,0],"kind":"face"},
+      {"name":"mount_b","origin":[58,18,0],"z":[0,0,-1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "lplate76-40-t3-steel",
+    "name": "L connector plate 76x76x3 steel, 40 series",
+    "category": "connectors",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/L-connector-plate-76x76-Laser-cut-STEEL/Motedis-LP40110SB/Motedis_LP40110SB.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP40110SB",
+    "supplier_url": "https://www.motedis.com/en/L-connector-plate-76x76-Laser-cut-STEEL",
+    "designation": "L connector plate 76x76x3 steel, 40 series",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":8,"grid":40},{"type":"B","slot":10,"grid":40}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["L"],"space":"outer","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],"fasteners":[{"frame":"mount_a","nut":{"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M8x12"}},{"frame":"mount_b","nut":{"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M8x12"}}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[18,58,0],"z":[0,0,-1],"x":[0,1,0],"kind":"face"},
+      {"name":"mount_b","origin":[58,18,0],"z":[0,0,-1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "lplate116-40-t5",
+    "name": "L connector plate 116x116x5, 40 series",
+    "category": "connectors",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/L-connector-plate-116x116x5-Laser-cut/Motedis-LP40107-2/Motedis_LP40107.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP40107",
+    "supplier_url": "https://www.motedis.com/en/L-connector-plate-116x116x5-Laser-cut",
+    "designation": "L connector plate 116x116x5, 40 series",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":8,"grid":40},{"type":"B","slot":10,"grid":40}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["L"],"space":"outer","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],"fasteners":[{"frame":"mount_a","nut":{"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M8x16"}},{"frame":"mount_b","nut":{"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M8x16"}}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[18,78,0],"z":[0,0,-1],"x":[0,1,0],"kind":"face"},
+      {"name":"mount_b","origin":[78,18,0],"z":[0,0,-1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "lplate116-40-t3-steel",
+    "name": "L connector plate 116x116x3 steel, 40 series",
+    "category": "connectors",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/L-connector-plate-116x116x3-Laser-cut-STEEL/Motedis-LP40107SB-2/Motedis_LP40107SB.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP40107SB",
+    "supplier_url": "https://www.motedis.com/en/L-connector-plate-116x116x3-Laser-cut-STEEL",
+    "designation": "L connector plate 116x116x3 steel, 40 series",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":8,"grid":40},{"type":"B","slot":10,"grid":40}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["L"],"space":"outer","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],"fasteners":[{"frame":"mount_a","nut":{"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M8x12"}},{"frame":"mount_b","nut":{"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M8x12"}}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[18,78,0],"z":[0,0,-1],"x":[0,1,0],"kind":"face"},
+      {"name":"mount_b","origin":[78,18,0],"z":[0,0,-1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "lplate156-40",
+    "name": "L connector plate 156x156x5, 40 series (2 to 2)",
+    "category": "connectors",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/L-connector-plate-156x156x5-Laser-cut/L-CONN 2TO2 [156 156 5] 40 H12 D8-5.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "L-CONN 2TO2 156x156x5 40",
+    "supplier_url": "https://www.motedis.com/en/L-connector-plate-156x156x5-Laser-cut",
+    "designation": "L connector plate 156x156x5, 40 series (2 to 2)",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":8,"grid":40},{"type":"B","slot":10,"grid":40}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["L"],"space":"outer","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],"fasteners":[{"frame":"mount_a","nut":{"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M8x16"}},{"frame":"mount_b","nut":{"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M8x16"}}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[38,118,0],"z":[0,0,-1],"x":[0,1,0],"kind":"face"},
+      {"name":"mount_b","origin":[118,38,0],"z":[0,0,-1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "lplate84-45-t5",
+    "name": "L connector plate 84x84x5, 45 series",
+    "category": "connectors",
+    "source": "slot-profile-accessories/L-connector-plate-84x84x5-Laser-cut/Motedis-LP45107/Motedis_LP45107.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP45107",
+    "supplier_url": "https://www.motedis.com/en/L-connector-plate-84x84x5-Laser-cut",
+    "designation": "L connector plate 84x84x5, 45 series",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"B","slot":10,"grid":45}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["L"],"space":"outer","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],"fasteners":[{"frame":"mount_a","nut":{"library":"mitcad-parts","component":"tnut-b10","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M8x16"}},{"frame":"mount_b","nut":{"library":"mitcad-parts","component":"tnut-b10","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M8x16"}}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[19.5,64.5,0],"z":[0,0,-1],"x":[0,1,0],"kind":"face"},
+      {"name":"mount_b","origin":[64.5,19.5,0],"z":[0,0,-1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "lplate84-45-t3-steel",
+    "name": "L connector plate 84x84x3 steel, 45 series",
+    "category": "connectors",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/L-connector-plate-84x84x3-Laser-cut-STEEL/Motedis-LP45107SB/Motedis_LP45107SB.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP45107SB",
+    "supplier_url": "https://www.motedis.com/en/L-connector-plate-84x84x3-Laser-cut-STEEL",
+    "designation": "L connector plate 84x84x3 steel, 45 series",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"B","slot":10,"grid":45}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["L"],"space":"outer","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],"fasteners":[{"frame":"mount_a","nut":{"library":"mitcad-parts","component":"tnut-b10","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M8x12"}},{"frame":"mount_b","nut":{"library":"mitcad-parts","component":"tnut-b10","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M8x12"}}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[19.5,64.5,0],"z":[0,0,-1],"x":[0,1,0],"kind":"face"},
+      {"name":"mount_b","origin":[64.5,19.5,0],"z":[0,0,-1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "lplate129-45",
+    "name": "L connector plate 129x129x5, 45 series",
+    "category": "connectors",
+    "source": "slot-profile-accessories/L-connector-plate-129x129x5-Laser-cut/Motedis_LP45105.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP45105",
+    "supplier_url": "https://www.motedis.com/en/L-connector-plate-129x129x5-Laser-cut",
+    "designation": "L connector plate 129x129x5, 45 series",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"B","slot":10,"grid":45}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["L"],"space":"outer","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],"fasteners":[{"frame":"mount_a","nut":{"library":"mitcad-parts","component":"tnut-b10","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M8x16"}},{"frame":"mount_b","nut":{"library":"mitcad-parts","component":"tnut-b10","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M8x16"}}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[20.5,86,0],"z":[0,0,-1],"x":[0,1,0],"kind":"face"},
+      {"name":"mount_b","origin":[88,18.5,0],"z":[0,0,-1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "lplate174-45",
+    "name": "L connector plate 174x174x5, 45 series (2 to 2)",
+    "category": "connectors",
+    "source": "slot-profile-accessories/L-connector-plate-174x174x5-Laser-cut/Motedis_LP45106.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP45106",
+    "supplier_url": "https://www.motedis.com/en/L-connector-plate-174x174x5-Laser-cut",
+    "designation": "L connector plate 174x174x5, 45 series (2 to 2)",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"B","slot":10,"grid":45}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["L"],"space":"outer","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],"fasteners":[{"frame":"mount_a","nut":{"library":"mitcad-parts","component":"tnut-b10","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M8x16"}},{"frame":"mount_b","nut":{"library":"mitcad-parts","component":"tnut-b10","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M8x16"}}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[42,132,0],"z":[0,0,-1],"x":[0,1,0],"kind":"face"},
+      {"name":"mount_b","origin":[132,42,0],"z":[0,0,-1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "tplate58-20-steel",
+    "name": "T connector plate 58x58x3 steel, 20 series",
+    "category": "connectors",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/T-connector-plate-58x58x3-Laser-cut-20-series-STEEL/Motedis-LP20111SB/Motedis_LP20111SB.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP20111SB",
+    "supplier_url": "https://www.motedis.com/en/T-connector-plate-58x58x3-Laser-cut-20-series-STEEL",
+    "designation": "T connector plate 58x58x3 steel, 20 series",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":5,"grid":20},{"type":"B","slot":6,"grid":20}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["T"],"space":"outer","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],"fasteners":[{"frame":"mount_a","nut":{"library":"mitcad-parts","component":"tnut-i5-spring-guided","config":"M5"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M5x8"}},{"frame":"mount_b","nut":{"library":"mitcad-parts","component":"tnut-i5-spring-guided","config":"M5"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M5x8"}}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[0,39,0],"z":[0,0,-1],"x":[0,1,0],"kind":"face"},
+      {"name":"mount_b","origin":[0,9,0],"z":[0,0,-1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "tplate78-20",
+    "name": "T connector plate 78x78x3, 20 series (2 to 2)",
+    "category": "connectors",
+    "source": "slot-profile-accessories/T-connector-plate-78x78x3-Laser-cut/Motedis-LP20112/Motedis-LP20112.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP20112",
+    "supplier_url": "https://www.motedis.com/en/T-connector-plate-78x78x3-Laser-cut",
+    "designation": "T connector plate 78x78x3, 20 series (2 to 2)",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":5,"grid":20},{"type":"B","slot":6,"grid":20}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["T"],"space":"outer","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],"fasteners":[{"frame":"mount_a","nut":{"library":"mitcad-parts","component":"tnut-i5-spring-guided","config":"M5"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M5x8"}},{"frame":"mount_b","nut":{"library":"mitcad-parts","component":"tnut-i5-spring-guided","config":"M5"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M5x8"}}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[0,59,0],"z":[0,0,-1],"x":[0,1,0],"kind":"face"},
+      {"name":"mount_b","origin":[0,19,0],"z":[0,0,-1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "tplate88-30",
+    "name": "T connector plate 88x88x3, 30 series",
+    "category": "connectors",
+    "source": "slot-profile-accessories/T-connector-plate-88x88x3-Laser-cut-30-series/Motedis-LP30110/Motedis_LP30110.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP30110",
+    "supplier_url": "https://www.motedis.com/en/T-connector-plate-88x88x3-Laser-cut-30-series",
+    "designation": "T connector plate 88x88x3, 30 series, {Finish}",
+    "rows": [
+      {"name":"Raw","select":{"Finish":"Raw"},"values":{},"part_number":"LP30110"},
+      {"name":"Black","select":{"Finish":"Black"},"values":{},"part_number":"LP30110B"}
+    ],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"B","slot":8,"grid":30},{"type":"I","slot":6,"grid":30}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["T"],"space":"outer","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],"fasteners":[{"frame":"mount_a","nut":{"library":"mitcad-parts","component":"tnut-b8","config":"M6"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M6x10"}},{"frame":"mount_b","nut":{"library":"mitcad-parts","component":"tnut-b8","config":"M6"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M6x10"}}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[0,59,0],"z":[0,0,-1],"x":[0,1,0],"kind":"face"},
+      {"name":"mount_b","origin":[0,14,0],"z":[0,0,-1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "tplate118-30",
+    "name": "T connector plate 118x118x3, 30 series (2 to 2)",
+    "category": "connectors",
+    "source": "slot-profile-accessories/T-connector-plate-118x118x3-Laser-cut/T-CONN 2TO2 [118 118 3] 30 H12 D6-5.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "T-CONN 2TO2 118x118x3 30",
+    "supplier_url": "https://www.motedis.com/en/T-connector-plate-118x118x3-Laser-cut",
+    "designation": "T connector plate 118x118x3, 30 series (2 to 2)",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"B","slot":8,"grid":30},{"type":"I","slot":6,"grid":30}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["T"],"space":"outer","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],"fasteners":[{"frame":"mount_a","nut":{"library":"mitcad-parts","component":"tnut-b8","config":"M6"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M6x10"}},{"frame":"mount_b","nut":{"library":"mitcad-parts","component":"tnut-b8","config":"M6"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M6x10"}}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[0,89,0],"z":[0,0,-1],"x":[0,1,0],"kind":"face"},
+      {"name":"mount_b","origin":[0,29,0],"z":[0,0,-1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "tplate116-40-t5",
+    "name": "T connector plate 116x116x5, 40 series",
+    "category": "connectors",
+    "source": "slot-profile-accessories/T-connector-plate-116x116x5-Laser-cut/Motedis-LP40111-3/Motedis_LP40111.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP40111",
+    "supplier_url": "https://www.motedis.com/en/T-connector-plate-116x116x5-Laser-cut",
+    "designation": "T connector plate 116x116x5, 40 series",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":8,"grid":40},{"type":"B","slot":10,"grid":40}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["T"],"space":"outer","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],"fasteners":[{"frame":"mount_a","nut":{"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M8x16"}},{"frame":"mount_b","nut":{"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M8x16"}}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[58,78,0],"z":[0,0,-1],"x":[0,1,0],"kind":"face"},
+      {"name":"mount_b","origin":[58,18,0],"z":[0,0,-1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "tplate116-40-t3-steel",
+    "name": "T connector plate 116x116x3 steel, 40 series",
+    "category": "connectors",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/T-connector-plate-116x116x5-Laser-cut-STEEL/Motedis-LP40111SB-2/Motedis_LP40111SB.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP40111SB",
+    "supplier_url": "https://www.motedis.com/en/T-connector-plate-116x116x5-Laser-cut-STEEL",
+    "designation": "T connector plate 116x116x3 steel, 40 series",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":8,"grid":40},{"type":"B","slot":10,"grid":40}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["T"],"space":"outer","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],"fasteners":[{"frame":"mount_a","nut":{"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M8x12"}},{"frame":"mount_b","nut":{"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M8x12"}}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[58,78,0],"z":[0,0,-1],"x":[0,1,0],"kind":"face"},
+      {"name":"mount_b","origin":[58,18,0],"z":[0,0,-1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "tplate156-40",
+    "name": "T connector plate 156x156x5, 40 series (2 to 2)",
+    "category": "connectors",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/T-connector-plate-156x156x5-Laser-cut/T-CONN 2TO2 [156 156 5] 40 H12 D8-5.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "T-CONN 2TO2 156x156x5 40",
+    "supplier_url": "https://www.motedis.com/en/T-connector-plate-156x156x5-Laser-cut",
+    "designation": "T connector plate 156x156x5, 40 series (2 to 2)",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":8,"grid":40},{"type":"B","slot":10,"grid":40}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["T"],"space":"outer","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],"fasteners":[{"frame":"mount_a","nut":{"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M8x16"}},{"frame":"mount_b","nut":{"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M8x16"}}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[0,118,0],"z":[0,0,-1],"x":[0,1,0],"kind":"face"},
+      {"name":"mount_b","origin":[0,38,0],"z":[0,0,-1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "tplate160x116-40",
+    "name": "T connector plate 160x116x5, 40 series (2 to 1)",
+    "category": "connectors",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/T-connector-plate-160x116x5-Laser-cut/T-CONN 2TO1 [116 160 5] 40 H8 D8-5.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "T-CONN 2TO1 116x160x5 40",
+    "supplier_url": "https://www.motedis.com/en/T-connector-plate-160x116x5-Laser-cut",
+    "designation": "T connector plate 160x116x5, 40 series (2 to 1)",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":8,"grid":40},{"type":"B","slot":10,"grid":40}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["T"],"space":"outer","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],"fasteners":[{"frame":"mount_a","nut":{"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M8x16"}},{"frame":"mount_b","nut":{"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M8x16"}}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[0,78,0],"z":[0,0,-1],"x":[0,1,0],"kind":"face"},
+      {"name":"mount_b","origin":[0,18,0],"z":[0,0,-1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "tplate200x160-40",
+    "name": "T connector plate 200x160x5, 40 series",
+    "category": "connectors",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/T-connector-plate-200x160x5-Laser-cut/Motedis-LP40114/Motedis-LP40114.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP40114",
+    "supplier_url": "https://www.motedis.com/en/T-connector-plate-200x160x5-Laser-cut",
+    "designation": "T connector plate 200x160x5, 40 series, {Finish}",
+    "rows": [
+      {"name":"Raw","select":{"Finish":"Raw"},"values":{},"part_number":"LP40114"},
+      {"name":"Black","select":{"Finish":"Black"},"values":{},"part_number":"LP40114B"}
+    ],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":8,"grid":40},{"type":"B","slot":10,"grid":40}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["T"],"space":"outer","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],"fasteners":[{"frame":"mount_a","nut":{"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M8x16"}},{"frame":"mount_b","nut":{"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M8x16"}}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[0,120,0],"z":[0,0,-1],"x":[0,1,0],"kind":"face"},
+      {"name":"mount_b","origin":[0,40,0],"z":[0,0,-1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "tplate129-45",
+    "name": "T connector plate 129x129x5, 45 series",
+    "category": "connectors",
+    "source": "slot-profile-accessories/T-connector-plate-129x129x5-Laser-cut/Motedis_LP45108.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP45108",
+    "supplier_url": "https://www.motedis.com/en/T-connector-plate-129x129x5-Laser-cut",
+    "designation": "T connector plate 129x129x5, 45 series",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"B","slot":10,"grid":45}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["T"],"space":"outer","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],"fasteners":[{"frame":"mount_a","nut":{"library":"mitcad-parts","component":"tnut-b10","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M8x16"}},{"frame":"mount_b","nut":{"library":"mitcad-parts","component":"tnut-b10","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M8x16"}}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[0,87,0],"z":[0,0,-1],"x":[0,1,0],"kind":"face"},
+      {"name":"mount_b","origin":[0,19.5,0],"z":[0,0,-1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "tplate174-45",
+    "name": "T connector plate 174x174x5, 45 series (2 to 2)",
+    "category": "connectors",
+    "source": "slot-profile-accessories/T-connector-plate-174x174x5-Laser-cut/Motedis_LP45109.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP45109",
+    "supplier_url": "https://www.motedis.com/en/T-connector-plate-174x174x5-Laser-cut",
+    "designation": "T connector plate 174x174x5, 45 series (2 to 2)",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"B","slot":10,"grid":45}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["T"],"space":"outer","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],"fasteners":[{"frame":"mount_a","nut":{"library":"mitcad-parts","component":"tnut-b10","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M8x16"}},{"frame":"mount_b","nut":{"library":"mitcad-parts","component":"tnut-b10","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M8x16"}}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[0,132,0],"z":[0,0,-1],"x":[0,1,0],"kind":"face"},
+      {"name":"mount_b","origin":[0,42,0],"z":[0,0,-1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "tplate75-alu",
+    "name": "T connection plate 75/75 aluminium anodized",
+    "category": "connectors",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/T-connection-plate-alu-elox-75-75/Motedis_Verbinderplatte-T-Alu_elox_75-75.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "4675",
+    "supplier_url": "https://www.motedis.com/en/T-connection-plate-alu-elox-75-75",
+    "designation": "T connection plate 75/75 aluminium anodized",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"B","slot":8},{"type":"I","slot":6},{"type":"I","slot":8}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["T"],"space":"outer","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],"fasteners":[{"frame":"mount_a","nut":{"library":"mitcad-parts","component":"tnut-b8","config":"M6"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M6x12"}},{"frame":"mount_b","nut":{"library":"mitcad-parts","component":"tnut-b8","config":"M6"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M6x12"}}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[0,0,-12.6],"z":[0,-1,0],"x":[0,0,-1],"kind":"face"},
+      {"name":"mount_b","origin":[0,0,25.2],"z":[0,-1,0],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "tplate-rig120x200",
+    "name": "T connector plate 120x200x10, 8 holes, 40 series",
+    "category": "connectors",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/T-Connector-Plate-120x200x10-8-Hole-Laser-cut/Motedis-LP40124-LP40124B/Motedis-LP40124-LP40124B.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP40124",
+    "supplier_url": "https://www.motedis.com/en/T-Connector-Plate-120x200x10-8-Hole-Laser-cut",
+    "designation": "T connector plate 120x200x10, {Finish}",
+    "rows": [
+      {"name":"Raw","select":{"Finish":"Raw"},"values":{},"part_number":"LP40124"},
+      {"name":"Black","select":{"Finish":"Black"},"values":{},"part_number":"LP40124B"}
+    ],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":8,"grid":40},{"type":"B","slot":10,"grid":40}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["T"],"space":"outer","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],"fasteners":[{"frame":"mount_a","nut":{"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso10642","config":"M8x20"}},{"frame":"mount_b","nut":{"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso10642","config":"M8x20"}}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[100,100,0],"z":[0,0,-1],"x":[0,1,0],"kind":"face"},
+      {"name":"mount_b","origin":[100,20,0],"z":[0,0,-1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "tplate-rig160x120",
+    "name": "T connector plate 160x120x10, T 6 holes, 40 series",
+    "category": "connectors",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/T-Connector-Plate-160x120x10-T-6-Hole-Laser-cut/motedis-LP40130-LP40130B/160x120.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP40130",
+    "supplier_url": "https://www.motedis.com/en/T-Connector-Plate-160x120x10-T-6-Hole-Laser-cut",
+    "designation": "T connector plate 160x120x10, {Finish}",
+    "rows": [
+      {"name":"Raw","select":{"Finish":"Raw"},"values":{},"part_number":"LP40130"},
+      {"name":"Black","select":{"Finish":"Black"},"values":{},"part_number":"LP40130B"}
+    ],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":8,"grid":40},{"type":"B","slot":10,"grid":40}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["T"],"space":"outer","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],"fasteners":[{"frame":"mount_a","nut":{"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso10642","config":"M8x20"}},{"frame":"mount_b","nut":{"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso10642","config":"M8x20"}}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[60,140,0],"z":[0,0,-1],"x":[0,1,0],"kind":"face"},
+      {"name":"mount_b","origin":[60,20,0],"z":[0,0,-1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "tplate-rig160x160",
+    "name": "T connector plate 160x160x10, 8 holes, 40 series",
+    "category": "connectors",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/T-Connector-Plate-160x160x10-8-Hole-Laser-cut/Motedis-LP40123-LP40123B/Motedis-LP40123-LP40123B.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP40123",
+    "supplier_url": "https://www.motedis.com/en/T-Connector-Plate-160x160x10-8-Hole-Laser-cut",
+    "designation": "T connector plate 160x160x10, {Finish}",
+    "rows": [
+      {"name":"Raw","select":{"Finish":"Raw"},"values":{},"part_number":"LP40123"},
+      {"name":"Black","select":{"Finish":"Black"},"values":{},"part_number":"LP40123B"}
+    ],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":8,"grid":40},{"type":"B","slot":10,"grid":40}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["T"],"space":"outer","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],"fasteners":[{"frame":"mount_a","nut":{"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso10642","config":"M8x20"}},{"frame":"mount_b","nut":{"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso10642","config":"M8x20"}}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[80,140,0],"z":[0,0,-1],"x":[0,1,0],"kind":"face"},
+      {"name":"mount_b","origin":[80,20,0],"z":[0,0,-1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "tplate-rig160x200",
+    "name": "T connector plate 160x200x10, 8 holes, 40 series",
+    "category": "connectors",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/T-Connector-Plate-160x200x10-8-Hole-Laser-cut/Motedis-LP40122-LP40122B/Motedis-LP40122-LP40122B.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP40122",
+    "supplier_url": "https://www.motedis.com/en/T-Connector-Plate-160x200x10-8-Hole-Laser-cut",
+    "designation": "T connector plate 160x200x10, {Finish}",
+    "rows": [
+      {"name":"Raw","select":{"Finish":"Raw"},"values":{},"part_number":"LP40122"},
+      {"name":"Black","select":{"Finish":"Black"},"values":{},"part_number":"LP40122B"}
+    ],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":8,"grid":40},{"type":"B","slot":10,"grid":40}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["T"],"space":"outer","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],"fasteners":[{"frame":"mount_a","nut":{"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso10642","config":"M8x20"}},{"frame":"mount_b","nut":{"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso10642","config":"M8x20"}}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[100,140,0],"z":[0,0,-1],"x":[0,1,0],"kind":"face"},
+      {"name":"mount_b","origin":[100,20,0],"z":[0,0,-1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "plate-rig40x120-t10",
+    "name": "T connector plate 40x120x10, 3 holes, 40 series",
+    "category": "connectors",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/T-Connector-Plate-40x120x10-3-Hole-Laser-cut/Motedis-LP40125/Motedis_LP40125.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP40125",
+    "supplier_url": "https://www.motedis.com/en/T-Connector-Plate-40x120x10-3-Hole-Laser-cut",
+    "designation": "T connector plate 40x120x10, 3 holes, 40 series",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":8,"grid":40},{"type":"B","slot":10,"grid":40}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["inline"],"space":"outer","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],"fasteners":[{"frame":"mount_a","nut":{"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso10642","config":"M8x20"}},{"frame":"mount_b","nut":{"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso10642","config":"M8x20"}}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[20,20,0],"z":[0,0,-1],"x":[-1,0,0],"kind":"face"},
+      {"name":"mount_b","origin":[100,20,0],"z":[0,0,-1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "plate-rig40x120-t8-steel",
+    "name": "T connector plate 40x120x8 steel, 3 holes, 40 series",
+    "category": "connectors",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/T-Connector-Plate-40x120x8-3-Hole-Laser-cut-STEEL/Motedis_LP40125SB.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP40125SB",
+    "supplier_url": "https://www.motedis.com/en/T-Connector-Plate-40x120x8-3-Hole-Laser-cut-STEEL",
+    "designation": "T connector plate 40x120x8 steel, 3 holes, 40 series",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":8,"grid":40},{"type":"B","slot":10,"grid":40}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["inline"],"space":"outer","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],"fasteners":[{"frame":"mount_a","nut":{"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso10642","config":"M8x20"}},{"frame":"mount_b","nut":{"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso10642","config":"M8x20"}}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[20,20,0],"z":[0,0,-1],"x":[-1,0,0],"kind":"face"},
+      {"name":"mount_b","origin":[100,20,0],"z":[0,0,-1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "xplate120x70-20",
+    "name": "X connector plate 120x70x3, 20 series",
+    "category": "connectors",
+    "source": "slot-profile-accessories/X-connector-plate-120x70x3-Laser-cut/Motedis-LP20302/Motedis-LP20302.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP20302",
+    "supplier_url": "https://www.motedis.com/en/X-connector-plate-120x70x3-Laser-cut",
+    "designation": "X connector plate 120x70x3, 20 series",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":5,"grid":20},{"type":"B","slot":6,"grid":20}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["cross","T"],"space":"outer","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],"fasteners":[{"frame":"mount_a","nut":{"library":"mitcad-parts","component":"tnut-i5-spring-guided","config":"M5"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M5x8"}},{"frame":"mount_b","nut":{"library":"mitcad-parts","component":"tnut-i5-spring-guided","config":"M5"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M5x8"}}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[0,0,25],"z":[0,-1,0],"x":[0,0,1],"kind":"face"},
+      {"name":"mount_b","origin":[0,0,0],"z":[0,-1,0],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "xplate184x104-40",
+    "name": "X connector plate 184x104x5, 40 series",
+    "category": "connectors",
+    "source": "slot-profile-accessories/X-connector-plate-184x104x5-Laser-cut/Motedis_LP40453.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP40453",
+    "supplier_url": "https://www.motedis.com/en/X-connector-plate-184x104x5-Laser-cut",
+    "designation": "X connector plate 184x104x5, 40 series",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":8,"grid":40},{"type":"B","slot":10,"grid":40}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["cross","T"],"space":"outer","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],"fasteners":[{"frame":"mount_a","nut":{"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M8x16"}},{"frame":"mount_b","nut":{"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M8x16"}}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[0,0,40],"z":[0,-1,0],"x":[0,0,1],"kind":"face"},
+      {"name":"mount_b","origin":[0,0,0],"z":[0,-1,0],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "pivot-plate84-20-30",
+    "name": "Pivot plate 84x3, 20 and 30 series",
+    "category": "connectors",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/NEW-Pivot-plate-2030-series-t3-Laser-cut-STEEL/Motedis_LP20301SB.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP20301SB",
+    "supplier_url": "https://www.motedis.com/en/NEW-Pivot-plate-2030-series-t3-Laser-cut-STEEL",
+    "designation": "Pivot plate 84x3, 20/30 series, {Material}",
+    "rows": [
+      {"name":"Steel","select":{"Material":"Steel"},"values":{},"part_number":"LP20301SB"},
+      {"name":"Aluminium","select":{"Material":"Aluminium"},"values":{},"part_number":"LP20301","supplier_url":"https://www.motedis.com/en/NEW-Pivot-plate-84x3-2030-series-t3-Laser-cut"}
+    ],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":5,"grid":20},{"type":"B","slot":6,"grid":20},{"type":"B","slot":8,"grid":30},{"type":"I","slot":6,"grid":30}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["L","T"],"space":"outer","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],"fasteners":[{"frame":"mount_a","nut":{"library":"mitcad-parts","component":"tnut-i5-spring-guided","config":"M5"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M5x8"}},{"frame":"mount_b","nut":{"library":"mitcad-parts","component":"tnut-i5-spring-guided","config":"M5"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M5x8"}}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[-27.5,0,0],"z":[0,-1,0],"x":[1,0,0],"kind":"face"},
+      {"name":"mount_b","origin":[-67,0,56],"z":[0,-1,0],"x":[0,0,1],"kind":"face"}
+    ]
+  },
+  {
+    "id": "pivot-plate185-40-45-t5",
+    "name": "Pivot plate 185x5, 40 and 45 series",
+    "category": "connectors",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/Pivot-plate-4045-series-Laser-cut-185x5/Motedis-LP40454-2/Motedis_LP40454.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP40454",
+    "supplier_url": "https://www.motedis.com/en/Pivot-plate-4045-series-Laser-cut-185x5",
+    "designation": "Pivot plate 185x5, 40 and 45 series",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":8,"grid":40},{"type":"B","slot":10,"grid":40},{"type":"B","slot":10,"grid":45}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["L","T"],"space":"outer","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],"fasteners":[{"frame":"mount_a","nut":{"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M8x16"}},{"frame":"mount_b","nut":{"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M8x16"}}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[107.5,34.66,2],"z":[0,0,-1],"x":[1,0,0],"kind":"face"},
+      {"name":"mount_b","origin":[20.7,134.66,2],"z":[0,0,-1],"x":[0,1,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "pivot-plate185-40-45-t3-steel",
+    "name": "Pivot plate 185x3 steel, 40 and 45 series",
+    "category": "connectors",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/Pivot-plate-4045-series-Laser-cut-185x3-STEEL/Motedis-LP40454SB-2/Motedis_LP40454SB.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP40454SB",
+    "supplier_url": "https://www.motedis.com/en/Pivot-plate-4045-series-Laser-cut-185x3-STEEL",
+    "designation": "Pivot plate 185x3 steel, 40 and 45 series",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":8,"grid":40},{"type":"B","slot":10,"grid":40},{"type":"B","slot":10,"grid":45}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["L","T"],"space":"outer","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],"fasteners":[{"frame":"mount_a","nut":{"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M8x12"}},{"frame":"mount_b","nut":{"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M8x12"}}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[107.5,34.66,2],"z":[0,0,-1],"x":[1,0,0],"kind":"face"},
+      {"name":"mount_b","origin":[20.7,134.66,2],"z":[0,0,-1],"x":[0,1,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "plate-l90-36x240-40",
+    "name": "Connector plate 36x240x8 90°, 40 series",
+    "category": "connectors",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/Connector-plate-Alu-lasered-36x240x8-90G/Motedis_LP70105.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP70105",
+    "supplier_url": "https://www.motedis.com/en/Connector-plate-Alu-lasered-36x240x8-90G",
+    "designation": "Connector plate 36x240x8 90°, 40 series",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":8,"grid":40},{"type":"B","slot":10,"grid":40}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["L"],"space":"outer","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],"fasteners":[{"frame":"mount_a","nut":{"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M8x20"}},{"frame":"mount_b","nut":{"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M8x20"}}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[18,50,8],"z":[0,0,1],"x":[0,-1,0],"kind":"face"},
+      {"name":"mount_b","origin":[18,118.95,76.95],"z":[0,-1,0],"x":[0,0,1],"kind":"face"}
+    ]
+  },
+  {
+    "id": "plate-45g-8hole-40",
+    "name": "Connector plate 45°, 8 holes, 40 series",
+    "category": "connectors",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/Connector-plate-lasered-aluminium-45G-8-hole/Motedis-LP40127-LP40127B/Motedis-LP40127-LP40127B.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP40127",
+    "supplier_url": "https://www.motedis.com/en/Connector-plate-lasered-aluminium-45G-8-hole",
+    "designation": "Connector plate 45°, 8 holes, 40 series, {Finish}",
+    "rows": [
+      {"name":"Raw","select":{"Finish":"Raw"},"values":{},"part_number":"LP40127"},
+      {"name":"Black","select":{"Finish":"Black"},"values":{},"part_number":"LP40127B"}
+    ],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":8,"grid":40},{"type":"B","slot":10,"grid":40}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["L","T"],"space":"outer","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],"fasteners":[{"frame":"mount_a","nut":{"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso10642","config":"M8x16"}},{"frame":"mount_b","nut":{"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso10642","config":"M8x16"}}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[60,38,0],"z":[0,0,-1],"x":[1,0,0],"kind":"face"},
+      {"name":"mount_b","origin":[-35.15,77.41,0],"z":[0,0,-1],"x":[-0.7071,0.7071,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "bracket40-i8-alu",
+    "name": "Bracket aluminium anodized 40x40, I-type slot 8",
+    "category": "connectors",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/Bracket-Alu-anodized-40x40/Motedis-S8IALUBR40/Motedis_S8IALUBR40.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "S8IALUBR40",
+    "supplier_url": "https://www.motedis.com/en/Bracket-Alu-anodized-40x40",
+    "designation": "Bracket aluminium anodized 40x40, I-type slot 8",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":8,"grid":40}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["L","T"],"space":"inner_corner","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],"fasteners":[{"frame":"mount_a","nut":{"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M8x16"}},{"frame":"mount_b","nut":{"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M8x16"}}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[18,20,0],"z":[0,0,-1],"x":[0,1,0],"kind":"face"},
+      {"name":"mount_b","origin":[18,0,20],"z":[0,-1,0],"x":[0,0,1],"kind":"face"}
+    ]
+  },
+  {
+    "id": "bracket74x40-steel",
+    "name": "Bracket 74x40 steel, black galvanized",
+    "category": "connectors",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/Bracket-74x40-steel-black-galvanized/Motedis-Bracket-74x40/Motedis_Bracket-74x40.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "Bracket 74x40",
+    "supplier_url": "https://www.motedis.com/en/Bracket-74x40-steel-black-galvanized",
+    "designation": "Bracket 74x40 steel, black galvanized",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"B","slot":8,"grid":30},{"type":"I","slot":6,"grid":30},{"type":"I","slot":8,"grid":40}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["L","T"],"space":"inner_corner","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[-17.68,-17.68,0],"z":[-0.7071,-0.7071,0],"x":[-0.7071,0.7071,0],"kind":"face"},
+      {"name":"mount_b","origin":[17.68,-17.68,0],"z":[0.7071,-0.7071,0],"x":[0.7071,0.7071,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "bracket20-alu",
+    "name": "Bracket aluminium anodized 20x20",
+    "category": "connectors",
+    "make": "model",
+    "dimensions": {"shape":"angle","legs":["20 mm","20 mm"],"width":"18 mm","thickness":"3 mm"},
+    "supplier": "Motedis",
+    "part_number": "ALUBR20",
+    "supplier_url": "https://www.motedis.com/en/Bracket-Alu-elox-20x20",
+    "designation": "Bracket aluminium anodized 20x20",
+    "description": "Modelled from the supplier's dimensions (legs 20 mm, width 18 mm, thickness 3 mm); the holes are not modelled.",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":5,"grid":20},{"type":"B","slot":6,"grid":20}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["L","T"],"space":"inner_corner","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],"fasteners":[{"frame":"mount_a","nut":{"library":"mitcad-parts","component":"tnut-i5-spring-guided","config":"M5"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M5x8"}},{"frame":"mount_b","nut":{"library":"mitcad-parts","component":"tnut-i5-spring-guided","config":"M5"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M5x8"}}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[0,0,10],"z":[0,-1,0],"x":[0,0,1],"kind":"face"},
+      {"name":"mount_b","origin":[0,10,0],"z":[0,0,-1],"x":[0,1,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "bracket30-alu",
+    "name": "Bracket aluminium anodized 30x30",
+    "category": "connectors",
+    "make": "model",
+    "dimensions": {"shape":"angle","legs":["30 mm","30 mm"],"width":"26 mm","thickness":"4 mm"},
+    "supplier": "Motedis",
+    "part_number": "ALUBR30",
+    "supplier_url": "https://www.motedis.com/en/Bracket-Alu-elox-30x30",
+    "designation": "Bracket aluminium anodized 30x30",
+    "description": "Modelled from the supplier's dimensions (legs 30 mm, width 26 mm, thickness 4 mm); the holes are not modelled.",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"B","slot":8,"grid":30},{"type":"I","slot":6,"grid":30}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["L","T"],"space":"inner_corner","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],"fasteners":[{"frame":"mount_a","nut":{"library":"mitcad-parts","component":"tnut-b8","config":"M6"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M6x12"}},{"frame":"mount_b","nut":{"library":"mitcad-parts","component":"tnut-b8","config":"M6"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M6x12"}}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[0,0,15],"z":[0,-1,0],"x":[0,0,1],"kind":"face"},
+      {"name":"mount_b","origin":[0,15,0],"z":[0,0,-1],"x":[0,1,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "swivel-bracket84-20",
+    "name": "Swivel bracket 84x2 steel, 20 series",
+    "category": "connectors",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/Swivel-bracket-84x2-galvanised-steel/Motedis-LP20101SB/Motedis-LP20101.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP20101SB",
+    "supplier_url": "https://www.motedis.com/en/Swivel-bracket-84x2-galvanised-steel",
+    "designation": "Swivel bracket 84x2 steel, {Finish}",
+    "rows": [
+      {"name":"Galvanised","select":{"Finish":"Galvanised"},"values":{},"part_number":"LP20101SB"},
+      {"name":"Black","select":{"Finish":"Black"},"values":{},"part_number":"LP20101","supplier_url":"https://www.motedis.com/en/Pivot-Angle-84x2-Steel-Galvanized-Black"}
+    ],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":5,"grid":20},{"type":"B","slot":6,"grid":20}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["L"],"space":"inner_corner","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[0,-6,0],"z":[1,0,0],"x":[0,0,1],"kind":"face"},
+      {"name":"mount_b","origin":[-9,-12,0],"z":[0,-1,0],"x":[0,0,1],"kind":"face"}
+    ]
+  },
+  {
+    "id": "joint-plate30x60-v1",
+    "name": "Connector plate joint 30x60 V1, 30 series",
+    "category": "connectors",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/Connector-plate-laser-cut-aluminium-Joint-30x60-V1/Motedis_LP30116.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP30116",
+    "supplier_url": "https://www.motedis.com/en/Connector-plate-laser-cut-aluminium-Joint-30x60-V1",
+    "designation": "Connector plate joint 30x60 V1, 30 series",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"B","slot":8,"grid":30},{"type":"I","slot":6,"grid":30}],
+      "frames": [{"name":"mount","kind":"end"},{"name":"pivot","kind":"bore","diameter":"6.5 mm"}],
+      "connector": {"junctions":["surface"],"space":"outer","mates":[{"frame":"mount","to":"end"}],"fasteners":[{"frame":"mount","screw":{"library":"mitcad-parts","component":"iso4762","config":"M6x16"}}]}
+    },
+    "frames": [
+      {"name":"mount","origin":[30,15,0],"z":[0,0,-1],"x":[1,0,0],"kind":"end"},
+      {"name":"pivot","origin":[30,15,32.11],"z":[1,0,0],"x":[0,1,0],"kind":"bore","diameter":"6.5 mm"}
+    ]
+  },
+  {
+    "id": "joint-plate40x80-v1",
+    "name": "Connector plate joint 40x80 V1, 40 series",
+    "category": "connectors",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/Connector-plate-laser-cut-aluminium-Joint-40x80-V1/Motedis_LP40120.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP40120",
+    "supplier_url": "https://www.motedis.com/en/Connector-plate-laser-cut-aluminium-Joint-40x80-V1",
+    "designation": "Connector plate joint 40x80 V1, 40 series",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":8,"grid":40},{"type":"B","slot":10,"grid":40}],
+      "frames": [{"name":"mount","kind":"end"},{"name":"pivot","kind":"bore","diameter":"8.5 mm"}],
+      "connector": {"junctions":["surface"],"space":"outer","mates":[{"frame":"mount","to":"end"}],"fasteners":[{"frame":"mount","screw":{"library":"mitcad-parts","component":"iso4762","config":"M8x20"}}]}
+    },
+    "frames": [
+      {"name":"mount","origin":[-42.2,18,82.2],"z":[0,0,-1],"x":[1,0,0],"kind":"end"},
+      {"name":"pivot","origin":[-42.2,18,123.71],"z":[1,0,0],"x":[0,1,0],"kind":"bore","diameter":"8.5 mm"}
+    ]
+  },
+  {
+    "id": "joint-plate180-40",
+    "name": "Connector plate 180° joint 96x36x3, 40 series",
+    "category": "connectors",
+    "make": "model",
+    "dimensions": {"shape":"plate","width":"36 mm","thickness":"3 mm","length":"96 mm"},
+    "supplier": "Motedis",
+    "part_number": "LP40132",
+    "supplier_url": "https://www.motedis.com/en/Connector-plate-laser-cut-aluminum-180G-joint",
+    "designation": "Connector plate 180° joint, {Finish}",
+    "description": "Modelled from the supplier's dimensions as a 96x36x3 plate; the rounded ends and the two 8.1 mm holes (60 mm apart) are not modelled.",
+    "rows": [
+      {"name":"Raw","select":{"Finish":"Raw"},"values":{},"part_number":"LP40132"},
+      {"name":"Black","select":{"Finish":"Black"},"values":{},"part_number":"LP40132B"}
+    ],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":8,"grid":40},{"type":"B","slot":10,"grid":40}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {"junctions":["inline"],"space":"outer","mates":[{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],"fasteners":[{"frame":"mount_a","nut":{"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M8x12"}},{"frame":"mount_b","nut":{"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},"screw":{"library":"mitcad-parts","component":"iso4762","config":"M8x12"}}]}
+    },
+    "frames": [
+      {"name":"mount_a","origin":[0,0,18],"z":[0,-1,0],"x":[0,0,-1],"kind":"face"},
+      {"name":"mount_b","origin":[0,0,78],"z":[0,-1,0],"x":[0,0,1],"kind":"face"}
+    ]
+  }
+]

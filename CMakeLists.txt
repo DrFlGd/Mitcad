@@ -13,7 +13,7 @@ endif()
 include(cmake/RenderDeps.cmake)
 
 project(Mitcad
-  VERSION 0.8.0
+  VERSION 0.9.0
   DESCRIPTION "Open source parametric desktop CAD"
   LANGUAGES CXX)
 
@@ -104,6 +104,8 @@ target_compile_options(mitcad_warnings INTERFACE
   $<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/W4 /permissive- /utf-8>
   $<$<COMPILE_LANG_AND_ID:OBJCXX,GNU,Clang,AppleClang>:-Wall -Wextra -Wpedantic>)
 
+# Windows executables with the UTF-8 code page (mitcad_utf8_code_page).
+include(cmake/Utf8CodePage.cmake)
 add_subdirectory(geometry)
 add_subdirectory(core)
 add_subdirectory(app)

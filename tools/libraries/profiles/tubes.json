@@ -1,0 +1,61 @@
+[
+  {
+    "id": "tube-d20-core",
+    "name": "Circular tube with core for thread, aluminium anodized, D19.98",
+    "category": "tubes",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/Circular-tube-with-core-for-thread-aluminium-anodized-1998mm/Motedis-Tube19-98/Motedis_Tube19,98.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "Tube19,98",
+    "supplier_url": "https://www.motedis.com/en/Circular-tube-with-core-for-thread-aluminium-anodized-1998mm",
+    "designation": "Circular tube D19.98 with core L={L}",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "length": {"parameter":"L","min":"50 mm","max":"1980 mm"},
+      "frames": [{"name":"end_a","kind":"end"},{"name":"end_b","kind":"end"},{"name":"shaft","kind":"shaft"}],
+      "linear": {"kind":"shaft","size":"19.98 mm"}
+    },
+    "frames": [
+      {"name":"end_a","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"end"},
+      {"name":"end_b","origin":[0,0,"L"],"z":[0,0,1],"x":[1,0,0],"kind":"end"},
+      {"name":"shaft","origin":[0,0,0],"z":[0,0,1],"x":[1,0,0],"kind":"shaft"}
+    ]
+  },
+  {
+    "id": "spacer-m4-l10",
+    "name": "Spacer for screw M4, L=10 mm",
+    "category": "tubes",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/Spacer-for-screw-M4-with-L-10-mm/Motedis_5345.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "5345",
+    "supplier_url": "https://www.motedis.com/en/Spacer-for-screw-M4-with-L-10-mm",
+    "designation": "Spacer for screw M4, L=10 mm",
+    "rows": []
+  },
+  {
+    "id": "spacer-m5-l3",
+    "name": "Spacer for screw M5, L=3 mm",
+    "category": "tubes",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/Spacer-for-screw-M5-with-L-3-mm/Motedis_5329.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "5329",
+    "supplier_url": "https://www.motedis.com/en/Spacer-for-screw-M5-with-L-3-mm",
+    "designation": "Spacer for screw M5, L=3 mm",
+    "rows": []
+  },
+  {
+    "id": "spacer-m5-l35",
+    "name": "Spacer for screw M5, L=35 mm",
+    "category": "tubes",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/Spacer-for-screw-M5-with-L-35-mm/Motedis_5346.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "5346",
+    "supplier_url": "https://www.motedis.com/en/Spacer-for-screw-M5-with-L-35-mm",
+    "designation": "Spacer for screw M5, L=35 mm",
+    "rows": []
+  }
+]

@@ -1093,6 +1093,42 @@ void showImportReport(QWidget* parent, const QString& file, const QJsonObject& r
     text->setWordWrap(true);
     layout->addWidget(text);
   }
+  // Items whose results deviate from the file's (mitcad#379): those kept
+  // parametric with their deviation, and those the file's stored geometry
+  // stands in for.
+  QStringList deviations;
+  for (const QJsonValue& value : design.value(QStringLiteral("items")).toArray()) {
+    const QJsonObject item = value.toObject();
+    const QJsonObject kept = item.value(QStringLiteral("accepted_deviation")).toObject();
+    const QJsonObject stored = item.value(QStringLiteral("deviation")).toObject();
+    const QJsonObject deviation = kept.isEmpty() ? stored : kept;
+    if (deviation.isEmpty()) {
+      continue;
+    }
+    const double change = deviation.value(QStringLiteral("volume_change")).toDouble();
+    const double fileChange = deviation.value(QStringLiteral("file_volume_change")).toDouble();
+    const QJsonValue largest = deviation.value(QStringLiteral("largest_distance"));
+    deviations << QObject::tr("%1: %2; volume change %3 mm³ against the file's %4%5")
+                      .arg(item.value(QStringLiteral("name")).toString(),
+                           kept.isEmpty() ? QObject::tr("the file's stored geometry")
+                                          : QObject::tr("kept parametric"))
+                      .arg(change, 0, 'f', 3)
+                      .arg(fileChange, 0, 'f', 3)
+                      .arg(largest.isDouble()
+                               ? QObject::tr(", its new faces up to %1 mm off").arg(largest.toDouble(), 0, 'f', 3)
+                               : QString());
+  }
+  if (!deviations.isEmpty()) {
+    QStringList escaped;
+    for (const QString& line : deviations) {
+      escaped << line.toHtmlEscaped();
+      qDebug().noquote() << QStringLiteral("Import report deviation: %1: %2").arg(file, line);
+    }
+    auto* text = new QLabel(QObject::tr("<b>Results that deviate from the file's</b><br>%1")
+                                .arg(escaped.join(QStringLiteral("<br>"))));
+    text->setWordWrap(true);
+    layout->addWidget(text);
+  }
   auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close);
   QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
   QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);

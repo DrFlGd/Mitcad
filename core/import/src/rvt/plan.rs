@@ -206,20 +206,52 @@ fn wall_solid(model: &Model, w: &Wall) -> Result<(Item, Vec<String>, Vec<String>
         outer: path,
         holes: Vec::new(),
     }]);
-    let mut solid = extrusion(at_height(a.lo), profile, true, a.hi - a.lo);
-    for (n, offset, below) in a.cuts {
+    let mut solid = extrusion(at_height(a.lo), profile.clone(), true, a.hi - a.lo);
+    // Where a roof rises over the wall's own top: the wall on up within
+    // the roof's outline, to under its slopes.
+    for e in a.extensions {
+        let mut ext = Item::Boolean {
+            op: BoolOp::Intersection,
+            first: Box::new(extrusion(
+                at_height(e.from),
+                profile.clone(),
+                true,
+                e.to - e.from,
+            )),
+            second: Box::new(extrusion(
+                at_height(e.from - 1.0),
+                profile_mm(areas(e.outline)),
+                true,
+                e.to - e.from + 2.0,
+            )),
+        };
+        for (n, o) in e.planes {
+            ext = Item::Boolean {
+                op: BoolOp::Difference,
+                first: Box::new(ext),
+                second: Box::new(half_space(n, o, false, None)),
+            };
+        }
+        solid = Item::Boolean {
+            op: BoolOp::Union,
+            first: Box::new(solid),
+            second: Box::new(ext),
+        };
+    }
+    for (n, offset, below, band) in a.cuts {
         solid = Item::Boolean {
             op: BoolOp::Difference,
             first: Box::new(solid),
-            second: Box::new(half_space(n, offset, below)),
+            second: Box::new(half_space(n, offset, below, band.as_ref())),
         };
     }
     Ok((solid, notes, a.attached))
 }
 
 /// The half of space above a plane (feet: its unit normal and its offset
-/// along it), or below it.
-fn half_space(n: P3, offset: f64, below: bool) -> Item {
+/// along it), or below it; within the vertical prism of a band in plan
+/// (feet) when one is given.
+fn half_space(n: P3, offset: f64, below: bool, band: Option<&Path>) -> Item {
     let origin = math::scale(n, offset * FOOT_MM);
     let x = math::normalize(math::cross([0.0, 0.0, 1.0], n))
         .or_else(|| math::normalize(math::cross([1.0, 0.0, 0.0], n)))
@@ -227,7 +259,10 @@ fn half_space(n: P3, offset: f64, below: bool) -> Item {
     Item::HalfSpace {
         plane: math::from_axes(origin, x, math::cross(n, x), n),
         below,
-        boundary: None,
+        boundary: band.map(|b| {
+            let plan = math::from_axes([0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]);
+            (plan, footprint::to_mm(b))
+        }),
     }
 }
 
@@ -252,11 +287,14 @@ fn attachment_names(w: &Wall) -> Vec<String> {
 /// What an attached end follows (mitcad#348), feet: the planes of the
 /// element's surface (each a unit normal pointing up and the offset along
 /// it; a roof's slopes) and the footprint they cover (None: a level or
-/// unbounded surface, which covers the wall wherever it is).
+/// unbounded surface, which covers the wall wherever it is), and the
+/// element's own outline in plan, where it has one (a level slab's too:
+/// which part of a wall under several elements each covers).
 struct Surface {
     what: String,
     planes: Vec<(P3, f64)>,
     footprint: Option<Vec<Path>>,
+    outline: Option<Vec<Path>>,
 }
 
 /// A floor's, pad's or ceiling's top and bottom (feet): its own, else its
@@ -283,8 +321,21 @@ fn level_slab_bounds(s: &Slab, width: Option<f64>) -> Result<(f64, f64), String>
         .bottom
         .or(level.iter().copied().reduce(f64::min).filter(|b| *b < top));
     match bottom {
-        Some(b) if top > b => Ok((top, b)),
+        // (A ceiling's lower reference face bounds its core, above its
+        // finish layers: its type's width runs down from its top.)
+        Some(b) if top > b => Ok((top, below_core(s, top, b, width))),
         _ => Ok((top, top - width.ok_or("no thickness")?)),
+    }
+}
+
+/// A slab's bottom: the one its reference faces give, or for a ceiling
+/// without a bottom of its own whose type is thicker, its top less its
+/// type's width (*seen*: ceilings' reference faces are their top and the
+/// top of their finish layers).
+fn below_core(s: &Slab, top: f64, bottom: f64, width: Option<f64>) -> f64 {
+    match width {
+        Some(w) if s.class == "Ceiling" && s.bottom.is_none() && w > top - bottom + 1e-6 => top - w,
+        _ => bottom,
     }
 }
 
@@ -311,6 +362,7 @@ fn attached_surface(model: &Model, id: i64, top: bool) -> Result<Surface, String
             what: format!("reference plane {id}{name}"),
             planes: vec![(n, math::dot(n, p.plane.origin))],
             footprint: None,
+            outline: None,
         });
     }
     let s = b.slabs.get(&id).ok_or_else(|| {
@@ -332,6 +384,13 @@ fn attached_surface(model: &Model, id: i64, top: bool) -> Result<Surface, String
         return Err(format!("{what}'s shape is edited, which is not read"));
     }
     let width = s.type_id.and_then(|t| b.width(t));
+    let outline = if s.class == "Roof" && s.extrusion.is_some() {
+        extrusion_span(model, s)
+    } else {
+        slab_areas(s).map(|(a, _)| a)
+    }
+    .ok()
+    .map(|a| a.into_iter().map(|a| a.outer).collect::<Vec<_>>());
     match s.class.as_str() {
         "Floor" | "BuildingPad" | "Ceiling" => {
             let (t, bottom) = level_slab_bounds(s, width).map_err(|e| format!("{what}: {e}"))?;
@@ -339,6 +398,7 @@ fn attached_surface(model: &Model, id: i64, top: bool) -> Result<Surface, String
                 what,
                 planes: level(if top { bottom } else { t }),
                 footprint: None,
+                outline,
             })
         }
         "Roof" | "ProfileRoof" => {
@@ -361,6 +421,7 @@ fn attached_surface(model: &Model, id: i64, top: bool) -> Result<Surface, String
                     what,
                     planes: level(if top { z } else { z + w }),
                     footprint: None,
+                    outline,
                 });
             }
             let mut planes = Vec::new();
@@ -376,7 +437,7 @@ fn attached_surface(model: &Model, id: i64, top: bool) -> Result<Surface, String
                 None
             } else {
                 let areas = if open_profile {
-                    extrusion_span(s)
+                    extrusion_span(model, s)
                 } else {
                     slab_areas(s).map(|(a, _)| a)
                 };
@@ -387,6 +448,7 @@ fn attached_surface(model: &Model, id: i64, top: bool) -> Result<Surface, String
                 what,
                 planes,
                 footprint,
+                outline,
             })
         }
         other => Err(format!("{what}: the surface of a {other} is not read")),
@@ -399,12 +461,24 @@ struct Attached {
     /// to the attached surfaces.
     lo: f64,
     hi: f64,
-    /// The half spaces cut from it: a plane (normal, offset) and whether
-    /// what lies below it (a base's) or above it (a top's) goes.
-    cuts: Vec<(P3, f64, bool)>,
+    /// The half spaces cut from it: a plane (normal, offset), whether
+    /// what lies below it (a base's) or above it (a top's) goes, and the
+    /// band of the wall it is bounded to (None: all of it).
+    cuts: Vec<(P3, f64, bool, Option<Path>)>,
+    /// The wall carried on up within a roof's outline (feet).
+    extensions: Vec<Extension>,
     notes: Vec<String>,
     /// Its attachments by name, applied or not.
     attached: Vec<String>,
+}
+
+/// The wall's footprint from `from` to `to` (feet) within an outline in
+/// plan, under the planes (each a unit normal up and its offset).
+struct Extension {
+    outline: Vec<Path>,
+    planes: Vec<(P3, f64)>,
+    from: f64,
+    to: f64,
 }
 
 /// A wall's attachments (mitcad#348): an attached top follows the lower
@@ -422,6 +496,7 @@ fn attach(model: &Model, w: &Wall, footprint: &Path, base: f64, top: f64) -> Att
         lo: base,
         hi: top,
         cuts: Vec::new(),
+        extensions: Vec::new(),
         notes: Vec::new(),
         attached: attachment_names(w),
     };
@@ -434,10 +509,6 @@ fn attach(model: &Model, w: &Wall, footprint: &Path, base: f64, top: f64) -> Att
         .flat_map(|s| s.sample(4))
         .map(|p| [p[0], p[1]])
         .collect();
-    let width = w
-        .type_id
-        .and_then(|t| model.building.width(t))
-        .unwrap_or(1.0);
     let height_at = |(n, o): (P3, f64), p: P2| (o - n[0] * p[0] - n[1] * p[1]) / n[2];
     for a in &w.attachments {
         let end = if a.top { "top" } else { "base" };
@@ -474,10 +545,9 @@ fn attach(model: &Model, w: &Wall, footprint: &Path, base: f64, top: f64) -> Att
                     && (s.planes[0].1 - first.planes[0].1).abs() < 1e-6
             });
             if !same {
-                out.notes.push(not_applied(format!(
-                    "the surfaces of its {} elements differ",
-                    surfaces.len()
-                )));
+                // Each element over its part of the wall.
+                let note = attach_parts(&surfaces, a.top, &points, &mut out);
+                out.notes.push(note.unwrap_or_else(not_applied));
                 continue;
             }
             Surface {
@@ -488,6 +558,7 @@ fn attach(model: &Model, w: &Wall, footprint: &Path, base: f64, top: f64) -> Att
                     .join(", "),
                 planes: first.planes.clone(),
                 footprint: None,
+                outline: None,
             }
         };
         if !a.top && surface.planes.len() > 1 {
@@ -498,16 +569,16 @@ fn attach(model: &Model, w: &Wall, footprint: &Path, base: f64, top: f64) -> Att
             )));
             continue;
         }
-        // A sloped roof covers the wall (its edge may run along the wall).
+        // A sloped roof covers the wall (its edge may run along the wall's
+        // face); over part of it (a ridge wall between two roofs' edges,
+        // a wall reaching out from under it) the rest keeps its own top.
         if let Some(fp) = &surface.footprint
             && !points
                 .iter()
-                .all(|p| fp.iter().any(|l| footprint::covers(l, *p, width + 0.1)))
+                .all(|p| fp.iter().any(|l| footprint::covers(l, *p, 1e-3)))
         {
-            out.notes.push(not_applied(format!(
-                "the wall reaches out of {}'s footprint",
-                surface.what
-            )));
+            let note = attach_parts(std::slice::from_ref(&surface), a.top, &points, &mut out);
+            out.notes.push(note.unwrap_or_else(not_applied));
             continue;
         }
         // The surface's heights over the wall: the highest and lowest of
@@ -543,7 +614,7 @@ fn attach(model: &Model, w: &Wall, footprint: &Path, base: f64, top: f64) -> Att
             }
             out.hi = out.hi.max(zmax) + 1.0;
             out.cuts
-                .extend(surface.planes.iter().map(|(n, o)| (*n, *o, false)));
+                .extend(surface.planes.iter().map(|(n, o)| (*n, *o, false, None)));
             out.notes.push(format!(
                 "its top follows {}'s lower surface{}",
                 surface.what,
@@ -563,12 +634,96 @@ fn attach(model: &Model, w: &Wall, footprint: &Path, base: f64, top: f64) -> Att
             }
             out.lo = out.lo.min(zmin) - 1.0;
             out.cuts
-                .extend(surface.planes.iter().map(|(n, o)| (*n, *o, true)));
+                .extend(surface.planes.iter().map(|(n, o)| (*n, *o, true, None)));
             out.notes
                 .push(format!("its base follows {}'s upper surface", surface.what));
         }
     }
     out
+}
+
+/// An attached top under elements that each cover part of the wall (a
+/// ridge wall under the two halves of a gable, whose edges end within its
+/// thickness; a wall reaching out from under its roof): within each
+/// element's outline the wall follows its lower surface (the lowest of
+/// them where they overlap), elsewhere it keeps its own top. Where a
+/// surface lies below the wall's own top a half space bounded to the
+/// outline cuts it; where it rises above, the wall's footprint carries on
+/// up within the outline to under it. The note, or why not.
+fn attach_parts(
+    surfaces: &[Surface],
+    top: bool,
+    points: &[P2],
+    out: &mut Attached,
+) -> Result<String, String> {
+    if !top {
+        return Err(format!(
+            "the surfaces of its {} elements differ",
+            surfaces.len()
+        ));
+    }
+    let height_at = |(n, o): (P3, f64), p: P2| (o - n[0] * p[0] - n[1] * p[1]) / n[2];
+    let (lo, own) = (out.lo, out.hi);
+    let mut used = Vec::new();
+    let mut extensions = Vec::new();
+    let mut cuts = Vec::new();
+    for s in surfaces {
+        let Some(outline) = &s.outline else {
+            return Err(format!("{} has no outline", s.what));
+        };
+        // Its heights over the points of the wall within its outline.
+        let zs: Vec<f64> = points
+            .iter()
+            .filter(|p| outline.iter().any(|l| footprint::covers(l, **p, 1e-3)))
+            .flat_map(|p| s.planes.iter().map(|q| height_at(*q, *p)))
+            .collect();
+        if zs.is_empty() {
+            continue;
+        }
+        let zmin = zs.iter().copied().fold(f64::INFINITY, f64::min);
+        let zmax = zs.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        if zmax <= lo + 1e-6 {
+            return Err(format!("{}'s lower surface lies below its base", s.what));
+        }
+        used.push(s.what.clone());
+        // (Carried on up only where the outline and the wall overlap: a
+        // wall along its edge has no part within it.)
+        let above = points
+            .iter()
+            .filter(|p| outline.iter().any(|l| footprint::covers(l, **p, -1.0)))
+            .any(|p| s.planes.iter().all(|q| height_at(*q, *p) > own + 1e-3));
+        if above {
+            extensions.push(Extension {
+                outline: outline.clone(),
+                planes: s.planes.clone(),
+                from: own - 0.01,
+                to: zmax + 1.0,
+            });
+        }
+        if zmin < own - 1e-6 {
+            for l in outline {
+                cuts.extend(
+                    s.planes
+                        .iter()
+                        .map(|(n, o)| (*n, *o, false, Some(l.clone()))),
+                );
+            }
+        }
+    }
+    if used.is_empty() {
+        return Err("the wall lies under none of them".into());
+    }
+    out.extensions.extend(extensions);
+    out.cuts.extend(cuts);
+    Ok(format!(
+        "its top follows {} lower surface{} where {} over it, elsewhere its own top",
+        used.iter()
+            .map(|w| format!("{w}'s"))
+            .collect::<Vec<_>>()
+            .join(", "),
+        if used.len() > 1 { "s" } else { "" },
+        if used.len() > 1 { "they are" } else { "it is" }
+    ))
 }
 
 /// A wall whose profile is edited: the profile's loops (in the wall's
@@ -750,10 +905,18 @@ pub fn wall_openings(model: &Model, w: &Wall) -> (Vec<Cutter>, usize) {
     ids.sort_unstable();
     let mut out: Vec<Cutter> = ids
         .into_iter()
-        .map(|id| Cutter {
-            id,
-            label: format!("insert {id}"),
-            tools: insert_cuts(b, id, width),
+        .map(|id| match b.walls.get(&id) {
+            // A wall embedded in it (a curtain wall in a basic wall).
+            Some(e) => Cutter {
+                id,
+                label: format!("embedded wall {id}"),
+                tools: embedded_tool(w, e, width).map(|t| (vec![t], "its embedded wall's extent")),
+            },
+            None => Cutter {
+                id,
+                label: format!("insert {id}"),
+                tools: insert_cuts(b, id, width),
+            },
         })
         .collect();
     for o in b
@@ -768,6 +931,60 @@ pub fn wall_openings(model: &Model, w: &Wall) -> (Vec<Cutter>, usize) {
         });
     }
     (out, idle)
+}
+
+/// The opening a wall embedded in another cuts in it (`WallEmbedWallGStep`,
+/// a curtain wall in a basic wall): the embedded wall's location line
+/// from its base to its top, through the host square to it.
+fn embedded_tool(w: &Wall, e: &Wall, host_width: f64) -> Result<Item, String> {
+    let base = e.base.ok_or("the embedded wall has no base height")?;
+    let height = e
+        .height
+        .filter(|h| *h > 0.0)
+        .ok_or("the embedded wall has no height")?;
+    let (s, t) = (e.curve.start(), e.curve.end());
+    rect_tool(
+        w,
+        [s[0], s[1], base],
+        [t[0], t[1], base + height],
+        host_width,
+    )
+}
+
+/// A rectangle in a line wall's plane between two corners (feet), through
+/// the wall square to it.
+fn rect_tool(w: &Wall, p: P3, q: P3, host_width: f64) -> Result<Item, String> {
+    let Curve::Line { start, end } = &w.curve else {
+        return Err("an opening in an arc wall is not built".into());
+    };
+    let d = math::normalize([end[0] - start[0], end[1] - start[1], 0.0])
+        .ok_or("its wall's location line has no length")?;
+    let up = [0.0, 0.0, 1.0];
+    let reach = host_width + 2.0;
+    let along = math::dot(math::sub(q, p), d);
+    let (lo, hi) = (p[2].min(q[2]), p[2].max(q[2]));
+    if along.abs() < 1e-6 || hi - lo < 1e-6 {
+        return Err("its rectangle has no size".into());
+    }
+    let x = if along > 0.0 { d } else { math::scale(d, -1.0) };
+    let z = math::cross(x, up);
+    // (The corners projected onto the host's plane.)
+    let origin = math::sub(
+        [p[0], p[1], lo],
+        math::scale(z, reach + math::dot(math::sub(p, *start), z)),
+    );
+    let (u, v) = (along.abs(), hi - lo);
+    Ok(Item::Extrusion {
+        position: math::from_axes(mm(origin), x, up, z),
+        profile: profile_mm(areas(vec![polygon(&[
+            [0.0, 0.0],
+            [u, 0.0],
+            [u, v],
+            [0.0, v],
+        ])])),
+        direction: [0.0, 0.0, 1.0],
+        depth: 2.0 * reach * FOOT_MM,
+    })
 }
 
 /// A wall's opening element's cut tool (mitcad#345): a rectangular
@@ -865,6 +1082,33 @@ fn void_tools(symbol: &Symbol, t: &[f64; 12]) -> Result<Vec<Item>, String> {
         + t[2] * (t[3] * t[7] - t[4] * t[6]);
     let mut tools = Vec::new();
     for s in &symbol.cut_solids {
+        // Its planar faces as they are (no slivers of triangles), else its
+        // triangles.
+        let faces = super::geometry::solid_faces(s)
+            .map_err(|e| format!("its type's void geometry: {e}"))?;
+        if let Some(faces) = faces {
+            let faces = faces
+                .into_iter()
+                .map(|face| {
+                    face.into_iter()
+                        .map(|l| {
+                            let mut l: Vec<P3> =
+                                l.iter().map(|p| mm(building::apply(t, *p))).collect();
+                            // (A mirroring transform turns the faces inside out.)
+                            if det < 0.0 {
+                                l.reverse();
+                            }
+                            l
+                        })
+                        .collect()
+                })
+                .collect();
+            tools.push(Item::Faceted {
+                faces,
+                closed: true,
+            });
+            continue;
+        }
         let (points, triangles) =
             super::geometry::solid_mesh(s).map_err(|e| format!("its type's void geometry: {e}"))?;
         let placed: Vec<P3> = points.iter().map(|p| mm(building::apply(t, *p))).collect();
@@ -1019,7 +1263,7 @@ fn slab(model: &Model, s: &Slab, kind: &'static str, with_cuts: bool) -> Result<
         let top = s.top.or(faces_top).unwrap_or(loops_z);
         let bottom = s.bottom.or(faces_bottom.filter(|b| *b < top));
         let thickness = match bottom {
-            Some(b) if top > b => top - b,
+            Some(b) if top > b => top - below_core(s, top, b, width),
             _ => width.ok_or("no thickness")?,
         };
         extrusion(at_height(top), profile_mm(areas_ft), false, thickness)
@@ -1029,7 +1273,7 @@ fn slab(model: &Model, s: &Slab, kind: &'static str, with_cuts: bool) -> Result<
     } else if open_profile {
         // An extrusion roof: its profile's span across the extents of the
         // extrusion, under its slopes.
-        let rect = extrusion_span(s)?;
+        let rect = extrusion_span(model, s)?;
         notes.push("an extrusion roof".into());
         roof_solid(s, rect, loops_z, width, &layers, &mut notes)?
     } else {
@@ -1197,7 +1441,7 @@ fn roof_solid(
         planes.iter().fold(prism(), |acc, (n, o)| Item::Boolean {
             op: BoolOp::Difference,
             first: Box::new(acc),
-            second: Box::new(half_space(*n, *o, false)),
+            second: Box::new(half_space(*n, *o, false, None)),
         })
     };
     Ok(Item::Boolean {
@@ -1519,15 +1763,36 @@ fn beam(model: &Model, e: &Element, i: &Instance) -> Result<Plan, String> {
 /// An extrusion roof's span (feet): the rectangle its open profile (in a
 /// vertical plane) covers across the extents of its extrusion along the
 /// plane's normal.
-fn extrusion_span(s: &Slab) -> Result<Vec<Area>, String> {
+/// An extrusion roof's span in plan: its profile across the extents of its
+/// extrusion, square to the profile. Which side of the profile the
+/// extents run to is the side its stored box lies on (the work plane's
+/// normal is not read; *seen*: two halves of a gable drawn from the eaves
+/// to the ridge, their profiles running opposite ways, with the same
+/// extents).
+fn extrusion_span(model: &Model, s: &Slab) -> Result<Vec<Area>, String> {
     let [d0, d1] = s.extrusion.ok_or("no extrusion extents")?;
     let curves: Vec<&Curve> = s.loops.iter().flatten().collect();
     let first = curves.first().ok_or("no profile")?.start();
     let last = curves.last().ok_or("no profile")?.end();
     let along = math::normalize([last[0] - first[0], last[1] - first[1], 0.0])
         .ok_or("a profile that does not run across")?;
-    let n = math::cross(along, [0.0, 0.0, 1.0]);
+    let mut n = math::cross(along, [0.0, 0.0, 1.0]);
     let (r0, r1) = (-d0.max(d1), -d0.min(d1));
+    if let Some(b) = model.element(s.id).and_then(|e| e.bbox) {
+        let mid = (r0 + r1) / 2.0;
+        let c = [
+            (first[0] + last[0]) / 2.0 + n[0] * mid,
+            (first[1] + last[1]) / 2.0 + n[1] * mid,
+        ];
+        let inside = |p: [f64; 2]| (b[0]..=b[3]).contains(&p[0]) && (b[1]..=b[4]).contains(&p[1]);
+        let flipped = [
+            (first[0] + last[0]) / 2.0 - n[0] * mid,
+            (first[1] + last[1]) / 2.0 - n[1] * mid,
+        ];
+        if !inside(c) && inside(flipped) {
+            n = math::scale(n, -1.0);
+        }
+    }
     let at = |p: P3, r: f64| [p[0] + n[0] * r, p[1] + n[1] * r];
     let pts = [at(first, r0), at(last, r0), at(last, r1), at(first, r1)];
     Ok(areas(vec![polygon(&pts)]))
@@ -1781,7 +2046,7 @@ fn mullion(model: &Model, e: &Element, i: &Instance) -> Result<Plan, String> {
         solid = Item::Boolean {
             op: BoolOp::Difference,
             first: Box::new(solid),
-            second: Box::new(half_space(o, math::dot(o, p), false)),
+            second: Box::new(half_space(o, math::dot(o, p), false, None)),
         };
     }
     let material = i
@@ -2757,7 +3022,7 @@ fn sweep(model: &Model, e: &Element, s: &building::Sweep, with_cuts: bool) -> Re
                 let mut main = Item::Boolean {
                     op: BoolOp::Difference,
                     first: Box::new(built[k].clone()),
-                    second: Box::new(half_space(n, math::dot(n, q), false)),
+                    second: Box::new(half_space(n, math::dot(n, q), false, None)),
                 };
                 if let Some(back) = back {
                     main = Item::Boolean {
@@ -2936,7 +3201,7 @@ fn with_returns(
         let piece = Item::Boolean {
             op: BoolOp::Difference,
             first: Box::new(piece),
-            second: Box::new(half_space(n, math::dot(n, at), true)),
+            second: Box::new(half_space(n, math::dot(n, at), true, None)),
         };
         mitres.push((end, at, n, Some(piece)));
     }
@@ -3807,7 +4072,8 @@ mod tests {
             panic!("{:?}", p.cuts);
         };
         match tool {
-            Item::Faceted { faces, closed } => assert!(*closed && faces.len() == 12),
+            // (Its six planes as they are.)
+            Item::Faceted { faces, closed } => assert!(*closed && faces.len() == 6),
             other => panic!("{other:?}"),
         }
         // The cube at the window's transform: x from -1 to 0 (its y turned
@@ -4455,5 +4721,157 @@ mod tests {
         spiral.spiral = true;
         model.building.stair_runs.insert(5, spiral);
         assert!(plan(&model, &e).unwrap_err().contains("spiral"));
+    }
+
+    #[test]
+    fn a_wall_embedded_in_another_cuts_its_extent_through_it() {
+        // A curtain wall in a basic wall (`WallEmbedWallGStep`), its
+        // location line a little off the host's.
+        use mitcad_rvt::testfile::building as t;
+        let mut model = house();
+        let mut e = model.building.walls[&t::WALL_A].clone();
+        e.id = 88;
+        e.curve = Curve::Line {
+            start: [2.0, 0.1, 0.5],
+            end: [6.0, 0.1, 0.5],
+        };
+        e.base = Some(0.5);
+        e.height = Some(2.0);
+        e.cutouts.clear();
+        model.building.walls.insert(88, e);
+        model
+            .building
+            .walls
+            .get_mut(&t::WALL_A)
+            .unwrap()
+            .cutouts
+            .push(88);
+        let p = plan(&model, model.element(t::WALL_A).unwrap()).unwrap();
+        let o = p.openings.iter().find(|o| o.id == 88).unwrap();
+        assert_eq!((o.label.as_str(), &o.missing), ("embedded wall 88", &None));
+        let tool = &p.cuts.iter().find(|c| c.0 == "embedded wall 88").unwrap().1;
+        let (lo, hi) = tool_box(tool);
+        let near = |a: f64, b: f64| (a - b).abs() < 1e-6;
+        assert!(near(lo[0], 2.0) && near(hi[0], 6.0), "{lo:?} {hi:?}");
+        assert!(near(lo[2], 0.5) && near(hi[2], 2.5), "{lo:?} {hi:?}");
+        // Through the host, about its location line.
+        assert!(lo[1] < -t::WIDTH && hi[1] > t::WIDTH, "{lo:?} {hi:?}");
+        assert!((lo[1] + hi[1]).abs() < 1e-6, "{lo:?} {hi:?}");
+    }
+
+    #[test]
+    fn a_ceiling_runs_down_by_its_type_from_its_top() {
+        // Its reference faces are its top and its core's: its finish
+        // layers lie below.
+        use mitcad_rvt::testfile::building as t;
+        let model = house();
+        let mut s = model.building.slabs[&t::FLOOR].clone();
+        s.bottom = None;
+        s.class = "Ceiling".into();
+        assert!((below_core(&s, 10.0, 9.9, Some(0.4)) - 9.6).abs() < 1e-12);
+        assert!((below_core(&s, 10.0, 9.5, Some(0.4)) - 9.5).abs() < 1e-12);
+        s.class = "Floor".into();
+        assert!((below_core(&s, 10.0, 9.9, Some(0.4)) - 9.9).abs() < 1e-12);
+    }
+
+    #[test]
+    fn an_extrusion_roof_spans_the_side_its_box_lies_on() {
+        use mitcad_rvt::testfile::building as t;
+        let mut model = house();
+        let mut s = model.building.slabs[&t::FLOOR].clone();
+        // A profile along +y at x = 0, extents 1 and 10 square to it: from
+        // x = -10 to 1 as drawn, from -1 to 10 when its box lies there.
+        s.extrusion = Some([-1.0, 10.0]);
+        s.loops = vec![vec![Curve::Line {
+            start: [0.0, 0.0, 3.0],
+            end: [0.0, 5.0, 4.0],
+        }]];
+        let span_x = |model: &Model, s: &Slab| {
+            let a = extrusion_span(model, s).unwrap();
+            let xs: Vec<f64> = a[0]
+                .outer
+                .segments
+                .iter()
+                .flat_map(|g| g.sample(1))
+                .map(|p| p[0])
+                .collect();
+            (
+                xs.iter().copied().fold(f64::INFINITY, f64::min),
+                xs.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+            )
+        };
+        let e = model
+            .elements
+            .iter_mut()
+            .find(|e| e.id == t::FLOOR)
+            .unwrap();
+        e.bbox = Some([-10.0, 0.0, 3.0, 1.0, 5.0, 4.0]);
+        let (lo, hi) = span_x(&model, &s);
+        assert!(
+            (lo + 10.0).abs() < 1e-9 && (hi - 1.0).abs() < 1e-9,
+            "{lo} {hi}"
+        );
+        let e = model
+            .elements
+            .iter_mut()
+            .find(|e| e.id == t::FLOOR)
+            .unwrap();
+        e.bbox = Some([-1.0, 0.0, 3.0, 10.0, 5.0, 4.0]);
+        let (lo, hi) = span_x(&model, &s);
+        assert!(
+            (lo + 1.0).abs() < 1e-9 && (hi - 10.0).abs() < 1e-9,
+            "{lo} {hi}"
+        );
+    }
+
+    #[test]
+    fn a_wall_under_its_roof_in_part_follows_it_there_only() {
+        // The house's gable wall attached to a roof whose outline covers
+        // half of it: within the outline the roof's slope cuts it (or it
+        // runs on up to under the slope), elsewhere it keeps its own top.
+        use mitcad_rvt::testfile::building as t;
+        let mut model = house();
+        let roof = model.building.slabs.get_mut(&44).unwrap();
+        let z = roof.loops[0][0].start()[2];
+        let corners = [[-1.0, -1.0], [21.0, -1.0], [21.0, 6.0], [-1.0, 6.0]];
+        roof.loops = vec![
+            (0..4)
+                .map(|k| {
+                    let (a, b) = (corners[k], corners[(k + 1) % 4]);
+                    Curve::Line {
+                        start: [a[0], a[1], z],
+                        end: [b[0], b[1], z],
+                    }
+                })
+                .collect(),
+        ];
+        let p = plan(&model, model.element(t::WALL_C).unwrap()).unwrap();
+        assert!(
+            p.notes.iter().any(|n| n
+                == "its top follows roof 44's lower surface where it is over it, elsewhere its own top"),
+            "{:?}",
+            p.notes
+        );
+        // Its prism to its own top, carried on up within the outline to
+        // under the slopes; no slope lies below its own top, so no half
+        // space bounded to the outline cuts it.
+        fn walk(item: &Item, unions: &mut usize, bounded: &mut usize) {
+            if let Item::Boolean { op, first, second } = item {
+                if *op == BoolOp::Union {
+                    *unions += 1;
+                }
+                if let Item::HalfSpace {
+                    boundary: Some(_), ..
+                } = second.as_ref()
+                {
+                    *bounded += 1;
+                }
+                walk(first, unions, bounded);
+                walk(second, unions, bounded);
+            }
+        }
+        let (mut unions, mut bounded) = (0, 0);
+        walk(&p.solid, &mut unions, &mut bounded);
+        assert_eq!((unions, bounded), (1, 0), "{:?}", p.solid);
     }
 }

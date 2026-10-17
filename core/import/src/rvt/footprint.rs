@@ -153,7 +153,13 @@ fn end_cut(
         return Ok((square, "free"));
     }
     // Joins with what is no layered wall (room separation lines, curtain
-    // walls) shape nothing.
+    // walls), or with a wall above or below this one (a storey's wall on
+    // the one under it, joined at the same corner), shape nothing.
+    let heights = |w: &Wall| Some((w.base?, w.base? + w.height?));
+    let overlaps = |w: &Wall| match (heights(wall), heights(w)) {
+        (Some((a0, a1)), Some((b0, b1))) => a0.max(b0) < a1.min(b1) - 1e-3,
+        _ => true,
+    };
     let list: Vec<JoinedEnd> = wall.joins[end]
         .iter()
         .filter(|j| {
@@ -161,7 +167,7 @@ fn end_cut(
                 || building
                     .walls
                     .get(&j.element)
-                    .is_some_and(|w| half_width(building, w).is_some())
+                    .is_some_and(|w| half_width(building, w).is_some() && overlaps(w))
         })
         .copied()
         .collect();
@@ -742,5 +748,54 @@ mod tests {
         ];
         let path = loop_path(&curves, 1e-6).unwrap();
         assert!((signed_area(&path).abs() - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_wall_above_at_the_corner_shapes_no_end() {
+        // A corner of two foundation walls (0 to 3 high), listed with the
+        // two walls of the storey on them (3 to 13): those first in the
+        // list, but they do not reach down to the foundation.
+        let mut b = Building::default();
+        let layer = |w| {
+            vec![Layer {
+                width: w,
+                material: None,
+                function: 1,
+            }]
+        };
+        for t in [100, 200, 300, 400] {
+            b.structures.insert(t, layer(0.5));
+        }
+        let corner = vec![j(3, 0), j(1, 0), j(2, 0), j(4, 0)];
+        let low = |mut w: Wall| {
+            w.height = Some(3.0);
+            w
+        };
+        let high = |mut w: Wall| {
+            w.base = Some(3.0);
+            w
+        };
+        b.walls.insert(
+            1,
+            low(wall(1, [0.0, 0.0], [20.0, 0.0], [corner.clone(), vec![]])),
+        );
+        b.walls.insert(
+            2,
+            low(wall(2, [0.0, 0.0], [0.0, 20.0], [corner.clone(), vec![]])),
+        );
+        b.walls.insert(
+            3,
+            high(wall(3, [0.0, 0.0], [20.0, 0.0], [corner.clone(), vec![]])),
+        );
+        b.walls
+            .insert(4, high(wall(4, [0.0, 0.0], [0.0, 20.0], [corner, vec![]])));
+        // Of the foundation walls, wall 1 comes first: it runs on to the
+        // far face of wall 2, which stops at its near face.
+        let (p1, notes) = wall_footprint(&b, &b.walls[&1]).unwrap();
+        assert_eq!(notes, vec!["its start extends"]);
+        assert!((bounds(&p1)[0] + 0.25).abs() < 1e-9, "{:?}", bounds(&p1));
+        let (p2, notes) = wall_footprint(&b, &b.walls[&2]).unwrap();
+        assert_eq!(notes, vec!["its start stops"]);
+        assert!((bounds(&p2)[1] - 0.25).abs() < 1e-9, "{:?}", bounds(&p2));
     }
 }

@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Command line tool for data exchange and geometry analysis.
 add_executable(mitcad-geomtool main.cpp)
+mitcad_utf8_code_page(mitcad-geomtool)
 target_link_libraries(mitcad-geomtool PRIVATE mitcad_geometry_io mitcad_geometry_analysis
                                               TKG3d TKTopAlgo TKPrim TKBO TKFillet mitcad_warnings)
 

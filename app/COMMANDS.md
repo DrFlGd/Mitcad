@@ -1725,6 +1725,42 @@ replaced. Log lines: `Import of <file> asks: <question>`, `Import of
 For tests, `MITCAD_TEST_IMPORT_QUESTION=1` makes the worker ask at the
 start of the import (`tools/ui-import-retry-test.sh`).
 
+**Keep Deviating Results?** (mitcad#379; `files/ImportDeviations`) An item
+of an `.f3d` design whose decoded definition builds a result that deviates
+from the bodies stored in the file comes in as the file's stored geometry,
+and the import report lists it with its numbers (`deviation`,
+core/model/src/api/commands.md). Once the import report is closed, with
+the design in view, the window asks about those items in one dialog
+(`importDeviations`), a row each (table `importDeviationsTable`): **Keep
+Parametric** (a check box, Space toggles the selected row; unchecked, *Use
+stored*, is the default), the component, the item's name (*without n
+edges* for a rounding offered without the edges the kernel fails on,
+named in its tooltip) and type, the
+volume it adds or removes against the file's (mm³), the difference (mm³
+and per cent), the largest distance of its new faces from the file's
+(mm), the share of their area beyond the geometric tolerance, and the
+volume of the bodies it changed against the stored ones. Selecting a row
+selects the faces of the design where the item deviates (the report's
+`faces`: of the stored geometry standing in for it), so the view shows
+where. Buttons: **Keep All Parametric** (Alt+K), **Use Stored for All**
+(Alt+U), **Apply** (the default, Enter: the rows checked) and **Cancel**
+(Esc: the design stays as imported). Items kept make the worker run the
+import again on the same file and options with `accept_deviations` (the
+items kept before and now), which replaces the document: those items are
+parametric with their results (the report's `accepted_deviation`, their
+features' timeline note *Deviation from the file accepted at import: …*)
+and the items after them are replayed on those results. Then the dialog
+comes again for the items still deviating that were not decided, and for
+those after the first item kept in that run (replayed on its result, their
+numbers can change); items left as the stored geometry before are not
+asked again otherwise. A stopped import does not ask. Log lines: `Import
+deviations: <file>: <n> items`, `Import deviation: <file>: <index> <name>
+(<type>): volume change … mm3 against the file's …`, `Import deviation
+shown: <file>: <name>, <n> faces`, `Import deviation choice: <file>:
+<name> keep|stored`, `Import deviations answer: <file>: keep <name>
+(<index>), …` (or `stored for all`), `Import of <file> runs again keeping
+<n> items parametric`. UI test: `tools/ui-import-deviations-test.sh`.
+
 **Documents the design refers to** (mitcad#196): before the worker starts,
 the window lists the documents an `.f3d` design's components come from
 (`import_f3d_timeline` with `list_references`) and, for each one whose

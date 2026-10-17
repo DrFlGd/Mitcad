@@ -1,0 +1,461 @@
+[
+  {
+    "id": "steel-angle-20",
+    "name": "Steel connection angle 20",
+    "category": "connectors",
+    "source": "mechanical-basics/Connection-Angle-20-steel-black/Motedis-BR20STB/Motedis_BR20STB.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "BR20STB",
+    "supplier_url": "https://www.motedis.com/en/Connection-Angle-20-steel-black",
+    "designation": "Steel connection angle 20, {Finish}",
+    "rows": [
+      {
+        "name": "black",
+        "select": {"Finish":"black"},
+        "values": {},
+        "part_number": "BR20STB",
+        "supplier_url": "https://www.motedis.com/en/Connection-Angle-20-steel-black",
+        "designation": "Steel connection angle 20, black"
+      },
+      {
+        "name": "galvanised",
+        "select": {"Finish":"galvanised"},
+        "values": {},
+        "part_number": "BR20STS",
+        "supplier_url": "https://www.motedis.com/en/Steel-Connection-Angle-galvanised-20",
+        "designation": "Steel connection angle 20, galvanised"
+      }
+    ],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":5,"grid":20},{"type":"B","slot":6,"grid":20}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {
+        "junctions": ["L","T"],
+        "space": "inner_corner",
+        "mates": [{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],
+        "fasteners": [
+          {
+            "frame": "mount_a",
+            "nut": {"library":"mitcad-parts","component":"tnut-i5-spring","config":"M5"},
+            "screw": {"library":"mitcad-parts","component":"iso4762","config":"M5x8"}
+          },
+          {
+            "frame": "mount_b",
+            "nut": {"library":"mitcad-parts","component":"tnut-i5-spring","config":"M5"},
+            "screw": {"library":"mitcad-parts","component":"iso4762","config":"M5x8"}
+          }
+        ]
+      }
+    },
+    "frames": [
+      {"name":"mount_a","origin":[0,10,-10],"z":[1,0,0],"x":[0,0,-1],"kind":"face"},
+      {"name":"mount_b","origin":[-10,10,0],"z":[0,0,1],"x":[-1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "steel-angle-30-b8",
+    "name": "Steel connection angle 30 B-type slot 8",
+    "category": "connectors",
+    "source": "mechanical-basics/Connection-Angle-30-B-Type-slot-8/Motedis-BR30STS/Motedis_BR30STS.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "BR30STS",
+    "supplier_url": "https://www.motedis.com/en/Connection-Angle-30-B-Type-slot-8",
+    "designation": "Steel connection angle 30 B-type slot 8, {Finish}",
+    "rows": [
+      {
+        "name": "galvanised",
+        "select": {"Finish":"galvanised"},
+        "values": {},
+        "part_number": "BR30STS",
+        "supplier_url": "https://www.motedis.com/en/Connection-Angle-30-B-Type-slot-8",
+        "designation": "Steel connection angle 30 B-type slot 8, galvanised"
+      },
+      {
+        "name": "black",
+        "select": {"Finish":"black"},
+        "values": {},
+        "part_number": "BR30STB",
+        "supplier_url": "https://www.motedis.com/en/Connection-Angle-30-Black-B-Type",
+        "designation": "Steel connection angle 30 B-type slot 8, black"
+      }
+    ],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"B","slot":8,"grid":30}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {
+        "junctions": ["L","T"],
+        "space": "inner_corner",
+        "mates": [{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],
+        "fasteners": [
+          {
+            "frame": "mount_a",
+            "nut": {"library":"mitcad-parts","component":"tnut-b8","config":"M6"},
+            "screw": {"library":"mitcad-parts","component":"iso4762","config":"M6x12"}
+          },
+          {
+            "frame": "mount_b",
+            "nut": {"library":"mitcad-parts","component":"tnut-b8","config":"M6"},
+            "screw": {"library":"mitcad-parts","component":"iso4762","config":"M6x12"}
+          }
+        ]
+      }
+    },
+    "frames": [
+      {"name":"mount_a","origin":[0,15,-15],"z":[1,0,0],"x":[0,0,-1],"kind":"face"},
+      {"name":"mount_b","origin":[-15,15,0],"z":[0,0,1],"x":[-1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "steel-angle-40-i8",
+    "name": "Steel connection angle 40 I-type slot 8",
+    "category": "connectors",
+    "source": "mechanical-basics/Steel-Connection-Angle-40-black-I-Type-slot-8/Motedis-BR40STB/Motedis_BR40STB.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "BR40STB",
+    "supplier_url": "https://www.motedis.com/en/Steel-Connection-Angle-40-black-I-Type-slot-8",
+    "designation": "Steel connection angle 40 I-type slot 8, {Finish}",
+    "rows": [
+      {
+        "name": "black",
+        "select": {"Finish":"black"},
+        "values": {},
+        "part_number": "BR40STB",
+        "supplier_url": "https://www.motedis.com/en/Steel-Connection-Angle-40-black-I-Type-slot-8",
+        "designation": "Steel connection angle 40 I-type slot 8, black"
+      },
+      {
+        "name": "galvanised",
+        "select": {"Finish":"galvanised"},
+        "values": {},
+        "part_number": "BR40STS",
+        "supplier_url": "https://www.motedis.com/en/Steel-Connection-Angle-40-galvanised",
+        "designation": "Steel connection angle 40 I-type slot 8, galvanised"
+      }
+    ],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":8,"grid":40}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {
+        "junctions": ["L","T"],
+        "space": "inner_corner",
+        "mates": [{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],
+        "fasteners": [
+          {
+            "frame": "mount_a",
+            "nut": {"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},
+            "screw": {"library":"mitcad-parts","component":"iso4762","config":"M8x16"}
+          },
+          {
+            "frame": "mount_b",
+            "nut": {"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},
+            "screw": {"library":"mitcad-parts","component":"iso4762","config":"M8x16"}
+          }
+        ]
+      }
+    },
+    "frames": [
+      {"name":"mount_a","origin":[0,20,-20],"z":[1,0,0],"x":[0,0,-1],"kind":"face"},
+      {"name":"mount_b","origin":[-20,20,0],"z":[0,0,1],"x":[-1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "steel-angle-45-b10",
+    "name": "Steel connection angle 45 B-type slot 10",
+    "category": "connectors",
+    "source": "mechanical-basics/Steel-angle-45-black/Motedis-BR45STB/Motedis_BR45STB.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "BR45STB",
+    "supplier_url": "https://www.motedis.com/en/Steel-angle-45-black",
+    "designation": "Steel connection angle 45 B-type slot 10, {Finish}",
+    "rows": [
+      {
+        "name": "black",
+        "select": {"Finish":"black"},
+        "values": {},
+        "part_number": "BR45STB",
+        "supplier_url": "https://www.motedis.com/en/Steel-angle-45-black",
+        "designation": "Steel connection angle 45 B-type slot 10, black"
+      },
+      {
+        "name": "galvanised",
+        "select": {"Finish":"galvanised"},
+        "values": {},
+        "part_number": "BR45STS",
+        "supplier_url": "https://www.motedis.com/en/Steel-angle-45-galvanized",
+        "designation": "Steel connection angle 45 B-type slot 10, galvanised"
+      }
+    ],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"B","slot":10,"grid":45}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {
+        "junctions": ["L","T"],
+        "space": "inner_corner",
+        "mates": [{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],
+        "fasteners": [
+          {
+            "frame": "mount_a",
+            "nut": {"library":"mitcad-parts","component":"tnut-b10","config":"M8"},
+            "screw": {"library":"mitcad-parts","component":"iso4762","config":"M8x16"}
+          },
+          {
+            "frame": "mount_b",
+            "nut": {"library":"mitcad-parts","component":"tnut-b10","config":"M8"},
+            "screw": {"library":"mitcad-parts","component":"iso4762","config":"M8x16"}
+          }
+        ]
+      }
+    },
+    "frames": [
+      {"name":"mount_a","origin":[0,22.5,-22.5],"z":[1,0,0],"x":[0,0,-1],"kind":"face"},
+      {"name":"mount_b","origin":[-22.5,22.5,0],"z":[0,0,1],"x":[-1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "connection-plate-40x80",
+    "name": "Connection plate 40x80, steel",
+    "category": "connectors",
+    "source": "mechanical-basics/Connection-Plate-40x80-black/Motedis-PLAT4080STB/Motedis_PLAT4080STB.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "PLAT4080STB",
+    "supplier_url": "https://www.motedis.com/en/Connection-Plate-40x80-black",
+    "designation": "Connection plate 40x80, {Finish}",
+    "rows": [
+      {
+        "name": "black",
+        "select": {"Finish":"black"},
+        "values": {},
+        "part_number": "PLAT4080STB",
+        "supplier_url": "https://www.motedis.com/en/Connection-Plate-40x80-black",
+        "designation": "Connection plate 40x80, black"
+      },
+      {
+        "name": "galvanised",
+        "select": {"Finish":"galvanised"},
+        "values": {},
+        "part_number": "PLAT4080STS",
+        "supplier_url": "https://www.motedis.com/en/Connection-Plate-40x80-steel-galvanized",
+        "designation": "Connection plate 40x80, galvanised"
+      }
+    ],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":8,"grid":40}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {
+        "junctions": ["inline","T"],
+        "space": "outer",
+        "mates": [{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],
+        "fasteners": [
+          {
+            "frame": "mount_a",
+            "nut": {"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},
+            "screw": {"library":"mitcad-parts","component":"iso4762","config":"M8x16"}
+          },
+          {
+            "frame": "mount_b",
+            "nut": {"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},
+            "screw": {"library":"mitcad-parts","component":"iso4762","config":"M8x16"}
+          }
+        ]
+      }
+    },
+    "frames": [
+      {"name":"mount_a","origin":[-20,-2.5,0],"z":[0,-1,0],"x":[-1,0,0],"kind":"face"},
+      {"name":"mount_b","origin":[20,-2.5,0],"z":[0,-1,0],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "connection-plate-40x120",
+    "name": "Connection plate 40x120, steel black",
+    "category": "connectors",
+    "source": "mechanical-basics/Connecting-plate-40x120-steel-black/Motedis_connecting_plate_40x120_I-Type_slot_8.STEP",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "PLAT40120STB",
+    "supplier_url": "https://www.motedis.com/en/Connecting-plate-40x120-steel-black",
+    "designation": "Connection plate 40x120, black",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":8,"grid":40}],
+      "frames": [
+        {"name":"mount_a","kind":"face"},
+        {"name":"mount_b","kind":"face"},
+        {"name":"mount_c","kind":"face"}
+      ],
+      "connector": {
+        "junctions": ["inline","T"],
+        "space": "outer",
+        "mates": [{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],
+        "fasteners": [
+          {
+            "frame": "mount_a",
+            "nut": {"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},
+            "screw": {"library":"mitcad-parts","component":"iso4762","config":"M8x16"}
+          },
+          {
+            "frame": "mount_b",
+            "nut": {"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},
+            "screw": {"library":"mitcad-parts","component":"iso4762","config":"M8x16"}
+          },
+          {
+            "frame": "mount_c",
+            "nut": {"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},
+            "screw": {"library":"mitcad-parts","component":"iso4762","config":"M8x16"}
+          }
+        ]
+      }
+    },
+    "frames": [
+      {"name":"mount_a","origin":[-40,0,0],"z":[0,0,-1],"x":[-1,0,0],"kind":"face"},
+      {"name":"mount_b","origin":[40,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"face"},
+      {"name":"mount_c","origin":[0,0,0],"z":[0,0,-1],"x":[0,1,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "connection-plate-45x90-b10",
+    "name": "Connection plate 45x90 B-type slot 10",
+    "category": "connectors",
+    "source": "mechanical-basics/Connection-Plate-45x90-B-Type-slot-10/Motedis_Connection_Plate_45x90_B-Type_slot_10.STEP",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "PLAT4590STB",
+    "supplier_url": "https://www.motedis.com/en/Connection-Plate-45x90-B-Type-slot-10",
+    "designation": "Connection plate 45x90 B10",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"B","slot":10,"grid":45}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {
+        "junctions": ["inline","T"],
+        "space": "outer",
+        "mates": [{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],
+        "fasteners": [
+          {
+            "frame": "mount_a",
+            "nut": {"library":"mitcad-parts","component":"tnut-b10","config":"M8"},
+            "screw": {"library":"mitcad-parts","component":"iso4762","config":"M8x16"}
+          },
+          {
+            "frame": "mount_b",
+            "nut": {"library":"mitcad-parts","component":"tnut-b10","config":"M8"},
+            "screw": {"library":"mitcad-parts","component":"iso4762","config":"M8x16"}
+          }
+        ]
+      }
+    },
+    "frames": [
+      {"name":"mount_a","origin":[-22.5,0,0],"z":[0,0,-1],"x":[-1,0,0],"kind":"face"},
+      {"name":"mount_b","origin":[22.5,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "connection-plate-20x60",
+    "name": "Connection plate 20x60, steel black",
+    "category": "connectors",
+    "make": "model",
+    "dimensions": {"shape":"plate","width":"20 mm","thickness":"3 mm","length":"60 mm"},
+    "supplier": "Motedis",
+    "part_number": "PLAT2060STB",
+    "supplier_url": "https://www.motedis.com/en/Connection-Plate-20x60-steel-black-",
+    "designation": "Connection plate 20x60, black",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":5,"grid":20},{"type":"B","slot":6,"grid":20}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {
+        "junctions": ["inline","T"],
+        "space": "outer",
+        "mates": [{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],
+        "fasteners": [
+          {
+            "frame": "mount_a",
+            "nut": {"library":"mitcad-parts","component":"tnut-i5-spring","config":"M5"},
+            "screw": {"library":"mitcad-parts","component":"iso4762","config":"M5x8"}
+          },
+          {
+            "frame": "mount_b",
+            "nut": {"library":"mitcad-parts","component":"tnut-i5-spring","config":"M5"},
+            "screw": {"library":"mitcad-parts","component":"iso4762","config":"M5x8"}
+          }
+        ]
+      }
+    },
+    "frames": [
+      {"name":"mount_a","origin":[0,0,10],"z":[0,-1,0],"x":[0,0,-1],"kind":"face"},
+      {"name":"mount_b","origin":[0,0,50],"z":[0,-1,0],"x":[0,0,1],"kind":"face"}
+    ]
+  },
+  {
+    "id": "connection-plate-20x80",
+    "name": "Connection plate 20x80, steel black",
+    "category": "connectors",
+    "make": "model",
+    "dimensions": {"shape":"plate","width":"20 mm","thickness":"3 mm","length":"80 mm"},
+    "supplier": "Motedis",
+    "part_number": "PLAT2080STB",
+    "supplier_url": "https://www.motedis.com/en/Connection-Plate-20x80-steel-black-",
+    "designation": "Connection plate 20x80, black",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":5,"grid":20},{"type":"B","slot":6,"grid":20}],
+      "frames": [{"name":"mount_a","kind":"face"},{"name":"mount_b","kind":"face"}],
+      "connector": {
+        "junctions": ["inline","T"],
+        "space": "outer",
+        "mates": [{"frame":"mount_a","to":"slot"},{"frame":"mount_b","to":"slot"}],
+        "fasteners": [
+          {
+            "frame": "mount_a",
+            "nut": {"library":"mitcad-parts","component":"tnut-i5-spring","config":"M5"},
+            "screw": {"library":"mitcad-parts","component":"iso4762","config":"M5x8"}
+          },
+          {
+            "frame": "mount_b",
+            "nut": {"library":"mitcad-parts","component":"tnut-i5-spring","config":"M5"},
+            "screw": {"library":"mitcad-parts","component":"iso4762","config":"M5x8"}
+          }
+        ]
+      }
+    },
+    "frames": [
+      {"name":"mount_a","origin":[0,0,10],"z":[0,-1,0],"x":[0,0,-1],"kind":"face"},
+      {"name":"mount_b","origin":[0,0,70],"z":[0,-1,0],"x":[0,0,1],"kind":"face"}
+    ]
+  },
+  {
+    "id": "floor-bracket-200",
+    "name": "Floor bracket 200, black, oblong holes 9 mm",
+    "category": "connectors",
+    "source": "mechanical-basics/Floor-Bracket-200-black-oblong-hole-9mm/Motedis_Floor Bracket 200 black - Oblong hole 9mm.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "FLOORBR200B-D9",
+    "supplier_url": "https://www.motedis.com/en/Floor-Bracket-200-black-oblong-hole-9mm",
+    "designation": "Floor bracket 200, black",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"B","slot":8},{"type":"I","slot":8},{"type":"B","slot":10}],
+      "frames": [{"name":"mount","kind":"face"},{"name":"floor","kind":"face"}],
+      "connector": {"junctions":["surface"],"space":"outer","mates":[{"frame":"mount","to":"slot"}]}
+    },
+    "frames": [
+      {"name":"mount","origin":[-87,137.5,21],"z":[-1,0,0],"x":[0,1,0],"kind":"face"},
+      {"name":"floor","origin":[-43.5,0,21],"z":[0,-1,0],"x":[1,0,0],"kind":"face"}
+    ]
+  }
+]

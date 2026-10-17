@@ -81,6 +81,7 @@ const char* const kUsage = R"(usage:
                         [--no-compare] [--time-limit <seconds>] [--hang-limit <seconds>]
                         [--threads N] [--learn <dir>] [--references <dir>]... [--no-references]
                         [--geometric-tolerance <mm>] [--retry-bodies keep|replace]
+                        [--accept-deviations all|none|<index>,...]
       Imports an .f3d or .f3z design with its timeline: parameters,
       sketches and features replayed as Mitcad features, checked against
       the file's ASM history; an item that cannot be replayed becomes a
@@ -102,6 +103,13 @@ const char* const kUsage = R"(usage:
       bodies that match them within the geometric tolerance, parametric,
       and replaces only those that differ; replace replaces those too.
       The report names the bodies each retry kept and replaced.
+      --accept-deviations: an item whose decoded definition builds a
+      result that deviates from the file's takes the file's bodies (none,
+      the default); all, or the items with the timeline indices given,
+      stay parametric with that result instead, and the items after them
+      are replayed on it. The report lists every such result with how far
+      off it is (its change of volume against the file's, the distance of
+      its new faces), kept or not.
       --threads is how many threads the import uses at once: to evaluate
       an item's definitions, to read the file's bodies and to build the
       history's bodies ahead of the replay (default: the logical cores, at
@@ -205,18 +213,19 @@ const char* const kUsage = R"(usage:
       their parameters, checked against the IFC export given with
       --reference-ifc or found next to the project by its name (unless
       --no-reference-ifc; each element's volume within 1 % and its box
-      within 5 mm, by GlobalId) or else against their stored boxes; every
+      within 5 mm, by GlobalId) or else against the geometry the file keeps
+      of them (its volume within 2 %), else their stored boxes; every
       other element (and one that does not agree) a body named
       Family:Type:Id: a mesh of the geometry the file keeps of it, else
       the reference's body, the triangle mesh its record saves or its box
       (hidden unless structural). Linked models (projects or IFC files)
-      found next to the project or in --link-folder come in as components
-      of their own; a link not found leaves its component empty. An .rfa
-      family file gives its metadata only. Prints the import report and
-      the document report; --report writes the import report as JSON,
-      --report-only reads and reports without importing, --mesh-only
-      builds no features, --elements imports only the elements listed
-      (by id) and leaves the others out.
+      found next to the project, in its folders or in --link-folder come in
+      as components of their own; a link not found leaves its component
+      empty. An .rfa family file gives its metadata only. Prints the import
+      report and the document report; --report writes the import report as
+      JSON, --report-only reads and reports without importing, --mesh-only
+      builds no features, --elements imports only the elements listed (by
+      id) and leaves the others out.
   mitcad-cli export <file.mitcad> <out> [--bodies <b>,...] [--schema ap214|ap242]
                     [--unit mm|cm|m|in|ft] [--refinement low|medium|high]
                     [--deviation MM --angle DEG] [--ascii]

@@ -277,11 +277,10 @@ fn summary(report: &Value) -> String {
             "Built {} elements as features ({}), checked against {}; of those kinds {} came in as meshes or boxes\n",
             import["features"],
             counts(&import["built"]),
-            import["reference"]
-                .as_str()
-                .map_or("their stored boxes".to_string(), |r| format!(
-                    "the reference {r}"
-                )),
+            import["reference"].as_str().map_or(
+                "the geometry the file keeps of them (else their stored boxes)".to_string(),
+                |r| format!("the reference {r}")
+            ),
             counts(&import["fallbacks"]),
         );
         if import["reference"].is_string() {
@@ -480,7 +479,10 @@ fn find_link(
     if let Some(given) = options.link_files.get(name) {
         return Some(PathBuf::from(given)).filter(|p| p.is_file());
     }
-    let dir = Path::new(project).parent().unwrap_or(Path::new("."));
+    let dir = Path::new(project)
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
     let stored = link.path.as_deref().map(|p| p.replace('\\', "/"));
     let mut candidates = vec![dir.join(name)];
     if let Some(stored) = &stored
@@ -492,7 +494,40 @@ fn find_link(
     if let Some(folder) = &options.link_folder {
         candidates.push(Path::new(folder).join(name));
     }
-    candidates.into_iter().find(|p| p.is_file())
+    candidates
+        .into_iter()
+        .find(|p| p.is_file())
+        .or_else(|| in_subfolders(dir, name))
+}
+
+/// A file of this name (in any case) in the folder or in one of its
+/// subfolders (a project's `Links` folder), the folder's own first.
+fn in_subfolders(dir: &Path, name: &str) -> Option<PathBuf> {
+    let wanted = name.to_lowercase();
+    let entries = |d: &Path| -> Vec<PathBuf> {
+        let mut v: Vec<PathBuf> = std::fs::read_dir(d)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+            .collect();
+        v.sort();
+        v
+    };
+    let named = |d: &Path| {
+        entries(d).into_iter().find(|p| {
+            p.is_file()
+                && p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.to_lowercase() == wanted)
+        })
+    };
+    named(dir).or_else(|| {
+        entries(dir)
+            .into_iter()
+            .filter(|p| p.is_dir())
+            .find_map(|sub| named(&sub))
+    })
 }
 
 impl Document {
@@ -588,7 +623,7 @@ impl Document {
             let Some(found) = cached.or_else(|| find_link(path, link, options)) else {
                 import_options.missing_links.push((
                     link.clone(),
-                    format!("{name} was not found next to the project or where it was given: its component is empty"),
+                    format!("{name} was not found next to the project, in its folders or where it was given: its component is empty"),
                 ));
                 continue;
             };
@@ -636,4 +671,45 @@ pub(crate) fn rvt_write_building_test(dir: &str) -> Result<(), String> {
             .map_err(|e| format!("{}: {e}", path.display()))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_linked_model_is_found_in_a_folder_of_the_project_s() {
+        // A project's links kept in a folder of their own (`Links`), the
+        // name in another case.
+        let dir = std::env::temp_dir().join(format!("mitcad-rvt-links-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("Links")).unwrap();
+        std::fs::write(dir.join("project.rvt"), b"").unwrap();
+        std::fs::write(dir.join("Links").join("Site (1).RVT"), b"").unwrap();
+        let link = mitcad_rvt::building::Link {
+            id: 1,
+            symbol: None,
+            instance_name: String::new(),
+            transform: None,
+            file: Some("Site (1).rvt".into()),
+            path: Some(r"C:\elsewhere\Site (1).rvt".into()),
+        };
+        let project = dir.join("project.rvt");
+        let found = find_link(&project.display().to_string(), &link, &Options::default());
+        assert_eq!(found, Some(dir.join("Links").join("Site (1).RVT")));
+        // Next to the project first.
+        std::fs::write(dir.join("Site (1).rvt"), b"").unwrap();
+        let found = find_link(&project.display().to_string(), &link, &Options::default());
+        assert_eq!(found, Some(dir.join("Site (1).rvt")));
+        // Not found anywhere.
+        let other = mitcad_rvt::building::Link {
+            file: Some("Other.rvt".into()),
+            ..link
+        };
+        assert_eq!(
+            find_link(&project.display().to_string(), &other, &Options::default()),
+            None
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

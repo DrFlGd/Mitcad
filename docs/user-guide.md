@@ -57,6 +57,34 @@ import tolerance), a dialog asks once per import:
 The import report lists, per feature tried again, the bodies kept and
 replaced.
 
+A feature whose own definition builds, but not quite the file's result
+(a rounding that removes 9 % more than the file's, say), comes in as the
+file's bodies too. Once the import report is closed, the dialog **Keep
+Deviating Results?** lists such features, one row each, with how far off
+each one is at that place: the volume it adds or removes against the
+file's, the difference in mm³ and per cent, how far its new faces lie
+from the file's and how much of their area is farther than the import
+tolerance, and the volume of the bodies it changed against the stored
+ones. A rounding that does not build with all its edges may be listed
+built without some of them (the row says how many, its tooltip which).
+Selecting a row selects the faces where it deviates, so the view
+shows where. For each row:
+
+- **Use stored** (the default): the file's geometry stands in for it, as
+  imported.
+- **Keep parametric** (check the row, or Space): the feature stays
+  parametric with its own result, and the features after it are built on
+  that result.
+
+**Keep All Parametric** and **Use Stored for All** decide every row at
+once; **Apply** runs the import again with the rows checked kept, and the
+dialog comes again for the features that still deviate after them. A
+feature kept so carries a note on the timeline (*Deviation from the file
+accepted at import: …*), and the import report lists it with its numbers.
+On the command line: `mitcad-cli import-f3d --accept-deviations all` (or
+timeline indices, `88,93`); the default keeps the file's geometry and the
+report lists the deviations.
+
 An import report then shows which items came in as parametric features,
 which partly (for example a sketch without unsupported constraints),
 which as the file's bodies and which were left out (for example assembly
@@ -1772,7 +1800,10 @@ other element (doors, windows, furniture, curtain panels and mullions,
 railings, …) is a mesh of the shape the file keeps of it. An IFC export
 of the project next to it (of the same name, `project.ifc`) is used to
 check the elements and stands in for an element whose shape the file does
-not keep. Only an element of which nothing is kept comes in as its box,
+not keep; without one, each element built as features is checked against
+the shape the file keeps of it, and one that differs comes in as that
+shape's mesh. Linked models are found next to the project, in a folder of
+the project's folder (such as `Links`) or where the project stores them. Only an element of which nothing is kept comes in as its box,
 and such a box is hidden unless the element is structural (a wall, floor,
 roof, ceiling, stair run, column or beam): show its body in the browser
 to see it. Annotations, rooms, levels, grids, types and group definitions

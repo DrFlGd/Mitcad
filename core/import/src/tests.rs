@@ -321,6 +321,10 @@ struct TestKernel {
     /// their volume comes from their history as other solids').
     fillet_takes: Option<f64>,
     fillet_noise: f64,
+    /// mm³ this kernel's fillets (with `fillet_takes`) leave on their body
+    /// beyond what they should take, marked `∆` in their history: a result
+    /// that deviates from the file's in its volume only (mitcad#379).
+    fillet_off: f64,
     /// The slack `Kernel::changed_volume` gives, where it measures at all:
     /// the change as the bodies' volumes, noise left out.
     change_slack: Option<f64>,
@@ -385,7 +389,12 @@ impl TestKernel {
             let rest = &f[at + 2..];
             rest[..rest.find(']')?].parse::<f64>().ok()
         });
-        given.unwrap_or_else(|| hash(&f.replace(['~', '≈'], ""), 1)) * scale + noise
+        let off = if f.contains('∆') {
+            self.fillet_off
+        } else {
+            0.0
+        };
+        given.unwrap_or_else(|| hash(&f.replace(['~', '≈', '∆'], ""), 1)) * scale + noise + off
     }
 }
 
@@ -539,8 +548,18 @@ impl Kernel for TestKernel {
             shape.history.push('~');
         }
         if let Some(takes) = self.fillet_takes {
-            let base = self.volume_of(&self.fingerprint(body));
+            // (A body that deviates already: its `∆` counts once, below.)
+            let body_print = self.fingerprint(body);
+            let off = if body_print.contains('∆') {
+                self.fillet_off
+            } else {
+                0.0
+            };
+            let base = self.volume_of(&body_print) - off;
             shape.history.push_str(&format!("[={}]", base - takes));
+            if self.fillet_off != 0.0 && !shape.history.contains('∆') {
+                shape.history.push('∆');
+            }
         }
         if self.noisy_fillets {
             shape.history.push('≈');
@@ -640,7 +659,7 @@ impl Kernel for TestKernel {
         }
         Ok(MassProperties {
             volume: self.volume_of(&f),
-            area: hash(&f.replace(['~', '≈'], ""), 2),
+            area: hash(&f.replace(['~', '≈', '∆'], ""), 2),
             center: [0.0; 3],
         })
     }
@@ -894,6 +913,7 @@ impl Kernel for TestKernel {
             noisy_fillets: self.noisy_fillets,
             fillet_takes: self.fillet_takes,
             fillet_noise: self.fillet_noise,
+            fillet_off: self.fillet_off,
             change_slack: self.change_slack,
             on_call: Default::default(),
             out_of_memory: Default::default(),
@@ -2708,6 +2728,10 @@ fn pattern_provenance_marks_only_omitted_dressup_inputs() {
         made_ahead: HashMap::new(),
         exact_pairs: None,
         waited: Default::default(),
+        deviations: Default::default(),
+        deviated: Default::default(),
+        deviated_log: Default::default(),
+        deviation_points: Default::default(),
         sources: None,
         linker: None,
         focus_paths: HashMap::new(),
@@ -6648,6 +6672,10 @@ mod reference_tests;
 // Retries on the file's exact state keep the matching bodies (mitcad#283).
 mod retry_tests;
 
+// Results that deviate from the file's, kept at the user's choice
+// (mitcad#379).
+mod deviation_tests;
+
 /// The learning dump (mitcad#96): the item the history settled is written
 /// with its candidates and answer in the file's terms.
 #[test]
@@ -7258,6 +7286,10 @@ fn a_split_in_two_operations_made_the_new_bodies_of_both() {
         made_ahead: HashMap::new(),
         exact_pairs: None,
         waited: Default::default(),
+        deviations: Default::default(),
+        deviated: Default::default(),
+        deviated_log: Default::default(),
+        deviation_points: Default::default(),
         sources: None,
         linker: None,
         focus_paths: HashMap::new(),
@@ -7369,6 +7401,10 @@ fn named_participants_alone_when_the_history_changed_only_them() {
             made_ahead: HashMap::new(),
             exact_pairs: None,
             waited: Default::default(),
+            deviations: Default::default(),
+            deviated: Default::default(),
+            deviated_log: Default::default(),
+            deviation_points: Default::default(),
             sources: None,
             linker: None,
             focus_paths: HashMap::new(),

@@ -298,6 +298,11 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                 }
             }
         }
+        // Items kept parametric with a result that deviates from the file's
+        // (mitcad#379): how far off, so that it can be found later.
+        for (uid, note) in self.deviation_notes() {
+            push(&mut notes, uid, note);
+        }
         // Only features there are (a fallback undone later is gone).
         notes.retain(|uid, _| self.doc.feature(*uid).is_some());
         notes.into_iter().collect()

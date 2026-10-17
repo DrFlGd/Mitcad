@@ -1,0 +1,181 @@
+[
+  {
+    "id": "hex-bar-sw19-bore10",
+    "name": "Aluminium hexagon SW19 with 10.3 mm bore",
+    "category": "linear",
+    "source": "slot-profile-accessories/Aluminium-hexagon-SW19-length-42mm-103-all-the-way-through/Motedis-AHSW19-42-10-3/Motedis_AHSW19-42-10,3.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "AHSW19-42-10,3",
+    "supplier_url": "https://www.motedis.com/en/Aluminium-hexagon-SW19-length-42mm-103-all-the-way-through",
+    "designation": "Hexagon SW19 bore 10.3 L={L}",
+    "rows": [
+      {"name":"42 mm","select":{"Length":"42 mm"},"values":{"L":"42 mm"},"part_number":"AHSW19-42-10,3"},
+      {"name":"77 mm","select":{"Length":"77 mm"},"values":{"L":"77 mm"},"part_number":"AHSW19-77-10,3","supplier_url":"https://www.motedis.com/en/Aluminium-hexagon-SW19-length-77mm-103-all-the-way-through"}
+    ],
+    "build": {
+      "role": "linear",
+      "length": {"parameter":"L","min":"10 mm","max":"77 mm","stock":["42 mm","77 mm"]},
+      "frames": [{"name":"end_a","kind":"end"},{"name":"end_b","kind":"end"},{"name":"shaft","kind":"bore","diameter":"10.3 mm"}],
+      "linear": {"kind":"shaft","size":"SW19"}
+    },
+    "frames": [
+      {"name":"end_a","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"end"},
+      {"name":"end_b","origin":[0,0,"L"],"z":[0,0,1],"x":[1,0,0],"kind":"end"},
+      {"name":"shaft","origin":[0,0,0],"z":[0,0,1],"x":[1,0,0],"kind":"bore","diameter":"10.3 mm"}
+    ]
+  },
+  {
+    "id": "hex-bar-sw19-bore8",
+    "name": "Aluminium hexagon SW19 with 8.3 mm bore",
+    "category": "linear",
+    "source": "slot-profile-accessories/Aluminium-hexagon-SW19-length-77mm-83-all-the-way-through/Motedis-AHSW19-77-8-3/Motedis_AHSW19-77-8,3.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "AHSW19-77-8,3",
+    "supplier_url": "https://www.motedis.com/en/Aluminium-hexagon-SW19-length-77mm-83-all-the-way-through",
+    "designation": "Hexagon SW19 bore 8.3 L={L}",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "length": {"parameter":"L","min":"10 mm","max":"77 mm","stock":["77 mm"]},
+      "frames": [{"name":"end_a","kind":"end"},{"name":"end_b","kind":"end"},{"name":"shaft","kind":"bore","diameter":"8.3 mm"}],
+      "linear": {"kind":"shaft","size":"SW19"}
+    },
+    "frames": [
+      {"name":"end_a","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"end"},
+      {"name":"end_b","origin":[0,0,"L"],"z":[0,0,1],"x":[1,0,0],"kind":"end"},
+      {"name":"shaft","origin":[0,0,0],"z":[0,0,1],"x":[1,0,0],"kind":"bore","diameter":"8.3 mm"}
+    ]
+  },
+  {
+    "id": "hex-bar-sw19-m8",
+    "name": "Aluminium hexagon SW19 with M8 thread through",
+    "category": "linear",
+    "source": "slot-profile-accessories/Aluminium-hexagon-SW19-length-77mm-M8-all-the-way-through/MOTEDIS-AHSW19-77/MOTEDIS AHSW19-77.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "AHSW19-77",
+    "supplier_url": "https://www.motedis.com/en/Aluminium-hexagon-SW19-length-77mm-M8-all-the-way-through",
+    "designation": "Hexagon SW19 M8 L={L}",
+    "rows": [
+      {"name":"77 mm","select":{"Length":"77 mm"},"values":{"L":"77 mm"},"part_number":"AHSW19-77"},
+      {"name":"80 mm","select":{"Length":"80 mm"},"values":{"L":"80 mm"},"part_number":"AHSW19-80","supplier_url":"https://www.motedis.com/en/Aluminium-hexagon-SW19-length-80mm-M8-all-the-way-through"}
+    ],
+    "build": {
+      "role": "linear",
+      "length": {"parameter":"L","min":"10 mm","max":"80 mm","stock":["77 mm","80 mm"]},
+      "frames": [{"name":"end_a","kind":"end"},{"name":"end_b","kind":"end"},{"name":"shaft","kind":"bore","diameter":"6.8 mm"}],
+      "linear": {"kind":"shaft","size":"SW19"}
+    },
+    "frames": [
+      {"name":"end_a","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"end"},
+      {"name":"end_b","origin":[0,0,"L"],"z":[0,0,1],"x":[1,0,0],"kind":"end"},
+      {"name":"shaft","origin":[0,0,0],"z":[0,0,1],"x":[1,0,0],"kind":"bore","diameter":"6.8 mm"}
+    ]
+  },
+  {
+    "id": "axle-hex-sw19-118-d11",
+    "name": "Axle aluminium hexagon SW19 L=118.5 mm, D11",
+    "category": "linear",
+    "source": "slot-profile-accessories/Axis-aluminium-hexagon-SW19-L1185mm-D11/Motedis-SW19-L-118-5mm-D11/Motedis_SW19 L=118,5mm - D11.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "SW19 L=118,5mm - D11",
+    "supplier_url": "https://www.motedis.com/en/Axis-aluminium-hexagon-SW19-L1185mm-D11",
+    "designation": "Axle aluminium hexagon SW19 L=118.5 mm, D11",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"shaft","kind":"shaft"}],
+      "linear": {"kind":"shaft","size":"SW19"}
+    },
+    "frames": [
+      {"name":"shaft","origin":[0,0,0],"z":[0,0,1],"x":[1,0,0],"kind":"shaft"}
+    ]
+  },
+  {
+    "id": "axle-hex-sw19-118-m8",
+    "name": "Axle steel hexagon SW19 L=118.5 mm, M8",
+    "category": "linear",
+    "source": "slot-profile-accessories/Axis-steel-hexagon-SW19-L1185mm-M8/Motedis-SW19-L-118-5mm-M8/Motedis_SW19 L=118,5mm - M8.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "SW19 L=118,5mm - M8",
+    "supplier_url": "https://www.motedis.com/en/Axis-steel-hexagon-SW19-L1185mm-M8",
+    "designation": "Axle steel hexagon SW19 L=118.5 mm, M8",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"shaft","kind":"shaft"}],
+      "linear": {"kind":"shaft","size":"SW19"}
+    },
+    "frames": [
+      {"name":"shaft","origin":[0,0,0],"z":[0,0,1],"x":[1,0,0],"kind":"shaft"}
+    ]
+  },
+  {
+    "id": "hex-spacer-sw19",
+    "name": "Hexagonal spacer SW19 for plastic joints",
+    "category": "linear",
+    "source": "slot-profile-accessories/Hexagonal-Spacer/HEX-SPACER/HEX-SPACER.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "HEX-SPACERSW19",
+    "supplier_url": "https://www.motedis.com/en/Hexagonal-Spacer",
+    "designation": "Hexagonal spacer SW19 for plastic joints",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"bearing","size":"SW19","mate":{"frame":"bore","on":"shaft","joint":"rigid"}}
+    },
+    "frames": [
+      {"name":"bore","origin":[0,0,0],"z":[0,0,1],"x":[1,0,0],"kind":"bore"}
+    ]
+  },
+  {
+    "id": "belt-htd-8m-936",
+    "name": "Closed timing belt HTD 8M, 936 mm",
+    "category": "linear",
+    "source": "slot-profile-accessories/Driving-belt-HTD-8M-936mm/Motedis-DRIVBEL936/Motedis_DRIVBEL936.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "DRIVBEL936",
+    "supplier_url": "https://www.motedis.com/en/Driving-belt-HTD-8M-936mm",
+    "designation": "Closed timing belt HTD 8M, 936 mm",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"end","kind":"end"}],
+      "linear": {"kind":"belt","size":"HTD8M"}
+    },
+    "frames": [
+      {"name":"end","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"end"}
+    ]
+  },
+  {
+    "id": "gear-motor-42-10rpm",
+    "name": "42 mm planetary gearbox and permanent magnet DC motor, 10 rpm",
+    "category": "motors",
+    "source": "slot-profile-accessories/42-mm-planetary-gearbox-and-permanent-magnet-DC-motor-10-rpm/Motedis_PMM-24V-9RPM.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "PMM-24V-9RPM",
+    "supplier_url": "https://www.motedis.com/en/42-mm-planetary-gearbox-and-permanent-magnet-DC-motor-10-rpm",
+    "designation": "42 mm planetary gearbox and permanent magnet DC motor, 10 rpm",
+    "rows": []
+  },
+  {
+    "id": "gear-motor-62-140rpm",
+    "name": "62 mm planetary gearbox and permanent magnet DC motor, 140 rpm",
+    "category": "motors",
+    "source": "slot-profile-accessories/62-mm-planetary-gearbox-and-permanent-magnet-DC-motor-140-rpm/Motedis_PMM-24V-143RPM.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "PMM-24V-143RPM",
+    "supplier_url": "https://www.motedis.com/en/62-mm-planetary-gearbox-and-permanent-magnet-DC-motor-140-rpm",
+    "designation": "62 mm planetary gearbox and permanent magnet DC motor, 140 rpm",
+    "rows": []
+  }
+]

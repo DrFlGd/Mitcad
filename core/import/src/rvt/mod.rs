@@ -128,6 +128,11 @@ pub struct ElementLine {
     pub volume_difference: Option<f64>,
     /// mm.
     pub box_difference: Option<f64>,
+    /// The volume (mm³) of the geometry the file keeps, where it was
+    /// checked against that (`volume_difference` then its relative
+    /// difference).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kept_volume: Option<f64>,
     pub notes: Vec<String>,
     /// Its body is hidden (a box of an element that is not structural).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -547,6 +552,15 @@ pub fn reference_openings(
     out
 }
 
+/// What an element built as features was checked against without a
+/// reference: the geometry the file keeps of it.
+pub const KEPT: &str = "the geometry the file keeps";
+/// Fraction of the volume of the geometry the file keeps the built volume
+/// may differ by (a little more than the reference's: the file's walls
+/// are cleaned up at their joins in ways the features follow only
+/// nearly).
+pub const KEPT_VOLUME_TOLERANCE: f64 = 0.02;
+
 /// Fraction of the reference volume the built volume may differ by.
 pub const VOLUME_TOLERANCE: f64 = 0.01;
 /// How far (mm) the built box's sides may lie from the reference's.
@@ -577,6 +591,10 @@ struct Pending<'m> {
     attached: Vec<String>,
     /// A wall's openings (mitcad#345).
     openings: Vec<plan::WallOpening>,
+    /// The volume (mm³) and box of the geometry the file keeps of it,
+    /// where that meshes closed: what it is checked against without a
+    /// reference.
+    kept: Option<(f64, Bbox)>,
 }
 
 /// An element's features and notes in a batch, or why they did not build;
@@ -663,6 +681,7 @@ fn check(
     reference: Option<&Reference>,
     volume: Option<f64>,
     bbox: Option<Bbox>,
+    kept: Option<(f64, Bbox)>,
 ) -> Result<&'static str, String> {
     let bbox = bbox.ok_or("its features made no body")?;
     let volume = volume
@@ -692,7 +711,33 @@ fn check(
         }
         return Ok("reference");
     }
-    // No reference solid: the element's stored box must hold it.
+    // No reference solid: the box of the geometry the file keeps must
+    // hold it (a wall's stored box also holds its layers' faces, which
+    // reach its unconnected height).
+    if let Some((kv, kb)) = kept {
+        line.kept_volume = Some(kv);
+        let d = (volume - kv).abs() / kv;
+        line.volume_difference = Some(d);
+        if d > KEPT_VOLUME_TOLERANCE {
+            return Err(format!(
+                "its volume {:.4} m³ differs from the geometry the file keeps ({:.4} m³) by {:.2} %",
+                volume * 1e-9,
+                kv * 1e-9,
+                d * 100.0
+            ));
+        }
+        let out = (0..3)
+            .map(|k| (kb.0[k] - bbox.0[k]).max(bbox.1[k] - kb.1[k]))
+            .fold(f64::NEG_INFINITY, f64::max);
+        line.box_difference = Some(out.max(0.0));
+        if out > BOX_TOLERANCE_MM {
+            return Err(format!(
+                "its body reaches {out:.1} mm outside the geometry the file keeps"
+            ));
+        }
+        return Ok(KEPT);
+    }
+    // Else the element's stored box must hold it.
     let stored = e
         .bbox
         .ok_or("no reference solid and no stored box to check against")?;
@@ -740,15 +785,27 @@ fn expected_openings(
 /// An attached wall's heights against its stored box, both ways
 /// (mitcad#348): checked against the stored box alone, a wall too low
 /// (its top not reaching its roof) would pass.
-fn check_heights(e: &Element, bbox: Option<Bbox>, attached: &[String]) -> Result<(), String> {
-    let (Some(bbox), Some(stored)) = (bbox, e.bbox) else {
+fn check_heights(
+    e: &Element,
+    bbox: Option<Bbox>,
+    attached: &[String],
+    kept: Option<(f64, Bbox)>,
+) -> Result<(), String> {
+    let stored = kept
+        .map(|(_, b)| (b.0[2], b.1[2]))
+        .or_else(|| e.bbox.map(|s| (s[2] * FOOT_MM, s[5] * FOOT_MM)));
+    let (Some(bbox), Some((lo, hi))) = (bbox, stored) else {
         return Ok(());
     };
-    let (lo, hi) = (stored[2] * FOOT_MM, stored[5] * FOOT_MM);
+    let box_of = if kept.is_some() {
+        "the geometry the file keeps"
+    } else {
+        "its stored box"
+    };
     let d = (bbox.0[2] - lo).abs().max((bbox.1[2] - hi).abs());
     if d > BOX_TOLERANCE_MM {
         return Err(format!(
-            "its heights {:.0} to {:.0} mm lie {d:.1} mm from its stored box's ({:.0} to {:.0} mm; {})",
+            "its heights {:.0} to {:.0} mm lie {d:.1} mm from {box_of}'s ({:.0} to {:.0} mm; {})",
             bbox.0[2],
             bbox.1[2],
             lo,
@@ -856,6 +913,17 @@ impl<K: Kernel> Importer<'_, '_, K> {
         out
     }
 
+    /// The volume (mm³) and box of the geometry the file keeps of an
+    /// element, where it meshes closed with every face.
+    fn kept(&mut self, model: &Model, e: &Element) -> Option<(f64, Bbox)> {
+        let mesh = geometry::element_mesh(model, e.id, &mut self.tess, &self.parts)?.ok()?;
+        if !mesh.closed || mesh.faces_left_out > 0 {
+            return None;
+        }
+        let volume = mesh.volume.filter(|v| *v > 0.0)?;
+        Some((volume, mesh.bounds()?))
+    }
+
     /// An element's plan made ready for a batch: its label, appearance,
     /// body name (taken) and the kernel's prepared items.
     #[allow(clippy::too_many_arguments)]
@@ -875,9 +943,11 @@ impl<K: Kernel> Importer<'_, '_, K> {
             .material
             .and_then(|m| self.appearance(model_key, model, m));
         let body_name = self.unique_body(&label);
+        let kept = self.kept(model, e);
         let kernel = self.document.kernel();
         Pending {
             e,
+            kept,
             kind,
             line,
             slot,
@@ -980,6 +1050,7 @@ impl<K: Kernel> Importer<'_, '_, K> {
         features: &[FeatureUid],
         line: &mut ElementLine,
         attached: &[String],
+        kept: Option<(f64, Bbox)>,
     ) -> Result<(&'static str, Vec<FeatureUid>), String> {
         // A cut that removes nothing stays, suppressed; another failing
         // feature fails the element.
@@ -1000,9 +1071,9 @@ impl<K: Kernel> Importer<'_, '_, K> {
         let (volume, bbox, bodies) = measure(self.document, features);
         line.volume = volume;
         line.bodies = bodies;
-        let against = check(line, e, self.options.reference, volume, bbox)?;
-        if against == "stored box" && !attached.is_empty() {
-            check_heights(e, bbox, attached)?;
+        let against = check(line, e, self.options.reference, volume, bbox, kept)?;
+        if against != "reference" && !attached.is_empty() {
+            check_heights(e, bbox, attached, kept)?;
         }
         Ok((against, misses))
     }
@@ -1035,7 +1106,8 @@ impl<K: Kernel> Importer<'_, '_, K> {
                 .map(|((b, p), line)| {
                     let (features, notes, cuts) = b?;
                     line.notes.extend(notes);
-                    let (against, misses) = self.judge(p.e, &features, line, &p.attached)?;
+                    let (against, misses) =
+                        self.judge(p.e, &features, line, &p.attached, p.kept)?;
                     Ok((against, features, misses, cuts))
                 })
                 .collect(),
@@ -1293,6 +1365,29 @@ impl<K: Kernel> Importer<'_, '_, K> {
                 "a curtain wall: its panels and mullions come in as elements of their own".into(),
             );
             self.report.curtain_walls += 1;
+            self.report.elements.push(line);
+            return;
+        }
+        // Cut away whole by the elements joined to it, in the file too: its
+        // bodies there bound nothing (faces without edges).
+        if line
+            .notes
+            .iter()
+            .any(|n| n.ends_with("its features made no body"))
+            && model.geometry.get(&e.id).is_some_and(|g| {
+                !g.solids.is_empty()
+                    && g.instances.is_empty()
+                    && g.solids
+                        .iter()
+                        .all(|s| s.faces.iter().all(|f| f.loops.is_empty()))
+            })
+        {
+            line.outcome = "not built".into();
+            line.notes.push(
+                "the elements that cut it remove all of it, as in the geometry the file keeps \
+                 (its faces have no edges): no body"
+                    .into(),
+            );
             self.report.elements.push(line);
             return;
         }

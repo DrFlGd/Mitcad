@@ -511,7 +511,11 @@ names. Each entry is one library component:
   narrowest slot found) and `build.mass_per_metre` (the design's
   volume per length in aluminium, 2.7 g/cm³), each only when the group file has none; `build.length.parameter`
   for a section.
-- The designs' timelines: a section part has `Section` (the sketch) and
+- The designs hold their features in the root, as a part: no components,
+  occurrences, active component or root policy (each starts from a blank
+  design `mitcad-cli` makes, not from MCP's `document_create`, whose root
+  is an assembly; a design that has them is left out). Their timelines: a
+  section part has `Section` (the sketch) and
   `Profile` (the extrusion), and with a pitch `Hole plane <n>`, `Hole
   <n>` and `Holes at the pitch`; a solid its base feature and `Placed` (the
   move, with `place`); a model its boxes and `Centred`. Then the joint

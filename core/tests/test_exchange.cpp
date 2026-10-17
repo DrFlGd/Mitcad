@@ -15,6 +15,11 @@
 //                                       folder (mitcad#196; CLI and UI tests);
 //                                       with <folder>, the documents there
 //                                       without references.json
+//   test_exchange --write-f3d-deviation <dir>
+//                                       writes a design whose rounding
+//                                       deviates from the file's, with its
+//                                       timeline as a dump (mitcad#379; CLI
+//                                       and UI tests)
 //   test_exchange --write-ipt <file>    writes a small .ipt part file
 //                                       (mitcad_ipt::testdata; CLI and UI
 //                                       tests)
@@ -790,6 +795,10 @@ int main(int argc, char** argv) {
     }
     if (args.size() == 2 && args[0] == "--write-f3d-package") {
       mitcad::bridge::f3d_write_test_package(args[1]);
+      return 0;
+    }
+    if (args.size() == 2 && args[0] == "--write-f3d-deviation") {
+      mitcad::bridge::f3d_write_test_deviation(args[1]);
       return 0;
     }
     if (args.size() == 2 && args[0] == "--write-ipt") {

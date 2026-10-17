@@ -312,6 +312,8 @@ impl crate::Document {
                         reference_files: resolver.files(),
                         stack: [stack.clone(), vec![this.clone()]].concat(),
                         reference_cache: Some(cache.clone()),
+                        // (The items of the design opened only, mitcad#379.)
+                        accept_deviations: None,
                         ..options.clone()
                     };
                     let imported = self.import_reference(&file, &sub_options);

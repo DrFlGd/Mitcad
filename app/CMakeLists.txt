@@ -141,6 +141,8 @@ qt_add_executable(mitcad
   files/FileFormats.hpp
   files/F3dImport.cpp
   files/F3dImport.hpp
+  files/ImportDeviations.cpp
+  files/ImportDeviations.hpp
   files/MainWindowFiles.cpp
   # Background computation (P7): the worker thread, the progress dialog and
   # the main window's jobs.
@@ -295,6 +297,9 @@ qt_add_resources(mitcad branding PREFIX / FILES ${MITCAD_APP_ICONS})
 if(WIN32)
   target_sources(mitcad PRIVATE branding/mitcad.rc)
 endif()
+# Narrow strings as UTF-8 on Windows too: the paths the application hands
+# the bridge and the geometry as std::string (cmake/Utf8CodePage.cmake).
+mitcad_utf8_code_page(mitcad)
 
 # Sketch selection filters: three states per category, body edges in sight
 # or behind faces, Shift's wider clicks, Project's sources (mitcad#217).
@@ -652,6 +657,7 @@ add_executable(mitcad-render
 # Crash reports (mitcad#62), with the worker's functions named in their
 # stacks as the application's are.
 target_sources(mitcad-render PRIVATE report/CrashHandler.cpp report/CrashHandler.hpp)
+mitcad_utf8_code_page(mitcad-render)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_link_options(mitcad-render PRIVATE
     "LINKER:--dynamic-list=${CMAKE_CURRENT_SOURCE_DIR}/report/crash-symbols.list")

@@ -1,0 +1,1205 @@
+{
+  "categories": [{"id":"bearings","name":"Ball bearings"}],
+  "parts": [
+    {
+      "id": "ball-bearing-623",
+      "name": "Deep groove ball bearing 623, 3x10x4",
+      "category": "bearings",
+      "source": "uncategorized/Deep-groove-ball-bearings-623-ZZ-3x10x4mm/Rillenkugellager_623_ZZ_3x10x4mm.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "5698",
+      "supplier_url": "https://www.motedis.com/en/Deep-groove-ball-bearings-623-ZZ-3x10x4mm",
+      "designation": "Deep groove ball bearing 623-ZZ 3x10x4",
+      "rows": [],
+      "build": {
+        "role": "linear",
+        "frames": [{"name":"bore","kind":"bore","diameter":"3 mm"}],
+        "linear": {
+          "kind": "bearing",
+          "size": "3 mm",
+          "mate": {"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}
+        }
+      },
+      "frames": [{"name":"bore","origin":[0,0,1.9],"z":[0,0,1],"x":[1,0,0],"kind":"bore","diameter":"3 mm"}]
+    },
+    {
+      "id": "ball-bearing-624",
+      "name": "Deep groove ball bearing 624, 4x13x5",
+      "category": "bearings",
+      "source": "uncategorized/Deep-groove-ball-bearings-624-ZZ-4x13x5mm/Rillenkugellager_624_ZZ_4x13x5mm.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "5699",
+      "supplier_url": "https://www.motedis.com/en/Deep-groove-ball-bearings-624-ZZ-4x13x5mm",
+      "designation": "Deep groove ball bearing 624-ZZ 4x13x5",
+      "rows": [],
+      "build": {
+        "role": "linear",
+        "frames": [{"name":"bore","kind":"bore","diameter":"4 mm"}],
+        "linear": {
+          "kind": "bearing",
+          "size": "4 mm",
+          "mate": {"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}
+        }
+      },
+      "frames": [{"name":"bore","origin":[0,0,2.4],"z":[0,0,1],"x":[1,0,0],"kind":"bore","diameter":"4 mm"}]
+    },
+    {
+      "id": "ball-bearing-605",
+      "name": "Deep groove ball bearing SS605, 5x14x5",
+      "category": "bearings",
+      "source": "uncategorized/Deep-groove-ball-bearings-SS605-2RS-5x14x5/Rillenkugellager_SS605-2RS_5x14x5.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "9547",
+      "supplier_url": "https://www.motedis.com/en/Deep-groove-ball-bearings-SS605-2RS-5x14x5",
+      "designation": "Deep groove ball bearing SS605-2RS 5x14x5, stainless steel",
+      "rows": [],
+      "build": {
+        "role": "linear",
+        "frames": [{"name":"bore","kind":"bore","diameter":"5 mm"}],
+        "linear": {
+          "kind": "bearing",
+          "size": "5 mm",
+          "mate": {"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}
+        }
+      },
+      "frames": [{"name":"bore","origin":[0,0,2.4],"z":[0,0,1],"x":[1,0,0],"kind":"bore","diameter":"5 mm"}]
+    },
+    {
+      "id": "ball-bearing-625",
+      "name": "Deep groove ball bearing 625, 5x16x5",
+      "category": "bearings",
+      "source": "uncategorized/Deep-groove-ball-bearings-625-2Z-5x16x5/Rillenkugellager_625_2Z_5x16x5.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "9545",
+      "supplier_url": "https://www.motedis.com/en/Deep-groove-ball-bearings-625-2Z-5x16x5",
+      "designation": "Deep groove ball bearing {Type} 5x16x5",
+      "rows": [
+        {
+          "name": "625-2Z",
+          "select": {"Type":"625-2Z"},
+          "values": {},
+          "part_number": "9545",
+          "supplier_url": "https://www.motedis.com/en/Deep-groove-ball-bearings-625-2Z-5x16x5",
+          "designation": "Deep groove ball bearing 625-2Z 5x16x5"
+        },
+        {
+          "name": "625-2Z-C3",
+          "select": {"Type":"625-2Z-C3"},
+          "values": {},
+          "part_number": "9546",
+          "supplier_url": "https://www.motedis.com/en/Deep-groove-ball-bearings-625-2Z-C3-5x16x5",
+          "designation": "Deep groove ball bearing 625-2Z/C3 5x16x5"
+        },
+        {
+          "name": "SS625-2RS",
+          "select": {"Type":"SS625-2RS"},
+          "values": {},
+          "part_number": "9548",
+          "supplier_url": "https://www.motedis.com/en/Deep-groove-ball-bearings-SS625-2RS-5x16x5",
+          "designation": "Deep groove ball bearing SS625-2RS 5x16x5, stainless steel"
+        }
+      ],
+      "build": {
+        "role": "linear",
+        "frames": [{"name":"bore","kind":"bore","diameter":"5 mm"}],
+        "linear": {
+          "kind": "bearing",
+          "size": "5 mm",
+          "mate": {"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}
+        }
+      },
+      "frames": [{"name":"bore","origin":[0,0,2.4],"z":[0,0,1],"x":[1,0,0],"kind":"bore","diameter":"5 mm"}]
+    },
+    {
+      "id": "ball-bearing-606",
+      "name": "Deep groove ball bearing SS606, 6x17x6",
+      "category": "bearings",
+      "source": "uncategorized/Deep-groove-ball-bearings-SS606-2RS-6x17x6/Rillenkugellager_SS606-2RS_6x17x6.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "9551",
+      "supplier_url": "https://www.motedis.com/en/Deep-groove-ball-bearings-SS606-2RS-6x17x6",
+      "designation": "Deep groove ball bearing SS606-2RS 6x17x6, stainless steel",
+      "rows": [],
+      "build": {
+        "role": "linear",
+        "frames": [{"name":"bore","kind":"bore","diameter":"6 mm"}],
+        "linear": {
+          "kind": "bearing",
+          "size": "6 mm",
+          "mate": {"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}
+        }
+      },
+      "frames": [{"name":"bore","origin":[0,0,2.9],"z":[0,0,1],"x":[1,0,0],"kind":"bore","diameter":"6 mm"}]
+    },
+    {
+      "id": "ball-bearing-626",
+      "name": "Deep groove ball bearing 626, 6x19x6",
+      "category": "bearings",
+      "source": "uncategorized/Deep-groove-ball-bearings-626-2RS-6x19x6/Rillenkugellager_626_2RS_6x19x6.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "5700",
+      "supplier_url": "https://www.motedis.com/en/Deep-groove-ball-bearings-626-2RS-6x19x6",
+      "designation": "Deep groove ball bearing {Type} 6x19x6",
+      "rows": [
+        {
+          "name": "626-2RS",
+          "select": {"Type":"626-2RS"},
+          "values": {},
+          "part_number": "5700",
+          "supplier_url": "https://www.motedis.com/en/Deep-groove-ball-bearings-626-2RS-6x19x6",
+          "designation": "Deep groove ball bearing 626-2RS 6x19x6"
+        },
+        {
+          "name": "626-2RS-C3",
+          "select": {"Type":"626-2RS-C3"},
+          "values": {},
+          "part_number": "9554",
+          "supplier_url": "https://www.motedis.com/en/Deepgrooveballbearings626-2RS2FC36x19x6",
+          "designation": "Deep groove ball bearing 626-2RS/C3 6x19x6"
+        },
+        {
+          "name": "626-2Z-C3",
+          "select": {"Type":"626-2Z-C3"},
+          "values": {},
+          "part_number": "9550",
+          "supplier_url": "https://www.motedis.com/en/Deep-groove-ball-bearings-626-2Z-C3-6x19x6",
+          "designation": "Deep groove ball bearing 626-2Z/C3 6x19x6"
+        },
+        {
+          "name": "SS626-2RS",
+          "select": {"Type":"SS626-2RS"},
+          "values": {},
+          "part_number": "9552",
+          "supplier_url": "https://www.motedis.com/en/Deep-groove-ball-bearings-SS626-2RS-6x19x6",
+          "designation": "Deep groove ball bearing SS626-2RS 6x19x6, stainless steel"
+        }
+      ],
+      "build": {
+        "role": "linear",
+        "frames": [{"name":"bore","kind":"bore","diameter":"6 mm"}],
+        "linear": {
+          "kind": "bearing",
+          "size": "6 mm",
+          "mate": {"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}
+        }
+      },
+      "frames": [{"name":"bore","origin":[0,0,2.9],"z":[0,0,1],"x":[1,0,0],"kind":"bore","diameter":"6 mm"}]
+    },
+    {
+      "id": "ball-bearing-607",
+      "name": "Deep groove ball bearing 607, 7x19x6",
+      "category": "bearings",
+      "source": "uncategorized/Deepgrooveballbearings607-2RS7x19x6/Rillenkugellager_607-2RS_7x19x6.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "9559",
+      "supplier_url": "https://www.motedis.com/en/Deepgrooveballbearings607-2RS7x19x6",
+      "designation": "Deep groove ball bearing {Type} 7x19x6",
+      "rows": [
+        {
+          "name": "607-2RS",
+          "select": {"Type":"607-2RS"},
+          "values": {},
+          "part_number": "9559",
+          "supplier_url": "https://www.motedis.com/en/Deepgrooveballbearings607-2RS7x19x6",
+          "designation": "Deep groove ball bearing 607-2RS 7x19x6"
+        },
+        {
+          "name": "607-2Z",
+          "select": {"Type":"607-2Z"},
+          "values": {},
+          "part_number": "9555",
+          "supplier_url": "https://www.motedis.com/en/Deep-groove-ball-bearings-607-2Z-7x19x6",
+          "designation": "Deep groove ball bearing 607-2Z 7x19x6"
+        },
+        {
+          "name": "SS607-2RS",
+          "select": {"Type":"SS607-2RS"},
+          "values": {},
+          "part_number": "9558",
+          "supplier_url": "https://www.motedis.com/en/Deep-groove-ball-bearings-SS607-2RS-7x19x6",
+          "designation": "Deep groove ball bearing SS607-2RS 7x19x6, stainless steel"
+        }
+      ],
+      "build": {
+        "role": "linear",
+        "frames": [{"name":"bore","kind":"bore","diameter":"7 mm"}],
+        "linear": {
+          "kind": "bearing",
+          "size": "7 mm",
+          "mate": {"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}
+        }
+      },
+      "frames": [{"name":"bore","origin":[0,0,2.9],"z":[0,0,1],"x":[1,0,0],"kind":"bore","diameter":"7 mm"}]
+    },
+    {
+      "id": "ball-bearing-627",
+      "name": "Deep groove ball bearing 627, 7x22x7",
+      "category": "bearings",
+      "source": "uncategorized/Deepgrooveballbearings627-2RS7x22x7/Rillenkugellager_627-2RS_7x22x7.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "9560",
+      "supplier_url": "https://www.motedis.com/en/Deepgrooveballbearings627-2RS7x22x7",
+      "designation": "Deep groove ball bearing {Type} 7x22x7",
+      "rows": [
+        {
+          "name": "627-2RS",
+          "select": {"Type":"627-2RS"},
+          "values": {},
+          "part_number": "9560",
+          "supplier_url": "https://www.motedis.com/en/Deepgrooveballbearings627-2RS7x22x7",
+          "designation": "Deep groove ball bearing 627-2RS 7x22x7"
+        },
+        {
+          "name": "627-2Z",
+          "select": {"Type":"627-2Z"},
+          "values": {},
+          "part_number": "9556",
+          "supplier_url": "https://www.motedis.com/en/Deep-groove-ball-bearings-627-2Z-7x22x7",
+          "designation": "Deep groove ball bearing 627-2Z 7x22x7"
+        }
+      ],
+      "build": {
+        "role": "linear",
+        "frames": [{"name":"bore","kind":"bore","diameter":"7 mm"}],
+        "linear": {
+          "kind": "bearing",
+          "size": "7 mm",
+          "mate": {"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}
+        }
+      },
+      "frames": [{"name":"bore","origin":[0,0,3.4],"z":[0,0,1],"x":[1,0,0],"kind":"bore","diameter":"7 mm"}]
+    },
+    {
+      "id": "ball-bearing-608",
+      "name": "Deep groove ball bearing 608, 8x22x7",
+      "category": "bearings",
+      "source": "uncategorized/Deep-groove-ball-bearings-608-2RS-8x22x7mm/Rillenkugellager_608_2RS_8x22x7mm.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "1457",
+      "supplier_url": "https://www.motedis.com/en/Deep-groove-ball-bearings-608-2RS-8x22x7mm",
+      "designation": "Deep groove ball bearing {Type} 8x22x7",
+      "rows": [
+        {
+          "name": "608-2RS",
+          "select": {"Type":"608-2RS"},
+          "values": {},
+          "part_number": "1457",
+          "supplier_url": "https://www.motedis.com/en/Deep-groove-ball-bearings-608-2RS-8x22x7mm",
+          "designation": "Deep groove ball bearing 608-2RS 8x22x7"
+        },
+        {
+          "name": "608-2RS-C3",
+          "select": {"Type":"608-2RS-C3"},
+          "values": {},
+          "part_number": "9562",
+          "supplier_url": "https://www.motedis.com/en/Deepgrooveballbearings608-2RS2FC38x22x7",
+          "designation": "Deep groove ball bearing 608-2RS/C3 8x22x7"
+        }
+      ],
+      "build": {
+        "role": "linear",
+        "frames": [{"name":"bore","kind":"bore","diameter":"8 mm"}],
+        "linear": {
+          "kind": "bearing",
+          "size": "8 mm",
+          "mate": {"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}
+        }
+      },
+      "frames": [{"name":"bore","origin":[0,0,3.4],"z":[0,0,1],"x":[1,0,0],"kind":"bore","diameter":"8 mm"}]
+    },
+    {
+      "id": "ball-bearing-628",
+      "name": "Deep groove ball bearing 628, 8x24x8",
+      "category": "bearings",
+      "source": "uncategorized/Deep-groove-ball-bearings-628-2RS-8x24x8mm/Rillenkugellager_628_2RS_8x24x8mm.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "5701",
+      "supplier_url": "https://www.motedis.com/en/Deep-groove-ball-bearings-628-2RS-8x24x8mm",
+      "designation": "Deep groove ball bearing 628-2RS 8x24x8",
+      "rows": [],
+      "build": {
+        "role": "linear",
+        "frames": [{"name":"bore","kind":"bore","diameter":"8 mm"}],
+        "linear": {
+          "kind": "bearing",
+          "size": "8 mm",
+          "mate": {"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}
+        }
+      },
+      "frames": [{"name":"bore","origin":[0,0,3.9],"z":[0,0,1],"x":[1,0,0],"kind":"bore","diameter":"8 mm"}]
+    },
+    {
+      "id": "ball-bearing-699",
+      "name": "Deep groove ball bearing 699, 9x20x6",
+      "category": "bearings",
+      "source": "uncategorized/Deep-groove-ball-bearings-699-2RS-9x20x6mm/Rillenkugellager_699_2RS_9x20x6mm.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "1458",
+      "supplier_url": "https://www.motedis.com/en/Deep-groove-ball-bearings-699-2RS-9x20x6mm",
+      "designation": "Deep groove ball bearing 699-2RS 9x20x6",
+      "rows": [],
+      "build": {
+        "role": "linear",
+        "frames": [{"name":"bore","kind":"bore","diameter":"9 mm"}],
+        "linear": {
+          "kind": "bearing",
+          "size": "9 mm",
+          "mate": {"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}
+        }
+      },
+      "frames": [{"name":"bore","origin":[0,0,2.9],"z":[0,0,1],"x":[1,0,0],"kind":"bore","diameter":"9 mm"}]
+    },
+    {
+      "id": "ball-bearing-609",
+      "name": "Deep groove ball bearing 609, 9x24x7",
+      "category": "bearings",
+      "source": "uncategorized/Deep-groove-ball-bearings-609-2Z-9x24x7/Rillenkugellager_609-2RS_9x24x7.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "9564",
+      "supplier_url": "https://www.motedis.com/en/Deep-groove-ball-bearings-609-2Z-9x24x7",
+      "designation": "Deep groove ball bearing 609-2Z 9x24x7",
+      "rows": [],
+      "build": {
+        "role": "linear",
+        "frames": [{"name":"bore","kind":"bore","diameter":"9 mm"}],
+        "linear": {
+          "kind": "bearing",
+          "size": "9 mm",
+          "mate": {"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}
+        }
+      },
+      "frames": [{"name":"bore","origin":[0,0,3.4],"z":[0,0,1],"x":[1,0,0],"kind":"bore","diameter":"9 mm"}]
+    },
+    {
+      "id": "ball-bearing-629",
+      "name": "Deep groove ball bearing 629, 9x26x8",
+      "category": "bearings",
+      "source": "uncategorized/Deep-groove-ball-bearings-629-2RS-9X26x8mm/Rillenkugellager_629_2RS_9X26x8mm.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "1459",
+      "supplier_url": "https://www.motedis.com/en/Deep-groove-ball-bearings-629-2RS-9X26x8mm",
+      "designation": "Deep groove ball bearing {Type} 9x26x8",
+      "rows": [
+        {
+          "name": "629-2RS",
+          "select": {"Type":"629-2RS"},
+          "values": {},
+          "part_number": "1459",
+          "supplier_url": "https://www.motedis.com/en/Deep-groove-ball-bearings-629-2RS-9X26x8mm",
+          "designation": "Deep groove ball bearing 629-2RS 9x26x8"
+        },
+        {
+          "name": "629-2Z",
+          "select": {"Type":"629-2Z"},
+          "values": {},
+          "part_number": "9563",
+          "supplier_url": "https://www.motedis.com/en/Deep-groove-ball-bearings-629-2Z-9x26x8",
+          "designation": "Deep groove ball bearing 629-2Z 9x26x8"
+        }
+      ],
+      "build": {
+        "role": "linear",
+        "frames": [{"name":"bore","kind":"bore","diameter":"9 mm"}],
+        "linear": {
+          "kind": "bearing",
+          "size": "9 mm",
+          "mate": {"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}
+        }
+      },
+      "frames": [{"name":"bore","origin":[0,0,3.9],"z":[0,0,1],"x":[1,0,0],"kind":"bore","diameter":"9 mm"}]
+    },
+    {
+      "id": "ball-bearing-6800",
+      "name": "Deep groove ball bearing 6800 (61800), 10x19x5",
+      "category": "bearings",
+      "source": "uncategorized/Deepgrooveballbearings6800-2RS10x19x5/Rillenkugellager_6800-2RS_10x19x5.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "9575",
+      "supplier_url": "https://www.motedis.com/en/Deepgrooveballbearings6800-2RS10x19x5",
+      "designation": "Deep groove ball bearing {Type} 10x19x5",
+      "rows": [
+        {
+          "name": "6800-2RS",
+          "select": {"Type":"6800-2RS"},
+          "values": {},
+          "part_number": "9575",
+          "supplier_url": "https://www.motedis.com/en/Deepgrooveballbearings6800-2RS10x19x5",
+          "designation": "Deep groove ball bearing 6800-2RS 10x19x5"
+        },
+        {
+          "name": "SS61800-2RS",
+          "select": {"Type":"SS61800-2RS"},
+          "values": {},
+          "part_number": "9571",
+          "supplier_url": "https://www.motedis.com/en/Deep-groove-ball-bearings-SS61800-2RS-10x19x5",
+          "designation": "Deep groove ball bearing SS61800-2RS 10x19x5, stainless steel"
+        }
+      ],
+      "build": {
+        "role": "linear",
+        "frames": [{"name":"bore","kind":"bore","diameter":"10 mm"}],
+        "linear": {
+          "kind": "bearing",
+          "size": "10 mm",
+          "mate": {"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}
+        }
+      },
+      "frames": [{"name":"bore","origin":[0,0,2.4],"z":[0,0,1],"x":[1,0,0],"kind":"bore","diameter":"10 mm"}]
+    },
+    {
+      "id": "ball-bearing-6900",
+      "name": "Deep groove ball bearing 6900 (61900), 10x22x6",
+      "category": "bearings",
+      "source": "uncategorized/Deep-groove-ball-bearings-61900-6900-2RS-10x22x6mm/Rillenkugellager_61900_6900_2RS_10x22x6mm.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "4757",
+      "supplier_url": "https://www.motedis.com/en/Deep-groove-ball-bearings-61900-6900-2RS-10x22x6mm",
+      "designation": "Deep groove ball bearing 61900-2RS 10x22x6",
+      "rows": [],
+      "build": {
+        "role": "linear",
+        "frames": [{"name":"bore","kind":"bore","diameter":"10 mm"}],
+        "linear": {
+          "kind": "bearing",
+          "size": "10 mm",
+          "mate": {"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}
+        }
+      },
+      "frames": [{"name":"bore","origin":[0,0,2.9],"z":[0,0,1],"x":[1,0,0],"kind":"bore","diameter":"10 mm"}]
+    },
+    {
+      "id": "ball-bearing-6000",
+      "name": "Deep groove ball bearing 6000, 10x26x8",
+      "category": "bearings",
+      "source": "uncategorized/Deep-groove-ball-bearings-6000-2RS-10x26x8mm/Rillenkugellager_6000_2RS_10x26x8mm.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "1463",
+      "supplier_url": "https://www.motedis.com/en/Deep-groove-ball-bearings-6000-2RS-10x26x8mm",
+      "designation": "Deep groove ball bearing {Type} 10x26x8",
+      "rows": [
+        {
+          "name": "6000-2RS",
+          "select": {"Type":"6000-2RS"},
+          "values": {},
+          "part_number": "1463",
+          "supplier_url": "https://www.motedis.com/en/Deep-groove-ball-bearings-6000-2RS-10x26x8mm",
+          "designation": "Deep groove ball bearing 6000-2RS 10x26x8"
+        },
+        {
+          "name": "6000-2Z",
+          "select": {"Type":"6000-2Z"},
+          "values": {},
+          "part_number": "9566",
+          "supplier_url": "https://www.motedis.com/en/Deep-groove-ball-bearings-6000-2Z-10x26x8",
+          "designation": "Deep groove ball bearing 6000-2Z 10x26x8"
+        },
+        {
+          "name": "6000-2Z-C3",
+          "select": {"Type":"6000-2Z-C3"},
+          "values": {},
+          "part_number": "9569",
+          "supplier_url": "https://www.motedis.com/en/Deep-groove-ball-bearings-6000-2Z-C3-10x26x8",
+          "designation": "Deep groove ball bearing 6000-2Z/C3 10x26x8"
+        },
+        {
+          "name": "SS6000-2RS",
+          "select": {"Type":"SS6000-2RS"},
+          "values": {},
+          "part_number": "9572",
+          "supplier_url": "https://www.motedis.com/en/Deep-groove-ball-bearings-SS6000-2RS-10x26x8",
+          "designation": "Deep groove ball bearing SS6000-2RS 10x26x8, stainless steel"
+        }
+      ],
+      "build": {
+        "role": "linear",
+        "frames": [{"name":"bore","kind":"bore","diameter":"10 mm"}],
+        "linear": {
+          "kind": "bearing",
+          "size": "10 mm",
+          "mate": {"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}
+        }
+      },
+      "frames": [{"name":"bore","origin":[0,0,3.9],"z":[0,0,1],"x":[1,0,0],"kind":"bore","diameter":"10 mm"}]
+    },
+    {
+      "id": "ball-bearing-6200",
+      "name": "Deep groove ball bearing 6200, 10x30x9",
+      "category": "bearings",
+      "source": "uncategorized/Deep-groove-ball-bearings-6200-2RS-10x30x9mm/Rillenkugellager_6200_2RS_10x30x9mm.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "1462",
+      "supplier_url": "https://www.motedis.com/en/Deep-groove-ball-bearings-6200-2RS-10x30x9mm",
+      "designation": "Deep groove ball bearing {Type} 10x30x9",
+      "rows": [
+        {
+          "name": "6200-2RS",
+          "select": {"Type":"6200-2RS"},
+          "values": {},
+          "part_number": "1462",
+          "supplier_url": "https://www.motedis.com/en/Deep-groove-ball-bearings-6200-2RS-10x30x9mm",
+          "designation": "Deep groove ball bearing 6200-2RS 10x30x9"
+        },
+        {
+          "name": "6200-2RS-C3",
+          "select": {"Type":"6200-2RS-C3"},
+          "values": {},
+          "part_number": "9577",
+          "supplier_url": "https://www.motedis.com/en/Deepgrooveballbearings6200-2RS2FC310x30x9",
+          "designation": "Deep groove ball bearing 6200-2RS/C3 10x30x9"
+        },
+        {
+          "name": "6200-2Z-C3",
+          "select": {"Type":"6200-2Z-C3"},
+          "values": {},
+          "part_number": "9570",
+          "supplier_url": "https://www.motedis.com/en/Deep-groove-ball-bearings-6200-2Z-C3-10x30x9",
+          "designation": "Deep groove ball bearing 6200-2Z/C3 10x30x9"
+        },
+        {
+          "name": "6200-open",
+          "select": {"Type":"6200-open"},
+          "values": {},
+          "part_number": "1476",
+          "supplier_url": "https://www.motedis.com/en/Deep-groove-ball-bearings-6200-open-10x30x9mm",
+          "designation": "Deep groove ball bearing 6200 open 10x30x9"
+        },
+        {
+          "name": "SS6200-2RS",
+          "select": {"Type":"SS6200-2RS"},
+          "values": {},
+          "part_number": "9573",
+          "supplier_url": "https://www.motedis.com/en/Deep-groove-ball-bearings-SS6200-2RS-10x30x9",
+          "designation": "Deep groove ball bearing SS6200-2RS 10x30x9, stainless steel"
+        }
+      ],
+      "build": {
+        "role": "linear",
+        "frames": [{"name":"bore","kind":"bore","diameter":"10 mm"}],
+        "linear": {
+          "kind": "bearing",
+          "size": "10 mm",
+          "mate": {"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}
+        }
+      },
+      "frames": [{"name":"bore","origin":[0,0,4.4],"z":[0,0,1],"x":[1,0,0],"kind":"bore","diameter":"10 mm"}]
+    },
+    {
+      "id": "ball-bearing-6801",
+      "name": "Deep groove ball bearing 6801 (61801), 12x21x5",
+      "category": "bearings",
+      "source": "uncategorized/Deepgrooveballbearings6801-2RS12x21x5/Rillenkugellager_6801-2RS_12x21x5.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "9587",
+      "supplier_url": "https://www.motedis.com/en/Deepgrooveballbearings6801-2RS12x21x5",
+      "designation": "Deep groove ball bearing {Type} 12x21x5",
+      "rows": [
+        {
+          "name": "6801-2RS",
+          "select": {"Type":"6801-2RS"},
+          "values": {},
+          "part_number": "9587",
+          "supplier_url": "https://www.motedis.com/en/Deepgrooveballbearings6801-2RS12x21x5",
+          "designation": "Deep groove ball bearing 6801-2RS 12x21x5"
+        },
+        {
+          "name": "6801-2Z",
+          "select": {"Type":"6801-2Z"},
+          "values": {},
+          "part_number": "9580",
+          "supplier_url": "https://www.motedis.com/en/Deep-groove-ball-bearings-6801-2Z-12x21x5",
+          "designation": "Deep groove ball bearing 6801-2Z 12x21x5"
+        },
+        {
+          "name": "SS61801-2RS",
+          "select": {"Type":"SS61801-2RS"},
+          "values": {},
+          "part_number": "9583",
+          "supplier_url": "https://www.motedis.com/en/Deep-groove-ball-bearings-SS61801-2RS-12x21x5",
+          "designation": "Deep groove ball bearing SS61801-2RS 12x21x5, stainless steel"
+        }
+      ],
+      "build": {
+        "role": "linear",
+        "frames": [{"name":"bore","kind":"bore","diameter":"12 mm"}],
+        "linear": {
+          "kind": "bearing",
+          "size": "12 mm",
+          "mate": {"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}
+        }
+      },
+      "frames": [{"name":"bore","origin":[0,0,2.4],"z":[0,0,1],"x":[1,0,0],"kind":"bore","diameter":"12 mm"}]
+    },
+    {
+      "id": "ball-bearing-6901",
+      "name": "Deep groove ball bearing 6901 (61901), 12x24x6",
+      "category": "bearings",
+      "source": "uncategorized/Deep-groove-ball-bearings-6901-2RS-12x24x6/Rillenkugellager_6901_2RS_12x24x6.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "9404",
+      "supplier_url": "https://www.motedis.com/en/Deep-groove-ball-bearings-6901-2RS-12x24x6",
+      "designation": "Deep groove ball bearing {Type} 12x24x6",
+      "rows": [
+        {
+          "name": "6901-2RS",
+          "select": {"Type":"6901-2RS"},
+          "values": {},
+          "part_number": "9404",
+          "supplier_url": "https://www.motedis.com/en/Deep-groove-ball-bearings-6901-2RS-12x24x6",
+          "designation": "Deep groove ball bearing 6901-2RS 12x24x6"
+        },
+        {
+          "name": "SS61901-2RS",
+          "select": {"Type":"SS61901-2RS"},
+          "values": {},
+          "part_number": "9584",
+          "supplier_url": "https://www.motedis.com/en/Deep-groove-ball-bearings-SS61901-2RS-12x24x6",
+          "designation": "Deep groove ball bearing SS61901-2RS 12x24x6, stainless steel"
+        }
+      ],
+      "build": {
+        "role": "linear",
+        "frames": [{"name":"bore","kind":"bore","diameter":"12 mm"}],
+        "linear": {
+          "kind": "bearing",
+          "size": "12 mm",
+          "mate": {"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}
+        }
+      },
+      "frames": [{"name":"bore","origin":[0,0,2.9],"z":[0,0,1],"x":[1,0,0],"kind":"bore","diameter":"12 mm"}]
+    },
+    {
+      "id": "ball-bearing-6001",
+      "name": "Deep groove ball bearing 6001, 12x28x8",
+      "category": "bearings",
+      "source": "uncategorized/Deep-groove-ball-bearings-6001-2RS-12x28x8mm/Rillenkugellager_6001_2RS_12x28x8mm.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "5697",
+      "supplier_url": "https://www.motedis.com/en/Deep-groove-ball-bearings-6001-2RS-12x28x8mm",
+      "designation": "Deep groove ball bearing {Type} 12x28x8",
+      "rows": [
+        {
+          "name": "6001-2RS",
+          "select": {"Type":"6001-2RS"},
+          "values": {},
+          "part_number": "5697",
+          "supplier_url": "https://www.motedis.com/en/Deep-groove-ball-bearings-6001-2RS-12x28x8mm",
+          "designation": "Deep groove ball bearing 6001-2RS 12x28x8"
+        },
+        {
+          "name": "6001-2Z",
+          "select": {"Type":"6001-2Z"},
+          "values": {},
+          "part_number": "9578",
+          "supplier_url": "https://www.motedis.com/en/Deep-groove-ball-bearings-6001-2Z-12x28x8",
+          "designation": "Deep groove ball bearing 6001-2Z 12x28x8"
+        },
+        {
+          "name": "6001-2Z-C3",
+          "select": {"Type":"6001-2Z-C3"},
+          "values": {},
+          "part_number": "9582",
+          "supplier_url": "https://www.motedis.com/en/Deep-groove-ball-bearings-6001-2Z-C3-12x28x8",
+          "designation": "Deep groove ball bearing 6001-2Z/C3 12x28x8"
+        },
+        {
+          "name": "SS6001-2RS",
+          "select": {"Type":"SS6001-2RS"},
+          "values": {},
+          "part_number": "9586",
+          "supplier_url": "https://www.motedis.com/en/Deep-groove-ball-bearings-SS6001-2RS-12x28x8",
+          "designation": "Deep groove ball bearing SS6001-2RS 12x28x8, stainless steel"
+        }
+      ],
+      "build": {
+        "role": "linear",
+        "frames": [{"name":"bore","kind":"bore","diameter":"12 mm"}],
+        "linear": {
+          "kind": "bearing",
+          "size": "12 mm",
+          "mate": {"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}
+        }
+      },
+      "frames": [{"name":"bore","origin":[0,0,3.9],"z":[0,0,1],"x":[1,0,0],"kind":"bore","diameter":"12 mm"}]
+    },
+    {
+      "id": "ball-bearing-16101",
+      "name": "Deep groove ball bearing 16101, 12x30x8",
+      "category": "bearings",
+      "source": "uncategorized/Deep-groove-ball-bearings-16101-2RS-12x30x8mm/Rillenkugellager_16101_2RS_12x30x8mm.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "1475",
+      "supplier_url": "https://www.motedis.com/en/Deep-groove-ball-bearings-16101-2RS-12x30x8mm",
+      "designation": "Deep groove ball bearing 16101-2RS 12x30x8",
+      "rows": [],
+      "build": {
+        "role": "linear",
+        "frames": [{"name":"bore","kind":"bore","diameter":"12 mm"}],
+        "linear": {
+          "kind": "bearing",
+          "size": "12 mm",
+          "mate": {"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}
+        }
+      },
+      "frames": [{"name":"bore","origin":[0,0,3.9],"z":[0,0,1],"x":[1,0,0],"kind":"bore","diameter":"12 mm"}]
+    },
+    {
+      "id": "ball-bearing-6201",
+      "name": "Deep groove ball bearing 6201, 12x32x10",
+      "category": "bearings",
+      "source": "uncategorized/Deep-groove-ball-bearings-6201-2RS-12x32x10mm/Rillenkugellager_6201_2RS_12x32x10mm.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "1461",
+      "supplier_url": "https://www.motedis.com/en/Deep-groove-ball-bearings-6201-2RS-12x32x10mm",
+      "designation": "Deep groove ball bearing {Type} 12x32x10",
+      "rows": [
+        {
+          "name": "6201-2RS",
+          "select": {"Type":"6201-2RS"},
+          "values": {},
+          "part_number": "1461",
+          "supplier_url": "https://www.motedis.com/en/Deep-groove-ball-bearings-6201-2RS-12x32x10mm",
+          "designation": "Deep groove ball bearing 6201-2RS 12x32x10"
+        },
+        {
+          "name": "6201-2RS-C3",
+          "select": {"Type":"6201-2RS-C3"},
+          "values": {},
+          "part_number": "9589",
+          "supplier_url": "https://www.motedis.com/en/Deepgrooveballbearings6201-2RS2FC312x32x10",
+          "designation": "Deep groove ball bearing 6201-2RS/C3 12x32x10"
+        },
+        {
+          "name": "6201-2Z",
+          "select": {"Type":"6201-2Z"},
+          "values": {},
+          "part_number": "9579",
+          "supplier_url": "https://www.motedis.com/en/Deep-groove-ball-bearings-6201-2Z-12x32x10",
+          "designation": "Deep groove ball bearing 6201-2Z 12x32x10"
+        },
+        {
+          "name": "6201-2Z-C3",
+          "select": {"Type":"6201-2Z-C3"},
+          "values": {},
+          "part_number": "9581",
+          "supplier_url": "https://www.motedis.com/en/Deep-groove-ball-bearings-6201-2Z-C3-12x32x10",
+          "designation": "Deep groove ball bearing 6201-2Z/C3 12x32x10"
+        },
+        {
+          "name": "SS6201-2RS",
+          "select": {"Type":"SS6201-2RS"},
+          "values": {},
+          "part_number": "9585",
+          "supplier_url": "https://www.motedis.com/en/Deep-groove-ball-bearings-SS6201-2RS-12x32x10",
+          "designation": "Deep groove ball bearing SS6201-2RS 12x32x10, stainless steel"
+        }
+      ],
+      "build": {
+        "role": "linear",
+        "frames": [{"name":"bore","kind":"bore","diameter":"12 mm"}],
+        "linear": {
+          "kind": "bearing",
+          "size": "12 mm",
+          "mate": {"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}
+        }
+      },
+      "frames": [{"name":"bore","origin":[0,0,4.9],"z":[0,0,1],"x":[1,0,0],"kind":"bore","diameter":"12 mm"}]
+    },
+    {
+      "id": "ball-bearing-6301",
+      "name": "Deep groove ball bearing 6301, 12x37x12",
+      "category": "bearings",
+      "source": "uncategorized/Deepgrooveballbearings6301-2RS12x37x12/Rillenkugellager_6301-2RS_12x37x12.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "9588",
+      "supplier_url": "https://www.motedis.com/en/Deepgrooveballbearings6301-2RS12x37x12",
+      "designation": "Deep groove ball bearing 6301-2RS 12x37x12",
+      "rows": [],
+      "build": {
+        "role": "linear",
+        "frames": [{"name":"bore","kind":"bore","diameter":"12 mm"}],
+        "linear": {
+          "kind": "bearing",
+          "size": "12 mm",
+          "mate": {"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}
+        }
+      },
+      "frames": [{"name":"bore","origin":[0,0,5.9],"z":[0,0,1],"x":[1,0,0],"kind":"bore","diameter":"12 mm"}]
+    },
+    {
+      "id": "ball-bearing-6802",
+      "name": "Deep groove ball bearing 6802 (61802), 15x24x5",
+      "category": "bearings",
+      "source": "uncategorized/Deepgrooveballbearings6802-2RS15x24x5/Rillenkugellager_6802-2RS_15x24x5.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "9606",
+      "supplier_url": "https://www.motedis.com/en/Deepgrooveballbearings6802-2RS15x24x5",
+      "designation": "Deep groove ball bearing {Type} 15x24x5",
+      "rows": [
+        {
+          "name": "6802-2RS",
+          "select": {"Type":"6802-2RS"},
+          "values": {},
+          "part_number": "9606",
+          "supplier_url": "https://www.motedis.com/en/Deepgrooveballbearings6802-2RS15x24x5",
+          "designation": "Deep groove ball bearing 6802-2RS 15x24x5"
+        },
+        {
+          "name": "SS61802-2RS",
+          "select": {"Type":"SS61802-2RS"},
+          "values": {},
+          "part_number": "9604",
+          "supplier_url": "https://www.motedis.com/en/Deep-groove-ball-bearings-SS61802-2RS-15x24x5",
+          "designation": "Deep groove ball bearing SS61802-2RS 15x24x5, stainless steel"
+        }
+      ],
+      "build": {
+        "role": "linear",
+        "frames": [{"name":"bore","kind":"bore","diameter":"15 mm"}],
+        "linear": {
+          "kind": "bearing",
+          "size": "15 mm",
+          "mate": {"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}
+        }
+      },
+      "frames": [{"name":"bore","origin":[0,0,2.4],"z":[0,0,1],"x":[1,0,0],"kind":"bore","diameter":"15 mm"}]
+    },
+    {
+      "id": "ball-bearing-6902",
+      "name": "Deep groove ball bearing 6902 (61902), 15x28x7",
+      "category": "bearings",
+      "source": "uncategorized/Deep-groove-ball-bearings-6902-2RS-15x28x7/Rillenkugellager_6902_2RS_15x28x7.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "9405",
+      "supplier_url": "https://www.motedis.com/en/Deep-groove-ball-bearings-6902-2RS-15x28x7",
+      "designation": "Deep groove ball bearing {Type} 15x28x7",
+      "rows": [
+        {
+          "name": "6902-2RS",
+          "select": {"Type":"6902-2RS"},
+          "values": {},
+          "part_number": "9405",
+          "supplier_url": "https://www.motedis.com/en/Deep-groove-ball-bearings-6902-2RS-15x28x7",
+          "designation": "Deep groove ball bearing 6902-2RS 15x28x7"
+        },
+        {
+          "name": "SS61902-2RS",
+          "select": {"Type":"SS61902-2RS"},
+          "values": {},
+          "part_number": "9601",
+          "supplier_url": "https://www.motedis.com/en/Deep-groove-ball-bearings-SS61902-2RS-15x28x7",
+          "designation": "Deep groove ball bearing SS61902-2RS 15x28x7, stainless steel"
+        }
+      ],
+      "build": {
+        "role": "linear",
+        "frames": [{"name":"bore","kind":"bore","diameter":"15 mm"}],
+        "linear": {
+          "kind": "bearing",
+          "size": "15 mm",
+          "mate": {"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}
+        }
+      },
+      "frames": [{"name":"bore","origin":[0,0,3.4],"z":[0,0,1],"x":[1,0,0],"kind":"bore","diameter":"15 mm"}]
+    },
+    {
+      "id": "ball-bearing-6002",
+      "name": "Deep groove ball bearing 6002, 15x32x9",
+      "category": "bearings",
+      "source": "uncategorized/Deepgrooveballbearings6002-2RS15x32x9/Rillenkugellager_6002-2RS_15x32x9.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "9605",
+      "supplier_url": "https://www.motedis.com/en/Deepgrooveballbearings6002-2RS15x32x9",
+      "designation": "Deep groove ball bearing {Type} 15x32x9",
+      "rows": [
+        {
+          "name": "6002-2RS",
+          "select": {"Type":"6002-2RS"},
+          "values": {},
+          "part_number": "9605",
+          "supplier_url": "https://www.motedis.com/en/Deepgrooveballbearings6002-2RS15x32x9",
+          "designation": "Deep groove ball bearing 6002-2RS 15x32x9"
+        },
+        {
+          "name": "6002-2RS-C3",
+          "select": {"Type":"6002-2RS-C3"},
+          "values": {},
+          "part_number": "9609",
+          "supplier_url": "https://www.motedis.com/en/Deepgrooveballbearings6002-2RS2FC315x32x9",
+          "designation": "Deep groove ball bearing 6002-2RS/C3 15x32x9"
+        },
+        {
+          "name": "6002-2Z",
+          "select": {"Type":"6002-2Z"},
+          "values": {},
+          "part_number": "9594",
+          "supplier_url": "https://www.motedis.com/en/Deep-groove-ball-bearings-6002-2Z-15x32x9",
+          "designation": "Deep groove ball bearing 6002-2Z 15x32x9"
+        },
+        {
+          "name": "6002-2Z-C3",
+          "select": {"Type":"6002-2Z-C3"},
+          "values": {},
+          "part_number": "9593",
+          "supplier_url": "https://www.motedis.com/en/Deep-groove-ball-bearings-6002-2Z-C3-15x32x9",
+          "designation": "Deep groove ball bearing 6002-2Z/C3 15x32x9"
+        },
+        {
+          "name": "SS6002-2RS",
+          "select": {"Type":"SS6002-2RS"},
+          "values": {},
+          "part_number": "9600",
+          "supplier_url": "https://www.motedis.com/en/Deep-groove-ball-bearings-SS6002-2RS-15x32x9",
+          "designation": "Deep groove ball bearing SS6002-2RS 15x32x9, stainless steel"
+        }
+      ],
+      "build": {
+        "role": "linear",
+        "frames": [{"name":"bore","kind":"bore","diameter":"15 mm"}],
+        "linear": {
+          "kind": "bearing",
+          "size": "15 mm",
+          "mate": {"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}
+        }
+      },
+      "frames": [{"name":"bore","origin":[0,0,4.4],"z":[0,0,1],"x":[1,0,0],"kind":"bore","diameter":"15 mm"}]
+    },
+    {
+      "id": "ball-bearing-6202",
+      "name": "Deep groove ball bearing 6202, 15x35x11",
+      "category": "bearings",
+      "source": "uncategorized/Deepgrooveballbearings6202-2RS15x35x11/Rillenkugellager_6202-2RS_15x35x11.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "9607",
+      "supplier_url": "https://www.motedis.com/en/Deepgrooveballbearings6202-2RS15x35x11",
+      "designation": "Deep groove ball bearing {Type} 15x35x11",
+      "rows": [
+        {
+          "name": "6202-2RS",
+          "select": {"Type":"6202-2RS"},
+          "values": {},
+          "part_number": "9607",
+          "supplier_url": "https://www.motedis.com/en/Deepgrooveballbearings6202-2RS15x35x11",
+          "designation": "Deep groove ball bearing 6202-2RS 15x35x11"
+        },
+        {
+          "name": "6202-2Z",
+          "select": {"Type":"6202-2Z"},
+          "values": {},
+          "part_number": "9597",
+          "supplier_url": "https://www.motedis.com/en/Deep-groove-ball-bearings-6202-2Z-15x35x11",
+          "designation": "Deep groove ball bearing 6202-2Z 15x35x11"
+        },
+        {
+          "name": "6202-2Z-C3",
+          "select": {"Type":"6202-2Z-C3"},
+          "values": {},
+          "part_number": "9598",
+          "supplier_url": "https://www.motedis.com/en/Deep-groove-ball-bearings-6202-2Z-C3-15x35x11",
+          "designation": "Deep groove ball bearing 6202-2Z/C3 15x35x11"
+        },
+        {
+          "name": "SS6202-2RS",
+          "select": {"Type":"SS6202-2RS"},
+          "values": {},
+          "part_number": "9599",
+          "supplier_url": "https://www.motedis.com/en/Deep-groove-ball-bearings-SS6202-2RS-15x35x11",
+          "designation": "Deep groove ball bearing SS6202-2RS 15x35x11, stainless steel"
+        }
+      ],
+      "build": {
+        "role": "linear",
+        "frames": [{"name":"bore","kind":"bore","diameter":"15 mm"}],
+        "linear": {
+          "kind": "bearing",
+          "size": "15 mm",
+          "mate": {"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}
+        }
+      },
+      "frames": [{"name":"bore","origin":[0,0,5.4],"z":[0,0,1],"x":[1,0,0],"kind":"bore","diameter":"15 mm"}]
+    },
+    {
+      "id": "ball-bearing-6302",
+      "name": "Deep groove ball bearing 6302, 15x42x13",
+      "category": "bearings",
+      "source": "uncategorized/Deepgrooveballbearings6302-2RS15x42x13/Rillenkugellager_6302-2RS_15x42x13.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "9602",
+      "supplier_url": "https://www.motedis.com/en/Deepgrooveballbearings6302-2RS15x42x13",
+      "designation": "Deep groove ball bearing {Type} 15x42x13",
+      "rows": [
+        {
+          "name": "6302-2RS",
+          "select": {"Type":"6302-2RS"},
+          "values": {},
+          "part_number": "9602",
+          "supplier_url": "https://www.motedis.com/en/Deepgrooveballbearings6302-2RS15x42x13",
+          "designation": "Deep groove ball bearing 6302-2RS 15x42x13"
+        },
+        {
+          "name": "6302-2Z",
+          "select": {"Type":"6302-2Z"},
+          "values": {},
+          "part_number": "9595",
+          "supplier_url": "https://www.motedis.com/en/Deep-groove-ball-bearings-6302-2Z-15x42x13",
+          "designation": "Deep groove ball bearing 6302-2Z 15x42x13"
+        },
+        {
+          "name": "SS6302-2RS",
+          "select": {"Type":"SS6302-2RS"},
+          "values": {},
+          "part_number": "9603",
+          "supplier_url": "https://www.motedis.com/en/Deep-groove-ball-bearings-SS6302-2RS-15x42x13",
+          "designation": "Deep groove ball bearing SS6302-2RS 15x42x13, stainless steel"
+        }
+      ],
+      "build": {
+        "role": "linear",
+        "frames": [{"name":"bore","kind":"bore","diameter":"15 mm"}],
+        "linear": {
+          "kind": "bearing",
+          "size": "15 mm",
+          "mate": {"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}
+        }
+      },
+      "frames": [{"name":"bore","origin":[0,0,6.4],"z":[0,0,1],"x":[1,0,0],"kind":"bore","diameter":"15 mm"}]
+    },
+    {
+      "id": "angular-bearing-10x30x9",
+      "name": "Angular contact ball bearing 10x30x9, plastic",
+      "category": "bearings",
+      "source": "uncategorized/Angular-contact-ball-bearings-10x30x9/Schr\u00e4gkugellager_10x30x9.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "9640",
+      "supplier_url": "https://www.motedis.com/en/Angular-contact-ball-bearings-10x30x9",
+      "designation": "Angular contact ball bearing 10x30x9, plastic",
+      "rows": [],
+      "build": {
+        "role": "linear",
+        "frames": [{"name":"bore","kind":"bore","diameter":"10 mm"}],
+        "linear": {
+          "kind": "bearing",
+          "size": "10 mm",
+          "mate": {"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}
+        }
+      },
+      "frames": [{"name":"bore","origin":[0,0,4.4],"z":[0,0,1],"x":[1,0,0],"kind":"bore","diameter":"10 mm"}]
+    },
+    {
+      "id": "angular-bearing-10x30x14",
+      "name": "Angular contact ball bearing 10x30x14, plastic",
+      "category": "bearings",
+      "source": "uncategorized/Angular-contact-ball-bearings-10x30x14/Schr\u00e4gkugellager_10x30x14.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "9641",
+      "supplier_url": "https://www.motedis.com/en/Angular-contact-ball-bearings-10x30x14",
+      "designation": "Angular contact ball bearing 10x30x14, plastic",
+      "rows": [],
+      "build": {
+        "role": "linear",
+        "frames": [{"name":"bore","kind":"bore","diameter":"10 mm"}],
+        "linear": {
+          "kind": "bearing",
+          "size": "10 mm",
+          "mate": {"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}
+        }
+      },
+      "frames": [{"name":"bore","origin":[0,0,6.9],"z":[0,0,1],"x":[1,0,0],"kind":"bore","diameter":"10 mm"}]
+    },
+    {
+      "id": "angular-bearing-3200-2rs",
+      "name": "Angular contact ball bearing 3200/5200 2RS, 10x30x14.3",
+      "category": "bearings",
+      "source": "uncategorized/angular-ball-bearing-3200-5200-2RS-10x30x143mm/Schr\u00e4gkugellager_3200_5200_2RS_10x30x14,3mm.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "1490",
+      "supplier_url": "https://www.motedis.com/en/angular-ball-bearing-3200-5200-2RS-10x30x143mm",
+      "designation": "Angular contact ball bearing 3200/5200 2RS, 10x30x14.3",
+      "rows": [],
+      "build": {
+        "role": "linear",
+        "frames": [{"name":"bore","kind":"bore","diameter":"10 mm"}],
+        "linear": {
+          "kind": "bearing",
+          "size": "10 mm",
+          "mate": {"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}
+        }
+      },
+      "frames": [{"name":"bore","origin":[0,0,7.05],"z":[0,0,1],"x":[1,0,0],"kind":"bore","diameter":"10 mm"}]
+    },
+    {
+      "id": "angular-bearing-12x32x10",
+      "name": "Angular contact ball bearing 12x32x10, plastic",
+      "category": "bearings",
+      "source": "uncategorized/Angular-contact-ball-bearings-12x32x10/Schr\u00e4gkugellager_12x32x10.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "9642",
+      "supplier_url": "https://www.motedis.com/en/Angular-contact-ball-bearings-12x32x10",
+      "designation": "Angular contact ball bearing 12x32x10, plastic",
+      "rows": [],
+      "build": {
+        "role": "linear",
+        "frames": [{"name":"bore","kind":"bore","diameter":"12 mm"}],
+        "linear": {
+          "kind": "bearing",
+          "size": "12 mm",
+          "mate": {"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}
+        }
+      },
+      "frames": [{"name":"bore","origin":[0,0,4.9],"z":[0,0,1],"x":[1,0,0],"kind":"bore","diameter":"12 mm"}]
+    },
+    {
+      "id": "angular-bearing-15x35x15-9",
+      "name": "Angular contact ball bearing 15x35x15.9, plastic",
+      "category": "bearings",
+      "source": "uncategorized/Angular-contact-ball-bearings-15x35x159/Schr\u00e4gkugellager_15x35x15.9.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "9645",
+      "supplier_url": "https://www.motedis.com/en/Angular-contact-ball-bearings-15x35x159",
+      "designation": "Angular contact ball bearing 15x35x15.9, plastic",
+      "rows": [],
+      "build": {
+        "role": "linear",
+        "frames": [{"name":"bore","kind":"bore","diameter":"15 mm"}],
+        "linear": {
+          "kind": "bearing",
+          "size": "15 mm",
+          "mate": {"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}
+        }
+      },
+      "frames": [{"name":"bore","origin":[0,0,7.85],"z":[0,0,1],"x":[1,0,0],"kind":"bore","diameter":"15 mm"}]
+    }
+  ]
+}

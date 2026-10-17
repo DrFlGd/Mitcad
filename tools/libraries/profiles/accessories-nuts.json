@@ -1,0 +1,362 @@
+[
+  {
+    "id": "tnut-b8-heavy",
+    "name": "Slotted block heavy B-type slot 8",
+    "category": "nuts",
+    "source": "slot-profile-accessories/Slotted-block-B-type-slot-8-M6/Motedis-S8BHESNM6/Motedis_S8BHESNM6.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "S8BHESNM6",
+    "supplier_url": "https://www.motedis.com/en/Slotted-block-B-type-slot-8-M6",
+    "designation": "Slotted block heavy B-type slot 8 {Thread}",
+    "rows": [
+      {"name":"M4","select":{"Thread":"M4"},"values":{},"part_number":"S8BHESNM4","supplier_url":"https://www.motedis.com/en/Slotted-block-B-type-slot-8-M4"},
+      {"name":"M5","select":{"Thread":"M5"},"values":{},"part_number":"S8BHESNM5","supplier_url":"https://www.motedis.com/en/Slotted-block-B-type-slot-8-M5"},
+      {"name":"M6","select":{"Thread":"M6"},"values":{},"part_number":"S8BHESNM6"},
+      {"name":"M8","select":{"Thread":"M8"},"values":{},"part_number":"S8BHESNM8","supplier_url":"https://www.motedis.com/en/Slotted-block-B-type-slot-8-M8"}
+    ],
+    "build": {
+      "role": "fastener",
+      "systems": [{"type":"B","slot":8}],
+      "frames": [{"name":"slot","kind":"slot"}]
+    },
+    "frames": [
+      {"name":"slot","origin":[0,6,0],"z":[0,-1,0],"x":[1,0,0],"kind":"slot"}
+    ]
+  },
+  {
+    "id": "snut-b10-spring",
+    "name": "Slotted block with spring B-type slot 10",
+    "category": "nuts",
+    "source": "slot-profile-accessories/Slotted-block-with-spring-B-type-slot-10-M6/Motedis-S10BSSNM6/Motedis_S10BSSNM6.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "S10BSSNM6",
+    "supplier_url": "https://www.motedis.com/en/Slotted-block-with-spring-B-type-slot-10-M6",
+    "designation": "Slotted block with spring B-type slot 10 {Thread}",
+    "rows": [
+      {"name":"M4","select":{"Thread":"M4"},"values":{},"part_number":"S10BSSNM4","supplier_url":"https://www.motedis.com/en/Slotted-block-with-spring-B-type-slot-10-M4"},
+      {"name":"M5","select":{"Thread":"M5"},"values":{},"part_number":"S10BSSNM5","supplier_url":"https://www.motedis.com/en/Slotted-block-with-spring-B-type-slot-10-M5"},
+      {"name":"M6","select":{"Thread":"M6"},"values":{},"part_number":"S10BSSNM6"},
+      {"name":"M8","select":{"Thread":"M8"},"values":{},"part_number":"S10BSSNM8","supplier_url":"https://www.motedis.com/en/Slotted-block-with-spring-B-type-slot-10-M8"}
+    ],
+    "build": {
+      "role": "fastener",
+      "systems": [{"type":"B","slot":10}],
+      "frames": [{"name":"slot","kind":"slot"}]
+    },
+    "frames": [
+      {"name":"slot","origin":[0,0,9.5],"z":[0,-1,0],"x":[1,0,0],"kind":"slot"}
+    ]
+  },
+  {
+    "id": "snut-b8-spring",
+    "name": "Slotted block with spring B-type slot 8",
+    "category": "nuts",
+    "source": "slot-profile-accessories/Slotted-block-with-spring-B-type-slot-8-M6/Motedis-S8BSSNM6/Motedis_S8BSSNM6.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "S8BSSNM6",
+    "supplier_url": "https://www.motedis.com/en/Slotted-block-with-spring-B-type-slot-8-M6",
+    "designation": "Slotted block with spring B-type slot 8 {Thread}",
+    "rows": [
+      {"name":"M3","select":{"Thread":"M3"},"values":{},"part_number":"S8BSSNM3","supplier_url":"https://www.motedis.com/en/Slotted-block-with-spring-B-type-slot-8-M3"},
+      {"name":"M4","select":{"Thread":"M4"},"values":{},"part_number":"S8BSSNM4","supplier_url":"https://www.motedis.com/en/Slotted-block-with-spring-B-type-slot-8-M4"},
+      {"name":"M5","select":{"Thread":"M5"},"values":{},"part_number":"S8BSSNM5","supplier_url":"https://www.motedis.com/en/Slotted-block-with-spring-B-type-slot-8-M5"},
+      {"name":"M6","select":{"Thread":"M6"},"values":{},"part_number":"S8BSSNM6"},
+      {"name":"M8","select":{"Thread":"M8"},"values":{},"part_number":"S8BSSNM8","supplier_url":"https://www.motedis.com/en/Slotted-block-with-spring-B-type-slot-8-M8"}
+    ],
+    "build": {
+      "role": "fastener",
+      "systems": [{"type":"B","slot":8}],
+      "frames": [{"name":"slot","kind":"slot"}]
+    },
+    "frames": [
+      {"name":"slot","origin":[0,0,0],"z":[0,-1,0],"x":[1,0,0],"kind":"slot"}
+    ]
+  },
+  {
+    "id": "threaded-plate-b6",
+    "name": "Threaded plate B-type slot 6",
+    "category": "nuts",
+    "source": "slot-profile-accessories/Threaded-Plate-B-Type-slot-6-M4/Motedis_Threaded_Plate_B-Type_slot6.STEP",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "561",
+    "supplier_url": "https://www.motedis.com/en/Threaded-Plate-B-Type-slot-6-M4",
+    "designation": "Threaded plate B-type slot 6 {Thread}",
+    "rows": [
+      {"name":"M4","select":{"Thread":"M4"},"values":{},"part_number":"561"}
+    ],
+    "build": {
+      "role": "fastener",
+      "systems": [{"type":"B","slot":6}],
+      "frames": [{"name":"slot","kind":"slot"}]
+    },
+    "frames": [
+      {"name":"slot","origin":[4.5,7,2.5],"z":[0,0,-1],"x":[0,1,0],"kind":"slot"}
+    ]
+  },
+  {
+    "id": "t-block-b10",
+    "name": "T-block B-type slot 10 for plastic joints",
+    "category": "nuts",
+    "source": "slot-profile-accessories/T-Block-slot-10-B-Type/Motedis-T-BLOCK-SLOT-10-B-TYPE/Motedis_T-BLOCK SLOT 10 B-TYPE.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "T-BLOCK 10",
+    "supplier_url": "https://www.motedis.com/en/T-Block-slot-10-B-Type",
+    "designation": "T-block B-type slot 10 for plastic joints",
+    "rows": [],
+    "build": {
+      "role": "fastener",
+      "systems": [{"type":"B","slot":10}],
+      "frames": [{"name":"slot","kind":"slot"}]
+    },
+    "frames": [
+      {"name":"slot","origin":[0,8,0],"z":[0,-1,0],"x":[0,0,1],"kind":"slot"}
+    ]
+  },
+  {
+    "id": "t-block-i8",
+    "name": "T-block I-type slot 8 for plastic joints",
+    "category": "nuts",
+    "source": "slot-profile-accessories/T-Block-slot-8-I-Type/Motedis-T-BLOCK-SLOT-8-I-TYPE/Motedis_T-BLOCK SLOT 8 I-TYPE.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "T-BLOCK 8",
+    "supplier_url": "https://www.motedis.com/en/T-Block-slot-8-I-Type",
+    "designation": "T-block I-type slot 8 for plastic joints",
+    "rows": [],
+    "build": {
+      "role": "fastener",
+      "systems": [{"type":"I","slot":8}],
+      "frames": [{"name":"slot","kind":"slot"}]
+    },
+    "frames": [
+      {"name":"slot","origin":[0,8,0],"z":[0,-1,0],"x":[0,0,1],"kind":"slot"}
+    ]
+  },
+  {
+    "id": "square-nut-o",
+    "name": "Square nut type O",
+    "category": "nuts",
+    "source": "slot-profile-accessories/Square-nut-type-O-M6/Motedis-SLOTONM6/Motedis_SLOTONM6.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "SLOTONM6",
+    "supplier_url": "https://www.motedis.com/en/Square-nut-type-O-M6",
+    "designation": "Square nut type O {Thread}",
+    "rows": [
+      {"name":"M5","select":{"Thread":"M5"},"values":{},"part_number":"SLOTONM5","supplier_url":"https://www.motedis.com/en/Square-nut-type-O-M5"},
+      {"name":"M6","select":{"Thread":"M6"},"values":{},"part_number":"SLOTONM6"},
+      {"name":"M8","select":{"Thread":"M8"},"values":{},"part_number":"SLOTONM8","supplier_url":"https://www.motedis.com/en/Square-nut-type-O-M8"}
+    ]
+  },
+  {
+    "id": "square-nut-o-spring",
+    "name": "Square nut with spring type O",
+    "category": "nuts",
+    "source": "slot-profile-accessories/Square-nut-with-spring-type-O-M6/Motedis-SLOTSWBM6/Motedis_SLOTSWBM6.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "SLOTSWBM6",
+    "supplier_url": "https://www.motedis.com/en/Square-nut-with-spring-type-O-M6",
+    "designation": "Square nut with spring type O {Thread}",
+    "rows": [
+      {"name":"M6","select":{"Thread":"M6"},"values":{},"part_number":"SLOTSWBM6"},
+      {"name":"M8","select":{"Thread":"M8"},"values":{},"part_number":"SLOTSWBM8","supplier_url":"https://www.motedis.com/en/Slot-O-Square-nut-with-spring-M8"}
+    ]
+  },
+  {
+    "id": "flange-nut-din6923",
+    "name": "Flange nut DIN 6923",
+    "category": "nuts",
+    "source": "slot-profile-accessories/Flange-nut-M8/Motedis-FNM8/Motedis_FNM8.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "FNM8",
+    "supplier_url": "https://www.motedis.com/en/Flange-nut-M8",
+    "designation": "Flange nut DIN 6923 {Thread}",
+    "standard": "DIN 6923",
+    "rows": [
+      {"name":"M6","select":{"Thread":"M6"},"values":{},"part_number":"DIN6923-vz-M6","supplier_url":"https://www.motedis.com/en/Flange-nut-M6"},
+      {"name":"M8","select":{"Thread":"M8"},"values":{},"part_number":"FNM8"}
+    ]
+  },
+  {
+    "id": "hammer-screw-b10-m8x20",
+    "name": "Hammer head screw B-type slot 10 M8x20",
+    "category": "screws",
+    "source": "slot-profile-accessories/Hammer-Head-Screw-B-Type-slot-10-M8x20/Motedis-THBM8X20/Motedis_THBM8X20.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "THBM8X20",
+    "supplier_url": "https://www.motedis.com/en/Hammer-Head-Screw-B-Type-slot-10-M8x20",
+    "designation": "Hammer head screw B-type slot 10 M8x20",
+    "rows": [],
+    "build": {
+      "role": "fastener",
+      "systems": [{"type":"B","slot":10}],
+      "frames": [{"name":"slot","kind":"slot"}]
+    },
+    "frames": [
+      {"name":"slot","origin":[0,0,0],"z":[0,-1,0],"x":[0,0,1],"kind":"slot"}
+    ]
+  },
+  {
+    "id": "hammer-screw-b10-m8x25",
+    "name": "Hammer head screw B-type slot 10 M8x25",
+    "category": "screws",
+    "source": "slot-profile-accessories/Hammer-Head-Screw-B-Type-slot-10-M8x25/Motedis-THBM8X25/Motedis_THBM8X25.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "THBM8X25",
+    "supplier_url": "https://www.motedis.com/en/Hammer-Head-Screw-B-Type-slot-10-M8x25",
+    "designation": "Hammer head screw B-type slot 10 M8x25, {Version}",
+    "rows": [
+      {"name":"Plain","select":{"Version":"Plain"},"values":{},"part_number":"THBM8X25"},
+      {"name":"Caulked","select":{"Version":"Caulked"},"values":{},"part_number":"THBM8X25verstemmt","supplier_url":"https://www.motedis.com/en/Hammer-Head-Screw-B-Type-slot-10-M8x25-caulked"}
+    ],
+    "build": {
+      "role": "fastener",
+      "systems": [{"type":"B","slot":10}],
+      "frames": [{"name":"slot","kind":"slot"}]
+    },
+    "frames": [
+      {"name":"slot","origin":[0,0,0],"z":[0,-1,0],"x":[0,0,1],"kind":"slot"}
+    ]
+  },
+  {
+    "id": "hammer-screw-b10-m8x30",
+    "name": "Hammer head screw B-type slot 10 M8x30",
+    "category": "screws",
+    "source": "slot-profile-accessories/Hammer-Head-Screw-B-Type-slot-10-M8x30/Motedis-THBM8X30/Motedis_THBM8X30.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "THBM8X30",
+    "supplier_url": "https://www.motedis.com/en/Hammer-Head-Screw-B-Type-slot-10-M8x30",
+    "designation": "Hammer head screw B-type slot 10 M8x30",
+    "rows": [],
+    "build": {
+      "role": "fastener",
+      "systems": [{"type":"B","slot":10}],
+      "frames": [{"name":"slot","kind":"slot"}]
+    },
+    "frames": [
+      {"name":"slot","origin":[0,0,0],"z":[0,-1,0],"x":[0,0,1],"kind":"slot"}
+    ]
+  },
+  {
+    "id": "central-screw-m12x30-sw8-b10",
+    "name": "Central screw M12x30 SW8 for 45 B-type slot 10",
+    "category": "screws",
+    "source": "slot-profile-accessories/Central-Screw-M12x30-SW8-P45-B-type-slot-10/Motedis-S10BCSTAT12x30SW8/Motedis_S10BCSTAT12x30SW8.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "S10BCSTAT12x30SW8",
+    "supplier_url": "https://www.motedis.com/en/Central-Screw-M12x30-SW8-P45-B-type-slot-10",
+    "designation": "Central screw M12x30 SW8 for 45 B-type slot 10",
+    "rows": [],
+    "build": {
+      "role": "fastener",
+      "systems": [{"type":"B","slot":10}]
+    }
+  },
+  {
+    "id": "central-screw-m12x30-t50-b10",
+    "name": "Central screw M12x30 T50 for 45 B-type slot 10",
+    "category": "screws",
+    "source": "slot-profile-accessories/Central-Screw-M12x30-T50-P45-B-type-slot-10/Motedis-S10BCSTAT12x30/Motedis_S10BCSTAT12x30.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "S10BCSTAT12x30",
+    "supplier_url": "https://www.motedis.com/en/Central-Screw-M12x30-T50-P45-B-type-slot-10",
+    "designation": "Central screw M12x30 T50 for 45 B-type slot 10",
+    "rows": [],
+    "build": {
+      "role": "fastener",
+      "systems": [{"type":"B","slot":10}]
+    }
+  },
+  {
+    "id": "self-forming-screw-s12x30-b10",
+    "name": "Self-forming screw S12x30 T50 for 45 B-type slot 10",
+    "category": "screws",
+    "source": "slot-profile-accessories/Self-Forming-Screw-S12x30-T50-P45-B-type-slot-10/Motedis-S10BCS12x30/Motedis_S10BCS12x30.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "S10BCS12x30",
+    "supplier_url": "https://www.motedis.com/en/Self-Forming-Screw-S12x30-T50-P45-B-type-slot-10",
+    "designation": "Self-forming screw S12x30 T50 for 45 B-type slot 10",
+    "rows": [],
+    "build": {
+      "role": "fastener",
+      "systems": [{"type":"B","slot":10}]
+    }
+  },
+  {
+    "id": "self-forming-screw-s7x25-i8",
+    "name": "Self-forming screw S7x25 T40 I-type slot 8",
+    "category": "screws",
+    "source": "slot-profile-accessories/Self-Forming-Screw-S7x25-T40-I-Type-slot-8/Motedis-S8ISS725-1/Motedis_S8ISS725.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "S8ISS725",
+    "supplier_url": "https://www.motedis.com/en/Self-Forming-Screw-S7x25-T40-I-Type-slot-8",
+    "designation": "Self-forming screw S7x25 T40 I-type slot 8",
+    "rows": [],
+    "build": {
+      "role": "fastener",
+      "systems": [{"type":"I","slot":8}]
+    }
+  },
+  {
+    "id": "auto-connector-screw-m4x30-i5",
+    "name": "Special screw for automatic connector DIN 912 M4x30, I-type slot 5",
+    "category": "screws",
+    "source": "slot-profile-accessories/Special-screw-automatic-connector-DIN-912-M4x30-N5-I-Type/Motedis-S5ICP1912430/Motedis_S5ICP1912430.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "S5ICP1912430",
+    "supplier_url": "https://www.motedis.com/en/Special-screw-automatic-connector-DIN-912-M4x30-N5-I-Type",
+    "designation": "Special screw for automatic connector DIN 912 M4x30, I-type slot 5",
+    "rows": [],
+    "build": {
+      "role": "fastener",
+      "systems": [{"type":"I","slot":5}]
+    }
+  },
+  {
+    "id": "auto-connector-screw-m4x35-i5",
+    "name": "Special screw for automatic connector DIN 912 M4x35, I-type slot 5",
+    "category": "screws",
+    "source": "slot-profile-accessories/Special-screw-automatic-connector-DIN-912-M4x35-N5-I-Type/Motedis-S5ICP1912435/Motedis_S5ICP1912435.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "S5ICP1912435",
+    "supplier_url": "https://www.motedis.com/en/Special-screw-automatic-connector-DIN-912-M4x35-N5-I-Type",
+    "designation": "Special screw for automatic connector DIN 912 M4x35, I-type slot 5",
+    "rows": [],
+    "build": {
+      "role": "fastener",
+      "systems": [{"type":"I","slot":5}]
+    }
+  },
+  {
+    "id": "shut-off-connector-screw-m4x40-i5",
+    "name": "Special screw for shut-off connector 180° DIN 912 M4x40, I-type slot 5",
+    "category": "screws",
+    "source": "slot-profile-accessories/Special-screw-Shut-off-connector-180-G-DIN-912-M4x40-N5-I-Type/Motedis-4854/Motedis_4854.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "4854",
+    "supplier_url": "https://www.motedis.com/en/Special-screw-Shut-off-connector-180-G-DIN-912-M4x40-N5-I-Type",
+    "designation": "Special screw for shut-off connector 180° DIN 912 M4x40, I-type slot 5",
+    "rows": [],
+    "build": {
+      "role": "fastener",
+      "systems": [{"type":"I","slot":5}]
+    }
+  }
+]

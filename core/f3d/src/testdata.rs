@@ -544,11 +544,347 @@ pub fn cone_blob() -> Vec<u8> {
     w.finish()
 }
 
+/// A solid bounded by planar polygons: its corners and its faces as
+/// cycles of corners, counter-clockwise seen from outside.
+struct Polyhedron {
+    corners: Vec<P3>,
+    faces: Vec<Vec<usize>>,
+}
+
+impl Polyhedron {
+    /// The 1 cm cube of [`cube_blob`].
+    fn cube() -> Self {
+        Polyhedron {
+            corners: vec![
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+                [1.0, 0.0, 1.0],
+                [1.0, 1.0, 1.0],
+                [0.0, 1.0, 1.0],
+            ],
+            faces: vec![
+                vec![0, 3, 2, 1],
+                vec![4, 5, 6, 7],
+                vec![0, 1, 5, 4],
+                vec![1, 2, 6, 5],
+                vec![2, 3, 7, 6],
+                vec![3, 0, 4, 7],
+            ],
+        }
+    }
+
+    /// The cube with its edge from (1, 0, 1) to (1, 1, 1) bevelled by
+    /// `d` cm: a planar face 45 degrees to its sides in its place.
+    fn bevelled_cube(d: f64) -> Self {
+        Polyhedron {
+            corners: vec![
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+                [1.0 - d, 0.0, 1.0],
+                [1.0 - d, 1.0, 1.0],
+                [0.0, 1.0, 1.0],
+                [1.0, 0.0, 1.0 - d],
+                [1.0, 1.0, 1.0 - d],
+            ],
+            faces: vec![
+                vec![0, 3, 2, 1],
+                vec![4, 5, 6, 7],
+                vec![0, 1, 8, 5, 4],
+                vec![1, 2, 9, 8],
+                vec![2, 3, 7, 6, 9],
+                vec![3, 0, 4, 7],
+                vec![5, 8, 9, 6],
+            ],
+        }
+    }
+
+    /// Its edges, each in the direction its first face takes it.
+    fn edges(&self) -> Vec<(usize, usize)> {
+        let mut out: Vec<(usize, usize)> = Vec::new();
+        for cycle in &self.faces {
+            for k in 0..cycle.len() {
+                let (a, b) = (cycle[k], cycle[(k + 1) % cycle.len()]);
+                if !out.contains(&(a, b)) && !out.contains(&(b, a)) {
+                    out.push((a, b));
+                }
+            }
+        }
+        out
+    }
+
+    /// How many records [`Polyhedron::write`] writes after the header.
+    fn records(&self) -> usize {
+        let (f, e, v) = (self.faces.len(), self.edges().len(), self.corners.len());
+        let coedges: usize = self.faces.iter().map(Vec::len).sum();
+        3 + f + f + coedges + e + v + v + e + f
+    }
+
+    /// Writes its records: body, lump, shell, faces, loops, coedges,
+    /// edges, vertices, points, curves and surfaces. `refer` gives the
+    /// pointer of each record by its place (1 the body, 2 the lump, 3 the
+    /// shell, then in that order), for the pointer fields.
+    fn write(&self, w: &mut Writer, refer: &dyn Fn(usize) -> i32) {
+        let edges = self.edges();
+        let (f, e, v) = (self.faces.len(), edges.len(), self.corners.len());
+        let coedges: usize = self.faces.iter().map(Vec::len).sum();
+        let face0 = 4;
+        let loop0 = face0 + f;
+        let coedge0 = loop0 + f;
+        let edge0 = coedge0 + coedges;
+        let vertex0 = edge0 + e;
+        let point0 = vertex0 + v;
+        let curve0 = point0 + v;
+        let surface0 = curve0 + e;
+        let p = |k: usize| refer(k);
+        w.record("body").head().ptr(p(2)).ptr(-1).ptr(-1).end();
+        w.record("lump").head().ptr(-1).ptr(p(3)).ptr(p(1)).end();
+        w.record("shell")
+            .head()
+            .ptr(-1)
+            .ptr(-1)
+            .ptr(p(face0))
+            .ptr(-1)
+            .ptr(p(2))
+            .end();
+        for i in 0..f {
+            let next = if i + 1 < f { p(face0 + i + 1) } else { -1 };
+            w.record("face")
+                .head()
+                .ptr(next)
+                .ptr(p(loop0 + i))
+                .ptr(p(3))
+                .ptr(-1)
+                .ptr(p(surface0 + i));
+            w.bool(false).bool(false).end();
+        }
+        // The coedges of each face in its cycle's order: (face, edge, reversed).
+        let mut sides: Vec<(usize, usize, bool)> = Vec::new();
+        let mut first = Vec::new();
+        for (i, cycle) in self.faces.iter().enumerate() {
+            first.push(sides.len());
+            for k in 0..cycle.len() {
+                let (a, b) = (cycle[k], cycle[(k + 1) % cycle.len()]);
+                let (j, reversed) = edges
+                    .iter()
+                    .enumerate()
+                    .find_map(|(j, &(x, y))| {
+                        if (x, y) == (a, b) {
+                            Some((j, false))
+                        } else if (x, y) == (b, a) {
+                            Some((j, true))
+                        } else {
+                            None
+                        }
+                    })
+                    .expect("every side of a face is an edge");
+                sides.push((i, j, reversed));
+            }
+        }
+        for (i, start) in first.iter().enumerate() {
+            w.record("loop")
+                .head()
+                .ptr(-1)
+                .ptr(p(coedge0 + start))
+                .ptr(p(face0 + i))
+                .end();
+        }
+        for (s, &(i, j, reversed)) in sides.iter().enumerate() {
+            let n = self.faces[i].len();
+            let k = s - first[i];
+            let next = coedge0 + first[i] + (k + 1) % n;
+            let prev = coedge0 + first[i] + (k + n - 1) % n;
+            let partner = sides
+                .iter()
+                .enumerate()
+                .position(|(t, &(i2, j2, _))| j2 == j && (i2 != i || t != s))
+                .expect("every edge has two faces");
+            w.record("coedge")
+                .head()
+                .ptr(p(next))
+                .ptr(p(prev))
+                .ptr(p(coedge0 + partner))
+                .ptr(p(edge0 + j));
+            w.bool(reversed).ptr(p(loop0 + i)).int(0).ptr(-1).end();
+        }
+        for (j, &(a, b)) in edges.iter().enumerate() {
+            let side = sides
+                .iter()
+                .position(|&(_, j2, _)| j2 == j)
+                .expect("every edge has a coedge");
+            w.record("edge")
+                .head()
+                .ptr(p(vertex0 + a))
+                .dbl(0.0)
+                .ptr(p(vertex0 + b))
+                .dbl(1.0);
+            w.ptr(p(coedge0 + side))
+                .ptr(p(curve0 + j))
+                .bool(false)
+                .str("unknown")
+                .end();
+        }
+        for c in 0..v {
+            let edge = edges
+                .iter()
+                .position(|&(a, b)| a == c || b == c)
+                .expect("every corner has an edge");
+            w.record("vertex")
+                .head()
+                .ptr(p(edge0 + edge))
+                .int(0)
+                .ptr(p(point0 + c))
+                .end();
+        }
+        for &corner in &self.corners {
+            w.record("point").head().pos(corner).end();
+        }
+        for &(a, b) in &edges {
+            let d = brep::sub(self.corners[b], self.corners[a]);
+            w.record("straight-curve")
+                .head()
+                .pos(self.corners[a])
+                .vec(d)
+                .bool(false)
+                .bool(false)
+                .end();
+        }
+        for cycle in &self.faces {
+            // The normal by Newell's rule, along the first side.
+            let mut normal = [0.0; 3];
+            for k in 0..cycle.len() {
+                let (a, b) = (
+                    self.corners[cycle[k]],
+                    self.corners[cycle[(k + 1) % cycle.len()]],
+                );
+                normal[0] += (a[1] - b[1]) * (a[2] + b[2]);
+                normal[1] += (a[2] - b[2]) * (a[0] + b[0]);
+                normal[2] += (a[0] - b[0]) * (a[1] + b[1]);
+            }
+            let normal = brep::normalize(normal);
+            let o = self.corners[cycle[0]];
+            let u = brep::normalize(brep::sub(self.corners[cycle[1]], o));
+            w.record("plane-surface").head().pos(o).vec(normal).vec(u);
+            w.bool(false)
+                .bool(false)
+                .bool(false)
+                .bool(false)
+                .bool(false)
+                .end();
+        }
+    }
+}
+
+/// A 1 cm cube whose edge from (1, 0, 1) to (1, 1, 1) is bevelled by `d`
+/// cm, with an ASM history of two operations, newest first: state 2
+/// bevelled the edge (it replaced every face of the cube), state 1 created
+/// the cube of [`cube_blob`]. Rolled back one state it is that cube; two,
+/// there is no body. For a test of a rounding of that edge whose result
+/// is not the file's (mitcad#379).
+pub fn bevelled_cube_history_blob(d: f64) -> Vec<u8> {
+    let live = Polyhedron::bevelled_cube(d);
+    let old = Polyhedron::cube();
+    // Pointers: the live records 0 (header) ..n, then the copies of the
+    // cube's records (the history section takes no pointer numbers):
+    // the body's, lump's and shell's copies stand for those entities as
+    // they were, the others for the cube's own entities, which the bevel
+    // deleted.
+    let n = 1 + live.records();
+    let mut w = Writer::new(2, 2);
+    w.record("asmheader")
+        .ptr(-1)
+        .int(-1)
+        .str("231.6.3.65535")
+        .end();
+    live.write(&mut w, &|k| k as i32);
+    w.record("Begin-of-ASM-History-Data")
+        .ident("history_stream")
+        .int(2)
+        .int(2)
+        .int(0)
+        .int(2)
+        .ptr(-1)
+        .ptr(0)
+        .ptr(1)
+        .ptr(-1)
+        .end();
+    let copy = |k: usize| (n + k - 1) as i32;
+    // State 2 (index 0): newer -1, older 1, itself 0.
+    w.record("delta_state")
+        .int(2)
+        .int(1)
+        .int(0)
+        .ptr(-1)
+        .ptr(1)
+        .ptr(0)
+        .ptr(-1)
+        .ptr(0);
+    w.bool(false).int(1).ptr(0).int(2);
+    for k in 1..=3 {
+        w.int(1).ptr(copy(k)).ptr(k as i32);
+    }
+    for k in 4..=old.records() {
+        w.int(1).ptr(copy(k)).ptr(-1);
+    }
+    for k in 4..=live.records() {
+        w.int(1).ptr(-1).ptr(k as i32);
+    }
+    w.int(0).int(0).int(0).end();
+    // State 1 (index 1): created the body.
+    w.record("delta_state")
+        .int(1)
+        .int(1)
+        .int(0)
+        .ptr(0)
+        .ptr(-1)
+        .ptr(1)
+        .ptr(-1)
+        .ptr(0);
+    w.bool(false).int(1).ptr(1).int(2);
+    for k in 1..=3 {
+        w.int(1).ptr(-1).ptr(k);
+    }
+    w.int(0).int(0).int(0).end();
+    w.record("End-of-ASM-History-Section");
+    old.write(&mut w, &|k| if k <= 3 { k as i32 } else { copy(k) });
+    w.finish()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::asm::AsmFile;
     use crate::convert::{Options, convert_file};
+
+    #[test]
+    fn a_bevelled_cube_rolls_back_to_the_cube() {
+        let data = bevelled_cube_history_blob(0.2);
+        let file = AsmFile::parse(&data).unwrap();
+        let history = crate::asm::history::History::parse(&file)
+            .unwrap()
+            .expect("a history");
+        assert_eq!(history.states.len(), 2);
+        assert_eq!(history.states[0].id, 2);
+        let b = convert_file(&file, &Options::default()).remove(0);
+        assert!(b.issues.is_empty(), "{:?}", b.issues);
+        assert!(b.check.is_clean(), "{:?}", b.check);
+        assert!(b.body.is_solid());
+        assert_eq!(b.body.faces.len(), 7);
+        // Rolled back one state: the cube.
+        let (record, _) = crate::convert::body_records(&file)[0];
+        let view = history.view(1);
+        let cube = crate::convert::convert_body_at(&file, record, &Options::default(), Some(&view));
+        assert!(cube.issues.is_empty(), "{:?}", cube.issues);
+        assert!(cube.check.is_clean(), "{:?}", cube.check);
+        assert!(cube.body.is_solid());
+        assert_eq!(cube.body.faces.len(), 6);
+        assert_eq!(cube.body.edges.len(), 12);
+    }
 
     #[test]
     fn converts_a_cube() {

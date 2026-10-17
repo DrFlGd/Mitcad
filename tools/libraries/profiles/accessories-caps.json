@@ -1,0 +1,140 @@
+[
+  {
+    "id": "bracket-cap20",
+    "name": "Cover cap for bracket 20",
+    "category": "caps",
+    "source": "slot-profile-accessories/Cover-Cap-Bracket-20/Motedis_S5I6BBR20C.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "S5I6BBR20C",
+    "supplier_url": "https://www.motedis.com/en/Cover-Cap-Bracket-20",
+    "designation": "Cover cap for bracket 20",
+    "rows": []
+  },
+  {
+    "id": "bracket-cap20x40",
+    "name": "Cover cap for bracket 20x40",
+    "category": "caps",
+    "source": "slot-profile-accessories/Bracket-Cover-Cap-20x40/Motedis-S5I6BBR2040C-1/Motedis_S5I6BBR2040C.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "S5I6BBR2040C",
+    "supplier_url": "https://www.motedis.com/en/Bracket-Cover-Cap-20x40",
+    "designation": "Cover cap for bracket 20x40",
+    "rows": []
+  },
+  {
+    "id": "bracket-cap30",
+    "name": "Cover cap for bracket 30",
+    "category": "caps",
+    "source": "slot-profile-accessories/Cover-Cap-bracket-30/Motedis_S68BR30C.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "S68BR30C",
+    "supplier_url": "https://www.motedis.com/en/Cover-Cap-bracket-30",
+    "designation": "Cover cap for bracket 30",
+    "rows": []
+  },
+  {
+    "id": "bracket-cap40-i8",
+    "name": "Cover cap for bracket 40x40 I-type slot 8",
+    "category": "caps",
+    "source": "slot-profile-accessories/Cover-Cap-Bracket-40x40-I-Type-Slot-8/Motedis_S810BR40C.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "S810BR40C",
+    "supplier_url": "https://www.motedis.com/en/Cover-Cap-Bracket-40x40-I-Type-Slot-8",
+    "designation": "Cover cap for bracket 40x40 I-type slot 8",
+    "rows": []
+  },
+  {
+    "id": "bracket-cap40x80",
+    "name": "Cover cap for bracket 40x80",
+    "category": "caps",
+    "source": "slot-profile-accessories/Bracket-cover-cap-40x80/Motedis-S8IBR4080C/Motedis_S8IBR4080C.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "S8IBR4080C",
+    "supplier_url": "https://www.motedis.com/en/Bracket-cover-cap-40x80",
+    "designation": "Cover cap for bracket 40x80",
+    "rows": []
+  },
+  {
+    "id": "bracket-cap45-b10",
+    "name": "Cover cap for bracket 45 B-type slot 10",
+    "category": "caps",
+    "source": "slot-profile-accessories/Bracket-cover-Cap-45-B-Type-slot-10/Motedis-S10BBRC4545/Motedis_S10BBRC4545.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "S10BBRC4545",
+    "supplier_url": "https://www.motedis.com/en/Bracket-cover-Cap-45-B-Type-slot-10",
+    "designation": "Cover cap for bracket 45 B-type slot 10",
+    "rows": []
+  },
+  {
+    "id": "bracket-cap45x90-b10",
+    "name": "Cover cap for bracket 45x90 B-type slot 10",
+    "category": "caps",
+    "source": "slot-profile-accessories/Bracket-cover-cap-45x90-B-Type-Slot-10/AbdKap_Mittel.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "S10BBRC4590",
+    "supplier_url": "https://www.motedis.com/en/Bracket-cover-cap-45x90-B-Type-Slot-10",
+    "designation": "Cover cap for bracket 45x90 B-type slot 10",
+    "rows": []
+  },
+  {
+    "id": "bracket-cap90-b10",
+    "name": "Cover cap for bracket 90 B-type slot 10",
+    "category": "caps",
+    "source": "slot-profile-accessories/Bracket-cover-Cap-90-B-Type-slot-10/Motedis-Bracket-cover-Cap-90-B-Type-slot-10/093WA901.step",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "S10BBRC9090",
+    "supplier_url": "https://www.motedis.com/en/Bracket-cover-Cap-90-B-Type-slot-10",
+    "designation": "Cover cap for bracket 90 B-type slot 10",
+    "rows": []
+  },
+  {
+    "id": "bracket-cap60-b10",
+    "name": "Cover cap for angle 60 B-type slot 10",
+    "category": "caps",
+    "source": "slot-profile-accessories/Angle-cover-cap-60/Motedis_Angle_Cover_Cap60.step",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "S10BBRC6060",
+    "supplier_url": "https://www.motedis.com/en/Angle-cover-cap-60",
+    "designation": "Cover cap for angle 60 B-type slot 10",
+    "rows": []
+  },
+  {
+    "id": "cap45x45-o8",
+    "name": "Cover cap 45x45 O-type slot 8",
+    "category": "caps",
+    "source": "slot-profile-accessories/Cover-caps-45x45-O-Type-slot-8/Motedis-PTS8O45x45-1/Motedis_PTS8O45x45.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "PTS8O45x45",
+    "supplier_url": "https://www.motedis.com/en/Cover-caps-45x45-O-Type-slot-8",
+    "designation": "Cover cap 45x45 O-type slot 8, {Colour}",
+    "rows": [
+      {"name":"Black","select":{"Colour":"Black"},"values":{},"part_number":"PTS8O45x45"},
+      {"name":"Grey","select":{"Colour":"Grey"},"values":{},"part_number":"PTS8O45x45","supplier_url":"https://www.motedis.com/en/Cover-caps-45x45-O-Type-slot-8-Grey"}
+    ]
+  },
+  {
+    "id": "cap45x90-o8",
+    "name": "Cover cap 45x90 O-type slot 8",
+    "category": "caps",
+    "source": "slot-profile-accessories/Cover-caps-45x90-O-Type-slot-8/Motedis-PTS8O45x90-1/Motedis_PTS8O45x90.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "PTS8O45x90",
+    "supplier_url": "https://www.motedis.com/en/Cover-caps-45x90-O-Type-slot-8-",
+    "designation": "Cover cap 45x90 O-type slot 8, {Colour}",
+    "rows": [
+      {"name":"Black","select":{"Colour":"Black"},"values":{},"part_number":"PTS8O45x90"},
+      {"name":"Grey","select":{"Colour":"Grey"},"values":{},"part_number":"PTS8O45x90","supplier_url":"https://www.motedis.com/en/Cover-caps-45x90-O-Type-slot-8-Grey"}
+    ]
+  }
+]

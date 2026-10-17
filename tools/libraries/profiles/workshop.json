@@ -1,0 +1,47 @@
+{
+  "categories": [{"id":"workshop","name":"Workshop"}],
+  "parts": [
+    {
+      "id": "push-pull-clamp-40x40",
+      "name": "Push/pull clamp, horizontal lever, hole spacing 40x40",
+      "category": "workshop",
+      "source": "workshop-supplies-consumables/Push-pull-clamp-lever-horizontal-hole-spacing-40x40/POWER-CLAMP-HORIZONTAL-HOLES-40x40/POWER CLAMP, HORIZONTAL, HOLES 40x40.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "PCHH40x40",
+      "supplier_url": "https://www.motedis.com/en/Push-pull-clamp-lever-horizontal-hole-spacing-40x40",
+      "designation": "Push/pull clamp, horizontal lever, hole spacing 40x40",
+      "rows": [],
+      "build": {
+        "role": "connector",
+        "systems": [{"type":"I","slot":8,"grid":40}],
+        "frames": [{"name":"mount","kind":"face"}],
+        "connector": {
+          "junctions": ["surface"],
+          "space": "outer",
+          "mates": [{"frame":"mount","to":"slot"}],
+          "fasteners": [
+            {
+              "frame": "mount",
+              "nut": {"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},
+              "screw": {"library":"mitcad-parts","component":"iso4762","config":"M8x16"}
+            }
+          ]
+        }
+      },
+      "frames": [{"name":"mount","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"face"}]
+    },
+    {
+      "id": "air-gripper-d32",
+      "name": "Parallel air gripper D32, double acting, gripping range 26-48 mm",
+      "category": "workshop",
+      "source": "workshop-supplies-consumables/Parallel-Style-air-gripper-D32-double-acting-gripping-range-26-48mm/Motedis-D32PARAIRGRI/Motedis_D32PARAIRGRI.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "D32PARAIRGRI",
+      "supplier_url": "https://www.motedis.com/en/Parallel-Style-air-gripper-D32-double-acting-gripping-range-26-48mm",
+      "designation": "Parallel air gripper D32, double acting, gripping range 26-48 mm",
+      "rows": []
+    }
+  ]
+}

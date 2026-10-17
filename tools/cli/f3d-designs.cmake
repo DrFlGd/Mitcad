@@ -9,7 +9,8 @@
 #   named as falling back fall back (the others of the file's own base
 #   features and of placing occurrences aside);
 # - no parametric item went through a retry on the file's exact state,
-#   and every modelling input was read, none inferred from the history;
+#   and every modelling input was read, none inferred from the history
+#   (but those of the items a design names as inferred, a fourth field);
 # - reading the file and applying its appearances take less time than
 #   replaying its items (the appearances made a design of hundreds of face
 #   appearances 16 times slower to open: 25 s reading them and 159 s
@@ -21,13 +22,22 @@
 
 cmake_minimum_required(VERSION 3.24)
 
-# <id>|<items parametric, comma separated>|<items that fall back>
+# <id>|<items parametric, comma separated>|<items that fall back>[|<items
+# whose inputs may be inferred>]
 set(designs
     # A circuit board with a pole round it (150 items, 78 occurrences):
     # its fillet between the pole's chamfer and a band 0.3 mm high where
     # flats cut the pole runs over the flats: built with them filled and cut
     # out again (mitcad#311). Nothing falls back.
-    "e3c34193|Revolve1,Revolve2,Revolve3,Fillet5,Extrude8,Extrude11,Sketch12,Plane1,Fillet9,Fillet10|")
+    "e3c34193|Revolve1,Revolve2,Revolve3,Fillet5,Extrude8,Extrude11,Sketch12,Plane1,Fillet9,Fillet10|"
+    # An assembly of a housing, a plug screwed into it, a nut and a tool
+    # (145 items, 7 components; mitcad#379): the plug's thread found its
+    # angle in the plug's own bodies, not in the housing's internal thread
+    # round it. Falling back: a sweep that passes over itself, roundings the
+    # geometry kernel does not build or builds off the file's, an extrusion
+    # whose profile's curve the sketch no longer has, a revolution whose cut
+    # the kernel does not make on a threaded bore.
+    "db73863f|Thread1|Sweep1,Fillet4,Fillet1,Fillet2,Fillet6,Extrude3,Fillet7,Fillet1,Fillet2,Revolve4,Fillet7,Fillet5,Fillet5,Fillet6|Axis1,C-Pattern1,Extrude3,Extrude6,Fillet4,GeometricRelationship1,Plane1,Plane2,Plane3,Thread1,Thread2")
 
 # Seconds as the trace gives them (two decimals) in hundredths.
 function(hundredths seconds out)
@@ -91,8 +101,14 @@ foreach(design IN LISTS designs)
   list(GET fields 0 id)
   list(GET fields 1 parametric)
   list(GET fields 2 falling)
+  set(inferred "")
+  list(LENGTH fields field_count)
+  if(field_count GREATER 3)
+    list(GET fields 3 inferred)
+  endif()
   string(REPLACE "," ";" parametric "${parametric}")
   string(REPLACE "," ";" falling "${falling}")
+  string(REPLACE "," ";" inferred "${inferred}")
   list(FIND found_ids "${id}" at)
   if(at EQUAL -1)
     message("f3d designs: ${id} not found, not checked")
@@ -127,7 +143,9 @@ foreach(design IN LISTS designs)
     if(outcome STREQUAL "parametric" AND NOT retry_missing)
       list(APPEND problems "${id}: ${name} is parametric after a retry on the file's exact state")
     endif()
-    if(outcome STREQUAL "parametric" AND NOT provenance_missing AND NOT provenance STREQUAL "read")
+    list(FIND inferred "${name}" may_infer)
+    if(outcome STREQUAL "parametric" AND NOT provenance_missing AND NOT provenance STREQUAL "read"
+       AND may_infer EQUAL -1)
       list(APPEND problems "${id}: ${name}'s inputs ${provenance}, not read")
     endif()
   endforeach()

@@ -843,7 +843,12 @@ not recompute.
   the file's on a retry on its stored bodies, or replace them; mitcad#283)
   goes through the job (`RecomputeMonitor::ask`): the worker prints it
   (`import-ask`), the window asks the user and writes the answer to its
-  stdin. Inside it, the `.f3d` and `.ipt` imports guard their memory themselves
+  stdin. Items whose results deviate from the file's (mitcad#379) are
+  asked about after the import, with the design in the window (so that a
+  row can select its faces): the items the user keeps parametric make the
+  window run the worker again with the same options and
+  `accept_deviations`, and the new document replaces the first.
+  Inside it, the `.f3d` and `.ipt` imports guard their memory themselves
   (mitcad#80, mitcad#60): low on memory, they give up definitions and
   finish with the file's bodies rather than end the process. The IFC
   import (mitcad#273) stops before its next element and reports the rest

@@ -215,6 +215,23 @@ int import_f3d_timeline(const Arguments& a) {
     }
     add(R"("retry_bodies": )" + json_string(*bodies));
   }
+  // Which items whose result deviates from the file's stay parametric
+  // with it (mitcad#379): all, none (the default) or timeline indices.
+  if (const std::string* accept = a.option("--accept-deviations")) {
+    bool valid = !accept->empty();
+    if (*accept != "all" && *accept != "none") {
+      for (std::size_t i = 0; i < accept->size(); ++i) {
+        const char c = (*accept)[i];
+        const bool digit = c >= '0' && c <= '9';
+        const bool comma = c == ',' && i > 0 && i + 1 < accept->size() && (*accept)[i - 1] != ',';
+        valid = valid && (digit || comma);
+      }
+    }
+    if (!valid) {
+      return usage("--accept-deviations needs all, none or timeline indices separated by commas");
+    }
+    add(R"("accept_deviations": )" + json_string(*accept));
+  }
   if (const std::string* path = a.option("--report")) {
     add(R"("report_path": )" + json_string(*path));
   }
@@ -271,7 +288,8 @@ int import_f3d(const std::vector<std::string>& args) {
   std::string problem;
   if (!parse_arguments(args,
                        {"--save", "--report", "--dump", "--design", "--time-limit", "--hang-limit", "--threads",
-                        "--learn", "--references", "--geometric-tolerance", "--retry-bodies"},
+                        "--learn", "--references", "--geometric-tolerance", "--retry-bodies",
+                        "--accept-deviations"},
                        {"--bodies-only", "--history", "--owners", "--json", "--no-verify", "--no-fallback",
                         "--no-compare", "--no-references"},
                        a, problem)) {

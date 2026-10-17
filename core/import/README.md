@@ -8148,6 +8148,165 @@ Not fixed here (the fillet corners' shapes).
 | `5ef2dbd5` 86 Chamfer2 | 1 / 1 parametric, verified (0530, 0531) | |
 | `52ba7a15` 61 Chamfer5 | 0 / 1 | upstream: the corner patches of item 38 and item 60 differ from the file's; the edges are a guess |
 
+### Results that deviate from the file's, kept at import (mitcad#379)
+
+An item whose decoded definition builds a result that is not the file's
+takes the file's bodies, as before (*Matching rules*, *Fallback*). That
+result is not thrown away unmeasured any more (`src/deviations.rs`):
+
+- While the item's definitions are tried, the first decoded definition
+  (not a guess) that builds a result the history does not take is
+  recorded (`Importer::record_deviation`), nothing more: most items then
+  find their state with a later definition. Where the kernel failed the
+  decoded rounding or chamfer, a definition that builds with some of its
+  edges only (the same size, a guess of the history's) is recorded the
+  same way, with the edges it leaves out (`missing_edges`).
+- Where the item takes the file's bodies in the end, the recorded
+  definition is built again on the bodies before it and measured against
+  the file's states (`Importer::deviation_now`): the volume it adds or
+  removes against the file's change for it, the largest distance of its
+  new faces from the state after it and the share of their area farther
+  than the geometric tolerance (the file's new faces against its result
+  the same), each side against the bodies the other side changed, at up
+  to 8 points a face and 600 a side (1–2 s on the large bodies of
+  `db73863f`; measuring every face of every body took up to 175 s), and
+  the volumes of the bodies it changed against the stored ones. The
+  item's report entry gets `deviation` with those numbers, and the end of
+  the import gives the faces of the design where it deviates (those of
+  the stored geometry standing in for it on which the file's faces off the
+  result lie) for the application to select.
+- With `Options::accept_deviations` naming the item (the application's
+  dialog *Keep Deviating Results?*, `mitcad-cli import-f3d
+  --accept-deviations`), the definition is added again and kept,
+  parametric and `verified` false, with `accepted_deviation` and a note.
+  Each body it changed carries an `Offset`: what it changed of the body
+  against what the file's operation changed of it (volume, area, first
+  moment of volume and face count; a difference the body carried before,
+  an earlier item's approximation, stays as the replay has it). Every
+  comparison with the history takes the body's measures with that offset
+  taken off (`Importer::current_bodies`, and the measures of definitions
+  evaluated ahead), so an item after it is checked by its own change; its
+  new faces are measured against the file's state as any item's. A later
+  item that does not give its state there takes the file's bodies, and the
+  base feature that brings them replaces the deviated body (its offset
+  goes with it; undone with the document's undo). The final comparison
+  does not replace a body that carries an offset.
+
+Tests: `src/tests/deviation_tests.rs` (mock kernel: listed by default;
+kept, the item after it replays on it and the final body keeps the
+deviation; a later item whose change is not the file's brings the file's
+body back); `cli.import_f3d_deviation*` on a synthetic design
+(`test_exchange --write-f3d-deviation`: a cube whose ASM history bevels an
+edge, `mitcad_f3d::testdata::bevelled_cube_history_blob`, with its
+timeline as a dump whose rounding of that edge removes 8.58 mm³ where the
+file's bevel removes 20; an external dump whose items carry the file's
+result numbers names the history's operations as the file's own design
+does); `tools/ui-import-deviations-test.sh`.
+
+On `db73863f` (*An assembly's remaining fallbacks* below) kept with
+item 88: the rounding stays parametric with -246.51 mm³ against the
+file's -225.30 (+9.4 %), its new faces up to 0.121 mm off (4.1 % of their
+area beyond 0.01 mm), and the items after it replay on it.
+
+### An assembly's remaining fallbacks (mitcad#379)
+
+`db73863f` (145 items in 7 components: a housing, a plug screwed into
+it, a nut and a tool; `f3d.corpus_designs`) imported by itself with the
+trace, its final bodies the file's exactly before and after. Each item
+that did not come in parametric, traced to its first deviation:
+
+- **Thread1 (item 96), now parametric.** The modelled thread's angle is
+  measured where the history's states show its groove (`thread_angle`,
+  the file's axis pointing down). The states hold every component's
+  bodies, and the housing's internal thread lies round the plug's in the
+  same place: their union filled the groove (19 % of a pitch empty at the
+  pitch radius instead of half), no angle was found, and the thread built
+  at angle 0 came out turned against the file's (the same volume, its
+  centre 0.08 mm off). Only the bodies of the thread's own component are
+  looked at now: the angle is found (half of each pitch empty at all four
+  angles) and the thread gives its state.
+- **Fillet7 (item 109), now a fallback.** The rounding after that thread,
+  of the plug's end edge, continues along the thread's helical edge in
+  the file. On the stored thread (the fallback before) its one edge gave
+  the state; on the modelled thread the edge's tangent chain takes the
+  helical edge, and the rounding along it stops where it rolls on an edge
+  of a neighbouring face (the edge overflow, mitcad#121); with its one
+  edge alone it changes 35.53 mm³ against the file's 37.11, a corner face
+  0.054 mm off. A candidate to keep (*Results that deviate*).
+- **Extrude3 (item 93).** Its profile record names one curve the sketch
+  no longer has (the sketch was edited after the item: its only curve
+  now is the projected circle of radius 30 round it; the file's cut, a
+  circle of radius 27.5 judging by the ring it leaves, is not in the
+  file). No region of the sketch is its profile; the note says so now
+  (`features::profile_curves_gone`). Not to be built from the history's
+  faces (a substitute).
+- **Revolve4 (item 132).** The triangle revolved about Axis1 lies where
+  the file's sketch puts it (the axis through the sketch's origin, the
+  sketch's frame the file's), and the file's cut removes 151.90 mm³ from
+  the housing round its threaded bore, changing five faces: a cone of
+  158 mm², two B-spline faces of 1190 mm² (the bore's thread flanks), a
+  cylinder of 486 mm² and a plane of 1439 mm². On the history's stored
+  body before the item, OCCT's section of the revolved triangle (768.66
+  mm³) with the body finds those five faces (four edges, 362.6 mm), yet
+  its cut changes the body by -0.05 mm³ and its common is the whole
+  triangle (768.66 mm³), with or without a fuzzy value up to 1e-3; points
+  of the triangle classify mostly outside the body. The boolean keeps the
+  wrong sides of the faces it split (the thread's B-spline flanks among
+  them): a kernel fault, on the replay's body ("does not cut into any
+  participant body") as on the stored one (`--retry-bodies replace`). What
+  is needed: OCCT's classification of the split faces fixed for these
+  flanks.
+- **Fillet1 (item 120).** A rounding of radius 10 of a circle's concave
+  edge (a boss of radius 10 on a face 20 wide each side) adds 852.7 mm³ in
+  the file; OCCT's rounding of the same edges (the replay's body is the
+  state's within 3.1e-5) removes 1924.6: it rolls over the edge's faces
+  onto the walls beyond (7 faces changed, the file's 3; its new faces up
+  to 2.06 mm off). The edge overflow (mitcad#121).
+- **Plane1 (item 11), partial.** Offset 5 mm from a face of another
+  component's body (an O-ring of the housing's component), in the nut's
+  component, just after a captured position moved the nut 10 mm. During
+  the replay the offset plane comes out at 53.43 (the face taken where the
+  nut is at its stored transform), the file's at 43.43, while the
+  occurrences at that point are where the file has them (the nut 10 mm
+  up, the trace lists them); the same definition added to the imported
+  design at that point of the timeline (opened again, marker after the
+  captured position) gives 43.43, and so does it on one thread. So the
+  link's move is lost when the import adds the plane, not in the inputs;
+  where in the model's evaluation is not found.
+- **Sketch14 (item 140), partial.** Its four linked curves (two lines,
+  two fixed splines) are where the sketch's plane cuts the body, not
+  projections of edges (their ends 3.8 and 4.7 mm from any edge of the
+  replay): kept as fixed reference geometry; one coincidence the file's
+  own positions keep only within 7.2 µm is left out.
+- **Sweep1 (item 9):** unchanged, the known sweep over itself (*Sweeps*).
+- **Fillets** (items 27, 74, 75, 88, 121, 133, 137, 142, 143): see the
+  table. Imported with `--retry-bodies replace`, each was tried again on
+  the history's stored bodies before it and failed there the same way:
+  not noise of the items before, the kernel's. Item 137's three edges the
+  file's references resolve are exactly the three edges its state lost
+  (lengths 5.32, 5.32 and 5.10; its fourth reference is lost in the
+  file): they are the file's edges, and OCCT fails on them.
+
+| Item | Class | Cause |
+|---|---|---|
+| 27 Fillet4 | rounding end (mitcad#343, mitcad#236) | the roundings along the thread's edges end where the rounding's end does not meet the face at the end |
+| 74 Fillet1 | corner (mitcad#343) | three roundings meeting at a corner of the housing: invalid (unorientable), each alone fails |
+| 75 Fillet2 | rounding end (mitcad#343) | an edge at the vertex has no curve on a face the corner takes it on; the faces are the stored ones of item 74's fallback |
+| 88 Fillet6 | corners (mitcad#343) | the rounding is the file's but at three corners: three of the file's new faces of 234.8 mm² each lie up to 0.063 mm off (5.8 % of the new area, more than the 5 % corner patches may hold), five of OCCT's up to 0.123 mm; the change 8.6 % off. A candidate to keep |
+| 121 Fillet2 | edge overflow (mitcad#121) | the chain of ten edges stops where it rolls on an edge of a neighbouring face |
+| 133 Fillet7 | rounding end / corner (mitcad#343) | the walk round the vertex at the end does not come back to the rounding; with both edges the corner finds two faces with no common edge; alone, invalid shapes |
+| 137 Fillet5 | rounding end (mitcad#343) | the corner's computation gives no result; the rounding along the concave edge fails |
+| 142 Fillet5 | rounding on a thread's edge (mitcad#343) | invalid (unorientable) along the edges of a cut face with the thread's face |
+| 143 Fillet6 | rounding end (mitcad#343, mitcad#236) | the rounding's surface and the face at the end do not intersect; the faces are the stored ones of item 142's fallback |
+
+Imported again by content id (items parametric / partial / fallback /
+skipped; final bodies 6 / 6 the file's exactly, before and after):
+
+| | Before | After |
+|---|---|---|
+| default | 122 / 2 / 14 / 7 | 122 / 2 / 14 / 7 (Thread1 parametric, Fillet7 109 a fallback) |
+| `--accept-deviations all` | | 125 / 2 / 11 / 7 (items 88, 109, 120 kept; the bodies after them the file's again where a later fallback brought them) |
+
 ## FreeCAD import (.FCStd)
 
 A FreeCAD document is a zip with `Document.xml` (every object and its

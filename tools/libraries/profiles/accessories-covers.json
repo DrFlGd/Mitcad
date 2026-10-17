@@ -1,0 +1,122 @@
+[
+  {
+    "id": "slot-cover-b8",
+    "name": "Slot cover profile black B-type slot 8",
+    "category": "covers",
+    "source": "slot-profile-accessories/Cover-profile-black-B-type-slot-8-1-meter-X/Motedis-125/Motedis_125.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "125",
+    "supplier_url": "https://www.motedis.com/en/Cover-profile-black-B-type-slot-8-1-meter-X",
+    "designation": "Slot cover profile black B-type slot 8 L={L}",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"B","slot":8}],
+      "frames": [{"name":"slot","kind":"slot"},{"name":"end_a","kind":"end"},{"name":"end_b","kind":"end"}],
+      "connector": {"junctions":["surface"],"space":"outer","mates":[{"frame":"slot","to":"slot"}]},
+      "length": {"parameter":"L","min":"10 mm","max":"1000 mm","stock":["1000 mm"]}
+    },
+    "frames": [
+      {"name":"slot","origin":[0,1.95,0],"z":[0,-1,0],"x":[0,0,1],"kind":"slot"},
+      {"name":"end_a","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"end"},
+      {"name":"end_b","origin":[0,0,"L"],"z":[0,0,1],"x":[1,0,0],"kind":"end"}
+    ]
+  },
+  {
+    "id": "slot-cover-reduction-b8",
+    "name": "Cover and reduction profile black B-type slot 8",
+    "category": "covers",
+    "source": "slot-profile-accessories/Cover-and-Reduction-Profile-black-B-type-slot-8-1-meter/Motedis-PSIL08BR/Motedis_PSIL08BR.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "PSIL08BR",
+    "supplier_url": "https://www.motedis.com/en/Cover-and-Reduction-Profile-black-B-type-slot-8-1-meter",
+    "designation": "Cover and reduction profile black B-type slot 8 L={L}",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"B","slot":8}],
+      "frames": [{"name":"slot","kind":"slot"},{"name":"end_a","kind":"end"},{"name":"end_b","kind":"end"}],
+      "connector": {"junctions":["surface"],"space":"outer","mates":[{"frame":"slot","to":"slot"}]},
+      "length": {"parameter":"L","min":"10 mm","max":"1000 mm","stock":["1000 mm"]}
+    },
+    "frames": [
+      {"name":"slot","origin":[0,4.25,0],"z":[0,-1,0],"x":[0,0,1],"kind":"slot"},
+      {"name":"end_a","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"end"},
+      {"name":"end_b","origin":[0,0,"L"],"z":[0,0,1],"x":[1,0,0],"kind":"end"}
+    ]
+  },
+  {
+    "id": "slot-cover-b10",
+    "name": "Slot cover profile black B-type slot 10",
+    "category": "covers",
+    "source": "slot-profile-accessories/Cover-profile-black-B-type-slot-10-1-meter-X/Motedis-128/Motedis_128.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "128",
+    "supplier_url": "https://www.motedis.com/en/Cover-profile-black-B-type-slot-10-1-meter-X",
+    "designation": "Slot cover profile black B-type slot 10 L={L}",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"B","slot":10}],
+      "frames": [{"name":"slot","kind":"slot"},{"name":"end_a","kind":"end"},{"name":"end_b","kind":"end"}],
+      "connector": {"junctions":["surface"],"space":"outer","mates":[{"frame":"slot","to":"slot"}]},
+      "length": {"parameter":"L","min":"10 mm","max":"1000 mm","stock":["1000 mm"]}
+    },
+    "frames": [
+      {"name":"slot","origin":[0,3.72,0],"z":[0,-1,0],"x":[0,0,1],"kind":"slot"},
+      {"name":"end_a","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"end"},
+      {"name":"end_b","origin":[0,0,"L"],"z":[0,0,1],"x":[1,0,0],"kind":"end"}
+    ]
+  },
+  {
+    "id": "slot-cover-i8",
+    "name": "Slot cover profile black I-type slot 8",
+    "category": "covers",
+    "source": "slot-profile-accessories/Cover-slot-profile-black-I-type-slot-8-1-meter-X/Motedis-129/Motedis_129.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "129",
+    "supplier_url": "https://www.motedis.com/en/Cover-slot-profile-black-I-type-slot-8-1-meter-X",
+    "designation": "Slot cover profile black I-type slot 8 L={L}",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":8}],
+      "frames": [{"name":"slot","kind":"slot"},{"name":"end_a","kind":"end"},{"name":"end_b","kind":"end"}],
+      "connector": {"junctions":["surface"],"space":"outer","mates":[{"frame":"slot","to":"slot"}]},
+      "length": {"parameter":"L","min":"10 mm","max":"1000 mm","stock":["1000 mm"]}
+    },
+    "frames": [
+      {"name":"slot","origin":[0,5.5,0],"z":[0,-1,0],"x":[0,0,1],"kind":"slot"},
+      {"name":"end_a","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"end"},
+      {"name":"end_b","origin":[0,0,"L"],"z":[0,0,1],"x":[1,0,0],"kind":"end"}
+    ]
+  },
+  {
+    "id": "slot-cover-nbr-i8",
+    "name": "Cover profile plastic NBR I-type slot 8",
+    "category": "covers",
+    "source": "slot-profile-accessories/Cover-Profile-Plastic-NBR-I-Type-Slot-8-1m/Motedis_3006.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "3006",
+    "supplier_url": "https://www.motedis.com/en/Cover-Profile-Plastic-NBR-I-Type-Slot-8-1m",
+    "designation": "Cover profile plastic NBR I-type slot 8 L={L}",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":8}],
+      "frames": [{"name":"slot","kind":"slot"},{"name":"end_a","kind":"end"},{"name":"end_b","kind":"end"}],
+      "connector": {"junctions":["surface"],"space":"outer","mates":[{"frame":"slot","to":"slot"}]},
+      "length": {"parameter":"L","min":"10 mm","max":"1000 mm","stock":["1000 mm"]}
+    },
+    "frames": [
+      {"name":"slot","origin":[0,6.47,0],"z":[0,-1,0],"x":[0,0,1],"kind":"slot"},
+      {"name":"end_a","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"end"},
+      {"name":"end_b","origin":[0,0,"L"],"z":[0,0,1],"x":[1,0,0],"kind":"end"}
+    ]
+  }
+]

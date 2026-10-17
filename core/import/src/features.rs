@@ -5801,6 +5801,20 @@ pub(crate) fn lost_edge_references(detail: &Detail) -> Option<(usize, usize)> {
     (lost > 0).then_some((lost, all))
 }
 
+/// How many curves an extrusion's or revolution's profile names when its
+/// sketch no longer has any of them ([`crate::profiles::gone_curves`]):
+/// the sketch was edited after the item was made, and its regions are not
+/// the profile (mitcad#379: one circle the profile named was deleted, and
+/// the sketch's one region left is the projected circle round it).
+pub(crate) fn profile_curves_gone(detail: &Detail) -> Option<usize> {
+    let other = match detail {
+        Detail::Extrude(d) => &d.other,
+        Detail::Revolve(d) => &d.other,
+        _ => return None,
+    };
+    crate::profiles::gone_curves(other.get("_f3d_profile_loops")?)
+}
+
 /// The largest group of edges at one distance (within 3 %) from the state
 /// after a rounding.
 fn largest_group<'a>(edges: &[&'a SetGone]) -> Vec<&'a SetGone> {

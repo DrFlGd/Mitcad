@@ -355,6 +355,13 @@ int runImportWorker(int argc, char* argv[]) {
       command.insert(it.key(), it.value());
     }
   }
+  // For tests: an .f3d design's timeline from a dump (import_f3d's `dump`)
+  // instead of its own streams, as a synthetic design has none
+  // (tools/ui-import-deviations-test.sh, mitcad#379).
+  if (const QString dump = qEnvironmentVariable("MITCAD_TEST_IMPORT_DUMP");
+      !dump.isEmpty() && !freecad && !ipt && !ifc && !rvt) {
+    command.insert(QStringLiteral("dump"), dump);
+  }
   QJsonObject answer;
   document->attach_job(**control);
   const auto relayed = std::make_shared<std::atomic<bool>>(false);
@@ -428,7 +435,9 @@ void F3dImport::start() {
   });
 
   const QString name = QFileInfo(m_path).fileName();
-  if (!isFreeCadFile(m_path) && !isIptFile(m_path) && !isIfcFile(m_path) && !isRvtFile(m_path)) {
+  if (m_preset) {
+    // (Run again with the options of the import before, mitcad#379.)
+  } else if (!isFreeCadFile(m_path) && !isIptFile(m_path) && !isIfcFile(m_path) && !isRvtFile(m_path)) {
     m_options = askReferences();
     // The geometric tolerance of the Preferences (mitcad#224).
     m_options.insert(QStringLiteral("geometric_tolerance"), GeneralSettings::load().importTolerance);
@@ -467,6 +476,11 @@ void F3dImport::start() {
     }
   }
   m_process->start(QCoreApplication::applicationFilePath(), arguments);
+}
+
+void F3dImport::setOptions(const QJsonObject& options) {
+  m_options = options;
+  m_preset = true;
 }
 
 QJsonObject F3dImport::askReferences() {

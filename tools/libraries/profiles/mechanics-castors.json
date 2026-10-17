@@ -1,0 +1,678 @@
+{
+  "categories": [{"id":"castors","name":"Castors and wheels"}],
+  "parts": [
+    {
+      "id": "castor-50-bolt",
+      "name": "Castor 50, single bolt hole",
+      "category": "castors",
+      "source": "mechanical-basics/Roller-50-single-bolt-hole-without-brake/Motedis-963/Motedis_963.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "963",
+      "supplier_url": "https://www.motedis.com/en/Roller-50-single-bolt-hole-without-brake",
+      "designation": "Castor 50, single bolt hole",
+      "rows": [],
+      "build": {
+        "role": "connector",
+        "systems": [{"type":"B","slot":8},{"type":"I","slot":8},{"type":"B","slot":10}],
+        "frames": [{"name":"mount","kind":"face"}],
+        "connector": {"junctions":["surface"],"space":"end","mates":[{"frame":"mount","to":"end"}]}
+      },
+      "frames": [{"name":"mount","origin":[0,56.7,0],"z":[0,1,0],"x":[1,0,0],"kind":"face"}]
+    },
+    {
+      "id": "castor-50-bolt-brake",
+      "name": "Castor 50, single bolt hole, with brake",
+      "category": "castors",
+      "source": "mechanical-basics/Roller-50-single-bolt-hole-with-brake/Motedis-965/Motedis_965.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "965",
+      "supplier_url": "https://www.motedis.com/en/Roller-50-single-bolt-hole-with-brake",
+      "designation": "Castor 50, single bolt hole, with brake",
+      "rows": [],
+      "build": {
+        "role": "connector",
+        "systems": [{"type":"B","slot":8},{"type":"I","slot":8},{"type":"B","slot":10}],
+        "frames": [{"name":"mount","kind":"face"}],
+        "connector": {"junctions":["surface"],"space":"end","mates":[{"frame":"mount","to":"end"}]}
+      },
+      "frames": [{"name":"mount","origin":[0,56.7,0],"z":[0,1,0],"x":[1,0,0],"kind":"face"}]
+    },
+    {
+      "id": "castor-75-bolt-brake",
+      "name": "Castor 75, single bolt hole, with brake",
+      "category": "castors",
+      "source": "mechanical-basics/Roller-75-single-bolt-hole-with-brake/Motedis-06.07.02/Motedis_06.07.02.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "06.07.02",
+      "supplier_url": "https://www.motedis.com/en/Roller-75-single-bolt-hole-with-brake",
+      "designation": "Castor 75, single bolt hole, with brake",
+      "rows": [],
+      "build": {
+        "role": "connector",
+        "systems": [{"type":"B","slot":8},{"type":"I","slot":8},{"type":"B","slot":10}],
+        "frames": [{"name":"mount","kind":"face"}],
+        "connector": {"junctions":["surface"],"space":"end","mates":[{"frame":"mount","to":"end"}]}
+      },
+      "frames": [{"name":"mount","origin":[0,0,0],"z":[0,1,0],"x":[1,0,0],"kind":"face"}]
+    },
+    {
+      "id": "castor-75-bolt-new",
+      "name": "Castor 75, single bolt hole (new design)",
+      "category": "castors",
+      "source": "mechanical-basics/Roller-75-single-bolt-hole-without-brake-NEW/Motedis-10146/Motedis_10146.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "10146",
+      "supplier_url": "https://www.motedis.com/en/Roller-75-single-bolt-hole-without-brake-NEW",
+      "designation": "Castor 75, single bolt hole (new design)",
+      "rows": [],
+      "build": {
+        "role": "connector",
+        "systems": [{"type":"B","slot":8},{"type":"I","slot":8},{"type":"B","slot":10}],
+        "frames": [{"name":"mount","kind":"face"}],
+        "connector": {"junctions":["surface"],"space":"end","mates":[{"frame":"mount","to":"end"}]}
+      },
+      "frames": [{"name":"mount","origin":[122.2,-2.7,-178.25],"z":[0,1,0],"x":[1,0,0],"kind":"face"}]
+    },
+    {
+      "id": "castor-75-bolt-brake-new",
+      "name": "Castor 75, single bolt hole, with brake (new design)",
+      "category": "castors",
+      "source": "mechanical-basics/Roller-75-single-bolt-hole-with-brake-NEW/Motedis-10147/Motedis_10147.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "10147",
+      "supplier_url": "https://www.motedis.com/en/Roller-75-single-bolt-hole-with-brake-NEW",
+      "designation": "Castor 75, single bolt hole, with brake (new design)",
+      "rows": [],
+      "build": {
+        "role": "connector",
+        "systems": [{"type":"B","slot":8},{"type":"I","slot":8},{"type":"B","slot":10}],
+        "frames": [{"name":"mount","kind":"face"}],
+        "connector": {"junctions":["surface"],"space":"end","mates":[{"frame":"mount","to":"end"}]}
+      },
+      "frames": [{"name":"mount","origin":[122.2,-2.7,-178.25],"z":[0,1,0],"x":[1,0,0],"kind":"face"}]
+    },
+    {
+      "id": "castor-75-plate-new",
+      "name": "Castor 75, plate fitting (new design)",
+      "category": "castors",
+      "source": "mechanical-basics/Roller-75-plate-without-brake-NEW/Motedis-10032/Motedis_10032.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "10032",
+      "supplier_url": "https://www.motedis.com/en/Roller-75-plate-without-brake-NEW",
+      "designation": "Castor 75, plate fitting (new design)",
+      "rows": [],
+      "build": {
+        "role": "connector",
+        "systems": [{"type":"B","slot":8},{"type":"I","slot":8},{"type":"B","slot":10}],
+        "frames": [{"name":"mount","kind":"face"}],
+        "connector": {"junctions":["surface"],"space":"outer","mates":[{"frame":"mount","to":"slot"}]}
+      },
+      "frames": [{"name":"mount","origin":[122.2,5.5,-178.25],"z":[0,1,0],"x":[1,0,0],"kind":"face"}]
+    },
+    {
+      "id": "castor-75-plate-brake-new",
+      "name": "Castor 75, plate fitting, with brake (new design)",
+      "category": "castors",
+      "source": "mechanical-basics/Roller-75-plate-fitting-with-brake-NEW/Motedis-10031/Motedis_10031.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "10031",
+      "supplier_url": "https://www.motedis.com/en/Roller-75-plate-fitting-with-brake-NEW",
+      "designation": "Castor 75, plate fitting, with brake (new design)",
+      "rows": [],
+      "build": {
+        "role": "connector",
+        "systems": [{"type":"B","slot":8},{"type":"I","slot":8},{"type":"B","slot":10}],
+        "frames": [{"name":"mount","kind":"face"}],
+        "connector": {"junctions":["surface"],"space":"outer","mates":[{"frame":"mount","to":"slot"}]}
+      },
+      "frames": [{"name":"mount","origin":[122.2,5.5,-178.25],"z":[0,1,0],"x":[1,0,0],"kind":"face"}]
+    },
+    {
+      "id": "castor-100-bolt",
+      "name": "Castor 100, single bolt hole",
+      "category": "castors",
+      "source": "mechanical-basics/Roller-100-single-bolt-hole-without-brake/Motedis-995/Motedis_995.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "995",
+      "supplier_url": "https://www.motedis.com/en/Roller-100-single-bolt-hole-without-brake",
+      "designation": "Castor 100, single bolt hole",
+      "rows": [],
+      "build": {
+        "role": "connector",
+        "systems": [{"type":"B","slot":8},{"type":"I","slot":8},{"type":"B","slot":10}],
+        "frames": [{"name":"mount","kind":"face"}],
+        "connector": {"junctions":["surface"],"space":"end","mates":[{"frame":"mount","to":"end"}]}
+      },
+      "frames": [{"name":"mount","origin":[122.2,-2.7,-178.25],"z":[0,1,0],"x":[1,0,0],"kind":"face"}]
+    },
+    {
+      "id": "castor-100-bolt-brake",
+      "name": "Castor 100, single bolt hole, with brake",
+      "category": "castors",
+      "source": "mechanical-basics/Roller-100-single-bolt-hole-with-brake/Motedis-1748/Motedis_1748.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "1748",
+      "supplier_url": "https://www.motedis.com/en/Roller-100-single-bolt-hole-with-brake",
+      "designation": "Castor 100, single bolt hole, with brake",
+      "rows": [],
+      "build": {
+        "role": "connector",
+        "systems": [{"type":"B","slot":8},{"type":"I","slot":8},{"type":"B","slot":10}],
+        "frames": [{"name":"mount","kind":"face"}],
+        "connector": {"junctions":["surface"],"space":"end","mates":[{"frame":"mount","to":"end"}]}
+      },
+      "frames": [{"name":"mount","origin":[122.2,-2.7,-178.25],"z":[0,1,0],"x":[1,0,0],"kind":"face"}]
+    },
+    {
+      "id": "castor-100-bolt-new",
+      "name": "Castor 100, single bolt hole (new design)",
+      "category": "castors",
+      "source": "mechanical-basics/Roller-100-single-bolt-hole-without-brake-NEW/Motedis-10033/Motedis_10033.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "10033",
+      "supplier_url": "https://www.motedis.com/en/Roller-100-single-bolt-hole-without-brake-NEW-",
+      "designation": "Castor 100, single bolt hole (new design)",
+      "rows": [],
+      "build": {
+        "role": "connector",
+        "systems": [{"type":"B","slot":8},{"type":"I","slot":8},{"type":"B","slot":10}],
+        "frames": [{"name":"mount","kind":"face"}],
+        "connector": {"junctions":["surface"],"space":"end","mates":[{"frame":"mount","to":"end"}]}
+      },
+      "frames": [{"name":"mount","origin":[122.2,-2.7,-178.25],"z":[0,1,0],"x":[1,0,0],"kind":"face"}]
+    },
+    {
+      "id": "castor-100-bolt-brake-new",
+      "name": "Castor 100, single bolt hole, with brake (new design)",
+      "category": "castors",
+      "source": "mechanical-basics/Roller-100-single-bolt-hole-with-brake-NEW/Motedis-10034/Motedis_10034.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "10034",
+      "supplier_url": "https://www.motedis.com/en/Roller-100-single-bolt-hole-with-brake-NEW",
+      "designation": "Castor 100, single bolt hole, with brake (new design)",
+      "rows": [],
+      "build": {
+        "role": "connector",
+        "systems": [{"type":"B","slot":8},{"type":"I","slot":8},{"type":"B","slot":10}],
+        "frames": [{"name":"mount","kind":"face"}],
+        "connector": {"junctions":["surface"],"space":"end","mates":[{"frame":"mount","to":"end"}]}
+      },
+      "frames": [{"name":"mount","origin":[122.2,-2.7,-178.25],"z":[0,1,0],"x":[1,0,0],"kind":"face"}]
+    },
+    {
+      "id": "castor-100-plate",
+      "name": "Castor 100, plate fitting",
+      "category": "castors",
+      "source": "mechanical-basics/Roller-100-plate-fitting-without-brake/Motedis-993/Motedis_993.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "993",
+      "supplier_url": "https://www.motedis.com/en/Roller-100-plate-fitting-without-brake",
+      "designation": "Castor 100, plate fitting",
+      "rows": [],
+      "build": {
+        "role": "connector",
+        "systems": [{"type":"B","slot":8},{"type":"I","slot":8},{"type":"B","slot":10}],
+        "frames": [{"name":"mount","kind":"face"}],
+        "connector": {"junctions":["surface"],"space":"outer","mates":[{"frame":"mount","to":"slot"}]}
+      },
+      "frames": [{"name":"mount","origin":[0,0,0],"z":[0,1,0],"x":[1,0,0],"kind":"face"}]
+    },
+    {
+      "id": "castor-125-bolt",
+      "name": "Castor 125, single bolt hole",
+      "category": "castors",
+      "source": "mechanical-basics/Roller-125-single-bolt-hole-without-brake/Motedis-1747/Motedis_1747.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "1747",
+      "supplier_url": "https://www.motedis.com/en/Roller-125-single-bolt-hole-without-brake",
+      "designation": "Castor 125, single bolt hole",
+      "rows": [],
+      "build": {
+        "role": "connector",
+        "systems": [{"type":"B","slot":8},{"type":"I","slot":8},{"type":"B","slot":10}],
+        "frames": [{"name":"mount","kind":"face"}],
+        "connector": {"junctions":["surface"],"space":"end","mates":[{"frame":"mount","to":"end"}]}
+      },
+      "frames": [{"name":"mount","origin":[122.2,-2.7,-178.25],"z":[0,1,0],"x":[1,0,0],"kind":"face"}]
+    },
+    {
+      "id": "castor-125-bolt-brake",
+      "name": "Castor 125, single bolt hole, with brake",
+      "category": "castors",
+      "source": "mechanical-basics/Roller-125-single-bolt-hole-with-brake/Motedis-996/Motedis_996.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "996",
+      "supplier_url": "https://www.motedis.com/en/Roller-125-single-bolt-hole-with-brake",
+      "designation": "Castor 125, single bolt hole, with brake",
+      "rows": [],
+      "build": {
+        "role": "connector",
+        "systems": [{"type":"B","slot":8},{"type":"I","slot":8},{"type":"B","slot":10}],
+        "frames": [{"name":"mount","kind":"face"}],
+        "connector": {"junctions":["surface"],"space":"end","mates":[{"frame":"mount","to":"end"}]}
+      },
+      "frames": [{"name":"mount","origin":[122.2,-2.7,-178.25],"z":[0,1,0],"x":[1,0,0],"kind":"face"}]
+    },
+    {
+      "id": "castor-125-bolt-new",
+      "name": "Castor 125, single bolt hole (new design)",
+      "category": "castors",
+      "source": "mechanical-basics/Roller-125-single-bolt-hole-without-brake-NEW/Motedis-10036/Motedis_10036.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "10036",
+      "supplier_url": "https://www.motedis.com/en/Roller-125-single-bolt-hole-without-brake-NEW",
+      "designation": "Castor 125, single bolt hole (new design)",
+      "rows": [],
+      "build": {
+        "role": "connector",
+        "systems": [{"type":"B","slot":8},{"type":"I","slot":8},{"type":"B","slot":10}],
+        "frames": [{"name":"mount","kind":"face"}],
+        "connector": {"junctions":["surface"],"space":"end","mates":[{"frame":"mount","to":"end"}]}
+      },
+      "frames": [{"name":"mount","origin":[122.2,-2.7,-178.25],"z":[0,1,0],"x":[1,0,0],"kind":"face"}]
+    },
+    {
+      "id": "castor-125-bolt-brake-new",
+      "name": "Castor 125, single bolt hole, with brake (new design)",
+      "category": "castors",
+      "source": "mechanical-basics/Roller-125-single-bolt-hole-with-brake-NEW/Motedis-10037/Motedis_10037.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "10037",
+      "supplier_url": "https://www.motedis.com/en/Roller-125-single-bolt-hole-with-brake-NEW",
+      "designation": "Castor 125, single bolt hole, with brake (new design)",
+      "rows": [],
+      "build": {
+        "role": "connector",
+        "systems": [{"type":"B","slot":8},{"type":"I","slot":8},{"type":"B","slot":10}],
+        "frames": [{"name":"mount","kind":"face"}],
+        "connector": {"junctions":["surface"],"space":"end","mates":[{"frame":"mount","to":"end"}]}
+      },
+      "frames": [{"name":"mount","origin":[122.2,-2.7,-178.25],"z":[0,1,0],"x":[1,0,0],"kind":"face"}]
+    },
+    {
+      "id": "castor-125-plate",
+      "name": "Castor 125, plate fitting",
+      "category": "castors",
+      "source": "mechanical-basics/Roller-125-plate-fitting-without-brake/Motedis-1126/Motedis_1126.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "1126",
+      "supplier_url": "https://www.motedis.com/en/Roller-125-plate-fitting-without-brake",
+      "designation": "Castor 125, plate fitting",
+      "rows": [],
+      "build": {
+        "role": "connector",
+        "systems": [{"type":"B","slot":8},{"type":"I","slot":8},{"type":"B","slot":10}],
+        "frames": [{"name":"mount","kind":"face"}],
+        "connector": {"junctions":["surface"],"space":"outer","mates":[{"frame":"mount","to":"slot"}]}
+      },
+      "frames": [{"name":"mount","origin":[0,0,0],"z":[0,1,0],"x":[1,0,0],"kind":"face"}]
+    },
+    {
+      "id": "castor-125-plate-brake",
+      "name": "Castor 125, plate fitting, with brake",
+      "category": "castors",
+      "source": "mechanical-basics/Roller-125-plate-fitting-with-brake/Motedis_1127.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "1127",
+      "supplier_url": "https://www.motedis.com/en/Roller-125-plate-fitting-with-brake",
+      "designation": "Castor 125, plate fitting, with brake",
+      "rows": [],
+      "build": {
+        "role": "connector",
+        "systems": [{"type":"B","slot":8},{"type":"I","slot":8},{"type":"B","slot":10}],
+        "frames": [{"name":"mount","kind":"face"}],
+        "connector": {"junctions":["surface"],"space":"outer","mates":[{"frame":"mount","to":"slot"}]}
+      },
+      "frames": [{"name":"mount","origin":[122.2,5.5,-178.25],"z":[0,1,0],"x":[1,0,0],"kind":"face"}]
+    },
+    {
+      "id": "castor-125-plate-brake-new",
+      "name": "Castor 125, plate fitting, with brake (new design)",
+      "category": "castors",
+      "source": "mechanical-basics/Roller-125-plate-with-brake-NEW/Motedis-10035/Motedis_10035.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "10035",
+      "supplier_url": "https://www.motedis.com/en/Roller-125-plate-with-brake-NEW",
+      "designation": "Castor 125, plate fitting, with brake (new design)",
+      "rows": [],
+      "build": {
+        "role": "connector",
+        "systems": [{"type":"B","slot":8},{"type":"I","slot":8},{"type":"B","slot":10}],
+        "frames": [{"name":"mount","kind":"face"}],
+        "connector": {"junctions":["surface"],"space":"outer","mates":[{"frame":"mount","to":"slot"}]}
+      },
+      "frames": [{"name":"mount","origin":[122.2,5.5,-178.25],"z":[0,1,0],"x":[1,0,0],"kind":"face"}]
+    },
+    {
+      "id": "castor-125-fixed",
+      "name": "Fixed castor 125",
+      "category": "castors",
+      "source": "mechanical-basics/Fixed-roller-125-without-brake/Motedis-9312/Motedis_9312.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "9312",
+      "supplier_url": "https://www.motedis.com/en/Fixed-roller-125-without-brake",
+      "designation": "Fixed castor 125",
+      "rows": [],
+      "build": {
+        "role": "connector",
+        "systems": [{"type":"B","slot":8},{"type":"I","slot":8},{"type":"B","slot":10}],
+        "frames": [{"name":"mount","kind":"face"}],
+        "connector": {"junctions":["surface"],"space":"outer","mates":[{"frame":"mount","to":"slot"}]}
+      },
+      "frames": [{"name":"mount","origin":[0,2,0],"z":[0,1,0],"x":[1,0,0],"kind":"face"}]
+    },
+    {
+      "id": "castor-125-fixed-new",
+      "name": "Fixed castor 125 (new design)",
+      "category": "castors",
+      "source": "mechanical-basics/Fixed-roller-125-without-brake-NEW/Motedis-10038/Motedis_10038.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "10038",
+      "supplier_url": "https://www.motedis.com/en/Fixed-roller-125-without-brake-NEW",
+      "designation": "Fixed castor 125 (new design)",
+      "rows": [],
+      "build": {
+        "role": "connector",
+        "systems": [{"type":"B","slot":8},{"type":"I","slot":8},{"type":"B","slot":10}],
+        "frames": [{"name":"mount","kind":"face"}],
+        "connector": {"junctions":["surface"],"space":"outer","mates":[{"frame":"mount","to":"slot"}]}
+      },
+      "frames": [{"name":"mount","origin":[0,2,0],"z":[0,1,0],"x":[1,0,0],"kind":"face"}]
+    },
+    {
+      "id": "levelling-castor-fm40",
+      "name": "Levelling castor FM-40",
+      "category": "castors",
+      "source": "mechanical-basics/Levelling-Caster-FM-40/Motedis-LC-FM40-1/Motedis_LC-FM40.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "LC-FM40",
+      "supplier_url": "https://www.motedis.com/en/Levelling-Caster-FM-40",
+      "designation": "Levelling castor FM-40",
+      "rows": [],
+      "build": {
+        "role": "connector",
+        "systems": [{"type":"B","slot":8},{"type":"I","slot":8},{"type":"B","slot":10}],
+        "frames": [{"name":"mount","kind":"face"}],
+        "connector": {"junctions":["surface"],"space":"outer","mates":[{"frame":"mount","to":"slot"}]}
+      },
+      "frames": [{"name":"mount","origin":[0,0,55.5],"z":[0,0,1],"x":[1,0,0],"kind":"face"}]
+    },
+    {
+      "id": "levelling-castor-fm60",
+      "name": "Levelling castor FM-60",
+      "category": "castors",
+      "source": "mechanical-basics/Lifting-caster-FM-60/Motedis-LC-FM60-1/Motedis_LC-FM60.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "LC-FM60",
+      "supplier_url": "https://www.motedis.com/en/Lifting-caster-FM-60",
+      "designation": "Levelling castor FM-60",
+      "rows": [],
+      "build": {
+        "role": "connector",
+        "systems": [{"type":"B","slot":8},{"type":"I","slot":8},{"type":"B","slot":10}],
+        "frames": [{"name":"mount","kind":"face"}],
+        "connector": {"junctions":["surface"],"space":"outer","mates":[{"frame":"mount","to":"slot"}]}
+      },
+      "frames": [{"name":"mount","origin":[7.99,3.2,16.3],"z":[0,0,1],"x":[1,0,0],"kind":"face"}]
+    },
+    {
+      "id": "levelling-castor-fm80",
+      "name": "Levelling castor FM-80",
+      "category": "castors",
+      "source": "mechanical-basics/Lifting-caster-FM-80/Motedis-LC-FM80/Motedis_LC-FM80.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "LC-FM80",
+      "supplier_url": "https://www.motedis.com/en/Lifting-caster-FM-80",
+      "designation": "Levelling castor FM-80",
+      "rows": [],
+      "build": {
+        "role": "connector",
+        "systems": [{"type":"B","slot":8},{"type":"I","slot":8},{"type":"B","slot":10}],
+        "frames": [{"name":"mount","kind":"face"}],
+        "connector": {"junctions":["surface"],"space":"outer","mates":[{"frame":"mount","to":"slot"}]}
+      },
+      "frames": [{"name":"mount","origin":[31.62,157.82,48.99],"z":[0,0,1],"x":[1,0,0],"kind":"face"}]
+    },
+    {
+      "id": "levelling-castor-sm60",
+      "name": "Levelling castor SM-60",
+      "category": "castors",
+      "source": "mechanical-basics/Levelling-Caster-SM-60/Motedis-LC-SM60-2/Motedis_LC-SM60.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "LC-SM60",
+      "supplier_url": "https://www.motedis.com/en/Levelling-Caster-SM-60",
+      "designation": "Levelling castor SM-60",
+      "rows": [],
+      "build": {
+        "role": "connector",
+        "systems": [{"type":"B","slot":8},{"type":"I","slot":8},{"type":"B","slot":10}],
+        "frames": [{"name":"mount","kind":"face"}],
+        "connector": {"junctions":["surface"],"space":"end","mates":[{"frame":"mount","to":"end"}]}
+      },
+      "frames": [{"name":"mount","origin":[7.99,3.2,13.9],"z":[0,0,1],"x":[1,0,0],"kind":"face"}]
+    },
+    {
+      "id": "levelling-castor-sm80",
+      "name": "Levelling castor SM-80",
+      "category": "castors",
+      "source": "mechanical-basics/Levelling-Caster-SM-80/Motedis-LC-SM80/Motedis_LC-SM80.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "LC-SM80",
+      "supplier_url": "https://www.motedis.com/en/Levelling-Caster-SM-80",
+      "designation": "Levelling castor SM-80",
+      "rows": [],
+      "build": {
+        "role": "connector",
+        "systems": [{"type":"B","slot":8},{"type":"I","slot":8},{"type":"B","slot":10}],
+        "frames": [{"name":"mount","kind":"face"}],
+        "connector": {"junctions":["surface"],"space":"end","mates":[{"frame":"mount","to":"end"}]}
+      },
+      "frames": [{"name":"mount","origin":[31.62,157.82,49.35],"z":[0,0,1],"x":[1,0,0],"kind":"face"}]
+    },
+    {
+      "id": "wheel-pom-100-b12",
+      "name": "Transport wheel POM D100, bore 12 mm",
+      "category": "castors",
+      "source": "mechanical-basics/Transport-wheel-POM-100-bore-hole-12mm/Motedis_4117.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "4117",
+      "supplier_url": "https://www.motedis.com/en/Transport-wheel-POM-100-bore-hole-12mm",
+      "designation": "Transport wheel POM D100, bore 12 mm",
+      "rows": [],
+      "build": {
+        "role": "linear",
+        "frames": [{"name":"bore","kind":"bore","diameter":"12 mm"}],
+        "linear": {
+          "kind": "bearing",
+          "size": "12 mm",
+          "mate": {"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}
+        }
+      },
+      "frames": [{"name":"bore","origin":[0,0,0],"z":[0,0,1],"x":[1,0,0],"kind":"bore","diameter":"12 mm"}]
+    },
+    {
+      "id": "wheel-pp-100-b10",
+      "name": "Transport wheel PP D100, bore 10 mm",
+      "category": "castors",
+      "source": "mechanical-basics/Transport-wheel-PP-100-bore-hole-10mm/Transport-wheel-PP-D100-bore-hole-10mm/Transport_wheel_PP_D100_bore_hole_10mm.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "10047",
+      "supplier_url": "https://www.motedis.com/en/Transport-wheel-PP-100-bore-hole-10mm",
+      "designation": "Transport wheel PP D100, bore 10 mm",
+      "rows": [],
+      "build": {
+        "role": "linear",
+        "frames": [{"name":"bore","kind":"bore","diameter":"10 mm"}],
+        "linear": {
+          "kind": "bearing",
+          "size": "10 mm",
+          "mate": {"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}
+        }
+      },
+      "frames": [{"name":"bore","origin":[0,0,0],"z":[0,0,1],"x":[1,0,0],"kind":"bore","diameter":"10 mm"}]
+    },
+    {
+      "id": "wheel-pp-125-b10",
+      "name": "Transport wheel PP D125, bore 10 mm",
+      "category": "castors",
+      "source": "mechanical-basics/Transport-wheel-PP-125-bore-hole-10mm/Motedis-10048/Motedis_10048.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "10048",
+      "supplier_url": "https://www.motedis.com/en/Transport-wheel-PP-125-bore-hole-10mm-",
+      "designation": "Transport wheel PP D125, bore 10 mm",
+      "rows": [],
+      "build": {
+        "role": "linear",
+        "frames": [{"name":"bore","kind":"bore","diameter":"10 mm"}],
+        "linear": {
+          "kind": "bearing",
+          "size": "10 mm",
+          "mate": {"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}
+        }
+      },
+      "frames": [{"name":"bore","origin":[0,0,0],"z":[0,0,1],"x":[1,0,0],"kind":"bore","diameter":"10 mm"}]
+    },
+    {
+      "id": "wheel-pp-125-b12",
+      "name": "Transport wheel PP D125, bore 12 mm",
+      "category": "castors",
+      "source": "mechanical-basics/Transport-wheel-PP-125-bore-hole-12mm/Motedis_7464.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "7464",
+      "supplier_url": "https://www.motedis.com/en/Transport-wheel-PP-125-bore-hole-12mm",
+      "designation": "Transport wheel PP D125, bore 12 mm",
+      "rows": [],
+      "build": {
+        "role": "linear",
+        "frames": [{"name":"bore","kind":"bore","diameter":"12 mm"}],
+        "linear": {
+          "kind": "bearing",
+          "size": "12 mm",
+          "mate": {"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}
+        }
+      },
+      "frames": [{"name":"bore","origin":[0,0,0],"z":[0,0,1],"x":[1,0,0],"kind":"bore","diameter":"12 mm"}]
+    },
+    {
+      "id": "wheel-304-8",
+      "name": "Wheel 304.8 mm (12 inch)",
+      "category": "castors",
+      "source": "mechanical-basics/Wheel-3048-mm-solid-rubber-ball-bearings/China-Rad-Hex-Vollgummi/China Rad Hex Vollgummi.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "SOLIDWH12-B",
+      "supplier_url": "https://www.motedis.com/en/Wheel-3048-mm-solid-rubber-ball-bearings",
+      "designation": "Wheel 304.8 mm {Type}",
+      "rows": [
+        {
+          "name": "solid-bearings",
+          "select": {"Type":"solid-bearings"},
+          "values": {},
+          "part_number": "SOLIDWH12-B",
+          "supplier_url": "https://www.motedis.com/en/Wheel-3048-mm-solid-rubber-ball-bearings",
+          "designation": "Wheel 304.8 mm, solid rubber, ball bearings"
+        },
+        {
+          "name": "solid-hex",
+          "select": {"Type":"solid-hex"},
+          "values": {},
+          "part_number": "SOLIDWH12-H",
+          "supplier_url": "https://www.motedis.com/en/Wheel-3048-mm-solid-rubber-wheel",
+          "designation": "Wheel 304.8 mm, solid rubber, hexagon hub"
+        },
+        {
+          "name": "air-bearings",
+          "select": {"Type":"air-bearings"},
+          "values": {},
+          "part_number": "INFWH12-B",
+          "supplier_url": "https://www.motedis.com/en/3048-mm-air-wheel-with-PVC-rim-and-ball-bearings",
+          "designation": "Wheel 304.8 mm, pneumatic, PVC rim, ball bearings"
+        },
+        {
+          "name": "air-hex",
+          "select": {"Type":"air-hex"},
+          "values": {},
+          "part_number": "INFWH12-H",
+          "supplier_url": "https://www.motedis.com/en/Transport-wheel-3048-mm-pneumatic-wheel-with-PVC-rim",
+          "designation": "Wheel 304.8 mm, pneumatic, PVC rim, hexagon hub"
+        }
+      ],
+      "build": {
+        "role": "linear",
+        "frames": [{"name":"bore","kind":"bore"}],
+        "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}}
+      },
+      "frames": [{"name":"bore","origin":[5.25,0,0],"z":[1,0,0],"x":[0,1,0],"kind":"bore"}]
+    },
+    {
+      "id": "wheel-plate-238x40",
+      "name": "Wheel mounting plate 238x40 for scooter, steel black",
+      "category": "castors",
+      "source": "mechanical-basics/Wheel-mounting-plate-238x40-for-Scooter-steel-black/Motedis-wheel-mounting-plate-238x40-for-Scooter/Motedis_wheel mounting plate 238x40 for Scooter.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "9431",
+      "supplier_url": "https://www.motedis.com/en/Wheel-mounting-plate-238x40-for-Scooter-steel-black",
+      "designation": "Wheel mounting plate 238x40",
+      "rows": [],
+      "build": {
+        "role": "connector",
+        "systems": [{"type":"I","slot":8,"grid":40}],
+        "frames": [{"name":"mount","kind":"face"},{"name":"axle","kind":"bore","diameter":"12 mm"}],
+        "connector": {
+          "junctions": ["surface"],
+          "space": "outer",
+          "mates": [{"frame":"mount","to":"slot"}],
+          "fasteners": [
+            {
+              "frame": "mount",
+              "nut": {"library":"mitcad-parts","component":"tnut-i8-guided","config":"M8"},
+              "screw": {"library":"mitcad-parts","component":"iso4762","config":"M8x16"}
+            }
+          ]
+        }
+      },
+      "frames": [
+        {"name":"mount","origin":[0,-22.05,0],"z":[0,0,-1],"x":[0,1,0],"kind":"face"},
+        {
+          "name": "axle",
+          "origin": [0,-200,2.5],
+          "z": [0,0,1],
+          "x": [1,0,0],
+          "kind": "bore",
+          "diameter": "12 mm"
+        }
+      ]
+    }
+  ]
+}

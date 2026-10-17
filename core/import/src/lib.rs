@@ -193,6 +193,11 @@ pub struct Options {
     /// replay's bodies that match the state (mitcad#283, [`retry`]): None
     /// keeps them, as [`RetryBodies::Keep`].
     pub retry_bodies: Option<Arc<RetryChoice>>,
+    /// Which items whose decoded definition builds a result that deviates
+    /// from the file's stay parametric with it (mitcad#379,
+    /// [`deviations`]); the others take the file's bodies (the default).
+    /// The report lists every such result with its numbers either way.
+    pub accept_deviations: AcceptDeviations,
 }
 
 impl Default for Options {
@@ -218,6 +223,7 @@ impl Default for Options {
             validate: false,
             geometric_tolerance: DEFAULT_GEOMETRIC_TOLERANCE,
             retry_bodies: None,
+            accept_deviations: AcceptDeviations::None,
         }
     }
 }
@@ -802,6 +808,17 @@ pub(crate) struct Importer<'a, K: Kernel> {
     /// Nanoseconds the import waited for the user's answer ([`retry`]),
     /// left out of the items' and the import's time (`learn::Clock`).
     waited: Arc<AtomicU64>,
+    /// The deviating results recorded for the item being replayed
+    /// ([`deviations`], mitcad#379).
+    deviations: Vec<deviations::Recorded>,
+    /// The bodies that carry an accepted deviation, with what they differ
+    /// by from the file's bodies they stand for.
+    deviated: HashMap<BodyUid, deviations::Offset>,
+    /// The earlier `deviated`, each with the undo depth it was replaced at.
+    deviated_log: Vec<(usize, HashMap<BodyUid, deviations::Offset>)>,
+    /// The points of each deviation (report entry, points, component), for
+    /// the faces to select at the end.
+    deviation_points: Vec<(usize, Vec<[f64; 3]>, ComponentUid)>,
 }
 
 impl<'a, K: Kernel> Importer<'a, K> {
@@ -852,6 +869,10 @@ impl<'a, K: Kernel> Importer<'a, K> {
             made_ahead: HashMap::new(),
             exact_pairs: None,
             waited: Arc::default(),
+            deviations: Vec::new(),
+            deviated: HashMap::new(),
+            deviated_log: Vec::new(),
+            deviation_points: Vec::new(),
         }
     }
 }
@@ -1125,6 +1146,10 @@ pub mod rvt;
 pub mod derive;
 // The dressup failure dump (mitcad#107, mitcad#322).
 mod dressups;
+// Results that deviate from the file's, kept at the user's choice
+// (mitcad#379).
+mod deviations;
+pub use deviations::{AcceptDeviations, DeviatingFace, DeviationReport};
 
 fn item_name(item: &TimelineItem) -> String {
     item.name().unwrap_or("?").to_owned()
@@ -1532,6 +1557,42 @@ fn dressup_edges(c: &Candidate) -> Option<(Value, BTreeSet<String>)> {
         set.as_object_mut()?.remove("edges");
     }
     Some((shape, edges))
+}
+
+/// The edges a fillet or chamfer candidate of one definition or several
+/// (one per edge or chain, the same rounding each) takes, with that
+/// rounding ([`dressup_edges`] of each).
+fn dressup_edge_set(c: &Candidate) -> Option<(Value, BTreeSet<String>)> {
+    let mut out: Option<(Value, BTreeSet<String>)> = None;
+    for def in &c.defs {
+        let (shape, edges) = dressup_edges(&Candidate::new(def.clone()))?;
+        match &mut out {
+            Some((s, all)) if *s == shape => all.extend(edges),
+            Some(_) => return None,
+            None => out = Some((shape, edges)),
+        }
+    }
+    out
+}
+
+/// The edges of a decoded fillet or chamfer (`decoded`) that candidate `c`
+/// leaves out, where it takes only some of them with the same rounding
+/// (mitcad#379: a rounding the kernel fails on some edges or corners,
+/// offered without them); empty otherwise.
+fn edges_left_out(decoded: Option<&(Value, BTreeSet<String>)>, c: &Candidate) -> Vec<String> {
+    let (Some((shape, all)), Some((s, some))) = (decoded, dressup_edge_set(c)) else {
+        return Vec::new();
+    };
+    if s != *shape || some.is_empty() || !some.is_subset(all) || some.len() == all.len() {
+        return Vec::new();
+    }
+    all.difference(&some)
+        .map(|e| {
+            e.split_once('|')
+                .map_or(e.as_str(), |(_, edge)| edge)
+                .to_owned()
+        })
+        .collect()
 }
 
 /// A candidate of one definition with participants: the definition
@@ -1975,6 +2036,8 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
             note: None,
             component: None,
             exact_retry: None,
+            deviation: None,
+            accepted_deviation: None,
         };
         self.report.items.push(report);
         let at = self.report.items.len() - 1;
@@ -2448,6 +2511,7 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                 break;
             }
         }
+        self.undo_deviated(self.doc.undo_depth());
     }
 
     /// The model parameters the item made become the feature's own.
@@ -2466,8 +2530,13 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
             .collect()
     }
 
+    /// The solids at the marker with their signatures; a body that carries
+    /// an accepted deviation measures as the file's body it stands for
+    /// ([`deviations::Offset`], mitcad#379).
     fn current_bodies(&self) -> Vec<(BodyUid, Sig)> {
-        bodies_of(self.doc)
+        let mut bodies = bodies_of(self.doc);
+        self.corrected(&mut bodies);
+        bodies
     }
 
     /// The sketches a modelling item can use (those it names, else the last
@@ -2728,6 +2797,25 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                                     place.map(|(o, _)| o),
                                     place.map(|(_, n)| n)
                                 );
+                                // Where the occurrences are for it (faces of
+                                // other components move by them).
+                                if c.defs[0].get("links").is_some() {
+                                    let moved: Vec<String> = self
+                                        .doc
+                                        .assembly()
+                                        .occurrences
+                                        .iter()
+                                        .filter_map(|o| {
+                                            let t = self.doc.placement(o.uid)?;
+                                            Some(format!("{} at {:?}", o.uid, t.translation))
+                                        })
+                                        .collect();
+                                    trace!(
+                                        "{}: the occurrences at its point: {}",
+                                        item_name(item),
+                                        moved.join(", ")
+                                    );
+                                }
                             }
                             self.undo_to(depth);
                             trace!(
@@ -3444,7 +3532,11 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                 match evaluated.result.clone() {
                     Ok(uids) => {
                         let current = match &evaluated.bodies {
-                            Some(bodies) => bodies.iter().map(|(_, s)| *s).collect(),
+                            Some(bodies) => {
+                                let mut bodies = bodies.clone();
+                                self.corrected(&mut bodies);
+                                bodies.iter().map(|(_, s)| *s).collect()
+                            }
                             None => self.current_sigs(),
                         };
                         if implausible(c, &start, &current) {
@@ -3673,6 +3765,7 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
     /// the state comes in as its fallback.
     fn verified_at(&mut self, at: usize, index: i64, item: &TimelineItem, state: usize) {
         let name = item_name(item);
+        self.deviations.clear();
         // Operations no item names right before the item's own, from the
         // state the replay is at: tried first as the item's own (each copy
         // of a pattern is an operation of its own, mitcad#156), so that no
@@ -3848,6 +3941,28 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
             ),
             _ => last_error,
         };
+        // An extrusion or revolution whose profile names only curves its
+        // sketch no longer has (mitcad#379): no region of the sketch is the
+        // file's profile, whatever its definitions then did.
+        let last_error = match item.detail.as_ref().and_then(features::profile_curves_gone) {
+            Some(n) if !halts(&last_error) => format!(
+                "its profile names {n} {} its sketch no longer has (the sketch was edited after \
+                 the item was made; the history keeps its result, but no region of the sketch is \
+                 its profile); {last_error}",
+                if n == 1 { "curve" } else { "curves" }
+            ),
+            _ => last_error,
+        };
+        // A decoded definition that built a result off the file's: kept
+        // parametric where the user chose so, else listed with the
+        // fallback (mitcad#379).
+        let deviation = if halts(&last_error) || self.recorded_deviation().is_none() {
+            None
+        } else if self.accept_deviation(at, index, item.name(), states, &last_error) {
+            return;
+        } else {
+            self.deviation_now(index, item.name(), states, &last_error)
+        };
         if fresh {
             self.tried_in_vain(index, &last_error);
         }
@@ -3914,6 +4029,9 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                 self.oracle.cursor = Some(state);
                 self.report.items[at].features.push(uid.to_string());
                 self.note(at, Outcome::Fallback, last_error);
+                if let Some(measured) = deviation {
+                    self.list_deviation(at, measured);
+                }
                 // Items waiting since a state that was not rebuilt.
                 let base = self.doc.feature(uid).map_or(label, |f| f.name.clone());
                 for p in std::mem::take(&mut self.pending) {
@@ -4091,6 +4209,10 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                 // Why the first of the decoded definitions failed, if it did:
                 // the note's cause when the guesses after it only missed.
                 let mut decoded_failure: Option<String> = None;
+                // The edges of a decoded rounding the kernel failed on: a
+                // definition that builds on some of them is a deviating
+                // result without the others (mitcad#379).
+                let mut decoded_edges: Option<(Value, BTreeSet<String>)> = None;
                 // Definitions cut short at their share of the time wait for
                 // the second round.
                 let mut turns = Turns::default();
@@ -4237,7 +4359,11 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                             combined.extend(same_result_combine(c));
                             let clock = std::time::Instant::now();
                             let bodies = match &evaluated.bodies {
-                                Some(bodies) => bodies.clone(),
+                                Some(bodies) => {
+                                    let mut bodies = bodies.clone();
+                                    self.corrected(&mut bodies);
+                                    bodies
+                                }
                                 None => self.current_bodies(),
                             };
                             trace!("{name}: measured in {:.2} s", clock.elapsed().as_secs_f64());
@@ -4325,6 +4451,10 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                                             short(&current),
                                             short(target)
                                         );
+                                        // (For the user's choice to keep it,
+                                        // mitcad#379.)
+                                        let left = edges_left_out(decoded_edges.as_ref(), c);
+                                        self.record_deviation(c, inner, left);
                                         self.undo_to(inner);
                                         continue;
                                     }
@@ -4395,6 +4525,9 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                                 short(&current),
                                 short(target)
                             );
+                            // (For the user's choice to keep it, mitcad#379.)
+                            let left = edges_left_out(decoded_edges.as_ref(), c);
+                            self.record_deviation(c, inner, left);
                             // (Where it differs, in numbers: the traces of
                             // the first few misses.)
                             if tracing()
@@ -4431,6 +4564,9 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                                 failed_dressups.extend(dressup_edges(c));
                             }
                             self.kernel_failed |= kernel_failure(&e);
+                            if (c.first || !c.guess) && decoded_edges.is_none() {
+                                decoded_edges = dressup_edge_set(c);
+                            }
                             if (c.first || !c.guess) && decoded_failure.is_none() {
                                 decoded_failure = Some(e.clone());
                             }
@@ -5196,6 +5332,7 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
             }
         }
         let label = name.map_or_else(|| "Add Base Feature".to_owned(), |n| format!("Add {n}"));
+        let replaced: Vec<BodyUid> = inputs.iter().flat_map(|i| i.replaces.clone()).collect();
         let imported = match self.doc.add_base_features(&label, inputs.clone()) {
             Ok(i) => i,
             // The name is taken (the item was tried already): default name.
@@ -5217,6 +5354,9 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
             return Err(e);
         }
         self.note_bases(&uids);
+        // A body the file's replaced carries no accepted deviation any more
+        // (mitcad#379).
+        self.not_deviated(&replaced);
         Ok(uids.first().copied())
     }
 
@@ -5305,6 +5445,8 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
             }
         }
         self.compare_final();
+        // The faces at each deviating result, to select (mitcad#379).
+        self.deviation_faces();
         // Low on memory first while the file's bodies were built for the
         // comparison (an allocation failed in their healing, mitcad#132).
         if self.report.low_memory.is_none() {

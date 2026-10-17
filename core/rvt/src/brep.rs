@@ -414,6 +414,9 @@ pub struct GRep {
     pub bbox: Option<[f64; 6]>,
     /// What did not read.
     pub notes: Vec<String>,
+    /// Bodies and placed types left out: under view conditions a 3D view
+    /// does not meet (the plan's and elevations' symbolic faces).
+    pub hidden: usize,
 }
 
 impl GRep {
@@ -425,6 +428,9 @@ impl GRep {
 struct Reader<'a> {
     schema: &'a Schema,
     record: &'a Record,
+    /// The detail level its view conditions are met at (1 coarse, 2
+    /// medium, 3 fine).
+    detail: u64,
 }
 
 /// Index of a pointee object (by address) in the record.
@@ -713,12 +719,41 @@ impl<'a> Reader<'a> {
         (m.len() == 12).then(|| std::array::from_fn(|i| m[i]))
     }
 
+    /// Whether a `GFilter`'s view conditions (`m_oConditions`, all of
+    /// which must hold, [`condition_in_3d`]) hold in a 3D view at the
+    /// reader's detail level.
+    fn shown_in_3d(&self, filter: &Object) -> bool {
+        self.list(filter, "m_oConditions").iter().all(|c| {
+            let Some(c) = self.record.deref(c) else {
+                return true;
+            };
+            let int = |name| self.get(c, name).and_then(Value::as_u64);
+            let negated = self
+                .get(c, "m_negateDirCondition")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            condition_in_3d(
+                self.class(c),
+                negated,
+                [int("m_param"), int("m_comp"), int("m_value")],
+                self.detail,
+            )
+        })
+    }
+
     fn node(&self, n: &'a Object, out: &mut GRep, depth: usize) {
+        self.node_shown(n, out, depth, true);
+    }
+
+    /// A node's geometry; under a filter not shown in 3D (`shown` false)
+    /// only its curves (a profile's lines), not its bodies or placed types.
+    fn node_shown(&self, n: &'a Object, out: &mut GRep, depth: usize, shown: bool) {
         if depth > 64 {
             out.notes.push("nodes nest too deep".into());
             return;
         }
         match self.class(n) {
+            "Geometry" | "GInstance" if !shown => out.hidden += 1,
             "Geometry" => {
                 if self.list(n, "m_pFaces").is_empty() {
                     return;
@@ -755,10 +790,11 @@ impl<'a> Reader<'a> {
                     out.curves.push(c);
                 }
             }
-            _ => {
+            class => {
+                let shown = shown && (class != "GFilter" || self.shown_in_3d(n));
                 for s in self.list(n, "m_subNodes") {
                     if let Some(s) = self.record.deref(s) {
-                        self.node(s, out, depth + 1);
+                        self.node_shown(s, out, depth + 1, shown);
                     }
                 }
             }
@@ -766,11 +802,42 @@ impl<'a> Reader<'a> {
     }
 }
 
+/// Whether a view condition of a `GFilter` holds in a 3D view at a detail
+/// level (1 coarse, 2 medium, 3 fine): a view direction along an axis
+/// (`GConditionDir`) or a cut (`GConditionCut`) does not hold there, its
+/// negation (`m_negateDirCondition`) does; the detail level
+/// (`GConditionInt` of `m_param` 3) is compared with `m_value` by `m_comp`
+/// (0 equal, 3 not equal). Other conditions hold. *(seen: the geometry
+/// under a direction or cut condition is the plan's, the elevations' and
+/// the cut's symbolic faces, the 3D bodies are under their negations; the
+/// detail levels' conditions pair up as a representation and its
+/// alternative)*
+pub fn condition_in_3d(
+    class: &str,
+    negated: bool,
+    [param, comp, value]: [Option<u64>; 3],
+    detail: u64,
+) -> bool {
+    match class {
+        "GConditionDir" | "GConditionCut" => negated,
+        "GConditionInt" => match (param, comp, value) {
+            (Some(3), Some(0), Some(v)) => v == detail,
+            (Some(3), Some(3), Some(v)) => v != detail,
+            _ => true,
+        },
+        _ => true,
+    }
+}
+
 /// The B-reps of the `Geometry` objects a record's pointers point at (a
 /// family type's void geometry, `FamilySymbol.m_complexCutGeoms`,
 /// mitcad#345), and what did not read.
 pub fn solids(schema: &Schema, record: &Record, values: &[Value]) -> (Vec<Solid>, Vec<String>) {
-    let r = Reader { schema, record };
+    let r = Reader {
+        schema,
+        record,
+        detail: 3,
+    };
     let mut out = GRep::default();
     for v in values {
         if let Some(o) = record.deref(v) {
@@ -780,17 +847,65 @@ pub fn solids(schema: &Schema, record: &Record, values: &[Value]) -> (Vec<Solid>
     (out.solids, out.notes)
 }
 
-/// An element's geometry from its `GElement` record.
+/// An element's geometry from its `GElement` record, as a 3D view shows it
+/// at the fine detail level; a type that shows nothing there, at the
+/// medium or else the coarse level (*seen*: families whose bodies are
+/// shown at the coarse level only, the level of a project's 3D views).
 pub fn read(schema: &Schema, record: &Record) -> Option<GRep> {
     if schema.class_name(record.root.class) != "GElement" {
         return None;
     }
-    let r = Reader { schema, record };
     let mut out = GRep::default();
-    let b = r.get(&record.root, "m_bBox").map(Value::floats);
-    out.bbox = b
-        .filter(|b| b.len() == 6 && b.iter().all(|v| v.is_finite()))
-        .map(|b| [b[0], b[1], b[2], b[3], b[4], b[5]]);
-    r.node(&record.root, &mut out, 0);
+    for detail in [3, 2, 1] {
+        let r = Reader {
+            schema,
+            record,
+            detail,
+        };
+        out = GRep::default();
+        let b = r.get(&record.root, "m_bBox").map(Value::floats);
+        out.bbox = b
+            .filter(|b| b.len() == 6 && b.iter().all(|v| v.is_finite()))
+            .map(|b| [b[0], b[1], b[2], b[3], b[4], b[5]]);
+        r.node(&record.root, &mut out, 0);
+        if !out.is_empty() || out.hidden == 0 {
+            break;
+        }
+    }
     Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::condition_in_3d;
+
+    #[test]
+    fn a_3d_view_shows_what_is_not_only_for_plans_cuts_or_other_detail_levels() {
+        // The plan's faces and the cut's: not in 3D; their negations: in 3D.
+        assert!(!condition_in_3d("GConditionDir", false, [None; 3], 3));
+        assert!(condition_in_3d("GConditionDir", true, [None; 3], 3));
+        assert!(!condition_in_3d("GConditionCut", false, [None; 3], 3));
+        assert!(condition_in_3d("GConditionCut", true, [None; 3], 3));
+        // Detail levels: "fine only" and "coarse and medium" at fine and at
+        // coarse.
+        let fine_only = [Some(3), Some(0), Some(3)];
+        let not_fine = [Some(3), Some(3), Some(3)];
+        assert!(condition_in_3d("GConditionInt", false, fine_only, 3));
+        assert!(!condition_in_3d("GConditionInt", false, not_fine, 3));
+        assert!(!condition_in_3d("GConditionInt", false, fine_only, 1));
+        assert!(condition_in_3d("GConditionInt", false, not_fine, 1));
+        // Other parameters and classes hold.
+        assert!(condition_in_3d(
+            "GConditionInt",
+            false,
+            [Some(6), Some(0), Some(1)],
+            3
+        ));
+        assert!(condition_in_3d(
+            "GConditionSomethingElse",
+            false,
+            [None; 3],
+            3
+        ));
+    }
 }

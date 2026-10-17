@@ -39,6 +39,7 @@
 #include "FileDialogs.hpp"
 #include "FileFormats.hpp"
 #include "F3dImport.hpp"
+#include "ImportDeviations.hpp"
 
 namespace mitcad {
 namespace {
@@ -761,17 +762,31 @@ void MainWindow::insertComponent(const QString& given) {
   }
 }
 
-void MainWindow::startF3dImport(const QString& path) {
+void MainWindow::startF3dImport(const QString& path, const QJsonObject& rerun) {
   if (m_import) {
     showError(tr("An import is running."));
     return;
   }
+  // A new import of a design: nothing decided about its deviating results
+  // yet (mitcad#379).
+  if (rerun.isEmpty()) {
+    m_deviationsPath = path;
+    m_deviationsDeclined.clear();
+    m_deviationsRerunFrom = -1;
+  }
   // The import runs to its end, or until its dialog stops it (T1e; the
   // time limit that Preferences once had, import/timeLimit, is not read).
   m_import = new F3dImport(path, this);
+  if (!rerun.isEmpty()) {
+    m_import->setOptions(rerun);
+  }
   connect(m_import, &F3dImport::finished, this,
           [this, path](bool ok, const QByteArray& project, const QJsonObject& result, const QString& error) {
             const QString name = QFileInfo(path).fileName();
+            // (The import's object goes once this returns: no import runs
+            // from now on, and one may start again, mitcad#379.)
+            const QJsonObject options = m_import ? m_import->options() : QJsonObject();
+            m_import.clear();
             if (!ok) {
               if (error.isEmpty()) {
                 showHint(tr("Import of %1 cancelled.").arg(name));
@@ -854,8 +869,68 @@ void MainWindow::startF3dImport(const QString& path) {
                          ? tr("Imported %1.").arg(name)
                          : tr("Imported %1; stopped early, the rest came in as the file's bodies.").arg(name));
             showImportReport(this, name, result, bodies);
+            // Items whose results deviate from the file's (mitcad#379):
+            // asked once the report is closed, with the design in view.
+            if (stop.isEmpty()) {
+              QTimer::singleShot(0, this, [this, path, result, options] { offerDeviations(path, result, options); });
+            }
           });
   m_import->start();
+}
+
+void MainWindow::offerDeviations(const QString& path, const QJsonObject& result, QJsonObject options) {
+  if (m_import || path != m_deviationsPath) {
+    return;
+  }
+  const QString name = QFileInfo(path).fileName();
+  // The items not decided yet, and those replayed on a result kept since.
+  std::vector<DeviationRow> rows;
+  for (const DeviationRow& row : deviationRows(result)) {
+    const bool replayed = m_deviationsRerunFrom >= 0 && row.index > m_deviationsRerunFrom;
+    if (!m_deviationsDeclined.contains(row.index) || replayed) {
+      rows.push_back(row);
+    }
+  }
+  if (rows.empty()) {
+    return;
+  }
+  const auto highlight = [this](const DeviationRow* row) {
+    Selection faces;
+    if (row != nullptr) {
+      for (const QJsonValue& value : row->faces) {
+        const QJsonObject face = value.toObject();
+        const QString body = face.value(QStringLiteral("body")).toString();
+        SelectionItem item;
+        item.kind = SelectKind::Face;
+        item.owner = body;
+        item.name = face.value(QStringLiteral("face")).toString();
+        item.occurrence = placingOccurrence(body.section(QLatin1Char('.'), 0, 0));
+        faces.append(item);
+      }
+    }
+    setSelection(faces);
+  };
+  const QSet<qint64> keep = askDeviations(this, name, rows, highlight);
+  for (const DeviationRow& row : rows) {
+    if (!keep.contains(row.index)) {
+      m_deviationsDeclined.insert(row.index, true);
+    }
+  }
+  if (keep.isEmpty()) {
+    return;
+  }
+  // The items kept so far and those kept now: the import runs again with
+  // them, the items after the first kept now replayed on its result.
+  QJsonArray accepted = options.value(QStringLiteral("accept_deviations")).toArray();
+  qint64 first = -1;
+  for (const qint64 index : keep) {
+    accepted.append(static_cast<double>(index));
+    first = first < 0 ? index : std::min(first, index);
+  }
+  options.insert(QStringLiteral("accept_deviations"), accepted);
+  m_deviationsRerunFrom = first;
+  qInfo().noquote() << QStringLiteral("Import of %1 runs again keeping %2 items parametric").arg(name).arg(accepted.size());
+  startF3dImport(path, options);
 }
 
 // ---------------------------------------------------------------------------

@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: MIT
 # mitcad-cli: the model and the kernel without the user interface.
 add_executable(mitcad-cli main.cpp library.cpp library.hpp projects.cpp projects.hpp)
+# Paths and arguments as UTF-8 on Windows too (cmake/Utf8CodePage.cmake).
+mitcad_utf8_code_page(mitcad-cli)
 target_link_libraries(mitcad-cli PRIVATE mitcad_ffi mitcad_geometry mitcad_geometry_io mitcad_warnings)
 
 # mitcad-cli render (mitcad#48, docs/rendering.md "Final render"). It makes
@@ -203,6 +205,12 @@ if(BUILD_TESTING)
                                    --save "${exchange}/imported.mitcad")
   set_tests_properties(cli.import PROPERTIES FIXTURES_REQUIRED cli_exported PASS_REGULAR_EXPRESSION
     "Bracket \\(F1\\.b0\\): volume 23946\\.350 mm3.*Bracket \\(2\\) \\(F1\\.b1\\): volume 47892\\.699 mm3")
+  # Paths with letters outside ASCII, which failed on Windows before the
+  # UTF-8 code page (cmake/Utf8CodePage.cmake).
+  add_test(NAME cli.non_ascii_paths
+    COMMAND "${CMAKE_COMMAND}" "-DCLI=$<TARGET_FILE:mitcad-cli>" "-DSCRIPT=${scripts}/join.json"
+            "-DDIR=${CMAKE_CURRENT_BINARY_DIR}/non-ascii-paths"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/non-ascii-paths-test.cmake")
   add_test(NAME cli.export_mesh
     COMMAND mitcad-cli export "${exchange}/exchange.mitcad" "${exchange}/out.stl"
             --refinement low --ascii)
@@ -294,6 +302,28 @@ if(BUILD_TESTING)
     COMMAND mitcad-cli import-f3d "${exchange}/bodies.f3d" --retry-bodies ask)
   set_tests_properties(cli.import_f3d_retry_bodies_refused PROPERTIES FIXTURES_REQUIRED cli_f3d
     PASS_REGULAR_EXPRESSION "--retry-bodies needs keep or replace")
+  # A rounding whose result deviates from the file's (mitcad#379): a
+  # synthetic design (a cube whose history bevels an edge, its timeline a
+  # dump with a rounding of that edge) comes in with the file's bevel and
+  # the deviation listed by default, and with the rounding kept parametric
+  # with --accept-deviations, the final body keeping its deviation.
+  add_test(NAME cli.f3d_deviation_files COMMAND test_exchange --write-f3d-deviation "${exchange}/deviation")
+  set_tests_properties(cli.f3d_deviation_files PROPERTIES FIXTURES_SETUP cli_f3d_deviation)
+  add_test(NAME cli.import_f3d_deviation
+    COMMAND mitcad-cli import-f3d "${exchange}/deviation/Rounding.f3d" --dump "${exchange}/deviation/Rounding.dump.json")
+  set_tests_properties(cli.import_f3d_deviation PROPERTIES FIXTURES_REQUIRED cli_f3d_deviation
+    PASS_REGULAR_EXPRESSION
+    "Fillet1 +FilletFeature +fallback[^\n]*\n +deviating result \\(not kept\\): volume change -8\\.5841 mm³ against the file's -20\\.0000 \\(\\+57\\.1 %\\).*Body1 \\(F2\\.b0\\): volume 980\\.000 mm3")
+  add_test(NAME cli.import_f3d_deviation_kept
+    COMMAND mitcad-cli import-f3d "${exchange}/deviation/Rounding.f3d" --dump "${exchange}/deviation/Rounding.dump.json"
+            --accept-deviations 2)
+  set_tests_properties(cli.import_f3d_deviation_kept PROPERTIES FIXTURES_REQUIRED cli_f3d_deviation
+    PASS_REGULAR_EXPRESSION
+    "Fillet1 +FilletFeature +parametric -> F3 \\(not verified\\): its result deviates from the file's; kept parametric at the user's choice: volume change -8\\.5841.*F3 Fillet1 \\(fillet\\): warning: Deviation from the file accepted at import.*Body1 \\(F2\\.b0\\): volume 991\\.416 mm3")
+  add_test(NAME cli.import_f3d_deviation_refused
+    COMMAND mitcad-cli import-f3d "${exchange}/deviation/Rounding.f3d" --accept-deviations 2,,3)
+  set_tests_properties(cli.import_f3d_deviation_refused PROPERTIES FIXTURES_REQUIRED cli_f3d_deviation
+    PASS_REGULAR_EXPRESSION "--accept-deviations needs all, none or timeline indices separated by commas")
   # After an import whose geometry kernel hung (mitcad#82): the exit status
   # of the import (1 when every try hung, 0 when one finished) while the
   # threads the hang watchdog gave up still run, not a crash at exit.
@@ -459,14 +489,15 @@ if(BUILD_TESTING)
   set_tests_properties(cli.import_rfa PROPERTIES FIXTURES_REQUIRED cli_rvt PASS_REGULAR_EXPRESSION
     "family\\.rfa \\(rfa\\), saved by release 2020.*family: Test Family & Co.*a family file: its metadata only")
   # The building test project (mitcad#275): its walls and floor rebuilt as
-  # features checked against their stored boxes, its levels' planes, its
-  # grid's axis, its material's appearance and its link found next to it.
+  # features checked against the geometry the file keeps of them (else
+  # their stored boxes), its levels' planes, its grid's axis, its
+  # material's appearance and its link found next to it.
   add_test(NAME cli.rvt_building_files COMMAND test_exchange --write-rvt-building "${exchange}/rvt-building")
   set_tests_properties(cli.rvt_building_files PROPERTIES FIXTURES_SETUP cli_rvt_building)
   add_test(NAME cli.import_rvt_building
     COMMAND mitcad-cli import-rvt "${exchange}/rvt-building/building.rvt" --save "${exchange}/rvt-building/building.mitcad")
   set_tests_properties(cli.import_rvt_building PROPERTIES FIXTURES_REQUIRED cli_rvt_building PASS_REGULAR_EXPRESSION
-    "Built 6 elements as features \\(2 floor, 4 wall\\), checked against their stored boxes; of those kinds none came in as meshes or boxes.*4 level planes, 2 grid axes, 0 grid arcs, 2 appearances.*link linked\\.rvt: linked\\.rvt, 4 elements")
+    "Built 6 elements as features \\(2 floor, 4 wall\\), checked against the geometry the file keeps of them \\(else their stored boxes\\); of those kinds none came in as meshes or boxes.*4 level planes, 2 grid axes, 0 grid arcs, 2 appearances.*link linked\\.rvt: linked\\.rvt, 4 elements")
   add_test(NAME rvt.corpus
     COMMAND "${CMAKE_COMMAND}" "-DCLI=$<TARGET_FILE:mitcad-cli>" "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/rvt-corpus"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/rvt-corpus.cmake")

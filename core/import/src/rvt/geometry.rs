@@ -144,6 +144,45 @@ pub fn solid_mesh(s: &Solid) -> Result<(Vec<P3>, Vec<[u32; 3]>), String> {
     Ok((points, triangles))
 }
 
+/// A closed body of planes as its faces (feet, its own coordinates): each
+/// face its outer loop and then its holes, facing out; None when a face
+/// is not a plane (its triangles then, [`solid_mesh`]).
+pub fn solid_faces(s: &Solid) -> Result<Option<Vec<Vec<Vec<P3>>>>, String> {
+    if s.faces
+        .iter()
+        .any(|f| !matches!(f.surface, Surface::Plane { .. }))
+    {
+        return Ok(None);
+    }
+    // (Closed, every face read.)
+    solid_mesh(s)?;
+    let mut faces = Vec::new();
+    for f in 0..s.faces.len() {
+        if s.faces[f].loops.is_empty() {
+            continue;
+        }
+        let loops: Vec<Vec<P3>> = (0..s.faces[f].loops.len())
+            .map(|l| loop_points(s, f, l))
+            .collect::<Result<_, _>>()?;
+        faces.extend(nested(&loops));
+    }
+    let volume: f64 = faces
+        .iter()
+        .flatten()
+        .map(|l| {
+            (1..l.len().saturating_sub(1))
+                .map(|k| math::dot(l[0], math::cross(l[k], l[k + 1])))
+                .sum::<f64>()
+        })
+        .sum();
+    if volume < 0.0 {
+        for l in faces.iter_mut().flatten() {
+            l.reverse();
+        }
+    }
+    Ok(Some(faces))
+}
+
 /// A geometry's own bodies triangulated (feet, its own coordinates), each
 /// body's triangles facing out where it is closed.
 #[derive(Debug, Default)]
@@ -161,9 +200,21 @@ pub type Cache = HashMap<usize, Rc<Tess>>;
 fn tessellate(g: &GRep) -> Tess {
     let mut out = Tess::default();
     for s in &g.solids {
+        // A single plane bounds no volume: a sheet (a wall's layer
+        // boundaries up to its unconnected height, a symbol's face), not a
+        // body a 3D view shows.
+        if s.faces.len() == 1 && matches!(s.faces[0].surface, Surface::Plane { .. }) {
+            continue;
+        }
         let mut points: Vec<P3> = Vec::new();
         let mut triangles: Vec<[u32; 3]> = Vec::new();
         for f in 0..s.faces.len() {
+            // A plane without loops bounds nothing: a face left over in the
+            // body, its edges all on other faces (seen in doors' and
+            // windows' void geometry).
+            if s.faces[f].loops.is_empty() && matches!(s.faces[f].surface, Surface::Plane { .. }) {
+                continue;
+            }
             match face_mesh(s, f, &mut points, &mut triangles) {
                 Ok(()) => out.faces += 1,
                 Err(why) => {
@@ -339,6 +390,85 @@ fn outer_first<T: Clone>(loops: &[Vec<T>], to3: impl Fn(&T) -> P3) -> Vec<Vec<T>
     v
 }
 
+/// A plane's loops (model points) grouped as areas, each outer loop first
+/// and then the holes in it: a loop within an odd number of others is a
+/// hole of the smallest that holds it (a face may have several outer
+/// loops, *seen* on in-place masses); loops of no area are left out.
+fn nested(loops: &[Vec<P3>]) -> Vec<Vec<Vec<P3>>> {
+    let newell = |l: &Vec<P3>| {
+        let mut n = [0.0; 3];
+        for k in 0..l.len() {
+            let (a, b) = (l[k], l[(k + 1) % l.len()]);
+            n[0] += (a[1] - b[1]) * (a[2] + b[2]);
+            n[1] += (a[2] - b[2]) * (a[0] + b[0]);
+            n[2] += (a[0] - b[0]) * (a[1] + b[1]);
+        }
+        n
+    };
+    let loops: Vec<&Vec<P3>> = loops
+        .iter()
+        .filter(|l| l.len() >= 3 && math::length(newell(l)) > 1e-9)
+        .collect();
+    let Some(largest) = loops
+        .iter()
+        .max_by(|a, b| math::length(newell(a)).total_cmp(&math::length(newell(b))))
+    else {
+        return Vec::new();
+    };
+    // In the plane's coordinates: the two axes off its normal's largest.
+    let n = newell(largest);
+    let k = (0..3)
+        .max_by(|a, b| n[*a].abs().total_cmp(&n[*b].abs()))
+        .unwrap_or(2);
+    let (u, v) = ((k + 1) % 3, (k + 2) % 3);
+    let inside = |p: P3, l: &Vec<P3>| {
+        let mut c = false;
+        for i in 0..l.len() {
+            let (a, b) = (l[i], l[(i + 1) % l.len()]);
+            if (a[v] > p[v]) != (b[v] > p[v]) {
+                let x = a[u] + (p[v] - a[v]) / (b[v] - a[v]) * (b[u] - a[u]);
+                if p[u] < x {
+                    c = !c;
+                }
+            }
+        }
+        c
+    };
+    let area = |l: &Vec<P3>| math::length(newell(l));
+    // Each loop's holders (by a point of it not on the other's boundary:
+    // its first).
+    let holders: Vec<Vec<usize>> = (0..loops.len())
+        .map(|i| {
+            (0..loops.len())
+                .filter(|j| {
+                    *j != i && area(loops[*j]) > area(loops[i]) && inside(loops[i][0], loops[*j])
+                })
+                .collect()
+        })
+        .collect();
+    let mut out: Vec<(usize, Vec<Vec<P3>>)> = Vec::new();
+    for i in 0..loops.len() {
+        if holders[i].len().is_multiple_of(2) {
+            out.push((i, vec![loops[i].clone()]));
+        }
+    }
+    for i in 0..loops.len() {
+        if !holders[i].len().is_multiple_of(2) {
+            // The smallest outer loop holding it.
+            let owner = holders[i]
+                .iter()
+                .filter(|j| holders[**j].len().is_multiple_of(2))
+                .min_by(|a, b| area(loops[**a]).total_cmp(&area(loops[**b])));
+            if let Some(o) = owner
+                && let Some(g) = out.iter_mut().find(|g| g.0 == *o)
+            {
+                g.1.push(loops[i].clone());
+            }
+        }
+    }
+    out.into_iter().map(|(_, g)| g).collect()
+}
+
 /// Triangles of a polygon with holes (the first loop the outer one),
 /// appended with their points.
 fn polygon(loops: &[Vec<P3>], points: &mut Vec<P3>, out: &mut Vec<[u32; 3]>) -> usize {
@@ -372,15 +502,14 @@ fn face_mesh(
             let loops: Vec<Vec<P3>> = (0..f.loops.len())
                 .map(|l| loop_points(s, face, l))
                 .collect::<Result<_, _>>()?;
-            let loops: Vec<Vec<P3>> = outer_first(&loops, |p| *p)
-                .into_iter()
-                .filter(|l| l.len() >= 3)
-                .collect();
-            if loops.is_empty() {
+            let groups = nested(&loops);
+            if groups.is_empty() {
                 return Err("its loops have no area".into());
             }
-            if polygon(&loops, points, triangles) == 0 {
-                return Err("its loops did not triangulate".into());
+            for group in groups {
+                if polygon(&group, points, triangles) == 0 {
+                    return Err("its loops did not triangulate".into());
+                }
             }
             Ok(())
         }
@@ -702,5 +831,97 @@ pub(crate) mod tests {
         for p in &points {
             assert!((p[0].hypot(p[1]) - 1.0).abs() < 1e-9);
         }
+    }
+
+    #[test]
+    fn a_plane_s_separate_outer_loops_and_its_holes() {
+        let square = |x: f64, y: f64, s: f64| -> Vec<P3> {
+            vec![
+                [x, y, 0.0],
+                [x + s, y, 0.0],
+                [x + s, y + s, 0.0],
+                [x, y + s, 0.0],
+            ]
+        };
+        let mut hole = square(1.0, 1.0, 1.0);
+        hole.reverse();
+        // A sliver of no area, as the file can keep one.
+        let sliver = vec![[0.0, 0.0, 0.0], [5.0, 0.0, 0.0], [10.0, 0.0, 0.0]];
+        let groups = nested(&[
+            square(0.0, 0.0, 4.0),
+            square(10.0, 0.0, 2.0),
+            hole.clone(),
+            sliver,
+        ]);
+        assert_eq!(groups.len(), 2);
+        let big = groups.iter().find(|g| g[0][0] == [0.0, 0.0, 0.0]).unwrap();
+        assert_eq!(big.len(), 2);
+        assert_eq!(big[1], hole);
+        let small = groups.iter().find(|g| g[0][0] == [10.0, 0.0, 0.0]).unwrap();
+        assert_eq!(small.len(), 1);
+        let (mut points, mut triangles) = (Vec::new(), Vec::new());
+        for g in &groups {
+            assert!(polygon(g, &mut points, &mut triangles) > 0);
+        }
+        // 16 - 1 + 4 square feet.
+        let area: f64 = triangles
+            .iter()
+            .map(|t| {
+                let [a, b, c] = t.map(|i| points[i as usize]);
+                math::length(math::cross(math::sub(b, a), math::sub(c, a))) / 2.0
+            })
+            .sum();
+        assert!((area - 19.0).abs() < 1e-9, "{area}");
+    }
+
+    #[test]
+    fn faces_that_bound_nothing_are_left_out() {
+        // A face left over without loops, and a sheet of one plane (a
+        // wall's layer boundary): the body still meshes closed.
+        let mut body = cube();
+        body.faces.push(Face {
+            surface: Surface::Plane {
+                origin: [0.0; 3],
+                x: [1.0, 0.0, 0.0],
+                y: [0.0, 0.0, -1.0],
+            },
+            loops: Vec::new(),
+            material: None,
+        });
+        let (points, triangles) = solid_mesh(&body).unwrap();
+        assert!(mesh_measures(&points, &triangles).0 > 0.0);
+        let mut sheet = cube();
+        sheet.faces.truncate(1);
+        let mut model = Model::default();
+        model.geometry.insert(
+            3,
+            GRep {
+                solids: vec![body, sheet],
+                ..GRep::default()
+            },
+        );
+        let m = element_mesh(&model, 3, &mut Cache::new(), &HashSet::new())
+            .unwrap()
+            .unwrap();
+        assert_eq!((m.bodies, m.faces, m.faces_left_out), (1, 6, 0));
+        assert!(m.closed);
+    }
+
+    #[test]
+    fn a_body_of_planes_as_its_faces_facing_out() {
+        let faces = solid_faces(&cube()).unwrap().unwrap();
+        assert_eq!(faces.len(), 6);
+        assert!(faces.iter().all(|f| f.len() == 1 && f[0].len() == 4));
+        let volume: f64 = faces
+            .iter()
+            .flatten()
+            .map(|l| {
+                (1..l.len() - 1)
+                    .map(|k| math::dot(l[0], math::cross(l[k], l[k + 1])))
+                    .sum::<f64>()
+                    / 6.0
+            })
+            .sum();
+        assert!((volume - 1.0).abs() < 1e-9, "{volume}");
     }
 }

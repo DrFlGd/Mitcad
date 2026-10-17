@@ -1,0 +1,935 @@
+[
+  {
+    "id": "telescopic-slide-45",
+    "name": "Telescopic slide 45, full extension (one of a pair)",
+    "category": "linear",
+    "make": "model",
+    "dimensions": {"shape":"plate","width":"45 mm","thickness":"12.7 mm","length":"L","parameters":{"L":"400 mm"}},
+    "supplier": "Motedis",
+    "part_number": "TS-45-400",
+    "supplier_url": "https://www.motedis.com/en/Telescopic-slider-45-full-extension-L400mm-1-pair",
+    "designation": "Telescopic slide 45 L={L}, {Type}",
+    "rows": [
+      {
+        "name": "400",
+        "select": {"Type":"400"},
+        "values": {"L":"400 mm"},
+        "part_number": "TS-45-400",
+        "supplier_url": "https://www.motedis.com/en/Telescopic-slider-45-full-extension-L400mm-1-pair",
+        "designation": "Telescopic slide 45 L=400, full extension"
+      },
+      {
+        "name": "600",
+        "select": {"Type":"600"},
+        "values": {"L":"600 mm"},
+        "part_number": "TS-45-600",
+        "supplier_url": "https://www.motedis.com/en/Telescopic-slider-45-full-extension-L600mm-1-pair",
+        "designation": "Telescopic slide 45 L=600, full extension"
+      },
+      {
+        "name": "300-SC",
+        "select": {"Type":"300-SC"},
+        "values": {"L":"300 mm"},
+        "part_number": "TS-45-300-SC",
+        "supplier_url": "https://www.motedis.com/en/Telescopic-slider-45-full-extension-soft-close-L300mm-1-pair",
+        "designation": "Telescopic slide 45 L=300, full extension, soft close"
+      },
+      {
+        "name": "400-SC",
+        "select": {"Type":"400-SC"},
+        "values": {"L":"400 mm"},
+        "part_number": "TS-45-400-SC",
+        "supplier_url": "https://www.motedis.com/en/Telescopic-slider-45-full-extension-soft-close-L400mm-1-pair",
+        "designation": "Telescopic slide 45 L=400, full extension, soft close"
+      },
+      {
+        "name": "600-SC",
+        "select": {"Type":"600-SC"},
+        "values": {"L":"600 mm"},
+        "part_number": "TS-45-600-SC",
+        "supplier_url": "https://www.motedis.com/en/Telescopic-slider-45-full-extension-soft-close-L600mm-1-pair",
+        "designation": "Telescopic slide 45 L=600, full extension, soft close"
+      }
+    ],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"base","kind":"face"},{"name":"slide","kind":"rail"}],
+      "linear": {"kind":"rail","size":"TS-45"}
+    },
+    "frames": [
+      {"name":"base","origin":[0,0,0],"z":[0,-1,0],"x":[0,0,1],"kind":"face"},
+      {"name":"slide","origin":[0,12.7,0],"z":[0,1,0],"x":[0,0,1],"kind":"rail"}
+    ]
+  },
+  {
+    "id": "housing-plain-20",
+    "name": "Housing plain bearing for shaft 20mm",
+    "category": "linear",
+    "source": "uncategorized/Housing-floating-bearing-for-shaft-20mm/WJ200UM_01_20.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "2423",
+    "supplier_url": "https://www.motedis.com/en/Housing-floating-bearing-for-shaft-20mm",
+    "designation": "Housing plain bearing for shaft 20mm",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore","diameter":"20 mm"},{"name":"mount","kind":"face"}],
+      "linear": {
+        "kind": "bearing",
+        "size": "20 mm",
+        "mate": {"frame":"bore","on":"shaft","joint":"slider","axis":"z"}
+      }
+    },
+    "frames": [
+      {"name":"bore","origin":[0,22.5,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore","diameter":"20 mm"},
+      {"name":"mount","origin":[0,22.5,15.8],"z":[0,0,1],"x":[0,1,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "housing-plain-adjustable-20",
+    "name": "Housing plain bearing for shaft 20mm, adjustable clearance",
+    "category": "linear",
+    "source": "uncategorized/Housing-floating-bearing-for-shaft-20mm-adjustable-clearance/WJ200UME_01_20.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "2425",
+    "supplier_url": "https://www.motedis.com/en/Housing-floating-bearing-for-shaft-20mm-adjustable-clearance",
+    "designation": "Housing plain bearing for shaft 20mm, adjustable clearance",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore","diameter":"20 mm"},{"name":"mount","kind":"face"}],
+      "linear": {
+        "kind": "bearing",
+        "size": "20 mm",
+        "mate": {"frame":"bore","on":"shaft","joint":"slider","axis":"z"}
+      }
+    },
+    "frames": [
+      {"name":"bore","origin":[0,22.5,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore","diameter":"20 mm"},
+      {"name":"mount","origin":[0,22.5,15.8],"z":[0,0,1],"x":[0,1,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "housing-floating-20",
+    "name": "Housing floating bearing for shaft 20mm, loose bearing",
+    "category": "linear",
+    "source": "uncategorized/Housing-floating-bearing-for-shaft-20mm-loose-bearing/WJ200UM_01_20_LL.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "2424",
+    "supplier_url": "https://www.motedis.com/en/Housing-floating-bearing-for-shaft-20mm-loose-bearing",
+    "designation": "Housing floating bearing for shaft 20mm, loose bearing",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore","diameter":"20 mm"},{"name":"mount","kind":"face"}],
+      "linear": {
+        "kind": "bearing",
+        "size": "20 mm",
+        "mate": {"frame":"bore","on":"shaft","joint":"slider","axis":"z"}
+      }
+    },
+    "frames": [
+      {"name":"bore","origin":[0,22.5,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore","diameter":"20 mm"},
+      {"name":"mount","origin":[0,22.5,15.8],"z":[0,0,1],"x":[0,1,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "housing-roller-2-20",
+    "name": "Housing roller bearings for shaft 20mm, 2 rollers",
+    "category": "linear",
+    "source": "uncategorized/Housing-roller-bearings-for-shaft-20mm2-rollers/WJRM_21_20.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "2418",
+    "supplier_url": "https://www.motedis.com/en/Housing-roller-bearings-for-shaft-20mm2-rollers",
+    "designation": "Housing roller bearings for shaft 20mm, 2 rollers",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore","diameter":"20 mm"},{"name":"mount","kind":"face"}],
+      "linear": {
+        "kind": "bearing",
+        "size": "20 mm",
+        "mate": {"frame":"bore","on":"shaft","joint":"slider","axis":"z"}
+      }
+    },
+    "frames": [
+      {"name":"bore","origin":[0,26,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore","diameter":"20 mm"},
+      {"name":"mount","origin":[0,26,29],"z":[0,0,1],"x":[0,1,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "liner-jucm-1216-16",
+    "name": "Linear plain liner for clipping JUCM-1216-16",
+    "category": "linear",
+    "source": "uncategorized/Igus-drylin-R-linear-liners-for-clipping-JUCM-1216-16/Motedis_IGUS_Drylin_linear_liners_for_clipping_JUCM_1216_16_6.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "JUCM-1216-16",
+    "supplier_url": "https://www.motedis.com/en/Igus-drylin-R-linear-liners-for-clipping-JUCM-1216-16",
+    "designation": "Linear plain liner for clipping JUCM-1216-16",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore","diameter":"12 mm"}],
+      "linear": {
+        "kind": "bearing",
+        "size": "12 mm",
+        "mate": {"frame":"bore","on":"shaft","joint":"slider","axis":"z"}
+      }
+    },
+    "frames": [{"name":"bore","origin":[0,0,10.25],"z":[0,0,1],"x":[1,0,0],"kind":"bore","diameter":"12 mm"}]
+  },
+  {
+    "id": "liner-jucm-1418-18",
+    "name": "Linear plain liner for clipping JUCM-1418-18",
+    "category": "linear",
+    "source": "uncategorized/Igus-drylin-R-linear-liners-for-clipping-JUCM-1418-18/Motedis_IGUS_Drylin_linear_liners_for_clipping_JUCM_1418_18_7.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "JUCM-1418-18",
+    "supplier_url": "https://www.motedis.com/en/Igus-drylin-R-linear-liners-for-clipping-JUCM-1418-18",
+    "designation": "Linear plain liner for clipping JUCM-1418-18",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore","diameter":"14 mm"}],
+      "linear": {
+        "kind": "bearing",
+        "size": "14 mm",
+        "mate": {"frame":"bore","on":"shaft","joint":"slider","axis":"z"}
+      }
+    },
+    "frames": [{"name":"bore","origin":[0,0,11.25],"z":[0,0,1],"x":[1,0,0],"kind":"bore","diameter":"14 mm"}]
+  },
+  {
+    "id": "liner-jucm-1620-20",
+    "name": "Linear plain liner for clipping JUCM-1620-20",
+    "category": "linear",
+    "source": "uncategorized/Igus-drylin-R-linear-liners-for-clipping-JUCM-1620-20/Motedis_IGUS_Drylin_linear_liners_for_clipping_JUCM_1620_20_8.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "JUCM-1620-20",
+    "supplier_url": "https://www.motedis.com/en/Igus-drylin-R-linear-liners-for-clipping-JUCM-1620-20",
+    "designation": "Linear plain liner for clipping JUCM-1620-20",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore","diameter":"16 mm"}],
+      "linear": {
+        "kind": "bearing",
+        "size": "16 mm",
+        "mate": {"frame":"bore","on":"shaft","joint":"slider","axis":"z"}
+      }
+    },
+    "frames": [{"name":"bore","origin":[0,0,12.25],"z":[0,0,1],"x":[1,0,0],"kind":"bore","diameter":"16 mm"}]
+  },
+  {
+    "id": "liner-jucm-2024-25",
+    "name": "Linear plain liner for clipping JUCM-2024-25",
+    "category": "linear",
+    "source": "uncategorized/Igus-drylin-R-linear-liners-for-clipping-JUCM-2024-25/Motedis_IGUS_Drylin_linear_liners_for_clipping_JUCM_2024_25_9.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "JUCM-2024-25",
+    "supplier_url": "https://www.motedis.com/en/Igus-drylin-R-linear-liners-for-clipping-JUCM-2024-25",
+    "designation": "Linear plain liner for clipping JUCM-2024-25",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore","diameter":"20 mm"}],
+      "linear": {
+        "kind": "bearing",
+        "size": "20 mm",
+        "mate": {"frame":"bore","on":"shaft","joint":"slider","axis":"z"}
+      }
+    },
+    "frames": [{"name":"bore","origin":[0,0,15],"z":[0,0,1],"x":[1,0,0],"kind":"bore","diameter":"20 mm"}]
+  },
+  {
+    "id": "plain-bearing-gfm-0608-07",
+    "name": "Plain bearing with flange GFM-0608-07",
+    "category": "linear",
+    "source": "uncategorized/Plain-bearing-with-flange-Igus-GFM-0608-07/GFM_0608_07_5.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "GFM-0608-07",
+    "supplier_url": "https://www.motedis.com/en/Plain-bearing-with-flange-Igus-GFM-0608-07",
+    "designation": "Plain bearing with flange GFM-0608-07",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore","diameter":"6 mm"},{"name":"flange","kind":"face"}],
+      "linear": {
+        "kind": "bearing",
+        "size": "6 mm",
+        "mate": {"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}
+      }
+    },
+    "frames": [
+      {"name":"bore","origin":[0,0,3.5],"z":[0,0,1],"x":[1,0,0],"kind":"bore","diameter":"6 mm"},
+      {"name":"flange","origin":[0,0,1],"z":[0,0,1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "plain-bearing-gfm-0810-11",
+    "name": "Plain bearing with flange GFM-0810-11",
+    "category": "linear",
+    "source": "uncategorized/Plain-bearing-with-flange-Igus-GFM-0810-11/GFM_0810_11_6.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "GFM-0810-11",
+    "supplier_url": "https://www.motedis.com/en/Plain-bearing-with-flange-Igus-GFM-0810-11",
+    "designation": "Plain bearing with flange GFM-0810-11",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore","diameter":"8 mm"},{"name":"flange","kind":"face"}],
+      "linear": {
+        "kind": "bearing",
+        "size": "8 mm",
+        "mate": {"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}
+      }
+    },
+    "frames": [
+      {"name":"bore","origin":[0,0,5.5],"z":[0,0,1],"x":[1,0,0],"kind":"bore","diameter":"8 mm"},
+      {"name":"flange","origin":[0,0,1],"z":[0,0,1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "plain-bearing-gfm-1012-04",
+    "name": "Plain bearing with flange GFM-1012-04",
+    "category": "linear",
+    "source": "uncategorized/Plain-bearing-with-flange-Igus-GFM-1012-04/GFM_1012_04_7.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "GFM-1012-04",
+    "supplier_url": "https://www.motedis.com/en/Plain-bearing-with-flange-Igus-GFM-1012-04",
+    "designation": "Plain bearing with flange GFM-1012-04",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore","diameter":"10 mm"},{"name":"flange","kind":"face"}],
+      "linear": {
+        "kind": "bearing",
+        "size": "10 mm",
+        "mate": {"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}
+      }
+    },
+    "frames": [
+      {"name":"bore","origin":[0,0,2],"z":[0,0,1],"x":[1,0,0],"kind":"bore","diameter":"10 mm"},
+      {"name":"flange","origin":[0,0,1],"z":[0,0,1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "plain-bearing-gfm-121418-10",
+    "name": "Plain bearing with flange GFM-121418-10",
+    "category": "linear",
+    "source": "uncategorized/Plain-bearing-with-flange-Igus-GFM-121418-10/GFM_121418_10_8.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "GFM-121418-10",
+    "supplier_url": "https://www.motedis.com/en/Plain-bearing-with-flange-Igus-GFM-121418-10",
+    "designation": "Plain bearing with flange GFM-121418-10",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore","diameter":"12 mm"},{"name":"flange","kind":"face"}],
+      "linear": {
+        "kind": "bearing",
+        "size": "12 mm",
+        "mate": {"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}
+      }
+    },
+    "frames": [
+      {"name":"bore","origin":[0,0,5],"z":[0,0,1],"x":[1,0,0],"kind":"bore","diameter":"12 mm"},
+      {"name":"flange","origin":[0,0,1],"z":[0,0,1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "plain-bearing-gfm-1416-04",
+    "name": "Plain bearing with flange GFM-1416-04",
+    "category": "linear",
+    "source": "uncategorized/Plain-bearing-with-flange-Igus-GFM-1416-04/GFM_1416_04_9.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "GFM-1416-04",
+    "supplier_url": "https://www.motedis.com/en/Plain-bearing-with-flange-Igus-GFM-1416-04",
+    "designation": "Plain bearing with flange GFM-1416-04",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore","diameter":"14 mm"},{"name":"flange","kind":"face"}],
+      "linear": {
+        "kind": "bearing",
+        "size": "14 mm",
+        "mate": {"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}
+      }
+    },
+    "frames": [
+      {"name":"bore","origin":[0,0,2],"z":[0,0,1],"x":[1,0,0],"kind":"bore","diameter":"14 mm"},
+      {"name":"flange","origin":[0,0,1],"z":[0,0,1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "plain-bearing-gfm-1618-09",
+    "name": "Plain bearing with flange GFM-1618-09",
+    "category": "linear",
+    "source": "uncategorized/Plain-bearing-Igus-with-flange-GFM-1618-09/GFM_1618_09_10.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "GFM-1618-09",
+    "supplier_url": "https://www.motedis.com/en/Plain-bearing-Igus-with-flange-GFM-1618-09",
+    "designation": "Plain bearing with flange GFM-1618-09",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore","diameter":"16 mm"},{"name":"flange","kind":"face"}],
+      "linear": {
+        "kind": "bearing",
+        "size": "16 mm",
+        "mate": {"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}
+      }
+    },
+    "frames": [
+      {"name":"bore","origin":[0,0,4.5],"z":[0,0,1],"x":[1,0,0],"kind":"bore","diameter":"16 mm"},
+      {"name":"flange","origin":[0,0,1],"z":[0,0,1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "roller-bearing-ktr30-b8",
+    "name": "Plastic roller bearing KTR 30x1.5, bore 8",
+    "category": "linear",
+    "source": "uncategorized/Plastic-Roller-Bearing-KTR-30x15-8/Motedis-KTR-30x1-5.00.08/Motedis_KTR-30x1,5.00.08.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "KTR-30x1,5.00.08",
+    "supplier_url": "https://www.motedis.com/en/Plastic-Roller-Bearing-KTR-30x15-8",
+    "designation": "Plastic roller bearing KTR 30x1.5, bore 8",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore","diameter":"8 mm"}],
+      "linear": {
+        "kind": "bearing",
+        "size": "8 mm",
+        "mate": {"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}
+      }
+    },
+    "frames": [{"name":"bore","origin":[0,14.6,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore","diameter":"8 mm"}]
+  },
+  {
+    "id": "roller-bearing-ktr40-b8",
+    "name": "Plastic roller bearing KTR 40x1.5, bore 8",
+    "category": "linear",
+    "source": "uncategorized/Plastic-Roller-Bearing-KTR-40x15-8/Motedis-KTR-40x1-5.00.08/Motedis_KTR-40x1,5.00.08.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "KTR-40x1,5.00.08",
+    "supplier_url": "https://www.motedis.com/en/Plastic-Roller-Bearing-KTR-40x15-8",
+    "designation": "Plastic roller bearing KTR 40x1.5, bore 8",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore","diameter":"8 mm"}],
+      "linear": {
+        "kind": "bearing",
+        "size": "8 mm",
+        "mate": {"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}
+      }
+    },
+    "frames": [{"name":"bore","origin":[0,14.6,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore","diameter":"8 mm"}]
+  },
+  {
+    "id": "roller-bearing-ktr40-b10",
+    "name": "Plastic roller bearing KTR 40x1.5, bore 10",
+    "category": "linear",
+    "source": "uncategorized/Plastic-Roller-Bearing-KTR-40x15-10/Motedis-KTR-40x1-5.00.10/Motedis_KTR-40x1,5.00.10.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "KTR-40x1,5.00.10",
+    "supplier_url": "https://www.motedis.com/en/Plastic-Roller-Bearing-KTR-40x15-10",
+    "designation": "Plastic roller bearing KTR 40x1.5, bore 10",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore","diameter":"10 mm"}],
+      "linear": {
+        "kind": "bearing",
+        "size": "10 mm",
+        "mate": {"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}
+      }
+    },
+    "frames": [{"name":"bore","origin":[0,14.6,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore","diameter":"10 mm"}]
+  },
+  {
+    "id": "slot-roller-19-i5",
+    "name": "Roller 19 mm for I-type slot 5",
+    "category": "linear",
+    "source": "uncategorized/Roller-19mm-I-Type-slot-5/Motedis_763.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "763",
+    "supplier_url": "https://www.motedis.com/en/Roller-19mm-I-Type-slot-5",
+    "designation": "Roller 19 mm for I-type slot 5",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0.41,-5.64,19],"z":[0,1,0],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "slot-roller-29-b6",
+    "name": "Roller 29 mm for B-type slot 6",
+    "category": "linear",
+    "source": "uncategorized/Roller-29mm-B-Type-slot-6/Motedis_566.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "566",
+    "supplier_url": "https://www.motedis.com/en/Roller-29mm-B-Type-slot-6",
+    "designation": "Roller 29 mm for B-type slot 6",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0.41,-0.14,19],"z":[0,1,0],"x":[1,0,0],"kind":"bore"}]
+  },
+  {
+    "id": "slot-roller-39-s8",
+    "name": "Roller 39 mm for slot 8",
+    "category": "linear",
+    "source": "uncategorized/Roller-39mm-Slot-8-10/Motedis-193-8/Motedis_193_8.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "193",
+    "supplier_url": "https://www.motedis.com/en/Roller-39mm-Slot-8-10",
+    "designation": "Roller 39 mm for slot 8",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,0,0],"z":[1,0,0],"x":[0,1,0],"kind":"bore"}]
+  },
+  {
+    "id": "slot-roller-39-s10",
+    "name": "Roller 39 mm for slot 10",
+    "category": "linear",
+    "source": "uncategorized/Roller-39mm-Slot-8-10/Motedis-193-10/Motedis_193_10.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "193",
+    "supplier_url": "https://www.motedis.com/en/Roller-39mm-Slot-8-10",
+    "designation": "Roller 39 mm for slot 10",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,0,0],"z":[1,0,0],"x":[0,1,0],"kind":"bore"}]
+  },
+  {
+    "id": "slot-roller-47-s8",
+    "name": "Roller 47 mm for slot 8",
+    "category": "linear",
+    "source": "uncategorized/Roller-47mm-Slot-8-10/Motedis-194-8/Motedis_194_8.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "194",
+    "supplier_url": "https://www.motedis.com/en/Roller-47mm-Slot-8-10",
+    "designation": "Roller 47 mm for slot 8",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,0,0],"z":[1,0,0],"x":[0,1,0],"kind":"bore"}]
+  },
+  {
+    "id": "slot-roller-47-s10",
+    "name": "Roller 47 mm for slot 10",
+    "category": "linear",
+    "source": "uncategorized/Roller-47mm-Slot-8-10/Motedis-194-10/Motedis_194_10.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "194",
+    "supplier_url": "https://www.motedis.com/en/Roller-47mm-Slot-8-10",
+    "designation": "Roller 47 mm for slot 10",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"}],
+      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}}
+    },
+    "frames": [{"name":"bore","origin":[0,0,0],"z":[1,0,0],"x":[0,1,0],"kind":"bore"}]
+  },
+  {
+    "id": "roller-block-s8-s10",
+    "name": "Roller mounting block slot 8 / slot 10",
+    "category": "linear",
+    "source": "uncategorized/Roller-mounting-block-slot-8-slot-10/Motedis_Roller mounting block slot 8 - slot 10.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "1049",
+    "supplier_url": "https://www.motedis.com/en/Roller-mounting-block-slot-8-slot-10",
+    "designation": "Roller mounting block slot 8 / slot 10",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [
+        {"name":"slot_a","kind":"slot"},
+        {"name":"slot_b","kind":"slot"},
+        {"name":"roller","kind":"shaft"}
+      ],
+      "linear": {"kind":"plate","mate":{"frame":"slot_a","on":"slot","joint":"slider","axis":"x"}}
+    },
+    "frames": [
+      {"name":"slot_a","origin":[0,0,-3.5],"z":[0,0,-1],"x":[1,0,0],"kind":"slot"},
+      {"name":"slot_b","origin":[0,0,3.5],"z":[0,0,1],"x":[1,0,0],"kind":"slot"},
+      {"name":"roller","origin":[16,0,0],"z":[0,0,1],"x":[1,0,0],"kind":"shaft"}
+    ]
+  },
+  {
+    "id": "sk20",
+    "name": "Shaft support SH20/SK20",
+    "category": "linear",
+    "source": "uncategorized/Shaft-supports-SH20-SK20/Motedis_SH20.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "SH20/SK20",
+    "supplier_url": "https://www.motedis.com/en/Shaft-supports-SH20-SK20",
+    "designation": "Shaft support SH20/SK20",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore","diameter":"20 mm"},{"name":"mount","kind":"face"}],
+      "linear": {"kind":"bearing","size":"20 mm","mate":{"frame":"bore","on":"shaft","joint":"rigid"}}
+    },
+    "frames": [
+      {"name":"bore","origin":[0,31,10],"z":[0,0,1],"x":[1,0,0],"kind":"bore","diameter":"20 mm"},
+      {"name":"mount","origin":[0,0,10],"z":[0,-1,0],"x":[0,0,1],"kind":"face"}
+    ]
+  },
+  {
+    "id": "shf20",
+    "name": "Shaft support flange SHF20",
+    "category": "linear",
+    "source": "uncategorized/Shaft-Supports-SHF20/Motedis-SHF20-1/Motedis_SHF20.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "SHF20",
+    "supplier_url": "https://www.motedis.com/en/Shaft-Supports-SHF20",
+    "designation": "Shaft support flange SHF20",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore","diameter":"20 mm"},{"name":"mount","kind":"face"}],
+      "linear": {"kind":"bearing","size":"20 mm","mate":{"frame":"bore","on":"shaft","joint":"rigid"}}
+    },
+    "frames": [
+      {"name":"bore","origin":[0,10,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore","diameter":"20 mm"},
+      {"name":"mount","origin":[0,0,0],"z":[0,-1,0],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "slewing-ring-60",
+    "name": "Slewing ring bearing BB-RT-01-60-ES",
+    "category": "linear",
+    "source": "uncategorized/Slewing-ring-bearing-Xirodur-R-BB-RT-01-60-ES/BB_RT_01_60_ES_1.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "BB-RT-01-60-ES",
+    "supplier_url": "https://www.motedis.com/en/Slewing-ring-bearing-Xirodur-R-BB-RT-01-60-ES",
+    "designation": "Slewing ring bearing BB-RT-01-60-ES",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore","diameter":"60 mm"},{"name":"top","kind":"face"}],
+      "linear": {
+        "kind": "bearing",
+        "size": "60 mm",
+        "mate": {"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}
+      }
+    },
+    "frames": [
+      {"name":"bore","origin":[0,8.75,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore","diameter":"60 mm"},
+      {"name":"top","origin":[0,17.5,0],"z":[0,1,0],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "slewing-plate-60-aluminium",
+    "name": "Aluminium plate for slewing ring bearing BB-RT-01-60-ES",
+    "category": "linear",
+    "source": "uncategorized/Slewing-Ring-Bearing-Aluminium-Plate-BB-RT-01-60-ES/Aluminium Plate for Slewing Bearing.STEP",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "4747",
+    "supplier_url": "https://www.motedis.com/en/Slewing-Ring-Bearing-Aluminium-Plate-BB-RT-01-60-ES",
+    "designation": "Aluminium plate for slewing ring bearing BB-RT-01-60-ES",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bearing","kind":"face"},{"name":"back","kind":"face"}],
+      "linear": {"kind":"plate"}
+    },
+    "frames": [
+      {"name":"bearing","origin":[0,0,2.5],"z":[0,0,1],"x":[1,0,0],"kind":"face"},
+      {"name":"back","origin":[0,0,-2.5],"z":[0,0,-1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "slewing-plate-60-3dp",
+    "name": "Plate for slewing ring bearing BB-RT-01-60 (3D printed)",
+    "category": "linear",
+    "source": "uncategorized/Slewing-ring-bearing-3D-Printed-plate/Slewing_Ring_3DP_plate.STEP",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "BB-RT-01-60-3DPlate",
+    "supplier_url": "https://www.motedis.com/en/Slewing-ring-bearing-3D-Printed-plate",
+    "designation": "Plate for slewing ring bearing BB-RT-01-60 (3D printed)",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bearing","kind":"face"},{"name":"back","kind":"face"}],
+      "linear": {"kind":"plate"}
+    },
+    "frames": [
+      {"name":"bearing","origin":[0,0,2.5],"z":[0,0,1],"x":[1,0,0],"kind":"face"},
+      {"name":"back","origin":[0,0,-2.5],"z":[0,0,-1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "slewing-plate-60-htd3m",
+    "name": "Geared plate HTD 3M 9 mm for slewing ring bearing BB-RT-01-60 (3D printed)",
+    "category": "linear",
+    "source": "uncategorized/Slewing-ring-bearing-3D-Printed-HTD3M-9mm-wide/SlewingRing_PLATE_GEARED-HTD3M.STEP",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "BB-RT-01-60-3DP-HTD3M-9mm",
+    "supplier_url": "https://www.motedis.com/en/Slewing-ring-bearing-3D-Printed-HTD3M-9mm-wide",
+    "designation": "Geared plate HTD 3M 9 mm for slewing ring bearing BB-RT-01-60 (3D printed)",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore"},{"name":"bearing","kind":"face"}],
+      "linear": {"kind":"pulley","mate":{"frame":"bore","on":"shaft","joint":"revolute","axis":"z"}}
+    },
+    "frames": [
+      {"name":"bore","origin":[0,0,0],"z":[0,0,1],"x":[1,0,0],"kind":"bore"},
+      {"name":"bearing","origin":[0,0,-2.5],"z":[0,0,-1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "slider-b6",
+    "name": "Slider B-type slot 6, POM",
+    "category": "linear",
+    "source": "uncategorized/Slider-B-Type-Slot-6-B/Motedis_563.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "563",
+    "supplier_url": "https://www.motedis.com/en/Slider-B-Type-Slot-6-B",
+    "designation": "Slider B-type slot 6, POM",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"slot","kind":"slot"},{"name":"top","kind":"face"}],
+      "linear": {"kind":"carriage","mate":{"frame":"slot","on":"slot","joint":"slider","axis":"x"}}
+    },
+    "frames": [
+      {"name":"slot","origin":[40,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"slot"},
+      {"name":"top","origin":[40,0,5],"z":[0,0,1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "slider-b8",
+    "name": "Slider B-type slot 8, POM",
+    "category": "linear",
+    "source": "uncategorized/Slider-B-Type-Slot-8-B/Motedis_754.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "754",
+    "supplier_url": "https://www.motedis.com/en/Slider-B-Type-Slot-8-B",
+    "designation": "Slider B-type slot 8, POM",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"slot","kind":"slot"},{"name":"top","kind":"face"}],
+      "linear": {"kind":"carriage","mate":{"frame":"slot","on":"slot","joint":"slider","axis":"x"}}
+    },
+    "frames": [
+      {"name":"slot","origin":[0,-5,0],"z":[0,-1,0],"x":[1,0,0],"kind":"slot"},
+      {"name":"top","origin":[0,0,0],"z":[0,1,0],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "slider-b10",
+    "name": "Slider B-type slot 10, POM",
+    "category": "linear",
+    "source": "uncategorized/Slider-B-Type-Slot-10-B/Motedis_383.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "383",
+    "supplier_url": "https://www.motedis.com/en/Slider-B-Type-Slot-10-B",
+    "designation": "Slider B-type slot 10, POM",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"slot","kind":"slot"},{"name":"top","kind":"face"}],
+      "linear": {"kind":"carriage","mate":{"frame":"slot","on":"slot","joint":"slider","axis":"x"}}
+    },
+    "frames": [
+      {"name":"slot","origin":[0,-5,0],"z":[0,-1,0],"x":[1,0,0],"kind":"slot"},
+      {"name":"top","origin":[0,0,0],"z":[0,1,0],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "slider-i5",
+    "name": "Slider I-type slot 5, POM",
+    "category": "linear",
+    "source": "uncategorized/Slider-I-Type-Slot-5-I/Motedis_SLDF-S5I.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "SLDF-S5I",
+    "supplier_url": "https://www.motedis.com/en/Slider-I-Type-Slot-5-I",
+    "designation": "Slider I-type slot 5, POM",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"slot","kind":"slot"},{"name":"top","kind":"face"}],
+      "linear": {"kind":"carriage","mate":{"frame":"slot","on":"slot","joint":"slider","axis":"x"}}
+    },
+    "frames": [
+      {"name":"slot","origin":[40,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"slot"},
+      {"name":"top","origin":[40,0,5],"z":[0,0,1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "slider-i5-3dp",
+    "name": "Slider I-type slot 5 (3D printed)",
+    "category": "linear",
+    "source": "uncategorized/Slider-I-Type-slot-5-I-3DP/Motedis_3737.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "3737",
+    "supplier_url": "https://www.motedis.com/en/Slider-I-Type-slot-5-I-3DP",
+    "designation": "Slider I-type slot 5 (3D printed)",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"slot","kind":"slot"},{"name":"top","kind":"face"}],
+      "linear": {"kind":"carriage","mate":{"frame":"slot","on":"slot","joint":"slider","axis":"x"}}
+    },
+    "frames": [
+      {"name":"slot","origin":[-3.37,0.25,-30],"z":[0,-1,0],"x":[0,0,1],"kind":"slot"},
+      {"name":"top","origin":[-3.37,5.25,-30],"z":[0,1,0],"x":[0,0,1],"kind":"face"}
+    ]
+  },
+  {
+    "id": "slider-i8",
+    "name": "Slider I-type slot 8, POM",
+    "category": "linear",
+    "source": "uncategorized/Slider-I-Type-Slot-8-I-POM/Motedis_SLDF-S8I.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "SLDF-S8I",
+    "supplier_url": "https://www.motedis.com/en/Slider-I-Type-Slot-8-I-POM",
+    "designation": "Slider I-type slot 8, POM",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"slot","kind":"slot"},{"name":"top","kind":"face"}],
+      "linear": {"kind":"carriage","mate":{"frame":"slot","on":"slot","joint":"slider","axis":"x"}}
+    },
+    "frames": [
+      {"name":"slot","origin":[0,-6,0],"z":[0,-1,0],"x":[1,0,0],"kind":"slot"},
+      {"name":"top","origin":[0,-1.2,0],"z":[0,1,0],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "threaded-rod-m5",
+    "name": "Threaded rod M5 DIN 976, steel 4.8",
+    "category": "linear",
+    "source": "mechanical-basics/M5-Thread-rod-DIN-976-steel-48-1000mm/Motedis_10135.stp",
+    "make": "section",
+    "supplier": "Motedis",
+    "part_number": "10135",
+    "supplier_url": "https://www.motedis.com/en/M5-Thread-rod-DIN-976-steel-48-1000mm",
+    "designation": "Threaded rod M5 DIN 976 L={L}",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "length": {"parameter":"L","min":"10 mm","max":"1000 mm","stock":["1000 mm"]},
+      "frames": [{"name":"end_a","kind":"end"},{"name":"end_b","kind":"end"},{"name":"shaft","kind":"shaft"}],
+      "linear": {"kind":"screw","size":"M5","lead":"0.8 mm","pitch":"0.8 mm"}
+    },
+    "frames": [
+      {"name":"end_a","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"end"},
+      {"name":"end_b","origin":[0,0,"L"],"z":[0,0,1],"x":[1,0,0],"kind":"end"},
+      {"name":"shaft","origin":[0,0,0],"z":[0,0,1],"x":[1,0,0],"kind":"shaft"}
+    ]
+  },
+  {
+    "id": "spacer-bearing-8-10",
+    "name": "Spacer for bearing, 8 to 10 mm",
+    "category": "linear",
+    "source": "mechanical-basics/Spacer-for-bearing-8-to-10mm/SPACER FOR BEARING 8 TO 10MM/SPACER FOR BEARING 8 TO 10MM.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "9485",
+    "supplier_url": "https://www.motedis.com/en/Spacer-for-bearing-8-to-10mm",
+    "designation": "Spacer for bearing, 8 to 10 mm",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"bore","kind":"bore","diameter":"8 mm"}],
+      "linear": {"kind":"bearing","size":"8 mm","mate":{"frame":"bore","on":"shaft","joint":"rigid"}}
+    },
+    "frames": [{"name":"bore","origin":[0,0,0],"z":[0,0,1],"x":[1,0,0],"kind":"bore","diameter":"8 mm"}]
+  },
+  {
+    "id": "axle-hex-sw19-165",
+    "name": "Aluminium hexagon SW19 motor axle for internal motor",
+    "category": "linear",
+    "source": "diy-kits-accesories-sim-racing/Aluminium-hexagon-SW19-motor-axis-for-internal-motor/Motedis-AHSW19-165-MI/6kant Achse.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "AHSW19-165-MI",
+    "supplier_url": "https://www.motedis.com/en/Aluminium-hexagon-SW19-motor-axis-for-internal-motor",
+    "designation": "Hexagon axle SW19 L=165, for internal motor",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"end_a","kind":"end"},{"name":"end_b","kind":"end"},{"name":"shaft","kind":"shaft"}],
+      "linear": {"kind":"shaft"}
+    },
+    "frames": [
+      {"name":"end_a","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"end"},
+      {"name":"end_b","origin":[0,0,165],"z":[0,0,1],"x":[1,0,0],"kind":"end"},
+      {"name":"shaft","origin":[0,0,0],"z":[0,0,1],"x":[1,0,0],"kind":"shaft"}
+    ]
+  },
+  {
+    "id": "belt-tensor-htd-5m-wedge",
+    "name": "Belt tensor for timing belt HTD 5M, wedge (3D printed)",
+    "category": "linear",
+    "source": "uncategorized/Belt-Tensor-for-timing-belt-HTD-5M-wedge-3DP/Motedis_3DPBT15MMHTD5M2.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "9196",
+    "supplier_url": "https://www.motedis.com/en/Belt-Tensor-for-timing-belt-HTD-5M-wedge-3DP",
+    "designation": "Belt tensor for timing belt HTD 5M, wedge (3D printed)",
+    "rows": [],
+    "build": {"role":"linear","frames":[{"name":"mount","kind":"face"}],"linear":{"kind":"belt"}},
+    "frames": [{"name":"mount","origin":[8,0,-9.6],"z":[0,-1,0],"x":[1,0,0],"kind":"face"}]
+  }
+]

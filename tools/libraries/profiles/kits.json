@@ -1,0 +1,34 @@
+[
+  {
+    "id": "bearing-shell-p70x90-b8",
+    "name": "Bearing shell for hexagonal bearings on profile 70x90 B-type (3D printed)",
+    "category": "caps",
+    "source": "diy-kits-accesories-sim-racing/Bearing-shell-for-hexagonal-bearings-on-70x90-B-type-profile/MotedisT-PLA-3DP-P70x90-S8-47HB-10/MotedisT-PLA 3DP P70x90 S8 47HB 10.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "T-PLA 3DP P70x90/S8/47HB/10",
+    "supplier_url": "https://www.motedis.com/en/Bearing-shell-for-hexagonal-bearings-on-70x90-B-type-profile",
+    "designation": "Bearing shell 70x90 B8 for hexagonal bearing 47",
+    "rows": [],
+    "build": {
+      "role": "cap",
+      "systems": [{"type":"B","slot":8,"grid":30}],
+      "section": {"width":"70 mm","height":"90 mm"},
+      "frames": [
+        {"name":"end","kind":"end","accepts":["profile"]},
+        {"name":"bore","kind":"bore","diameter":"37 mm"}
+      ]
+    },
+    "frames": [
+      {
+        "name": "end",
+        "origin": [35,45,10.5],
+        "z": [0,0,1],
+        "x": [1,0,0],
+        "kind": "end",
+        "accepts": ["profile"]
+      },
+      {"name":"bore","origin":[35,45,0],"z":[0,0,-1],"x":[1,0,0],"kind":"bore","diameter":"37 mm"}
+    ]
+  }
+]

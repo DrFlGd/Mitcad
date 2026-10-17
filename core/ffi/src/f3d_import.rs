@@ -1926,6 +1926,37 @@ pub struct TimelineOptions {
     /// of the documents it refers to.
     #[serde(skip)]
     pub(crate) retry_choice: Option<Arc<mitcad_import::RetryChoice>>,
+    /// Which items whose decoded definition builds a result that deviates
+    /// from the file's stay parametric with it (mitcad#379,
+    /// `mitcad_import::AcceptDeviations`): `true` or `"all"` every one,
+    /// timeline indices (`[88, 93]`) those; left out, `false` or `"none"`:
+    /// none, they take the file's bodies. The report lists them all.
+    /// Not passed on to the documents the design refers to.
+    #[serde(default)]
+    pub accept_deviations: Option<AcceptDeviationsOption>,
+}
+
+/// [`TimelineOptions::accept_deviations`].
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(untagged)]
+pub enum AcceptDeviationsOption {
+    Flag(bool),
+    Word(String),
+    Items(Vec<i64>),
+}
+
+impl AcceptDeviationsOption {
+    /// The import's setting; Err for a word other than `all` or `none`.
+    pub fn to_import(&self) -> Result<mitcad_import::AcceptDeviations, String> {
+        use mitcad_import::AcceptDeviations;
+        match self {
+            Self::Flag(true) => Ok(AcceptDeviations::All),
+            Self::Flag(false) => Ok(AcceptDeviations::None),
+            Self::Word(w) => AcceptDeviations::parse(w)
+                .ok_or_else(|| format!("accept_deviations: {w:?} is not all, none or indices")),
+            Self::Items(items) => Ok(AcceptDeviations::Items(items.iter().copied().collect())),
+        }
+    }
 }
 
 /// [`TimelineOptions::retry_bodies`].
@@ -2305,6 +2336,26 @@ fn prepare(path: &str, options: &TimelineOptions) -> Result<Prepared, ApiError> 
     trace_reading("design streams decoded", clock);
     // (An external dump stands in for the file's design.)
     let resolve = options.dump.is_none();
+    let external = match &options.dump {
+        Some(dump_path) => {
+            let text = std::fs::read_to_string(dump_path)
+                .map_err(|e| ApiError(format!("{dump_path}: {e}")))?;
+            Some(Dump::from_json(&text).map_err(|e| ApiError(format!("{dump_path}: {e}")))?)
+        }
+        None => None,
+    };
+    // Its items name the history's operations where they carry the file's
+    // result numbers (`_f3d.result_no`, as the decoder's own dump does; a
+    // synthetic design of the tests, mitcad#379); else the file's design
+    // does.
+    let numbered = external.as_ref().filter(|d| {
+        d.timeline_items().iter().any(|i| {
+            i.f3d
+                .as_ref()
+                .and_then(|f| f.result_no)
+                .is_some_and(|n| n > 0)
+        })
+    });
     let threads = options.threads.unwrap_or(1).max(1);
     let file = if resolve && threads > 1 {
         // The inputs are found while the bodies are converted: they read
@@ -2357,7 +2408,7 @@ fn prepare(path: &str, options: &TimelineOptions) -> Result<Prepared, ApiError> 
             trace_reading("inputs found", clock);
         }
         let clock = Instant::now();
-        let file = StoredFile::new(doc, &label, decoded.dump.as_ref(), threads);
+        let file = StoredFile::new(doc, &label, numbered.or(decoded.dump.as_ref()), threads);
         trace_reading("bodies converted", clock);
         file
     }
@@ -2388,12 +2439,8 @@ fn prepare(path: &str, options: &TimelineOptions) -> Result<Prepared, ApiError> 
             trace_reading("inputs in other documents found", clock);
         }
     }
-    let dump = match &options.dump {
-        Some(dump_path) => {
-            let text = std::fs::read_to_string(dump_path)
-                .map_err(|e| ApiError(format!("{dump_path}: {e}")))?;
-            Some(Dump::from_json(&text).map_err(|e| ApiError(format!("{dump_path}: {e}")))?)
-        }
+    let dump = match external {
+        Some(external) => Some(external),
         None => decoded.dump,
     };
     Ok(Prepared {
@@ -2504,6 +2551,9 @@ impl Document {
         // the import's all the same. The job's monitor is the import's stop
         // request, not the document's (Document::without_job).
         let stop = self.0.monitor().cloned();
+        if let Some(accept) = &options.accept_deviations {
+            accept.to_import().map_err(ApiError)?;
+        }
         // The choice for retries on the file's exact state (mitcad#283), one
         // for the import, its tries and the documents it refers to.
         let mut options = options.clone();
@@ -2801,6 +2851,11 @@ impl Document {
                 .filter(|t| t.is_finite() && *t > 0.0)
                 .unwrap_or(mitcad_import::DEFAULT_GEOMETRIC_TOLERANCE),
             retry_bodies: options.retry_choice.clone(),
+            accept_deviations: options
+                .accept_deviations
+                .as_ref()
+                .and_then(|a| a.to_import().ok())
+                .unwrap_or_default(),
             learn: options
                 .learn
                 .clone()

@@ -172,8 +172,14 @@ class Mcp:
             raise PartError(f"{name}: {message}")
         return content
 
+    # A blank design in the workspace, as mitcad-cli makes one: its root
+    # takes the features. MCP's document_create makes a new design as File
+    # > New does (the root an assembly, the features going into a component
+    # Part1), which a library's design must not be.
+    BLANK = "blank.mitcad"
+
     def create(self):
-        return self.tool("document_create", {})["document"]
+        return self.tool("document_open", {"path": self.BLANK})["document"]
 
     def open(self, path):
         return self.tool("document_open", {"path": path})["document"]
@@ -1038,10 +1044,49 @@ def finish_design(mcp, document, entry):
         raise PartError("; ".join(failed))
 
 
+# Top-level fields of a design that put its parts in components: a
+# library's design holds its features in the root.
+ASSEMBLY_FIELDS = ("components", "occurrences", "active_component", "root_policy")
+
+
 def save(ctx, mcp, document, entry):
     name = f"part-{entry['id']}.mitcad"
     mcp.save(document, name)
-    return os.path.join(ctx.scratch, name)
+    path = os.path.join(ctx.scratch, name)
+    try:
+        with open(path, encoding="utf-8") as f:
+            design = json.load(f)
+    except (OSError, ValueError) as e:
+        raise PartError(f"the saved design cannot be read: {e}")
+    found = [key for key in ASSEMBLY_FIELDS if design.get(key) not in (None, [], {}, "C0")]
+    if found:
+        raise PartError(f"the design has {', '.join(found)}: its features are not all in the root")
+    # Names a source file brought along in another language or a broken
+    # encoding (German or mis-decoded body names) become the part's own: names
+    # are for people, references go by uid.
+    renamed = {}
+
+    def plain(value):
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key == "name" and isinstance(item, str) and not item.isascii():
+                    value[key] = renamed.setdefault(item, f"{entry['name']} {len(renamed) + 1}")
+                else:
+                    plain(item)
+        elif isinstance(value, list):
+            for item in value:
+                plain(item)
+
+    plain(design)
+    # Other text from the source (its file name in a base feature) is kept,
+    # written as JSON escapes so that the design file is ASCII.
+    with open(path, encoding="utf-8") as f:
+        is_ascii = f.read().isascii()
+    if renamed or not is_ascii:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(design, f, indent=2, ensure_ascii=True)
+            f.write("\n")
+    return path
 
 
 # ---------------------------------------------------------------------
@@ -1247,6 +1292,15 @@ SOFTWARE.
 """
 
 
+# Letters of the suppliers' file names written in ASCII in SOURCES.md.
+ASCII_LETTERS = {"\u00e4": "ae", "\u00f6": "oe", "\u00fc": "ue", "\u00c4": "Ae", "\u00d6": "Oe", "\u00dc": "Ue",
+                 "\u00df": "ss", "\u00b0": "deg"}
+
+
+def ascii_text(text):
+    return "".join(c if c.isascii() else ASCII_LETTERS.get(c, "?") for c in text)
+
+
 def sources_text(components, entries):
     by_id = {e["id"]: e for e in entries}
     lines = ["# Sources of the parts", "",
@@ -1268,7 +1322,7 @@ def sources_text(components, entries):
             line += f"; {url}"
         lines.append(line)
     lines += ["", "The generator: tools/libraries/make-profile-library.py in Mitcad's repository.", ""]
-    return "\n".join(lines)
+    return ascii_text("\n".join(lines))
 
 
 class Context:
@@ -1299,7 +1353,9 @@ def make_part(ctx, mcp, entry):
         if entry.get(key):
             component[key] = entry[key]
     component["preview"] = preview_path
-    if build:
+    # A plain part (no build block in its group file) stays one: the frames
+    # the making found are not a BUILD part's.
+    if build and entry.get("build"):
         component["build"] = build
     rows = entry.get("rows") or []
     if rows and "description" not in component:
@@ -1341,6 +1397,10 @@ def inside_project(folder):
 
 
 def main():
+    # The parts' source paths are the supplier's UTF-8 file names; a console
+    # in another code page must not stop the build.
+    for stream in (sys.stdout, sys.stderr):
+        stream.reconfigure(encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--cli", required=True, help="mitcad-cli")
     parser.add_argument("--source", required=True, help="the folder of the supplier's files (never copied)")
@@ -1375,6 +1435,12 @@ def main():
         ctx.scratch = scratch
         if inside_project(scratch):
             fail(f"--work {work} is inside a Mitcad project; give a folder outside it")
+        # The blank design each made part starts from (Mcp.create).
+        write(os.path.join(scratch, "blank.json"), "[]\n")
+        try:
+            run([ctx.cli, "run", os.path.join(scratch, "blank.json"), "--save", os.path.join(scratch, Mcp.BLANK)])
+        except PartError as e:
+            fail(str(e))
         mcp = Mcp(ctx.cli, scratch)
         try:
             for entry in entries:
@@ -1423,7 +1489,7 @@ def main():
     if check.returncode != 0:
         fail("the library check found errors; nothing was recorded")
     if args.commit:
-        identity = ["-c", "user.name=Mitcad library generator", "-c", "user.email=libraries@mitcad.invalid"]
+        identity = ["-c", "user.name=Mitcad developers", "-c", "user.email=devs@mitcad.org"]
         if not os.path.isdir(os.path.join(ctx.out, ".git")):
             run(["git", "init", "-q", "-b", "main", ctx.out])
         run(["git", "-C", ctx.out, "add", "-A"])

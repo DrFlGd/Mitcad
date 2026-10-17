@@ -44,6 +44,13 @@ public:
 
   void start();
 
+  // The import's options, set before start(): the import runs with these
+  // (an .f3d design run again with items whose deviating results the user
+  // keeps, mitcad#379) instead of asking for the documents it refers to.
+  void setOptions(const QJsonObject& options);
+  // The options the import ran with (the documents chosen, ...).
+  const QJsonObject& options() const { return m_options; }
+
 signals:
   // ok: `design` is the imported document's design file (JSON) and
   // `result` the import_f3d command's result with its report. Not ok:
@@ -75,6 +82,7 @@ private:
 
   QString m_path;
   QJsonObject m_options; // more options of the import (askReferences)
+  bool m_preset = false; // m_options given (setOptions)
   QPointer<QWidget> m_window;
   QTemporaryDir m_dir;
   QProcess* m_process = nullptr;

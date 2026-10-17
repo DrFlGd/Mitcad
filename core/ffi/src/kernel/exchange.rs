@@ -216,6 +216,15 @@ pub mod ffi {
         /// `Package.f3z` with its `Manifest.json` and
         /// `DesignDescription.json`, and `Package-plain.f3z` without them.
         fn f3d_write_test_package(dir: &str) -> Result<()>;
+        /// Writes a design whose rounding deviates from the file's
+        /// (mitcad#379) into `dir`: `Rounding.f3d`, whose ASM history makes
+        /// a 10 mm cube and then bevels one edge by 2 mm
+        /// (`mitcad_f3d::testdata::bevelled_cube_history_blob`), and
+        /// `Rounding.dump.json`, its timeline as a dump (a sketch, the
+        /// extrusion and a rounding of that edge of radius 2 mm): replayed
+        /// with it (`import_f3d`'s `dump`), the extrusion gives the file's
+        /// cube and the rounding removes less than the file's bevel.
+        fn f3d_write_test_deviation(dir: &str) -> Result<()>;
 
         // .ipt import (mitcad#60).
         /// Writes a small .ipt part file for tests (`mitcad_ipt::testdata`):
@@ -307,6 +316,75 @@ fn f3d_write_test_package(dir: &str) -> Result<(), String> {
             .map_err(|e| format!("{}: {e}", path.display()))?;
     }
     Ok(())
+}
+
+/// The files of [`ffi::f3d_write_test_deviation`].
+fn f3d_write_test_deviation(dir: &str) -> Result<(), String> {
+    use mitcad_f3d::zip::{Method, Writer};
+    use serde_json::json;
+
+    let dir = std::path::Path::new(dir);
+    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let mut writer = Writer::new();
+    writer
+        .add(
+            "FusionAssetName[Active]/Breps.BlobParts/BREP.mitcad-test-rounding.smbh",
+            &mitcad_f3d::testdata::bevelled_cube_history_blob(0.2),
+            Method::Stored,
+        )
+        .map_err(|e| e.to_string())?;
+    let path = dir.join("Rounding.f3d");
+    std::fs::write(&path, writer.finish().map_err(|e| e.to_string())?)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    // The timeline in the dump's terms (core/import/SCHEMA.md; cm): its
+    // items name the history's operations by their result numbers.
+    let param = |name: &str, expression: &str, value: f64, unit: &str| {
+        json!({"kind": "parameter", "name": name, "expression": expression, "value": value,
+               "unit": unit})
+    };
+    let point = |id: &str, x: f64, y: f64| json!({"id": id, "xyz": [x, y, 0.0]});
+    let line = |id: &str, a: &str, b: &str| json!({"id": id, "type": "SketchLine", "startSketchPoint": a, "endSketchPoint": b});
+    let state = |result: i32| json!({"result_no": result, "flags": "000000"});
+    let dump = json!({
+        "schema": "mitcad-f3d-dump", "schema_version": 2,
+        "source": {"mode": "f3d_stream", "file": "Rounding.f3d"},
+        "parameters": {"model": [
+            {"name": "d1", "expression": "10 mm", "value": 1.0, "unit": "mm"},
+            {"name": "d2", "expression": "0.0 deg", "value": 0.0, "unit": "deg"},
+            {"name": "d3", "expression": "2 mm", "value": 0.2, "unit": "mm"}
+        ]},
+        "timeline": {"items": [
+            {"index": 0, "name": "Sketch1", "objectType": "Sketch", "detail": {
+                "referencePlane": {"kind": "construction_plane", "name": "XY", "origin": "XY"},
+                "model_frame": {"sketch_to_model": [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0],
+                                                    [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]]},
+                "points": [point("p0", 0.0, 0.0), point("p1", 1.0, 0.0), point("p2", 1.0, 1.0),
+                           point("p3", 0.0, 1.0)],
+                "curves": [line("c0", "p0", "p1"), line("c1", "p1", "p2"),
+                           line("c2", "p2", "p3"), line("c3", "p3", "p0")]
+            }},
+            {"index": 1, "name": "Extrude1", "objectType": "ExtrudeFeature", "detail": {
+                "operation": "NewBodyFeatureOperation",
+                "profile": [{"kind": "profile", "sketch": "Sketch1", "sketch_timeline_index": 0}],
+                "extentType": "OneSideFeatureExtentType",
+                "extentOne": {"_type": "DistanceExtentDefinition",
+                              "distance": param("d1", "10 mm", 1.0, "mm")},
+                "taperAngleOne": param("d2", "0.0 deg", 0.0, "deg")
+            }, "_f3d": state(1)},
+            {"index": 2, "name": "Fillet1", "objectType": "FilletFeature", "detail": {
+                "edgeSets": [{"_type": "ConstantRadiusFilletEdgeSet",
+                    "radius": param("d3", "2 mm", 0.2, "mm"),
+                    "edges": [{"kind": "edge", "objectType": "BRepEdge", "length": 1.0,
+                               "start_point": [1.0, 0.0, 1.0], "end_point": [1.0, 1.0, 1.0],
+                               "mid_point": [1.0, 0.5, 1.0]}],
+                    "isTangentChain": true}],
+                "isRollingBallCorner": true
+            }, "_f3d": state(2)}
+        ]}
+    });
+    let path = dir.join("Rounding.dump.json");
+    let text = serde_json::to_string_pretty(&dump).map_err(|e| e.to_string())?;
+    std::fs::write(&path, text).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// The part of [`ffi::ipt_write_test_file`].

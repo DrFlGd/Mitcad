@@ -120,6 +120,10 @@ come from: SOURCES.md.
 
 
 def main():
+    # The parts' names and source paths are UTF-8 (a supplier's file names);
+    # a console in another code page must not stop the build.
+    for stream in (sys.stdout, sys.stderr):
+        stream.reconfigure(encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--cli", required=True, help="mitcad-cli")
     parser.add_argument("--source", required=True, help="the folder of the supplier's files (never copied)")
@@ -156,7 +160,7 @@ def main():
         fail(f"the manifest's id is {manifest.get('id')}, not {LIBRARY_ID}")
     run([args.cli, "library", "check", out], "the library check")
     if args.commit:
-        identity = ["-c", "user.name=Mitcad library generator", "-c", "user.email=libraries@mitcad.invalid"]
+        identity = ["-c", "user.name=Mitcad developers", "-c", "user.email=devs@mitcad.org"]
         if not os.path.isdir(os.path.join(out, ".git")):
             run(["git", "init", "-q", "-b", "main", out], "git init")
         run(["git", "-C", out, "add", "-A"], "git add")

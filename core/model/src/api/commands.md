@@ -3632,6 +3632,7 @@ file's bodies built with OCCT.
 | `skipped_references` | URNs of documents the user chose not to give: reported `skipped` rather than `missing` |
 | `no_references` | the components of other documents stay empty (no document is imported) |
 | `list_references` | `import_f3d_timeline` only lists the documents the design refers to and where their files are, importing nothing: `{"documents": [{"document", "name", "version", "occurrences", "file", "design", "found", "note", "parent", "depth"}], "folders", "warnings"}`; documents found are followed into their own references (`parent`: the URN of the document that refers to one) |
+| `accept_deviations` | which items whose decoded definition builds a result that deviates from the file's stay parametric with it (mitcad#379; see *Deviating results kept at import* below): `true` or `"all"` every one, an array of timeline indices (`[88]`) or `"88,93"` those; left out, `false` or `"none"` (the default): none, they take the file's bodies. Not passed on to the documents the design refers to |
 
 The result: `file`, `design`, `items` (timeline items), `counts` (items
 per outcome: `parametric`, `partial`, `fallback`, `skipped`) and
@@ -3790,6 +3791,42 @@ first item given up) and its `name`, no `item` when the stop came after
 the last one; a warning says so too. The job's test delay slows each
 definition tried. `import_f3d` without the timeline is not stopped by a
 job.
+
+#### Deviating results kept at import (mitcad#379)
+
+An item whose decoded definition builds a result that is not the file's
+(its result does not measure as its history state, or the volume it adds
+or removes or its new faces are off the file's, `core/import/README.md`,
+*Matching rules*) takes the file's bodies as before; its report entry
+has `deviation`, how far off the result was there:
+
+| Field | Meaning |
+|---|---|
+| `volume_change` | mm³ the item adds (negative: removes) |
+| `file_volume_change` | mm³ the file's operation adds or removes |
+| `volume_difference` | the first minus the second |
+| `relative_difference` | that against the file's change (missing when it changes nothing) |
+| `largest_distance`, `area_beyond` | the largest distance (mm) of the result's new faces from the file's state after the item, and the share (0–1) of their area farther than the tolerance |
+| `file_largest_distance`, `file_area_beyond` | the same of the file's new faces against the result |
+| `body_volume`, `stored_body_volume` | mm³ of the bodies the item changed, after it, and of the file's bodies its operation changed |
+| `tolerance` | the geometric tolerance (mm) the faces were measured with |
+| `reason` | why the result is not the file's |
+| `accepted` | whether it was kept |
+| `missing_edges` | a rounding or chamfer the geometry kernel fails with all its decoded edges, built with some of them: the edges it leaves out (left out when none) |
+| `faces` | `[{"body", "face"}]`: faces of the imported design where it deviates (of the stored geometry standing in for it; of the result where kept), for the application to select |
+
+With `accept_deviations` naming the item, it is parametric instead: its
+definition is added again (`outcome` `parametric`, `verified` false, the
+note saying so) and the entry has `accepted_deviation` with these numbers
+(`accepted` true) instead of `deviation`; its features get the timeline
+note *Deviation from the file accepted at import: …*. The items after it
+replay on its result; each body it changed counts in the comparisons with
+the history with its difference from the file's body taken off, so a
+later item is checked by what it changes itself (a later item that does
+not give its state there takes the file's bodies, and the file's body
+replaces the deviated one from then on, with its own `deviation`), and
+the final comparison does not replace those bodies. The text report
+lists the deviations not kept (`deviating result (not kept): …`).
 
 #### From the dump IR
 

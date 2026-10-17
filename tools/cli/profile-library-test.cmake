@@ -237,6 +237,31 @@ string(JSON mass GET "${manifest}" components 1 build mass_per_metre)
 same("${mass}" "1.664 kg" "the mass per metre of aluminium")
 frames(2 "mount_a;mount_b")
 
+# The designs hold their features in the root: no components, occurrences,
+# active component or root policy (a section, a solid and a model part).
+foreach(design profiles/p20x20-i5.mitcad connectors/bracket-20-i5.mitcad panels/panel-generic.mitcad
+               linear/rail-15.mitcad)
+  file(READ "${library}/${design}" text)
+  foreach(field components occurrences active_component root_policy)
+    string(JSON value ERROR_VARIABLE missing GET "${text}" ${field})
+    if(NOT missing AND NOT value STREQUAL "C0" AND NOT value STREQUAL "[]")
+      message(FATAL_ERROR "${design} has ${field}: ${value}")
+    endif()
+  endforeach()
+  string(JSON count LENGTH "${text}" features)
+  if(count EQUAL 0)
+    message(FATAL_ERROR "${design} has no features in its root")
+  endif()
+  math(EXPR last "${count} - 1")
+  foreach(i RANGE ${last})
+    # A feature of the root names no component.
+    string(JSON owner ERROR_VARIABLE root GET "${text}" features ${i} component)
+    if(NOT root AND NOT owner STREQUAL "C0")
+      message(FATAL_ERROR "${design}: feature ${i} is in ${owner}, not in the root")
+    endif()
+  endforeach()
+endforeach()
+
 # 4. The profile's design: the section extruded by L; cut to 250 mm its
 #    body and end B follow, end A stays at the origin pointing along -Z.
 file(WRITE "${WORK}/cut.json" "[

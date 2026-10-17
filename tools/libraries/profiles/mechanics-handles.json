@@ -1,0 +1,616 @@
+{
+  "categories": [{"id":"handles","name":"Handles and knobs"}],
+  "parts": [
+    {
+      "id": "knob-internal-thread",
+      "name": "Knob with internal thread",
+      "category": "handles",
+      "make": "model",
+      "dimensions": {
+        "shape": "none",
+        "parameters": {"D":"25 mm","H":"9 mm","B":"17.5 mm","K":"9 mm","T":"6 mm","F":"9 mm"}
+      },
+      "commands": [
+        {
+          "cmd": "add_feature",
+          "name": "Base",
+          "def": {
+            "type": "cylinder",
+            "plane": "xy",
+            "center": [0,0],
+            "diameter": "D",
+            "height": "K + H",
+            "operation": "new_body"
+          }
+        },
+        {
+          "cmd": "add_feature",
+          "name": "Above the base",
+          "def": {
+            "type": "cylinder",
+            "plane": "xy",
+            "center": [0,0],
+            "diameter": "D + 2",
+            "height": "K",
+            "operation": "cut"
+          }
+        },
+        {
+          "cmd": "add_feature",
+          "name": "Boss",
+          "def": {
+            "type": "cylinder",
+            "plane": "xy",
+            "center": [0,0],
+            "diameter": "B",
+            "height": "K",
+            "operation": "join"
+          }
+        },
+        {
+          "cmd": "add_feature",
+          "name": "Thread",
+          "def": {
+            "type": "cylinder",
+            "plane": "xy",
+            "center": [0,0],
+            "diameter": "T",
+            "height": "F",
+            "operation": "cut"
+          }
+        }
+      ],
+      "supplier": "Motedis",
+      "part_number": "D25M6KNOBCI",
+      "supplier_url": "https://www.motedis.com/en/Handle-with-internal-thread-D25-M6",
+      "designation": "Knob with internal thread {Size}",
+      "default": "D25-M6",
+      "rows": [
+        {
+          "name": "D16-M4",
+          "select": {"Size":"D16-M4"},
+          "values": {"D":"16 mm","H":"8 mm","B":"12 mm","K":"3 mm","T":"4 mm","F":"9 mm"},
+          "part_number": "D16M4KNOBCI",
+          "supplier_url": "https://www.motedis.com/en/Handle-with-internal-thread-D16-M4",
+          "designation": "Knob with internal thread D16 M4"
+        },
+        {
+          "name": "D18-M5",
+          "select": {"Size":"D18-M5"},
+          "values": {"D":"18.5 mm","H":"8 mm","B":"13 mm","K":"3 mm","T":"5 mm","F":"8 mm"},
+          "part_number": "D18M5KNOBCI",
+          "supplier_url": "https://www.motedis.com/en/Handle-with-internal-thread-D18-M5",
+          "designation": "Knob with internal thread D18 M5"
+        },
+        {
+          "name": "D25-M6",
+          "select": {"Size":"D25-M6"},
+          "values": {"D":"25 mm","H":"9 mm","B":"17.5 mm","K":"9 mm","T":"6 mm","F":"9 mm"},
+          "part_number": "D25M6KNOBCI",
+          "supplier_url": "https://www.motedis.com/en/Handle-with-internal-thread-D25-M6",
+          "designation": "Knob with internal thread D25 M6"
+        },
+        {
+          "name": "D32-M8",
+          "select": {"Size":"D32-M8"},
+          "values": {"D":"32 mm","H":"11 mm","B":"22 mm","K":"9 mm","T":"8 mm","F":"15 mm"},
+          "part_number": "D32M8KNOBCI",
+          "supplier_url": "https://www.motedis.com/en/Handle-with-internal-thread-D32-M8",
+          "designation": "Knob with internal thread D32 M8"
+        }
+      ]
+    },
+    {
+      "id": "star-knob-d25-m5",
+      "name": "Star knob with internal thread D25 M5",
+      "category": "handles",
+      "make": "model",
+      "dimensions": {
+        "shape": "none",
+        "parameters": {"D":"25 mm","H":"11 mm","B":"15 mm","K":"10 mm","T":"5 mm","F":"10 mm"}
+      },
+      "commands": [
+        {
+          "cmd": "add_feature",
+          "name": "Core",
+          "def": {
+            "type": "cylinder",
+            "plane": "xy",
+            "center": [0,0],
+            "diameter": "0.62 * D",
+            "height": "K + H",
+            "operation": "new_body"
+          }
+        },
+        {
+          "cmd": "add_feature",
+          "name": "Lobe 1",
+          "def": {
+            "type": "cylinder",
+            "plane": "xy",
+            "center": [0,8],
+            "diameter": "0.36 * D",
+            "height": "K + H",
+            "operation": "join"
+          }
+        },
+        {
+          "cmd": "add_feature",
+          "name": "Lobe 2",
+          "def": {
+            "type": "cylinder",
+            "plane": "xy",
+            "center": [-7.61,2.47],
+            "diameter": "0.36 * D",
+            "height": "K + H",
+            "operation": "join"
+          }
+        },
+        {
+          "cmd": "add_feature",
+          "name": "Lobe 3",
+          "def": {
+            "type": "cylinder",
+            "plane": "xy",
+            "center": [-4.7,-6.47],
+            "diameter": "0.36 * D",
+            "height": "K + H",
+            "operation": "join"
+          }
+        },
+        {
+          "cmd": "add_feature",
+          "name": "Lobe 4",
+          "def": {
+            "type": "cylinder",
+            "plane": "xy",
+            "center": [4.7,-6.47],
+            "diameter": "0.36 * D",
+            "height": "K + H",
+            "operation": "join"
+          }
+        },
+        {
+          "cmd": "add_feature",
+          "name": "Lobe 5",
+          "def": {
+            "type": "cylinder",
+            "plane": "xy",
+            "center": [7.61,2.47],
+            "diameter": "0.36 * D",
+            "height": "K + H",
+            "operation": "join"
+          }
+        },
+        {
+          "cmd": "add_feature",
+          "name": "Above the base",
+          "def": {
+            "type": "cylinder",
+            "plane": "xy",
+            "center": [0,0],
+            "diameter": "D + 2",
+            "height": "K",
+            "operation": "cut"
+          }
+        },
+        {
+          "cmd": "add_feature",
+          "name": "Boss",
+          "def": {
+            "type": "cylinder",
+            "plane": "xy",
+            "center": [0,0],
+            "diameter": "B",
+            "height": "K",
+            "operation": "join"
+          }
+        },
+        {
+          "cmd": "add_feature",
+          "name": "Thread",
+          "def": {
+            "type": "cylinder",
+            "plane": "xy",
+            "center": [0,0],
+            "diameter": "T",
+            "height": "F",
+            "operation": "cut"
+          }
+        }
+      ],
+      "supplier": "Motedis",
+      "part_number": "D25M5KNOBST",
+      "supplier_url": "https://www.motedis.com/en/Star-handle-with-internal-thread-D25-M5",
+      "designation": "Star knob D25 M5",
+      "rows": []
+    },
+    {
+      "id": "star-knob-d25-m6",
+      "name": "Star knob with internal thread D25 M6",
+      "category": "handles",
+      "make": "model",
+      "dimensions": {
+        "shape": "none",
+        "parameters": {"D":"25 mm","H":"11 mm","B":"15 mm","K":"10 mm","T":"6 mm","F":"10 mm"}
+      },
+      "commands": [
+        {
+          "cmd": "add_feature",
+          "name": "Core",
+          "def": {
+            "type": "cylinder",
+            "plane": "xy",
+            "center": [0,0],
+            "diameter": "0.62 * D",
+            "height": "K + H",
+            "operation": "new_body"
+          }
+        },
+        {
+          "cmd": "add_feature",
+          "name": "Lobe 1",
+          "def": {
+            "type": "cylinder",
+            "plane": "xy",
+            "center": [0,8],
+            "diameter": "0.36 * D",
+            "height": "K + H",
+            "operation": "join"
+          }
+        },
+        {
+          "cmd": "add_feature",
+          "name": "Lobe 2",
+          "def": {
+            "type": "cylinder",
+            "plane": "xy",
+            "center": [-7.61,2.47],
+            "diameter": "0.36 * D",
+            "height": "K + H",
+            "operation": "join"
+          }
+        },
+        {
+          "cmd": "add_feature",
+          "name": "Lobe 3",
+          "def": {
+            "type": "cylinder",
+            "plane": "xy",
+            "center": [-4.7,-6.47],
+            "diameter": "0.36 * D",
+            "height": "K + H",
+            "operation": "join"
+          }
+        },
+        {
+          "cmd": "add_feature",
+          "name": "Lobe 4",
+          "def": {
+            "type": "cylinder",
+            "plane": "xy",
+            "center": [4.7,-6.47],
+            "diameter": "0.36 * D",
+            "height": "K + H",
+            "operation": "join"
+          }
+        },
+        {
+          "cmd": "add_feature",
+          "name": "Lobe 5",
+          "def": {
+            "type": "cylinder",
+            "plane": "xy",
+            "center": [7.61,2.47],
+            "diameter": "0.36 * D",
+            "height": "K + H",
+            "operation": "join"
+          }
+        },
+        {
+          "cmd": "add_feature",
+          "name": "Above the base",
+          "def": {
+            "type": "cylinder",
+            "plane": "xy",
+            "center": [0,0],
+            "diameter": "D + 2",
+            "height": "K",
+            "operation": "cut"
+          }
+        },
+        {
+          "cmd": "add_feature",
+          "name": "Boss",
+          "def": {
+            "type": "cylinder",
+            "plane": "xy",
+            "center": [0,0],
+            "diameter": "B",
+            "height": "K",
+            "operation": "join"
+          }
+        },
+        {
+          "cmd": "add_feature",
+          "name": "Thread",
+          "def": {
+            "type": "cylinder",
+            "plane": "xy",
+            "center": [0,0],
+            "diameter": "T",
+            "height": "F",
+            "operation": "cut"
+          }
+        }
+      ],
+      "supplier": "Motedis",
+      "part_number": "D25M6KNOBST",
+      "supplier_url": "https://www.motedis.com/en/Star-handle-with-internal-thread-D25-M6",
+      "designation": "Star knob D25 M6",
+      "rows": []
+    },
+    {
+      "id": "star-knob-d32-m6",
+      "name": "Star knob with internal thread D32 M6",
+      "category": "handles",
+      "make": "model",
+      "dimensions": {
+        "shape": "none",
+        "parameters": {"D":"32 mm","H":"12 mm","B":"18 mm","K":"10 mm","T":"6 mm","F":"12.5 mm"}
+      },
+      "commands": [
+        {
+          "cmd": "add_feature",
+          "name": "Core",
+          "def": {
+            "type": "cylinder",
+            "plane": "xy",
+            "center": [0,0],
+            "diameter": "0.62 * D",
+            "height": "K + H",
+            "operation": "new_body"
+          }
+        },
+        {
+          "cmd": "add_feature",
+          "name": "Lobe 1",
+          "def": {
+            "type": "cylinder",
+            "plane": "xy",
+            "center": [0,10.24],
+            "diameter": "0.36 * D",
+            "height": "K + H",
+            "operation": "join"
+          }
+        },
+        {
+          "cmd": "add_feature",
+          "name": "Lobe 2",
+          "def": {
+            "type": "cylinder",
+            "plane": "xy",
+            "center": [-9.74,3.16],
+            "diameter": "0.36 * D",
+            "height": "K + H",
+            "operation": "join"
+          }
+        },
+        {
+          "cmd": "add_feature",
+          "name": "Lobe 3",
+          "def": {
+            "type": "cylinder",
+            "plane": "xy",
+            "center": [-6.02,-8.28],
+            "diameter": "0.36 * D",
+            "height": "K + H",
+            "operation": "join"
+          }
+        },
+        {
+          "cmd": "add_feature",
+          "name": "Lobe 4",
+          "def": {
+            "type": "cylinder",
+            "plane": "xy",
+            "center": [6.02,-8.28],
+            "diameter": "0.36 * D",
+            "height": "K + H",
+            "operation": "join"
+          }
+        },
+        {
+          "cmd": "add_feature",
+          "name": "Lobe 5",
+          "def": {
+            "type": "cylinder",
+            "plane": "xy",
+            "center": [9.74,3.16],
+            "diameter": "0.36 * D",
+            "height": "K + H",
+            "operation": "join"
+          }
+        },
+        {
+          "cmd": "add_feature",
+          "name": "Above the base",
+          "def": {
+            "type": "cylinder",
+            "plane": "xy",
+            "center": [0,0],
+            "diameter": "D + 2",
+            "height": "K",
+            "operation": "cut"
+          }
+        },
+        {
+          "cmd": "add_feature",
+          "name": "Boss",
+          "def": {
+            "type": "cylinder",
+            "plane": "xy",
+            "center": [0,0],
+            "diameter": "B",
+            "height": "K",
+            "operation": "join"
+          }
+        },
+        {
+          "cmd": "add_feature",
+          "name": "Thread",
+          "def": {
+            "type": "cylinder",
+            "plane": "xy",
+            "center": [0,0],
+            "diameter": "T",
+            "height": "F",
+            "operation": "cut"
+          }
+        }
+      ],
+      "supplier": "Motedis",
+      "part_number": "D32M6KNOBST",
+      "supplier_url": "https://www.motedis.com/en/Star-handle-with-internal-thread-D32-M6",
+      "designation": "Star knob D32 M6",
+      "rows": []
+    },
+    {
+      "id": "star-knob-d40-m8",
+      "name": "Star knob with internal thread D40 M8",
+      "category": "handles",
+      "make": "model",
+      "dimensions": {
+        "shape": "none",
+        "parameters": {"D":"40 mm","H":"18 mm","B":"23 mm","K":"13 mm","T":"8 mm","F":"13 mm"}
+      },
+      "commands": [
+        {
+          "cmd": "add_feature",
+          "name": "Core",
+          "def": {
+            "type": "cylinder",
+            "plane": "xy",
+            "center": [0,0],
+            "diameter": "0.62 * D",
+            "height": "K + H",
+            "operation": "new_body"
+          }
+        },
+        {
+          "cmd": "add_feature",
+          "name": "Lobe 1",
+          "def": {
+            "type": "cylinder",
+            "plane": "xy",
+            "center": [0,12.8],
+            "diameter": "0.36 * D",
+            "height": "K + H",
+            "operation": "join"
+          }
+        },
+        {
+          "cmd": "add_feature",
+          "name": "Lobe 2",
+          "def": {
+            "type": "cylinder",
+            "plane": "xy",
+            "center": [-12.17,3.96],
+            "diameter": "0.36 * D",
+            "height": "K + H",
+            "operation": "join"
+          }
+        },
+        {
+          "cmd": "add_feature",
+          "name": "Lobe 3",
+          "def": {
+            "type": "cylinder",
+            "plane": "xy",
+            "center": [-7.52,-10.36],
+            "diameter": "0.36 * D",
+            "height": "K + H",
+            "operation": "join"
+          }
+        },
+        {
+          "cmd": "add_feature",
+          "name": "Lobe 4",
+          "def": {
+            "type": "cylinder",
+            "plane": "xy",
+            "center": [7.52,-10.36],
+            "diameter": "0.36 * D",
+            "height": "K + H",
+            "operation": "join"
+          }
+        },
+        {
+          "cmd": "add_feature",
+          "name": "Lobe 5",
+          "def": {
+            "type": "cylinder",
+            "plane": "xy",
+            "center": [12.17,3.96],
+            "diameter": "0.36 * D",
+            "height": "K + H",
+            "operation": "join"
+          }
+        },
+        {
+          "cmd": "add_feature",
+          "name": "Above the base",
+          "def": {
+            "type": "cylinder",
+            "plane": "xy",
+            "center": [0,0],
+            "diameter": "D + 2",
+            "height": "K",
+            "operation": "cut"
+          }
+        },
+        {
+          "cmd": "add_feature",
+          "name": "Boss",
+          "def": {
+            "type": "cylinder",
+            "plane": "xy",
+            "center": [0,0],
+            "diameter": "B",
+            "height": "K",
+            "operation": "join"
+          }
+        },
+        {
+          "cmd": "add_feature",
+          "name": "Thread",
+          "def": {
+            "type": "cylinder",
+            "plane": "xy",
+            "center": [0,0],
+            "diameter": "T",
+            "height": "F",
+            "operation": "cut"
+          }
+        }
+      ],
+      "supplier": "Motedis",
+      "part_number": "D40M8KNOBST",
+      "supplier_url": "https://www.motedis.com/en/Star-handle-with-internal-thread-D40-M8",
+      "designation": "Star knob D40 M8",
+      "rows": []
+    },
+    {
+      "id": "locking-lever-m8-r63",
+      "name": "Locking lever with internal thread M8, R63, zamak",
+      "category": "handles",
+      "source": "mechanical-basics/Locking-Lever-with-internal-thread-M8xR63-in-Zamak/Motedis-S8AHM8R63/Motedis_S8AHM8R63.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "S8AHM8R63",
+      "supplier_url": "https://www.motedis.com/en/Locking-Lever-with-internal-thread-M8xR63-in-Zamak",
+      "designation": "Locking lever M8 R63",
+      "rows": []
+    }
+  ]
+}

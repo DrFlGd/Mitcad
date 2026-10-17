@@ -1,0 +1,48 @@
+{
+  "categories": [{"id":"accessories","name":"Accessories"}],
+  "parts": [
+    {
+      "id": "ball-catch-s8-s10",
+      "name": "Ball catch, slot 8 and 10",
+      "category": "accessories",
+      "source": "mechanical-basics/Ball-Catch/Motedis-S810BALLCA/Motedis_S810BALLCA.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "S810BALLCA",
+      "supplier_url": "https://www.motedis.com/en/Ball-Catch",
+      "designation": "Ball catch slot 8/10",
+      "rows": [],
+      "build": {
+        "role": "connector",
+        "systems": [{"type":"B","slot":8},{"type":"I","slot":8},{"type":"B","slot":10}],
+        "frames": [{"name":"mount","kind":"face"}],
+        "connector": {"junctions":["surface"],"space":"outer","mates":[{"frame":"mount","to":"slot"}]}
+      },
+      "frames": [{"name":"mount","origin":[0,0,0],"z":[0,-1,0],"x":[1,0,0],"kind":"face"}]
+    },
+    {
+      "id": "cup-holder-closed",
+      "name": "Cup holder with a closed bottom",
+      "category": "accessories",
+      "source": "mechanical-basics/Cup-holder-with-a-closed-bottom/Motedis-CUPCLOSED/Motedis_CUPCLOSED.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "CUPCLOSED",
+      "supplier_url": "https://www.motedis.com/en/Cup-holder-with-a-closed-bottom",
+      "designation": "Cup holder with a closed bottom",
+      "rows": []
+    },
+    {
+      "id": "cup-holder-open",
+      "name": "Cup holder with an open bottom",
+      "category": "accessories",
+      "source": "mechanical-basics/Cup-holders-with-open-bottom/Motedis-CUPOPENED/Motedis_CUPOPENED.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "CUPOPENED",
+      "supplier_url": "https://www.motedis.com/en/Cup-holders-with-open-bottom",
+      "designation": "Cup holder with an open bottom",
+      "rows": []
+    }
+  ]
+}

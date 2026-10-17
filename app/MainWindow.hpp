@@ -751,7 +751,13 @@ private:
   void insertMesh();
   void insertDxf();
   void insertComponent(const QString& path = QString());
-  void startF3dImport(const QString& path);
+  // `rerun`: the options of an .f3d import run again with the items whose
+  // deviating results the user keeps (mitcad#379); empty for a new import.
+  void startF3dImport(const QString& path, const QJsonObject& rerun = QJsonObject());
+  // The items of an imported .f3d design whose results deviate from the
+  // file's (mitcad#379): asked which to keep parametric, and the import run
+  // again with them (`options`: those it ran with).
+  void offerDeviations(const QString& path, const QJsonObject& result, QJsonObject options);
   void exportFile();
   // 3D Print (mitcad#13, mitcad#234; files/MainWindowPrint.cpp): a panel of
   // the bodies to send, picked in the view, and the format, refinement and
@@ -847,6 +853,13 @@ private:
   bool& m_changeNoted = m_documentSession->state().changeNoted;
   QMenu* m_recentMenu = nullptr;
   QPointer<F3dImport> m_import; // an .f3d import in progress
+  // The deviating results of the .f3d design imported last (mitcad#379):
+  // the items the user left as the file's stored geometry, and the first
+  // item kept parametric in the run since (the items after it were
+  // replayed on its result and are asked again; -1: none).
+  QString m_deviationsPath;
+  QHash<qint64, bool> m_deviationsDeclined;
+  qint64 m_deviationsRerunFrom = -1;
   OcctViewer* m_viewer = nullptr;
   CommandRegistry* m_registry = nullptr;
   Ribbon* m_ribbon = nullptr;

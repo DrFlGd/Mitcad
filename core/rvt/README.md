@@ -322,7 +322,11 @@ in feet:
   (and stays at the joint when the second runs on in line), the others
   stop at its near face (one in line with it where it ends); an end on
   another wall's side stops at that side's near face; joins with what is
-  no layered wall (room separation lines, curtain walls) shape nothing.
+  no layered wall (room separation lines, curtain walls) shape nothing,
+  nor do joins with a wall wholly above or below this one *(seen: a
+  corner's join lists the foundation walls and the storey's walls on
+  them, a storey's wall first; the foundation walls' ends in the geometry
+  the file keeps are joined to each other)*.
 - **Floors, pads and roofs:** the loops of their extrusion helper cell
   (`FloorExtrusionHelper`, `BuildingPadExtrusionHelper`,
   `RoofExtrusionHelper`: `m_pCurveLoops`) or a footprint roof's own
@@ -330,7 +334,12 @@ in feet:
   horizontal reference faces; a roof's layer reference faces
   (`m_pRefLayerFaces`: the boundaries of its type's layers, per slope)
   and an extrusion roof's extents (`m_extrusionDepth`, along its open
-  profile's plane's normal); a shape edit in use
+  profile's plane's normal: the plane is not read, the side the extents
+  run to is the side its stored box lies on *(seen: the two halves of a
+  gable drawn from their eaves to the ridge, their profiles running
+  opposite ways with the same extents)*); a ceiling's horizontal
+  reference faces, its top and its core's top: its type's layers run
+  down from its top *(seen: its body in the geometry the file keeps)*; a shape edit in use
   (`SlabShapeEditGStep.m_dormant` false).
 - **Family instances and types:** the level references (`m_refs`'
   `FamilyLevelRef`: `m_elemId`, `m_offset`: a column's base and top), a
@@ -405,6 +414,16 @@ planes: a floor's or ceiling's bottom (top) or top (base), a footprint
 roof's slopes' lower (top) or upper (base) planes (its layer faces), a
 reference plane. A face roof's surface is not read.
 
+A top under elements that each cover part of the wall (a ridge wall
+under the two halves of a gable whose edges end within its thickness, a
+wall reaching out from under its roof) follows each element only within
+its outline and keeps its own top elsewhere: half spaces bounded to the
+outline cut it where the surface lies below its own top, and its
+footprint runs on up within the outline to under the surface where that
+lies above *(seen in a 2026 project: the ridge walls' bodies in the
+geometry the file keeps rise to their own tops between the halves'
+edges)*.
+
 ### Wall openings (mitcad#345)
 
 What opens a wall, by its records:
@@ -433,8 +452,13 @@ What opens a wall, by its records:
   corners in model coordinates (`m_lowerLeftCorner`, `m_upperRightCorner`
   the same in the wall's face's (u, v)); the wall keeps a
   `WallRectOpeningGStep` *(seen: 11 in `33271010`, 2 in `bb62c161`)*.
-- **Walls in walls**: `WallShadowCutoutGStep.m_otherWallId`, a wall
-  embedded in this one *(seen: 117 in `33271010`; not read)*.
+- **Walls in walls**: `WallEmbedWallGStep` (a `WallCutoutGStepBase`
+  whose `m_instId` is a wall embedded in this one, a curtain wall in a
+  basic wall) *(seen in a 2026 project: the host's body in the geometry
+  the file keeps has the embedded walls' location lines by their base and
+  height as its openings)*: the import cuts that rectangle through the
+  host; `WallShadowCutoutGStep.m_otherWallId` *(seen: 117 in `33271010`;
+  not read)*.
 - **The geometry the file keeps** of a wall holds its openings *(seen: the
   faces of a wall's cut-out snapshot, `m_bRepCutOutSnapshot`, run round
   its insert's opening)*.
@@ -451,8 +475,11 @@ On the MIT project with its IFC export (`c805df44`, `bfdf36ff`) every
 wall (360), slab (80, and 20 floors the export names shading devices) and
 column (256) built as features agrees with the export's solid (its volume
 within 0.1 %, its box within 0.001 mm). Elsewhere the features are
-checked against the elements' stored boxes (`rvt.corpus` imports a
-structural sample with the architectural sample it links).
+checked against the geometry the file keeps of the element where that
+meshes closed (the volume within 2 %, the box within 5 mm: a wall's
+stored box also holds the sheets of its layers' boundaries, which reach
+its unconnected height), else against its stored box (`rvt.corpus`
+imports a structural sample with the architectural sample it links).
 
 ## The geometry (mitcad#333)
 
@@ -464,8 +491,19 @@ end and reads, 13,979 elements of the MIT project, 11,644 of `33271010`)*:
 
 - **The tree.** `GElement`, `GGroup` and `GFilter` hold nodes
   (`m_subNodes`); a `GFilter`'s `m_oConditions` say in which views its
-  nodes show (`GConditionDir`, `GConditionCut`, ...; not read: every body
-  is taken). `Geometry` is a body (`m_pFaces`, `m_pEdges`); `GInstance`
+  nodes show, all of them to hold: the import takes what a 3D view shows
+  at the fine detail level (`brep::condition_in_3d`): a view direction
+  (`GConditionDir`, `m_dir`) or a cut (`GConditionCut`) never holds
+  there, its negation (`m_negateDirCondition`) always; `GConditionInt`
+  with `m_param` 3 is the detail level (`m_value` 1 coarse, 2 medium, 3
+  fine) compared by `m_comp` (0 equal, 3 not equal) *(seen in a 2026
+  project: under direction and cut conditions lie the plans', the
+  elevations' and the cut's symbolic faces, single planes, and the 3D
+  bodies under their negations; the detail conditions come in
+  complementary pairs, a representation and its alternative)*. A type
+  that shows nothing at the fine level is read at the medium, else the
+  coarse one *(seen: a column family whose body shows at the coarse level
+  only)*. `Geometry` is a body (`m_pFaces`, `m_pEdges`); `GInstance`
   places a type's geometry (`m_instanceInfo` → `InstanceInfo`: `m_symbolId`,
   `m_Trf`; or `m_oEmbeddedSymbolGRep`). Curves (`GLine`, `GArc`) are
   symbolic lines. A family instance's own `GElement` is one `GInstance` of
@@ -484,7 +522,11 @@ end and reads, 13,979 elements of the MIT project, 11,644 of `33271010`)*:
   and, along a curved edge, those between (`m_interiorEdgePnts`). Faces
   and edges name each other by reference pointers, numbers of the
   record's objects (`Record::numbered`). A face can have no loops *(seen:
-  1,916 faces of the MIT project; left out)*.
+  1,916 faces of the MIT project; left out)*; a body of one plane is a
+  sheet, not a solid (a wall's layer boundaries, a symbol's face; left
+  out of the meshes); a plane can have several outer loops besides its
+  holes *(seen on an in-place mass)*: a loop is a hole of the loop that
+  holds it.
 - **The surfaces**, (u, v) to a point *(verified: the model points of an
   edge's two sides lie within 0.0005 ft (0.15 mm) of each other over every
   corpus project, `mitcad-rvt-inspect geometry`)*: `Plane` `m_origin + u

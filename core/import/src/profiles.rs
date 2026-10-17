@@ -108,6 +108,26 @@ fn profiles_of(v: &Value) -> Option<Vec<Profile>> {
         .collect()
 }
 
+/// How many curves the decoded loops (`_f3d_profile_loops`) name when
+/// none of their records names a curve the sketch has (the profile is
+/// older than the sketch's last edit, which removed its curves): what the
+/// note of an item that does not give its state says (mitcad#379). None
+/// when a record names a curve of the sketch or the loops do not read.
+pub(crate) fn gone_curves(loops: &Value) -> Option<usize> {
+    let profiles = profiles_of(loops)?;
+    let records = || {
+        profiles
+            .iter()
+            .flat_map(|p| p.loops.iter().chain(p.children.iter().flatten()))
+            .flat_map(|l| l.pieces.iter())
+    };
+    if records().next().is_none() || records().any(|r| r.id.is_some()) {
+        return None;
+    }
+    let keys: BTreeSet<(u64, u64)> = records().map(|r| r.key).collect();
+    Some(keys.len())
+}
+
 /// A region of Mitcad's sketch as [`mapped_regions`] sees it.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct RegionView {
@@ -572,6 +592,23 @@ mod tests {
             {"outer": true, "curves": [rec("c0", 1), rec("c1", 1), rec("c2", 1), no_curve]}],
             "children": []}]);
         assert!(mapped(&lost, &curves, &regions).is_none_or(|(_, exact)| !exact));
+    }
+
+    #[test]
+    fn a_profile_whose_curves_are_all_gone_counts_them() {
+        let gone =
+            |primary: u64| json!({"primary": primary, "secondary": 0, "piece": 1, "pieces": 1});
+        let one = json!([{"loops": [{"outer": true, "curves": [gone(136)]}], "children": []}]);
+        assert_eq!(gone_curves(&one), Some(1));
+        let two = json!([{"loops": [{"outer": true, "curves": [gone(7), gone(8), gone(7)]}],
+                          "children": []}]);
+        assert_eq!(gone_curves(&two), Some(2));
+        // A record of a curve the sketch has: not gone.
+        let kept = json!([{"loops": [{"outer": true, "curves": [
+            {"id": "c0", "primary": 1, "secondary": 0, "piece": 1, "pieces": 1}, gone(9)]}],
+            "children": []}]);
+        assert_eq!(gone_curves(&kept), None);
+        assert_eq!(gone_curves(&json!([])), None);
     }
 
     #[test]

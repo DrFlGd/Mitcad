@@ -1,0 +1,659 @@
+[
+  {
+    "id": "motor-angle-holder-80",
+    "name": "Angle motor holder steel 48x80x80, hole circle 35 mm",
+    "category": "plates",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/Angle-motor-holder-steel-48x80x80-hole-circle-35mm/Motedis-9689/Motedis_9689.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "9689",
+    "supplier_url": "https://www.motedis.com/en/Angle-motor-holder-steel-48x80x80-hole-circle-35mm",
+    "designation": "Angle motor holder steel 48x80x80, hole circle 35 mm",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":8,"grid":40},{"type":"B","slot":10,"grid":40}],
+      "frames": [{"name":"mount","kind":"face"},{"name":"motor","kind":"face"}],
+      "connector": {"junctions":["surface"],"space":"outer","mates":[{"frame":"mount","to":"slot"}]}
+    },
+    "frames": [
+      {"name":"mount","origin":[0,27.4,36.08],"z":[0,0,1],"x":[1,0,0],"kind":"face"},
+      {"name":"motor","origin":[0,-1,0],"z":[0,-1,0],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "motor-holder-80x100",
+    "name": "Motor holder steel 80x100, hole circle 35 mm",
+    "category": "plates",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/Motor-holder-steel-80x100-hole-circle-35mm/Motedis_9690.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "9690",
+    "supplier_url": "https://www.motedis.com/en/Motor-holder-steel-80x100-hole-circle-35mm",
+    "designation": "Motor holder steel 80x100, hole circle 35 mm",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":8,"grid":40},{"type":"B","slot":10,"grid":40}],
+      "frames": [{"name":"mount","kind":"face"},{"name":"motor","kind":"face"}],
+      "connector": {"junctions":["surface"],"space":"outer","mates":[{"frame":"mount","to":"slot"}]}
+    },
+    "frames": [
+      {"name":"mount","origin":[0,-33,-1],"z":[0,0,-1],"x":[1,0,0],"kind":"face"},
+      {"name":"motor","origin":[0,24,1],"z":[0,0,1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "motor-bracket-nema17-slotted",
+    "name": "Motor bracket NEMA 17 with slotted holes, t=3 mm",
+    "category": "plates",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/Bracket-motor-bracket-slotted-hole-laser-cut-aluminium-Nema-17-t3mm/Motedis-LP50115/Motedis_LP50115.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP50115",
+    "supplier_url": "https://www.motedis.com/en/Bracket-motor-bracket-slotted-hole-laser-cut-aluminium-Nema-17-t3mm",
+    "designation": "Motor bracket NEMA 17, t=3 mm, {Material}",
+    "rows": [
+      {"name":"Aluminium","select":{"Material":"Aluminium"},"values":{},"part_number":"LP50115"},
+      {"name":"Steel","select":{"Material":"Steel"},"values":{},"part_number":"LP50115SB","supplier_url":"https://www.motedis.com/en/Bracket-motor-bracket-slotted-hole-laser-cut-STEEL-Nema-17-t3mm-"}
+    ],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":5,"grid":20},{"type":"B","slot":6,"grid":20}],
+      "frames": [{"name":"mount","kind":"face"},{"name":"motor","kind":"face"}],
+      "connector": {"junctions":["surface"],"space":"outer","mates":[{"frame":"mount","to":"slot"}]}
+    },
+    "frames": [
+      {"name":"mount","origin":[21,15,0],"z":[0,0,-1],"x":[0,1,0],"kind":"face"},
+      {"name":"motor","origin":[21,42.61,32.11],"z":[0,1,0],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "motor-plate-easy-rider-nema",
+    "name": "Engine mount plate easy rider NEMA, t=5 mm",
+    "category": "plates",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/Plate-engine-mount-easy-rider-NEMA-t5mm-Laser-cut/Motedis_LP50123 [Alu 5mm].stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP50123",
+    "supplier_url": "https://www.motedis.com/en/Plate-engine-mount-easy-rider-NEMA-t5mm-Laser-cut",
+    "designation": "Engine mount plate easy rider NEMA, t=5 mm",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":5,"grid":20},{"type":"B","slot":6,"grid":20}],
+      "frames": [{"name":"mount","kind":"face"},{"name":"motor","kind":"face"}],
+      "connector": {"junctions":["surface"],"space":"outer","mates":[{"frame":"mount","to":"slot"}]}
+    },
+    "frames": [
+      {"name":"mount","origin":[-155.9,0,145.95],"z":[0,-1,0],"x":[0,0,1],"kind":"face"},
+      {"name":"motor","origin":[-182.5,5,182.83],"z":[0,1,0],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "motor-plate-idler-t3",
+    "name": "Engine mount plate idler, t=3 mm",
+    "category": "plates",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/Plate-engine-mount-Idler-t3mm-Laser-cut/IDLER PLT.stp",
+    "make": "solid",
+    "place": {"translate":[-734.29,-381.55,0]},
+    "supplier": "Motedis",
+    "part_number": "IDLER PLT",
+    "supplier_url": "https://www.motedis.com/en/Plate-engine-mount-Idler-t3mm-Laser-cut",
+    "designation": "Engine mount plate idler, t=3 mm",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":5,"grid":20},{"type":"B","slot":6,"grid":20}],
+      "frames": [{"name":"mount","kind":"face"}],
+      "connector": {"junctions":["surface"],"space":"outer","mates":[{"frame":"mount","to":"slot"}]}
+    },
+    "frames": [
+      {"name":"mount","origin":[-17.75,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "motor-plate-nema17-90",
+    "name": "Engine mount plate NEMA 17 90°, t=3 mm",
+    "category": "plates",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/Plate-engine-mount-NEMA-17-90-Deg-Laser-cut-t3mm/NEMA 17 90DEG.stp",
+    "make": "solid",
+    "place": {"translate":[-607.85,-369.83,0]},
+    "supplier": "Motedis",
+    "part_number": "NEMA 17 90DEG",
+    "supplier_url": "https://www.motedis.com/en/Plate-engine-mount-NEMA-17-90-Deg-Laser-cut-t3mm",
+    "designation": "Engine mount plate NEMA 17 90°, t=3 mm",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":5,"grid":20},{"type":"B","slot":6,"grid":20}],
+      "frames": [{"name":"mount","kind":"face"},{"name":"motor","kind":"face"}],
+      "connector": {"junctions":["surface"],"space":"outer","mates":[{"frame":"mount","to":"slot"}]}
+    },
+    "frames": [
+      {"name":"mount","origin":[26,0,0],"z":[0,0,-1],"x":[0,1,0],"kind":"face"},
+      {"name":"motor","origin":[-28.75,-10,3],"z":[0,0,1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "motor-plate-nema23-90",
+    "name": "Engine mount plate NEMA 23 90°, t=5 mm",
+    "category": "plates",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/Plate-engine-mount-NEMA-23-90-Deg-t5mm-Laser-cut/NEMA 23 90DEG.stp",
+    "make": "solid",
+    "place": {"translate":[-396.21,-355.03,0]},
+    "supplier": "Motedis",
+    "part_number": "NEMA 23 90DEG",
+    "supplier_url": "https://www.motedis.com/en/Plate-engine-mount-NEMA-23-90-Deg-t5mm-Laser-cut",
+    "designation": "Engine mount plate NEMA 23 90°, t=5 mm",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":8,"grid":40},{"type":"B","slot":10,"grid":40}],
+      "frames": [{"name":"mount","kind":"face"},{"name":"motor","kind":"face"}],
+      "connector": {"junctions":["surface"],"space":"outer","mates":[{"frame":"mount","to":"slot"}]}
+    },
+    "frames": [
+      {"name":"mount","origin":[37.5,0,0],"z":[0,0,-1],"x":[0,1,0],"kind":"face"},
+      {"name":"motor","origin":[-35.5,-6.43,5],"z":[0,0,1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "motor-plate-hole26-t5",
+    "name": "Motor plate hole 26 mm and hole circle 35 mm, t=5 mm steel",
+    "category": "plates",
+    "make": "model",
+    "dimensions": {"shape":"plate","width":"42 mm","thickness":"5 mm","length":"191 mm"},
+    "supplier": "Motedis",
+    "part_number": "Motor plate hole 26mm t5",
+    "supplier_url": "https://www.motedis.com/en/Motor-plate-hole-26mm-and-hole-circle-35mm-t5mm-steel",
+    "designation": "Motor plate hole 26 mm and hole circle 35 mm, t=5 mm steel",
+    "description": "Modelled from the supplier's drawing as a 191x42x5 plate (the two 9 mm holes 20 and 60 mm from the lower end, the 26 mm motor hole 170 mm from it); the holes and the rounded corners are not modelled.",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":8,"grid":40},{"type":"B","slot":10,"grid":40}],
+      "frames": [{"name":"mount","kind":"face"},{"name":"motor","kind":"face"}],
+      "connector": {"junctions":["surface"],"space":"outer","mates":[{"frame":"mount","to":"slot"}]}
+    },
+    "frames": [
+      {"name":"mount","origin":[0,0,40],"z":[0,-1,0],"x":[0,0,1],"kind":"face"},
+      {"name":"motor","origin":[0,5,170],"z":[0,1,0],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "motor-plate-nema23-0-short",
+    "name": "Engine mount plate NEMA 23 0°, M8 30 short, t=5 mm",
+    "category": "plates",
+    "make": "model",
+    "dimensions": {"shape":"plate","width":"59 mm","thickness":"5 mm","length":"85 mm"},
+    "supplier": "Motedis",
+    "part_number": "LP50211",
+    "supplier_url": "https://www.motedis.com/en/Plate-engine-mount-NEMA-23-0DEG-M8-30-short-t5mm",
+    "designation": "Engine mount plate NEMA 23 0°, t=5 mm, {Finish}",
+    "description": "Modelled from the supplier's drawing as a 85x59x5 plate; the holes and the rounded corners are not modelled.",
+    "rows": [
+      {"name":"Raw","select":{"Finish":"Raw"},"values":{},"part_number":"LP50211"},
+      {"name":"Black","select":{"Finish":"Black"},"values":{},"part_number":"LP50211B"}
+    ]
+  },
+  {
+    "id": "leadscrew-plate60-t5",
+    "name": "Lead screw mounting plate 60x60x5",
+    "category": "plates",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/Leadscrew-mounting-plate-60x60x5/Motedis-LP50125/Motedis_LP50125.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP50125",
+    "supplier_url": "https://www.motedis.com/en/Leadscrew-mounting-plate-60x60x5",
+    "designation": "Lead screw mounting plate 60x60x5, {Material}",
+    "rows": [
+      {"name":"Aluminium","select":{"Material":"Aluminium"},"values":{},"part_number":"LP50125"},
+      {"name":"Steel","select":{"Material":"Steel"},"values":{},"part_number":"LP50125SB","supplier_url":"https://www.motedis.com/en/Laser-cut-mounting-plate-60x60x5-for-Igus-RFRM-2525TR10x2-STEEL"}
+    ],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"B","slot":8,"grid":30},{"type":"I","slot":6,"grid":30}],
+      "frames": [{"name":"mount","kind":"face"},{"name":"nut","kind":"hole","diameter":"25.4 mm"}],
+      "connector": {"junctions":["surface"],"space":"outer","mates":[{"frame":"mount","to":"slot"}]}
+    },
+    "frames": [
+      {"name":"mount","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"face"},
+      {"name":"nut","origin":[0,0,5],"z":[0,0,1],"x":[1,0,0],"kind":"hole","diameter":"25.4 mm"}
+    ]
+  },
+  {
+    "id": "trapezoidal-nut-plate-8x15",
+    "name": "Mounting plate for trapezoidal screw nut 8x1.5, t=5 mm",
+    "category": "plates",
+    "make": "model",
+    "dimensions": {"shape":"plate","width":"40 mm","thickness":"5 mm","length":"59 mm"},
+    "supplier": "Motedis",
+    "part_number": "LP10206",
+    "supplier_url": "https://www.motedis.com/en/Trapezoidal-screw-nut-8x15-Mounting-plate-Alu-lasered-t5mm",
+    "designation": "Mounting plate for trapezoidal screw nut 8x1.5, t=5 mm",
+    "description": "Modelled from the supplier's drawing as a 59x40x5 plate; the holes and the rounded corners are not modelled.",
+    "rows": []
+  },
+  {
+    "id": "plate-x-axle-rear-t6",
+    "name": "Plate X axle rear, aluminium 6 mm",
+    "category": "plates",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/Plate-X-axle-rear-Alu6mm/Motedis-LP10201/Motedis-LP10201.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP10201",
+    "supplier_url": "https://www.motedis.com/en/Plate-X-axle-rear-Alu6mm",
+    "designation": "Plate X axle rear, aluminium 6 mm",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":5,"grid":20},{"type":"B","slot":6,"grid":20}],
+      "frames": [{"name":"mount","kind":"face"}],
+      "connector": {"junctions":["surface"],"space":"outer","mates":[{"frame":"mount","to":"slot"}]}
+    },
+    "frames": [
+      {"name":"mount","origin":[80,10,0],"z":[0,0,-1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "bearing-plate-hole16-t5",
+    "name": "Bearing plate hole 16 mm, t=5 mm steel",
+    "category": "plates",
+    "make": "model",
+    "dimensions": {"shape":"plate","width":"46 mm","thickness":"5 mm","length":"115 mm"},
+    "supplier": "Motedis",
+    "part_number": "Bearing plate hole 16mm t5",
+    "supplier_url": "https://www.motedis.com/en/Bearing-plate-hole-16mm-t5mm-steel",
+    "designation": "Bearing plate hole 16 mm, t=5 mm steel",
+    "description": "Modelled from the supplier's drawing as a 115x46x5 plate (the 9 mm holes 14 and 39 mm from one end, the 16 mm bearing hole 90 mm from it); the holes and the rounded corners are not modelled.",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":8,"grid":40},{"type":"B","slot":10,"grid":40}],
+      "frames": [{"name":"mount","kind":"face"},{"name":"bearing","kind":"hole","diameter":"16 mm"}],
+      "connector": {"junctions":["surface"],"space":"outer","mates":[{"frame":"mount","to":"slot"}]}
+    },
+    "frames": [
+      {"name":"mount","origin":[0,0,26.5],"z":[0,-1,0],"x":[0,0,1],"kind":"face"},
+      {"name":"bearing","origin":[0,5,90],"z":[0,1,0],"x":[1,0,0],"kind":"hole","diameter":"16 mm"}
+    ]
+  },
+  {
+    "id": "bearing-plate-hole24-t8",
+    "name": "Bearing plate hole 24 mm, t=8 mm steel",
+    "category": "plates",
+    "make": "model",
+    "dimensions": {"shape":"plate","width":"46 mm","thickness":"8 mm","length":"115 mm"},
+    "supplier": "Motedis",
+    "part_number": "Bearing plate hole 24mm t8",
+    "supplier_url": "https://www.motedis.com/en/Bearing-plate-hole-24mm-t8mm-steel",
+    "designation": "Bearing plate hole 24 mm, t=8 mm steel",
+    "description": "Modelled from the supplier's drawing as a 115x46x8 plate (the 9 mm holes 14 and 39 mm from one end, the 24 mm bearing hole 90 mm from it); the holes and the rounded corners are not modelled.",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":8,"grid":40},{"type":"B","slot":10,"grid":40}],
+      "frames": [{"name":"mount","kind":"face"},{"name":"bearing","kind":"hole","diameter":"24 mm"}],
+      "connector": {"junctions":["surface"],"space":"outer","mates":[{"frame":"mount","to":"slot"}]}
+    },
+    "frames": [
+      {"name":"mount","origin":[0,0,26.5],"z":[0,-1,0],"x":[0,0,1],"kind":"face"},
+      {"name":"bearing","origin":[0,8,90],"z":[0,1,0],"x":[1,0,0],"kind":"hole","diameter":"24 mm"}
+    ]
+  },
+  {
+    "id": "bearing-plate70x90-t4",
+    "name": "Plate 70x90 for sheet metal package, t=4 mm",
+    "category": "plates",
+    "make": "model",
+    "dimensions": {"shape":"plate","width":"70 mm","thickness":"4 mm","length":"90 mm"},
+    "supplier": "Motedis",
+    "part_number": "Plate 70x90 t4",
+    "supplier_url": "https://www.motedis.com/en/Plate-70x90-for-sheet-metal-package-t4mm",
+    "designation": "Plate 70x90 for sheet metal package, t=4 mm",
+    "description": "Modelled from the supplier's drawing as a 90x70x4 plate (four 8.1 mm holes, a 37 mm hole in the middle); the holes and the rounded corners are not modelled.",
+    "rows": []
+  },
+  {
+    "id": "monitor-mount-vesa75-100",
+    "name": "Monitor mount VESA 75/100, t=5 mm",
+    "category": "plates",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/Monitor-Mount-Alu-lasered-VESA-75-100/Motedis-LP50136/Motedis_LP50136.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP50136",
+    "supplier_url": "https://www.motedis.com/en/Monitor-Mount-Alu-lasered-VESA-75-100",
+    "designation": "Monitor mount VESA 75/100, {Material}",
+    "rows": [
+      {"name":"Aluminium","select":{"Material":"Aluminium"},"values":{},"part_number":"LP50136"},
+      {"name":"Steel","select":{"Material":"Steel"},"values":{},"part_number":"LP50136SB","supplier_url":"https://www.motedis.com/en/Monitor-Mount-lasered-VESA-75-100-STEEL"}
+    ],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":8,"grid":40},{"type":"B","slot":10,"grid":40}],
+      "frames": [{"name":"mount","kind":"face"}],
+      "connector": {"junctions":["surface"],"space":"outer","mates":[{"frame":"mount","to":"slot"}]}
+    },
+    "frames": [
+      {"name":"mount","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "monitor-mount-universal-vesa75-400",
+    "name": "Universal monitor mount VESA 75-400, t=5 mm",
+    "category": "plates",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/Universal-Monitor-Mount-Alu-lasered-VESA-75-400-t5mm/Motedis-LP50135/Motedis-LP50135.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP50135",
+    "supplier_url": "https://www.motedis.com/en/Universal-Monitor-Mount-Alu-lasered-VESA-75-400-t5mm",
+    "designation": "Universal monitor mount VESA 75-400, {Finish}",
+    "rows": [
+      {"name":"Raw","select":{"Finish":"Raw"},"values":{},"part_number":"LP50135"},
+      {"name":"Black","select":{"Finish":"Black"},"values":{},"part_number":"LP50135B"}
+    ],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":8,"grid":40},{"type":"B","slot":10,"grid":40}],
+      "frames": [{"name":"mount","kind":"face"}],
+      "connector": {"junctions":["surface"],"space":"outer","mates":[{"frame":"mount","to":"slot"}]}
+    },
+    "frames": [
+      {"name":"mount","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "monitor-mount-universal-vesa75-100",
+    "name": "Universal monitor mount VESA 75/100",
+    "category": "plates",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/Universal-Monitor-Mount-Alu-lasered-VESA-75100/Motedis-LP50131B/Motedis_LP50131B.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP50131B",
+    "supplier_url": "https://www.motedis.com/en/Universal-Monitor-Mount-Alu-lasered-VESA-75100",
+    "designation": "Universal monitor mount VESA 75/100",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"B","slot":8,"grid":30},{"type":"I","slot":6,"grid":30}],
+      "frames": [{"name":"mount","kind":"face"}],
+      "connector": {"junctions":["surface"],"space":"outer","mates":[{"frame":"mount","to":"slot"}]}
+    },
+    "frames": [
+      {"name":"mount","origin":[0,60,22.5],"z":[0,1,0],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "vesa-adaptor-400-t3-steel",
+    "name": "VESA adaptor extension plate 400/200/100, t=3 mm steel",
+    "category": "plates",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/VESA-Adaptor-Extension-Plate-for-TV-LCD-400-200-100-mm-t3mm-STEEL/Motedis-LP50132SB/Motedis_LP50132SB.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP50132SB",
+    "supplier_url": "https://www.motedis.com/en/VESA-Adaptor-Extension-Plate-for-TV-LCD-400-200-100-mm-t3mm-STEEL",
+    "designation": "VESA adaptor extension plate 400/200/100, t=3 mm steel",
+    "rows": []
+  },
+  {
+    "id": "vesa-adaptor-400-t5",
+    "name": "VESA adaptor extension plate 400/200/100, t=5 mm",
+    "category": "plates",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/VESA-Adaptor-Extension-Plate-for-TV-LCD-400-200-100-mm-t5mm/Motedis-LP50132/Motedis_LP50132.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP50132",
+    "supplier_url": "https://www.motedis.com/en/VESA-Adaptor-Extension-Plate-for-TV-LCD-400-200-100-mm-t5mm",
+    "designation": "VESA adaptor extension plate 400/200/100, t=5 mm",
+    "rows": []
+  },
+  {
+    "id": "plate-adjustable-foot-m12",
+    "name": "Connector plate for adjustable foot M12, 40 series",
+    "category": "plates",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/Connector-plate-Alu-lasered-Adjustable-foot-M12/Motedis-LP40131SB-1/Motedis_LP40131SB.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP40131SB",
+    "supplier_url": "https://www.motedis.com/en/Connector-plate-Alu-lasered-Adjustable-foot-M12",
+    "designation": "Connector plate for adjustable foot M12, 40 series",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":8,"grid":40},{"type":"B","slot":10,"grid":40}],
+      "frames": [{"name":"mount","kind":"face"},{"name":"foot","kind":"hole","diameter":"12.5 mm"}],
+      "connector": {"junctions":["surface"],"space":"outer","mates":[{"frame":"mount","to":"slot"}]}
+    },
+    "frames": [
+      {"name":"mount","origin":[40,20,0],"z":[0,0,-1],"x":[1,0,0],"kind":"face"},
+      {"name":"foot","origin":[40,60,0],"z":[0,0,-1],"x":[1,0,0],"kind":"hole","diameter":"12.5 mm"}
+    ]
+  },
+  {
+    "id": "buttkicker-plate",
+    "name": "Mounting plate for a BS-200 shaker, steel",
+    "category": "plates",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/Buttkicker-mounting-plate-for-Reckhorn-BS-200-Steel/Motedis-LP10404B/Motedis-LP10404B.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP10404B",
+    "supplier_url": "https://www.motedis.com/en/Buttkicker-mounting-plate-for-Reckhorn-BS-200-Steel",
+    "designation": "Mounting plate for a BS-200 shaker, steel",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":8,"grid":40},{"type":"B","slot":10,"grid":40}],
+      "frames": [{"name":"mount","kind":"face"}],
+      "connector": {"junctions":["surface"],"space":"outer","mates":[{"frame":"mount","to":"slot"}]}
+    },
+    "frames": [
+      {"name":"mount","origin":[0,-99,0],"z":[0,0,-1],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "keyboard-plate-steel",
+    "name": "Keyboard plate steel, black",
+    "category": "plates",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/Keyboard-plate-steel-Black/Motedis-LP90104B-1/Motedis_LP90104B.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP90104B",
+    "supplier_url": "https://www.motedis.com/en/Keyboard-plate-steel-Black",
+    "designation": "Keyboard plate steel, black",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":8,"grid":40},{"type":"B","slot":10,"grid":40}],
+      "frames": [{"name":"mount","kind":"face"}],
+      "connector": {"junctions":["surface"],"space":"outer","mates":[{"frame":"mount","to":"slot"}]}
+    },
+    "frames": [
+      {"name":"mount","origin":[0,-1,-86.8],"z":[0,-1,0],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "keyboard-plate-small-35",
+    "name": "Keyboard plate small 35° steel, black",
+    "category": "plates",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/Keyboard-plate-small-35G-steel-Black/Motedis-LP90105SB/Motedis_LP90105SB.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP90105SB",
+    "supplier_url": "https://www.motedis.com/en/Keyboard-plate-small-35G-steel-Black",
+    "designation": "Keyboard plate small 35° steel, black",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":8,"grid":40},{"type":"B","slot":10,"grid":40}],
+      "frames": [{"name":"mount","kind":"face"}],
+      "connector": {"junctions":["surface"],"space":"outer","mates":[{"frame":"mount","to":"slot"}]}
+    },
+    "frames": [
+      {"name":"mount","origin":[0,172.79,72.09],"z":[0,-0.5736,-0.8192],"x":[1,0,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "mousepad-plate-320x270",
+    "name": "Mouse pad plate 320x270x3 steel, black",
+    "category": "plates",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/Mousepad-320x270-3mm-steel-black/Motedis-LP90115B/Motedis_LP90115B.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP90115B",
+    "supplier_url": "https://www.motedis.com/en/Mousepad-320x270-3mm-steel-black",
+    "designation": "Mouse pad plate 320x270x3 steel, black",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":8,"grid":40},{"type":"B","slot":10,"grid":40}],
+      "frames": [{"name":"mount","kind":"face"}],
+      "connector": {"junctions":["surface"],"space":"outer","mates":[{"frame":"mount","to":"slot"}]}
+    },
+    "frames": [
+      {"name":"mount","origin":[20,135,0],"z":[0,0,-1],"x":[0,1,0],"kind":"face"}
+    ]
+  },
+  {
+    "id": "steering-bracket-ft-base",
+    "name": "Steering wheel mounting bracket for a direct drive base",
+    "category": "plates",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/Steering-wheel-mounting-bracket-FT-Base/Motedis-LP10405B/Motedis_LP10405B.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP10405B",
+    "supplier_url": "https://www.motedis.com/en/Steering-wheel-mounting-bracket-FT-Base",
+    "designation": "Steering wheel mounting bracket for a direct drive base",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":8,"grid":40},{"type":"B","slot":10,"grid":40}],
+      "frames": [{"name":"mount","kind":"face"}],
+      "connector": {"junctions":["surface"],"space":"outer","mates":[{"frame":"mount","to":"slot"}]}
+    },
+    "frames": [
+      {"name":"mount","origin":[0,-2.5,-75],"z":[0,-1,0],"x":[0,0,1],"kind":"face"}
+    ]
+  },
+  {
+    "id": "steering-plate-universal",
+    "name": "Steering wheel mounting plate, universal",
+    "category": "plates",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/Steering-Wheel-Mounting-Plate-Fanatec-Logitech-Trustmaster/Motedis-LP10106B/Motedis_LP10106B.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP10106B",
+    "supplier_url": "https://www.motedis.com/en/Steering-Wheel-Mounting-Plate-Fanatec-Logitech-Trustmaster",
+    "designation": "Steering wheel mounting plate, universal",
+    "rows": [],
+    "build": {
+      "role": "connector",
+      "systems": [{"type":"I","slot":8,"grid":40},{"type":"B","slot":10,"grid":40}],
+      "frames": [{"name":"mount","kind":"face"}],
+      "connector": {"junctions":["surface"],"space":"outer","mates":[{"frame":"mount","to":"slot"}]}
+    },
+    "frames": [
+      {"name":"mount","origin":[-165.89,-1.5,0],"z":[0,-1,0],"x":[0,0,1],"kind":"face"}
+    ]
+  },
+  {
+    "id": "shifter-plate-127",
+    "name": "Mounting plate for a shifter, 127x127x8",
+    "category": "plates",
+    "make": "model",
+    "dimensions": {"shape":"plate","width":"127 mm","thickness":"8 mm","length":"127 mm"},
+    "supplier": "Motedis",
+    "part_number": "LP10401",
+    "supplier_url": "https://www.motedis.com/en/Mounting-Plate-Fanatec-ClubSport-Shifter-SQ-V-15",
+    "designation": "Mounting plate for a shifter, 127x127x8",
+    "description": "Modelled from the supplier's drawing as a 127x127x8 plate; the holes and the rounded corners are not modelled.",
+    "rows": []
+  },
+  {
+    "id": "heating-bed-holder-200",
+    "name": "Heating bed holder 200 for 3D printers, t=3 mm",
+    "category": "plates",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/Heating-bed-holder-3D-printer-Accessories-Bracket-200-t-3mm/Motedis-LP50101/Motedis-LP50101.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP50101",
+    "supplier_url": "https://www.motedis.com/en/Heating-bed-holder-3D-printer-Accessories-Bracket-200-t-3mm",
+    "designation": "Heating bed holder 200 for 3D printers, t=3 mm",
+    "rows": []
+  },
+  {
+    "id": "heating-bed-holder-300",
+    "name": "Heating bed holder 300 for 3D printers, t=3 mm",
+    "category": "plates",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/Heating-bed-holder-3D-printer-Accessories-Bracket-300-t-3mm/Motedis-LP50102/Motedis-LP50102.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP50102",
+    "supplier_url": "https://www.motedis.com/en/Heating-bed-holder-3D-printer-Accessories-Bracket-300-t-3mm",
+    "designation": "Heating bed holder 300 for 3D printers, t=3 mm",
+    "rows": []
+  },
+  {
+    "id": "lab-plate-raster-20-30",
+    "name": "Lab plate raster 20/30, t=5 mm",
+    "category": "plates",
+    "source": "laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/Lab-plate-raster-20-30-t5mm-Laser-cut/Motedis_LP50120.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "part_number": "LP50120",
+    "supplier_url": "https://www.motedis.com/en/Lab-plate-raster-20-30-t5mm-Laser-cut",
+    "designation": "Lab plate raster 20/30, t=5 mm, {Finish}",
+    "rows": [
+      {"name":"Raw","select":{"Finish":"Raw"},"values":{},"part_number":"LP50120"},
+      {"name":"Black","select":{"Finish":"Black"},"values":{},"part_number":"LP50120B"}
+    ]
+  },
+  {
+    "id": "drilling-aid-30",
+    "name": "Drilling aid 30 steel, 5 mm",
+    "category": "plates",
+    "make": "model",
+    "dimensions": {"shape":"plate","width":"60 mm","thickness":"5 mm","length":"60 mm"},
+    "supplier": "Motedis",
+    "part_number": "LP30118",
+    "supplier_url": "https://www.motedis.com/en/Drilling-Aid-30-Steel-5mm",
+    "designation": "Drilling aid 30 steel, 5 mm, {Finish}",
+    "description": "Modelled from the supplier's drawing as a 60x60x5 plate; the holes and the rounded corners are not modelled.",
+    "rows": [
+      {"name":"Raw","select":{"Finish":"Raw"},"values":{},"part_number":"LP30118"},
+      {"name":"Black","select":{"Finish":"Black"},"values":{},"part_number":"LP30118B"}
+    ]
+  },
+  {
+    "id": "drilling-aid-40-i",
+    "name": "Drilling aid 40 I-type steel, 5 mm",
+    "category": "plates",
+    "make": "model",
+    "dimensions": {"shape":"plate","width":"80 mm","thickness":"5 mm","length":"80 mm"},
+    "supplier": "Motedis",
+    "part_number": "LP80552",
+    "supplier_url": "https://www.motedis.com/en/Drilling-Aid-40-I-Type-Steel-5mm",
+    "designation": "Drilling aid 40 I-type steel, 5 mm, {Finish}",
+    "description": "Modelled from the supplier's drawing as a 80x80x5 plate; the holes and the rounded corners are not modelled.",
+    "rows": [
+      {"name":"Raw","select":{"Finish":"Raw"},"values":{},"part_number":"LP80552"},
+      {"name":"Black","select":{"Finish":"Black"},"values":{},"part_number":"LP80552B"}
+    ]
+  },
+  {
+    "id": "drilling-aid-45",
+    "name": "Drilling aid 45 steel, 5 mm",
+    "category": "plates",
+    "make": "model",
+    "dimensions": {"shape":"plate","width":"90 mm","thickness":"5 mm","length":"90 mm"},
+    "supplier": "Motedis",
+    "part_number": "LP45110",
+    "supplier_url": "https://www.motedis.com/en/Drilling-Aid-45-Steel-5mm",
+    "designation": "Drilling aid 45 steel, 5 mm, {Finish}",
+    "description": "Modelled from the supplier's drawing as a 90x90x5 plate; the holes and the rounded corners are not modelled.",
+    "rows": [
+      {"name":"Raw","select":{"Finish":"Raw"},"values":{},"part_number":"LP45110"},
+      {"name":"Black","select":{"Finish":"Black"},"values":{},"part_number":"LP45110B"}
+    ]
+  }
+]

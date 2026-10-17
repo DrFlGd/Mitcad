@@ -1,0 +1,440 @@
+{
+  "categories": [{"id":"feet","name":"Feet and base plates"}],
+  "parts": [
+    {
+      "id": "foot-bd40-m8-l50",
+      "name": "Adjustable foot D40 M8 L50",
+      "category": "feet",
+      "source": "mechanical-basics/Adjustable-feet-D40-M8-L50/BD40-8x50/BD40-8x50.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "BD40-8x50",
+      "supplier_url": "https://www.motedis.com/en/Adjustable-feet-D40-M8-L50",
+      "designation": "Adjustable foot D40 M8x50",
+      "rows": [],
+      "build": {
+        "role": "connector",
+        "systems": [{"type":"B","slot":8,"grid":30},{"type":"I","slot":8,"grid":40}],
+        "frames": [{"name":"mount","kind":"face"}],
+        "connector": {
+          "junctions": ["surface"],
+          "space": "end",
+          "mates": [{"frame":"mount","to":"end"}],
+          "machining": [{"on":"a","frame":"end","hole":{"diameter":"6.8 mm","depth":"25 mm","thread":"M8"}}]
+        }
+      },
+      "frames": [{"name":"mount","origin":[0,56.3,0],"z":[0,1,0],"x":[1,0,0],"kind":"face"}]
+    },
+    {
+      "id": "foot-bd40-m12-l50",
+      "name": "Adjustable foot D40 M12 L50",
+      "category": "feet",
+      "source": "mechanical-basics/Adjustable-feet-D40-M12-L50/BD40-12x50/BD40-12x50.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "BD40-12x50",
+      "supplier_url": "https://www.motedis.com/en/Adjustable-feet-D40-M12-L50",
+      "designation": "Adjustable foot D40 M12x50",
+      "rows": [],
+      "build": {
+        "role": "connector",
+        "systems": [{"type":"B","slot":10}],
+        "frames": [{"name":"mount","kind":"face"}],
+        "connector": {
+          "junctions": ["surface"],
+          "space": "end",
+          "mates": [{"frame":"mount","to":"end"}],
+          "machining": [{"on":"a","frame":"end","hole":{"diameter":"10.2 mm","depth":"24 mm","thread":"M12"}}]
+        }
+      },
+      "frames": [{"name":"mount","origin":[0,57.7,0],"z":[0,1,0],"x":[1,0,0],"kind":"face"}]
+    },
+    {
+      "id": "foot-bd80-m12-l50",
+      "name": "Adjustable foot D80 M12 L50",
+      "category": "feet",
+      "source": "mechanical-basics/Adjustable-feet-D80-M12-L50/Motedis-BD80-12x50/Motedis_BD80-12x50.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "BD80-12x50",
+      "supplier_url": "https://www.motedis.com/en/Adjustable-feet-D80-M12-L50",
+      "designation": "Adjustable foot D80 M12x50",
+      "rows": [],
+      "build": {
+        "role": "connector",
+        "systems": [{"type":"B","slot":10}],
+        "frames": [{"name":"mount","kind":"face"}],
+        "connector": {
+          "junctions": ["surface"],
+          "space": "end",
+          "mates": [{"frame":"mount","to":"end"}],
+          "machining": [{"on":"a","frame":"end","hole":{"diameter":"10.2 mm","depth":"24 mm","thread":"M12"}}]
+        }
+      },
+      "frames": [{"name":"mount","origin":[0,55.2,0],"z":[0,1,0],"x":[1,0,0],"kind":"face"}]
+    },
+    {
+      "id": "foot-bd80-m12-l80",
+      "name": "Adjustable foot D80 M12 L80",
+      "category": "feet",
+      "source": "mechanical-basics/Adjustable-feet-D80-M12-L80/Motedis-BD80-12x80/Motedis_BD80-12x80.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "BD80-12x80",
+      "supplier_url": "https://www.motedis.com/en/Adjustable-feet-D80-M12-L80",
+      "designation": "Adjustable foot D80 M12x80",
+      "rows": [],
+      "build": {
+        "role": "connector",
+        "systems": [{"type":"B","slot":10}],
+        "frames": [{"name":"mount","kind":"face"}],
+        "connector": {
+          "junctions": ["surface"],
+          "space": "end",
+          "mates": [{"frame":"mount","to":"end"}],
+          "machining": [{"on":"a","frame":"end","hole":{"diameter":"10.2 mm","depth":"24 mm","thread":"M12"}}]
+        }
+      },
+      "frames": [{"name":"mount","origin":[0,85.2,0],"z":[0,1,0],"x":[1,0,0],"kind":"face"}]
+    },
+    {
+      "id": "foot-lfm6-40-d19",
+      "name": "Levelling foot D19 M6x40",
+      "category": "feet",
+      "source": "mechanical-basics/Levelling-foot-D19-M640/Motedis-LFM6-40B19/Motedis_LFM6-40B19.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "LFM6*40B19",
+      "supplier_url": "https://www.motedis.com/en/Levelling-foot-D19-M640",
+      "designation": "Levelling foot D19 M6x40",
+      "rows": [],
+      "build": {
+        "role": "connector",
+        "systems": [{"type":"B","slot":6,"grid":20},{"type":"I","slot":6,"grid":30}],
+        "frames": [{"name":"mount","kind":"face"}],
+        "connector": {
+          "junctions": ["surface"],
+          "space": "end",
+          "mates": [{"frame":"mount","to":"end"}],
+          "machining": [{"on":"a","frame":"end","hole":{"diameter":"5 mm","depth":"10 mm","thread":"M6"}}]
+        }
+      },
+      "frames": [{"name":"mount","origin":[0,46.63,0],"z":[0,1,0],"x":[1,0,0],"kind":"face"}]
+    },
+    {
+      "id": "foot-bd80-m16-l150",
+      "name": "Adjustable foot D80 M16 L150",
+      "category": "feet",
+      "source": "mechanical-basics/Adjustable-feet-D80-M16-L150/Motedis-BD80-16x150/Motedis_BD80-16x150.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "BD80-16x150",
+      "supplier_url": "https://www.motedis.com/en/Adjustable-feet-D80-M16-L150",
+      "designation": "Adjustable foot D80 M16x150",
+      "rows": []
+    },
+    {
+      "id": "levelling-foot-p30-b8",
+      "name": "Adjustable levelling foot P30 B-type",
+      "category": "feet",
+      "source": "mechanical-basics/Adjustable-leveling-foot-P30-B-Type/Motedis-PL-FT-P30B/Motedis_PL-FT-P30B.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "PL-FT-P30B",
+      "supplier_url": "https://www.motedis.com/en/Adjustable-leveling-foot-P30-B-Type",
+      "designation": "Adjustable levelling foot P30 B-type",
+      "rows": [],
+      "build": {
+        "role": "connector",
+        "systems": [{"type":"B","slot":8,"grid":30}],
+        "frames": [{"name":"mount","kind":"face"}],
+        "connector": {"junctions":["surface"],"space":"end","mates":[{"frame":"mount","to":"end"}]}
+      },
+      "frames": [{"name":"mount","origin":[-55.62,-29.44,-7.44],"z":[0,0,-1],"x":[1,0,0],"kind":"face"}]
+    },
+    {
+      "id": "levelling-foot-p40-i8",
+      "name": "Adjustable levelling foot P40 I-type",
+      "category": "feet",
+      "source": "mechanical-basics/Adjustable-leveling-foot-P40-I-Type/Motedis-PL-FT-P40I/Motedis_PL-FT-P40I.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "PL-FT-P40I",
+      "supplier_url": "https://www.motedis.com/en/Adjustable-leveling-foot-P40-I-Type",
+      "designation": "Adjustable levelling foot P40 I-type",
+      "rows": [],
+      "build": {
+        "role": "connector",
+        "systems": [{"type":"I","slot":8,"grid":40}],
+        "frames": [{"name":"mount","kind":"face"}],
+        "connector": {"junctions":["surface"],"space":"end","mates":[{"frame":"mount","to":"end"}]}
+      },
+      "frames": [{"name":"mount","origin":[-16.93,-0.12,-25],"z":[0,0,-1],"x":[1,0,0],"kind":"face"}]
+    },
+    {
+      "id": "levelling-foot-p45-b10",
+      "name": "Adjustable levelling foot P45 B-type",
+      "category": "feet",
+      "source": "mechanical-basics/Adjustable-leveling-foot-P45-B-Typ/Motedis-PL-FT-P45B/Motedis_PL-FT-P45B.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "PL-FT-P45B",
+      "supplier_url": "https://www.motedis.com/en/Adjustable-leveling-foot-P45-B-Typ",
+      "designation": "Adjustable levelling foot P45 B-type",
+      "rows": [],
+      "build": {
+        "role": "connector",
+        "systems": [{"type":"B","slot":10,"grid":45}],
+        "frames": [{"name":"mount","kind":"face"}],
+        "connector": {"junctions":["surface"],"space":"end","mates":[{"frame":"mount","to":"end"}]}
+      },
+      "frames": [{"name":"mount","origin":[-16.93,-0.12,-25],"z":[0,0,-1],"x":[1,0,0],"kind":"face"}]
+    },
+    {
+      "id": "base-plate-castor-60-s8",
+      "name": "Base plate aluminium slot 8 for levelling castor 60",
+      "category": "feet",
+      "source": "mechanical-basics/Base-Plate-Aluminium-Slot-8-for-Levelling-Castor-60/Motedis-9050/Motedis_9050.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "9050",
+      "supplier_url": "https://www.motedis.com/en/Base-Plate-Aluminium-Slot-8-for-Levelling-Castor-60",
+      "designation": "Base plate aluminium slot 8 for levelling castor 60",
+      "rows": [],
+      "build": {
+        "role": "connector",
+        "systems": [{"type":"B","slot":8},{"type":"I","slot":8}],
+        "frames": [{"name":"mount","kind":"face"},{"name":"castor","kind":"hole","diameter":"10.2 mm"}],
+        "connector": {"junctions":["surface"],"space":"outer","mates":[{"frame":"mount","to":"slot"}]}
+      },
+      "frames": [
+        {"name":"mount","origin":[0,7.5,0],"z":[0,1,0],"x":[1,0,0],"kind":"face"},
+        {
+          "name": "castor",
+          "origin": [0,-7.5,0],
+          "z": [0,-1,0],
+          "x": [1,0,0],
+          "kind": "hole",
+          "diameter": "10.2 mm"
+        }
+      ]
+    },
+    {
+      "id": "base-plate-castor-80-s8",
+      "name": "Base plate aluminium slot 8 for levelling castor 80",
+      "category": "feet",
+      "source": "mechanical-basics/Base-Plate-Aluminium-Slot-8-for-Levelling-Castor-80/Motedis-9049/Motedis_9049.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "9049",
+      "supplier_url": "https://www.motedis.com/en/Base-Plate-Aluminium-Slot-8-for-Levelling-Castor-80",
+      "designation": "Base plate aluminium slot 8 for levelling castor 80",
+      "rows": [],
+      "build": {
+        "role": "connector",
+        "systems": [{"type":"B","slot":8},{"type":"I","slot":8}],
+        "frames": [{"name":"mount","kind":"face"},{"name":"castor","kind":"hole","diameter":"10.2 mm"}],
+        "connector": {"junctions":["surface"],"space":"outer","mates":[{"frame":"mount","to":"slot"}]}
+      },
+      "frames": [
+        {"name":"mount","origin":[0,7.5,0],"z":[0,1,0],"x":[1,0,0],"kind":"face"},
+        {
+          "name": "castor",
+          "origin": [0,-7.5,0],
+          "z": [0,-1,0],
+          "x": [1,0,0],
+          "kind": "hole",
+          "diameter": "10.2 mm"
+        }
+      ]
+    },
+    {
+      "id": "transport-plate-30x60-b8-m12",
+      "name": "Transport and base plate 30x60 B-type slot 8, M12",
+      "category": "feet",
+      "source": "mechanical-basics/Transport-and-Base-Plate-Aluminium-30x60-B-Type-slot-8-M12/TBPA3060M12M8.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "TBPA3060M12M8",
+      "supplier_url": "https://www.motedis.com/en/Transport-and-Base-Plate-Aluminium-30x60-B-Type-slot-8-M12",
+      "designation": "Transport and base plate 30x60 B-type slot 8, M12",
+      "rows": [],
+      "build": {
+        "role": "connector",
+        "systems": [{"type":"B","slot":8,"grid":30}],
+        "frames": [{"name":"mount","kind":"face"},{"name":"castor","kind":"hole","diameter":"10.2 mm"}],
+        "connector": {
+          "junctions": ["surface"],
+          "space": "end",
+          "mates": [{"frame":"mount","to":"end"}],
+          "machining": [{"on":"a","frame":"end","hole":{"diameter":"6.8 mm","depth":"20 mm","thread":"M8"}}]
+        }
+      },
+      "frames": [
+        {"name":"mount","origin":[0,-7.5,0],"z":[0,-1,0],"x":[1,0,0],"kind":"face"},
+        {
+          "name": "castor",
+          "origin": [0,7.5,0],
+          "z": [0,1,0],
+          "x": [1,0,0],
+          "kind": "hole",
+          "diameter": "10.2 mm"
+        }
+      ]
+    },
+    {
+      "id": "transport-plate-30x60-b8-m8",
+      "name": "Transport and base plate 30x60 B-type slot 8, M8",
+      "category": "feet",
+      "source": "mechanical-basics/Transport-and-Base-Plate-Aluminium-30x60-B-Type-slot-8-M8/TBPA3060M8M8.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "TBPA3060M8M8",
+      "supplier_url": "https://www.motedis.com/en/Transport-and-Base-Plate-Aluminium-30x60-B-Type-slot-8-M8",
+      "designation": "Transport and base plate 30x60 B-type slot 8, M8",
+      "rows": [],
+      "build": {
+        "role": "connector",
+        "systems": [{"type":"B","slot":8,"grid":30}],
+        "frames": [{"name":"mount","kind":"face"},{"name":"castor","kind":"hole","diameter":"6.8 mm"}],
+        "connector": {
+          "junctions": ["surface"],
+          "space": "end",
+          "mates": [{"frame":"mount","to":"end"}],
+          "machining": [{"on":"a","frame":"end","hole":{"diameter":"6.8 mm","depth":"20 mm","thread":"M8"}}]
+        }
+      },
+      "frames": [
+        {"name":"mount","origin":[0,-7.5,0],"z":[0,-1,0],"x":[1,0,0],"kind":"face"},
+        {
+          "name": "castor",
+          "origin": [0,7.5,0],
+          "z": [0,1,0],
+          "x": [1,0,0],
+          "kind": "hole",
+          "diameter": "6.8 mm"
+        }
+      ]
+    },
+    {
+      "id": "transport-plate-30x60-i6-m12",
+      "name": "Transport and base plate 30x60 I-type slot 6, M12",
+      "category": "feet",
+      "source": "mechanical-basics/Transport-and-Base-Plate-Aluminium-30x60-I-Type-slot-6-M12/TBPA3060M12M6.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "TBPA3060M12M6",
+      "supplier_url": "https://www.motedis.com/en/Transport-and-Base-Plate-Aluminium-30x60-I-Type-slot-6-M12-",
+      "designation": "Transport and base plate 30x60 I-type slot 6, M12",
+      "rows": [],
+      "build": {
+        "role": "connector",
+        "systems": [{"type":"I","slot":6,"grid":30}],
+        "frames": [{"name":"mount","kind":"face"},{"name":"castor","kind":"hole","diameter":"10.2 mm"}],
+        "connector": {
+          "junctions": ["surface"],
+          "space": "end",
+          "mates": [{"frame":"mount","to":"end"}],
+          "machining": [{"on":"a","frame":"end","hole":{"diameter":"5 mm","depth":"15 mm","thread":"M6"}}]
+        }
+      },
+      "frames": [
+        {"name":"mount","origin":[0,-7.5,0],"z":[0,-1,0],"x":[1,0,0],"kind":"face"},
+        {
+          "name": "castor",
+          "origin": [0,7.5,0],
+          "z": [0,1,0],
+          "x": [1,0,0],
+          "kind": "hole",
+          "diameter": "10.2 mm"
+        }
+      ]
+    },
+    {
+      "id": "transport-plate-30x60-i6-m8",
+      "name": "Transport and base plate 30x60 I-type slot 6, M8",
+      "category": "feet",
+      "source": "mechanical-basics/Transport-and-Base-Plate-Aluminium-30x60-I-Type-slot-6-M6/TBPA3060M8M6.stp",
+      "make": "solid",
+      "supplier": "Motedis",
+      "part_number": "TBPA3060M8M6",
+      "supplier_url": "https://www.motedis.com/en/Transport-and-Base-Plate-Aluminium-30x60-I-Type-slot-6-M6",
+      "designation": "Transport and base plate 30x60 I-type slot 6, M8",
+      "rows": [],
+      "build": {
+        "role": "connector",
+        "systems": [{"type":"I","slot":6,"grid":30}],
+        "frames": [{"name":"mount","kind":"face"},{"name":"castor","kind":"hole","diameter":"6.8 mm"}],
+        "connector": {
+          "junctions": ["surface"],
+          "space": "end",
+          "mates": [{"frame":"mount","to":"end"}],
+          "machining": [{"on":"a","frame":"end","hole":{"diameter":"5 mm","depth":"15 mm","thread":"M6"}}]
+        }
+      },
+      "frames": [
+        {"name":"mount","origin":[0,-7.5,0],"z":[0,-1,0],"x":[1,0,0],"kind":"face"},
+        {
+          "name": "castor",
+          "origin": [0,7.5,0],
+          "z": [0,1,0],
+          "x": [1,0,0],
+          "kind": "hole",
+          "diameter": "6.8 mm"
+        }
+      ]
+    },
+    {
+      "id": "swivel-foot-base-s10",
+      "name": "Base for swivel feet, PA, series 10",
+      "category": "feet",
+      "make": "model",
+      "dimensions": {"shape":"none","parameters":{"D":"29 mm","H":"10.4 mm"}},
+      "commands": [
+        {
+          "cmd": "add_feature",
+          "name": "Base",
+          "def": {
+            "type": "cylinder",
+            "plane": "xy",
+            "center": [0,0],
+            "diameter": "D",
+            "height": "H",
+            "operation": "new_body"
+          }
+        }
+      ],
+      "supplier": "Motedis",
+      "part_number": "4701",
+      "supplier_url": "https://www.motedis.com/en/Base-30-for-Swivel-Feet-PA-Series-10",
+      "designation": "Base {Size} for swivel feet, series 10",
+      "default": "30",
+      "rows": [
+        {
+          "name": "20",
+          "select": {"Size":"20"},
+          "values": {"D":"19 mm"},
+          "part_number": "4699",
+          "supplier_url": "https://www.motedis.com/en/Base-20-for-Swivel-Feet-PA-Series-10",
+          "designation": "Base 20 for swivel feet, series 10"
+        },
+        {
+          "name": "30",
+          "select": {"Size":"30"},
+          "values": {"D":"29 mm"},
+          "part_number": "4701",
+          "supplier_url": "https://www.motedis.com/en/Base-30-for-Swivel-Feet-PA-Series-10",
+          "designation": "Base 30 for swivel feet, series 10"
+        },
+        {
+          "name": "40",
+          "select": {"Size":"40"},
+          "values": {"D":"39 mm"},
+          "part_number": "4702",
+          "supplier_url": "https://www.motedis.com/en/Base-40-for-Swivel-Feet-PA-Series-10",
+          "designation": "Base 40 for swivel feet, series 10"
+        }
+      ]
+    }
+  ]
+}

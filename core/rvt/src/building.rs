@@ -331,7 +331,8 @@ pub struct Wall {
     /// The elements whose geometry cuts it (`CutPairGStep`).
     pub cut_by: Vec<i64>,
     /// The inserts (doors, windows, openings) whose cut it takes
-    /// (`WallCutoutGStep.m_instId`).
+    /// (`WallCutoutGStep.m_instId`), and the walls embedded in it
+    /// (`WallEmbedWallGStep`: a curtain wall in a basic wall).
     pub cutouts: Vec<i64>,
     /// Where its faces lie: the least and the greatest offset (feet, to
     /// the left of a line wall's location line) of its vertical reference
@@ -1089,8 +1090,12 @@ impl<'a> Reader<'a> {
                             cut_by.push(other);
                         }
                     }
-                    // (Of a family's void geometry too, mitcad#345.)
-                    "WallCutoutGStep" | "WallComplexCutoutGStep" | "FamilyHostCutoutGStep" => {
+                    // (Of a family's void geometry too, mitcad#345; of a wall
+                    // embedded in it, a curtain wall in a basic wall.)
+                    "WallCutoutGStep"
+                    | "WallComplexCutoutGStep"
+                    | "FamilyHostCutoutGStep"
+                    | "WallEmbedWallGStep" => {
                         if let Some(inst) = self.id(step, "m_instId")
                             && !cutouts.contains(&inst)
                         {

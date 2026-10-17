@@ -103,6 +103,16 @@ pub struct ItemReport {
     /// the bodies kept and replaced (mitcad#283).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exact_retry: Option<RetryReport>,
+    /// Its decoded definition built a result that deviates from the file's
+    /// (mitcad#379): how far off, where the item took the file's bodies
+    /// instead. The import keeps it parametric when asked to
+    /// (`Options::accept_deviations`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deviation: Option<crate::DeviationReport>,
+    /// The deviating result it was kept with, parametric, at the user's
+    /// choice (mitcad#379).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub accepted_deviation: Option<crate::DeviationReport>,
 }
 
 /// An item's retry on the file's state before it exactly (mitcad#283,
@@ -765,6 +775,9 @@ impl DesignReport {
             );
             if let Some(retry) = &item.exact_retry {
                 let _ = writeln!(out, "       {}", retry.text());
+            }
+            if let Some(d) = &item.deviation {
+                let _ = writeln!(out, "       deviating result (not kept): {}", d.summary());
             }
         }
         if let Some(q) = &self.retry_question {

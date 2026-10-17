@@ -552,7 +552,7 @@ def main():
           f"Licence: {LIBRARY_LICENSE}, the fasteners {LICENSE} (LICENSE). Sources of the dimensions: "
           "SOURCES.md.\n")
     if args.commit:
-        identity = ["-c", "user.name=Mitcad library generator", "-c", "user.email=libraries@mitcad.invalid"]
+        identity = ["-c", "user.name=Mitcad developers", "-c", "user.email=devs@mitcad.org"]
         if not os.path.isdir(os.path.join(out, ".git")):
             run(["git", "init", "-q", "-b", "main", out])
         run(["git", "-C", out, "add", "-A"])

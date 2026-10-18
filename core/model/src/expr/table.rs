@@ -254,7 +254,15 @@ pub struct ParameterTable {
     items: Vec<Parameter>,
     by_name: HashMap<String, ParamId>,
     next_id: u32,
+    /// Where [`ParameterTable::unused_name`] starts looking for a free
+    /// dimension name: every `d<n>` below it is taken or reserved
+    /// (mitcad#413: a search from `d1` each time made adding many
+    /// dimensions quadratic).
+    dimension_names_from: u64,
 }
+
+/// The prefix of dimension parameters' names.
+const DIMENSION_PREFIX: &str = "d";
 
 /// Values of the table with pending new values on top.
 struct Overlay<'a> {
@@ -314,6 +322,7 @@ impl ParameterTable {
             let expr = parse(&spec.name, &spec.expression)?;
             let expression = with_decimal_points(&spec.expression).into_owned();
             table.by_name.insert(spec.name.clone(), id);
+            table.name_taken(&spec.name);
             table.items.push(Parameter {
                 id,
                 name: spec.name,
@@ -405,10 +414,41 @@ impl ParameterTable {
     /// The first free name `<prefix>1`, `<prefix>2`, ..., such as `d1`,
     /// `d2` for dimensions.
     pub fn unused_name(&self, prefix: &str) -> String {
-        (1u64..)
+        let from = if prefix == DIMENSION_PREFIX {
+            self.dimension_names_from.max(1)
+        } else {
+            1
+        };
+        (from..)
             .map(|n| format!("{prefix}{n}"))
             .find(|name| !self.by_name.contains_key(name) && !is_reserved_name(name))
             .expect("an unused name exists")
+    }
+
+    /// Keeps [`ParameterTable::dimension_names_from`] after `name` was
+    /// taken: past the names taken from it on.
+    fn name_taken(&mut self, name: &str) {
+        let from = self.dimension_names_from.max(1);
+        if name == format!("{DIMENSION_PREFIX}{from}") {
+            self.dimension_names_from = (from..)
+                .find(|n| {
+                    let name = format!("{DIMENSION_PREFIX}{n}");
+                    !self.by_name.contains_key(&name) && !is_reserved_name(&name)
+                })
+                .expect("an unused name exists");
+        }
+    }
+
+    /// Keeps [`ParameterTable::dimension_names_from`] after `name` was
+    /// freed: a dimension name below it is free again.
+    fn name_freed(&mut self, name: &str) {
+        if let Some(n) = name
+            .strip_prefix(DIMENSION_PREFIX)
+            .filter(|digits| !digits.starts_with('0'))
+            .and_then(|digits| digits.parse::<u64>().ok())
+        {
+            self.dimension_names_from = self.dimension_names_from.min(n);
+        }
     }
 
     /// Adds a parameter. Its expression may reference existing parameters.
@@ -434,6 +474,7 @@ impl ParameterTable {
         let id = ParamId(self.next_id);
         self.next_id = self.next_id.checked_add(1).expect("parameter ids left");
         self.by_name.insert(spec.name.clone(), id);
+        self.name_taken(&spec.name);
         self.items.push(Parameter {
             id,
             name: spec.name,
@@ -569,7 +610,9 @@ impl ParameterTable {
             self.items[i].expr = expr;
         }
         self.by_name.remove(&old);
+        self.name_freed(&old);
         self.by_name.insert(new_name.to_owned(), id);
+        self.name_taken(new_name);
         let i = self.index(id).expect("checked above");
         new_name.clone_into(&mut self.items[i].name);
         Ok(rewritten)
@@ -590,6 +633,7 @@ impl ParameterTable {
         let i = self.index(id).expect("checked above");
         let removed = self.items.remove(i);
         self.by_name.remove(&removed.name);
+        self.name_freed(&removed.name);
         Ok(removed)
     }
 

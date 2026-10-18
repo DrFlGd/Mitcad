@@ -41,14 +41,15 @@ pub struct PolicyReport {
 }
 
 impl DocState {
-    /// The state of a new, empty design: the root with the Assembly policy
-    /// and an empty component Part1 with the Part policy, active, so that
-    /// the first sketch or feature goes into Part1.
+    /// The state of a new, empty design: the root and an empty component
+    /// Part1, active, so that the first sketch or feature goes into Part1.
+    /// Both have the general defaults (the Hybrid preset, everything
+    /// allowed, mitcad#421): Part1 takes components too.
     pub(crate) fn new_design() -> Self {
         let mut state = Self::default();
-        state.assembly.root_policy = Policy::ASSEMBLY;
+        state.assembly.root_policy = Policy::GENERAL;
         let part = state.assembly.create(Some(NEW_DESIGN_PART), None);
-        state.assembly.set_policy(part, Policy::PART);
+        state.assembly.set_policy(part, Policy::GENERAL);
         state
             .assembly
             .place(part, ComponentUid::ROOT, Transform::IDENTITY);

@@ -1943,6 +1943,7 @@ int textureSourceTests();
 int polyHavenSourceTests();
 int renderMeshTests();
 int agentFolderTests();
+int partPickerDataTests();
 
 int main(int argc, char* argv[]) {
   QApplication app(argc, argv);
@@ -1989,6 +1990,7 @@ int main(int argc, char* argv[]) {
     failures += polyHavenSourceTests();
     failures += renderMeshTests();
     failures += agentFolderTests();
+    failures += partPickerDataTests();
   }
   if (failures != 0) {
     std::fprintf(stderr, "%d check(s) failed\n", failures);

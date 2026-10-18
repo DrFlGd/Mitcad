@@ -601,8 +601,9 @@ pub(crate) fn single_file(state: &DocState) -> String {
 }
 
 /// The design file of a new, empty design (what
-/// `Document::new_design(..).to_json()` writes: the root with the Assembly
-/// policy and an empty active Part1, mitcad#220), without a geometry kernel:
+/// `Document::new_design(..).to_json()` writes: the root and an empty
+/// active Part1, both with the general defaults, mitcad#220, mitcad#421),
+/// without a geometry kernel:
 /// the projects' `new_design` (mitcad#144).
 pub fn empty_design() -> String {
     v2::save(&DocState::new_design())

@@ -642,7 +642,8 @@ impl SketchDef {
         regions_and_layout(&curves)
     }
 
-    /// The texts laid out with the kernel's fonts. Without font support
+    /// The texts laid out with the kernel's fonts, or with the outlines
+    /// stored with a text whose font is not installed. Without font support
     /// (a test kernel) the texts have no outlines.
     pub fn text_outlines<K: Kernel + ?Sized>(
         &self,
@@ -674,7 +675,17 @@ impl SketchDef {
                     .map(|p| p[1])
                     .fold(0.0, f64::max);
             }
-            out.push(text::layout(t, &glyphs, &solved.points, &solved.curves)?);
+            // The outlines the file stored with the text while its font is
+            // missing (mitcad#416).
+            let stored = text::stored_glyphs(t, &glyphs);
+            let mut outline = text::layout(
+                t,
+                stored.as_ref().unwrap_or(&glyphs),
+                &solved.points,
+                &solved.curves,
+            )?;
+            outline.stored = stored.is_some();
+            out.push(outline);
         }
         Ok(out)
     }

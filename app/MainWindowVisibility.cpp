@@ -44,7 +44,7 @@ QString MainWindow::activeCommandName() const {
 // root, and its first sketch starts on the origin planes; so does a design
 // whose bodies are all the active component's. Another component, or the
 // root's bodies beside the active component, is where sketches usually
-// start instead (a component's first sketch may attach there), and the
+// start instead (a component's sketch may attach there), and the
 // planes would only cover it; the Origin folder shows them on request.
 bool MainWindow::sketchShowsOrigin() const {
   for (const DocumentSnapshot::Component& component : m_snapshot.components) {

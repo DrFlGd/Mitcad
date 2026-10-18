@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
 // CommandSession: the hover of a tangent chain (mitcad#290). With Tangent
 // Chain on, Fillet, Chamfer and the face tools take the whole chain of a
-// picked edge or face; the hover shows it before the click. The rest of
-// the session is in CommandSession.cpp.
+// picked edge or face; the hover shows it before the click. And the point
+// under the mouse for a command that previews a click there (mitcad#417).
+// The rest of the session is in CommandSession.cpp.
 #include <exception>
 
 #include <QElapsedTimer>
@@ -34,6 +35,21 @@ void CommandSession::hovered(const SelectionItem& item) {
   // of the profile under the mouse): its markers again.
   if (m_def.hover && m_def.hover(item, m_state, m_host)) {
     updateManipulators();
+  }
+  // Off the bodies: no point under the mouse for hoverPreview.
+  if (!item.isValid()) {
+    hoverMoved(item);
+  }
+}
+
+void CommandSession::hoverMoved(const SelectionItem& item) {
+  // A move while the model computes or the view turns is left out: the
+  // next one comes soon enough.
+  if (m_done || !m_def.hoverPreview || m_host.modelBusy() || m_host.viewer().isNavigating()) {
+    return;
+  }
+  if (m_def.hoverPreview(item, m_state, m_host)) {
+    schedulePreview();
   }
 }
 

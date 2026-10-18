@@ -235,3 +235,44 @@ fn placing_from_a_source_of_the_design_is_the_model_s_own() {
         Some(ApiClass::Model)
     );
 }
+
+#[test]
+fn the_library_usage_counts_build_parts_by_their_source() {
+    let mut doc = design();
+    let t = first(&mut doc, "p30", [0.0; 3], 1000.0);
+    command(
+        &mut doc,
+        json!({"cmd": "build_place", "part": {"source": "S1"},
+               "at": {"point": [0, 200, 0]}, "length": 500}),
+    )
+    .unwrap();
+    place(
+        &mut doc,
+        json!({"part": part("cap30"), "at": {"point": [100, 0, 0]}}),
+    );
+    let usage = |doc: &crate::Document<MockKernel>| -> Vec<(String, String, u64)> {
+        query(doc, json!({"query": "library_usage"}))["parts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| {
+                assert_eq!(p["library"], LIBRARY);
+                assert_eq!(p["url"], URL);
+                (
+                    p["library"].as_str().unwrap().to_owned(),
+                    p["component"].as_str().unwrap().to_owned(),
+                    p["count"].as_u64().unwrap(),
+                )
+            })
+            .collect()
+    };
+    let entry = |component: &str, count: u64| (LIBRARY.to_owned(), component.to_owned(), count);
+    assert_eq!(usage(&doc), [entry("p30", 2), entry("cap30", 1)]);
+    // A part removed is counted no more.
+    command(
+        &mut doc,
+        json!({"cmd": "build_remove", "component": t["component"]}),
+    )
+    .unwrap();
+    assert_eq!(usage(&doc), [entry("p30", 1), entry("cap30", 1)]);
+}

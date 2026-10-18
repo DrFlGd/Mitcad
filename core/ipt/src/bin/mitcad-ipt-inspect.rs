@@ -58,7 +58,10 @@ const USAGE: &str = "usage: mitcad-ipt-inspect <command> ...
   stream <file> <path> [--raw]  a stream's bytes (hex, or raw)
   record <file> <seg> <n> --raw a record's bytes, raw
   dump <file> <segment>         every record of a segment (hex)
-  labels <file> <segment>       the browser labels of a segment's records";
+  labels <file> <segment>       the browser labels of a segment's records
+  texts <file>                  the sketch texts: string, fonts, frame,
+                                and each glyph contour in sketch
+                                coordinates (pen, extent, pieces)";
 
 fn open(path: &str) -> Result<IptFile, String> {
     IptFile::open(Path::new(path)).map_err(|e| format!("{path}: {e}"))
@@ -1507,6 +1510,122 @@ fn cmd_nodes(path: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The sketch texts (mitcad#414): each text record decoded, the font
+/// table entries it uses, and its glyph contours in its sketch's
+/// coordinates (mm): pen, extent and pieces with their control points
+/// relative to the pen.
+fn cmd_texts(path: &str) -> Result<(), String> {
+    use mitcad_ipt::text;
+    let f = open(path)?;
+    let dc = f
+        .definitions()
+        .map_err(|e| e.to_string())?
+        .ok_or("no definitions segment")?;
+    let fonts = text::Fonts::read(&f);
+    for font in &fonts.0 {
+        println!(
+            "font {:>3}: {} weight {} size {:.4} mm",
+            font.index,
+            font.family,
+            font.weight,
+            10.0 * font.size
+        );
+    }
+    // The sketch each text is listed in.
+    let mut sketch_of: HashMap<usize, usize> = HashMap::new();
+    for s in dc.of_type(&mitcad_ipt::design::SKETCH) {
+        let mut r = dc.body(s);
+        if r.i32().is_ok()
+            && r.u32().is_ok()
+            && let Ok(list) = r.references()
+        {
+            for e in list {
+                sketch_of.insert(e, s);
+            }
+        }
+    }
+    for t in dc.of_type(&text::TEXT) {
+        let x = match text::read(&dc, t) {
+            Ok(x) => x,
+            Err(e) => {
+                println!("text {t}: {e}");
+                continue;
+            }
+        };
+        let (plain, used) = text::plain(&x.content, x.font);
+        println!(
+            "text {t}: {:?} anchor [{:.4}, {:.4}] mm angle {:.4} alignment {} frame {:.4} x {:.4} mm fonts {used:?} sketch {:?}",
+            plain,
+            10.0 * x.anchor[0],
+            10.0 * x.anchor[1],
+            x.angle,
+            x.alignment,
+            10.0 * x.size[0],
+            10.0 * x.size[1],
+            sketch_of.get(&t)
+        );
+        let m = sketch_of
+            .get(&t)
+            .and_then(|&s| mitcad_ipt::sketch::sketch_matrix(&dc, s).ok());
+        let Some(m) = m else {
+            continue;
+        };
+        for &c in &x.contours {
+            match text::contour(&dc, c) {
+                Ok(k) => {
+                    let pen = text::to_sketch(&m, k.pen);
+                    let pts: Vec<[f64; 2]> = k
+                        .pieces
+                        .iter()
+                        .flat_map(|p| p.points())
+                        .map(|p| text::to_sketch(&m, p))
+                        .collect();
+                    let (mut lo, mut hi) = ([f64::MAX; 2], [f64::MIN; 2]);
+                    for p in &pts {
+                        for i in 0..2 {
+                            lo[i] = lo[i].min(p[i]);
+                            hi[i] = hi[i].max(p[i]);
+                        }
+                    }
+                    println!(
+                        "  contour {c}: pen [{:.7}, {:.7}] mm, {} pieces, x {:.6}..{:.6} y {:.6}..{:.6} mm (from the pen)",
+                        10.0 * pen[0],
+                        10.0 * pen[1],
+                        k.pieces.len(),
+                        10.0 * (lo[0] - pen[0]),
+                        10.0 * (hi[0] - pen[0]),
+                        10.0 * (lo[1] - pen[1]),
+                        10.0 * (hi[1] - pen[1])
+                    );
+                    for p in &k.pieces {
+                        let kind = match p {
+                            text::Piece::Spline { degree, knots, .. } => {
+                                format!("spline {degree} knots {knots:?}")
+                            }
+                            text::Piece::Line { .. } => "line".to_owned(),
+                        };
+                        let rel: Vec<String> = p
+                            .points()
+                            .iter()
+                            .map(|q| {
+                                let q = text::to_sketch(&m, *q);
+                                format!(
+                                    "({:.6}, {:.6})",
+                                    10.0 * (q[0] - pen[0]),
+                                    10.0 * (q[1] - pen[1])
+                                )
+                            })
+                            .collect();
+                        println!("    {kind}: {}", rel.join(" "));
+                    }
+                }
+                Err(e) => println!("  {e}"),
+            }
+        }
+    }
+    Ok(())
+}
+
 fn cmd_show(path: &str, n: &str) -> Result<(), String> {
     let f = open(path)?;
     let dc = f
@@ -1961,6 +2080,7 @@ fn run(args: &[String]) -> Result<(), String> {
             n,
             Some(m.parse().map_err(|_| format!("bad count {m}"))?),
         ),
+        ["texts", file] => cmd_texts(file),
         ["write-test", out] => std::fs::write(out, mitcad_ipt::testdata::test_part())
             .map_err(|e| format!("{out}: {e}")),
         _ => Err(USAGE.to_string()),

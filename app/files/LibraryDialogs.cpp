@@ -37,6 +37,7 @@
 
 #include "../framework/Dialogs.hpp"
 #include "../framework/Json.hpp"
+#include "../library/PartPicker.hpp"
 #include "Libraries.hpp"
 #include "RemoteTask.hpp"
 #include "mitcad_bridge/lib.h"
@@ -374,13 +375,16 @@ void LibrariesDialog::fetch(bool all) {
 
 LibraryBrowser::LibraryBrowser(bool community, QWidget* parent) : QDialog(parent), m_community(community) {
   setWindowTitle(community ? tr("Community Library") : tr("Insert from Library"));
-  resize(940, 600);
+  resize(1180, 680);
   auto* layout = new QVBoxLayout(this);
-  auto* top = new QHBoxLayout;
-  m_search = new QLineEdit;
+  // The results are the part picker's grid (mitcad#418): its search runs
+  // library_search here (the licence filter beside it).
+  m_grid = new PartGrid;
+  m_grid->setExternalSearch(true);
+  m_grid->view()->setObjectName(QStringLiteral("libraryResults"));
+  m_search = m_grid->searchField();
   m_search->setObjectName(QStringLiteral("librarySearch"));
   m_search->setPlaceholderText(tr("Search: name, standard, size, tag (e.g. 4762, washer, M5)"));
-  m_search->setClearButtonEnabled(true);
   m_license = new QComboBox;
   m_license->setObjectName(QStringLiteral("libraryLicense"));
   const QStringList accepted = acceptedLicenses();
@@ -391,19 +395,11 @@ LibraryBrowser::LibraryBrowser(bool community, QWidget* parent) : QDialog(parent
   m_license->addItem(tr("Any licence"), QVariant());
   m_license->setToolTip(tr("The licences a part may have to be shown"));
   m_unlicensed = new QCheckBox(tr("Show items &without a licence"));
-  auto* searchLabel = new QLabel(tr("&Search:"));
-  searchLabel->setBuddy(m_search);
-  top->addWidget(searchLabel);
-  top->addWidget(m_search, 1);
-  top->addWidget(m_license);
-  top->addWidget(m_unlicensed);
-  layout->addLayout(top);
+  m_grid->addFilter(m_license);
+  m_grid->addFilter(m_unlicensed);
   auto* split = new QSplitter;
-  m_results = new QListWidget;
-  m_results->setObjectName(QStringLiteral("libraryResults"));
-  m_results->setIconSize(QSize(64, 64));
-  m_results->setMinimumWidth(380);
-  split->addWidget(m_results);
+  m_grid->setMinimumWidth(560);
+  split->addWidget(m_grid);
   auto* right = new QWidget;
   auto* side = new QVBoxLayout(right);
   m_details = new QLabel;
@@ -427,7 +423,7 @@ LibraryBrowser::LibraryBrowser(bool community, QWidget* parent) : QDialog(parent
   side->addWidget(m_link);
   side->addWidget(m_copy);
   split->addWidget(right);
-  split->setStretchFactor(0, 1);
+  split->setStretchFactor(0, 2);
   split->setStretchFactor(1, 1);
   layout->addWidget(split, 1);
   auto* buttons = new QHBoxLayout;
@@ -449,12 +445,12 @@ LibraryBrowser::LibraryBrowser(bool community, QWidget* parent) : QDialog(parent
   layout->addLayout(buttons);
   m_get->setEnabled(false);
   m_insert->setEnabled(false);
-  connect(m_search, &QLineEdit::textChanged, this, &LibraryBrowser::search);
+  connect(m_grid, &PartGrid::searchChanged, this, &LibraryBrowser::search);
   connect(m_license, &QComboBox::currentIndexChanged, this, &LibraryBrowser::search);
   connect(m_unlicensed, &QCheckBox::toggled, this, &LibraryBrowser::search);
-  connect(m_results, &QListWidget::currentRowChanged, this, &LibraryBrowser::select);
+  connect(m_grid, &PartGrid::currentChanged, this, &LibraryBrowser::select);
   connect(m_version, &QComboBox::currentIndexChanged, this, &LibraryBrowser::showVersion);
-  connect(m_results, &QListWidget::itemActivated, this, [this] {
+  connect(m_grid, &PartGrid::activated, this, [this] {
     if (m_insert->isEnabled()) {
       insert();
     } else if (m_get->isEnabled()) {
@@ -476,23 +472,17 @@ LibraryBrowser::LibraryBrowser(bool community, QWidget* parent) : QDialog(parent
       qInfo().noquote() << QStringLiteral("Library browser size %1").arg(row);
     }
   });
-  // Up and Down in the search field move through the results.
-  m_search->installEventFilter(this);
+  // Up and Down in the search field move through the results (the grid's).
   search();
+  qInfo().noquote() << QStringLiteral("Part picker opened: %1 parts for %2").arg(m_items.size()).arg(windowTitle());
   m_search->setFocus();
 }
 
-bool LibraryBrowser::eventFilter(QObject* watched, QEvent* event) {
-  if (watched == m_search && event->type() == QEvent::KeyPress) {
-    const int key = static_cast<QKeyEvent*>(event)->key();
-    if ((key == Qt::Key_Down || key == Qt::Key_Up) && m_results->count() > 0) {
-      const int row = std::clamp(m_results->currentRow() + (key == Qt::Key_Down ? 1 : -1), 0,
-                                 m_results->count() - 1);
-      m_results->setCurrentRow(row);
-      return true;
-    }
-  }
-  return QDialog::eventFilter(watched, event);
+void LibraryBrowser::setUsedParts(const QList<UsedPart>& used) { m_grid->setUsedParts(used); }
+
+int LibraryBrowser::currentIndex() const {
+  const QString key = m_grid->currentKey();
+  return key.isEmpty() ? -1 : static_cast<int>(m_keys.indexOf(key));
 }
 
 void LibraryBrowser::search() {
@@ -527,48 +517,41 @@ void LibraryBrowser::search() {
     addAll(components, "component");
     addAll(libraries, "library");
   }
-  m_results->blockSignals(true);
-  m_results->clear();
+  // The grid's tiles: the components with their pictures (read as they come
+  // into sight), an index's libraries in "Libraries to get".
+  QList<PickerPart> parts;
+  m_keys.clear();
   for (const QJsonValue& value : m_items) {
     const QJsonObject item = value.toObject();
-    auto* entry = new QListWidgetItem;
+    PickerPart part;
     if (str(item, "item") == QLatin1String("component")) {
-      const QString standard = str(item, "standard");
-      entry->setText(QStringLiteral("%1\n%2%3").arg(str(item, "name"),
-                                                     standard.isEmpty() ? QString() : standard + QStringLiteral(" · "),
-                                                     str(item, "library_name")));
-      if (item.value(QStringLiteral("preview")).toBool()) {
-        const QJsonObject preview = command("library_preview", {{QStringLiteral("url"), str(item, "url")},
-                                                                {QStringLiteral("id"), str(item, "library")},
-                                                                {QStringLiteral("rev"), str(item, "rev")},
-                                                                {QStringLiteral("component"), str(item, "id")}});
-        QPixmap image;
-        if (image.loadFromData(QByteArray::fromBase64(str(preview, "png").toLatin1()), "PNG")) {
-          entry->setIcon(QIcon(image));
-        }
-      }
+      part = pickerPart(item);
     } else {
-      const QString license = item.value(QStringLiteral("license")).toString();
-      entry->setText(tr("%1\nLibrary · %2 · %3")
-                         .arg(str(item, "name"), license.isEmpty() ? tr("no licence") : license,
-                              item.value(QStringLiteral("fetched")).toBool() ? tr("fetched") : tr("not fetched")));
+      part.library = str(item, "id");
+      part.libraryName = str(item, "name");
+      part.name = str(item, "name");
+      part.url = str(item, "url");
+      part.description = str(item, "description");
+      part.license = item.value(QStringLiteral("license")).toString();
+      part.preview = false;
+      part.libraryEntry = true;
     }
-    m_results->addItem(entry);
+    part.key = itemKey(item);
+    m_keys << part.key;
+    parts.append(part);
   }
-  m_results->blockSignals(false);
+  m_grid->setParts(parts);
   qInfo().noquote() << QStringLiteral("Library search '%1': %2 components, %3 libraries, %4 hidden by the licence")
                            .arg(m_search->text())
                            .arg(components.size())
                            .arg(libraries.size())
                            .arg(answer.value(QStringLiteral("hidden")).toInt());
-  if (!m_items.isEmpty()) {
-    m_results->setCurrentRow(0);
-  }
+  m_grid->selectFirst(false);
   select();
 }
 
 void LibraryBrowser::select() {
-  const int row = m_results->currentRow();
+  const int row = currentIndex();
   m_version->blockSignals(true);
   m_version->clear();
   m_version->blockSignals(false);
@@ -633,7 +616,7 @@ void LibraryBrowser::select() {
 }
 
 void LibraryBrowser::showVersion() {
-  const int row = m_results->currentRow();
+  const int row = currentIndex();
   if (row < 0 || row >= m_items.size() || m_version->count() == 0) {
     return;
   }
@@ -687,7 +670,7 @@ void LibraryBrowser::showVersion() {
 }
 
 void LibraryBrowser::getLibrary() {
-  const int row = m_results->currentRow();
+  const int row = currentIndex();
   if (row < 0 || row >= m_items.size()) {
     return;
   }
@@ -727,7 +710,7 @@ void LibraryBrowser::updateLibraries() {
 void LibraryBrowser::refresh() {
   // The search again, keeping the selected item when it is still listed.
   QString kept;
-  const int row = m_results->currentRow();
+  const int row = currentIndex();
   if (row >= 0 && row < m_items.size()) {
     kept = itemKey(m_items[row].toObject());
   }
@@ -735,14 +718,12 @@ void LibraryBrowser::refresh() {
   if (kept.isEmpty()) {
     return;
   }
-  for (int i = 0; i < m_items.size(); ++i) {
-    if (itemKey(m_items[i].toObject()) == kept) {
-      if (i != m_results->currentRow()) {
-        m_results->setCurrentRow(i);
-      }
-      qInfo().noquote() << QStringLiteral("Library browser kept the selection %1").arg(kept);
-      return;
+  // Kept when the grid still shows it (its group and filters).
+  if (m_grid->shownKeys().contains(kept)) {
+    if (kept != m_grid->currentKey()) {
+      m_grid->setCurrent(kept, true);
     }
+    qInfo().noquote() << QStringLiteral("Library browser kept the selection %1").arg(kept);
   }
 }
 
@@ -762,7 +743,7 @@ bool LibraryBrowser::anySourceFetched() {
 }
 
 void LibraryBrowser::insert() {
-  const int row = m_results->currentRow();
+  const int row = currentIndex();
   if (row < 0 || row >= m_items.size() || !m_insert->isEnabled()) {
     return;
   }
@@ -778,6 +759,7 @@ void LibraryBrowser::insert() {
   choice.license = item.value(QStringLiteral("license")).toString();
   choice.link = m_link->isChecked();
   m_choice = choice;
+  qInfo().noquote() << QStringLiteral("Part picker chose %1/%2").arg(choice.library, choice.component);
   accept();
 }
 

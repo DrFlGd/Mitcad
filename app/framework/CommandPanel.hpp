@@ -84,6 +84,8 @@ signals:
   void itemRemoved(const QString& key, int index);
   void rowAdded(const QString& list);
   void rowRemoved(const QString& list, int index);
+  // The button beside a choice (InputDef::onButton).
+  void buttonClicked(const QString& key);
   void accepted();
   void rejected();
 
@@ -111,6 +113,7 @@ private:
     QListWidget* order = nullptr; // an ordered selection's items
     QLineEdit* edit = nullptr;
     QComboBox* combo = nullptr;
+    QToolButton* button = nullptr; // beside the combo (InputDef::onButton)
     // A choice shown as icon buttons (InputDef::choiceIcons), by option.
     QHash<QString, QToolButton*> choiceButtons;
     QAbstractButton* check = nullptr;

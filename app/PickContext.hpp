@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
+#include <functional>
+
 #include <AIS_InteractiveContext.hxx>
+#include <SelectMgr_EntityOwner.hxx>
 #include <V3d_Viewer.hxx>
 
 namespace mitcad {
@@ -27,5 +30,15 @@ constexpr int kVertexSensitivity = 12; // vertices and points: 16 in all, 8 pixe
 // behind itself (a cylinder's far seam) do not. The highlight under the
 // cursor and a click take the same first item.
 occ::handle<AIS_InteractiveContext> makePickContext(const occ::handle<V3d_Viewer>& viewer);
+
+// The active component first (mitcad#420): with a preference set on a
+// context makePickContext made, a click's and the hover's items under the
+// cursor are ordered with the preferred owners first (each group in the
+// order above), so the nearest preferred one is taken before nearer others;
+// where none is preferred (or all are), the order stays. pickPrioritized():
+// the last such pick put a preferred owner before a nearer other one.
+using PickPreference = std::function<bool(const occ::handle<SelectMgr_EntityOwner>&)>;
+void setPickPriority(const occ::handle<AIS_InteractiveContext>& context, PickPreference preferred);
+bool pickPrioritized(const occ::handle<AIS_InteractiveContext>& context);
 
 } // namespace mitcad

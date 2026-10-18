@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <functional>
 #include <initializer_list>
+#include <limits>
 #include <map>
 #include <utility>
 
@@ -64,8 +65,10 @@
 #include <gp_Pln.hxx>
 #include <gp_Pnt2d.hxx>
 #include <gp_Trsf.hxx>
+#include <gp_Vec.hxx>
 
 #include "AboutDialog.hpp"
+#include "browser/BrowserBackground.hpp"
 #include "browser/BrowserController.hpp"
 #include "browser/ComponentColors.hpp"
 #include "browser/TimelineWidget.hpp"
@@ -93,6 +96,7 @@
 #include "framework/CacheDiagnostics.hpp"
 #include "framework/ModelShapes.hpp"
 #include "framework/ResultCache.hpp"
+#include "framework/Restart.hpp"
 #include "framework/Ribbon.hpp"
 #include "framework/TitleBar.hpp"
 #include "framework/ShortcutDialog.hpp"
@@ -100,6 +104,7 @@
 #include "framework/Diagnostics.hpp"
 #include "framework/TestSync.hpp"
 #include "framework/WindowStyle.hpp"
+#include "library/PartPicker.hpp"
 #include "platform/MacChrome.hpp"
 #ifdef MITCAD_MACOS_NATIVE_UI
 #include "platform/NativeMacWindow.hpp"
@@ -189,6 +194,37 @@ void noGuessedMenuRoles(QMenu* menu) {
       noGuessedMenuRoles(action->menu());
     }
   }
+}
+
+// What the view draws normally while a component other than the root is
+// active (mitcad#420): its occurrences, the sketch being edited and the
+// origin's datums (the active component's own); the rest is drawn as
+// inactive ghosts. Off while the root is active.
+OcctViewer::ActiveScope activeScopeOf(const DocumentSnapshot& snapshot, const QString& editedSketch) {
+  OcctViewer::ActiveScope scope;
+  if (snapshot.activeComponent.isEmpty() || snapshot.activeComponent == QStringLiteral("C0")) {
+    return scope;
+  }
+  QStringList names;
+  std::function<void(const QVector<DocumentSnapshot::Occurrence>&)> visit =
+      [&](const QVector<DocumentSnapshot::Occurrence>& occurrences) {
+        for (const DocumentSnapshot::Occurrence& occurrence : occurrences) {
+          if (occurrence.component == snapshot.activeComponent) {
+            scope.occurrences << occurrence.path;
+            names << occurrence.name;
+          } else {
+            visit(occurrence.children);
+          }
+        }
+      };
+  visit(snapshot.occurrences);
+  scope.on = true;
+  scope.name = names.isEmpty() ? snapshot.componentName(snapshot.activeComponent) : names.join(QStringLiteral(", "));
+  scope.normal = kOriginDatums;
+  if (!editedSketch.isEmpty()) {
+    scope.normal << editedSketch;
+  }
+  return scope;
 }
 
 } // namespace
@@ -624,9 +660,9 @@ void MainWindow::registerCommands() {
   CommandDef policy = action("assembly.policy", tr("Design Policy..."), "component", CommandDef::Mode::Model,
                              [this] { m_controller->openPolicy(m_snapshot.activeComponent); });
   policy.tooltip = tr("What the active component may hold, and which links to and from other components "
-                      "it allows: Assembly and Part presets and nine settings");
+                      "it allows: Hybrid (everything, the default), Part and Assembly presets and nine settings");
   policy.keywords = {QStringLiteral("policy"), QStringLiteral("permissions"), QStringLiteral("assembly"),
-                     QStringLiteral("part"), QStringLiteral("attach")};
+                     QStringLiteral("part"), QStringLiteral("attach"), QStringLiteral("hybrid")};
   m_registry->add(policy);
   // Appearances with their physically based parameters (mitcad#46).
   CommandDef appearances = action("solid.appearances", tr("Edit Appearances..."), "appearance",
@@ -648,6 +684,8 @@ void MainWindow::registerCommands() {
   diagnostics.duringCommands = true;
   m_registry->add(diagnostics);
   m_viewController->showDiagnostics = [this] { showDiagnostics(); };
+  // Preferences' Layout (mitcad#419).
+  m_viewController->restartRequested = [this] { restartApplication(); };
   // Help > Check for Updates (mitcad#9).
   m_updates->registerCommands(*m_registry);
   // Help > Send Feedback (mitcad#61).
@@ -676,6 +714,24 @@ void MainWindow::showDiagnostics() {
                                                       : this);
   prepareModal(&dialog);
   execDialog(&dialog);
+}
+
+void MainWindow::restartApplication() {
+  // Once no model job runs: a close while computing would only cancel it.
+  whenIdle(this, [this] {
+    qInfo() << "Restart: closing the window";
+    if (!close()) {
+      qInfo() << "Restart cancelled: Mitcad stayed open";
+      return;
+    }
+    // The design again in the new window, as it was saved (or left).
+    QStringList extra;
+    if (!m_filePath.isEmpty() && QFileInfo::exists(m_filePath)) {
+      extra << QStringLiteral("--open") << m_filePath;
+    }
+    qInfo().noquote() << "Restart:" << scheduleRestart(extra);
+    QCoreApplication::quit();
+  });
 }
 
 void MainWindow::createMenus() {
@@ -1017,6 +1073,8 @@ void MainWindow::createFloatingPanels() {
                       {300, [this] { return commandContentHeight(); }, 1.0, false});
   connect(m_controller->browser(), &BrowserPanel::contentHeightChanged, m_floating,
           &FloatingLayout::requestLayout);
+  // Its card, or a box behind each row (Preferences, mitcad#419).
+  followBrowserBackground(browserCard, m_controller->browser());
   connect(m_commandPages, &QStackedWidget::currentChanged, this, [this] { updateCommandCard(); });
   setCentralWidget(m_floating);
   m_floating->watchContent(m_idlePage);
@@ -1406,6 +1464,13 @@ void MainWindow::startCommand(const QString& id, const Selection& preselection,
   if (!m_session && m_commandFinished) {
     std::exchange(m_commandFinished, nullptr)(false);
   }
+}
+
+bool MainWindow::chooseInCommand(const QString& command, const QString& input, const QString& value) {
+  if (m_mode != Mode::Command || !m_session || m_session->def().id != command) {
+    return false;
+  }
+  return m_session->choose(input, value);
 }
 
 void MainWindow::onCommandFinished(bool committed) {
@@ -1862,6 +1927,15 @@ TopoDS_Shape MainWindow::analysisShape(const QJsonObject& request) const {
   }
 }
 
+double MainWindow::pixelSize(const gp_Pnt& point) const {
+  // One step up the view from the point, measured on the screen (as the
+  // manipulators measure the zoom).
+  const QPointF a = m_viewer->toWidgetF(point);
+  const QPointF b = m_viewer->toWidgetF(point.Translated(gp_Vec(m_viewer->viewUp())));
+  const double pixels = std::hypot(b.x() - a.x(), b.y() - a.y());
+  return pixels > 1e-9 ? 1.0 / pixels : std::numeric_limits<double>::quiet_NaN();
+}
+
 bool MainWindow::takesFeatures() const {
   return m_session && m_session->activeTakes(SelectKind::Feature);
 }
@@ -2113,6 +2187,9 @@ void MainWindow::refreshScene() {
         }
       };
   place(m_snapshot.occurrences);
+  // Everything outside the active component as ghosts (mitcad#420), set
+  // before the items are shown, which then take their look at once.
+  m_viewer->setActiveScope(activeScopeOf(m_snapshot, m_sketch->isActive() ? m_sketch->uid() : QString()));
 
   ScopedTiming bodies("refresh bodies");
   showBodies();
@@ -2148,6 +2225,10 @@ void MainWindow::refreshScene() {
     m_selection = kept;
     m_controller->showSelection(m_selection);
     updateIdleView();
+  }
+  // The part picker's In this design follows the design (mitcad#418).
+  if (auto* picker = findChild<PartPicker*>(QString(), Qt::FindDirectChildrenOnly)) {
+    picker->designChanged();
   }
   updateActions();
 }
@@ -4212,7 +4293,7 @@ QString MainWindow::fileDialogDirectory() const {
 }
 
 bool MainWindow::installDocument(const QString& label, const QString& path, const DocumentMaker& make,
-                                 QString& error) {
+                                 QString& error, const QString& handedOver) {
   std::optional<rust::Box<Document>> made;
   QJsonObject recomputed;
   QJsonObject persisted;
@@ -4223,12 +4304,16 @@ bool MainWindow::installDocument(const QString& label, const QString& path, cons
   const QByteArray store = resultStoreDirectory().toUtf8();
   const QByteArray buildId = resultStoreBuildId().toUtf8();
   const QByteArray storeLabel = label.toUtf8();
+  const QByteArray handOff = handedOver.toUtf8();
   const double minMs = resultStoreMinMs();
   const auto memoryMb = static_cast<std::uint64_t>(CacheSettings::load().memoryMegabytes);
   try {
     const bool done = runJob(label, tr("Opening %1").arg(label), [&](ModelJob& job) {
       rust::Box<Document> document = make(job);
-      document->set_result_store(rustStr(store), rustStr(buildId), rustStr(storeLabel));
+      // An import's results come from the store its process handed them
+      // over in (mitcad#413); the user's store is the document's after.
+      document->set_result_store(rustStr(handOff.isEmpty() ? store : handOff), rustStr(buildId),
+                                 rustStr(storeLabel));
       document->set_memory_cache_budget(memoryMb);
       {
         const AttachedJob attached(*document, job);
@@ -4237,6 +4322,9 @@ bool MainWindow::installDocument(const QString& label, const QString& path, cons
         recomputed = parseObject(document->command(rustStr(compactJson(
             {{QStringLiteral("cmd"), QStringLiteral("recompute")}}))));
         milliseconds = static_cast<double>(timer.nsecsElapsed()) / 1.0e6;
+      }
+      if (!handOff.isEmpty()) {
+        document->set_result_store(rustStr(store), rustStr(buildId), rustStr(storeLabel));
       }
       if (!store.isEmpty() && recomputed.value(QStringLiteral("recomputed")).toInt() > 0) {
         job.setStage(tr("Saving results of %1").arg(label));
@@ -4283,6 +4371,12 @@ bool MainWindow::installDocument(const QString& label, const QString& path, cons
   updateVersionStatus();
   m_profileFaces.clear();
   reportRecompute(recomputed, milliseconds);
+  if (!handOff.isEmpty()) {
+    qInfo().noquote() << QStringLiteral("Results handed over for %1: restored %2, evaluated %3")
+                             .arg(label)
+                             .arg(recomputed.value(QStringLiteral("restored")).toInt())
+                             .arg(recomputed.value(QStringLiteral("recomputed")).toInt());
+  }
   if (!store.isEmpty()) {
     reportStored(recomputed, persisted);
   }

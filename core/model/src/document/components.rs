@@ -247,11 +247,17 @@ impl<K: Kernel> Document<K> {
         let a = self.state.assembly.at_placements(&self.result.placements);
         let placement = |o: OccurrenceUid| self.placement(o).unwrap_or(Transform::IDENTITY);
         let bodies = |c: ComponentUid| self.component_bodies(c);
+        // The bodies' names at once: a name per instance would be
+        // quadratic in the bodies (mitcad#413: an imported building).
+        let names = super::display_names(&self.state, &self.result);
         a.instances(&placement, &bodies)
             .into_iter()
             .map(|i| InstanceView {
                 path_name: a.path_name(&i.path),
-                name: self.body_name(i.body),
+                name: names
+                    .get(&i.body)
+                    .cloned()
+                    .unwrap_or_else(|| i.body.to_string()),
                 visible: i.visible && self.body_attributes(i.body).visible,
                 path: i.path,
                 component: i.component,

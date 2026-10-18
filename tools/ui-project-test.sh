@@ -708,8 +708,8 @@ in_git "$ROBOT" commit -qm "Add plate.mitcad"
 cp "$WORK/block.mitcad" "$GEAR/pin.mitcad"
 in_git "$GEAR" add pin.mitcad
 in_git "$GEAR" commit -qm "Add pin.mitcad"
-# nut.mitcad began as a new design: its active Part1 takes no components
-# (mitcad#220), the root (an assembly) does.
+# nut.mitcad began as a new design: the component goes into the root,
+# activated first (its active Part1 would take it too, mitcad#421).
 ui_mark
 ui_step "activate the root"              ui_click_logged "Browser radio Root"
 ui_expect_new "Activated Root" "the root is active"

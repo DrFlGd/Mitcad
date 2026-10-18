@@ -36,11 +36,13 @@ set(designs
     # round it. The revolution cut into the threaded bore is parametric: the
     # bore's cylinders, which the file keeps as cones of 1e-13 rad, are read
     # as cylinders (mitcad#389). A rounding along the thread (item 109) is
-    # parametric since the walk past a seam of mitcad#235. Falling back: a
-    # sweep that passes over itself, roundings the geometry kernel does not
-    # build or builds off the file's, an extrusion whose profile's curve the
-    # sketch no longer has.
-    "db73863f|Thread1,Revolve4|Sweep1,Fillet4,Fillet1,Fillet2,Fillet6,Extrude3,Fillet1,Fillet2,Fillet7,Fillet5,Fillet5,Fillet6|Axis1,C-Pattern1,Extrude3,Extrude6,Fillet4,GeometricRelationship1,Plane1,Plane2,Plane3,Thread1,Thread2")
+    # parametric since the walk past a seam of mitcad#235. The housing's
+    # corner rounded with 20 (item 74) and the rounding at the thread's
+    # chamfer (item 142) are parametric since the port's patches 0720 and
+    # 0721 (mitcad#343). Falling back: a sweep that passes over itself,
+    # roundings the geometry kernel does not build or builds off the file's,
+    # an extrusion whose profile's curve the sketch no longer has.
+    "db73863f|Thread1,Revolve4|Sweep1,Fillet4,Fillet2,Fillet6,Extrude3,Fillet1,Fillet2,Fillet7,Fillet5,Fillet6|Axis1,C-Pattern1,Extrude3,Extrude6,Fillet4,GeometricRelationship1,Plane1,Plane2,Plane3,Thread1,Thread2")
 
 # Seconds as the trace gives them (two decimals) in hundredths.
 function(hundredths seconds out)

@@ -271,6 +271,24 @@ Quantity_Color occtColor(const QColor& color) {
   return Quantity_Color(color.redF(), color.greenF(), color.blueF(), Quantity_TOC_sRGB);
 }
 
+// How far a line, point or plane outside the active component (mitcad#420)
+// is faded towards the background, and how see-through its faces are.
+constexpr double kInactiveFade = 0.65;
+constexpr double kInactivePlaneTransparency = 0.9;
+constexpr double kInactiveProfileTransparency = 0.85;
+
+// A colour faded most of the way to `paper` (the background's middle):
+// pale, but still its own hue.
+Quantity_Color inactiveColor(const Quantity_Color& color, const QColor& paper) {
+  double r = 0.0;
+  double g = 0.0;
+  double b = 0.0;
+  color.Values(r, g, b, Quantity_TOC_sRGB);
+  const auto towards = [](double from, double to) { return from + (to - from) * kInactiveFade; };
+  return Quantity_Color(towards(r, paper.redF()), towards(g, paper.greenF()), towards(b, paper.blueF()),
+                        Quantity_TOC_sRGB);
+}
+
 // The hatch's colour on a cap of `color` (mitcad#382): a darker shade of the
 // cap's own, lighter than it instead when it is dark already.
 QColor capHatchColor(const QColor& color) {
@@ -908,6 +926,16 @@ OcctViewer::OcctViewer(QWidget* parent) : QOpenGLWidget(parent) {
   m_renderedQuad = new RenderedImageQuad();
 
   m_context = makePickContext(m_viewer);
+  // The active component first in picks (mitcad#420): its items before
+  // nearer ones of other components.
+  mitcad::setPickPriority(m_context, [this](const occ::handle<SelectMgr_EntityOwner>& owner) {
+    if (!m_activePickPriority || !m_activeScope.on || owner.IsNull()) {
+      return true; // no preference: the order by depth
+    }
+    // What is not the model's (the orientation cube) keeps its place.
+    const auto info = m_pickInfo.find(dynamic_cast<const AIS_InteractiveObject*>(owner->Selectable().get()));
+    return info == m_pickInfo.end() || !outsideActive(info->second.item);
+  });
   m_context->SetPixelTolerance(qRound(kPickTolerance * devicePixelRatioF()));
   m_pickFilter = new Filter(this);
   m_context->AddFilter(m_pickFilter);
@@ -1085,6 +1113,7 @@ void OcctViewer::display(const occ::handle<AIS_Shape>& object, int displayMode, 
 
 void OcctViewer::remove(const occ::handle<AIS_Shape>& object) {
   m_pickInfo.erase(object.get());
+  m_inactiveObjects.erase(object.get());
   m_context->Remove(object, false);
 }
 
@@ -1202,8 +1231,10 @@ void OcctViewer::setBodies(const std::vector<BodyDisplay>& bodies) {
     const bool ghosted =
         body.style == BodyDisplay::Style::Normal && isGhosted(QString::fromStdString(body.occurrence));
     const BodyDisplay::Style style = ghosted ? BodyDisplay::Style::Ghost : body.style;
+    // Outside the active component: drawn as a ghost that stays pickable.
+    const bool inactive = isInactive(QString::fromStdString(body.occurrence));
     auto existing = m_bodies.find(key);
-    if (existing != m_bodies.end() && existing->second.style == style &&
+    if (existing != m_bodies.end() && existing->second.style == style && existing->second.inactive == inactive &&
         existing->second.object->Shape().IsEqual(shape) &&
         sameTransformation(existing->second.placement.Transformation(), body.placement.Transformation()) &&
         existing->second.component == body.component && existing->second.color == body.color &&
@@ -1235,6 +1266,7 @@ void OcctViewer::setBodies(const std::vector<BodyDisplay>& bodies) {
     entry.shape = body.shape;
     entry.style = style;
     entry.ghosted = ghosted;
+    entry.inactive = inactive;
     entry.placement = body.placement;
     entry.color = body.color;
     entry.appearance = body.appearance;
@@ -1252,6 +1284,7 @@ void OcctViewer::setBodies(const std::vector<BodyDisplay>& bodies) {
   if (wasEmpty && !m_bodies.empty()) {
     m_fitPending = true;
   }
+  logInactiveGhosts();
   sceneChanged();
   if (changed) {
     emit bodiesChanged();
@@ -1317,6 +1350,123 @@ void OcctViewer::setGhosts(const QStringList& occurrences) {
                                                           .arg(ghosts == 1 ? QStringLiteral("body")
                                                                            : QStringLiteral("bodies")));
   sceneChanged();
+}
+
+bool OcctViewer::outsideActive(const QString& occurrence) const {
+  if (!m_activeScope.on) {
+    return false;
+  }
+  // The root's own items (an empty occurrence) are outside every component.
+  return std::none_of(m_activeScope.occurrences.begin(), m_activeScope.occurrences.end(),
+                      [&occurrence](const QString& active) {
+                        return active.isEmpty() || occurrence == active ||
+                               occurrence.startsWith(active + QLatin1Char('/'));
+                      });
+}
+
+bool OcctViewer::outsideActive(const SelectionItem& item) const {
+  return outsideActive(item.occurrence) && !m_activeScope.normal.contains(item.owner);
+}
+
+bool OcctViewer::isInactive(const QString& occurrence) const {
+  return m_ghostInactive && outsideActive(occurrence);
+}
+
+bool OcctViewer::isInactiveItem(const SelectionItem& item) const {
+  return m_ghostInactive && outsideActive(item);
+}
+
+void OcctViewer::setActivePickPriority(bool on) {
+  m_activePickPriority = on;
+}
+
+bool OcctViewer::markInactive(const occ::handle<AIS_Shape>& object, bool inactive) {
+  if (inactive) {
+    return m_inactiveObjects.insert(object.get()).second;
+  }
+  return m_inactiveObjects.erase(object.get()) > 0;
+}
+
+void OcctViewer::setActiveScope(const ActiveScope& scope) {
+  if (scope == m_activeScope) {
+    return;
+  }
+  m_activeScope = scope;
+  applyInactiveGhosts();
+}
+
+void OcctViewer::setGhostInactive(bool on) {
+  if (on == m_ghostInactive) {
+    return;
+  }
+  m_ghostInactive = on;
+  applyInactiveGhosts();
+}
+
+void OcctViewer::applyInactiveGhosts(bool faded) {
+  for (auto& [key, entry] : m_bodies) {
+    const bool inactive = isInactive(QString::fromStdString(entry.occurrence));
+    if (inactive == entry.inactive) {
+      continue;
+    }
+    entry.inactive = inactive;
+    // A command's ghosts and previews keep their look.
+    if (entry.style == BodyDisplay::Style::Normal) {
+      removeBody(entry);
+      showBody(entry);
+    }
+  }
+  // Sketch entities, profiles and datums: pale or not, redrawn in place.
+  const auto restyle = [this, faded](const occ::handle<AIS_Shape>& object) {
+    const auto info = m_pickInfo.find(object.get());
+    if (info == m_pickInfo.end()) {
+      return false;
+    }
+    return markInactive(object, isInactiveItem(info->second.item)) || (faded && drawnInactive(object));
+  };
+  for (const occ::handle<AIS_Shape>& object : m_sketchEntities) {
+    const auto look = m_sketchEntityLooks.find(object.get());
+    if (look != m_sketchEntityLooks.end() && restyle(object)) {
+      styleSketchEntity(object, look->second);
+      m_context->Redisplay(object, false);
+    }
+  }
+  for (const auto& [key, profile] : m_profiles) {
+    if (restyle(profile)) {
+      styleProfile(profile);
+      m_context->Redisplay(profile, false);
+    }
+  }
+  for (const occ::handle<AIS_Shape>& datum : m_datums) {
+    const auto info = m_pickInfo.find(datum.get());
+    if (info != m_pickInfo.end() && restyle(datum)) {
+      styleDatum(datum, info->second.item.kind);
+      m_context->Redisplay(datum, false);
+    }
+  }
+  m_context->ClearDetected(false);
+  logInactiveGhosts();
+  sceneChanged();
+}
+
+void OcctViewer::logInactiveGhosts() {
+  QString line = QStringLiteral("none");
+  if (m_ghostInactive && m_activeScope.on) {
+    // The bodies drawn as ghosts for it: a command's ghosts among them, not
+    // its previews.
+    const int ghosts = static_cast<int>(std::count_if(m_bodies.begin(), m_bodies.end(), [](const auto& body) {
+      const BodyEntry& entry = body.second;
+      return entry.inactive && (entry.style == BodyDisplay::Style::Normal || entry.ghosted);
+    }));
+    line = QStringLiteral("%1 %2 (active %3)")
+               .arg(ghosts)
+               .arg(ghosts == 1 ? QStringLiteral("body") : QStringLiteral("bodies"))
+               .arg(m_activeScope.name);
+  }
+  if (line != m_loggedInactiveGhosts) {
+    m_loggedInactiveGhosts = line;
+    qDebug().noquote() << QStringLiteral("View inactive ghosts: %1").arg(line);
+  }
 }
 
 void OcctViewer::applyRenderedVisibility(BodyEntry& entry) {
@@ -1467,7 +1617,10 @@ void OcctViewer::showBody(BodyEntry& entry) {
     }
     color = QColor::fromHsv(int((quint64(index) * 137u + 30u) % 360u), 155, 220);
   }
-  entry.object = makeBody(*entry.shape, entry.style, color,
+  // A normal body outside the active component (mitcad#420) looks like a
+  // command's ghost, and stays pickable.
+  const bool inactive = entry.inactive && entry.style == BodyDisplay::Style::Normal;
+  entry.object = makeBody(*entry.shape, inactive ? BodyDisplay::Style::Ghost : entry.style, color,
                          componentColors ? std::vector<BodyDisplay::FaceLook>{} : entry.faceLooks,
                          m_visualStyle, m_paper);
   const bool placed = !entry.placement.IsIdentity();
@@ -1483,11 +1636,11 @@ void OcctViewer::showBody(BodyEntry& entry) {
   info.item.occurrence = QString::fromStdString(entry.occurrence);
   info.body = entry.shape;
   const bool normal = entry.style == BodyDisplay::Style::Normal;
-  const bool wire = normal && m_visualStyle == VisualStyle::Wireframe;
+  const bool wire = normal && !inactive && m_visualStyle == VisualStyle::Wireframe;
   display(entry.object, wire ? AIS_WireFrame : AIS_Shaded, std::move(info), normal);
   entry.hiddenEdges.Nullify();
   entry.visibleEdges.Nullify();
-  if (!normal || !drawsHiddenEdges(m_visualStyle)) {
+  if (!normal || inactive || !drawsHiddenEdges(m_visualStyle)) {
     if (normal) {
       applyRenderedVisibility(entry);
     }
@@ -1563,6 +1716,11 @@ void OcctViewer::setProfiles(const std::vector<std::pair<ProfileKey, TopoDS_Shap
       const auto info = m_pickInfo.find(existing->second.get());
       if (info != m_pickInfo.end()) {
         info->second.item.occurrence = occurrence;
+        // Pale outside the active component (mitcad#420).
+        if (markInactive(existing->second, isInactiveItem(info->second.item))) {
+          styleProfile(existing->second);
+          m_context->Redisplay(existing->second, false);
+        }
       }
       m_profiles.emplace(key, existing->second);
       shown.erase(existing);
@@ -1574,6 +1732,9 @@ void OcctViewer::setProfiles(const std::vector<std::pair<ProfileKey, TopoDS_Shap
     info.item = {SelectKind::Profile, QString::fromStdString(key.first),
                  QString::fromStdString(key.second), QStringLiteral("plane")};
     info.item.occurrence = occurrence;
+    if (markInactive(profile, isInactiveItem(info.item))) {
+      styleProfile(profile); // pale outside the active component (mitcad#420)
+    }
     display(profile, AIS_Shaded, std::move(info), true);
     m_profiles.emplace(key, profile);
   }
@@ -1599,6 +1760,16 @@ void OcctViewer::setSketchEntities(const std::vector<SketchEntityDisplay>& entit
     const auto existing = shown.find(key);
     if (existing != shown.end() && !entity.signature.isEmpty() &&
         existing->second.first == entity.signature) {
+      // Pale outside the active component (mitcad#420): the same entity
+      // may be the edited sketch's now, or no longer.
+      const occ::handle<AIS_Shape>& kept = existing->second.second;
+      const auto look = m_sketchEntityLooks.find(kept.get());
+      const auto info = m_pickInfo.find(kept.get());
+      if (look != m_sketchEntityLooks.end() && info != m_pickInfo.end() &&
+          markInactive(kept, isInactiveItem(info->second.item))) {
+        styleSketchEntity(kept, look->second);
+        m_context->Redisplay(kept, false);
+      }
       m_sketchEntities.push_back(existing->second.second);
       m_sketchEntityKeys.emplace(key, existing->second);
       shown.erase(existing);
@@ -1613,12 +1784,13 @@ void OcctViewer::setSketchEntities(const std::vector<SketchEntityDisplay>& entit
     look.centerline = entity.centerline;
     look.constrained = entity.constrained;
     look.reference = entity.reference;
-    styleSketchEntity(object, look);
-    m_sketchEntityLooks[object.get()] = look;
     PickInfo info;
     info.item = {isPoint ? SelectKind::SketchPoint : SelectKind::SketchCurve, entity.sketch,
                  entity.id, entity.geometry};
     info.item.occurrence = entity.occurrence;
+    markInactive(object, isInactiveItem(info.item)); // pale outside the active component (mitcad#420)
+    styleSketchEntity(object, look);
+    m_sketchEntityLooks[object.get()] = look;
     display(object, AIS_WireFrame, std::move(info), true);
     // Over the faces a sketch lies on.
     m_context->SetZLayer(object, Graphic3d_ZLayerId_Top);
@@ -1687,11 +1859,13 @@ void OcctViewer::setSketchEntities(const std::vector<SketchEntityDisplay>& entit
 }
 
 void OcctViewer::styleSketchEntity(const occ::handle<AIS_Shape>& object, const SketchEntityLook& look) const {
-  const Quantity_Color& color = look.reference      ? kReferenceColor
-                                : look.construction ? kConstructionColor
-                                : look.centerline   ? (m_backgroundDark ? kCenterlineColorDark : kCenterlineColor)
-                                : look.constrained  ? (m_backgroundDark ? kConstrainedColorDark : kConstrainedColor)
-                                                    : kSketchColor;
+  const Quantity_Color& own = look.reference      ? kReferenceColor
+                              : look.construction ? kConstructionColor
+                              : look.centerline   ? (m_backgroundDark ? kCenterlineColorDark : kCenterlineColor)
+                              : look.constrained  ? (m_backgroundDark ? kConstrainedColorDark : kConstrainedColor)
+                                                  : kSketchColor;
+  // Pale outside the active component (mitcad#420).
+  const Quantity_Color color = drawnInactive(object) ? inactiveColor(own, m_paper) : own;
   if (look.point) {
     setPointStyle(object, color, Aspect_TOM_O_POINT, 1.0);
   } else {
@@ -1768,31 +1942,45 @@ void OcctViewer::setDatums(const std::vector<DatumDisplay>& datums) {
       continue;
     }
     occ::handle<AIS_Shape> object = new AIS_Shape(datum.shape);
-    int mode = AIS_WireFrame;
-    switch (datum.kind) {
-    case SelectKind::Plane: {
-      object->SetColor(kPlaneColor);
-      object->SetTransparency(0.75);
-      const occ::handle<Prs3d_Drawer>& drawer = object->Attributes();
-      drawer->SetFaceBoundaryDraw(true);
-      drawer->SetFaceBoundaryAspect(new Prs3d_LineAspect(kAxisColor, Aspect_TOL_SOLID, 1.0));
-      mode = AIS_Shaded;
-      break;
-    }
-    case SelectKind::Axis:
-      setEdgeStyle(object, kAxisColor, 2.0, Aspect_TOL_DOTDASH);
-      break;
-    default:
-      setPointStyle(object, kAxisColor, Aspect_TOM_BALL, 1.5);
-      break;
-    }
     PickInfo info;
     info.item = {datum.kind, datum.uid, QString(), SelectionItem::kindName(datum.kind)};
     info.item.occurrence = datum.occurrence;
+    markInactive(object, isInactiveItem(info.item)); // pale outside the active component (mitcad#420)
+    const int mode = styleDatum(object, datum.kind);
     display(object, mode, std::move(info), true);
     m_datums.push_back(object);
   }
   sceneChanged();
+}
+
+int OcctViewer::styleDatum(const occ::handle<AIS_Shape>& object, SelectKind kind) const {
+  const bool inactive = drawnInactive(object);
+  const auto look = [this, inactive](const Quantity_Color& color) {
+    return inactive ? inactiveColor(color, m_paper) : color;
+  };
+  switch (kind) {
+  case SelectKind::Plane: {
+    object->SetColor(look(kPlaneColor));
+    object->SetTransparency(inactive ? kInactivePlaneTransparency : 0.75);
+    const occ::handle<Prs3d_Drawer>& drawer = object->Attributes();
+    drawer->SetFaceBoundaryDraw(true);
+    drawer->SetFaceBoundaryAspect(new Prs3d_LineAspect(look(kAxisColor), Aspect_TOL_SOLID, 1.0));
+    return AIS_Shaded;
+  }
+  case SelectKind::Axis:
+    setEdgeStyle(object, look(kAxisColor), 2.0, Aspect_TOL_DOTDASH);
+    return AIS_WireFrame;
+  default:
+    setPointStyle(object, look(kAxisColor), Aspect_TOM_BALL, 1.5);
+    return AIS_WireFrame;
+  }
+}
+
+void OcctViewer::styleProfile(const occ::handle<AIS_Shape>& profile) const {
+  const bool inactive = drawnInactive(profile);
+  profile->SetTransparency(inactive ? kInactiveProfileTransparency : 0.6);
+  profile->Attributes()->SetFaceBoundaryAspect(new Prs3d_LineAspect(
+      inactive ? inactiveColor(kSketchColor, m_paper) : kSketchColor, Aspect_TOL_SOLID, 2.0));
 }
 
 void OcctViewer::setHighlights(const std::vector<HighlightDisplay>& highlights) {
@@ -2313,9 +2501,9 @@ bool OcctViewer::occluded(const gp_Pnt& point) const {
   }
   const gp_Lin ray(point, toEye);
   for (const auto& [key, entry] : m_bodies) {
-    // Bodies drawn see-through (previews, ghosts) hide nothing; hidden
-    // bodies are not shown at all.
-    if (entry.style != BodyDisplay::Style::Normal || !entry.shape) {
+    // Bodies drawn see-through (previews, ghosts, inactive components'
+    // ghosts) hide nothing; hidden bodies are not shown at all.
+    if (entry.style != BodyDisplay::Style::Normal || entry.inactive || !entry.shape) {
       continue;
     }
     if (!entry.occluder) {
@@ -2511,6 +2699,11 @@ void OcctViewer::OnSelectionChanged(const occ::handle<AIS_InteractiveContext>& c
     }
   }
   m_context->ClearSelected(false);
+  // A click that took the active component's item before a nearer one of
+  // another component (mitcad#420).
+  if (!m_windowPick && items.size() == 1 && mitcad::pickPrioritized(m_context) && !outsideActive(items.first())) {
+    qDebug().noquote() << QStringLiteral("Pick priority: active %1").arg(m_activeScope.name);
+  }
   m_context->MainSelector()->AllowOverlapDetection(false);
   m_windowSelecting = false; // what follows is a hover or a click again
   emit picked(items, m_pressModifiers, m_windowPick);
@@ -3117,6 +3310,11 @@ void OcctViewer::setBackground(const QColor& top, const QColor& bottom, bool gra
         showBody(entry);
       }
     }
+    // What is pale outside the active component fades towards the new
+    // background (mitcad#420).
+    if (!m_inactiveObjects.empty()) {
+      applyInactiveGhosts(true);
+    }
   }
   m_backgroundTop = top;
   m_backgroundBottom = bottom;
@@ -3566,7 +3764,22 @@ void OcctViewer::paintGL() {
   }
   if (m_context->DetectedOwner() != m_hoveredOwner) {
     m_hoveredOwner = m_context->DetectedOwner();
+    m_hoveredPoint.reset();
     emit hovered(itemFor(m_hoveredOwner).value_or(SelectionItem()));
+  }
+  // The point under the mouse on it (mitcad#417), once per move of the
+  // mouse over the view: a frame drawn for anything else (a preview) after
+  // the mouse left keeps the last detection, which is no hover any more.
+  if (!m_hoveredOwner.IsNull() && m_hoverMoved) {
+    m_hoverMoved = false;
+    const std::optional<std::array<double, 3>> point = pickedPoint(m_hoveredOwner);
+    if (point && point != m_hoveredPoint) {
+      m_hoveredPoint = point;
+      if (std::optional<SelectionItem> item = itemFor(m_hoveredOwner)) {
+        item->at = point;
+        emit hoverMoved(*item);
+      }
+    }
   }
   // The camera is logged once it has kept still for a moment.
   const occ::handle<Graphic3d_Camera>& current = m_view->Camera();
@@ -3749,6 +3962,14 @@ bool OcctViewer::event(QEvent* event) {
     // The release goes to the dialog: an orbit or a window selection in
     // progress ends here, without a pick.
     cancelPointerInteraction();
+  }
+  if (event->type() == QEvent::Leave && m_hoveredPoint) {
+    // Out of the view (to a panel): the point is under the mouse no more.
+    // A move still to be drawn is not dropped: posted input (a UI test in
+    // a session without a cursor) gets a Leave right after each move,
+    // before the frame that detects it.
+    m_hoveredPoint.reset();
+    emit hoverMoved(SelectionItem());
   }
   const bool handled = QOpenGLWidget::event(event);
   if (event->type() == QEvent::DevicePixelRatioChange) {
@@ -3943,6 +4164,7 @@ void OcctViewer::mouseReleaseEvent(QMouseEvent* event) {
 
 void OcctViewer::mouseMoveEvent(QMouseEvent* event) {
   QOpenGLWidget::mouseMoveEvent(event);
+  m_hoverMoved = true; // the next frame says where the mouse is on the item
   if (m_scrollDragging) {
     endScrollDrag();
   }

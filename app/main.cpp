@@ -14,6 +14,7 @@
 #include <QtGlobal>
 #include <QtLogging>
 #include <memory>
+#include <optional>
 
 #include "MainWindow.hpp"
 #include "OcctViewer.hpp"
@@ -24,6 +25,7 @@
 #include "framework/DesktopEntry.hpp"
 #include "framework/Diagnostics.hpp"
 #include "framework/Numbers.hpp"
+#include "framework/Restart.hpp"
 #include "framework/TestDriver.hpp"
 #include "framework/TestSync.hpp"
 #include "framework/TypedTextLog.hpp"
@@ -255,6 +257,10 @@ int main(int argc, char* argv[]) {
     }
   }
 
+  // The layout (mitcad#419): --chrome for this run, else Preferences' Layout,
+  // else the platform's. The native macOS frontend has a layout of its own.
+  const std::optional<mitcad::ChromeStyle> layoutPreference = mitcad::layoutPreference();
+  QString chromeSource = QStringLiteral("the platform's default");
   if (parser.isSet(chromeOption)) {
     const QString chrome = parser.value(chromeOption);
     if (chrome == QLatin1String("docked")) {
@@ -265,12 +271,39 @@ int main(int argc, char* argv[]) {
       qCritical().noquote() << "Invalid --chrome argument (docked or floating):" << chrome;
       return 2;
     }
+    chromeSource = layoutPreference ? QStringLiteral("--chrome; the preference %1")
+                                          .arg(mitcad::chromeStyleName(*layoutPreference))
+                                    : QStringLiteral("--chrome");
+  } else if (layoutPreference && !nativeUiRequested) {
+    mitcad::setChromeStyle(*layoutPreference);
+    chromeSource = QStringLiteral("the preference");
   }
+  mitcad::setLayoutChoosable(!nativeUiRequested);
   if (parser.isSet(noGlassOption)) {
     mitcad::setGlassRequested(false);
   }
   qInfo().noquote() << "Style:" << QApplication::style()->name() << "Chrome:"
-                    << (mitcad::chromeStyle() == mitcad::ChromeStyle::Floating ? "floating" : "docked");
+                    << mitcad::chromeStyleName(mitcad::chromeStyle()) << QStringLiteral("(%1)").arg(chromeSource);
+  // What a restart keeps of this run's arguments (framework/Restart.hpp): its
+  // settings, not its start actions nor --chrome.
+  {
+    QStringList kept;
+    if (parser.isSet(uiOption)) {
+      kept << QStringLiteral("--ui=%1").arg(parser.value(uiOption));
+    }
+    for (const QCommandLineOption* flag : {&qtDialogsOption, &noRecoveryOption, &noGlassOption, &noMcpOption}) {
+      if (parser.isSet(*flag)) {
+        kept << QStringLiteral("--") + flag->names().constFirst();
+      }
+    }
+    for (const QString& folder : parser.values(mcpFolderOption)) {
+      kept << QStringLiteral("--mcp-folder=%1").arg(folder);
+    }
+    if (debugLog.on) {
+      kept << QStringLiteral("--debug-log"); // a new file: a given one would be overwritten
+    }
+    mitcad::setRestartArguments(kept);
+  }
   qInfo().noquote() << "Glass:" << (mitcad::glassActive() ? "on" : "off");
 
   if (parser.isSet(qtDialogsOption)) {

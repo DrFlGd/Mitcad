@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <initializer_list>
 
 #include <QCoreApplication>
 #include <QEvent>
@@ -15,6 +16,7 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QPixmap>
+#include <QSpacerItem>
 #include <QToolButton>
 #include <QVBoxLayout>
 #include <QWheelEvent>
@@ -146,6 +148,9 @@ public:
 
 protected:
   void paintEvent(QPaintEvent*) override {
+    if (m_card->isBare()) {
+      return; // the boxes of a bare card cast none
+    }
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing);
     painter.setOpacity(m_card->opacityLevel());
@@ -194,6 +199,10 @@ GlassCard::GlassCard(QWidget* parent) : QWidget(parent) {
   m_holderLayout->setContentsMargins(m_contentMargins);
   m_layout->addWidget(m_holder, 1);
   updateChevron();
+  // Where the header's parts and the content are, for a bare card's mask.
+  for (QWidget* watched : std::initializer_list<QWidget*>{m_header, m_chevron, m_titleLabel, m_holder}) {
+    watched->installEventFilter(this);
+  }
 }
 
 GlassCard::~GlassCard() { delete m_shadow; }
@@ -224,7 +233,12 @@ void GlassCard::setCollapsed(bool collapsed) {
 
 void GlassCard::addHeaderWidget(QWidget* widget) {
   widget->setParent(m_header);
-  m_headerLayout->addWidget(widget);
+  if (m_headerSpacer != nullptr) {
+    m_headerLayout->insertWidget(m_headerLayout->count() - 1, widget); // before the bare card's spacer
+  } else {
+    m_headerLayout->addWidget(widget);
+  }
+  widget->installEventFilter(this);
   m_hasHeaderWidgets = true;
   updateHeader();
 }
@@ -239,7 +253,95 @@ void GlassCard::setContent(QWidget* content, const QMargins& margins) {
   m_holderLayout->setContentsMargins(margins);
   if (content != nullptr) {
     m_holderLayout->addWidget(content);
+    content->installEventFilter(this);
   }
+  updateBareMask();
+}
+
+void GlassCard::setBare(bool bare) {
+  if (bare == m_bare) {
+    return;
+  }
+  m_bare = bare;
+  // Bare, the header's widgets follow the title, and its box ends after
+  // them; a card's header spans the card with the widgets at its right.
+  m_headerLayout->setStretchFactor(m_titleLabel, bare ? 0 : 1);
+  if (bare) {
+    m_headerSpacer = new QSpacerItem(0, 0, QSizePolicy::Expanding, QSizePolicy::Minimum);
+    m_headerLayout->addItem(m_headerSpacer);
+    m_headerLayout->setStretch(m_headerLayout->count() - 1, 1);
+  } else if (m_headerSpacer != nullptr) {
+    m_headerLayout->removeItem(m_headerSpacer);
+    delete m_headerSpacer;
+    m_headerSpacer = nullptr;
+  }
+  m_headerLayout->activate();
+  if (bare) {
+    updateBareMask();
+  } else {
+    clearMask();
+  }
+  update();
+  if (m_shadow) {
+    m_shadow->update();
+  }
+}
+
+void GlassCard::setContentRegion(const QRegion& region) {
+  m_contentRegion = region;
+  updateBareMask();
+}
+
+QRect GlassCard::headerBox() const {
+  if (m_header->isHidden()) {
+    return QRect();
+  }
+  // To the right end of the last part shown, and the header's margin.
+  int right = 0;
+  for (QObject* child : m_header->children()) {
+    const auto* part = qobject_cast<const QWidget*>(child);
+    if (part != nullptr && !part->isHidden()) {
+      right = std::max(right, part->geometry().right() + 1);
+    }
+  }
+  const QRect header = m_header->geometry();
+  const int width = std::min(header.width(), right + m_headerLayout->contentsMargins().right());
+  return QRect(header.left(), header.top() + 2, width, header.height() - 2);
+}
+
+void GlassCard::updateBareMask() {
+  if (!m_bare) {
+    return;
+  }
+  QRegion region(headerBox());
+  if (m_content != nullptr && !m_collapsed && !m_holder->isHidden()) {
+    region += m_contentRegion.translated(m_content->mapTo(this, QPoint(0, 0)));
+  }
+  region &= QRegion(rect());
+  if (region.isEmpty()) {
+    // An empty mask is none at all: the whole card would take the mouse.
+    region = QRegion(0, 0, 1, 1);
+  }
+  if (region != mask()) {
+    setMask(region);
+  }
+  update();
+}
+
+bool GlassCard::eventFilter(QObject* watched, QEvent* event) {
+  if (m_bare) {
+    switch (event->type()) {
+    case QEvent::Move:
+    case QEvent::Resize:
+    case QEvent::Show:
+    case QEvent::Hide:
+      updateBareMask();
+      break;
+    default:
+      break;
+    }
+  }
+  return QWidget::eventFilter(watched, event);
 }
 
 void GlassCard::setCapsule(bool capsule) {
@@ -461,6 +563,14 @@ void GlassCard::paintShadow(QPainter& painter, const QRectF& cardRect, qreal rad
 void GlassCard::paintEvent(QPaintEvent*) {
   QPainter painter(this);
   painter.setRenderHint(QPainter::Antialiasing);
+  if (m_bare) {
+    // Only the header's box; the content paints its own.
+    const QRect box = headerBox();
+    if (!box.isEmpty()) {
+      paintMaterial(painter, QRectF(box), kBoxRadius);
+    }
+    return;
+  }
   if (m_backdrop == Backdrop::Painted) {
     paintMaterial(painter, QRectF(rect()), cornerRadius());
   }
@@ -538,6 +648,9 @@ bool GlassCard::event(QEvent* event) {
     }
     if (m_windowed && event->type() == QEvent::Resize && isVisible()) {
       mac::setGlassCornerRadius(this, cornerRadius()); // a capsule's radius follows its height
+    }
+    if (event->type() == QEvent::Resize) {
+      updateBareMask();
     }
     break;
   case QEvent::Show:

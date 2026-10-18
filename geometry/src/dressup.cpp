@@ -925,6 +925,69 @@ std::string fillet_failure(const BRepFilletAPI_MakeFillet& maker, const Shape& b
   return maker.NbFaultyVertices() > 0 ? corner_failure(maker) : "the radius may be too large for the edges";
 }
 
+// Where OCCT's fillet failed because the roundings of a convex and a
+// concave edge overlap on the face between them (a step narrower than the
+// two roundings are wide; OCCT runs two overlapping roundings over the face
+// as one only where both are convex or both concave): the selected edges of
+// the concave contours of such pairs, which the convex roundings come
+// before. Empty where the failure is another one.
+std::vector<int> concave_after_convex(const BRepFilletAPI_MakeFillet& maker, const Shape& body,
+                                      const std::vector<int>& owner) {
+  std::vector<int> later;
+  if (maker.Failure() != ChFi3d_Builder::Failure_Overlap) {
+    return later;
+  }
+  // The failed contours: whether convex (1), concave (0) or neither (-1)
+  // all along, and the faces of their edges.
+  struct Failed {
+    int contour = 0;
+    int kind = -1;
+    std::set<int> faces;
+  };
+  std::vector<Failed> failed;
+  for (int i = 1; i <= maker.NbFaultyContours(); ++i) {
+    Failed f;
+    f.contour = maker.FaultyContour(i);
+    for (int ie = 1; ie <= maker.NbEdges(f.contour); ++ie) {
+      const int edge = body.edge_index(maker.Edge(f.contour, ie));
+      if (edge < 0) {
+        f.kind = -2;
+        break;
+      }
+      const auto [a, b] = edge_face_pair(body, edge);
+      const ChFiDS_TypeOfConcavity type =
+          ChFi3d::DefineConnectType(body.edge(edge), body.face(a), body.face(b), 1.0e-4, false);
+      const int kind = type == ChFiDS_Convex ? 1 : type == ChFiDS_Concave ? 0 : -2;
+      f.kind = (ie == 1 || f.kind == kind) ? kind : -2;
+      f.faces.insert(a);
+      f.faces.insert(b);
+    }
+    failed.push_back(f);
+  }
+  std::set<int> deferred;
+  for (const Failed& concave : failed) {
+    if (concave.kind != 0) {
+      continue;
+    }
+    for (const Failed& convex : failed) {
+      if (convex.kind == 1 && std::any_of(concave.faces.begin(), concave.faces.end(),
+                                          [&](int f) { return convex.faces.count(f) > 0; })) {
+        deferred.insert(concave.contour);
+        break;
+      }
+    }
+  }
+  for (const int ic : deferred) {
+    for (int ie = 1; ie <= maker.NbEdges(ic); ++ie) {
+      const int edge = body.edge_index(maker.Edge(ic, ie));
+      if (edge >= 0 && owner[static_cast<std::size_t>(edge)] >= 0) {
+        later.push_back(edge);
+      }
+    }
+  }
+  return later;
+}
+
 // The rolling ball fillets of the sets (none asymmetric or G2) that own the
 // body's edges, at their sizes times `scale`.
 ShapePtr round_edges(const std::string& feature, const Shape& body, const std::vector<FilletSet>& sets,
@@ -1023,6 +1086,30 @@ ShapePtr round_edges(const std::string& feature, const Shape& body, const std::v
   }
   detail::build(maker);
   if (!maker.IsDone()) {
+    // A convex and a concave rounding that overlap on the face between
+    // them: the convex one first, then the concave one on that result, its
+    // ball rolling on the face beyond the remaining strip of the face
+    // between, the convex rounding (an S-shaped section whose concave arc
+    // touches the convex one, as the files' roundings of such steps are).
+    // The concave edges are found again by their names.
+    const std::vector<int> later = setbacks.empty() ? concave_after_convex(maker, body, owner) : std::vector<int>();
+    if (!later.empty()) {
+      std::vector<int> first = owner;
+      for (const int edge : later) {
+        first[static_cast<std::size_t>(edge)] = -1;
+      }
+      const ShapePtr convex = round_edges(feature, body, sets, first, rolling_ball_corners, scale, tight);
+      std::vector<int> second(static_cast<std::size_t>(convex->edge_count()), -1);
+      for (const int edge : later) {
+        const std::string& name = body.edge_name(edge);
+        const std::vector<int> found = name.empty() ? std::vector<int>() : convex->find_edges(name);
+        if (found.size() != 1) {
+          throw std::runtime_error("fillet failed; " + fillet_failure(maker, body));
+        }
+        second[static_cast<std::size_t>(found.front())] = owner[static_cast<std::size_t>(edge)];
+      }
+      return round_edges(feature, *convex, sets, second, rolling_ball_corners, scale, tight);
+    }
     throw std::runtime_error("fillet failed; " + fillet_failure(maker, body));
   }
   const ShapePtr rounded = join_at_turn_stops(name_result(maker, feature, "fillet", body), maker.ChainTurnStops());

@@ -19,7 +19,9 @@ class OcctViewer;
 // The central widget of the Floating chrome: the header (title bar and
 // ribbon, if any) on top, below it the 3D view filling the rest of the
 // window, and GlassCards as children over the view, anchored to its corners
-// with a margin that is concentric with the window's corner radius. A card
+// with a margin that is concentric with the window's corner radius; no card
+// starts above the header's bottom (mitcad#419), which is followed as it
+// grows, shrinks or moves. A card
 // has the size of its content up to a share of the view, and scrolls
 // inside when it is longer (the content's own scroll area).
 //
@@ -96,6 +98,10 @@ private:
   };
 
   void layoutCards();
+  // "Floating cards: window 1280x800, top bar bottom 140; browserDock
+  // 12,152 260x300; ..." in the window's coordinates, when it changed (UI
+  // tests check that no card is under the top bar, mitcad#419).
+  void logCards();
   void adopt(GlassCard* card);
   void elidePill(int room = 0);
   GlassCard* ensurePill();
@@ -106,6 +112,7 @@ private:
   bool m_layoutQueued = false;
   bool m_inLayout = false;
   bool m_windowed; // the cards are windows (native glass)
+  QString m_loggedCards;
   QPointer<QWidget> m_hostWindow; // watched for moves and state changes
 
   GlassCard* m_pill = nullptr;

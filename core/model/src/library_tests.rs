@@ -623,3 +623,73 @@ fn the_parts_list_counts_placements_and_names_library_parts() {
     assert_eq!(parts[0]["library"]["config"], "M4x16");
     assert_eq!(parts[0]["linked"], true);
 }
+
+#[test]
+fn the_library_usage_counts_each_library_component_once() {
+    let library = Library::new();
+    let mut doc = Document::new(MockKernel::default());
+    doc.set_link_resolver(Some(library));
+    assert_eq!(
+        query(&doc, json!({"query": "library_usage"})),
+        json!({"parts": []})
+    );
+    // A bracket with two pins (M4x16), placed twice, and one more pin of
+    // another row at the top: one component of the library, five times.
+    let bracket = command(
+        &mut doc,
+        json!({"cmd": "create_component", "name": "Bracket"}),
+    )
+    .unwrap();
+    doc.insert_library_component(&part(V1, Some("M4x16")), &InsertOptions::default())
+        .unwrap();
+    command(
+        &mut doc,
+        json!({"cmd": "copy_occurrence", "occurrence": "TP 1 M4x16:1"}),
+    )
+    .unwrap();
+    command(
+        &mut doc,
+        json!({"cmd": "activate_component", "component": "C0"}),
+    )
+    .unwrap();
+    let copy = command(
+        &mut doc,
+        json!({"cmd": "copy_occurrence", "occurrence": bracket["occurrence"]}),
+    )
+    .unwrap();
+    let top = command(
+        &mut doc,
+        json!({"cmd": "insert_component", "library": {"id": "test-pins", "url": "https://example.org/pins.git",
+               "rev": V1, "component": "pin", "config": "M10x20"}, "link": false}),
+    )
+    .unwrap();
+    assert_eq!(
+        query(&doc, json!({"query": "library_usage"})),
+        json!({"parts": [{"library": "test-pins", "url": "https://example.org/pins.git",
+                          "component": "pin", "count": 5}]})
+    );
+    // It follows the design as parts are removed.
+    command(
+        &mut doc,
+        json!({"cmd": "delete_occurrence", "occurrence": copy["occurrence"]}),
+    )
+    .unwrap();
+    assert_eq!(
+        query(&doc, json!({"query": "library_usage"}))["parts"][0]["count"],
+        3
+    );
+    command(
+        &mut doc,
+        json!({"cmd": "delete_occurrence", "occurrence": bracket["occurrence"]}),
+    )
+    .unwrap();
+    command(
+        &mut doc,
+        json!({"cmd": "delete_occurrence", "occurrence": top["occurrence"]}),
+    )
+    .unwrap();
+    assert_eq!(
+        query(&doc, json!({"query": "library_usage"})),
+        json!({"parts": []})
+    );
+}

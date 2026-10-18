@@ -1,0 +1,168 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: a rounding ending on a face at the end split round the corner's
+vertex into several faces of one surface, each piece with its own
+surface (mitcad#415).
+
+The case: a bar's top edge rounded where the bar meets a bore's wall; the
+wall round the corner's vertex is three faces of one cylinder (a piece
+above the bar's top, one beside the bar below it and one beside it above,
+as booleans that kept faces of different origins apart leave it), each on
+its own cylinder object. PerformIntersectionAtEnd walks round the vertex
+through the three and, the faces being tangent along both edges between
+them, takes the cut on one piece (oneintersection, Face[0]); the part of
+the contact's arc on another piece (edgesau, the arc on facesau) from the
+contact's point to the vertex becomes the edge between them. Its curve on
+Face[0] was asked of the arc (BRep_Tool::CurveOnSurface), which has curves
+only on its own faces' surfaces: null where the pieces do not share the
+surface object. The edge then had no curve on that face, and the arc's
+point on it (Hc1, Hc2) was taken at (0, 0): the face was invalid or cut
+along a wrong curve (the volume wrong).
+
+- ChFi3d_ArcOnSameSurface: an edge's curve on a face of the same surface
+  as its own faces: its 3d curve projected on the face's surface,
+  parametrized as the 3d curve, moved by whole periods into the face's
+  period at the vertex, and checked to lie on the surface.
+- PerformIntersectionAtEnd: where the arc's curve on the face at the end
+  is null (Hc1 of the first face, Hc2 of the last, C2dint1 of the edge
+  between the pieces in the oneintersection case), it is computed so.
+
+Before, the result was invalid. Test: a bar across a ring of two layers,
+the upper notched over the bar and the notch filled again (the bore's wall
+in three pieces round each end of the bar's top edges), as copied (each
+piece on its own surface): the bar's top edges rounded (geometry
+test_fillet_results).
+
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
+@@ -595,6 +595,88 @@
+ }
+ 
+ //=======================================================================
++// function : ChFi3d_ArcOnSameSurface
++// purpose  : The curve on face F of an edge E of another face of the same
++//            surface (a face at a corner split into several faces of one
++//            surface, e.g. by booleans, whose pieces each keep their own
++//            surface): E's curve projected on F's surface, parametrized as
++//            E's curve, in the period of F at the vertex V (when V is of F)
++//            or of F's middle. Null where E does not lie on F's surface
++//            within its tolerance.
++//=======================================================================
++
++static occ::handle<Geom2d_Curve> ChFi3d_ArcOnSameSurface(const TopoDS_Edge&   E,
++                                                         const TopoDS_Face&   F,
++                                                         const TopoDS_Vertex& V)
++{
++  double                        f = 0., l = 0.;
++  const occ::handle<Geom_Curve> C = BRep_Tool::Curve(E, f, l);
++  if (C.IsNull() || BRep_Tool::Degenerated(E))
++  {
++    return nullptr;
++  }
++  const occ::handle<Geom_Surface> S   = BRep_Tool::Surface(F);
++  const double                    tol = std::max(BRep_Tool::Tolerance(E), BRep_Tool::Tolerance(F));
++  double                          tolReached = Precision::Confusion();
++  occ::handle<Geom2d_Curve>       C2d        = GeomProjLib::Curve2d(C, f, l, S, tolReached);
++  if (C2d.IsNull())
++  {
++    return nullptr;
++  }
++  // Into the face's period: at the vertex where the face has it, else at
++  // the middle of the face's bounds.
++  bool isVOfF = false;
++  for (TopExp_Explorer ex(F, TopAbs_VERTEX); ex.More() && !isVOfF && !V.IsNull(); ex.Next())
++  {
++    isVOfF = ex.Current().IsSame(V);
++  }
++  bool isVOfE = false;
++  for (TopExp_Explorer ex(E, TopAbs_VERTEX); ex.More() && !isVOfE && !V.IsNull(); ex.Next())
++  {
++    isVOfE = ex.Current().IsSame(V);
++  }
++  gp_Pnt2d aRef, aCur;
++  if (isVOfF && isVOfE)
++  {
++    aRef = BRep_Tool::Parameters(V, F);
++    aCur = C2d->Value(BRep_Tool::Parameter(V, E));
++  }
++  else
++  {
++    double u1 = 0., u2 = 0., v1 = 0., v2 = 0.;
++    BRepTools::UVBounds(F, u1, u2, v1, v2);
++    aRef.SetCoord(0.5 * (u1 + u2), 0.5 * (v1 + v2));
++    aCur = C2d->Value(0.5 * (f + l));
++  }
++  gp_Vec2d aShift(0., 0.);
++  if (S->IsUPeriodic())
++  {
++    const double T = S->UPeriod();
++    aShift.SetX(T * std::round((aRef.X() - aCur.X()) / T));
++  }
++  if (S->IsVPeriodic())
++  {
++    const double T = S->VPeriod();
++    aShift.SetY(T * std::round((aRef.Y() - aCur.Y()) / T));
++  }
++  if (aShift.SquareMagnitude() > 0.)
++  {
++    C2d = occ::down_cast<Geom2d_Curve>(C2d->Translated(aShift));
++  }
++  // It must lie on the face's surface where E's curve does.
++  for (int i = 0; i <= 4; i++)
++  {
++    const double   t  = f + (l - f) * i / 4.;
++    const gp_Pnt2d uv = C2d->Value(t);
++    if (S->Value(uv.X(), uv.Y()).Distance(C->Value(t)) > 10. * tol)
++    {
++      return nullptr;
++    }
++  }
++  return C2d;
++}
++
++//=======================================================================
+ // function : ChFi3d_CutCrossesSeamLine
+ // purpose  : Where the curve Pc on the periodic face Fv (from Udeb to Ufin)
+ //            crosses the line of the face's seam Seam (an iso-line of the
+@@ -6671,6 +6753,14 @@
+     if (nb == 1)
+     {
+       Hc1 = BRep_Tool::CurveOnSurface(Edge[0], Face[0], Ubid, Ubid);
++      if (Hc1.IsNull())
++      {
++        // An edge of another face of the face's surface, at the vertex (a
++        // face at the end split round the vertex into faces of one
++        // surface, each with its own, the cut on one of them): its curve
++        // on this face is computed.
++        Hc1 = ChFi3d_ArcOnSameSurface(Edge[0], Face[0], Vtx);
++      }
+       if (isOnSame1)
+       {
+         // update interference param on Fi1 and point of CV1
+@@ -7117,6 +7207,11 @@
+       Hc2 = BRep_Tool::CurveOnSurface(E2, Face[nbface - 1], Ubid, Ubid);
+       if (Hc2.IsNull())
+       {
++        // (An edge of another face of the face's surface, at the vertex.)
++        Hc2 = ChFi3d_ArcOnSameSurface(E2, Face[nbface - 1], Vtx);
++      }
++      if (Hc2.IsNull())
++      {
+         // curve 2d is not found,  Sfacemoins1 is extended CV2.Point() is projected there
+ 
+         ChFi3d_ExtendSurface(Sfacemoins1, prolface[0]);
+@@ -7825,6 +7920,13 @@
+               aLocalEdge.Reverse();
+             }
+             C2dint1 = BRep_Tool::CurveOnSurface(aLocalEdge, Face[0], ubid, vbid);
++            if (C2dint1.IsNull())
++            {
++              // Face[0] and facesau are faces of one surface, each with
++              // its own (a face at the corner split round the vertex):
++              // edgesau has no curve on Face[0], it is computed.
++              C2dint1 = ChFi3d_ArcOnSameSurface(edgesau, Face[0], Vtx);
++            }
+           }
+         }
+         else

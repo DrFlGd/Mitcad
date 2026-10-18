@@ -13,7 +13,8 @@ use serde_json::{Map, Value, json};
 use super::ApiError;
 use crate::build::place::{LengthPlan, Plan, Spot, value_in};
 use crate::build::{
-    BuildRole, ConnectInput, CutListOptions, EditInput, PanelInput, PartInput, PlaceInput, Placed,
+    BuildRole, ConnectInput, CutListOptions, EditInput, MitreCut, PanelInput, PartInput,
+    PlaceInput, Placed,
 };
 use crate::document::Document;
 use crate::expr::Unit;
@@ -299,8 +300,44 @@ impl<K: Kernel> Document<K> {
             for (kind, offset) in side.snaps() {
                 snaps.push(json!({"kind": kind, "offset": offset, "point": at(offset)}));
             }
-            snapped = json!({"kind": side.snapped, "offset": side.offset,
-                             "point": at(side.offset), "width": side.far - side.near});
+            // The reference the placement is bound to and the offset from
+            // it, as `at.from` and `at.offset` take them (mitcad#417).
+            snapped = json!({"kind": side.snapped, "from": side.from.as_str(),
+                             "offset": side.from_offset, "point": at(side.offset),
+                             "width": side.far - side.near});
+        }
+        // On an end (mitcad#417): straight or turned, the turns the panel
+        // offers, a corner's offset and the mitre it gets.
+        let mut end = Value::Null;
+        if let Spot::Joint(joint) = &plan.spot
+            && let Some(e) = &joint.end
+        {
+            let host = |v: crate::build::V3| active.apply_vector(v);
+            let mitre = match &e.mitre {
+                Some(m) => {
+                    let cut = match m.cut {
+                        MitreCut::New => "new",
+                        MitreCut::Existing => "existing",
+                        MitreCut::Shared => "shared",
+                        MitreCut::None => "none",
+                    };
+                    let own = plan.own_ends.a.as_ref().or(plan.own_ends.b.as_ref());
+                    let angle = match m.cut {
+                        MitreCut::Existing => plan.target_ends.as_ref().map(|(_, _, c)| &c.angle),
+                        _ => own.map(|c| &c.angle),
+                    };
+                    json!({"cut": cut,
+                           "angle": angle.and_then(|a| value_in(self, a, Unit::DEG).ok())})
+                }
+                None => json!({"cut": "none", "angle": null}),
+            };
+            end = json!({
+                "zone": e.zone,
+                "direction": host(e.direction),
+                "turns": e.turns.map(host),
+                "offset": e.offset,
+                "mitre": mitre,
+            });
         }
         json!({
             "frame": frame_json(&frame),
@@ -314,6 +351,7 @@ impl<K: Kernel> Document<K> {
             "ends": ends,
             "snaps": snaps,
             "side": snapped,
+            "end": end,
             "host": self.host_json(),
             "designation": plan.designation,
             "box": plan.bounds.as_ref().map(|b| json!({"min": b.min, "max": b.max})),
@@ -538,6 +576,7 @@ impl<K: Kernel> Document<K> {
                     "added_by": info.record.added_by,
                     "adds": info.record.adds,
                     "junction": info.record.junction,
+                    "from": info.record.from.map(|f| f.as_str()),
                     "machining": machining,
                 })
             })

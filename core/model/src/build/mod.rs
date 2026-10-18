@@ -30,7 +30,7 @@ pub use junctions::{Junction, JunctionSide};
 pub use meta::*;
 pub use place::{
     BindInput, EditAt, EditInput, EndCutInput, EndFrom, EndsInput, LengthInput, MitreCut,
-    MitreInput, OwnMachining, PartInput, PlaceAt, PlaceInput, PlaceKind, Placed,
+    MitreInput, OwnMachining, PartInput, PlaceAt, PlaceInput, PlaceKind, Placed, SideFrom,
 };
 pub use sources::{LibrarySourceDef, LibrarySources, SourceDesign};
 
@@ -44,6 +44,8 @@ mod easy_tests;
 mod junction_tests;
 #[cfg(test)]
 mod place_tests;
+#[cfg(test)]
+mod side_end_tests;
 #[cfg(test)]
 mod source_tests;
 #[cfg(test)]
@@ -136,6 +138,10 @@ pub struct BuildRecord {
     /// A connector's junction (`build_junctions`' id).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub junction: Option<String>,
+    /// What a part on a side or a rail is placed from (mitcad#417): its
+    /// joint's slide is bound to that end or the middle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<place::SideFrom>,
 }
 
 /// What a BUILD part is (`docs/libraries.md`, "BUILD parts").

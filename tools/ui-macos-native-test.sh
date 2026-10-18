@@ -15,8 +15,8 @@ fi
 ui_init "$1" "${2:-ui-macos-native}"
 scenario=${3:-workflow}
 # A scenario that models in the root starts from an empty design without a
-# stored policy (written below), not from a new design, whose root is an
-# assembly with an active Part1 (mitcad#220).
+# stored policy (written below), not from a new design, whose active Part1
+# would take the features (mitcad#220, mitcad#421).
 plain_design=0
 case "$scenario" in
   workflow) script=native-macos.mitcad-ui ;;

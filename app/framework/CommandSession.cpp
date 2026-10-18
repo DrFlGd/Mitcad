@@ -152,6 +152,9 @@ CommandSession::CommandSession(const CommandDef& def, CommandHost& host, const Q
   TestSync::watch(&m_previewTimer);
   // The hover of a tangent chain (mitcad#290); emitted while the view paints.
   connect(&m_host.viewer(), &OcctViewer::hovered, this, &CommandSession::hovered, Qt::QueuedConnection);
+  // The point under the mouse, for a command that previews a click there
+  // (CommandDef::hoverPreview, mitcad#417).
+  connect(&m_host.viewer(), &OcctViewer::hoverMoved, this, &CommandSession::hoverMoved, Qt::QueuedConnection);
 }
 
 CommandSession::~CommandSession() {
@@ -701,6 +704,19 @@ void CommandSession::setPresenter(CommandPresenter& presenter) {
     };
   }
   actions.valueFocused = [this](const QString& key, bool focused) { valueFocused(key, focused); };
+  // The button beside a choice (InputDef::onButton, mitcad#418): once the
+  // model is idle, with the input's state; it changes no input itself.
+  actions.buttonClicked = [this](const QString& key) {
+    inputAction(
+        [this, key] {
+          const auto slot = slotOf(key);
+          if (slot && slot->def->onButton) {
+            qDebug().noquote() << QStringLiteral("%1: %2 button").arg(m_def.name, slot->def->label);
+            slot->def->onButton(scopeOf(*slot), m_host);
+          }
+        },
+        false);
+  };
   actions.detached = [this] { presenterDetached(); };
   presenter.setActions(std::move(actions));
 
@@ -3021,6 +3037,19 @@ void CommandSession::discard() {
 
 bool CommandSession::focusValue(const QString& key) { return m_presenter != nullptr && m_presenter->focusValue(key); }
 
+bool CommandSession::choose(const QString& key, const QString& value) {
+  if (m_done || m_presenter == nullptr || !m_presenter->actions().choiceChanged) {
+    return false;
+  }
+  const auto slot = slotOf(key);
+  if (!slot || slot->def->type != InputDef::Type::Choice) {
+    return false;
+  }
+  // As the panel's drop-down does: queued while the model computes.
+  m_presenter->actions().choiceChanged(key, value);
+  return true;
+}
+
 // Takes an edit's roll-back away: with undo while it is the last step, so
 // that the edit stays one undo step, else by moving the marker back.
 bool CommandSession::rollForward() {
@@ -3105,6 +3134,9 @@ void CommandSession::finish(bool committed) {
   viewer.setHoverChain(TopoDS_Shape());
   m_host.setConstructionHidden(false);
   m_host.inputActivated(SelectFilter());
+  if (m_def.ended) {
+    m_def.ended(committed); // what the command opened beside its panel (mitcad#418)
+  }
   emit finished(committed);
 }
 

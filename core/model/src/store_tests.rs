@@ -327,6 +327,33 @@ fn gc_removes_the_files_used_longest_ago() {
 }
 
 #[test]
+fn an_import_s_results_are_handed_over_however_quick() {
+    // The import process hands its evaluation over in a store of its own
+    // (mitcad#413): every result the store takes, however quick, without
+    // a store of the document's, and none marked written there.
+    let handed = Folder::new();
+    let own = Folder::new();
+    let mut p = part();
+    let report = p.b.doc.hand_off_results(&handed.store());
+    assert_eq!((report.results, report.failed), (3, 0));
+    assert_eq!(handed.files().len(), 3);
+    assert!(p.b.doc.result_store().is_none());
+    p.b.doc.set_result_store(Some(own.store()));
+    assert_eq!(
+        p.b.doc.persist_results(Duration::from_secs(3600)).results,
+        0,
+        "the quick ones are left out of the document's store"
+    );
+    assert_eq!(p.b.doc.persist_results(Duration::ZERO).results, 3);
+    // The design read with it takes them instead of evaluating them.
+    let opened = open(&p.b.doc.to_json(), Some(handed.store()));
+    assert_eq!(opened.stats().restored, vec![p.b.extrude, p.boss, p.fillet]);
+    assert_eq!(opened.kernel().count("extrude"), 0);
+    assert_eq!(histories(&opened), histories(&p.b.doc));
+    assert_eq!(opened.versions(), p.b.doc.versions());
+}
+
+#[test]
 fn without_a_store_nothing_is_written_or_read() {
     let mut p = part();
     assert_eq!(p.b.doc.persist_results(Duration::ZERO), Default::default());

@@ -1129,6 +1129,16 @@ fn text(
     if t["definition"]["rectangleLines"].is_array() {
         v["wrap"] = json!(true);
     }
+    // The `.ipt` decoder's measures (mitcad#414): the lines' own spacing,
+    // aligned by their pens, the top at the first line's highest outline.
+    if let Some(s) = t["lineSpacing"].as_f64().filter(|s| *s > 0.0) {
+        v["line_spacing"] = json!(mm(s));
+    }
+    for (key, mitcad) in [("penAligned", "pen_align"), ("inkTop", "ink_top")] {
+        if t[key] == true {
+            v[mitcad] = json!(true);
+        }
+    }
     if let Some(f) = t["fontName"].as_str() {
         v["font"] = json!(f);
     }
@@ -1144,6 +1154,9 @@ fn text(
         if t[key] == true {
             v[mitcad] = json!(true);
         }
+    }
+    if let Some(glyphs) = stored_glyphs(t, &v, height) {
+        v["glyphs"] = glyphs;
     }
     let definition = &t["definition"];
     // The dump's enums (values or names): left, centre, right; top, middle,
@@ -1210,6 +1223,60 @@ fn text(
         _ => {}
     }
     Some(v)
+}
+
+/// The glyph outlines a file stores with a text (SCHEMA.md `Text.glyphs`,
+/// cm) as the model text's `glyphs` (mitcad#416): in units of the text's
+/// height (`height`, cm), for the string, font and style of the model text
+/// `v`. The model uses them while that font is not installed.
+fn stored_glyphs(t: &Value, v: &Value, height: f64) -> Option<Value> {
+    let list = t["glyphs"].as_array()?;
+    if list.len() != v["text"].as_str()?.chars().count() || height <= 0.0 {
+        return None;
+    }
+    let glyphs = list
+        .iter()
+        .map(|g| {
+            let advance = g["advance"].as_f64()? / height;
+            let contours: Vec<Vec<Vec<[f64; 2]>>> = match &g["contours"] {
+                Value::Null => Vec::new(),
+                c => serde_json::from_value(c.clone()).ok()?,
+            };
+            let contours: Vec<Vec<Vec<[f64; 2]>>> = contours
+                .iter()
+                .map(|contour| {
+                    contour
+                        .iter()
+                        .map(|piece| {
+                            piece
+                                .iter()
+                                .map(|p| [p[0] / height, p[1] / height])
+                                .collect()
+                        })
+                        .collect()
+                })
+                .collect();
+            let mut out = json!({});
+            if advance != 0.0 {
+                out["advance"] = json!(advance);
+            }
+            if !contours.is_empty() {
+                out["contours"] = json!(contours);
+            }
+            Some(out)
+        })
+        .collect::<Option<Vec<Value>>>()?;
+    let mut stored = json!({
+        "text": v["text"],
+        "font": v["font"].as_str().unwrap_or(""),
+        "glyphs": glyphs,
+    });
+    for key in ["bold", "italic"] {
+        if v[key] == true {
+            stored[key] = json!(true);
+        }
+    }
+    Some(stored)
 }
 
 /// The direction of the first of a text box's lines, start to end, as the

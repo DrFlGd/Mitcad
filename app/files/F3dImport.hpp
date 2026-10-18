@@ -50,6 +50,13 @@ public:
   void setOptions(const QJsonObject& options);
   // The options the import ran with (the documents chosen, ...).
   const QJsonObject& options() const { return m_options; }
+  // The store the worker hands the import's evaluation over in (every
+  // result a store takes, mitcad#413), while this object lives: the
+  // application reads the imported design with it rather than evaluating
+  // every feature again. Empty: none was written.
+  QString handedOverResults() const {
+    return m_handedOver > 0 ? m_dir.filePath(QStringLiteral("results")) : QString();
+  }
 
 signals:
   // ok: `design` is the imported document's design file (JSON) and
@@ -85,6 +92,7 @@ private:
   bool m_preset = false; // m_options given (setOptions)
   QPointer<QWidget> m_window;
   QTemporaryDir m_dir;
+  int m_handedOver = 0; // results the worker handed over (handedOverResults)
   QProcess* m_process = nullptr;
   ImportProgress* m_dialog = nullptr;
   QPointer<QMessageBox> m_question; // askRetryBodies, while it asks

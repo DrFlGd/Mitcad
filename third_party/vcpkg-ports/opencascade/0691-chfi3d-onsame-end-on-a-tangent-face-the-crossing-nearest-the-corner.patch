@@ -1,0 +1,90 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: an OnSame end whose face at the end continues the opposite face
+tangentially, the contact a closed curve that comes round to that face's
+surface again (mitcad#235).
+
+The case: a recess's rim on a part's bottom rounded, the recess crossed by
+a rib whose bottom is the part's bottom, the rib's edges with the bottom
+rounded. Each half of the rim's rounding ends at the rib; the face at the
+end is the rib's rounding, tangent to the bottom (the opposite face) along
+the prolonged edge. IntersUpdateOnSame took the point where the contact
+on the bottom, a circle round the recess's axis, meets the rounding's
+surface: the contact only touches that surface (it lies on the bottom,
+which the surface touches along the edge), at both ends of the half, and
+the intersection gave the far end's touch, a diameter away. The cap was
+then sought between the two ends ("echec calcul intersection") or the
+point was the other corner's.
+
+- IntersUpdateOnSame: where the surfaces are tangent along the prolonged
+  edge (ChFi3d::IsTangentFaces with the face at the end taken either way:
+  the orientation the corner passes it with is not the face's in the
+  solid), both the intersection and the contact's crossing with the
+  prolonged edge (until now sought only when the intersection found
+  nothing) are computed, and the one nearer the corner's vertex is taken.
+  Elsewhere the intersection alone, as before.
+
+Before, the rounding failed at both ends. Test: a disc's recess crossed by
+a rib, its rim rounded (geometry test_fillet_results).
+
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
+@@ -365,25 +365,46 @@
+     Hc3df = new GeomAdaptor_Curve(c3dFI, uf, ul);
+   }
+ 
+-  if (Update(HBs, Hc3df, FIop, CPop, FprolUV, isFirst, c3dU))
++  // Where the face at the end is tangent to Fop along the prolonged edge,
++  // the contact, which lies on Fop, touches the face's surface there
++  // without crossing it: the intersection of the two is ill-conditioned,
++  // and may give only the touch at the contact's other end (the contact
++  // coming round to the same surface again). Then the contact's crossing
++  // with the prolonged edge is sought too, and of the two points the one
++  // nearer the corner's vertex is taken (the surfaces tangent along the
++  // edge, whichever way the faces are taken).
++  if (Eprol.IsNull()
++      || (!ChFi3d::IsTangentFaces(Eprol, Fprol, Fop)
++          && !ChFi3d::IsTangentFaces(Eprol, TopoDS::Face(Fprol.Reversed()), Fop)))
+   {
+-    return true;
++    return Update(HBs, Hc3df, FIop, CPop, FprolUV, isFirst, c3dU);
+   }
+-
+-  if (Eprol.IsNull() || !ChFi3d::IsTangentFaces(Eprol, Fprol, Fop))
+-  {
+-    return false;
+-  }
+-
+-  occ::handle<Geom2d_Curve> gpcprol = BRep_Tool::CurveOnSurface(Eprol, Fprol, uf, ul);
++  ChFiDS_FaceInterference aFI[2] = {FIop, FIop};
++  ChFiDS_CommonPoint      aCP[2] = {CPop, CPop};
++  gp_Pnt2d                aUV[2] = {FprolUV, FprolUV};
++  double                  aW[2]  = {c3dU, c3dU};
++  bool                    aOk[2] = {false, false};
++  aOk[0] = Update(HBs, Hc3df, aFI[0], aCP[0], aUV[0], isFirst, aW[0]);
++  double                    ef = 0., el = 0.;
++  occ::handle<Geom2d_Curve> gpcprol = BRep_Tool::CurveOnSurface(Eprol, Fprol, ef, el);
+   if (gpcprol.IsNull())
+   {
+     throw Standard_ConstructionError("Failed to get p-curve of edge");
+   }
+   occ::handle<Geom2dAdaptor_Curve> pcprol  = new Geom2dAdaptor_Curve(gpcprol);
+   double                           partemp = BRep_Tool::Parameter(Vtx, Eprol);
+-
+-  return Update(HBs, pcprol, HGs, FIop, CPop, FprolUV, isFirst, partemp, c3dU, Tol);
++  aOk[1] = Update(HBs, pcprol, HGs, aFI[1], aCP[1], aUV[1], isFirst, partemp, aW[1], Tol);
++  if (!aOk[0] && !aOk[1])
++  {
++    return false;
++  }
++  const gp_Pnt aPV = BRep_Tool::Pnt(Vtx);
++  const int    k   = !aOk[0] || (aOk[1] && aCP[1].Point().Distance(aPV) < aCP[0].Point().Distance(aPV)) ? 1 : 0;
++  FIop             = aFI[k];
++  CPop             = aCP[k];
++  FprolUV          = aUV[k];
++  c3dU             = aW[k];
++  return true;
+ }
+ 
+ //=======================================================================

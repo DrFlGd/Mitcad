@@ -18,7 +18,7 @@ pub(crate) enum PolicyCommand {
         /// Uid or name; the active component when left out.
         #[serde(default)]
         component: Option<String>,
-        /// `assembly`, `part` or `defaults`, applied first.
+        /// `hybrid` (alias `defaults`), `part` or `assembly`, applied first.
         #[serde(default)]
         preset: Option<String>,
         /// Settings to change (the others stay).
@@ -61,7 +61,7 @@ pub(crate) fn changed_policy(
     let mut policy = match preset {
         Some(name) => Policy::preset(name).ok_or_else(|| {
             ApiError(format!(
-                "unknown preset '{name}' (assembly, part or defaults)"
+                "unknown preset '{name}' (hybrid, part or assembly)"
             ))
         })?,
         None => base,

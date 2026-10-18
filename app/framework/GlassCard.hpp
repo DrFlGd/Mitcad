@@ -5,12 +5,14 @@
 #include <QPixmap>
 #include <QPointer>
 #include <QRect>
+#include <QRegion>
 #include <QToolButton>
 #include <QWidget>
 
 class QGraphicsOpacityEffect;
 class QHBoxLayout;
 class QLabel;
+class QSpacerItem;
 class QVBoxLayout;
 
 namespace mitcad {
@@ -73,6 +75,9 @@ public:
   // rectangle, on the companion widget).
   static constexpr int kShadowBlur = 16;
   static constexpr int kShadowOffset = 4;
+  // The corner radius of the small boxes of a bare card (setBare): its
+  // header's and the Browser's rows'.
+  static constexpr int kBoxRadius = 8;
 
   explicit GlassCard(QWidget* parent = nullptr);
   ~GlassCard() override;
@@ -133,6 +138,23 @@ public:
   void setOpacityLevel(qreal opacity);
   qreal opacityLevel() const { return m_opacity; }
 
+  // Bare (the Browser's Rows background, mitcad#419): no material and no
+  // shadow behind the content, which paints boxes of its own; the header is
+  // a small box of the material, as wide as its chevron, title and widgets
+  // (which then follow the title). The card takes the mouse only in the
+  // header's box and in the content's region (setContentRegion): a click,
+  // drag or wheel anywhere else reaches what is under the card (the 3D
+  // view), as beside a card. Not for a windowed card: its window's glass
+  // would be behind all of it.
+  void setBare(bool bare);
+  bool isBare() const { return m_bare; }
+  // Where the content takes the mouse while the card is bare, in the
+  // content's coordinates.
+  void setContentRegion(const QRegion& region);
+  // The header's box while bare, in the card's coordinates (empty without
+  // a header).
+  QRect headerBox() const;
+
   // The height of the header alone.
   int headerHeight() const;
   // The height that fits `contentHeight` of content (header and margins
@@ -156,10 +178,14 @@ protected:
   void keyReleaseEvent(QKeyEvent* event) override;
   void changeEvent(QEvent* event) override;
   bool event(QEvent* event) override;
+  bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
   friend class CardShadow;
 
+  // Bare: the mask that leaves the mouse to what is under the card except
+  // in the header's box and the content's region.
+  void updateBareMask();
   bool headerWanted() const;
   void updateHeader();
   void updateChevron();
@@ -187,6 +213,9 @@ private:
   QWidget* m_content = nullptr;
   QMargins m_contentMargins = QMargins(8, 2, 8, 8);
   bool m_hasHeaderWidgets = false;
+  bool m_bare = false;
+  QRegion m_contentRegion;     // setContentRegion
+  QSpacerItem* m_headerSpacer = nullptr; // bare: after the header's widgets
   // The shadow's pixmap, cached by size, radius, colour and pixel ratio.
   QPixmap m_shadowPixmap;
   quint64 m_shadowKey = 0;

@@ -4,7 +4,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <iterator>
+#include <utility>
 #include <vector>
 
 #include <SelectMgr_SelectingVolumeManager.hxx>
@@ -61,12 +63,51 @@ class EdgeFirstSelector : public StdSelect_ViewerSelector3d {
 public:
   void SortResult() const override {
     StdSelect_ViewerSelector3d::SortResult();
+    m_prioritized = false;
     // Only a click or the hover has one item to choose; a window takes all.
     // (With nothing picked, the indexes are left over from the last pick.)
     if (mystored.Extent() < 2 ||
         mySelectingVolumeMgr.GetActiveSelectionType() != SelectMgr_SelectionType_Point) {
       return;
     }
+    edgesFirst();
+    preferredFirst();
+  }
+
+  // setPickPriority(), pickPrioritized().
+  void setPreferred(std::function<bool(const occ::handle<SelectMgr_EntityOwner>&)> preferred) {
+    m_preferred = std::move(preferred);
+  }
+  bool prioritized() const { return m_prioritized; }
+
+private:
+  // The preferred owners (the active component's, mitcad#420) before the
+  // others, each in their order; m_prioritized when one went before a
+  // nearer other one.
+  void preferredFirst() const {
+    if (!m_preferred) {
+      return;
+    }
+    std::vector<int> preferred;
+    std::vector<int> others;
+    for (int rank = myIndexes.Lower(); rank <= myIndexes.Upper(); ++rank) {
+      const int index = myIndexes(rank);
+      (m_preferred(mystored.FindKey(index)) ? preferred : others).push_back(index);
+    }
+    if (preferred.empty() || others.empty() || myIndexes(myIndexes.Lower()) == preferred.front()) {
+      return;
+    }
+    int rank = myIndexes.Lower();
+    for (const int index : preferred) {
+      myIndexes(rank++) = index;
+    }
+    for (const int index : others) {
+      myIndexes(rank++) = index;
+    }
+    m_prioritized = true;
+  }
+
+  void edgesFirst() const {
     const int first = myIndexes.Lower();
     const int nearestIndex = myIndexes(first);
     const occ::handle<SelectMgr_EntityOwner>& nearest = mystored.FindKey(nearestIndex);
@@ -133,7 +174,9 @@ public:
     }
   }
 
-private:
+  std::function<bool(const occ::handle<SelectMgr_EntityOwner>&)> m_preferred;
+  mutable bool m_prioritized = false;
+
   // Whether an edge or vertex picked with a face lies on the face's surface
   // where the face was hit (within both pick widths), not behind it: the
   // distance from the tangent plane there. Without the face's normal, the
@@ -163,6 +206,18 @@ public:
 
 occ::handle<AIS_InteractiveContext> makePickContext(const occ::handle<V3d_Viewer>& viewer) {
   return new PickContext(viewer);
+}
+
+void setPickPriority(const occ::handle<AIS_InteractiveContext>& context, PickPreference preferred) {
+  const auto selector = occ::handle<EdgeFirstSelector>::DownCast(context->MainSelector());
+  if (!selector.IsNull()) {
+    selector->setPreferred(std::move(preferred));
+  }
+}
+
+bool pickPrioritized(const occ::handle<AIS_InteractiveContext>& context) {
+  const auto selector = occ::handle<EdgeFirstSelector>::DownCast(context->MainSelector());
+  return !selector.IsNull() && selector->prioritized();
 }
 
 } // namespace mitcad

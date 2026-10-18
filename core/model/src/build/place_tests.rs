@@ -210,11 +210,21 @@ fn offsets_from_end_b_follow_the_target_s_length() {
         placed(&doc, occurrence(&p)).translation,
         [0.0, 15.0, 1135.0]
     ));
-    // Edited to 80 from end A, then flipped: end B on the slot.
+    // An offset alone keeps its reference (mitcad#417): 80 from end B.
     let c = p["component"].clone();
     command(
         &mut doc,
         json!({"cmd": "build_edit", "component": c, "at": {"offset": 80}}),
+    )
+    .unwrap();
+    assert!(close(
+        placed(&doc, occurrence(&p)).translation,
+        [0.0, 15.0, 1105.0]
+    ));
+    // Edited to 80 from end A, then flipped: end B on the slot.
+    command(
+        &mut doc,
+        json!({"cmd": "build_edit", "component": c, "at": {"offset": 80, "from": "a"}}),
     )
     .unwrap();
     assert!(close(

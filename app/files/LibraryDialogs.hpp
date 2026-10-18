@@ -5,9 +5,11 @@
 // - LibrariesDialog: the sources (libraries and community indexes, on or
 //   off), added by URL or folder, fetched only when asked.
 // - LibraryBrowser: Insert from Library and the community library: search
-//   with a licence filter, previews, details with the licence and the
-//   attribution, the version and the size, linked or a copy; libraries a
-//   community index lists are fetched from there.
+//   with a licence filter, the results as the part picker's grid of previews
+//   (PartGrid, mitcad#418: groups, favourites, In this design), details
+//   with the licence and the attribution, the version and the size,
+//   linked or a copy; libraries a community index lists are fetched from
+//   there.
 // - LibraryPartsDialog: the design's library parts, each kept at the
 //   version chosen for it: another version or size, what changes, the
 //   update; and the parts list with the designations (a bill of
@@ -26,6 +28,7 @@
 #include <QList>
 #include <QMap>
 #include <QString>
+#include <QStringList>
 
 class QCheckBox;
 class QComboBox;
@@ -39,6 +42,9 @@ class QRadioButton;
 class QTableWidget;
 
 namespace mitcad {
+
+class PartGrid;
+struct UsedPart;
 
 // Cascaded choices of a configuration table's rows (Size, then Length):
 // each selector a combo box of the values the rows with the earlier
@@ -106,11 +112,12 @@ public:
   // fetched indexes name first.
   explicit LibraryBrowser(bool community, QWidget* parent = nullptr);
   std::optional<LibraryChoice> choice() const { return m_choice; }
-
-protected:
-  bool eventFilter(QObject* watched, QEvent* event) override;
+  // The open design's library parts: the grid's In this design (mitcad#418).
+  void setUsedParts(const QList<UsedPart>& used);
 
 private:
+  // The item of m_items the grid's current tile is, or -1.
+  int currentIndex() const;
   void search();
   void select();
   void showVersion();
@@ -130,7 +137,9 @@ private:
   QLineEdit* m_search = nullptr;
   QComboBox* m_license = nullptr;
   QCheckBox* m_unlicensed = nullptr;
-  QListWidget* m_results = nullptr;
+  // The results as the part picker's grid (mitcad#418), keyed by itemKey.
+  PartGrid* m_grid = nullptr;
+  QStringList m_keys;
   QLabel* m_details = nullptr;
   QComboBox* m_version = nullptr;
   SizeChooser* m_size = nullptr;

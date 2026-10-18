@@ -112,8 +112,8 @@ mod ffi {
         fn validate_mcp_query(request: &str) -> Result<()>;
 
         fn new_document() -> Box<Document>;
-        /// A new, empty design: Root with the Assembly policy, an empty
-        /// component Part1 with the Part policy, active (mitcad#220).
+        /// A new, empty design: Root and an empty component Part1, active,
+        /// both with the general defaults (mitcad#220, mitcad#421).
         fn new_design_document() -> Box<Document>;
         /// A 60 x 40 x 20 mm block (Sketch1, Extrude1), used by tests.
         fn new_demo_document() -> Box<Document>;
@@ -266,6 +266,12 @@ mod ffi {
         /// yet and whose evaluation took at least `min_ms`; returns JSON
         /// {"results", "shapes", "bytes", "failed", "errors", "ms"}.
         fn persist_results(self: &mut Document, min_ms: f64) -> String;
+        /// Writes every result of the last recompute that a store takes
+        /// to the store in `dir` (build `build_id`, document `label`),
+        /// however quick, leaving the document's own store as it is: the
+        /// import process hands its evaluation over to the application
+        /// (mitcad#413). The same JSON as persist_results.
+        fn hand_off_results(self: &Document, dir: &str, build_id: &str, label: &str) -> String;
         /// When the store holds more than `budget_mb` megabytes, removes
         /// the files used longest ago down to 80 % of it; returns JSON
         /// {"files", "bytes", "removed", "removed_bytes"} (what is left and
@@ -505,9 +511,9 @@ fn new_document() -> Box<Document> {
     Box::new(Document(mitcad_model::Document::new(OcctKernel)))
 }
 
-/// A new, empty design as File > New makes it (mitcad#220): the root with
-/// the Assembly policy and an empty component Part1 with the Part policy,
-/// active.
+/// A new, empty design as File > New makes it (mitcad#220): the root and an
+/// empty component Part1, active, both with the general defaults
+/// (mitcad#421).
 fn new_design_document() -> Box<Document> {
     Box::new(Document(mitcad_model::Document::new_design(OcctKernel)))
 }

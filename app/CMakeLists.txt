@@ -16,6 +16,9 @@ qt_add_executable(mitcad
   browser/BrowserController.hpp
   browser/BrowserPanel.cpp
   browser/BrowserPanel.hpp
+  # The Browser's background in the Floating layout (mitcad#419).
+  browser/BrowserBackground.cpp
+  browser/BrowserBackground.hpp
   browser/DocumentHost.hpp
   browser/DocumentSnapshot.cpp
   browser/DocumentSnapshot.hpp
@@ -43,6 +46,9 @@ qt_add_executable(mitcad
   framework/AutoselectPanel.hpp
   framework/ChromeStyle.cpp
   framework/ChromeStyle.hpp
+  # Restarting the application (mitcad#419: the layout preference).
+  framework/Restart.cpp
+  framework/Restart.hpp
   framework/Command.cpp
   framework/Command.hpp
   framework/CommandPresenter.hpp
@@ -863,3 +869,24 @@ target_sources(mitcad PRIVATE
   build/BuildModel.cpp
   build/BuildModel.hpp
   commands/BuildCommands.cpp)
+# The part picker's data (mitcad#418, app/library): the user's favourite
+# parts and groups in the settings, the picker's order, and the library
+# parts the design uses (the model's `library_usage` query).
+target_sources(mitcad PRIVATE
+  library/PartFavourites.cpp
+  library/PartFavourites.hpp
+  library/UsedParts.cpp
+  library/UsedParts.hpp)
+if(BUILD_TESTING)
+  # The order with stars, the stars' settings and the used parts read from a
+  # model's answer: plain Qt Core and the command context's interface.
+  target_sources(test_app PRIVATE tests/part_picker_data.cpp
+                 library/PartFavourites.cpp library/PartFavourites.hpp
+                 library/UsedParts.cpp library/UsedParts.hpp)
+endif()
+# The part picker (mitcad#418, app/library): the library's parts as a grid
+# of pictures with favourites and the design's parts, a floating window for
+# the part-choosing commands and Insert from Library's results.
+target_sources(mitcad PRIVATE
+  library/PartPicker.cpp
+  library/PartPicker.hpp)

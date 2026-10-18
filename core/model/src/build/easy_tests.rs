@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 //! Easy placement (mitcad#394) with the mock kernel: BUILD places parts in
-//! the nearest component up from the active one that takes components (a
-//! new design's root while Part1 is active), the first part at the origin
+//! the nearest component up from the active one that takes components (the
+//! root while a Part1 set to the Part policy is active; a new design's
+//! Part1 itself since mitcad#421), the first part at the origin
 //! or on the root's XY plane along X, Y or Z, and a part on a side measured
 //! to its near face: flush with either end within one section width of it,
 //! the middle and the grid points snapped, and never past an end.
@@ -15,11 +16,23 @@ use crate::ids::ComponentUid;
 use crate::testing::MockKernel;
 use crate::transform::Transform;
 
-/// A new design as File › New makes it (the root with the Assembly policy,
-/// Part1 with the Part policy and active), with the test library.
-fn new_design() -> Document<MockKernel> {
+/// A new design as File › New makes it (the root and an active Part1, both
+/// Hybrid since mitcad#421), with the test library.
+fn hybrid_design() -> Document<MockKernel> {
     let mut doc = Document::new_design(MockKernel::default());
     doc.set_link_resolver(Some(TestLibrary::new()));
+    doc
+}
+
+/// A new design whose Part1 takes no components (the Part policy, as File ›
+/// New made it before mitcad#421): BUILD goes up to the root.
+fn new_design() -> Document<MockKernel> {
+    let mut doc = hybrid_design();
+    command(
+        &mut doc,
+        json!({"cmd": "set_policy", "component": "Part1", "preset": "part"}),
+    )
+    .unwrap();
     doc
 }
 
@@ -213,8 +226,10 @@ fn a_side_click_near_either_end_is_flush_with_it() {
         json!({"query": "build_preview", "part": {"source": "S1"}, "length": 200,
                "at": {"occurrence": t["occurrence"], "geometry": slot, "point": [0.0, 15.0, 995.0]}}),
     );
+    // Bound to end B (mitcad#417): from B, offset 0.
     assert_eq!(preview["side"]["kind"], "end_b", "{preview}");
-    assert!((preview["side"]["offset"].as_f64().unwrap() - 970.0).abs() < 1e-9);
+    assert_eq!(preview["side"]["from"], "b", "{preview}");
+    assert!(preview["side"]["offset"].as_f64().unwrap().abs() < 1e-9);
     assert!((preview["side"]["width"].as_f64().unwrap() - 30.0).abs() < 1e-9);
 }
 
@@ -272,10 +287,9 @@ fn no_placement_overhangs_the_target() {
     );
     let warnings = p["warnings"].as_array().unwrap();
     assert!(
-        warnings.iter().any(|w| w
-            .as_str()
-            .unwrap()
-            .contains("offset from end A is 970 mm instead")),
+        warnings
+            .iter()
+            .any(|w| w.as_str().unwrap().contains("flush with end B instead")),
         "{p}"
     );
     // From end B past end A likewise.
@@ -391,4 +405,19 @@ fn a_part_in_a_component_that_takes_components_stays_there() {
     let p = place(&mut doc, json!({"part": part("p30"), "length": 500}));
     all_ok(&doc);
     assert_eq!(parent(&doc, &p), frame);
+}
+
+#[test]
+fn a_new_hybrid_design_places_in_its_active_part1() {
+    // mitcad#421: Part1 takes components, so BUILD's host is Part1 itself.
+    let mut doc = hybrid_design();
+    let part1 = doc.assembly().active;
+    assert!(!part1.is_root());
+    let host = query(&doc, json!({"query": "build_host"}));
+    assert_eq!(host["component"], json!(part1), "{host}");
+    let first = place(&mut doc, json!({"part": part("p30"), "length": 500}));
+    all_ok(&doc);
+    assert!(first["warnings"].as_array().unwrap().is_empty(), "{first}");
+    assert_eq!(parent(&doc, &first), part1);
+    assert_eq!(doc.assembly().active, part1);
 }

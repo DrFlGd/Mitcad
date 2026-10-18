@@ -1179,6 +1179,177 @@ fn text_measured_by_its_capitals_and_outlines_in_a_frame() {
     assert!(near(second, [9.5, 26.5]), "{second:?}");
 }
 
+/// A text measured as the `.ipt` files' texts are (mitcad#414): lines
+/// align by their pens, the frame's top meets the first line's highest
+/// outline point, and the lines are as far apart as the text says (the
+/// mock font's `C` rises in an arc to 0.825 em, its control point at 0.95
+/// em; its other letters are 0.7 em high, 0.5 em wide with 0.1 em of side
+/// bearing and advance 0.7 em).
+#[test]
+fn text_aligned_by_its_pens_and_its_highest_outline_with_its_own_line_spacing() {
+    let o_at = |extra: Value| {
+        let mut d = with_sketch();
+        let mut cmd = json!({"cmd": "sketch.add_text", "sketch": "F1", "text": "C\nO",
+                             "height": 7, "frame": {"corner": [0, 0], "diagonal": [40, 30]},
+                             "valign": "top", "cap_height": true});
+        for (k, v) in extra.as_object().unwrap() {
+            cmd[k] = v.clone();
+        }
+        let made = command(&mut d, cmd);
+        let t = made["texts"][0].as_str().unwrap().to_owned();
+        region(&sketch(&d), &format!("r{{{t}.g2.c0}}")).1
+    };
+    // The em is 10 mm. The C's arc tops out at 8.25 mm: the first
+    // baseline lies that far below the frame's top (30 - 8.25), the
+    // second 12 mm below it, and the O's pen (not its outline, 1 mm to
+    // the right) on the frame's left side.
+    let at = o_at(json!({"pen_align": true, "ink_top": true, "line_spacing": 12}));
+    assert!(near(at, [3.5, 13.25]), "{at:?}");
+    // By the capitals' top and the outlines: the first baseline 7 mm below
+    // the top and the O's outline on the frame's side.
+    let at = o_at(json!({"line_spacing": 12}));
+    assert!(near(at, [2.5, 14.5]), "{at:?}");
+    // The font's spacing without a line spacing of its own: the ascender
+    // to the descender, 10 mm.
+    let at = o_at(json!({"pen_align": true, "ink_top": true}));
+    assert!(near(at, [3.5, 15.25]), "{at:?}");
+    // Centred by the pens: the line's advance (7 mm) about the middle.
+    let at = o_at(
+        json!({"pen_align": true, "ink_top": true, "line_spacing": 12,
+                         "align": "center"}),
+    );
+    assert!(near(at, [20.0, 13.25]), "{at:?}");
+}
+
+/// The outlines a file stores with a text (mitcad#416), in units of the
+/// height: an `A` that is a triangle 0.5 wide and 0.7 high with advance
+/// 0.6, and a `B` that is a 0.4 x 0.7 box 0.1 from its pen, in a font
+/// the computer does not have.
+fn stored_ab(font: &str) -> Value {
+    json!({"text": "AB", "font": font, "glyphs": [
+        {"advance": 0.6, "contours": [[[[0, 0], [0.5, 0]], [[0.5, 0], [0.25, 0.7]],
+                                       [[0.25, 0.7], [0, 0]]]]},
+        {"advance": 0.5, "contours": [[[[0.1, 0], [0.5, 0]], [[0.5, 0], [0.5, 0.7]],
+                                       [[0.5, 0.7], [0.1, 0.7]], [[0.1, 0.7], [0.1, 0]]]]}
+    ]})
+}
+
+#[test]
+fn a_text_whose_font_is_missing_keeps_its_stored_outlines_until_its_string_or_font_changes() {
+    let mut d = with_sketch();
+    let made = command(
+        &mut d,
+        json!({"cmd": "sketch.add_text", "sketch": "F1", "text": "AB", "at": [5, 5],
+               "height": 10, "font": "No Such Font", "glyphs": stored_ab("No Such Font")}),
+    );
+    let t = made["texts"][0].as_str().unwrap().to_owned();
+    let (a, b) = (format!("r{{{t}.g0.c0}}"), format!("r{{{t}.g1.c0}}"));
+    let s = sketch(&d);
+    let text = &s["texts"][0];
+    assert_eq!(
+        (
+            text["family"].clone(),
+            text["fallback"].clone(),
+            text["stored_outlines"].clone(),
+            text["has_glyphs"].clone(),
+            text.get("glyphs").cloned()
+        ),
+        (
+            json!("No Such Font"),
+            json!(false),
+            json!(true),
+            json!(true),
+            None
+        )
+    );
+    // The stored shapes at 10 mm a unit: the triangle and the box, the box
+    // 6 mm on.
+    let (area, at) = region(&s, &a);
+    assert!(
+        close(area, 17.5, 1e-9) && near(at, [7.5, 5.0 + 7.0 / 3.0]),
+        "{area} {at:?}"
+    );
+    let (area, at) = region(&s, &b);
+    assert!(
+        close(area, 28.0, 1e-9) && near(at, [14.0, 8.5]),
+        "{area} {at:?}"
+    );
+    // The sketch has no warning for the font: the text has its own shapes.
+    let timeline: Value =
+        serde_json::from_str(&d.query(r#"{"query": "timeline"}"#).unwrap()).unwrap();
+    assert!(
+        !timeline.to_string().contains("not installed"),
+        "{timeline}"
+    );
+    // Its layout changes with them: twice the height, by the capitals (the
+    // unit is the height either way), and centred in a frame by the pens
+    // with the frame's top at the highest outline point.
+    command(
+        &mut d,
+        json!({"cmd": "sketch.edit_text", "sketch": "F1", "id": t, "height": 20,
+               "cap_height": true}),
+    );
+    let (area, at) = region(&sketch(&d), &b);
+    assert!(
+        close(area, 112.0, 1e-9) && near(at, [23.0, 12.0]),
+        "{area} {at:?}"
+    );
+    let mut d = with_sketch();
+    let made = command(
+        &mut d,
+        json!({"cmd": "sketch.add_text", "sketch": "F1", "text": "AB", "height": 10,
+               "font": "No Such Font", "glyphs": stored_ab("No Such Font"),
+               "frame": {"corner": [0, 0], "diagonal": [40, 30]}, "align": "center",
+               "valign": "top", "cap_height": true, "pen_align": true, "ink_top": true}),
+    );
+    let t = made["texts"][0].as_str().unwrap().to_owned();
+    // The line's 11 mm of advance about the frame's middle, its top 7 mm
+    // above the baseline at the frame's top.
+    let (_, at) = region(&sketch(&d), &format!("r{{{t}.g1.c0}}"));
+    assert!(near(at, [14.5 + 6.0 + 3.0, 30.0 - 3.5]), "{at:?}");
+    // Another string drops them: the substitute font, with its warning.
+    command(
+        &mut d,
+        json!({"cmd": "sketch.edit_text", "sketch": "F1", "id": t, "text": "BA"}),
+    );
+    let s = sketch(&d);
+    let text = &s["texts"][0];
+    assert_eq!(
+        (
+            text["family"].clone(),
+            text["fallback"].clone(),
+            text.get("stored_outlines").cloned(),
+            text.get("has_glyphs").cloned()
+        ),
+        (json!("Mock Sans"), json!(true), None, None)
+    );
+    // An installed font is used even with stored outlines of it.
+    let mut d = with_sketch();
+    command(
+        &mut d,
+        json!({"cmd": "sketch.add_text", "sketch": "F1", "text": "AB", "at": [5, 5],
+               "height": 10, "font": "Mock Sans", "glyphs": stored_ab("Mock Sans")}),
+    );
+    let text = &sketch(&d)["texts"][0];
+    assert_eq!(
+        (
+            text["fallback"].clone(),
+            text.get("stored_outlines").cloned(),
+            text["has_glyphs"].clone()
+        ),
+        (json!(false), None, json!(true))
+    );
+    // Outlines that are not Bézier pieces are refused.
+    let mut bad = stored_ab("No Such Font");
+    bad["glyphs"][0]["contours"][0][0] = json!([[0, 0]]);
+    let why = rejected(
+        &mut with_sketch(),
+        json!({"cmd": "sketch.add_text", "sketch": "F1", "text": "AB", "at": [5, 5],
+               "height": 10, "font": "No Such Font", "glyphs": bad}),
+    );
+    assert!(why.contains("stored glyphs"), "{why}");
+}
+
 // --- A derived offset is closed by shared points only (mitcad#360)
 
 #[test]

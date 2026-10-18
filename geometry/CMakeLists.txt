@@ -271,6 +271,9 @@ if(BUILD_TESTING)
   target_sources(test_geometry PRIVATE tests/test_fillet_cutouts.cpp)
   # Section curves of sketches (mitcad#389).
   target_sources(test_geometry PRIVATE tests/test_section_curves.cpp)
+  # Roundings cut by a face of the solid they pass through, with the port's
+  # patch 0700 (mitcad#343).
+  target_sources(test_geometry PRIVATE tests/test_fillet_pierced.cpp)
   target_link_libraries(test_geometry PRIVATE mitcad_geometry_analysis)
   target_link_libraries(test_geometry PRIVATE mitcad_geometry mitcad_warnings)
   add_test(NAME geometry COMMAND test_geometry)
@@ -295,6 +298,11 @@ if(BUILD_TESTING)
   add_executable(test_helical_joins tests/test_helical_joins.cpp)
   target_link_libraries(test_helical_joins PRIVATE mitcad_geometry mitcad_warnings)
   add_test(NAME geometry.helical_joins COMMAND test_helical_joins)
+  # Corners and ends of roundings, with the port's patches 0720 and later
+  # (mitcad#343).
+  add_executable(test_fillet_corner_cases tests/test_fillet_corner_cases.cpp)
+  target_link_libraries(test_fillet_corner_cases PRIVATE mitcad_geometry mitcad_warnings)
+  add_test(NAME geometry.fillet_corner_cases COMMAND test_fillet_corner_cases)
   # OCCT's crash handlers next to the application's crash report (mitcad#62).
   if(NOT WIN32)
     add_executable(test_guard tests/test_guard.cpp)

@@ -41,6 +41,9 @@ pub struct TextOutline {
     pub id: EntityUid,
     pub family: String,
     pub fallback: bool,
+    /// The outlines are the ones stored with the text (its `glyphs`,
+    /// mitcad#416), its font not being installed.
+    pub stored: bool,
     pub contours: Vec<PlacedContour>,
 }
 
@@ -68,6 +71,44 @@ pub fn request(text: &SketchText) -> FontRequest<'_> {
         italic: text.italic,
         text: &text.text,
     }
+}
+
+/// The outlines stored with a text (its `glyphs`, mitcad#416) in place of
+/// the substitute font's `font`: when the kernel fell back because the
+/// text's font is not installed, and the text, its font and its style are
+/// still the ones the outlines were stored for. Their outlines and advances
+/// are in units of the text's height, so the em is the height (with
+/// `cap_height` the capitals' height is too). The ascender, descender and
+/// line spacing stay the substitute font's, as fractions of its capitals'
+/// height with `cap_height`: a file stores none, and they place only what
+/// the stored layout leaves to the font (the font's line spacing, an
+/// ascender or descender alignment, a text above a path). None otherwise.
+pub fn stored_glyphs(text: &SketchText, font: &FontGlyphs) -> Option<FontGlyphs> {
+    let stored = text
+        .glyphs
+        .as_ref()
+        .filter(|g| font.fallback && g.fit(text))?;
+    let unit = if text.cap_height && font.cap_height > 0.0 {
+        1.0 / font.cap_height
+    } else {
+        1.0
+    };
+    Some(FontGlyphs {
+        family: stored.font.clone(),
+        fallback: false,
+        ascender: font.ascender * unit,
+        descender: font.descender * unit,
+        cap_height: 1.0,
+        line_spacing: font.line_spacing * unit,
+        glyphs: stored
+            .glyphs
+            .iter()
+            .map(|g| Glyph {
+                advance: g.advance,
+                contours: g.contours.clone(),
+            })
+            .collect(),
+    })
 }
 
 /// The Bézier control points of a piece raised to `degree`.
@@ -196,6 +237,65 @@ impl ArcLength {
 /// How a glyph's outline (em units) maps into the sketch.
 type Placement = Box<dyn Fn(P2) -> P2>;
 
+/// The highest point of a Bézier piece given by its control points: its
+/// ends, and where a quadratic's or a cubic's height stops rising (higher
+/// degrees by samples).
+fn highest(points: &[P2]) -> f64 {
+    let ends = [points.first(), points.last()]
+        .into_iter()
+        .flatten()
+        .map(|p| p[1])
+        .fold(f64::NEG_INFINITY, f64::max);
+    let y: Vec<f64> = points.iter().map(|p| p[1]).collect();
+    // The height at t of the piece (de Casteljau).
+    let at = |t: f64| {
+        let mut v = y.clone();
+        for n in (1..v.len()).rev() {
+            for i in 0..n {
+                v[i] += t * (v[i + 1] - v[i]);
+            }
+        }
+        v.first().copied().unwrap_or(f64::NEG_INFINITY)
+    };
+    let inside: Vec<f64> = match y[..] {
+        [a, b, c] => {
+            let d = a - 2.0 * b + c;
+            if d.abs() > 1e-15 {
+                vec![(a - b) / d]
+            } else {
+                Vec::new()
+            }
+        }
+        [a, b, c, e] => {
+            // The derivative's roots: (b-a)(1-t)² + 2(c-b)t(1-t) + (e-c)t².
+            let (p, q, r) = (b - a, c - b, e - c);
+            let (qa, qb, qc) = (p - 2.0 * q + r, 2.0 * (q - p), p);
+            if qa.abs() < 1e-15 {
+                if qb.abs() > 1e-15 {
+                    vec![-qc / qb]
+                } else {
+                    Vec::new()
+                }
+            } else {
+                let disc = qb * qb - 4.0 * qa * qc;
+                if disc < 0.0 {
+                    Vec::new()
+                } else {
+                    let s = disc.sqrt();
+                    vec![(-qb + s) / (2.0 * qa), (-qb - s) / (2.0 * qa)]
+                }
+            }
+        }
+        [_, _] | [_] | [] => Vec::new(),
+        _ => (1..64).map(|i| f64::from(i) / 64.0).collect(),
+    };
+    inside
+        .into_iter()
+        .filter(|t| (0.0..=1.0).contains(t))
+        .map(at)
+        .fold(ends, f64::max)
+}
+
 /// The horizontal extent of a glyph's outline (em units, from its pen): the
 /// range of the pieces' end points; None for a glyph without outline.
 fn ink(glyph: &Glyph) -> Option<(f64, f64)> {
@@ -297,9 +397,11 @@ pub fn layout(
     let (ascender, descender, spacing) = (
         glyphs.ascender * h,
         glyphs.descender * h,
-        // One line to the next: the font's own spacing, or with `cap_height`
-        // the ascender and descender without a line gap.
-        if cap {
+        // One line to the next: the text's own, the font's own spacing, or
+        // with `cap_height` the ascender and descender without a line gap.
+        if text.line_spacing > 0.0 {
+            text.line_spacing
+        } else if cap {
             (glyphs.ascender - glyphs.descender) * h
         } else {
             glyphs.line_spacing * h
@@ -371,7 +473,21 @@ pub fn layout(
         // The block's extent for the vertical alignment: the font's
         // ascender down to its descender, or the capitals' top down to the
         // last baseline.
-        let block_top = if cap { text.height } else { ascender };
+        // With `ink_top`, the first line's highest outline point instead.
+        let ink_top = || -> Option<f64> {
+            lines
+                .first()?
+                .iter()
+                .flat_map(|&k| glyphs.glyphs[k].contours.iter().flatten())
+                .map(|points| highest(points))
+                .reduce(f64::max)
+                .map(|top| top * h)
+        };
+        let block_top = text.ink_top.then(ink_top).flatten().unwrap_or(if cap {
+            text.height
+        } else {
+            ascender
+        });
         let block_bottom = if cap {
             last_baseline
         } else {
@@ -388,10 +504,10 @@ pub fn layout(
             (Some((_, hh)), TextVAlign::Middle) => hh / 2.0 - (block_top + block_bottom) / 2.0,
         };
         // The extent of a line along its baseline: its pen advance, or
-        // with `cap_height` the extent of its outlines (the first and the
-        // last character with an outline).
+        // with `cap_height` (and not `pen_align`) the extent of its
+        // outlines (the first and the last character with an outline).
         let extent = |line: &[usize]| -> (f64, f64) {
-            if !cap {
+            if !cap || text.pen_align {
                 return (0.0, width(line));
             }
             let mut x = 0.0;
@@ -476,6 +592,7 @@ pub fn layout(
         id: text.id,
         family: glyphs.family.clone(),
         fallback: glyphs.fallback,
+        stored: false,
         contours,
     })
 }
@@ -506,6 +623,20 @@ pub fn check(text: &SketchText, index: &EntityIndex<'_>) -> Result<(), String> {
             if !index.get(*p).is_some_and(|e| e.is_point()) {
                 return Err(format!("{what}: the frame point p{} does not exist", p.0));
             }
+        }
+    }
+    if let Some(stored) = &text.glyphs {
+        let finite = |v: f64| v.is_finite();
+        let pieces_ok = stored.glyphs.iter().all(|g| {
+            finite(g.advance)
+                && g.contours.iter().flatten().all(|piece| {
+                    (2..=4).contains(&piece.len()) && piece.iter().flatten().all(|v| finite(*v))
+                })
+        });
+        if !pieces_ok {
+            return Err(format!(
+                "{what}: its stored glyphs are not finite Bézier pieces of two to four points"
+            ));
         }
     }
     if let Some(path) = &text.path {

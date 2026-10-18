@@ -37,12 +37,14 @@ pub mod rse;
 pub mod sheet;
 pub mod sketch;
 pub mod states;
+// Sketch texts (mitcad#414).
 #[doc(hidden)]
 pub mod testassembly;
 #[doc(hidden)]
 pub mod testdata;
 #[doc(hidden)]
 pub mod testdesign;
+pub mod text;
 
 use std::fmt;
 

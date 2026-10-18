@@ -7,7 +7,7 @@
 use std::path::Path;
 use std::time::Duration;
 
-use mitcad_model::store::{self, GcReport, ResultStore};
+use mitcad_model::store::{self, GcReport, PersistReport, ResultStore};
 use serde_json::json;
 
 use crate::Document;
@@ -62,10 +62,18 @@ impl Document {
 
     pub(crate) fn persist_results(&mut self, min_ms: f64) -> String {
         let min = Duration::from_secs_f64(min_ms.max(0.0) / 1000.0);
-        let report = self.0.persist_results(min);
-        json!({"results": report.results, "shapes": report.shapes, "bytes": report.bytes,
-               "failed": report.failed, "errors": report.errors,
-               "ms": report.time.as_secs_f64() * 1000.0})
-        .to_string()
+        persist_json(&self.0.persist_results(min))
     }
+
+    pub(crate) fn hand_off_results(&self, dir: &str, build_id: &str, label: &str) -> String {
+        let store = ResultStore::new(dir, build_id).with_label(label);
+        persist_json(&self.0.hand_off_results(&store))
+    }
+}
+
+fn persist_json(report: &PersistReport) -> String {
+    json!({"results": report.results, "shapes": report.shapes, "bytes": report.bytes,
+           "failed": report.failed, "errors": report.errors,
+           "ms": report.time.as_secs_f64() * 1000.0})
+    .to_string()
 }

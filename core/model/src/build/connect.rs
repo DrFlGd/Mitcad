@@ -979,6 +979,7 @@ impl<K: Kernel> Document<K> {
                 origin: Some(lo),
                 z_axis: Some(lz),
                 x_axis: Some(lx),
+                shift: None,
             }),
         };
         let designation_values: BTreeMap<String, f64> = values

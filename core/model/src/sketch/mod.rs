@@ -1141,6 +1141,70 @@ pub struct SketchText {
     /// sets it.
     #[serde(default, skip_serializing_if = "is_false")]
     pub wrap: bool,
+    /// The distance from one line's baseline to the next, mm; 0 for the
+    /// font's (see `cap_height`). The `.ipt` import sets it from the
+    /// baselines the file keeps (mitcad#414).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub line_spacing: f64,
+    /// Lines align by their pens (from the first character's pen position
+    /// to the end of the last one's advance) also with `cap_height`, where
+    /// they align by their outlines otherwise. The `.ipt` import sets it.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub pen_align: bool,
+    /// The top of the lines (a frame's top, `valign` top or middle) is the
+    /// first line's highest outline point, not the capitals' top (with
+    /// `cap_height`) or the font's ascender. The `.ipt` import sets it.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub ink_top: bool,
+    /// The outlines a file stores for the text's characters (mitcad#416),
+    /// used as their shapes while the font is not installed and the text
+    /// is still the one they are the outlines of (`text.rs`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub glyphs: Option<StoredGlyphs>,
+}
+
+/// The glyph outlines a file stores with a text (mitcad#416): what the
+/// characters of `text` look like in `font`, so a text keeps its shape on
+/// a computer without that font. Lengths are in units of the text's
+/// `height` (a glyph 0.7 high is 0.7 × `height` mm high), with the pen at
+/// the origin on the baseline and y up.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StoredGlyphs {
+    /// The string, family and style they are the outlines of.
+    pub text: String,
+    pub font: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub bold: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub italic: bool,
+    /// One per character of `text`, newlines included.
+    pub glyphs: Vec<StoredGlyph>,
+}
+
+/// One character's stored outline (see [`StoredGlyphs`]).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StoredGlyph {
+    /// From its pen to the next character's.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub advance: f64,
+    /// Closed contours of Bézier pieces (two control points for a line,
+    /// three or four for a quadratic or cubic curve), each piece starting
+    /// where the one before it ends.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub contours: Vec<Vec<Vec<[f64; 2]>>>,
+}
+
+impl StoredGlyphs {
+    /// Whether they are the outlines of a text as it is now.
+    pub fn fit(&self, text: &SketchText) -> bool {
+        self.text == text.text
+            && self.font == text.font
+            && self.bold == text.bold
+            && self.italic == text.italic
+            && self.glyphs.len() == text.text.chars().count()
+    }
 }
 
 impl SketchText {
@@ -1164,6 +1228,10 @@ impl SketchText {
             flip_y: false,
             cap_height: false,
             wrap: false,
+            line_spacing: 0.0,
+            pen_align: false,
+            ink_top: false,
+            glyphs: None,
         }
     }
 }

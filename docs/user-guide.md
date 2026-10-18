@@ -142,6 +142,17 @@ sets ("autosave", "slicer", "git"), as *Preferences: Cache* and so on.
 The Agents page lists the folders an agent connected through MCP
 (`mitcad-cli mcp --connect`) may save the open design to and open designs
 from; there are none until you add one ([mcp.md](mcp.md)).
+The Display page's **Layout** chooses how the window is arranged:
+**Docked** (the panels in docks around the 3D view, the default on Windows
+and Linux) or **Floating** (the panels as cards over a full-window 3D view,
+the default on macOS; [The Mac layout](#the-mac-layout) describes it, and
+on Windows and Linux the menu bar stays above it). The layout takes effect
+when Mitcad starts: after a change Mitcad asks whether to restart now.
+Restart Now closes the window as quitting does (a design with unsaved
+changes is saved or asked about first; Cancel keeps Mitcad open) and
+starts Mitcad again with the design open; Later keeps the choice for the
+next start. `--chrome=docked|floating` on the command line overrides it
+for one run.
 
 | Command | Key | Action |
 |---|---|---|
@@ -430,8 +441,12 @@ when edited; opening an existing cut does not add other component targets.
 
 ### The Mac layout
 
-On macOS the window follows the system's own apps; `--chrome=docked`
-brings back the layout of the other systems.
+On macOS the window follows the system's own apps; Preferences › Display
+› Layout (Docked) or `--chrome=docked` brings back the layout of the other
+systems, and Floating brings this layout to Windows and Linux. The cards
+always start below the whole bar at the top (the title bar row, the
+workspace switch, the ribbon's groups and, on Windows and Linux, the menu
+bar), at any window size.
 
 - **Title bar row:** Undo and Redo, the workspace tabs as a segmented
   control, the document's name, the command search and, in a sketch,
@@ -443,6 +458,12 @@ brings back the layout of the other systems.
   shown, is a card above the Browser. View › Browser, › Timeline and ›
   Projects show and hide them. Fit and Home place the model in the area the cards
   leave free; a click beside a card reaches the view.
+- **Browser background** (Preferences › Display, in this layout only):
+  **Card** puts the Browser on its card; **Rows** leaves the card out and
+  gives each row, and the Browser's header, a small box of its own, as wide
+  as its content. The model shows between and beside the rows, and a click,
+  drag or wheel there works in the view (select, orbit, zoom); only the
+  boxes belong to the Browser. The change applies at once.
 - **Messages** appear for a few seconds in a capsule above the Timeline;
   update and remote notices appear under the ribbon. The remote's state is
   not shown; its commands are in File › Project.
@@ -729,7 +750,11 @@ sketch.
   everything below folded rows; only the top row stays. Its arrow then
   opens just that row, and each row below opens with its own arrow, so you
   reopen the tree one level at a time. It changes only what the browser
-  shows: nothing in the design and no light bulb changes.
+  shows: nothing in the design and no light bulb changes. In the floating
+  layout (the Mac layout, or `--chrome=floating`) Preferences › Display ›
+  **Browser background** chooses between the Browser's card and **Rows**:
+  each row on a small box of its own, the model visible and clickable
+  between and beside them (see [The Mac layout](#the-mac-layout)).
 - **Timeline:** features as icons in their component's colour, a failed
   one in red with its error, one with a warning in yellow with the
   warning in its tooltip (also what an import says about a feature, see
@@ -814,6 +839,33 @@ radio button) directs new features into it. Ground fixes an occurrence;
 Move/Copy moves components as a timeline feature. Insert Component
 inserts another design linked (updated when opened) or as a copy.
 
+**The active component in the view:** while a component other than the
+root is active, everything outside it (the root's own bodies, the other
+components, their sketches and construction geometry) is drawn as a
+ghost: bodies see-through in their own colour, lines and planes pale. The
+active component's sub-components, the sketch being edited and the
+origin's planes are drawn normally. Ghosts can still be picked as
+references (a face to sketch on or project, a measurement), with the usual
+highlights; a click takes the active component's own item under the
+cursor first, even where a ghost lies in front of it, so click where only
+the ghost lies to pick it. Activating the root (or undoing the activation)
+draws everything normally again. Tools › Preferences › Display turns
+either off: **Ghost inactive components** and **Pick the active component
+first**. The rendered view and Render Image show every body normally;
+screenshots show the view as it is.
+
+**Design policy:** a new design starts with an empty component, Part1,
+active, so the first sketch and feature go into it. By default every
+component and the root may hold sketches, features and components, and
+sketches and features may use other components' faces and geometry. To
+be stricter, Design Policy... (on a component's row, or from the command
+search) sets what a component may hold and link to: the preset **Part**
+(sketches and features, no components), **Assembly** (components only)
+or **Hybrid** (everything, the default), or each setting on its own.
+Blocked settings show how many existing objects break them; a policy
+never changes or removes anything that exists, it only refuses new
+work, with the reason. A design saved with a policy keeps it.
+
 **Modelled bodies in the root:** a design often starts with sketches
 and features in the root, and components come later. When a component
 is made in a root that has modelled bodies (New Component, Create
@@ -896,8 +948,8 @@ library.
 
 You do not need to activate a component first. BUILD puts its parts into
 the active component when it can hold components, else into the nearest
-one above it that can: in a new design (where Part1 is active) that is the
-root. The panel says where (*Adds to: Root*).
+one above it that can: in a new design that is Part1 itself, which is
+active and holds components. The panel says where (*Adds to: Part1*).
 
 **PROFILE**
 
@@ -906,6 +958,16 @@ root. The panel says where (*Adds to: Root*).
   system (System: `B8 30` is B-type slot 8 on a 30 mm grid). At first the
   panel shows only the part, its **Length** (the profile's stock length,
   or 500 mm) and its **Direction**.
+- **Choosing by picture:** the **...** button beside **Part** opens the
+  [part picker](#part-picker) with the profiles of the System chosen in
+  the panel, your favourites first and the profiles this design already
+  uses in *In this design*. Click a picture: that profile is chosen and
+  the preview shows it at once, while the view stays yours to click in.
+  Choosing in the panel's list works as before, and the picker follows
+  it. The picker closes with the command unless you pin it; a pinned
+  picker stays open and shows the parts of the next BUILD command that
+  chooses one (Panel, Linear Part, Connector). Panel and Linear Part
+  have the same button.
 - **The first profile:** the view says *Click a plane or a face, or press
   Enter*. Click one of the origin's planes, a construction plane or a face,
   or press Enter to place it at the origin. The X, Y and Z buttons choose
@@ -916,12 +978,31 @@ root. The panel says where (*Adds to: Root*).
   - **On a side** (a click near an end on its side) it goes along that
     slot. Within one profile width of an end it sits flush with that end;
     near the middle or a grid point of the profile system it snaps there,
-    and the preview marks the snap. It never sticks out past an end.
-    **Offset from an End** places it exactly: the offset is to the new
-    profile's near face, so 0 is flush.
-  - **On an end** (a click on its end face) it continues that profile, or
-    turns to an axis (**Direction**: a corner). **Mitre** cuts the existing
-    profile, the new one or both (Shared, on the bisector).
+    and the preview marks the snap. It never sticks out past an end. Snaps
+    keep a size on the screen, so they work in a zoomed-out view too.
+    The click fills **Offset** and **From** (End A, End B or Middle): flush
+    with end B is From End B, Offset 0; on the middle From Middle, Offset
+    0; elsewhere the nearer end and the distance from it. The profile stays
+    bound to that place: when the profile it is on gets longer, one flush
+    with end B stays flush with end B, one on the middle on the middle.
+    Typing an offset moves it from the same reference (from end A to its
+    near face, from end B to its far face, from the middle to its centre);
+    changing **From** keeps it where it is and shows its offset from the
+    new reference. A new click replaces both.
+  - **On an end** (a click on its end face) the click decides: in the
+    middle of the end face the new profile continues straight on; near an
+    edge it turns towards that edge (a corner), in the profile's own axes.
+    With the mouse over an end face the preview shows which before you
+    click, and the face's zones are marked (*straight*, *turn +X*, ...).
+    **Direction** changes it afterwards: Straight, or one of the four
+    sides, named by the axis it runs along (+X, -Y, ...) when it does. A
+    corner lies in the profile's plane with its outer faces flush: with
+    the default mitre (Auto: *Shared*, both cut on the bisector) their
+    outer corners meet; without one the new profile sits on the end face,
+    its end flush with the outer side. The corner's **Offset** moves the
+    new profile's end from that outer side towards the turn; a shared
+    mitre meets only at 0, so at any other offset the mitre is none.
+    **Mitre** also cuts only the existing profile or only the new one.
   - **Rotate** turns it about its axis in 90 degree steps, **Flip** puts
     its other end first.
   - **More** › Placement makes the click go on the side or the end, or
@@ -952,7 +1033,10 @@ root. The panel says where (*Adds to: Root*).
   and greys out those that nearly fit with the reason; the chosen
   connector is previewed in
   place with its nuts and screws, and choosing another one in the list
-  previews that one. **Connect** places the
+  previews that one. The **...** button beside **Connector** shows them
+  in the part picker: the fitting ones first, the nearly fitting ones
+  greyed with the reason; a click on a picture previews that connector,
+  and the picker follows the junction you move on to. **Connect** places the
   chosen one with its nuts and screws and the end machining it needs (a
   bore in the profile's end), and moves on to the next junction. Removing
   a connector removes what it added.
@@ -1429,6 +1513,8 @@ program to be fetched; parts already in a design need nothing.
    off, and **Fetch** to get it or its newer versions. Nothing is fetched
    unless you ask.
 2. **Insert from Library** (the ASSEMBLE group, or Tools › Libraries):
+   the parts are shown as pictures in the part picker's grid (see
+   [Part picker](#part-picker) below): pick a group on the left or
    search by name, standard or tag (`4762`, `washer`), choose the version
    (the newest first) and the size (Size, then Length), and insert the part
    **linked** (read only) or as a **copy** (editable, with its history).
@@ -1451,6 +1537,37 @@ program to be fetched; parts already in a design need nothing.
 A design from another computer whose libraries are not here keeps the
 parts' saved bodies; **Get Missing Libraries** in Library Parts fetches
 them after showing their addresses.
+
+### Part picker
+
+Insert from Library and the commands that choose a part (BUILD's
+Profile, Panel, Linear Part and Connector) show the library's parts as a
+grid of pictures, each with its name and main sizes.
+
+- **Groups** on the left: **Favourites**, **In this design** (the
+  library parts the open design already uses, each with how many times,
+  `×4`; shown while there are any), **All parts**, then the library's
+  categories (profiles, connectors, screws, nuts, ...). Above the grid:
+  **Search** (name, standard, size, supplier, part number), **System**
+  (the slot system of BUILD parts) and **Tiles**, the size of the
+  pictures. Rest the mouse on a tile to see a larger picture with the
+  supplier, the part number, the library and the licence.
+- **Favourites**: click the star in a tile's corner (or **Star**,
+  Ctrl+D) to mark a part. Starred parts come first in every group and
+  are all in Favourites. Click a group's star (Ctrl+Shift+D) to put the
+  group first; inside Favourites its parts come first. Stars belong to
+  you on this computer, not to the design, and survive library updates;
+  a part no longer in the library just drops out of Favourites. Search
+  and the system filter work inside Favourites too.
+- For a BUILD command (the **...** button beside its Part or Connector
+  field) the picker is a floating window: move it, resize it or put it
+  on another screen (it keeps its place and size), and the view stays
+  usable. It shows only the parts the command takes (parts that nearly
+  fit are greyed, with the reason), starting with the System chosen in
+  the panel. A click on a tile chooses the part, and the command
+  previews it at once. The window closes with the command unless you
+  **Pin** it; a pinned picker follows the next command that chooses
+  parts.
 
 ### Community library
 
@@ -1878,7 +1995,8 @@ The application (`mitcad`, on Windows `mitcad.exe`):
 - `file`: the same as `--open file`, as a file association passes it
   (one file, not together with `--open`)
 - `--chrome=docked|floating`: panels in docks or floating over the 3D
-  view (default: floating on macOS, docked elsewhere)
+  view for this run (default: the Layout chosen in Preferences › Display,
+  else floating on macOS, docked elsewhere)
 - `--no-glass`: floating panels paint their own material instead of
   Liquid Glass (macOS 26 and later)
 - `--debug-log [file.log]`, `--debug-log=file`: write a debug log for this

@@ -1246,6 +1246,40 @@ void test_fillets_at_strips_within_the_tolerance() {
   }
 }
 
+void test_convex_and_concave_roundings_overlapping_on_a_step() {
+  // mitcad#235: a step 0.5 high on the block's top (a 60 x 20 x 0.5 box
+  // joined on its front half), both edges of the riser rounded 0.3. The
+  // roundings overlap on the riser (0.6 > 0.5) and OCCT's fillet fails; the
+  // convex rounding is built first, then the concave one, whose ball rolls
+  // on the convex rounding: an S-shaped section, the riser gone.
+  const ShapePtr step = extrude("F3", {rectangle(5, 0, 0, 60, 20)}, 20, 20.5);
+  const ShapePtr body = boolean(BooleanOp::Join, {block().get()}, *step).pieces.at(0).shape;
+  const std::string top = edge(end_cap("F3", 5), side("F3", 5, 2));
+  const std::string foot = edge(end_cap("F2", 1), side("F3", 5, 2));
+  {
+    const ShapePtr copy = mitcad::geometry::detail::working_copy(*body);
+    BRepFilletAPI_MakeFillet plain(copy->occt());
+    plain.Add(0.3, copy->edge(copy->find_edges(top).at(0)));
+    plain.Add(0.3, copy->edge(copy->find_edges(foot).at(0)));
+    plain.Build();
+    CHECK(!plain.IsDone()); // why the roundings are built in order; if OCCT learns it, this check can go
+  }
+  const ShapePtr rounded = fillet("F5", *body, {top, foot}, 0.3);
+  CHECK(mitcad::geometry::detail::is_valid(rounded->occt()));
+  CHECK(faces_named(*rounded, "F5:fillet(" + top + ")") == 1);
+  CHECK(faces_named(*rounded, "F5:fillet(" + foot + ")") == 1);
+  CHECK(faces_named(*rounded, side("F3", 5, 2)) == 0);
+  // The section, the riser at y = 0 and its foot at z = 0: the convex arc
+  // about (-r, h - r), the concave one about (y2, r) at 2r from it, the
+  // arcs meeting half-way between their centres.
+  const double r = 0.3, h = 0.5;
+  const double y2 = -r + std::sqrt(4 * r * r - (2 * r - h) * (2 * r - h));
+  const double yt = (y2 - r) / 2;
+  const auto segment = [r](double u) { return (u * std::sqrt(r * r - u * u) + r * r * std::asin(u / r)) / 2; };
+  const double change = (h - r) * (yt + r) + segment(yt + r) + r * (y2 - yt) + segment(yt - y2) - r * h;
+  CHECK_NEAR_TOL(accurate_volume(*rounded), 48000.0 + 60 * 20 * h + change * 60, 1e-6);
+}
+
 } // namespace
 
 void dressup_tests() {
@@ -1273,6 +1307,8 @@ void dressup_tests() {
   guarded("test_fillets_of_circles_in_pieces", test_fillets_of_circles_in_pieces);
   guarded("test_fillets_of_knife_edges", test_fillets_of_knife_edges);
   guarded("test_fillets_at_strips_within_the_tolerance", test_fillets_at_strips_within_the_tolerance);
+  guarded("test_convex_and_concave_roundings_overlapping_on_a_step",
+          test_convex_and_concave_roundings_overlapping_on_a_step);
 }
 
 } // namespace test

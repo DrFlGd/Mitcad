@@ -190,6 +190,12 @@ CommandPanel::CommandPanel(const CommandDef& def, const CommandState& state, boo
       call(key, index);
     }
   });
+  connect(this, &CommandPanel::buttonClicked, this, [this](const QString& key) {
+    auto call = CommandPresenter::actions().buttonClicked;
+    if (call) {
+      call(key);
+    }
+  });
   connect(this, &CommandPanel::accepted, this, [this] {
     auto call = CommandPresenter::actions().accepted;
     if (call) {
@@ -482,6 +488,22 @@ CommandPanel::Row* CommandPanel::createRow(const InputDef& input, const QString&
       emit choiceChanged(key, combo->itemData(at).toString());
     });
     field = row.combo;
+    if (input.onButton) {
+      // A button beside the drop-down (mitcad#418: BUILD's part picker).
+      auto* line = new QWidget;
+      auto* box = new QHBoxLayout(line);
+      box->setContentsMargins(0, 0, 0, 0);
+      box->setSpacing(4);
+      row.button = new QToolButton;
+      row.button->setText(input.buttonText);
+      row.button->setToolTip(input.buttonTooltip);
+      row.button->setFocusPolicy(Qt::NoFocus);
+      row.button->setObjectName(QStringLiteral("button_") + key);
+      connect(row.button, &QToolButton::clicked, this, [this, key] { emit buttonClicked(key); });
+      box->addWidget(row.combo, 1);
+      box->addWidget(row.button);
+      field = line;
+    }
     break;
   }
   case InputDef::Type::Check: {
@@ -1045,6 +1067,11 @@ void CommandPanel::logLayout() const {
       for (auto it = row->choiceButtons.cbegin(); it != row->choiceButtons.cend(); ++it) {
         qDebug().noquote() << QStringLiteral("Panel %1 input %2=%3 at %4")
                                   .arg(m_def.name, row->key, it.key(), position(it.value()));
+      }
+      if (row->button != nullptr) {
+        // The button beside a choice (InputDef::onButton).
+        qDebug().noquote() << QStringLiteral("Panel %1 button_%2 at %3")
+                                  .arg(m_def.name, row->key, position(row->button));
       }
     }
     if (row->order != nullptr && !hidden) {

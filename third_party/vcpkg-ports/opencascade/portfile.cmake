@@ -158,6 +158,15 @@ vcpkg_from_github(
         0670-chfi3d-standing-ball-sphere-in-a-gap-between-pieces.patch
         0671-chfi3d-kpart-chamfer-cut-across-its-width-by-faces-beyond-at-both-ends.patch
         0680-shapeupgrade-unifysamedomain-faces-round-a-period-without-winding.patch
+        0690-chfi3d-end-on-a-face-along-the-line-of-its-seam.patch
+        0691-chfi3d-onsame-end-on-a-tangent-face-the-crossing-nearest-the-corner.patch
+        0692-chfi3d-kpart-contact-end-within-a-vertex-tolerance-at-the-vertex.patch
+        0720-chfi3d-face-at-the-end-passed-wholly-beyond-is-consumed.patch
+        0721-chfi3d-onsame-prolonged-edge-own-curve-on-both-surfaces.patch
+        0700-chfi3d-blends-cut-by-a-narrow-face-they-roll-over.patch
+        0740-chfi3d-end-face-split-round-the-vertex-pieces-of-one-surface.patch
+        0741-chfi3d-kpart-contact-end-at-a-vertex-on-the-edge-to-the-spines-end.patch
+        0742-chfi3d-guide-past-an-open-end-along-the-end-edges-own-curve.patch
 )
 
 if (VCPKG_LIBRARY_LINKAGE STREQUAL "dynamic")

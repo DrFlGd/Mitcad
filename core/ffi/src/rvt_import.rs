@@ -83,7 +83,13 @@ impl Document {
         // The reading and the building, watched by the memory guard.
         let (model, import) = MemoryGuard::with_limit(None)
             .around(&progress, || {
-                let model = Model::read(&rvt, &schema)?;
+                // (The links are listed without the geometry the file
+                // keeps: reading it took most of the listing's time.)
+                let model = if options.list_links {
+                    Model::read_elements(&rvt, &schema)?
+                } else {
+                    Model::read(&rvt, &schema)?
+                };
                 let import =
                     if rvt.kind == Kind::Project && !options.report_only && !options.list_links {
                         Some(

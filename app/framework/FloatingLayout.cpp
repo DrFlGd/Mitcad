@@ -5,8 +5,10 @@
 
 #include <QEvent>
 #include <QShowEvent>
+#include <QStringList>
 #include <QFontMetrics>
 #include <QLabel>
+#include <QMainWindow>
 #include <QMargins>
 #include <QTimer>
 #include <QVBoxLayout>
@@ -27,6 +29,9 @@ FloatingLayout::FloatingLayout(OcctViewer* viewer, QWidget* header, QWidget* par
   column->setSpacing(0);
   if (header != nullptr) {
     column->addWidget(header);
+    // The cards start below it (mitcad#419): its size and place are followed
+    // too, as the ribbon's groups collapse and notices come and go.
+    header->installEventFilter(this);
   }
   column->addWidget(viewer, 1);
   // The view's size and place are what the cards follow.
@@ -115,6 +120,8 @@ bool FloatingLayout::eventFilter(QObject* watched, QEvent* event) {
   case QEvent::Move:
     if (watched == m_viewer) {
       layoutCards();
+    } else if (watched == m_header) {
+      requestLayout();
     }
     break;
   case QEvent::Show:
@@ -238,9 +245,17 @@ void FloatingLayout::layoutCards() {
   }
   const int cardsBottom = floor;
 
+  // The top bar above the view (the title bar row, the workspace switch, the
+  // ribbon's groups, the notices; mitcad#419): no card reaches under it,
+  // whatever the view's top says, at any window size and however the
+  // ribbon's groups collapse.
+  int barBottom = view.top();
+  if (m_header != nullptr && !m_header->isHidden()) {
+    barBottom = std::max(barBottom, m_header->geometry().bottom() + 1);
+  }
   // The cards on the left, then the free area for the view's overlays: the
   // cube's corner, pushed down under a card that reaches it.
-  const int topLimit = view.top() + kMargin;
+  const int topLimit = barBottom + kMargin;
   int insetTop = 0;
   const QRect cubeCorner(view.right() + 1 - OcctViewer::kCubeArea, view.top(), OcctViewer::kCubeArea,
                          OcctViewer::kCubeArea);
@@ -264,8 +279,8 @@ void FloatingLayout::layoutCards() {
     if (!visible(entry) || entry.anchor != Anchor::TopRight) {
       continue;
     }
-    // Under the cube, and its arrows.
-    const int top = view.top() + insetTop + OcctViewer::kCubeArea;
+    // Under the cube, and its arrows; below the top bar in any case.
+    const int top = std::max(view.top() + insetTop + OcctViewer::kCubeArea, topLimit);
     const int limit = std::min(static_cast<int>((view.height() - 2 * kMargin) * entry.sizing.maxHeightShare),
                                cardsBottom - top);
     const QSize size = sized(entry, entry.sizing.width > 0 ? entry.sizing.width : 300, limit);
@@ -320,6 +335,47 @@ void FloatingLayout::layoutCards() {
   }
   m_viewer->setCoveredRects(covered);
   m_inLayout = false;
+  logCards();
+}
+
+void FloatingLayout::logCards() {
+  QWidget* host = window();
+  if (host == nullptr || !host->isVisible()) {
+    return;
+  }
+  // The bottom of the bar above the cards in the window: the menu bar (none
+  // on macOS) and the header, as they are placed.
+  int barBottom = 0;
+  if (const auto* mainWindow = qobject_cast<const QMainWindow*>(host)) {
+    if (mainWindow->menuWidget() != nullptr && mainWindow->menuWidget()->isVisible()) {
+      barBottom = mainWindow->menuWidget()->geometry().bottom() + 1;
+    }
+  }
+  if (m_header != nullptr && m_header->isVisible()) {
+    barBottom = std::max(barBottom, m_header->mapTo(host, QPoint(0, m_header->height())).y());
+  }
+  QStringList cards;
+  for (const Entry& entry : m_entries) {
+    if (entry.card == nullptr || !entry.card->isShown()) {
+      continue;
+    }
+    const QPoint at = GlassCard::mapToHost(entry.card.data(), QPoint(0, 0));
+    cards << QStringLiteral("%1 %2,%3 %4x%5")
+                 .arg(entry.card->objectName())
+                 .arg(at.x())
+                 .arg(at.y())
+                 .arg(entry.card->width())
+                 .arg(entry.card->height());
+  }
+  const QString line = QStringLiteral("Floating cards: window %1x%2, top bar bottom %3; %4")
+                           .arg(host->width())
+                           .arg(host->height())
+                           .arg(barBottom)
+                           .arg(cards.join(QStringLiteral("; ")));
+  if (line != m_loggedCards) {
+    m_loggedCards = line;
+    qDebug().noquote() << line;
+  }
 }
 
 } // namespace mitcad

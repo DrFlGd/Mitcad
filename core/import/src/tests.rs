@@ -4380,6 +4380,16 @@ fn a_text_in_a_box_needs_no_position_of_its_own() {
                        line("c2", "p2", "p3"), line("c3", "p3", "p0")],
             "texts": [
                 {"id": "t0", "text": "A B", "height": 0.3, "fontName": "Arial",
+                 "lineSpacing": 0.25, "penAligned": true, "inkTop": true,
+                 "glyphs": [
+                     {"advance": 0.2, "contours": [[[[0.0, 0.0], [0.15, 0.0]],
+                                                    [[0.15, 0.0], [0.075, 0.21]],
+                                                    [[0.075, 0.21], [0.0, 0.0]]]]},
+                     {"advance": 0.0},
+                     {"advance": 0.2, "contours": [[[[0.0, 0.0], [0.15, 0.0]],
+                                                    [[0.15, 0.0], [0.15, 0.21]],
+                                                    [[0.15, 0.21], [0.0, 0.0]]]]}
+                 ],
                  "definition": {"_type": "MultiLineTextDefinition",
                                 "rectangleLines": [{"kind": "sketch_entity", "id": "c0"},
                                                    {"kind": "sketch_entity", "id": "c1"},
@@ -4403,6 +4413,36 @@ fn a_text_in_a_box_needs_no_position_of_its_own() {
         (t["cap_height"].clone(), t["wrap"].clone()),
         (json!(true), json!(true))
     );
+    // The `.ipt` decoder's measures (mitcad#414).
+    assert_eq!(
+        (
+            t["line_spacing"].clone(),
+            t["pen_align"].clone(),
+            t["ink_top"].clone()
+        ),
+        (json!(2.5), json!(true), json!(true))
+    );
+    // The glyphs the file stores (mitcad#416) are the shapes while the font
+    // is missing (the mock kernel has no Arial): the A a triangle 1.5 mm
+    // wide and 2.1 mm high.
+    assert_eq!(
+        (
+            t["has_glyphs"].clone(),
+            t["stored_outlines"].clone(),
+            t["family"].clone()
+        ),
+        (json!(true), json!(true), json!("Arial"))
+    );
+    let id = t["id"].as_str().unwrap();
+    let area = s["regions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["key"] == format!("r{{{id}.g0.c0}}"))
+        .unwrap_or_else(|| panic!("{}", s["regions"]))["area"]
+        .as_f64()
+        .unwrap();
+    assert!((area - 1.575).abs() < 1e-9, "{area}");
     assert!((t["angle"].as_f64().unwrap() - std::f64::consts::PI).abs() < 1e-9);
     let at = |x: f64, y: f64| {
         s["entities"]

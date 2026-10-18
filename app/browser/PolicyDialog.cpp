@@ -30,8 +30,9 @@ QString presetText(const QString& preset) {
   if (preset == QStringLiteral("part")) {
     return QObject::tr("Part");
   }
-  if (preset == QStringLiteral("defaults")) {
-    return QObject::tr("General defaults");
+  // `defaults` is the Hybrid preset's name before mitcad#421.
+  if (preset == QStringLiteral("hybrid") || preset == QStringLiteral("defaults")) {
+    return QObject::tr("Hybrid");
   }
   return QObject::tr("Custom");
 }
@@ -67,9 +68,9 @@ PolicyDialog::PolicyDialog(Query query, const QString& component, QWidget* paren
   presets->addWidget(m_preset);
   presets->addStretch(1);
   const std::pair<QString, QString> presetButtons[] = {
-      {QStringLiteral("assembly"), tr("&Assembly")},
+      {QStringLiteral("hybrid"), tr("&Hybrid")},
       {QStringLiteral("part"), tr("&Part")},
-      {QStringLiteral("defaults"), tr("&Defaults")},
+      {QStringLiteral("assembly"), tr("&Assembly")},
   };
   for (const auto& [preset, text] : presetButtons) {
     auto* button = new QPushButton(text, this);
@@ -78,9 +79,10 @@ PolicyDialog::PolicyDialog(Query query, const QString& component, QWidget* paren
     presets->addWidget(button);
   }
   layout->addLayout(presets);
-  auto* presetHelp = new QLabel(tr("Assembly: components only. Part: sketches and features, no components. "
-                                   "Both refuse sketch attachment in both directions, except a component's first "
-                                   "sketch, and allow references."),
+  auto* presetHelp = new QLabel(tr("Hybrid (the defaults): everything allowed. Part: sketches and features, no "
+                                   "components. Assembly: components only. Part and Assembly refuse sketch "
+                                   "attachment in both directions, except a component's first sketch, and allow "
+                                   "references."),
                                 this);
   presetHelp->setWordWrap(true);
   layout->addWidget(presetHelp);
@@ -102,7 +104,7 @@ PolicyDialog::PolicyDialog(Query query, const QString& component, QWidget* paren
        tr("Components can be created, inserted, pasted or moved directly under %1.").arg(m_name)},
       {"attach_to_others", tr("Sketch attachment"), tr("Attach sketches to &other components"),
        tr("Outgoing: sketches of %1 can lie on faces and planes of other components.").arg(m_name)},
-      {"attachments_from_others", QString(), tr("Allow sketch attac&hments from other components"),
+      {"attachments_from_others", QString(), tr("Allow sketch a&ttachments from other components"),
        tr("Incoming: sketches of other components can lie on faces and planes of %1. Both sides must allow an "
           "attachment.")
            .arg(m_name)},

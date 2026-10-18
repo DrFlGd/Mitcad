@@ -44,6 +44,8 @@
 //! Other surfaces are kept by their class name: their faces' points come
 //! from the neighbouring faces' surfaces.
 
+use std::collections::HashMap;
+
 use serde::Serialize;
 
 use crate::schema::Schema;
@@ -433,9 +435,14 @@ struct Reader<'a> {
     detail: u64,
 }
 
-/// Index of a pointee object (by address) in the record.
+/// Index of a pointee object (by address) in the record: from its offset
+/// in the record's pointees, as a search through them for every edge of a
+/// body took quadratic time (mitcad#413).
 fn index_of(record: &Record, o: &Object) -> Option<usize> {
-    record.pointees.iter().position(|p| std::ptr::eq(p, o))
+    let size = std::mem::size_of::<Object>();
+    let offset = (o as *const Object as usize).checked_sub(record.pointees.as_ptr() as usize)?;
+    let i = offset / size;
+    (offset % size == 0 && record.pointees.get(i).is_some_and(|p| std::ptr::eq(p, o))).then_some(i)
 }
 
 impl<'a> Reader<'a> {
@@ -585,14 +592,19 @@ impl<'a> Reader<'a> {
             .iter()
             .filter_map(|f| self.record.deref(f))
             .collect();
-        let face_index = |o: &Object| {
-            let i = index_of(self.record, o)?;
-            faces
-                .iter()
-                .position(|f| index_of(self.record, f) == Some(i))
-        };
+        // The faces and edges by their pointees' indices (searches made
+        // reading a body of many faces quadratic).
+        let mut face_of: HashMap<usize, usize> = HashMap::new();
+        for (k, f) in faces.iter().enumerate() {
+            if let Some(i) = index_of(self.record, f) {
+                face_of.entry(i).or_insert(k);
+            }
+        }
+        let face_index =
+            |o: &Object| index_of(self.record, o).and_then(|i| face_of.get(&i).copied());
         let mut solid = Solid::default();
         let mut edge_ids: Vec<usize> = Vec::new();
+        let mut edge_of: HashMap<usize, usize> = HashMap::new();
         for f in &faces {
             solid.faces.push(Face {
                 surface: self
@@ -656,13 +668,10 @@ impl<'a> Reader<'a> {
                     if start.is_none() {
                         start = Some((ei, side));
                     }
-                    let k = match edge_ids.iter().position(|x| *x == ei) {
-                        Some(k) => k,
-                        None => {
-                            edge_ids.push(ei);
-                            edge_ids.len() - 1
-                        }
-                    };
+                    let k = *edge_of.entry(ei).or_insert_with(|| {
+                        edge_ids.push(ei);
+                        edge_ids.len() - 1
+                    });
                     uses.push((k, side));
                     if uses.len() > 100_000 {
                         return Err("a loop that does not close".into());

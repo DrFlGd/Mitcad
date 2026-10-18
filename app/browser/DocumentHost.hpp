@@ -53,6 +53,13 @@ public:
   // ("Extrude", "Create Sketch" while it asks for a plane) or the name of
   // the sketch edited; empty outside them.
   virtual QString activeCommandName() const { return {}; }
+  // A choice of the running command made outside its panel (mitcad#418:
+  // BUILD's part picker): option `value` of its choice input `input`, as if
+  // chosen in the panel, while the command `command` ("build.profile") is
+  // the one running; false otherwise.
+  virtual bool chooseInCommand(const QString& /*command*/, const QString& /*input*/, const QString& /*value*/) {
+    return false;
+  }
   // Why the design cannot be changed at all (a read-only window whose edit
   // lock someone else holds, mitcad#89); empty when it can.
   virtual QString readOnlyReason() const { return {}; }

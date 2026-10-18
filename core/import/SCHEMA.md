@@ -596,7 +596,26 @@ which.
   `verticalAlignment` as the API's names) or `AlongPathTextDefinition`
   (`path`: the curve). `textStyle` bit 1 (bold) comes from the font weight
   (600 and up); italic and underline are not decoded. `_f3d` holds the raw
-  flags, weight, width factor and kind.
+  flags, weight, width factor and kind. The `.ipt` decoder (mitcad#414)
+  adds `lineSpacing` (cm, baseline to baseline, measured from the glyph
+  contours the file keeps), `penAligned` (lines align by their pens) and
+  `inkTop` (a frame's top meets the first line's highest outline point),
+  and `_ipt`: the text record, its alignment code and `glyphs` (each
+  stored glyph contour's pen and pieces in sketch coordinates). From those
+  contours it also gives `glyphs` (mitcad#416): one per character of
+  `text` (newlines included), `{advance, contours}` in cm in the text's
+  own axes from the character's pen, each contour a list of Bézier pieces
+  (`[[x, y], …]`: two points a line, three a quadratic; the file's
+  B-splines split at their knots); the advance runs to the next pen of its
+  line (white space between included), a line's last to where its
+  alignment about the anchor ends the line (left: its outline). Left out,
+  with the reason in `_ipt.glyphsLeftOut`, when the contours do not lie as
+  the text's layout puts them (one pen per character that is not white
+  space, pens on baselines `lineSpacing` apart, a line starting at or
+  centred on the anchor, the frame's top at the first line's highest
+  outline point, to 1e-5 cm). The import gives them to the model text as
+  its `glyphs` (in units of the height), its shapes while the font is not
+  installed.
 - `Profile`: `index`, `loops` (`[{isOuter, curves: [{curve, geometry}]}]`:
   `curve` is the id of the sketch curve the profile curve lies on,
   `geometry` the profile curve's own geometry, possibly part of that

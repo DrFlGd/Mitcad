@@ -218,3 +218,41 @@ impl<K: Kernel> Document<K> {
         json!({"rows": rows})
     }
 }
+
+impl<K: Kernel> Document<K> {
+    /// The `library_usage` query (mitcad#418): the library parts the
+    /// design uses, BUILD sources and inserted library components alike,
+    /// one entry per library and component (whatever its version or row)
+    /// with how many times the design places it, in the order the parts
+    /// list has them. Parts placed nowhere are left out.
+    pub(crate) fn library_usage_json(&self) -> Value {
+        let mut parts: Vec<(String, String, String, usize)> = Vec::new();
+        for row in self.parts_list() {
+            let Some(library) = row.library.as_ref() else {
+                continue;
+            };
+            if row.quantity == 0 {
+                continue;
+            }
+            match parts
+                .iter_mut()
+                .find(|p| p.0 == library.library && p.2 == library.component)
+            {
+                Some(part) => part.3 += row.quantity,
+                None => parts.push((
+                    library.library.clone(),
+                    crate::library::shown_url(&library.url),
+                    library.component.clone(),
+                    row.quantity,
+                )),
+            }
+        }
+        let parts: Vec<Value> = parts
+            .into_iter()
+            .map(|(library, url, component, count)| {
+                json!({"library": library, "url": url, "component": component, "count": count})
+            })
+            .collect();
+        json!({ "parts": parts })
+    }
+}

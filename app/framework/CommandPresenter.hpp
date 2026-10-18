@@ -31,6 +31,8 @@ public:
     // A value field took the keyboard or lost it (mitcad#250: the view's
     // labels then put parameter names into it).
     std::function<void(const QString&, bool)> valueFocused;
+    // The button beside a choice was clicked (InputDef::onButton).
+    std::function<void(const QString&)> buttonClicked;
   };
 
   virtual ~CommandPresenter() {

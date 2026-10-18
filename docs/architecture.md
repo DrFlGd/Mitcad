@@ -91,7 +91,9 @@ design in a project.
   version reuses them. Shapes are stored with their names
   (`geometry/include/mitcad/geometry/persist.hpp`); results of another
   build are ignored; sketches, construction and plain base features are
-  not stored. The memory cache has a byte budget (the app gives a quarter
+  not stored. An import's worker hands every result a store takes over
+  to the window in a store of the import's own (mitcad#413). The memory
+  cache has a byte budget (the app gives a quarter
   of RAM) and evicts least recently used results not held by the current
   document. The `cache` query reports both caches.
 - **Sheet material state:** `sheet_rules` publishes resolved versioned fabrication
@@ -305,9 +307,12 @@ design in a project.
   settings (sketches, features, components; sketch attachment to and from
   other components, and of a component's first sketch, mitcad#293;
   references to and from them), in the definition state
-  and the design file. A new design (`Document::new_design`) has an
-  Assembly root and an empty, active Part1; `Document::new` and designs
-  without a stored policy have the general defaults. Every change a JSON
+  and the design file. The general defaults (the Hybrid preset,
+  mitcad#421) allow everything; the Part and Assembly presets are the
+  stricter choices. A new design (`Document::new_design`) has the root and
+  an empty, active Part1, both with the general defaults, as have
+  `Document::new`, new components and owners without a stored policy (a
+  stored one keeps its values; the file format is unchanged). Every change a JSON
   command or preview makes goes through one check before it is computed
   (`apply_with`, `apply_move`, previews): the next state's violations are
   compared with the current ones, counted per owner, setting, object and
@@ -348,8 +353,8 @@ design in a project.
   plan everything against the document and make it in one undo step;
   components record what BUILD made (`build`). They work in the **BUILD
   host** (mitcad#394, `Document::build_host`): the active component when
-  its policy takes components, else the nearest one up that does (a new
-  design's root while Part1 is active), so the design policy never
+  its policy takes components, else the nearest one up that does (in a
+  new design Part1 itself, mitcad#421), so the design policy never
   refuses where a part goes; bound lengths count as assembly features
   there, as joints do. Everything else treats
   them as ordinary components, features, joints and parameters
@@ -782,7 +787,10 @@ entities and constraints, shared by the UI and the imports.
 
 - **Text** (`sketch/text.rs`): glyph outlines from `Kernel::font_glyphs`
   (OCCT font manager; bundled Droid Sans as fallback), laid out in Rust;
-  each outline is a region curve `t<n>.g<k>.c<j>`.
+  each outline is a region curve `t<n>.g<k>.c<j>`. A text may carry the
+  outlines a file stores for it (`glyphs`, mitcad#416), laid out instead
+  of the fallback font's while its font is missing and its string and
+  font are unchanged.
 - **Patterns** (`sketch/pattern.rs`): copies are tied to originals by
   solver constraints (`Translated`, `Rotated`, `TurnedDirection`,
   `EqualSize`), so they add no DOF and keep ids when the count changes.
@@ -921,7 +929,11 @@ not recompute.
   switches), flushed every second and at each warning, rolled over at
   20 MB, the folder kept to 10 files and 200 MB.
 - **Imports** run in a separate process (`mitcad --import-worker`) so a
-  kernel crash or hang only kills that process. Stop keeps what was
+  kernel crash or hang only kills that process. The worker hands the
+  import's evaluation back in a result store of the import's own (every
+  result a store takes, `hand_off_results`); the window reads the
+  imported design with it, restoring those results rather than
+  evaluating every feature a second time (mitcad#413). Stop keeps what was
   imported (the worker reads `stop` on stdin); Cancel kills the process.
   The `.f3d` import's one question (keep the imported bodies that match
   the file's on a retry on its stored bodies, or replace them; mitcad#283)
@@ -1129,13 +1141,16 @@ The following layouts describe the retained Qt frontend.
 
 `chromeStyle()` (`app/framework/ChromeStyle`) picks the layout at start-up:
 **Docked** (Windows and Linux: the ribbon in a toolbar, the panels in docks)
-or **Floating** (the default on macOS; `--chrome=docked|floating` overrides
-it). `MainWindow` builds either from the same panels, so object names and
-the positions the UI tests click are the same in both. The ribbon's
-workspace tabs are SOLID and BUILD (mitcad#375: slot-profile assemblies,
-whose commands call only the model's BUILD commands and queries;
-app/COMMANDS.md, *BUILD*), with SKETCH after them while a sketch is
-edited; the AppKit frontend lists BUILD's commands in a menu.
+or **Floating** (the default on macOS). Preferences › Display › Layout chooses
+one for the next starts (`appearance/layout`, `layoutPreference()`; a change
+offers to restart, `framework/Restart`), and `--chrome=docked|floating`
+overrides both for a run (mitcad#419). `MainWindow` builds either from the
+same panels, so object names and the positions the UI tests click are
+the same in both. The ribbon's workspace tabs are SOLID and BUILD
+(mitcad#375: slot-profile assemblies, whose commands call only the
+model's BUILD commands and queries; app/COMMANDS.md, *BUILD*), with SKETCH
+after them while a sketch is edited; the AppKit frontend lists BUILD's
+commands in a menu.
 
 Docked has a look of its own, `WindowStyle` (`app/framework/WindowStyle`,
 mitcad#251), the same on every platform and in both themes: the docks and
@@ -1173,7 +1188,9 @@ Floating is a full-window 3D view with the panels over it:
   rectangles (`setCoveredRects`): the cube and its buttons stay clear of
   cards, picks and logged click positions avoid them, and Fit, Home and the
   named views fit the model into the free area (`fitToFreeArea`). Cards
-  take the mouse only inside their rounded rectangle.
+  take the mouse only inside their rounded rectangle. No card starts above
+  the bottom of the header (the title bar row, the ribbon, the notices),
+  whose size and place the layout follows too (mitcad#419).
 
 **Why the cards are windows.** With `glassActive()` (macOS 26+, Floating,
 no `--no-glass`) a card's material is the system's Liquid Glass
@@ -1757,7 +1774,12 @@ expressions). Formats: [libraries.md](libraries.md).
 In the app (`app/files/MainWindowLibraries.cpp`, `LibraryDialogs.cpp`)
 fetches run as `RemoteTask`s on their own thread with Cancel; the other
 library commands are local and run on the UI thread; inserts and updates
-are model commands (jobs on the model worker).
+are model commands (jobs on the model worker). The part picker
+(`app/library/`, mitcad#418) shows the library's parts as pictures for
+Insert from Library and the part-choosing commands: previews are read a
+few at a time while the UI is idle, only for tiles in sight; the user's
+favourites are app settings, not design data; the design's library parts
+come from the model's `library_usage` query.
 
 ### Autosave
 

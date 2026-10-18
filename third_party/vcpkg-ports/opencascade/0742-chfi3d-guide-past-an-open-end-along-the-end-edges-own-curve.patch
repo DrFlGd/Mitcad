@@ -1,0 +1,356 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: the guide past an open end of the spine follows the curve the end
+edge is a piece of, where that goes on past the edge, instead of a smooth
+turn into the edge's tangent (mitcad#415).
+
+The case: the root of a thread (the helical edge between its two flanks,
+a piece of one helix or of an iso-line of a flank's B-spline surface) cut
+by the faces at its ends, e.g. a nut's thread running from below the nut
+to above it, its roots rounded up to the nut's top and bottom. The walk of
+the blend starts and ends some way past the spine's ends, along the guide
+(ChFi3d_PerformElSpine) extended there by GeomLib::ExtendCurveToPoint
+towards a point twenty times as far along the end tangent. On a helix of
+small lead that extension leaves the root's helix within millimetres,
+the sections of the walk past the end turned away from the flanks, the
+contacts swerved, and the faces at the ends were cut along curves joined by
+vertices with tolerances of tens of millimetres (the result invalid, or
+valid with such vertices, which a later boolean merged with far away
+vertices of other faces).
+
+- ChFi3d_OwnCurveExtension: the guide extended past its open end along
+  the end edge's own curve (a non-periodic B-spline going on past the
+  edge), by up to the length the extension needs, reparametrized with the
+  guide's speed at its end so that the guide's own part keeps its
+  parameters (checked), the two joined (GeomConvert_CompCurveToBSplineCurve)
+  where they meet within tolerance and tangentially.
+- ChFi3d_IsoCurveOfEdge: the iso-line of a B-spline surface of the end
+  edge along which the edge runs (its curve on that face a line along one
+  parameter), oriented as the spine runs: the curve the edge is a piece of
+  where the edge's own curve stops at the edge's end.
+- ChFi3d_PerformElSpine: at an open start or end of the spine, the guide
+  is extended along the edge's own curve, else along that iso-line, where
+  one goes on past the end by more than the extension needs (cut to the
+  extension's length there); else the smooth extension continues from as
+  far as one goes (as before where neither does).
+
+Before, the result was invalid, its vertices up to tens of millimetres
+off. Test: a ring's bore threaded from below the ring to above it, the
+thread's root rounded up to the ring's faces (geometry test_sweeps): valid,
+the vertices within 1e-3, the volume added that of the section the ball
+fills turned over the ring's height, and each face's gain that section
+turned through the angle the root rises across it.
+
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
+@@ -47,6 +47,7 @@
+ #include <GeomAbs_Shape.hxx>
+ #include <GeomAPI_PointsToBSpline.hxx>
+ #include <GeomAPI_ProjectPointOnCurve.hxx>
++#include <Geom_BSplineSurface.hxx>
+ #include <Geom2dAPI_ProjectPointOnCurve.hxx>
+ #include <GeomAPI_ProjectPointOnSurf.hxx>
+ #include <GeomConvert.hxx>
+@@ -6515,6 +6516,180 @@
+ }
+ 
+ //=======================================================================
++// function : ChFi3d_OwnCurveExtension
++// purpose  : The guide BS (the spine's edges from Wref at its start, or up
++//            to Wref at its end) extended past that open end of the spine
++//            along the end edge's own curve Cv (oriented as the spine
++//            runs, the edge ending at We on it), where that is a B-spline
++//            going on past the edge (a thread's root cut by a face at the
++//            end, the edge a piece of its whole run), by up to Need of it
++//            (Length): the walk past the spine's end follows the curve the
++//            edge is a piece of, not a smooth turn into its tangent. The
++//            extension is parametrized with the guide's speed at its end,
++//            so that the guide's own parameters stay as they are. Null
++//            where the curve does not go on or the pieces do not join.
++//=======================================================================
++
++static occ::handle<Geom_BSplineCurve> ChFi3d_OwnCurveExtension(const occ::handle<Geom_Curve>&        Cv,
++                                                               const double                          We,
++                                                               const bool                            AtStart,
++                                                               const double                          Need,
++                                                               const occ::handle<Geom_BSplineCurve>& BS,
++                                                               const double                          Wref,
++                                                               const double                          Tol,
++                                                               double&                               Length)
++{
++  Length = 0.;
++  const occ::handle<Geom_BSplineCurve> aBC = occ::down_cast<Geom_BSplineCurve>(Cv);
++  if (aBC.IsNull() || aBC->IsPeriodic() || BS.IsNull() || BS->IsRational() || BS->IsPeriodic()
++      || Need <= Tol)
++  {
++    return nullptr;
++  }
++  const double aFrom = AtStart ? aBC->FirstParameter() : We;
++  const double aTo   = AtStart ? We : aBC->LastParameter();
++  if (aTo - aFrom <= Precision::PConfusion())
++  {
++    return nullptr;
++  }
++  GeomAdaptor_Curve aGC(aBC);
++  Length = std::min(Need, GCPnts_AbscissaPoint::Length(aGC, aFrom, aTo));
++  if (Length <= 10. * Tol)
++  {
++    return nullptr;
++  }
++  GCPnts_AbscissaPoint aGCP(aGC, AtStart ? -Length : Length, We);
++  if (!aGCP.IsDone())
++  {
++    return nullptr;
++  }
++  const double aW = std::min(std::max(aGCP.Parameter(), aBC->FirstParameter()), aBC->LastParameter());
++  occ::handle<Geom_BSplineCurve> anExt =
++    GeomConvert::CurveToBSplineCurve(new Geom_TrimmedCurve(aBC, AtStart ? aW : We, AtStart ? We : aW));
++  if (anExt.IsNull() || anExt->IsRational())
++  {
++    return nullptr;
++  }
++  // The speeds at the junction made equal.
++  gp_Pnt aP0, aPe;
++  gp_Vec aV0, aVe;
++  BS->D1(Wref, aP0, aV0);
++  aBC->D1(We, aPe, aVe);
++  if (aV0.Magnitude() <= gp::Resolution() || aVe.Magnitude() <= gp::Resolution()
++      || aP0.Distance(aPe) > 10. * Tol || aV0.Normalized().Dot(aVe.Normalized()) < 1. - 1.e-6)
++  {
++    return nullptr;
++  }
++  const double               aSpan = std::abs(We - aW) * aVe.Magnitude() / aV0.Magnitude();
++  NCollection_Array1<double> aKnots(anExt->Knots());
++  BSplCLib::Reparametrize(AtStart ? Wref - aSpan : Wref, AtStart ? Wref : Wref + aSpan, aKnots);
++  anExt->SetKnots(aKnots);
++  GeomConvert_CompCurveToBSplineCurve aConcat(AtStart ? anExt : BS, Convert_QuasiAngular);
++  if (!aConcat.Add(AtStart ? BS : anExt, 10. * Tol, true))
++  {
++    return nullptr;
++  }
++  occ::handle<Geom_BSplineCurve> aRes = aConcat.BSplineCurve();
++  // The guide's own part kept where it was.
++  for (int i = 0; i <= 4; i++)
++  {
++    const double t = BS->FirstParameter() + (BS->LastParameter() - BS->FirstParameter()) * i / 4.;
++    if (t < aRes->FirstParameter() - Precision::PConfusion() || t > aRes->LastParameter() + Precision::PConfusion()
++        || aRes->Value(t).Distance(BS->Value(t)) > 10. * Tol)
++    {
++      return nullptr;
++    }
++  }
++  return aRes;
++}
++
++//=======================================================================
++// function : ChFi3d_IsoCurveOfEdge
++// purpose  : The iso-line of a B-spline surface of edge E along which E
++//            runs (its curve on that face a line along a parameter), as a
++//            3d curve oriented with direction T at the spine's end P on E,
++//            and P's parameter on it (W): the curve E is a piece of where
++//            E's own curve stops at the end (a thread's root on its
++//            flank's iso-line, cut at a face at the end). False where E has
++//            no such curve on a surface.
++//=======================================================================
++
++static bool ChFi3d_IsoCurveOfEdge(const TopoDS_Edge&       E,
++                                  const gp_Pnt&            P,
++                                  const gp_Vec&            T,
++                                  const double             Tol,
++                                  occ::handle<Geom_Curve>& C,
++                                  double&                  W)
++{
++  for (int i = 1;; i++)
++  {
++    occ::handle<Geom2d_Curve> aC2d;
++    occ::handle<Geom_Surface> aS;
++    TopLoc_Location           aL;
++    double                    f = 0., l = 0.;
++    BRep_Tool::CurveOnSurface(E, aC2d, aS, aL, f, l, i);
++    if (aC2d.IsNull() || aS.IsNull())
++    {
++      return false;
++    }
++    occ::handle<Geom2d_Curve> aBasis = aC2d;
++    while (const occ::handle<Geom2d_TrimmedCurve> aTr = occ::down_cast<Geom2d_TrimmedCurve>(aBasis))
++    {
++      aBasis = aTr->BasisCurve();
++    }
++    const occ::handle<Geom2d_Line>        aLin = occ::down_cast<Geom2d_Line>(aBasis);
++    const occ::handle<Geom_BSplineSurface> aBS = occ::down_cast<Geom_BSplineSurface>(aS);
++    if (aLin.IsNull() || aBS.IsNull())
++    {
++      continue;
++    }
++    const gp_Dir2d aD   = aLin->Direction();
++    const bool     isU  = std::abs(aD.X()) <= 1.e-12; // u constant: a U-iso, along v
++    const bool     isV  = std::abs(aD.Y()) <= 1.e-12; // v constant: a V-iso, along u
++    if (!isU && !isV)
++    {
++      continue;
++    }
++    const gp_Pnt2d aP0 = aLin->Location();
++    occ::handle<Geom_Curve> anIso = isU ? aBS->UIso(aP0.X()) : aBS->VIso(aP0.Y());
++    if (anIso.IsNull())
++    {
++      continue;
++    }
++    if (!aL.IsIdentity())
++    {
++      anIso = occ::down_cast<Geom_Curve>(anIso->Transformed(aL.Transformation()));
++    }
++    GeomAPI_ProjectPointOnCurve aProj(P, anIso);
++    if (aProj.NbPoints() == 0 || aProj.LowerDistance() > Tol)
++    {
++      continue;
++    }
++    double aW = aProj.LowerDistanceParameter();
++    gp_Pnt aPt;
++    gp_Vec aTg;
++    anIso->D1(aW, aPt, aTg);
++    if (aTg.Magnitude() <= gp::Resolution() || T.Magnitude() <= gp::Resolution())
++    {
++      continue;
++    }
++    const double aCos = aTg.Normalized().Dot(T.Normalized());
++    if (std::abs(aCos) < 1. - 1.e-6)
++    {
++      continue;
++    }
++    if (aCos < 0.)
++    {
++      aW    = anIso->ReversedParameter(aW);
++      anIso = anIso->Reversed();
++    }
++    C = anIso;
++    W = aW;
++    return true;
++  }
++}
++
++//=======================================================================
+ // function : ChFi3d_AdjustGuideEndsLocally
+ // purpose  : Gives guide BS the point and tangent of the blends before
+ //            and after it at its ends (WF, WL), changing it within Length
+@@ -6757,6 +6932,11 @@
+   }
+   //
+   TC = new (Geom_TrimmedCurve)(Cv, First, Last);
++  // (The end edges' own curves as the spine runs and the edges' ends on
++  // them, for extensions past open ends of the spine.)
++  occ::handle<Geom_Curve> CvDeb = Cv, CvFin = Cv;
++  double                  WeDeb = First, WeFin = Last;
++  TopoDS_Edge             EDeb = E, EFin = E;
+   BS = GeomConvert::CurveToBSplineCurve(TC);
+   CurveCleaner(BS, std::abs(WL - WF) * 1.e-4, 0);
+   //
+@@ -6844,6 +7024,12 @@
+     }
+     //
+     TC = new (Geom_TrimmedCurve)(Cv, First, Last);
++    if (IEdge == IL)
++    {
++      CvFin = Cv;
++      WeFin = Last;
++      EFin  = E;
++    }
+     BS = GeomConvert::CurveToBSplineCurve(TC);
+     CurveCleaner(BS, std::abs(WL - WF) * 1.e-4, 0);
+     //
+@@ -6907,9 +7093,46 @@
+     double rabdist = Wrefdeb - WF;
+     Bout           = PDeb.Translated(-20 * rabdist * VrefDeb);
+     bool goodext   = false;
++    // Along the first edge's own curve where it goes on past the edge, as
++    // far as it does (the smooth extension beyond).
++    occ::handle<Geom_BSplineCurve> aBase = BSpline;
++    double                         anOwnLength = 0.;
++    {
++      // (Or along the iso-line of its face's surface it runs on.)
++      gp_Pnt                  aPe;
++      gp_Vec                  aTe;
++      occ::handle<Geom_Curve> anIso;
++      double                  aWiso = 0.;
++      BSpline->D1(Wrefdeb, aPe, aTe);
++      const bool hasIso = ChFi3d_IsoCurveOfEdge(EDeb, aPe, aTe, 10. * tol, anIso, aWiso);
++      for (int k = 0; k < (hasIso ? 2 : 1) && anOwnLength <= 1.1 * rabdist; k++)
++      {
++        double aLength = 0.;
++        const occ::handle<Geom_BSplineCurve> anOwn = ChFi3d_OwnCurveExtension(
++          k == 0 ? CvDeb : anIso, k == 0 ? WeDeb : aWiso, true, 1.2 * rabdist, BSpline, Wrefdeb, tol, aLength);
++        if (!anOwn.IsNull() && aLength > anOwnLength)
++        {
++          aBase       = anOwn;
++          anOwnLength = aLength;
++        }
++      }
++    }
++    // (Some of it left beyond the guide's end, which is then not adjusted
++    // to the spine's end below.)
++    if (anOwnLength > 1.1 * rabdist)
++    {
++      gacurve.Load(aBase);
++      GCPnts_AbscissaPoint GCP(gacurve, -rabdist, Wrefdeb, WF);
++      if (GCP.IsDone())
++      {
++        newc    = aBase;
++        WF      = GCP.Parameter();
++        goodext = true;
++      }
++    }
+     for (int icont = 3; icont >= 1 && !goodext; icont--)
+     {
+-      occ::handle<Geom_BoundedCurve> anExtCurve = BSpline;
++      occ::handle<Geom_BoundedCurve> anExtCurve = aBase;
+       GeomLib::ExtendCurveToPoint(anExtCurve, Bout, icont, false);
+       newc = occ::down_cast<Geom_BSplineCurve>(anExtCurve);
+       gacurve.Load(newc);
+@@ -6938,9 +7161,46 @@
+     double rabdist = WL - Wreffin;
+     Bout           = PFin.Translated(20 * rabdist * VrefFin);
+     bool goodext   = false;
++    // Along the last edge's own curve where it goes on past the edge, as
++    // far as it does (the smooth extension beyond).
++    occ::handle<Geom_BSplineCurve> aBase = BSpline;
++    double                         anOwnLength = 0.;
++    {
++      // (Or along the iso-line of its face's surface it runs on.)
++      gp_Pnt                  aPe;
++      gp_Vec                  aTe;
++      occ::handle<Geom_Curve> anIso;
++      double                  aWiso = 0.;
++      BSpline->D1(Wreffin, aPe, aTe);
++      const bool hasIso = ChFi3d_IsoCurveOfEdge(EFin, aPe, aTe, 10. * tol, anIso, aWiso);
++      for (int k = 0; k < (hasIso ? 2 : 1) && anOwnLength <= 1.1 * rabdist; k++)
++      {
++        double aLength = 0.;
++        const occ::handle<Geom_BSplineCurve> anOwn = ChFi3d_OwnCurveExtension(
++          k == 0 ? CvFin : anIso, k == 0 ? WeFin : aWiso, false, 1.2 * rabdist, BSpline, Wreffin, tol, aLength);
++        if (!anOwn.IsNull() && aLength > anOwnLength)
++        {
++          aBase       = anOwn;
++          anOwnLength = aLength;
++        }
++      }
++    }
++    // (Some of it left beyond the guide's end, which is then not adjusted
++    // to the spine's end below.)
++    if (anOwnLength > 1.1 * rabdist)
++    {
++      gacurve.Load(aBase);
++      GCPnts_AbscissaPoint GCP(gacurve, rabdist, Wreffin, WL);
++      if (GCP.IsDone())
++      {
++        newc    = aBase;
++        WL      = GCP.Parameter();
++        goodext = true;
++      }
++    }
+     for (int icont = 3; icont >= 1 && !goodext; icont--)
+     {
+-      occ::handle<Geom_BoundedCurve> anExtCurve = BSpline;
++      occ::handle<Geom_BoundedCurve> anExtCurve = aBase;
+       GeomLib::ExtendCurveToPoint(anExtCurve, Bout, icont, true);
+       newc = occ::down_cast<Geom_BSplineCurve>(anExtCurve);
+       gacurve.Load(newc);

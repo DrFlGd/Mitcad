@@ -38,6 +38,7 @@ but not understood further.
 | `params` | Parameters: units, expression trees, their translation into Mitcad's expression language and their evaluation. |
 | `sketch` | Planar sketches: transform, points, lines, circles and arcs, constraints, dimensions. |
 | `groups` | Polygons and circular and rectangular patterns of sketch entities. |
+| `text` | Sketch texts: the text and frame records, the glyph contours the file keeps, the application segment's font table (mitcad#414). |
 | `features` | Extrusions, revolutions, holes, fillets, chamfers, rectangular and circular patterns, mirrors, threads, coils, work planes, combines, splits, shells, sweeps; the bodies features refer to and the items that made them. |
 | `profile` | The profiles a feature selected, measured from the definitions segment's own ASM record. |
 | `design` | The timeline (the browser's features in order, with their history states) and the dump IR. |
@@ -48,7 +49,7 @@ but not understood further.
 | `naming` | Topological names (mitcad#242): the items features name edges and faces by, the naming table's names, the naming attributes of the ASM entities at a history state, and the edge a name names there (*Topological names* below). |
 | `testdata`, `testdesign` | Small parts made by these writers: two bodies of Mitcad's own ASM writer (a cube and a cylinder), part number, material, inches; the cube with the records of a parameter, a sketch and an extrusion that make it; a part of a mesh feature's tetrahedron; an empty part; the cube and the cylinder with a result list that keeps the cylinder hidden. |
 | `testassembly` | Small assemblies made by these writers and a test project of them (a top assembly as saved on another machine, a sub-assembly, parts found relative to it and by name, a missing one; hidden, grounded and suppressed occurrences). |
-| `bin/mitcad-ipt-inspect` | `list`, `properties`, `segments`, `records`, `record [--raw]`, `data`, `dump`, `labels`, `stream [--raw]`, `asm`, `bodies [-v|-f]`, `result`, `history`, `parameters`, `typed`, `show`, `constraints`, `prefix`, `flags`, `design [--json]`, `profile [-v]`, `slots` (a sheet-metal group's parts too), `tree`, `find`, `assembly`, `write-test`; for the names (mitcad#242) `words` (a segment's records as u32 words), `nodes`, `names` (each feature's items with their names), `entry`, `brepnames <state>` (the faces and edges of a history state with their naming attributes), `study` (every item resolved in the state before its feature, checked against the file's own `matched` marks). |
+| `bin/mitcad-ipt-inspect` | `list`, `properties`, `segments`, `records`, `record [--raw]`, `data`, `dump`, `labels`, `stream [--raw]`, `asm`, `bodies [-v|-f]`, `result`, `history`, `parameters`, `typed`, `show`, `constraints`, `prefix`, `flags`, `design [--json]`, `profile [-v]`, `slots` (a sheet-metal group's parts too), `tree`, `find`, `assembly`, `write-test`; for the names (mitcad#242) `words` (a segment's records as u32 words), `nodes`, `names` (each feature's items with their names), `entry`, `brepnames <state>` (the faces and edges of a history state with their naming attributes), `study` (every item resolved in the state before its feature, checked against the file's own `matched` marks); `texts` (the sketch texts, their fonts and glyph contours, mitcad#414). |
 
 ## The container
 
@@ -539,12 +540,77 @@ as the items whose definitions gave no state do.
   the records make the chains, each the dump's offset constraint with its
   distance (lines' or concentric arcs' distance) and the dimension between
   a curve and its offset, which drives it.
+- **Texts** (`text`, mitcad#414) *(seen: 9 texts in 4 parts, all in a
+  frame)*. A text (`013cbb1f…`, in the sketch's list as an entity): the
+  header, the prefix, its anchor (x, y, z, cm), its angle (radians), a
+  u32, its alignment (u32: the low two bits 1 left, 2 centre, 3 right; the
+  rest 2 for the frame's top: 9 and 10 seen, the anchor the frame's top
+  left corner or the middle of its top side in the text's own axes), a
+  u32, 21 bytes, an f64 (0.065 in all), the string, the font table entry
+  it starts with (u32), 12 bytes, an empty list, the list of its glyph
+  contours, its frame's box in its own axes (two points: the anchor's x
+  to it plus the frame's width, the anchor's y less the frame's height to
+  it), a u32, three bytes, the sketch, an empty list and the string again.
+  The string's font changes are codes `\F<n>;` naming entries of the
+  part's **font table** (`01691837…`, in the application segment: after
+  a u32 and a u16 a list (kind 2) of entries: index (u32), a u16, weight
+  (u16: 400, 700), italic (a byte), a byte, size (f32, cm), width factor
+  (f32: 1, 0 in some entries, 0.77 to 0.9 in others), family (a text), 11
+  bytes); lines break at `\n`. Its frame (`7f341025…`, in the list as a
+  constraint): after the prefix the corner point of the frame's
+  construction rectangle at the text's top left (in its own axes) and the
+  text. Its **glyph contours** (`cb63f719…`): a 22-byte header whose last
+  u32 counts its pieces, the pieces (a u32 kind: 0x2a a B-spline, two u32,
+  the NURBS data of a sketch spline with x, y, z points, an f64, two u32
+  and its parameter range; 0x17 a line, its start and the vector to its
+  end), the sketch and the pen position of its character on the baseline
+  (model coordinates, cm): the font's outlines exactly, as quadratic
+  B-splines and lines, each contour closed.
+  A text in a frame in one font of the font's own width comes in as
+  Mitcad's sketch text: the string, the family, bold from weight 600,
+  italic, the size as the capitals' height (`cap_height`), the frame
+  (`frame`, from the rectangle's four construction lines), the alignment,
+  `pen_align` and `ink_top`, and the lines' spacing (`line_spacing`)
+  measured from the contours' baselines. What the contours show *(seen:
+  `c2ed6f98` and `b266c91f`, two lines in Tahoma bold of 1.5 mm in a
+  17.2 × 8.1 mm frame, centred; two single-line texts of `11f1b478`,
+  turned a half turn, aligned left)*: the size is the capitals' height
+  (an X and an L 1.500000 mm high; the contours' control points are whole
+  units of a grid of 1234 units to the capitals, to 0.0004 units); lines
+  are centred or aligned by their pens (the first line's pens, from the
+  first one to the end of the last advance, centred to 3e-6 mm), not by
+  their outlines; the frame's top meets the first line's highest outline
+  point (an 8's top 1.534 mm above the baseline, an S's 3.154 mm), not the
+  capitals' top; the second line lies 2.46971 mm (1.6465 capital heights)
+  below the first, which is not the font's ascender plus descender over
+  its capitals' height as Mitcad lays out the `.f3d` files' texts, hence
+  the measured spacing. Mitcad lays the text out from the installed font
+  (the scale from the top of its A); the file's glyph contours stay in the
+  dump (`_ipt.glyphs`, sketch coordinates). For a computer without the font
+  (mitcad#416; Tahoma is not installed on the Linux test machine) the text
+  also keeps them as its stored glyphs (the dump's `glyphs`, the model
+  text's `glyphs`): each character's contours from its pen in the text's
+  axes, the B-splines split into their quadratic pieces at their knots,
+  and its advance to the next pen; a line's last advance ends where the
+  centring about the anchor ends the line (`c2ed6f98`'s 8: 1.3140200 mm,
+  its other digits 1.3140195), or at the outline of a line aligned left.
+  The decoder checks that the contours lie as the text's layout puts them
+  (one pen per character that is not white space, pens on baselines the
+  line spacing apart, a line starting at or centred on the anchor, the
+  frame's top at the first line's highest outline point, to 1e-5 cm) and
+  leaves them out otherwise (`_ipt.glyphsLeftOut`). Without the font the
+  model lays the text out from these outlines instead of Droid Sans, so
+  the text keeps the file's shapes and stays an editable text: a new
+  frame, height or alignment re-lays the stored outlines, a new string or
+  font drops them (commands.md, sketch `texts`). Left out with their reason: a text
+  in several fonts (`f5e9d2d7`: lines of 1.5 and 3 mm in one text, and no
+  glyph contours), a font with a width factor (`11f1b478`: 0.77; Mitcad's
+  texts keep the font's widths), a text without a frame (not seen); the
+  outlines below then come in for it.
 - Not decoded (the sketch comes in partial, these left out): sketch block
   instances (`4c12f14c…`, their geometry `7e71a918…` and constraints
-  `cf8d56f2…`), texts (`013cbb1f…`: a text with its font codes, its
-  frame `7f341025…`; taken for splines before; its text holds the font
-  codes as `\F10;` naming entries of a font table, and the glyphs need
-  the font) and splines through points (`46737b31…`: the list of the
+  `cf8d56f2…`), the texts left out above, and splines through points
+  (`46737b31…`: the list of the
   points they pass through, not the curve; the curve through them is the
   authoring application's own fit) and their offsets (`47d9553e…`: the
   spline, its two end points and the distance) with what constrains them.
@@ -1273,6 +1339,104 @@ those vertices). Chamfer2 and Fillet7 verify, 22 → 23 of 24 (Fillet3
 still falls back: two roundings overlap on the face between them). The
 other named parts are unchanged (`01fb13c9` 30/31, `d9aec91e` 43/46,
 `033448e3` 12/12, `2ac732ee` 14/14, `c2ed6f98` 29/31, `547d59d1` 24/25).
+
+The three fillets left are fixed (mitcad#235, 2026-10-18, release build,
+the parts run one at a time). `517c1204` Fillet3 rounds both edges of a
+step 0.5 mm high in a bore with 0.3 mm, one convex and one concave: their
+contacts overlap on the step's face, and OCCT runs overlapping roundings
+over the face as one only when both have the same kind. The file's state
+has an S-shaped section whose convex arc is the plain rounding and whose
+concave ball touches it; Mitcad's fillet now builds the convex roundings
+first and the concave ones on that result when OCCT fails so
+(`concave_after_convex` in `geometry/src/dressup.cpp`), the file's state
+to 1e-6 mm³. `d9aec91e` Fillet13 rounds a bar's top edges where the bar
+meets a bore's wall at the wall's seam, the seam continuing the bar's side
+edge up from the corner: OCCT port patch 0690 carries the seam down to the
+rounding's contact. `d9aec91e` Fillet7 (the item's time went to the
+dressup's retries after OCCT failed in 0.1 s) rounds a recess's rim up to
+a rib whose bottom edges are rounded tangent to the part's bottom: patch
+0691 takes the contact's crossing with the edge the rib's rounding leaves
+the bottom along (the intersection gave the touch at the rim's other
+end), and 0692 puts the contact's end, found 5e-6 inside an edge whose
+curve ends 3.7e-5 past its vertex (within its tolerance), at the vertex.
+All three verify: `517c1204` 23 → 24 of 24, `d9aec91e` 43 → 45 of 46
+(Fillet5 keeps no result in the file). With Fillet7 built, two later
+items are evaluated on the file's states (warnings, still verified):
+Fillet10 (0.3 mm on a ring at the top of Revolution1's cut) fails its walk
+on the replay, whose Coil2 thread meets that ring's wall 90° from where
+the file's does (the replay is 0.016 mm off the file's state before
+Fillet7), and Fillet13 finds the bore's wall in three faces of one
+cylinder round the corner (Mitcad's cuts keep faces of different names
+apart), which OCCT's corner does not join (a face at the end split round
+the vertex). The other named parts are unchanged (`01fb13c9` 30/31,
+`033448e3` 12/12, `2ac732ee` 14/14, `9452d970` 35/40, `c2ed6f98` 29/31,
+`547d59d1` 24/25).
+
+The two items traced further (mitcad#415, 2026-10-18, release build, the
+part run alone). `d9aec91e` Fillet13 is built on the replay again: OCCT
+port patch 0740 gives the corner whose face at the end is the bore's wall
+in three faces of one cylinder round the vertex, each with its own
+surface, the curves its arcs lacked on the piece the cut goes on. Fillet10
+rounds the foot of the threaded post (the circles of 22 and 23 mm at the
+step 22 mm up) with 0.3 mm; Coil2's groove runs out 0.175 mm above that
+step, inside the rounding. Its first deviation is not Coil2: the replay's
+thread, its run-out and the post after Extrusion7 have the file's
+sections at every height checked (the cylinder's seam lies elsewhere, 0°
+against the file's 162°, which alone does not matter). It is Fillet2, the
+0.3 mm rounding of Coil1's root up to the bore's bottom and the part's
+bottom: OCCT's guide past the root's ends turned off the root's helix, and
+the rounding's ends were joined by vertices with tolerances of 12 and
+14 mm. Extrusion7's cut merged the vertex of the post's foot circle, 12 mm
+above the first, into it; the circle's spine was no longer closed, and the
+guide over the gap where Coil2's run-out takes the rounding's contact ran
+backwards (the walk failed). Port patch 0742 extends the guide
+along the root's own curve: the vertices' tolerances are now 2e-4, and
+Fillet2 verifies by its faces (within 0.01 mm of the file's). Fillet10
+still takes the file's state (45 of 46 as before; Fillet5 keeps no result
+in the file): on the replay Fillet4 (0.15 mm, Coil2's crests) rounds the
+lowest crest down to the run-out's end, as OCCT follows the tangent chain
+past the edges the history state rounds, while the file's rounding stops
+331° before it, at 23.554 mm, on a planar end face of 0.006 mm² where the
+crest goes on tangentially with no vertex (Fillet4 still verifies, its
+faces within 0.016 mm of the file's). The foot's contact then meets
+Fillet4's rounding from 214° on instead of 192°, and OCCT's walk over the
+gap from the run-out (153°)
+fails; on the file's own state after Extrusion7, OCCT's rounding of
+Fillet4's edges leaves the same and Fillet10 fails the same way, while on
+the file's state after Fillet4 it builds. A rounding that stops where the
+file's does needs that end's rule, which this one item does not tell.
+With 0740 to 0742 the `.f3d` designs of mitcad#235's and mitcad#343's
+rounds keep their counts, each run alone: `5ef2dbd5` 80 of 98 (item by
+item as without the three patches), `a9e82a9a` and `de7b8b9d` 181 of 199,
+`52ba7a15` and `0c99fb88` 97 of 110, `61526c66` 12 of 14, `db73863f` 128
+of 145.
+
+Sketch texts (dev build, 2026-10-18, mitcad#414, each part run alone on
+the Linux machine, which has no Tahoma): `c2ed6f98` Sketch12 (a text in
+its frame, *Texts* above) comes in parametric as Mitcad's text, where it
+was partial with the outlines of the regions its cut selected. Its text
+is laid out in Droid Sans here, so Extrusion8 (the text cut 0.1 mm deep)
+removes 0.587 mm³ against the file's 0.835 and falls back: 29 of 31
+parametric before and after (Sketch12 for Extrusion8). `b266c91f`, the
+same text: 28 → 27 of 32; Sketch12 parametric, Extrusion8 a fallback, and
+Extrusion10 (a cut 1.0 s on the replayed body) gives way after its 23 s
+share on the chain that continues from Extrusion8's stored body. The
+other named parts are unchanged (`01fb13c9` 30/31, `d9aec91e` 45/46,
+`033448e3` 12/12, `2ac732ee` 14/14, `517c1204` 24/24, `9452d970` 35/40,
+`547d59d1` 24/25).
+
+The stored glyphs (dev build, 2026-10-18, mitcad#416, each part run alone
+on the Linux machine without Tahoma): the text of `c2ed6f98` and
+`b266c91f` is laid out from the file's outlines, and the sketch has no font
+warning. `c2ed6f98` 29 → 30 of 31 parametric: Extrusion8 is parametric and
+verified against its history state (Thread4, which the file keeps no
+result for, is skipped). `b266c91f` 27 → 29 of 32: Extrusion8 and
+Extrusion10 parametric and verified; left: Fillet4 (its result is not in
+the file's history), Sketch6 partial (two undecoded records) and Thread3
+(no result in the file). Reopening the saved design keeps the outlines; a
+new character spacing keeps them, a new string gives Droid Sans and the
+warning. Parts without texts are unchanged (`01fb13c9` 30/31, `033448e3`
+12/12, `547d59d1` 24/25).
 
 ### What the files do not tell (feasibility)
 

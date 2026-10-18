@@ -1,0 +1,142 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: a face at the end vertex that the rounding's end passes wholly
+beyond is consumed, the face beyond it cut once (mitcad#343).
+
+The case: three edges of a housing's corner rounded with 20, each ending at
+a vertex of a plane square to it. A cylinder stands out of that plane,
+its trace inscribed in the corner between the rounded edge's two faces: it
+leaves of the plane a small piece at the vertex (two sides on the edge's
+faces, the third on the cylinder) and the pieces beyond, on either side.
+The rounding's contacts pass that small piece and end on the pieces beyond;
+its end is cut by them and by the cylinder between them. The walk round
+the end vertex (PerformIntersectionAtEnd) met the faces: a piece beyond,
+the cylinder, the small piece, the cylinder again, the other piece beyond;
+the cylinder was cut twice, both times up to the crossing with its edge
+with the small piece (outside that edge), and the small piece was kept:
+its edge with the cylinder twice in the faces, the shell unorientable.
+
+- After the faces at the end are found, a face between two visits of one
+  face, across the same edge both times, that holds the end vertex and
+  whose edge with that face the rounding does not cross (its surface about
+  the end, also widened along the spine by its own extent): it lies in the
+  removed corner. It is taken out of the faces at the end with the second
+  visit (the face beyond is cut once, from the edge before the first visit
+  to the edge after the second), and its edges are cut at their vertices
+  so that the builder drops it with them (as a face consumed at an end
+  along an edge is).
+
+Nothing else changes: where the rounding crosses that edge, the faces are
+cut as before.
+
+Upstream: new.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
+index 6f92d33..c891277 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
+@@ -6163,6 +6163,104 @@ void ChFi3d_Builder::PerformIntersectionAtEnd(const int Index)
+     Edge[1] = Edge[2];
+   }
+ 
++  // A face at the vertex that the fillet's end passes wholly beyond (a small
++  // chamfer of the corner, between the fillet's faces and one face beyond
++  // it): the walk round the vertex met it between two visits of that face,
++  // across one edge both times. Where the fillet does not cross that edge,
++  // the face lies in the removed corner: the face beyond is cut once, from
++  // the edge before the first visit to the edge after the second, and the
++  // consumed face's edges are cut at their vertices, so that the builder
++  // drops it with them.
++  for (int k = 1; k + 1 < nbface; k++)
++  {
++    if (!Face[k - 1].IsSame(Face[k + 1]) || Face[k].IsSame(Face[k - 1]) || Edge[k].IsNull()
++        || !Edge[k].IsSame(Edge[k + 1]) || BRep_Tool::Degenerated(Edge[k]))
++    {
++      continue;
++    }
++    bool hasVtx = false;
++    for (TopExp_Explorer exV(Face[k], TopAbs_VERTEX); exV.More() && !hasVtx; exV.Next())
++    {
++      hasVtx = exV.Current().IsSame(Vtx);
++    }
++    if (!hasVtx)
++    {
++      continue;
++    }
++    double                          aF = 0., aL = 0.;
++    const occ::handle<Geom_Curve>   aC = BRep_Tool::Curve(Edge[k], aF, aL);
++    if (aC.IsNull())
++    {
++      continue;
++    }
++    // (The fillet's surface about its end, widened along the spine by its
++    // own extent, as where an edge's crossing is sought further on below.)
++    const occ::handle<Geom_Surface>& aBlendSurf = DStr.Surface(Fd->Surf()).Surface();
++    const double aDU = HGs->LastUParameter() - HGs->FirstUParameter();
++    const double aDV = HGs->LastVParameter() - HGs->FirstVParameter();
++    const double aMU = aBlendSurf->IsUPeriodic() ? std::min(aDU, 0.5 * (aBlendSurf->UPeriod() - aDU)) : aDU;
++    const double aMV = aBlendSurf->IsVPeriodic() ? std::min(aDV, 0.5 * (aBlendSurf->VPeriod() - aDV)) : aDV;
++    bool         isCrossed = false;
++    for (int iw = 0; iw < 2 && !isCrossed; iw++)
++    {
++      occ::handle<GeomAdaptor_Surface> aSurf =
++        iw == 0 ? HGs
++                : occ::handle<GeomAdaptor_Surface>(new GeomAdaptor_Surface(aBlendSurf,
++                                                                           HGs->FirstUParameter() - aMU,
++                                                                           HGs->LastUParameter() + aMU,
++                                                                           HGs->FirstVParameter() - aMV,
++                                                                           HGs->LastVParameter() + aMV));
++      occ::handle<GeomAdaptor_Curve> aHC = new GeomAdaptor_Curve(aC, aF, aL);
++      IntCurveSurface_HInter         anInter;
++      anInter.Perform(aHC, aSurf);
++      isCrossed = !anInter.IsDone() || anInter.NbPoints() > 0 || anInter.NbSegments() > 0;
++    }
++    if (isCrossed)
++    {
++      continue;
++    }
++    const TopoDS_Face aConsumed = Face[k];
++    for (int j = k; j + 2 <= nbface; j++)
++    {
++      Edge[j]  = Edge[j + 2];
++      Vedge[j] = Vedge[j + 2];
++      if (j + 2 < nbface)
++      {
++        Face[j] = Face[j + 2];
++      }
++    }
++    nbface -= 2;
++    TopoDS_Face aFc = aConsumed;
++    aFc.Orientation(TopAbs_FORWARD);
++    for (TopExp_Explorer exE(aFc, TopAbs_EDGE); exE.More(); exE.Next())
++    {
++      TopoDS_Edge anE = TopoDS::Edge(exE.Current());
++      if (BRep_Tool::Degenerated(anE) || anE.IsSame(EdgeSpine))
++      {
++        continue;
++      }
++      anE.Orientation(TopAbs_FORWARD);
++      const int IE = DStr.AddShape(anE);
++      for (TopExp_Explorer exv(anE, TopAbs_VERTEX); exv.More(); exv.Next())
++      {
++        const TopoDS_Vertex& aV  = TopoDS::Vertex(exv.Current());
++        const int            IV  = DStr.AddShape(aV);
++        bool                 has = false;
++        for (NCollection_List<occ::handle<TopOpeBRepDS_Interference>>::Iterator itI(DStr.ShapeInterferences(IE));
++             itI.More() && !has;
++             itI.Next())
++        {
++          has = itI.Value()->GeometryType() == TopOpeBRepDS_VERTEX && itI.Value()->Geometry() == IV;
++        }
++        if (!has)
++        {
++          DStr.ChangeShapeInterferences(IE).Append(
++            ChFi3d_FilVertexInDS(TopAbs::Reverse(aV.Orientation()), IE, IV, BRep_Tool::Parameter(aV, anE)));
++        }
++      }
++    }
++    k--;
++  }
+   NCollection_Array1<double> Pardeb(1, 4), Parfin(1, 4);
+   gp_Pnt2d                   pfil1, pfac1, pfil2, pfac2, pint, pfildeb;
+   occ::handle<Geom2d_Curve>  Hc1, Hc2;

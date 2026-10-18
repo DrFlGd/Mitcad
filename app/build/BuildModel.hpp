@@ -53,9 +53,18 @@ gp_Pnt inHost(const gp_Pnt& world, const CommandContext& context);
 
 // --- Picks
 
+// The least snap distance of a click on the screen (mitcad#417): the
+// placements' `at.snap` is this many pixels of the view at the click.
+constexpr double kSnapPixels = 12.0;
+// Where a click (or the hover) hit an item, as `recordPick` keeps it:
+// {item (its describe()), point (in the design), snap (mm, when the view
+// tells its pixel size there)}; empty without the item's `at`.
+QJsonObject pickRecord(const SelectionItem& item, const CommandContext& context);
 // Keeps where a click hit the item of a selection input (in the design),
-// under "<key>_pick", for `pickPoint`.
+// under "<key>_pick", for `pickPoint` and `pickSnap`.
 void recordPick(const QString& key, const SelectionItem& item, CommandState& state, const CommandContext& context);
+// The snap distance kept with the input's first item's click, in mm.
+std::optional<double> pickSnap(const QString& key, const CommandState& state);
 // Where the input's first item was picked, in the design: the click kept,
 // else the middle of the item (an item given otherwise, as live MCP does).
 std::optional<gp_Pnt> pickPoint(const QString& key, const CommandState& state, const CommandContext& context);

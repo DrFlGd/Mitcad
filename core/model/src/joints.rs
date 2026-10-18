@@ -359,7 +359,12 @@ pub(crate) fn apply_override(frame_in: &Transform, o: &FrameOverride) -> Result<
         (None, Some(_)) => return Err("the frame's x axis must not be along its z axis".to_owned()),
         (None, None) => default_x_axis(z),
     };
-    Ok(frame(origin, x, z))
+    let turned = frame(origin, x, z);
+    // The shift along the frame's own axes as they are now.
+    Ok(match o.shift {
+        Some(shift) => frame(turned.apply_point(shift), x, z),
+        None => turned,
+    })
 }
 
 /// The frame of a joint origin's geometry in its component's coordinates:

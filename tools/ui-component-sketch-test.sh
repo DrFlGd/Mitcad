@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 # check-all sources: app/sketch app/browser
-# check-all sources: core/model/src/document/policy.rs core/model/src/api/policy.rs app/MainWindow.cpp
+# check-all sources: core/model/src/policy.rs core/model/src/document/policy.rs core/model/src/api/policy.rs app/MainWindow.cpp
 # Sketches and the timeline in a design of two components side by side,
 # through the real UI (mitcad#98, mitcad#99, mitcad#100):
 #   - With Cover active, a sketch on the top face of Part's block: linked
@@ -14,7 +14,8 @@
 #     Project with nothing to project).
 #   - The project file keeps the links.
 #   - New Component on Part, which takes no components: made beside it, in
-#     the root, with the warning (mitcad#292).
+#     the root, with the warning (mitcad#292), with the defaults (Hybrid,
+#     mitcad#421).
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
 # Usage: tools/ui-component-sketch-test.sh [screenshot.png]
@@ -178,5 +179,7 @@ tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -qE "Browser radio Root/Part:1/Compon
 echo "ok   its row is in the root, not under Part"
 save
 expect_file '[o["parent"] for o in doc["occurrences"]]' "['C0', 'C0']" "both occurrences in the root"
+expect_file '[c.get("policy") for c in doc["components"]][-1]' "None" \
+  "the new component has the defaults, Hybrid, stored as nothing (mitcad#421)"
 
 ui_finish "UI component sketch test"

@@ -178,6 +178,7 @@ public:
   void showHint(const QString& message) override;
   TopoDS_Shape itemShape(const SelectionItem& item) const override;
   TopoDS_Shape analysisShape(const QJsonObject& request) const override;
+  double pixelSize(const gp_Pnt& point) const override; // mitcad#417
   QStringList bodyUids() const override;
   std::vector<BodyDisplay> modelBodies() const override;
   void showSection(const QJsonValue& plane) override;
@@ -226,6 +227,7 @@ public:
   // Light bulbs in every mode (mitcad#295; MainWindowVisibility.cpp).
   bool runVisibilityCommands(const QJsonArray& commands, const QString& label) override;
   QString activeCommandName() const override;
+  bool chooseInCommand(const QString& command, const QString& input, const QString& value) override;
 
 protected:
   void closeEvent(QCloseEvent* event) override;
@@ -336,9 +338,11 @@ private:
   // Makes a new document the window's: `make` reads or makes it, then it is
   // computed, all as a job named `label`; the window's document stays as it
   // was when that fails (false, the reason in error) or is cancelled (false,
-  // error empty).
+  // error empty). `handedOver`: a store of results the import process
+  // handed over (F3dImport::handedOverResults, mitcad#413), which the
+  // computation takes them from instead of evaluating them again.
   bool installDocument(const QString& label, const QString& path, const DocumentMaker& make,
-                       QString& error);
+                       QString& error, const QString& handedOver = QString());
   // The result store (P7d, framework/ResultCache.hpp): the document's
   // results that were costly to compute go to the store as a job, for the
   // document named `label` (after Save); and what a recompute took from
@@ -350,6 +354,11 @@ private:
   void applyCacheSettings();
   // Help > Diagnostics (framework/CacheDiagnostics.hpp).
   void showDiagnostics();
+  // Starts Mitcad again (Preferences' Layout, mitcad#419): the window
+  // closes as when Mitcad quits (the design saved or asked about) and the
+  // design, when it has a file, opens in the new one; nothing when the close
+  // is cancelled.
+  void restartApplication();
   // Shows what the command's recompute did; true when nothing failed.
   bool reportRecompute(const QJsonObject& result, double milliseconds);
   // A new component placed beside a component that takes none (mitcad#292):

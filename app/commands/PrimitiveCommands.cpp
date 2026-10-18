@@ -236,11 +236,10 @@ CommandDef newComponentCommand(const CommandContext& context) {
                     {QStringLiteral("label"), QStringLiteral("Create Components from Bodies")}};
       return result;
     }
-    // A new empty component is a part (mitcad#220): its own sketches and
-    // features, no components nested in it by accident.
+    // A new empty component has the general defaults, everything allowed
+    // (mitcad#421).
     QJsonObject command{{QStringLiteral("cmd"), QStringLiteral("create_component")},
-                        {QStringLiteral("activate"), state.checked(QStringLiteral("activate"))},
-                        {QStringLiteral("policy"), QStringLiteral("part")}};
+                        {QStringLiteral("activate"), state.checked(QStringLiteral("activate"))}};
     const QString name = state.text(QStringLiteral("name")).trimmed();
     if (!name.isEmpty()) {
       command.insert(QStringLiteral("name"), name);

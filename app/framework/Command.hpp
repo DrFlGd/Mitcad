@@ -67,6 +67,10 @@ public:
   // The document's length unit ("mm", "in", ...) and its size in mm.
   QString lengthUnit() const;
   double unitMillimetres() const;
+  // The size of one pixel of the 3D view in mm at a point of the design:
+  // snap distances that keep their size on the screen (BUILD's `at.snap`,
+  // mitcad#417). NaN without a view (an inspection on the model's worker).
+  virtual double pixelSize(const gp_Pnt& /*point*/) const { return std::numeric_limits<double>::quiet_NaN(); }
 };
 
 enum class ValueKind { Length, Angle, Unitless };
@@ -207,6 +211,15 @@ struct InputDef {
   // drop-down (BUILD's X / Y / Z direction, mitcad#394). A frontend that
   // has no such row shows the drop-down.
   QHash<QString, QString> choiceIcons;
+  // Choice: a button beside the drop-down (`buttonText`, `buttonTooltip`)
+  // that calls `onButton` with the input's state and the model (BUILD's
+  // part picker, mitcad#418). It changes nothing itself; what it opens may
+  // choose an option later through the main window
+  // (DocumentHost::chooseInCommand, CommandSession::choose). A frontend
+  // without such a button (the AppKit inspector) shows none.
+  QString buttonText;
+  QString buttonTooltip;
+  std::function<void(const CommandState&, const CommandContext&)> onButton;
   // Value: also a box at the cursor in the view (BUILD's length), in step
   // with the panel's field: what is typed in either is the input's text.
   // The shown inspection's report may give the box another text while the
@@ -328,6 +341,13 @@ struct InputDef {
   }
   InputDef& withDisclosure() {
     disclosure = true;
+    return *this;
+  }
+  InputDef& withButton(const QString& text, const QString& tip,
+                       std::function<void(const CommandState&, const CommandContext&)> call) {
+    buttonText = text;
+    buttonTooltip = tip;
+    onButton = std::move(call);
     return *this;
   }
 
@@ -551,6 +571,10 @@ struct CommandDef {
   // Defaults that depend on the model (the newest profile, ...), after the
   // inputs' own defaults and the selection made before the command.
   std::function<void(CommandState&, const CommandContext&)> init;
+  // Called once when the command ends (OK, Cancel, Close or discarded),
+  // with whether it was committed: what it opened beside its panel goes
+  // with it (BUILD's part picker, mitcad#418).
+  std::function<void(bool committed)> ended;
   std::function<Built(const CommandState&, const CommandContext&)> build;
   std::function<std::vector<PreviewMarker>(const QJsonObject&)> previewMarkers;
   // As previewMarkers, with the inputs' state (in its place when set): the
@@ -561,6 +585,13 @@ struct CommandDef {
   // bodies); true when it changed the state, so that the markers are drawn
   // again (no preview is computed for it).
   std::function<bool(const SelectionItem&, CommandState&, const CommandContext&)> hover;
+  // The mouse moved over an item of the view, `at` where it is now (in the
+  // item's component's coordinates), or off the items (an invalid item:
+  // off the bodies, out of the view): true when it changed the state so
+  // that the preview is computed again (BUILD: an end click's part
+  // straight or turned before the click, mitcad#417). Not while the model
+  // computes or the view is navigated.
+  std::function<bool(const SelectionItem&, CommandState&, const CommandContext&)> hoverPreview;
   // Fills the inputs from a definition to edit: the `feature` query's def,
   // with the feature's "uid" added (see CommandContext::valueText).
   std::function<void(const QJsonObject&, CommandState&, const CommandContext&)> load;

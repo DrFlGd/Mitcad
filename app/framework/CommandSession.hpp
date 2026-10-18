@@ -196,6 +196,10 @@ public:
   void discard();
   // Puts the keyboard into a value input (by its key) of the panel.
   bool focusValue(const QString& key);
+  // A choice made outside the panel (mitcad#418: BUILD's part picker), as
+  // if chosen in it: its onChange runs and the preview follows. False when
+  // the command has no choice input `key` or has ended.
+  bool choose(const QString& key, const QString& value);
   // A light bulb of the browser while the panel is open (mitcad#295;
   // CommandSessionVisibility.cpp): runs the visibility commands as one undo
   // step `label` outside the command's undo range. An applied sketch
@@ -448,6 +452,9 @@ private:
   QString m_chainKey;
   TopoDS_Shape m_chainShape;
   QString m_loggedHover; // the hover's last log line
+  // The point under the mouse moved (CommandDef::hoverPreview, mitcad#417):
+  // the command's preview again when the command says so.
+  void hoverMoved(const SelectionItem& item);
 
   // Visibility changes while the panel is open (mitcad#295;
   // CommandSessionVisibility.cpp), in their order, to run again where the

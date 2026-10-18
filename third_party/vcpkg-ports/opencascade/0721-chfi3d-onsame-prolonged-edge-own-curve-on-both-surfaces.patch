@@ -1,0 +1,270 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: at an OnSame end, the prolonged edge's own curve where it lies on
+both faces' surfaces past the vertex (mitcad#343).
+
+The case: an external thread's flank rounded with 0.1 along its edge with
+the chamfer cone at the thread's start. The rounding starts where the
+flank comes out of the root cylinder: an OnSame end (PerformOneCorner),
+the cone the opposite face, the root cylinder the face at the end; the
+cone's edge with the cylinder (a circle, both surfaces of revolution about
+the thread's axis) is prolonged past the vertex up to the rounding's
+contact on the cone, and that prolongation crosses the cone's seam.
+OCCT intersected the cone and the cylinder for it (ChFi3d_ComputeCurves):
+the cone is nearly flat there and the ends' parameters on it lay a period
+apart, so the intersection's p-curve ran the long way round the cone, its
+3d curve up to 0.1 off the circle (tolerance reached 62); the seam was not
+found on it and not cut, and the cone's face lost its seam and its edge
+with the cylinder (unorientable).
+
+- ChFi3d_ProlongTangentEdge (the edge's own curve and p-curves continued
+  from the vertex up to the contact's end, so far for faces tangent along
+  the edge) takes, with Transversal, faces not tangent there whose
+  surfaces both hold the curve continued (within 10 tolapp3d at three
+  points between the vertex and the contact's end). PerformOneCorner tries
+  it after the tangent prolongations and before intersecting the surfaces.
+  The prolongation is then exact, its p-curve on the cone crosses the
+  seam's line, and the seam is cut there as before.
+- There, a prolongation running from the edge's last vertex on a periodic
+  curve (a circle) kept its p-curves in the parameters the edge has, while
+  the trimmed 3d curve's parameters came into the curve's first period: the
+  pieces split at the seam took p-curves a period off on the face beside
+  (an unorientable face). The p-curves are parametrized as the 3d curve
+  then, as they already were for a prolongation from the first vertex.
+- Where the prolongation is still an intersection of the two surfaces (the
+  edge's curve an approximation ending at the vertex: the thread modelled
+  again, its root a spline), its ends on the periodic opposite face are
+  taken in one period (ChFi3d_Recale, as on the face at the end): they lay
+  a period apart across the cone's seam and the intersection ran the long
+  way round.
+- Split at the opposite face's seam, the pieces of such a prolongation
+  take the seam's crossing in the curve's own range (on a circle's basis
+  the crossing's parameter came in its first period, outside a range
+  across the parameters' origin) and their own p-curves, each moved by
+  whole periods into the face's domain (the p-curve projected there anew
+  lay a period off for the piece from the vertex: a rib's foot on a rod,
+  its rounding's end across the rod's seam).
+
+Nothing else changes: where the edge's curve continued leaves either
+surface, the surfaces are intersected as before.
+
+Upstream: new.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
+index c891277..8069396 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
+@@ -645,6 +645,40 @@ static bool ChFi3d_CutCrossesSeamLine(const BRepAdaptor_Surface&       Bs,
+   return false;
+ }
+ 
++//=======================================================================
++// function : ChFi3d_InFaceDomain
++// purpose  : The curve C on face F's periodic surface moved by whole
++//            periods so that its middle lies in F's parametric domain.
++//=======================================================================
++
++static occ::handle<Geom2d_Curve> ChFi3d_InFaceDomain(const occ::handle<Geom2d_Curve>& C, const TopoDS_Face& F)
++{
++  const occ::handle<Geom_Surface> S = BRep_Tool::Surface(F);
++  if (C.IsNull() || S.IsNull() || (!S->IsUPeriodic() && !S->IsVPeriodic()))
++  {
++    return C;
++  }
++  double u1 = 0., u2 = 0., v1 = 0., v2 = 0.;
++  BRepTools::UVBounds(F, u1, u2, v1, v2);
++  const gp_Pnt2d m  = C->Value(0.5 * (C->FirstParameter() + C->LastParameter()));
++  double         du = 0., dv = 0.;
++  if (S->IsUPeriodic() && (m.X() < u1 || m.X() > u2))
++  {
++    du = ElCLib::InPeriod(m.X(), u1, u1 + S->UPeriod()) - m.X();
++  }
++  if (S->IsVPeriodic() && (m.Y() < v1 || m.Y() > v2))
++  {
++    dv = ElCLib::InPeriod(m.Y(), v1, v1 + S->VPeriod()) - m.Y();
++  }
++  if (du == 0. && dv == 0.)
++  {
++    return C;
++  }
++  occ::handle<Geom2d_Curve> aMoved = occ::down_cast<Geom2d_Curve>(C->Copy());
++  aMoved->Translate(gp_Vec2d(du, dv));
++  return aMoved;
++}
++
+ //=================================================================================================
+ 
+ static void ChFi3d_Recale(const BRepAdaptor_Surface& Bs,
+@@ -1335,6 +1369,12 @@ static void ChFi3d_CapAcrossFaceBeyond(TopOpeBRepDS_DataStructure&             D
+ //            V to P (P within Tol of the curve, beyond V). C3d runs from V
+ //            to P; PcOp and PcV are its curves on Fop (E oriented OonFop
+ //            there) and on Fv.
++//            With Transversal, for faces not tangent along E whose surfaces
++//            both hold E's curve continued (within Tol at points between V
++//            and P: a circle of two surfaces of revolution about one axis,
++//            a cone's rim on a cylinder): that curve is their intersection
++//            there, exact where an intersection of the surfaces is an
++//            approximation.
+ //=======================================================================
+ 
+ static bool ChFi3d_ProlongTangentEdge(const TopoDS_Edge&                    E,
+@@ -1349,9 +1389,10 @@ static bool ChFi3d_ProlongTangentEdge(const TopoDS_Edge&                    E,
+                                       occ::handle<Geom_Curve>&              C3d,
+                                       occ::handle<Geom2d_Curve>&            PcOp,
+                                       occ::handle<Geom2d_Curve>&            PcV,
+-                                      double&                               tolreached)
++                                      double&                               tolreached,
++                                      const bool                            Transversal = false)
+ {
+-  if (BRep_Tool::Degenerated(E) || !ChFi3d::IsTangentFaces(E, Fop, Fv))
++  if (BRep_Tool::Degenerated(E) || ChFi3d::IsTangentFaces(E, Fop, Fv) == Transversal)
+   {
+     return false;
+   }
+@@ -1385,6 +1426,28 @@ static bool ChFi3d_ProlongTangentEdge(const TopoDS_Edge&                    E,
+   {
+     return false;
+   }
++  if (Transversal)
++  {
++    // (The curve continued on both surfaces.)
++    const occ::handle<Geom_Surface> SOp = BRep_Tool::Surface(Fop);
++    const occ::handle<Geom_Surface> SV  = BRep_Tool::Surface(Fv);
++    if (SOp.IsNull() || SV.IsNull())
++    {
++      return false;
++    }
++    for (int k = 1; k <= 3; k++)
++    {
++      const gp_Pnt Q = C->Value(tV + (tP - tV) * 0.25 * k);
++      for (const occ::handle<Geom_Surface>& S : {SOp, SV})
++      {
++        GeomAPI_ProjectPointOnSurf aPr(Q, S);
++        if (aPr.NbPoints() == 0 || aPr.LowerDistance() > Tol)
++        {
++          return false;
++        }
++      }
++    }
++  }
+   // The p-curves, defined at tP.
+   double                    u1 = 0., u2 = 0.;
+   occ::handle<Geom2d_Curve> pcOp =
+@@ -1422,6 +1485,18 @@ static bool ChFi3d_ProlongTangentEdge(const TopoDS_Edge&                    E,
+     ChFi3d_ReparamPcurv(C3d->FirstParameter(), C3d->LastParameter(), PcOp);
+     ChFi3d_ReparamPcurv(C3d->FirstParameter(), C3d->LastParameter(), PcV);
+   }
++  else if (std::abs(C3d->FirstParameter() - t1) > Precision::PConfusion()
++           || std::abs(C3d->LastParameter() - t2) > Precision::PConfusion())
++  {
++    // On a periodic curve the trimmed curve's parameters come into the
++    // curve's first period: the p-curves parametrized as the 3d curve (a
++    // circle's p-curve on a cone a period off, across the cone's seam,
++    // otherwise).
++    PcOp = Geom2dConvert::CurveToBSplineCurve(PcOp);
++    PcV  = Geom2dConvert::CurveToBSplineCurve(PcV);
++    ChFi3d_ReparamPcurv(C3d->FirstParameter(), C3d->LastParameter(), PcOp);
++    ChFi3d_ReparamPcurv(C3d->FirstParameter(), C3d->LastParameter(), PcV);
++  }
+   tolreached =
+     std::max(BRep_Tool::Tolerance(E), ChFi3d_EvalTolReached(HSop, PcOp, HSv, PcV, C3d));
+   return true;
+@@ -4191,6 +4266,10 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
+       aProj.LowerDistanceParameters(aU, aV);
+       pop2.SetCoord(aU, aV);
+     }
++    // The prolongation's ends on a periodic opposite face in one period:
++    // across the face's seam they lay a period apart, and the intersection's
++    // p-curve ran the long way round.
++    ChFi3d_Recale(Bop, pop1, pop2, true);
+     Hc   = BRep_Tool::CurveOnSurface(Arcprol, Fv, Ubid, Ubid);
+     if (Hc.IsNull())
+     {
+@@ -4249,7 +4328,23 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
+                                                                      zob2dop,
+                                                                      zob2dv,
+                                                                      tolreached);
+-    if (!isTangentProlonged && !isIsoProlonged
++    // (Or that edge's own curve continued, where it lies on both surfaces.)
++    const bool isCurveProlonged = !cutArcop && !isTangentProlonged && !isIsoProlonged
++                                  && ChFi3d_ProlongTangentEdge(Arcprol,
++                                                               OArcprolop,
++                                                               Fzob,
++                                                               Fv,
++                                                               HBop,
++                                                               HBs,
++                                                               Vtx,
++                                                               Fd->Vertex(isfirst, IFopArc).Point(),
++                                                               10 * tolapp3d,
++                                                               zob3d,
++                                                               zob2dop,
++                                                               zob2dv,
++                                                               tolreached,
++                                                               true);
++    if (!isTangentProlonged && !isIsoProlonged && !isCurveProlonged
+         && !ChFi3d_ComputeCurves(HBop,
+                                  HBs,
+                                  Pardeb,
+@@ -4289,6 +4384,16 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
+           {
+             par1                  = extCC.ParameterOnE1(i);
+             par2                  = extCC.ParameterOnE2(i);
++            {
++              // (In the curve's range on a periodic basis: a circle's
++              // prolongation may run across its parameters' origin.)
++              const occ::handle<Geom_TrimmedCurve> aTz = occ::down_cast<Geom_TrimmedCurve>(zob3d);
++              const occ::handle<Geom_Curve> aBz = aTz.IsNull() ? zob3d : aTz->BasisCurve();
++              if (aBz->IsPeriodic())
++              {
++                par2 = ElCLib::InPeriod(par2, Udeb, Udeb + aBz->Period());
++              }
++            }
+             gp_Pnt             P1 = extCC.PointOnE1(i);
+             TopOpeBRepDS_Point tpoint(P1, 1.e-4);
+             indpt      = DStr.AddPoint(tpoint);
+@@ -4311,10 +4416,18 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
+       // other face, were put on Fv)
+       Et = TopAbs::Reverse(TopAbs::Compose(OVtx, OArcprolv));
+       c2d1 = new Geom2d_TrimmedCurve(zob2dv, Udeb, par2);
++      if (isCurveProlonged)
++      {
++        c2d1 = ChFi3d_InFaceDomain(c2d1, Fv);
++      }
+       occ::handle<TopOpeBRepDS_SurfaceCurveInterference> InterFv =
+         ChFi3d_FilCurveInDS(Icurv1, IShape, c2d1, Et);
+       DStr.ChangeShapeInterferences(IShape).Append(InterFv);
+       c2d2    = new Geom2d_TrimmedCurve(zob2dv, par2, Ufin);
++      if (isCurveProlonged)
++      {
++        c2d2 = ChFi3d_InFaceDomain(c2d2, Fv);
++      }
+       InterFv = ChFi3d_FilCurveInDS(Icurv2, IShape, c2d2, Et);
+       DStr.ChangeShapeInterferences(IShape).Append(InterFv);
+ 
+@@ -4343,10 +4456,24 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
+       int Iop = DStr.AddShape(Fzob);
+       Et      = TopAbs::Reverse(TopAbs::Compose(OVtx, OArcprolop));
+       occ::handle<TopOpeBRepDS_SurfaceCurveInterference> Interfop;
+-      ComputeCurve2d(curv1, Fzob, c2d1);
++      if (isCurveProlonged)
++      {
++        // (The pieces of the prolongation's own p-curve, each in the period
++        // of the face's domain it lies in: the one from the vertex as the
++        // face's edges there, the one past the seam a period on.)
++        c2d1 = ChFi3d_InFaceDomain(new Geom2d_TrimmedCurve(zob2dop, Udeb, par2), Fzob);
++        c2d2 = ChFi3d_InFaceDomain(new Geom2d_TrimmedCurve(zob2dop, par2, Ufin), Fzob);
++      }
++      else
++      {
++        ComputeCurve2d(curv1, Fzob, c2d1);
++      }
+       Interfop = ChFi3d_FilCurveInDS(Icurv1, Iop, c2d1, Et);
+       DStr.ChangeShapeInterferences(Iop).Append(Interfop);
+-      ComputeCurve2d(curv2, Fzob, c2d2);
++      if (!isCurveProlonged)
++      {
++        ComputeCurve2d(curv2, Fzob, c2d2);
++      }
+       Interfop = ChFi3d_FilCurveInDS(Icurv2, Iop, c2d2, Et);
+       DStr.ChangeShapeInterferences(Iop).Append(Interfop);
+       occ::handle<TopOpeBRepDS_CurvePointInterference> interfprol =

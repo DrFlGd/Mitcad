@@ -30,6 +30,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QMessageBox>
 #include <QMenu>
 #include <QPushButton>
 #include <QRadioButton>
@@ -42,6 +43,7 @@
 #include <QVBoxLayout>
 #include <QtLogging>
 
+#include "../browser/BrowserBackground.hpp"
 #include "../browser/DocumentHost.hpp"
 #include "../framework/Dialogs.hpp"
 #ifdef MITCAD_MACOS_NATIVE_UI
@@ -49,6 +51,7 @@
 #endif
 #include "../framework/AppSettings.hpp"
 #include "../framework/CachePreferences.hpp"
+#include "../framework/ChromeStyle.hpp"
 #include "../framework/CommandRegistry.hpp"
 #include "../framework/DebugLog.hpp"
 #include "../framework/Icons.hpp"
@@ -200,7 +203,7 @@ const PreferencePage kPreferencePages[] = {
     {"general", QT_TRANSLATE_NOOP("View", "General"), "autosave recovery"},
     {"navigation", QT_TRANSLATE_NOOP("View", "Navigation"), "mouse orbit pan zoom scheme"},
     {"display", QT_TRANSLATE_NOOP("View", "Display"),
-     "camera perspective orthographic background environment render device gpu cuda"},
+     "camera perspective orthographic background environment render device gpu cuda ghost inactive components pick priority layout docked floating browser background rows card"},
     {"cache", QT_TRANSLATE_NOOP("View", "Cache"), "results memory disk diagnostics"},
     {"cloud", QT_TRANSLATE_NOOP("View", "Cloud"),
      "git remote sync push fetch version control author email name mqtt live broker"},
@@ -323,6 +326,8 @@ ViewSettings ViewSettings::load() {
   s.navigation.reverseZoom = flag("reverseZoom", false);
   s.navigation.constrainedOrbit = flag("constrainedOrbit", false);
   s.navigation.animate = flag("animate", true);
+  s.ghostInactive = flag("ghostInactive", s.ghostInactive);
+  s.activePickPriority = flag("activePickPriority", s.activePickPriority);
   return s;
 }
 
@@ -343,6 +348,8 @@ void ViewSettings::save() const {
   store.setValue(kGroup + QStringLiteral("reverseZoom"), navigation.reverseZoom);
   store.setValue(kGroup + QStringLiteral("constrainedOrbit"), navigation.constrainedOrbit);
   store.setValue(kGroup + QStringLiteral("animate"), navigation.animate);
+  store.setValue(kGroup + QStringLiteral("ghostInactive"), ghostInactive);
+  store.setValue(kGroup + QStringLiteral("activePickPriority"), activePickPriority);
 }
 
 void ViewSettings::colors(QColor& upper, QColor& lower, bool& gradient) const {
@@ -641,6 +648,8 @@ void ViewController::apply() {
   if (gridSnapChanged) {
     gridSnapChanged(m_settings.snapToGrid, m_settings.gridSpacing);
   }
+  m_viewer.setGhostInactive(m_settings.ghostInactive); // mitcad#420
+  m_viewer.setActivePickPriority(m_settings.activePickPriority);
   syncChecks();
 }
 
@@ -1186,11 +1195,95 @@ void ViewController::showPreferences(const QString& page) {
     }
     qDebug().noquote() << QStringLiteral("Preferences: render devices %1").arg(labels.join(QStringLiteral(", ")));
   }
+  // The window's layout (mitcad#419), for the next starts: Docked or
+  // Floating, the platform's until one is chosen. Not in the native macOS
+  // frontend, which has its own.
+  QComboBox* layoutChoice = nullptr;
+  if (layoutChoosable()) {
+    layoutChoice = new QComboBox;
+    layoutChoice->setObjectName(QStringLiteral("layout"));
+    layoutChoice->addItem(tr("Docked"), int(ChromeStyle::Docked));
+    layoutChoice->addItem(tr("Floating"), int(ChromeStyle::Floating));
+    layoutChoice->setCurrentIndex(layoutChoice->findData(int(layoutPreference().value_or(defaultChromeStyle()))));
+    layoutChoice->setToolTip(tr("Docked: the panels in docks around the 3D view. Floating: the panels as cards over "
+                                "the 3D view. Takes effect when Mitcad starts again."));
+    display->addRow(tr("&Layout:"), layoutChoice);
+  }
+  // The layout chosen when the window opened or last applied.
+  const auto layoutApplied = std::make_shared<int>(layoutChoice != nullptr ? layoutChoice->currentData().toInt() : -1);
+  // The Browser's background in the Floating layout (mitcad#419): its card,
+  // or a box of its own behind each row; it applies at once.
+  QComboBox* browserBackground = nullptr;
+  if (chromeStyle() == ChromeStyle::Floating) {
+    browserBackground = new QComboBox;
+    browserBackground->setObjectName(QStringLiteral("browserBackground"));
+    browserBackground->addItem(tr("Card"), browserBackgroundId(BrowserBackground::Card));
+    browserBackground->addItem(tr("Rows"), browserBackgroundId(BrowserBackground::Rows));
+    browserBackground->setCurrentIndex(
+        browserBackground->findData(browserBackgroundId(savedBrowserBackground())));
+    browserBackground->setToolTip(tr("Card: the Browser on a card. Rows: each row on a small box of its own, the "
+                                     "view between and beside them, where clicks, drags and the wheel reach "
+                                     "the view"));
+    display->addRow(tr("&Browser background:"), browserBackground);
+    if (window == nullptr) {
+      // Where it is once the dialog shows (UI tests).
+      QTimer::singleShot(0, browserBackground, [this, browserBackground] {
+        if (browserBackground->isVisible()) {
+          const QPoint at = browserBackground->mapToGlobal(browserBackground->rect().center()) -
+                            m_window->mapToGlobal(QPoint(0, 0));
+          qDebug().noquote() << QStringLiteral("Preferences browser background at %1,%2").arg(at.x()).arg(at.y());
+        }
+      });
+    }
+  }
+  // Everything outside the active component as ghosts (mitcad#420): saved
+  // and applied when the dialog is accepted, at once in the Settings window.
+  auto* ghostInactive = new QCheckBox(tr("&Ghost inactive components"));
+  ghostInactive->setObjectName(QStringLiteral("ghostInactive"));
+  ghostInactive->setChecked(m_settings.ghostInactive);
+  ghostInactive->setToolTip(tr("While a component other than the root is active, everything outside it is drawn "
+                               "faded; it can still be picked as a reference"));
+  control(display, ghostInactive);
+  const auto applyGhostInactive = [this, ghostInactive] {
+    if (ghostInactive->isChecked() == m_settings.ghostInactive) {
+      return;
+    }
+    m_settings.ghostInactive = ghostInactive->isChecked();
+    m_settings.save();
+    m_viewer.setGhostInactive(m_settings.ghostInactive);
+    qDebug().noquote()
+        << QStringLiteral("Preferences: ghost inactive components %1").arg(onOff(m_settings.ghostInactive));
+  };
+  // Picks take the active component's items first (mitcad#420).
+  auto* activePickPriority = new QCheckBox(tr("&Pick the active component first"));
+  activePickPriority->setObjectName(QStringLiteral("activePickPriority"));
+  activePickPriority->setChecked(m_settings.activePickPriority);
+  activePickPriority->setToolTip(tr("While a component other than the root is active, a click takes its items "
+                                    "under the cursor before nearer items of other components; click where only "
+                                    "another component lies to pick it"));
+  control(display, activePickPriority);
+  const auto applyActivePickPriority = [this, activePickPriority] {
+    if (activePickPriority->isChecked() == m_settings.activePickPriority) {
+      return;
+    }
+    m_settings.activePickPriority = activePickPriority->isChecked();
+    m_settings.save();
+    m_viewer.setActivePickPriority(m_settings.activePickPriority);
+    qDebug().noquote()
+        << QStringLiteral("Preferences: active component first in picks %1").arg(onOff(m_settings.activePickPriority));
+  };
+  if (window != nullptr) {
+    connect(ghostInactive, &QCheckBox::toggled, host, applyGhostInactive);
+    connect(activePickPriority, &QCheckBox::toggled, host, applyActivePickPriority);
+  } else {
+    connect(dialog.get(), &QDialog::accepted, ghostInactive, applyGhostInactive);
+    connect(dialog.get(), &QDialog::accepted, activePickPriority, applyActivePickPriority);
+  }
   groups.insert(QStringLiteral("display"), displayBox);
 
   *commit = [this, general, top, bottom, scheme, zoomToCursor, reverseZoom, constrained, animate, camera, background,
              autosave, minutes, importTolerance, cacheBox, updatesBox, slicerBox, remoteBox, renderDevice, debugLog,
-             debugLogApplied, texturesBox, agentsBox] {
+             debugLogApplied, texturesBox, agentsBox, layoutChoice, layoutApplied] {
     // Folders for MCP agents (mitcad#402).
     const QStringList agentFolders = agentsBox->chosen();
     if (agentFolders != mcp::savedAgentFolders()) {
@@ -1289,7 +1382,36 @@ void ViewController::showPreferences(const QString& page) {
                                                           : QStringLiteral("orthographic"),
                                    chosen.autosave ? QStringLiteral("autosave every %1 min").arg(chosen.autosaveMinutes)
                                                    : QStringLiteral("autosave off"));
+    // The window's layout (mitcad#419): saved for the next starts; one other
+    // than the window's asks whether to restart now, once the dialog is gone.
+    if (layoutChoice != nullptr && layoutChoice->currentData().toInt() != *layoutApplied) {
+      *layoutApplied = layoutChoice->currentData().toInt();
+      const ChromeStyle chosenLayout = static_cast<ChromeStyle>(*layoutApplied);
+      setLayoutPreference(chosenLayout);
+      const bool restart = chosenLayout != chromeStyle();
+      qDebug().noquote() << QStringLiteral("Layout preference: %1 (%2)")
+                                .arg(chromeStyleName(chosenLayout),
+                                     restart ? QStringLiteral("restart asked") : QStringLiteral("in use"));
+      if (restart) {
+        QTimer::singleShot(0, this, [this, chosenLayout] { askLayoutRestart(chosenLayout); });
+      }
+    }
   };
+  if (browserBackground != nullptr) {
+    // The Browser's background (mitcad#419), with the rest: saved and
+    // applied at once when it changed.
+    *commit = [rest = *commit, browserBackground] {
+      rest();
+      const BrowserBackground chosen = browserBackground->currentData().toString() == QLatin1String("rows")
+                                           ? BrowserBackground::Rows
+                                           : BrowserBackground::Card;
+      if (chosen != savedBrowserBackground()) {
+        qDebug().noquote() << QStringLiteral("Preferences: browser background %1").arg(browserBackgroundId(chosen));
+        saveBrowserBackground(chosen);
+      }
+    };
+    connect(browserBackground, &QComboBox::currentIndexChanged, host, changed);
+  }
 
   if (window != nullptr) {
     // A pane per page; the pane's name is the group's title, which the
@@ -1342,6 +1464,9 @@ void ViewController::showPreferences(const QString& page) {
     connect(background, &QComboBox::currentIndexChanged, host, changed);
     if (renderDevice != nullptr) {
       connect(renderDevice, &QComboBox::currentIndexChanged, host, changed);
+    }
+    if (layoutChoice != nullptr) {
+      connect(layoutChoice, &QComboBox::currentIndexChanged, host, changed);
     }
     for (QCheckBox* box : {zoomToCursor, reverseZoom, constrained, animate, autosave, debugLog}) {
       connect(box, &QCheckBox::toggled, host, changed);
@@ -1428,6 +1553,26 @@ void ViewController::showPreferences(const QString& page) {
     return;
   }
   (*commit)();
+}
+
+void ViewController::askLayoutRestart(ChromeStyle chosen) {
+  const QString name = chosen == ChromeStyle::Floating ? tr("Floating") : tr("Docked");
+  QMessageBox box(QMessageBox::Question, tr("Restart Mitcad"),
+                  tr("The %1 layout takes effect when Mitcad starts again. Restart now?").arg(name),
+                  QMessageBox::Yes | QMessageBox::No, m_window);
+  box.setInformativeText(tr("A design with unsaved changes is saved or asked about first, as when Mitcad quits."));
+  box.button(QMessageBox::Yes)->setText(tr("&Restart Now"));
+  box.button(QMessageBox::No)->setText(tr("&Later"));
+  box.setDefaultButton(QMessageBox::Yes);
+  box.setEscapeButton(QMessageBox::No);
+  prepareModal(&box);
+  const bool now = execDialog(&box) == QMessageBox::Yes;
+  qDebug().noquote() << QStringLiteral("Layout restart: %1")
+                            .arg(now ? QStringLiteral("now")
+                                     : QStringLiteral("later (%1 at the next start)").arg(chromeStyleName(chosen)));
+  if (now && restartRequested) {
+    restartRequested();
+  }
 }
 
 void ViewController::showShortcutOverview() {

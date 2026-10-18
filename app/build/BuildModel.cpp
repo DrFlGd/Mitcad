@@ -192,17 +192,39 @@ gp_Pnt inHost(const gp_Pnt& world, const CommandContext& context) {
   return world.Transformed(placement->Inverted());
 }
 
-void recordPick(const QString& key, const SelectionItem& item, CommandState& state, const CommandContext& context) {
+QJsonObject pickRecord(const SelectionItem& item, const CommandContext& context) {
   if (!item.at) {
-    return;
+    return {};
   }
   gp_Pnt point((*item.at)[0], (*item.at)[1], (*item.at)[2]);
   // `at` is in the coordinates of the item's component.
   if (const std::optional<gp_Trsf> placement = worldOf(item.occurrence, context)) {
     point.Transform(*placement);
   }
-  state.setObject(key + QStringLiteral("_pick"),
-                  {{QStringLiteral("item"), item.describe()}, {QStringLiteral("point"), pointJson(point)}});
+  QJsonObject record{{QStringLiteral("item"), item.describe()}, {QStringLiteral("point"), pointJson(point)}};
+  // The snap distance there: kSnapPixels on the screen (mitcad#417).
+  const double pixel = context.pixelSize(point);
+  if (std::isfinite(pixel) && pixel > 0.0) {
+    record.insert(QStringLiteral("snap"), kSnapPixels * pixel);
+  }
+  return record;
+}
+
+void recordPick(const QString& key, const SelectionItem& item, CommandState& state, const CommandContext& context) {
+  const QJsonObject record = pickRecord(item, context);
+  if (!record.isEmpty()) {
+    state.setObject(key + QStringLiteral("_pick"), record);
+  }
+}
+
+std::optional<double> pickSnap(const QString& key, const CommandState& state) {
+  const Selection& items = state.items(key);
+  const QJsonObject pick = state.object(key + QStringLiteral("_pick"));
+  const double snap = pick.value(QStringLiteral("snap")).toDouble(-1.0);
+  if (items.isEmpty() || text(pick, "item") != items.first().describe() || !std::isfinite(snap) || snap <= 0.0) {
+    return std::nullopt;
+  }
+  return snap;
 }
 
 std::optional<gp_Pnt> pickPoint(const QString& key, const CommandState& state, const CommandContext& context) {
@@ -229,8 +251,16 @@ std::optional<QJsonObject> atOf(const QString& key, const CommandState& state, c
   const SelectionItem& item = items.first();
   const std::optional<QString> path = pathFromHost(item, context);
   if (!path) {
-    // Only what is under the host highlights (the inputs' pick rules), so
-    // this is an item given otherwise (live MCP).
+    // An origin or construction plane or point above the host (the root's
+    // origin planes while a new design's Part1 is the host, mitcad#421): the
+    // first part is grounded at the click, in the host's coordinates, as
+    // Enter grounds it at the origin. (A BUILD part to go on is always
+    // under the host.)
+    if (item.kind == SelectKind::Plane || item.kind == SelectKind::Point) {
+      if (const std::optional<gp_Pnt> point = pickPoint(key, state, context)) {
+        return QJsonObject{{QStringLiteral("point"), pointJson(inHost(*point, context))}};
+      }
+    }
     problem = QObject::tr("%1 is not in %2, where BUILD places parts.").arg(item.describe(), buildHost(context).name);
     return std::nullopt;
   }

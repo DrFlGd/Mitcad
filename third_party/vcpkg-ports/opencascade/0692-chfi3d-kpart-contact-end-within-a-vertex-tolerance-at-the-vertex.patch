@@ -1,0 +1,60 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets and chamfers: an analytic blend's contact that leaves its face
+through a vertex of the face's boundary, found on one of the vertex's
+edges within the vertex's tolerance, ends at the vertex (mitcad#235).
+
+The case: the recess's rim of 0691 rounded with 1, the rib's bottom edges
+rounded with 1 up to 45-degree slopes; the rim's rounding has its contact
+on the recess's 45-degree cone exactly where the rib's roundings meet the
+slopes, so that the contact leaves the cone through the vertex there. In
+a part's own body the curve of the edge between the cone and the rib's
+rounding ends 3.7e-5 past that vertex (within its tolerance of 2.4e-4):
+the hatching of the contact on the cone found its end inside that edge,
+5e-6 before the curve's end, and a sliver of the edge was left between
+the point and the vertex. The cone's wire intersected itself there and
+the result was invalid (with the curve carried 2e-5 past the vertex in
+the test's body, valid but with that sliver: the area 1.7e-3 more than
+the exact body's).
+
+- FillSD (ChFi3d_Builder_SpKP.cxx): an end found inside an arc (not at a
+  vertex by the hatching) within the tolerance of one of the arc's
+  vertices is put at that vertex (SnapToVertex, until now used only for a
+  contact along the face's boundary, with the vertices' tolerance).
+
+Test: the rib's edges with the cone carried 2e-5 past their vertices
+(geometry test_fillet_results); the result is the exact body's.
+
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_SpKP.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_SpKP.cxx
+@@ -1173,6 +1173,29 @@
+     // inside.)
+     SnapToVertex(DStr, CD, isFirst, ons, pitol, snapTol);
+   }
++  else if (pPH != nullptr && Pons.IsOnArc() && !Pons.IsVertex())
++  {
++    // A tangency line that leaves its face through a vertex of the face's
++    // boundary, found on one of the vertex's edges within the vertex's
++    // tolerance (a contact running exactly through the vertex where two
++    // edges of the face meet): at the vertex. Else a sliver of that edge
++    // is left between the point and the vertex, and the face's wire
++    // intersects itself there.
++    TopoDS_Vertex V1, V2;
++    TopExp::Vertices(Pons.Arc(), V1, V2);
++    double aTolV = 0.;
++    for (const TopoDS_Vertex& V : {V1, V2})
++    {
++      if (!V.IsNull())
++      {
++        aTolV = std::max(aTolV, BRep_Tool::Tolerance(V));
++      }
++    }
++    if (aTolV > 0.)
++    {
++      SnapToVertex(DStr, CD, isFirst, ons, pitol, aTolV);
++    }
++  }
+ }
+ 
+ //=======================================================================

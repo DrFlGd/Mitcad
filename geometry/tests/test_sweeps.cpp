@@ -1677,6 +1677,120 @@ void test_helix_turns_meet_in_one_edge() {
   }
 }
 
+// The roots of a nut's thread rounded up to the nut's faces (mitcad#415):
+// the thread runs from below the nut to above it, so each root's rounding
+// ends where the nut's bottom and top cut it, and the two contacts of the
+// rounding, on the flanks either side of the root, cross those planes far
+// apart along the root (the thread's lead is 0.47 degrees). The walk past
+// the root's end follows the flank's iso-line the root runs on (port patch
+// 0742): before, it followed the guide's smooth extension, which leaves the
+// root's helix within millimetres, the contacts swerved, and the result was
+// invalid, its ends joined by vertices with tolerances of tens of
+// millimetres (as the `.ipt` import's rounding of a thread's root running
+// out past a bore's bottom left them). The rounding adds the section
+// between the flanks and the ball turned about the axis over the nut's
+// height, and each plane gains
+// that section turned through the angle the root rises across it.
+void test_thread_roots_rounded_up_to_the_nuts_faces() {
+  const double bore = 19;
+  const double pitch = 1;
+  const double depth = 0.5;
+  const double height = 10;
+  const double ball = 0.3;
+  const ShapePtr nut = ring_body(bore, bore + 10, 0, height);
+  Frame xz;
+  xz.x_axis = gp_Dir(1, 0, 0);
+  xz.y_axis = gp_Dir(0, 0, 1);
+  HelixSweepSpec spec;
+  spec.feature = "F2";
+  spec.frame = xz;
+  spec.axis = gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1));
+  spec.pitch = pitch;
+  spec.revolutions = (height + 4) / pitch;
+  spec.regions = {polygon({{bore, -2}, {bore + depth, -2 + pitch / 2}, {bore, -2 + pitch}})};
+  spec.bodies = {nut};
+  const BooleanResult cut = boolean(BooleanOp::Cut, {nut.get()}, *helix_sweep(spec));
+  CHECK(cut.pieces.size() == 1);
+  if (cut.pieces.size() != 1) {
+    return;
+  }
+  const ShapePtr threaded = cut.pieces.front().shape;
+  // The root: the edge between the flanks on the thread's outer radius.
+  std::vector<std::string> roots;
+  NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher> faces_of;
+  TopExp::MapShapesAndAncestors(threaded->occt(), TopAbs_EDGE, TopAbs_FACE, faces_of);
+  for (int i = 1; i <= faces_of.Extent(); ++i) {
+    BRepAdaptor_Curve curve(TopoDS::Edge(faces_of.FindKey(i)));
+    const gp_Pnt middle = curve.Value((curve.FirstParameter() + curve.LastParameter()) / 2);
+    if (faces_of(i).Extent() == 2 && std::abs(std::hypot(middle.X(), middle.Y()) - bore - depth) < 1e-5) {
+      if (const auto name = threaded->name_of_edge(faces_of.FindKey(i))) {
+        roots.push_back(*name);
+      }
+    }
+  }
+  CHECK(!roots.empty());
+  // The section the ball fills at the root: between the flanks, whose
+  // wedge has the half angle `half` from the radial direction, and the
+  // ball; its area and its moment about the axis (x inwards from the root).
+  const double half = std::atan2(pitch / 2, depth);
+  const double centre = ball / std::sin(half);
+  const double tangent = ball / std::tan(half) * std::cos(half);
+  double area = 0;
+  double moment = 0;
+  constexpr int kSteps = 200000;
+  for (int k = 0; k < kSteps; ++k) {
+    const double x = tangent * (k + 0.5) / kSteps;
+    double width = 2 * x * std::tan(half);
+    if (std::abs(centre - x) < ball) {
+      width -= 2 * std::sqrt(ball * ball - (centre - x) * (centre - x));
+    }
+    area += width * tangent / kSteps;
+    moment += (bore + depth - x) * width * tangent / kSteps;
+  }
+  const auto plane_area = [](const Shape& shape, double z) {
+    double sum = 0;
+    for (TopExp_Explorer f(shape.occt(), TopAbs_FACE); f.More(); f.Next()) {
+      const BRepAdaptor_Surface surface(TopoDS::Face(f.Current()));
+      if (surface.GetType() == GeomAbs_Plane && std::abs(surface.Plane().Location().Z() - z) < 1e-9) {
+        GProp_GProps props;
+        BRepGProp::SurfaceProperties(f.Current(), props);
+        sum += props.Mass();
+      }
+    }
+    return sum;
+  };
+  try {
+    const ShapePtr rounded = fillet("F3", *threaded, roots, ball);
+    CHECK(detail::is_valid(rounded->occt()));
+    double largest = 0;
+    for (TopExp_Explorer v(rounded->occt(), TopAbs_VERTEX); v.More(); v.Next()) {
+      largest = std::max(largest, BRep_Tool::Tolerance(TopoDS::Vertex(v.Current())));
+    }
+    CHECK(largest < 1e-3);
+    const double expected = 2 * kPi * moment * height / pitch;
+    const double change = precise_volume(*rounded) - precise_volume(*threaded);
+    if (std::abs(change - expected) > 1e-2 * expected) {
+      std::fprintf(stderr, "thread roots: the rounding added %.9g, expected %.9g (%zu edges)\n", change, expected,
+                   roots.size());
+      ++failures;
+    }
+    // Each plane gains what the ball fills of the root's groove there: the
+    // section turned through the angle the root rises across it, its area
+    // 2 pi moment / pitch.
+    for (const double z : {0.0, height}) {
+      const double gain = plane_area(*rounded, z) - plane_area(*threaded, z);
+      const double section = 2 * kPi * moment / pitch;
+      if (std::abs(gain - section) > 1e-2 * section) {
+        std::fprintf(stderr, "thread roots: the plane at z = %g gained %.6g, expected %.6g\n", z, gain, section);
+        ++failures;
+      }
+    }
+  } catch (const std::exception& error) {
+    std::fprintf(stderr, "thread roots: the rounding failed: %s\n", error.what());
+    ++failures;
+  }
+}
+
 // A fixed binormal (mitcad#397): a 20 x 2 profile, its 20 level, swept
 // along a quarter of a circle of radius 50 in a plane tilted 20 degrees
 // about X (a sloped arc, rising from (50, 0, 0) to its top, where it runs
@@ -1750,6 +1864,7 @@ void sweeps_tests() {
   guarded("lofts", test_lofts);
   guarded("ribs", test_ribs);
   guarded("guide surfaces", test_guide_surfaces);
+  guarded("thread roots rounded up to the nut's faces", test_thread_roots_rounded_up_to_the_nuts_faces);
 }
 
 } // namespace test

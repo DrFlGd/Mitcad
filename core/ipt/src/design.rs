@@ -358,16 +358,18 @@ fn parameters(
 
 /// A sketch's detail and the parameters of its dimensions (`{}` and a
 /// note when it cannot be read).
+#[allow(clippy::too_many_arguments)]
 fn sketch_detail(
     dc: &Definitions,
     record: usize,
     name: &str,
     params: &Parameters,
+    fonts: &crate::text::Fonts,
     left_out: &mut Vec<String>,
     ids: &mut HashMap<usize, HashMap<usize, String>>,
     flagged: &mut HashMap<usize, Vec<String>>,
 ) -> (Value, Vec<(usize, String)>) {
-    match crate::sketch::sketch(dc, record, name, params) {
+    match crate::sketch::sketch(dc, record, name, params, fonts) {
         Ok(s) => {
             ids.insert(record, s.ids.clone());
             if !s.flagged.is_empty() {
@@ -790,8 +792,8 @@ fn bounding_curves(
 }
 
 /// Record types of what a sketch draws that the decoder leaves out: texts
-/// (`013cbb1f…`), splines through points (`46737b31…`) and their offsets
-/// (`47d9553e…`) *(seen)*.
+/// it cannot bring in as Mitcad's (`013cbb1f…`, `crate::text`), splines
+/// through points (`46737b31…`) and their offsets (`47d9553e…`) *(seen)*.
 const UNDECODED_DRAWINGS: [&str; 3] = ["013cbb1f", "46737b31", "47d9553e"];
 
 /// Whether a sketch item left out something it draws
@@ -810,11 +812,14 @@ fn draws_undecoded(item: &Value) -> bool {
 /// (a circle of the model's hole the selection holds, its sketch only
 /// construction lines about it: `01fb13c9` Extrusion8, mitcad#235).
 fn draws_only_construction(item: &Value) -> bool {
-    item["detail"]["curves"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .all(|c| c["isConstruction"] == true)
+    // A text's glyphs bound profiles too (mitcad#414).
+    let texts = item["detail"]["texts"].as_array().map_or(0, Vec::len);
+    texts == 0
+        && item["detail"]["curves"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .all(|c| c["isConstruction"] == true)
 }
 
 /// The curves of the profiles features selected in a sketch that left out
@@ -1066,6 +1071,8 @@ pub fn design_of_file(
     file: Option<&crate::IptFile>,
 ) -> Design {
     let params = Parameters::read(dc);
+    // The font table sketch texts name (mitcad#414).
+    let fonts = file.map(crate::text::Fonts::read).unwrap_or_default();
     let mut owners: HashMap<usize, Value> = HashMap::new();
     let labels = dc.labels();
     let states = history_states(dc);
@@ -1130,6 +1137,7 @@ pub fn design_of_file(
                     record,
                     &shown,
                     &params,
+                    &fonts,
                     &mut left_out,
                     &mut sketch_ids,
                     &mut flagged,
@@ -1219,6 +1227,7 @@ pub fn design_of_file(
                     child,
                     &shown,
                     &params,
+                    &fonts,
                     &mut left_out,
                     &mut sketch_ids,
                     &mut flagged,

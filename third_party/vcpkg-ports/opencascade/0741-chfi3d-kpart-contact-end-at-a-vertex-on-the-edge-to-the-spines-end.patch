@@ -1,0 +1,92 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets and chamfers: an analytic blend's contact that leaves its face at
+a vertex V of the face's boundary ends on the edge of the face that holds
+both V and the spine's end vertex, also where the hatching misses that
+edge (mitcad#415).
+
+The case: the recess's rim of 0691 and 0692 rounded up to the rib across
+it; the rim's contact on the recess's cone leaves the cone exactly at the
+vertex V where the rib's rounding meets its slope. Where the cone's edge
+with the rib's rounding (from the spine's end vertex to V) has a curve
+that stops short of V within V's tolerance, as an imported body's edge
+may, the hatching of the contact on the cone found its end only on the
+cone's other edge at V (with the slope). FillSD puts the end on an edge
+holding the spine's end vertex when the hatching finds several edges at
+the point; with only the slope's edge, the end was on it, and the corner
+(PerformOneCorner, OnSame) took the face beyond that edge, the slope, for
+the face at the end instead of the rib's rounding: the cut ran across the
+bottom face and the result was invalid.
+
+- FillSD (ChFi3d_Builder_SpKP.cxx): an end found at a vertex V of an arc
+  that does not hold the spine's end vertex, where another arc of the face
+  holds both V and that vertex: the end is on that arc, at V.
+
+Before, the result was invalid. Test: the rib's edges with the cone
+stopped 2e-5 short of their vertices with the slopes (geometry
+test_fillet_results); the result is the exact body's.
+
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_SpKP.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_SpKP.cxx
+@@ -1139,7 +1139,59 @@
+     }
+     const TopoDS_Edge& E = HE->Edge();
+ 
+-    if (PE.Position() != TopAbs_INTERNAL)
++    // The end found at a vertex V of an edge E that does not hold the
++    // spine's end vertex bout, where another edge of the face holds both V
++    // and bout: the end is on that edge, at V, as where the hatching finds
++    // both edges at V (above). The hatching misses that edge where its
++    // curve stops short of V within V's tolerance (an imported body's
++    // edge): the face at the corner was then taken beyond E, the wrong one.
++    TopoDS_Edge   aBoutEdge;
++    TopoDS_Vertex aVatEnd;
++    if (PE.Position() != TopAbs_INTERNAL && !bout.IsNull())
++    {
++      aVatEnd = PE.Position() == TopAbs_FORWARD ? TopExp::FirstVertex(E) : TopExp::LastVertex(E);
++      TopoDS_Vertex aE1, aE2;
++      TopExp::Vertices(E, aE1, aE2);
++      if (!aVatEnd.IsNull() && !aE1.IsSame(bout) && !aE2.IsSame(bout))
++      {
++        // (Among the face's arcs that were hatched, as they lie in it.)
++        for (NCollection_DataMap<int, occ::handle<Adaptor2d_Curve2d>>::Iterator anIt(M);
++             anIt.More() && aBoutEdge.IsNull();
++             anIt.Next())
++        {
++          const occ::handle<BRepAdaptor_Curve2d> aC = occ::down_cast<BRepAdaptor_Curve2d>(anIt.Value());
++          if (aC.IsNull())
++          {
++            continue;
++          }
++          const TopoDS_Edge& anE = aC->Edge();
++          if (anE.IsSame(E) || BRep_Tool::Degenerated(anE))
++          {
++            continue;
++          }
++          TopoDS_Vertex aV1, aV2;
++          TopExp::Vertices(anE, aV1, aV2);
++          if ((aV1.IsSame(aVatEnd) && aV2.IsSame(bout)) || (aV2.IsSame(aVatEnd) && aV1.IsSame(bout)))
++          {
++            aBoutEdge = anE;
++          }
++        }
++      }
++    }
++    if (!aBoutEdge.IsNull())
++    {
++      TopAbs_Orientation O = CD->Interference(ons).Transition();
++      if (isFirst)
++      {
++        O = TopAbs::Reverse(O);
++      }
++      Pons.SetVertex(aVatEnd);
++      Pons.SetArc(Precision::PIntersection(),
++                  aBoutEdge,
++                  BRep_Tool::Parameter(aVatEnd, aBoutEdge),
++                  TopAbs::Compose(aBoutEdge.Orientation(), O));
++    }
++    else if (PE.Position() != TopAbs_INTERNAL)
+     {
+       TopAbs_Orientation O = CD->Interference(ons).Transition();
+       if (isFirst)

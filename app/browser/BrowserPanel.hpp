@@ -3,6 +3,7 @@
 
 #include <QHash>
 #include <QPoint>
+#include <QRegion>
 #include <QSet>
 #include <QString>
 #include <QStringList>
@@ -136,7 +137,23 @@ public:
   // A compact width, which the dock opens with (mitcad#10).
   QSize sizeHint() const override;
 
+  // The Rows background of the Floating layout (mitcad#419,
+  // BrowserBackground.hpp): no card behind the tree; each row in sight on a
+  // small box of the card's material, from its arrow to the end of its name
+  // or radio button, the selection and the pointer shown on the box. A place
+  // beside the rows is logged for UI tests ("Browser view beside the rows at
+  // x,y", logLayout).
+  void setRowsBackground(bool rows);
+  bool rowsBackground() const { return m_rows; }
+  // With the Rows background, where the panel takes the mouse, in its own
+  // coordinates: the rows' boxes in sight, the scroll bars shown and an
+  // open rename editor.
+  QRegion rowsRegion() const;
+
 signals:
+  // With the Rows background, rowsRegion changed (the rows scrolled, opened,
+  // folded, were rebuilt, renamed or selected; the panel was resized).
+  void rowsRegionChanged();
   // The rows in sight changed in number.
   void contentHeightChanged();
   // Rows were selected: the items of the rows that stand for one, and the
@@ -155,8 +172,15 @@ signals:
   // Ctrl+F (Cmd+F on macOS) in the rows: the timeline's search (mitcad#179).
   void searchRequested();
 
+protected:
+  bool eventFilter(QObject* watched, QEvent* event) override;
+
 private:
   friend class BrowserTree;
+
+  // With the Rows background: rowsRegionChanged once the changes in hand
+  // are laid out.
+  void queueRowsRegion();
 
   // The features under each sketch (mitcad#177), by the sketch's uid, and
   // the components each feature's bodies are in, by the feature's uid.
@@ -196,6 +220,8 @@ private:
   QString m_logged;
   QSet<QString> m_loggedPlaces; // what logLayout logged a place for, and has not logged out of sight
   QString m_loggedSelection;
+  bool m_rows = false; // the Rows background (mitcad#419)
+  bool m_rowsQueued = false;
 };
 
 } // namespace mitcad

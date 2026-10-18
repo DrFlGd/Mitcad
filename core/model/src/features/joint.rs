@@ -82,7 +82,10 @@ impl<'de> Deserialize<'de> for OccurrencePath {
 }
 
 /// Parts of a joint origin's frame given instead of the resolved ones, in
-/// the component's coordinates (mm, directions).
+/// the component's coordinates (mm, directions); `shift` then moves the
+/// origin along the frame's own axes as they are after the override (mm),
+/// so it follows geometry that moves (BUILD's corner on a profile's end,
+/// mitcad#417).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FrameOverride {
@@ -92,11 +95,13 @@ pub struct FrameOverride {
     pub z_axis: Option<Vec3>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub x_axis: Option<Vec3>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shift: Option<Vec3>,
 }
 
 impl FrameOverride {
     fn check(&self) -> Result<(), String> {
-        let numbers: Vec<f64> = [self.origin, self.z_axis, self.x_axis]
+        let numbers: Vec<f64> = [self.origin, self.z_axis, self.x_axis, self.shift]
             .into_iter()
             .flatten()
             .flatten()

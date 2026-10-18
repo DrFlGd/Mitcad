@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 //! Design policy (mitcad#220) with the mock kernel: the new design's
-//! Assembly root and Part1, creation refused where an owner does not
-//! allow it, attachment and reference permissions in both directions,
+//! root and Part1 with everything allowed (mitcad#421), creation
+//! refused where an owner does not allow it, attachment and reference permissions in both directions,
 //! violations of existing content counted and listed, moves validated
 //! before anything changes, and the policy kept in the design file and in
 //! undo and redo. Older designs load without a policy and unchanged.
@@ -110,19 +110,96 @@ fn breaking(doc: &Document<MockKernel>, component: &str, setting: &str) -> Vec<S
     items
 }
 
+/// Sets the presets of owners by name.
+fn presets(doc: &mut Document<MockKernel>, owners: &[(&str, &str)]) {
+    for (component, preset) in owners {
+        command(
+            doc,
+            json!({"cmd": "set_policy", "component": component, "preset": preset}),
+        );
+    }
+}
+
 #[test]
-fn a_new_design_has_an_assembly_root_and_an_active_part() {
-    let mut doc = Document::new_design(MockKernel::default());
+fn a_new_design_has_a_hybrid_root_and_an_active_part1() {
+    // mitcad#421: everything allowed in both.
+    let doc = Document::new_design(MockKernel::default());
     assert!(!doc.is_modified());
     let policies = query(&doc, json!({"query": "policies"}));
     assert_eq!(policies[0]["name"], "Root");
-    assert_eq!(policies[0]["policy"]["preset"], "assembly");
+    assert_eq!(policies[0]["policy"]["preset"], "hybrid");
     assert_eq!(policies[1]["name"], "Part1");
-    assert_eq!(policies[1]["policy"]["preset"], "part");
+    assert_eq!(policies[1]["policy"]["preset"], "hybrid");
     let part = doc.active_component();
     assert_eq!(doc.assembly().name(part), "Part1");
+    assert_eq!(doc.policy(ComponentUid::ROOT), Policy::GENERAL);
+    assert_eq!(doc.policy(part), Policy::GENERAL);
+    // Nothing of it is stored: the file has no policy.
+    let text = doc.to_json();
+    assert!(!text.contains("policy"), "{text}");
+}
 
+#[test]
+fn a_new_design_takes_sketches_components_and_links_without_a_violation() {
+    let mut doc = Document::new_design(MockKernel::default());
+    let part1 = doc.active_component();
+    *doc.kernel().curves.borrow_mut() = vec![Curve3::Line {
+        start: [0.0, 0.0, 5.0],
+        end: [10.0, 0.0, 5.0],
+    }];
     // The first sketch and feature go into Part1.
+    let (body, face) = block(&mut doc);
+    assert_eq!(doc.feature(body.feature).unwrap().component, part1);
+    // A component made in Part1 stays there, active.
+    let made = command(
+        &mut doc,
+        json!({"cmd": "create_component", "name": "Part2"}),
+    );
+    assert!(made.get("placed_in").is_none(), "{made}");
+    let part2 = doc.active_component();
+    assert_eq!(doc.assembly().name(part2), "Part2");
+    assert_eq!(doc.policy(part2), Policy::GENERAL);
+    let occurrence: crate::ids::OccurrenceUid =
+        made["occurrence"].as_str().unwrap().parse().unwrap();
+    assert_eq!(doc.assembly().occurrence(occurrence).unwrap().parent, part1);
+    // Part2's sketches on Part1's face, its first and a later one, and a
+    // linked projection of the face: nothing is left out or refused.
+    let supports = query(&doc, json!({"query": "sketch_supports"}));
+    assert_eq!(supports["denied"], json!([]), "{supports}");
+    let create = json!({"cmd": "sketch.create", "plane": {"face": face, "body": body},
+                        "occurrence": "O1"});
+    let first = uid(&command(&mut doc, create.clone()));
+    let second = uid(&command(&mut doc, create));
+    command(
+        &mut doc,
+        json!({"cmd": "sketch.project", "sketch": second, "source": face, "body": body,
+               "linked": true, "occurrence": "O1"}),
+    );
+    for sketch in [first, second] {
+        assert_eq!(doc.feature(sketch).unwrap().component, part2);
+        assert_eq!(doc.status(sketch), Some(&FeatureStatus::Ok));
+    }
+    let supports = query(&doc, json!({"query": "sketch_supports"}));
+    assert_eq!(supports["denied"], json!([]), "{supports}");
+    // The root takes sketches too.
+    command(
+        &mut doc,
+        json!({"cmd": "activate_component", "component": "Root"}),
+    );
+    command(&mut doc, json!({"cmd": "sketch.create"}));
+    let policies = query(&doc, json!({"query": "policies"}));
+    for owner in policies.as_array().unwrap() {
+        assert_eq!(owner["violations"], json!(0), "{owner}");
+        assert_eq!(owner["policy"]["preset"], "hybrid", "{owner}");
+    }
+}
+
+#[test]
+fn the_assembly_preset_refuses_sketches_and_features_with_the_reason() {
+    let mut doc = Document::new_design(MockKernel::default());
+    presets(&mut doc, &[("Root", "assembly")]);
+    // The first sketch and feature go into Part1.
+    let part = doc.active_component();
     let sketch = uid(&command(&mut doc, json!({"cmd": "sketch.create"})));
     assert_eq!(doc.feature(sketch).unwrap().component, part);
     let plane = command(
@@ -131,8 +208,6 @@ fn a_new_design_has_an_assembly_root_and_an_active_part() {
                "definition": {"type": "offset", "plane": "xy", "distance": 4}}}),
     );
     assert_eq!(doc.feature(uid(&plane)).unwrap().component, part);
-    // Part1 has no child components: a new one goes beside it
-    // (mitcad#292, `a_new_component_refused_by_a_part_goes_beside_it`).
 
     // Activating the root is allowed and redirects nothing: the root
     // refuses sketches and features with the reason.
@@ -159,14 +234,94 @@ fn a_new_design_has_an_assembly_root_and_an_active_part() {
     assert_eq!(report["name"], "Root");
     assert!(report["refusals"]["sketches"].is_string());
     assert!(report["refusals"].get("components").is_none());
-    // The root takes components: Part2, which the application makes a part.
+    // The root takes components: Part2 with the general defaults, Part3
+    // with a preset.
     let made = command(
         &mut doc,
-        json!({"cmd": "create_component", "name": "Part2", "policy": "part"}),
+        json!({"cmd": "create_component", "name": "Part2"}),
     );
     assert_eq!(made["name"], "Part2");
     let part2 = doc.active_component();
-    assert_eq!(doc.policy(part2), Policy::PART);
+    assert_eq!(doc.policy(part2), Policy::GENERAL);
+    command(
+        &mut doc,
+        json!({"cmd": "activate_component", "component": "Root"}),
+    );
+    command(
+        &mut doc,
+        json!({"cmd": "create_component", "name": "Part3", "policy": "part"}),
+    );
+    assert_eq!(doc.policy(doc.active_component()), Policy::PART);
+}
+
+#[test]
+fn the_hybrid_preset_is_the_general_defaults_and_defaults_an_alias() {
+    let mut doc = Document::new_design(MockKernel::default());
+    presets(&mut doc, &[("Part1", "part")]);
+    for name in ["hybrid", "defaults"] {
+        let report = query(
+            &doc,
+            json!({"query": "policy", "component": "Part1", "preset": name}),
+        );
+        assert_eq!(report["policy"]["preset"], "hybrid", "{name}");
+    }
+    let set = command(
+        &mut doc,
+        json!({"cmd": "set_policy", "component": "Part1", "preset": "defaults"}),
+    );
+    assert_eq!(set["policy"]["preset"], "hybrid");
+    assert_eq!(doc.policy(doc.active_component()), Policy::GENERAL);
+    assert_eq!(Policy::preset("hybrid"), Some(Policy::GENERAL));
+    assert_eq!(Policy::GENERAL.preset_name(), Some("hybrid"));
+    let error = rejected(&mut doc, json!({"cmd": "set_policy", "preset": "strict"}));
+    assert!(error.contains("hybrid, part or assembly"), "{error}");
+    // Every setting of the general defaults is on; the presets keep their
+    // values (mitcad#220, mitcad#293).
+    for setting in crate::policy::Setting::ALL {
+        assert!(Policy::GENERAL.allows(setting), "{setting:?}");
+    }
+    let strict = Policy {
+        attach_to_others: false,
+        attachments_from_others: false,
+        ..Policy::GENERAL
+    };
+    assert_eq!(
+        Policy::PART,
+        Policy {
+            components: false,
+            ..strict
+        }
+    );
+    assert_eq!(
+        Policy::ASSEMBLY,
+        Policy {
+            sketches: false,
+            features: false,
+            first_sketch_attaches: false,
+            ..strict
+        }
+    );
+}
+
+#[test]
+fn stored_policies_keep_their_values() {
+    // A design saved with a policy that differed from the old defaults:
+    // the root an Assembly, A a part, B attaching to nothing.
+    let (mut doc, _, _, _, _) = siblings();
+    presets(&mut doc, &[("Root", "assembly"), ("A", "part")]);
+    set(
+        &mut doc,
+        "B",
+        json!({"attach_to_others": false, "attachments_from_others": false}),
+    );
+    let text = doc.to_json();
+    let loaded = Document::from_json(&text, MockKernel::default()).unwrap();
+    assert_eq!(loaded.policy(ComponentUid::ROOT), Policy::ASSEMBLY);
+    assert_eq!(loaded.policy(ComponentUid(1)), Policy::PART);
+    let b = loaded.policy(ComponentUid(2));
+    assert!(!b.attach_to_others && !b.attachments_from_others);
+    assert_eq!(b.preset_name(), None);
+    assert_eq!(loaded.to_json(), text);
 }
 
 #[test]
@@ -201,9 +356,15 @@ fn an_older_design_loads_with_the_general_defaults_and_unchanged() {
     assert_eq!(loaded.active_component(), b);
     for owner in ["C0", "C1", "C2"] {
         let report = query(&loaded, json!({"query": "policy", "component": owner}));
-        assert_eq!(report["policy"]["preset"], "defaults", "{owner}");
+        assert_eq!(report["policy"]["preset"], "hybrid", "{owner}");
     }
     let uid = uid(&sketch);
+    assert_eq!(loaded.status(uid), Some(&FeatureStatus::Ok));
+    // The general defaults allow it (mitcad#421); under the Part preset it
+    // is a violation, kept.
+    assert!(breaking(&loaded, "B", "attach_to_others").is_empty());
+    assert!(breaking(&loaded, "A", "attachments_from_others").is_empty());
+    presets(&mut loaded, &[("A", "part"), ("B", "part")]);
     assert_eq!(loaded.status(uid), Some(&FeatureStatus::Ok));
     assert_eq!(
         breaking(&loaded, "B", "attach_to_others"),
@@ -233,7 +394,8 @@ fn either_side_of_an_attachment_can_refuse_it() {
     doc.add_sketch(SketchPlane::Xy).unwrap();
     let create = json!({"cmd": "sketch.create", "plane": {"face": face, "body": body},
                         "occurrence": "O1"});
-    // The general defaults: both sides refuse.
+    // Two parts: both sides refuse.
+    presets(&mut doc, &[("A", "part"), ("B", "part")]);
     let error = rejected(&mut doc, create.clone());
     assert!(
         error.contains("cannot be attached to a face or plane of A"),
@@ -507,6 +669,7 @@ fn moves_and_pastes_follow_the_destination_policy() {
 #[test]
 fn checks_are_off_outside_commands_and_when_suspended() {
     let mut doc = Document::new_design(MockKernel::default());
+    presets(&mut doc, &[("Root", "assembly")]);
     command(
         &mut doc,
         json!({"cmd": "activate_component", "component": "Root"}),
@@ -627,6 +790,7 @@ fn new_component_extrude(doc: &mut Document<MockKernel>) -> Value {
 fn a_new_component_refused_by_a_part_goes_beside_it() {
     // mitcad#292: Part1 (a part) placed 100 mm along X in the root.
     let mut doc = Document::new_design(MockKernel::default());
+    presets(&mut doc, &[("Part1", "part")]);
     let part = doc.active_component();
     command(
         &mut doc,
@@ -639,7 +803,7 @@ fn a_new_component_refused_by_a_part_goes_beside_it() {
     let depth = doc.undo_depth();
     let made = command(
         &mut doc,
-        json!({"cmd": "create_component", "name": "Inner", "policy": "part"}),
+        json!({"cmd": "create_component", "name": "Inner"}),
     );
     assert_eq!(made["placed_in"], "C0", "{made}");
     assert_eq!(made["instead_of"], json!(part));
@@ -729,6 +893,7 @@ fn a_new_component_goes_into_the_nearest_owner_that_takes_components() {
 fn a_new_component_is_refused_when_no_owner_above_takes_components() {
     let mut doc = Document::new_design(MockKernel::default());
     set(&mut doc, "Root", json!({"components": false}));
+    set(&mut doc, "Part1", json!({"components": false}));
     let extrude = new_component_extrude(&mut doc);
     let depth = doc.undo_depth();
     let before = doc.to_json();
@@ -741,10 +906,11 @@ fn a_new_component_is_refused_when_no_owner_above_takes_components() {
 }
 
 #[test]
-fn a_first_sketch_may_attach_to_another_component_by_default() {
-    // mitcad#293: B has no sketch or modelling feature yet; the general
-    // defaults.
+fn a_part_s_first_sketch_may_attach_to_another_part() {
+    // mitcad#293: B has no sketch or modelling feature yet; A and B are
+    // parts, which refuse other sketch attachments.
     let (mut doc, body, face, _, _) = siblings();
+    presets(&mut doc, &[("A", "part"), ("B", "part")]);
     let create = json!({"cmd": "sketch.create", "plane": {"face": face, "body": body},
                         "occurrence": "O1"});
     // Sketch-support picking offers A's faces for B's first sketch.
@@ -795,8 +961,10 @@ fn a_first_sketch_may_attach_to_another_component_by_default() {
         assert_eq!(row["items"][0]["uid"], json!(first), "{report}");
     }
 
-    // A new design's parts: Part2's first sketch may lie on Part1's faces.
+    // A new design's Part1 and Part2 as parts: Part2's first sketch may lie
+    // on Part1's faces.
     let mut doc = Document::new_design(MockKernel::default());
+    presets(&mut doc, &[("Part1", "part")]);
     block(&mut doc);
     command(
         &mut doc,
@@ -816,6 +984,7 @@ fn either_first_sketch_setting_off_refuses_the_first_sketch() {
     let (mut doc, body, face, _, _) = siblings();
     let create = json!({"cmd": "sketch.create", "plane": {"face": face, "body": body},
                         "occurrence": "O1"});
+    presets(&mut doc, &[("A", "part"), ("B", "part")]);
     // The sketch owner's side.
     set(&mut doc, "B", json!({"first_sketch_attaches": false}));
     let supports = query(&doc, json!({"query": "sketch_supports"}));

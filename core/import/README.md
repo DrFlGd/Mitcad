@@ -5074,6 +5074,9 @@ Droid Sans and the sketch a warning ("the font Arial is not installed;
 Droid Sans is used"). The glyphs then differ from the file's, so a text
 extrusion's volume differs from the history's and the extrusion stays a
 fallback on a machine without the font (nothing is substituted by shape).
+A text keeps outlines a file stores for it while its font is missing
+(mitcad#416, the `.ipt` import's texts), but an `.f3d` text record holds
+none: its profile loops have no curve records either (below).
 A text on a path is placed from its start; the file's per-glyph matrices
 (where on a closed path the text starts and which way it runs) are not
 decoded yet.
@@ -8229,6 +8232,175 @@ failure:
 | `61526c66` 12's other end | not taken | no geometric rule; item 13 fails on the stored body (mitcad#121) |
 | `db73863f` 143 | 0 / 1 | sliver rounding: corners only with trials; then two tangent stripes overlapping past their common vertex |
 | `db73863f` 27, 74, 75, 133, 137, 142 | 0 / 6 | traced to the first failure only (above) |
+
+### Corner and end cases of `db73863f`'s roundings (round 8 of mitcad#343)
+
+The roundings of `db73863f` (mitcad#379) that fail on the history's
+stored bodies before them, traced again through OCCT's fillet alone on
+the dumped inputs (the stored body before each item, its edges found by
+their names in the file), with traces of the walks, the corners and the
+walk round the end vertex. Two are fixed in the port (0720, 0721); the
+design imported again by content id: features parametric 125 → 127,
+fallbacks 12 → 10 (the final bodies the file's).
+
+- **Item 74 (Fillet1, radius 20, three edges of the housing's corner):
+  parametric, verified.** Each edge ends at a vertex of a plane square to
+  it, a side of the housing's triangular end, out of which a coaxial
+  cylinder of radius 49.135 stands; the cylinder's trace on the plane cuts
+  off a small piece (16.84 mm²) at the vertex. The rounding's contacts pass
+  that piece and end on the plane's pieces beyond it, the end cut by them
+  and by the cylinder between them. The walk round the end vertex
+  (`PerformIntersectionAtEnd`) met: a piece beyond, the cylinder, the small
+  piece, the cylinder again, the other piece beyond; the cylinder was cut
+  twice up to its edge with the small piece and the small piece kept (its
+  edge with the cylinder twice in the faces: unorientable). Port patch 0720
+  takes such a face (between two visits of one face across one edge,
+  holding the end vertex, its edge not crossed by the rounding) out of the
+  faces at the end and drops it. On the stored body the change is
+  -3312.88 mm³ against the file's -3312.93, the cylinders and the
+  roundings the file's faces; the result valid.
+- **Item 142 (Fillet5, radius 0.1, the plug's thread flank along its
+  chamfer cone): parametric, verified.** The rounding starts where the
+  flank comes out of the root cylinder (an OnSame end): the cone's edge
+  with the cylinder (a circle of both) is prolonged past the vertex up to
+  the contact on the cone, across the cone's seam, where the cone is a
+  ring 0.022 wide and nearly flat. OCCT intersected the two surfaces for
+  it: the p-curve ran the long way round the cone (its ends a period
+  apart), the 3d curve strayed 0.1 off the circle, and the cone lost its
+  seam and its edge with the cylinder (unorientable). Port patch 0721
+  prolongs the edge as its own circle where that lies on both surfaces,
+  its p-curves parametrized as the circle and split at the seam each in
+  the face's domain; on the replay's body (the thread modelled, its root a
+  spline, the edge's curve an approximation) the surfaces are still
+  intersected, with the ends taken in one period of the cone. On the
+  stored body the result has the file's faces
+  and vertices (the cone's seam cut at the circle, the rounding starting
+  where the file's does).
+- **Item 143 (Fillet6, radius 0.5, the five edges round the thread's
+  chamfer cone): 0 / 1.** With 0721 the first OnSame corner builds (its
+  prolongation, 0.008 long, is the circle continued); the second fails
+  where the cap is the intersection of the blend, a surface 95 long along
+  the helix, with the root cylinder: not found over the whole blend, found
+  with the blend bounded about its end section (a trial, not in the port).
+  Then the result is invalid: the thread's crest (a cylinder band 0.36
+  wide) is narrower than the rounding, and the stripes of the flank on
+  either side of it (one with the crest's edge) each walk past their
+  common vertex over the other's spine (10.7 and 1.6 along their guides),
+  where the file's rounding leaves the first flank for the second about 5
+  before that vertex, in one face. Needed: the two stripes joined into one
+  blend between the two flanks over the crest (the crest consumed).
+- **Item 133 (Fillet7, radius 0.8, the two helical edges of a thread's
+  crest, three turns): 0 / 1.** The crest (a cylinder band of 3.2 turns,
+  0.79 wide on average) is narrower than the two roundings: their balls
+  touch both flanks over most of the crest (the pieces of the first edge's
+  stripe lie between the two flanks), so the two stripes are one blend
+  there. At the ends the walk round the vertex follows a face that does
+  not hold the vertex and loops (the limit of 15 faces). Needed, as for
+  item 143: the stripes of a narrow face's two edges joined into one blend
+  between the faces beyond them.
+- **Item 27 (Fillet4, radius 0.6, the thread's roots on both flanks, 13
+  edges over the per-turn root faces): 0 / 1.** At the thread's start the
+  root rounding's flank contact reaches the end face (the ridge's flat
+  start, z = 15.432) 6.2 past the vertex while the root contact is still
+  above it; the root cylinder there continues as the shaft, so its contact
+  meets the end face's plane only about 3.3 further, with no edge of the
+  root face there (OnSame: "bouchon non ecrit" at both starts). The walk's
+  end on the root face also carries a spurious arc (the root face's seam,
+  at another angle). Needed: the walk run on with the flank's surface
+  unbounded until the root contact crosses the end face's plane (as port
+  patch 0600 does up to an edge), then the OnSame cap. The thread's other
+  end fails in `PerformMoreSurfdata` (not traced further).
+- **Item 75 (Fillet2, radius 20, the concave edges between the cylinder
+  and the plane pieces of item 74): 0 / 1.** Each rounding ends at a vertex
+  of item 74's rounding (its end cap there). Its plane contact leaves the
+  narrowing piece across its convex edge with the housing's side (rolling
+  on it, as in the file), then at that edge's end OCCT rolls on the next
+  edge, item 74's rounding's end circle, whose face holds the end vertex,
+  and the corner's update runs the cylinder contact's p-curve out of its
+  range (a point 3e12 off). The file's blend runs on and is cut across
+  item 74's rounding (that rounding shortened by 0.31). Needed: the walk
+  ended where the obstacle edge reaches the face at the end, and a corner
+  cutting the blend by that face.
+- **Item 137 (Fillet5, radius 2): 0 / 1.** A key inside the bore ends in a
+  lens face 0.67 wide between its convex arc and the bore's concave arc;
+  both arcs are rounded with 2, wider than the lens. The concave rounding's
+  walk fails; the file joins the two roundings tangentially below the lens
+  (an S-shaped section), the lens consumed. Needed: two roundings of
+  opposite sides of a narrow face meeting tangentially.
+- **Items 120 and 121 (edge overflow, mitcad#121):** not taken further in
+  this round.
+
+| Item | Achieved / target | Cause of the gap |
+|---|---|---|
+| `db73863f` 74 | 1 / 1 parametric, verified (0720) | |
+| `db73863f` 142 | 1 / 1 parametric, verified (0721) | |
+| `db73863f` 143 | 0 / 1 | two flank stripes over a crest narrower than the rounding overlap past their vertex |
+| `db73863f` 133 | 0 / 1 | the two crest edges' stripes are one blend between the flanks; the walk round the end loops |
+| `db73863f` 27 | 0 / 1 | the root contact meets the end face's plane past the flank's, where the root face has no edge |
+| `db73863f` 75 | 0 / 1 | the walk rolls on an edge of the face at the end; the blend is to be cut across item 74's rounding |
+| `db73863f` 137 | 0 / 1 | two roundings of a lens's two sides meet tangentially, the lens consumed |
+| `db73863f` 120, 121 | 0 / 2 | edge overflow (mitcad#121), not taken |
+
+### Blends cut by a narrow face they roll over (round 8 of mitcad#343)
+
+The owner decided (18.10.2026) that fillets get the larger OCCT change: the
+blend trimmed by the boss as a face of the result. Port patch 0700.
+
+**`6418ebb1`, `920a1cef` item 45 (radius 0.5).** On each side of the first
+strip the stripes are one rolling ball (round 7). OCCT now joins them
+(`JoinOverNarrowFaces`): the blend of one end is walked again, from a
+section four radii before its end, over the earlier rounding's surface
+unbounded, along a guide through the ball's centres of the two ends'
+pieces (A's own guide runs straight on past the spine's end and its
+sections slide along the ball's path: the walk ran 6 off and was cut
+back). The contact leaves the earlier rounding at the stored body's lens
+vertex and comes back at the other one (within 1e-5); the boss cuts the
+walked blend between them along a curve 3.8043 long (the stored body's
+3.8042) that reaches 0.59 and 0.62 past those points along the blend. The
+walk is three pieces on one surface, one face of the result whose side is
+that cut (a notch); the other stripe's end piece is cut back to the same
+ball's section past the cut and the two meet there. With the file's five
+edges, the stripe on the strip's edge with the torus lies under the ball
+and is dropped. Over the second strip the boss pokes through the blend in a
+closed curve 3.66 long (`PierceBlends`): a hole in the blend's face, the
+strip's lens bounded by that curve alone, as in the stored body (its lens
+0.8877 against the file's 0.8876, the first strip's 1.1947 against
+1.1953). On the stored body before the item the definition now gives a
+change of volume of 7.398 (three edges 7.398, five 7.398) against the
+file's 7.343; the faces over the strips agree with the stored body's
+within 0.002 in area, the rest of the difference is OCCT's roundings
+elsewhere on the torus, as before the item's failure. The stored bodies
+before and after the item have the same three invalid faces (tolerances
+up to 0.46); the result has those and no other.
+Tests: a corner rounded over a cap of a ball standing out of it in
+`geometry/tests/test_fillet_pierced.cpp` (OCCT only; the cap notching the
+rounding, with and without the cap's edges with the wall rounded too, and
+poking through it; each fails without the patch).
+
+**`61526c66` item 12's other end: not done.** The input is mirror-symmetric
+(the chain's edges continue each other to 1e-14 rad on both sides, the two
+narrow B-spline faces 0.10750 each, the two slivers 0.0752 and 0.0753), and
+the stored body after the item rounds both B-spline faces alike (0.07268
+and 0.07269 left) but ends the rounding differently at the two slivers: one
+shrinks to 0.0620 (the rounding runs 0.28 past A, cut by the sliver's
+plane), the other grows to 0.0856 (its plane cuts the rounding 0.24 before
+A). No rule of the geometry gives the two ends: one rule makes both sides
+alike. The item is parametric and verified as it is (round 5: the
+rounding goes on along the sliver's edge, 2.8e-6 of the body); its
+behaviour is unchanged by 0700 and so is the patch 0342's test.
+
+Imported again by content id (features parametric, before → after):
+
+| Class | Items achieved / target | Designs |
+|---|---|---|
+| one rounding over narrow boss strips, cut by them | 2 / 2 | `6418ebb1` 40 → 41 of 50, `920a1cef` 40 → 41 of 50 |
+| item 12's other end | 0 / 1 | `61526c66` 12 of 14, unchanged |
+
+The other designs with the patch, item by item as without it: `5ef2dbd5` 81
+of 98, `a9e82a9a` and `de7b8b9d` 181 of 199 (item 159's short stripes
+beyond its ribs are kept: the ball touches the wall beyond a rib), `52ba7a15`
+and `0c99fb88` 97 of 110, `db73863f` 126 of 145 (128 with 0720 and 0721,
+the port built with 0700 on top of them).
 
 ### Chamfers left after mitcad#240 (mitcad#263)
 

@@ -12,6 +12,7 @@
 #include <QString>
 
 #include "../OcctViewer.hpp"
+#include "../framework/ChromeStyle.hpp"
 #include "../framework/Selection.hpp"
 
 class QAction;
@@ -45,6 +46,12 @@ struct ViewSettings {
   double gridSpacing = 0.0; // mm; 0: automatic, the spacing follows the zoom
   bool snapToGrid = true;
   NavigationSettings navigation;
+  // Everything outside the active component drawn as ghosts (mitcad#420,
+  // `view/ghostInactive`).
+  bool ghostInactive = true;
+  // Picks take the active component's items first (mitcad#420,
+  // `view/activePickPriority`).
+  bool activePickPriority = true;
 
   static ViewSettings load();
   void save() const;
@@ -80,6 +87,9 @@ public:
   std::function<void()> generalChanged;
   // Help > Diagnostics, from Preferences' Cache group (P7d).
   std::function<void()> showDiagnostics;
+  // Preferences' Layout changed and Restart Now was chosen (mitcad#419):
+  // Mitcad starts again, its window closed as when it quits.
+  std::function<void()> restartRequested;
   void setSnapToGrid(bool on);
 
   // A standard view: front, back, left, right, top, bottom, iso.
@@ -116,6 +126,9 @@ private:
   void setBackground(ViewSettings::Background background);
   void setGridShown(bool shown);
   void syncChecks();
+  // Asks whether to restart now for the layout chosen in Preferences
+  // (mitcad#419); yes calls restartRequested.
+  void askLayoutRestart(ChromeStyle chosen);
 
   OcctViewer& m_viewer;
   CommandRegistry& m_registry;

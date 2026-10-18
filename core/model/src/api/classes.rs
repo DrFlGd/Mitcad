@@ -258,6 +258,8 @@ const QUERIES: &[(&str, ApiClass)] = &[
     ("build_junctions", Model),
     ("build_cut_list", Model),
     ("build_host", Model),
+    // The library parts the design uses (mitcad#418).
+    ("library_usage", Model),
 ];
 
 fn class_in(table: &[(&str, ApiClass)], name: &str) -> Option<ApiClass> {

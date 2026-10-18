@@ -75,11 +75,27 @@ pub struct Policy {
 }
 
 impl Policy {
-    /// The general defaults: what a design without a stored policy has.
+    /// The general defaults, the Hybrid preset: everything allowed
+    /// (mitcad#421). What an owner without a stored policy has, a new
+    /// design's root and Part1, and a new component.
     pub const GENERAL: Self = Self {
         sketches: true,
         features: true,
         components: true,
+        attach_to_others: true,
+        attachments_from_others: true,
+        first_sketch_attaches: true,
+        first_sketch_attachments_from_others: true,
+        reference_others: true,
+        references_from_others: true,
+    };
+    /// Holds sketches and features, no child components; sketch
+    /// attachment refused both ways except a first sketch's, references
+    /// allowed.
+    pub const PART: Self = Self {
+        sketches: true,
+        features: true,
+        components: false,
         attach_to_others: false,
         attachments_from_others: false,
         first_sketch_attaches: true,
@@ -94,14 +110,7 @@ impl Policy {
         features: false,
         components: true,
         first_sketch_attaches: false,
-        ..Self::GENERAL
-    };
-    /// Holds sketches and features, no child components.
-    pub const PART: Self = Self {
-        sketches: true,
-        features: true,
-        components: false,
-        ..Self::GENERAL
+        ..Self::PART
     };
 
     /// The policy of a new component that features move into from an
@@ -124,12 +133,13 @@ impl Policy {
         *self == Self::GENERAL
     }
 
-    /// A preset by name: `assembly`, `part` or `defaults`.
+    /// A preset by name: `hybrid` (the general defaults; `defaults`, its
+    /// name before mitcad#421, is an alias), `part` or `assembly`.
     pub fn preset(name: &str) -> Option<Self> {
         match name {
-            "assembly" => Some(Self::ASSEMBLY),
+            "hybrid" | "defaults" => Some(Self::GENERAL),
             "part" => Some(Self::PART),
-            "defaults" => Some(Self::GENERAL),
+            "assembly" => Some(Self::ASSEMBLY),
             _ => None,
         }
     }
@@ -142,7 +152,7 @@ impl Policy {
         [
             ("assembly", Self::ASSEMBLY),
             ("part", Self::PART),
-            ("defaults", Self::GENERAL),
+            ("hybrid", Self::GENERAL),
         ]
         .into_iter()
         .find(|(_, p)| {

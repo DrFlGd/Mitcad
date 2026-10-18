@@ -10,9 +10,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::FRAC_PI_2;
 use std::sync::Arc;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-use super::geometry::{V3, angle_between, dot, inverse, parts, sub, unit, x_axis, z_axis};
+use super::geometry::{
+    V3, add, angle_between, cross, dot, inverse, parts, perpendicular, scale, sub, unit, x_axis,
+    z_axis,
+};
 use super::parts::{PartInfo, as_input, default_value, designation, source_state};
 use super::{BuildMeta, BuildRecord, BuildRole, LibrarySourceDef, SourceId};
 use crate::document::{DocState, Document, ModelError};
@@ -68,7 +71,7 @@ pub enum PlaceKind {
     End,
 }
 
-/// The end an offset is measured from.
+/// An end of a part (a hole at it).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 pub enum EndFrom {
     #[default]
@@ -76,6 +79,29 @@ pub enum EndFrom {
     A,
     #[serde(rename = "b")]
     B,
+}
+
+/// What a placement's offset along a profile is measured from
+/// (mitcad#417): end A, end B or the middle.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SideFrom {
+    #[default]
+    #[serde(rename = "a")]
+    A,
+    #[serde(rename = "b")]
+    B,
+    #[serde(rename = "middle")]
+    Middle,
+}
+
+impl SideFrom {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::A => "a",
+            Self::B => "b",
+            Self::Middle => "middle",
+        }
+    }
 }
 
 /// Where a part goes.
@@ -93,14 +119,21 @@ pub struct PlaceAt {
     pub point: Option<V3>,
     #[serde(default)]
     pub place: PlaceKind,
+    /// On a side: the offset from `from` (mitcad#417); on a turned end:
+    /// the new part's end from the target's outer side.
     #[serde(default)]
     pub offset: Option<ValueInput>,
+    /// What `offset` is measured from (end A when left out).
     #[serde(default)]
-    pub from: EndFrom,
+    pub from: Option<SideFrom>,
     /// On an end: the new part's axis, in the BUILD host's
-    /// coordinates; along the target's axis when left out.
+    /// coordinates; when left out, a click on an end face decides.
     #[serde(default)]
     pub direction: Option<V3>,
+    /// The app's least snap distance, mm (about 12 px at the click's
+    /// depth, mitcad#417).
+    #[serde(default)]
+    pub snap: Option<f64>,
 }
 
 /// What a length is bound to.
@@ -134,6 +167,8 @@ pub enum MitreCut {
     New,
     Existing,
     Shared,
+    /// No mitre (on a corner, where the default is `shared`).
+    None,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -197,7 +232,7 @@ pub struct EditAt {
     #[serde(default)]
     pub offset: Option<ValueInput>,
     #[serde(default)]
-    pub from: Option<EndFrom>,
+    pub from: Option<SideFrom>,
 }
 
 /// The fields of `build_edit`.
@@ -325,6 +360,10 @@ pub(crate) struct JointPlan {
     pub ray: Option<RayPlan>,
     /// On a side: how the part stands along the slot (mitcad#394).
     pub side: Option<SidePlan>,
+    /// On an end: straight or turned, and the corner's mitre (mitcad#417).
+    pub end: Option<EndPlan>,
+    /// What a slide's offset is measured from (kept in the record).
+    pub from: Option<SideFrom>,
     pub warnings: Vec<String>,
 }
 
@@ -370,6 +409,91 @@ fn shifted(value: &ValueInput, by: f64) -> ValueInput {
     }
 }
 
+/// ` + k` or ` - k` after an expression; nothing for 0.
+fn plus(k: f64) -> String {
+    if k.abs() < 1e-9 {
+        String::new()
+    } else if k > 0.0 {
+        format!(" + {}", super::round(k))
+    } else {
+        format!(" - {}", super::round(-k))
+    }
+}
+
+/// Where a part's frame slides to along a profile (from end A) for an
+/// offset from a reference (mitcad#417): its near face `distance` from end
+/// A, its far face from end B, its middle from the profile's. `near` and
+/// `far` are its reach from its frame, `length` the profile's.
+pub(crate) fn slide_of(
+    from: SideFrom,
+    distance: f64,
+    near: f64,
+    far: f64,
+    length: Option<f64>,
+) -> Result<f64, ModelError> {
+    let middle = (near + far) / 2.0;
+    match (from, length) {
+        (SideFrom::A, _) => Ok(distance - near),
+        (SideFrom::B, Some(l)) => Ok(l - distance - far),
+        (SideFrom::Middle, Some(l)) => Ok(l / 2.0 + distance - middle),
+        (SideFrom::B, None) => Err(refuse("the part has no end B to measure from")),
+        (SideFrom::Middle, None) => Err(refuse("the part has no length to find its middle")),
+    }
+}
+
+/// The offset from a reference of a part whose frame is at `tx` along the
+/// profile ([`slide_of`] the other way); 0 for B and the middle without a
+/// length.
+pub(crate) fn offset_of(from: SideFrom, tx: f64, near: f64, far: f64, length: Option<f64>) -> f64 {
+    let middle = (near + far) / 2.0;
+    let offset = match (from, length) {
+        (SideFrom::A, _) => tx + near,
+        (SideFrom::B, Some(l)) => l - (tx + far),
+        (SideFrom::Middle, Some(l)) => tx + middle - l / 2.0,
+        (_, None) => 0.0,
+    };
+    if offset.abs() < 1e-9 { 0.0 } else { offset }
+}
+
+/// The slide's value as the joint keeps it, bound to its reference: from
+/// end A the offset less the part's reach behind its frame, from end B
+/// and the middle an expression of the profile's length parameter `name`
+/// (`d12 - 15`, `d12 / 2 + 35`), so that the part keeps its place from
+/// that end or the middle when the profile's length changes.
+pub(crate) fn slide_value_of(
+    from: SideFrom,
+    offset: &ValueInput,
+    near: f64,
+    far: f64,
+    name: Option<&str>,
+) -> Result<ValueInput, ModelError> {
+    let middle = (near + far) / 2.0;
+    let length = |what: &str| {
+        name.ok_or_else(|| refuse(format!("the part has no length to measure {what}")))
+    };
+    Ok(match (from, offset) {
+        (SideFrom::A, value) => shifted(value, -near),
+        (SideFrom::B, ValueInput::Number(n)) => {
+            ValueInput::Name(format!("{}{}", length("from end B")?, plus(-(n + far))))
+        }
+        (SideFrom::B, ValueInput::Name(text)) => ValueInput::Name(format!(
+            "{} - ({text}){}",
+            length("from end B")?,
+            plus(-far)
+        )),
+        (SideFrom::Middle, ValueInput::Number(n)) => ValueInput::Name(format!(
+            "{} / 2{}",
+            length("from the middle")?,
+            plus(n - middle)
+        )),
+        (SideFrom::Middle, ValueInput::Name(text)) => ValueInput::Name(format!(
+            "{} / 2 + ({text}){}",
+            length("from the middle")?,
+            plus(-middle)
+        )),
+    })
+}
+
 /// A part on a side, along the slot: where it reaches from its joint's
 /// slide, the length it stays within, and the snap a click took.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -391,6 +515,27 @@ pub(crate) struct SidePlan {
     pub snapped: Option<&'static str>,
     /// The near face's distance from end A.
     pub offset: f64,
+    /// The reference the placement is bound to and its offset from it
+    /// (mitcad#417): the near face from end A, the far face from end B,
+    /// the part's middle from the target's.
+    pub from: SideFrom,
+    pub from_offset: f64,
+}
+
+/// A part on an end (mitcad#417): what the click chose, the new part's
+/// axis, the four turns square to the target, a corner's offset and the
+/// mitre the placement uses.
+#[derive(Debug, Clone)]
+pub(crate) struct EndPlan {
+    /// `straight` or `edge` (the click), `given` (`at.direction`).
+    pub zone: &'static str,
+    /// In the BUILD host's coordinates.
+    pub direction: V3,
+    /// +x, +y, -x, -y of the target's end frame, in the host's coordinates.
+    pub turns: [V3; 4],
+    /// A corner's offset (None when straight).
+    pub offset: Option<f64>,
+    pub mitre: Option<MitreInput>,
 }
 
 impl SidePlan {
@@ -714,8 +859,16 @@ impl<K: Kernel> Document<K> {
                 let path = self.path_from_host(&at.occurrence)?;
                 match self.target(&path) {
                     Some(t) => {
-                        let (spot, place) =
-                            self.plan_on_part(&source, &t, geometry, &at, touch, &new, &length)?;
+                        let (spot, place) = self.plan_on_part(
+                            &source,
+                            &t,
+                            geometry,
+                            &at,
+                            touch,
+                            &new,
+                            &length,
+                            input.mitre.as_ref(),
+                        )?;
                         target = Some(t);
                         (spot, place)
                     }
@@ -739,10 +892,15 @@ impl<K: Kernel> Document<K> {
                     .after(&inverse(&own))
             }
         };
-        // Mitres.
+        // Mitres: on an end the one its plan resolved (a corner's default,
+        // mitcad#417), elsewhere the command's.
         let mut own_ends = Ends { a: None, b: None };
         let mut target_ends = None;
-        if let Some(mitre) = &input.mitre {
+        let mitre = match &spot {
+            Spot::Joint(j) if j.end.is_some() => j.end.as_ref().and_then(|e| e.mitre.clone()),
+            _ => input.mitre.clone().filter(|m| m.cut != MitreCut::None),
+        };
+        if let Some(mitre) = &mitre {
             let Some(target) = &target else {
                 return Err(refuse("a mitre needs a profile's side or end to meet"));
             };
@@ -798,6 +956,7 @@ impl<K: Kernel> Document<K> {
                     let (own_angle, target_angle) = match mitre.cut {
                         MitreCut::New => (Some(angle("new")?.0), None),
                         MitreCut::Existing => (None, Some(angle("existing")?.0)),
+                        MitreCut::None => (None, None),
                         MitreCut::Shared => {
                             let half = angle_between(u, v) / 2.0;
                             if half < 1e-9 {
@@ -881,10 +1040,14 @@ impl<K: Kernel> Document<K> {
         touch: &str,
         new: &NewPart<'_>,
         length: &LengthPlan,
+        mitre: Option<&MitreInput>,
     ) -> Result<(Spot, &'static str), ModelError> {
         let label = source.def.label();
         let mounts = new.mounts;
         let target_part = target.part()?;
+        // A click on an end face: its zone turns the new part (mitcad#417).
+        let on_end_face = matches!(geometry, GeomRef::Face { face, .. }
+            if face.feature == target_part && matches!(face.role.as_str(), "end_a" | "end_b"));
         let point_local = at.point.map(|p| inverse(&target.placement).apply_point(p));
         // What was picked: a frame or a face.
         enum Pick {
@@ -968,26 +1131,95 @@ impl<K: Kernel> Document<K> {
                     .info
                     .mount(&end)
                     .ok_or_else(|| refuse(format!("{} has no frame {end}", target.info.name)))?;
-                let bend = at
-                    .direction
-                    .and_then(unit)
-                    .map(|d| unit(inverse(&target.placement).apply_vector(d)).unwrap_or(d));
-                let bend = bend.filter(|d| dot(*d, z_axis(&end_frame_local)) < 1.0 - 1e-9);
+                let [e, ex, ey, u] = parts(&end_frame_local);
+                let to_host = |v: V3| target.placement.apply_vector(v);
+                let cut_to_length = source.meta.length.is_some();
+                let target_box = self.part_bounds(target.info.component);
+                let least = at.snap.filter(|s| s.is_finite() && *s > 0.0).unwrap_or(0.0);
+                // The new part's axis (mitcad#417): `at.direction`, else the
+                // zone of the end face the click was in.
+                let (zone, bend) = match at.direction.and_then(unit) {
+                    Some(d) => {
+                        let d = unit(inverse(&target.placement).apply_vector(d)).unwrap_or(d);
+                        ("given", (dot(d, u) < 1.0 - 1e-9).then_some(d))
+                    }
+                    None => match (point_local, &target_box) {
+                        (Some(p), Some(b)) if on_end_face && cut_to_length => {
+                            match end_zone(p, e, ex, ey, b, least) {
+                                Some(d) => ("edge", Some(d)),
+                                None => ("straight", None),
+                            }
+                        }
+                        _ => ("straight", None),
+                    },
+                };
+                if bend.is_some_and(|d| dot(d, u) < -1.0 + 1e-6) {
+                    return Err(refuse(
+                        "the direction runs back along the part it meets: turn it to a side",
+                    ));
+                }
+                // A corner's offset and mitre: shared at offset 0 unless
+                // the command says otherwise, none at another offset.
+                let corner = bend.is_some();
+                let offset = match (corner, &at.offset) {
+                    (true, Some(value)) => value_in(self, value, Unit::MM)?,
+                    _ => 0.0,
+                };
+                let mitre = match mitre {
+                    Some(m) if m.cut == MitreCut::None => None,
+                    Some(m) => {
+                        if corner && m.cut == MitreCut::Shared && offset.abs() > 1e-9 {
+                            return Err(refuse(
+                                "a shared mitre needs offset 0: the outer corners meet only there",
+                            ));
+                        }
+                        Some(m.clone())
+                    }
+                    None if corner
+                        && offset.abs() <= 1e-9
+                        && cut_to_length
+                        && target.info.is_cut_to_length() =>
+                    {
+                        Some(MitreInput {
+                            angle: None,
+                            cut: MitreCut::Shared,
+                        })
+                    }
+                    None => None,
+                };
+                let shared = mitre.as_ref().is_some_and(|m| m.cut == MitreCut::Shared);
                 let mut b = target.origin(&end)?;
                 let mut local = end_frame_local;
+                // The corner's shift from the end frame's origin, in the
+                // target's coordinates.
+                let mut shift = [0.0; 3];
                 if let Some(d) = bend {
                     // The end frame's first axis that is not along the new
                     // direction keeps the turned frame's roll.
-                    let [_, ex, ey, ez] = parts(&end_frame_local);
-                    let hint = [ex, ey, ez]
+                    let hint = [ex, ey, u]
                         .into_iter()
                         .find(|a| dot(*a, d).abs() < 1.0 - 1e-6)
                         .unwrap_or(ex);
-                    let o = FrameOverride {
+                    let mut o = FrameOverride {
                         origin: None,
                         z_axis: Some(d),
                         x_axis: Some(hint),
+                        shift: None,
                     };
+                    let turned =
+                        crate::joints::apply_override(&end_frame_local, &o).map_err(refuse)?;
+                    // Aligned (mitcad#417): in the target's plane, on its end
+                    // face flush with its outer side, or mitred with the
+                    // outer corners meeting.
+                    if let (Some(own_box), Some(target_box)) = (new.bounds, &target_box) {
+                        let own_local = mounts.get(&own).copied().unwrap_or(Transform::IDENTITY);
+                        let to_target = turned
+                            .after(&crate::joints::alignment(new.rotate, 0.0, true))
+                            .after(&inverse(&own_local));
+                        shift =
+                            corner_shift(e, u, d, target_box, own_box, &to_target, offset, shared);
+                        o.shift = Some(inverse(&turned).apply_vector(shift));
+                    }
                     local = crate::joints::apply_override(&end_frame_local, &o).map_err(refuse)?;
                     b.frame_override = Some(o);
                 }
@@ -1004,7 +1236,7 @@ impl<K: Kernel> Document<K> {
                         };
                         Some(RayPlan {
                             from: target.origin(&end)?,
-                            shift: [0.0; 3],
+                            shift: inverse(&end_frame_local).apply_vector(shift),
                             shift_by_joint: false,
                             direction,
                             start: frame_b.translation,
@@ -1012,6 +1244,13 @@ impl<K: Kernel> Document<K> {
                         })
                     }
                     _ => None,
+                };
+                let plan = EndPlan {
+                    zone,
+                    direction: to_host(bend.unwrap_or(u)),
+                    turns: [ex, ey, scale(ex, -1.0), scale(ey, -1.0)].map(to_host),
+                    offset: corner.then_some(offset),
+                    mitre,
                 };
                 Ok((
                     Spot::Joint(Box::new(JointPlan {
@@ -1024,6 +1263,8 @@ impl<K: Kernel> Document<K> {
                         slide_value: None,
                         ray,
                         side: None,
+                        end: Some(plan),
+                        from: None,
                         warnings: Vec::new(),
                     })),
                     "end",
@@ -1194,6 +1435,8 @@ impl<K: Kernel> Document<K> {
                 .unwrap_or(0.0),
             snapped: None,
             offset: 0.0,
+            from: SideFrom::A,
+            from_offset: 0.0,
         };
         let point_local = at.point.map(|p| inverse(&target.placement).apply_point(p));
         let mut warnings = Vec::new();
@@ -1236,7 +1479,9 @@ impl<K: Kernel> Document<K> {
                 flip,
                 slide_value: Some((Motion::Tx, value, tx)),
                 ray,
+                from: Some(side.from),
                 side: Some(side),
+                end: None,
                 warnings,
             })),
             "side",
@@ -1244,10 +1489,12 @@ impl<K: Kernel> Document<K> {
     }
 
     /// The slide along a slot of a part on a side (`position.tx`, the
-    /// distance of the part's frame from end A): from `at.offset` to the
-    /// near face (from end A) or the far face (from end B), else from the
-    /// click, snapped; kept within the target's length (a typed offset
-    /// that would overhang is clamped with a warning, `what` naming it).
+    /// distance of the part's frame from end A), bound to its reference
+    /// (mitcad#417): `at.offset` from `at.from`, else the click, snapped,
+    /// from the reference it snapped to (the nearer end between snaps, or
+    /// `at.from` when given); kept within the target's length (a typed
+    /// offset that would overhang goes flush with that end, with a warning
+    /// that `what` names).
     #[allow(clippy::too_many_arguments)]
     fn side_value(
         &self,
@@ -1260,38 +1507,29 @@ impl<K: Kernel> Document<K> {
         what: &str,
     ) -> Result<(ValueInput, f64), ModelError> {
         let (near, far) = (side.near, side.far);
+        let length = side.length;
         let along = |p: V3| dot(sub(p, slot_local.translation), x_axis(slot_local));
-        let (value, tx) = match (&at.offset, at.from) {
-            (Some(offset), EndFrom::A) => {
+        let (mut from, mut offset, tx) = match &at.offset {
+            Some(offset) => {
+                let from = at.from.unwrap_or_default();
                 let distance = value_in(self, offset, Unit::MM)?;
-                (shifted(offset, -near), distance - near)
+                let tx = slide_of(from, distance, near, far, length)?;
+                (from, offset.clone(), tx)
             }
-            (Some(offset), EndFrom::B) => {
-                let Some((id, l)) = target_length else {
-                    return Err(refuse("the part has no end B to measure from"));
-                };
-                let distance = value_in(self, offset, Unit::MM)?;
-                let name = self.parameters().name(id);
-                let text = match offset {
-                    ValueInput::Number(n) => format!("{name} - {}", super::round(*n + far)),
-                    ValueInput::Name(text) if far.abs() < 1e-9 => format!("{name} - ({text})"),
-                    ValueInput::Name(text) => {
-                        format!("{name} - ({text}) - {}", super::round(far))
-                    }
-                };
-                (ValueInput::Name(text), l - distance - far)
-            }
-            (None, _) => {
-                // The part centred on the click, then snapped.
+            None => {
+                // The part centred on the click, then snapped; the snap
+                // distances at least the app's (`at.snap`).
+                let least = at.snap.filter(|s| s.is_finite() && *s > 0.0).unwrap_or(0.0);
                 let middle = (near + far) / 2.0;
                 let mut tx = point_local.map_or(-near, along) - middle;
-                if let Some(l) = side.length {
+                if let Some(l) = length {
                     let face = tx + near;
-                    let fine = side.snap / 4.0;
-                    if face < side.snap {
+                    let ends = side.snap.max(least);
+                    let fine = (side.snap / 4.0).max(least);
+                    if face < ends {
                         tx = -near;
                         side.snapped = Some("end_a");
-                    } else if l - (tx + far) < side.snap {
+                    } else if l - (tx + far) < ends {
                         tx = l - far;
                         side.snapped = Some("end_b");
                     } else if (tx + middle - l / 2.0).abs() < fine {
@@ -1299,40 +1537,66 @@ impl<K: Kernel> Document<K> {
                         side.snapped = Some("middle");
                     } else if side.grid > 0.0 {
                         let grid = (face / side.grid).round() * side.grid;
-                        if (face - grid).abs() < fine.min(side.grid / 4.0) {
+                        let within = (side.snap / 4.0)
+                            .min(side.grid / 4.0)
+                            .max(least)
+                            .min(side.grid / 2.0);
+                        if (face - grid).abs() < within {
                             tx = grid - near;
                             side.snapped = Some("grid");
                         }
                     }
                 }
-                (ValueInput::Number(tx), tx)
+                let from = match (at.from, side.snapped, length) {
+                    (Some(from), _, _) => from,
+                    (None, Some("end_a"), _) | (None, _, None) => SideFrom::A,
+                    (None, Some("end_b"), _) => SideFrom::B,
+                    (None, Some("middle"), _) => SideFrom::Middle,
+                    (None, _, Some(l)) if l - (tx + far) < tx + near => SideFrom::B,
+                    (None, _, Some(_)) => SideFrom::A,
+                };
+                let distance = offset_of(from, tx, near, far, length);
+                // A click is no finer than a thousandth of a millimetre.
+                let distance = (distance * 1000.0).round() / 1000.0;
+                let tx = slide_of(from, distance, near, far, length)?;
+                (from, ValueInput::Number(distance), tx)
             }
         };
         // Never past an end of the target (a part longer than the target
         // stays flush with end A).
-        let kept = match side.length {
+        let kept = match length {
             Some(l) => tx.min(l - far).max(-near),
             None => tx,
         };
+        if (kept - tx).abs() > 1e-9 {
+            let flush = if (kept + near).abs() <= 1e-9 {
+                SideFrom::A
+            } else {
+                SideFrom::B
+            };
+            if at.offset.is_some() {
+                warnings.push(format!(
+                    "{what}: flush with end {} instead",
+                    if flush == SideFrom::A { "A" } else { "B" }
+                ));
+            }
+            if side.snapped.is_none() {
+                side.snapped = Some("clamped");
+            }
+            from = flush;
+            offset = ValueInput::Number(0.0);
+        }
+        let name = target_length.map(|(id, _)| self.parameters().name(id));
+        let value = slide_value_of(from, &offset, near, far, name.as_deref())?;
         side.offset = kept + near;
-        if (kept - tx).abs() <= 1e-9 {
-            return Ok((value, tx));
-        }
-        if at.offset.is_some() {
-            warnings.push(format!(
-                "{what}: the offset from end A is {} mm instead",
-                super::round(kept + near)
-            ));
-        }
-        if side.snapped.is_none() {
-            side.snapped = Some("clamped");
-        }
-        Ok((ValueInput::Number(kept), kept))
+        side.from = from;
+        side.from_offset = offset_of(from, kept, near, far, length);
+        Ok((value, kept))
     }
 
     /// The offset along a rail a part that moves on it slides by
-    /// (`at.offset` from end A or B, else the pick's distance along it),
-    /// between the ends.
+    /// (`at.offset` from end A, end B or the middle, else the pick's
+    /// distance along it), between the ends.
     fn slide_value(
         &self,
         at: &PlaceAt,
@@ -1345,21 +1609,18 @@ impl<K: Kernel> Document<K> {
             Some((_, l)) => v.clamp(0.0, l),
             None => v,
         };
-        Ok(match (&at.offset, at.from) {
-            (Some(offset), EndFrom::A) => (offset.clone(), value_in(self, offset, Unit::MM)?),
-            (Some(offset), EndFrom::B) => {
-                let Some((id, l)) = target_length else {
-                    return Err(refuse("the part has no end B to measure from"));
-                };
+        Ok(match &at.offset {
+            Some(offset) => {
+                let from = at.from.unwrap_or_default();
                 let distance = value_in(self, offset, Unit::MM)?;
-                let name = self.parameters().name(id);
-                let text = match offset {
-                    ValueInput::Number(n) => format!("{name} - {}", super::round(*n)),
-                    ValueInput::Name(text) => format!("{name} - ({text})"),
-                };
-                (ValueInput::Name(text), l - distance)
+                let length = target_length.map(|(_, l)| l);
+                let name = target_length.map(|(id, _)| self.parameters().name(id));
+                (
+                    slide_value_of(from, offset, 0.0, 0.0, name.as_deref())?,
+                    slide_of(from, distance, 0.0, 0.0, length)?,
+                )
             }
-            (None, _) => {
+            None => {
                 let v = clamp(point_local.map_or(0.0, along));
                 (ValueInput::Number(v), v)
             }
@@ -1447,6 +1708,11 @@ impl<K: Kernel> Document<K> {
             slide_value,
             ray: None,
             side: None,
+            end: None,
+            from: matches!(motion, Some(Motion::Tx)).then(|| match at.offset {
+                Some(_) => at.from.unwrap_or_default(),
+                None => SideFrom::A,
+            }),
             warnings: Vec::new(),
         })))
     }
@@ -1494,6 +1760,7 @@ impl<K: Kernel> Document<K> {
             origin: point_local,
             z_axis: turn,
             x_axis: hint,
+            shift: None,
         });
         let direction = match turn {
             Some(d) => RayDirection::Vector(inverse(&local).apply_vector(d)),
@@ -1530,6 +1797,8 @@ impl<K: Kernel> Document<K> {
                 along: z_axis(&frame_b),
             }),
             side: None,
+            end: None,
+            from: None,
             warnings: Vec::new(),
         })))
     }
@@ -1560,6 +1829,112 @@ impl<K: Kernel> Document<K> {
     pub(crate) fn preview_place(&self, input: &PlaceInput) -> Result<Plan, ModelError> {
         self.plan_place(input)
     }
+}
+
+/// The least and the most of points along a direction.
+fn extent(points: &[V3], along: V3) -> (f64, f64) {
+    points
+        .iter()
+        .map(|p| dot(*p, along))
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), v| {
+            (lo.min(v), hi.max(v))
+        })
+}
+
+/// The turn a click at `p` on a profile's end face asks for (mitcad#417),
+/// in the target's coordinates: none in the inner half of the face both
+/// ways (at least `least` across, as far as the face allows), else 90°
+/// towards the edge of the band it is in (the nearest edge in a corner),
+/// along ±x or ±y of the end frame (origin `e`, axes `ex`, `ey`). The face
+/// is the target's box across the end frame's z.
+pub(crate) fn end_zone(
+    p: V3,
+    e: V3,
+    ex: V3,
+    ey: V3,
+    target: &BoundingBox,
+    least: f64,
+) -> Option<V3> {
+    let corners: Vec<V3> = target.corners().map(|c| sub(c, e)).collect();
+    let q = sub(p, e);
+    // Across an axis: the click from the face's middle, the face's half
+    // width, and the inner zone's half width.
+    let across = |axis: V3| {
+        let (lo, hi) = extent(&corners, axis);
+        let half = (hi - lo) / 2.0;
+        let inner = (half / 2.0).max((least / 2.0).min(half));
+        (dot(q, axis) - (lo + hi) / 2.0, half, inner)
+    };
+    let (dx, hx, ix) = across(ex);
+    let (dy, hy, iy) = across(ey);
+    let along_x = match (dx.abs() >= ix, dy.abs() >= iy) {
+        (false, false) => return None,
+        (true, false) => true,
+        (false, true) => false,
+        (true, true) => hx - dx.abs() <= hy - dy.abs(),
+    };
+    Some(if along_x {
+        scale(ex, if dx < 0.0 { -1.0 } else { 1.0 })
+    } else {
+        scale(ey, if dy < 0.0 { -1.0 } else { 1.0 })
+    })
+}
+
+/// Where a corner moves the new part's end frame from the target's end
+/// frame origin `e` (mitcad#417), in the target's coordinates. `u` is the
+/// end frame's z (out of the target), `d` the new part's axis; `to_target`
+/// takes the new part's coordinates into the target's with its end frame
+/// at `e` turned to `d`. The new part lies in the target's plane (the plane
+/// of `u` and `d`), centred on the target's section across it, and:
+///
+/// - without a shared mitre on the target's end face, its end `offset`
+///   from the target's outer side (the side away from the turn) towards
+///   the turn: at 0 flush with it;
+/// - with a shared mitre where both ends cut through their centres on the
+///   bisector make the outer corners meet.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn corner_shift(
+    e: V3,
+    u: V3,
+    d: V3,
+    target: &BoundingBox,
+    new: &BoundingBox,
+    to_target: &Transform,
+    offset: f64,
+    shared: bool,
+) -> V3 {
+    // Towards the turn across the target, across the new part away from
+    // the corner's inside, and across both.
+    let s = unit(sub(d, scale(u, dot(d, u)))).unwrap_or(d);
+    let t = unit(sub(u, scale(d, dot(u, d)))).unwrap_or(u);
+    let n = unit(cross(u, d)).unwrap_or_else(|| perpendicular(u));
+    let target_corners: Vec<V3> = target.corners().map(|c| sub(c, e)).collect();
+    let new_corners: Vec<V3> = new
+        .corners()
+        .map(|c| sub(to_target.apply_point(c), e))
+        .collect();
+    // The target's outer side from its axis, and the centring across.
+    let outer = extent(&target_corners, scale(s, -1.0)).1;
+    let (tl, th) = extent(&target_corners, n);
+    let (nl, nh) = extent(&new_corners, n);
+    let centred = scale(n, (tl + th) / 2.0 - (nl + nh) / 2.0);
+    if shared {
+        // Both cut through their centres on the plane across `u + d`: the
+        // target's outer edge meets it where the new part's must.
+        let m = unit(add(u, d)).unwrap_or(u);
+        let height = extent(&new_corners, t).1;
+        let lambda = outer * dot(m, s) / dot(m, u);
+        let mu = -height * dot(m, t) / dot(m, d);
+        let corner = add(scale(s, -outer), scale(u, lambda));
+        let start = sub(sub(corner, scale(t, height)), scale(d, mu));
+        return add(start, centred);
+    }
+    // On the end face: lifted by what reaches below it, then along its
+    // axis until its end is `offset` from the outer side.
+    let lift = scale(u, extent(&new_corners, scale(u, -1.0)).1);
+    let least = extent(&new_corners, s).0 + dot(lift, s);
+    let along = (offset - outer - least) / dot(d, s);
+    add(add(lift, scale(d, along)), centred)
 }
 
 /// The name of the target's end a joint's b side names.
@@ -1864,6 +2239,10 @@ pub(crate) fn make_part(
         added_by: None,
         adds: Vec::new(),
         junction: None,
+        from: match &plan.spot {
+            Spot::Joint(j) => j.from,
+            Spot::Grounded(_) => None,
+        },
     };
     state.assembly.component_mut(made).expect("made").build = Some(record);
     Ok(Placed {
@@ -1974,54 +2353,66 @@ impl<K: Kernel> Document<K> {
             }
             None => None,
         };
+        // The offset along a side or a rail, bound to its reference
+        // (mitcad#417): a new From alone keeps the part where it is.
         let offset = match &input.at {
-            Some(EditAt {
-                offset: Some(offset),
-                from,
-            }) => {
+            Some(EditAt { offset, from }) if offset.is_some() || from.is_some() => {
                 let joint = joint.ok_or_else(|| refuse(format!("{} has no joint", info.name)))?;
-                let (_, target_name) = self.joint_target_length(joint);
-                // On a side the offset is to the part's near face (from
-                // end A) or its far face (from end B), as `build_place`
-                // measures it (mitcad#394).
-                let (near, far) = self.side_reach(&info, joint, rotate);
-                let value = match (from.unwrap_or_default(), offset) {
-                    (EndFrom::A, value) => shifted(value, -near),
-                    (EndFrom::B, value) => {
-                        let Some(name) = target_name else {
-                            return Err(refuse("the part it is on has no end B to measure from"));
-                        };
-                        match value {
-                            ValueInput::Number(n) => {
-                                ValueInput::Name(format!("{name} - {}", super::round(*n + far)))
-                            }
-                            ValueInput::Name(text) if far.abs() < 1e-9 => {
-                                ValueInput::Name(format!("{name} - ({text})"))
-                            }
-                            ValueInput::Name(text) => ValueInput::Name(format!(
-                                "{name} - ({text}) - {}",
-                                super::round(far)
-                            )),
-                        }
+                let Some(FeatureDef::Joint(j)) = self.feature(joint).map(|e| &e.def) else {
+                    return Err(refuse(format!("{} has no joint", info.name)));
+                };
+                let motion = match j.kind {
+                    JointKind::Slider => j.slide_axis.motion(),
+                    JointKind::Cylindrical => Motion::Tz,
+                    _ => {
+                        return Err(refuse(format!(
+                            "{} is not on a side or a rail: it has no offset to edit",
+                            info.name
+                        )));
                     }
                 };
-                Some(value)
+                let (length, target_name) = self.joint_target_length(joint);
+                // On a side the offset is to the part's near face (from end
+                // A), its far face (from end B) or its middle, as
+                // `build_place` measures it.
+                let (near, far) = self.side_reach(&info, joint, rotate);
+                let from_now = info.record.from.unwrap_or_default();
+                let new_from = from.unwrap_or(from_now);
+                let value = match offset {
+                    Some(value) => value.clone(),
+                    None => {
+                        let tx = j
+                            .position
+                            .get(&motion)
+                            .and_then(|id| self.parameters().value(*id))
+                            .unwrap_or(0.0);
+                        let distance = offset_of(new_from, tx, near, far, length);
+                        ValueInput::Number((distance * 1000.0).round() / 1000.0)
+                    }
+                };
+                let value = slide_value_of(new_from, &value, near, far, target_name.as_deref())?;
+                Some((motion, value, new_from, from.is_some()))
             }
             _ => None,
         };
         self.apply(|state| {
             let mut changed = Vec::new();
-            if let Some(value) = offset {
+            if let Some((motion, value, from, from_given)) = offset {
                 let joint = joint.expect("checked");
                 edit_joint(state, joint, |j| {
-                    let motion = match j.kind {
-                        JointKind::Slider => j.slide_axis.motion(),
-                        JointKind::Cylindrical => Motion::Tz,
-                        _ => Motion::Tx,
-                    };
                     j.position.insert(motion, value);
                 })?;
+                if let Some(record) = state
+                    .assembly
+                    .component_mut(component)
+                    .and_then(|c| c.build.as_mut())
+                {
+                    record.from = Some(from);
+                }
                 changed.push("offset".to_owned());
+                if from_given {
+                    changed.push("from".to_owned());
+                }
             }
             if let Some(angle) = rotate {
                 let joint = joint.ok_or_else(|| refuse(format!("{} has no joint", info.name)))?;
@@ -2274,19 +2665,28 @@ impl<K: Kernel> Document<K> {
             )));
         }
         let mut from = j.b.clone();
+        // The frame the joint turns and moves (a corner, mitcad#417): the
+        // ray starts where it is, along its z, in the frame's axes.
+        let mut shift = [0.0; 3];
         let direction = match from.frame_override.take() {
-            Some(FrameOverride {
-                z_axis: Some(z), ..
-            }) => {
+            Some(o) => {
                 let local = crate::joints::origin_frame(&mut self.resolver(), &from.geometry)
                     .map_err(refuse)?;
-                RayDirection::Vector(inverse(&local).apply_vector(z))
+                let turned = crate::joints::apply_override(&local, &o).map_err(refuse)?;
+                if o.shift.is_some() {
+                    shift =
+                        inverse(&local).apply_vector(sub(turned.translation, local.translation));
+                }
+                match o.z_axis {
+                    Some(_) => RayDirection::Vector(inverse(&local).apply_vector(z_axis(&turned))),
+                    None => RayDirection::default(),
+                }
             }
-            _ => RayDirection::default(),
+            None => RayDirection::default(),
         };
         Ok(RayPlan {
             from,
-            shift: [0.0; 3],
+            shift,
             shift_by_joint: j.kind == JointKind::Slider,
             direction,
             start: [0.0; 3],

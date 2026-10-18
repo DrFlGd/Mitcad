@@ -219,6 +219,14 @@ pub(super) enum SketchCommand {
         cap_height: bool,
         #[serde(default)]
         wrap: bool,
+        #[serde(default)]
+        line_spacing: f64,
+        #[serde(default)]
+        pen_align: bool,
+        #[serde(default)]
+        ink_top: bool,
+        #[serde(default)]
+        glyphs: Option<crate::sketch::StoredGlyphs>,
     },
     // Sketch text edited afterwards (P3).
     #[serde(rename = "sketch.edit_text")]
@@ -255,6 +263,12 @@ pub(super) enum SketchCommand {
         cap_height: Option<bool>,
         #[serde(default)]
         wrap: Option<bool>,
+        #[serde(default)]
+        line_spacing: Option<f64>,
+        #[serde(default)]
+        pen_align: Option<bool>,
+        #[serde(default)]
+        ink_top: Option<bool>,
     },
     #[serde(rename = "sketch.add_constraint")]
     AddConstraint {
@@ -1191,9 +1205,14 @@ impl<K: Kernel> Document<K> {
                     flip_y,
                     cap_height,
                     wrap,
+                    line_spacing,
+                    pen_align,
+                    ink_top,
+                    glyphs,
                     ..
                 } => {
                     let mut t = SketchText {
+                        glyphs,
                         angle,
                         font,
                         bold,
@@ -1206,6 +1225,9 @@ impl<K: Kernel> Document<K> {
                         flip_y,
                         cap_height,
                         wrap,
+                        line_spacing,
+                        pen_align,
+                        ink_top,
                         ..SketchText::new(EntityUid(0), &text, at.unwrap_or_default(), height)
                     };
                     match (frame, at, path) {
@@ -1240,6 +1262,9 @@ impl<K: Kernel> Document<K> {
                     flip_y,
                     cap_height,
                     wrap,
+                    line_spacing,
+                    pen_align,
+                    ink_top,
                     ..
                 } => {
                     let uid = crate::ids::parse_number(&id, "t")
@@ -1296,6 +1321,20 @@ impl<K: Kernel> Document<K> {
                     }
                     if let Some(v) = wrap {
                         t.wrap = v;
+                    }
+                    if let Some(v) = line_spacing {
+                        t.line_spacing = v;
+                    }
+                    if let Some(v) = pen_align {
+                        t.pen_align = v;
+                    }
+                    if let Some(v) = ink_top {
+                        t.ink_top = v;
+                    }
+                    // Stored outlines of another string, font or style are
+                    // dropped (mitcad#416).
+                    if t.glyphs.as_ref().is_some_and(|g| !g.fit(t)) {
+                        t.glyphs = None;
                     }
                     made_ref.push(id);
                 }
@@ -2068,9 +2107,19 @@ impl<K: Kernel> Document<K> {
             .iter()
             .map(|t| {
                 let mut value = serde_json::to_value(t).expect("serializes");
+                // The stored outlines only as whether the text has them
+                // (mitcad#416); `outline` gives the shapes in use.
+                if let Some(map) = value.as_object_mut()
+                    && map.remove("glyphs").is_some()
+                {
+                    map.insert("has_glyphs".into(), json!(true));
+                }
                 if let Some(o) = output.and_then(|o| o.texts.iter().find(|o| o.id == t.id)) {
                     value["family"] = json!(o.family);
                     value["fallback"] = json!(o.fallback);
+                    if o.stored {
+                        value["stored_outlines"] = json!(true);
+                    }
                     value["outline"] = json!(
                         o.contours
                             .iter()

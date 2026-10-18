@@ -178,6 +178,9 @@ int main() {
   test::fillet_cutout_tests();
   // Section curves of sketches (mitcad#389).
   test::section_curve_tests();
+  // Roundings cut by a face of the solid they pass through, with the port's
+  // patch 0700 (mitcad#343).
+  test::fillet_pierced_tests();
   for (const std::string& change : mitcad::geometry::input_changes()) {
     std::fprintf(stderr, "%s\n", change.c_str());
   }

@@ -289,12 +289,20 @@ type Latest = HashMap<i64, (usize, usize)>;
 
 impl Model {
     pub fn read(file: &RvtFile, schema: &Schema) -> Result<Model, RvtError> {
+        let mut model = Self::read_elements(file, schema)?;
+        model.read_geometry(file, schema);
+        model.read_profiles(file, schema);
+        Ok(model)
+    }
+
+    /// The model without the geometry the file keeps and the profiles'
+    /// curves ([`Model::geometry`] and [`Model::profiles`] empty): what
+    /// listing a project's links needs (mitcad#413).
+    pub fn read_elements(file: &RvtFile, schema: &Schema) -> Result<Model, RvtError> {
         let declared = element_table(file, schema)?;
         let partitions = file.partitions(schema)?;
         let mut model = Model::from_parts(schema, declared, &partitions);
         model.episodes = file.episodes();
-        model.read_geometry(file, schema);
-        model.read_profiles(file, schema);
         Ok(model)
     }
 

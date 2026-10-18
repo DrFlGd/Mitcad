@@ -888,6 +888,9 @@ pub(crate) fn recompute<K: Kernel>(
             continue;
         }
 
+        // (The component's bodies are let go once the output is there: a
+        // second holder of them would make each body the feature sets copy
+        // every body of the component, quadratic in its bodies, mitcad#413.)
         let own = components.get(&entry.component).unwrap_or(&none).clone();
         let env = Env {
             sheets: &done.sheets,
@@ -953,6 +956,7 @@ pub(crate) fn recompute<K: Kernel>(
                 }
             }
         };
+        drop(own);
 
         let mut status = match &output.result {
             Ok(()) => FeatureStatus::Ok,
@@ -1156,6 +1160,10 @@ pub(crate) fn place(
     changes: &[PlacementChange],
     placements: &mut BTreeMap<OccurrenceUid, Transform>,
 ) -> Result<(), String> {
+    // (Most features move nothing: no copy of the placements for them.)
+    if changes.is_empty() {
+        return Ok(());
+    }
     let assembly = &state.assembly;
     let mut next = placements.clone();
     for change in changes {

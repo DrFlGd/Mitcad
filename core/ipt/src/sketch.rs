@@ -21,7 +21,8 @@
 //!   tangentially)*, then points that lie on it; none for a full circle);
 //!   a circle ends with its centre point, radius (f64) and a byte (1:
 //!   full circle).
-//! - Polygons and patterns of sketch entities: `groups`.
+//! - Polygons and patterns of sketch entities: `groups`; texts in their
+//!   frames: `text`.
 //! - Constraints and dimensions: the header, an i32, a reference, two
 //!   maps (kind 6: reference and f64, reference and reference), the
 //!   parameter (dimensions) and the entities.
@@ -491,6 +492,7 @@ pub fn sketch(
     record: usize,
     name: &str,
     params: &Parameters,
+    fonts: &crate::text::Fonts,
 ) -> Result<Sketch, String> {
     let mut r = dc.body(record);
     let (entities, transform) = (|| -> dc::Result<(Vec<usize>, Option<usize>)> {
@@ -863,6 +865,17 @@ pub fn sketch(
             ids.insert(e, id);
         }
     }
+    // Texts in their frames (mitcad#414).
+    let mut texts = crate::text::sketch_texts(dc, &entities, &ids, &curves, &m, fonts);
+    for (e, why) in std::mem::take(&mut texts.dropped) {
+        // Named by its type, as other drawings left out (the profiles'
+        // outlines then come in for it, `design::outline_curves`).
+        dropped.push(format!(
+            "record {e} of type {}: {why}, not decoded",
+            tname(e)
+        ));
+        texts.done.insert(e);
+    }
     let mut constraints = Vec::new();
     let mut dimensions = Vec::new();
     let mut used = Vec::new();
@@ -914,6 +927,7 @@ pub fn sketch(
             || dc.is(e, &SPLINE)
             || dc.is(e, &TRANSFORM)
             || done.contains(&e)
+            || texts.done.contains(&e)
             || instances.contains(&e)
             || (dc.is(e, &BLOCK_POINT) && ids.contains_key(&e))
             || (dc.is(e, &BLOCK_GROUP)
@@ -1280,6 +1294,10 @@ pub fn sketch(
         "counts": {"points": points.len(), "curves": curves.len(),
                    "constraints": constraints.len(), "dimensions": dimensions.len()},
     });
+    if !texts.texts.is_empty() {
+        detail["counts"]["texts"] = json!(texts.texts.len());
+        detail["texts"] = json!(texts.texts);
+    }
     if let Some(plane) = origin_plane {
         detail["referencePlane"] = json!({"kind": "construction_plane", "name": format!("{plane} Plane"),
                                           "origin": plane, "timeline_index": null});

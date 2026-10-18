@@ -12,6 +12,7 @@
 #include "../framework/CommandRegistry.hpp"
 #include "../framework/Dialogs.hpp"
 #include "../framework/AppSettings.hpp"
+#include "../library/UsedParts.hpp"
 #include "Libraries.hpp"
 #include "LibraryDialogs.hpp"
 
@@ -92,6 +93,8 @@ void MainWindow::insertFromLibrary(bool community) {
     return;
   }
   LibraryBrowser browser(community, this);
+  // The picker's In this design (mitcad#418).
+  browser.setUsedParts(usedLibraryParts(model()));
   prepareModal(&browser);
   if (execDialog(&browser) != QDialog::Accepted || !browser.choice()) {
     return;

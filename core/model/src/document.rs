@@ -1521,20 +1521,43 @@ impl<K: Kernel> Document<K> {
     /// took at least `min_time` and whose results the store takes (see
     /// `store.rs`). What a preview computed is not written.
     pub fn persist_results(&mut self, min_time: Duration) -> PersistReport {
+        match self.cache.store.as_ref() {
+            Some(store) => self.write_results(store, Some(min_time)),
+            None => PersistReport::default(),
+        }
+    }
+
+    /// Writes every result of the last recompute that a store takes to
+    /// `store`, however quick its evaluation was, and leaves them marked
+    /// as not written to the document's own store: the import process
+    /// hands the import's evaluation over to the application this way
+    /// (mitcad#413), which reads the imported design with that store and
+    /// so restores the results instead of evaluating every feature again.
+    /// What a preview computed is not written.
+    pub fn hand_off_results(&self, store: &ResultStore) -> PersistReport {
+        self.write_results(store, None)
+    }
+
+    /// Writes the results of the last recompute that succeeded and that
+    /// the store takes: with `min_time`, those not written yet whose
+    /// evaluation took at least that long, marked written; without, all.
+    fn write_results(&self, store: &ResultStore, min_time: Option<Duration>) -> PersistReport {
         let start = Instant::now();
         let mut report = PersistReport::default();
-        let Some(store) = self.cache.store.as_ref() else {
-            return report;
-        };
         let params = &self.state.parameters;
+        // (By uid at once: a search per result was quadratic.)
+        let entries: HashMap<FeatureUid, &FeatureEntry> =
+            self.state.features.iter().map(|f| (f.uid, &**f)).collect();
         for result in &self.result.results {
             let Some(output) = &result.output else {
                 continue;
             };
-            if output.persisted.get() || output.time < min_time || output.result.is_err() {
+            if output.result.is_err()
+                || min_time.is_some_and(|min| output.persisted.get() || output.time < min)
+            {
                 continue;
             }
-            let Some(entry) = self.state.entry(result.uid) else {
+            let Some(entry) = entries.get(&result.uid).copied() else {
                 continue;
             };
             let stored_form =
@@ -1549,7 +1572,9 @@ impl<K: Kernel> Document<K> {
             }
             match store.write(&self.kernel, entry, output, params) {
                 Ok((bytes, shapes)) => {
-                    output.persisted.set(true);
+                    if min_time.is_some() {
+                        output.persisted.set(true);
+                    }
                     report.results += 1;
                     report.shapes += shapes;
                     report.bytes += bytes;

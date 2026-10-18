@@ -1363,6 +1363,34 @@ fn table_names_and_metadata() {
 }
 
 #[test]
+fn table_unused_dimension_names_follow_adds_renames_and_removals() {
+    // The first free name, wherever names were taken or freed (the search
+    // starts from a hint, mitcad#413).
+    let mut t = ParameterTable::new(ctx());
+    let add = |t: &mut ParameterTable| {
+        let name = t.unused_name("d");
+        t.add(spec(&name, "1 mm", Unit::MM)).unwrap()
+    };
+    let ids: Vec<ParamId> = (0..5).map(|_| add(&mut t)).collect();
+    assert_eq!(names(&t, ids.clone()), ["d1", "d2", "d3", "d4", "d5"]);
+    assert_eq!(t.unused_name("d"), "d6");
+    t.remove(ids[2]).unwrap();
+    assert_eq!(t.unused_name("d"), "d3");
+    t.rename(ids[0], "first").unwrap();
+    assert_eq!(t.unused_name("d"), "d1");
+    // Taken by hand, out of turn: the next one is skipped too.
+    t.add(spec("d1", "1 mm", Unit::MM)).unwrap();
+    assert_eq!(t.unused_name("d"), "d3");
+    t.add(spec("d7", "1 mm", Unit::MM)).unwrap();
+    t.add(spec("d3", "1 mm", Unit::MM)).unwrap();
+    assert_eq!(t.unused_name("d"), "d6");
+    t.rename(ids[1], "d6").unwrap();
+    assert_eq!(t.unused_name("d"), "d2");
+    // Another prefix searches from the start.
+    assert_eq!(t.unused_name("x"), "x1");
+}
+
+#[test]
 fn table_evaluates_free_expressions() {
     let t = sample_table();
     assert_eq!(t.evaluate("width * 2", Unit::MM), Ok(len(100.0)));

@@ -185,6 +185,15 @@ if(MITCAD_MESA_DIR)
               -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-browser"
               -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
     set_tests_properties(app.ui-windows-browser PROPERTIES TIMEOUT 300)
+    # The Browser's Rows background in the Floating layout (mitcad#419): a
+    # click beside the rows picks the plate behind them, a middle drag there
+    # orbits, a row still takes its click; Card again takes the click.
+    add_test(NAME app.ui-windows-browser-rows
+      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+              -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-browser-rows-test.ps1"
+              -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-browser-rows"
+              -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
+    set_tests_properties(app.ui-windows-browser-rows PROPERTIES TIMEOUT 300)
 
     # The library browser's Update (mitcad#317): empty until Update, which
     # fetches every enabled source (a local git repository) and lists its
@@ -209,13 +218,35 @@ if(MITCAD_MESA_DIR)
     # The BUILD tab (mitcad#375): a library of synthetic parts fetched from
     # a local git repository; a frame of four profiles (a mitred end, a
     # bound length), a connector, a panel, a rail with a carriage; saved,
-    # reopened, the cut list's CSV and PDF.
+    # reopened, the cut list's CSV and PDF; the part picker (mitcad#418).
     add_test(NAME app.ui-windows-build
       COMMAND powershell -NoProfile -ExecutionPolicy Bypass
               -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-build-test.ps1"
               -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-build"
               -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
-    set_tests_properties(app.ui-windows-build PROPERTIES TIMEOUT 600)
+    set_tests_properties(app.ui-windows-build PROPERTIES TIMEOUT 900)
+
+    # The window's layout chosen in Preferences (mitcad#419): Floating
+    # asks to restart, Later and Restart Now (unsaved changes asked about,
+    # the restart's command logged), the next start Floating, --chrome
+    # overriding it; the Floating cards below the top bar at the default
+    # size and in a narrow and a wide window.
+    add_test(NAME app.ui-windows-chrome-layout
+      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+              -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-chrome-layout-test.ps1"
+              -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-chrome-layout"
+              -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
+    set_tests_properties(app.ui-windows-chrome-layout PROPERTIES TIMEOUT 300)
+    # Everything outside the active component as ghosts (mitcad#420): off
+    # in the settings none; on, a ghost's face picked for a sketch and a
+    # projection; the root activated, undone, redone; the active component
+    # first in picks, through a ghost in front of it.
+    add_test(NAME app.ui-windows-inactive-ghost
+      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+              -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-inactive-ghost-test.ps1"
+              -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-inactive-ghost"
+              -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
+    set_tests_properties(app.ui-windows-inactive-ghost PROPERTIES TIMEOUT 300)
   endif()
 elseif(WIN32 AND CMAKE_RUNTIME_OUTPUT_DIRECTORY)
   # Turned off again: remove earlier copies, or they would stay in use.

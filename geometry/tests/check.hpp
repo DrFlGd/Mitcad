@@ -190,5 +190,8 @@ void tangent_chain_tests();
 void fillet_cutout_tests();
 // Section curves of sketches (mitcad#389).
 void section_curve_tests();
+// Roundings cut by a face of the solid they pass through, with the port's
+// patch 0700 (mitcad#343).
+void fillet_pierced_tests();
 
 } // namespace test

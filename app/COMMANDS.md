@@ -161,6 +161,16 @@ Modifiers:
   shows the drop-down. `withDisclosure()`: a check shown as a small
   `▸ More` button that opens the inputs whose `withVisible` follows it
   (a check box in the AppKit frontend).
+- `withButton(text, tooltip, call)` (mitcad#418): a choice with a button
+  beside its drop-down; a click calls `call(state, context)` once the
+  model is idle (the presenter's `buttonClicked`, logged `<command>:
+  <label> button`; the button's place `Panel <command> button_<key> at
+  x,y`). It changes no input itself: what it opens chooses later through
+  `DocumentHost::chooseInCommand(command, key, value)` (the main window's
+  `CommandSession::choose`, as the drop-down chooses: `onChange` runs and
+  the preview follows; false when that command does not run). BUILD's
+  Part and Connector open the part picker so. The AppKit frontend shows no
+  button.
 - `Inspection::viewHint`: a line over the top of the view while the
   command waits for something there (BUILD's first part: `Click a plane
   or a face, or press Enter`), logged `View hint <command>: <text>`.
@@ -196,7 +206,9 @@ Modifiers:
   row's state. Joint and As-Built Joint ghost side A's occurrence until B
   is picked (`ghostUntilPicked`); the same hook serves other commands that
   pick one component and then another behind it (Rigid Group, assembly
-  constraints, mitcad#148).
+  constraints, mitcad#148). The ghosts of components that are not active
+  (mitcad#420, "Inactive components as ghosts" under The view) look the
+  same but stay pickable; a body ghosted by both is the command's ghost.
 - `withHoverChain(kinds, check)`: while the check input `check` (a
   top-level one) is on, the hover over an edge or face of a body of
   `kinds` shows its whole tangent chain, what the operation takes with
@@ -258,6 +270,10 @@ becomes the active one (Extrude's To Object).
 - `init(state, context)`: defaults that depend on the model, applied after
   the inputs' defaults and the pre-selection (Extrude and Revolve take the
   newest unused profile).
+- `ended(committed)`: called once when the command ends (OK, Cancel,
+  Close, discarded), before the main window's `finished`: what the
+  command opened beside its panel goes with it (BUILD's part picker,
+  mitcad#418).
 - `preselect(selection, state, context)`: fills the inputs from the
   selection made before the command itself, instead of each item going to
   the first input that takes it (3D Print: a face stands for its body, an
@@ -300,7 +316,15 @@ Three other kinds of panels:
   mouse moves onto another item of the view (an invalid item: off the
   bodies); true when it changed the state redraws the markers, nothing
   is computed (BUILD's Connector: the junctions of the profile under the
-  mouse).
+  mouse). `hoverPreview(item, state, context)` (mitcad#417) is called as
+  the point under the mouse moves (`OcctViewer::hoverMoved`: the item with
+  its `at`; an invalid item off the bodies or when the mouse leaves the
+  view), not while the model computes or the view is navigated; true
+  when it changed the state computes the preview again (BUILD's Profile:
+  an end click's part straight or turned before the click).
+  `CommandContext::pixelSize(point)` is the size of a view pixel in mm
+  at a point of the design (NaN on the model's worker), for snap
+  distances that keep their size on the screen (BUILD's `at.snap`).
 - `apply(state, context)` with `inspect` (mitcad#375, BUILD): a panel with
   model commands of its own. The inspection is the preview; OK (its
   `okLabel`, Place) is refused while the inspection failed, else calls
@@ -806,6 +830,35 @@ computing`. Tests: `tools/ui-visibility-test.sh`,
   runs no model command and changes no visibility. Logs: `Browser collapsed
   all`; `logLayout` also logs each row with children's arrow as `Browser
   arrow <path> at x,y`. Test: `tools/ui-browser-collapse-test.sh`.
+- **Background in the Floating layout** (mitcad#419,
+  `browser/BrowserBackground.*`): Preferences › Display › Browser
+  background, the setting `appearance/browserBackground`, shown only in
+  the Floating layout and applied at once (OK, or as it changes in the
+  macOS Settings window). **Card** (`card`, the default): the Browser on
+  its card, the rows as a sidebar's (`SidebarDelegate`). **Rows** (`rows`):
+  the card is bare (`GlassCard::setBare`): no material and no shadow; its
+  header is a small box of the card's material as wide as its chevron,
+  title and buttons, which follow the title; each row in sight is on a box
+  of its own (`BrowserTree::rowBox`, painted in `drawRow` under the row's
+  arrow), from its arrow's place to the end of its name or radio button and
+  2 px short of the row at the top and bottom, tinted with the accent colour
+  when selected and lightly under the pointer. The card's mask
+  (`GlassCard::updateBareMask`) is the header's box and
+  `BrowserPanel::rowsRegion` (the rows' boxes, the scroll bars shown, a
+  rename editor), kept up to date as the rows scroll, open, fold, change,
+  are selected or the card resizes or folds: a click, drag or wheel
+  anywhere else in the card's rectangle reaches the 3D view (select,
+  orbit, zoom), as beside a card. The view's covered area for fitting and
+  pick places stays the card's rectangle. With native glass the card is a
+  widget over the view while bare (`GlassCard::setWindowed(false)`), a
+  window again with Card. The timeline and the command panel keep their
+  cards. Logs: `Browser background: rows` (`card`; at start and on each
+  change), `Preferences: browser background rows`, `Preferences browser
+  background at x,y`, and with Rows `Browser view beside the rows at x,y`
+  (right of every row's box at the middle row in sight; `… out of sight`
+  when it goes, as Card comes back). Tests: `tools/ui-browser-rows-test.sh`,
+  `tools/ui-windows-browser-rows-test.ps1` (ctest
+  `app.ui-windows-browser-rows`).
 - **Rename in place:** F2, the menu's Rename, or a slow second click on
   the name of the selected, current row (`BrowserTree`: after the
   double-click interval, not in a double-click or a drag; the timer is
@@ -1315,10 +1368,10 @@ places one and closes it.
 
 | Command | Panel | Model |
 |---|---|---|
-| `build.profile` Profile | grows as the placement needs it (mitcad#394). At first: the picker (Search, System, Part); Place On (none needed for the first part); Length (the part's stock length, else 500 mm; also a box at the cursor, `withCursorBox`, and a handle at the free end while the length is a number); for a ground placement Direction, three icon buttons X, Y, Z (`withChoiceIcons`, default Z: standing; `at.direction`). Once a part is placed, the length's Auto choice (to the face, to the centre, through; Typed length) and, by the pick: an **end pick** adds Direction (along the part it meets, or turned to ±X, ±Y, ±Z of the host: a corner, with a shared mitre) and Mitre (None, Cut the new part, the existing part, Shared) with Mitre Angle; a **side pick** adds Offset from an End (Offset to the new part's near face, From A/B: 0 is flush); either adds Rotate (0, 90, 180, 270 deg) and Flip. **More** (`withDisclosure`) holds Placement (Automatic, On the Side, On the End, On a plane: a ground placement again). The result names where the part goes (`Adds to: Root`, the `build_host` query). **Place** (Enter) places it, also without a pick in a ground placement (at the origin), and the panel stays for the next one; **Close** (Esc) keeps what was placed | `build_host`, `build_preview` while the inputs change, `build_place` on Place |
-| `build.panel` Panel | the picker (panels); Frame Face (an inner face of a frame puts it in the slots, an outer face on the surface with clamps); Thickness when the panel's thickness is a parameter. Place repeats | `build_preview`, `build_panel`; `fits` false is shown with its reason, not refused |
-| `build.linear` Linear Part | as Profile without the mitre (rails are cut to length; a carriage on its rail gets the joint its `mate` says) | `build_preview`, `build_place` |
-| `build.connector` Connector | Near (a click on a profile chooses the nearest junction), Junction (every junction, `L junction of Part1 and Part2`, `, connected`), Connector (the parts that fit, best first, each with the library's picture of it (`library_preview`, `withChoiceImages`), its supplier and part number), With Nuts and Screws, With End Machining, Show All Junctions. The junctions of the profile under the mouse are marked in the view at their `at_frame` (`L`, `T (connected)`; `CommandDef::hover`, `previewMarkersIn`), the chosen one always (`> L`), every one with Show All Junctions; the panel lists the fitting connectors and, greyed, those that nearly fit with the reason; the two profiles are highlighted. The chosen connector is previewed where it goes (`build_preview` with `build_connect`'s fields; its shape `analysis_shape` `{"shape": "build_preview", "junction", "part", ...}`), its fasteners as markers, the machining it needs in the panel; choosing another in the list previews that one. **Connect** repeats and moves on to the nearest junction not connected | `build_junctions`, `library_build_candidates` with the junction, `build_preview`, `build_connect` |
+| `build.profile` Profile | grows as the placement needs it (mitcad#394). At first: the picker (Search, System, Part; **...** beside Part opens the part picker with the role's parts and this System, mitcad#418); Place On (none needed for the first part); Length (the part's stock length, else 500 mm; also a box at the cursor, `withCursorBox`, and a handle at the free end while the length is a number); for a ground placement Direction, three icon buttons X, Y, Z (`withChoiceIcons`, default Z: standing; `at.direction`). Once a part is placed, the length's Auto choice (to the face, to the centre, through; Typed length) and, by the pick: an **end pick** adds Direction (mitcad#417: Auto, the click's zone of the end face, `Auto: by the click (+X)`; Straight; the four turns square to the part it meets, `end.turns`, named by the host axis they run along, `+X`, else `Side 1`..`Side 4`), on a corner Offset (the new part's end from the outer side, positive towards the turn, default 0) and Mitre (Auto, `Auto (shared)` or `Auto (none)`; None; Shared, not offered at a corner offset other than 0; Cut the new part; Cut the existing part) with Mitre Angle; a **side pick** adds Offset and From (End A, End B, Middle), which the click fills; either adds Rotate (0, 90, 180, 270 deg) and Flip. **More** (`withDisclosure`) holds Placement (Automatic, On the Side, On the End, On a plane: a ground placement again). The result names where the part goes (`Adds to: Root`, the `build_host` query). **Place** (Enter) places it, also without a pick in a ground placement (at the origin), and the panel stays for the next one; **Close** (Esc) keeps what was placed | `build_host`, `build_preview` while the inputs change, `build_place` on Place |
+| `build.panel` Panel | the picker (panels; **...** opens the part picker); Frame Face (an inner face of a frame puts it in the slots, an outer face on the surface with clamps); Thickness when the panel's thickness is a parameter. Place repeats | `build_preview`, `build_panel`; `fits` false is shown with its reason, not refused |
+| `build.linear` Linear Part | as Profile (its part picker too) without the mitre (rails are cut to length; a carriage on its rail gets the joint its `mate` says) | `build_preview`, `build_place` |
+| `build.connector` Connector | Near (a click on a profile chooses the nearest junction), Junction (every junction, `L junction of Part1 and Part2`, `, connected`), Connector (the parts that fit, best first, each with the library's picture of it (`library_preview`, `withChoiceImages`), its supplier and part number; **...** beside it opens the part picker with the fitting connectors first and, greyed with the reason, those that nearly fit; a new junction gives it new ones), With Nuts and Screws, With End Machining, Show All Junctions. The junctions of the profile under the mouse are marked in the view at their `at_frame` (`L`, `T (connected)`; `CommandDef::hover`, `previewMarkersIn`), the chosen one always (`> L`), every one with Show All Junctions; the panel lists the fitting connectors and, greyed, those that nearly fit with the reason; the two profiles are highlighted. The chosen connector is previewed where it goes (`build_preview` with `build_connect`'s fields; its shape `analysis_shape` `{"shape": "build_preview", "junction", "part", ...}`), its fasteners as markers, the machining it needs in the panel; choosing another in the list previews that one. **Connect** repeats and moves on to the nearest junction not connected | `build_junctions`, `library_build_candidates` with the junction, `build_preview`, `build_connect` |
 | `build.fasteners` Fasteners | Connector (a connector, or one of its nuts or screws), With Nuts and Screws, Fastener (the kinds it has), Size (the rows of its library component, `library_show`) | `build_edit` with `config`; off: `build_remove` of each; on for a connector without them: `build_remove` and `build_connect` again with them; one undo step `Fasteners of <name>` |
 | `build.length` Length | Part, Length (Detached: this length, Bound: to the face, to the centre, through), Value, Bound To (none: the face it is bound to now); the bound target highlighted | `build_edit` with `length` (a value detaches, a `bind` binds) |
 | `build.ends` Ends | Part (the end nearer the click; an end face by its name), End, Angle, About (x, -x, y, -y), Also the Part It Meets (a shared mitre: the end that meets this one in an `L` or `inline` junction); End Machining (As it is, A bore: Diameter, Depth, Thread; None takes the part's end machining away) | `build_edit` with `ends` and `machining`, the part's whole list (`[{end, hole: {diameter, depth, thread}}]`): `build_parts`' list with this end's entries replaced by the bore, or left out for None; one undo step for both parts |
@@ -1335,10 +1388,29 @@ places one and closes it.
   system (`B8 30`), size (`30x30`) or slots (`4 slots`); System narrows to
   one system. The part chosen stays in the list; the part placed last is
   the next start's.
+- **The part picker** (mitcad#418, [Part picker](#part-picker)): **...**
+  beside Part (Connector's Connector; `withButton`) opens the main
+  window's `PartPicker` for the command: Profile, Panel and Linear Part
+  ask with their catalog's parts (`pickerParts(QVector<build::Part>)`,
+  the drop-down's keys) and the panel's System as the picker's system;
+  Connector with the junction's fitting connectors (the catalog's
+  `forJunction`) and, greyed with the reason, the nearly fitting ones
+  (`buildCandidates` with the junction's `refused`). A tile clicked is
+  chosen in the command (`DocumentHost::chooseInCommand` with the key)
+  and previewed at once; the drop-down keeps working, and the open picker
+  follows the panel (Search, System, Part, another junction). A part of
+  another system than System's (the picker's own system filter) sets
+  System to its system. The picker closes with the command
+  (`CommandDef::ended`, `commandEnded`) unless pinned; an open, pinned
+  picker follows the next BUILD command that chooses parts (its `init`).
+  In this design reads `usedLibraryParts`; the main window's
+  `refreshScene` calls `designChanged`. Not in the AppKit frontend (its
+  inspector has no button).
 - **Where parts go** (mitcad#394): no component needs to be activated.
   The model's `build_host` query names the BUILD host, the active
   component when it takes components, else the nearest one up that does
-  (a new design's root while Part1 is active); the panel's result says
+  (in a new design Part1 itself, which takes components, mitcad#421; the
+  root when Part1 is set to Part); the panel's result says
   `Adds to: <name>`, and no policy refusal comes from where the parts go.
 - **Where a pick is:** `withOnPick` keeps the click in the design (`at`
   is in the item's component; `build::recordPick`); an item given
@@ -1359,11 +1431,39 @@ places one and closes it.
   hidden (`withHiddenConstruction`, the host's `setConstructionHidden`)
   until the placement is a ground one again or the command ends; their
   visibility in the design is not changed.
+- **Snap distance** (mitcad#417): every placement with a click sends
+  `at.snap`, 12 pixels of the view at the click in mm
+  (`build::kSnapPixels`, `CommandContext::pixelSize`, kept with the
+  click by `build::recordPick`); the model snaps within the larger of it
+  and its own distances, so a zoomed-out view still snaps.
 - **Side snaps:** a click on a side goes flush with an end within one
   section width of it, or to the middle or a grid point (the model's
-  rules, commands.md, *Side placements*); the result says where (`120.0
-  mm from end A (flush A)`), and the markers show the ends and the middle
+  rules, commands.md, *Side placements*); the result says where (`0.0
+  mm from end B (flush B)`), and the markers show the ends and the middle
   (`flush A`, `flush B`, `middle`) and the snap taken (`> flush B`).
+- **Side offsets** (mitcad#417): Offset and From are always there on a
+  side. A click fills them from the preview's `side.from` and
+  `side.offset` (flush with an end: that end and 0; the middle: Middle
+  and 0; else the nearer end), and the placement is left to the click
+  (`at.point`), which the model binds to that reference. Typing an
+  offset sends `at.from` and `at.offset` from then on: the part moves
+  from its reference and never snaps; only a new click replaces both.
+  Changing From keeps the part where it is: the offset from the new
+  reference comes from the side shown last (`side.offset`, `side.width`,
+  the target's length from end B's snap) and is sent as typed.
+- **Ends** (mitcad#417): a click on an end face continues the part
+  straight in the face's inner half and turns it towards an edge in the
+  band along it; the click fills Direction's choices from the preview's
+  `end` (its `turns`; Auto again). Straight sends the end's axis
+  (`at.direction`, the turns' cross product), a turn its vector; on a
+  corner the Offset goes as `at.offset`. Mitre Auto sends no `mitre`
+  (the model's default: shared on a corner at offset 0), None sends
+  `{"cut": "none"}`. The markers show the end face's zones (`straight`
+  in its middle, `turn +X` in the middle of each band; the one taken
+  `> turn +X`). With the mouse on an end face of a part it can go on
+  (`hoverPreview`), the preview is what a click there places, Direction
+  Auto (the result says so); a move of under 4 pixels shows the same,
+  and leaving the face or the view shows the pick again.
 - **Auto length:** the preview without a length names the face the ray
   meets (`length.target`); the panel then binds to it (`{"bind": target,
   "mode", "add": 0}`) and previews again. Nothing in the way (the first
@@ -1388,8 +1488,21 @@ Logs: `BUILD parts <role>: <n> (<m> in the design)`, `BUILD profile adds
 to Root (a ground placement)`, `BUILD connectors for
 junction <id> (<kind>): <n> fit, <m> nearly`, `Inspect Profile: place
 side, length 742.50 mm (bound, auto: to the face to F8:part(...) of
-Part5), square ends; adds to Root; snap end_b at 970.0 mm`, `Inspect
-Profile: waiting: Click a profile's side or end.; adds to Root`, `View
+Part5), square ends; adds to Root; snap end_b at 0.0 mm from b; least
+snap 1.30 mm; part Profile 30x30` (the part previewed, last, mitcad#418; the side's snap, `none` between snaps, its offset from
+its reference `a`, `b` or `middle`; `at.snap`), `Inspect Profile: place
+end, ...; end edge towards +X, mitre shared, offset 0.0 mm; least snap
+1.30 mm; on the hover` (the end's zone `straight`, `edge` or `given`,
+the direction, the mitre the placement takes, a corner's offset; the
+hover's preview), `BUILD side click: From End B, Offset 0 mm (end_b)`,
+`BUILD side offset typed: from end B`, `BUILD From End A keeps the part
+in place: Offset 350 mm`, `BUILD end click: edge towards +X, mitre
+shared; turns +X, +Y, -X, -Y`, `BUILD corner offset: the shared mitre
+goes (it needs offset 0)`, `BUILD hover on <face>`, `BUILD hover off the
+end faces`, `BUILD click not placed: <reason>`, `Preview marker Profile
+turn +X world x,y,z at x,y` (an end face's zone; `straight`; the taken
+one with `> `), `Inspect
+Profile: waiting: Click a profile's side or end.; adds to Root; part <part>`, `View
 hint Profile: Click a plane or a face, or press Enter`, `Profile Place On
 takes now: faces`, `Construction geometry hidden for the command`,
 `Construction geometry shown again`, `Panel Profile input axis=x at x,y`
@@ -1412,7 +1525,7 @@ stock: <part>, 6000.0 mm stock x 1, pieces 500.0, ..., offcut <mm>`, `Cut
 list: <n> row(s), <n> stock, <n> other part(s), kerf 3 mm`, `Build parts
 list: <n> row(s)`, `Build list CSV: <line>`, `Build list copied as CSV:
 <n> line(s)`, `Build list PDF written: <path> (<bytes> bytes; Cut list of
-<design>, <date>)`, `Ribbon tab BUILD at x,y`. Tests:
+<design>, <date>)`, `Ribbon tab BUILD at x,y`, `Panel Profile button_part at x,y` (the part picker's button), `Profile: Part button` (clicked), `BUILD picker: <part> not chosen, <command> does not run` (a pinned picker's tile after its command ended), and the picker's own ([Part picker](#part-picker)). Tests:
 `tools/ui-build-test.sh`, `tools/ui-windows-build-test.ps1` (ctest
 `app.ui-windows-build`).
 
@@ -1471,9 +1584,9 @@ settings in the user's settings (`ViewSettings`, group `view`);
   Pinch, rotation and two-finger double tap
   work in every scheme (`OcctViewer::event`).
 - **Preferences** (`tools.preferences`): one page per group (General,
-  Navigation, Display, Cache, Cloud, Updates, 3D Print, Diagnostics,
-  Textures: `TexturePreferencesBox`, the texture folders, mitcad#315) so the
-  window fits 1366 × 768; each page is also a command
+  Navigation, Display with the window's Layout, Cache, Cloud, Updates, 3D
+  Print, Diagnostics, Textures: `TexturePreferencesBox`, the texture
+  folders, mitcad#315) so the window fits 1366 × 768; each page is also a command
   `tools.preferences.<page>` that the search finds by its settings. OK
   saves every page. On macOS the pages are the panes of `SettingsWindow`
   (Settings, Cmd+,), whose changes apply as they are made. In builds with
@@ -1481,7 +1594,83 @@ settings in the user's settings (`ViewSettings`, group `view`);
   the setting `render/device`: Automatic, the CPU or a GPU the worker
   lists with `mitcad-render --list-devices`; a device of an earlier choice
   that is not there stays as "Not found"): a change starts a running
-  rendered view's worker again on it, and Render Image renders on it.
+  rendered view's worker again on it, and Render Image renders on it. In
+  the Floating layout Display also has the **Browser background** (Card
+  or Rows, mitcad#419, [above](#browser-timeline-and-parameters)), which
+  applies without a restart.
+  Display ends with **Ghost inactive components** (`view/ghostInactive`)
+  and **Pick the active component first** (`view/activePickPriority`),
+  both on by default (mitcad#420, below).
+- **Layout** (mitcad#419; Preferences › Display › Layout, after the render
+  device; not in the native macOS frontend: `layoutChoosable()`):
+  Docked or Floating, kept as `appearance/layout` (`docked`, `floating`;
+  absent: the platform's default, `defaultChromeStyle()`: Floating on
+  macOS, Docked elsewhere). The ticket's "Appearance" page is this Display
+  page. `main()` reads it before the window is made (`layoutPreference()`,
+  `framework/ChromeStyle`); `--chrome=docked|floating` overrides it for
+  that run, and the start-up's `Chrome:` line says which decided. A change
+  to a layout other than the window's asks *Restart Mitcad* (Restart Now,
+  Later) once the dialog is gone (on macOS's Settings window, as it is
+  made); Later keeps it for the next start. Restart Now
+  (`MainWindow::restartApplication`, once no model job runs) closes the
+  window as quitting does (`maybeSave`: Cancel keeps Mitcad open and
+  nothing restarts) and starts Mitcad again after this process has quit
+  (`framework/Restart`: a post routine of `QCoreApplication`, as an
+  installed update starts; the AppImage itself when it runs from one) with
+  this run's settings options (`--ui`, `--no-native-dialogs`,
+  `--no-recovery`, `--no-glass`, `--no-mcp`, `--mcp-folder`, a plain
+  `--debug-log`), without `--chrome` and the one-off start actions, and
+  with `--open <file>` when the design has a file. `MITCAD_TEST_NO_RESTART=1`
+  logs the command instead of starting it (UI tests).
+- **The Floating layout's top bar** (mitcad#419): the cards start below the
+  whole bar above the view (`FloatingLayout`'s header: the title bar row
+  with the workspace switch, the ribbon's groups, the notices; the menu bar
+  on Windows and Linux is above the central widget): the upper cards' top
+  is at least the header's bottom plus the margin, whatever the view's top,
+  and the header's size and place are followed (resized, moved, a notice
+  shown) as the view's are, so a narrow window whose groups collapse, or a
+  taller bar, places them again. On macOS the view starts at the bar's
+  bottom, so nothing changes there.
+- **Inactive components as ghosts** (mitcad#420): while a component other
+  than the root is active (Browser › Activate, its radio button; also its
+  undo and redo, and a document opened with a stored active component),
+  `MainWindow::refreshScene` gives the view the active component's
+  occurrences (`OcctViewer::setActiveScope`, from the `DocumentSnapshot`:
+  every occurrence of the active component, its sub-components with them),
+  the sketch being edited and the origin's datums (the active component's
+  own). Everything else is an inactive ghost: bodies are drawn as
+  `BodyDisplay::Style::Ghost` (see-through, their own colour) but stay
+  pickable, with the hover and highlights of any item; sketch curves and
+  points, profiles and datums are pale (faded towards the background's
+  middle, `inactiveColor`; profiles and planes more see-through). The root
+  active, or the setting off (`OcctViewer::setGhostInactive`): the view as
+  before. A command's ghosts (`withGhosts`, Joint's side A) and previews
+  keep working on top: a body ghosted by both is drawn once, as the
+  command's ghost (not pickable). Inactive ghosts hide nothing for the
+  edge sight test (`occluded`). The rendered view, Render Image and
+  `shownBodies()` ignore the ghosting (every body renders normally);
+  Section Analysis cuts the ghosts like any body (their caps as usual);
+  screenshots and the view's captures show what the viewport shows.
+  **Pick priority:** while the scope is on and the setting
+  `view/activePickPriority` is on (`OcctViewer::setActivePickPriority`,
+  independent of the ghosting), a click, a command's pick and the hover take
+  the nearest pickable item of the active component under the cursor before
+  nearer items of other components (`setPickPriority` in `PickContext.hpp`:
+  the selector orders its point picks with the preferred owners first, after
+  its edges-first order; what is not the model's, the orientation cube,
+  keeps its place). Where nothing of the active component is under the
+  cursor, the ghosts are picked as usual; there is no layered pick through
+  to the next item under the cursor, so a ghost behind the active
+  component is picked where nothing of the active component covers it, or
+  with the setting off. Logs: `View inactive ghosts: 2 bodies (active
+  Bracket:1)` (the bodies drawn as inactive ghosts, a command's ghosts
+  among them; the active component's occurrence names) and `View inactive
+  ghosts: none`, when that changes; `Pick priority: active Bracket:1` when
+  a click took the active component's item before a nearer one of another
+  component; `Preferences: ghost inactive components on|off`, `Preferences:
+  active component first in picks on|off`. Tests:
+  `tools/ui-inactive-ghost-test.sh`, `tools/ui-windows-inactive-ghost-test.ps1`
+  (ctest `app.ui-windows-inactive-ghost`).
 - **Named views** are the document's (`add_named_view` and friends); a
   view named `Home` is the document's home.
 - **Section Analysis** and **Hide Above Sketch:** the cut faces are drawn
@@ -1724,6 +1913,7 @@ UI thread.
 | `MainWindowSheet.cpp` | Edit Sheet Rules, Show Flat Pattern, Export Flat Pattern and its dialog |
 | `commands/BuildCommands.cpp` | `registerBuildCommands`: the BUILD tab (mitcad#375, [BUILD](#build)): Profile, Panel, Linear Part, Connector, Fasteners, Length, Ends, Flip, Rotate 90 deg, Cut List, Parts List |
 | `build/BuildCatalog.*`, `build/BuildModel.*`, `build/BuildLists.*` | BUILD's parts for the pickers (library commands, the design's sources); what it reads of the model (paths, placements, picks as `at`, BUILD parts, junctions, preview frames); the Cut List and Parts List dialog with CSV and PDF |
+| `library/PartPicker.*`, `library/PartFavourites.*`, `library/UsedParts.*` | the part picker (mitcad#418, [Part picker](#part-picker)): the grid of the library's parts (`PartGrid`), the floating window of the part-choosing commands (`PartPicker`), Insert from Library's results; the favourites and their order; the design's library parts |
 | `commands/SketchCommands.cpp` | the SKETCH tab: drawing tools, Sketch Dimension, constraints, Offset, Mirror, patterns, Project, sketch Fillet and Chamfer, Move/Copy, Trim, Extend, Construction, Convert to Sketch Geometry, Delete |
 | `sketch/SketchController.*` | sketch mode: mouse and keys, typed values, drags, `SketchOp` |
 | `sketch/SketchTool.hpp`, `DrawTools.cpp`, `EditTools.cpp` | the tools (`SketchTool`) and their factories |
@@ -1782,7 +1972,15 @@ same ways without questions (mm, the XY plane, linked).
 window; `main.cpp`), which runs `import_f3d` with `hang_limit` 90 s and
 no time limit on a new document under a job (`attach_job`) and writes the
 design file and result; it also gets `--result-store` and
-`--persist-min-ms` and stores the design's results. A kernel crash or
+`--persist-min-ms` and stores the design's results. It hands the
+import's evaluation over to the window (mitcad#413): with
+`--hand-off-store <folder>` (in the import's temporary folder, whether
+the user's store is on or not) it writes every result a store takes,
+however quick (`hand_off_results`), and prints `import-handed-over <n>`;
+the window reads the design with that store (`installDocument`'s
+`handedOver`, logged `Results handed over for <file>: restored <n>,
+evaluated <m>`), so it restores those results instead of evaluating
+every feature again, then gives the document the user's store. A kernel crash or
 hang ends only the worker. While import threads the hang watchdog gave
 up still run, the worker ends with `std::_Exit` after writing its result
 (`abandoned_imports()`), without the static destructors that would crash
@@ -2400,7 +2598,7 @@ SOLID tab's ASSEMBLE group.
 
 | Command | What it does | Model command / bridge |
 |---|---|---|
-| `insert.library_component` Insert from Library | `LibraryBrowser`: search (words, a licence filter, items without a licence only when asked), previews, details with the licence and the attribution, the version (newest first) and the size (cascaded combo boxes per selector, `SizeChooser`), linked or a copy; **Update** fetches every enabled source (as Fetch All, one warning for the failures) and searches again, keeping the selected item; while no enabled source is fetched the empty list says to press Update (mitcad#317) | `library_search`, `library_show`, `library_preview`, `library_list`, `library_fetch`; then `insert_component` with `library` |
+| `insert.library_component` Insert from Library | `LibraryBrowser`: search (words, a licence filter, items without a licence only when asked), the results as the part picker's grid (`PartGrid`, [Part picker](#part-picker): groups with Favourites and In this design, stars, the tiles' size, the hover's larger picture; an index's libraries not fetched in "Libraries to get"; a double click or Return inserts), details with the licence and the attribution, the version (newest first) and the size (cascaded combo boxes per selector, `SizeChooser`), linked or a copy; **Update** fetches every enabled source (as Fetch All, one warning for the failures) and searches again, keeping the selected item; while no enabled source is fetched the empty list says to press Update (mitcad#317) | `library_search`, `library_show`, `library_preview`, `library_list`, `library_fetch`; then `insert_component` with `library` |
 | `tools.library_parts` Library Parts... | `LibraryPartsDialog`: each part's recorded version and size, another version or size, Show Changes, Update; Check for Newer Versions and Get Missing Libraries fetch (the latter after showing the addresses, which come from the design); the Parts List tab (Copy as CSV) | `library_parts`, `parts_list`, `library_show`, `library_diff`, `library_fetch`; then `update_library_parts` |
 | `tools.libraries` Libraries... | `LibrariesDialog`: the sources (settings `libraries/sources`: URL or folder, on or off; the defaults are Mitcad's fastener library and the community index), Add URL, Add Folder, Remove, Fetch Selected, Fetch All | `library_list`, `library_fetch` |
 | `tools.community_library` Community Library... | the browser with the indexes' libraries first; Get Library adds a library an index lists to the sources and fetches it after a question with its address and licence | as Insert from Library |
@@ -2430,6 +2628,81 @@ part <name>: <library> <version>, size <row>, <status>`, `Library changes:
 (...)`, `Publish: ...`. Tests: `tools/ui-library-test.sh`,
 `tools/ui-windows-library-test.ps1` (ctest `app.ui-windows-library`).
 
+### Part picker
+
+`library/PartPicker.*`, `library/PartFavourites.*`, `library/UsedParts.*`
+(mitcad#418). The library's parts as pictures, for Insert from Library
+(the browser's results) and the commands that choose parts (BUILD's
+Profile, Panel, Linear Part and Connector).
+
+- **`PartGrid`** (a widget): the groups on the left (Alt+O): Favourites
+  first, In this design (only while the design uses one of the parts
+  listed), All parts, then the library's categories (`category`, shown
+  with its id's words: `linear-parts` as "Linear parts"), Other (no
+  category) and Libraries to get (an index's libraries not fetched, in
+  the browser). Above the grid: Search (Alt+S; the words `library_search`
+  matches: name, id, standard, description, category, keywords,
+  supplier, part number, library), the slot System (Alt+Y; only when a
+  part has one), Star and the tiles' size (Tiles, Alt+T, 48 to 192
+  pixels, the setting `partPicker/tileSize`). A tile: the part's preview
+  (`library_preview`, read a few at a time while the application is
+  idle, only for tiles a view paints, kept for the session), its name,
+  its main sizes (a BUILD part's section and row, else its standard),
+  `×N` when the design uses it, a star in the corner. Refused parts
+  (`library_build_candidates`' `refused`) are greyed and cannot be
+  chosen. Hovering a tile shows a larger picture with the sizes, the
+  supplier, the part number, the library and its version, the licence
+  and the reason a refused part does not fit. Up and Down in the search
+  move through the tiles; a double click or Return activates a tile.
+- **Favourites**: a click on a tile's star (or Star, Ctrl+D) stars the
+  part; a click on a group's star (Ctrl+Shift+D) stars the group. Stars
+  are the user's (`PartFavourites`, settings group `partPicker`, keys
+  `starredParts` and `starredGroups`), keyed by the library's id and the
+  component's id, so they survive library updates; a starred part that
+  is not listed is left out of Favourites. Order (`pickerOrder`,
+  `groupOrder`): starred first, then the rest, each in the given order;
+  starred groups first after Favourites, In this design and All parts;
+  in Favourites the parts of starred groups first. Search and the system
+  filter work inside every group.
+- **In this design**: `usedLibraryParts` (the model's `library_usage`
+  query): the BUILD sources and inserted library components with how
+  many times the design uses each.
+- **`PartPicker`** (a non-modal dialog of the main window,
+  `PartPicker::of(window)`, shown without taking the focus from the
+  view; Docked and Floating chrome alike): `ask(PickerRequest)` with the
+  command's id, a title ("Part Picker - Profile"), the parts
+  (`buildCandidates(fields)` runs `library_build_candidates`;
+  `pickerParts(QVector<build::Part>)` turns a BUILD catalog's parts into
+  tiles with their categories and licences from one `library_search`),
+  the current key and the system to start with. A click (or Return) on a
+  tile emits `chosen(part, command)`; `commandEnded(command)` hides it
+  unless **Pin** (Alt+P) is on; a pinned, open picker follows the next
+  `ask`. `setDesignParts(reader)` and `designChanged()` keep In this
+  design current. Its place and size: the setting `partPicker/geometry`.
+
+Logs: `Part picker opened: <n> parts for <command or dialog>`, `Part
+picker follows <command>: <n> parts`, `Part picker group <group>: <n>
+parts, first <library>/<component>` (every time the tiles change: a
+group, a search, the system, a star), `Part picker search '<text>'`
+(searched by the grid), `Part picker system <system|all>`, `Part picker
+in this design: <n> parts: <library>/<component> x<count>, ...`, `Part
+picker star <component> on|off`, `Part picker group star <group>
+on|off`, `Part picker chose <library>/<component>[ (<row>)]`, `Part
+picker refused <library>/<component>: <reason>`, `Part picker pinned
+on|off`, `Part picker closed with <command>`, `Part picker stays pinned
+after <command>`. The window's places, once laid out after it shows,
+moves, resizes or its tiles change (for UI tests): `Part picker place
+search|star|pin at x,y; in the picker x,y`, `Part picker group row
+<group> at ...` (the middle of the row, clear of its star) and `Part
+picker tile <library>/<component> at ...` (the tiles in sight, up to
+24): in the main window's coordinates as the panel's places, then in
+the picker's own (the Windows tests post their clicks to its window).
+Tests: the data in `tests/part_picker_data.cpp` (test_app), Insert from
+Library in `tools/ui-library-test.sh` (part 7) and
+`tools/ui-windows-library-test.ps1` (part 4), BUILD in
+`tools/ui-build-test.sh` (part 8) and `tools/ui-windows-build-test.ps1`
+(part 8).
+
 ### Design policy
 
 `browser/PolicyDialog.cpp`, `BrowserController::openPolicy`,
@@ -2438,14 +2711,17 @@ part <name>: <library> <version>, size <row>, <status>`, `Library changes:
 
 | Command | What it does | Model command / query |
 |---|---|---|
-| `assembly.policy` Design Policy... (command search; the browser's component menu, last entry, opens it for that component) | `PolicyDialog`: the nine settings of the component or the root, each with what it allows in words (incoming and outgoing links told apart; the first-sketch pair, Alt+I and Alt+K, next to the sketch attachment pair, mitcad#293), the presets (Alt+A Assembly, Alt+P Part, Alt+D Defaults), and next to a blocked setting the number of objects that break it, a button that lists them; counts follow the edited settings; OK sets them as one undo step, Cancel changes nothing | `policy` (with the proposed `policy`), then `set_policy` |
+| `assembly.policy` Design Policy... (command search; the browser's component menu, last entry, opens it for that component) | `PolicyDialog`: the nine settings of the component or the root, each with what it allows in words (incoming and outgoing links told apart; the first-sketch pair, Alt+I and Alt+K, next to the sketch attachment pair, mitcad#293), the presets (Alt+H Hybrid, everything allowed, the defaults; Alt+P Part; Alt+A Assembly; mitcad#421), Alt+T for the incoming sketch attachment setting, and next to a blocked setting the number of objects that break it, a button that lists them; counts follow the edited settings; OK sets them as one undo step, Cancel changes nothing | `policy` (with the proposed `policy`), then `set_policy` |
 
-- A new design (File > New, the window's first design) has the root at
-  Assembly and an empty Part1 at Part, active; opened and imported designs
-  are not rearranged.
+- A new design (File > New, the window's first design) has the root and
+  an empty Part1, active, both Hybrid (mitcad#421): Part1 takes sketches,
+  features and components, and other components' sketches may lie on its
+  faces. Opened and imported designs are not rearranged; a stored policy
+  keeps its values, an owner without one is Hybrid.
 - New Component (the command and the browser's) makes a component with
-  the Part preset. Made in a component that takes no components (a part),
-  or by a feature's New Component operation there, the model places it
+  the defaults, Hybrid. Made in a component that takes no components (one
+  set to Part), or by a feature's New Component operation there, the
+  model places it
   beside the part, in the nearest owner above that takes components
   (mitcad#292): the reply's `placement_warning` is shown as a hint, also
   when the command's panel closes (instead of "Done.").
@@ -2461,7 +2737,8 @@ part <name>: <library> <version>, size <row>, <status>`, `Library changes:
   with the reason (a projection without Projection Link is always allowed).
 - Commands that the policy refuses (features in an Assembly, components in
   a Part with no owner above that takes them, a move into a component that refuses what moves) show the
-  model's reason in their panel's preview or when OK is pressed.
+  model's reason in their panel's preview or when OK is pressed. Under the
+  defaults nothing is refused and no hint names left-out owners.
 
 Logs: `Placement warning: <text>`, `Create Sketch refused: <reason>`, `Create Sketch: policy leaves out
 <owners>`, `Sketch <name> is in <component>`, `Design Policy dialog opened
@@ -2786,6 +3063,7 @@ next screenshot.
 | `Timeline group Group1 at x,y` (its band, or its folded cell), `Timeline group Group1 collapsed` / `expanded`, `Timeline selected: F1, F2, F4` (a Shift+click run, or what the browser's rows selected; `nothing`), `Grouped Sketch1, Extrude1 as Group1`, `Renamed group Group1 to Body`, `Ungrouped Body` | timeline groups |
 | `Timeline tooltip: Fillet2: <error>`, `Marker at 2 of 4`, `Moved Plane1 to 0 in the timeline`, `Move of Fillet1 refused: <reason>`, `Suppressed Fillet1`, `Renamed Plane1 to Datum`, `Delete Sketch1: also Extrude1, Fillet1?`, `Deleted Sketch1, Extrude1, Fillet1`, `Delete Sketch1 cancelled` | timeline actions |
 | `Browser width 240` (`, scrolls sideways` with a horizontal scroll bar), `Browser Root/Bodies/Body1 at x,y` (its name), `Browser eye <path> at x,y`, `Browser radio <path> at x,y`, `Browser linked Root/Sketches/Sketch1/Extrude2 to Component1` (a feature row whose result is in another component) | the browser's width and the rows in sight (names from the root; a row whose middle is in the view), when they changed, also when the tree scrolls or the panel moves in the window; a place logged before whose row has left sight (scrolled away, folded, gone) is logged once more as `Browser <path> out of sight` (also `Browser eye <path>`, `Browser radio <path>`), so that a test never clicks a place that is not valid; `tools/ui-test-lib.sh` scrolls such a row back into sight before it clicks it (`ui_browser_reveal`) |
+| `Browser background: rows` (`card`), `Preferences: browser background rows`, `Preferences browser background at x,y`, `Browser view beside the rows at x,y` (`… out of sight`) | the Browser's background in the Floating layout (mitcad#419): at start and on each change, the choice saved in Preferences, its drop-down in the dialog, and with Rows a place right of every row's box where a click reaches the 3D view (`tools/ui-browser-rows-test.sh`) |
 | `Browser selected: <paths>`, `Visibility <path>: hidden`, `Visibility <path>: hidden (during Extrude)`, `Command Extrude: 1 visibility change(s) kept`, `Renaming <path>`, `Renamed Body1 to Plate`, `Renamed body F3.b0 with its component to Bracket` (mitcad#291), `Activated Bracket`, `Isolated …`, `Copied …`, `Pasted Bracket:1 as Bracket:2`, `Placed Bracket:2 at (90, 0, 0)`, `Paste of Bracket:3 cancelled`, `Ground Bracket:2`, `Deleted Bracket:2`, `New component in Root`, `Placement warning: <text>` (mitcad#292), `Look at plane F4`, `View top`, `Units: in`, `Found … in the browser` | browser actions |
 | `Bodies shown: F2.b0, F3.b0 in O1`, `Body F3.b0 in O1 at x,y` | the shown bodies (with their occurrences) and their middles in the window |
 | `Failed features: Fillet2: <error>` / `none`, `Failures button at x,y`, `Revealed Fillet2` | the status bar's summary |
@@ -2798,9 +3076,11 @@ next screenshot.
 | `Parameters favorites: width` / `none`, `Parameters width favorite at x,y`, `Parameter width favorite: on = 30 mm` | favourites |
 | `Parameters dialog opened`, `Parameters: d1 = width + 5 mm (35 mm); …`, `Parameters d1 expression at x,y` (name, unit, expression, comment), `Parameters add/delete/OK at x,y`, `Added parameter width = 30 mm`, `Parameter d1 expression: width + 5 mm = 35 mm`, `Parameter width expression: d2 / 2 refused: <reason>`, `Delete parameter w refused: <reason>` | Change Parameters (places in the main window's coordinates) |
 | `Panel Fillet input sets.1.radius at x,y`, `Panel Fillet input add sets at x,y`, `… input remove sets.1 at x,y`, `… input up_sections.2 at x,y`, `… input down_sections.0 at x,y` | a list's rows and buttons, an ordered selection's buttons |
+| `Panel Profile button_part at x,y`; `Part picker place search at x,y; in the picker x,y` (also `star`, `pin`), `Part picker group row Profiles at …`, `Part picker tile <library>/<component> at …` | the button beside a choice (`withButton`, mitcad#418); the part picker's places, in the main window and in the picker ([Part picker](#part-picker)) |
 | `Panel Extrude width 284 of 284` (after its places), `Panel Extrude message 284x36, panel width 284 of 284` (`message hidden`; `284x96 scrolling`) | the panel's width and its page's (mitcad#198): with its places, and once laid out after its message or a note under a field changed (`tools/ui-panel-message-test.sh`) |
 | `Pick places:` then `Pick face F2.b0/F2:end(…) at x,y`, `Pick edge …`, `Pick vertex …`, `Pick profile F1/r{…} at x,y` | an input became active (with `MITCAD_LOG_PICKS=1`, which the tests set): where a click picks each item it takes (`ui_click_pick`) |
 | `View ghosts: O2 (1 body)`, `View ghosts: none` | the occurrences a command draws as ghosts changed (`withGhosts`, mitcad#147); logged before the pick places of the input that picks through them |
+| `View inactive ghosts: 2 bodies (active Bracket:1)`, `View inactive ghosts: none`, `Pick priority: active Bracket:1` | the bodies drawn as ghosts outside the active component changed (mitcad#420; `none`: the root active or the setting off); a click took the active component's item before a nearer one of another component |
 | `View body highlights: F1.b0, F2.b0 in O1`, `View body highlights: none` | the bodies highlighted whole changed (a selection input of bodies, such as 3D Print's, mitcad#234) |
 | `Hover chain: 3 edge(s) of F2.b0` (`face(s)`), `Tangent chains of F2.b0 (edges): 2 in 3 ms` | the hover of an input with `withHoverChain` over an edge or face changed how many it shows (the tangent chain with its check on, else 1); a body's chains asked the first time (mitcad#290) |
 | `Manipulator <command> <input> at x,y`, `Manipulator <command> <input> dragged to <value>` | a handle's knob, a drag ended |
@@ -2868,6 +3148,8 @@ next screenshot.
 | `Live: <project>: off (no broker)` (`not allowed in Preferences`, `no versions`), `Live trust question: <project> through <address> [Connect, Not Now]`, `Live trust: <address> connect` (`not now`), `Live: <project>: <address> not trusted (Not Now): not connected`, `Keychain: read <host:port>: found, user <user>` (`not found`, `unavailable (<why>)`), `Keychain: saved <host:port>` (`save … failed (<why>)`), `Keychain: removed <host:port>`, `Live: <project> subscribes through <address>, prefix <prefix>, as <user>` (`anonymous`; `(<connection>, <state>)`), `Live: <project>: cannot connect to <address>: <why>`, `Live: connection c1 (<address>) connected` (`connecting`, `offline, again in <ms> ms`, `failed (auth_failed: <why>)`, `closed`), `Live: <project> subscribed`, `Live: <project> unsubscribed from c1[, which closed]`, `Live: <project>: the remote is checked (version abc1234)` (`connected again`), `Remote check: announced by live updates`, `Remote check: no timer while live updates are connected` (`the timer again (every 10 min)`), `Live: <project> published version abc1234` (`open <path>`, `closed <path>`, `lock <path>`), `Live event: <project>: open <file id> by <name> (editing) in session <id>` (`open … closed by session <id>[ (cleared: offline)]`, `version abc1234 on main by <name>`, `lock <file id> held by <name> (active)`, `lock … released`, `request <kind> <file id> from <name>`, `session <id> online` / `offline` / `left`, `dropped <reason> (<n> so far)`; ` (retained)`; ids are their first 8 characters), `Live notice: Live updates need you to sign in to <host> [Sign In, Not Now]`, `Live notice Sign In at x,y` (`Not Now`), `Live notice: Sign In` (`not now`), `Live sign-in dialog: <address>, user <user>, keychain on` (`off`), `Live sign-in refused: <why>`, `Live sign-in: <address> as <user>[, remembered]` (`cancelled`), `Live: signed out of <host:port>`, `Live: <address> forgotten: <project> disconnected`, `Live test dialog: <address>, prefix <prefix>[, as <user>]`, `Live test: <address>: ok; steps connect ok, sign_in ok, subscribe ok, publish ok, receive ok` (`failed (<class>: <why>)`), `Live: closed[, every connection left cleanly]`, `Preferences: known brokers: <address> (trusted, user <user>), …` (`none`), `Preferences: sign out of <host:port>`, `Preferences: forget <address>` | live updates (mitcad#89, `tools/ui-live-test.sh`); places in the main window's coordinates |
 | `Debug log on: <file> (--debug-log)` (`MITCAD_DEBUG_LOG`, `Preferences`), `Debug log off: <file>`, `Debug log not started: <why>`, `Debug log turned off from the project indicator`, `Preferences: debug log on` (`off`), `Project indicator: …, debug log on`, `Open Log Folder: <folder>`, `Report section log: 150 lines`, `Report section logfile: <file>`, `Report section logfile included` (`left out`), `Report debug log: <file>` | the debug log (mitcad#269): started and stopped (the file's own first and last lines too), Preferences' switch, the indicator, Help > Open Log Folder (with `MITCAD_TEST_LOG_URLS` the folder's address is logged, not opened), a report's recent log lines and log file |
 | `Wait cursor on: set_parameter (depth 1)`, `Wait cursor off: set_parameter (depth 1)`, `Wait cursor at idle: none set`, `Wait cursor left on after <job>: cleared` (a warning; ` (2 override cursors)`), `Wait cursor left on for a test: test hook` | the wait cursor of a job the window waits for (mitcad#268): set, and restored once by the progress dialog or at the wait's end (N counts the waits holding one, nested waits too); the first idle check after a wait; the idle recovery of one left on; the test hook (`MITCAD_TEST_WAIT_CURSOR=1`) |
+| `Style: <style> Chrome: floating (the preference)` (`(--chrome)`, `(--chrome; the preference floating)`, `(the platform's default)`), `Layout preference: floating (restart asked)` (`(in use)`: the window's layout already), `Layout restart: now` (`later (floating at the next start)`), `Restart: closing the window`, `Restart cancelled: Mitcad stayed open`, `Restart (test, not started): <program> <arguments>` (`MITCAD_TEST_NO_RESTART=1`), `Restart: <program> <arguments>`, `Restart: started <program> (process <pid>)` | the layout preference and the restart (mitcad#419; `tools/ui-chrome-layout-test.sh`, `tools/ui-windows-chrome-layout-test.ps1`) |
+| `Floating cards: window 1280x800, top bar bottom 140; projectsDock 12,152 260x200; browserDock 12,360 260x300; timelineDock 12,740 1256x48; commandDock 968,268 300x200` | the Floating layout's visible cards (main window coordinates, also for cards that are windows) and the bottom of the bar above them (the menu bar, the header), when it changed (mitcad#419: no card's top above the bar's bottom) |
 
 Test logs are switched on by environment variables
 (`framework/Diagnostics.hpp`): `MITCAD_LOG_PICKS`, `MITCAD_LOG_VOLUMES`

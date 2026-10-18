@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# check-all sources: app/files
+# check-all sources: app/files app/library
 # Component libraries (mitcad#64) and the community library (mitcad#63)
 # through the real UI, with local git repositories only (no network):
 #   1. Publish to Library: the demo block added to a new library of one's
@@ -23,6 +23,10 @@
 #   6. A source that is no library: Fetch All in Libraries... and Update in
 #      the browser fetch the others and report it in one warning; Update
 #      searches again and keeps the selected part.
+#   7. The part picker's grid in Insert from Library (mitcad#418): In this
+#      design lists the screw, a group (Screws), a search inside it, a star
+#      (the nut first in All parts), Favourites, a part inserted from
+#      there, and In this design after the placement.
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
 # Usage: tools/ui-library-test.sh
@@ -253,6 +257,50 @@ ui_expect_new "Library browser kept the selection component|" "the selection kep
 ui_focus_dialog '^Fetch Libraries$'
 ui_step "close the warning (Return)"       ui_key Return
 ui_focus_dialog '^Insert from Library$'
+ui_step "close (Escape)"                   ui_key Escape
+ui_focus_main
+
+echo "--- 7. The part picker in Insert from Library (mitcad#418)"
+ui_mark
+ui_step "Insert from Library (command search)" ui_command "Insert from Library"
+ui_focus_dialog '^Insert from Library$'
+ui_expect_new "Part picker opened: " "the results as the picker's grid"
+ui_expect_new "Part picker in this design: " "the design's library parts read"
+ui_expect_new "mitcad-parts/iso4762 x1" "the inserted screw in this design, once"
+ui_mark
+ui_step "the group Screws (Alt+O, S)"      eval 'ui_key alt+o; ui_sync; xdotool type --delay 40 "S"'
+ui_expect_new "Part picker group Screws: 1 parts, first mitcad-parts/iso4762" "only the screws"
+ui_mark
+ui_step "search 4032 in Screws"            eval 'ui_key alt+s; ui_sync; xdotool type --delay 40 "4032"'
+ui_expect_new "Library search '4032': 1 components" "the search"
+ui_expect_new "Part picker group Screws: 0 parts, first -" "the nut is not a screw"
+ui_step "clear the search"                 eval 'ui_key ctrl+a; ui_key BackSpace'
+ui_mark
+ui_step "All parts (Alt+O, A)"             eval 'ui_key alt+o; ui_sync; xdotool type --delay 40 "A"'
+ui_expect_new "Part picker group All parts: " "every part"
+ui_step "search hexagon nut"               eval 'ui_key alt+s; ui_sync; xdotool type --delay 40 "hexagon nut"'
+ui_expect_new "Library browser selected mitcad-parts/iso4032: version " "the nut chosen in the grid"
+ui_mark
+ui_step "star it (Ctrl+D)"                 ui_key ctrl+d
+ui_expect_new "Part picker star iso4032 on" "the nut starred"
+ui_mark
+ui_step "clear the search"                 eval 'ui_key ctrl+a; ui_key BackSpace'
+ui_expect_new "Library search '': " "every part again"
+ui_expect_new "first mitcad-parts/iso4032" "the starred nut first"
+ui_mark
+ui_step "Favourites (Alt+O, F)"            eval 'ui_key alt+o; ui_sync; xdotool type --delay 40 "F"'
+ui_expect_new "Part picker group Favourites: 1 parts, first mitcad-parts/iso4032" "Favourites has the nut"
+ui_step "Insert (Alt+I)"                   ui_key alt+i
+ui_focus_main
+ui_expect_new "Part picker chose mitcad-parts/iso4032" "chosen in the picker"
+ui_expect_new "Inserted component ISO 4032 M5 (linked) from mitcad-parts " "the nut inserted"
+ui_mark
+ui_step "Insert from Library again"        ui_command "Insert from Library"
+ui_focus_dialog '^Insert from Library$'
+ui_expect_new "mitcad-parts/iso4032 x" "the nut in this design after the placement"
+ui_mark
+ui_step "In this design (Alt+O, I)"        eval 'ui_key alt+o; ui_sync; xdotool type --delay 40 "I"'
+ui_expect_new "Part picker group In this design: " "the design's parts as a group"
 ui_step "close (Escape)"                   ui_key Escape
 ui_focus_main
 

@@ -5,15 +5,19 @@
 #include <cmath>
 #include <functional>
 #include <utility>
+#include <vector>
 
 #include <QApplication>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QHelpEvent>
 #include <QIconEngine>
+#include <QItemSelectionModel>
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QPen>
+#include <QPersistentModelIndex>
 #include <QScrollBar>
 #include <QSet>
 #include <QStyledItemDelegate>
@@ -60,6 +64,9 @@ constexpr int kLinkedRole = Qt::UserRole + 3;
 constexpr int kGap = 4;
 // The browser's width when it opens (mitcad#10).
 constexpr int kDefaultWidth = 240;
+// With the Rows background (mitcad#419), the room in a row's box after its
+// name or radio button.
+constexpr int kBoxPadding = 8;
 // The indentation per level, which is also the width the style centres a
 // branch's arrow in: the side panels' common one (framework/PanelTree.hpp).
 constexpr int kIndentation = panel::kTreeIndentation;
@@ -234,12 +241,16 @@ private:
 // row is a rounded band of the accent colour (translucent) behind the whole
 // row, with its text in semibold, instead of the style's highlight (the
 // tree's palette makes that one transparent).
+// With the Rows background (mitcad#419) the row's box shows the selection
+// and the pointer instead (BrowserTree::drawRow).
 class SidebarDelegate : public BrowserDelegate {
 public:
   using BrowserDelegate::BrowserDelegate;
 
+  void setRows(bool rows) { m_rows = rows; }
+
   void paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override {
-    if (option.state.testFlag(QStyle::State_Selected)) {
+    if (!m_rows && option.state.testFlag(QStyle::State_Selected)) {
       QColor fill = accentColor(option.palette);
       fill.setAlphaF(option.state.testFlag(QStyle::State_Active) ? 0.30f : 0.16f);
       const QRect cell = option.rect;
@@ -280,7 +291,13 @@ protected:
       option->font.setWeight(QFont::DemiBold);
       option->fontMetrics = QFontMetrics(option->font);
     }
+    if (m_rows) {
+      option->state &= ~QStyle::State_MouseOver; // the box shows it
+    }
   }
+
+private:
+  bool m_rows = false;
 };
 
 // The rows of the tree in a Docked panel (mitcad#251): at least the panels'
@@ -439,6 +456,9 @@ public:
         m_delegate(chromeStyle() == ChromeStyle::Floating ? static_cast<BrowserDelegate*>(new SidebarDelegate(this))
                                                           : static_cast<BrowserDelegate*>(new PanelDelegate(this))) {
     setItemDelegate(m_delegate);
+    if (chromeStyle() == ChromeStyle::Floating) {
+      m_sidebar = static_cast<SidebarDelegate*>(m_delegate);
+    }
     m_renameTimer.setSingleShot(true);
     QObject::connect(&m_renameTimer, &QTimer::timeout, this, [this] { emit m_panel.renameClicked(m_renameNode); });
     TestSync::watch(&m_renameTimer); // UI tests wait for the rename to start
@@ -469,7 +489,64 @@ public:
     return m_delegate->parts(option, index);
   }
 
+  // The Rows background (mitcad#419): each row on a box of its own.
+  void setRows(bool rows) {
+    m_rows = rows;
+    if (m_sidebar != nullptr) {
+      m_sidebar->setRows(rows);
+    }
+    // The pointer's row is followed without a button (setHover).
+    if (rows) {
+      m_tracking = viewport()->hasMouseTracking();
+      viewport()->setMouseTracking(true);
+    } else {
+      viewport()->setMouseTracking(m_tracking);
+    }
+    setHover(QModelIndex());
+    viewport()->update();
+  }
+
+  // The row under the pointer, whose box is tinted.
+  void setHover(const QModelIndex& index) {
+    if (m_hover == index) {
+      return;
+    }
+    m_hover = index;
+    if (m_rows) {
+      viewport()->update();
+    }
+  }
+
+  // A row's box with the Rows background, in the viewport's coordinates:
+  // from its arrow's place before it to the end of its name or radio
+  // button, a little shorter than the row so that the view shows between
+  // rows. Empty for a row not laid out.
+  QRect rowBox(const QModelIndex& index) const {
+    const QRect cell = visualRect(index);
+    if (cell.isEmpty()) {
+      return QRect();
+    }
+    QStyleOptionViewItem option;
+    initViewItemOption(&option);
+    option.rect = cell;
+    if (selectionModel() != nullptr && selectionModel()->isSelected(index)) {
+      option.state |= QStyle::State_Selected; // its name in semibold is wider
+    }
+    const BrowserDelegate::Parts parts = m_delegate->parts(option, index);
+    const int end = std::max(parts.name.right(), parts.radio.isEmpty() ? parts.name.right() : parts.radio.right());
+    const int left = cell.left() - indentation() + 2;
+    const int right = std::min(end + kBoxPadding, viewport()->width() - 1);
+    return QRect(QPoint(left, cell.top() + 2), QPoint(std::max(left, right), cell.bottom() - 2));
+  }
+
 protected:
+  void drawRow(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override {
+    if (m_rows) {
+      paintRowBox(painter, option, index);
+    }
+    QTreeWidget::drawRow(painter, option, index);
+  }
+
   void mousePressEvent(QMouseEvent* event) override {
     cancelSlowClick();
     const QPoint at = event->position().toPoint();
@@ -564,6 +641,40 @@ protected:
   }
 
 private:
+  // A row's box (rowBox): the card's material, tinted with the accent colour
+  // when the row is selected (less when the window is not active, as the
+  // sidebar's band) and lightly when the pointer is on it. Under the
+  // row's arrow, which the tree draws after it.
+  void paintRowBox(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const {
+    const QRect box = rowBox(index);
+    if (box.isEmpty()) {
+      return;
+    }
+    const QPalette& colors = palette();
+    const qreal hairline = 1.0 / devicePixelRatioF();
+    const QRectF outline = QRectF(box).adjusted(hairline / 2, hairline / 2, -hairline / 2, -hairline / 2);
+    const qreal radius = GlassCard::kBoxRadius;
+    painter->save();
+    painter->setRenderHint(QPainter::Antialiasing);
+    painter->setPen(QPen(cardBorderColor(colors), hairline));
+    painter->setBrush(cardFillColor(colors));
+    painter->drawRoundedRect(outline, radius, radius);
+    QColor tint;
+    if (selectionModel() != nullptr && selectionModel()->isSelected(index)) {
+      tint = accentColor(colors);
+      tint.setAlphaF(option.state.testFlag(QStyle::State_Active) ? 0.30f : 0.16f);
+    } else if (m_hover == index) {
+      tint = colors.color(QPalette::Text);
+      tint.setAlphaF(0.08f);
+    }
+    if (tint.isValid()) {
+      painter->setPen(Qt::NoPen);
+      painter->setBrush(tint);
+      painter->drawRoundedRect(outline, radius, radius);
+    }
+    painter->restore();
+  }
+
   // Clicks the light bulb or the radio button at a point; false when there
   // is none.
   bool clickPart(const QPoint& at, bool doubleClick) {
@@ -589,6 +700,12 @@ private:
 
   BrowserPanel& m_panel;
   BrowserDelegate* m_delegate;
+  SidebarDelegate* m_sidebar = nullptr; // the Floating layout's
+  // The Rows background (mitcad#419): on, the row under the pointer, and
+  // whether the viewport tracked the mouse before.
+  bool m_rows = false;
+  QPersistentModelIndex m_hover;
+  bool m_tracking = false;
   // A press (or double-click) consumed by a light bulb or radio button: its
   // moves and release are consumed too (mitcad#344).
   bool m_partPress = false;
@@ -665,6 +782,103 @@ BrowserPanel::BrowserPanel(QWidget* parent) : QWidget(parent), m_tree(new Browse
           [remember](QTreeWidgetItem* item) { remember(item, true); });
   connect(m_tree, &QTreeWidget::itemCollapsed, this,
           [remember](QTreeWidgetItem* item) { remember(item, false); });
+
+  // With the Rows background (mitcad#419), where the rows' boxes are
+  // follows every change of the rows in sight.
+  const auto rowsMoved = [this] { queueRowsRegion(); };
+  for (QScrollBar* bar : {m_tree->verticalScrollBar(), m_tree->horizontalScrollBar()}) {
+    connect(bar, &QScrollBar::valueChanged, this, rowsMoved);
+    connect(bar, &QScrollBar::rangeChanged, this, rowsMoved);
+    bar->installEventFilter(this); // shown and hidden
+  }
+  connect(m_tree, &QTreeWidget::itemExpanded, this, rowsMoved);
+  connect(m_tree, &QTreeWidget::itemCollapsed, this, rowsMoved);
+  connect(m_tree, &QTreeWidget::itemSelectionChanged, this, rowsMoved);
+  QAbstractItemModel* model = m_tree->model();
+  connect(model, &QAbstractItemModel::rowsInserted, this, rowsMoved);
+  connect(model, &QAbstractItemModel::rowsRemoved, this, rowsMoved);
+  connect(model, &QAbstractItemModel::modelReset, this, rowsMoved);
+  connect(model, &QAbstractItemModel::layoutChanged, this, rowsMoved);
+  connect(model, &QAbstractItemModel::dataChanged, this, rowsMoved);
+  // Its size, a rename editor opened and closed, and the pointer's row.
+  m_tree->viewport()->installEventFilter(this);
+}
+
+void BrowserPanel::setRowsBackground(bool rows) {
+  if (rows == m_rows) {
+    return;
+  }
+  m_rows = rows;
+  m_tree->setRows(rows);
+  queueRowsRegion();
+  // The place beside the rows is logged, or logged out of sight.
+  TestSync::singleShot(0, this, [this] { logLayout(); });
+}
+
+QRegion BrowserPanel::rowsRegion() const {
+  QRegion region;
+  const QWidget* viewport = m_tree->viewport();
+  const QRect inside = viewport->rect();
+  const QPoint origin = viewport->mapTo(this, QPoint(0, 0));
+  for (QModelIndex index = m_tree->indexAt(QPoint(0, 0)); index.isValid(); index = m_tree->indexBelow(index)) {
+    const QRect row = m_tree->visualRect(index);
+    if (row.top() > inside.bottom()) {
+      break;
+    }
+    region += m_tree->rowBox(index).intersected(inside).translated(origin);
+  }
+  for (const QScrollBar* bar : {m_tree->verticalScrollBar(), m_tree->horizontalScrollBar()}) {
+    if (bar->isVisible()) {
+      region += QRect(bar->mapTo(this, QPoint(0, 0)), bar->size());
+    }
+  }
+  // A rename editor, as wide as the row.
+  for (const QWidget* child : viewport->findChildren<QWidget*>(Qt::FindDirectChildrenOnly)) {
+    if (child->isVisible()) {
+      region += child->geometry().translated(origin);
+    }
+  }
+  return region;
+}
+
+void BrowserPanel::queueRowsRegion() {
+  if (!m_rows || m_rowsQueued) {
+    return;
+  }
+  m_rowsQueued = true;
+  // After the tree has laid out the change (its rows' layout is delayed).
+  TestSync::singleShot(0, this, [this] {
+    m_rowsQueued = false;
+    if (m_rows) {
+      emit rowsRegionChanged();
+      logLayout(); // the place beside the rows may have moved
+    }
+  });
+}
+
+bool BrowserPanel::eventFilter(QObject* watched, QEvent* event) {
+  if (watched == m_tree->viewport()) {
+    switch (event->type()) {
+    case QEvent::Resize:
+    case QEvent::ChildAdded:
+    case QEvent::ChildRemoved:
+      queueRowsRegion();
+      break;
+    case QEvent::MouseMove:
+      if (m_rows) {
+        m_tree->setHover(m_tree->indexAt(static_cast<QMouseEvent*>(event)->position().toPoint()));
+      }
+      break;
+    case QEvent::Leave:
+      m_tree->setHover(QModelIndex());
+      break;
+    default:
+      break;
+    }
+  } else if (event->type() == QEvent::Show || event->type() == QEvent::Hide) {
+    queueRowsRegion(); // a scroll bar
+  }
+  return QWidget::eventFilter(watched, event);
 }
 
 QSize BrowserPanel::sizeHint() const { return QSize(kDefaultWidth, QWidget::sizeHint().height()); }
@@ -1535,6 +1749,28 @@ void BrowserPanel::logLayout() {
     // A feature row whose result is in another component (mitcad#177).
     if (const QString linked = item->data(kName, kLinkedRole).toString(); !linked.isEmpty()) {
       lines << QStringLiteral("Browser linked %1 to %2").arg(node.path, linked);
+    }
+  }
+  if (m_rows) {
+    // With the Rows background (mitcad#419): a place right of every row's
+    // box, at the middle row in sight, where a click reaches the 3D view.
+    int right = -1;
+    std::vector<QRect> whole; // the boxes of rows whose middle is in sight
+    for (QModelIndex index = m_tree->indexAt(QPoint(0, 0)); index.isValid(); index = m_tree->indexBelow(index)) {
+      const QRect row = m_tree->visualRect(index);
+      if (row.top() > viewport.bottom()) {
+        break;
+      }
+      const QRect box = m_tree->rowBox(index);
+      right = std::max(right, box.right());
+      if (viewport.contains(row.center())) {
+        whole.push_back(box);
+      }
+    }
+    if (!whole.empty() && viewport.right() - right > 16) {
+      const QRect middle = whole[whole.size() / 2];
+      place(QStringLiteral("Browser view beside the rows"),
+            QRect(QPoint(right + 1, middle.top()), QPoint(viewport.right(), middle.bottom())));
     }
   }
   const QString logged = lines.join(QLatin1Char('\n'));

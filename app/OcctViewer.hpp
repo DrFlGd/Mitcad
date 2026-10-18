@@ -7,6 +7,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -79,7 +80,9 @@ struct BodyDisplay {
     Normal,
     New, // a body the previewed command makes: see-through blue, not pickable
     // A body a command picks through (mitcad#147): see-through in its own
-    // colour, not pickable. setGhosts() draws whole occurrences so.
+    // colour, not pickable. setGhosts() draws whole occurrences so;
+    // setActiveScope() draws inactive components with the same look, but
+    // pickable (mitcad#420).
     Ghost,
   };
   std::string uid;
@@ -325,6 +328,41 @@ public:
   // a click goes to what lies behind. Logs "View ghosts: ..." when the
   // list changes.
   void setGhosts(const QStringList& occurrences);
+  // What the view draws normally while a component other than the root is
+  // active (mitcad#420): the bodies, sketches, profiles and construction
+  // items of `occurrences` (the active component's occurrences, paths from
+  // the root, `O1/O4`) and of the occurrences inside them, and the items
+  // whose owners `normal` names (the sketch being edited, the origin's
+  // datums, which are the active component's own). Everything else is an
+  // inactive ghost: bodies see-through in their own colour (as setGhosts()
+  // draws them), lines, points and planes pale. Unlike setGhosts()' ghosts
+  // they stay pickable as references, with the hover and highlights of any
+  // item (after the active component's own: setActivePickPriority()); a
+  // body that a command ghosts too is drawn once, as the command's
+  // ghost. Not `on` (the root active): everything is drawn normally.
+  struct ActiveScope {
+    bool on = false;
+    QStringList occurrences;
+    QStringList normal;
+    QString name; // the active component's occurrences, for the log
+    bool operator==(const ActiveScope& other) const {
+      return on == other.on && occurrences == other.occurrences && normal == other.normal && name == other.name;
+    }
+  };
+  // Logs "View inactive ghosts: <n> bodies (active <name>)" or "View
+  // inactive ghosts: none" when that changes.
+  void setActiveScope(const ActiveScope& scope);
+  // Preferences' Ghost Inactive Components (`view/ghostInactive`, default
+  // on): off draws everything normally whatever the scope.
+  void setGhostInactive(bool on);
+  // Preferences' Pick the Active Component First (`view/activePickPriority`,
+  // default on; mitcad#420): while the scope is on, a click, a command's
+  // pick and the hover take the nearest item of the active component under
+  // the cursor before nearer items of other components (PickContext.hpp's
+  // setPickPriority); where none of its items is under the cursor, the
+  // others are taken as usual. Logs "Pick priority: active <name>" when a
+  // click took such an item before a nearer other one.
+  void setActivePickPriority(bool on);
 
   // The rendered view (docs/rendering.md): the image fills the view
   // (stretched; a frame that refines is smaller) over the bodies, which
@@ -488,6 +526,12 @@ signals:
   // OCCT's highlight, whose lines are one pixel wide on macOS. Emitted while
   // the view paints: connect queued.
   void hovered(const mitcad::SelectionItem& item);
+  // The point under the mouse moved on what a click would pick: the item
+  // with `at` where the mouse is now (in its component's coordinates), or
+  // an invalid item when the mouse left the view (mitcad#417: BUILD shows
+  // an end click's part before the click). Emitted while the view paints:
+  // connect queued.
+  void hoverMoved(const mitcad::SelectionItem& item);
   // A right click; `item` is what lies under the mouse (invalid if nothing).
   void contextMenuRequested(const QPoint& globalPosition, const mitcad::SelectionItem& item);
   // A right click on the orientation cube.
@@ -553,6 +597,9 @@ private:
     std::vector<BodyDisplay::FaceLook> faceLooks;
     // A normal body drawn as a ghost by setGhosts() (`style` is Ghost).
     bool ghosted = false;
+    // Outside the active component (setActiveScope): a normal body is drawn
+    // as a ghost that stays pickable (`style` stays Normal).
+    bool inactive = false;
     // The hidden-edge styles' edges: dashed through faces, solid in sight.
     occ::handle<AIS_Shape> hiddenEdges;
     occ::handle<AIS_Shape> visibleEdges;
@@ -571,6 +618,28 @@ private:
   void removeBody(BodyEntry& entry);
   // Whether setGhosts() names an occurrence or one it lies in.
   bool isGhosted(const QString& occurrence) const;
+  // Inactive ghosts (setActiveScope, mitcad#420): whether what an occurrence
+  // places lies outside the active component, and whether an item (a
+  // sketch entity, profile or datum) is drawn as one.
+  bool isInactive(const QString& occurrence) const;
+  bool isInactiveItem(const SelectionItem& item) const;
+  // The same by the scope alone, whatever the setting (the pick priority).
+  bool outsideActive(const QString& occurrence) const;
+  bool outsideActive(const SelectionItem& item) const;
+  // Draws the bodies, sketch entities, profiles and datums by the scope
+  // and the setting again; `faded` restyles the pale ones too (their
+  // colour follows the background).
+  void applyInactiveGhosts(bool faded = false);
+  // Marks an object as drawn pale or not; true when that changed.
+  bool markInactive(const occ::handle<AIS_Shape>& object, bool inactive);
+  bool drawnInactive(const occ::handle<AIS_Shape>& object) const {
+    return m_inactiveObjects.count(object.get()) != 0;
+  }
+  // A profile's and a datum's look, pale when drawnInactive(); a datum's
+  // display mode.
+  void styleProfile(const occ::handle<AIS_Shape>& profile) const;
+  int styleDatum(const occ::handle<AIS_Shape>& object, SelectKind kind) const;
+  void logInactiveGhosts();
   // The rendered mode's layer for a body, and its edges hidden under a
   // rendered image.
   void applyRenderedVisibility(BodyEntry& entry);
@@ -696,6 +765,13 @@ private:
   occ::handle<SelectMgr_Filter> m_pickFilter;
   std::map<std::string, BodyEntry> m_bodies;
   QStringList m_ghosts; // setGhosts()
+  // Inactive ghosts (mitcad#420): the scope, the setting, the sketch
+  // entities, profiles and datums drawn pale, and the log line last written.
+  ActiveScope m_activeScope;
+  bool m_ghostInactive = true;
+  bool m_activePickPriority = true; // setActivePickPriority()
+  std::set<const AIS_InteractiveObject*> m_inactiveObjects;
+  QString m_loggedInactiveGhosts = QStringLiteral("none");
   std::map<ProfileKey, occ::handle<AIS_Shape>> m_profiles;
   std::vector<occ::handle<AIS_Shape>> m_sketchEntities;
   // The shown sketch entities by "<sketch>/<id>@<occurrence>", with their
@@ -829,6 +905,10 @@ private:
   QString m_restingCamera; // the camera when the rest timer started
   // What the mouse was last over, for hovered().
   occ::handle<SelectMgr_EntityOwner> m_hoveredOwner;
+  // Where the mouse was last on it, for hoverMoved(), and whether it moved
+  // over the view since the last frame.
+  std::optional<std::array<double, 3>> m_hoveredPoint;
+  bool m_hoverMoved = false;
   // The hover's colour, and the rest of the hovered tangent chain
   // (setHoverChain, mitcad#290).
   QColor m_hoverColor = QColor(0x2f, 0x9b, 0xff);

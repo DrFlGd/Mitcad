@@ -608,9 +608,8 @@ void BrowserController::newComponent(const BrowserNode& node) {
     // It is made in the component the menu was opened on.
     commands.append(cmd("activate_component", {{QStringLiteral("component"), node.uid}}));
   }
-  // A part (mitcad#220): its own sketches and features, no components
-  // nested in it by accident.
-  commands.append(cmd("create_component", {{QStringLiteral("policy"), QStringLiteral("part")}}));
+  // With the general defaults, everything allowed (mitcad#421).
+  commands.append(cmd("create_component"));
   if (m_host.runModelCommands(commands, tr("New Component"))) {
     qDebug().noquote() << QStringLiteral("New component in %1").arg(node.name);
   }

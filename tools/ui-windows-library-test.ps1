@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-# check-all sources: app/files tools/cli
+# check-all sources: app/files app/library tools/cli
 # Input-driven Windows UI test of the library browser's Update button
 # (mitcad#317) in the build VM (tools/ui-windows-lib.ps1 says how the input
 # is posted); the Linux test is tools/ui-library-test.sh (parts 2b and 6).
@@ -11,6 +11,9 @@
 #      fetches the source and lists the block.
 #   3. A source that is no library added: Update fetches the other, says so
 #      in one warning, searches again and keeps the selected block.
+#   4. The part picker's grid (mitcad#418): the group Blocks, a search
+#      inside it, a star, Favourites, the block inserted from there and In
+#      this design with it.
 #
 # Usage: powershell -ExecutionPolicy Bypass -File tools\ui-windows-library-test.ps1 [-App build\dev\mitcad.exe] [-Out dir] [-QtBin dir]
 param(
@@ -125,6 +128,41 @@ Ui-ExpectNew 'Library browser kept the selection component|' 'the search ran aga
 Ui-FocusDialog '^Fetch Libraries$'
 Ui-Step 'close the warning (Return)'     { Ui-Key 'Return' }
 Ui-FocusDialog '^Insert from Library$'
+Ui-Step 'close (Escape)'                 { Ui-Key 'Escape' }
+Ui-FocusMain
+
+Write-Host '--- 4. The part picker: a group, a search, a star, Favourites, In this design (mitcad#418)'
+Ui-Mark
+Ui-Step 'Insert from Library (F9)'       { Ui-Key 'F9' }
+Ui-FocusDialog '^Insert from Library$'
+Ui-ExpectNew 'Part picker opened: 1 parts for Insert from Library' 'the results as the picker grid'
+Ui-ExpectNew 'Part picker in this design: 0 parts' 'no library part in the design yet'
+Ui-Mark
+Ui-Step 'the group Blocks (Alt+O, B)'    { Ui-Key 'alt+o'; Ui-Type 'B' }
+Ui-ExpectNew 'Part picker group Blocks: 1 parts, first test-blocks/block' 'the group'
+Ui-Mark
+Ui-Step 'search for nothing (Alt+S)'     { Ui-Key 'alt+s'; Ui-Type 'nosuchpart' }
+Ui-ExpectNew "Library search 'nosuchpart': 0 components" 'the search'
+Ui-ExpectNew 'Part picker group Blocks: 0 parts, first -' 'nothing in the group'
+Ui-Mark
+Ui-Step 'clear the search'               { Ui-Key 'ctrl+a'; Ui-Key 'BackSpace' }
+Ui-ExpectNew 'Part picker group Blocks: 1 parts, first test-blocks/block' 'the block again'
+Ui-ExpectNew 'Library browser selected test-blocks/block: version ' 'the block chosen in the grid'
+Ui-Mark
+Ui-Step 'star it (Ctrl+D)'               { Ui-Key 'ctrl+d' }
+Ui-ExpectNew 'Part picker star block on' 'the block starred'
+Ui-Mark
+Ui-Step 'Favourites (Alt+O, F)'          { Ui-Key 'alt+o'; Ui-Type 'F' }
+Ui-ExpectNew 'Part picker group Favourites: 1 parts, first test-blocks/block' 'Favourites has the block'
+Ui-Step 'Insert (Alt+I)'                 { Ui-Key 'alt+i' }
+Ui-FocusMain
+Ui-ExpectNew 'Part picker chose test-blocks/block' 'chosen in the picker'
+Ui-ExpectNew 'Inserted component Test block (linked) from test-blocks ' 'the block inserted'
+Ui-Mark
+Ui-Step 'Insert from Library (F9)'       { Ui-Key 'F9' }
+Ui-FocusDialog '^Insert from Library$'
+Ui-ExpectNew 'Part picker in this design: 1 parts: test-blocks/block x1' 'the block in this design'
+Ui-ExpectNew 'Part picker group All parts: 1 parts, first test-blocks/block' 'All parts again'
 Ui-Step 'close (Escape)'                 { Ui-Key 'Escape' }
 Ui-FocusMain
 

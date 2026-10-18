@@ -786,6 +786,9 @@ void MainWindow::startF3dImport(const QString& path, const QJsonObject& rerun) {
             // (The import's object goes once this returns: no import runs
             // from now on, and one may start again, mitcad#379.)
             const QJsonObject options = m_import ? m_import->options() : QJsonObject();
+            // (Its folder lasts while the import's object does: until this
+            // returns.)
+            const QString handedOver = m_import ? m_import->handedOverResults() : QString();
             m_import.clear();
             if (!ok) {
               if (error.isEmpty()) {
@@ -798,14 +801,15 @@ void MainWindow::startF3dImport(const QString& path, const QJsonObject& rerun) {
               sheetWarning(this, tr("Import"), message);
               return;
             }
-            // The process computed the design; this one reads and computes
-            // it again, with progress and cancel.
+            // The process computed the design; this one reads it, with
+            // progress and cancel, and takes the results the process handed
+            // over rather than evaluating the features again (mitcad#413).
             QString reason;
             const DocumentMaker read = [&](ModelJob& job) {
               job.setStage(tr("Reading the imported %1").arg(name));
               return load_document(rustStr(project));
             };
-            if (!installDocument(name, QString(), read, reason)) {
+            if (!installDocument(name, QString(), read, reason, handedOver)) {
               if (reason.isEmpty()) {
                 qInfo().noquote() << QStringLiteral("Opening the imported %1 cancelled").arg(name);
                 showHint(tr("Import of %1 cancelled.").arg(name));

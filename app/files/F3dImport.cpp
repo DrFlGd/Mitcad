@@ -285,11 +285,16 @@ int runImportWorker(int argc, char* argv[]) {
                                  QStringLiteral("folder"));
   const QCommandLineOption minMs(QStringLiteral("persist-min-ms"), QStringLiteral("Milliseconds"),
                                  QStringLiteral("ms"));
+  // The import's evaluation handed over (mitcad#413): every result a
+  // store takes, however quick, goes to this store of the import's own,
+  // which the application reads the design with.
+  const QCommandLineOption handOff(QStringLiteral("hand-off-store"), QStringLiteral("Hand-off store folder"),
+                                   QStringLiteral("folder"));
   // More options of the import (JSON): the files of the documents the
   // design refers to that the user chose (mitcad#196).
   const QCommandLineOption more(QStringLiteral("import-options"), QStringLiteral("Import options (JSON)"),
                                 QStringLiteral("file"));
-  parser.addOptions({worker, output, result, store, minMs, more});
+  parser.addOptions({worker, output, result, store, minMs, handOff, more});
   parser.process(app);
   const QByteArray path = parser.value(worker).toUtf8();
 
@@ -382,9 +387,15 @@ int runImportWorker(int argc, char* argv[]) {
   endQuestions();
   // A stop from now on has nothing to stop.
   document->detach_job();
+  const QByteArray label = QFileInfo(QString::fromUtf8(path)).fileName().toUtf8();
+  if (parser.isSet(handOff)) {
+    const QJsonObject handed = parseObject(document->hand_off_results(
+        rustStr(parser.value(handOff).toUtf8()), rustStr(resultStoreBuildId().toUtf8()), rustStr(label)));
+    std::printf("import-handed-over %d\n", handed.value(QStringLiteral("results")).toInt());
+    std::fflush(stdout);
+  }
   if (parser.isSet(store)) {
     const QByteArray folder = parser.value(store).toUtf8();
-    const QByteArray label = QFileInfo(QString::fromUtf8(path)).fileName().toUtf8();
     document->set_result_store(rustStr(folder), rustStr(resultStoreBuildId().toUtf8()), rustStr(label));
     const QJsonObject persisted = parseObject(document->persist_results(parser.value(minMs).toDouble()));
     std::printf("import-stored %d\n", persisted.value(QStringLiteral("results")).toInt());
@@ -463,6 +474,9 @@ void F3dImport::start() {
   QStringList arguments{QStringLiteral("--import-worker"), m_path, QStringLiteral("--output"),
                         m_dir.filePath(QStringLiteral("import.mitcad")), QStringLiteral("--result"),
                         m_dir.filePath(QStringLiteral("result.json"))};
+  // The import's evaluation comes back in a store of its own (mitcad#413),
+  // whether the user's store is on or not.
+  arguments << QStringLiteral("--hand-off-store") << m_dir.filePath(QStringLiteral("results"));
   // The worker has no application name for the user's folders: it is
   // told where the result store is (P7d).
   if (const QString store = resultStoreDirectory(); !store.isEmpty()) {
@@ -554,31 +568,24 @@ QJsonObject F3dImport::askReferences() {
 
 QJsonObject F3dImport::askRvtLinks() {
   QJsonObject files;
-  QStringList asked;
   QString folder = QFileInfo(m_path).absolutePath();
   const QString project = QFileInfo(m_path).fileName();
-  for (;;) {
-    // Listed again after each chosen file (the links are found by name).
-    QJsonObject listed;
-    try {
-      const QJsonObject options{{QStringLiteral("list_links"), true}, {QStringLiteral("link_files"), files}};
-      listed = parseObject(new_document()->import_rvt(rustStr(m_path.toUtf8()), rustStr(compactJson(options))));
-    } catch (const std::exception& e) {
-      // The import itself says what is wrong with the file.
-      qInfo().noquote() << QStringLiteral("Import links of %1 not listed: %2").arg(project, QString::fromUtf8(e.what()));
-      break;
-    }
-    QString missing;
-    for (const QJsonValue& value : listed.value(QStringLiteral("links")).toArray()) {
-      const QJsonObject link = value.toObject();
-      const QString name = link.value(QStringLiteral("file")).toString();
-      if (!link.value(QStringLiteral("found")).isString() && !name.isEmpty() && !asked.contains(name)) {
-        missing = name;
-        break;
-      }
-    }
-    if (missing.isEmpty()) {
-      break;
+  // Listed once (mitcad#413: each listing reads the project): a link is
+  // found by its own name, so a file chosen for one finds no other.
+  QJsonObject listed;
+  try {
+    const QJsonObject options{{QStringLiteral("list_links"), true}};
+    listed = parseObject(new_document()->import_rvt(rustStr(m_path.toUtf8()), rustStr(compactJson(options))));
+  } catch (const std::exception& e) {
+    // The import itself says what is wrong with the file.
+    qInfo().noquote() << QStringLiteral("Import links of %1 not listed: %2").arg(project, QString::fromUtf8(e.what()));
+  }
+  QStringList asked;
+  for (const QJsonValue& value : listed.value(QStringLiteral("links")).toArray()) {
+    const QJsonObject link = value.toObject();
+    const QString missing = link.value(QStringLiteral("file")).toString();
+    if (link.value(QStringLiteral("found")).isString() || missing.isEmpty() || asked.contains(missing)) {
+      continue;
     }
     asked.append(missing);
     qInfo().noquote() << QStringLiteral("Links dialog: %1 of %2").arg(missing, project);
@@ -612,6 +619,11 @@ void F3dImport::readProgress() {
     m_errors.remove(0, end + 1);
     if (line.startsWith(QStringLiteral("import-items "))) {
       m_items = line.mid(13).toInt();
+      continue;
+    }
+    if (line.startsWith(QStringLiteral("import-handed-over "))) {
+      m_handedOver = line.mid(19).toInt();
+      qInfo().noquote() << QStringLiteral("Import handed over %1 results").arg(m_handedOver);
       continue;
     }
     if (line.startsWith(QStringLiteral("import-stored "))) {

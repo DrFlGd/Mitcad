@@ -549,6 +549,9 @@ enum Query {
     BuildCutList(build::CutListQuery),
     // The component BUILD places parts in (mitcad#394, `build.rs`).
     BuildHost,
+    // The library parts the design uses, with their counts, for the part
+    // picker (mitcad#418, `libraries.rs`).
+    LibraryUsage,
 }
 
 fn names(names: &[String]) -> Value {
@@ -1346,6 +1349,8 @@ impl<K: Kernel> Document<K> {
             Query::BuildJunctions(query) => self.build_junctions_json(&query)?,
             Query::BuildCutList(query) => self.build_cut_list_json(&query)?,
             Query::BuildHost => self.host_json(),
+            // The library parts the design uses (mitcad#418).
+            Query::LibraryUsage => self.library_usage_json(),
         };
         Ok(result.to_string())
     }

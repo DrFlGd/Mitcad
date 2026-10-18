@@ -410,6 +410,10 @@ void CommandSession::canonicalizeSelections() {
                  (item.kind == SelectKind::Face || item.kind == SelectKind::Edge ||
                   item.kind == SelectKind::Vertex || item.kind == SelectKind::Body)) {
         item.occurrence = m_host.bodyOccurrence(item.owner);
+      } else if (item.occurrence.isEmpty() &&
+                 (item.kind == SelectKind::Plane || item.kind == SelectKind::Axis ||
+                  item.kind == SelectKind::Point)) {
+        item.occurrence = m_host.datumOccurrence(item.owner);
       }
     }
     items = uniqueProfiles(items, resolve);

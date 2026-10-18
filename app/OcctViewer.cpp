@@ -1993,9 +1993,31 @@ void OcctViewer::setHighlights(const std::vector<HighlightDisplay>& highlights) 
   m_highlights.clear();
   QStringList bodies; // highlighted whole, for the log
   QStringList profiles; // "F1/r{...} 2 faces", for the log
+  // Where faces, edges, vertices and datums are highlighted, for UI tests
+  // ("face F2.b0/F2:side(c1) in O1 at 60.0,0.0,10.0": the middle of its
+  // bounding box in the design, mitcad#432).
+  const bool logPlaces = qEnvironmentVariableIsSet("MITCAD_LOG_PICKS");
+  QStringList places;
   for (const HighlightDisplay& highlight : highlights) {
     if (highlight.shape.IsNull()) {
       continue;
+    }
+    const SelectKind kind = highlight.item.kind;
+    if (logPlaces && (kind == SelectKind::Face || kind == SelectKind::Edge || kind == SelectKind::Vertex ||
+                      kind == SelectKind::Plane || kind == SelectKind::Axis || kind == SelectKind::Point)) {
+      Bnd_Box box;
+      BRepBndLib::Add(highlight.shape, box);
+      if (!box.IsVoid()) {
+        const gp_Pnt middle((box.CornerMin().XYZ() + box.CornerMax().XYZ()) / 2.0);
+        const SelectionItem& item = highlight.item;
+        places << QStringLiteral("%1 %2%3%4 at %5,%6,%7")
+                      .arg(SelectionItem::kindName(kind), item.owner,
+                           item.name.isEmpty() ? QString() : QStringLiteral("/") + item.name,
+                           item.occurrence.isEmpty() ? QString() : QStringLiteral(" in ") + item.occurrence)
+                      .arg(middle.X(), 0, 'f', 1)
+                      .arg(middle.Y(), 0, 'f', 1)
+                      .arg(middle.Z(), 0, 'f', 1);
+      }
     }
     if (highlight.item.kind == SelectKind::Body) {
       bodies << (highlight.item.occurrence.isEmpty()
@@ -2062,6 +2084,11 @@ void OcctViewer::setHighlights(const std::vector<HighlightDisplay>& highlights) 
   if (loggedProfiles != m_loggedProfileHighlights) {
     m_loggedProfileHighlights = loggedProfiles;
     qDebug().noquote() << QStringLiteral("View profile highlights: %1").arg(loggedProfiles);
+  }
+  const QString loggedPlaces = places.isEmpty() ? QStringLiteral("none") : places.join(QStringLiteral("; "));
+  if (logPlaces && loggedPlaces != m_loggedHighlightPlaces) {
+    m_loggedHighlightPlaces = loggedPlaces;
+    qDebug().noquote() << QStringLiteral("View highlight places: %1").arg(loggedPlaces);
   }
   sceneChanged();
 }

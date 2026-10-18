@@ -2648,6 +2648,11 @@ QString MainWindow::bodyOccurrence(const QString& body) const {
   return entry != m_snapshot.bodies.cend() ? m_snapshot.firstOccurrence(entry->component) : QString();
 }
 
+// As showDatums places it.
+QString MainWindow::datumOccurrence(const QString& datum) const {
+  return kOriginDatums.contains(datum) ? QString() : placingOccurrence(datum);
+}
+
 // The shown sketches (the browser's light bulbs, else the default rule:
 // DocumentSnapshot::featureShown), and the one being edited.
 void MainWindow::showSketches() {
@@ -2743,7 +2748,7 @@ void MainWindow::showDatums() {
       }
     }
     datums.push_back(display);
-    if (kOriginDatums.contains(uid) ? origin : (picks && display.occurrence.isEmpty())) {
+    if (kOriginDatums.contains(uid) ? origin : picks) {
       logged.append(datum);
     }
   }
@@ -2755,9 +2760,9 @@ void MainWindow::showDatums() {
 
 void MainWindow::logDatumPlaces() {
   // Where a click picks each datum (the origin's while they are shown;
-  // with MITCAD_LOG_PICKS also the root's construction features, at the
-  // first place tried where a click would pick the datum now), for UI
-  // tests.
+  // with MITCAD_LOG_PICKS also the construction features, at the first
+  // place tried where a click would pick the datum now; a component's
+  // "Datum F4 in O1 at x,y", where its occurrence places it), for UI tests.
   // Logged again when the camera comes to rest (the places move with it;
   // a place logged before the view was laid out is 0,0, mitcad#318).
   QStringList lines;
@@ -2765,6 +2770,7 @@ void MainWindow::logDatumPlaces() {
   for (const QJsonObject& datum : std::as_const(m_loggedDatums)) {
     const QString uid = datum.value(QStringLiteral("uid")).toString();
     const SelectKind kind = datumKind(datum.value(QStringLiteral("type")).toString());
+    const QString occurrence = datumOccurrence(uid);
     std::vector<gp_Pnt> candidates;
     if (kind == SelectKind::Plane && !kOriginDatums.contains(uid)) {
       // A construction plane's square, away from its middle.
@@ -2796,6 +2802,13 @@ void MainWindow::logDatumPlaces() {
     } else {
       candidates.push_back(pointOf(datum.value(QStringLiteral("point"))));
     }
+    if (!occurrence.isEmpty()) {
+      // In the component's coordinates: where the occurrence places them.
+      const gp_Trsf placement = placementOf(occurrence).Transformation();
+      for (gp_Pnt& candidate : candidates) {
+        candidate.Transform(placement);
+      }
+    }
     // The first place that picks the datum where no other datum and no
     // edge lies (another may be selected and highlighted over it later,
     // and an edge a pixel away may win the click), else the first that
@@ -2807,7 +2820,8 @@ void MainWindow::logDatumPlaces() {
         break;
       }
       const std::vector<SelectionItem> items = m_viewer->itemsAt(QPointF(m_viewer->toWidget(candidate)));
-      if (items.empty() || items.front().owner != uid || items.front().kind != kind) {
+      if (items.empty() || items.front().owner != uid || items.front().kind != kind ||
+          items.front().occurrence != occurrence) {
         continue;
       }
       const bool alone = std::none_of(items.begin() + 1, items.end(), [&uid](const SelectionItem& other) {
@@ -2826,7 +2840,8 @@ void MainWindow::logDatumPlaces() {
       }
     }
     const QPoint point = m_viewer->mapTo(this, m_viewer->toWidget(at));
-    lines << QStringLiteral("Datum %1 at %2,%3").arg(uid).arg(point.x()).arg(point.y());
+    const QString in = occurrence.isEmpty() ? QString() : QStringLiteral(" in ") + occurrence;
+    lines << QStringLiteral("Datum %1%2 at %3,%4").arg(uid, in).arg(point.x()).arg(point.y());
   }
   const QString text = lines.join(QLatin1Char('\n'));
   if (text == m_loggedDatumPlaces) {

@@ -3020,6 +3020,13 @@ model's `profile` query names the region a key means now
   body's component (`CommandHost::bodyOccurrence`): before, editing a
   thread on a placed component's face highlighted the face unplaced, at
   the component's own coordinates, on another part of the design.
+  Construction planes, axes and points without an occurrence get the one
+  the view shows them in (`CommandHost::datumOccurrence`: the first
+  occurrence of their feature's component; none for the origin's, which
+  the view draws unplaced). In both cases a click on the shown face or
+  datum is on the loaded entry and takes it out; before, it added the face
+  a second time, or replaced a datum with itself (mitcad#432,
+  `tools/ui-placed-edit-test.sh`).
 - A region a sketch edit split (mitcad#407) is all its pieces: the
   `profile` query's `regions` lists them, the main one (which keeps the
   old key in the model) first, and the resolver returns that list. Every
@@ -3042,6 +3049,7 @@ model's `profile` query names the region a key means now
   profiles.") with OK refused.
 
 Tests: `app.unit` (`selectionEntryTests`), `tools/ui-profile-toggle-test.sh`,
+`tools/ui-placed-edit-test.sh` (faces and datums of a placed component),
 `tools/ui-profile-split-test.sh` (split pieces, Docked and Floating),
 part 14 of `tools/ui-windows-workflow-test.ps1`.
 
@@ -3231,6 +3239,8 @@ next screenshot.
 | `Ribbon menu SKETCH/CREATE: Line \| Rectangles > [2-Point Rectangle \| …] \| … \| Sketch Dimension`, `Ribbon menu SKETCH/CREATE/Circles: Center Diameter Circle \| …` | a group menu or a subgroup's submenu as it opens (`-` a separator, a submenu as `Name > [its entries]`) |
 | `Panel <command> input <id> at x,y [(hidden)]`, `Panel <command> OK at x,y` | a panel opened |
 | `Datum xy at x,y`, `Sketch entity F1/c4 at x,y` | an input that takes them became active |
+| `Datum F4 at x,y`, `Datum F4 in O1 at x,y` | with `MITCAD_LOG_PICKS`: where a click picks a shown construction feature, a component's where its occurrence places it (mitcad#432) |
+| `View highlight places: face F2.b0/F2:side(c1) in O1 at 60.0,0.0,10.0; plane F4 in O1 at …` (`none`) | with `MITCAD_LOG_PICKS`: the highlighted faces, edges, vertices and datums changed: each with its occurrence and the middle of its bounding box in the design (mitcad#432: a loaded face of a placed component drawn where the view shows it) |
 | `Command <name> started`, `Editing F2 with <name>`, `Editing analysis Section1 with <name>`, `Command <name> cancelled` | |
 | `<command> <input>: 2 edges [edge E{…} of F2.b0; …]` | a selection input changed |
 | `<command> <input>: d1*2 = 120 mm`, `… is invalid: <reason>` | a value was evaluated |

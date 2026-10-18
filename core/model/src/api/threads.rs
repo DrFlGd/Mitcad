@@ -23,6 +23,23 @@ use crate::topo::{FaceName, RoleKey};
 /// (length, offset, from the high end) of a partial thread.
 type Part = Option<(f64, f64, bool)>;
 
+/// What the query reads of a thread's definition.
+struct ThreadOf<'a> {
+    entry: &'a FeatureEntry,
+    size: ThreadSize,
+    modeled: bool,
+    part: Part,
+    /// The end chamfers asked for (mitcad#304): the angle and the diameter
+    /// (the size's default without).
+    chamfer: Option<(f64, Option<f64>)>,
+    /// A modelled thread's major and minor diameters when given, and its
+    /// radial clearance: where its crest and root lie.
+    profile: (Option<(f64, f64)>, f64),
+    /// The feature threads faces of the bodies before it (a thread
+    /// feature), not faces it makes itself (a hole's walls).
+    on_input: bool,
+}
+
 impl<K: Kernel> Document<K> {
     pub(super) fn threads_json(&self) -> Value {
         let params = self.parameters();
@@ -41,24 +58,27 @@ impl<K: Kernel> Document<K> {
                             def.location == ThreadEnd::HighEnd,
                         )
                     });
-                    // A cosmetic thread's end chamfers (mitcad#304): the
-                    // angle and the diameter (the size's default without).
-                    let chamfer = def.chamfer.filter(|_| !def.modeled).map(|_| {
+                    let chamfer = def.chamfer.map(|_| {
                         (
                             value(def.chamfer_angle).unwrap_or(DEFAULT_CHAMFER_ANGLE),
                             value(def.chamfer_diameter),
                         )
                     });
+                    let diameters = def
+                        .diameters
+                        .as_ref()
+                        .and_then(|d| Some((value(Some(d.major))?, value(Some(d.minor))?)));
+                    let of = ThreadOf {
+                        entry,
+                        size: def.thread.clone(),
+                        modeled: def.modeled,
+                        part,
+                        chamfer,
+                        profile: (diameters, value(def.radial_clearance).unwrap_or(0.0)),
+                        on_input: true,
+                    };
                     for face in &def.faces {
-                        threads.extend(self.thread_json(
-                            entry,
-                            face.body,
-                            &face.face,
-                            &def.thread,
-                            def.modeled,
-                            part,
-                            chamfer,
-                        ));
+                        threads.extend(self.thread_json(&of, face.body, &face.face));
                     }
                 }
                 FeatureDef::Hole(def) => {
@@ -69,20 +89,21 @@ impl<K: Kernel> Document<K> {
                     // axis, which points into the material.
                     let part = value(thread.length)
                         .map(|length| (length, value(thread.offset).unwrap_or(0.0), false));
+                    let of = ThreadOf {
+                        entry,
+                        size: thread.size(),
+                        modeled: thread.modeled,
+                        part,
+                        chamfer: None,
+                        profile: (None, value(thread.radial_clearance).unwrap_or(0.0)),
+                        on_input: false,
+                    };
                     let walls: Vec<FaceName> = (0..def.count())
                         .map(|i| hole_face(entry.uid, i, "wall"))
                         .collect();
                     for body in self.bodies() {
                         for wall in &walls {
-                            threads.extend(self.thread_json(
-                                entry,
-                                body.uid,
-                                wall,
-                                &thread.size(),
-                                thread.modeled,
-                                part,
-                                None,
-                            ));
+                            threads.extend(self.thread_json(&of, body.uid, wall));
                         }
                     }
                 }
@@ -92,29 +113,37 @@ impl<K: Kernel> Document<K> {
         Value::Array(threads)
     }
 
-    /// A thread on a face of a body at the marker, if the face is there;
-    /// `chamfer`: a cosmetic thread's end chamfers (angle, diameter).
-    #[allow(clippy::too_many_arguments)]
-    fn thread_json(
-        &self,
-        entry: &FeatureEntry,
-        body: BodyUid,
-        face: &FaceName,
-        size: &ThreadSize,
-        modeled: bool,
-        part: Part,
-        chamfer: Option<(f64, Option<f64>)>,
-    ) -> Option<Value> {
+    /// A thread on a face of a body at the marker, if the face is there or
+    /// the thread took its place (mitcad#433).
+    fn thread_json(&self, of: &ThreadOf<'_>, body: BodyUid, face: &FaceName) -> Option<Value> {
         let shape = self.body_shape(body)?;
         let kernel = self.kernel();
-        // A face a sketch change renamed is found again, as the thread
-        // feature finds it (mitcad#272).
-        let found = if kernel.count_faces(shape, face).ok()? == 0 {
-            crate::features::renamed::find_face(kernel, shape, face).ok()??
-        } else {
-            face.clone()
+        let entry = of.entry;
+        // The face the thread is on, the body to measure it on, and whether
+        // that face lost the ends the chamfers took (it is the body at the
+        // marker) or not (the body before the feature).
+        let (face, measured, trimmed) = match find_face(kernel, shape, face) {
+            Some(found) => (found, shape, true),
+            None if of.on_input => {
+                // A modelled thread whose crest is off its face (a class's
+                // diameters, a radial clearance) leaves no piece of the
+                // face. The faces the feature made from it stand in its
+                // place; the face is measured on the body before the
+                // feature.
+                let before = self.body_before(entry.uid, body)?;
+                let found = find_face(kernel, before, face)?;
+                let made = ["thread", "thread_chamfer_low", "thread_chamfer_high"]
+                    .into_iter()
+                    .any(|role| has_face(kernel, shape, &derived(entry, role, &found)));
+                if !made {
+                    return None;
+                }
+                (found, before, false)
+            }
+            None => return None,
         };
-        let face = &found;
+        let face = &face;
+        let size = &of.size;
         let data = size.data().ok()?;
         let mut thread = json!({
             "feature": entry.uid,
@@ -125,51 +154,63 @@ impl<K: Kernel> Document<K> {
             "designation": data.designation,
             "class": size.class,
             "right_handed": size.right_handed,
-            "modeled": modeled,
+            "modeled": of.modeled,
             "major_diameter": data.major,
             "minor_diameter": data.minor,
             "pitch": data.pitch,
         });
-        if let Ok(cylinder) = kernel.face_cylinder(shape, face) {
-            // The cones of end chamfers took `low` and `high` off the face's
-            // ends: the part is measured on the face as it was, and the
-            // thread starts where a cone meets the cylinder.
+        if let Ok(cylinder) = kernel.face_cylinder(measured, face) {
+            // The cones of end chamfers take `low` and `high` off the face's
+            // ends, and the thread starts where a cone meets the cylinder.
+            // On the face at the marker that is a cosmetic thread's face
+            // (what a modelled thread leaves of its face ends at the cones
+            // already); the part is measured on the face as it was.
+            let chamfer = of.chamfer.filter(|_| !trimmed || !of.modeled);
             let (low, high) = match chamfer {
                 Some((angle, diameter)) => {
-                    let diameter = diameter.unwrap_or_else(|| {
-                        default_chamfer_diameter(&data, cylinder.internal, None)
-                    });
-                    let depth = (cylinder.radius - diameter / 2.0).abs() / angle.tan();
-                    let cut = |role: &str| {
-                        let cone = FaceName::new(
-                            entry.uid,
-                            role,
-                            Some(RoleKey::Face(Box::new(face.clone()))),
-                        );
-                        kernel.count_faces(shape, &cone).is_ok_and(|n| n > 0)
+                    let depth = if of.modeled {
+                        // From the chamfer's diameter at the end to the
+                        // crest, which the cut profile leaves.
+                        let (diameters, radial) = of.profile;
+                        let (major, minor) = diameters.unwrap_or((data.major, data.minor));
+                        let (crest, root) = if cylinder.internal {
+                            (minor + 2.0 * radial, major + 2.0 * radial)
+                        } else {
+                            (major - 2.0 * radial, minor - 2.0 * radial)
+                        };
+                        let diameter = diameter.unwrap_or_else(|| {
+                            default_chamfer_diameter(&data, cylinder.internal, Some(root))
+                        });
+                        (crest - diameter).abs() / 2.0 / angle.tan()
+                    } else {
+                        let diameter = diameter.unwrap_or_else(|| {
+                            default_chamfer_diameter(&data, cylinder.internal, None)
+                        });
+                        (cylinder.radius - diameter / 2.0).abs() / angle.tan()
                     };
-                    (
-                        if cut("thread_chamfer_low") {
+                    let cut = |role: &str| {
+                        if has_face(kernel, shape, &derived(entry, role, face)) {
                             depth
                         } else {
                             0.0
-                        },
-                        if cut("thread_chamfer_high") {
-                            depth
-                        } else {
-                            0.0
-                        },
-                    )
+                        }
+                    };
+                    (cut("thread_chamfer_low"), cut("thread_chamfer_high"))
                 }
                 None => (0.0, 0.0),
             };
-            let whole = cylinder.length + low + high;
-            let (from, to) = match part {
+            // The face as it was, and where the face measured starts on it.
+            let (whole, base) = if trimmed {
+                (cylinder.length + low + high, low)
+            } else {
+                (cylinder.length, 0.0)
+            };
+            let (from, to) = match of.part {
                 None => (0.0, whole),
                 Some((length, offset, true)) => (whole - offset - length, whole - offset),
                 Some((length, offset, false)) => (offset, offset + length),
             };
-            let (from, to) = (from.max(low) - low, to.min(whole - high) - low);
+            let (from, to) = (from.max(low) - base, to.min(whole - high) - base);
             let at = |t: f64| -> [f64; 3] {
                 std::array::from_fn(|i| cylinder.axis.origin[i] + t * cylinder.axis.direction[i])
             };
@@ -180,6 +221,25 @@ impl<K: Kernel> Document<K> {
         }
         Some(thread)
     }
+}
+
+/// A face of a shape by its name, or the face a sketch change renamed, as
+/// the thread feature finds it (mitcad#272).
+fn find_face<K: Kernel>(kernel: &K, shape: &K::Shape, face: &FaceName) -> Option<FaceName> {
+    if kernel.count_faces(shape, face).ok()? > 0 {
+        return Some(face.clone());
+    }
+    crate::features::renamed::find_face(kernel, shape, face).ok()?
+}
+
+fn has_face<K: Kernel>(kernel: &K, shape: &K::Shape, face: &FaceName) -> bool {
+    kernel.count_faces(shape, face).is_ok_and(|n| n > 0)
+}
+
+/// A face a thread feature made from a face it threads:
+/// `<feature>:<role>(<face>)`.
+fn derived(entry: &FeatureEntry, role: &str, face: &FaceName) -> FaceName {
+    FaceName::new(entry.uid, role, Some(RoleKey::Face(Box::new(face.clone()))))
 }
 
 /// The `thread_sizes` query (P9, P11): the size table of the Hole and

@@ -187,6 +187,7 @@ public:
   void editInstead(const QString& uid, const QString& input) override;
   QString profileOccurrence(const QString& sketch) const override { return placingOccurrence(sketch); }
   QString bodyOccurrence(const QString& body) const override;
+  QString datumOccurrence(const QString& datum) const override;
   const SelectionScope* commandScope() const override; // mitcad#217
   // Parameter names picked from the view (mitcad#250;
   // MainWindowParameterPicks.cpp).

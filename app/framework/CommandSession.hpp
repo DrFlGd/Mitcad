@@ -117,6 +117,10 @@ public:
   // the body's component (empty in the root). A loaded definition's face of
   // a placed component was otherwise highlighted unplaced, on another part.
   virtual QString bodyOccurrence(const QString& /*body*/) const { return QString(); }
+  // The same for a datum (a construction plane, axis or point): the first
+  // occurrence of its feature's component, where the view shows it; empty
+  // for the origin's planes, axes and point, which the view draws unplaced.
+  virtual QString datumOccurrence(const QString& /*datum*/) const { return QString(); }
   // The selection filter context the running command's selections pick
   // through besides their inputs' own tests (mitcad#217: Project in sketch
   // mode; framework/SelectionScope.hpp), null when there is none. Shift

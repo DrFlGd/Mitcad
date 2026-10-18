@@ -1260,6 +1260,21 @@ impl Kernel for MockKernel {
             };
             if spec.groove {
                 shape.faces.push(named("thread"));
+                // As the OCCT facade: a profile over the whole face whose
+                // crest is off the face (a class's diameter, a radial
+                // clearance) leaves no piece of it (mitcad#433).
+                if spec.part.is_none()
+                    && let Ok(cylinder) = self.face_cylinder(body, face)
+                {
+                    let crest = if cylinder.internal {
+                        spec.minor / 2.0 + spec.radial_clearance
+                    } else {
+                        spec.major / 2.0 - spec.radial_clearance
+                    };
+                    if (crest - cylinder.radius).abs() > 1e-7 {
+                        shape.faces.retain(|f| f != face);
+                    }
+                }
             }
             let ends = spec.chamfer.as_ref().and_then(|c| c.ends.get(i).copied());
             let (low, high) = ends.unwrap_or((false, false));

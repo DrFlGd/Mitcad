@@ -1257,3 +1257,88 @@ fn thread_end_chamfers_default_to_the_size_and_cut_only_ends_the_thread_reaches(
     };
     assert!(message.contains("must be smaller than"), "{message}");
 }
+
+#[test]
+fn modelled_threads_that_take_their_whole_face_are_listed() {
+    // The basic M10 on the 10 mm rod: its crest lies on the face, pieces of
+    // which stay; the thread runs over the face.
+    let mut doc = rod();
+    let body = BodyUid::new(FeatureUid(2), 0);
+    let has = |doc: &Document<MockKernel>, name: &str| {
+        let shape = doc.body_shape(body).unwrap();
+        shape.faces.iter().any(|f| f.to_string() == name)
+    };
+    let uid = doc
+        .add_feature(&thread_def("F2:side(c1)", json!({"modeled": true})), None)
+        .unwrap()
+        .uid;
+    assert_eq!(status(&doc, uid), FeatureStatus::Ok);
+    assert!(has(&doc, "F2:side(c1)"));
+    let listed = json!([{"feature": "F3", "name": "Thread1", "body": "F2.b0",
+        "face": "F2:side(c1)", "standard": "iso_metric", "designation": "M10x1.5",
+        "class": "6g", "right_handed": true, "modeled": true, "major_diameter": 10.0,
+        "minor_diameter": 8.376202367904177, "pitch": 1.5, "internal": false,
+        "radius": 5.0, "start": [0.0, 0.0, 0.0], "end": [0.0, 0.0, 20.0]}]);
+    assert_eq!(query(&doc, json!({"query": "threads"})), listed);
+
+    // A radial clearance puts the crest inside the face, so no piece of the
+    // face is left, and both ends get a cone (mitcad#433). The thread is
+    // listed on the face as it was before the feature, from the cones'
+    // inner edges, where the cones meet the crest (9.8): 45 degrees from
+    // the default diameter, a tenth of a pitch inside the root (8.3762 -
+    // 0.2), so (9.8 - 8.0262) / 2 = 0.8869 deep.
+    let chamfered = thread_def(
+        "F2:side(c1)",
+        json!({"modeled": true, "radial_clearance": 0.1, "chamfer": "both"}),
+    );
+    doc.edit_feature(uid, &chamfered).unwrap();
+    assert_eq!(status(&doc, uid), FeatureStatus::Ok);
+    assert!(!has(&doc, "F2:side(c1)"));
+    assert!(has(&doc, "F3:thread_chamfer_low(F2:side(c1))"));
+    let threads = query(&doc, json!({"query": "threads"}));
+    assert_eq!(threads.as_array().map(Vec::len), Some(1), "{threads}");
+    let depth = (9.8 - (8.376202367904177 - 0.2 - 0.15)) / 2.0;
+    let mut expected = listed.clone();
+    expected[0]["start"] = Value::Null;
+    expected[0]["end"] = Value::Null;
+    let mut got = threads.clone();
+    let [start, end] = ["start", "end"].map(|key| got[0][key].take());
+    assert_eq!(got, expected);
+    let near = |point: &Value, z: f64| {
+        let p: Vec<f64> = point
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_f64().unwrap())
+            .collect();
+        p.len() == 3 && p[0].abs() < 1e-9 && p[1].abs() < 1e-9 && (p[2] - z).abs() < 1e-9
+    };
+    assert!(near(&start, depth) && near(&end, 20.0 - depth), "{threads}");
+
+    // A given chamfer diameter, at the high end only: from the low end of
+    // the face to that cone's inner edge, (9.8 - 7) / 2 / tan 30 deep.
+    let start_only = thread_def(
+        "F2:side(c1)",
+        json!({"modeled": true, "radial_clearance": 0.1, "chamfer": "start",
+               "chamfer_diameter": 7, "chamfer_angle": "30 deg"}),
+    );
+    doc.edit_feature(uid, &start_only).unwrap();
+    assert_eq!(status(&doc, uid), FeatureStatus::Ok);
+    let threads = query(&doc, json!({"query": "threads"}));
+    let depth = (9.8 - 7.0) / 2.0 / 30f64.to_radians().tan();
+    assert!(
+        near(&threads[0]["start"], 0.0) && near(&threads[0]["end"], 20.0 - depth),
+        "{threads}"
+    );
+
+    // A class's major diameter below the face's, without a chamfer: the
+    // whole face, from end to end.
+    let class = thread_def(
+        "F2:side(c1)",
+        json!({"modeled": true, "diameters": {"major": 9.85, "minor": 8.141, "pitch": 8.928}}),
+    );
+    doc.edit_feature(uid, &class).unwrap();
+    assert_eq!(status(&doc, uid), FeatureStatus::Ok);
+    assert!(!has(&doc, "F2:side(c1)"));
+    assert_eq!(query(&doc, json!({"query": "threads"})), listed);
+}

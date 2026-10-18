@@ -1822,14 +1822,18 @@ fn modelled_threads_take_the_files_diameters() {
     let info = json!({"_type": "ThreadInfo", "threadType": "ISO Metric profile",
         "threadDesignation": "M10x1.5", "threadClass": "6g", "isInternal": false,
         "majorDiameter": 0.985, "minorDiameter": 0.8141, "pitchDiameter": 0.8928});
+    // A modelled pipe thread on the same face, in a design of its own: the
+    // modelled metric thread's crest lies inside the face and leaves no
+    // piece of it (mitcad#433).
+    let pipe = json!({"_type": "ThreadInfo", "threadType": "BSP Pipe Threads",
+                      "threadDesignation": "G 1/4-19", "threadClass": "A"});
+    let mut modelled_pipe = thread_item(2, pipe, true, 1.0, point);
+    modelled_pipe["detail"]["isModeled"] = json!(true);
+    let mut pipe_items = items.clone();
+    pipe_items.push(modelled_pipe);
     let mut modelled = thread_item(2, info, true, 1.0, point);
     modelled["detail"]["isModeled"] = json!(true);
     items.push(modelled);
-    let pipe = json!({"_type": "ThreadInfo", "threadType": "BSP Pipe Threads",
-                      "threadDesignation": "G 1/4-19", "threadClass": "A"});
-    let mut modelled_pipe = thread_item(3, pipe, true, 1.0, point);
-    modelled_pipe["detail"]["isModeled"] = json!(true);
-    items.push(modelled_pipe);
     let mut doc = Document::new(kernel());
     let report = import_design(
         &mut doc,
@@ -1858,9 +1862,16 @@ fn modelled_threads_take_the_files_diameters() {
     );
     // Without a history the angle is not measured.
     assert!(def.get("angle").is_none(), "{def}");
-    assert_ne!(report.items[3].outcome, Outcome::Parametric);
+    let mut doc = Document::new(kernel());
+    let report = import_design(
+        &mut doc,
+        &timeline_dump(pipe_items),
+        &mut NoGeometry,
+        &Options::default(),
+    );
+    assert_ne!(report.items[2].outcome, Outcome::Parametric);
     assert!(
-        report.items[3]
+        report.items[2]
             .note
             .as_deref()
             .is_some_and(|n| n.contains("Whitworth")),

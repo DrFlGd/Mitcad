@@ -802,6 +802,9 @@ private:
   // profile highlights:", for UI tests: every piece of a split region,
   // mitcad#410).
   QString m_loggedProfileHighlights = QStringLiteral("none");
+  // Where faces, edges, vertices and datums are highlighted, as last logged
+  // ("View highlight places:", with MITCAD_LOG_PICKS; mitcad#432).
+  QString m_loggedHighlightPlaces = QStringLiteral("none");
   // What each pickable object shows.
   std::map<const AIS_InteractiveObject*, PickInfo> m_pickInfo;
   occ::handle<AIS_Shape> m_preview;

@@ -172,9 +172,25 @@ echo "ok   the view refined in $(grep -cE "Render frame view $VIEW " "$UI_LOG") 
 shot rendered
 same_silhouette shaded rendered "the rendered block is where the shaded one is"
 grep -q "Orientation cube front at" "$UI_LOG" || ui_fail "the cube's places were not logged"
-python3 "$STATS" "$WORK/rendered.xwd" $(ui_logged_at "Orientation cube front") 4 4 |
-  grep -q '"object": [1-9]' || ui_fail "the orientation cube is not drawn over the render"
-echo "ok   the orientation cube is drawn over the render"
+# The front face's name around its middle (mitcad#435): the letters stand
+# out of their rows' glass ("object"; the render's background there has
+# none, its rows are even), and look as in the shaded view ("changed").
+# A spot of a few pixels missed the glass cube's smaller, slanted letters.
+read -r fx fy <<< "$(ui_logged_at "Orientation cube front")"
+spot="$((fx - 12 * UI_SCALE)) $((fy - 12 * UI_SCALE)) $((24 * UI_SCALE)) $((24 * UI_SCALE))"
+json=$(python3 "$STATS" "$WORK/rendered.xwd" $spot "$WORK/shaded.xwd")
+echo "     the cube's front over the render: $json"
+verdict=$(python3 -c '
+import json, sys
+d = json.loads(sys.argv[1])
+if d["object"] < 20:
+    print("the orientation cube is not drawn over the render (%d pixels of its name)" % d["object"])
+elif d["changed"] * 4 > d["object"]:
+    print("the orientation cube differs from the shaded view (%d pixels)" % d["changed"])
+else:
+    print("ok %d pixels of its name" % d["object"])' "$json")
+[ "${verdict#ok }" != "$verdict" ] || ui_fail "$verdict"
+echo "ok   the orientation cube is drawn over the render (${verdict#ok })"
 
 echo "--- Orbit, pan and zoom"
 # Each navigation sends the worker one view, once it ends (mitcad#214): no

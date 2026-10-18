@@ -2401,6 +2401,28 @@ impl<K: Kernel> Document<K> {
         bodies
     }
 
+    /// A body as it was before the feature `uid` (its input), from the
+    /// last recompute; none when the body was not there yet.
+    pub(crate) fn body_before(&self, uid: FeatureUid, body: BodyUid) -> Option<&K::Shape> {
+        let position = self.state.position(uid)?;
+        self.result
+            .results
+            .iter()
+            .take(position)
+            .rev()
+            .filter_map(|result| result.output.as_deref())
+            .find_map(|output| {
+                output.changes.iter().rev().find_map(|change| match change {
+                    crate::recompute::Change::Set(uid, shape) if *uid == body => {
+                        Some(Some(&shape.value))
+                    }
+                    crate::recompute::Change::Remove(uid) if *uid == body => Some(None),
+                    _ => None,
+                })
+            })
+            .flatten()
+    }
+
     /// Projects model geometry into a sketch (Project): the curves
     /// of an edge, a face's boundary or a vertex of the bodies before the
     /// sketch, as fixed reference entities. A linked projection follows

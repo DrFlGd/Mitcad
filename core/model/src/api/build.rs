@@ -26,6 +26,10 @@ use crate::kernel::Kernel;
 use crate::parameters::ParamId;
 use crate::transform::Transform;
 
+/// What a placing's ray meets: the occurrence path, the face and the
+/// length to it.
+type RayHit = (Vec<OccurrenceUid>, GeomRef, f64);
+
 #[derive(Debug, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case", deny_unknown_fields)]
 // The variants are named after the commands (`build_place`, ...), read from `cmd`.
@@ -211,6 +215,47 @@ impl<K: Kernel> Document<K> {
         })
     }
 
+    /// What a placing's ray meets and the new part's length: a length
+    /// given is the value; else what the ray gives, else the source's
+    /// default. The preview's shape is cut to the same length.
+    fn place_preview_length(
+        &self,
+        input: &PlaceInput,
+        plan: &Plan,
+    ) -> (Option<RayHit>, Option<f64>) {
+        let world = self.host_placement().after(&plan.placement);
+        let flip = input.flip;
+        let touch = plan
+            .mounts
+            .get(if flip { "end_b" } else { "end_a" })
+            .copied();
+        let start = touch.map_or(world.translation, |t| world.apply_point(t.translation));
+        let along = world.apply_vector(if flip {
+            [0.0, 0.0, -1.0]
+        } else {
+            crate::build::Z
+        });
+        let mode = match &plan.length {
+            LengthPlan::Bound { mode, .. } => *mode,
+            _ => BoundMode::Face,
+        };
+        let hit = self.ray_target(
+            start,
+            along,
+            plan.target.as_ref().map(|t| t.info.component),
+            mode,
+        );
+        let given = matches!(input.length, Some(crate::build::LengthInput::Value(_)));
+        let length_value = match (&plan.length, &hit) {
+            (LengthPlan::None, _) => None,
+            (LengthPlan::Value(_, v), _) if given => Some(*v),
+            (_, Some(hit)) => Some(hit.2),
+            (LengthPlan::Value(_, v), None) => Some(*v),
+            (LengthPlan::Bound { first, .. }, None) => Some(*first),
+        };
+        (hit, length_value)
+    }
+
     /// A placing's preview.
     fn place_preview_json(&self, input: &PlaceInput, plan: &Plan) -> Value {
         let active = self.host_placement();
@@ -237,38 +282,16 @@ impl<K: Kernel> Document<K> {
                 "tilt": cut.tilt.unwrap_or_default().as_str(),
             });
         }
-        // The length and what the part's ray meets.
-        let flip = input.flip;
-        let touch = plan
-            .mounts
-            .get(if flip { "end_b" } else { "end_a" })
-            .copied();
-        let start = touch.map_or(world.translation, |t| world.apply_point(t.translation));
-        let along = world.apply_vector(if flip {
-            [0.0, 0.0, -1.0]
-        } else {
-            crate::build::Z
-        });
-        let (mode, bound_to) = match &plan.length {
-            LengthPlan::Bound { mode, to, .. } => (*mode, Some((**to).clone())),
-            _ => (BoundMode::Face, None),
+        let bound_to = match &plan.length {
+            LengthPlan::Bound { to, .. } => Some((**to).clone()),
+            _ => None,
         };
-        let hit = self.ray_target(
-            start,
-            along,
-            plan.target.as_ref().map(|t| t.info.component),
-            mode,
-        );
-        // A length given is the value; else what the ray gives, else the
-        // source's default.
+        let (hit, length_value) = self.place_preview_length(input, plan);
+        let mode = match &plan.length {
+            LengthPlan::Bound { mode, .. } => *mode,
+            _ => BoundMode::Face,
+        };
         let given = matches!(input.length, Some(crate::build::LengthInput::Value(_)));
-        let length_value = match (&plan.length, &hit) {
-            (LengthPlan::None, _) => None,
-            (LengthPlan::Value(_, v), _) if given => Some(*v),
-            (_, Some(hit)) => Some(hit.2),
-            (LengthPlan::Value(_, v), None) => Some(*v),
-            (LengthPlan::Bound { first, .. }, None) => Some(*first),
-        };
         let default = match &plan.length {
             LengthPlan::Value(_, v) if !given => Some(*v),
             LengthPlan::Bound { first, .. } => Some(*first),
@@ -370,7 +393,7 @@ impl<K: Kernel> Document<K> {
         along: crate::build::V3,
         except: Option<ComponentUid>,
         mode: BoundMode,
-    ) -> Option<(Vec<OccurrenceUid>, GeomRef, f64)> {
+    ) -> Option<RayHit> {
         use crate::build::{box_along, dot, in_box, moved_box, ray_plane, unit, z_axis};
         let along = unit(along)?;
         let active = self.host_placement();
@@ -436,18 +459,32 @@ impl<K: Kernel> Document<K> {
         &self,
         fields: Map<String, Value>,
     ) -> Result<Option<K::Shape>, ApiError> {
-        let (source, values, placement) = match self.preview_input(fields)? {
+        // The end that touches the target (end B when flipped), kept where
+        // the plan put it when the length differs from the plan's.
+        let (source, values, mut placement, touch) = match self.preview_input(fields)? {
             PreviewInput::Place(input) => {
                 let plan = self.preview_place(&input)?;
-                (plan.source, plan.values, plan.placement)
+                // A bound length (or none given) is the ray's, as the
+                // query says, not the source's default.
+                let mut values = plan.values.clone();
+                let mut touch = None;
+                if let (Some(meta), (_, Some(length))) = (
+                    &plan.source.meta.length,
+                    self.place_preview_length(&input, &plan),
+                ) {
+                    values.insert(meta.parameter.clone(), ValueInput::Number(length));
+                    let end = if input.flip { "end_b" } else { "end_a" };
+                    touch = plan.mounts.get(end).map(|t| (end, t.translation));
+                }
+                (plan.source, values, plan.placement, touch)
             }
             PreviewInput::Panel(input) => {
                 let plan = self.plan_panel(&input)?;
-                (plan.panel.source, plan.panel.values, plan.placement)
+                (plan.panel.source, plan.panel.values, plan.placement, None)
             }
             PreviewInput::Connect(input) => {
                 let plan = self.plan_connect(&input)?;
-                (plan.connector.source, BTreeMap::new(), plan.placement)
+                (plan.connector.source, BTreeMap::new(), plan.placement, None)
             }
         };
         let mut numbers = Vec::new();
@@ -458,6 +495,12 @@ impl<K: Kernel> Document<K> {
             crate::build::parts::source_state(&source.def, source.config.as_deref(), &numbers)
                 .map_err(ApiError)?;
         let evaluated = evaluate_source(self.kernel(), &state).map_err(ApiError)?;
+        if let Some((end, was)) = touch
+            && let Some(now) = evaluated.mounts.get(end)
+        {
+            let shift = crate::transform::sub(was, now.translation);
+            placement = placement.after(&Transform::translation(shift));
+        }
         let world = self.host_placement().after(&placement);
         let kernel = self.kernel();
         let mut shapes = Vec::new();

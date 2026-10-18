@@ -23,13 +23,14 @@
 #      The same panel in the Floating chrome (Placement's icon buttons once
 #      a part is there, mitcad#427).
 #   3. Profile on a design with only its root: the first profile on the
-#      XY plane (typed length); two on its side flush with its ends by
+#      XY plane (typed length); the mouse on its side previews a part
+#      there before the click (mitcad#431); two on its side flush with its ends by
 #      clicks at the flush snaps (From End A and End B, Offset 0; for the
 #      one at end B a typed offset stays from end B and From changed keeps
 #      the part in place, mitcad#417); the fourth on the side of the
 #      second at its far end, its length bound to the third (Tab steps
-#      face, centre, through; the box at the cursor shows it) - a frame of
-#      four.
+#      face, centre, through; the box at the cursor shows it; the preview's
+#      body as long as the length in each, mitcad#431) - a frame of four.
 #   4. Connector at a junction (shown on the hover, the chosen one
 #      always), from the fitting connectors, previewed in place.
 #   5. Panel in the frame from an inner face.
@@ -248,6 +249,27 @@ marker_at() {
   read -r px py <<< "$at"
   echo $((X + px * UI_SCALE)) $((Y + py * UI_SCALE))
 }
+# pick_markers X Y: the mouse moved out of the view to window point X, Y
+# (above it, over the ribbon), and the pick's markers logged again: with
+# the mouse on a part's side or end the preview shows what a click there
+# places, with that place's markers (mitcad#431), as its "Inspect
+# Profile:" line says ("; on the hover").
+pick_markers() {
+  local inspect="" line
+  xdotool mousemove $((X + $1 * UI_SCALE)) $((Y + $2 * UI_SCALE))
+  for _ in $(seq 1 50); do
+    ui_sync >&2
+    line=$(grep -n "^Inspect Profile: " "$UI_LOG" | tail -1)
+    [[ $line == *"; on the hover"* ]] || { inspect=${line%%:*}; inspect=${inspect:-1}; break; }
+    sleep 0.1
+  done
+  [ -n "$inspect" ] || ui_fail "the hover's preview stayed with the mouse out of the view"
+  # The markers come after the inspection's line.
+  for _ in $(seq 1 25); do
+    tail -n +"$inspect" "$UI_LOG" | grep -q "^Preview marker Profile " && return
+    sleep 0.1
+  done
+}
 # marker_in_middle LABEL: as marker_at, once the marker lies in the middle
 # half of the view, the view zoomed out step by step at its centre until
 # then: fitted to the parts, a profile's end can come under the orientation
@@ -261,6 +283,7 @@ marker_in_middle() {
   cx=$((vx + vw / 2))
   cy=$((vy + vh / 2))
   for i in $(seq 1 16); do
+    pick_markers "$cx" $((vy / 2))
     at=$(grep -E "^Preview marker Profile (> )?$1 world " "$UI_LOG" | tail -1 |
       sed -n 's/.* at \([0-9]*\),\([0-9]*\)$/\1 \2/p')
     [ -n "$at" ] || ui_fail "no preview marker '$1' of Profile logged"
@@ -296,6 +319,35 @@ expect_inspect() {
     sleep 0.2
   done
   ui_fail "$description: no 'Inspect Profile:' line since the mark with: ${*:1:$#-1}"
+}
+# expect_body_length DESCRIPTION: the last "Inspect Profile:" line since
+# the mark that logs the preview body's length ("; body <n> mm",
+# mitcad#431) has it equal to the length shown ("length <n> mm").
+expect_body_length() {
+  local line="" length body
+  for _ in $(seq 1 30); do
+    line=$(tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep "^Inspect Profile: .*; body " | tail -1)
+    [ -n "$line" ] && break
+    sleep 0.2
+  done
+  [ -n "$line" ] || ui_fail "$1: no 'Inspect Profile:' line with the body's length since the mark"
+  length=$(sed -n 's/^Inspect Profile: place [a-z]*, length \([0-9.]*\) mm.*/\1/p' <<< "$line")
+  body=$(sed -n 's/.*; body \([0-9.]*\) mm.*/\1/p' <<< "$line")
+  [ -n "$length" ] && [ "$length" = "$body" ] || ui_fail "$1: length ${length:-?} mm, body ${body:-?} mm ($line)"
+  echo "ok   $1: $body mm"
+}
+# shot NAME: with UI_BUILD_SHOTS set, a screenshot of the test display
+# there as NAME.png.
+shot() {
+  [ -n "${UI_BUILD_SHOTS:-}" ] || return 0
+  mkdir -p "$UI_BUILD_SHOTS"
+  ui_sync
+  if command -v import > /dev/null; then
+    import -window root "$UI_BUILD_SHOTS/$1.png"
+  else
+    ui_capture "$UI_BUILD_SHOTS/$1.png"
+  fi
+  echo "note: screenshot $UI_BUILD_SHOTS/$1.png"
 }
 # no_policy_message: no design-policy refusal reached the log.
 no_policy_message() {
@@ -473,6 +525,13 @@ refresh_picks "Profile"
 # The two on a side of the first one that a click can reach.
 SIDE1=$(faces_of "$B1" "$SIDE" | head -1)
 [ -n "$SIDE1" ] || ui_fail "no side of the first profile ($B1) to pick"
+# The mouse on the side before a click shows what a click there places
+# (mitcad#431), the body as long as the length it shows.
+ui_mark
+ui_step "the mouse on the first profile's side" xdotool mousemove $(ui_pick_at "$B1/$SIDE1 at")
+ui_expect_new "BUILD hover on " "the hover on the side"
+expect_inspect "Inspect Profile: place side, " "; on the hover" "the hover previews the part on the side before the click"
+expect_body_length "the hover's body as long as its length"
 # A click fills Offset and From (mitcad#417): a click at the flush-A snap
 # (its marker) gives From End A, Offset 0.
 ui_mark
@@ -552,11 +611,21 @@ for face in "${FACES2[@]}"; do
 done
 [ -n "$found" ] || ui_fail "no side of the second profile a click reaches has its auto length to the third"
 echo "ok   $found of the second profile runs to the third: bound"
+# The preview's body ends at the third profile, in each mode (mitcad#431).
+expect_body_length "the body to the third profile's face"
+shot "431-bound-face"
 ui_mark
 ui_step "to the centre (Tab)"              ui_key Tab
 ui_expect_new "Profile: Length = Auto: to its centre" "Tab: to the centre"
+ui_expect_new "(bound, auto: to the centre to " "bound to the third profile's centre"
+expect_body_length "the body to the third profile's centre"
+shot "431-bound-centre"
+ui_mark
 ui_step "through (Tab)"                    ui_key Tab
 ui_expect_new "Profile: Length = Auto: through it" "Tab: through"
+ui_expect_new "(bound, auto: through to " "bound through the third profile"
+expect_body_length "the body through the third profile"
+shot "431-bound-through"
 ui_step "to the face (Tab)"                ui_key Tab
 ui_expect_new "Profile: Length = Auto: to the face it meets" "Tab: to the face again"
 ui_expect_new "Cursor box Profile length: " "the auto length in the box at the cursor"
@@ -743,11 +812,19 @@ ui_focus_dialog '^Part Picker - Profile$'
 ui_mark
 ui_step "the group Profiles"               ui_click_logged "Part picker group row Profiles"
 ui_expect_new "Part picker group Profiles: 2 parts" "the group of profiles"
+# The first tile's place, where the 30 profile is to be once the search
+# leaves only it. The picker logs its places 150 ms after the tiles change,
+# after the sync key's answer (PartPicker::logPlacesLater): a line of the
+# tiles before the search (the 30 profile second) can come after the mark,
+# and a click there would miss.
+FIRST_TILE=$(grep -F "Part picker tile test-profiles/p20-test at " "$UI_LOG" | tail -1 |
+  sed -n 's/.* at \([0-9]*,[0-9]*\);.*/\1/p')
+[ -n "$FIRST_TILE" ] || ui_fail "no place of the first tile (the 20 profile)"
 ui_mark
 ui_step "search p30 (Alt+S)"               eval 'ui_key alt+s; ui_sync; xdotool type --delay 40 "p30"'
 ui_expect_new "Part picker search 'p30'" "the picker's search"
 ui_expect_new "Part picker group Profiles: 1 parts, first test-profiles/p30-test" "only the 30 profile"
-expect_picker_place "Part picker tile test-profiles/p30-test" "its tile's place"
+ui_expect_new "Part picker tile test-profiles/p30-test at $FIRST_TILE;" "its tile's place, the first"
 ui_mark
 ui_step "a click on the 30 profile"        ui_click_logged "Part picker tile test-profiles/p30-test"
 ui_expect_new "Part picker chose test-profiles/p30-test" "chosen in the picker"

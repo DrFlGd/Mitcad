@@ -8358,7 +8358,9 @@ radians, as joints have them.
 `analysis_shape` with `{"shape": "build_preview", ...}` and the same
 fields gives the new part's bodies (a connector's, a panel's) in the
 design's coordinates, as other analysis shapes, for the view to show
-while a command is open.
+while a command is open. A profile's bodies are at the length the query
+says (`length.value`): a bound length or none given is what the ray
+meets, not the source's default.
 
 **How junctions are found.** From the derived parts' frames and boxes at
 the marker: two profiles meet when their boxes touch or overlap within

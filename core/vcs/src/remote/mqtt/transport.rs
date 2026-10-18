@@ -5,8 +5,9 @@
 //! of a certificate authority file the user names.
 //!
 //! Blocking sockets with timeouts: a read that waits longer than the read
-//! timeout gives [`io::ErrorKind::WouldBlock`] or `TimedOut` (Windows), and
-//! the caller reads again; TLS keeps what it has read of a record.
+//! timeout gives [`io::ErrorKind::WouldBlock`] or `TimedOut` (Windows; there
+//! also `ERROR_IO_PENDING` under load), and the caller reads again; TLS
+//! keeps what it has read of a record.
 
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpStream, ToSocketAddrs};
@@ -249,7 +250,16 @@ pub fn is_timeout(error: &io::Error) -> bool {
     matches!(
         error.kind(),
         io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-    )
+    ) || is_io_pending(error)
+}
+
+/// Windows' `ERROR_IO_PENDING` (997, "Overlapped I/O operation is in
+/// progress"): a read that timed out while the socket's operation was still
+/// under way, seen under load (0.12.0-rc3's `core.vcs.rest`). Nothing broke:
+/// the caller reads again, as after a timeout.
+fn is_io_pending(error: &io::Error) -> bool {
+    const ERROR_IO_PENDING: i32 = 997;
+    cfg!(windows) && error.raw_os_error() == Some(ERROR_IO_PENDING)
 }
 
 /// A failure of the socket or of TLS, classified.
@@ -260,9 +270,10 @@ pub fn io_error(what: &str, error: &io::Error) -> LiveError {
     {
         return tls_error(what, tls);
     }
-    let class = match error.kind() {
-        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut => LiveErrorClass::TimedOut,
-        _ => LiveErrorClass::Network,
+    let class = if is_timeout(error) {
+        LiveErrorClass::TimedOut
+    } else {
+        LiveErrorClass::Network
     };
     LiveError::new(class, format!("{what}: {error}"))
 }
@@ -293,4 +304,21 @@ fn tls_error(what: &str, error: &rustls::Error) -> LiveError {
         other => (LiveErrorClass::Tls, other.to_string()),
     };
     LiveError::new(class, format!("{what}: {why}"))
+}
+
+#[cfg(test)]
+mod io_pending_tests {
+    use super::*;
+
+    #[test]
+    fn a_pending_read_on_windows_is_a_timeout_not_a_broken_connection() {
+        let pending = io::Error::from_raw_os_error(997);
+        assert_eq!(is_timeout(&pending), cfg!(windows));
+        let reset = io::Error::new(io::ErrorKind::ConnectionReset, "reset");
+        assert!(!is_timeout(&reset));
+        assert!(is_timeout(&io::Error::new(
+            io::ErrorKind::WouldBlock,
+            "later"
+        )));
+    }
 }

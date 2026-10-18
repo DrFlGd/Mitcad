@@ -223,6 +223,18 @@ ui_start_display() {
   exit 1
 }
 
+# ui_chooses_chrome [app arguments...]: whether the arguments choose the
+# window's layout (--chrome=…, --chrome …).
+ui_chooses_chrome() {
+  local argument
+  for argument in "$@"; do
+    case "$argument" in
+    --chrome | --chrome=*) return 0 ;;
+    esac
+  done
+  return 1
+}
+
 # ui_start_app [app arguments...]: starts Mitcad, without gdb: gdb loads the
 # debug build's symbols at every start, and the app's crash handler logs a
 # crash's stack itself. UI_GDB=1 runs it under gdb (when available) for
@@ -230,7 +242,10 @@ ui_start_display() {
 # UI_WINDOW_WAIT is how long the window may take to appear (seconds, default 20; a large design opens first). The app
 # does not offer to recover work at start-up (--no-recovery: a test that
 # killed it and starts it again would get the question) unless
-# UI_RECOVERY=1.
+# UI_RECOVERY=1. The window is Docked (--chrome=docked), which the tests
+# were written for, unless the arguments choose a layout (--chrome…) or
+# UI_DEFAULT_CHROME=1 leaves it to the preference and the default
+# (Floating since mitcad#429).
 ui_start_app() {
   local options=(--no-recovery) before window
   # Never on the caller's desktop: a test that forgot ui_start_display
@@ -240,6 +255,9 @@ ui_start_app() {
     exit 1
   fi
   [ "${UI_RECOVERY:-0}" = 1 ] && options=()
+  if [ "${UI_DEFAULT_CHROME:-0}" != 1 ] && ! ui_chooses_chrome "$@"; then
+    options+=(--chrome=docked)
+  fi
   # The windows of other instances (ui_instance) are not this one's.
   before=" $(xdotool search --onlyvisible --name ' - Mitcad$' 2> /dev/null | tr '\n' ' ')"
   if [ "${UI_GDB:-0}" = 1 ] && command -v gdb > /dev/null; then

@@ -3,7 +3,8 @@
 # check-all sources: app/browser app/framework app/view tools/cli
 # The Browser's Rows background in the Floating layout (mitcad#419), through
 # the real UI, on a 200 x 200 mm plate zoomed in until it fills the view:
-#   - The Browser starts on its card (the default).
+#   - Floating by default (mitcad#429); the Browser starts on its card (set
+#     in the settings: Rows is the default on Linux, mitcad#429).
 #   - Preferences > Display > Browser background: Rows, applied at once and
 #     saved (appearance/browserBackground); a place beside the rows, inside
 #     the card's old rectangle, is logged.
@@ -49,9 +50,11 @@ JSON
 
 # The middle button orbits (the drag beside the rows). No Projects card:
 # the Browser's card starts below the floating rows and has the room down
-# to the timeline.
+# to the timeline. The Browser on its card, for the choice of Rows (the
+# default on Linux, mitcad#429).
 mkdir -p "$UI_CONFIG/Mitcad"
-printf '[view]\nnavigationScheme=middle-orbit\n[projects]\npanel=false\n' > "$UI_CONFIG/Mitcad/Mitcad.conf"
+printf '[view]\nnavigationScheme=middle-orbit\n[projects]\npanel=false\n[appearance]\nbrowserBackground=card\n' \
+  > "$UI_CONFIG/Mitcad/Mitcad.conf"
 
 # count_new "text": how many lines logged since the mark contain the text.
 count_new() { tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -cF -- "$1"; }
@@ -106,9 +109,11 @@ browser_height_becomes() {
 scroll_range() { grep -o '^Browser scroll range [0-9]*$' "$UI_LOG" | tail -1 | grep -o '[0-9]*$'; }
 
 ui_start_display
-ui_start_app --open "$FILE" --chrome=floating
+# The default layout: Floating (mitcad#429).
+UI_DEFAULT_CHROME=1 ui_start_app --open "$FILE"
+ui_expect_log "Chrome: floating (the platform's default)" "Floating by default"
 ui_expect_log "Opened $FILE" "the plate is open"
-ui_expect_log "Browser background: card" "the Browser starts on its card"
+ui_expect_log "Browser background: card" "the Browser starts on its card (the setting)"
 # Its 30 sketches do not fit: the design opens folded below the root
 # (mitcad#426); Bodies opened again for Body1's row.
 ui_expect_log "Browser opened folded: " "the design opens folded"

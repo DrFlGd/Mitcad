@@ -48,8 +48,9 @@ and [docs/development.md](docs/development.md) before larger changes.
 - Platform code: few `Q_OS_MACOS` branches (GL format, menus, shortcuts)
   and AppKit only in `app/platform/macos/`, behind
   `app/platform/MacChrome.hpp` (inline stubs elsewhere). The layout is
-  chosen at run time (`chromeStyle()`: Docked on Windows and Linux,
-  Floating on macOS); Docked must keep working everywhere.
+  chosen at run time (`chromeStyle()`: Floating by default everywhere
+  since mitcad#429, Docked by the preference or `--chrome=docked`); Docked
+  must keep working everywhere.
 - Face and edge references are topological names (`F2:side(c1[c4,c2])`,
   `E{…|…}`) carried through OCCT's history.
 - Geometry operations must not modify their input shapes.

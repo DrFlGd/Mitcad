@@ -3,7 +3,8 @@
 //! to another profile (face, centre, through, with an overlap), following
 //! the target when it moves and the part when it slides along its slot,
 //! keeping its last value when the ray meets nothing, detached into a
-//! plain length, and the refusals of a cycle and of a target placed later.
+//! plain length, the refusals of a cycle and of a target placed later, and
+//! the preview's body at the bound length.
 
 use serde_json::json;
 
@@ -248,4 +249,66 @@ fn cycles_and_later_targets_are_refused() {
     assert!(error.contains("placed after"), "{error}");
     assert_eq!(doc.revision(), revision_before);
     assert!(revision < revision_before);
+}
+
+/// The preview's body is as long as the length the preview query gives
+/// (mitcad#431): a part on T's x+ side, previewed with its length bound to
+/// X's x- side in each mode, flipped or not, and with no length (the ray's
+/// own), runs from T's side (x = 15) to the length along X, not to the
+/// source's default.
+#[test]
+fn the_preview_body_has_the_bound_length() {
+    use crate::kernel::Kernel;
+
+    let mut doc = design();
+    let t = first(&mut doc, "p30", [0.0; 3], 1000.0);
+    let x = first(&mut doc, "p30", [500.0, 0.0, 0.0], 1000.0);
+    let tp = derived(&doc, component(&t));
+    let xp = derived(&doc, component(&x));
+    let at = json!({"occurrence": t["occurrence"],
+                    "geometry": {"mount": format!("{tp}:mount(slot_x+_1)")}, "offset": 100});
+    let bind = json!({"occurrence": x["occurrence"],
+                      "geometry": {"mount": format!("{xp}:mount(slot_x-_1)")}});
+    let mut cases = Vec::new();
+    for flip in [false, true] {
+        for (mode, expected) in [("face", 470.0), ("centre", 485.0), ("through", 500.0)] {
+            cases.push((
+                json!({"part": {"source": "S1"}, "at": at, "flip": flip,
+                       "length": {"bind": bind, "mode": mode}}),
+                expected,
+            ));
+        }
+        cases.push((
+            json!({"part": {"source": "S1"}, "at": at, "flip": flip}),
+            470.0,
+        ));
+    }
+    for (fields, expected) in cases {
+        let mut request = fields.clone();
+        request["query"] = json!("build_preview");
+        let answer = query(&doc, request);
+        let value = answer["length"]["value"].as_f64().unwrap_or(f64::NAN);
+        assert!((value - expected).abs() < 1e-9, "{fields}: {answer}");
+        // The source's default is not the length, so a body at the default
+        // would show.
+        assert!(
+            (answer["length"]["default"].as_f64().unwrap_or(f64::NAN) - value).abs() > 1.0,
+            "{fields}: {answer}"
+        );
+        let mut request = fields.clone();
+        request["shape"] = json!("build_preview");
+        let shape = doc
+            .analysis_shape(&request.to_string())
+            .unwrap()
+            .expect("a preview body");
+        let bounds = doc.kernel().bounding_box(&shape).unwrap().unwrap();
+        assert!(
+            (bounds.min[0] - 15.0).abs() < 1e-9 && (bounds.max[0] - 15.0 - value).abs() < 1e-9,
+            "{fields}: {bounds:?}"
+        );
+        assert!(
+            (bounds.min[2] - 100.0).abs() < 1e-9 && (bounds.max[2] - 130.0).abs() < 1e-9,
+            "{fields}: {bounds:?}"
+        );
+    }
 }

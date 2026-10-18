@@ -113,6 +113,10 @@ public:
   // (the newest, a loaded definition) are highlighted where they are shown,
   // and a click on one is on the same entry (mitcad#199).
   virtual QString profileOccurrence(const QString& /*sketch*/) const { return QString(); }
+  // The same for a body's faces, edges and vertices: the first occurrence of
+  // the body's component (empty in the root). A loaded definition's face of
+  // a placed component was otherwise highlighted unplaced, on another part.
+  virtual QString bodyOccurrence(const QString& /*body*/) const { return QString(); }
   // The selection filter context the running command's selections pick
   // through besides their inputs' own tests (mitcad#217: Project in sketch
   // mode; framework/SelectionScope.hpp), null when there is none. Shift

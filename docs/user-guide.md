@@ -145,11 +145,11 @@ The Agents page lists the folders an agent connected through MCP
 (`mitcad-cli mcp --connect`) may save the open design to and open designs
 from; there are none until you add one ([mcp.md](mcp.md)).
 The Display page's **Layout** chooses how the window is arranged:
-**Docked** (the panels in docks around the 3D view, the default on Windows
-and Linux) or **Floating** (the panels as cards over a full-window 3D view,
-the default on macOS; [The Mac layout](#the-mac-layout) describes it; on
-Windows and Linux only the menu bar stays above the view, and the title row
-and the toolbar's groups float over it as cards). The layout takes effect
+**Docked** (the panels in docks around the 3D view) or **Floating** (the
+panels as cards over a full-window 3D view, the default;
+[The Mac layout](#the-mac-layout) describes it; on Windows and Linux only
+the menu bar stays above the view, the title row floats over it and the
+toolbar's groups as cards). The layout takes effect
 when Mitcad starts: after a change Mitcad asks whether to restart now.
 Restart Now closes the window as quitting does (a design with unsaved
 changes is saved or asked about first; Cancel keeps Mitcad open) and
@@ -365,7 +365,11 @@ application menu.
 - **Orientation cube**: a click on a face, edge or corner turns the view
   there, dragging the cube orbits, the house returns to the home view, the
   right button opens the cube's menu (Home, Orthographic, Perspective, Set
-  Current View as Home, Reset Home).
+  Current View as Home, Reset Home). The cube is of dark glass over a dark
+  background and of frosted light glass over a light one; its face names
+  are printed on it, and the faces, edges and corners light up in the
+  accent colour under the pointer. The house is the small capsule above
+  its upper left corner.
 - **View menu:** standard views, Look At, Fit, camera, display styles
   (Shaded, Shaded with Visible Edges Only, Shaded with Hidden Edges,
   Wireframe, Wireframe with Hidden Edges), background, Grid and Snaps, and
@@ -444,13 +448,15 @@ when edited; opening an existing cut does not add other component targets.
 
 ### The Mac layout
 
-On macOS the window follows the system's own apps; Preferences › Display
-› Layout (Docked) or `--chrome=docked` brings back the layout of the other
-systems, and Floating brings this layout to Windows and Linux. On macOS the
+On macOS the window follows the system's own apps; this layout (Floating)
+is the default on every system, and Preferences › Display › Layout
+(Docked) or `--chrome=docked` brings back the docked one. On macOS the
 title bar row and the ribbon's groups are a bar at the top; on Windows and
 Linux only the menu bar is, the 3D view starts right below it, and the
-title bar row is a card floating over the top of the view, with each of the
-ribbon's groups a card of its own in a row below it: a click, drag or wheel
+title bar row floats over the top of the view without a card (its
+controls and the document's name each on a small box of their own), with
+each of the ribbon's groups a card of its own in a row below it: a click,
+drag or wheel
 between and beside these cards works in the view. The other cards always
 start below the bar and the floating rows, at any window size.
 
@@ -763,8 +769,9 @@ sketch.
   with its own arrow, so you reopen the tree one level at a time; the top
   row's arrow still folds it. It changes only what the browser
   shows: nothing in the design and no light bulb changes. In the floating
-  layout (the Mac layout, or `--chrome=floating`) Preferences › Display ›
-  **Browser background** chooses between the Browser's card and **Rows**:
+  layout (the default) Preferences › Display › **Browser background**
+  chooses between the Browser's card (the default on macOS) and **Rows**
+  (the default on Windows and Linux):
   each row on a small box of its own, the model visible and clickable
   between and beside them (see [The Mac layout](#the-mac-layout)).
 - **Opening a design:** a design opens with its root active, whatever
@@ -2124,7 +2131,7 @@ The application (`mitcad`, on Windows `mitcad.exe`):
   (one file, not together with `--open`)
 - `--chrome=docked|floating`: panels in docks or floating over the 3D
   view for this run (default: the Layout chosen in Preferences › Display,
-  else floating on macOS, docked elsewhere)
+  else floating)
 - `--no-glass`: floating panels paint their own material instead of
   Liquid Glass (macOS 26 and later)
 - `--debug-log [file.log]`, `--debug-log=file`: write a debug log for this

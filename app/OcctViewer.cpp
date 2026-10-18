@@ -24,6 +24,7 @@
 #include "framework/Diagnostics.hpp"
 #include "framework/TestSync.hpp"
 #include "mitcad/geometry/import.hpp"
+#include "view/ViewCube.hpp"
 #include "view/ViewTessellation.hpp"
 
 #include <algorithm>
@@ -950,7 +951,8 @@ OcctViewer::OcctViewer(QWidget* parent) : QOpenGLWidget(parent) {
   m_grid->SetZLayer(m_gridLayer);
   setGridColors(*m_grid, m_paper);
 
-  m_orientationCube = new AIS_ViewCube();
+  // In glass of its own (mitcad#430).
+  m_orientationCube = makeViewCube();
   m_orientationCube->SetViewAnimation(ViewAnimation());
   m_orientationCube->SetFixedAnimationLoop(false);
   m_orientationCube->SetAutoStartAnimation(true);
@@ -979,11 +981,12 @@ OcctViewer::OcctViewer(QWidget* parent) : QOpenGLWidget(parent) {
   connect(m_navigationTimer, &QTimer::timeout, this, &OcctViewer::updateNavigation);
   TestSync::watch(m_navigationTimer);
   const bool glass = chromeStyle() == ChromeStyle::Floating;
-  m_homeButton = makeOverlayButton(this);
+  // A capsule of the cube's glass (mitcad#430).
+  m_homeButton = new ViewCubeHomeButton(this);
   m_homeButton->setObjectName(QStringLiteral("viewHome"));
   m_homeButton->setIcon(overlayIcon(QStringLiteral("home"), IconBackdrop::Light));
-  m_homeButton->setIconSize(glass ? QSize(15, 15) : QSize(18, 18));
-  m_homeButton->setFixedSize(glass ? QSize(30, 30) : QSize(26, 26));
+  m_homeButton->setIconSize(QSize(14, 14));
+  m_homeButton->setFixedSize(QSize(36, 24));
   m_homeButton->setAutoRaise(true);
   m_homeButton->setFocusPolicy(Qt::NoFocus);
   m_homeButton->setToolTip(tr("Home: the home view of the whole design"));
@@ -2937,6 +2940,7 @@ void OcctViewer::applyCubePlacement() {
   }
   m_orientationCube->SetSize(m_cubeBaseSize * m_cubeRatio);
   m_orientationCube->SetFontHeight(m_cubeBaseFont * m_cubeRatio);
+  scaleViewCube(*m_orientationCube);
   m_orientationCube->SetTransformPersistence(cubePersistence(m_cubeRatio, m_overlayInsets));
   if (displayed) {
     m_context->Display(m_orientationCube, 0, 0, false);
@@ -2995,7 +2999,7 @@ void OcctViewer::placeHomeButton() {
     return;
   }
   // At the cube's upper left.
-  m_homeButton->move(width() - m_overlayInsets.right() - kCubeOffset - 70, m_overlayInsets.top() + 6);
+  m_homeButton->move(width() - m_overlayInsets.right() - kCubeOffset - 73, m_overlayInsets.top() + 9);
   m_homeButton->raise();
   const QPoint at = mapTo(window(), m_homeButton->geometry().center());
   qDebug().noquote() << QStringLiteral("View home at %1,%2").arg(at.x()).arg(at.y());
@@ -3310,6 +3314,9 @@ void OcctViewer::setBackground(const QColor& top, const QColor& bottom, bool gra
   if ((paper.lightnessF() < 0.5f) != m_backgroundDark) {
     m_backgroundDark = !m_backgroundDark;
     updateOverlayIcons(); // the buttons over the view
+    setViewCubeBackdrop(*m_orientationCube, m_backgroundDark); // the cube's glass
+    m_homeButton->setDark(m_backgroundDark);
+    m_context->Redisplay(m_orientationCube, false);
     restyleSketchEntities();
   }
   if (paper != m_paper) {

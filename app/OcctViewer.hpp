@@ -59,6 +59,8 @@ class QWheelEvent;
 
 namespace mitcad {
 
+class ViewCubeHomeButton;
+
 #ifdef Q_OS_MACOS
 // The OpenGL format of every context Qt creates on macOS, the viewport's and
 // the window's shared one (main() sets it as the default format): a core
@@ -873,7 +875,7 @@ private:
   gp_Ax3 m_gridPlane;
   Graphic3d_ZLayerId m_gridLayer = Graphic3d_ZLayerId_UNKNOWN;
   std::optional<CameraState> m_home;
-  QToolButton* m_homeButton = nullptr;
+  ViewCubeHomeButton* m_homeButton = nullptr;
   bool m_nativeControls = false;
   bool m_backgroundDark = false; // the view's background is dark
   QColor m_backgroundTop = QColor(237, 240, 245);

@@ -171,7 +171,7 @@ answer_trust() {
 B_LOG=$WORK/b.log
 start_b() {
   XDG_CONFIG_HOME=$WORK/b-config XDG_DATA_HOME=$WORK/b-data XDG_CACHE_HOME=$WORK/b-cache \
-    "$UI_APP" --no-recovery --open "$1" > "$B_LOG" 2>&1 &
+    "$UI_APP" --no-recovery --chrome=docked --open "$1" > "$B_LOG" 2>&1 &
   B_PID=$!
   B_WINDOW=""
   for _ in $(seq 1 100); do

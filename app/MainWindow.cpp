@@ -2643,6 +2643,11 @@ QString MainWindow::placingOccurrence(const QString& feature) const {
   return entry != nullptr ? m_snapshot.firstOccurrence(entry->component) : QString();
 }
 
+QString MainWindow::bodyOccurrence(const QString& body) const {
+  const auto entry = m_snapshot.bodies.constFind(body);
+  return entry != m_snapshot.bodies.cend() ? m_snapshot.firstOccurrence(entry->component) : QString();
+}
+
 // The shown sketches (the browser's light bulbs, else the default rule:
 // DocumentSnapshot::featureShown), and the one being edited.
 void MainWindow::showSketches() {

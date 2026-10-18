@@ -1157,8 +1157,9 @@ display changes and hardware rendering require the manual checks in
 The following layouts describe the retained Qt frontend.
 
 `chromeStyle()` (`app/framework/ChromeStyle`) picks the layout at start-up:
-**Docked** (Windows and Linux: the ribbon in a toolbar, the panels in docks)
-or **Floating** (the default on macOS). Preferences › Display › Layout chooses
+**Docked** (the ribbon in a toolbar, the panels in docks) or **Floating**
+(the default everywhere since mitcad#429; the Browser's Rows background by
+default on Windows and Linux). Preferences › Display › Layout chooses
 one for the next starts (`appearance/layout`, `layoutPreference()`; a change
 offers to restart, `framework/Restart`), and `--chrome=docked|floating`
 overrides both for a run (mitcad#419). `MainWindow` builds either from the

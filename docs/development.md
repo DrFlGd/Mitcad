@@ -491,6 +491,12 @@ visibly on a desktop in use.
   (autosave folder) and git config (`GIT_CONFIG_GLOBAL`,
   `GIT_CONFIG_NOSYSTEM`). Tests start the app with `--no-recovery`;
   `UI_RECOVERY=1` re-enables the recovery prompt.
+- The layout: `ui_start_app` starts the app Docked (`--chrome=docked`),
+  which the tests were written for, although Floating is the default
+  (mitcad#429), unless the test's arguments choose a layout (`--chrome…`)
+  or `UI_DEFAULT_CHROME=1` leaves it to the preference and the default
+  (`ui-chrome-layout-test.sh`, `ui-browser-rows-test.sh`). Tests that
+  start the app themselves pass `--chrome=docked` too.
 - The result store is off (`MITCAD_RESULT_STORE=off`) because stored
   results would change how many features later steps compute; tests of it
   set `MITCAD_RESULT_STORE=<dir>` and `MITCAD_RESULT_STORE_MIN_MS=0`.
@@ -512,7 +518,9 @@ commands go through shortcuts. As on Linux, a step waits for the app's
 answer to the sync key (`MITCAD_TEST_SYNC`; the library posts Pause), and
 a key's modifiers stay in the keyboard state until the app logs that it
 took the key (`MITCAD_LOG_KEYS`): while a model job runs, Qt keeps the
-input for later. See
+input for later. As on Linux, `Ui-StartApp` starts the app Docked unless
+the arguments choose a layout or `-DefaultChrome` leaves it to the
+preference and the default (Floating, mitcad#429). See
 [tools/ui-windows-lib.ps1](../tools/ui-windows-lib.ps1).
 
 Not a test: `tools/ui-windows-window-shots.ps1 -App <mitcad.exe> -Out <dir>`

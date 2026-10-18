@@ -406,6 +406,10 @@ void CommandSession::canonicalizeSelections() {
     for (SelectionItem& item : items) {
       if (item.kind == SelectKind::Profile) {
         item.occurrence = m_host.profileOccurrence(item.owner);
+      } else if (item.occurrence.isEmpty() &&
+                 (item.kind == SelectKind::Face || item.kind == SelectKind::Edge ||
+                  item.kind == SelectKind::Vertex || item.kind == SelectKind::Body)) {
+        item.occurrence = m_host.bodyOccurrence(item.owner);
       }
     }
     items = uniqueProfiles(items, resolve);

@@ -562,7 +562,7 @@ const Choices kEnds = {{QStringLiteral("a"), QStringLiteral("End A")}, {QStringL
 // State kept besides the inputs (mitcad#417): whether the side's Offset
 // and From were typed (sent as at.offset and at.from; a click leaves them
 // to the click), what the preview said of the end picked last (its zone,
-// direction, turns and mitre), and the end face under the mouse.
+// direction, turns and mitre), and the side or end face under the mouse.
 const QString kOffsetTyped = QStringLiteral("offset_typed");
 const QString kEndPick = QStringLiteral("end_pick");
 const QString kHover = QStringLiteral("hover_end");
@@ -1029,8 +1029,9 @@ Shared::Side sideOf(const QJsonObject& answer, double targetLength) {
   return shown;
 }
 
-// The state a click at the hover would make (mitcad#417): the end face
-// under the mouse picked there, its Direction Auto. None without a hover.
+// The state a click at the hover would make (mitcad#417): the side or end
+// face under the mouse picked there, its Direction Auto and the side's
+// Offset left to the click. None without a hover.
 std::optional<CommandState> hoverState(const CommandState& state) {
   const QJsonObject hover = state.object(kHover);
   if (hover.isEmpty()) {
@@ -1047,19 +1048,22 @@ std::optional<CommandState> hoverState(const CommandState& state) {
   shown.setObject(kAt + QStringLiteral("_pick"), pick);
   shown.setChoice(QStringLiteral("direction"), kAuto);
   shown.setObject(kEndPick, {});
+  shown.setChecked(kOffsetTyped, false);
   return shown;
 }
 
-// The hover on an end face of a part the new one goes on (mitcad#417),
-// kept with where the mouse is, so that the preview shows what a click
-// there places, straight on or turned, before the click. True when the
-// hover changed; a move of a few pixels shows the same.
-bool hoverEnd(const Shared& shared, const QString& role, const SelectionItem& item, CommandState& state,
-              const CommandContext& context) {
+// The hover on a side or an end face of a part the new one goes on
+// (mitcad#417), kept with where the mouse is, so that the preview shows
+// what a click there places (on a side at its snap, on an end straight on
+// or turned) before the click. True when the hover changed; a move of a
+// few pixels shows the same.
+bool hoverFace(const Shared& shared, const QString& role, const SelectionItem& item, CommandState& state,
+               const CommandContext& context) {
   const QJsonObject before = state.object(kHover);
   const QString place = state.choice(QStringLiteral("place"));
-  bool takes = item.isValid() && item.kind == SelectKind::Face && item.at && isEndFace(item) &&
-               (place.isEmpty() || place == kAuto || place == QStringLiteral("end")) && shared.hasTargets(role);
+  const QString wanted = isEndFace(item) ? QStringLiteral("end") : QStringLiteral("side");
+  bool takes = item.isValid() && item.kind == SelectKind::Face && item.at &&
+               (place.isEmpty() || place == kAuto || place == wanted) && shared.hasTargets(role);
   if (takes) {
     const std::optional<BuildPart> part = shared.partAt(item.occurrence);
     takes = part && Shared::targets(role, part->role);
@@ -1070,7 +1074,7 @@ bool hoverEnd(const Shared& shared, const QString& role, const SelectionItem& it
       return false;
     }
     state.setObject(kHover, {});
-    qInfo().noquote() << QStringLiteral("BUILD hover off the end faces");
+    qInfo().noquote() << QStringLiteral("BUILD hover off the parts' faces");
     return true;
   }
   if (str(before, "item") == str(record, "item") && str(before, "occurrence") == item.occurrence) {
@@ -1143,12 +1147,26 @@ void addEndMarkers(QJsonArray& markers, const QJsonObject& end, const SelectionI
   }
 }
 
+// How far a shape's vertices reach along an axis: the length of the
+// preview's body (mitcad#431), logged beside the length the panel shows.
+// NaN without vertices.
+double extentAlong(const TopoDS_Shape& shape, const gp_Dir& axis) {
+  double low = std::numeric_limits<double>::infinity();
+  double high = -low;
+  for (TopExp_Explorer it(shape, TopAbs_VERTEX); it.More(); it.Next()) {
+    const double at = BRep_Tool::Pnt(TopoDS::Vertex(it.Current())).XYZ().Dot(axis.XYZ());
+    low = std::min(low, at);
+    high = std::max(high, at);
+  }
+  return high >= low ? high - low : kNaN;
+}
+
 // The inspection of a placement: what build_preview says, the new part's
 // shape (the model's, else its section along the frame), the auto
 // length's target highlighted, the length at the free end, the side's
 // snaps and an end face's zones, where the part goes ("Adds to") and the
-// first part's hint; with the mouse on an end face, what a click there
-// places (mitcad#417).
+// first part's hint; with the mouse on a side or an end face, what a
+// click there places (mitcad#417).
 Inspection inspectPlacement(const SharedPtr& shared, const QString& role, const CommandState& picked,
                             const CommandContext& context, bool profile) {
   Inspection result;
@@ -1157,7 +1175,7 @@ Inspection inspectPlacement(const SharedPtr& shared, const QString& role, const 
     result.error = noPartsText(*shared, role);
     return result;
   }
-  // An end face under the mouse shows what a click there places
+  // A side or end face under the mouse shows what a click there places
   // (mitcad#417); else the pick.
   const std::optional<CommandState> hovered = hoverState(picked);
   const CommandState& state = hovered ? *hovered : picked;
@@ -1195,6 +1213,7 @@ Inspection inspectPlacement(const SharedPtr& shared, const QString& role, const 
   QJsonObject shapeRequest = placed.fields;
   shapeRequest.insert(QStringLiteral("shape"), QStringLiteral("build_preview"));
   result.shape = context.analysisShape(shapeRequest);
+  const double bodyLength = result.shape.IsNull() || !frame.valid ? kNaN : extentAlong(result.shape, frame.z);
   if (result.shape.IsNull() && part.sectionWidth() > 0.0) {
     result.shape = build::boxAlong(frame, part.sectionWidth(), part.sectionHeight(), length);
   }
@@ -1294,6 +1313,9 @@ Inspection inspectPlacement(const SharedPtr& shared, const QString& role, const 
   }
   if (placed.how == Against::Ground) {
     result.log += QStringLiteral("; along %1").arg(state.choice(QStringLiteral("axis")));
+  }
+  if (std::isfinite(bodyLength)) {
+    result.log += QStringLiteral("; body %1 mm").arg(bodyLength, 0, 'f', 2);
   }
   if (hovered) {
     result.log += QStringLiteral("; on the hover");
@@ -1622,9 +1644,10 @@ CommandDef placeCommand(const SharedPtr& shared, DocumentHost& host, const QStri
     return inspectPlacement(shared, role, state, context, profile);
   };
   def.previewMarkers = markersOf;
-  // The mouse on an end face shows what a click there places (mitcad#417).
+  // The mouse on a side or an end face shows what a click there places
+  // (mitcad#417).
   def.hoverPreview = [shared, role](const SelectionItem& item, CommandState& state, const CommandContext& context) {
-    return hoverEnd(*shared, role, item, state, context);
+    return hoverFace(*shared, role, item, state, context);
   };
   def.apply = [shared, &host, role, profile](CommandState& state, const CommandContext& context) {
     Part part;

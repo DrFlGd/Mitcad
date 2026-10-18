@@ -928,3 +928,8 @@ if(BUILD_TESTING)
   # The designs' slugs, designs.json and the index: plain Qt Core.
   target_sources(test_app PRIVATE tests/project_web.cpp web/ProjectWeb.cpp web/ProjectWeb.hpp)
 endif()
+# The orientation cube and its Home button in glass of their own
+# (mitcad#430).
+target_sources(mitcad PRIVATE
+  view/ViewCube.cpp
+  view/ViewCube.hpp)

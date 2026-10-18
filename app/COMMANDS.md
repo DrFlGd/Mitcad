@@ -1519,10 +1519,12 @@ places one and closes it.
   turns; shared at offset 0 only on a corner at another angle), None sends
   `{"cut": "none"}`. The markers show the end face's zones (`straight`
   in its middle, `turn +X` in the middle of each band; the one taken
-  `> turn +X`). With the mouse on an end face of a part it can go on
-  (`hoverPreview`), the preview is what a click there places, Direction
-  Auto (the result says so); a move of under 4 pixels shows the same,
-  and leaving the face or the view shows the pick again.
+  `> turn +X`). With the mouse on a side or an end face of a part it can
+  go on (`hoverPreview`; a side while Placement is Auto or On the side,
+  an end while Auto or On the end), the preview is what a click there
+  places: on a side at its snap with Offset left to the click, on an end
+  with Direction Auto (the result says so); a move of under 4 pixels
+  shows the same, and leaving the face or the view shows the pick again.
 - **Auto length:** the preview without a length names the face the ray
   meets (`length.target`); the panel then binds to it (`{"bind": target,
   "mode", "add": 0}`) and previews again. Nothing in the way (the first
@@ -1548,8 +1550,9 @@ to Root (a ground placement)`, `BUILD connectors for
 junction <id> (<kind>): <n> fit, <m> nearly`, `Inspect Profile: place
 side, length 742.50 mm (bound, auto: to the face to F8:part(...) of
 Part5), square ends; adds to Root; snap end_b at 0.0 mm from b; least
-snap 1.30 mm; part Profile 30x30` (the part previewed, last, mitcad#418; the side's snap, `none` between snaps, its offset from
-its reference `a`, `b` or `middle`; `at.snap`), `Inspect Profile: place
+snap 1.30 mm; body 742.50 mm; part Profile 30x30` (the part previewed, last, mitcad#418; the side's snap, `none` between snaps, its offset from
+its reference `a`, `b` or `middle`; `at.snap`; how far the model's
+preview body reaches along the part's axis, mitcad#431), `Inspect Profile: place
 end, ...; end edge towards +X, mitre none, offset 0.0 mm; least snap
 1.30 mm; on the hover` (the end's zone `straight`, `edge` or `given`,
 the direction, the mitre the placement takes, a corner's offset; the
@@ -1558,7 +1561,7 @@ hover's preview), `BUILD side click: From End B, Offset 0 mm (end_b)`,
 in place: Offset 350 mm`, `BUILD end click: edge towards +X, mitre
 none; turns +X, +Y, -X, -Y`, `BUILD corner offset: the shared mitre
 goes (it needs offset 0)`, `BUILD hover on <face>`, `BUILD hover off the
-end faces`, `BUILD click not placed: <reason>`, `Preview marker Profile
+parts' faces`, `BUILD click not placed: <reason>`, `Preview marker Profile
 turn +X world x,y,z at x,y` (an end face's zone; `straight`; the taken
 one with `> `), `Inspect
 Profile: waiting: Click a profile's side or end.; adds to Root; part <part>`, `View
@@ -1594,9 +1597,22 @@ list: <n> row(s)`, `Build list CSV: <line>`, `Build list copied as CSV:
 settings in the user's settings (`ViewSettings`, group `view`);
 `OcctViewer` draws them.
 
-- **Orientation cube** (OCCT's `AIS_ViewCube`): a drag that starts on it
-  orbits (passed to OCCT with its own key flag `kCubeDrag`); sketch mode
-  leaves presses on the cube to the view (`OcctViewer::cubeInteraction`).
+- **Orientation cube** (OCCT's `AIS_ViewCube`, drawn by `GlassViewCube` in
+  `view/ViewCube.cpp`, mitcad#430): AIS_ViewCube's picking, hover, turns
+  and logs, in glass of its own. Over a dark background dark smoked glass
+  with light names, over a light one frosted light glass with dark names
+  (`setViewCubeBackdrop`, from `setBackground`); the faces about 85 %
+  opaque (OCCT blends in linear light, so the glass follows the
+  background rather than the theme), their names painted with Qt into
+  their textures (only the faces in front are drawn, so no names show
+  mirrored from behind), the edges and corners AIS_ViewCube's flat bevels
+  a shade apart (they are parts to click), the axes X red, Y green, Z
+  blue, the hover in the accent. The Home button above it
+  (`ViewCubeHomeButton`, `viewHome`) is a capsule of the same glass, its
+  house in the names' colour, the accent on hover. A drag that starts on
+  the cube orbits (passed to OCCT with its own key flag `kCubeDrag`);
+  sketch mode leaves presses on the cube to the view
+  (`OcctViewer::cubeInteraction`).
   Create Sketch's plane pick points keep away from the cube
   (`cubeArea`, `planePickPoint`), and the datums' logged pick places are
   where no other datum lies. The arrows shown when looking straight at a
@@ -2026,6 +2042,7 @@ UI thread.
 | `report/` | feedback and error reports ([below](#feedback-and-error-reports)): `ReportCenter` (Help › Send Feedback, the offers, the delivery), `ReportDialogs` (the form, the screenshot's crop, the preview), `ReportText` (masking, crash files, duplicate keys, the issue form's address; Qt Core, `app.unit`), `CrashHandler` (the signal and exception handlers, plain C++, also in `mitcad-render`) |
 | `MainWindow.*` | the host: document, modes (idle, picking a sketch plane, sketch, command), selection, context menu, actions |
 | `OcctViewer.*` | the 3D view: bodies in the visual style, previews, highlights, picking, camera, orientation cube, navigation |
+| `view/ViewCube.*` | the orientation cube's glass and its Home capsule (mitcad#430) |
 | `icons/*.svg` | own icons (see [Icons](#icons)) |
 | `web/` | the web viewer's pages (mitcad#423, [Web page](#web-page)): `WebPage` (`writePage` of the open design, `writePageOfFile` of a design file without a window, `pageHtml`: the viewer's template with its import map, module and data inlined), `WebGlb` (the bodies as the viewer's glb: a node per placed body, appearances and textures; the component tree); the viewer itself in `web/viewer/` |
 | `web/MainWindowWeb.cpp`, `web/ProjectWeb.*` | a project's web viewer (mitcad#423): Web Viewer, Update Web Viewer, the Save that writes a design's page; the `web/` folder's slugs, `designs.json` and `index.html` (Qt Core, `app.unit`) |
@@ -2998,6 +3015,11 @@ model's `profile` query names the region a key means now
   and each region once (`uniqueProfiles`). Before, a click on the newest
   profile of a placed component's sketch added the region a second time,
   and the feature failed with "profile … is listed more than once".
+  Faces, edges, vertices and bodies without an occurrence (a loaded
+  definition's references have none) get the first occurrence of their
+  body's component (`CommandHost::bodyOccurrence`): before, editing a
+  thread on a placed component's face highlighted the face unplaced, at
+  the component's own coordinates, on another part of the design.
 - A region a sketch edit split (mitcad#407) is all its pieces: the
   `profile` query's `regions` lists them, the main one (which keeps the
   old key in the model) first, and the resolver returns that list. Every

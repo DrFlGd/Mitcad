@@ -53,6 +53,10 @@ std::vector<ToolContact> tool_contacts(const Shape& tool, const std::vector<cons
     std::vector<gp_Pnt> points;
     bool found = false;
     for (std::size_t i = 0; i < bodies.size(); ++i) {
+      // A mesh body is neither joined nor cut (mitcad#399): apart.
+      if (detail::has_mesh_faces(bodies[i]->occt())) {
+        continue;
+      }
       const Bnd_Box box = box_of(bodies[i]->occt());
       if (box.IsVoid() || tool_box.IsOut(box) || !detail::shapes_touch(*bodies[i], tool)) {
         continue;

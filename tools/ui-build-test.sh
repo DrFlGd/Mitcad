@@ -7,17 +7,26 @@
 # slot 5, a corner block, a panel, a rail and a carriage; no supplier's
 # files), fetched from a local git repository:
 #   1. The BUILD tab beside SOLID, its groups.
-#   2. Profile: the first profile on the XY plane (typed length); two on
-#      its side at its ends (one with its new end mitred); the fourth on
-#      the side of the second at its far end, its length bound to the third
-#      (Tab steps face, centre, through; the box at the cursor shows it)
-#      - a frame of four.
-#   3. Connector at a junction (shown on the hover, the chosen one
+#   2. A new design, Part1 active (mitcad#394): Profile adds to the root
+#      without activating it, no policy message; the panel starts with the
+#      part, its length (the stock length) and the X / Y / Z buttons, the
+#      view's hint; the first profile by a pick on the root's XY plane,
+#      then (undone) by Enter at the origin, 60 mm long; then only
+#      profiles' faces are picked and the planes are hidden; a click on its
+#      side places one flush with an end, a pick on its end face shows
+#      Mitre and places one mitred; Close shows the planes again.
+#      The same panel in the Floating chrome (More opens Placement).
+#   3. Profile on a design with only its root: the first profile on the
+#      XY plane (typed length); two on its side flush with its ends (offset
+#      0 from A and from B); the fourth on the side of the second at its
+#      far end, its length bound to the third (Tab steps face, centre,
+#      through; the box at the cursor shows it) - a frame of four.
+#   4. Connector at a junction (shown on the hover, the chosen one
 #      always), from the fitting connectors, previewed in place.
-#   4. Panel in the frame from an inner face.
-#   5. Linear Part: a rail on the first profile, a carriage on the rail;
+#   5. Panel in the frame from an inner face.
+#   6. Linear Part: a rail on the first profile, a carriage on the rail;
 #      Ends: an end of the third profile mitred and bored (end machining).
-#   6. Save, reopen: the parts are there (their sources in the design);
+#   7. Save, reopen: the parts are there (their sources in the design);
 #      Cut List: its rows (one with a 45 degree end), Copy as CSV, Save as
 #      PDF.
 #
@@ -177,9 +186,31 @@ refresh_picks() {
   ui_step "$1's pick again"                ui_click_logged "Panel $1 input at"
 }
 SIDE=":part(F2:side("
+# expect_row INPUT shown|hidden description: Profile's panel row INPUT as
+# the panel laid it out last ("Panel Profile input <id> at x,y", with
+# " (hidden)" when hidden).
+expect_row() {
+  local line=""
+  for _ in $(seq 1 30); do
+    line=$(grep -F "Panel Profile input $1 at " "$UI_LOG" | tail -1)
+    if [ "$2" = hidden ]; then
+      [[ $line == *"(hidden)" ]] && { echo "ok   $3"; return; }
+    else
+      [ -n "$line" ] && [[ $line != *"(hidden)" ]] && { echo "ok   $3"; return; }
+    fi
+    sleep 0.2
+  done
+  ui_fail "$3: Panel Profile input $1 is not $2 (${line:-never laid out})"
+}
+# no_policy_message: no design-policy refusal reached the log.
+no_policy_message() {
+  ! grep -q "does not allow" "$UI_LOG" || ui_fail "a policy refusal: $(grep "does not allow" "$UI_LOG" | head -1)"
+  echo "ok   no policy message"
+}
 
 ui_start_display
-ui_start_app --open "$WORK/start.mitcad" --no-native-dialogs
+# A new design (mitcad#394): Part1 active, the root with the Assembly policy.
+ui_start_app --no-native-dialogs
 
 echo "--- 1. The BUILD tab"
 ui_expect_log "Ribbon tab BUILD at" "the BUILD tab beside SOLID"
@@ -188,11 +219,110 @@ ui_step "the BUILD tab"                    ui_click_logged "Ribbon tab BUILD"
 ui_expect_new "Ribbon BUILD/PROFILE at" "its PROFILE group"
 ui_expect_new "Ribbon BUILD/OUTPUT at" "its OUTPUT group"
 
-echo "--- 2. Profile: a frame of four"
+echo "--- 2. The first profiles of a new design, Part1 active"
 ui_mark
 ui_step "Profile (command search)"         ui_command "Profile"
 ui_expect_new "Command Profile started" "Profile started"
 ui_expect_new "BUILD parts profile: 1 (0 in the design)" "the picker lists the library's profile"
+ui_expect_new "BUILD profile adds to Root (a ground placement)" "BUILD adds to the root while Part1 is active"
+ui_expect_new "View hint Profile: Click a plane or a face, or press Enter" "the view's hint for the first part"
+ui_expect_new "Inspect Profile: place grounded, length 1000.00 mm (typed), square ends; adds to Root" \
+  "at the origin with its stock length, adding to Root"
+expect_row axis=z shown "the Direction's X, Y and Z buttons"
+expect_row mitre hidden "no Mitre before an end pick"
+expect_row use_offset hidden "no Offset before a side pick"
+expect_row rotate hidden "no Rotate before another part is picked"
+expect_row place hidden "Placement under More"
+ui_mark
+ui_step "on the root's XY plane"           ui_click_logged "Datum xy"
+ui_expect_new "Inspect Profile: place geometry, length 1000.00 mm (typed), square ends; adds to Root" \
+  "on the XY plane, without activating Root"
+ui_step "Place (Enter)"                    ui_key Return
+ui_expect_new "Placed Profile 20 test as " "placed by a pick on the XY plane" 30
+no_policy_message
+ui_step "Close (Escape)"                   ui_key Escape
+ui_mark
+ui_step "undo it (Ctrl+Z)"                 ui_key ctrl+z
+ui_sync
+ui_mark
+ui_step "Profile again"                    ui_command "Profile"
+ui_expect_new "BUILD profile adds to Root (a ground placement)" "a new design again"
+ui_step "60 mm long"                       ui_type_in "Panel Profile input length" "60"
+ui_mark
+ui_step "along X"                          ui_click_logged "Panel Profile input axis=x"
+ui_expect_new "Profile: Direction = Along X" "the X button"
+ui_expect_new "; along x" "the preview along X"
+ui_mark
+ui_step "standing (Z)"                     ui_click_logged "Panel Profile input axis=z"
+ui_expect_new "; along z" "the preview standing"
+ui_mark
+ui_step "Place without a pick (Enter)"     ui_key Return
+ui_expect_new "Placed Profile 20 test as " "placed at the origin by Enter" 30
+ui_expect_new "Applied Profile (1)" "the panel stays open"
+no_policy_message
+B1=$(placed_body)
+[ -n "$B1" ] || ui_fail "no body of the first profile"
+ui_expect_new "Profile Place On takes now: faces" "only a profile's faces once one is there"
+ui_expect_new "Construction geometry hidden for the command" "the planes hidden for side and end placements"
+ui_expect_new "View hint Profile: Click a profile's side or end" "the view's hint for the next one"
+refresh_picks "Profile"
+SIDE0=$(faces_of "$B1" "$SIDE" | head -1)
+[ -n "$SIDE0" ] || ui_fail "no side of the first profile ($B1) to pick"
+ui_mark
+ui_step "its side, 60 mm long"             pick_face "$B1" "$SIDE0"
+ui_expect_new "Inspect Profile: place side" "on the side"
+ui_expect_new "; snap end_" "flush with the end near the click"
+expect_row use_offset shown "Offset for a side pick"
+expect_row mitre hidden "no Mitre for a side pick"
+expect_row rotate shown "Rotate against another part"
+ui_step "Place (Enter)"                    ui_key Return
+ui_expect_new "Placed Profile 20 test as " "the second profile placed flush" 30
+refresh_picks "Profile"
+TOP0=$(faces_of "$B1" ":end_b" | head -1)
+[ -n "$TOP0" ] || ui_fail "no end face of the first profile ($B1) to pick"
+ui_mark
+ui_step "its end face"                     pick_face "$B1" "$TOP0"
+ui_expect_new "Inspect Profile: place end" "on the end"
+expect_row mitre shown "Mitre for an end pick"
+expect_row use_offset hidden "no Offset for an end pick"
+ui_mark
+ui_step "mitre the new part"               ui_choose "Panel Profile input mitre" 1
+ui_expect_new "ends A 45 deg" "the new part's end mitred"
+ui_step "Place (Enter)"                    ui_key Return
+ui_expect_new "Placed Profile 20 test as " "the third profile placed on the end, mitred" 30
+no_policy_message
+ui_mark
+ui_step "Close (Escape)"                   ui_key Escape
+ui_expect_new "Closed Profile after 3" "Close keeps them"
+ui_expect_new "Construction geometry shown again" "the planes shown again when the command ends"
+ui_stop_app
+
+echo "--- 2b. The same panel in the Floating chrome"
+ui_start_app --no-native-dialogs --chrome=floating
+ui_mark
+ui_step "Profile (command search)"         ui_command "Profile"
+ui_expect_new "BUILD profile adds to Root (a ground placement)" "a new design: adds to the root"
+expect_row axis=x shown "the X button in a floating card"
+expect_row more shown "More in a floating card"
+expect_row place hidden "Placement closed under More"
+ui_step "More"                             ui_click_logged "Panel Profile input more"
+expect_row place shown "Placement under More, opened"
+ui_mark
+ui_step "Place without a pick (Enter)"     ui_key Return
+ui_expect_new "Placed Profile 20 test as " "placed at the origin by Enter" 30
+no_policy_message
+ui_step "Close (Escape)"                   ui_key Escape
+ui_stop_app
+
+# The rest on a design with only its root, the active component.
+ui_start_app --open "$WORK/start.mitcad" --no-native-dialogs
+ui_step "the BUILD tab"                    ui_click_logged "Ribbon tab BUILD"
+
+echo "--- 3. Profile: a frame of four"
+ui_mark
+ui_step "Profile (command search)"         ui_command "Profile"
+ui_expect_new "Command Profile started" "Profile started"
+ui_expect_new "BUILD profile adds to Root (a ground placement)" "the root, the active component"
 ui_step "a typed length of 400"            ui_type_in "Panel Profile input length" "400"
 ui_expect_new "BUILD length typed: detached from the auto length" "typing a length detaches it"
 ui_step "on the XY plane"                  ui_click_logged "Datum xy"
@@ -206,12 +336,8 @@ B1=$(placed_body)
 [ -n "$P1" ] && [ -n "$B1" ] || ui_fail "no occurrence or body of the first profile"
 echo "ok   the first profile is $P1 ($B1)"
 
-# Two profiles on the first one's side, at its ends: offset 0 from A, and
-# from B; the first of them with its new end mitred.
-ui_step "Offset from an End"               ui_click_logged "Panel Profile input use_offset"
-ui_step "offset 0"                         ui_type_in "Panel Profile input offset" "0"
-ui_step "mitre the new part"               ui_choose "Panel Profile input mitre" 1
-ui_step "length 300"                       ui_type_in "Panel Profile input length" "300"
+# Two profiles on the first one's side, flush with its ends: offset 0 from
+# A, and from B.
 refresh_picks "Profile"
 # The two on a side of the first one that a click can reach.
 SIDE1=$(faces_of "$B1" "$SIDE" | head -1)
@@ -219,16 +345,22 @@ SIDE1=$(faces_of "$B1" "$SIDE" | head -1)
 ui_mark
 ui_step "the first profile's side"         pick_face "$B1" "$SIDE1"
 ui_expect_new "Inspect Profile: place side" "on the side"
+ui_mark
+ui_step "Offset from an End"               ui_click_logged "Panel Profile input use_offset"
+ui_step "offset 0"                         ui_type_in "Panel Profile input offset" "0"
+ui_step "length 300"                       ui_type_in "Panel Profile input length" "300"
+ui_expect_new "snap none at 0.0 mm" "offset 0 from end A: flush with end A"
 ui_step "Place (Enter)"                    ui_key Return
 ui_expect_new "Placed Profile 20 test as " "the second profile placed" 30
 P2=$(placed_occurrence)
 B2=$(placed_body)
-ui_step "no mitre"                         ui_choose "Panel Profile input mitre" -1
-ui_step "from end B"                       ui_choose "Panel Profile input from" 1
 refresh_picks "Profile"
 ui_mark
 ui_step "the first profile's side again"   pick_face "$B1" "$SIDE1"
 ui_expect_new "Inspect Profile: place side" "on the side"
+ui_mark
+ui_step "from end B"                       ui_choose "Panel Profile input from" 1
+ui_expect_new "snap none at 380.0 mm" "offset 0 from end B: flush with end B"
 ui_step "Place (Enter)"                    ui_key Return
 ui_expect_new "Placed Profile 20 test as " "the third profile placed" 30
 P3=$(placed_occurrence)
@@ -275,7 +407,7 @@ ui_mark
 ui_step "Close (Escape)"                   ui_key Escape
 ui_expect_new "Closed Profile after 4" "Close keeps the four profiles"
 
-echo "--- 3. Connector"
+echo "--- 4. Connector"
 ui_step "fit the view (F6)"                ui_key F6
 ui_mark
 ui_step "Connector (command search)"       ui_command "Connector"
@@ -302,7 +434,7 @@ ui_step "Connect (Enter)"                  ui_key Return
 ui_expect_new "Connected Bracket 20 test at junction " "the connector placed" 30
 ui_step "Close (Escape)"                   ui_key Escape
 
-echo "--- 4. Panel"
+echo "--- 5. Panel"
 ui_mark
 ui_step "Panel (command search)"           ui_command "Panel"
 ui_expect_new "BUILD parts panel: 1" "the picker lists the panel"
@@ -313,7 +445,7 @@ ui_step "Place (Enter)"                    ui_key Return
 ui_expect_new "Placed panel Panel test as " "the panel placed" 30
 ui_step "Close (Escape)"                   ui_key Escape
 
-echo "--- 5. Linear Part: a rail and a carriage"
+echo "--- 6. Linear Part: a rail and a carriage"
 ui_mark
 ui_step "Linear Part (command search)"     ui_command "Linear Part"
 ui_expect_new "BUILD parts linear: 2" "the rail and the carriage"
@@ -340,7 +472,7 @@ ui_step "Place (Enter)"                    ui_key Return
 ui_expect_new "Placed Carriage 15 test as " "the carriage placed on the rail" 30
 ui_step "Close (Escape)"                   ui_key Escape
 
-echo "--- 5b. Ends: an end of the third profile mitred and bored"
+echo "--- 6b. Ends: an end of the third profile mitred and bored"
 ui_step "fit the view (F6)"                ui_key F6
 ui_mark
 ui_step "Ends (command search)"            ui_command "Ends"
@@ -355,7 +487,7 @@ ui_step "OK (Enter)"                       ui_key Return
 ui_expect_new "Ends of " "the end edited"
 ui_expect_new "machining D6.8" "with its bore"
 
-echo "--- 6. Save, reopen, Cut List"
+echo "--- 7. Save, reopen, Cut List"
 ui_mark
 ui_step "save as (Ctrl+Shift+S)"           ui_key ctrl+shift+s
 ui_type_path "Save As" "$FILE"
@@ -373,7 +505,7 @@ ui_step "Cut List (command search)"        ui_command "Cut List"
 ui_focus_dialog '^Cut List$'
 ui_expect_new "Cut list row: " "the cut list's rows"
 ui_expect_new "x Profile 20 test" "the profiles in it"
-ui_expect_new "A 45 deg" "the mitred end"
+ui_expect_new " 45 deg (" "the mitred end"
 ui_expect_new "x Rail 15 test" "the rail in it"
 ui_expect_new "machining D6.8" "the bored end"
 rows=$(tail -n +$((UI_MARK + 1)) "$UI_LOG" | sed -n 's/^Cut list: \([0-9]*\) row(s).*/\1/p' | tail -1)

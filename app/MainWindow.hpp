@@ -100,6 +100,10 @@ public:
   // root when AppKit owns the visible window.
   void present();
   bool usesNativeUi() const { return m_nativeUi; }
+  // Logs the window's size and where its bars, docks and central widget
+  // are ("Window layout: ..."), which every UI test's clicks and
+  // screenshots depend on (tools/ui-layout.sh, mitcad#412).
+  void logLayout() const;
 
   OcctViewer* viewerWidget() const { return m_viewer; }
   DocumentSession& documentSession() const { return *m_documentSession; }
@@ -170,6 +174,7 @@ public:
   bool runCommands(const QJsonArray& commands, const QString& label) override;
   void refreshScene() override;
   void inputActivated(SelectFilter filter) override;
+  void setConstructionHidden(bool hidden) override;
   void showHint(const QString& message) override;
   TopoDS_Shape itemShape(const SelectionItem& item) const override;
   TopoDS_Shape analysisShape(const QJsonObject& request) const override;
@@ -258,12 +263,24 @@ private:
   void mcpRefuseBusy() const;
   QJsonObject mcpSketchCommand(const QJsonObject& request);
   void mcpLabelAgentChange(int depthBefore);
-  QJsonObject mcpSave();
+  QJsonObject mcpSave(const QJsonObject& arguments);
   QJsonObject mcpUiState();
   QJsonObject mcpLog(const QJsonObject& arguments) const;
   QJsonObject mcpScreenshot(const QJsonObject& arguments);
   QJsonObject mcpSelect(const QJsonObject& arguments);
   QJsonObject mcpUiCommand(const QJsonObject& arguments);
+  // Open into the window from an allowed folder, and the view's camera
+  // (mitcad#402, mitcad#405).
+  QJsonObject mcpOpen(const QJsonObject& arguments);
+  QJsonObject mcpCamera(const QJsonObject& arguments);
+  QJsonObject mcpCameraJson() const;
+  // The corners of the boxes of entities as the view shows them; false with
+  // `missing` naming one that must be in the model and is not.
+  bool mcpItemCorners(const Selection& items, std::vector<gp_Pnt>& corners, QString* missing) const;
+  // View > Fit (mitcad#405): the selection when something with a shape is
+  // selected outside commands and sketches, the shown bodies when the
+  // design isolates some, otherwise everything shown.
+  void fitView();
 
   void registerCommands();
   void createMenus();
@@ -871,6 +888,9 @@ private:
   ReportCenter* m_reports = nullptr;     // feedback and error reports (mitcad#61, mitcad#62)
   sketch::SketchController* m_sketch = nullptr;
   sketch::SketchPalette* m_palette = nullptr;
+  // The palette's page of the command pages: the palette, or in the docked
+  // layout a scroll area around it (mitcad#412).
+  QWidget* m_palettePage = nullptr;
 
   QAction* m_confirmAction = nullptr;
   QAction* m_cancelAction = nullptr;
@@ -911,6 +931,7 @@ private:
   Selection& m_selection = m_documentSession->state().selection;
   QString m_loggedFeatureFaces = QStringLiteral("none"); // the selected features' faces (UI tests)
   bool m_originVisible = false; // an input takes construction geometry
+  bool m_constructionHidden = false; // an input hides it (mitcad#394)
   std::vector<SketchEntityDisplay> m_sketchDisplay;
   QString m_loggedSketches; // the sketches whose curves are shown (UI tests)
   // The shown bodies' middles ("F3.b0 in O1"), and those of their shapes.

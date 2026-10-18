@@ -389,6 +389,8 @@ bool near_copies_off() {
 } // namespace
 
 BooleanResult removed_material(const Shape& before, const Shape& after, double slack) {
+  detail::require_surfaces(before.occt(), "removed material");
+  detail::require_surfaces(after.occt(), "removed material");
   return detail::run("removed material", [&] {
     const std::vector<Bnd_Box> regions = changed_regions(before, after, slack);
     if (regions.empty()) {
@@ -422,6 +424,8 @@ std::optional<BooleanResult> join_near_copy(const Shape& body, const Shape& copy
   if (off) {
     return std::nullopt;
   }
+  detail::require_surfaces(body.occt(), "join of a near copy");
+  detail::require_surfaces(copy.occt(), "join of a near copy");
   return detail::run("join of a near copy", [&]() -> std::optional<BooleanResult> {
     // A near copy: at most half the faces of each differ from the other's.
     const std::vector<int> far_copy = far_faces(copy, body, slack, false);

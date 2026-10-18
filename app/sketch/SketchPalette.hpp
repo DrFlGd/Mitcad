@@ -33,10 +33,18 @@ public:
 
   // Logs where the options are, for UI tests.
   void logLayout() const;
+  // Logs where the options and the Auto constraint section, when shown,
+  // are: again when the palette scrolls (mitcad#412).
+  void logPlaces();
   // The status line as text ("2 degrees of freedom") and whether Clean Up
   // Stale Projections is offered, for live MCP's ui_state (mitcad#265).
   QString statusText() const;
   bool cleanUpOffered() const { return m_cleanUpOffered; }
+
+signals:
+  // The Auto constraint section was laid out shown: a scroll area around
+  // the palette brings it into view (mitcad#412).
+  void autoSectionShown(QWidget* section);
 
 protected:
   bool eventFilter(QObject* watched, QEvent* event) override;
@@ -58,6 +66,7 @@ private:
   PaletteWarnings* m_warnings = nullptr; // under the status (mitcad#264)
   QLabel* m_tool = nullptr;
   QCheckBox* m_construction = nullptr;
+  QCheckBox* m_signed = nullptr; // Signed distances for Sketch Dimension (mitcad#409)
   QCheckBox* m_grid = nullptr;
   QCheckBox* m_dimensions = nullptr;
   QCheckBox* m_constraints = nullptr;

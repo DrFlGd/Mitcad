@@ -157,10 +157,13 @@ impl CadBackend {
             .ok_or_else(|| format!("no open document '{id}'"))
     }
 
+    /// Opens `document` under a new handle. `failed` is the opening
+    /// recompute's `failed_features`: listed, not an error (mitcad#401).
     fn insert(
         &mut self,
         document: Box<Document>,
         path: Option<PathBuf>,
+        failed: Value,
     ) -> Result<ToolResult, String> {
         if self.documents.len() >= MAX_DOCUMENTS {
             return Err(format!(
@@ -176,9 +179,9 @@ impl CadBackend {
         value["document"] = json!(id);
         value["path"] = json!(path.as_ref().map(|p| p.to_string_lossy().into_owned()));
         value["applied"] = json!(true);
-        let is_error = geometry_failed(&value);
+        value["failed_features"] = if failed.is_array() { failed } else { json!([]) };
         self.documents.insert(id, OpenDocument { document, path });
-        Ok(ToolResult { value, is_error })
+        success(value)
     }
 
     fn open(&mut self, path: &str) -> Result<ToolResult, String> {
@@ -224,13 +227,15 @@ impl CadBackend {
             }
         }
         let mut document = Box::new(Document(model));
-        document
-            .command(r#"{"cmd":"recompute"}"#)
-            .map_err(|e| e.to_string())?;
+        let recomputed = parse_result(
+            &document
+                .command(r#"{"cmd":"recompute"}"#)
+                .map_err(|e| e.to_string())?,
+        )?;
         document
             .command(r#"{"cmd":"mark_saved"}"#)
             .map_err(|e| e.to_string())?;
-        self.insert(document, Some(path))
+        self.insert(document, Some(path), recomputed["failed_features"].clone())
     }
 }
 
@@ -240,7 +245,7 @@ impl Backend for CadBackend {
             "document_create" => {
                 self.require_writable()?;
                 // A new design as File > New makes it (mitcad#220).
-                self.insert(crate::new_design_document(), None)
+                self.insert(crate::new_design_document(), None, json!([]))
             }
             "document_open" => self.open(string(arguments, "path")?),
             "document_list" => {
@@ -294,9 +299,10 @@ impl Backend for CadBackend {
                 let mut value = snapshot(&opened.document)?;
                 value["document"] = json!(id);
                 value["applied"] = json!(true);
-                let is_error =
-                    geometry_failed(&value) || result.get("error").is_some_and(|e| !e.is_null());
                 value["result"] = result;
+                // An error only when a feature this command added or
+                // edited fails; the others are listed (mitcad#401).
+                let is_error = mitcad_mcp::command_outcome(&mut value);
                 Ok(ToolResult { value, is_error })
             }
             "document_save" => {

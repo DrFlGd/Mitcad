@@ -748,6 +748,7 @@ impl<'b, 'a> Builder<'b, 'a> {
                 profile,
                 directrix,
                 reference,
+                binormal,
                 ..
             } => {
                 // A helix (the `.rvt` import's spiral rails, mitcad#385) is a
@@ -791,6 +792,11 @@ impl<'b, 'a> Builder<'b, 'a> {
                 let s = self.sketch(sketch, "profile")?;
                 let mut def = json!({"type": "sweep", "profiles": Self::profiles(s, &regions),
                     "path": path, "orientation": "perpendicular"});
+                // (mitcad#397) The profile kept at its angles to a fixed
+                // binormal.
+                if let Some(b) = binormal {
+                    def["binormal"] = json!(b);
+                }
                 op.fields(&mut def);
                 let label = self.label.clone();
                 let uid = self.add(def, &label)?;
@@ -884,9 +890,27 @@ fn start_tangent(path: &Path) -> Option<[f64; 3]> {
             ];
             math::normalize(math::scale(math::apply_vector(frame, d), sweep.signum()))
         }
-        other => {
-            let pts = other.sample(1000);
-            math::normalize(math::sub(pts[1], pts[0]))
+        // (mitcad#397) Exactly: a chord's direction is half its angle off,
+        // which turned a sweep's profile out of the plane square to the
+        // path (and its start cap off the piece before it).
+        Seg::Arc {
+            frame,
+            radius,
+            start,
+            sweep,
+        } => {
+            let d = [-radius * start.sin(), radius * start.cos(), 0.0];
+            math::normalize(math::scale(math::apply_vector(frame, d), sweep.signum()))
+        }
+        Seg::Ellipse {
+            frame,
+            a,
+            b,
+            start,
+            sweep,
+        } => {
+            let d = [-a * start.sin(), b * start.cos(), 0.0];
+            math::normalize(math::scale(math::apply_vector(frame, d), sweep.signum()))
         }
     }
 }

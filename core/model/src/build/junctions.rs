@@ -24,7 +24,7 @@ const TOLERANCE: f64 = 1e-3;
 #[derive(Debug, Clone, PartialEq)]
 pub struct JunctionSide {
     pub component: ComponentUid,
-    /// The path from the active component.
+    /// The path from the BUILD host.
     pub occurrence: Vec<OccurrenceUid>,
     /// `end_a`, `end_b`, a slot frame, or `side` (a closed side).
     pub at: String,
@@ -91,14 +91,14 @@ impl Placed {
 impl<K: Kernel> Document<K> {
     /// The junctions of the design's profiles (of `only` when given).
     pub fn build_junctions(&self, only: Option<&[ComponentUid]>) -> Vec<Junction> {
-        let active = self.active_placement();
+        let active = self.host_placement();
         let placed: Vec<Placed> = self
             .build_parts_info()
             .into_iter()
             .filter(|i| i.meta.role == BuildRole::Profile || i.is_cut_to_length())
             .filter(|i| i.meta.role != BuildRole::Panel)
             .filter_map(|info| {
-                let path = self.placed_in_active(info.component)?;
+                let path = self.placed_in_host(info.component)?;
                 let world = active.after(&self.path_transform(&path));
                 let bounds = self.part_bounds(info.component)?;
                 let length = info

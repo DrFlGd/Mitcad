@@ -1,0 +1,132 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+ShapeUpgrade_UnifySameDomain: the planarity of each surface is tested once
+per merge of faces, not once for each pair of neighbouring faces
+(mitcad#235).
+
+IsSameDomain tests both faces' surfaces with GeomLib_IsPlanarSurface,
+which samples a B-spline surface at 8 + 3 times its knot spans in each
+direction over the whole surface. The faces of a thread that run its 25
+turns are split into pieces of a third of a turn sharing their surface;
+after a boolean every piece met its tangent neighbours with that test of
+the whole surface (40000 points each time), 4 of the 8 s of the face merge
+after cutting such a thread.
+
+IntUnifyFaces now keeps the result for each surface it tested (a face
+without a location; a located surface is tested as before), so a surface
+is sampled once. The results are those of the test itself.
+
+--- a/src/ModelingAlgorithms/TKShHealing/ShapeUpgrade/ShapeUpgrade_UnifySameDomain.cxx
++++ b/src/ModelingAlgorithms/TKShHealing/ShapeUpgrade/ShapeUpgrade_UnifySameDomain.cxx
+@@ -1584,11 +1584,62 @@
+ 
+ //=================================================================================================
+ 
++namespace
++{
++// Whether a surface is planar within the linear tolerance, and its plane.
++struct SurfacePlanarity
++{
++  occ::handle<Geom_Surface> Surface; // keeps the key alive
++  bool                      IsPlanar = false;
++  gp_Pln                    Plane;
++};
++
++typedef NCollection_DataMap<const Geom_Surface*, SurfacePlanarity> DataMapOfSurfacePlanarity;
++} // namespace
++
++// The planarity of a face's surface (theSurface, without its location
++// theLocation) tested once per surface and kept in theCache: the faces of
++// one surface (the pieces of a B-spline face running many turns) each met
++// their neighbours with a test of the whole surface, tens of thousands of
++// points each time (mitcad#235). A located surface is tested as before.
++static bool IsPlanarSurface(const occ::handle<Geom_Surface>& theSurface,
++                            const TopLoc_Location&           theLocation,
++                            const occ::handle<Geom_Surface>& theLocated,
++                            const double                     theLinTol,
++                            DataMapOfSurfacePlanarity&       theCache,
++                            gp_Pln&                          thePlane)
++{
++  const bool aCached = theLocation.IsIdentity() && theSurface == theLocated;
++  if (aCached)
++  {
++    if (const SurfacePlanarity* aFound = theCache.Seek(theSurface.get()))
++    {
++      thePlane = aFound->Plane;
++      return aFound->IsPlanar;
++    }
++  }
++  GeomLib_IsPlanarSurface aPlanarityChecker(theLocated, theLinTol);
++  SurfacePlanarity        aResult;
++  aResult.Surface  = theSurface;
++  aResult.IsPlanar = aPlanarityChecker.IsPlanar();
++  if (aResult.IsPlanar)
++  {
++    aResult.Plane = aPlanarityChecker.Plan();
++  }
++  if (aCached)
++  {
++    theCache.Bind(theSurface.get(), aResult);
++  }
++  thePlane = aResult.Plane;
++  return aResult.IsPlanar;
++}
++
+ static bool IsSameDomain(const TopoDS_Face&                                aFace,
+                          const TopoDS_Face&                                aCheckedFace,
+                          const double                                      theLinTol,
+                          const double                                      theAngTol,
+-                         ShapeUpgrade_UnifySameDomain::DataMapOfFacePlane& theFacePlaneMap)
++                         ShapeUpgrade_UnifySameDomain::DataMapOfFacePlane& theFacePlaneMap,
++                         DataMapOfSurfacePlanarity&                        thePlanarityCache)
+ {
+   // checking the same handles
+   TopLoc_Location           L1, L2;
+@@ -1601,6 +1652,8 @@
+   {
+     return true;
+   }
++  const occ::handle<Geom_Surface> aRaw1 = ClearRts(S1);
++  const occ::handle<Geom_Surface> aRaw2 = ClearRts(S2);
+ 
+   S1 = BRep_Tool::Surface(aFace);
+   S2 = BRep_Tool::Surface(aCheckedFace);
+@@ -1616,15 +1669,11 @@
+ 
+   // case of two planar surfaces:
+   // all kinds of surfaces checked, including b-spline and bezier
+-  GeomLib_IsPlanarSurface aPlanarityChecker1(S1, theLinTol);
+-  if (aPlanarityChecker1.IsPlanar())
++  gp_Pln aPln1, aPln2;
++  if (IsPlanarSurface(aRaw1, L1, S1, theLinTol, thePlanarityCache, aPln1))
+   {
+-    GeomLib_IsPlanarSurface aPlanarityChecker2(S2, theLinTol);
+-    if (aPlanarityChecker2.IsPlanar())
++    if (IsPlanarSurface(aRaw2, L2, S2, theLinTol, thePlanarityCache, aPln2))
+     {
+-      gp_Pln aPln1 = aPlanarityChecker1.Plan();
+-      gp_Pln aPln2 = aPlanarityChecker2.Plan();
+-
+       if (aPln1.Position().Direction().IsParallel(aPln2.Position().Direction(), theAngTol)
+           && aPln1.Distance(aPln2) < theLinTol)
+       {
+@@ -3295,6 +3344,9 @@
+   // map of processed shapes
+   NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aProcessed;
+ 
++  // the planarity of the surfaces tested (IsSameDomain)
++  DataMapOfSurfacePlanarity aPlanarity;
++
+   // processing each face
+   TopExp_Explorer exp;
+   for (exp.Init(theInpShape, TopAbs_FACE); exp.More(); exp.Next())
+@@ -3430,7 +3482,7 @@
+           }
+         }
+         //
+-        if (IsSameDomain(aFace, aCheckedFace, myLinTol, myAngTol, myFacePlaneMap))
++        if (IsSameDomain(aFace, aCheckedFace, myLinTol, myAngTol, myFacePlaneMap, aPlanarity))
+         {
+ 
+           if (AddOrdinaryEdges(edges, aCheckedFace, dummy, RemovedEdges))

@@ -123,6 +123,9 @@ struct InputDef {
   // Selection: what the input accepts and how many (max 0: any number).
   SelectFilter filter;
   std::function<bool(const SelectionItem&)> test; // beyond the filter
+  // Mesh bodies and their faces (item.geometry "mesh": triangles without
+  // surfaces) are not taken: the operation needs surfaces (mitcad#399).
+  bool refusesMeshes = false;
   int min = 1;
   int max = 1;
   QColor color; // highlight colour; the palette's next when invalid
@@ -155,6 +158,18 @@ struct InputDef {
   // take with the pick. Picks stay the item clicked.
   SelectFilter chainKinds;
   QString chainCheck;
+  // What it takes now, following the other inputs (mitcad#394: BUILD's
+  // planes and other faces only in a ground placement, a profile's faces
+  // otherwise): the kinds (within `filter`) and a test with the state,
+  // beside `test`. The hover highlights only what they take, the origin's
+  // planes show only while the kinds have planes, and the active input
+  // takes them again when they change.
+  std::function<SelectFilter(const CommandState&)> filterNow;
+  std::function<bool(const SelectionItem&, const CommandState&)> testNow;
+  // Construction planes and axes are hidden while the input is active and
+  // takes none now (BUILD's side and end placements); shown again when it
+  // takes them, another input is active or the command ends.
+  bool hidesConstruction = false;
 
   // Value: an expression with units, as text.
   ValueKind valueKind = ValueKind::Length;
@@ -187,6 +202,11 @@ struct InputDef {
   // Choice: a picture for each option (by its value) beside its label;
   // a null image for none (BUILD's connectors: the library's previews).
   std::function<QImage(const QString&)> choiceImage;
+  // Choice: shown as a row of icon buttons, one per option (by its value:
+  // the icon's name in app/icons), the chosen one pressed, instead of a
+  // drop-down (BUILD's X / Y / Z direction, mitcad#394). A frontend that
+  // has no such row shows the drop-down.
+  QHash<QString, QString> choiceIcons;
   // Value: also a box at the cursor in the view (BUILD's length), in step
   // with the panel's field: what is typed in either is the input's text.
   // The shown inspection's report may give the box another text while the
@@ -195,6 +215,10 @@ struct InputDef {
 
   // Check and Flip.
   bool defaultChecked = false;
+  // Check: shown as a small disclosure button with its label ("More",
+  // mitcad#394) that opens the inputs below it whose `visible` follows it;
+  // a frontend without one shows a check box.
+  bool disclosure = false;
 
   // List: the inputs of a row, by their own ids (CommandState::row).
   std::vector<InputDef> children;
@@ -219,6 +243,10 @@ struct InputDef {
   }
   InputDef& withAccepts(std::function<bool(const SelectionItem&)> extra) {
     test = std::move(extra);
+    return *this;
+  }
+  InputDef& withoutMeshes() {
+    refusesMeshes = true;
     return *this;
   }
   InputDef& withVisible(std::function<bool(const CommandState&)> shown) {
@@ -284,12 +312,33 @@ struct InputDef {
     cursorBox = true;
     return *this;
   }
+  InputDef& withPickRule(std::function<SelectFilter(const CommandState&)> kinds,
+                         std::function<bool(const SelectionItem&, const CommandState&)> takes) {
+    filterNow = std::move(kinds);
+    testNow = std::move(takes);
+    return *this;
+  }
+  InputDef& withHiddenConstruction() {
+    hidesConstruction = true;
+    return *this;
+  }
+  InputDef& withChoiceIcons(const QHash<QString, QString>& icons) {
+    choiceIcons = icons;
+    return *this;
+  }
+  InputDef& withDisclosure() {
+    disclosure = true;
+    return *this;
+  }
 
   // A choice's options in a state.
   QVector<QPair<QString, QString>> choicesIn(const CommandState& state) const {
     return choicesFor ? choicesFor(state) : choices;
   }
   bool accepts(const SelectionItem& item) const;
+  // What a selection input takes in a state (filterNow, testNow).
+  SelectFilter filterIn(const CommandState& state) const;
+  bool acceptsIn(const SelectionItem& item, const CommandState& state) const;
   bool isRequired() const { return type == Type::Selection && min > 0; }
 };
 
@@ -412,6 +461,10 @@ struct Inspection {
   // Given to the definition's previewMarkers for labelled points over the
   // view (BUILD: the junctions, the new part's length at its free end).
   QJsonObject report;
+  // A line shown over the top of the view while the command waits for
+  // something there (BUILD's first part: "Click a plane or a face, or
+  // press Enter", mitcad#394); none when empty.
+  QString viewHint;
 };
 
 struct CommandDef {

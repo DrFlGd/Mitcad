@@ -260,7 +260,7 @@ fn a_surface_panel_covers_the_frame_on_its_outer_face_with_its_clamps() {
         assert_eq!(c.meta.role, super::BuildRole::Connector);
         let joint = c.record.joint.expect("a clamp's joint");
         assert!(doc.status(joint).is_some_and(|s| s.is_ok()));
-        let path = doc.placed_in_active(*clamp).unwrap();
+        let path = doc.placed_in_host(*clamp).unwrap();
         let t = doc.path_transform(&path).translation;
         assert!((t[1] + 15.0).abs() < 1e-6 && t[2].abs() < 1e-6, "{t:?}");
         at_x.push(t[0]);
@@ -286,7 +286,7 @@ fn a_surface_panel_covers_the_frame_on_its_outer_face_with_its_clamps() {
         .nth(3)
         .unwrap()
         .component;
-    let right_path = doc.placed_in_active(right).unwrap();
+    let right_path = doc.placed_in_host(right).unwrap();
     let right_occurrence = right_path[0].to_string();
     command(
         &mut doc,

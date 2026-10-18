@@ -1,0 +1,45 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Extrema_GenExtPS: the grid of a B-spline range of very many knot spans
+holds at most 1001 parameters in a direction, evenly spaced (mitcad#235).
+
+The projection of a point onto a B-spline surface (GeomAPI_ProjectPointOnSurf,
+the boolean's projector of each face in IntTools_Context, ShapeAnalysis'
+ValueOfUV in the face merge) puts its grid at the degree's number of
+parameters in each knot span, and every projection computes the distances
+to all of the grid's nodes, edges and cells. On a thread's face running 25
+turns (4000 knot spans along the helix, 12000 grid rows) one projection
+cost about 500000 of each, the union of a part with such a thread insert
+spent most of its 13 s in them, and each face's grid held 100 MB in every
+thread's context (7.5 GB for that union).
+
+A direction of more than 1001 such parameters is now sampled at 1001
+parameters evenly over the range, as many as Adaptor3d_TopolTool samples a
+B-spline at most (BSplSamplePnts); a range of fewer is unchanged.
+
+--- a/src/ModelingData/TKGeomBase/Extrema/Extrema_GenExtPS.cxx
++++ b/src/ModelingData/TKGeomBase/Extrema/Extrema_GenExtPS.cxx
+@@ -361,6 +361,22 @@
+   {
+     return;
+   }
++  // A range of very many knot spans (a thread's face running tens of turns,
++  // its helices interpolated at a hundred points a turn: 10000 parameters)
++  // is sampled evenly at as many points as Adaptor3d_TopolTool samples a
++  // B-spline at most: every projection computes the distances to all nodes,
++  // edges and cells of the grid (mitcad#235).
++  constexpr int THE_MAX_PARAMS = 1001;
++  if (nbPar > THE_MAX_PARAMS)
++  {
++    theParams = new NCollection_HArray1<double>(1, THE_MAX_PARAMS);
++    for (i = 0; i < THE_MAX_PARAMS; i++)
++    {
++      theParams->SetValue(i + 1,
++                          theParMin + (theParMax - theParMin) * i / (THE_MAX_PARAMS - 1));
++    }
++    return;
++  }
+   theParams = new NCollection_HArray1<double>(1, nbPar);
+   for (i = 0; i < nbPar; i++)
+   {

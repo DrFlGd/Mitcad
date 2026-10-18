@@ -111,6 +111,8 @@ private:
     QListWidget* order = nullptr; // an ordered selection's items
     QLineEdit* edit = nullptr;
     QComboBox* combo = nullptr;
+    // A choice shown as icon buttons (InputDef::choiceIcons), by option.
+    QHash<QString, QToolButton*> choiceButtons;
     QAbstractButton* check = nullptr;
     CutTargetsPanel* targets = nullptr;
     // A list: its rows' frames and the button that adds one.

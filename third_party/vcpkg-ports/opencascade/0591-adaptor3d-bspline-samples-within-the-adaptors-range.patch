@@ -1,0 +1,45 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Adaptor3d_HSurfaceTool: a B-spline surface is sampled by the knot spans
+within the adaptor's range, not by all of the surface's (mitcad#235).
+
+The intersections of a curve with a surface (IntCurveSurface, through the
+edge-face intersections of the booleans) build a polyhedron of the
+surface with NbSamplesU and NbSamplesV points, for a B-spline its number
+of knots times its degree. A face on a part of a large surface was
+sampled as the whole surface: a thread built as faces split every third
+of a turn on surfaces that run all its 25 turns (about 4000 knots along
+the helix) gave every piece's polyhedron 12000 rows, and the cut of the
+thread spent 87 s of work (10 s on all cores) in the edge-face
+intersections.
+
+The counts are now the knot spans within the adaptor's range plus one,
+times the degree (NbUIntervals and NbVIntervals at CN, which count the
+spans between the range's knots): the same as before for an adaptor of the
+whole surface, as dense as before within a part of it.
+
+--- a/src/ModelingData/TKG3d/Adaptor3d/Adaptor3d_HSurfaceTool.cxx
++++ b/src/ModelingData/TKG3d/Adaptor3d/Adaptor3d_HSurfaceTool.cxx
+@@ -33,7 +33,9 @@
+     case GeomAbs_BezierSurface:
+       return (3 + S->NbUPoles());
+     case GeomAbs_BSplineSurface: {
+-      const int nbs = S->NbUKnots() * S->UDegree();
++      // The knots within the adaptor's range (a face's), as many as the
++      // surface's own where the range is the whole surface.
++      const int nbs = (S->NbUIntervals(GeomAbs_CN) + 1) * S->UDegree();
+       return (nbs < 2 ? 2 : nbs);
+     }
+     case GeomAbs_Torus:
+@@ -53,7 +55,9 @@
+     case GeomAbs_BezierSurface:
+       return (3 + S->NbVPoles());
+     case GeomAbs_BSplineSurface: {
+-      const int nbs = S->NbVKnots() * S->VDegree();
++      // The knots within the adaptor's range (a face's), as many as the
++      // surface's own where the range is the whole surface.
++      const int nbs = (S->NbVIntervals(GeomAbs_CN) + 1) * S->VDegree();
+       return (nbs < 2 ? 2 : nbs);
+     }
+     case GeomAbs_Cylinder:

@@ -55,6 +55,24 @@ void require_finite(const char* what, double value) {
   }
 }
 
+bool has_mesh_faces(const TopoDS_Shape& shape) {
+  for (TopExp_Explorer it(shape, TopAbs_FACE); it.More(); it.Next()) {
+    TopLoc_Location location;
+    if (BRep_Tool::Surface(TopoDS::Face(it.Current()), location).IsNull()) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void require_surfaces(const TopoDS_Shape& shape, const char* operation) {
+  if (has_mesh_faces(shape)) {
+    throw std::invalid_argument(std::string(operation) +
+                                ": a mesh body (faces without surfaces) cannot be used; the operation "
+                                "works on solid and surface bodies");
+  }
+}
+
 ShapeKey shape_key(const TopoDS_Shape& shape) {
   GProp_GProps props;
   switch (shape.ShapeType()) {

@@ -441,6 +441,11 @@ void SketchController::enter(const QString& uid) {
   qDebug().noquote() << QStringLiteral("Sketch origin at %1, %2, %3 %4 in the design; the design origin at %5 in the sketch")
                             .arg(formatLength(origin.X()), formatLength(origin.Y()), formatLength(origin.Z()), m_unit,
                                  pointerTextAt(designOrigin));
+  // What its dimensions show as it opens, for UI tests (the signs of signed
+  // distances, mitcad#409).
+  if (!m_model.dimensions.empty()) {
+    logDimensionTexts();
+  }
   m_viewer.setSketchPlane(toAx3(m_model.frame));
   m_overlay->resize(m_viewer.size());
   m_overlay->show();
@@ -1031,6 +1036,30 @@ void SketchController::editDimension(const QString& id) {
   }
 }
 
+void SketchController::setDimensionSigned(const QString& id, bool on) {
+  const DimensionData* d = m_model.dimension(id);
+  if (d == nullptr || !d->isAxisDistance() || d->signedOffset == on) {
+    return;
+  }
+  SketchOp op(*this);
+  QJsonObject cmd = op.command(QStringLiteral("sketch.set_signed"));
+  cmd.insert(QStringLiteral("dimension"), id);
+  cmd.insert(QStringLiteral("signed"), on);
+  if (!op.run(cmd)) {
+    const QString reason = op.error();
+    op.rollback();
+    error(reason);
+    return;
+  }
+  op.commit();
+  const DimensionData* changed = m_model.dimension(id);
+  // "Dimension k5 signed: fx: -15.00 (-(r * cos(a)))", for UI tests.
+  qDebug().noquote() << QStringLiteral("Dimension %1 %2: %3 (%4)")
+                            .arg(id, on ? QStringLiteral("signed") : QStringLiteral("unsigned"),
+                                 changed != nullptr ? m_overlay->dimensionText(*changed) : QString(),
+                                 changed != nullptr ? changed->expression : QString());
+}
+
 // ---------------------------------------------------------------------------
 // Options
 
@@ -1039,6 +1068,15 @@ void SketchController::setConstruction(bool on) {
     m_construction = on;
     qDebug().noquote() << QStringLiteral("Construction mode %1").arg(on ? QStringLiteral("on")
                                                                          : QStringLiteral("off"));
+    emit optionsChanged();
+    m_overlay->update();
+  }
+}
+
+void SketchController::setSignedDistances(bool on) {
+  if (on != m_signedDistances) {
+    m_signedDistances = on;
+    qDebug().noquote() << QStringLiteral("Signed distances %1").arg(on ? QStringLiteral("on") : QStringLiteral("off"));
     emit optionsChanged();
     m_overlay->update();
   }

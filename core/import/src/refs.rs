@@ -243,8 +243,9 @@ fn widened() -> Option<f64> {
     (tolerance > EXACT).then_some(tolerance)
 }
 
-/// Notes the deviation of a match that needed more than [`EXACT`].
-fn note_deviation(distance: f64) {
+/// Notes the deviation of a match that needed more than [`EXACT`] (or of
+/// a sketch's solved points, `features.rs`).
+pub(crate) fn note_deviation(distance: f64) {
     DEVIATION.with(|d| d.set(Some(d.get().map_or(distance, |o| o.max(distance)))));
 }
 

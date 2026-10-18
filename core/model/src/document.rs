@@ -70,6 +70,10 @@ pub use feature_batch::FeatureBatch;
 // Extrude's automatic operation (mitcad#289).
 mod auto_operation;
 pub use auto_operation::AutoOperation;
+// The failed features after a command, and whether it made them
+// (mitcad#401); a feature added at a timeline position (mitcad#403).
+mod command_outcome;
+mod insert;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
@@ -220,6 +224,10 @@ pub struct DocState {
     pub(crate) join_tolerance: Option<f64>,
     /// The library parts BUILD placed, each kept once (mitcad#375).
     pub(crate) library_sources: crate::build::LibrarySources,
+    /// What features remember of the pieces they split bodies into, by
+    /// feature (mitcad#408, `features/pieces.rs`): taken from each
+    /// recompute, saved with the features.
+    pub(crate) split_pieces: crate::features::SplitPieces,
 }
 
 impl Default for DocState {
@@ -246,6 +254,7 @@ impl Default for DocState {
             flat_patterns: BTreeMap::new(),
             join_tolerance: None,
             library_sources: Default::default(),
+            split_pieces: BTreeMap::new(),
         }
     }
 }
@@ -569,6 +578,19 @@ impl DocState {
     pub(crate) fn take_measured(&mut self, measured: &[(ParamId, f64)]) {
         for (id, value) in measured {
             let _ = self.parameters.set_measured(*id, *value);
+        }
+    }
+
+    /// Takes what the features a recompute evaluated remember of the
+    /// pieces of their splits (mitcad#408); features it did not evaluate
+    /// (suppressed, rolled back, failed) keep theirs.
+    pub(crate) fn take_split_pieces(&mut self, made: &crate::features::SplitPieces) {
+        for (feature, groups) in made {
+            if groups.is_empty() {
+                self.split_pieces.remove(feature);
+            } else if self.split_pieces.get(feature) != Some(groups) {
+                self.split_pieces.insert(*feature, groups.clone());
+            }
         }
     }
 
@@ -1313,6 +1335,8 @@ impl<K: Kernel> Document<K> {
 
     /// Takes the results of a recompute of the state.
     fn set_result(&mut self, result: Recomputed<K::Shape>) {
+        // The pieces of splits as this recompute made them (mitcad#408).
+        self.state.take_split_pieces(&result.split_pieces);
         self.result = result;
         self.recomputes += 1;
         // Results only the last ones held may go now (a memory budget).
@@ -1735,6 +1759,27 @@ impl<K: Kernel> Document<K> {
     ) -> Option<(SketchFrame, &ProfileRegion)> {
         let output = &self.result.sketches.get(&sketch)?.value;
         Some((output.frame, output.resolved(region)?))
+    }
+
+    /// All regions a profile reference means now ([`profile_region`]'s
+    /// main one first, then the other pieces of a region a sketch change
+    /// split, mitcad#407), with the sketch frame and whether the key is
+    /// the region's own: what the application highlights for the
+    /// reference.
+    ///
+    /// [`profile_region`]: Self::profile_region
+    pub fn profile_pieces(
+        &self,
+        sketch: FeatureUid,
+        region: &RegionKey,
+    ) -> Option<(SketchFrame, Vec<&ProfileRegion>, bool)> {
+        let output = &self.result.sketches.get(&sketch)?.value;
+        let found = output.found(region)?;
+        Some((
+            output.frame,
+            found.regions.iter().map(|r| &r.profile).collect(),
+            found.exact,
+        ))
     }
 
     /// The output of an evaluated sketch: frame, solved geometry, status
@@ -2360,6 +2405,38 @@ impl<K: Kernel> Document<K> {
         occurrence: Option<&[OccurrenceUid]>,
         context: Option<&[OccurrenceUid]>,
     ) -> Result<EditReport, ModelError> {
+        self.project_or_section(sketch, source, body, linked, occurrence, context, false)
+    }
+
+    /// Section curves (mitcad#389): where the sketch's plane cuts a face
+    /// (every face of a name without `#k`), as [`Document::project_from`]
+    /// adds a projection; a linked section is recomputed from the body
+    /// when the model changes ([`crate::sketch::Projection::section`]).
+    pub fn section_from(
+        &mut self,
+        sketch: FeatureUid,
+        face: &crate::topo::FaceName,
+        body: Option<BodyUid>,
+        linked: bool,
+        occurrence: Option<&[OccurrenceUid]>,
+        context: Option<&[OccurrenceUid]>,
+    ) -> Result<EditReport, ModelError> {
+        let source = crate::topo::TopoName::Face(face.clone());
+        self.project_or_section(sketch, &source, body, linked, occurrence, context, true)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn project_or_section(
+        &mut self,
+        sketch: FeatureUid,
+        source: &crate::topo::TopoName,
+        body: Option<BodyUid>,
+        linked: bool,
+        occurrence: Option<&[OccurrenceUid]>,
+        context: Option<&[OccurrenceUid]>,
+        section: bool,
+    ) -> Result<EditReport, ModelError> {
+        let what = if section { "section" } else { "projection" };
         let position = self.state.require(sketch)?;
         let frame = match (
             self.sketch_output(sketch),
@@ -2380,7 +2457,7 @@ impl<K: Kernel> Document<K> {
         let assembly = &self.state.assembly;
         let link = match occurrence {
             Some(path) => crate::links::link_for(assembly, component, path, context)
-                .map_err(|e| invalid(format!("projection of {source}: {e}")))?,
+                .map_err(|e| invalid(format!("{what} of {source}: {e}")))?,
             None => None,
         };
         let (from, to_sketch) = match &link {
@@ -2395,7 +2472,7 @@ impl<K: Kernel> Document<K> {
                 };
                 let from = link.source_component(assembly);
                 let to_sketch = link.transform(assembly, component, &mut placement);
-                let error = |e: String| invalid(format!("projection of {source}: {e}"));
+                let error = |e: String| invalid(format!("{what} of {source}: {e}"));
                 (from.map_err(error)?, Some(to_sketch.map_err(error)?))
             }
             None => (component, None),
@@ -2405,13 +2482,36 @@ impl<K: Kernel> Document<K> {
             && owner != from
         {
             return Err(invalid(format!(
-                "projection of {source}: {b} is a body of {}, not of {}; pick it where an \
+                "{what} of {source}: {b} is a body of {}, not of {}; pick it where an \
                  occurrence of {} shows it",
                 assembly.name(owner),
                 assembly.name(from),
                 assembly.name(owner)
             )));
         }
+        // A section's plane where the source is: the sketch's moved back
+        // by the link.
+        let plane = match (section, source) {
+            (false, _) => None,
+            (true, crate::topo::TopoName::Face(_)) => {
+                let plane = crate::datum::DatumPlane {
+                    origin: frame.origin,
+                    x_axis: frame.x_axis,
+                    y_axis: frame.y_axis,
+                };
+                Some(match &to_sketch {
+                    Some(t) => {
+                        crate::sketch::project::section_plane(&crate::assembly::inverse(t), &plane)
+                    }
+                    None => plane,
+                })
+            }
+            (true, _) => {
+                return Err(invalid(format!(
+                    "section of {source}: a section's source is a face"
+                )));
+            }
+        };
         let mut curves = Vec::new();
         for (uid, shape) in &bodies {
             if body.is_some_and(|b| b != *uid)
@@ -2419,18 +2519,32 @@ impl<K: Kernel> Document<K> {
             {
                 continue;
             }
-            curves = self
-                .kernel
-                .curves_of(shape, source)
-                .map_err(|e| invalid(format!("projection of {source}: {e}")))?;
+            curves = match (&plane, source) {
+                (Some(plane), crate::topo::TopoName::Face(face)) => self
+                    .kernel
+                    .section_curves(shape, Some(face), plane)
+                    .map_err(|e| invalid(format!("{what} of {source}: {e}")))?
+                    .into_iter()
+                    .map(|c| c.curve)
+                    .collect(),
+                _ => self
+                    .kernel
+                    .curves_of(shape, source)
+                    .map_err(|e| invalid(format!("{what} of {source}: {e}")))?,
+            };
             if !curves.is_empty() {
                 break;
             }
         }
         if curves.is_empty() {
-            return Err(invalid(format!(
-                "nothing named {source} exists before the sketch"
-            )));
+            return Err(invalid(if section {
+                format!(
+                    "section of {source}: nothing named so before the sketch, or the sketch's \
+                     plane does not cut it"
+                )
+            } else {
+                format!("nothing named {source} exists before the sketch")
+            }));
         }
         if let Some(t) = &to_sketch {
             curves = curves
@@ -2441,7 +2555,12 @@ impl<K: Kernel> Document<K> {
         let projected =
             crate::sketch::project::distinct(crate::sketch::project::project(&curves, &frame));
         let source = source.clone();
-        let ((), report) = self.edit_sketch(sketch, "Project to {sketch}", |edit| {
+        let label = if section {
+            "Section Curves to {sketch}"
+        } else {
+            "Project to {sketch}"
+        };
+        let ((), report) = self.edit_sketch(sketch, label, |edit| {
             let entities = crate::sketch::project::entities(&projected, &mut || edit.id());
             let refs = crate::sketch::project::refs(&entities);
             for entity in entities {
@@ -2454,6 +2573,8 @@ impl<K: Kernel> Document<K> {
                     entities: refs,
                     link,
                     by_geometry: true,
+                    section,
+                    chain: Vec::new(),
                 });
             }
             Ok(())

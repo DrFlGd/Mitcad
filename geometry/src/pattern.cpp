@@ -6,6 +6,7 @@
 #include <stdexcept>
 #include <utility>
 
+#include <BRepAdaptor_Surface.hxx>
 #include <BRepAlgoAPI_Fuse.hxx>
 #include <BRepBndLib.hxx>
 #include <BRepBuilderAPI_Copy.hxx>
@@ -16,6 +17,7 @@
 #include <BRep_Tool.hxx>
 #include <Bnd_Box.hxx>
 #include <GProp_GProps.hxx>
+#include <GeomAbs_SurfaceType.hxx>
 #include <Geom_Curve.hxx>
 #include <Geom_Plane.hxx>
 #include <NCollection_List.hxx>
@@ -35,12 +37,17 @@
 #include <gp_Pln.hxx>
 
 #include "history.hpp"
+#include "mitcad/geometry/cancel.hpp"
 #include "util.hpp"
 
 namespace mitcad::geometry {
 namespace {
 
 constexpr double kTolerance = 1.0e-6;
+
+// The first fuzzy value a union within a tolerance tries (mm, mitcad#397;
+// as a join's, boolean.cpp).
+constexpr double kFuzzyStart = 1.0e-5;
 
 double area(const TopoDS_Shape& face) {
   GProp_GProps props;
@@ -173,66 +180,146 @@ ShapePtr disjoint_union(const std::vector<const Shape*>& shapes) {
   return namer.shape();
 }
 
+// Whether a face of the shape lies on a free-form surface (not a plane,
+// cylinder, cone, sphere or torus): a B-spline, a swept surface, an offset.
+bool free_form(const Shape& shape) {
+  for (int i = 0; i < shape.face_count(); ++i) {
+    switch (BRepAdaptor_Surface(shape.face(i), false).GetType()) {
+    case GeomAbs_Plane:
+    case GeomAbs_Cylinder:
+    case GeomAbs_Cone:
+    case GeomAbs_Sphere:
+    case GeomAbs_Torus:
+      break;
+    default:
+      return true;
+    }
+  }
+  return false;
+}
+
+ShapePtr united(const std::vector<const Shape*>& shapes, double within) {
+  if (shapes.size() == 1) {
+    return std::make_shared<Shape>(*shapes.front());
+  }
+  if (ShapePtr apart = disjoint_union(shapes)) {
+    return apart;
+  }
+  // (mitcad#400) The shapes of elementary faces are joined first, and the
+  // shapes with free-form faces then with their union. OCCT's union
+  // intersects every pair of faces that meet; a sketch's lines split a
+  // slab's rim and a tread's sides into many faces, which the face merge
+  // after the union makes one again. Joined in one go, each of those pieces
+  // met a helical stringer's faces on the same cylinder: a free-form face
+  // against a cylinder it lies on is the costliest pair, walked over the
+  // whole of both, and the merge after it broke the result, which was then
+  // joined again without it (a spiral stair's 40 treads and two stringers:
+  // 10 s on 16 cores, 72 s on fewer, 2292 faces). Joined first, the
+  // treads' merged faces meet the stringers once each.
+  std::vector<const Shape*> elementary;
+  std::vector<const Shape*> rest;
+  for (const Shape* shape : shapes) {
+    (free_form(*shape) ? rest : elementary).push_back(shape);
+  }
+  if (elementary.size() > 1 && !rest.empty()) {
+    const ShapePtr first = united(elementary, within);
+    rest.insert(rest.begin(), first.get());
+    return united(rest, within);
+  }
+  const auto fused = [&](bool simplify, double fuzzy) {
+    // On a copy of the shapes, as a boolean operation (boolean.cpp): the
+    // face merge writes into the sub-shapes the union kept.
+    std::vector<TopoDS_Shape> inputs;
+    for (const Shape* shape : shapes) {
+      inputs.push_back(shape->occt());
+    }
+    const detail::InputCopy copy(inputs);
+    BRepAlgoAPI_Fuse fuse;
+    NCollection_List<TopoDS_Shape> arguments;
+    arguments.Append(copy.shape(0));
+    NCollection_List<TopoDS_Shape> tools;
+    for (std::size_t i = 1; i < shapes.size(); ++i) {
+      tools.Append(copy.shape(i));
+    }
+    fuse.SetArguments(arguments);
+    fuse.SetTools(tools);
+    fuse.SetNonDestructive(true);
+    // On all cores, as the booleans (boolean.cpp): the union of a part
+    // with a thread insert whose faces run 25 turns took 20 s on one
+    // (mitcad#235).
+    fuse.SetRunParallel(true);
+    if (fuzzy > 0.0) {
+      fuse.SetFuzzyValue(fuzzy);
+    }
+    detail::build(fuse);
+    if (!fuse.IsDone() || fuse.HasErrors()) {
+      throw std::runtime_error("the union failed");
+    }
+    if (simplify) {
+      fuse.SimplifyResult();
+    }
+    detail::FaceNamer namer(fuse.Shape());
+    for (const Shape* shape : shapes) {
+      namer.carry(fuse, *shape, copy);
+    }
+    namer.finish();
+    return namer;
+  };
+  // As a boolean operation's (boolean.cpp): when merging the faces the
+  // union left breaks its result, the faces stay as it left them.
+  detail::FaceNamer namer = fused(true, 0.0);
+  if (!detail::is_valid(namer.result())) {
+    namer = fused(false, 0.0);
+    // (mitcad#397) Within the caller's tolerance: the smallest fuzzy
+    // value that gives a valid union (faces that lie on each other only
+    // within an importer's geometric tolerance).
+    if (!detail::is_valid(namer.result()) && within > 0.0) {
+      std::vector<double> steps;
+      for (double decade = kFuzzyStart; decade < within; decade *= 10.0) {
+        steps.push_back(decade);
+        if (3.0 * decade < within) {
+          steps.push_back(3.0 * decade);
+        }
+      }
+      steps.push_back(within);
+      for (const double step : steps) {
+        for (const bool simplify : {true, false}) {
+          try {
+            detail::FaceNamer fuzzy = fused(simplify, step);
+            if (detail::is_valid(fuzzy.result())) {
+              return fuzzy.shape();
+            }
+          } catch (const Cancelled&) {
+            throw;
+          } catch (...) {
+            throw_if_cancelled();
+          }
+        }
+      }
+    }
+    detail::require_valid(namer.result(), "the union");
+  }
+  return namer.shape();
+}
+
 } // namespace
 
-ShapePtr unite(const std::vector<const Shape*>& shapes) {
+ShapePtr unite(const std::vector<const Shape*>& shapes, double within) {
   if (shapes.empty()) {
     throw std::invalid_argument("there are no shapes to unite");
   }
-  return detail::run("union", [&] {
-    if (shapes.size() == 1) {
-      return std::make_shared<Shape>(*shapes.front());
-    }
-    if (ShapePtr apart = disjoint_union(shapes)) {
-      return apart;
-    }
-    const auto fused = [&](bool simplify) {
-      // On a copy of the shapes, as a boolean operation (boolean.cpp): the
-      // face merge writes into the sub-shapes the union kept.
-      std::vector<TopoDS_Shape> inputs;
-      for (const Shape* shape : shapes) {
-        inputs.push_back(shape->occt());
-      }
-      const detail::InputCopy copy(inputs);
-      BRepAlgoAPI_Fuse fuse;
-      NCollection_List<TopoDS_Shape> arguments;
-      arguments.Append(copy.shape(0));
-      NCollection_List<TopoDS_Shape> tools;
-      for (std::size_t i = 1; i < shapes.size(); ++i) {
-        tools.Append(copy.shape(i));
-      }
-      fuse.SetArguments(arguments);
-      fuse.SetTools(tools);
-      fuse.SetNonDestructive(true);
-      detail::build(fuse);
-      if (!fuse.IsDone() || fuse.HasErrors()) {
-        throw std::runtime_error("the union failed");
-      }
-      if (simplify) {
-        fuse.SimplifyResult();
-      }
-      detail::FaceNamer namer(fuse.Shape());
-      for (const Shape* shape : shapes) {
-        namer.carry(fuse, *shape, copy);
-      }
-      namer.finish();
-      return namer;
-    };
-    // As a boolean operation's (boolean.cpp): when merging the faces the
-    // union left breaks its result, the faces stay as it left them.
-    detail::FaceNamer namer = fused(true);
-    if (!detail::is_valid(namer.result())) {
-      namer = fused(false);
-      detail::require_valid(namer.result(), "the union");
-    }
-    return namer.shape();
-  });
+  detail::require_finite("union tolerance", within);
+  for (const Shape* shape : shapes) {
+    detail::require_surfaces(shape->occt(), "union");
+  }
+  return detail::run("union", [&] { return united(shapes, within); });
 }
 
 FaceTool face_tool(const Shape& body, const std::vector<std::string>& names) {
   if (names.empty()) {
     throw std::invalid_argument("no faces selected");
   }
+  detail::require_surfaces(body.occt(), "faces");
   return detail::run("faces", [&] {
     std::vector<int> indices;
     for (const std::string& name : names) {

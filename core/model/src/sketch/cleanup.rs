@@ -411,8 +411,8 @@ pub(super) fn remap_dimension(kind: &mut DimensionKind, map: &BTreeMap<EntityUid
     use DimensionKind as D;
     match kind {
         D::Distance { a, b }
-        | D::HorizontalDistance { a, b }
-        | D::VerticalDistance { a, b }
+        | D::HorizontalDistance { a, b, .. }
+        | D::VerticalDistance { a, b, .. }
         | D::LineDistance { a, b }
         | D::Angle { a, b, .. } => {
             m(a);

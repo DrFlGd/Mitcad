@@ -62,6 +62,9 @@ struct Part {
   bool matches(const QString& words) const;
   // Cut to length (a `length` block): profiles, rails, cut plates.
   bool cutToLength() const;
+  // The length a new one starts with, mm: the length block's `default`,
+  // else its shortest stock length, else 500 (mitcad#394).
+  double defaultLength() const;
   // The section's width and height in millimetres (0 when unknown).
   double sectionWidth() const;
   double sectionHeight() const;

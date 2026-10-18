@@ -285,6 +285,13 @@ pub(super) enum SketchCommand {
         #[serde(default = "yes")]
         driven: bool,
     },
+    #[serde(rename = "sketch.set_signed")]
+    SetSigned {
+        sketch: FeatureUid,
+        dimension: ConstraintUid,
+        #[serde(default = "yes")]
+        signed: bool,
+    },
     #[serde(rename = "sketch.remove")]
     Remove {
         sketch: FeatureUid,
@@ -446,6 +453,10 @@ pub(super) enum SketchCommand {
         occurrence: Option<OccurrencePath>,
         #[serde(default)]
         context: Option<OccurrencePath>,
+        /// Section curves (mitcad#389): where the sketch's plane cuts the
+        /// source face instead of its projection.
+        #[serde(default)]
+        section: bool,
     },
     // Sketch mode (U2): a dimension's value dragged to another place.
     #[serde(rename = "sketch.set_dimension_text")]
@@ -814,15 +825,21 @@ impl<K: Kernel> Document<K> {
                 linked,
                 occurrence,
                 context,
+                section,
             } => {
-                let report = self.project_from(
-                    sketch,
-                    &source,
-                    body,
-                    linked,
-                    occurrence.as_ref().map(|o| &o.0[..]),
-                    context.as_ref().map(|c| &c.0[..]),
-                )?;
+                let occurrence = occurrence.as_ref().map(|o| &o.0[..]);
+                let context = context.as_ref().map(|c| &c.0[..]);
+                let report = match (&source, section) {
+                    (TopoName::Face(face), true) => {
+                        self.section_from(sketch, face, body, linked, occurrence, context)?
+                    }
+                    (_, true) => {
+                        return Err(ApiError(format!(
+                            "section of {source}: a section's source is a face"
+                        )));
+                    }
+                    _ => self.project_from(sketch, &source, body, linked, occurrence, context)?,
+                };
                 report_json(&report, self.sketch_def(sketch))
             }
             SketchCommand::ImportDxf {
@@ -896,6 +913,7 @@ impl<K: Kernel> Document<K> {
             C::AddDimension { sketch, .. } => (*sketch, "Add Dimension to {sketch}"),
             C::SetDimension { sketch, .. } => (*sketch, "Change Dimension in {sketch}"),
             C::SetDriven { sketch, .. } => (*sketch, "Change Dimension in {sketch}"),
+            C::SetSigned { sketch, .. } => (*sketch, "Change Dimension in {sketch}"),
             C::Remove { sketch, .. } => (*sketch, "Delete in {sketch}"),
             C::SetConstruction { sketch, .. } => (*sketch, "Construction in {sketch}"),
             C::SetCenterline { sketch, .. } => (*sketch, "Centerline in {sketch}"),
@@ -1339,6 +1357,9 @@ impl<K: Kernel> Document<K> {
                         edit.require_needed(before, &dimension.to_string())?;
                     }
                 }
+                C::SetSigned {
+                    dimension, signed, ..
+                } => edit.set_signed(dimension, signed)?,
                 C::Remove { items, .. } => {
                     let items = items
                         .iter()
@@ -1841,9 +1862,9 @@ impl<K: Kernel> Document<K> {
         for entry in self.features().skip_while(|e| e.uid != sketch).skip(1) {
             for p in entry.def.info().profiles() {
                 if p.sketch == sketch
-                    && let Some(region) = output.resolved(&p.region)
+                    && let Some(found) = output.found(&p.region)
                 {
-                    keys.insert(region.key.clone());
+                    keys.extend(found.regions.iter().map(|r| r.profile.key.clone()));
                 }
             }
         }

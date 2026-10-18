@@ -4,7 +4,7 @@
 //! keep their names through the boolean. Join gives one body (several
 //! solids if the bodies do not touch); Cut may split the target, the first
 //! piece in geometric order keeping its id and the others becoming bodies
-//! of the combine; Intersect keeps the common volume as one body (the tools
+//! of the combine (ids kept after upstream edits, `pieces.rs`); Intersect keeps the common volume as one body (the tools
 //! count as their union, experiment K48). The tools are consumed unless
 //! kept. With `new_component` the result (the target) goes into a new
 //! component (F6).
@@ -118,13 +118,14 @@ impl FeatureInfo for CombineDef {
 
 impl<K: Kernel> Evaluate<K> for CombineDef {
     fn evaluate(&self, ctx: &mut EvalContext<'_, K>) -> Result<FeatureOutput<K::Shape>, String> {
-        let target = ctx.body(self.target)?;
+        // Mesh bodies are refused (mitcad#399).
+        let target = ctx.surface_body(self.target)?;
         let tools = self
             .tools
             .iter()
             .map(|uid| match self.tool_links.get(uid) {
                 Some(link) => linked_tool(ctx, *uid, link),
-                None => ctx.body(*uid),
+                None => ctx.surface_body(*uid),
             })
             .collect::<Result<Vec<_>, _>>()?;
         let kernel = ctx.kernel;
@@ -134,7 +135,8 @@ impl<K: Kernel> Evaluate<K> for CombineDef {
             CombineOperation::Join => {
                 let mut all = vec![&target];
                 all.extend(tools.iter());
-                let joined = kernel.unite(&all).map_err(error)?;
+                // (Within the document's join tolerance, mitcad#397.)
+                let joined = ctx.unite(&all).map_err(error)?;
                 changes.push(BodyChange::Set(self.target, joined));
             }
             CombineOperation::Cut | CombineOperation::Intersect => {
@@ -164,16 +166,15 @@ impl<K: Kernel> Evaluate<K> for CombineDef {
                     changes.push(BodyChange::Set(self.target, common));
                 } else if result.touched[0] {
                     // Needles a cut leaves are lumps of the first piece.
-                    let mut pieces = super::base::lump_needles(kernel, pieces).into_iter();
-                    match pieces.next() {
-                        // The tools cover the whole target.
-                        None => changes.push(BodyChange::Remove(self.target)),
-                        Some(first) => {
-                            changes.push(BodyChange::Set(self.target, first));
-                            for piece in pieces {
-                                changes.push(BodyChange::Set(ctx.new_body(), piece));
-                            }
-                        }
+                    let pieces = super::base::lump_needles(kernel, pieces);
+                    // The pieces' ids (mitcad#408); none left for the target
+                    // (the tools cover it all) removes it.
+                    let named = ctx.piece_ids(self.target, pieces);
+                    if !named.iter().any(|(id, _)| *id == self.target) {
+                        changes.push(BodyChange::Remove(self.target));
+                    }
+                    for (id, piece) in named {
+                        changes.push(BodyChange::Set(id, piece));
                     }
                 }
             }
@@ -196,6 +197,7 @@ fn linked_tool<K: Kernel>(
 ) -> Result<K::Shape, String> {
     let (component, transform) = ctx.linked(link).map_err(|e| format!("tool {uid}: {e}"))?;
     let shape = ctx.body_in(component, uid)?;
+    ctx.require_surfaces(uid, &shape)?;
     ctx.kernel
         .transform_shape(&shape, &transform, None)
         .map_err(|e| format!("tool {uid}: {e}"))

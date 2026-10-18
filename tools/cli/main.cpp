@@ -234,7 +234,11 @@ const char* const kUsage = R"(usage:
       names) to a .step/.stp, .iges/.igs, .stl, .obj, .brep, .3mf or .usdz
       file. STEP and IGES keep body names and imported colours;
       --refinement or --deviation and --angle set the STL, OBJ, 3MF and
-      USDZ triangulation. A 3MF file (for slicers) holds the solid and mesh
+      USDZ triangulation: the refinements (medium by default) bound each
+      doubly curved face at about 5 000, 20 000 and 50 000 triangles (a
+      face larger than about 15 cm that would get more meshes with
+      a deviation that grows with its size); --deviation and --angle hold
+      on every face as given. A 3MF file (for slicers) holds the solid and mesh
       bodies as the parts of one object, in their places, with names and
       imported colours. A USDZ file (for AR viewers) holds the shown
       bodies as shaded meshes in the components' hierarchy, with their

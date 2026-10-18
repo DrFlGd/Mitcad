@@ -5,9 +5,10 @@
 //! normal onto the plane and become fixed reference entities. Lines stay
 //! lines, circles in parallel planes stay circles, other circles and
 //! ellipses become ellipses (or lines seen edge on), B-splines keep their
-//! knots with projected poles. Ends that meet share a point; a curve or
-//! point the same as another of the source is projected once. A linked
-//! projection is recorded ([`Projection`]) and its entities follow the
+//! knots with projected poles (a planar one seen edge on is the line
+//! between its extreme points, mitcad#389). Ends that meet share a point;
+//! a curve or point the same as another of the source is projected once.
+//! A linked projection is recorded ([`Projection`]) and its entities follow the
 //! source at every evaluation, each the fresh curve of its kind most like
 //! it (mitcad#232); an entity that finds none, and the entities of a lost
 //! source, keep their last geometry, and the sketch warns about them. A
@@ -15,19 +16,24 @@
 //! (the source changed shape) moves nothing: the whole projection keeps
 //! its last geometry and warns (mitcad#249). Projections of earlier
 //! versions and imports (no [`Projection::by_geometry`]) follow only a
-//! source whose curves come back as they were listed, as there.
+//! source whose curves come back as they were listed, as there. A
+//! projection with a [`Projection::chain`] is one curve, its edges joined
+//! ([`join_curves`]); one with [`Projection::section`] is where the
+//! sketch's plane cuts its face ([`crate::Kernel::section_curves`]).
 
 use std::collections::BTreeMap;
 
 use super::geometry::{Curve2, P2, add, angle_after, dist, norm, scale, sub};
 use super::solve::{SolveError, Solved};
 use super::{Entity, EntityKind, Projection, Ref};
+use crate::datum::DatumPlane;
 use crate::features::EvalContext;
 use crate::features::sketch::SketchDef;
 use crate::ids::EntityUid;
 use crate::kernel::{Curve3, Kernel};
 use crate::parameters::ParamId;
 use crate::profile::{SketchFrame, cross, dot};
+use crate::topo::TopoName;
 use crate::transform::Transform;
 
 /// A projected primitive in sketch coordinates.
@@ -175,12 +181,16 @@ pub fn project(curves: &[Curve3], frame: &SketchFrame) -> Vec<Projected> {
                 weights,
                 knots,
             } => {
-                out.push(Projected::Curve(Curve2::Nurbs(super::geometry::Nurbs {
+                let spline = Curve2::Nurbs(super::geometry::Nurbs {
                     degree: *degree as usize,
                     control: poles.iter().map(|p| to_sketch(frame, *p)).collect(),
                     weights: weights.clone(),
                     knots: knots.clone(),
-                })));
+                });
+                // Seen edge on (a planar curve whose plane holds the view
+                // direction, mitcad#389): the line between its extreme
+                // points, as a conic's.
+                out.push(Projected::Curve(edge_on(&spline).unwrap_or(spline)));
             }
             // A helix seen along its axis is its circle (mitcad#385); seen
             // otherwise it is no curve a sketch holds, and is left out.
@@ -211,6 +221,58 @@ pub fn project(curves: &[Curve3], frame: &SketchFrame) -> Vec<Projected> {
         }
     }
     out
+}
+
+/// A projected spline whose control points lie on one line (within 1e-9
+/// of its size): the line between the curve's extreme points along it.
+fn edge_on(spline: &Curve2) -> Option<Curve2> {
+    let Curve2::Nurbs(n) = spline else {
+        return None;
+    };
+    let first = *n.control.first()?;
+    let far = n
+        .control
+        .iter()
+        .copied()
+        .max_by(|a, b| dist(*a, first).total_cmp(&dist(*b, first)))?;
+    let size = dist(far, first);
+    if size <= 1e-12 {
+        return None;
+    }
+    let u = scale(sub(far, first), 1.0 / size);
+    let off = |p: P2| super::geometry::cross(sub(p, first), u).abs();
+    if n.control.iter().any(|p| off(*p) > 1e-9 * size) {
+        return None;
+    }
+    // The extreme parameters along the line: sampled, then narrowed.
+    let along = |t: f64| dot2(sub(spline.point(t), first), u);
+    let (t0, t1) = spline.domain();
+    let ts = spline.sample_params(t0, t1);
+    let step = (t1 - t0) / (ts.len().max(2) - 1) as f64;
+    let extreme = |sign: f64| {
+        let best = ts
+            .iter()
+            .copied()
+            .max_by(|a, b| (sign * along(*a)).total_cmp(&(sign * along(*b))))
+            .unwrap_or(t0);
+        let (mut lo, mut hi) = ((best - step).max(t0), (best + step).min(t1));
+        for _ in 0..100 {
+            let (a, b) = (lo + (hi - lo) / 3.0, hi - (hi - lo) / 3.0);
+            if sign * along(a) >= sign * along(b) {
+                hi = b;
+            } else {
+                lo = a;
+            }
+        }
+        let t = (lo + hi) / 2.0;
+        // (An end is exact where it is the extreme.)
+        [t0, t1, t]
+            .into_iter()
+            .max_by(|a, b| (sign * along(*a)).total_cmp(&(sign * along(*b))))
+            .unwrap_or(t)
+    };
+    let (a, b) = (spline.point(extreme(-1.0)), spline.point(extreme(1.0)));
+    (dist(a, b) > 1e-12).then_some(Curve2::Line { a, b })
 }
 
 fn dot2(a: P2, b: P2) -> f64 {
@@ -356,41 +418,81 @@ fn shape_of(entities: &[Entity]) -> Vec<(&'static str, Vec<usize>)> {
 
 /// The model curves of a projection's source, in the sketch's component's
 /// coordinates (moved there from another component's by its link,
-/// mitcad#100).
+/// mitcad#100): its curves, or for section curves where the sketch's plane
+/// (`frame`) cuts it (mitcad#389).
 fn source_curves<K: Kernel>(
     projection: &Projection,
+    frame: &SketchFrame,
     ctx: &mut EvalContext<'_, K>,
 ) -> Result<Vec<Curve3>, String> {
     let source = &projection.source;
+    let what = if projection.section {
+        "section of"
+    } else {
+        "projection of"
+    };
     let (component, moved) = match &projection.link {
         Some(link) => {
             let (component, t) = ctx
                 .linked(link)
-                .map_err(|e| format!("projection of {source}: {e}"))?;
+                .map_err(|e| format!("{what} {source}: {e}"))?;
             (component, Some(t))
         }
         None => (ctx.component(), None),
     };
+    // The sketch's plane where the source is.
+    let plane = projection.section.then(|| {
+        let plane = DatumPlane {
+            origin: frame.origin,
+            x_axis: frame.x_axis,
+            y_axis: frame.y_axis,
+        };
+        match &moved {
+            Some(t) => section_plane(&crate::assembly::inverse(t), &plane),
+            None => plane,
+        }
+    });
     let shapes = match projection.body {
         Some(body) => vec![(body, ctx.body_in(component, body)?)],
         None => ctx.bodies_in(component),
     };
+    let curves_of = |kernel: &K, shape: &K::Shape, name: &TopoName| match &plane {
+        Some(plane) => match name {
+            TopoName::Face(face) => kernel
+                .section_curves(shape, Some(face), plane)
+                .map(|found| found.into_iter().map(|c| c.curve).collect())
+                .map_err(|e| format!("{what} {source}: {e}")),
+            _ => Err(format!("{what} {source}: a section's source is a face")),
+        },
+        None => kernel
+            .curves_of(shape, name)
+            .map_err(|e| format!("{what} {source}: {e}")),
+    };
     for (_, shape) in shapes {
-        let mut curves = ctx
-            .kernel
-            .curves_of(&shape, source)
-            .map_err(|e| format!("projection of {source}: {e}"))?;
-        // A source a sketch change renamed is found again (mitcad#272).
+        let mut curves = curves_of(ctx.kernel, &shape, source)?;
+        // A source a sketch change renamed is found again (mitcad#272; a
+        // section of a face the plane misses is empty too, and the face is
+        // then found as it is named).
         if curves.is_empty()
             && let Ok(Some((found, what, maker))) =
                 crate::features::renamed::find_name(ctx.kernel, &shape, source)
         {
-            curves = ctx
-                .kernel
-                .curves_of(&shape, &found)
-                .map_err(|e| format!("projection of {source}: {e}"))?;
+            curves = curves_of(ctx.kernel, &shape, &found)?;
             if !curves.is_empty() {
                 ctx.found_renamed(what, source, &found, maker);
+            }
+        }
+        // The edges it continues into, joined with it into one curve; a
+        // piece gone or no longer joining loses the whole curve.
+        if !curves.is_empty() && !projection.chain.is_empty() {
+            let mut pieces = std::mem::take(&mut curves);
+            for name in &projection.chain {
+                pieces.extend(curves_of(ctx.kernel, &shape, name)?);
+            }
+            if pieces.len() == projection.chain.len() + 1
+                && let Some(joined) = join_curves(&pieces)
+            {
+                curves = vec![joined];
             }
         }
         if !curves.is_empty() {
@@ -401,6 +503,131 @@ fn source_curves<K: Kernel>(
         }
     }
     Ok(Vec::new())
+}
+
+/// How far apart (mm) the ends of two pieces of a chain may be and still
+/// join ([`join_curves`]): the model's edges meet within their tolerance.
+const JOIN: f64 = 1e-4;
+
+/// A clamped, non-rational B-spline: degree, poles, knots.
+type Spline = (u32, Vec<[f64; 3]>, Vec<f64>);
+
+/// A piece as a clamped, non-rational B-spline of `degree` (a line raised
+/// to it exactly); None for conics, rational and unclamped splines and
+/// other degrees.
+fn as_spline(curve: &Curve3, degree: u32) -> Option<Spline> {
+    match curve {
+        Curve3::Line { start, end } => {
+            let p = degree.max(1) as usize;
+            let poles = (0..=p)
+                .map(|i| {
+                    let t = i as f64 / p as f64;
+                    std::array::from_fn(|k| start[k] + t * (end[k] - start[k]))
+                })
+                .collect();
+            let knots = std::iter::repeat_n(0.0, p + 1)
+                .chain(std::iter::repeat_n(1.0, p + 1))
+                .collect();
+            Some((degree.max(1), poles, knots))
+        }
+        Curve3::BSpline {
+            degree: d,
+            poles,
+            weights,
+            knots,
+        } if *d == degree => {
+            let p = degree as usize;
+            let rational = weights.windows(2).any(|w| (w[0] - w[1]).abs() > 1e-12);
+            let clamped = knots.len() == poles.len() + p + 1
+                && knots[..=p].iter().all(|k| *k == knots[0])
+                && knots[knots.len() - p - 1..]
+                    .iter()
+                    .all(|k| *k == knots[knots.len() - 1]);
+            (!rational && clamped).then(|| (degree, poles.clone(), knots.clone()))
+        }
+        _ => None,
+    }
+}
+
+fn reversed((degree, poles, knots): Spline) -> Spline {
+    let (first, last) = (knots[0], knots[knots.len() - 1]);
+    (
+        degree,
+        poles.into_iter().rev().collect(),
+        knots.iter().rev().map(|k| first + last - k).collect(),
+    )
+}
+
+fn distance3(a: [f64; 3], b: [f64; 3]) -> f64 {
+    ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+}
+
+/// Curves joined end to end into one B-spline, exactly (continuous in
+/// position where they meet; mitcad#389), in the order given, each turned
+/// to start where the one before ends. Lines join B-splines of the degree
+/// of the first B-spline; None when the pieces do not meet within
+/// [`JOIN`], or one is a conic, rational or unclamped, or of another
+/// degree. One curve is itself.
+pub fn join_curves(curves: &[Curve3]) -> Option<Curve3> {
+    if curves.len() == 1 {
+        return Some(curves[0].clone());
+    }
+    let degree = curves
+        .iter()
+        .find_map(|c| match c {
+            Curve3::BSpline { degree, .. } => Some(*degree),
+            _ => None,
+        })
+        .unwrap_or(1);
+    let pieces: Vec<Spline> = curves
+        .iter()
+        .map(|c| as_spline(c, degree))
+        .collect::<Option<_>>()?;
+    let ends = |s: &Spline| (s.1[0], s.1[s.1.len() - 1]);
+    // The first piece runs towards the second.
+    let mut joined = pieces[0].clone();
+    let (a0, a1) = ends(&joined);
+    let (b0, b1) = ends(&pieces[1]);
+    if distance3(a1, b0).min(distance3(a1, b1)) > distance3(a0, b0).min(distance3(a0, b1)) {
+        joined = reversed(joined);
+    }
+    let p = degree as usize;
+    for piece in &pieces[1..] {
+        let end = joined.1[joined.1.len() - 1];
+        let (s0, s1) = ends(piece);
+        let piece = if distance3(end, s0) <= distance3(end, s1) {
+            piece.clone()
+        } else {
+            reversed(piece.clone())
+        };
+        if distance3(end, piece.1[0]) > JOIN {
+            return None;
+        }
+        let at = joined.2[joined.2.len() - 1];
+        let shift = at - piece.2[0];
+        // The joint is a knot of multiplicity p: drop one of the
+        // joined end knots (p + 1 each) from each side.
+        let mut knots: Vec<f64> = joined.2[..joined.2.len() - 1].to_vec();
+        knots.extend(piece.2[p + 1..].iter().map(|k| k + shift));
+        let mut poles = joined.1.clone();
+        poles.extend_from_slice(&piece.1[1..]);
+        joined = (degree, poles, knots);
+    }
+    Some(Curve3::BSpline {
+        degree,
+        poles: joined.1,
+        weights: Vec::new(),
+        knots: joined.2,
+    })
+}
+
+/// A plane moved by a rigid transform.
+pub fn section_plane(t: &Transform, plane: &DatumPlane) -> DatumPlane {
+    DatumPlane {
+        origin: t.apply_point(plane.origin),
+        x_axis: t.apply_vector(plane.x_axis),
+        y_axis: t.apply_vector(plane.y_axis),
+    }
 }
 
 /// A model curve moved by a rigid transform.
@@ -563,7 +790,7 @@ pub fn follow_links<K: Kernel>(
     let index = super::EntityIndex::new(&def.entities);
     let old_at = |id: EntityUid| index.point(id);
     for (k, projection) in def.projections.iter().enumerate() {
-        let curves = source_curves(projection, ctx)?;
+        let curves = source_curves(projection, frame, ctx)?;
         if curves.is_empty() {
             // A lost projection keeps its last geometry.
             out.reports.push(ProjectionFollow {

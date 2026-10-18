@@ -125,18 +125,35 @@ backslashes:
 ### Live tools
 
 The live catalog has `document_list`, `model_query`, `model_command`,
-`document_save` and the application's own tools `ui_state`, `ui_log`,
-`ui_screenshot`, `ui_select` and `ui_command` (mitcad#265). The rule of
+`document_save`, `document_open` and the application's own tools
+`ui_state`, `ui_log`, `ui_screenshot`, `ui_select`, `ui_command` and
+`ui_camera` (mitcad#265, mitcad#402, mitcad#405). The rule of
 thumb: what the user can see and do in the window, an agent can read and do
 through them, with the same undo and the same refusals. `document_list`
 returns the GUI document's opaque handle, path, name, state, `busy` and
-`editable` (model commands run now). Commands modify that actual document
+`editable` (model commands run now), and the folders agents may use.
+Commands modify that actual document
 through its normal computation and undo workflow, updating its viewport,
-browser and history. New or Open in the GUI invalidates the previous
-document handle; list again before editing the replacement. The tools that
-act on the document (`model_query`, `model_command`, `document_save`,
-`ui_select`, `ui_command`) take the handle; `ui_state`, `ui_log` and
-`ui_screenshot` read the window and take none.
+browser and history. New or Open in the GUI (or `document_open`)
+invalidates the previous document handle; list again before editing the
+replacement. The tools that act on the document (`model_query`,
+`model_command`, `document_save`, `ui_select`, `ui_command`) take the
+handle; `ui_state`, `ui_log`, `ui_screenshot` and `ui_camera` read or set
+the window and take none, nor does `document_open`, which replaces the
+document.
+
+**Folders for agents** (mitcad#402), live mode's counterpart of headless
+mode's `--workspace`: `document_save` with a `path` (Save As) and
+`document_open` work only on `.mitcad` files in folders the user allows,
+none by default. The user lists them in Preferences › Agents (the setting
+`mcp/folders`), or allows one for a single run by starting the application
+with `--mcp-folder DIR` (repeatable). A path is allowed when its folder, with
+symbolic links resolved, is such a folder or below it; `..` is refused, a
+relative path is relative to the first folder, an existing file is replaced
+only with `overwrite: true` and never through a link. Without a `path`,
+`document_save` writes the document's own file as before, in any folder.
+So an agent working in the user's untitled window can make the work
+crash-safe: `document_save` with a path once, then plain saves.
 
 What blocks what:
 
@@ -200,21 +217,33 @@ to headless mode and cannot be combined with `--connect` or
 
 | Tool | Arguments | Result |
 |---|---|---|
-| `document_list` | `{}` | `documents`: the window's one, with `document`, `path`, `name`, `state`, `busy`, `editable` |
+| `document_list` | `{}` | `documents`: the window's one, with `document`, `path`, `name`, `state`, `busy`, `editable`; `folders`: the folders agents may save to and open from (empty: none) |
 | `model_query` | `document`, `query` | `document`, native JSON in `result` |
-| `model_command` | `document`, `command` | `document`, `applied`, native `result`, `state`, `timeline`, `bodies`; in a sketch also `sketch` |
-| `document_save` | `document` | `document`, `path`, `saved`, `status` (the status bar's text, with the version recorded), `state`. Saves to the document's own path as File > Save does, with the project's version and commit message (`Save …: …`) in a project with versions. Refused for a document never saved (no path), a read-only one, while a command panel is open, and when saving would ask the user something (the question's dialog is closed and named) |
+| `model_command` | `document`, `command` | `document`, `applied`, native `result`, `failed_features`, `state`, `timeline`, `bodies`; in a sketch also `sketch` ([failed features](#transport-errors-and-limits)) |
+| `document_save` | `document`; `path`, `overwrite` (default false) | `document`, `path`, `saved`, `status` (the status bar's text, with the version recorded), `state`. Without `path`, saves to the document's own path as File > Save does, with the project's version and commit message (`Save …: …`) in a project with versions. With `path`, saves as Save As does to that `.mitcad` file in a folder for agents (above); the document is that file afterwards, and an existing file needs `overwrite: true`. Refused for a document never saved and no `path`, a path outside the folders, a read-only document, while a command panel is open, and when saving would ask the user something (the question's dialog is closed and named) |
+| `document_open` | `path`; `discard` (default false) | `document` (the new handle), `path`, `name`, `state`, `busy`, `editable`, `opened`, `replaced` (the old handle). Opens a `.mitcad` design from a folder for agents in the window, as File > Open does, replacing the open document. Refused outside the folders, while the open document has unsaved changes (unless `discard: true`, which loses them and their recovery data), while a sketch or command panel is open, and when opening would ask the user something |
 | `ui_state` | `{}` | `document`, `name`, `path`, `modified`, `read_only` (and `read_only_reason`), `mode` (`idle`, `sketch`, `command`, `pick_plane`), `busy`, `editable`, `active_component`, `undo`, `redo`, `undo_depth`, `selection` (entities as `ui_select` takes them, with `geometry`, `reference` and `text`), `hint` and `hint_is_error` (the status line), `agents`, `sketch` (null, or `uid`, `name`, `dof`, `fully_constrained`, `existing`, `tool` and `palette`: `status`, `warnings` as `{"text", "entities"}` (the `sketch` query's `warning_entities`, mitcad#264), `clean_up_offered`), `command` (null, or the panel's `id`, `name`, `editing`, `in_sketch`, `inputs` by key with `label`, `type` and their values, `ready` or `message`, `preview_ok`, `preview_failed`, `preview_warnings`, `busy` and `panel`: `message`, `result`, `ok_enabled`, `notes` by key), `app` (`version`, `build`, `qt`, `platform`, `ui`, `chrome`) |
 | `ui_log` | `since` (a sequence number; lines after it), `limit` (default 200, at most 2000) | `lines`: `seq`, `level`, `text`, `time` (ms since the epoch), the newest last; `next` (the next line's number), `dropped` (lines after `since` no longer kept). The application's own log lines (the same as on stderr: what commands did, `Selected: …`, `Preview …`, refusals, `MCP refused: …`), the newest 5000 kept |
 | `ui_screenshot` | `window` (default false: the 3D view), `max_size` (default 1280, 64 to 4096) | `format` `png`, `of`, `width`, `height`, `full_width`, `full_height`, `bytes`, `png_base64`. The image the user sees, the sketch overlay included; the whole window with `window` (in the native macOS window as the window server composes it). Scaled to fit `max_size`, and further until the PNG is under 5 MiB, well within the 8 MiB frame |
-| `ui_select` | `document`, `items` (entities: `kind` of `face`, `edge`, `vertex`, `body`, `profile`, `sketch_curve`, `sketch_point`, `sketch_constraint`, `sketch_dimension`, `plane`, `axis`, `point`, `component`, `sketch`, `feature`; `owner`; `name`; `occurrence`), `reveal` (`none`, `pan` default, `fit`) | `document`, `selected`, `selection`, `view` (`none`, `pan`, `zoom`). Replaces the selection as clicks would, so the user can press Delete or run a command on it; with `pan` the view moves to them when none is in sight, keeping the zoom unless they do not fit; `fit` zooms to them. Entities the model lacks are refused. With a command panel open the entities go to its active input instead, each as a click (one already there goes out again): `picked`, `into_command`, `command` (the panel's state) |
-| `ui_command` | `document`; `id` (a command of the registry, [app/COMMANDS.md](../app/COMMANDS.md)) or `edit` (a feature's uid); `inputs` (by the panel's input keys: a number or text for values and texts, a choice's value, true or false for checks, an array of entities for selections); `finish` (`ok` default, `cancel`, `keep_open`) | `document`, `command`, `panel` (as `ui_state`'s `command`, after the preview), `committed`, `open`, `mode`, `sketch`, `undo`, `previews` (the `Preview …` log lines: validation, the preview's outcome and warnings), `log` (every line the command logged), `hint`. A command with a panel opens, takes the inputs as typing, choosing and picking would, previews, then OK, Cancel or stays open; OK refused leaves it open and returns an error with the panel's state; the OK of a command that repeats (the BUILD tab's Place, Connect and Rotate, mitcad#375) does it once and closes the panel, keeping it. An action runs (Finish Sketch, Undo, Fit). `edit` opens a feature as a double-click in the timeline does (a sketch in sketch mode). Without `id` and `edit`, `finish` ends the open panel, or the sketch being edited: `ok` finishes it, `cancel` takes back every change made since it was opened and leaves it. Commands that open a file dialog or another window (`file.*`, `insert.*`, `tools.*`, `help.*`, 3D Print, DXF import and export, ...) are refused; any other modal dialog a command opens is closed at once and the call refused with the dialog's name |
+| `ui_select` | `document`, `items` (entities: `kind` of `face`, `edge`, `vertex`, `body`, `profile`, `sketch_curve`, `sketch_point`, `sketch_constraint`, `sketch_dimension`, `plane`, `axis`, `point`, `component`, `sketch`, `feature`; `owner`; `name`; `occurrence`), `reveal` (`none`, `pan` default, `fit`) | `document`, `selected`, `selection`, `view` (`none`, `pan`, `zoom`), `camera` (as `ui_camera`'s, unless `reveal` is `none`). Replaces the selection as clicks would, so the user can press Delete or run a command on it; with `pan` the view moves to them when none is in sight, keeping the zoom unless they do not fit; `fit` zooms to them. The view is where it goes when the reply comes (its animation ended), so the next `ui_screenshot` shows it. Entities the model lacks are refused. With a command panel open the entities go to its active input instead, each as a click (one already there goes out again): `picked`, `into_command`, `command` (the panel's state) |
+| `ui_command` | `document`; `id` (a command of the registry, [app/COMMANDS.md](../app/COMMANDS.md)) or `edit` (a feature's uid); `inputs` (by the panel's input keys: a number or text for values and texts, a choice's value, true or false for checks, an array of entities for selections); `finish` (`ok` default, `cancel`, `keep_open`) | `document`, `command`, `panel` (as `ui_state`'s `command`, after the preview), `committed`, `open`, `mode`, `sketch`, `undo`, `previews` (the `Preview …` log lines: validation, the preview's outcome and warnings), `log` (every line the command logged), `hint`; for a `view.*` command `camera` (as `ui_camera`'s, the view's animation ended). A command with a panel opens, takes the inputs as typing, choosing and picking would, previews, then OK, Cancel or stays open; OK refused leaves it open and returns an error with the panel's state; the OK of a command that repeats (the BUILD tab's Place, Connect and Rotate, mitcad#375) does it once and closes the panel, keeping it. An action runs (Finish Sketch, Undo, Fit). `edit` opens a feature as a double-click in the timeline does (a sketch in sketch mode). Without `id` and `edit`, `finish` ends the open panel, or the sketch being edited: `ok` finishes it, `cancel` takes back every change made since it was opened and leaves it. Commands that open a file dialog or another window (`file.*`, `insert.*`, `tools.*`, `help.*`, 3D Print, DXF import and export, ...) are refused (`document_save` with a path and `document_open` do Save As and Open); any other modal dialog a command opens is closed at once and the call refused with the dialog's name |
+| `ui_camera` | `eye`, `target`, `up` (each `[x, y, z]`, mm), `height` (mm of the model shown at the target, top to bottom), `fov` (the perspective's vertical field of view, 1 to 170 degrees), `projection` (`orthographic`, `perspective`); `box` (`{"min": [x, y, z], "max": [x, y, z]}`) or `frame` (`none` default, `shown`, `selection`) | `camera`: `eye`, `target`, `up`, `direction` (unit, eye to target), `distance`, `height`, `width` (mm at the target), `projection`, `fov`, `view_size` (the view's pixels); `framed` (`none`, `box`, `shown`, `selection`); `changed`. Without arguments it reads the camera. The values given replace the camera's at once (no animation); a perspective camera's eye keeps its place when no `height` is given (the height follows from its distance), and with a `height` it moves along its line to show that much. Then `box` frames that box, `frame: "shown"` the shown bodies (only the isolated ones when some are isolated: not the origin, datums or sketches), `frame: "selection"` the selected entities: along the view direction, with Fit's margin, in the part of the view no panel covers. The next `ui_screenshot` shows exactly that view |
 
 The UI-only flows this covers: Clean Up Stale Projections
 (`{"id": "sketch.clean_up_stale_projections"}` in an open sketch), Project
 (`sketch.project` with its `source` input), Finish Sketch (`sketch.finish`)
 or cancelling the sketch (`{"finish": "cancel"}`), editing a sketch
 (`{"edit": "F4"}`), and any feature panel.
+
+For inspection screenshots (mitcad#405), aim the camera with `ui_camera`
+and then take `ui_screenshot`: `{"box": {"min": [...], "max": [...]}}`
+frames a region, `{"eye": ..., "target": ..., "up": ..., "height": ...}`
+sets an exact view, `{"frame": "selection"}` frames what `ui_select`
+selected. The reply's `camera` says where the view is. Fit (`view.fit`)
+frames the selection when something is selected outside commands and
+sketches, the isolated bodies when the design isolates some, and otherwise
+everything shown; Home (`view.home`) takes a `Home` named view's eye,
+target, up and height.
 
 ## Tools and results
 
@@ -224,11 +253,11 @@ objects; fields below without a default are required.
 
 | Tool | Arguments | Result |
 |---|---|---|
-| `document_create` | `{}` | `document`, null `path`, `state`, `timeline`, `bodies`, `applied` |
-| `document_open` | `path` | New `document`, canonical `path`, recomputed `state`, `timeline`, `bodies`, `applied` |
+| `document_create` | `{}` | `document`, null `path`, `state`, `timeline`, `bodies`, `applied`, empty `failed_features` |
+| `document_open` | `path` | New `document`, canonical `path`, recomputed `state`, `timeline`, `bodies`, `applied`, `failed_features` |
 | `document_list` | `{}` | `documents`: objects with `document`, `path`, `state` |
 | `document_close` | `document`, `discard` (default false) | `document`, `closed`; refuses unsaved changes unless `discard` is true |
-| `model_command` | `document`, `command` (native JSON object) | `document`, `applied`, native `result`, `state`, `timeline`, `bodies` |
+| `model_command` | `document`, `command` (native JSON object) | `document`, `applied`, native `result`, `failed_features`, `state`, `timeline`, `bodies` ([failed features](#transport-errors-and-limits)) |
 | `model_query` | `document`, `query` (native JSON object) | `document`, native JSON in `result` |
 | `document_save` | `document`, `path`, `overwrite` (default false) | `document`, canonical `path`, saved `state` |
 | `model_export` | `document`, `path`, `format`, optional `bodies` (array of names or UIDs), optional `sketch`, or for DXF `flat_pattern` (a sheet-metal body: its Flat Pattern, mitcad#210) | `document`, canonical `path`, native export `result` |
@@ -372,14 +401,31 @@ retry that operation. `original_is_error` reports whether the omitted result
 itself contained an error. Large embedded images may exceed this response
 limit even though the design file accepts them.
 
-A valid command can add or edit a feature whose geometry fails during
-recompute. That result has `isError:true` **and** `applied:true`, with the
-document's current state, timeline and bodies. Inspect the feature
-errors, then edit or undo; do not treat this result as proof that nothing
-changed. Opening a document with failed geometry similarly returns a
-handle and an error snapshot. Export refuses documents with failed
-features. File IO errors can leave partial output; inspect or remove it
-before choosing a retry destination.
+A failed feature does not reject a command: the command is applied and
+the feature is skipped. Every applied `model_command` result has
+`failed_features`, every feature in error after it in timeline order
+(empty when none): `uid`, `name`, `error`, `edited` (the command added
+the feature or edited it: its definition, suppression, component or
+place, or it is the `uid` of `edit_feature`, `suppress_feature` or
+`reorder_feature`, or the `sketch` of a sketch command) and `new` (it did
+not fail before this command). `isError` is true only when the command
+was refused or a feature it added or edited fails (mitcad#401). That
+result has `isError:true` **and** `applied:true`, with the document's
+current state, timeline and bodies: inspect the feature's error, then
+edit or undo; do not treat it as proof that nothing changed. A failure
+elsewhere in the timeline (an earlier failure, or one this command caused
+in a later feature, `new:true`, for example through a parameter) is
+listed in `failed_features` but leaves `isError` false: the command did
+what it was asked. Opening a document with failed geometry returns a
+handle, its snapshot and the failed features, not an error. Export
+refuses documents with failed features. File IO errors can leave partial
+output; inspect or remove it before choosing a retry destination.
+
+`add_feature` takes `after` (a feature's uid) or `index` (a timeline
+position, at most the marker) to insert a feature in the middle of the
+timeline in one call: one undo step, one recompute of the features after
+it, the marker staying after the feature it was after; a refused insert
+changes nothing (mitcad#403, see the command reference).
 
 In headless mode, paths are relative to the workspace or absolute inside it. Parent
 traversal (`..`) and symlinks leading outside the workspace are refused;
@@ -408,6 +454,9 @@ notifications, workspace boundaries, read-only mode, version negotiation
 and EOF cleanup, plus persisted geometry failures, symlink escapes and
 OBJ companion-file conflicts. Protocol unit tests accompany the Rust
 protocol crate; the native CLI integration tests exercise the FFI backend.
+[tools/cli/mcp-results-test.cmake](../tools/cli/mcp-results-test.cmake)
+(`cli.mcp_results`, no Python) checks `isError` and `failed_features` with
+a failed feature in the timeline, and `add_feature` with `after`.
 The macOS `app.ui-macos-mcp` test
 ([tools/ui-macos-mcp-test.py](../tools/ui-macos-mcp-test.py)) launches the
 actual GUI and CLI bridge. It verifies live discovery, private records,
@@ -424,7 +473,18 @@ and `ui_log`. The same flow runs on Linux in
 [tools/ui-mcp-test.sh](../tools/ui-mcp-test.sh) (Xvfb), and on Windows in the
 ctest `app.ui-windows-mcp`
 ([tools/ui-windows-mcp-test.ps1](../tools/ui-windows-mcp-test.ps1), session
-0 with Mesa, its own PowerShell client of the bridge). The classification's
+0 with Mesa, its own PowerShell client of the bridge). Save As, Open and
+the camera (mitcad#402, mitcad#405) are covered on Linux by
+[tools/ui-mcp-files-camera-test.sh](../tools/ui-mcp-files-camera-test.sh)
+(Xvfb, a shell client of the bridge with jq): an untitled design saved into
+the folder `--mcp-folder` allows and refused elsewhere, `..`, other
+suffixes and an existing file without `overwrite`; `document_open` with
+and without unsaved changes, the new handle and the old one refused;
+`ui_camera` reading and setting the camera and framing two equal blocks
+500 mm apart, whose screenshots then match; `ui_select`'s fit, Fit with
+isolation and Home with a `Home` named view, each read back from the reply.
+The folder rules' unit tests are in `app.unit` (`tests/agent_folders.cpp`).
+The classification's
 unit tests are in `core.model` (`api::classes`), the live catalog's in
 `core.mcp`. Run these focused CTests only in the approved isolated
 environments, as described in

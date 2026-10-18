@@ -207,8 +207,8 @@ $init = Mcp-Request 'initialize' @{ protocolVersion = '2025-11-25'; capabilities
 Mcp-Check ($init.result.protocolVersion -eq '2025-11-25') 'initialized' ($init | ConvertTo-Json -Compress -Depth 10)
 Mcp-Send @{ jsonrpc = '2.0'; method = 'notifications/initialized' }
 $tools = @((Mcp-Request 'tools/list').result.tools | ForEach-Object { $_.name }) | Sort-Object
-$expected = @('document_list', 'document_save', 'model_command', 'model_query', 'ui_command', 'ui_log',
-  'ui_screenshot', 'ui_select', 'ui_state') | Sort-Object
+$expected = @('document_list', 'document_open', 'document_save', 'model_command', 'model_query', 'ui_camera',
+  'ui_command', 'ui_log', 'ui_screenshot', 'ui_select', 'ui_state') | Sort-Object
 Mcp-Check (($tools -join ',') -eq ($expected -join ',')) 'the live catalog has the debugging tools' ($tools -join ',')
 $document = @((Mcp-Tool 'document_list' @{}).documents)[0].document
 Ui-ExpectNew 'Agent connected' 'the window says an agent is connected'

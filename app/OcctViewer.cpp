@@ -23,6 +23,8 @@
 #include "platform/MacChrome.hpp"
 #include "framework/Diagnostics.hpp"
 #include "framework/TestSync.hpp"
+#include "mitcad/geometry/import.hpp"
+#include "view/ViewTessellation.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -366,6 +368,10 @@ NCollection_Vec2<int> devicePixel(const QPointF& point) {
 }
 
 QString surfaceType(const TopoDS_Shape& face) {
+  TopLoc_Location location;
+  if (BRep_Tool::Surface(TopoDS::Face(face), location).IsNull()) {
+    return QStringLiteral("mesh"); // a mesh body's triangles (mitcad#399)
+  }
   switch (BRepAdaptor_Surface(TopoDS::Face(face)).GetType()) {
   case GeomAbs_Plane:
     return QStringLiteral("plane");
@@ -838,6 +844,9 @@ OcctViewer::OcctViewer(QWidget* parent) : QOpenGLWidget(parent) {
   // of a shape on all cores instead of one after another (W1: a design of
   // many bodies displayed several times faster).
   BRepMesh_IncrementalMesh::SetParallelDefault(true);
+  // And bound each face's triangles (mitcad#398): a sphere face of metres
+  // took millions at the view's 0.01 mm and froze the window.
+  useViewMeshing();
   const occ::handle<Aspect_DisplayConnection> display = new Aspect_DisplayConnection();
   const occ::handle<OpenGl_GraphicDriver> driver = new OpenGl_GraphicDriver(display, false);
   driver->ChangeOptions().buffersNoSwap = true;      // Qt swaps the buffers
@@ -1467,6 +1476,10 @@ void OcctViewer::showBody(BodyEntry& entry) {
   }
   PickInfo info;
   info.item = {SelectKind::Body, QString::fromStdString(entry.uid), QString(), QString()};
+  if (geometry::body_kind(shape) == geometry::BodyKind::Mesh) {
+    // Inputs of surface operations do not take it (mitcad#399).
+    info.item.geometry = QStringLiteral("mesh");
+  }
   info.item.occurrence = QString::fromStdString(entry.occurrence);
   info.body = entry.shape;
   const bool normal = entry.style == BodyDisplay::Style::Normal;
@@ -1788,6 +1801,7 @@ void OcctViewer::setHighlights(const std::vector<HighlightDisplay>& highlights) 
   }
   m_highlights.clear();
   QStringList bodies; // highlighted whole, for the log
+  QStringList profiles; // "F1/r{...} 2 faces", for the log
   for (const HighlightDisplay& highlight : highlights) {
     if (highlight.shape.IsNull()) {
       continue;
@@ -1796,6 +1810,15 @@ void OcctViewer::setHighlights(const std::vector<HighlightDisplay>& highlights) 
       bodies << (highlight.item.occurrence.isEmpty()
                      ? highlight.item.owner
                      : QStringLiteral("%1 in %2").arg(highlight.item.owner, highlight.item.occurrence));
+    } else if (highlight.item.kind == SelectKind::Profile) {
+      int faces = 0;
+      for (TopExp_Explorer face(highlight.shape, TopAbs_FACE); face.More(); face.Next()) {
+        ++faces;
+      }
+      profiles << QStringLiteral("%1/%2 %3 face%4")
+                      .arg(highlight.item.owner, highlight.item.name)
+                      .arg(faces)
+                      .arg(faces == 1 ? QString() : QStringLiteral("s"));
     }
     occ::handle<AIS_Shape> object = new AIS_Shape(highlight.shape);
     const Quantity_Color color = occtColor(highlight.color);
@@ -1843,6 +1866,11 @@ void OcctViewer::setHighlights(const std::vector<HighlightDisplay>& highlights) 
   if (logged != m_loggedBodyHighlights) {
     m_loggedBodyHighlights = logged;
     qDebug().noquote() << QStringLiteral("View body highlights: %1").arg(logged);
+  }
+  const QString loggedProfiles = profiles.isEmpty() ? QStringLiteral("none") : profiles.join(QStringLiteral("; "));
+  if (loggedProfiles != m_loggedProfileHighlights) {
+    m_loggedProfileHighlights = loggedProfiles;
+    qDebug().noquote() << QStringLiteral("View profile highlights: %1").arg(loggedProfiles);
   }
   sceneChanged();
 }
@@ -2120,6 +2148,10 @@ std::vector<std::pair<SelectionItem, QPoint>> OcctViewer::pickPoints(SelectFilte
   // The point at the middle of a face's parameter range, when it is on the
   // face.
   const auto parameterMiddleOf = [](const TopoDS_Face& face) -> std::optional<gp_Pnt> {
+    TopLoc_Location location;
+    if (BRep_Tool::Surface(face, location).IsNull()) {
+      return std::nullopt; // a mesh body's face has no parameters
+    }
     double u1 = 0.0;
     double u2 = 0.0;
     double v1 = 0.0;
@@ -2509,6 +2541,68 @@ void OcctViewer::restoreCamera() {
 
 void OcctViewer::fitAll() {
   m_fitPending = true;
+  requestFrame();
+}
+
+void OcctViewer::frameBox(const Bnd_Box& box) {
+  if (box.IsVoid()) {
+    return;
+  }
+  AbortViewAnimation();
+  m_fitPending = false;
+  occ::handle<Graphic3d_Camera> fitted = new Graphic3d_Camera();
+  fitted->Copy(m_view->Camera());
+  if (!m_view->FitMinMax(fitted, box, 0.15, 10.0 * Precision::Confusion())) {
+    return;
+  }
+  fitToFreeArea(fitted);
+  m_view->Camera()->Copy(fitted);
+  m_view->Invalidate();
+  cameraMoved();
+  requestFrame();
+}
+
+Bnd_Box OcctViewer::bodiesBox() const {
+  Bnd_Box box;
+  for (const auto& [key, entry] : m_bodies) {
+    if (entry.object.IsNull() || entry.ghosted || entry.style != BodyDisplay::Style::Normal ||
+        !m_context->IsDisplayed(entry.object)) {
+      continue;
+    }
+    BRepBndLib::Add(entry.object->Shape().Moved(entry.placement), box);
+  }
+  return box;
+}
+
+void OcctViewer::settleCamera() {
+  const occ::handle<AIS_AnimationCamera>& animation = ViewAnimation();
+  if (!animation.IsNull() && !animation->IsStopped()) {
+    const occ::handle<Graphic3d_Camera> end = animation->CameraEnd();
+    AbortViewAnimation();
+    if (!end.IsNull()) {
+      m_view->Camera()->Copy(end);
+    }
+    m_view->Invalidate();
+    cameraMoved();
+  }
+  if (m_fitPending) {
+    // As the next frame would (paintGL).
+    m_view->FitAll(0.15, false);
+    fitToFreeArea(m_view->Camera());
+    m_view->ZFitAll();
+    m_view->Invalidate();
+    m_fitPending = false;
+    cameraMoved();
+  }
+  requestFrame();
+}
+
+double OcctViewer::fieldOfView() const { return m_view->Camera()->FOVy(); }
+
+void OcctViewer::setFieldOfView(double degrees) {
+  m_view->Camera()->SetFOVy(degrees);
+  m_view->Invalidate();
+  cameraMoved();
   requestFrame();
 }
 

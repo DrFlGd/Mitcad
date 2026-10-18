@@ -454,6 +454,66 @@ impl SketchEdit<'_> {
         self.set_dimension(id, &ValueInput::Number(value))
     }
 
+    /// Makes a horizontal or vertical distance signed (its value is the
+    /// offset `b - a`, which may be negative) or unsigned (its size),
+    /// keeping the point where it is (mitcad#409): where `b` lies on the
+    /// negative side of `a`, a driving value is negated, a constant as a
+    /// number and an expression as `-(…)` (or without the `-(…)` it
+    /// already has). A driven one only measures the other way.
+    pub fn set_signed(&mut self, id: ConstraintUid, signed: bool) -> Result<(), String> {
+        let i = self.dimension_index(id)?;
+        let mut kind = self.def.dimensions[i].kind.clone();
+        let flag = match &mut kind {
+            DimensionKind::HorizontalDistance { signed, .. }
+            | DimensionKind::VerticalDistance { signed, .. } => signed,
+            other => {
+                return Err(format!(
+                    "dimension {id} is a {}, not a horizontal or vertical distance",
+                    other.type_name()
+                ));
+            }
+        };
+        if *flag == signed {
+            return Ok(());
+        }
+        *flag = true;
+        let solved = self.solved()?;
+        let offset = measure_in(&kind, &solved, &self.def.constraints)
+            .ok_or("the dimension cannot be measured")?;
+        // The positions as they are now, which the stored ones may not be
+        // after parameter changes: the solve after the switch starts from
+        // them, so an unsigned dimension keeps its point on this side.
+        solved.store(&mut self.def.entities);
+        if let DimensionKind::HorizontalDistance { signed: s, .. }
+        | DimensionKind::VerticalDistance { signed: s, .. } = &mut kind
+        {
+            *s = signed;
+        }
+        let value = self.def.dimensions[i].value;
+        self.def.dimensions[i].kind = kind;
+        let Some(param) = value else {
+            return Ok(());
+        };
+        let current = self.params.value(param).unwrap_or(0.0);
+        if offset >= 0.0 || current == 0.0 {
+            return Ok(());
+        }
+        let p = self
+            .params
+            .get(param)
+            .ok_or_else(|| format!("parameter {} does not exist", self.params.name(param)))?;
+        let own = self.params.owner(param) == Some(self.owner());
+        let negated = if own && p.expr().is_constant() {
+            ValueInput::Number(-current)
+        } else if own {
+            ValueInput::Name(negate_expression(p.expression()))
+        } else {
+            // Another parameter by name: an expression of its own now.
+            ValueInput::Name(format!("-{}", p.name()))
+        };
+        self.set_dimension(id, &negated)
+    }
+
     pub fn set_text_position(&mut self, id: ConstraintUid, at: P2) -> Result<(), String> {
         let i = self.dimension_index(id)?;
         if !at.iter().all(|v| v.is_finite()) {
@@ -1907,4 +1967,26 @@ pub fn point_input(value: &serde_json::Value) -> Result<PointInput, String> {
         }
         _ => Err("a point is [x, y] or \"p<n>\"".to_owned()),
     }
+}
+
+/// `-(expression)`, or the expression inside when it is that already, so
+/// that switching a dimension back and forth does not nest negations.
+fn negate_expression(expression: &str) -> String {
+    let text = expression.trim();
+    if let Some(inner) = text.strip_prefix("-(").and_then(|t| t.strip_suffix(')')) {
+        // The parentheses must enclose all of it: `-(a) * (b)` is not one.
+        let mut depth = 0i32;
+        let enclosed = inner.chars().all(|c| {
+            match c {
+                '(' => depth += 1,
+                ')' => depth -= 1,
+                _ => {}
+            }
+            depth >= 0
+        });
+        if enclosed && depth == 0 {
+            return inner.trim().to_owned();
+        }
+    }
+    format!("-({text})")
 }

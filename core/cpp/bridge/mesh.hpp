@@ -15,7 +15,8 @@ namespace mitcad::bridge {
 // Shared with Rust; defined in the generated mitcad_bridge/kernel/mesh.h.
 struct TriangleMesh;
 
-TriangleMesh triangle_mesh(const geometry::Shape& shape, double deviation, double angle);
+TriangleMesh triangle_mesh(const geometry::Shape& shape, double deviation, double angle,
+                           std::uint64_t face_triangles);
 
 std::shared_ptr<geometry::Shape> mesh_from_triangles(rust::Slice<const double> vertices,
                                                      rust::Slice<const std::uint32_t> triangles);

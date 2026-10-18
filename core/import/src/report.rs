@@ -89,7 +89,8 @@ pub struct ItemReport {
     pub geometric_check: Option<String>,
     /// The largest distance (mm) beyond the exact tolerance at which a
     /// lookup of its decoded inputs took the replay's geometry for the
-    /// file's (within `geometric_tolerance`, mitcad#224); None when every
+    /// file's (within `geometric_tolerance`, mitcad#224), or a sketch's
+    /// solved points lie from the file's (mitcad#396); None when every
     /// lookup was exact.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub geometric_deviation: Option<f64>,

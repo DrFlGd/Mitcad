@@ -11,6 +11,7 @@
 #include <QAction>
 #include <QApplication>
 #include <QDebug>
+#include <QDir>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QJsonValue>
@@ -21,8 +22,10 @@
 #include <QThread>
 
 #include "browser/BrowserController.hpp"
+#include "files/LockController.hpp"
 #include "files/ProjectIndicator.hpp"
 #include "framework/Json.hpp"
+#include "mcp/AgentFolders.hpp"
 #include "mcp/LiveErrors.hpp"
 #include "mcp/ModalGuard.hpp"
 #ifdef MITCAD_MACOS_NATIVE_UI
@@ -233,10 +236,11 @@ void MainWindow::mcpLabelAgentChange(int depthBefore) {
   }
 }
 
-QJsonObject MainWindow::mcpSave() {
+QJsonObject MainWindow::mcpSave(const QJsonObject& arguments) {
   mcpRefuseBusy();
   // As File > Save does (mitcad#265): to the document's own path, with the
-  // project's version and commit message.
+  // project's version and commit message; with a path as Save As does, into
+  // a folder the user allows agents (mitcad#402).
   if (m_session || m_mode == Mode::Command) {
     refuse(tr("Finish the current command before saving."));
   }
@@ -246,9 +250,17 @@ QJsonObject MainWindow::mcpSave() {
   if (windowReadOnly()) {
     refuse(readOnlyReason());
   }
-  if (m_filePath.isEmpty()) {
-    refuse(tr("%1 has never been saved: it has no path to save to. Save it in the application (File > Save As) "
-              "first.")
+  QString target;
+  if (arguments.contains(QStringLiteral("path"))) {
+    QString reason;
+    target = mcp::agentDesignPath(arguments.value(QStringLiteral("path")).toString(), true,
+                                  arguments.value(QStringLiteral("overwrite")).toBool(false), reason);
+    if (target.isEmpty()) {
+      refuse(reason);
+    }
+  } else if (m_filePath.isEmpty()) {
+    refuse(tr("%1 has never been saved: it has no path to save to. Give a path in a folder agents may use "
+              "(document_list lists them), or save it in the application (File > Save As).")
                .arg(documentName()));
   }
   const QScopedValueRollback<bool> active(m_mcpRequestActive, true);
@@ -256,7 +268,7 @@ QJsonObject MainWindow::mcpSave() {
   QString dialog;
   {
     mcp::ModalGuard guard;
-    saved = save();
+    saved = target.isEmpty() ? save() : writeFile(target);
     dialog = guard.opened();
   }
   if (!dialog.isEmpty()) {
@@ -271,6 +283,54 @@ QJsonObject MainWindow::mcpSave() {
           {QStringLiteral("saved"), true},
           {QStringLiteral("status"), m_statusLabel->text()},
           {QStringLiteral("state"), query({{QStringLiteral("query"), QStringLiteral("document")}})}};
+}
+
+QJsonObject MainWindow::mcpOpen(const QJsonObject& arguments) {
+  mcpRefuseBusy();
+  // As File > Open does, without its dialogs (mitcad#402): a design from a
+  // folder the user allows agents; the window's document is replaced and
+  // with it the handle.
+  QString reason;
+  const QString path = mcp::agentDesignPath(arguments.value(QStringLiteral("path")).toString(), false, false, reason);
+  if (path.isEmpty()) {
+    refuse(reason);
+  }
+  if (m_session || m_mode != Mode::Idle) {
+    refuse(tr("Finish the sketch or command first (ui_command with finish ok or cancel)."));
+  }
+  // What else keeps a model command from running: drags, imports, dialogs,
+  // a native command form.
+  const QString blocked = mcpBlockedReason(false);
+  if (!blocked.isEmpty()) {
+    refuse(blocked);
+  }
+  const bool discard = arguments.value(QStringLiteral("discard")).toBool(false);
+  if (!discard && (windowReadOnly() ? m_locks->keptChanges() : isModified())) {
+    refuse(tr("%1 has unsaved changes: save them first (document_save), or pass discard: true to lose them.")
+               .arg(documentName()));
+  }
+  const QString before = m_mcpDocumentId;
+  const QScopedValueRollback<bool> active(m_mcpRequestActive, true);
+  QString error;
+  bool opened = false;
+  QString dialog;
+  {
+    mcp::ModalGuard guard;
+    opened = openFile(path, error);
+    dialog = guard.opened();
+  }
+  if (!dialog.isEmpty()) {
+    refuse(tr("Opening asked a question (%1), which an agent cannot answer: open it in the application.").arg(dialog));
+  }
+  if (!opened || m_mcpDocumentId == before) {
+    refuse(error.isEmpty() ? tr("%1 was not opened.").arg(QDir::toNativeSeparators(path))
+                           : tr("Could not open %1: %2").arg(QDir::toNativeSeparators(path), error));
+  }
+  qInfo().noquote() << QStringLiteral("MCP: an agent opened %1").arg(m_filePath);
+  QJsonObject result = mcpDocumentInfo();
+  result.insert(QStringLiteral("opened"), true);
+  result.insert(QStringLiteral("replaced"), before);
+  return result;
 }
 
 void MainWindow::setMcpAgents(int count, std::function<void()> disconnectAll) {
@@ -307,7 +367,17 @@ void MainWindow::setMcpAgents(int count, std::function<void()> disconnectAll) {
 QJsonObject MainWindow::mcpTool(const QString& name, const QJsonObject& arguments) {
   Q_ASSERT(QThread::currentThread() == thread());
   if (name == QStringLiteral("document_list")) {
-    return {{QStringLiteral("documents"), QJsonArray{mcpDocumentInfo()}}};
+    // With the folders document_save's path and document_open may use
+    // (mitcad#402).
+    QJsonArray folders;
+    for (const QString& folder : mcp::agentFolders()) {
+      folders.append(QDir::toNativeSeparators(folder));
+    }
+    return {{QStringLiteral("documents"), QJsonArray{mcpDocumentInfo()}}, {QStringLiteral("folders"), folders}};
+  }
+  // The window's document replaced: no handle (mitcad#402).
+  if (name == QStringLiteral("document_open")) {
+    return mcpOpen(arguments);
   }
   // What the window shows: no document handle.
   if (name == QStringLiteral("ui_state")) {
@@ -319,6 +389,9 @@ QJsonObject MainWindow::mcpTool(const QString& name, const QJsonObject& argument
   if (name == QStringLiteral("ui_screenshot")) {
     return mcpScreenshot(arguments);
   }
+  if (name == QStringLiteral("ui_camera")) {
+    return mcpCamera(arguments);
+  }
   if (arguments.value(QStringLiteral("document")).toString() != m_mcpDocumentId) {
     throw std::runtime_error("No open document with this handle; call document_list after New or Open");
   }
@@ -329,7 +402,7 @@ QJsonObject MainWindow::mcpTool(const QString& name, const QJsonObject& argument
     return mcpCommand(arguments.value(QStringLiteral("command")).toObject());
   }
   if (name == QStringLiteral("document_save")) {
-    return mcpSave();
+    return mcpSave(arguments);
   }
   if (name == QStringLiteral("ui_select")) {
     return mcpSelect(arguments);

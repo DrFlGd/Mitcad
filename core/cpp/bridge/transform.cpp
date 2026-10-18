@@ -47,6 +47,14 @@ std::shared_ptr<geometry::Shape> unite(const ShapeList& shapes) {
   return geometry::unite(raw);
 }
 
+std::shared_ptr<geometry::Shape> unite_within(const ShapeList& shapes, double within) {
+  std::vector<const geometry::Shape*> raw;
+  for (const auto& shape : shapes.items()) {
+    raw.push_back(shape.get());
+  }
+  return geometry::unite(raw, within);
+}
+
 std::unique_ptr<FaceTool> face_tool(const geometry::Shape& body,
                                     rust::Slice<const rust::String> faces) {
   std::vector<std::string> names;

@@ -59,6 +59,8 @@ struct BrowserNode {
   QString path;       // the names from the root, "Root/Bodies/Body1"
   bool visible = true; // its light bulb
   bool hasEye = false;
+  // A body: a mesh body (mitcad#399); its item's geometry is "mesh".
+  bool mesh = false;
 
   bool isValid() const { return type != Type::None; }
   bool isFolder() const {

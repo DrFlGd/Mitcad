@@ -265,14 +265,20 @@ impl Default for Refinement {
     }
 }
 
+/// The presets bound each doubly curved face's triangles (mitcad#398): a
+/// face that would get more at the preset's deviation, which only faces
+/// larger than about 15 cm can, meshes with a larger deviation that
+/// grows with its size, so that a dome of metres exports in about the
+/// triangles of one of centimetres.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RefinementPreset {
-    /// 0.1 mm surface deviation, 30 degrees between facet normals.
+    /// 0.1 mm surface deviation, 30 degrees between facet normals, about
+    /// 5 000 triangles a face at most.
     Low,
-    /// 0.03 mm, 15 degrees.
+    /// 0.03 mm, 15 degrees, 20 000 triangles.
     Medium,
-    /// 0.01 mm, 8 degrees.
+    /// 0.01 mm, 8 degrees, 50 000 triangles.
     High,
 }
 
@@ -283,20 +289,32 @@ pub struct MeshTolerance {
     pub deviation: f64,
     /// Largest angle between neighbouring facet normals, radians.
     pub angle: f64,
+    /// About how many triangles a doubly curved face gets at most; such a
+    /// face that would get more meshes with a larger deviation (mitcad#398,
+    /// `geometry/io` `MeshOptions::face_triangles`). 0 (the default of a
+    /// tolerance given as numbers): `deviation` everywhere.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub face_triangles: u64,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 impl Refinement {
-    /// The tolerances: (surface deviation in mm, normal angle in radians).
+    /// The tolerances: (surface deviation in mm, normal angle in radians,
+    /// triangles a face at most).
     pub fn tolerance(self) -> MeshTolerance {
-        let (deviation, degrees) = match self {
+        let (deviation, degrees, face_triangles) = match self {
             Self::Custom(tolerance) => return tolerance,
-            Self::Preset(RefinementPreset::Low) => (0.1, 30.0_f64),
-            Self::Preset(RefinementPreset::Medium) => (0.03, 15.0),
-            Self::Preset(RefinementPreset::High) => (0.01, 8.0),
+            Self::Preset(RefinementPreset::Low) => (0.1, 30.0_f64, 5_000),
+            Self::Preset(RefinementPreset::Medium) => (0.03, 15.0, 20_000),
+            Self::Preset(RefinementPreset::High) => (0.01, 8.0, 50_000),
         };
         MeshTolerance {
             deviation,
             angle: degrees.to_radians(),
+            face_triangles,
         }
     }
 }

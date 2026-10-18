@@ -106,6 +106,7 @@ CommandDef sweepCommand(const CommandContext& context) {
   def.inputs += pathInputs(QStringLiteral("rail"), QObject::tr("Guide Rail"), rail);
   // Guide surfaces (mitcad#157): faces the path lies on.
   def.inputs += selectionInput(QStringLiteral("surfaces"), QObject::tr("Guide Surface"), SelectKind::Face, 1, 0)
+                    .withoutMeshes()
                     .withTooltip(QObject::tr("Faces the path lies on; the profile turns with their normal"))
                     .withVisible(surface);
   def.inputs += {

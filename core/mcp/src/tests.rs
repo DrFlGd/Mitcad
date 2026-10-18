@@ -620,11 +620,13 @@ fn live_catalog_has_only_supported_tools_and_live_handles() {
             "model_query",
             "model_command",
             "document_save",
+            "document_open",
             "ui_state",
             "ui_log",
             "ui_screenshot",
             "ui_select",
-            "ui_command"
+            "ui_command",
+            "ui_camera"
         ]
     );
     for tool in tools
@@ -637,7 +639,9 @@ fn live_catalog_has_only_supported_tools_and_live_handles() {
         assert!(description.contains("document_list"));
         assert!(!description.contains("document_create"));
     }
-    // The live save writes only to the document's own path (mitcad#265).
+    // The live save writes to the document's own path, or with path into a
+    // folder the user allows (mitcad#265, mitcad#402); the application
+    // checks the folder.
     let save = tools
         .iter()
         .find(|tool| tool["name"] == "document_save")
@@ -648,14 +652,22 @@ fn live_catalog_has_only_supported_tools_and_live_handles() {
             .unwrap()
             .keys()
             .collect::<Vec<_>>(),
-        ["document"]
+        ["document", "overwrite", "path"]
     );
-    for name in [
-        "document_create",
-        "document_open",
-        "document_close",
-        "model_export",
-    ] {
+    assert_eq!(save["inputSchema"]["required"], json!(["document"]));
+    // The live open takes no handle: it replaces the document.
+    let open = tools
+        .iter()
+        .find(|tool| tool["name"] == "document_open")
+        .unwrap();
+    assert_eq!(open["inputSchema"]["required"], json!(["path"]));
+    assert!(
+        open["inputSchema"]["properties"]["path"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("allow")
+    );
+    for name in ["document_create", "document_close", "model_export"] {
         let response = live_response(session.prepare(call(name, json!({}))).unwrap()).unwrap();
         assert_eq!(response["error"]["code"], -32602);
         assert!(session.finish(json!({}), false).is_err());
@@ -688,10 +700,25 @@ fn live_ui_tools_validate_their_arguments_before_the_application_runs_them() {
             "ui_command",
             json!({"document": "live-1", "finish": "later"}),
         ),
+        ("document_save", json!({"document": "live-1", "path": ""})),
         (
             "document_save",
-            json!({"document": "live-1", "path": "x.mitcad"}),
+            json!({"document": "live-1", "path": "x.mitcad", "overwrite": "yes"}),
         ),
+        ("document_open", json!({})),
+        (
+            "document_open",
+            json!({"path": "x.mitcad", "document": "live-1"}),
+        ),
+        ("ui_camera", json!({"eye": [0, 0]})),
+        ("ui_camera", json!({"eye": [0, 0, 1, 2]})),
+        ("ui_camera", json!({"target": [0, "a", 1]})),
+        ("ui_camera", json!({"height": 0})),
+        ("ui_camera", json!({"fov": 200})),
+        ("ui_camera", json!({"projection": "fisheye"})),
+        ("ui_camera", json!({"box": {"min": [0, 0, 0]}})),
+        ("ui_camera", json!({"frame": "all"})),
+        ("ui_camera", json!({"document": "live-1"})),
     ] {
         let response =
             live_response(session.prepare(call(name, arguments.clone())).unwrap()).unwrap();
@@ -712,6 +739,25 @@ fn live_ui_tools_validate_their_arguments_before_the_application_runs_them() {
                    "inputs": {}, "finish": "ok"}),
         ),
         ("document_save", json!({"document": "live-1"})),
+        (
+            "document_save",
+            json!({"document": "live-1", "path": "x.mitcad", "overwrite": true}),
+        ),
+        (
+            "document_open",
+            json!({"path": "/designs/x.mitcad", "discard": true}),
+        ),
+        ("ui_camera", json!({})),
+        (
+            "ui_camera",
+            json!({"eye": [100, -100.5, 80], "target": [0, 0, 0], "up": [0, 0, 1], "height": 90.5,
+                   "fov": 30, "projection": "perspective"}),
+        ),
+        (
+            "ui_camera",
+            json!({"box": {"min": [0, 0, 0], "max": [10, 10, 10]}, "frame": "none"}),
+        ),
+        ("ui_camera", json!({"frame": "selection"})),
     ] {
         assert!(matches!(
             session.prepare(call(name, arguments.clone())).unwrap(),
@@ -884,5 +930,88 @@ fn live_dispatch_plans_keep_protocol_responses_as_exact_json_text() {
             .unwrap()
             .into_plan(),
         json!({"tool": "document_list", "arguments": {}})
+    );
+}
+
+// A model command fails only by the features it added or edited; failed
+// features elsewhere are listed beside its result (mitcad#401).
+
+fn failed_feature(uid: &str, edited: bool) -> Value {
+    json!({"uid": uid, "name": uid, "error": "fillet failed", "edited": edited, "new": false})
+}
+
+#[test]
+fn command_outcome_lists_failures_and_fails_only_by_edited_features() {
+    let elsewhere = json!([failed_feature("F3", false)]);
+    let mut value = json!({"applied": true, "result": {"error": "F3: fillet failed",
+                                                       "failed_features": elsewhere}});
+    assert!(!command_outcome(&mut value));
+    assert_eq!(value["failed_features"], elsewhere);
+
+    let own = json!([failed_feature("F3", false), failed_feature("F5", true)]);
+    let mut value = json!({"applied": true, "result": {"failed_features": own}});
+    assert!(command_outcome(&mut value));
+    assert_eq!(value["failed_features"], own);
+
+    let mut value = json!({"applied": true, "result": {"error": null}});
+    assert!(!command_outcome(&mut value));
+    assert_eq!(value["failed_features"], json!([]));
+}
+
+#[test]
+fn live_model_command_is_not_an_error_for_a_failure_elsewhere() {
+    let mut session = ready_live();
+    let command = |cmd: &str| {
+        call(
+            "model_command",
+            json!({"document": "live-1", "command": {"cmd": cmd}}),
+        )
+    };
+    let elsewhere = json!([failed_feature("F3", false)]);
+    assert!(matches!(
+        session.prepare(command("add_parameter")).unwrap(),
+        PreparedMessage::Tool { .. }
+    ));
+    let response = session
+        .finish(
+            json!({"document": "live-1", "applied": true,
+                   "result": {"error": "F3: fillet failed", "failed_features": elsewhere}}),
+            false,
+        )
+        .unwrap();
+    assert_eq!(response["result"]["isError"], false);
+    assert_eq!(
+        response["result"]["structuredContent"]["failed_features"],
+        elsewhere
+    );
+
+    // The feature the command edited fails: the command's error.
+    assert!(matches!(
+        session.prepare(command("edit_feature")).unwrap(),
+        PreparedMessage::Tool { .. }
+    ));
+    let own = json!([failed_feature("F3", true)]);
+    let response = session
+        .finish(
+            json!({"document": "live-1", "applied": true,
+                   "result": {"error": "F3: fillet failed", "failed_features": own}}),
+            false,
+        )
+        .unwrap();
+    assert_eq!(response["result"]["isError"], true);
+    assert_eq!(
+        response["result"]["structuredContent"]["failed_features"],
+        own
+    );
+
+    // Other tools' results are passed as they are.
+    assert!(matches!(
+        session.prepare(call("document_list", json!({}))).unwrap(),
+        PreparedMessage::Tool { .. }
+    ));
+    let response = session.finish(json!({"documents": []}), false).unwrap();
+    assert_eq!(
+        response["result"]["structuredContent"],
+        json!({"documents": []})
     );
 }

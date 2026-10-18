@@ -6,7 +6,7 @@
   {"expect": {"body": "F1.b0", "volume": 900000, "has_face": "F1:end_a"}},
   {"expect": {"body": "F1.b0", "has_face": "F1:end_b"}},
 
-  {"comment": "P (O3) on T's x+ slot 100 up, its length bound to X's x- slot: 470 mm (bound length F5 before its part F3 and joint F4)."},
+  {"comment": "P (O3) on T's x+ slot, its near face 100 up (mitcad#394: an offset is to the near face), its length bound to X's x- slot: 470 mm (bound length F5 before its part F3 and joint F4)."},
   {"cmd": "build_place", "part": {"source": "S1"},
    "at": {"occurrence": "O1", "geometry": {"mount": "F1:mount(slot_x+_1)"}, "offset": 100},
    "length": {"bind": {"occurrence": "O2", "geometry": {"mount": "F2:mount(slot_x-_1)"}}}},
@@ -14,7 +14,7 @@
   {"expect": {"feature": "F4", "status": "ok"}},
   {"expect": {"body": "F3.b0", "volume": 423000}},
   {"expect": {"occurrence": "O3", "body": "F3.b0",
-              "bbox": {"min": [15, -15, 85], "max": [485, 15, 115]}, "tolerance": 1e-3}},
+              "bbox": {"min": [15, -15, 100], "max": [485, 15, 130]}, "tolerance": 1e-3}},
 
   {"comment": "X moves 100 further: P's length follows."},
   {"cmd": "ground_occurrence", "occurrence": "O2", "grounded": false},

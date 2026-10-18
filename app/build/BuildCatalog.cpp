@@ -217,6 +217,22 @@ bool Part::matches(const QString& words) const {
 
 bool Part::cutToLength() const { return build.value(QStringLiteral("length")).isObject(); }
 
+double Part::defaultLength() const {
+  // The length block's `default`, else its shortest stock length (mitcad#394).
+  const QJsonObject length = build.value(QStringLiteral("length")).toObject();
+  double shown = millimetres(length.value(QStringLiteral("default")));
+  if (!std::isfinite(shown) || shown <= 0.0) {
+    shown = std::numeric_limits<double>::quiet_NaN();
+    for (const QJsonValue& stock : length.value(QStringLiteral("stock")).toArray()) {
+      const double mm = millimetres(stock);
+      if (std::isfinite(mm) && mm > 0.0 && !(mm >= shown)) {
+        shown = mm;
+      }
+    }
+  }
+  return std::isfinite(shown) && shown > 0.0 ? shown : 500.0;
+}
+
 double Part::sectionWidth() const {
   const double width = millimetres(build.value(QStringLiteral("section")).toObject().value(QStringLiteral("width")));
   return std::isfinite(width) ? width : 0.0;

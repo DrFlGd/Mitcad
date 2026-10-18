@@ -369,6 +369,7 @@ fn distance_dimensions() {
             a,
             b: c,
             value: 7.0,
+            signed: false,
         })
         .unwrap();
     let e = s.add_point(1.0, -2.0);
@@ -377,6 +378,7 @@ fn distance_dimensions() {
             a,
             b: e,
             value: 3.0,
+            signed: false,
         })
         .unwrap();
     solve_ok(&mut s);
@@ -390,6 +392,77 @@ fn distance_dimensions() {
             "measure",
         );
     }
+}
+
+/// Signed horizontal and vertical distances (mitcad#404) hold `b - a`
+/// itself: a point driven by `r cos(t)`, `r sin(t)` follows `t` through all
+/// four quadrants, also when a step jumps across both axes at once, while
+/// unsigned ones refuse the negative values.
+#[test]
+fn signed_distances_follow_through_all_quadrants() {
+    let mut s = System::new();
+    let a = s.add_point(0.0, 0.0);
+    s.add_constraint(FixPoint(a)).unwrap();
+    let b = s.add_point(3.0, 4.0);
+    let r = 10.0;
+    let at = |t: f64| (r * t.to_radians().cos(), r * t.to_radians().sin());
+    let (x, y) = at(30.0);
+    let h = s
+        .add_constraint(HorizontalDistance {
+            a,
+            b,
+            value: x,
+            signed: true,
+        })
+        .unwrap();
+    let v = s
+        .add_constraint(VerticalDistance {
+            a,
+            b,
+            value: y,
+            signed: true,
+        })
+        .unwrap();
+    solve_ok(&mut s);
+    assert_pt(&s, b, x, y);
+    for t in [120.0, 210.0, 300.0, 45.0, 225.0, 135.0, 315.0, 30.0] {
+        let (x, y) = at(t);
+        s.set_dimension_value(h, x).unwrap();
+        s.set_dimension_value(v, y).unwrap();
+        solve_ok(&mut s);
+        assert_pt(&s, b, x, y);
+        assert_near(s.measure(h).unwrap(), x, "signed horizontal measure");
+        assert_near(s.measure(v).unwrap(), y, "signed vertical measure");
+    }
+    // Added where the point is on the negative side, it still measures
+    // `b - a`: the value gives the side, not where the point was.
+    let c = s.add_point(-4.0, -1.0);
+    let hc = s
+        .add_constraint(HorizontalDistance {
+            a,
+            b: c,
+            value: 6.0,
+            signed: true,
+        })
+        .unwrap();
+    solve_ok(&mut s);
+    assert_near(pt(&s, c)[0], 6.0, "signed distance moves the point across");
+    assert_eq!(
+        s.set_dimension_value(hc, f64::NAN),
+        Err(Error::InvalidValue(
+            "the signed distance must be a finite number"
+        ))
+    );
+    let e = s.add_point(1.0, 1.0);
+    assert!(matches!(
+        s.add_constraint(VerticalDistance {
+            a,
+            b: e,
+            value: -2.0,
+            signed: false,
+        }),
+        Err(Error::InvalidValue(_))
+    ));
 }
 
 #[test]

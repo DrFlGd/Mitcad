@@ -248,12 +248,53 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             snap::Snapped::default()
         };
         // Those that follow one edge as projections.
-        let resolved = match &target {
+        let mut resolved = match &target {
             Some(t) => linked::resolve(&mut parts, &frame, &sources, &choices, t, &mut |e| {
                 self.edge_curves(e, t)
             }),
             None => linked::Resolved::default(),
         };
+        // The others that are the projection of an edge of any kind, or of
+        // several edges end to end (mitcad#389).
+        if let Some(t) = &target
+            && parts.linked > resolved.projections.len()
+        {
+            let made: Vec<&str> = resolved
+                .projections
+                .iter()
+                .flat_map(|p| p["entities"].as_array().into_iter().flatten())
+                .filter_map(Value::as_str)
+                .collect();
+            let skip: Vec<usize> = parts
+                .entities
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| e["id"].as_str().is_some_and(|id| made.contains(&id)))
+                .map(|(i, _)| i)
+                .collect();
+            let found = linked::chains(
+                &parts,
+                &frame,
+                &sources,
+                &skip,
+                refs::geometric_tolerance(),
+                &mut |e| self.edge_curves(e, t),
+            );
+            if crate::tracing() {
+                for c in &found {
+                    eprintln!(
+                        "import:   linked {} follows {} edges: {:?}",
+                        parts.entities[c.entity]["id"],
+                        c.edges.len(),
+                        c.edges
+                            .iter()
+                            .map(|k| &sources[*k].edge)
+                            .collect::<Vec<_>>()
+                    );
+                }
+            }
+            linked::resolve_chains(&mut parts, &frame, &sources, &found, t, &mut resolved);
+        }
         if crate::tracing() && parts.linked > 0 {
             eprintln!(
                 "import: {name:?} in {} (owned {owned}, seen at {target:?}): {} linked curves, {} edges they may follow, {} projections ({} of other components)",
@@ -411,7 +452,22 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                                     position_error(&parts.positions, &o.solved.points)
                                 }
                             });
-                            if error > SKETCH_TOLERANCE {
+                            // Within the import's geometric tolerance the
+                            // solve is the file's sketch too, where the
+                            // regions it bounds stay the file's (mitcad#224,
+                            // mitcad#396): the linked curves the replay's
+                            // edges give and the file's rounded numbers
+                            // differ by micrometres.
+                            let within = error <= SKETCH_TOLERANCE
+                                || error <= refs::geometric_tolerance()
+                                    && output.is_some_and(|o| {
+                                        linked::regions_kept(
+                                            entities,
+                                            &constraints,
+                                            &o.solved.points,
+                                        )
+                                    });
+                            if !within {
                                 last = format!("the solved sketch moved by {error:.3e} mm");
                                 if crate::tracing() {
                                     eprintln!(
@@ -498,6 +554,15 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                             }
                             if level > 0 {
                                 notes.push((*what).to_owned());
+                            }
+                            if error > SKETCH_TOLERANCE {
+                                notes.push(format!(
+                                    "solved within the geometric tolerance: points up to \
+                                     {error:.1e} mm from the file's"
+                                ));
+                                if error > refs::EXACT {
+                                    refs::note_deviation(error);
+                                }
                             }
                             if unlocked {
                                 notes.push(
@@ -4733,8 +4798,14 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         // Two distances: which face takes which is not decoded. Each
         // definition with the other reading next to it: the wrong one can
         // come within the tolerance, and the right one is tried before
-        // other edges.
-        if sizes.iter().any(|(s, _, _)| s["type"] == "two_distances") {
+        // other edges. So too a distance and angle whose face is not
+        // decoded (no `isFlipped`, as in the `.ipt` import): the distance
+        // on either face of the edge.
+        let undecided = |(i, (s, _, _)): (usize, &(Value, bool, bool))| {
+            s["type"] == "two_distances"
+                || (s["type"] == "distance_angle" && sets[i].is_flipped.is_none())
+        };
+        if sizes.iter().enumerate().any(undecided) {
             candidates = candidates
                 .into_iter()
                 .flat_map(|c| {
@@ -4841,17 +4912,30 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                     // Edges the file names that its history no longer has
                     // are no input of the file's operation: the other edges
                     // come first (the history checks them).
-                    if let Some((subset, dropped)) = without_stale_edges(&fingerprints)
+                    if let Some((subset, lost)) = without_stale_edges(&fingerprints)
                         && let Ok((mut c, _)) =
                             self.dressup_by_fingerprints(&subset, sections, make, false)
                     {
+                        let plural = if lost == 1 { "" } else { "s" };
+                        let dropped = format!("{lost} edge{plural}");
                         c.note = Some(format!(
                             "{BY_NAME}; {dropped} the file no longer has left out"
                         ));
                         c.input_provenance = InputProvenance::Inferred;
                         let chains = self.by_chains(&c);
+                        // The lost references in their place as the edges
+                        // that join the others end to end along a face all
+                        // of them share (mitcad#343).
+                        let joined = self.with_joining_edges(&c, lost).map(|mut j| {
+                            j.note = Some(format!(
+                                "{BY_NAME}; {dropped} the file no longer has taken as the edges \
+                                 joining the others along their common face"
+                            ));
+                            j
+                        });
                         first.push(c);
                         first.extend(chains);
+                        first.extend(joined);
                     }
                 }
             }
@@ -5428,6 +5512,150 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             first: false,
         })
     }
+
+    /// Candidate `c` (the edges found by their names, the `lost` ones the
+    /// file no longer has left out) with the edges that join each set's
+    /// edges end to end along a face they all share ([`joining_edges`]), at
+    /// most `lost` of them in all: where the lost references named the
+    /// pieces of one chain between the edges found (a rounding along a
+    /// torus's edges with a plane and with narrow faces between, whose
+    /// references to the narrow faces' edges are lost, mitcad#343). None
+    /// when no set has such edges.
+    fn with_joining_edges(&self, c: &Candidate, lost: usize) -> Option<Candidate> {
+        let kernel = self.doc.kernel();
+        let mut defs = c.defs.clone();
+        let mut added = 0;
+        for def in &mut defs {
+            let body = def["body"].as_str()?.to_owned();
+            let shape = self
+                .doc
+                .bodies()
+                .iter()
+                .find(|b| b.uid.to_string() == body)?
+                .shape
+                .clone();
+            let ends = edge_ends(kernel, &shape);
+            for set in def["sets"].as_array_mut()? {
+                let kept: Vec<String> = set["edges"]
+                    .as_array()?
+                    .iter()
+                    .filter_map(|e| e.as_str().map(str::to_owned))
+                    .collect();
+                let more = joining_edges(&kept, &ends, lost - added, 1e-6);
+                added += more.len();
+                if let Some(edges) = set["edges"].as_array_mut() {
+                    edges.extend(more.into_iter().map(Value::String));
+                }
+            }
+        }
+        (added > 0).then_some(Candidate {
+            defs,
+            note: None,
+            guess: true,
+            predicted: None,
+            input_provenance: InputProvenance::Inferred,
+            first: false,
+        })
+    }
+}
+
+/// Every edge of `shape` by name with its two end points (the edges whose
+/// ends the kernel does not give left out).
+fn edge_ends<K: Kernel>(kernel: &K, shape: &K::Shape) -> Vec<(String, [[f64; 3]; 2])> {
+    use mitcad_model::EdgeName;
+    use mitcad_model::datum::PathParameter;
+    let Ok(edges) = kernel.edges(shape) else {
+        return Vec::new();
+    };
+    edges
+        .into_iter()
+        .filter_map(|e| {
+            let text = e.name?;
+            let name: EdgeName = text.parse().ok()?;
+            let at = |f: f64| {
+                kernel
+                    .path_point(
+                        shape,
+                        std::slice::from_ref(&name),
+                        PathParameter::Fraction(f),
+                    )
+                    .ok()
+                    .map(|p| p.point)
+            };
+            Some((text, [at(0.0)?, at(1.0)?]))
+        })
+        .collect()
+}
+
+/// The edges of `ends` (every edge of a body by name with its end points)
+/// that join the edges `kept` end to end along a face all of them share:
+/// edges of that face, not kept, from an end of one kept edge to an end of
+/// another (within `tol`). Of the faces the kept edges share, the one face
+/// with such edges, at most `limit` of them; none where no face or more
+/// than one has them, or where one has more than `limit`.
+fn joining_edges(
+    kept: &[String],
+    ends: &[(String, [[f64; 3]; 2])],
+    limit: usize,
+    tol: f64,
+) -> Vec<String> {
+    use mitcad_model::EdgeName;
+    let faces_of = |name: &str| -> Option<[String; 2]> {
+        let e: EdgeName = name.parse().ok()?;
+        Some([e.faces()[0].to_string(), e.faces()[1].to_string()])
+    };
+    if kept.len() < 2 || limit == 0 {
+        return Vec::new();
+    }
+    // The faces all kept edges share.
+    let Some(first) = faces_of(&kept[0]) else {
+        return Vec::new();
+    };
+    let mut common: Vec<String> = first.to_vec();
+    common.dedup();
+    for k in &kept[1..] {
+        let Some(f) = faces_of(k) else {
+            return Vec::new();
+        };
+        common.retain(|c| f.contains(c));
+    }
+    // Which kept edge an end point is an end of.
+    let kept_ends: Vec<(usize, [f64; 3])> = kept
+        .iter()
+        .enumerate()
+        .filter_map(|(i, k)| ends.iter().find(|(n, _)| n == k).map(|(_, p)| (i, p)))
+        .flat_map(|(i, p)| p.iter().map(move |q| (i, *q)))
+        .collect();
+    let kept_at = |p: [f64; 3]| -> Vec<usize> {
+        kept_ends
+            .iter()
+            .filter(|(_, q)| geom::distance(p, *q) <= tol)
+            .map(|(i, _)| *i)
+            .collect()
+    };
+    let mut found: Vec<Vec<String>> = Vec::new();
+    for face in &common {
+        let joins: Vec<String> = ends
+            .iter()
+            .filter(|(name, [a, b])| {
+                !kept.contains(name)
+                    && faces_of(name).is_some_and(|f| f.contains(face))
+                    && geom::distance(*a, *b) > tol
+                    && {
+                        let (at_a, at_b) = (kept_at(*a), kept_at(*b));
+                        at_a.iter().any(|i| at_b.iter().any(|j| i != j))
+                    }
+            })
+            .map(|(name, _)| name.clone())
+            .collect();
+        if !joins.is_empty() {
+            found.push(joins);
+        }
+    }
+    match found.as_slice() {
+        [one] if one.len() <= limit => one.clone(),
+        _ => Vec::new(),
+    }
 }
 
 /// The note of a fillet's or chamfer's edges found by their names.
@@ -5498,11 +5726,11 @@ fn read_chamfer_inputs(d: &ChamferDetail) -> bool {
 /// the other edges only (the API reference dumps list just the edges that
 /// resolve for most items whose edges the decoder left unresolved for
 /// these reasons; the history checks the rest, which a decoder's own
-/// failure to find a face does not hold), and how many were left out ("3
-/// edges"); None when there are none of that kind or none is left.
+/// failure to find a face does not hold), and how many were left out; None
+/// when there are none of that kind or none is left.
 fn without_stale_edges<'a>(
     sets: &[Vec<&'a Fingerprint>],
-) -> Option<(Vec<Vec<&'a Fingerprint>>, String)> {
+) -> Option<(Vec<Vec<&'a Fingerprint>>, usize)> {
     let stale = |fp: &Fingerprint| {
         fp.mid_point.is_none()
             && fp.f3d.as_ref().is_some_and(|f| {
@@ -5517,10 +5745,7 @@ fn without_stale_edges<'a>(
         .iter()
         .map(|s| s.iter().copied().filter(|fp| !stale(fp)).collect())
         .collect();
-    (dropped > 0 && kept.iter().any(|s| !s.is_empty())).then(|| {
-        let plural = if dropped == 1 { "" } else { "s" };
-        (kept, format!("{dropped} edge{plural}"))
-    })
+    (dropped > 0 && kept.iter().any(|s| !s.is_empty())).then_some((kept, dropped))
 }
 
 /// Whether every edge of a set is one the stream decoder named (its
@@ -6218,6 +6443,61 @@ mod tests {
             with_participants(&c, &[selected])[0].input_provenance,
             InputProvenance::Inferred
         );
+    }
+
+    /// An edge between faces `a` and `b` of base feature F1 (with its
+    /// index) from `p` to `q`.
+    fn edge(
+        a: u32,
+        b: u32,
+        index: Option<u32>,
+        p: [f64; 3],
+        q: [f64; 3],
+    ) -> (String, [[f64; 3]; 2]) {
+        let mut name = format!("E{{F1:import({a})|F1:import({b})}}");
+        if let Some(k) = index {
+            name.push_str(&format!("#{k}"));
+        }
+        (name, [p, q])
+    }
+
+    #[test]
+    fn edges_joining_the_found_ones_along_their_common_face() {
+        // A torus (31) meeting a plane (34) in three pieces, two narrow
+        // faces (32, 35) between them, each meeting the torus in one edge
+        // from the end of one piece to the start of the next and the plane
+        // in two edges away from them.
+        let ends = vec![
+            edge(31, 34, Some(0), [0.0, 0.0, 0.0], [1.0, 0.0, 0.0]),
+            edge(31, 34, Some(1), [2.0, 0.0, 0.0], [3.0, 0.0, 0.0]),
+            edge(31, 34, Some(2), [4.0, 0.0, 0.0], [5.0, 0.0, 0.0]),
+            edge(31, 32, None, [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]),
+            edge(31, 35, None, [3.0, 0.0, 0.0], [4.0, 0.0, 0.0]),
+            edge(32, 34, Some(0), [1.0, 0.0, 0.0], [1.0, 1.0, 0.0]),
+            edge(32, 34, Some(1), [2.0, 0.0, 0.0], [2.0, 1.0, 0.0]),
+            edge(34, 35, Some(0), [3.0, 0.0, 0.0], [3.0, 1.0, 0.0]),
+            edge(34, 35, Some(1), [4.0, 0.0, 0.0], [4.0, 1.0, 0.0]),
+        ];
+        let kept: Vec<String> = ends[..3].iter().map(|(n, _)| n.clone()).collect();
+        assert_eq!(
+            joining_edges(&kept, &ends, 2, 1e-6),
+            vec![ends[3].0.clone(), ends[4].0.clone()]
+        );
+        // More than the references lost, or none lost: none.
+        assert!(joining_edges(&kept, &ends, 1, 1e-6).is_empty());
+        assert!(joining_edges(&kept, &ends, 0, 1e-6).is_empty());
+        // One edge alone joins nothing.
+        assert!(joining_edges(&kept[..1], &ends, 2, 1e-6).is_empty());
+        // The face 1 edge from the start of the first piece to the end of
+        // the last joins two found edges along the torus too: three, more
+        // than lost.
+        let mut with_far = ends.clone();
+        with_far.push(edge(1, 31, None, [0.0, 0.0, 0.0], [5.0, 0.0, 0.0]));
+        assert!(joining_edges(&kept, &with_far, 2, 1e-6).is_empty());
+        // Joining edges along both shared faces: which face is not known.
+        let mut both = ends[..5].to_vec();
+        both.push(edge(34, 40, None, [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]));
+        assert!(joining_edges(&kept, &both, 4, 1e-6).is_empty());
     }
 
     #[test]

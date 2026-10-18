@@ -454,6 +454,10 @@ impl CutScope {
             let mut touched: Vec<(BodyUid, BooleanOutput<K::Shape>)> = Vec::new();
             let mut boolean_failed = false;
             for (uid, shape) in &candidate.shapes {
+                // Mesh bodies are not cut (mitcad#399).
+                if ctx.is_mesh(shape) {
+                    continue;
+                }
                 let bounds = ctx.kernel.bounding_box(shape).map_err(|e| e.to_string())?;
                 if let (Some(a), Some(b)) = (&tool_bounds, &bounds)
                     && !a.overlaps(b, 1e-7)
@@ -509,18 +513,21 @@ impl CutScope {
                     continue;
                 }
                 report.selected_bodies += 1;
-                let mut pieces = result.pieces.into_iter().filter(|p| p.sources.contains(&0));
-                match pieces.next() {
-                    None => output.changes.push(BodyChange::Remove(body)),
-                    Some(first) => {
-                        output.changes.push(BodyChange::Set(body, first.shape));
-                        output.owners.insert(body, candidate.target.component);
-                        for piece in pieces {
-                            let uid = ctx.new_body();
-                            output.changes.push(BodyChange::Set(uid, piece.shape));
-                            output.owners.insert(uid, candidate.target.component);
-                        }
-                    }
+                let pieces: Vec<K::Shape> = result
+                    .pieces
+                    .into_iter()
+                    .filter(|p| p.sources.contains(&0))
+                    .map(|p| p.shape)
+                    .collect();
+                // The pieces' ids (mitcad#408); none left for the body
+                // removes it.
+                let named = ctx.piece_ids(body, pieces);
+                if !named.iter().any(|(id, _)| *id == body) {
+                    output.changes.push(BodyChange::Remove(body));
+                }
+                for (uid, piece) in named {
+                    output.changes.push(BodyChange::Set(uid, piece));
+                    output.owners.insert(uid, candidate.target.component);
                 }
             }
             let checked_count = candidate.row.bodies.iter().filter(|b| b.checked).count();

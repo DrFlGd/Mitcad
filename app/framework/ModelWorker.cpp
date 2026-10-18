@@ -54,8 +54,8 @@ std::exception_ptr ModelWorker::take() {
 }
 
 void ModelWorker::run() {
-  // On Windows OCCT's handlers are per thread; on Linux they are the
-  // process's, so a crash in OCCT on the UI thread becomes an exception too.
+  // On Windows OCCT's handlers are per thread (main installs them on the UI
+  // thread); on Linux and macOS they are the process's.
   geometry::catch_occt_crashes();
   std::unique_lock<std::mutex> lock(m_mutex);
   for (;;) {

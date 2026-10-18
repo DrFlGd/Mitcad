@@ -1467,3 +1467,380 @@ fn a_line_collapsed_by_a_constraint_is_a_warning_naming_it() {
     assert_eq!(s["degenerate"], json!([]), "{s}");
     assert_eq!(s["warnings"], json!([]), "{s}");
 }
+
+// --- Signed horizontal and vertical distances (mitcad#404)
+
+/// A ray from a fixed centre p1 at (5, -2) to its end p3, the end driven by
+/// signed distances from the centre `r * cos(a)` and `r * sin(a)`
+/// (a = 30 deg). Returns the document and the ids of the two dimensions.
+fn polar_ray(signed: bool) -> (Document<MockKernel>, [String; 2]) {
+    let mut d = with_sketch();
+    command(
+        &mut d,
+        json!({"cmd": "sketch.add_point", "sketch": "F1", "at": [5, -2], "fixed": true}),
+    );
+    let ray = command(
+        &mut d,
+        json!({"cmd": "sketch.add_line", "sketch": "F1", "start": "p1", "end": [60, 40]}),
+    );
+    assert_eq!(ray["entities"], json!(["p3", "c2"]), "{ray}");
+    command(
+        &mut d,
+        json!({"cmd": "add_parameter", "name": "r", "value": "50 mm"}),
+    );
+    command(
+        &mut d,
+        json!({"cmd": "add_parameter", "name": "a", "value": "30 deg"}),
+    );
+    let mut ids = Vec::new();
+    for (kind, value) in [
+        ("horizontal_distance", "r * cos(a)"),
+        ("vertical_distance", "r * sin(a)"),
+    ] {
+        let mut dimension = json!({"type": kind, "a": "p1", "b": "p3"});
+        if signed {
+            dimension["signed"] = json!(true);
+        }
+        let added = command(
+            &mut d,
+            json!({"cmd": "sketch.add_dimension", "sketch": "F1", "dimension": dimension,
+                   "value": value}),
+        );
+        ids.push(added["dimensions"][0].as_str().unwrap().to_owned());
+    }
+    (d, [ids[0].clone(), ids[1].clone()])
+}
+
+#[test]
+fn a_signed_point_dimension_follows_its_angle_through_all_quadrants() {
+    let (mut d, [h, v]) = polar_ray(true);
+    let expected = |degrees: f64| {
+        let t = degrees.to_radians();
+        [5.0 + 50.0 * t.cos(), -2.0 + 50.0 * t.sin()]
+    };
+    // Every quadrant, single steps and jumps across both axes, and back.
+    for degrees in [30.0, 120.0, 210.0, 300.0, 39.0, 225.0, 135.0, 315.0, 30.0] {
+        command(
+            &mut d,
+            json!({"cmd": "set_parameter", "name": "a", "value": format!("{degrees} deg")}),
+        );
+        let s = sketch(&d, "F1");
+        assert!(s["error"].is_null(), "{degrees}: {s}");
+        let [x, y] = point_at(&s, "p3");
+        let [ex, ey] = expected(degrees);
+        assert!(close(x, ex) && close(y, ey), "{degrees}: ({x}, {y})");
+        assert!(close(measured(&s, &h), ex - 5.0), "{degrees}: {s}");
+        assert!(close(measured(&s, &v), ey + 2.0), "{degrees}: {s}");
+    }
+    // The query shows the flag; a driven one measures with the sign.
+    let s = sketch(&d, "F1");
+    let dimension = |s: &Value, id: &str| {
+        s["dimensions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|x| x["id"] == id)
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(dimension(&s, &h)["signed"], true, "{s}");
+    command(
+        &mut d,
+        json!({"cmd": "set_parameter", "name": "a", "value": "210 deg"}),
+    );
+    let driven = command(
+        &mut d,
+        json!({"cmd": "sketch.add_dimension", "sketch": "F1", "driven": true,
+               "dimension": {"type": "horizontal_distance", "a": "p1", "b": "p3",
+                             "signed": true}}),
+    );
+    let driven = driven["dimensions"][0].as_str().unwrap().to_owned();
+    let s = sketch(&d, "F1");
+    let cos210 = 50.0 * 210f64.to_radians().cos();
+    assert!(close(measured(&s, &driven), cos210), "{s}");
+    // An unsigned one keeps measuring the size.
+    let unsigned = command(
+        &mut d,
+        json!({"cmd": "sketch.add_dimension", "sketch": "F1", "driven": true,
+               "dimension": {"type": "horizontal_distance", "a": "p1", "b": "p3"}}),
+    );
+    let unsigned = unsigned["dimensions"][0].as_str().unwrap().to_owned();
+    let s = sketch(&d, "F1");
+    assert!(close(measured(&s, &unsigned), -cos210), "{s}");
+    assert!(dimension(&s, &unsigned).get("signed").is_none(), "{s}");
+}
+
+#[test]
+fn an_unsigned_point_dimension_still_refuses_a_negative_value() {
+    // As before: the sign flip of `r * cos(a)` is an error of the sketch.
+    let (mut d, _) = polar_ray(false);
+    command(
+        &mut d,
+        json!({"cmd": "set_parameter", "name": "a", "value": "120 deg"}),
+    );
+    let s = sketch(&d, "F1");
+    let error = s["error"].as_str().unwrap_or_default();
+    assert!(error.contains("must not be negative"), "{s}");
+}
+
+#[test]
+fn signed_point_dimensions_round_trip_and_older_files_are_unchanged() {
+    let (mut d, [h, v]) = polar_ray(true);
+    command(
+        &mut d,
+        json!({"cmd": "set_parameter", "name": "a", "value": "250 deg"}),
+    );
+    let (plain, _) = polar_ray(false);
+    for (doc, signed) in [(&d, true), (&plain, false)] {
+        let json = doc.to_json();
+        let value: Value = serde_json::from_str(&json).unwrap();
+        let dimensions = value["features"][0]["dimensions"].as_array().unwrap();
+        assert_eq!(dimensions.len(), 2, "{json}");
+        for dimension in dimensions {
+            // Only a signed dimension has the field: an unsigned one is
+            // saved as before.
+            assert_eq!(dimension.get("signed").is_some(), signed, "{dimension}");
+        }
+        let mut loaded = Document::from_json(&json, MockKernel::default()).unwrap();
+        assert_eq!(loaded.to_json(), json, "saving again gives the same file");
+        loaded.recompute();
+        assert_eq!(sketch(&loaded, "F1"), sketch(doc, "F1"));
+    }
+    // The loaded signed dimensions keep following their angle.
+    let mut loaded = Document::from_json(&d.to_json(), MockKernel::default()).unwrap();
+    command(
+        &mut loaded,
+        json!({"cmd": "set_parameter", "name": "a", "value": "60 deg"}),
+    );
+    let s = sketch(&loaded, "F1");
+    assert!(s["error"].is_null(), "{s}");
+    assert!(close(measured(&s, &h), 25.0), "{s}");
+    assert!(
+        close(measured(&s, &v), 50.0 * 60f64.to_radians().sin()),
+        "{s}"
+    );
+}
+
+// --- Switching a distance between signed and unsigned (mitcad#409)
+
+/// The `dimensions` entry of the sketch query with this id.
+fn dimension_entry(s: &Value, id: &str) -> Value {
+    s["dimensions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|x| x["id"] == id)
+        .unwrap_or_else(|| panic!("no {id} in {s}"))
+        .clone()
+}
+
+fn set_signed(d: &mut Document<MockKernel>, id: &str, signed: bool) {
+    command(
+        d,
+        json!({"cmd": "sketch.set_signed", "sketch": "F1", "dimension": id, "signed": signed}),
+    );
+}
+
+#[test]
+fn switching_a_distance_signed_keeps_its_point_where_it_is() {
+    // A ray from the fixed p1 at (0, 0) to p3 at (-30, 20), left of p1.
+    let mut d = with_sketch();
+    command(
+        &mut d,
+        json!({"cmd": "sketch.add_point", "sketch": "F1", "at": [0, 0], "fixed": true}),
+    );
+    command(
+        &mut d,
+        json!({"cmd": "sketch.add_line", "sketch": "F1", "start": "p1", "end": [-30, 20]}),
+    );
+    let mut ids = Vec::new();
+    for (kind, value) in [("horizontal_distance", 30), ("vertical_distance", 20)] {
+        let added = command(
+            &mut d,
+            json!({"cmd": "sketch.add_dimension", "sketch": "F1", "value": value,
+                   "dimension": {"type": kind, "a": "p1", "b": "p3"}}),
+        );
+        ids.push(added["dimensions"][0].as_str().unwrap().to_owned());
+    }
+    let (h, v) = (ids[0].clone(), ids[1].clone());
+    let at = |d: &Document<MockKernel>| point_at(&sketch(d, "F1"), "p3");
+    let check = |d: &Document<MockKernel>, x: f64, hx: f64, vy: f64| {
+        let s = sketch(d, "F1");
+        assert!(s["error"].is_null(), "{s}");
+        let [px, py] = point_at(&s, "p3");
+        assert!(close(px, x) && close(py, 20.0), "({px}, {py}) {s}");
+        assert!(close(measured(&s, &h), hx), "{s}");
+        assert!(close(measured(&s, &v), vy), "{s}");
+    };
+    check(&d, -30.0, 30.0, 20.0);
+
+    // Signed: the value becomes the offset -30, the point stays; the
+    // vertical one is positive and keeps its value.
+    set_signed(&mut d, &h, true);
+    set_signed(&mut d, &v, true);
+    check(&d, -30.0, -30.0, 20.0);
+    let s = sketch(&d, "F1");
+    assert_eq!(dimension_entry(&s, &h)["signed"], true, "{s}");
+    assert_eq!(dimension_entry(&s, &v)["signed"], true, "{s}");
+    // One undo step each: undo makes it unsigned with its size again.
+    command(&mut d, json!({"cmd": "undo"}));
+    command(&mut d, json!({"cmd": "undo"}));
+    check(&d, -30.0, 30.0, 20.0);
+    assert!(
+        dimension_entry(&sketch(&d, "F1"), &h)
+            .get("signed")
+            .is_none()
+    );
+    command(&mut d, json!({"cmd": "redo"}));
+    command(&mut d, json!({"cmd": "redo"}));
+    check(&d, -30.0, -30.0, 20.0);
+    // Switching again changes nothing.
+    set_signed(&mut d, &h, true);
+    check(&d, -30.0, -30.0, 20.0);
+
+    // Unsigned again: the size, on the side where the point is.
+    set_signed(&mut d, &h, false);
+    check(&d, -30.0, 30.0, 20.0);
+    assert!(
+        dimension_entry(&sketch(&d, "F1"), &h)
+            .get("signed")
+            .is_none()
+    );
+
+    // An expression is negated as -(...), and switching back takes the
+    // negation off instead of nesting another.
+    command(
+        &mut d,
+        json!({"cmd": "add_parameter", "name": "r", "value": "50 mm"}),
+    );
+    command(
+        &mut d,
+        json!({"cmd": "sketch.set_dimension", "sketch": "F1", "dimension": h, "value": "r * 0.6"}),
+    );
+    check(&d, -30.0, 30.0, 20.0);
+    set_signed(&mut d, &h, true);
+    check(&d, -30.0, -30.0, 20.0);
+    let s = sketch(&d, "F1");
+    assert_eq!(dimension_entry(&s, &h)["expression"], "-(r * 0.6)", "{s}");
+    command(
+        &mut d,
+        json!({"cmd": "set_parameter", "name": "r", "value": "100 mm"}),
+    );
+    check(&d, -60.0, -60.0, 20.0);
+    set_signed(&mut d, &h, false);
+    check(&d, -60.0, 60.0, 20.0);
+    let s = sketch(&d, "F1");
+    assert_eq!(dimension_entry(&s, &h)["expression"], "r * 0.6", "{s}");
+
+    // A dimension using another parameter gets an expression of its own.
+    command(
+        &mut d,
+        json!({"cmd": "add_parameter", "name": "w", "value": "40 mm"}),
+    );
+    command(
+        &mut d,
+        json!({"cmd": "sketch.set_dimension", "sketch": "F1", "dimension": h, "value": "w"}),
+    );
+    check(&d, -40.0, 40.0, 20.0);
+    set_signed(&mut d, &h, true);
+    check(&d, -40.0, -40.0, 20.0);
+    let s = sketch(&d, "F1");
+    assert_eq!(dimension_entry(&s, &h)["expression"], "-w", "{s}");
+    command(
+        &mut d,
+        json!({"cmd": "set_parameter", "name": "w", "value": "10 mm"}),
+    );
+    assert!(close(at(&d)[0], -10.0), "{:?}", at(&d));
+
+    // A driven one only measures the other way.
+    let driven = command(
+        &mut d,
+        json!({"cmd": "sketch.add_dimension", "sketch": "F1", "driven": true,
+               "dimension": {"type": "horizontal_distance", "a": "p1", "b": "p3"}}),
+    );
+    let driven = driven["dimensions"][0].as_str().unwrap().to_owned();
+    assert!(close(measured(&sketch(&d, "F1"), &driven), 10.0));
+    set_signed(&mut d, &driven, true);
+    assert!(close(measured(&sketch(&d, "F1"), &driven), -10.0));
+    assert!(close(at(&d)[0], -10.0), "{:?}", at(&d));
+
+    // Only horizontal and vertical distances have a sign.
+    let length = command(
+        &mut d,
+        json!({"cmd": "sketch.add_dimension", "sketch": "F1", "driven": true,
+               "dimension": {"type": "length", "line": "c2"}}),
+    );
+    let length = length["dimensions"][0].as_str().unwrap().to_owned();
+    let error = rejected(
+        &mut d,
+        json!({"cmd": "sketch.set_signed", "sketch": "F1", "dimension": length}),
+    );
+    assert!(
+        error.contains("not a horizontal or vertical distance"),
+        "{error}"
+    );
+    // A negative value for a new unsigned distance is refused (the sketch
+    // Dimension tool then adds it signed).
+    let error = rejected(
+        &mut d,
+        json!({"cmd": "sketch.add_dimension", "sketch": "F1", "value": -5,
+               "dimension": {"type": "vertical_distance", "a": "p1", "b": "p3"}}),
+    );
+    assert!(error.contains("must not be negative"), "{error}");
+}
+
+#[test]
+fn unsigned_point_dimensions_switched_signed_follow_their_angle() {
+    // Made unsigned at 30 deg, where both offsets are positive, then
+    // switched: they follow the angle through all four quadrants.
+    let (mut d, [h, v]) = polar_ray(false);
+    set_signed(&mut d, &h, true);
+    set_signed(&mut d, &v, true);
+    let s = sketch(&d, "F1");
+    assert_eq!(dimension_entry(&s, &h)["expression"], "r * cos(a)", "{s}");
+    for degrees in [120.0, 210.0, 300.0, 30.0] {
+        command(
+            &mut d,
+            json!({"cmd": "set_parameter", "name": "a", "value": format!("{degrees} deg")}),
+        );
+        let s = sketch(&d, "F1");
+        assert!(s["error"].is_null(), "{degrees}: {s}");
+        let t = f64::to_radians(degrees);
+        let [x, y] = point_at(&s, "p3");
+        assert!(
+            close(x, 5.0 + 50.0 * t.cos()) && close(y, -2.0 + 50.0 * t.sin()),
+            "{degrees}: ({x}, {y})"
+        );
+    }
+}
+
+#[test]
+fn a_distance_switched_after_parameter_changes_keeps_its_point() {
+    // The stored positions are those of the last edit (30 deg); at 300 deg
+    // the point is below and right of the centre, and stays there through
+    // both switches.
+    let (mut d, [h, v]) = polar_ray(true);
+    command(
+        &mut d,
+        json!({"cmd": "set_parameter", "name": "a", "value": "300 deg"}),
+    );
+    let t = 300f64.to_radians();
+    let expected = [5.0 + 50.0 * t.cos(), -2.0 + 50.0 * t.sin()];
+    let check = |d: &Document<MockKernel>, vy: f64, expression: &str| {
+        let s = sketch(d, "F1");
+        assert!(s["error"].is_null(), "{s}");
+        let [x, y] = point_at(&s, "p3");
+        assert!(
+            close(x, expected[0]) && close(y, expected[1]),
+            "({x}, {y}) {s}"
+        );
+        assert!(close(measured(&s, &h), 25.0), "{s}");
+        assert!(close(measured(&s, &v), vy), "{s}");
+        assert_eq!(dimension_entry(&s, &v)["expression"], expression, "{s}");
+    };
+    let below = 50.0 * t.sin();
+    set_signed(&mut d, &v, false);
+    check(&d, -below, "-(r * sin(a))");
+    set_signed(&mut d, &v, true);
+    check(&d, below, "r * sin(a)");
+}

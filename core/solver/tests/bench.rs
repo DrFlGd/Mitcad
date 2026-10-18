@@ -22,6 +22,7 @@ fn rectangles(s: &mut System, rng: &mut Rng, n: usize) -> (Vec<ConstraintId>, Ve
                 a: r.p[0],
                 b: r.p[1],
                 value: 20.0,
+                signed: false,
             })
             .unwrap(),
         );
@@ -30,6 +31,7 @@ fn rectangles(s: &mut System, rng: &mut Rng, n: usize) -> (Vec<ConstraintId>, Ve
                 a: r.p[1],
                 b: r.p[2],
                 value: 10.0,
+                signed: false,
             })
             .unwrap(),
         );
@@ -43,6 +45,7 @@ fn rectangles(s: &mut System, rng: &mut Rng, n: usize) -> (Vec<ConstraintId>, Ve
                         a: p.p[1],
                         b: r.p[0],
                         value: 10.0,
+                        signed: false,
                     })
                     .unwrap(),
                 );
@@ -51,6 +54,7 @@ fn rectangles(s: &mut System, rng: &mut Rng, n: usize) -> (Vec<ConstraintId>, Ve
                         a: p.p[0],
                         b: r.p[0],
                         value: 0.0,
+                        signed: false,
                     })
                     .unwrap(),
                 );
@@ -119,6 +123,7 @@ fn slots(s: &mut System, rng: &mut Rng) -> Vec<ConstraintId> {
                 a: c1,
                 b: c3,
                 value: 10.0,
+                signed: false,
             })
             .unwrap(),
         );
@@ -132,6 +137,7 @@ fn slots(s: &mut System, rng: &mut Rng) -> Vec<ConstraintId> {
                         a: p,
                         b: c1,
                         value: 20.0,
+                        signed: false,
                     })
                     .unwrap(),
                 );

@@ -70,7 +70,7 @@ impl<K: Kernel> Evaluate<K> for OffsetFaceDef {
                 ctx.param_name(self.distance)
             ));
         }
-        let shape = ctx.body(self.body)?;
+        let shape = ctx.surface_body(self.body)?;
         let faces = require_faces(ctx, self.body, &shape, &self.faces)?;
         let moved = ctx
             .kernel

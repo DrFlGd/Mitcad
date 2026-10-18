@@ -566,7 +566,7 @@ impl HoleDef {
     ) -> Result<Vec<Axis>, String> {
         let (points, normal) = match &self.placement {
             HolePlacement::Face { body, face, points } => {
-                let shape = ctx.body(*body)?;
+                let shape = ctx.surface_body(*body)?;
                 let face = super::renamed::face_for(ctx, &shape, face)?;
                 let plane = ctx
                     .kernel
@@ -592,7 +592,7 @@ impl HoleDef {
                 edge2,
                 offset2,
             } => {
-                let shape = ctx.body(*body)?;
+                let shape = ctx.surface_body(*body)?;
                 let face = super::renamed::face_for(ctx, &shape, face)?;
                 let plane = ctx
                     .kernel

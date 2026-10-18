@@ -134,7 +134,16 @@ double CommandContext::unitMillimetres() const {
 // Inputs
 
 bool InputDef::accepts(const SelectionItem& item) const {
-  return type == Type::Selection && filter.testFlag(item.kind) && (!test || test(item));
+  return type == Type::Selection && filter.testFlag(item.kind) &&
+         !(refusesMeshes && item.geometry == QStringLiteral("mesh")) && (!test || test(item));
+}
+
+SelectFilter InputDef::filterIn(const CommandState& state) const {
+  return filterNow ? (filterNow(state) & filter) : filter;
+}
+
+bool InputDef::acceptsIn(const SelectionItem& item, const CommandState& state) const {
+  return accepts(item) && filterIn(state).testFlag(item.kind) && (!testNow || testNow(item, state));
 }
 
 InputDef selectionInput(const QString& id, const QString& label, SelectFilter filter, int min,

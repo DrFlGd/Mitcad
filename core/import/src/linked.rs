@@ -19,9 +19,13 @@
 //! that edge is the only one whose projection the curve lies on (the
 //! edges in the sketch's plane first, as the file projects the face a
 //! sketch lies on), its curve is the edge's only curve, and the curve is
-//! where the edge projects (the snap of `snap.rs` put it there). Every
-//! other linked curve stays fixed reference geometry, and the sketch's
-//! import note says how many.
+//! where the edge projects (the snap of `snap.rs` put it there). A linked
+//! line or spline left follows an edge of any kind, or a chain of edges
+//! end to end (mitcad#389: a thread's helix the replay splits per turn),
+//! when the projection of the pieces lies on it within the geometric
+//! tolerance and putting it there keeps the sketch's regions ([`chains`],
+//! [`resolve_chains`]). Every other linked curve stays fixed reference
+//! geometry, and the sketch's import note says how many.
 
 use std::collections::HashMap;
 
@@ -29,7 +33,9 @@ use mitcad_model::assembly::inverse;
 use mitcad_model::datum::CurveGeometry;
 use mitcad_model::features::SketchPlane;
 use mitcad_model::sketch::EntityKind;
-use mitcad_model::sketch::project::{entities, project, transform_curve};
+use mitcad_model::sketch::geometry::{Curve2, Nurbs};
+use mitcad_model::sketch::project::{Projected, entities, project, transform_curve};
+use mitcad_model::sketch::regions::{RegionCurve, regions};
 use mitcad_model::{
     BodyUid, ComponentUid, Curve3, EntityUid, FaceName, OccurrenceUid, SketchFrame, TopoName,
     Transform,
@@ -437,6 +443,600 @@ pub(crate) fn resolve(
         out.projections.push(projection);
     }
     out
+}
+
+/// A linked curve of the sketch as a curve of the sketch's plane (sketch
+/// mm): a line, or a spline from its control points; None for other kinds.
+fn file_curve(entities: &[Value], e: &Value) -> Option<Curve2> {
+    match e["type"].as_str()? {
+        "line" => Some(Curve2::Line {
+            a: point_at(entities, e["start"].as_str()?)?,
+            b: point_at(entities, e["end"].as_str()?)?,
+        }),
+        "spline" => {
+            let control = e["control"]
+                .as_array()?
+                .iter()
+                .map(|id| point_at(entities, id.as_str()?))
+                .collect::<Option<Vec<_>>>()?;
+            let degree = e["degree"].as_u64()? as usize;
+            let knots: Vec<f64> = serde_json::from_value(e["knots"].clone()).ok()?;
+            let weights: Vec<f64> =
+                serde_json::from_value(e["weights"].clone()).unwrap_or_default();
+            (knots.len() == control.len() + degree + 1).then_some(Curve2::Nurbs(Nurbs {
+                degree,
+                control,
+                weights,
+                knots,
+            }))
+        }
+        _ => None,
+    }
+}
+
+/// How far (mm) the points of `piece` lie from `curve` at most, sampled.
+fn off_curve(piece: &Curve2, curve: &Curve2) -> f64 {
+    let (t0, t1) = piece.domain();
+    piece
+        .sample(t0, t1)
+        .into_iter()
+        .map(|p| curve.closest(p).1)
+        .fold(0.0, f64::max)
+}
+
+fn same_point(a: [f64; 2], b: [f64; 2], tolerance: f64) -> bool {
+    (a[0] - b[0]).hypot(a[1] - b[1]) <= tolerance
+}
+
+/// A linked curve that is the projection of a chain of edges (mitcad#389):
+/// the entity, the edges (indices into the edge sources) in order along
+/// it, and their curves (as `curves_of` gives them) joined into one.
+#[derive(Debug, Clone)]
+pub(crate) struct Chain {
+    pub entity: usize,
+    pub edges: Vec<usize>,
+    pub curve: Curve3,
+}
+
+/// The linked lines and splines of `parts` (other than `skip`, those made
+/// projections already) that are the projection of one edge, or of
+/// several edges end to end (a thread's helix the replay splits into a
+/// piece per turn), of one body seen through one occurrence path: every
+/// sampled point of each edge's projection within `tolerance` of the
+/// curve, the pieces following one another from the curve's start to its
+/// end, one way only, and their projection joined of the curve's kind.
+/// `curves_of` gives an edge's curves in the sketch's component's
+/// coordinates (one curve, or it is no piece).
+pub(crate) fn chains(
+    parts: &SketchParts,
+    frame: &SketchFrame,
+    edges: &[EdgeSource],
+    skip: &[usize],
+    tolerance: f64,
+    curves_of: &mut dyn FnMut(&EdgeSource) -> Option<Vec<Curve3>>,
+) -> Vec<Chain> {
+    let mut out = Vec::new();
+    // Each edge's projection, read once, for the curves that need them.
+    let mut projected: HashMap<usize, Option<(Curve3, Curve2)>> = HashMap::new();
+    for (i, e) in parts.entities.iter().enumerate() {
+        if e["reference"] != json!(true) || skip.contains(&i) {
+            continue;
+        }
+        let Some(curve) = file_curve(&parts.entities, e) else {
+            continue;
+        };
+        let (t0, t1) = curve.domain();
+        let (low, high) = curve.bounds();
+        let (start, end) = (curve.point(t0), curve.point(t1));
+        // The pieces on the curve, each turned to run along it.
+        let mut pieces: Vec<(usize, f64, [f64; 2], [f64; 2])> = Vec::new();
+        for (k, source) in edges.iter().enumerate() {
+            if source.edge.is_empty() {
+                continue;
+            }
+            let entry = projected.entry(k).or_insert_with(|| {
+                let curves = curves_of(source)?;
+                let [c] = curves.as_slice() else {
+                    return None;
+                };
+                match project(std::slice::from_ref(c), frame).pop()? {
+                    Projected::Curve(p) => Some((c.clone(), p)),
+                    Projected::Point(_) => None,
+                }
+            });
+            let Some((_, piece)) = entry else {
+                continue;
+            };
+            let Some((a, b)) = piece.ends() else {
+                continue;
+            };
+            let (lo, hi) = piece.bounds();
+            if (0..2).any(|n| hi[n] < low[n] - tolerance || lo[n] > high[n] + tolerance)
+                || off_curve(piece, &curve) > tolerance
+            {
+                continue;
+            }
+            let (ta, tb) = (curve.closest(a).0, curve.closest(b).0);
+            if ta <= tb {
+                pieces.push((k, ta, a, b));
+            } else {
+                pieces.push((k, tb, b, a));
+            }
+        }
+        let same_edge = |x: usize, y: usize| {
+            let (x, y) = (&edges[x], &edges[y]);
+            x.body == y.body && x.edge == y.edge && x.path == y.path
+        };
+        // From the curve's start to its end, one piece after another.
+        let mut chain: Vec<usize> = Vec::new();
+        let mut at = start;
+        let mut done = false;
+        for _ in 0..pieces.len() {
+            let next: Vec<&(usize, f64, [f64; 2], [f64; 2])> = pieces
+                .iter()
+                .filter(|p| same_point(p.2, at, tolerance) && !chain.contains(&p.0))
+                .collect();
+            let Some(first) = next.first() else {
+                break;
+            };
+            if next.iter().any(|p| !same_edge(p.0, first.0)) {
+                chain.clear();
+                break;
+            }
+            if let Some(last) = chain.last()
+                && (edges[*last].body != edges[first.0].body
+                    || edges[*last].path != edges[first.0].path)
+            {
+                chain.clear();
+                break;
+            }
+            chain.push(first.0);
+            at = first.3;
+            if same_point(at, end, tolerance) {
+                done = true;
+                break;
+            }
+        }
+        if !done || chain.is_empty() {
+            continue;
+        }
+        let curves: Vec<Curve3> = chain
+            .iter()
+            .filter_map(|k| {
+                projected
+                    .get(k)
+                    .and_then(|p| p.as_ref())
+                    .map(|p| p.0.clone())
+            })
+            .collect();
+        let Some(joined) = mitcad_model::sketch::project::join_curves(&curves) else {
+            continue;
+        };
+        // Of the curve's kind, and all of it on the joined curve.
+        let Some(Projected::Curve(whole)) = project(std::slice::from_ref(&joined), frame).pop()
+        else {
+            continue;
+        };
+        let kind_ok = matches!(
+            (&whole, e["type"].as_str()),
+            (Curve2::Line { .. }, Some("line")) | (Curve2::Nurbs(_), Some("spline"))
+        );
+        if !kind_ok || off_curve(&curve, &whole) > tolerance {
+            if crate::tracing() {
+                eprintln!(
+                    "import:   linked {} on {} edges: not a projection of its kind",
+                    e["id"],
+                    chain.len()
+                );
+            }
+            continue;
+        }
+        if crate::tracing() {
+            eprintln!(
+                "import:   linked {} on {} edges, {:.2e} mm off",
+                e["id"],
+                chain.len(),
+                off_curve(&curve, &whole).max(off_curve(&whole, &curve))
+            );
+        }
+        out.push(Chain {
+            entity: i,
+            edges: chain,
+            curve: joined,
+        });
+    }
+    out
+}
+
+/// The regions the sketch's curves (not construction ones) bound, where
+/// the entities place them with the points the file holds on a curve
+/// (`coincident` with a curve) on it, as the solver puts them: a change
+/// that keeps them keeps the profiles the features after the sketch name.
+/// Each region's key with its curves' directions left out (a line turned
+/// to run as its edge bounds the same region).
+fn region_keys(entities: &[Value], constraints: &[Value]) -> Vec<String> {
+    let mut held: Vec<Value> = entities.to_vec();
+    for c in constraints {
+        let (Some("coincident"), Some(point), Some(on)) = (
+            c["type"].as_str(),
+            c["point"].as_str(),
+            c["entity"].as_str(),
+        ) else {
+            continue;
+        };
+        let Some(curve) = held
+            .iter()
+            .find(|e| e["id"] == on && e["type"] != "point")
+            .and_then(|e| entity_curve(&held, e))
+        else {
+            continue;
+        };
+        if let Some(p) = held
+            .iter_mut()
+            .find(|e| e["id"] == point && e["type"] == "point")
+            && let Some(at) = p["at"]
+                .as_array()
+                .and_then(|a| Some([a.first()?.as_f64()?, a.get(1)?.as_f64()?]))
+        {
+            p["at"] = json!(curve.point(curve.closest(at).0));
+        }
+    }
+    let curves: Vec<RegionCurve> = held
+        .iter()
+        .filter(|e| e["construction"] != json!(true) && e["type"] != "point")
+        .filter_map(|e| {
+            let curve = entity_curve(&held, e)?;
+            let n: u32 = e["id"].as_str()?.get(1..)?.parse().ok()?;
+            Some(RegionCurve::new(EntityUid(n), curve))
+        })
+        .collect();
+    let mut keys: Vec<String> = regions(&curves)
+        .into_iter()
+        .map(|r| unoriented(&r.profile.key.to_string()))
+        .collect();
+    keys.sort();
+    keys
+}
+
+/// Whether the sketch solved bounds the regions the file's numbers do
+/// ([`region_keys`]): `solved` the points where the solver put them
+/// (mitcad#396; a solve that moves points within the import's geometric
+/// tolerance is the file's sketch only where its regions stay).
+pub(crate) fn regions_kept(
+    entities: &[Value],
+    constraints: &[Value],
+    solved: &std::collections::BTreeMap<EntityUid, [f64; 2]>,
+) -> bool {
+    let moved: Vec<Value> = entities
+        .iter()
+        .map(|e| {
+            let mut e = e.clone();
+            if e["type"] == "point"
+                && let Some(at) = e["id"]
+                    .as_str()
+                    .and_then(|id| id.strip_prefix('p')?.parse::<u32>().ok())
+                    .and_then(|n| solved.get(&EntityUid(n)))
+            {
+                e["at"] = json!(at);
+            }
+            e
+        })
+        .collect();
+    region_keys(entities, constraints) == region_keys(&moved, constraints)
+}
+
+/// A sketch curve entity as a curve of the plane.
+fn entity_curve(entities: &[Value], e: &Value) -> Option<Curve2> {
+    let at = |id: &Value| id.as_str().and_then(|id| point_at(entities, id));
+    match e["type"].as_str()? {
+        "spline" => file_curve(entities, e),
+        _ => snap::curve_of(e, &at, None),
+    }
+}
+
+/// A region key with each segment's two neighbours in order, and the
+/// segments sorted: `r{c3[c1,c2],c1[c3,c2]}` and `r{c1[c2,c3],c3[c1,c2]}`
+/// are the same.
+fn unoriented(key: &str) -> String {
+    let inner = key
+        .strip_prefix("r{")
+        .and_then(|k| k.strip_suffix('}'))
+        .unwrap_or(key);
+    let mut segments: Vec<String> = Vec::new();
+    let (mut depth, mut start) = (0, 0);
+    for (i, ch) in inner.char_indices() {
+        match ch {
+            '[' => depth += 1,
+            ']' => depth -= 1,
+            ',' if depth == 0 => {
+                segments.push(inner[start..i].to_owned());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    segments.push(inner[start..].to_owned());
+    let mut segments: Vec<String> = segments
+        .into_iter()
+        .map(|s| match (s.find('['), s.find(']')) {
+            (Some(open), Some(close)) if close > open => {
+                let mut ends: Vec<&str> = s[open + 1..close].split(',').collect();
+                ends.sort_unstable();
+                format!("{}[{}]{}", &s[..open], ends.join(","), &s[close + 1..])
+            }
+            _ => s,
+        })
+        .collect();
+    segments.sort();
+    format!("r{{{}}}", segments.join(","))
+}
+
+/// The linked curves that are projections of `found` chains of edges
+/// (mitcad#389) put where the projection of the joined edges is, with the
+/// projections recording them (a chain of several edges as the first
+/// edge's projection with the rest in its `chain`). A line keeps its
+/// points; a spline its end points, its other control points made anew
+/// (the file's are dropped). `target` is the occurrence path the sketch's
+/// component is seen at.
+pub(crate) fn resolve_chains(
+    parts: &mut SketchParts,
+    frame: &SketchFrame,
+    edges: &[EdgeSource],
+    found: &[Chain],
+    target: &[OccurrenceUid],
+    out: &mut Resolved,
+) {
+    let first_new = parts
+        .entities
+        .iter()
+        .filter_map(|e| e["id"].as_str()?.get(1..)?.parse::<u32>().ok())
+        .max()
+        .unwrap_or(0);
+    // (By id: a spline's replaced control points leave the entities.)
+    let found: Vec<(Value, &Chain)> = found
+        .iter()
+        .map(|c| (parts.entities[c.entity]["id"].clone(), c))
+        .collect();
+    let before = region_keys(&parts.entities, &parts.constraints);
+    let saved = (parts.entities.clone(), parts.positions.clone());
+    // All of them at once (curves the file's numbers join where the
+    // replay's edges meet: each alone would open the loop), else one at a
+    // time.
+    let mut next = first_new;
+    let made: Vec<(Value, bool)> = found
+        .iter()
+        .filter_map(|(id, chain)| apply_chain(parts, frame, edges, id, chain, target, &mut next))
+        .collect();
+    let after = region_keys(&parts.entities, &parts.constraints);
+    if crate::tracing() && !made.is_empty() && after != before {
+        eprintln!(
+            "import:   linked curves on chains of edges: the regions {:?} would be {:?}",
+            before
+                .iter()
+                .filter(|k| !after.contains(k))
+                .collect::<Vec<_>>(),
+            after
+                .iter()
+                .filter(|k| !before.contains(k))
+                .collect::<Vec<_>>()
+        );
+    }
+    if !made.is_empty() && after == before {
+        for (projection, other) in made {
+            out.other += usize::from(other);
+            out.projections.push(projection);
+        }
+        return;
+    }
+    (parts.entities, parts.positions) = saved;
+    let mut next = first_new;
+    for (id, chain) in &found {
+        let saved = (parts.entities.clone(), parts.positions.clone());
+        let Some((projection, other)) =
+            apply_chain(parts, frame, edges, id, chain, target, &mut next)
+        else {
+            continue;
+        };
+        // Where the replay's curve would change the regions the file's
+        // numbers make (as a snap must not, mitcad#227), the curve stays.
+        if region_keys(&parts.entities, &parts.constraints) != before {
+            if crate::tracing() {
+                eprintln!(
+                    "import:   linked {id} on {} edges: kept, the regions would change",
+                    chain.edges.len()
+                );
+            }
+            (parts.entities, parts.positions) = saved;
+            continue;
+        }
+        out.other += usize::from(other);
+        out.projections.push(projection);
+    }
+}
+
+/// One linked curve of [`resolve_chains`] put where its chain projects:
+/// its projection and whether it is of another component; None, `parts`
+/// as it was, where it cannot be.
+fn apply_chain(
+    parts: &mut SketchParts,
+    frame: &SketchFrame,
+    edges: &[EdgeSource],
+    id: &Value,
+    chain: &Chain,
+    target: &[OccurrenceUid],
+    next: &mut u32,
+) -> Option<(Value, bool)> {
+    let i = parts.entities.iter().position(|x| x["id"] == *id)?;
+    let saved = (parts.entities.clone(), parts.positions.clone());
+    let mut counter = 0;
+    let fresh = entities(
+        &project(std::slice::from_ref(&chain.curve), frame),
+        &mut || {
+            counter += 1;
+            EntityUid(counter)
+        },
+    );
+    let curve = fresh.last()?;
+    let at = |id: EntityUid| {
+        fresh.iter().find_map(|f| match f.kind {
+            EntityKind::Point { at } if f.id == id => Some(at),
+            _ => None,
+        })
+    };
+    let points = curve.kind.points();
+    let e = parts.entities[i].clone();
+    // The file's points the fresh ones become, by position: a line's
+    // ends, a spline's end control points; the rest are new.
+    let ends: Vec<String> = match e["type"].as_str() {
+        Some("line") => vec![
+            e["start"].as_str().unwrap_or_default().to_owned(),
+            e["end"].as_str().unwrap_or_default().to_owned(),
+        ],
+        _ => {
+            let control = e["control"].as_array().cloned().unwrap_or_default();
+            vec![
+                control
+                    .first()
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+                control
+                    .last()
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+            ]
+        }
+    };
+    let (Some(first), Some(last)) = (points.first(), points.last()) else {
+        return None;
+    };
+    // (The projection may run the other way round.)
+    let swap = match (
+        at(*first),
+        point_at(&parts.entities, &ends[0]),
+        point_at(&parts.entities, &ends[1]),
+    ) {
+        (Some(a), Some(s), Some(t)) => {
+            (a[0] - t[0]).hypot(a[1] - t[1]) < (a[0] - s[0]).hypot(a[1] - s[1])
+        }
+        _ => false,
+    };
+    let mut ids: HashMap<EntityUid, String> = HashMap::new();
+    ids.insert(*first, ends[usize::from(swap)].clone());
+    ids.insert(*last, ends[1 - usize::from(swap)].clone());
+    ids.insert(curve.id, e["id"].as_str().unwrap_or_default().to_owned());
+    // A spline's other control points, new; the file's go.
+    if e["type"] == "spline" {
+        let old: Vec<String> = e["control"]
+            .as_array()
+            .map(|c| {
+                c.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .filter(|id| !ends.contains(id))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let used_elsewhere = |id: &str| {
+            parts.entities.iter().enumerate().any(|(k, x)| {
+                k != i && x["id"] != id && x.to_string().contains(&format!("\"{id}\""))
+            }) || parts
+                .constraints
+                .iter()
+                .chain(&parts.dimensions)
+                .any(|c| c.to_string().contains(&format!("\"{id}\"")))
+        };
+        if old.iter().any(|id| used_elsewhere(id)) {
+            return None;
+        }
+        parts.entities.retain(|x| {
+            !x["id"]
+                .as_str()
+                .is_some_and(|id| old.iter().any(|o| o == id))
+        });
+        let old_numbers: Vec<u32> = old
+            .iter()
+            .filter_map(|id| id.get(1..)?.parse().ok())
+            .collect();
+        parts.positions.retain(|(n, _)| !old_numbers.contains(n));
+        for p in &points[1..points.len() - 1] {
+            *next += 1;
+            let next = *next;
+            ids.insert(*p, format!("p{next}"));
+            if let Some(xy) = at(*p) {
+                parts.entities.push(
+                    json!({"id": format!("p{next}"), "type": "point", "at": xy, "fixed": true}),
+                );
+                parts.positions.push((next, xy));
+            }
+        }
+    }
+    let Some(i) = parts.entities.iter().position(|x| x["id"] == e["id"]) else {
+        (parts.entities, parts.positions) = saved;
+        return None;
+    };
+    // The curve and its points where the projection puts them.
+    for p in &points {
+        let (Some(id), Some(xy)) = (ids.get(p), at(*p)) else {
+            continue;
+        };
+        if let Some(x) = parts.entities.iter_mut().find(|x| x["id"] == id.as_str()) {
+            x["at"] = json!(xy);
+        }
+        if let Some(n) = id.get(1..).and_then(|n| n.parse::<u32>().ok())
+            && let Some(pos) = parts.positions.iter_mut().find(|(m, _)| *m == n)
+        {
+            pos.1 = xy;
+        }
+    }
+    let entity = &mut parts.entities[i];
+    match &curve.kind {
+        EntityKind::Line { .. } => {
+            entity["start"] = json!(ids[first]);
+            entity["end"] = json!(ids[last]);
+        }
+        EntityKind::Spline {
+            degree,
+            control,
+            weights,
+            knots,
+        } => {
+            entity["degree"] = json!(degree);
+            entity["control"] = json!(control.iter().map(|p| ids[p].clone()).collect::<Vec<_>>());
+            entity["knots"] = json!(knots);
+            if weights.is_empty() {
+                if let Some(m) = entity.as_object_mut() {
+                    m.remove("weights");
+                }
+            } else {
+                entity["weights"] = json!(weights);
+            }
+        }
+        _ => {
+            (parts.entities, parts.positions) = saved;
+            return None;
+        }
+    }
+    let refs: Vec<String> = fresh
+        .iter()
+        .filter_map(|f| ids.get(&f.id).cloned())
+        .collect();
+    let source = &edges[chain.edges[0]];
+    let mut projection = json!({"source": source.edge, "body": source.body.to_string(),
+                                "entities": refs});
+    if chain.edges.len() > 1 {
+        projection["chain"] = json!(
+            chain.edges[1..]
+                .iter()
+                .map(|k| edges[*k].edge.clone())
+                .collect::<Vec<_>>()
+        );
+    }
+    if let Some(path) = &source.path {
+        projection["link"] = link(path, target);
+    }
+    Some((projection, source.path.is_some()))
 }
 
 /// A curve of an edge moved by a rigid transform (lines and circles; the
@@ -931,5 +1531,77 @@ mod tests {
             notes(2, &Resolved::default(), false, false, 0, 0),
             ["2 linked curves kept as fixed reference geometry"]
         );
+    }
+
+    /// A linked spline that is the projection of two edges end to end
+    /// (a helix the replay splits per turn, mitcad#389): one projection of
+    /// the first edge with the second in its chain, the spline where the
+    /// joined edges project, its inner control points new.
+    #[test]
+    fn a_linked_spline_on_a_chain_of_edges_becomes_one_projection() {
+        let point = |id: &str, x: f64, y: f64| json!({"id": id, "type": "point", "at": [x, y], "fixed": true});
+        let mut p = parts(vec![
+            point("p1", 0.0, 0.0),
+            point("p2", 1.0, 1.000002),
+            point("p3", 2.0, 0.0),
+            point("p4", 3.0, -0.999998),
+            point("p5", 4.0, 0.0),
+            json!({"id": "c6", "type": "spline", "degree": 2,
+                   "control": ["p1", "p2", "p3", "p4", "p5"],
+                   "knots": [0, 0, 0, 1, 1, 2, 2, 2], "fixed": true, "reference": true}),
+        ]);
+        let quadratic = |poles: [[f64; 3]; 3]| Curve3::BSpline {
+            degree: 2,
+            poles: poles.to_vec(),
+            weights: Vec::new(),
+            knots: vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+        };
+        let other = |name: &str| EdgeSource {
+            body: body(1),
+            edge: name.to_owned(),
+            path: None,
+            curve: CurveGeometry::Other {
+                kind: "bspline".to_owned(),
+                start: [0.0; 3],
+                end: [0.0; 3],
+            },
+        };
+        let edges = vec![other("E1"), other("E2"), other("E3")];
+        let mut curves_of = |e: &EdgeSource| -> Option<Vec<Curve3>> {
+            Some(vec![match e.edge.as_str() {
+                "E1" => quadratic([[0.0, 0.0, 0.0], [1.0, 1.0, 0.0], [2.0, 0.0, 0.0]]),
+                // (Listed the other way round.)
+                "E2" => quadratic([[4.0, 0.0, 0.0], [3.0, -1.0, 0.0], [2.0, 0.0, 0.0]]),
+                _ => quadratic([[0.0, 5.0, 0.0], [1.0, 6.0, 0.0], [2.0, 5.0, 0.0]]),
+            }])
+        };
+        let found = chains(&p, &SketchFrame::XY, &edges, &[], 0.01, &mut curves_of);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].edges, vec![0, 1]);
+        let mut r = Resolved::default();
+        resolve_chains(&mut p, &SketchFrame::XY, &edges, &found, &[], &mut r);
+        assert_eq!(
+            r.projections,
+            vec![json!({"source": "E1", "chain": ["E2"], "body": "F1.b0",
+                        "entities": ["p1", "p7", "p8", "p9", "p5", "c6"]})]
+        );
+        let spline = p.entities.iter().find(|e| e["id"] == "c6").unwrap();
+        assert_eq!(spline["control"], json!(["p1", "p7", "p8", "p9", "p5"]));
+        assert_eq!(point_at(&p.entities, "p7"), Some([1.0, 1.0]));
+        assert_eq!(point_at(&p.entities, "p9"), Some([3.0, -1.0]));
+        assert!(point_at(&p.entities, "p2").is_none());
+    }
+
+    #[test]
+    fn region_keys_are_compared_without_the_curves_directions() {
+        assert_eq!(
+            unoriented("r{c12[c13,c14],c13[c14,c12],c14[c13,c12]}"),
+            unoriented("r{c13[c12,c14],c12[c13,c14],c14[c13,c12]}")
+        );
+        assert_ne!(
+            unoriented("r{c12[c13,c14],c13[c14,c12]}"),
+            unoriented("r{c12[c13+c15,c14],c13[c14,c12]}")
+        );
+        assert_eq!(unoriented("r{c3}"), "r{c3}");
     }
 }

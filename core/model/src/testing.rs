@@ -157,6 +157,10 @@ pub struct MockKernel {
     /// vertices `indexed_element` lists, by name and place, on any shape that
     /// has faces.
     pub vertices: RefCell<Vec<(String, [f64; 3])>>,
+    /// Pieces a cut or intersection leaves of each touched target, as their
+    /// bounding boxes in geometric order (mitcad#408): `#k` pieces with
+    /// these bounds instead of `split`'s.
+    pub piece_boxes: RefCell<Option<Vec<BoundingBox>>>,
 }
 
 impl MockShape {
@@ -531,8 +535,21 @@ impl Kernel for MockKernel {
             } else {
                 "common"
             };
+            let boxes = self.piece_boxes.borrow().clone();
             for (i, target) in targets.iter().enumerate() {
                 if !touched[i] {
+                    continue;
+                }
+                if let Some(boxes) = &boxes {
+                    for (k, bounds) in boxes.iter().enumerate() {
+                        let history = format!("{verb}({},{})#{k}", target.history, tool.history);
+                        let mut shape = MockShape::merged(history, &[target, tool], &lost);
+                        shape.bounds = Some(*bounds);
+                        pieces.push(BooleanPiece {
+                            shape,
+                            sources: vec![i],
+                        });
+                    }
                     continue;
                 }
                 let count = self.split.get().unwrap_or(1);
@@ -1112,9 +1129,12 @@ impl Kernel for MockKernel {
         ));
         let full = spec.target.is_none()
             && spec.angle1 + spec.angle2.unwrap_or(0.0) >= std::f64::consts::TAU - 1e-9;
-        let mut faces = Vec::new();
-        let mut edges = Vec::new();
+        let history = format!("revolve({}:{})", spec.feature, number(spec.angle1));
+        // Each region turns into a solid of its own, as an extrusion's do.
+        let mut parts = Vec::new();
         for region in spec.regions {
+            let mut faces = Vec::new();
+            let mut edges = Vec::new();
             let start = FaceName::start(spec.feature, region.key.clone());
             let end = FaceName::end(spec.feature, region.key.clone());
             if !full {
@@ -1128,14 +1148,21 @@ impl Kernel for MockKernel {
                 }
                 faces.push(side);
             }
+            parts.push(MockShape {
+                history: history.clone(),
+                faces,
+                edges,
+                bounds: None,
+                parts: Vec::new(),
+            });
         }
-        Ok(MockShape {
-            history: format!("revolve({}:{})", spec.feature, number(spec.angle1)),
-            faces,
-            edges,
-            bounds: None,
-            parts: Vec::new(),
-        })
+        if parts.len() == 1 {
+            return Ok(parts.remove(0));
+        }
+        let all: Vec<&MockShape> = parts.iter().collect();
+        let mut shape = MockShape::merged(history, &all, &[]);
+        shape.parts = parts;
+        Ok(shape)
     }
 
     fn hole_tool(&self, spec: &HoleSpec<'_, MockShape>) -> Result<MockShape, KernelError> {
@@ -1332,6 +1359,17 @@ impl Kernel for MockKernel {
                 )
             )
         ));
+        // A fixed binormal (mitcad#397), when one is given.
+        if let Some(b) = spec.binormal
+            && let Some(last) = self.specs.borrow_mut().last_mut()
+        {
+            last.push_str(&format!(
+                " binormal {} {} {}",
+                number(b[0]),
+                number(b[1]),
+                number(b[2])
+            ));
+        }
         let around = crate::features::path::is_closed(spec.path)
             && spec.extent1 + spec.extent2 >= 1.0 - 1e-9;
         let mut faces = Vec::new();
@@ -2123,6 +2161,88 @@ impl Kernel for MockKernel {
             Some((feature, role.to_owned()))
         };
         Ok(renamed(shape, &wrap, renames))
+    }
+
+    /// Where the plane cuts the shape's bounds (a box): a line per side of
+    /// the polygon, each on the face asked for (on none for all faces).
+    fn section_curves(
+        &self,
+        shape: &MockShape,
+        face: Option<&FaceName>,
+        plane: &crate::datum::DatumPlane,
+    ) -> Result<Vec<crate::kernel::SectionCurve>, KernelError> {
+        self.call("section_curves")?;
+        let (Some(bounds), true) = (shape.bounds, face.is_none_or(|f| shape.has_face(f))) else {
+            return Ok(Vec::new());
+        };
+        let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+        let sub = |a: [f64; 3], b: [f64; 3]| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+        let normal = plane.normal();
+        let corners: Vec<[f64; 3]> = bounds.corners().collect();
+        let mut points: Vec<[f64; 3]> = Vec::new();
+        // The box's edges join corners whose indices differ in one bit.
+        for i in 0..8 {
+            for axis in 0..3 {
+                let j = i | (1 << axis);
+                if j == i {
+                    continue;
+                }
+                let (p, q) = (corners[i], corners[j]);
+                let (dp, dq) = (
+                    dot(sub(p, plane.origin), normal),
+                    dot(sub(q, plane.origin), normal),
+                );
+                if (dp > 0.0 && dq > 0.0) || (dp < 0.0 && dq < 0.0) || dp == dq {
+                    continue;
+                }
+                let t = dp / (dp - dq);
+                let at: [f64; 3] = std::array::from_fn(|k| p[k] + t * (q[k] - p[k]));
+                if !points
+                    .iter()
+                    .any(|o| sub(*o, at).iter().all(|d| d.abs() < 1e-9))
+                {
+                    points.push(at);
+                }
+            }
+        }
+        if points.len() < 3 {
+            return Ok(Vec::new());
+        }
+        // Round the polygon's middle, in the plane's coordinates.
+        let n = points.len() as f64;
+        let middle: [f64; 3] =
+            std::array::from_fn(|k| points.iter().map(|p| p[k]).sum::<f64>() / n);
+        let angle = |p: &[f64; 3]| {
+            let d = sub(*p, middle);
+            dot(d, plane.y_axis).atan2(dot(d, plane.x_axis))
+        };
+        points.sort_by(|a, b| angle(a).total_cmp(&angle(b)));
+        let faces: Vec<FaceName> = face.into_iter().cloned().collect();
+        Ok((0..points.len())
+            .map(|k| crate::kernel::SectionCurve {
+                curve: crate::kernel::Curve3::Line {
+                    start: points[k],
+                    end: points[(k + 1) % points.len()],
+                },
+                faces: faces.clone(),
+            })
+            .collect())
+    }
+
+    // Unions within a tolerance (mitcad#397).
+
+    /// [`MockKernel::unite`], counted as "unite_within" too; the tolerance
+    /// goes to `specs` ("unite within <mm>").
+    fn unite_within(
+        &self,
+        shapes: &[&MockShape],
+        tolerance: f64,
+    ) -> Result<MockShape, KernelError> {
+        self.specs
+            .borrow_mut()
+            .push(format!("unite within {tolerance}"));
+        self.call("unite_within")?;
+        self.unite(shapes)
     }
 }
 

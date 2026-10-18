@@ -502,9 +502,19 @@ pub struct MullionTrim {
     /// 0 the path's start, 1 its end.
     pub end: u8,
     pub path: Curve,
+    /// The neighbour's further pieces (`m_trimPath`'s later curves: a
+    /// neighbour of two pieces meeting at the end, in line or bending
+    /// there; mitcad#390).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub more: Vec<Curve>,
     pub flags: u64,
     pub neighbour: Option<i64>,
     pub normal: P3,
+    /// `m_direction`, `m_flip` and `m_cornerAngles` (a corner
+    /// neighbour's, else -1 and -1).
+    pub direction: bool,
+    pub flip: bool,
+    pub corner_angles: [f64; 2],
 }
 
 /// A curtain panel's own symbol (`SysPanelFamSym` with a
@@ -587,7 +597,12 @@ pub struct SpiralLayout {
 /// the treads reach `m_nosingLength` over the riser below), a landing's
 /// thickness (`m_thickness`) and whether it is monolithic; a run type's
 /// nosing profile (`m_nosingProfileTypeId`, a profile family type,
-/// mitcad#385).
+/// mitcad#385); a run type's slanted risers (`m_riserIsSlanted`, each
+/// leaning from its base the nosing length behind its tread's front up to
+/// that front), whether a riser stands on the tread below it (the tread
+/// reaching under it to its back, `m_riserTreadConnection` 1) or reaches
+/// down behind that tread (0), and a landing type's treads and risers
+/// taken from its stair's run type (`m_useSameTriserAsRun`, mitcad#395).
 #[derive(Debug, Clone, Copy, Default, Serialize)]
 pub struct StairParts {
     pub monolithic: bool,
@@ -597,16 +612,35 @@ pub struct StairParts {
     pub thickness: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nosing_profile: Option<i64>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub slanted: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub tread_under_riser: bool,
+    /// Where the nosing profile runs (`m_nosingPlacement`): 0 along the
+    /// treads' fronts only, 3 along their sides too.
+    #[serde(skip_serializing_if = "is_front_only")]
+    pub nosing_placement: u64,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub same_as_run: bool,
+}
+
+fn is_front_only(placement: &u64) -> bool {
+    *placement == 0
 }
 
 /// A stair landing (`StairsLanding`, mitcad#333): its boundary
 /// (`m_oBoundary`, at its top) and its top's elevation
-/// (`m_baseElevation`).
+/// (`m_baseElevation`); the runs joined to it (mitcad#395:
+/// `m_logicJoinInfo.m_logiciJoins`, each `m_peerElementId` and which of
+/// its ends meets the landing, `m_peerJoinEndType`: 1 its start, 2 its
+/// end).
 #[derive(Debug, Clone, Serialize)]
 pub struct Landing {
     pub id: i64,
     pub boundary: Vec<Vec<Curve>>,
     pub top: f64,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub joins: Vec<(i64, u64)>,
 }
 
 /// A profile swept along a path (mitcad#333): a wall sweep (`WallSweep`:
@@ -654,6 +688,12 @@ pub struct Sweep {
     /// path, its end (0, 1) and the other sweep.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub joined: Vec<(usize, u8, i64)>,
+    /// A rail's supports (`ContinuousRail.m_supportIds`, mitcad#391: family
+    /// instances of their own, whose `m_ownerElemId` is the rail; an
+    /// instance naming the rail that the rail does not list is none of its
+    /// supports).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub supports: Vec<i64>,
 }
 
 /// A wall sweep's return at an end of one of its paths (mitcad#385):
@@ -715,8 +755,12 @@ pub(crate) enum Raw {
     Sweep(Box<Sweep>),
     Path3d(Vec<Vec<Curve>>, Vec<String>),
     ProfileType(i64),
+    /// A continuous rail's type: its profile and its joins (mitcad#387).
+    RailType(Option<i64>, RailJoin),
     /// A reference plane (mitcad#348).
     RefPlane(Box<RefPlane>),
+    /// A stair repeated on other levels (mitcad#391).
+    Multistory(Multistory),
     /// A building element of one of these kinds whose parameters did not
     /// read: why.
     Unread(String),
@@ -757,6 +801,39 @@ pub struct Building {
     pub unread: BTreeMap<i64, String>,
     /// Reference planes (walls attach to them, mitcad#348).
     pub ref_planes: BTreeMap<i64, RefPlane>,
+    /// Continuous rail types' joins (mitcad#387).
+    pub rail_joins: BTreeMap<i64, RailJoin>,
+    /// Stairs repeated up a multistory stair (mitcad#391), by stair.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub multistory: BTreeMap<i64, Multistory>,
+    /// What an element of a stair belongs to (mitcad#391): a run's,
+    /// landing's or railing's stair (`m_stairsId`), a stair support's run
+    /// or landing (`m_hostCompId`), a rail's railing (`m_railSystemId`), a
+    /// family instance's owner (`m_ownerElemId`: a rail's supports, a
+    /// railing's balusters).
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub owners: BTreeMap<i64, i64>,
+}
+
+/// A stair of a multistory stair placed again on other levels
+/// (`StairsElement` with a `MultistoryStairsDataCell`, mitcad#391): its
+/// base level (`m_baseLevelId`) and the levels it is repeated on
+/// (`m_levelIdIndexPairSet` → `m_data`: `ElementIdPlusIndex.m_elementId`,
+/// with the copy's `m_index`), each copy its base moved from the stair's
+/// base level up to that level.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Multistory {
+    pub base_level: i64,
+    pub levels: Vec<i64>,
+}
+
+/// How a continuous rail type joins its path's pieces where they meet at
+/// an angle (`ContinuousRailType`, mitcad#387): `m_defaultContinuousRailJoinType`
+/// (1: a fillet) and `m_filletRadius` (feet).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct RailJoin {
+    pub kind: u64,
+    pub fillet_radius: f64,
 }
 
 impl Building {
@@ -805,6 +882,12 @@ impl Building {
             Raw::ProfileType(p) => {
                 self.profile_types.insert(id, p);
             }
+            Raw::RailType(p, join) => {
+                if let Some(p) = p {
+                    self.profile_types.insert(id, p);
+                }
+                self.rail_joins.insert(id, join);
+            }
             Raw::StairRun(r) => {
                 self.stair_runs.insert(id, *r);
             }
@@ -816,6 +899,9 @@ impl Building {
             }
             Raw::RefPlane(p) => {
                 self.ref_planes.insert(id, *p);
+            }
+            Raw::Multistory(m) => {
+                self.multistory.insert(id, m);
             }
         }
     }
@@ -1283,6 +1369,27 @@ impl<'a> Reader<'a> {
         })
     }
 
+    /// A stair's copies up its multistory stair (mitcad#391), None for a
+    /// stair placed once.
+    fn multistory(&self, root: &'a Object) -> Option<Multistory> {
+        let cells = self.obj(root, "m_cellList")?;
+        let cell = self
+            .list(cells, "m_cells")
+            .iter()
+            .filter_map(|c| self.deref(c))
+            .find(|c| self.class(c) == "MultistoryStairsDataCell")?;
+        let set = self.obj(cell, "m_levelIdIndexPairSet")?;
+        let levels: Vec<i64> = self
+            .list(set, "m_data")
+            .iter()
+            .filter_map(|p| self.id(self.deref(p)?, "m_elementId"))
+            .collect();
+        (!levels.is_empty()).then(|| Multistory {
+            base_level: self.id(root, "m_baseLevelId").unwrap_or(-1),
+            levels,
+        })
+    }
+
     fn ref_plane(&self, id: i64, root: &'a Object) -> Option<RefPlane> {
         Some(RefPlane {
             id,
@@ -1472,13 +1579,21 @@ impl<'a> Reader<'a> {
         s
     }
 
-    /// A curtain mullion's own symbol's profile and path.
+    /// A curtain mullion's own symbol's profile and path; a mullion type's
+    /// (no `MullionSymFamRef`) profile and sizes only.
     fn mullion_sym(&self, root: &'a Object) -> Option<MullionSym> {
         let r = self
             .record
             .pointees
             .iter()
-            .find(|p| self.class(p) == "MullionSymFamRef")?;
+            .find(|p| self.class(p) == "MullionSymFamRef");
+        if r.is_none() && self.class(root) != "SysMullionFamSym" {
+            return None;
+        }
+        let normal = match r {
+            Some(r) => self.vec3(r, "m_pathNorm")?,
+            None => [0.0; 3],
+        };
         let profile = self
             .obj(root, "m_sysProfile")
             .map(|p| self.class(p).to_string())
@@ -1492,38 +1607,48 @@ impl<'a> Reader<'a> {
             depths: [p(-1_007_357).unwrap_or(0.0), p(-1_007_358).unwrap_or(0.0)],
             thickness: p(-1_007_304).unwrap_or(0.0),
             offset: p(-1_007_351).unwrap_or(0.0),
-            path: self.obj(r, "m_pCurve").and_then(|c| self.curve(c).ok()),
-            normal: self.vec3(r, "m_pathNorm")?,
-            flags: self.u64(r, "m_flags").unwrap_or(0),
+            path: r
+                .and_then(|r| self.obj(r, "m_pCurve"))
+                .and_then(|c| self.curve(c).ok()),
+            normal,
+            flags: r.and_then(|r| self.u64(r, "m_flags")).unwrap_or(0),
             legs: [p(-1_007_354).unwrap_or(0.0), p(-1_007_355).unwrap_or(0.0)],
-            corner_angles: {
-                let a = self.floats(r, "m_cornerAngles");
-                if a.len() == 2 {
-                    [a[0], a[1]]
-                } else {
-                    [0.0, 0.0]
-                }
-            },
+            corner_angles: r.map(|r| self.angle_pair(r)).unwrap_or([0.0, 0.0]),
             trims: ["m_trimEnd0", "m_trimEnd1"]
                 .iter()
                 .zip(0u8..)
                 .filter_map(|(f, end)| {
-                    let n = self.obj(r, f)?;
-                    let path = self
+                    let n = self.obj(r?, f)?;
+                    let mut curves = self
                         .obj(n, "m_trimPath")
-                        .and_then(|l| self.list(l, "m_curves").first())
-                        .and_then(|c| self.deref(c))
-                        .and_then(|c| self.curve(c).ok())?;
+                        .map(|l| self.list(l, "m_curves"))
+                        .unwrap_or_default()
+                        .iter()
+                        .map(|c| self.deref(c).and_then(|c| self.curve(c).ok()));
+                    let path = curves.next()??;
+                    let more = curves.collect::<Option<Vec<_>>>()?;
                     Some(MullionTrim {
                         end,
                         path,
+                        more,
                         flags: self.u64(n, "m_flags").unwrap_or(0),
                         neighbour: self.id(n, "m_nbrSymbolId"),
                         normal: self.vec3(n, "m_trimPathNorm").unwrap_or([0.0; 3]),
+                        direction: self.bool(n, "m_direction").unwrap_or(false),
+                        flip: self.bool(n, "m_flip").unwrap_or(false),
+                        corner_angles: self.angle_pair(n),
                     })
                 })
                 .collect(),
         })
+    }
+
+    /// `m_cornerAngles`: two angles (0, 0 when not two).
+    fn angle_pair(&self, o: &Object) -> [f64; 2] {
+        match self.floats(o, "m_cornerAngles").as_slice() {
+            [a, b] => [*a, *b],
+            _ => [0.0, 0.0],
+        }
     }
 
     /// A curtain panel's own symbol's cell.
@@ -1874,6 +1999,12 @@ impl<'a> Reader<'a> {
             cut_by: self.steps(root).1,
             returns,
             joined,
+            supports: self
+                .list(root, "m_supportIds")
+                .iter()
+                .filter_map(Value::as_id)
+                .filter(|id| *id > 0)
+                .collect(),
         }
     }
 
@@ -1887,6 +2018,10 @@ impl<'a> Reader<'a> {
             nosing: self.f64(root, "m_nosingLength").unwrap_or(0.0),
             thickness: self.f64(root, "m_thickness").unwrap_or(0.0),
             nosing_profile: self.id(root, "m_nosingProfileTypeId").filter(|p| *p > 0),
+            nosing_placement: self.u64(root, "m_nosingPlacement").unwrap_or(0),
+            slanted: has("m_riserIsSlanted"),
+            tread_under_riser: self.u64(root, "m_riserTreadConnection") == Some(1),
+            same_as_run: has("m_useSameTriserAsRun"),
         }
     }
 
@@ -1914,10 +2049,26 @@ impl<'a> Reader<'a> {
             }
             None => Vec::new(),
         };
+        let joins = self
+            .obj(root, "m_logicJoinInfo")
+            .map(|j| {
+                self.list(j, "m_logiciJoins")
+                    .iter()
+                    .filter_map(|v| self.deref(v))
+                    .filter_map(|j| {
+                        Some((
+                            self.id(j, "m_peerElementId")?,
+                            self.u64(j, "m_peerJoinEndType")?,
+                        ))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         Landing {
             id,
             boundary,
             top: self.f64(root, "m_baseElevation").unwrap_or(0.0),
+            joins,
         }
     }
 
@@ -1984,6 +2135,21 @@ pub(crate) fn curve_elem(schema: &Schema, record: &Record) -> Vec<Curve> {
         .collect()
 }
 
+/// What an element of a stair belongs to (mitcad#391, see
+/// [`Building::owners`]): the first of its `m_stairsId`, `m_hostCompId`,
+/// `m_railSystemId` and `m_ownerElemId` that names an element.
+pub(crate) fn owner(schema: &Schema, record: &Record) -> Option<i64> {
+    let r = Reader { schema, record };
+    [
+        "m_stairsId",
+        "m_hostCompId",
+        "m_railSystemId",
+        "m_ownerElemId",
+    ]
+    .iter()
+    .find_map(|f| r.id(&record.root, f).filter(|id| *id > 0))
+}
+
 /// What a record gives the building model, by its class (None for
 /// classes it has nothing of).
 pub(crate) fn read(schema: &Schema, record: &Record, id: i64) -> Option<Raw> {
@@ -2008,6 +2174,15 @@ pub(crate) fn read(schema: &Schema, record: &Record, id: i64) -> Option<Raw> {
     }
     if is("FamilySymbol") {
         return Some(Raw::Symbol(Box::new(r.symbol(id, root))));
+    }
+    if is("ContinuousRailType") {
+        return Some(Raw::RailType(
+            r.id(root, "m_profileId").filter(|p| *p > 0),
+            RailJoin {
+                kind: r.u64(root, "m_defaultContinuousRailJoinType").unwrap_or(0),
+                fillet_radius: r.f64(root, "m_filletRadius").unwrap_or(0.0),
+            },
+        ));
     }
     if is("Symbol")
         && let Some(p) = r.id(root, "m_profileId").filter(|p| *p > 0)
@@ -2043,6 +2218,7 @@ pub(crate) fn read(schema: &Schema, record: &Record, id: i64) -> Option<Raw> {
             return Some(Raw::Opening(Box::new(r.opening(id, root))));
         }
         "RefPlane" => return r.ref_plane(id, root).map(|p| Raw::RefPlane(Box::new(p))),
+        "StairsElement" => return r.multistory(root).map(Raw::Multistory),
         _ => {}
     }
     if class.starts_with("ParamElem") {

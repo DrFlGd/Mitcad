@@ -83,6 +83,16 @@ void ManipulatorOverlay::setHandles(std::vector<Handle> handles) {
   logPlaces();
 }
 
+void ManipulatorOverlay::setHint(const QString& text) {
+  if (text == m_hint) {
+    return;
+  }
+  m_hint = text;
+  update();
+  qDebug().noquote() << (text.isEmpty() ? QStringLiteral("View hint %1 cleared").arg(m_command)
+                                        : QStringLiteral("View hint %1: %2").arg(m_command, text));
+}
+
 double ManipulatorOverlay::pixelSize(const gp_Pnt& at) const {
   const gp_Dir up = m_viewer.viewUp();
   const QPointF a = m_viewer.toWidgetF(at);
@@ -414,6 +424,16 @@ void ManipulatorOverlay::paintEvent(QPaintEvent*) {
       painter.setBrush(color);
       painter.drawEllipse(drawn.handle, 6.0, 6.0);
     }
+  }
+  if (!m_hint.isEmpty()) {
+    // A pill at the top of the view, over the model.
+    const QRectF text = painter.fontMetrics().boundingRect(m_hint).adjusted(-14, -7, 14, 7);
+    const QRectF box(QPointF((width() - text.width()) / 2.0, 16.0), text.size());
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(QColor(0x2b, 0x3a, 0x4a, 215));
+    painter.drawRoundedRect(box, box.height() / 2.0, box.height() / 2.0);
+    painter.setPen(Qt::white);
+    painter.drawText(box, Qt::AlignCenter, m_hint);
   }
 }
 

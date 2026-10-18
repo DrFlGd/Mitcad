@@ -90,6 +90,11 @@ public:
   // An input became active (none: an empty filter): shows what it can pick
   // that is hidden otherwise, such as the origin planes and axes.
   virtual void inputActivated(SelectFilter filter) = 0;
+  // Construction planes, axes and points hidden in the view (not their
+  // visibility in the design) while an input takes none of them
+  // (InputDef::hidesConstruction, mitcad#394); false shows them as they
+  // are again.
+  virtual void setConstructionHidden(bool /*hidden*/) {}
   virtual void showHint(const QString& message) = 0;
   // Bodies at the marker.
   virtual QStringList bodyUids() const = 0;
@@ -254,6 +259,17 @@ private:
   // What the view lets the input pick (with the host's selection filter
   // context, when it has one).
   void applyPickFilter(const InputDef* input);
+  // What the active input takes now (InputDef::filterIn, mitcad#394), and
+  // whether it takes an item now.
+  SelectFilter activeKinds(const InputDef* input) const;
+  bool acceptsNow(const InputDef* input, const SelectionItem& item) const;
+  // Shows what it takes now: the origin's planes, construction geometry
+  // hidden or not (InputDef::hidesConstruction), the pick places.
+  void showActiveKinds(const InputDef* input);
+  // After a change of the inputs: the active input takes what it takes
+  // now.
+  void followActiveKinds();
+  SelectFilter m_activeFilter; // what the active input took when it was shown
   void activateFirstNeeded();
   void advanceIfFull();
   void selectionChanged(const QString& key);

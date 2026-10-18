@@ -177,6 +177,11 @@ target_sources(mitcad_geometry PRIVATE
 target_sources(mitcad_geometry PRIVATE
   src/build.cpp
   include/mitcad/geometry/build.hpp)
+# Helices built as B-reps whose faces run all the turns, and threads whose
+# turns meet in one edge (mitcad#235).
+target_sources(mitcad_geometry PRIVATE
+  src/helix_brep.cpp
+  src/helix_brep.hpp)
 target_include_directories(mitcad_geometry PUBLIC include)
 # Volumes and areas come from the analysis library's integrals, so that
 # every reported volume agrees (query.cpp, brep_import.cpp).
@@ -264,6 +269,8 @@ if(BUILD_TESTING)
   target_sources(test_geometry PRIVATE tests/test_tangent_chain.cpp)
   # Roundings that run over cut-outs of their faces (mitcad#311).
   target_sources(test_geometry PRIVATE tests/test_fillet_cutouts.cpp)
+  # Section curves of sketches (mitcad#389).
+  target_sources(test_geometry PRIVATE tests/test_section_curves.cpp)
   target_link_libraries(test_geometry PRIVATE mitcad_geometry_analysis)
   target_link_libraries(test_geometry PRIVATE mitcad_geometry mitcad_warnings)
   add_test(NAME geometry COMMAND test_geometry)
@@ -284,6 +291,10 @@ if(BUILD_TESTING)
   add_executable(test_multi_turn_faces tests/test_multi_turn_faces.cpp)
   target_link_libraries(test_multi_turn_faces PRIVATE mitcad_geometry mitcad_warnings)
   add_test(NAME geometry.multi_turn_faces COMMAND test_multi_turn_faces)
+  # Joins of treads and helical stringers on shared cylinders (mitcad#400).
+  add_executable(test_helical_joins tests/test_helical_joins.cpp)
+  target_link_libraries(test_helical_joins PRIVATE mitcad_geometry mitcad_warnings)
+  add_test(NAME geometry.helical_joins COMMAND test_helical_joins)
   # OCCT's crash handlers next to the application's crash report (mitcad#62).
   if(NOT WIN32)
     add_executable(test_guard tests/test_guard.cpp)
@@ -292,6 +303,10 @@ if(BUILD_TESTING)
     set_tests_properties(geometry.guard_inside PROPERTIES PASS_REGULAR_EXPRESSION "converted: SIGSEGV")
     add_test(NAME geometry.guard_outside COMMAND test_guard outside)
     set_tests_properties(geometry.guard_outside PROPERTIES PASS_REGULAR_EXPRESSION "earlier handler: signal 11")
+    # The wrapper of the analysis bridge's operations (mitcad#392).
+    add_test(NAME geometry.guard_operation COMMAND test_guard operation)
+    set_tests_properties(geometry.guard_operation PROPERTIES ENVIRONMENT "MITCAD_TEST_OCCT_CRASH=clip"
+      PASS_REGULAR_EXPRESSION "error: clip: SIGSEGV")
   endif()
 endif()
 

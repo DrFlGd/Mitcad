@@ -1,0 +1,701 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: the rounding round a wall's corner rounded with the ball's own
+radius, between two analytic pieces of the stripe, where the face across
+the corner is not square to the corner's axis (mitcad#235).
+
+The case: a tab whose top is a cylinder across it (a steep bowl of radius
+1.6) and whose corners are rounded with 0.2, its top's outline rounded
+with 0.2. Round each corner the ball's centre stays on the corner's axis:
+its contact on the top stands at one point while the other sweeps round
+the corner, and the rounding there is a piece of the ball's sphere. The
+walls' roundings are analytic (a cylinder along a wall parallel to the
+top's axis, a torus along one square to it) and end where the ball
+reaches the corner; the walk between them took its sections with the
+contacts' mid-point in the guide's normal plane (0075). On the steep top
+the guide climbs round the corner and its normal planes lean: the
+corner's balls fell to guide parameters before the corner's edge, the
+walk swept round the corner before the guide reached it and then found
+no ball (the balls on the next wall all have their mid-points in one
+leaning plane of the edge before), and the stripe failed ("Path
+failed"). Where the planes lean less the walk got through.
+
+- ChFi3d_Builder::PerformSetOfKPart: in a gap between two pieces of the
+  stripe (also the gap across the period's end of a closed spine) whose
+  piece before ends, or whose piece after starts, with its contact on an
+  edge into a face on a cylinder of the ball's radius whose axis runs
+  through the ball's centre, and its other contact inside its face at
+  the ball's radius along that face's normal (ChFi3d_StandingBall), the
+  rounding round that corner is the piece of the ball's sphere from that
+  section to the one where the sweep (the circle about the centre square
+  to the axis) reaches the corner face's other edge
+  (ChFi3d_StandingBallPiece: its pole at the standing contact, a
+  degenerated edge of the blend's face as ChFi3d_ConcaveTurnWedge's; the
+  sweep an iso of the corner's cylinder). It reaches up to the next piece
+  where that piece starts with the same ball; otherwise the walk takes
+  the rest of the gap, from the guide's parameter where its sections put
+  that ball (ChFi3d_StandingBallSection).
+
+Nothing else changes: gaps whose ends are no standing ball are walked as
+before.
+
+Upstream: new.
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+@@ -121,6 +121,11 @@
+ #include <Geom_SphericalSurface.hxx>
+ #include <Geom_ToroidalSurface.hxx>
+ #include <gp_Ax3.hxx>
++#include <Geom2dAPI_Interpolate.hxx>
++#include <Geom_Circle.hxx>
++#include <NCollection_HArray1.hxx>
++#include <gp_Cylinder.hxx>
++#include <gp_Lin.hxx>
+ 
+ namespace
+ {
+@@ -13712,6 +13717,447 @@
+   return true;
+ }
+ 
++//=======================================================================
++// function : ChFi3d_StandingBall
++// purpose  : Where the piece D of a rounding of radius R ends (its first
++//            end with isFirst) with its contact on side ons on an edge of
++//            its face, across which lies a face Fc on a cylinder of radius
++//            R whose axis runs through the ball's centre (a corner of a
++//            wall rounded with the ball's own radius), the ball stands
++//            there while its contact sweeps round Fc: its centre C stays on
++//            the axis, its other contact at the point q. The sweep is the
++//            circle of radius R about C square to the axis, from D's
++//            contact P0 into Fc up to where it reaches another edge Efar of
++//            Fc (at Pfar, wFar on Efar's curve), the angle Sweep about Axis.
++//            False where D's end is no such ball.
++//=======================================================================
++
++namespace
++{
++struct ChFi3d_StandingBallData
++{
++  int         ons = 0;
++  TopoDS_Face Fc;
++  gp_Pnt      C, q, P0, Pfar;
++  gp_Ax2      Axis; // at C, its X direction towards P0
++  double      Sweep = 0.;
++  TopoDS_Edge Efar;
++  double      wFar = 0.;
++};
++} // namespace
++
++static bool ChFi3d_StandingBall(const TopOpeBRepDS_DataStructure&   DStr,
++                                const occ::handle<ChFiDS_SurfData>& D,
++                                const bool                          isFirst,
++                                const double                        R,
++                                const double                        tol3d,
++                                const ChFiDS_Map&                   EFMap,
++                                ChFi3d_StandingBallData&            Ball)
++{
++  if (D.IsNull() || D->Index(1) <= 0 || D->Index(2) <= 0 || R <= Precision::Confusion())
++  {
++    return false;
++  }
++  const double tolBall = 10. * tol3d;
++  for (int s = 1; s <= 2; s++)
++  {
++    const ChFiDS_CommonPoint&      CP = D->Vertex(isFirst, s);
++    const ChFiDS_CommonPoint&      CQ = D->Vertex(isFirst, 3 - s);
++    const ChFiDS_FaceInterference& FQ = D->Interference(3 - s);
++    if (!CP.IsOnArc() || CQ.IsOnArc() || FQ.PCurveOnFace().IsNull() || !EFMap.Contains(CP.Arc()))
++    {
++      continue;
++    }
++    const TopoDS_Face N  = TopoDS::Face(DStr.Shape(D->Index(s)));
++    const TopoDS_Face Fc = otherFace(EFMap, TopoDS::Edge(CP.Arc()), N);
++    if (Fc.IsNull() || Fc.IsSame(N))
++    {
++      continue;
++    }
++    BRepAdaptor_Surface aSc(Fc, false);
++    if (aSc.GetType() != GeomAbs_Cylinder || std::abs(aSc.Cylinder().Radius() - R) > tol3d)
++    {
++      continue;
++    }
++    // The centre: on the axis, at R from both contacts, along the normal of
++    // the other contact's face.
++    const gp_Ax1 anAxis = aSc.Cylinder().Axis();
++    const gp_Pnt P0     = CP.Point();
++    const gp_Pnt C      = ElCLib::Value(ElCLib::Parameter(gp_Lin(anAxis), P0), gp_Lin(anAxis));
++    const gp_Pnt q      = CQ.Point();
++    if (std::abs(C.Distance(P0) - R) > tolBall || std::abs(C.Distance(q) - R) > tolBall)
++    {
++      continue;
++    }
++    {
++      const TopoDS_Face   Fq = TopoDS::Face(DStr.Shape(D->Index(3 - s)));
++      BRepAdaptor_Surface aSq(Fq, false);
++      const gp_Pnt2d      uvq = FQ.PCurveOnFace()->Value(FQ.Parameter(isFirst));
++      gp_Pnt              aP;
++      gp_Vec              aDu, aDv;
++      aSq.D1(uvq.X(), uvq.Y(), aP, aDu, aDv);
++      const gp_Vec aN = aDu.Crossed(aDv);
++      if (aN.Magnitude() <= gp::Resolution() || aP.Distance(q) > tolBall
++          || gp_Vec(q, C).Crossed(aN).Magnitude() > 1.e-3 * R * aN.Magnitude())
++      {
++        continue;
++      }
++    }
++    // The sweep: the first other edge of Fc the circle reaches inside Fc, in
++    // either direction about the axis.
++    gp_Vec X0(C, P0);
++    X0.SetLinearForm(-X0.Dot(gp_Vec(anAxis.Direction())), gp_Vec(anAxis.Direction()), X0);
++    if (X0.Magnitude() <= gp::Resolution())
++    {
++      continue;
++    }
++    TopoDS_Face FcF = Fc;
++    FcF.Orientation(TopAbs_FORWARD);
++    const occ::handle<Geom_Surface> SFc = BRep_Tool::Surface(FcF);
++    double                          umin = 0., umax = 0., vmin = 0., vmax = 0.;
++    BRepTools::UVBounds(FcF, umin, umax, vmin, vmax);
++    BRepTopAdaptor_FClass2d aClass(FcF, Precision::PConfusion());
++    const auto inside = [&](const gp_Pnt& P) {
++      GeomAPI_ProjectPointOnSurf aPr(P, SFc);
++      if (aPr.NbPoints() == 0 || aPr.LowerDistance() > tolBall)
++      {
++        return false;
++      }
++      double u = 0., v = 0.;
++      aPr.LowerDistanceParameters(u, v);
++      if (SFc->IsUPeriodic())
++      {
++        u = ElCLib::InPeriod(u, umin - Precision::PConfusion(), umin - Precision::PConfusion() + SFc->UPeriod());
++      }
++      return aClass.Perform(gp_Pnt2d(u, v)) == TopAbs_IN;
++    };
++    bool found = false;
++    for (const double aSense : {1., -1.})
++    {
++      const gp_Ax2 anAx(C, aSense > 0. ? anAxis.Direction() : anAxis.Direction().Reversed(), gp_Dir(X0));
++      const occ::handle<Geom_Circle> aCirc = new Geom_Circle(anAx, R);
++      for (TopExp_Explorer ex(FcF, TopAbs_EDGE); ex.More(); ex.Next())
++      {
++        const TopoDS_Edge& E = TopoDS::Edge(ex.Current());
++        double             f = 0., l = 0.;
++        const occ::handle<Geom_Curve> aC = BRep_Tool::Curve(E, f, l);
++        if (aC.IsNull() || BRep_Tool::Degenerated(E) || E.IsSame(CP.Arc()))
++        {
++          continue;
++        }
++        GeomAPI_ExtremaCurveCurve anExt(aCirc, aC, 0., 2. * M_PI, f, l);
++        // (Not an edge running along the circle, e.g. a circle about the
++        // same axis: no single crossing.)
++        if (anExt.Extrema().IsParallel())
++        {
++          continue;
++        }
++        for (int i = 1; i <= anExt.NbExtrema(); i++)
++        {
++          double a = 0., w = 0.;
++          anExt.Parameters(i, a, w);
++          if (anExt.Distance(i) > tolBall || a <= 1.e-6 || a >= 2. * M_PI - 1.e-6
++              || (found && a >= Ball.Sweep) || !inside(aCirc->Value(0.5 * a)))
++          {
++            continue;
++          }
++          Ball.ons   = s;
++          Ball.Fc    = Fc;
++          Ball.C     = C;
++          Ball.q     = q;
++          Ball.P0    = P0;
++          Ball.Pfar  = aCirc->Value(a);
++          Ball.Axis  = anAx;
++          Ball.Sweep = a;
++          Ball.Efar  = E;
++          Ball.wFar  = w;
++          found      = true;
++        }
++      }
++    }
++    if (found && Ball.Sweep < M_PI)
++    {
++      return true;
++    }
++  }
++  return false;
++}
++
++//=======================================================================
++// function : ChFi3d_StandingBallPiece
++// purpose  : The piece of the standing ball's sphere (ChFi3d_StandingBall
++//            of D's end) between D's end section and the section through
++//            the sweep's far end: from spine parameter W1 to W2 (D's end at
++//            W2 where isFirst, at W1 otherwise). Its side on Fc is the
++//            sweep, its other side the point q (a degenerated edge of the
++//            blend's face, as ChFi3d_ConcaveTurnWedge's).
++//=======================================================================
++
++static occ::handle<ChFiDS_SurfData> ChFi3d_StandingBallPiece(TopOpeBRepDS_DataStructure&         DStr,
++                                                              const occ::handle<ChFiDS_SurfData>& D,
++                                                              const bool                          isFirst,
++                                                              const ChFi3d_StandingBallData&      Ball,
++                                                              const double                        R,
++                                                              const double                        W1,
++                                                              const double                        W2,
++                                                              const double                        tol3d)
++{
++  const int                      ons = Ball.ons;
++  const int                      opp = 3 - ons;
++  const ChFiDS_FaceInterference& FDo = D->Interference(opp);
++  const ChFiDS_FaceInterference& FDn = D->Interference(ons);
++  if (W2 - W1 <= Precision::PConfusion() || FDo.PCurveOnSurf().IsNull() || FDn.PCurveOnSurf().IsNull()
++      || FDo.PCurveOnFace().IsNull())
++  {
++    return occ::handle<ChFiDS_SurfData>();
++  }
++  // The sweep in the order of the spine: from Pa to Pb.
++  const gp_Pnt Pa = isFirst ? Ball.Pfar : Ball.P0;
++  const gp_Pnt Pb = isFirst ? Ball.P0 : Ball.Pfar;
++  gp_Ax2       anAx = Ball.Axis;
++  if (isFirst)
++  {
++    // (From the far end back round to P0.)
++    anAx = gp_Ax2(Ball.C, Ball.Axis.Direction().Reversed(), gp_Dir(gp_Vec(Ball.C, Pa)));
++  }
++  occ::handle<Geom_Curve> Cc = new Geom_TrimmedCurve(new Geom_Circle(anAx, R), 0., Ball.Sweep);
++  // The sphere, its pole at q; longitudes increase from Pa's to Pb's, Pa's at
++  // 0.5 (clear of the seam).
++  const gp_Dir Z(gp_Vec(Ball.C, Ball.q));
++  gp_Vec       Xa(Ball.C, Pa);
++  Xa.SetLinearForm(-Xa.Dot(gp_Vec(Z)), gp_Vec(Z), Xa);
++  if (Xa.Magnitude() <= gp::Resolution())
++  {
++    return occ::handle<ChFiDS_SurfData>();
++  }
++  gp_Ax3 aFrame(Ball.C, Z, gp_Dir(Xa));
++  if (gp_Vec(Ball.C, Cc->Value(0.5 * Ball.Sweep)).Dot(gp_Vec(aFrame.YDirection())) < 0.)
++  {
++    aFrame.YReverse();
++  }
++  aFrame.Rotate(gp_Ax1(Ball.C, aFrame.Direction()), aFrame.Direct() ? -0.5 : 0.5);
++  double ua = 0., va = 0., ub = 0., vb = 0.;
++  ElSLib::SphereParameters(aFrame, R, Pa, ua, va);
++  ElSLib::SphereParameters(aFrame, R, Pb, ub, vb);
++  if (std::abs(ua - 0.5) > 1.e-6 || ub <= ua || ub >= ua + M_PI)
++  {
++    return occ::handle<ChFiDS_SurfData>();
++  }
++  occ::handle<Geom_SphericalSurface> aSphere = new Geom_SphericalSurface(aFrame, R);
++  TopoDS_Face                        FcF     = Ball.Fc;
++  FcF.Orientation(TopAbs_FORWARD);
++  const double c1 = Cc->FirstParameter(), c2 = Cc->LastParameter();
++  // The sweep on Fc: an iso of its cylinder (its parameter the angle).
++  occ::handle<Geom2d_Curve> Pc;
++  {
++    const gp_Cylinder aCyl = BRepAdaptor_Surface(FcF, false).Cylinder();
++    double            u0 = 0., v0 = 0., u1 = 0., v1 = 0.;
++    ElSLib::Parameters(aCyl, Pa, u0, v0);
++    ElSLib::Parameters(aCyl, Cc->Value(c1 + 1.e-2 * (c2 - c1)), u1, v1);
++    const double aSense = ElCLib::InPeriod(u1 - u0, -M_PI, M_PI) > 0. ? 1. : -1.;
++    // (In the period of Fc's parameters.)
++    double umin = 0., umax = 0., vmin = 0., vmax = 0.;
++    BRepTools::UVBounds(FcF, umin, umax, vmin, vmax);
++    const double aSlack = 0.5 * (2. * M_PI - (umax - umin));
++    const double um     = ElCLib::InPeriod(u0 + aSense * 0.5 * (c2 - c1), umin - aSlack, umin - aSlack + 2. * M_PI);
++    u0                  = um - aSense * 0.5 * (c2 - c1);
++    Pc = new Geom2d_Line(gp_Pnt2d(u0, v0), gp_Dir2d(aSense, 0.));
++  }
++  // On the sphere: through its points along the sweep, its longitudes from
++  // Pa's on.
++  occ::handle<Geom2d_Curve> Ps;
++  {
++    const int                                     n = 64;
++    occ::handle<NCollection_HArray1<gp_Pnt2d>> aPnts   = new NCollection_HArray1<gp_Pnt2d>(1, n + 1);
++    occ::handle<NCollection_HArray1<double>>   aParams = new NCollection_HArray1<double>(1, n + 1);
++    double                                        uPrev = ua;
++    for (int i = 0; i <= n; i++)
++    {
++      const double t = c1 + (c2 - c1) * i / n;
++      double       u = 0., v = 0.;
++      ElSLib::SphereParameters(aFrame, R, Cc->Value(t), u, v);
++      u     = ElCLib::InPeriod(u, uPrev - M_PI, uPrev + M_PI);
++      uPrev = u;
++      aPnts->SetValue(i + 1, gp_Pnt2d(u, v));
++      aParams->SetValue(i + 1, t);
++    }
++    Geom2dAPI_Interpolate anInterp(aPnts, aParams, false, Precision::PConfusion());
++    anInterp.Perform();
++    if (!anInterp.IsDone())
++    {
++      return occ::handle<ChFiDS_SurfData>();
++    }
++    Ps = anInterp.Curve();
++    if (Ps->Value(c1).Distance(gp_Pnt2d(ua, va)) > Precision::PConfusion()
++        || Ps->Value(c2).Distance(gp_Pnt2d(ub, vb)) > Precision::PConfusion())
++    {
++      return occ::handle<ChFiDS_SurfData>();
++    }
++  }
++  // The blend's orientation: D's where the sphere's normal agrees with D's
++  // surface's at their common section.
++  TopAbs_Orientation anOr = D->Orientation();
++  {
++    const occ::handle<Geom_Surface>& SD  = DStr.Surface(D->Surf()).Surface();
++    const gp_Pnt2d                   uvo = FDo.PCurveOnSurf()->Value(FDo.Parameter(isFirst));
++    const gp_Pnt2d                   uvn = FDn.PCurveOnSurf()->Value(FDn.Parameter(isFirst));
++    const gp_Pnt2d                   uvM((uvo.XY() + uvn.XY()) * 0.5);
++    GeomLProp_SLProps                aPropD(SD, uvM.X(), uvM.Y(), 1, Precision::Confusion());
++    if (!aPropD.IsNormalDefined())
++    {
++      return occ::handle<ChFiDS_SurfData>();
++    }
++    double us = 0., vs = 0.;
++    ElSLib::SphereParameters(aFrame, R, aPropD.Value(), us, vs);
++    GeomLProp_SLProps aPropS(aSphere, us, vs, 1, Precision::Confusion());
++    if (!aPropS.IsNormalDefined())
++    {
++      return occ::handle<ChFiDS_SurfData>();
++    }
++    if (gp_Vec(aPropD.Normal()).Dot(gp_Vec(aPropS.Normal())) < 0.)
++    {
++      anOr = TopAbs::Reverse(anOr);
++    }
++  }
++  // The side on the other face: the point q, along the pole over the
++  // sweep's longitudes.
++  const gp_Pnt2d             uvq = FDo.PCurveOnFace()->Value(FDo.Parameter(isFirst));
++  NCollection_Array1<double> aKnots(1, 2);
++  NCollection_Array1<int>    aMults(1, 2);
++  aKnots(1) = c1;
++  aKnots(2) = c2;
++  aMults(1) = aMults(2) = 2;
++  NCollection_Array1<gp_Pnt>   aPoles3d(1, 2);
++  NCollection_Array1<gp_Pnt2d> aPolesS(1, 2), aPolesF(1, 2);
++  aPoles3d(1) = aPoles3d(2) = Ball.q;
++  aPolesS(1)                = gp_Pnt2d(ua, 0.5 * M_PI);
++  aPolesS(2)                = gp_Pnt2d(ub, 0.5 * M_PI);
++  aPolesF(1) = aPolesF(2) = uvq;
++  occ::handle<Geom_BSplineCurve>   Cq  = new Geom_BSplineCurve(aPoles3d, aKnots, aMults, 1);
++  occ::handle<Geom2d_BSplineCurve> PSq = new Geom2d_BSplineCurve(aPolesS, aKnots, aMults, 1);
++  occ::handle<Geom2d_BSplineCurve> PFq = new Geom2d_BSplineCurve(aPolesF, aKnots, aMults, 1);
++
++  const TopoDS_Face        Fn   = TopoDS::Face(DStr.Shape(D->Index(ons)));
++  const TopAbs_Orientation aTra = TopAbs::Compose(FDn.Transition(), TopAbs::Compose(Fn.Orientation(), Ball.Fc.Orientation()));
++  occ::handle<ChFiDS_SurfData> G = new ChFiDS_SurfData();
++  G->ChangeSurf(DStr.AddSurface(TopOpeBRepDS_Surface(aSphere, tol3d)));
++  G->ChangeOrientation() = anOr;
++  G->ChangeIndexOfS1(opp == 1 ? D->IndexOfS1() : DStr.AddShape(Ball.Fc));
++  G->ChangeIndexOfS2(opp == 2 ? D->IndexOfS2() : DStr.AddShape(Ball.Fc));
++  {
++    ChFiDS_FaceInterference& GO = G->ChangeInterference(opp);
++    GO.SetInterference(DStr.AddCurve(TopOpeBRepDS_Curve(Cq, tol3d)), FDo.Transition(), PFq, PSq);
++    GO.SetFirstParameter(c1);
++    GO.SetLastParameter(c2);
++  }
++  {
++    ChFiDS_FaceInterference& GI = G->ChangeInterference(ons);
++    GI.SetInterference(DStr.AddCurve(TopOpeBRepDS_Curve(Cc, tol3d)), aTra, Pc, Ps);
++    GI.SetFirstParameter(c1);
++    GI.SetLastParameter(c2);
++  }
++  // The ends: q on the other side; on side ons, D's point on its edge with Fc
++  // and the sweep's far end on Efar, their transitions those of the contact
++  // entering Fc and leaving it.
++  G->ChangeVertex(true, opp)  = D->Vertex(isFirst, opp);
++  G->ChangeVertex(false, opp) = D->Vertex(isFirst, opp);
++  for (int k = 0; k < 2; k++)
++  {
++    const bool          atD = (k == 0) != isFirst; // (the start shared with D's last end, or the end with D's first)
++    ChFiDS_CommonPoint& CP  = G->ChangeVertex(k == 0, ons);
++    TopoDS_Edge         anArc;
++    double              aW = 0.;
++    gp_Pnt              aP;
++    if (atD)
++    {
++      const ChFiDS_CommonPoint& CPD = D->Vertex(isFirst, ons);
++      anArc                         = TopoDS::Edge(CPD.Arc());
++      aW                            = CPD.ParameterOnArc();
++      aP                            = CPD.Point();
++    }
++    else
++    {
++      anArc = Ball.Efar;
++      aW    = Ball.wFar;
++      aP    = Ball.Pfar;
++    }
++    const TopoDS_Edge aEInF = edgeInFace(anArc, FcF);
++    if (aEInF.IsNull())
++    {
++      return occ::handle<ChFiDS_SurfData>();
++    }
++    const TopAbs_Orientation aTr = k == 0 ? TopAbs::Reverse(TopAbs::Compose(aTra, aEInF.Orientation()))
++                                          : TopAbs::Compose(aTra, aEInF.Orientation());
++    CP.Reset();
++    CP.SetPoint(aP);
++    CP.SetArc(tol3d, anArc, aW, aTr);
++    CP.SetParameter(k == 0 ? W1 : W2);
++    G->ChangeVertex(k == 0, opp).SetParameter(k == 0 ? W1 : W2);
++  }
++  G->FirstSpineParam(W1);
++  G->LastSpineParam(W2);
++  return G;
++}
++
++//=======================================================================
++// function : ChFi3d_StandingBallSection
++// purpose  : Where the walk (its section's rule: the mid-point of the
++//            contacts in the guide's normal plane) has the ball touching P
++//            and q: the spine's parameter in [Wa, Wb] nearest to Wb
++//            (towardB) or to Wa.
++//=======================================================================
++
++static bool ChFi3d_StandingBallSection(const occ::handle<ChFiDS_Spine>& Spine,
++                                       const gp_Pnt&                    P,
++                                       const gp_Pnt&                    q,
++                                       const double                     Wa,
++                                       const double                     Wb,
++                                       const bool                       towardB,
++                                       double&                          W)
++{
++  const gp_Pnt M((P.XYZ() + q.XYZ()) * 0.5);
++  const auto   g = [&](const double t) {
++    gp_Pnt G;
++    gp_Vec T;
++    Spine->D1(t, G, T);
++    const double n = T.Magnitude();
++    return n > gp::Resolution() ? gp_Vec(G, M).Dot(T) / n : 0.;
++  };
++  const int n     = 200;
++  bool      found = false;
++  double    ga    = g(Wa);
++  for (int i = 1; i <= n; i++)
++  {
++    const double a = Wa + (Wb - Wa) * (i - 1) / n, b = Wa + (Wb - Wa) * i / n;
++    const double gb = g(b);
++    if (ga * gb <= 0.)
++    {
++      double lo = a, hi = b, glo = ga;
++      for (int it = 0; it < 60; it++)
++      {
++        const double m  = 0.5 * (lo + hi);
++        const double gm = g(m);
++        if (glo * gm <= 0.)
++        {
++          hi = m;
++        }
++        else
++        {
++          lo  = m;
++          glo = gm;
++        }
++      }
++      W     = 0.5 * (lo + hi);
++      found = true;
++      if (!towardB)
++      {
++        return true;
++      }
++    }
++    ga = gb;
++  }
++  return found;
++}
+ 
+ void ChFi3d_Builder::PerformSetOfKPart(occ::handle<ChFiDS_Stripe>& Stripe, const bool Simul)
+ {
+@@ -13848,6 +14296,95 @@
+   }
+ 
+   NCollection_Sequence<int> anEdgeOf; // (each piece's edge, as SeqSurf holds them)
++  // A gap between the pieces Prev and Next, from the spine's parameter G0 to
++  // G1: where Prev ends, or Next starts, with a ball that stands (a wall's
++  // corner rounded with the ball's radius next to it), the rounding round
++  // that corner is a piece of the ball's sphere (StartBall from G0, EndBall
++  // up to G1); G0 and G1 become the ends of what is left to the walk. The
++  // walk's own sections there leave the corner's face backwards where the
++  // contact on the other face is not on the corner's axis (that face, e.g.
++  // a cylinder across the corner, is not square to it).
++  const occ::handle<ChFiDS_FilSpine> aBallSpine = occ::down_cast<ChFiDS_FilSpine>(Spine);
++  const auto StandingBallsInGap = [&](const occ::handle<ChFiDS_SurfData>& Prev,
++                                      const occ::handle<ChFiDS_SurfData>& Next,
++                                      double&                             G0,
++                                      double&                             G1,
++                                      occ::handle<ChFiDS_SurfData>&       StartBall,
++                                      occ::handle<ChFiDS_SurfData>&       EndBall) {
++    if (Simul || G1 - G0 <= tolesp || aBallSpine.IsNull() || !aBallSpine->IsConstant())
++    {
++      return;
++    }
++    const double            R = aBallSpine->Radius();
++    ChFi3d_StandingBallData aBall;
++    if (ChFi3d_StandingBall(DStr, Prev, false, R, tolapp3d, myEFMap, aBall))
++    {
++      // (Up to Next where it starts with the same ball at the sweep's far
++      // end.)
++      double     W2    = 0.;
++      const bool aSame = !Next.IsNull()
++                         && Next->Vertex(true, aBall.ons).Point().Distance(aBall.Pfar) <= 10. * tolapp3d
++                         && Next->Vertex(true, 3 - aBall.ons).Point().Distance(aBall.q) <= 10. * tolapp3d;
++      if (aSame)
++      {
++        W2 = G1;
++      }
++      if (aSame || ChFi3d_StandingBallSection(Spine, aBall.Pfar, aBall.q, G0, G1, true, W2))
++      {
++        StartBall = ChFi3d_StandingBallPiece(DStr, Prev, false, aBall, R, G0, W2, tolapp3d);
++      }
++      if (!StartBall.IsNull())
++      {
++        G0 = W2;
++      }
++    }
++    if (G1 - G0 > tolesp && ChFi3d_StandingBall(DStr, Next, true, R, tolapp3d, myEFMap, aBall))
++    {
++      double W1 = 0.;
++      if (ChFi3d_StandingBallSection(Spine, aBall.Pfar, aBall.q, G0, G1, false, W1))
++      {
++        EndBall = ChFi3d_StandingBallPiece(DStr, Next, true, aBall, R, W1, G1, tolapp3d);
++      }
++      if (!EndBall.IsNull())
++      {
++        G1 = W1;
++      }
++    }
++  };
++  // A ball's piece among the stripe's pieces: before its last one (AtEnd
++  // false) or after it, with the spine's edge at its middle. Its face is
++  // one the edge generates (Li, the current edge's list, where it is that
++  // edge).
++  const auto AddBallPiece = [&](const occ::handle<ChFiDS_SurfData>& P,
++                                const bool                          AtEnd,
++                                const int                           CurrentEdge,
++                                NCollection_List<int>*              Li) {
++    const int anEdge = Spine->Index(0.5 * (P->FirstSpineParam() + P->LastSpineParam()));
++    if (AtEnd)
++    {
++      SeqSurf.Append(P);
++      anEdgeOf.Append(anEdge);
++    }
++    else
++    {
++      SeqSurf.InsertBefore(SeqSurf.Length(), P);
++      anEdgeOf.InsertBefore(anEdgeOf.Length(), anEdge);
++    }
++    if (Li != nullptr && anEdge == CurrentEdge)
++    {
++      Li->Append(P->Surf());
++    }
++    else if (NCollection_List<int>* aList = myEVIMap.ChangeSeek(Spine->Edges(anEdge)))
++    {
++      aList->Append(P->Surf());
++    }
++    else
++    {
++      NCollection_List<int> aList1;
++      aList1.Append(P->Surf());
++      myEVIMap.Bind(Spine->Edges(anEdge), aList1);
++    }
++  };
+   for (int iedge = 1; iedge <= nbed; iedge++)
+   {
+     if (aState(iedge) != 0)
+@@ -14091,19 +14628,56 @@
+         }
+         else
+         {
+-          if (WFirst - CurrentHE->FirstParameter() > tolesp)
++          // Where the piece before the gap ends, or this one starts, with a
++          // ball that stands (a wall's corner rounded with the ball's radius
++          // next to it), the rounding round that corner is the ball's
++          // sphere; the walk takes the rest of the gap, if any.
++          occ::handle<ChFiDS_SurfData> aStartBall, anEndBall;
++          double                       aGap0 = CurrentHE->FirstParameter(), aGap1 = WFirst;
++          if (!CurrentHE->Previous().IsNull())
++          {
++            StandingBallsInGap(CurrentHE->Previous(), curSD, aGap0, aGap1, aStartBall, anEndBall);
++          }
++          for (const occ::handle<ChFiDS_SurfData>& aBallPiece : {aStartBall, anEndBall})
++          {
++            if (aBallPiece.IsNull())
++            {
++              continue;
++            }
++            AddBallPiece(aBallPiece, false, iedge, &li);
++            if (aBallPiece == aStartBall)
++            {
++              gp_Pnt aP;
++              gp_Vec aT;
++              Spine->D1(aGap0, aP, aT);
++              CurrentHE->FirstParameter(aGap0);
++              CurrentHE->SetFirstPointAndTgt(aP, aT);
++              CurrentHE->ChangePrevious() = aStartBall;
++              CurrentOffsetHE->FirstParameter(aGap0);
++              CurrentOffsetHE->SetFirstPointAndTgt(aP, aT);
++              CurrentOffsetHE->ChangePrevious() = aStartBall;
++            }
++          }
++          if (aGap1 - CurrentHE->FirstParameter() > tolesp)
+           {
+             // section between two KPart
+-            CurrentHE->LastParameter(WFirst);
+-            CurrentHE->SetLastPointAndTgt(PFirst, TFirst);
++            const occ::handle<ChFiDS_SurfData> aNext = anEndBall.IsNull() ? LSD.Value(j) : anEndBall;
++            gp_Pnt                             aP    = PFirst;
++            gp_Vec                             aT    = TFirst;
++            if (!anEndBall.IsNull())
++            {
++              Spine->D1(aGap1, aP, aT);
++            }
++            CurrentHE->LastParameter(aGap1);
++            CurrentHE->SetLastPointAndTgt(aP, aT);
+             Spine->AppendElSpine(CurrentHE);
+-            CurrentHE->ChangeNext() = LSD.Value(j);
++            CurrentHE->ChangeNext() = aNext;
+             CurrentHE               = new ChFiDS_ElSpine();
+ 
+-            CurrentOffsetHE->LastParameter(WFirst);
+-            CurrentOffsetHE->SetLastPointAndTgt(PFirst, TFirst);
++            CurrentOffsetHE->LastParameter(aGap1);
++            CurrentOffsetHE->SetLastPointAndTgt(aP, aT);
+             Spine->AppendOffsetElSpine(CurrentOffsetHE);
+-            CurrentOffsetHE->ChangeNext() = LSD.Value(j);
++            CurrentOffsetHE->ChangeNext() = aNext;
+             CurrentOffsetHE               = new ChFiDS_ElSpine();
+           }
+           CurrentHE->FirstParameter(WLast);
+@@ -14159,6 +14733,35 @@
+ 
+     if (Spine->IsPeriodic())
+     {
++      // (The gap across the period's end, up to the first piece.)
++      occ::handle<ChFiDS_SurfData> aStartBall, anEndBall;
++      double                       aGap0 = WLast, aGap1 = WEndPeriodic;
++      if (YaKPart && !SeqSurf.IsEmpty() && !CurrentHE->Previous().IsNull())
++      {
++        StandingBallsInGap(CurrentHE->Previous(), SeqSurf.First(), aGap0, aGap1, aStartBall, anEndBall);
++      }
++      if (!aStartBall.IsNull())
++      {
++        AddBallPiece(aStartBall, true, 0, nullptr);
++        gp_Pnt aP;
++        gp_Vec aT;
++        Spine->D1(aGap0, aP, aT);
++        CurrentHE->FirstParameter(aGap0);
++        CurrentHE->SetFirstPointAndTgt(aP, aT);
++        CurrentHE->ChangePrevious() = aStartBall;
++        CurrentOffsetHE->FirstParameter(aGap0);
++        CurrentOffsetHE->SetFirstPointAndTgt(aP, aT);
++        CurrentOffsetHE->ChangePrevious() = aStartBall;
++        WLast = aGap0;
++      }
++      if (!anEndBall.IsNull())
++      {
++        AddBallPiece(anEndBall, true, 0, nullptr);
++        WEndPeriodic = aGap1;
++        Spine->D1(aGap1, PEndPeriodic, TEndPeriodic);
++        CurrentHE->ChangeNext()       = anEndBall;
++        CurrentOffsetHE->ChangeNext() = anEndBall;
++      }
+       if (WEndPeriodic - WLast > tolesp)
+       {
+         CurrentHE->LastParameter(WEndPeriodic);

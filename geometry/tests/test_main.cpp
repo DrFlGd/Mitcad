@@ -176,6 +176,8 @@ int main() {
   test::tangent_chain_tests();
   // Roundings that run over cut-outs of their faces (mitcad#311).
   test::fillet_cutout_tests();
+  // Section curves of sketches (mitcad#389).
+  test::section_curve_tests();
   for (const std::string& change : mitcad::geometry::input_changes()) {
     std::fprintf(stderr, "%s\n", change.c_str());
   }

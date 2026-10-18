@@ -596,7 +596,7 @@ value), booleans (`284d8790…`: the value is the last byte), directions
 | Coil | 0 operation, 1 profiles, 2 axis (a work axis), 3 against the axis (a boolean: the coil runs against the work axis' stored direction), 5 its type (`b80cb14f…`: the prefix, u16 kind, u16 value: 0 pitch and turns, 1 turns and height, 2 pitch and height; 3, a spiral, not seen), 6 pitch, 7 height, 8 turns, 9 taper, 10 to 15 its ends (a boolean: flat, else natural; the transition angle; the flat angle; for the start, then the end: the one coil of the older parts with a flat end gives its history state so), 19 its bodies (`ae70680e…`, as an extrusion's) *(seen)*; the parameters its type does not use keep values, as do a natural end's angles | all but its hand (the import tries both, the direction slot 3 gives first), as Mitcad's helix; the axis a line of its sketch on the work axis, an origin axis, else the work axis fixed where it is (a cylinder's axis: 46 of the 85 coils of the older parts, all of which fell back before); a taper as the growth `pitch * tan(taper)` outwards (the one tapered coil of the older parts gives its state so; inwards is tried next), flat ends as the helix's ends, beyond the turns at the full pitch (mitcad#235) |
 | Hole | 0 form (`117ccd43…`: 0 drilled, 1 countersink, 2 and 3 counterbore), 1 diameter, 2 depth, 3 counterbore or countersink diameter, 4 counterbore depth, 5 countersink angle, 6 drill point angle (0: flat), 7 its sketch points (`b1226593…`), 8 placement (a transform), 9 extent (1, 5, 7), 16 direction | position: the sketch points in the sketch (label child) the feature is on, else the placement's origin; up to a face as through all |
 | Fillet | 0 edge sets (`dae9481b…` of `1641d6aa…`: edges, radius, selection, a boolean), 11 form (`2788f278…`, 0 edge fillet) | radii; the edges are named by the file's topological naming, not decoded: the import finds them from the history state. The boolean (not a boolean record in the parts of `ipt.corpus`) is false in every fillet of the older parts below, while their history states show whole tangent chains rounded from an edge inside them, so it is not the tangent chain option: the sets follow tangent chains |
-| Chamfer | 0 edges, 2 distance, 3 second distance, 4 form (`3200aa7d…`: 0 equal, 1 distance and angle, 2 two distances), 10 angle | sizes; edges as for fillets |
+| Chamfer | 0 edges, 2 distance, 3 second distance, 4 form (`3200aa7d…`: 0 equal, 1 distance and angle, 2 two distances), 10 angle | sizes; edges as for fillets; the face a distance and angle (or the first of two distances) lies on is not read: each definition is tried with the other face next to it, and the history state chooses (mitcad#235) |
 | Rectangular pattern, circular pattern, mirror | after the feature's list: u32, the list of the copied features, then properties as references at no fixed offsets: counts (integer parameters), spacings and directions (`7b4544a2…`: a flip, a start point, a vector and an end point; or a direction `40df52ce…`, or a path `aa7b97a5…` *(seen)*), the angle and the axis, the mirror plane (a work plane) | all; the copied features in the timeline's order; directions `40df52ce…` and paths below (mitcad#288); other directions are found with the history |
 | Loft (`e0ef542f…` label class) | 0 its sections (a list `509e2f31…` of sections `e850314b…`: after the prefix an entity link as a profile selection's, its wire body the section's boundary), 1 operation *(seen: every loft of the test files)*; the label shows the sections' sketches, or records `7ca882b3…` of the sections | the sections as the profiles of the sketches whose planes hold them (the label's, else the latest before it); rails and conditions not decoded |
 | Work plane (`42df52ce…`) | its last nine f64: origin, x axis, y axis. Definitions (each the header, an i32, the plane, then references): offset `c0d8280d…` (the plane it is offset from, the offset parameter), mid plane `560a6ccb…` (the two planes), at an angle `8af4e674…` (the work axis it turns about, the plane it is at an angle to, the angle parameter, then data not decoded), through three work points `8a924209…` (the points), through two work axes `5abeff8a…` (the axes), of a work point and a work axis `62b73858…` (through both, or through the point normal to the axis: the plane's geometry tells), parallel to a plane through a work point `63b73858…` (the point, then the plane; the plane's origin is the point) and through a point of the model's geometry `eea9eab3…` (the plane, then an edge `4a068a52…` not decoded, and two f64) *(seen)*; a work point `3edf52ce…`: after the prefix 12 bytes (up to major 18; 16 from 24), its position (three f64, cm) and two empty lists *(seen)*; not decoded: `315417a7…` (a work point and an edge: normal to the edge at the point, by the plane's geometry). Planes the file keeps fixed: those no definition names (their flags after the prefix have `0x100000`; 33 of the 49 fixed planes of the older parts, among them planes of parts made from other formats), those of a definition `118e11a6…` with no references after the plane (7); `61b8480c…` defines a plane off the timeline as another one (its first reference, then the plane it copies) | offset, mid and angle planes (a plane off the timeline by its geometry: the import looks for the face in it); planes through three points, two lines, a line and a point, or normal to a line through a point, the work points and axes as the origin's or fixed where they are (work points and axes are not imported); parallel ones as offsets from their plane to where the point puts them (the point fixed where it is); the others fixed where they are |
@@ -1177,6 +1177,102 @@ stop `01fb13c9` Combine2: the join of the file's bodies before it is
 valid, with Mitcad's thread insert (487 faces, the file's 10) the union
 is invalid (a self-intersecting wire), the insert's helical slot lying
 on the hole's wall.
+
+Turns that meet in one edge (dev and release builds, 2026-10-17,
+mitcad#235, the parts run alone): a helix whose profile has a side on a
+cylinder of its bodies as long as the pitch is now built as the stored
+bodies keep threads, one face per profile edge running all the turns, its
+turns meeting in one edge on that cylinder (a core beyond that side in the
+void, cut away beyond the bodies' faces; the helix section of the model's
+`commands.md`). `d9aec91e` Fillet1, the 0.2 mm rounding of Coil1's crest,
+is parametric and verified (41 → 42 of 46): the crest is an edge between
+the flanks. `d9aec91e` Fillet4 (on Coil2's thread, also built so now)
+still falls back, on the item's time where the kernel's walk failed
+before. Where such a thread runs out past a blind bore's bottom, its turns
+meet on the bore's cylinder in the material there; the face merge after
+intersecting that part with the cylinder went back and forth over the
+same seams without end until the memory was gone (OCCT port patch 0590
+gives such a wire up).
+
+`01fb13c9` Combine2 did not come from the strip: Coil2's groove (pitch
+0.5005 mm, 25.6 turns through the wall of a tube of 1.229 to 1.5 mm) has
+no side as long as the pitch. Swept in pieces, its run-out past the
+insert's end face left faces there of 1e-4 mm² and less, and the union
+with the part failed on one of them (a self-intersecting wire; so with the
+file's own main body too, while the file's insert unites with Mitcad's
+main body). Built as a B-rep the groove unites, but the booleans on its
+25-turn faces took 10 to 35 s each, over the item's time share. Where the
+time went (sampled stacks): the edge-face intersections built a polyhedron
+of each piece's whole 25-turn surface (`Adaptor3d_HSurfaceTool` counted
+all its 4000 knots), the face merge tested the whole surface for planarity
+for every pair of tangent neighbouring faces, and every projection onto
+such a face (the booleans' projector of each face, `ShapeFix` in the face
+merge) computed distances over a grid of 44 x 12000 nodes, kept in every
+thread (7.5 GB for the union); the union also ran on one core. OCCT port
+patches 0591 to 0593 bound that work (samples within the face's range,
+planarity once per surface, at most 1001 grid parameters a direction) and
+the union runs on all cores (2026-10-17, release build, the part run
+alone): Coil2's cut 6 s (gave way after its 25 s share before), Combine2
+3.5 s (20 to 35 s), so every thread of one profile with a side on a
+cylinder of its bodies is built as a B-rep again. `01fb13c9` 27 → 28 of 31,
+Combine2 verified (the final body 15332.607 mm³, within 0.0002 % of the
+file's).
+The other named coil and thread parts are unchanged item by item
+(`d9aec91e` 42/46, `033448e3` 12/12, `2ac732ee` 14/14, `517c1204` 22/24,
+`9452d970` 32/40, `c2ed6f98` 27/31, `547d59d1` 24/25). `d9aec91e` Fillet4
+does not come from the time: OCCT's rolling ball fails on its two
+contours along Coil2's thread in under 3 s (a walking failure and an
+error), and the item's time goes to the retries after that (shrunken
+sizes, the cut-outs cleared, whose distances between 25-turn helix edges
+are slow).
+
+Chamfers past the roots of teeth and a thread's crests rounded
+(mitcad#235, 2026-10-17, release build, the parts run one at a time):
+`01fb13c9` Chamfer1 and Chamfer2 chamfer a pulley's flange rims 2.5 mm at
+15°, wider than the flange's top up to the tooth roots, and `c2ed6f98`
+Chamfer1 and Chamfer2 a pinion's exactly up to its root circle. The face a
+distance and angle chamfer's distance lies on is now tried both ways (the
+history state chooses), and OCCT port patch 0650 cuts the chamfer under
+each tooth by its seven faces, fills gaps whose ends are the root arcs'
+vertices, and keeps the pieces about a closed spine's start. All four
+chamfers verify (within 0.05 mm³ of the file's states): `01fb13c9` 28 → 30
+of 31 (Thread2: no result in the file), `c2ed6f98` 27 → 29 of 31 (Sketch12
+partial on an undecoded record, Thread4 skipped). `d9aec91e` Fillet4
+rounds Coil2's crests (0.15 mm, two contours about 700 mm long; it failed
+on the file's own state too): patch 0651 starts the walk that begins on a
+crest face's seam on the seam's other side and ends the corner's extension
+where it fails over the thread's run-out; Fillet4 verifies, 42 → 43 of 46
+(Fillet7 out of time, Fillet13 an unorientable face, Fillet5 skipped). Not
+fixed: `517c1204` Chamfer2 (22/24), whose two contacts both leave into the
+coil's flank before the edge's ends, so both corners fail (a cut across the
+whole width at each end is needed, as 0059 does for one contact), and
+`9452d970` Fillet7, Fillet12 and Fillet14 (32/40), roundings of 0.2 mm in
+a pocket whose wall corners have that same radius on a steep cylindrical
+floor: the walk into each corner moves the wall's contact back out of the
+corner face at its first step (the true blend there is a sphere patch, as
+the file's state has), so they fail on the file's own states too. The
+other named parts are unchanged (`033448e3` 12/12, `2ac732ee` 14/14,
+`547d59d1` 24/25).
+
+Both left from that round are fixed (mitcad#235, 2026-10-18, release
+build, the parts run one at a time). `9452d970` Fillet7, Fillet12 and
+Fillet14: round each tab corner of the pocket the ball stands on the
+corner's axis while its contact sweeps round the corner; OCCT port patch
+0670 makes that piece the ball's sphere between the walls' analytic
+roundings instead of walking it (the walk's sections lean with the steep
+floor and swept the corner before the guide reached it). All three verify
+(within 4e-5 mm³ of the file's states), 32 → 35 of 40 (the other five keep
+no result in the file). `517c1204` Chamfer2: patch 0671 cuts the chamfer
+across its whole width at both ends by the groove's tip rounding and
+flanks grown on past the flat end face, the chamfer ending in a point
+where they meet its contact on the bore (one end on the next turn's crest,
+the other on the crest's prolongation past the edge's end); Mitcad's
+chamfer joins the contacts' pieces at the vertices they leave, as the file
+keeps one edge there (Fillet7 rounds the crests beside it and failed at
+those vertices). Chamfer2 and Fillet7 verify, 22 → 23 of 24 (Fillet3
+still falls back: two roundings overlap on the face between them). The
+other named parts are unchanged (`01fb13c9` 30/31, `d9aec91e` 43/46,
+`033448e3` 12/12, `2ac732ee` 14/14, `c2ed6f98` 29/31, `547d59d1` 24/25).
 
 ### What the files do not tell (feasibility)
 

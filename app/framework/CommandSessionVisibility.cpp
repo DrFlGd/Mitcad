@@ -186,7 +186,7 @@ void CommandSession::visibilityChanged(bool sketchPreviewTakenBack) {
   // Where the active input picks now (hidden bodies are not picked), for
   // UI tests.
   if (const InputDef* input = activeInput()) {
-    m_host.inputActivated(input->showsOrigin ? input->filter : input->filter & ~kConstructionGeometry);
+    showActiveKinds(input);
   }
 }
 

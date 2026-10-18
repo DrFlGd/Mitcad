@@ -493,7 +493,7 @@ impl<K: Kernel> Evaluate<K> for ThreadDef {
         let mut extreme_diameter: Option<f64> = None;
         let mut internal = None;
         for face in &self.faces {
-            let shape = ctx.body(face.body)?;
+            let shape = ctx.surface_body(face.body)?;
             // A face a sketch change renamed is found again (mitcad#272).
             let found = ctx.face_or(&shape, &face.face, || {
                 format!("body {} has no face {}", face.body, face.face)

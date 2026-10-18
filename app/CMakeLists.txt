@@ -369,6 +369,12 @@ target_link_libraries(mitcad PRIVATE
   mitcad_ffi mitcad_geometry
   TKService TKV3d TKOpenGl TKMesh
   mitcad_warnings)
+# The view's meshes of large curved faces (mitcad#398): mesh.hpp's
+# bounded meshing, also on the model's worker thread at the end of jobs.
+target_link_libraries(mitcad PRIVATE mitcad_geometry_io)
+target_sources(mitcad PRIVATE
+  framework/DisplayMeshes.cpp
+  framework/DisplayMeshes.hpp)
 
 if(WIN32)
   # wglGetCurrentDC() in OcctViewer.cpp
@@ -437,6 +443,9 @@ target_sources(mitcad PRIVATE
   mcp/LiveErrors.hpp
   mcp/LogRing.cpp mcp/LogRing.hpp
   mcp/ModalGuard.cpp mcp/ModalGuard.hpp)
+# Live MCP's Save As and Open into the folders the user allows agents
+# (mitcad#402).
+target_sources(mitcad PRIVATE mcp/AgentFolders.cpp mcp/AgentFolders.hpp)
 if(WIN32)
   target_sources(mitcad PRIVATE mcp/WindowsEndpointSecurity.cpp mcp/WindowsEndpointSecurity.hpp)
   target_link_libraries(mitcad PRIVATE advapi32)
@@ -582,13 +591,16 @@ if(BUILD_TESTING)
   # triangulations wind (mitcad#319): OCCT's shapes and meshing.
   target_sources(test_app PRIVATE tests/render_mesh.cpp render/RenderMesh.cpp render/RenderMesh.hpp)
   target_link_libraries(test_app PRIVATE TKMesh)
+  # The folders live MCP agents may save to and open from (mitcad#402):
+  # plain Qt Core and Widgets.
+  target_sources(test_app PRIVATE tests/agent_folders.cpp mcp/AgentFolders.cpp mcp/AgentFolders.hpp)
   target_link_libraries(test_app PRIVATE mitcad_geometry)
   target_include_directories(test_app PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
   target_link_libraries(test_app PRIVATE Qt6::Widgets Qt6::Svg mitcad_warnings)
   add_test(NAME app.unit COMMAND test_app)
   add_executable(test_view_tessellation tests/view_tessellation.cpp)
   target_include_directories(test_view_tessellation PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-  target_link_libraries(test_view_tessellation PRIVATE mitcad_geometry_io TKV3d TKPrim mitcad_warnings)
+  target_link_libraries(test_view_tessellation PRIVATE mitcad_geometry_io TKV3d TKPrim TKBO mitcad_warnings)
   add_test(NAME app.view_tessellation COMMAND test_view_tessellation
     "${CMAKE_CURRENT_BINARY_DIR}/view-tessellation-files")
   # Check renderer device policy and fallback independently of UI helpers.
@@ -795,6 +807,8 @@ endif()
 
 # The browser's and the timeline's places logged again when they move (mitcad#262).
 target_sources(mitcad PRIVATE framework/PlaceWatcher.hpp)
+# The side panels' trees' common indentation (mitcad#393).
+target_sources(mitcad PRIVATE framework/PanelTree.hpp)
 # The hover of a tangent chain in Fillet, Chamfer and the face tools (mitcad#290).
 target_sources(mitcad PRIVATE framework/CommandSessionHover.cpp)
 # A new feature's operation and objects follow what the model chooses from

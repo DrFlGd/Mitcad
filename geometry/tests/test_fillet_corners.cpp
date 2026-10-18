@@ -39,12 +39,14 @@
 #include <BRepBuilderAPI_MakePolygon.hxx>
 #include <BRepBuilderAPI_MakeSolid.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
+#include <BRepBuilderAPI_NurbsConvert.hxx>
 #include <BRepBuilderAPI_Sewing.hxx>
 #include <BRepLib.hxx>
 #include <BRep_Builder.hxx>
 #include <Geom2d_Curve.hxx>
 #include <GeomAPI_ProjectPointOnSurf.hxx>
 #include <Geom_BSplineSurface.hxx>
+#include <Geom_BSplineCurve.hxx>
 #include <NCollection_Array1.hxx>
 #include <NCollection_Array2.hxx>
 #include <Precision.hxx>
@@ -2111,6 +2113,89 @@ void test_rounding_cut_along_its_side_by_the_face_at_an_onsame_end() {
   CHECK_NEAR_TOL(plate_side_rounding_removes(0.0, -0.7), expected, 1e-5);
 }
 
+// A wall (the plane x = 0 for z in [0, 5]) standing on a floor (z = 0, y in
+// [0, 10]) that narrows: its far edge, where a cliff drops to z = -3, is
+// one cubic B-spline, along x = 2 up to y = 0.9, turning in between, along
+// x = w from y = 4.6 to the end y = 10. All faces are B-splines (the blend
+// is walked, as between the faces of stored bodies).
+TopoDS_Shape wall_on_a_narrowing_floor(double w) {
+  const TopoDS_Shape         wall  = BRepPrimAPI_MakeBox(gp_Pnt(-5, 0, -4), gp_Pnt(0, 10, 5)).Shape();
+  const TopoDS_Shape         floor = BRepPrimAPI_MakeBox(gp_Pnt(0, 0, -4), gp_Pnt(5, 10, 0)).Shape();
+  const double               xs[8] = {2, 2, 2, 2, w, w, w, w};
+  const double               ys[8] = {-1, 0, 0.5, 1.5, 3, 4, 7, 11};
+  NCollection_Array1<gp_Pnt> poles(1, 8);
+  for (int i = 0; i < 8; ++i) {
+    poles(i + 1) = gp_Pnt(xs[i], ys[i], -3);
+  }
+  NCollection_Array1<double> knots(1, 6);
+  NCollection_Array1<int>    mults(1, 6);
+  for (int i = 1; i <= 6; ++i) {
+    knots(i) = i - 1;
+    mults(i) = i == 1 || i == 6 ? 4 : 1;
+  }
+  BRepBuilderAPI_MakeWire outline;
+  outline.Add(
+    BRepBuilderAPI_MakeEdge(occ::handle<Geom_Curve>(new Geom_BSplineCurve(poles, knots, mults, 3))).Edge());
+  outline.Add(BRepBuilderAPI_MakeEdge(gp_Pnt(w, 11, -3), gp_Pnt(6, 11, -3)).Edge());
+  outline.Add(BRepBuilderAPI_MakeEdge(gp_Pnt(6, 11, -3), gp_Pnt(6, -1, -3)).Edge());
+  outline.Add(BRepBuilderAPI_MakeEdge(gp_Pnt(6, -1, -3), gp_Pnt(2, -1, -3)).Edge());
+  const TopoDS_Shape beyond =
+    BRepPrimAPI_MakePrism(BRepBuilderAPI_MakeFace(outline.Wire(), true).Face(), gp_Vec(0, 0, 4)).Shape();
+  ShapeUpgrade_UnifySameDomain unify(
+    BRepAlgoAPI_Cut(BRepAlgoAPI_Fuse(wall, floor).Shape(), beyond).Shape(), true, true, true);
+  unify.Build();
+  BRepBuilderAPI_NurbsConvert nurbs(unify.Shape(), true);
+  return nurbs.Shape();
+}
+
+// The area of the rounding's section (radius 1) between the wall and a
+// floor of width w at the wall's foot: the ball touches the wall and, where
+// the floor is narrower than 1, rolls on the floor's far edge.
+double wall_foot_section(double w) {
+  if (w >= 1.0) {
+    return 1.0 - M_PI / 4.0;
+  }
+  const double h = std::sqrt(2.0 * w - w * w); // the ball's centre above the floor
+  return h - 0.5 * (h * (1.0 - w) + std::asin(h));
+}
+
+// The wall's foot rounded with 1 (port patch 0620): the floor's contact
+// leaves the floor across its far edge where that turns in (y 2 to 3),
+// long before the end of the spine, and the faces at the end vertex (the
+// wall, the floor and the end y = 10) do not include the cliff beyond that
+// edge. OCCT took that edge for the end region (it is a few edges from the
+// end vertex) and the rounding stopped there, the rest of the edge left
+// sharp. Now the ball rolls on the far edge from there, as in the middle of
+// a rounding, up to the end, where the end face cuts it: the section is the
+// full rounding's where the floor is wide and the rolling ball's where it
+// is narrow, nothing added beyond the floor's edge.
+void test_rounding_rolls_on_the_far_edge_of_a_floor_narrowing_before_the_end() {
+  const double       w    = 0.5;
+  const TopoDS_Shape body = wall_on_a_narrowing_floor(w);
+  CHECK(BRepCheck_Analyzer(body).IsValid());
+  const std::vector<TopoDS_Edge> foot =
+    edges_where(body, [](const gp_Pnt& m) { return std::abs(m.X()) < 1e-7 && std::abs(m.Z()) < 1e-7; });
+  CHECK(foot.size() == 1);
+  if (foot.size() != 1) {
+    return;
+  }
+  const TopoDS_Shape result = rounded(body, foot, 1.0);
+  CHECK(!result.IsNull());
+  if (result.IsNull()) {
+    return;
+  }
+  CHECK(BRepCheck_Analyzer(result).IsValid());
+  const TopoDS_Shape added = BRepAlgoAPI_Cut(result, body).Shape();
+  CHECK(volume_of(BRepAlgoAPI_Cut(body, result).Shape()) < 1e-9);
+  const auto in_box = [&added](double x0, double y0, double x1, double y1) {
+    return volume_of(
+      BRepAlgoAPI_Common(added, BRepPrimAPI_MakeBox(gp_Pnt(x0, y0, -10), gp_Pnt(x1, y1, 10)).Shape()).Shape());
+  };
+  CHECK_NEAR_TOL(in_box(-10, 0, 10, 1), wall_foot_section(2.0), 1e-4);
+  CHECK_NEAR_TOL(in_box(-10, 5, 10, 10), 5.0 * wall_foot_section(w), 5e-4);
+  CHECK(in_box(w + 1e-6, 4, 10, 10) < 1e-9);
+}
+
 } // namespace
 
 void fillet_corner_tests() {
@@ -2151,6 +2236,8 @@ void fillet_corner_tests() {
   guarded("test_roundings_joined_across_ribs_with_square_sides", test_roundings_joined_across_ribs_with_square_sides);
   guarded("test_rounding_cut_along_its_side_by_the_face_at_an_onsame_end",
           test_rounding_cut_along_its_side_by_the_face_at_an_onsame_end);
+  guarded("test_rounding_rolls_on_the_far_edge_of_a_floor_narrowing_before_the_end",
+          test_rounding_rolls_on_the_far_edge_of_a_floor_narrowing_before_the_end);
 }
 
 } // namespace test

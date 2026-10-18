@@ -24,6 +24,13 @@ pub mod ffi {
 
         /// The body's faces triangulated within the surface deviation (mm)
         /// and the angle between neighbouring facets (radians), on a copy.
-        fn face_meshes(shape: &Shape, deviation: f64, angle: f64) -> Result<FaceMeshes>;
+        /// At most about `face_triangles` triangles a doubly curved face (0:
+        /// no limit; mitcad#398).
+        fn face_meshes(
+            shape: &Shape,
+            deviation: f64,
+            angle: f64,
+            face_triangles: u64,
+        ) -> Result<FaceMeshes>;
     }
 }

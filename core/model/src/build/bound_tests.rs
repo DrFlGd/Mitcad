@@ -104,7 +104,7 @@ fn the_length_follows_the_target_and_the_slide() {
     assert!((length(&doc, &p) - 570.0).abs() < 1e-9);
     assert!(close(
         placed(&doc, occurrence(&p)).translation,
-        [15.0, 0.0, 300.0]
+        [15.0, 0.0, 315.0]
     ));
     // Centre and through.
     let xp = derived(&doc, component(&x));

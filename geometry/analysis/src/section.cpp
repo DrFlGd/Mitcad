@@ -20,6 +20,7 @@
 #include <gp_Pln.hxx>
 
 #include "convert.hpp"
+#include "mesh_section.hpp"
 
 namespace mitcad::analysis {
 
@@ -71,6 +72,9 @@ Section section(const TopoDS_Shape& shape, const Plane& plane) {
   if (shape.IsNull()) {
     throw Error("cannot section a null shape");
   }
+  if (detail::mesh_only(shape)) {
+    return detail::mesh_section(shape, plane);
+  }
   Section result;
   BRepAlgoAPI_Section curves(shape, gp_Pln(detail::pnt(plane.origin), direction(plane)), false);
   curves.Approximation(true);
@@ -113,6 +117,9 @@ Section section(const TopoDS_Shape& shape, const Plane& plane) {
 TopoDS_Shape clip(const TopoDS_Shape& shape, const Plane& plane, std::vector<ClippedFace>* faces) {
   if (shape.IsNull()) {
     throw Error("cannot clip a null shape");
+  }
+  if (detail::mesh_only(shape)) {
+    return detail::mesh_clip(shape, plane, faces);
   }
   double size = 0.0;
   double distance = 0.0;

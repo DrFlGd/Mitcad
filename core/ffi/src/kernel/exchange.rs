@@ -61,6 +61,9 @@ pub mod ffi {
         /// between neighbouring facet normals (radians).
         deviation: f64,
         angle: f64,
+        /// At most about this many triangles a doubly curved face (0: no
+        /// limit; mitcad#398).
+        face_triangles: u64,
         /// STL as text.
         ascii: bool,
     }

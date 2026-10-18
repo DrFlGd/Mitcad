@@ -1,0 +1,57 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+OSD signal handling on Windows: a signal raised with ::raise() reaches
+OCCT's exception instead of "resource deadlock would occur".
+
+SIGWntHandler, the handler OSD::SetSignal installs for SIGSEGV, SIGFPE and
+SIGILL, locks THE_SIGNAL_MUTEX and then calls CallHandler, which locks it
+again on the same thread. THE_SIGNAL_MUTEX is a std::mutex, so the second
+lock is undefined; MSVC's runtime detects it and throws std::system_error
+("resource deadlock would occur") in place of OSD_Exception_ACCESS_VIOLATION
+and its kin, and a caller that catches Standard_Failure misses it. The
+mutex is now a std::recursive_mutex: setting the handlers and handling a
+signal on another thread still exclude each other, and the handler's own
+nested lock goes through.
+
+--- a/src/FoundationClasses/TKernel/OSD/OSD_signal.cxx
++++ b/src/FoundationClasses/TKernel/OSD/OSD_signal.cxx
+@@ -95,8 +95,9 @@
+ 
+ static bool fMsgBox;
+ 
+-// used to forbid simultaneous execution of setting / executing handlers
+-static std::mutex THE_SIGNAL_MUTEX;
++// used to forbid simultaneous execution of setting / executing handlers;
++// recursive, as SIGWntHandler holds it while it calls CallHandler
++static std::recursive_mutex THE_SIGNAL_MUTEX;
+ 
+ static LONG __fastcall _osd_raise(DWORD theCode, const char* theMsg, const char* theStack);
+ static BOOL WINAPI _osd_ctrl_break_handler(DWORD);
+@@ -126,7 +127,7 @@
+   }
+ 
+   // lock the mutex to prevent simultaneous handling
+-  std::lock_guard<std::mutex> aLock(THE_SIGNAL_MUTEX);
++  std::lock_guard<std::recursive_mutex> aLock(THE_SIGNAL_MUTEX);
+ 
+   static char aBuffer[2048];
+ 
+@@ -314,7 +315,7 @@
+ static void SIGWntHandler(int signum, int sub_code)
+ {
+   // lock the mutex to prevent simultaneous handling
+-  std::lock_guard<std::mutex> aLock(THE_SIGNAL_MUTEX);
++  std::lock_guard<std::recursive_mutex> aLock(THE_SIGNAL_MUTEX);
+ 
+   switch (signum)
+   {
+@@ -442,7 +443,7 @@
+ void OSD::SetSignal(OSD_SignalMode theSignalMode, bool theFloatingSignal)
+ {
+   // lock the mutex to prevent simultaneous handling
+-  std::lock_guard<std::mutex> aLock(THE_SIGNAL_MUTEX);
++  std::lock_guard<std::recursive_mutex> aLock(THE_SIGNAL_MUTEX);
+ 
+   OSD_WasSetSignal = theSignalMode;
+ 

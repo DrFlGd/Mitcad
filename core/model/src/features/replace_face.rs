@@ -95,7 +95,7 @@ impl FeatureInfo for ReplaceFaceDef {
 
 impl<K: Kernel> Evaluate<K> for ReplaceFaceDef {
     fn evaluate(&self, ctx: &mut EvalContext<'_, K>) -> Result<FeatureOutput<K::Shape>, String> {
-        let shape = ctx.body(self.body)?;
+        let shape = ctx.surface_body(self.body)?;
         let faces = require_faces(ctx, self.body, &shape, &self.faces)?;
         let target = resolve_tool(ctx, &self.target, self.offset, None)?;
         let replaced = ctx

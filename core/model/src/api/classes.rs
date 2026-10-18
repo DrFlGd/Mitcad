@@ -152,6 +152,7 @@ const COMMANDS: &[(&str, ApiClass)] = &[
     ("sketch.add_dimension", Model),
     ("sketch.set_dimension", Model),
     ("sketch.set_driven", Model),
+    ("sketch.set_signed", Model),
     ("sketch.remove", Model),
     ("sketch.set_construction", Model),
     ("sketch.set_centerline", Model),
@@ -256,6 +257,7 @@ const QUERIES: &[(&str, ApiClass)] = &[
     ("build_parts", Model),
     ("build_junctions", Model),
     ("build_cut_list", Model),
+    ("build_host", Model),
 ];
 
 fn class_in(table: &[(&str, ApiClass)], name: &str) -> Option<ApiClass> {

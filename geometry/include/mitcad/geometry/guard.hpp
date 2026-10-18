@@ -9,9 +9,12 @@
 // application's model worker thread installs it when it starts (P7), and
 // mitcad-cli in main. For tests, the environment variable
 // MITCAD_TEST_OCCT_CRASH=<operation> ("fillet") makes that operation crash
-// as an access violation inside OCCT would.
+// as an access violation inside OCCT would. The application's UI thread
+// installs it at start too: Section Analysis clips the bodies shown and
+// measures sections there (mitcad#392).
 
 #include <cstddef>
+#include <functional>
 
 namespace mitcad::geometry {
 
@@ -27,6 +30,17 @@ namespace mitcad::geometry {
 // installed before the first call (the application's crash report,
 // mitcad#62), or crashes as without OCCT's.
 void catch_occt_crashes();
+
+// Runs `work`, which calls OCCT's algorithms from outside this library (the
+// analysis bridge's section, clip and measurements, mitcad#392), as one of
+// the library's operations named `operation`: with the handlers installed
+// on the thread (catch_occt_crashes), a crash inside OCCT is the error
+// "<operation>: <OCCT's message>" (std::runtime_error) instead of a crash
+// report, and so is an exception of OCCT's (Standard_Failure); an
+// allocation that fails is "<operation>: out of memory"; other exceptions
+// pass as they are. The input check compares the Shapes `work` reads
+// (input_check.hpp), and MITCAD_TEST_OCCT_CRASH=<operation> crashes it.
+void run_operation(const char* operation, const std::function<void()>& work);
 
 // How many allocations inside OCCT have failed in the process so far, on
 // any thread (mitcad#132; OCCT's Standard_OutOfMemory, counted by patches

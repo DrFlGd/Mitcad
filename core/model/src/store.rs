@@ -209,6 +209,7 @@ enum StoredRead {
     Assembly(Hex),
     JoinTolerance(Option<u64>),
     Source(crate::build::SourceId, Option<Hex>),
+    Pieces(FeatureUid, Vec<Hex>),
 }
 
 impl StoredRead {
@@ -234,6 +235,7 @@ impl StoredRead {
             Read::Assembly(key) => Self::Assembly(Hex(*key)),
             Read::JoinTolerance(bits) => Self::JoinTolerance(*bits),
             Read::Source(id, v) => Self::Source(*id, hex(v)),
+            Read::Pieces(uid, fits) => Self::Pieces(*uid, fits.iter().map(|f| Hex(*f)).collect()),
         }
     }
 
@@ -261,6 +263,7 @@ impl StoredRead {
             Self::Assembly(key) => Read::Assembly(key.0),
             Self::JoinTolerance(bits) => Read::JoinTolerance(*bits),
             Self::Source(id, v) => Read::Source(*id, version(v)),
+            Self::Pieces(uid, fits) => Read::Pieces(*uid, fits.iter().map(|f| f.0).collect()),
         })
     }
 }
@@ -304,6 +307,12 @@ struct VariantHead {
     tool: Option<usize>,
     /// How long the evaluation took.
     ms: f64,
+    /// What it remembers of the pieces of its splits, and the bodies that
+    /// are other pieces than before (mitcad#408).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    split_pieces: Option<Vec<crate::features::PieceGroup>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    changed_pieces: Vec<(BodyUid, String)>,
 }
 
 /// A stored result: its head and its shapes, zlib-compressed.
@@ -532,6 +541,8 @@ impl ResultStore {
                 changes,
                 tool,
                 ms: output.time.as_secs_f64() * 1000.0,
+                split_pieces: output.split_pieces.as_deref().cloned(),
+                changed_pieces: output.changed_pieces.clone(),
             },
             shapes,
         };
@@ -643,6 +654,8 @@ fn restore<K: Kernel>(
         placements: Vec::new(),
         mounts: None,
         measured: Vec::new(),
+        split_pieces: head.split_pieces.clone().map(std::sync::Arc::new),
+        changed_pieces: head.changed_pieces.clone(),
     })
 }
 

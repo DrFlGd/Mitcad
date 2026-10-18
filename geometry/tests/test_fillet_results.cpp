@@ -2,7 +2,8 @@
 // Roundings whose result OCCT's topological build made invalid, or whose
 // computation failed, rebuilt with the port's patches 0150 and later
 // (third_party/vcpkg-ports/opencascade, mitcad#239; a rounding carried
-// across a notch in its rim, 0260, mitcad#307). OCCT alone on plain
+// across a notch in its rim, 0260, mitcad#307; a rounding round wall corners
+// of the ball's radius under a steep top, 0670, mitcad#235). OCCT alone on plain
 // primitives; the volumes come from exact cross-sections, or from the same
 // body built another way (rounded before a notch is cut, a seam turned away).
 
@@ -39,6 +40,7 @@
 #include <TopoDS.hxx>
 #include <TopoDS_Vertex.hxx>
 #include <gp_Ax2.hxx>
+#include <gp_Circ.hxx>
 #include <gp_Vec.hxx>
 
 #include "../src/util.hpp"
@@ -782,6 +784,81 @@ void test_rib_foot_rounded_across_the_rods_seam() {
 // than a micrometre. Tightened in place, it is what they need, and the box
 // stays valid; tolerances below 1 mm, or within ten times the need, are
 // left alone.
+// The area of the spherical triangle of radius r whose corners lie along
+// the unit vectors a, b and c from its centre.
+double spherical_triangle_area(const gp_Vec& a, const gp_Vec& b, const gp_Vec& c, double r) {
+  const double excess =
+      2.0 * std::atan2(std::abs(a.Dot(b.Crossed(c))), 1.0 + a.Dot(b) + b.Dot(c) + c.Dot(a));
+  return r * r * excess;
+}
+
+void test_bowl_topped_boss_rounded_past_corners_of_the_balls_radius() {
+  // A boss 0.8 x 0.8 on a plate, its vertical edges rounded with 0.2, its
+  // top cut by the cylinder of radius 1.6 about the line x = 5, z = 3.5
+  // along y (a steep bowl: the top climbs from z 1.91 to 2.25 across the
+  // boss); then the top's outline rounded with 0.2 (port patch 0670). The
+  // walls' roundings are analytic; round each corner the ball's centre
+  // stays on the corner's axis, 1.8 from the bowl's, its contact on the
+  // top at one point: the rounding there is the spherical triangle between
+  // that point and the walls' directions. Before, the walk between the
+  // walls' roundings failed at the steep corners.
+  const double r = 0.2;
+  const double x0 = 5.2, x1 = 6.0, y0 = 3.8, y1 = 4.6, h = kPi / 2.0;
+  const auto arc = [&](double cx, double cy, double a0, double a1) {
+    return BRepBuilderAPI_MakeEdge(gp_Circ(gp_Ax2(gp_Pnt(cx, cy, 0.5), gp_Dir(0, 0, 1)), r), a0, a1).Edge();
+  };
+  BRepBuilderAPI_MakeWire outline;
+  outline.Add(BRepBuilderAPI_MakeEdge(gp_Pnt(x0 + r, y0, 0.5), gp_Pnt(x1 - r, y0, 0.5)).Edge());
+  outline.Add(arc(x1 - r, y0 + r, 3 * h, 4 * h));
+  outline.Add(BRepBuilderAPI_MakeEdge(gp_Pnt(x1, y0 + r, 0.5), gp_Pnt(x1, y1 - r, 0.5)).Edge());
+  outline.Add(arc(x1 - r, y1 - r, 0, h));
+  outline.Add(BRepBuilderAPI_MakeEdge(gp_Pnt(x1 - r, y1, 0.5), gp_Pnt(x0 + r, y1, 0.5)).Edge());
+  outline.Add(arc(x0 + r, y1 - r, h, 2 * h));
+  outline.Add(BRepBuilderAPI_MakeEdge(gp_Pnt(x0, y1 - r, 0.5), gp_Pnt(x0, y0 + r, 0.5)).Edge());
+  outline.Add(arc(x0 + r, y0 + r, 2 * h, 3 * h));
+  const TopoDS_Shape boss =
+      BRepPrimAPI_MakePrism(BRepBuilderAPI_MakeFace(outline.Wire(), true).Face(), gp_Vec(0, 0, 2.5)).Shape();
+  BRepAlgoAPI_Fuse fuse(BRepPrimAPI_MakeBox(gp_Pnt(4, 3, 0), gp_Pnt(7, 5.4, 0.5)).Shape(), boss);
+  fuse.SimplifyResult();
+  BRepAlgoAPI_Cut cut(fuse.Shape(), BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(5, 2, 3.5), gp_Dir(0, 1, 0)), 1.6, 4).Shape());
+  cut.SimplifyResult();
+  const TopoDS_Shape body = cut.Shape();
+  CHECK(BRepCheck_Analyzer(body).IsValid());
+  // The top's outline: the edges of the bowl's face.
+  BRepFilletAPI_MakeFillet maker(body);
+  for (TopExp_Explorer f(body, TopAbs_FACE); f.More(); f.Next()) {
+    const BRepAdaptor_Surface top(TopoDS::Face(f.Current()));
+    if (top.GetType() != GeomAbs_Cylinder || std::abs(top.Cylinder().Radius() - 1.6) > 1e-9) {
+      continue;
+    }
+    for (TopExp_Explorer e(f.Current(), TopAbs_EDGE); e.More(); e.Next()) {
+      if (maker.Contour(TopoDS::Edge(e.Current())) == 0) {
+        maker.Add(r, TopoDS::Edge(e.Current()));
+      }
+    }
+  }
+  maker.Build();
+  CHECK(maker.IsDone());
+  if (!maker.IsDone()) {
+    return;
+  }
+  const TopoDS_Shape rounded = maker.Shape();
+  CHECK(BRepCheck_Analyzer(rounded).IsValid());
+  CHECK(volume_of(rounded) < volume_of(body));
+  for (const double cx : {x0 + r, x1 - r}) {
+    for (const double cy : {y0 + r, y1 - r}) {
+      // The ball's centre, its contact on the top towards the bowl's axis,
+      // and the walls' directions at this corner.
+      const double zc = 3.5 - std::sqrt(1.8 * 1.8 - (cx - 5.0) * (cx - 5.0));
+      const gp_Vec toTop = gp_Vec(5.0 - cx, 0.0, 3.5 - zc).Normalized();
+      const gp_Vec alongX(cx < 5.6 ? -1.0 : 1.0, 0.0, 0.0), alongY(0.0, cy < 4.2 ? -1.0 : 1.0, 0.0);
+      double area = 0.0;
+      CHECK(faces_on_sphere(rounded, gp_Pnt(cx, cy, zc), r, 1e-6, area) == 1);
+      CHECK_NEAR_TOL(area, spherical_triangle_area(toTop, alongX, alongY, r), 2e-5);
+    }
+  }
+}
+
 void test_inflated_vertex_tolerances_tightened() {
   const TopoDS_Shape box = BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), gp_Pnt(10, 20, 30)).Shape();
   TopExp_Explorer first(box, TopAbs_VERTEX);
@@ -817,6 +894,7 @@ void fillet_result_tests() {
   test_roundings_cut_by_each_other_where_the_top_narrows();
   test_concave_roundings_cut_by_each_other_where_a_channel_narrows();
   test_rib_foot_rounded_across_the_rods_seam();
+  test_bowl_topped_boss_rounded_past_corners_of_the_balls_radius();
   test_inflated_vertex_tolerances_tightened();
 }
 

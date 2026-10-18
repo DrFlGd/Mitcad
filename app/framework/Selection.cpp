@@ -180,21 +180,70 @@ bool sameEntry(const SelectionItem& a, const SelectionItem& b, const ItemResolve
   if (!resolve) {
     return false;
   }
-  const QString region = resolve(a);
-  return !region.isEmpty() && region == resolve(b);
+  QStringList regions = resolve(a);
+  QStringList others = resolve(b);
+  regions.sort();
+  others.sort();
+  return !regions.isEmpty() && regions == others;
 }
 
+namespace {
+
+// The regions of `item` that `entry` also means, when `entry` means every
+// region `item` does: `item` is `entry`'s region or pieces of it (a split
+// region, mitcad#410). Empty otherwise.
+QStringList piecesOf(const SelectionItem& entry, const SelectionItem& item, const ItemResolver& resolve) {
+  if (!resolve || entry.kind != SelectKind::Profile || item.kind != SelectKind::Profile ||
+      entry.owner != item.owner) {
+    return {};
+  }
+  const QStringList pieces = resolve(item);
+  if (pieces.isEmpty()) {
+    return {};
+  }
+  const QStringList regions = resolve(entry);
+  const bool inside = std::all_of(pieces.cbegin(), pieces.cend(),
+                                  [&](const QString& piece) { return regions.contains(piece); });
+  return inside ? pieces : QStringList();
+}
+
+} // namespace
+
 bool containsEntry(const Selection& items, const SelectionItem& item, const ItemResolver& resolve) {
-  return std::any_of(items.cbegin(), items.cend(),
-                     [&](const SelectionItem& entry) { return sameEntry(entry, item, resolve); });
+  return std::any_of(items.cbegin(), items.cend(), [&](const SelectionItem& entry) {
+    return sameEntry(entry, item, resolve) || !piecesOf(entry, item, resolve).isEmpty();
+  });
 }
 
 int removeEntry(Selection& items, const SelectionItem& item, const ItemResolver& resolve) {
-  const auto before = items.size();
-  items.erase(std::remove_if(items.begin(), items.end(),
-                             [&](const SelectionItem& entry) { return sameEntry(entry, item, resolve); }),
-              items.end());
-  return static_cast<int>(before - items.size());
+  Selection kept;
+  int changed = 0;
+  for (const SelectionItem& entry : items) {
+    if (sameEntry(entry, item, resolve)) {
+      ++changed;
+      continue;
+    }
+    const QStringList taken = piecesOf(entry, item, resolve);
+    if (taken.isEmpty()) {
+      kept.append(entry);
+      continue;
+    }
+    // A piece of a split region clicked off: the other pieces stay
+    // selected, each under its own key (the entry's key would mean all of
+    // them again), the main one first.
+    ++changed;
+    for (const QString& region : resolve(entry)) {
+      if (!taken.contains(region)) {
+        SelectionItem piece = entry;
+        piece.name = region;
+        piece.at.reset();
+        kept.append(piece);
+      }
+    }
+  }
+  // A piece kept may already be an entry of its own.
+  items = changed > 0 ? uniqueProfiles(kept, resolve) : kept;
+  return changed;
 }
 
 bool toggleEntry(Selection& items, const SelectionItem& item, const ItemResolver& resolve) {

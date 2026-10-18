@@ -356,6 +356,29 @@ mod tests {
     }
 
     #[test]
+    fn a_combine_s_join_unites_within_the_join_tolerance() {
+        // (mitcad#397) Exact for the model's own designs; within the
+        // tolerance an importer set.
+        let mut b = block();
+        let other = crate::document_tests::extrude(b.sketch, &[&b.region], 5.0, "new_body", &[]);
+        let tool = b.doc.add_feature(&other, None).unwrap().uid;
+        let combine = crate::document_tests::def(json!({"type": "combine", "target": "F2.b0",
+            "tools": [format!("{tool}.b0")], "operation": "join"}));
+        b.doc.add_feature(&combine, None).unwrap();
+        assert_eq!(b.doc.kernel().count("unite_within"), 0);
+        assert_eq!(b.doc.kernel().count("unite"), 1);
+        b.doc.set_join_tolerance(Some(0.01)).unwrap();
+        assert_eq!(b.doc.kernel().count("unite_within"), 1);
+        assert!(
+            b.doc
+                .kernel()
+                .specs
+                .borrow()
+                .contains(&"unite within 0.01".to_owned())
+        );
+    }
+
+    #[test]
     fn import_notes_survive_save_and_reopen() {
         let mut b = block();
         b.doc

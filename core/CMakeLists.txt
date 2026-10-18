@@ -362,13 +362,16 @@ if(BUILD_TESTING)
               "-DLIST=${CMAKE_CURRENT_BINARY_DIR}/cargo-test/tests-${profile}.tsv"
               -P "${CMAKE_CURRENT_SOURCE_DIR}/cargo-tests.cmake" -- build ${release} ${packages})
     # A build from scratch (a new build folder, a new toolchain) takes long
-    # in a VM.
+    # in a VM. A build runs alone (RUN_SERIAL): a debug build from scratch
+    # beside the release profile's crate tests, the geometry tests and the
+    # .rvt corpus ran the Linux release check of 0.10.0 out of its memory
+    # limit (18.10.2026).
     set_tests_properties(core.cargo_build${suffix} PROPERTIES FIXTURES_SETUP cargo_tests_${profile}
-      ENVIRONMENT "${cargo_build_environment}" TIMEOUT 3600)
+      ENVIRONMENT "${cargo_build_environment}" TIMEOUT 3600 RUN_SERIAL TRUE)
     add_test(NAME core.doctests${suffix}
       COMMAND "${Rust_CARGO_CACHED}" test --doc --manifest-path "${CMAKE_CURRENT_SOURCE_DIR}/Cargo.toml"
               --quiet ${release} ${selected})
     set_tests_properties(core.doctests${suffix} PROPERTIES FIXTURES_REQUIRED cargo_tests_${profile}
-      ENVIRONMENT "${cargo_build_environment}")
+      ENVIRONMENT "${cargo_build_environment}" RESOURCE_LOCK cargo_build)
   endforeach()
 endif()

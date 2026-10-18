@@ -33,11 +33,14 @@ set(designs
     # An assembly of a housing, a plug screwed into it, a nut and a tool
     # (145 items, 7 components; mitcad#379): the plug's thread found its
     # angle in the plug's own bodies, not in the housing's internal thread
-    # round it. Falling back: a sweep that passes over itself, roundings the
-    # geometry kernel does not build or builds off the file's, an extrusion
-    # whose profile's curve the sketch no longer has, a revolution whose cut
-    # the kernel does not make on a threaded bore.
-    "db73863f|Thread1|Sweep1,Fillet4,Fillet1,Fillet2,Fillet6,Extrude3,Fillet7,Fillet1,Fillet2,Revolve4,Fillet7,Fillet5,Fillet5,Fillet6|Axis1,C-Pattern1,Extrude3,Extrude6,Fillet4,GeometricRelationship1,Plane1,Plane2,Plane3,Thread1,Thread2")
+    # round it. The revolution cut into the threaded bore is parametric: the
+    # bore's cylinders, which the file keeps as cones of 1e-13 rad, are read
+    # as cylinders (mitcad#389). A rounding along the thread (item 109) is
+    # parametric since the walk past a seam of mitcad#235. Falling back: a
+    # sweep that passes over itself, roundings the geometry kernel does not
+    # build or builds off the file's, an extrusion whose profile's curve the
+    # sketch no longer has.
+    "db73863f|Thread1,Revolve4|Sweep1,Fillet4,Fillet1,Fillet2,Fillet6,Extrude3,Fillet1,Fillet2,Fillet7,Fillet5,Fillet5,Fillet6|Axis1,C-Pattern1,Extrude3,Extrude6,Fillet4,GeometricRelationship1,Plane1,Plane2,Plane3,Thread1,Thread2")
 
 # Seconds as the trace gives them (two decimals) in hundredths.
 function(hundredths seconds out)

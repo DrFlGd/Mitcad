@@ -30,10 +30,11 @@
     "has_face": "F3:fillet(E{F2:side(c14[c9,c8])|F2:side(c9[c14,c11])})"}},
   {"expect": {"body": "Body1", "has_face": "F3:fillet(E{F2:side(c10[c11,c12])|F2:side(c12[c7,c10])})"}},
 
-  {"comment": "The arc goes and a circle of diameter 12 (c15) takes its place at the corner: c9 and c10 now end on c15, so their faces are renamed (c9[c14,c15], c10[c15,c12]) and the fillet's stored edges no longer exist under their names."},
+  {"comment": "The arc goes and a circle of diameter 12 (c15) takes its place at the corner: c9 and c10 now end on c15, so their faces are renamed (c9[c14,c15], c10[c15,c12]) and the fillet's stored edges no longer exist under their names. The extrusion's region is found by the most curves in common and warns (mitcad#407)."},
   {"cmd": "sketch.remove", "sketch": "F1", "items": ["c11"]},
   {"cmd": "sketch.add_circle", "sketch": "F1", "center": [0, 40], "diameter": 12},
-  {"expect": {"feature": "Extrude1", "status": "ok", "body": "Body1",
+  {"expect": {"feature": "Extrude1", "status": "warning", "body": "Body1",
+    "error_contains": "region r{c7[c12,c13],c8[c13,c14],c9[c14,c11],c10[c11,c12],c11[c9,c10],c12[c7,c10],c13[c8,c7],c14[c9,c8]} found as r{c7[c12,c13],c8[c13,c14],c9[c14,c15],c10[c15,c12],c12[c7,c10],c13[c8,c7],c14[c9,c8],c15[c10,c9]} after a change in Sketch1",
     "no_edge": "E{F2:side(c14[c9,c8])|F2:side(c9[c14,c11])}"}},
 
   {"comment": "The fillet finds both edges between the faces it finds, rounds the same edges and warns."},

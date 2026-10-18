@@ -23,6 +23,7 @@
 #include <gp_Vec.hxx>
 
 #include "face_select.hpp"
+#include "util.hpp"
 
 namespace mitcad::geometry {
 
@@ -152,6 +153,9 @@ gp_Pln tool_plane(const Tool& tool, const char* what) {
 }
 
 Cutter make_cutter(const Tool& tool, const Bnd_Box& around, bool extend) {
+  if (tool.shape) {
+    require_surfaces(tool.shape->occt(), "the splitting tool");
+  }
   Cutter cutter;
   BRep_Builder builder;
   TopoDS_Compound compound;

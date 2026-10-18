@@ -3,8 +3,11 @@
 // minor and major cylinders kept as one face each, their helix edges'
 // pcurves spanning tens of periods, and the thread flanks one ruled
 // B-spline face each (mitcad#349). The port's patches 0510 to 0512 and 0560 let
-// OCCT's booleans cut them.
+// OCCT's booleans cut them; 0591 to 0593 bound their work on such faces
+// (mitcad#235); a major cylinder a file keeps as a cone of a tiny half
+// angle is read as the cylinder (mitcad#389).
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -12,7 +15,15 @@
 #include <string>
 #include <vector>
 
+#include <Adaptor3d_HSurfaceTool.hxx>
+#include <Adaptor3d_Surface.hxx>
 #include <BRepAdaptor_Curve.hxx>
+#include <BRepBuilderAPI_MakeEdge.hxx>
+#include <BRepBuilderAPI_MakeFace.hxx>
+#include <Extrema_ExtFlag.hxx>
+#include <Extrema_ExtPS.hxx>
+#include <GeomAdaptor_Surface.hxx>
+#include <Geom_BSplineSurface.hxx>
 #include <NCollection_IndexedMap.hxx>
 #include <TopExp.hxx>
 #include <TopTools_ShapeMapHasher.hxx>
@@ -22,6 +33,7 @@
 #include <BRepGProp.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
+#include <BRepPrimAPI_MakeCone.hxx>
 #include <BRep_Tool.hxx>
 #include <GProp_GProps.hxx>
 #include <GeomAbs_SurfaceType.hxx>
@@ -76,6 +88,10 @@ struct ThreadedBlock {
   double groove = 0.6;
   int turns = 32;
   double half = 8.0; // half the block's width
+  // The half angle of the cone the major cylinder is stored as (0: a
+  // cylinder); a file may keep a cylinder as a cone of a half angle of
+  // 1e-13 rad, its apex 1e14 mm away (mitcad#389).
+  double major_angle = 0.0;
 
   double height() const { return pitch * turns; }
 
@@ -243,7 +259,7 @@ struct ThreadedBlock {
       return add_surface(7, ints, reals);
     };
     const std::uint32_t minor = add_surface(1, {}, {0, 0, 0, 0, 0, 1, 1, 0, 0, r1, 0});
-    const std::uint32_t major = add_surface(1, {}, {0, 0, 0, 0, 0, 1, 1, 0, 0, r2, 0});
+    const std::uint32_t major = add_surface(1, {}, {0, 0, 0, 0, 0, 1, 1, 0, 0, r2, major_angle});
     const std::uint32_t flank_a = add_ruled(0, 0);
     const std::uint32_t flank_b = add_ruled(tb, groove);
     const std::uint32_t bottom = add_surface(0, {}, {0, 0, 0, 0, 0, 1, 1, 0, 0});
@@ -436,6 +452,278 @@ void test_second_cut_across_a_thread_whose_faces_run_many_turns() {
   check_box_cut(spec, drilled, gp_Pnt(-0.5, -4.5, 30.0), gp_Pnt(0.5, -3.0, 31.0));
 }
 
+void test_cut_across_a_thread_whose_major_cylinder_is_stored_as_a_cone() {
+  // A file may store a thread's major cylinder as a cone of a half angle
+  // of 1e-13 rad, its apex 1e14 mm away, one face running all the turns
+  // (mitcad#389). OCCT's intersections of such a cone with other faces of
+  // revolution about its axis lost their curves: the cut by a cone round
+  // the axis removed nothing (here it ran for minutes, past 6 GB). Within
+  // the angular precision of zero it is read as the cylinder it is, and
+  // cuts across it go as across the cylinder.
+  ThreadedBlock spec;
+  spec.major_angle = -1e-13;
+  const TopoDS_Shape block = threaded_block(spec);
+  int cones = 0;
+  for (TopExp_Explorer ex(block, TopAbs_FACE); ex.More(); ex.Next()) {
+    cones += BRepAdaptor_Surface(TopoDS::Face(ex.Current())).GetType() == GeomAbs_Cone ? 1 : 0;
+  }
+  CHECK(cones == 0);
+  check_box_cut(spec, block, gp_Pnt(3.0, -0.5, 2.0), gp_Pnt(4.5, 0.5, 3.0));
+  check_box_cut(spec, block, gp_Pnt(-0.5, -4.5, 30.0), gp_Pnt(0.5, -3.0, 31.0));
+  // A cone round the hole's axis from inside the major cylinder out past
+  // it: the circle where it crosses the major face.
+  const TopoDS_Shape tool = BRepPrimAPI_MakeCone(gp_Ax2(gp_Pnt(0, 0, 19.0), gp_Dir(0, 0, 1)), 3.7, 4.4, 0.8).Shape();
+  check_cut(spec, block, tool, gp_Pnt(-4.4, -4.4, 19.0), gp_Pnt(4.4, 4.4, 19.8), [](const gp_Pnt& p) {
+    return std::hypot(p.X(), p.Y()) < 3.7 + 0.7 * (p.Z() - 19.0) / 0.8;
+  });
+}
+
+// The thread's flank faces: B-spline surfaces whose knots run along the
+// helices of all 32 turns (64 a turn).
+std::vector<TopoDS_Face> flank_faces(const TopoDS_Shape& block) {
+  std::vector<TopoDS_Face> faces;
+  for (TopExp_Explorer ex(block, TopAbs_FACE); ex.More(); ex.Next()) {
+    if (BRepAdaptor_Surface(TopoDS::Face(ex.Current())).GetType() == GeomAbs_BSplineSurface) {
+      faces.push_back(TopoDS::Face(ex.Current()));
+    }
+  }
+  return faces;
+}
+
+// The knot spans of the knots within [from, to], counted as OCCT's
+// adaptors count the intervals of a range.
+int spans_within(const NCollection_Array1<double>& knots, double from, double to) {
+  int inside = 0;
+  for (int i = knots.Lower(); i <= knots.Upper(); ++i) {
+    inside += knots(i) > from + 1e-9 && knots(i) < to - 1e-9 ? 1 : 0;
+  }
+  return inside + 1;
+}
+
+void test_face_on_a_part_of_a_multi_turn_surface_sampled_within_it() {
+  // An edge crossing a face is intersected with a polyhedron of the face's
+  // surface (IntCurveSurface) of NbSamplesU x NbSamplesV points; for a
+  // B-spline they were its knots times its degree over the whole surface,
+  // also for a face on a third of a turn of a flank running 32 turns, as a
+  // thread built in pieces sharing its surfaces has them (mitcad#235, port
+  // 0591). They are now the knot spans within the face's range: the same
+  // for a face of the whole surface.
+  const ThreadedBlock spec;
+  const TopoDS_Shape block = threaded_block(spec);
+  const std::vector<TopoDS_Face> flanks = flank_faces(block);
+  CHECK(flanks.size() == 2);
+  if (flanks.empty()) {
+    return;
+  }
+  const occ::handle<Geom_BSplineSurface> surface =
+      occ::down_cast<Geom_BSplineSurface>(BRep_Tool::Surface(flanks.front()));
+  CHECK(!surface.IsNull());
+  if (surface.IsNull()) {
+    return;
+  }
+  // The direction along the helices.
+  const bool along_u = surface->NbUKnots() > surface->NbVKnots();
+  const int knots = along_u ? surface->NbUKnots() : surface->NbVKnots();
+  const int degree = along_u ? surface->UDegree() : surface->VDegree();
+  CHECK(knots > 32 * 60);
+  const occ::handle<BRepAdaptor_Surface> whole = new BRepAdaptor_Surface(flanks.front());
+  const int whole_samples =
+      along_u ? Adaptor3d_HSurfaceTool::NbSamplesU(whole) : Adaptor3d_HSurfaceTool::NbSamplesV(whole);
+  CHECK(whole_samples == knots * degree);
+
+  // A face on a third of a turn of the surface, halfway up.
+  double u0 = 0.0;
+  double u1 = 0.0;
+  double v0 = 0.0;
+  double v1 = 0.0;
+  surface->Bounds(u0, u1, v0, v1);
+  const double from = along_u ? (u0 + u1) / 2.0 : (v0 + v1) / 2.0;
+  const double to = from + (along_u ? u1 - u0 : v1 - v0) / spec.turns / 3.0;
+  const TopoDS_Face piece = along_u ? BRepBuilderAPI_MakeFace(surface, from, to, v0, v1, 1e-7).Face()
+                                    : BRepBuilderAPI_MakeFace(surface, u0, u1, from, to, 1e-7).Face();
+  const occ::handle<BRepAdaptor_Surface> part = new BRepAdaptor_Surface(piece);
+  const int part_samples =
+      along_u ? Adaptor3d_HSurfaceTool::NbSamplesU(part) : Adaptor3d_HSurfaceTool::NbSamplesV(part);
+  const int spans = spans_within(along_u ? surface->UKnots() : surface->VKnots(), from, to);
+  std::printf("  samples along the helices: whole face %d, a third of a turn %d (%d spans)\n", whole_samples,
+              part_samples, spans);
+  CHECK(part_samples <= (spans + 1) * degree);
+  CHECK(part_samples * 50 < whole_samples);
+
+  // A line through the piece's middle along its normal crosses it there,
+  // once.
+  const double um = along_u ? (from + to) / 2.0 : (u0 + u1) / 2.0;
+  const double vm = along_u ? (v0 + v1) / 2.0 : (from + to) / 2.0;
+  gp_Pnt middle;
+  gp_Vec du;
+  gp_Vec dv;
+  surface->D1(um, vm, middle, du, dv);
+  const gp_Vec normal = du.Crossed(dv).Normalized();
+  const TopoDS_Edge line =
+      BRepBuilderAPI_MakeEdge(middle.Translated(-normal * 0.2), middle.Translated(normal * 0.2)).Edge();
+  IntTools_EdgeFace intersection;
+  intersection.SetEdge(line);
+  intersection.SetFace(piece);
+  intersection.SetRange(IntTools_Range(0.0, 0.4));
+  intersection.Perform();
+  CHECK(intersection.IsDone());
+  CHECK(intersection.IsDone() && intersection.CommonParts().Length() == 1);
+  if (intersection.IsDone() && intersection.CommonParts().Length() == 1) {
+    const IntTools_CommonPrt& part0 = intersection.CommonParts().First();
+    CHECK(part0.Type() == TopAbs_VERTEX);
+    CHECK_NEAR_TOL(part0.VertexParameter1(), 0.2, 1e-6);
+  }
+}
+
+// An adaptor of a surface that counts its evaluations: the work of
+// algorithms that evaluate a surface through its adaptor.
+class CountingSurface : public Adaptor3d_Surface {
+public:
+  explicit CountingSurface(const occ::handle<Geom_Surface>& surface) : m_inner(surface) {}
+
+  long evaluations() const { return m_evaluations; }
+
+  double FirstUParameter() const override { return m_inner.FirstUParameter(); }
+  double LastUParameter() const override { return m_inner.LastUParameter(); }
+  double FirstVParameter() const override { return m_inner.FirstVParameter(); }
+  double LastVParameter() const override { return m_inner.LastVParameter(); }
+  GeomAbs_Shape UContinuity() const override { return m_inner.UContinuity(); }
+  GeomAbs_Shape VContinuity() const override { return m_inner.VContinuity(); }
+  int NbUIntervals(const GeomAbs_Shape s) const override { return m_inner.NbUIntervals(s); }
+  int NbVIntervals(const GeomAbs_Shape s) const override { return m_inner.NbVIntervals(s); }
+  void UIntervals(NCollection_Array1<double>& t, const GeomAbs_Shape s) const override { m_inner.UIntervals(t, s); }
+  void VIntervals(NCollection_Array1<double>& t, const GeomAbs_Shape s) const override { m_inner.VIntervals(t, s); }
+  bool IsUClosed() const override { return m_inner.IsUClosed(); }
+  bool IsVClosed() const override { return m_inner.IsVClosed(); }
+  bool IsUPeriodic() const override { return m_inner.IsUPeriodic(); }
+  double UPeriod() const override { return m_inner.UPeriod(); }
+  bool IsVPeriodic() const override { return m_inner.IsVPeriodic(); }
+  double VPeriod() const override { return m_inner.VPeriod(); }
+  double UResolution(const double r) const override { return m_inner.UResolution(r); }
+  double VResolution(const double r) const override { return m_inner.VResolution(r); }
+  GeomAbs_SurfaceType GetType() const override { return m_inner.GetType(); }
+  int UDegree() const override { return m_inner.UDegree(); }
+  int VDegree() const override { return m_inner.VDegree(); }
+  int NbUPoles() const override { return m_inner.NbUPoles(); }
+  int NbVPoles() const override { return m_inner.NbVPoles(); }
+  int NbUKnots() const override { return m_inner.NbUKnots(); }
+  int NbVKnots() const override { return m_inner.NbVKnots(); }
+  bool IsURational() const override { return m_inner.IsURational(); }
+  bool IsVRational() const override { return m_inner.IsVRational(); }
+  occ::handle<Geom_BSplineSurface> BSpline() const override { return m_inner.BSpline(); }
+  gp_Pnt EvalD0(const double u, const double v) const override {
+    ++m_evaluations;
+    return m_inner.EvalD0(u, v);
+  }
+  Geom_Surface::ResD1 EvalD1(const double u, const double v) const override {
+    ++m_evaluations;
+    return m_inner.EvalD1(u, v);
+  }
+  Geom_Surface::ResD2 EvalD2(const double u, const double v) const override {
+    ++m_evaluations;
+    return m_inner.EvalD2(u, v);
+  }
+  Geom_Surface::ResD3 EvalD3(const double u, const double v) const override {
+    ++m_evaluations;
+    return m_inner.EvalD3(u, v);
+  }
+  gp_Vec EvalDN(const double u, const double v, const int nu, const int nv) const override {
+    ++m_evaluations;
+    return m_inner.EvalDN(u, v, nu, nv);
+  }
+
+private:
+  GeomAdaptor_Surface m_inner;
+  mutable long m_evaluations = 0;
+};
+
+void test_projection_onto_a_multi_turn_surface_works_on_a_bounded_grid() {
+  // The projection of a point onto a B-spline surface finds its candidates
+  // on a grid, the degree's number of parameters a knot span, and computes
+  // the distance to every node, edge and cell of it for each point: on a
+  // flank running 32 turns (2000 knot spans along the helices) the grid had
+  // 44 x 6000 nodes, and the booleans project onto each such face many times
+  // (mitcad#235, port 0593). A range of more than 1001 such parameters is
+  // now sampled at 1001; the projections are as before. The first
+  // projection evaluates the grid's nodes through the adaptor.
+  const ThreadedBlock spec;
+  const TopoDS_Shape block = threaded_block(spec);
+  const std::vector<TopoDS_Face> flanks = flank_faces(block);
+  CHECK(!flanks.empty());
+  if (flanks.empty()) {
+    return;
+  }
+  const occ::handle<Geom_Surface> surface = BRep_Tool::Surface(flanks.front());
+  const CountingSurface counted(surface);
+  Extrema_ExtPS projection;
+  projection.Initialize(counted, counted.FirstUParameter(), counted.LastUParameter(), counted.FirstVParameter(),
+                        counted.LastVParameter(), 1e-9, 1e-9);
+  projection.SetFlag(Extrema_ExtFlag_MIN);
+  // Points 0.05 off the surface along its normal, along its height: each
+  // projects back onto its foot.
+  double u0 = 0.0;
+  double u1 = 0.0;
+  double v0 = 0.0;
+  double v1 = 0.0;
+  surface->Bounds(u0, u1, v0, v1);
+  long grid = 0;
+  long most = 0;
+  for (int k = 0; k < 8; ++k) {
+    const double u = u0 + (u1 - u0) * (k + 0.37) / 8.0;
+    const double v = v0 + (v1 - v0) * (k + 0.61) / 8.0;
+    gp_Pnt foot;
+    gp_Vec du;
+    gp_Vec dv;
+    surface->D1(u, v, foot, du, dv);
+    const gp_Pnt point = foot.Translated(du.Crossed(dv).Normalized() * 0.05);
+    const long before = counted.evaluations();
+    projection.Perform(point);
+    // The first projection builds the grid.
+    if (k == 0) {
+      grid = counted.evaluations() - before;
+    } else {
+      most = std::max(most, counted.evaluations() - before);
+    }
+    CHECK(projection.IsDone() && projection.NbExt() > 0);
+    if (!projection.IsDone() || projection.NbExt() == 0) {
+      continue;
+    }
+    double best = projection.SquareDistance(1);
+    for (int i = 2; i <= projection.NbExt(); ++i) {
+      best = std::min(best, projection.SquareDistance(i));
+    }
+    CHECK_NEAR_TOL(std::sqrt(best), 0.05, 1e-7);
+  }
+  std::printf("  surface evaluations: the first projection (its grid) %ld, the others at most %ld\n", grid, most);
+  CHECK(grid < 100000);
+}
+
+void test_merge_after_a_cut_across_a_multi_turn_thread() {
+  // The face merge after a boolean (ShapeUpgrade_UnifySameDomain) tests
+  // neighbouring faces of other surfaces for planarity, over the whole
+  // surface; it now tests each surface once (mitcad#235, port 0592), with
+  // the test's own results. The merge after a box cut across the thread,
+  // whose faces lie on no common surface, keeps the cut's result as it is:
+  // valid, of the same volume (integrated over the faces the merge
+  // changed) and faces.
+  const ThreadedBlock spec;
+  const TopoDS_Shape block = threaded_block(spec);
+  BRepAlgoAPI_Cut cut(block, BRepPrimAPI_MakeBox(gp_Pnt(3.0, -0.5, 20.2), gp_Pnt(4.5, 0.5, 21.2)).Shape());
+  CHECK(cut.IsDone());
+  if (!cut.IsDone()) {
+    return;
+  }
+  const TopoDS_Shape before = cut.Shape();
+  cut.SimplifyResult();
+  const TopoDS_Shape after = cut.Shape();
+  CHECK(BRepCheck_Analyzer(after).IsValid());
+  const mitcad::geometry::ChangedVolume changed = mitcad::geometry::changed_volume({before}, {after});
+  CHECK_NEAR_TOL(changed.volume, 0.0, 1e-6);
+  std::printf("  faces before the merge %d, after %d (flanks %zu)\n", count(before, TopAbs_FACE),
+              count(after, TopAbs_FACE), flank_faces(after).size());
+  CHECK(count(after, TopAbs_FACE) == count(before, TopAbs_FACE));
+}
+
 } // namespace
 
 int main() {
@@ -444,6 +732,13 @@ int main() {
                 test_cross_hole_through_a_thread_whose_edges_run_many_turns);
   test::guarded("second cut across a thread whose faces run many turns",
                 test_second_cut_across_a_thread_whose_faces_run_many_turns);
+  test::guarded("cut across a thread whose major cylinder is stored as a cone",
+                test_cut_across_a_thread_whose_major_cylinder_is_stored_as_a_cone);
+  test::guarded("face on a part of a multi-turn surface sampled within it",
+                test_face_on_a_part_of_a_multi_turn_surface_sampled_within_it);
+  test::guarded("projection onto a multi-turn surface works on a bounded grid",
+                test_projection_onto_a_multi_turn_surface_works_on_a_bounded_grid);
+  test::guarded("merge after a cut across a multi-turn thread", test_merge_after_a_cut_across_a_multi_turn_thread);
   if (test::failures == 0) {
     std::puts("test_multi_turn_faces: all checks passed");
   }

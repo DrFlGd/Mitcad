@@ -1,0 +1,353 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+ShapeUpgrade_UnifySameDomain: faces on a cylinder that reach round the
+whole period without winding round it are merged into one face without a
+seam (mitcad#400).
+
+Where the faces to merge on a surface periodic in u have no seam among
+them, IntUnifyFaces finds the range of u they cover; when that range is the
+whole period, it takes it that their union winds round the surface and
+builds the merged face's wires with seams reconstructed from removed edges
+(ReconstructMissedSeam). A ring of pieces cut through from one end to the
+other by a stepped or slanting cut covers the whole period without winding
+round it: the rim of a spiral stair's slabs, split by the lines of a
+sketch, with the treads' inner sides on it rising from step to step, or
+with a helical stringer along it. Its union is one face reaching from one
+side of the cut round to the other, whose pcurves span more than the
+period. The wires built with seams were wrong: the merged face used an
+edge with two pcurves on its surface once (BRepCheck_InvalidMultiConnexity)
+and left pieces of the ring unmerged beneath it, the result was invalid,
+and the boolean operation's caller recomputed it without the merge, with a
+thousand pieces of the rim (and twice the time).
+
+IntUnifyFaces now first follows the contours of the merged face's edges,
+moving each pcurve by whole periods onto the end of the one before it
+(RelocateContoursNotWinding). When every contour closes in 2d, so that none
+goes round the surface, and each hole lies inside the outer contour at one
+place, the face is built without a seam on a copy of the surface with
+those pcurves, as the faces whose union covers less than the period are
+built on a trimmed surface; otherwise (a contour winding round the
+surface, a vertex with more than one way on, a hole that cannot be placed,
+a surface periodic in both directions) the seam is taken as before.
+
+--- a/src/ModelingAlgorithms/TKShHealing/ShapeUpgrade/ShapeUpgrade_UnifySameDomain.cxx
++++ b/src/ModelingAlgorithms/TKShHealing/ShapeUpgrade/ShapeUpgrade_UnifySameDomain.cxx
+@@ -705,6 +705,275 @@
+   return true;
+ }
+ 
++namespace
++{
++// The points of a contour's pcurves (theCurves, in the contour's order and
++// orientation) as a polygon in 2d.
++NCollection_Sequence<gp_Pnt2d> ContourPolygon(
++  const NCollection_Sequence<std::pair<occ::handle<Geom2d_Curve>, bool>>& theCurves)
++{
++  NCollection_Sequence<gp_Pnt2d> aPolygon;
++  const int                      aNbSteps = 16;
++  for (int anIndex = 1; anIndex <= theCurves.Length(); ++anIndex)
++  {
++    const occ::handle<Geom2d_Curve>& aCurve    = theCurves(anIndex).first;
++    const bool                       isForward = theCurves(anIndex).second;
++    const double                     aFirst    = aCurve->FirstParameter();
++    const double                     aLast     = aCurve->LastParameter();
++    for (int aStep = 0; aStep < aNbSteps; ++aStep)
++    {
++      const double aT = isForward ? aFirst + (aLast - aFirst) * aStep / aNbSteps
++                                  : aLast + (aFirst - aLast) * aStep / aNbSteps;
++      aPolygon.Append(aCurve->Value(aT));
++    }
++  }
++  return aPolygon;
++}
++
++// Twice the signed area of a polygon in 2d.
++double PolygonArea(const NCollection_Sequence<gp_Pnt2d>& thePolygon)
++{
++  double anArea = 0.;
++  for (int anIndex = 1; anIndex <= thePolygon.Length(); ++anIndex)
++  {
++    const gp_Pnt2d& aP = thePolygon(anIndex);
++    const gp_Pnt2d& aQ = thePolygon(anIndex == thePolygon.Length() ? 1 : anIndex + 1);
++    anArea += aP.X() * aQ.Y() - aQ.X() * aP.Y();
++  }
++  return anArea;
++}
++
++// Whether a point lies inside a polygon in 2d (crossings of a ray along +X).
++bool IsInsidePolygon(const NCollection_Sequence<gp_Pnt2d>& thePolygon, const gp_Pnt2d& thePoint)
++{
++  bool isInside = false;
++  for (int anIndex = 1; anIndex <= thePolygon.Length(); ++anIndex)
++  {
++    const gp_Pnt2d& aP = thePolygon(anIndex);
++    const gp_Pnt2d& aQ = thePolygon(anIndex == thePolygon.Length() ? 1 : anIndex + 1);
++    if ((aP.Y() > thePoint.Y()) != (aQ.Y() > thePoint.Y()))
++    {
++      const double anX = aP.X() + (thePoint.Y() - aP.Y()) * (aQ.X() - aP.X()) / (aQ.Y() - aP.Y());
++      if (anX > thePoint.X())
++      {
++        isInside = !isInside;
++      }
++    }
++  }
++  return isInside;
++}
++} // namespace
++
++//=======================================================================
++// function : RelocateContoursNotWinding
++// purpose  : The faces to merge on a surface periodic in one coordinate
++//           cover every value of that coordinate within the period, and no
++//           seam was found among them. Their union may still not wind round
++//           the surface: a ring of pieces of a cylinder cut through from
++//           one end to the other by a stepped or slanting cut (the treads of
++//           a spiral stair against its slabs' rim, a helical stringer along
++//           it) reaches round the whole period, from one side of the cut to
++//           the other, and is one face without a seam whose pcurves span
++//           more than the period. The contours of the merged face's edges
++//           <theEdges> are followed with each pcurve moved by whole periods
++//           onto the end of the one before it; when every contour closes in
++//           2d (none goes round the surface) and the holes are placed inside
++//           the outer contour, the moved pcurves are returned in
++//           <theEdgeNewPCurve> and the face needs no seam. Returns false when a
++//           contour winds round the surface (a seam is needed), when a vertex
++//           has more than one way on, or when the contours cannot be placed.
++//=======================================================================
++static bool RelocateContoursNotWinding(
++  const NCollection_Sequence<TopoDS_Shape>&                     theEdges,
++  const TopoDS_Face&                                            theRefFace,
++  const double                                                  theCoordTol,
++  const int                                                     theIndCoord,
++  const double                                                  thePeriod,
++  NCollection_DataMap<TopoDS_Shape, occ::handle<Geom2d_Curve>>& theEdgeNewPCurve)
++{
++  NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>
++    aVEmap;
++  for (int anIndex = 1; anIndex <= theEdges.Length(); ++anIndex)
++  {
++    if (BRep_Tool::Degenerated(TopoDS::Edge(theEdges(anIndex))))
++    {
++      return false;
++    }
++    TopExp::MapShapesAndUniqueAncestors(theEdges(anIndex), TopAbs_VERTEX, TopAbs_EDGE, aVEmap);
++  }
++  const int anOtherCoord = theIndCoord == 1 ? 2 : 1;
++
++  // The pcurve of an edge on the reference face, trimmed to the edge, with
++  // its start and end in the edge's orientation.
++  const auto aPCurveOf = [&](const TopoDS_Edge& theEdge,
++                             occ::handle<Geom2d_Curve>& theCurve,
++                             gp_Pnt2d&                  theStart,
++                             gp_Pnt2d&                  theEnd) {
++    double                    aFirst, aLast;
++    occ::handle<Geom2d_Curve> aPCurve = BRep_Tool::CurveOnSurface(theEdge, theRefFace, aFirst, aLast);
++    if (aPCurve.IsNull())
++    {
++      return false;
++    }
++    theCurve = new Geom2d_TrimmedCurve(aPCurve, aFirst, aLast);
++    const bool isForward = theEdge.Orientation() != TopAbs_REVERSED;
++    theStart             = theCurve->Value(isForward ? aFirst : aLast);
++    theEnd               = theCurve->Value(isForward ? aLast : aFirst);
++    return true;
++  };
++
++  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aUsedEdges;
++  // The contours: their edges and their pcurves with the edges' orientation.
++  NCollection_Sequence<NCollection_Sequence<TopoDS_Shape>>                              aContourEdges;
++  NCollection_Sequence<NCollection_Sequence<std::pair<occ::handle<Geom2d_Curve>, bool>>> aContours;
++  for (int anIndex = 1; anIndex <= theEdges.Length(); ++anIndex)
++  {
++    const TopoDS_Edge aStartEdge = TopoDS::Edge(theEdges(anIndex));
++    if (aUsedEdges.Contains(aStartEdge))
++    {
++      continue;
++    }
++    occ::handle<Geom2d_Curve> aCurve;
++    gp_Pnt2d                  aStartPoint, aCurPoint;
++    if (!aPCurveOf(aStartEdge, aCurve, aStartPoint, aCurPoint))
++    {
++      return false;
++    }
++    NCollection_Sequence<TopoDS_Shape>                              anEdges;
++    NCollection_Sequence<std::pair<occ::handle<Geom2d_Curve>, bool>> aCurves;
++    anEdges.Append(aStartEdge);
++    aCurves.Append(std::make_pair(aCurve, aStartEdge.Orientation() != TopAbs_REVERSED));
++    aUsedEdges.Add(aStartEdge);
++    const TopoDS_Vertex aStartVertex = TopExp::FirstVertex(aStartEdge, true);
++    TopoDS_Vertex       aCurVertex   = TopExp::LastVertex(aStartEdge, true);
++    for (int aCount = 0;; ++aCount)
++    {
++      if (aCount > theEdges.Length())
++      {
++        return false;
++      }
++      // The edges going on from the current vertex.
++      TopoDS_Edge aNextEdge;
++      int         aNbNext = 0;
++      if (aVEmap.Contains(aCurVertex))
++      {
++        for (NCollection_List<TopoDS_Shape>::Iterator anIter(aVEmap.FindFromKey(aCurVertex));
++             anIter.More();
++             anIter.Next())
++        {
++          const TopoDS_Edge& anEdge = TopoDS::Edge(anIter.Value());
++          if (!aUsedEdges.Contains(anEdge) && TopExp::FirstVertex(anEdge, true).IsSame(aCurVertex))
++          {
++            aNextEdge = anEdge;
++            ++aNbNext;
++          }
++        }
++      }
++      if (aCurVertex.IsSame(aStartVertex))
++      {
++        // The contour is closed in 3d: it must be closed in 2d too, and
++        // touch itself nowhere else.
++        if (aNbNext != 0 || std::abs(aCurPoint.Coord(theIndCoord) - aStartPoint.Coord(theIndCoord)) > theCoordTol
++            || std::abs(aCurPoint.Coord(anOtherCoord) - aStartPoint.Coord(anOtherCoord)) > theCoordTol)
++        {
++          return false;
++        }
++        break;
++      }
++      if (aNbNext != 1)
++      {
++        return false;
++      }
++      gp_Pnt2d aNextStart, aNextEnd;
++      if (!aPCurveOf(aNextEdge, aCurve, aNextStart, aNextEnd))
++      {
++        return false;
++      }
++      const double anOffset  = aCurPoint.Coord(theIndCoord) - aNextStart.Coord(theIndCoord);
++      const double aNbPeriod = std::floor(anOffset / thePeriod + 0.5);
++      if (std::abs(anOffset - aNbPeriod * thePeriod) > theCoordTol
++          || std::abs(aCurPoint.Coord(anOtherCoord) - aNextStart.Coord(anOtherCoord)) > theCoordTol)
++      {
++        return false;
++      }
++      if (aNbPeriod != 0.)
++      {
++        gp_Vec2d aShift(0., 0.);
++        aShift.SetCoord(theIndCoord, aNbPeriod * thePeriod);
++        aCurve->Translate(aShift);
++        aNextEnd.Translate(aShift);
++      }
++      anEdges.Append(aNextEdge);
++      aCurves.Append(std::make_pair(aCurve, aNextEdge.Orientation() != TopAbs_REVERSED));
++      aUsedEdges.Add(aNextEdge);
++      aCurPoint  = aNextEnd;
++      aCurVertex = TopExp::LastVertex(aNextEdge, true);
++    }
++    aContourEdges.Append(anEdges);
++    aContours.Append(aCurves);
++  }
++  if (aContours.IsEmpty())
++  {
++    return false;
++  }
++
++  // The outer contour encloses the largest area; each hole is moved by the
++  // whole periods that put it inside it.
++  NCollection_Sequence<NCollection_Sequence<gp_Pnt2d>> aPolygons;
++  int                                                    anOuter    = 1;
++  double                                                 aMaxArea   = 0.;
++  for (int anIndex = 1; anIndex <= aContours.Length(); ++anIndex)
++  {
++    aPolygons.Append(ContourPolygon(aContours(anIndex)));
++    const double anArea = std::abs(PolygonArea(aPolygons(anIndex)));
++    if (anArea > aMaxArea)
++    {
++      aMaxArea = anArea;
++      anOuter  = anIndex;
++    }
++  }
++  for (int anIndex = 1; anIndex <= aContours.Length(); ++anIndex)
++  {
++    if (anIndex != anOuter)
++    {
++      // A point inside the hole's first pcurve, away from its ends.
++      const std::pair<occ::handle<Geom2d_Curve>, bool>& aFirst = aContours(anIndex)(1);
++      const gp_Pnt2d aPoint = aFirst.first->Value(
++        0.5 * (aFirst.first->FirstParameter() + aFirst.first->LastParameter()));
++      int    aNbPlaces = 0;
++      double aPlace    = 0.;
++      for (int aNbPeriod = -2; aNbPeriod <= 2; ++aNbPeriod)
++      {
++        gp_Pnt2d aMoved = aPoint;
++        aMoved.SetCoord(theIndCoord, aPoint.Coord(theIndCoord) + aNbPeriod * thePeriod);
++        if (IsInsidePolygon(aPolygons(anOuter), aMoved))
++        {
++          ++aNbPlaces;
++          aPlace = aNbPeriod * thePeriod;
++        }
++      }
++      if (aNbPlaces != 1)
++      {
++        return false;
++      }
++      if (aPlace != 0.)
++      {
++        gp_Vec2d aShift(0., 0.);
++        aShift.SetCoord(theIndCoord, aPlace);
++        for (int aCurveIndex = 1; aCurveIndex <= aContours(anIndex).Length(); ++aCurveIndex)
++        {
++          aContours(anIndex)(aCurveIndex).first->Translate(aShift);
++        }
++      }
++    }
++    for (int aCurveIndex = 1; aCurveIndex <= aContours(anIndex).Length(); ++aCurveIndex)
++    {
++      theEdgeNewPCurve.Bind(aContourEdges(anIndex)(aCurveIndex), aContours(anIndex)(aCurveIndex).first);
++    }
++  }
++  return true;
++}
++
+ static void InsertWiresIntoFaces(const NCollection_Sequence<TopoDS_Shape>& theWires,
+                                  const NCollection_Sequence<TopoDS_Shape>& theFaces,
+                                  const TopoDS_Face&                        theRefFace)
+@@ -3849,7 +4118,40 @@
+ 
+             if (aMaxCoord - aMinCoord > aPeriods[ii] - 1.e-5)
+             {
+-              anIsSeamFound[ii] = true;
++              // The faces reach round the whole period; their union needs
++              // a seam only if it winds round the surface.
++              NCollection_DataMap<TopoDS_Shape, occ::handle<Geom2d_Curve>> EdgeNewPCurve;
++              if (aPeriods[1 - ii] == 0.
++                  && RelocateContoursNotWinding(edges,
++                                                F_RefFace,
++                                                CoordTol,
++                                                ii + 1,
++                                                aPeriods[ii],
++                                                EdgeNewPCurve))
++              {
++                // One face without a seam, its pcurves spanning more than
++                // the period, on a copy of the surface (the edges keep their
++                // pcurves on the faces merged).
++                occ::handle<Geom_Surface> NewSurf =
++                  occ::down_cast<Geom_Surface>(aBaseSurface->Copy());
++                TopoDS_Face               OldRefFace = RefFace;
++                occ::handle<Geom2d_Curve> NullPCurve;
++                RefFace.Nullify();
++                BB.MakeFace(RefFace, NewSurf, aBaseLocation, 0.);
++                for (int jj = 1; jj <= edges.Length(); jj++)
++                {
++                  TopoDS_Edge anEdge = TopoDS::Edge(edges(jj));
++                  if (MapEdgesWithTemporaryPCurves.Contains(anEdge))
++                  {
++                    BB.UpdateEdge(anEdge, NullPCurve, OldRefFace, 0.);
++                  }
++                  BB.UpdateEdge(anEdge, EdgeNewPCurve(anEdge), RefFace, 0.);
++                }
++              }
++              else
++              {
++                anIsSeamFound[ii] = true;
++              }
+             }
+             else if (aNumberOfIntervals == 2)
+             {

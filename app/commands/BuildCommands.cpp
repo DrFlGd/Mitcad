@@ -73,6 +73,7 @@ struct Shared {
   // The preview shown last: the new part's frame and length.
   build::Frame frame;
   double length = kNaN;
+  bool bound = false;
   // build_junctions, and each junction's label for the choice.
   QJsonArray junctions;
   Choices junctionChoices;
@@ -119,14 +120,35 @@ struct Shared {
     return image;
   }
 
-  void setPreview(const build::Frame& shown, double shownLength) {
+  void setPreview(const build::Frame& shown, double shownLength, bool shownBound) {
     const std::lock_guard<std::mutex> lock(mutex);
     frame = shown;
     length = shownLength;
+    bound = shownBound;
   }
   std::pair<build::Frame, double> preview() const {
     const std::lock_guard<std::mutex> lock(mutex);
     return {frame, length};
+  }
+  // Whether the preview shown last had its length bound (an auto length
+  // with a target): then the length has no handle.
+  bool previewBound() const {
+    const std::lock_guard<std::mutex> lock(mutex);
+    return bound;
+  }
+  // Whether the design has parts a part of `role` goes on (mitcad#394):
+  // profiles for a profile, profiles and linear parts (a rail for its
+  // carriage) for a linear part. Without them a placement is a ground
+  // placement.
+  bool hasTargets(const QString& role) const {
+    const std::lock_guard<std::mutex> lock(mutex);
+    return std::any_of(parts.begin(), parts.end(), [&role](const BuildPart& part) {
+      return targets(role, part.role);
+    });
+  }
+  static bool targets(const QString& role, const QString& target) {
+    return target == QStringLiteral("profile") ||
+           (role == QStringLiteral("linear") && target == QStringLiteral("linear"));
   }
   QJsonObject junction(const QString& id) const {
     const std::lock_guard<std::mutex> lock(mutex);
@@ -208,9 +230,27 @@ bool chosenPart(const Shared& shared, const CommandState& state, Part& part) {
   return shared.catalog.find(state.choice(kPart), part);
 }
 
+// A cut-to-length part starts with its default length (its stock length,
+// else 500 mm, mitcad#394), unless a length was typed: the length shown
+// follows the chosen part while it is the default one.
+void followPart(const Shared& shared, CommandState& state, const CommandContext& context) {
+  Part part;
+  if (!chosenPart(shared, state, part) || !part.cutToLength()) {
+    return;
+  }
+  const QString shown = cmd::lengthText(part.defaultLength(), context);
+  const QString before = state.object(QStringLiteral("length_default")).value(QStringLiteral("text")).toString();
+  const QString typed = state.text(QStringLiteral("length")).trimmed();
+  if (typed.isEmpty() || typed == before) {
+    state.setText(QStringLiteral("length"), shown);
+    state.setValue(QStringLiteral("length"), kNaN);
+    state.setObject(QStringLiteral("length_default"), {{QStringLiteral("text"), shown}});
+  }
+}
+
 // The first part the search and the system leave, when the chosen one is
 // not among them any more.
-void followFilter(const Shared& shared, const QString& role, CommandState& state) {
+void followFilter(const Shared& shared, const QString& role, CommandState& state, const CommandContext& context) {
   const QVector<Part> parts = shared.catalog.parts(role);
   const Choices shown = build::partChoices(parts, state.text(kSearch), state.choice(kSystem), QString());
   const bool kept = std::any_of(shown.begin(), shown.end(),
@@ -218,21 +258,29 @@ void followFilter(const Shared& shared, const QString& role, CommandState& state
   if (!kept && !shown.isEmpty()) {
     state.setChoice(kPart, shown.first().first);
   }
+  followPart(shared, state, context);
 }
 
 QVector<InputDef> pickerInputs(const SharedPtr& shared, const QString& role) {
   return {
       textInput(kSearch, QObject::tr("Search"))
           .withTooltip(QObject::tr("Words of the part's name, size, system, slots, supplier or part number"))
-          .withOnChange([shared, role](CommandState& state, const CommandContext&) { followFilter(*shared, role, state); }),
+          .withOnChange([shared, role](CommandState& state, const CommandContext& context) {
+            followFilter(*shared, role, state, context);
+          }),
       choiceInput(kSystem, QObject::tr("System"), {}, QString())
           .withChoices([shared, role](const CommandState&) { return build::systemChoices(shared->catalog.parts(role)); })
-          .withOnChange([shared, role](CommandState& state, const CommandContext&) { followFilter(*shared, role, state); })
+          .withOnChange([shared, role](CommandState& state, const CommandContext& context) {
+            followFilter(*shared, role, state, context);
+          })
           .withTooltip(QObject::tr("The profile system: type, slot width and grid (B8 30: B-type slot 8, 30 mm)")),
       choiceInput(kPart, QObject::tr("Part"), {}, QString())
           .withChoices([shared, role](const CommandState& state) {
             return build::partChoices(shared->catalog.parts(role), state.text(kSearch), state.choice(kSystem),
                                       state.choice(kPart));
+          })
+          .withOnChange([shared](CommandState& state, const CommandContext& context) {
+            followPart(*shared, state, context);
           })
           .withTooltip(QObject::tr("The library's parts that match, with their supplier and part number")),
   };
@@ -246,6 +294,7 @@ void startPicker(Shared& shared, const QString& role, CommandState& state, const
   const QVector<Part> parts = shared.catalog.parts(role);
   Part known;
   if (!state.choice(kPart).isEmpty() && shared.catalog.find(state.choice(kPart), known)) {
+    followPart(shared, state, context);
     return;
   }
   const QString last = shared.lastPart.value(role);
@@ -254,6 +303,7 @@ void startPicker(Shared& shared, const QString& role, CommandState& state, const
   } else if (!parts.isEmpty()) {
     state.setChoice(kPart, parts.first().key);
   }
+  followPart(shared, state, context);
 }
 
 // Why the picker is empty.
@@ -269,13 +319,31 @@ QString noPartsText(const Shared& shared, const QString& role) {
 }
 
 // --- Placing a part (Profile, Linear Part)
+//
+// The panel grows as the placement needs it (mitcad#394): at first the
+// part, its length and, for a ground placement, its direction (X, Y, Z);
+// an end pick adds the corner's direction and the mitre, a side pick the
+// offset, a pick on another part rotate and flip; Placement goes under
+// More. Only what the placement can use highlights: in a ground placement
+// (the design has no part to go on, or Placement "On a plane") planes,
+// points and faces that are no BUILD part's, with the origin's planes
+// shown and Enter placing the part at the origin; else only the faces of
+// the parts it goes on, construction geometry hidden. The parts go into
+// the BUILD host (the `build_host` query), shown as "Adds to".
 
 const Choices kPlaces = {{QStringLiteral("auto"), QStringLiteral("Automatic: the click decides")},
                          {QStringLiteral("side"), QStringLiteral("On the side")},
                          {QStringLiteral("end"), QStringLiteral("On the end")},
-                         {QStringLiteral("grounded"), QStringLiteral("Grounded at the origin (no pick)")}};
+                         {QStringLiteral("plane"), QStringLiteral("On a plane, a face or the origin")}};
+// A ground placement's axis (at.direction): X, Y or Z of the host.
+const Choices kAxes = {{QStringLiteral("x"), QStringLiteral("Along X")},
+                       {QStringLiteral("y"), QStringLiteral("Along Y")},
+                       {QStringLiteral("z"), QStringLiteral("Along Z (standing)")}};
+const QHash<QString, QString> kAxisIcons = {{QStringLiteral("x"), QStringLiteral("build-axis-x")},
+                                            {QStringLiteral("y"), QStringLiteral("build-axis-y")},
+                                            {QStringLiteral("z"), QStringLiteral("build-axis-z")}};
 // An end placement's axis (at.direction): along the target, or turned to
-// an axis of the active component (a corner).
+// an axis of the host (a corner).
 const Choices kDirections = {{QStringLiteral("along"), QStringLiteral("Along the part it meets")},
                              {QStringLiteral("+x"), QStringLiteral("+X")}, {QStringLiteral("-x"), QStringLiteral("-X")},
                              {QStringLiteral("+y"), QStringLiteral("+Y")}, {QStringLiteral("-y"), QStringLiteral("-Y")},
@@ -299,6 +367,51 @@ const Choices kTilts = {{QStringLiteral("x"), QStringLiteral("About x")},
                         {QStringLiteral("-x"), QStringLiteral("About x, the other way")},
                         {QStringLiteral("y"), QStringLiteral("About y")},
                         {QStringLiteral("-y"), QStringLiteral("About y, the other way")}};
+const QString kAt = QStringLiteral("at");
+
+// How a placement goes now: on the ground (a plane, a face, a point or the
+// origin), waiting for a pick on a part, or on a part's side or end.
+enum class Against { Ground, Pick, Side, End };
+
+bool isEndFace(const SelectionItem& item) {
+  return item.name.endsWith(QStringLiteral(":end_a")) || item.name.endsWith(QStringLiteral(":end_b"));
+}
+
+Against against(const Shared& shared, const QString& role, const CommandState& state) {
+  const QString place = state.choice(QStringLiteral("place"));
+  if (place == QStringLiteral("plane") || (place != QStringLiteral("side") && place != QStringLiteral("end") &&
+                                            !shared.hasTargets(role))) {
+    return Against::Ground;
+  }
+  const Selection& items = state.items(kAt);
+  const std::optional<BuildPart> part = items.isEmpty() ? std::nullopt : shared.partAt(items.first().occurrence);
+  if (!part) {
+    return Against::Pick;
+  }
+  if (place == QStringLiteral("side")) {
+    return Against::Side;
+  }
+  if (place == QStringLiteral("end")) {
+    return Against::End;
+  }
+  return isEndFace(items.first()) ? Against::End : Against::Side;
+}
+
+// What the pick input takes now (InputDef::withPickRule).
+SelectFilter pickKinds(const Shared& shared, const QString& role, const CommandState& state) {
+  if (against(shared, role, state) == Against::Ground) {
+    return SelectKind::Face | SelectKind::Plane | SelectKind::Point | SelectKind::Vertex;
+  }
+  return SelectKind::Face;
+}
+
+bool pickTakes(const Shared& shared, const QString& role, const SelectionItem& item, const CommandState& state) {
+  const std::optional<BuildPart> part = shared.partAt(item.occurrence);
+  if (against(shared, role, state) == Against::Ground) {
+    return !part; // planes, points and faces of other components
+  }
+  return item.kind == SelectKind::Face && part && Shared::targets(role, part->role);
+}
 
 // What `build_place` (and its preview) gets from the panel, the auto
 // length's target found.
@@ -307,57 +420,71 @@ struct Placement {
   QString problem;
   QJsonObject target;     // what the auto length runs to, or empty
   QString lengthNote;     // how the length was chosen, for the panel
+  Against how = Against::Ground;
 };
 
 QString angleValue(const QString& degrees) { return degrees + QStringLiteral(" deg"); }
 
+QJsonArray axisVector(const QString& axis) {
+  const double sign = axis.startsWith(QLatin1Char('-')) ? -1.0 : 1.0;
+  const QChar letter = axis.isEmpty() ? QLatin1Char('z') : axis.at(axis.size() - 1);
+  return QJsonArray{letter == QLatin1Char('x') ? sign : 0.0, letter == QLatin1Char('y') ? sign : 0.0,
+                    letter == QLatin1Char('z') ? sign : 0.0};
+}
+
 // The panel's fields; with an auto length the preview names its target
 // first (commands.md, `build_preview`'s `length.target`), and the length
 // binds to it.
-Placement placement(const CommandState& state, const CommandContext& context, const Part& part, bool profile) {
+Placement placement(const Shared& shared, const QString& role, const CommandState& state,
+                    const CommandContext& context, const Part& part, bool profile) {
   Placement result;
+  result.how = against(shared, role, state);
+  if (result.how == Against::Pick) {
+    result.problem = QObject::tr("Click a profile's side or end.");
+    return result;
+  }
   QJsonObject fields{{QStringLiteral("part"), part.ref()}};
-  const QString place = state.choice(QStringLiteral("place"));
-  std::optional<QJsonObject> at;
-  if (place == QStringLiteral("grounded")) {
-    // No geometry: grounded at the active component's origin along its +Z.
-    at = QJsonObject();
-  } else {
-    at = build::atOf(QStringLiteral("at"), state, context, result.problem);
+  std::optional<QJsonObject> at = QJsonObject();
+  if (!state.items(kAt).isEmpty()) {
+    at = build::atOf(kAt, state, context, result.problem);
     if (!at) {
       return result;
     }
-    at->insert(QStringLiteral("place"), place);
   }
-  // On an end, the new part's axis turned (a corner): in the active
-  // component's coordinates.
-  const QString direction = state.choice(QStringLiteral("direction"));
-  if (place != QStringLiteral("side") && place != QStringLiteral("grounded") && !direction.isEmpty() &&
-      direction != QStringLiteral("along")) {
-    const double sign = direction.startsWith(QLatin1Char('-')) ? -1.0 : 1.0;
-    const QChar axis = direction.at(direction.size() - 1);
-    at->insert(QStringLiteral("direction"), QJsonArray{axis == QLatin1Char('x') ? sign : 0.0,
-                                                       axis == QLatin1Char('y') ? sign : 0.0,
-                                                       axis == QLatin1Char('z') ? sign : 0.0});
-  }
-  if (state.checked(QStringLiteral("use_offset")) && place != QStringLiteral("grounded")) {
-    at->insert(QStringLiteral("offset"), state.expression(QStringLiteral("offset")));
-    at->insert(QStringLiteral("from"), state.choice(QStringLiteral("from")));
-  }
-  fields.insert(QStringLiteral("at"), *at);
-  fields.insert(QStringLiteral("rotate"), angleValue(state.choice(QStringLiteral("rotate"))));
-  fields.insert(QStringLiteral("flip"), state.checked(QStringLiteral("flip")));
-  const QString mitre = state.choice(QStringLiteral("mitre"));
-  if (profile && !mitre.isEmpty() && mitre != QStringLiteral("none")) {
-    QJsonObject cut{{QStringLiteral("cut"), mitre}};
-    if (mitre != QStringLiteral("shared")) {
-      cut.insert(QStringLiteral("angle"), state.expression(QStringLiteral("mitre_angle")));
+  const QString place = state.choice(QStringLiteral("place"));
+  if (result.how == Against::Ground) {
+    // On the picked plane, face or point, else (Enter) at the origin,
+    // along X, Y or Z.
+    at->insert(QStringLiteral("direction"), axisVector(state.choice(QStringLiteral("axis"))));
+  } else {
+    at->insert(QStringLiteral("place"), place == QStringLiteral("side") || place == QStringLiteral("end")
+                                            ? place
+                                            : QStringLiteral("auto"));
+    // On an end, the new part's axis turned (a corner): in the host's
+    // coordinates.
+    const QString direction = state.choice(QStringLiteral("direction"));
+    if (result.how == Against::End && !direction.isEmpty() && direction != QStringLiteral("along")) {
+      at->insert(QStringLiteral("direction"), axisVector(direction));
     }
-    fields.insert(QStringLiteral("mitre"), cut);
+    if (result.how == Against::Side && state.checked(QStringLiteral("use_offset"))) {
+      at->insert(QStringLiteral("offset"), state.expression(QStringLiteral("offset")));
+      at->insert(QStringLiteral("from"), state.choice(QStringLiteral("from")));
+    }
+    fields.insert(QStringLiteral("rotate"), angleValue(state.choice(QStringLiteral("rotate"))));
+    fields.insert(QStringLiteral("flip"), state.checked(QStringLiteral("flip")));
+    const QString mitre = state.choice(QStringLiteral("mitre"));
+    if (profile && result.how == Against::End && !mitre.isEmpty() && mitre != QStringLiteral("none")) {
+      QJsonObject cut{{QStringLiteral("cut"), mitre}};
+      if (mitre != QStringLiteral("shared")) {
+        cut.insert(QStringLiteral("angle"), state.expression(QStringLiteral("mitre_angle")));
+      }
+      fields.insert(QStringLiteral("mitre"), cut);
+    }
   }
+  fields.insert(kAt, *at);
   if (part.cutToLength()) {
     const QString mode = state.choice(QStringLiteral("length_mode"));
-    if (mode == kTyped) {
+    if (mode == kTyped || result.how == Against::Ground) {
       fields.insert(QStringLiteral("length"), state.expression(QStringLiteral("length")));
       result.lengthNote = QObject::tr("typed");
     } else {
@@ -373,7 +500,7 @@ Placement placement(const CommandState& state, const CommandContext& context, co
       }
       result.target = first.value(QStringLiteral("length")).toObject().value(QStringLiteral("target")).toObject();
       if (result.target.isEmpty()) {
-        // Nothing in the way (the first part): the typed length.
+        // Nothing in the way: the typed length.
         fields.insert(QStringLiteral("length"), state.expression(QStringLiteral("length")));
         result.lengthNote = QObject::tr("typed: nothing in the way for an auto length");
       } else {
@@ -427,6 +554,34 @@ QJsonObject marker(const QString& label, const gp_Pnt& point) {
   return {{QStringLiteral("label"), label}, {QStringLiteral("point"), build::pointJson(point)}};
 }
 
+std::optional<gp_Pnt> pointOf(const QJsonValue& value) {
+  const QJsonArray point = value.toArray();
+  if (point.size() < 3) {
+    return std::nullopt;
+  }
+  return gp_Pnt(point[0].toDouble(), point[1].toDouble(), point[2].toDouble());
+}
+
+// A side snap's name in the view: "flush A", "middle", ...
+QString snapText(const QString& kind) {
+  if (kind == QStringLiteral("end_a")) {
+    return QObject::tr("flush A");
+  }
+  if (kind == QStringLiteral("end_b")) {
+    return QObject::tr("flush B");
+  }
+  if (kind == QStringLiteral("middle")) {
+    return QObject::tr("middle");
+  }
+  if (kind == QStringLiteral("grid")) {
+    return QObject::tr("grid");
+  }
+  if (kind == QStringLiteral("clamped")) {
+    return QObject::tr("kept on the part");
+  }
+  return kind;
+}
+
 QString targetText(const QJsonObject& target, const CommandContext& context) {
   const std::optional<SelectionItem> item = build::itemOfTarget(target, context);
   const QString occurrence = build::rootPath(str(target, "occurrence"), context);
@@ -453,7 +608,8 @@ QString endsText(const QJsonObject& ends) {
 
 // The inspection of a placement: what build_preview says, the new part's
 // shape (the model's, else its section along the frame), the auto
-// length's target highlighted and the length at the free end.
+// length's target highlighted, the length at the free end, the side's
+// snaps, where the part goes ("Adds to") and the first part's hint.
 Inspection inspectPlacement(const SharedPtr& shared, const QString& role, const CommandState& state,
                             const CommandContext& context, bool profile) {
   Inspection result;
@@ -462,9 +618,19 @@ Inspection inspectPlacement(const SharedPtr& shared, const QString& role, const 
     result.error = noPartsText(*shared, role);
     return result;
   }
-  const Placement placed = placement(state, context, part, profile);
+  const build::Host host = build::buildHost(context);
+  const QString addsTo = QObject::tr("Adds to: %1").arg(host.name);
+  const Placement placed = placement(*shared, role, state, context, part, profile);
+  if (placed.how == Against::Ground && state.items(kAt).isEmpty()) {
+    // The first part: a click or Enter (mitcad#394).
+    result.viewHint = QObject::tr("Click a plane or a face, or press Enter");
+  } else if (placed.how == Against::Pick) {
+    result.viewHint = QObject::tr("Click a profile's side or end");
+  }
   if (!placed.problem.isEmpty()) {
+    result.text = QStringLiteral("<b>%1</b><br>%2").arg(part.name.toHtmlEscaped(), addsTo.toHtmlEscaped());
     result.error = placed.problem;
+    result.log = QStringLiteral("waiting: %1; adds to %2").arg(placed.problem, host.name);
     return result;
   }
   QJsonObject request = placed.fields;
@@ -481,7 +647,7 @@ Inspection inspectPlacement(const SharedPtr& shared, const QString& role, const 
   if (!std::isfinite(length) && placed.target.isEmpty()) {
     length = state.value(QStringLiteral("length"));
   }
-  shared->setPreview(frame, length);
+  shared->setPreview(frame, length, !placed.target.isEmpty());
   // The model's shape of the new part, else its section along the axis.
   QJsonObject shapeRequest = placed.fields;
   shapeRequest.insert(QStringLiteral("shape"), QStringLiteral("build_preview"));
@@ -499,18 +665,28 @@ Inspection inspectPlacement(const SharedPtr& shared, const QString& role, const 
   }
   const QString place = str(answer, "place");
   const QJsonObject ends = answer.value(QStringLiteral("ends")).toObject();
+  const QJsonObject side = answer.value(QStringLiteral("side")).toObject();
   QStringList lines;
   lines << QStringLiteral("<b>%1</b>").arg(part.name.toHtmlEscaped());
   const QString seller = QStringList{part.supplier, part.partNumber}.join(QLatin1Char(' ')).trimmed();
   if (!seller.isEmpty()) {
     lines << seller.toHtmlEscaped();
   }
+  lines << addsTo.toHtmlEscaped();
   if (!place.isEmpty()) {
     lines << (place == QStringLiteral("end")        ? QObject::tr("On the end")
               : place == QStringLiteral("side")     ? QObject::tr("On the side")
               : place == QStringLiteral("frame")    ? QObject::tr("On the part's frame")
-              : place == QStringLiteral("grounded") ? QObject::tr("Grounded at the origin")
+              : place == QStringLiteral("grounded") ? QObject::tr("At the origin")
                                                     : QObject::tr("On the picked geometry"));
+  }
+  QString snapped;
+  if (!side.isEmpty()) {
+    const double offset = side.value(QStringLiteral("offset")).toDouble();
+    const QString kind = str(side, "kind");
+    snapped = kind.isEmpty() ? QStringLiteral("none") : kind;
+    lines << (kind.isEmpty() ? QObject::tr("%1 mm from end A").arg(offset, 0, 'f', 1)
+                             : QObject::tr("%1 mm from end A (%2)").arg(offset, 0, 'f', 1).arg(snapText(kind)));
   }
   if (part.cutToLength()) {
     QString shown = std::isfinite(length) ? QObject::tr("Length %1 mm").arg(length, 0, 'f', 1) : QObject::tr("Length");
@@ -525,28 +701,38 @@ Inspection inspectPlacement(const SharedPtr& shared, const QString& role, const 
   }
   result.text = lines.join(QStringLiteral("<br>"));
   result.error = problemsOf(answer);
-  result.log = QStringLiteral("place %1, length %2 mm (%3%4), %5")
+  result.log = QStringLiteral("place %1, length %2 mm (%3%4), %5; adds to %6%7")
                    .arg(place.isEmpty() ? QStringLiteral("first") : place,
                         std::isfinite(length) ? QString::number(length, 'f', 2) : QStringLiteral("?"),
                         placed.lengthNote,
                         placed.target.isEmpty() ? QString()
                                                 : QStringLiteral(" to ") + targetText(placed.target, context),
-                        endsText(ends));
-  // The length at the free end ("the length box"), and the slot's snaps.
+                        endsText(ends), host.name,
+                        snapped.isEmpty() ? QString()
+                                          : QStringLiteral("; snap %1 at %2 mm")
+                                                .arg(snapped)
+                                                .arg(side.value(QStringLiteral("offset")).toDouble(), 0, 'f', 1));
+  if (placed.how == Against::Ground) {
+    result.log += QStringLiteral("; along %1").arg(state.choice(QStringLiteral("axis")));
+  }
+  // The length at the free end, and the side's snaps: the ends and the
+  // middle, the one taken marked.
   QJsonArray markers;
   if (frame.valid && std::isfinite(length) && part.cutToLength()) {
     markers.append(marker(QStringLiteral("%1 mm").arg(length, 0, 'f', 1),
                           frame.origin.Translated(gp_Vec(frame.z) * length)));
   }
-  int snaps = 0;
   for (const QJsonValue& value : answer.value(QStringLiteral("snaps")).toArray()) {
     const QJsonObject snap = value.toObject();
-    const QJsonArray point = snap.value(QStringLiteral("point")).toArray();
-    if (point.size() >= 3 && snaps < 12) {
-      markers.append(marker(str(snap, "label").isEmpty() ? str(snap, "kind") : str(snap, "label"),
-                            gp_Pnt(point[0].toDouble(), point[1].toDouble(), point[2].toDouble())));
-      ++snaps;
+    const QString kind = str(snap, "kind");
+    const std::optional<gp_Pnt> point = pointOf(snap.value(QStringLiteral("point")));
+    if (point && kind != QStringLiteral("grid") && kind != str(side, "kind")) {
+      markers.append(marker(snapText(kind), *point));
     }
+  }
+  if (const std::optional<gp_Pnt> point = pointOf(side.value(QStringLiteral("point")));
+      point && !str(side, "kind").isEmpty()) {
+    markers.append(marker(QStringLiteral("> %1").arg(snapText(str(side, "kind"))), *point));
   }
   result.report = {{QStringLiteral("markers"), markers}};
   // The box at the cursor shows the auto length while it is bound; typing
@@ -564,39 +750,35 @@ bool shownForCut(const Shared& shared, const CommandState& state) {
 }
 
 // The inputs where and how a part goes, after the picker.
-QVector<InputDef> placementInputs(const SharedPtr& shared, bool profile) {
+QVector<InputDef> placementInputs(const SharedPtr& shared, const QString& role, bool profile) {
   const auto cut = [shared](const CommandState& state) { return shownForCut(*shared, state); };
-  const auto offset = [](const CommandState& state) { return state.checked(QStringLiteral("use_offset")); };
-  const auto picked = [](const CommandState& state) {
-    return state.choice(QStringLiteral("place")) != QStringLiteral("grounded");
+  const auto how = [shared, role](const CommandState& state) { return against(*shared, role, state); };
+  const auto ground = [how](const CommandState& state) { return how(state) == Against::Ground; };
+  const auto onSide = [how](const CommandState& state) { return how(state) == Against::Side; };
+  const auto onEnd = [how](const CommandState& state) { return how(state) == Against::End; };
+  const auto onPart = [how](const CommandState& state) {
+    return how(state) == Against::Side || how(state) == Against::End;
   };
+  const auto offset = [onSide](const CommandState& state) {
+    return onSide(state) && state.checked(QStringLiteral("use_offset"));
+  };
+  const auto more = [](const CommandState& state) { return state.checked(QStringLiteral("more")); };
   QVector<InputDef> inputs = {
-      selectionInput(QStringLiteral("at"), QObject::tr("Place On"),
-                     SelectKind::Face | SelectKind::Plane | SelectKind::Point | SelectKind::Vertex, 1, 1)
+      selectionInput(kAt, QObject::tr("Place On"),
+                     SelectKind::Face | SelectKind::Plane | SelectKind::Point | SelectKind::Vertex, 0, 1)
           .withOnPick([](const SelectionItem& item, CommandState& state, const CommandContext& context) {
-            build::recordPick(QStringLiteral("at"), item, state, context);
+            build::recordPick(kAt, item, state, context);
           },
                       false)
-          .withVisible(picked)
-          .withTooltip(QObject::tr("The first part: a plane, a point or a face. Then a profile: near an end on its "
-                                   "side, or its end face")),
-      choiceInput(QStringLiteral("place"), QObject::tr("Placement"), kPlaces, QStringLiteral("auto"))
-          .withTooltip(QObject::tr("On a profile's side (along its slot) or on its end; Automatic: where the "
-                                   "click was; Grounded: at the origin, without a pick")),
-      choiceInput(QStringLiteral("direction"), QObject::tr("Direction"), kDirections, QStringLiteral("along"))
-          .withVisible([](const CommandState& state) {
-            const QString place = state.choice(QStringLiteral("place"));
-            return place == QStringLiteral("auto") || place == QStringLiteral("end");
-          })
-          .withTooltip(QObject::tr("On an end: along the part it meets, or turned to an axis (a corner, with a "
-                                   "shared mitre)")),
-      checkInput(QStringLiteral("use_offset"), QObject::tr("Offset from an End"), false),
-      valueInput(QStringLiteral("offset"), QObject::tr("Offset"), ValueKind::Length, QStringLiteral("0 mm"))
-          .withVisible(offset)
-          .withTooltip(QObject::tr("Along the profile it goes on, from the end below")),
-      choiceInput(QStringLiteral("from"), QObject::tr("From"), kEnds, QStringLiteral("a")).withVisible(offset),
+          .withPickRule([shared, role](const CommandState& state) { return pickKinds(*shared, role, state); },
+                        [shared, role](const SelectionItem& item, const CommandState& state) {
+                          return pickTakes(*shared, role, item, state);
+                        })
+          .withHiddenConstruction()
+          .withTooltip(QObject::tr("The first part: a plane, a point or a face, or none (Enter: at the origin). "
+                                   "Then a profile: near an end on its side, or its end face")),
       choiceInput(QStringLiteral("length_mode"), QObject::tr("Length"), kLengthModes, QStringLiteral("face"))
-          .withVisible(cut)
+          .withVisible([cut, ground](const CommandState& state) { return cut(state) && !ground(state); })
           .withTabCycle(kAutoModes)
           .withOnChange([shared](CommandState& state, const CommandContext& context) {
             // Typed from where the auto length is.
@@ -610,7 +792,7 @@ QVector<InputDef> placementInputs(const SharedPtr& shared, bool profile) {
           })
           .withTooltip(QObject::tr("Auto: up to the part in the way (bound: it follows that part); Tab steps "
                                    "face, centre, through")),
-      valueInput(QStringLiteral("length"), QObject::tr("Typed Length"), ValueKind::Length, QStringLiteral("500 mm"))
+      valueInput(QStringLiteral("length"), QObject::tr("Length"), ValueKind::Length, QString())
           .withVisible(cut)
           .withCursorBox()
           .withOnChange([](CommandState& state, const CommandContext&) {
@@ -621,7 +803,9 @@ QVector<InputDef> placementInputs(const SharedPtr& shared, bool profile) {
             }
           })
           .withManipulator([shared](const CommandState& state, const CommandContext&) -> std::optional<Manipulator> {
-            if (state.choice(QStringLiteral("length_mode")) != kTyped) {
+            // A handle at the free end while the length is a number (typed,
+            // or nothing in the way): dragging it types the length.
+            if (state.choice(QStringLiteral("length_mode")) != kTyped && shared->previewBound()) {
               return std::nullopt;
             }
             const build::Frame frame = shared->preview().first;
@@ -630,24 +814,57 @@ QVector<InputDef> placementInputs(const SharedPtr& shared, bool profile) {
             }
             return cmd::arrow(frame.origin, frame.z);
           })
-          .withTooltip(QObject::tr("The length when nothing is in the way, or typed; drag its handle at the free end")),
+          .withTooltip(QObject::tr("The part's length: its stock length or 500 mm at first; typed here or in the "
+                                   "box at the cursor, or dragged by its handle at the free end")),
+      choiceInput(QStringLiteral("axis"), QObject::tr("Direction"), kAxes, QStringLiteral("z"))
+          .withChoiceIcons(kAxisIcons)
+          .withVisible(ground)
+          .withTooltip(QObject::tr("The axis the part runs along from where it goes")),
+      choiceInput(QStringLiteral("direction"), QObject::tr("Direction"), kDirections, QStringLiteral("along"))
+          .withVisible(onEnd)
+          .withTooltip(QObject::tr("On an end: along the part it meets, or turned to an axis (a corner, with a "
+                                   "shared mitre)")),
   };
   if (profile) {
-    const auto mitred = [](const CommandState& state) {
+    const auto mitred = [onEnd](const CommandState& state) {
       const QString mitre = state.choice(QStringLiteral("mitre"));
-      return mitre == QStringLiteral("new") || mitre == QStringLiteral("existing");
+      return onEnd(state) && (mitre == QStringLiteral("new") || mitre == QStringLiteral("existing"));
     };
     inputs.append(choiceInput(QStringLiteral("mitre"), QObject::tr("Mitre"), kMitres, QStringLiteral("none"))
-                      .withVisible(cut)
-                      .withTooltip(QObject::tr("On an end: the existing part, the new one or both (shared); on a "
-                                               "side only the new part")));
+                      .withVisible([cut, onEnd](const CommandState& state) { return cut(state) && onEnd(state); })
+                      .withTooltip(QObject::tr("On an end: the existing part, the new one or both (shared)")));
     inputs.append(valueInput(QStringLiteral("mitre_angle"), QObject::tr("Mitre Angle"), ValueKind::Angle,
                              QStringLiteral("45 deg"))
                       .withVisible(mitred));
   }
+  inputs.append(checkInput(QStringLiteral("use_offset"), QObject::tr("Offset from an End"), false)
+                    .withVisible(onSide)
+                    .withTooltip(QObject::tr("Off: where the click was, flush with an end near it, or on the "
+                                             "middle or a grid point")));
+  inputs.append(valueInput(QStringLiteral("offset"), QObject::tr("Offset"), ValueKind::Length, QStringLiteral("0 mm"))
+                    .withVisible(offset)
+                    .withTooltip(QObject::tr("From the end below to the new part's near face: 0 is flush")));
+  inputs.append(choiceInput(QStringLiteral("from"), QObject::tr("From"), kEnds, QStringLiteral("a")).withVisible(offset));
   inputs.append(choiceInput(QStringLiteral("rotate"), QObject::tr("Rotate"), kRotations, QStringLiteral("0"))
+                    .withVisible(onPart)
                     .withTooltip(QObject::tr("About the part's axis, in 90 degree steps")));
-  inputs.append(flipInput(QStringLiteral("flip"), QObject::tr("Flip")));
+  inputs.append(flipInput(QStringLiteral("flip"), QObject::tr("Flip")).withVisible(onPart));
+  inputs.append(checkInput(QStringLiteral("more"), QObject::tr("More"), false)
+                    .withDisclosure()
+                    .withTooltip(QObject::tr("How the click places the part")));
+  inputs.append(choiceInput(QStringLiteral("place"), QObject::tr("Placement"), kPlaces, QStringLiteral("auto"))
+                    .withVisible(more)
+                    .withOnChange([shared, role](CommandState& state, const CommandContext&) {
+                      // What the pick takes changes with it: a pick it no
+                      // longer takes is picked again.
+                      const Selection& items = state.items(kAt);
+                      if (!items.isEmpty() && !pickTakes(*shared, role, items.first(), state)) {
+                        state.setItems(kAt, {});
+                        state.setObject(QStringLiteral("at_pick"), {});
+                      }
+                    })
+                    .withTooltip(QObject::tr("On a profile's side (along its slot) or on its end; Automatic: where "
+                                             "the click was; On a plane: as the first part (Enter: at the origin)")));
   return inputs;
 }
 
@@ -657,8 +874,9 @@ CommandDef placeCommand(const SharedPtr& shared, DocumentHost& host, const QStri
   def.id = profile ? QStringLiteral("build.profile") : QStringLiteral("build.linear");
   def.name = profile ? QObject::tr("Profile") : QObject::tr("Linear Part");
   def.icon = profile ? QStringLiteral("build-profile") : QStringLiteral("build-linear");
-  def.tooltip = profile ? QObject::tr("Places slot profiles: pick one, click where it goes, its length runs to the "
-                                      "part in the way; Enter places it and the next one follows")
+  def.tooltip = profile ? QObject::tr("Places slot profiles: pick one, click where it goes (the first one: a plane, "
+                                      "or Enter at the origin), its length runs to the part in the way; Enter "
+                                      "places it and the next one follows")
                         : QObject::tr("Places rails, carriages, bearings and motor plates: a carriage on its rail "
                                       "slides along it");
   def.tab = kTab;
@@ -671,9 +889,12 @@ CommandDef placeCommand(const SharedPtr& shared, DocumentHost& host, const QStri
   def.okLabel = QObject::tr("Place");
   def.repeats = true;
   def.inputs = pickerInputs(shared, role);
-  def.inputs += placementInputs(shared, profile);
+  def.inputs += placementInputs(shared, role, profile);
   def.init = [shared, role](CommandState& state, const CommandContext& context) {
     startPicker(*shared, role, state, context);
+    qInfo().noquote() << QStringLiteral("BUILD %1 adds to %2%3")
+                             .arg(role, build::buildHost(context).name,
+                                  shared->hasTargets(role) ? QString() : QStringLiteral(" (a ground placement)"));
   };
   def.inspect = [shared, role, profile](const CommandState& state, const CommandContext& context) {
     return inspectPlacement(shared, role, state, context, profile);
@@ -685,7 +906,7 @@ CommandDef placeCommand(const SharedPtr& shared, DocumentHost& host, const QStri
       host.showStatus(noPartsText(*shared, role), true);
       return false;
     }
-    const Placement placed = placement(state, context, part, profile);
+    const Placement placed = placement(*shared, role, state, context, part, profile);
     if (!placed.problem.isEmpty()) {
       host.showStatus(placed.problem, true);
       return false;
@@ -704,7 +925,7 @@ CommandDef placeCommand(const SharedPtr& shared, DocumentHost& host, const QStri
       host.showStatus(warnings.join(QLatin1Char(' ')), false);
     }
     // The next one: picked again; the part stays.
-    state.setItems(QStringLiteral("at"), {});
+    state.setItems(kAt, {});
     state.setObject(QStringLiteral("at_pick"), {});
     shared->lastPart.insert(role, part.key);
     shared->catalog.refresh(role, context); // its source is the design's now
@@ -1447,9 +1668,9 @@ CommandDef lengthCommand(DocumentHost& host, const CommandContext& context) {
       QJsonObject bind;
       const Selection& targets = state.items(QStringLiteral("target"));
       if (!targets.isEmpty()) {
-        const std::optional<QString> path = build::pathFromActive(targets.first(), model);
+        const std::optional<QString> path = build::pathFromHost(targets.first(), model);
         if (!path) {
-          host.showStatus(QObject::tr("%1 is not in the active component.").arg(targets.first().describe()), true);
+          host.showStatus(QObject::tr("%1 is not in %2, where BUILD places parts.").arg(targets.first().describe(), build::buildHost(model).name), true);
           return false;
         }
         bind.insert(QStringLiteral("geometry"), targets.first().reference());

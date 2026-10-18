@@ -40,6 +40,18 @@ constexpr double kDegreesPerRadian = 57.29577951308232;
 
 const QColor kFailedColor(0xd0, 0x20, 0x20);
 
+// "faces, planes" for the log.
+QString selectFilterText(SelectFilter filter) {
+  QStringList names;
+  for (unsigned bit = 1; bit != 0 && bit <= static_cast<unsigned>(SelectKind::Feature); bit <<= 1) {
+    const auto kind = static_cast<SelectKind>(bit);
+    if (filter.testFlag(kind)) {
+      names << SelectionItem::kindName(kind, 2);
+    }
+  }
+  return names.isEmpty() ? QStringLiteral("nothing") : names.join(QStringLiteral(", "));
+}
+
 struct InspectionShape {
   SelectionItem item;
   TopoDS_Shape shape;
@@ -322,7 +334,7 @@ bool CommandSession::start(const Selection& preselection, QString& error) {
     for (const SelectionItem& picked : preselection) {
       for (const Slot& slot : all) {
         const InputDef& input = *slot.def;
-        if (input.type != InputDef::Type::Selection || !input.accepts(picked) ||
+        if (input.type != InputDef::Type::Selection || !input.acceptsIn(picked, scopeOf(slot)) ||
             !isReferable(picked)) {
           continue;
         }
@@ -347,30 +359,37 @@ bool CommandSession::start(const Selection& preselection, QString& error) {
 ItemResolver CommandSession::resolver() const {
   // Asked once per item while the resolver lives (a pick, a start): the
   // model does not change in between.
-  auto known = std::make_shared<QHash<QString, QString>>();
+  auto known = std::make_shared<QHash<QString, QStringList>>();
   const CommandHost* host = &m_host;
-  return [host, known](const SelectionItem& item) -> QString {
+  return [host, known](const SelectionItem& item) -> QStringList {
     if (item.kind != SelectKind::Profile) {
-      return QString();
+      return {};
     }
     const QString key = item.owner + QLatin1Char('|') + item.name;
     const auto found = known->constFind(key);
     if (found != known->cend()) {
       return found.value();
     }
-    QString region;
+    // Every region the key means now, the main one first: all pieces of a
+    // region a sketch edit split (mitcad#407, #410).
+    QStringList regions;
     try {
-      region = host->query({{QStringLiteral("query"), QStringLiteral("profile")},
-                            {QStringLiteral("sketch"), item.owner},
-                            {QStringLiteral("region"), item.name}})
-                   .toObject()
-                   .value(QStringLiteral("region"))
-                   .toString();
+      const QJsonObject answer = host->query({{QStringLiteral("query"), QStringLiteral("profile")},
+                                              {QStringLiteral("sketch"), item.owner},
+                                              {QStringLiteral("region"), item.name}})
+                                     .toObject();
+      for (const QJsonValue& region : answer.value(QStringLiteral("regions")).toArray()) {
+        regions << region.toString();
+      }
+      const QString main = answer.value(QStringLiteral("region")).toString();
+      if (regions.isEmpty() && !main.isEmpty()) {
+        regions << main;
+      }
     } catch (const std::exception&) {
       // A sketch or key the model does not know: only equal keys are one.
     }
-    known->insert(key, region);
-    return region;
+    known->insert(key, regions);
+    return regions;
   };
 }
 
@@ -763,7 +782,7 @@ const InputDef* CommandSession::activeInput() const {
 
 bool CommandSession::activeTakes(SelectKind kind) const {
   const InputDef* input = activeInput();
-  return input != nullptr && input->filter.testFlag(kind);
+  return input != nullptr && activeKinds(input).testFlag(kind);
 }
 
 void CommandSession::activateFirstNeeded() {
@@ -797,6 +816,8 @@ void CommandSession::activate(const QString& key) {
   if (input == nullptr) {
     viewer.setPickFilter(SelectFilter());
     updateGhosts();
+    m_activeFilter = SelectFilter();
+    m_host.setConstructionHidden(false);
     m_host.inputActivated(SelectFilter());
     return;
   }
@@ -806,28 +827,69 @@ void CommandSession::activate(const QString& key) {
   if (m_presenter) {
     viewer.setHoverColor(m_presenter->colorOf(m_active).lighter(130));
   }
-  m_host.inputActivated(input->showsOrigin ? input->filter : input->filter & ~kConstructionGeometry);
+  showActiveKinds(input);
   m_host.showHint(tr("%1: select %2.").arg(m_def.name, input->label.toLower()));
   updateHoverChain();
+}
+
+SelectFilter CommandSession::activeKinds(const InputDef* input) const {
+  const auto slot = slotOf(m_active);
+  return input->filterIn(slot ? scopeOf(*slot) : m_state);
+}
+
+void CommandSession::showActiveKinds(const InputDef* input) {
+  // What the input takes now (InputDef::filterNow, mitcad#394): the
+  // origin's planes while it takes planes, construction geometry hidden
+  // while an input that hides it takes none.
+  const SelectFilter kinds = activeKinds(input);
+  if (input->filterNow && kinds != m_activeFilter) {
+    qDebug().noquote() << QStringLiteral("%1 %2 takes now: %3").arg(m_def.name, input->label, selectFilterText(kinds));
+  }
+  m_activeFilter = kinds;
+  m_host.setConstructionHidden(input->hidesConstruction && !(m_activeFilter & kConstructionGeometry));
+  m_host.inputActivated(input->showsOrigin ? m_activeFilter : m_activeFilter & ~kConstructionGeometry);
+}
+
+void CommandSession::followActiveKinds() {
+  const InputDef* input = activeInput();
+  if (input == nullptr || (!input->filterNow && !input->testNow) || m_done) {
+    return;
+  }
+  if (activeKinds(input) != m_activeFilter) {
+    applyPickFilter(input);
+    showActiveKinds(input);
+  } else {
+    // The same kinds, another test: the hover asks the test again.
+    applyPickFilter(input);
+  }
 }
 
 void CommandSession::applyPickFilter(const InputDef* input) {
   OcctViewer& viewer = m_host.viewer();
   const SelectionScope* scope = m_host.commandScope();
+  const SelectFilter kinds = activeKinds(input);
   if (scope == nullptr) {
-    viewer.setPickFilter(input->filter, [this, input](const SelectionItem& item) {
-      return input->accepts(item) && isReferable(item);
+    viewer.setPickFilter(kinds, [this, input](const SelectionItem& item) {
+      return acceptsNow(input, item) && isReferable(item);
     });
     return;
   }
   // Through the host's selection filter context (mitcad#217): its rows
   // decide clicks and windows, Shift widens a click to its empty rows; the
   // input's own test always holds.
-  viewer.setPickScope(input->filter & scope->kinds(false), input->filter & scope->kinds(true),
+  viewer.setPickScope(kinds & scope->kinds(false), kinds & scope->kinds(true),
                       [this, input, scope](const SelectionItem& item, const PickCase& how) {
-                        return input->accepts(item) && isReferable(item) &&
+                        return acceptsNow(input, item) && isReferable(item) &&
                                scopeAccepts(*scope, item, how, QString(), SketchRowOf());
                       });
+}
+
+bool CommandSession::acceptsNow(const InputDef* input, const SelectionItem& item) const {
+  if (!input->filterNow && !input->testNow) {
+    return input->accepts(item);
+  }
+  const auto slot = slotOf(m_active);
+  return input->acceptsIn(item, slot && slot->def == input ? scopeOf(*slot) : m_state);
 }
 
 void CommandSession::scopeChanged() {
@@ -877,15 +939,24 @@ void CommandSession::picked(const Selection& items, Qt::KeyboardModifiers modifi
   Selection accepted;
   Selection raw; // as picked, with where the click hit
   for (const SelectionItem& item : items) {
-    if (input->accepts(item) && isReferable(item)) {
+    if (acceptsNow(input, item) && isReferable(item)) {
       accepted.append(input->convert ? input->convert(item) : item);
       raw.append(item);
+    } else if (input->refusesMeshes && item.geometry == QStringLiteral("mesh") && input->filter.testFlag(item.kind)) {
+      // A mesh body picked in the browser (the view does not offer one):
+      // say why it is not taken (mitcad#399).
+      qDebug().noquote() << QStringLiteral("%1 %2: %3 not taken: a mesh body")
+                                .arg(m_def.name, input->label, item.describe());
+      m_host.showHint(tr("%1 works on solid and surface bodies; %2 is a mesh body (triangles without surfaces).")
+                          .arg(m_def.name, item.describe()));
     }
   }
   Selection& selection = m_state.items(key);
   // One entry per model item: a profile clicked where the view shows it is
   // the entry the newest profile or the edited definition put there, under
-  // whatever key or occurrence (mitcad#199).
+  // whatever key or occurrence (mitcad#199). A piece of a region a sketch
+  // edit split is part of the entry that means the whole region: a click
+  // takes just that piece out (mitcad#410).
   const ItemResolver resolve = resolver();
   if (window) {
     // A window keeps one kind, and adds to what is there. Through a
@@ -1155,6 +1226,7 @@ void CommandSession::inputsChanged() {
   schedulePreview();
   updateHoverChain(); // Tangent Chain turned on or off (mitcad#290)
   updateCursorBox();  // its input shown or hidden, its text (mitcad#375)
+  followActiveKinds(); // what the active input takes now (mitcad#394)
 }
 
 void CommandSession::updateManipulators() {
@@ -1303,6 +1375,9 @@ void CommandSession::runInspection() {
     m_presenter->setResult(QString());
     m_presenter->setMessage(message, error);
     m_host.viewer().setPreview(TopoDS_Shape());
+    if (m_manipulators) {
+      m_manipulators->setHint(QString());
+    }
     if (!m_shownReport.isEmpty()) {
       m_shownReport = {};
       updateManipulators();
@@ -1404,6 +1479,9 @@ void CommandSession::acceptInspection(const Inspection& result) {
   // What the inspection points at (BUILD's auto-length target), and its
   // labelled points through previewMarkers (the junctions).
   m_previewHighlights = result.highlights;
+  if (m_manipulators) {
+    m_manipulators->setHint(result.viewHint); // over the view (mitcad#394)
+  }
   m_shownReport = result.report;
   updateManipulators();
   updateCursorBox();
@@ -3025,6 +3103,7 @@ void CommandSession::finish(bool committed) {
   viewer.setHighlights({});
   viewer.setGhosts({});
   viewer.setHoverChain(TopoDS_Shape());
+  m_host.setConstructionHidden(false);
   m_host.inputActivated(SelectFilter());
   emit finished(committed);
 }

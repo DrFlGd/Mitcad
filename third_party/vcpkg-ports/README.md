@@ -30,7 +30,8 @@ OCCT's rolling ball fillet build roundings it failed on (mitcad#121), and
 mitcad#133). Patches 0030 to 0032 make an allocation that fails throw
 instead of crashing, let a caller learn of it and leave the collections
 valid (mitcad#132), and 0033 makes the checker's parallel mode give the
-sequential mode's results (mitcad#203). Patch 0060 changes no result
+sequential mode's results (mitcad#203), and 0034 lets a signal raised on Windows
+reach OCCT's exception instead of locking its mutex twice. Patch 0060 changes no result
 either: it removes repeated work that made ShapeFix's repair of
 intersecting edges quadratic in the wires of a face (mitcad#60). Patches 0090 and 0091 fix a heap overflow of
 OCCT's chamfer and fillet (mitcad#160). Patches 0130 to 0139 make its
@@ -117,9 +118,36 @@ a first one left of such a face (mitcad#380), and 0580 and 0581 round a
 pocket's walls over ribs up to blocks flush with the contact: a contact line
 along a concave edge of its face is off that face, and roundings joined over
 a rib whose sides cut them along sections meet inside the piece over the
-rib's end (mitcad#343), and 0600 ends a rounding at a vertex where a wall
+rib's end (mitcad#343), 0590 gives up a merged face's wire that repeats
+itself over the same seams instead of building it without end
+(mitcad#235), 0591 to 0593 bound the work of booleans on faces running
+many turns: a face's samples count the knot spans in its range, the face
+merge tests each surface's planarity once, and a projection's grid holds
+at most 1001 parameters a direction (mitcad#235), 0600 ends a rounding at a vertex where a wall
 starts by its blend run on past the vertex along its other face up to the
-wall's edge with that face, cut by the wall along its side (mitcad#343).
+wall's edge with that face, cut by the wall along its side (mitcad#343),
+0620 rolls a rounding on the convex edge where its contact leaves a
+narrow face before the end of the spine, as in its middle, where that
+edge is not of a face at the end vertex (mitcad#343), 0650 cuts an
+analytic chamfer over a gap by a chain of up to nine faces beyond, along
+the arc nearest the blend's piece where the face beyond grows to the cut,
+from gap ends at vertices of the contact's face, and keeps the pieces about
+a closed spine's start (a flange chamfered past the strip of its top up to
+the roots of the teeth standing on it, mitcad#235), 0651 starts a walk
+on the seam of a face closed round its surface on the seam's other side
+where it leaves the face across it, and ends a spine's extension where its
+walk or surface fails (a thread's crests rounded along all their turns,
+mitcad#235), 0670 makes the rounding round a wall's corner rounded with the
+ball's radius, between two analytic pieces, the piece of the standing
+ball's sphere (a tab's top outline on a steep cylinder across it,
+mitcad#235), 0671 cuts an analytic chamfer whose contacts both leave
+their faces before its edge's ends across its whole width there, by a chain
+of faces beyond grown on to it (a thread's groove ending in a flat face, the
+edge where it meets the bore chamfered past the flanks, mitcad#235),
+and 0680 merges a ring of cylinder pieces cut through from
+end to end, which reaches round the whole period without winding round it,
+into one face without a seam (a spiral stair's slabs, treads and helical
+stringers, mitcad#400).
 
 - `0006-shapeupgrade-unifysamedomain-seam-search-by-vertex.patch`: the face
   merge after booleans (`ShapeUpgrade_UnifySameDomain`) looks up the edges
@@ -322,6 +350,15 @@ The patches 0030 to 0032 make OCCT handle an allocation that fails
   swept along a helix and cut from a nut, mitcad#203). Each context now
   evaluates its own copy of the adaptor (`ShallowCopy`); the sequential
   mode, the checks and their statuses are unchanged.
+
+- `0034-osd-signal-handler-recursive-mutex.patch`: on Windows the handler
+  `OSD::SetSignal` installs for SIGSEGV, SIGFPE and SIGILL
+  (`SIGWntHandler`) locked the signal mutex and called `CallHandler`,
+  which locked it again on the same thread; MSVC's runtime threw
+  `std::system_error` ("resource deadlock would occur") in place of
+  `OSD_Exception_ACCESS_VIOLATION`, which the geometry's guard missed (a
+  crash in a section's booleans was reported on the body instead of the
+  section). The mutex is recursive now.
 
 - `0060-shapefix-intersecting-edges-once-per-face.patch`: the repair of
   a wire's intersecting edges (`ShapeFix_IntersectionTool::FixSelfIntersectWire`,
@@ -1789,6 +1826,50 @@ B-spline face each, and the helices as one B-spline edge each.
   goes; faces of at most one period, and curves the shift into the range
   does not move, are not affected (mitcad#380).
 
+The patch 0590 comes from threads whose turns meet in one edge, as the
+bodies stored in files have them (mitcad#235):
+
+- `0590-shapeupgrade-unifysamedomain-wire-repeating-itself-given-up.patch`:
+  the face merge builds a merged face's wires edge by edge and, where no
+  edge left goes on from the current vertex, takes a removed seam there
+  (`ReconstructMissedSeam`). The seven pieces of a cylinder cut by the
+  helix and the lines along the axis where a thread's turns meet in one
+  edge (the threaded part intersected with the thread's crest cylinder
+  past a blind bore's bottom) sent the wire back and forth over the same
+  removed edges without end, until the memory was gone. A wire runs along
+  each edge left at most once and each removed edge at most twice; past
+  that count it is given up as when no next edge is found, and the faces
+  stay unmerged (mitcad#235).
+
+The patches 0591 to 0593 bound the work of booleans on faces whose
+B-spline surfaces run many turns (mitcad#235): a thread built as the
+stored bodies keep it has one face per profile edge over all its turns,
+its helices interpolated at about 140 points a turn (4000 knot spans for
+25 turns), and is split into pieces of a third of a turn on the one
+surface for the booleans. The cut of such a thread took 19 s (87 s of
+work) and its union with the part 13 s and 7.5 GB; with the three patches
+3 s and 3 s, 0.8 GB.
+
+- `0591-adaptor3d-bspline-samples-within-the-adaptors-range.patch`
+  (`TKG3d`): `Adaptor3d_HSurfaceTool::NbSamplesU` and `NbSamplesV`, the
+  polyhedron of the edge-face intersections, count a B-spline's knot spans
+  within the adaptor's range (a face's) instead of all of the surface's;
+  for a face of the whole surface the counts are as before.
+- `0592-shapeupgrade-unifysamedomain-planarity-once-per-surface.patch`:
+  the face merge tests each surface for planarity once
+  (`GeomLib_IsPlanarSurface`, which samples the whole surface), not once
+  for each pair of neighbouring faces; the pieces of a thread's faces met
+  their tangent neighbours with that test each time. Results are the
+  test's own.
+- `0593-extrema-genextps-grid-of-very-many-knot-spans-sampled-evenly.patch`
+  (`TKGeomBase`): the grid of a point's projection onto a B-spline holds
+  at most 1001 parameters in a direction (as many as
+  `Adaptor3d_TopolTool::BSplSamplePnts` samples at most), evenly spaced,
+  where the degree's number of parameters in each knot span would be more;
+  every projection computes the distances to all of the grid's nodes,
+  edges and cells, and each face's grid was kept in every thread's
+  context.
+
 The patches 0530 and 0531 build chamfers wider than a face of their
 edges along part of the chain (mitcad#263):
 
@@ -1911,6 +1992,148 @@ cut.
   end. The stripe is left as it was where that walk does not reach the
   edge; analytic blends (not walked) are not changed.
 
+The patch 0620 comes from the round after (mitcad#343): a concave edge
+between a revolve's torus and a narrow B-spline face rounded with 0.1 along
+its tangent chain, on into the torus's edge with a planar sliver tangent
+to the B-spline face. Near the chain's middle the B-spline face is
+narrower than the rounding: its contact leaves the face across its convex
+edge with another torus, and the ball rolls on that edge and on the
+sliver's edge that continues it.
+
+- `0620-chfi3d-contact-off-its-face-before-the-end-rolls-on-the-edge.patch`:
+  the chain's one guide reaches both ends of the spine, so the walk's end
+  handling (`ComputeData`) took the edge the contact met for the end
+  region (it is a few edges from the end vertex, `IsObst`) and went on
+  over the B-spline's surface beyond the edge, unclassified, until the
+  other contact met the torus's edge with the sliver; the stripe stopped
+  there, short of the spine's end, and the corner at the end failed.
+  `ChFi3d_ObstacleBeforeEnd` now takes a contact on a convex edge of its
+  face more than 10 `tolesp` before the spine's end, whose face beyond
+  does not hold the end vertex, for an obstacle: the walk ends there, and
+  `PerformSetOfSurfOnElSpine` goes on with a piece rolling on the edge, as
+  where a walk meets an edge in the middle of a rounding. Edges of faces
+  at the end vertex, concave or tangent edges and edges at the spine's end
+  are handled as before.
+
+The patches 0650 and 0651 come from the `.ipt` import's replay gaps
+(mitcad#235): a flange's rim chamfered past the strip of its top up to the
+roots of the teeth standing on it (a pulley's, a pinion's), and a thread's
+crests rounded with 0.15 along all their turns.
+
+- `0650-chfi3d-kpart-cut-by-a-long-chain-of-faces-beyond.patch`: the
+  chamfer's cone runs under every tooth, whose seven faces (root and tip
+  roundings, flanks, tip) cut it and grow down to it (0055, 0071, 0142).
+  The chain of faces beyond from the one the contact leaves its face into
+  to the one it comes back from may be nine faces long
+  (`ChFi3d_KPartCutChain`, four before). Where no arc of the intersection
+  between a cut's ends lies on the face beyond (it grows to the cut), the
+  arc whose coordinate along the spine spans the least is the cut: the
+  other arc of a root rounding's cylinder with the cone runs round the
+  cylinder's far side (`ChFi3d_KPartCutCurve`, the first arc before); and
+  ends on two lines of the intersection that meet end to end, or through a
+  third (it splits where a rounding tangent to the root circle touches the
+  cone), give the arc joined along them. For chamfers, a gap whose ends are
+  vertices of the contact's face (the contact runs along the root arcs and
+  leaves the face where they end) starts and ends on the face's edges into
+  the faces beyond there, which bound no face any more
+  (`ChFi3d_FillKPartGaps`; before, the chamfer failed, "Chaining is
+  impossible"). On a closed spine the first and the last SurfData are
+  neighbours across the spine's start, so a contact along an edge that the
+  start splits runs on along it (`ChFi3d_ContactsAlongFaceEdges`; before,
+  the edge was cut there, an open wire), and a piece of a spine of several
+  edges whose line runs across its period's end into the edge is kept
+  (`SplitKPart`; before, it was taken for a piece past the edge's end).
+- `0651-chfi3d-walk-from-a-seam-and-extension-ending-where-it-fails.patch`:
+  each crest's strip of a turn is a face closed round its cylinder, its
+  seam where the thread starts. The walk past the spine's start starts
+  where the walk before stopped, the crest's contact on that seam at the end
+  of the face's parameters, and runs out across it: its first step left the
+  face and was halved until it failed ("Path failed"). It now starts a
+  period on, on the seam's other side, where the solution a little way on
+  lies beyond the face's bounds (`BRepBlend_Walking::Perform`). The
+  extension past the spine's ends (half the spine's length) walked on over
+  the thread's run-out, where the rounding vanishes and the guide nearly
+  stops while the sections go on: the surface over them had weights below
+  zero or strayed far from them. A step wholly past the spine's end whose
+  surface fails so (it throws, or strays from its sections by more than
+  100 times the approximation's tolerance) fails as a step whose walk
+  fails (`CallPerformSurf`), and ends the extension where it started
+  (`PerformSetOfSurfOnElSpine`; before, the stripe failed). Steps within the spine fail the stripe as before.
+
+The patch 0670 goes on with the `.ipt` import's replay gaps (mitcad#235): a
+tab's top outline rounded with the radius of its rounded corners, the top a
+steep cylinder across the tab.
+
+- `0670-chfi3d-standing-ball-sphere-in-a-gap-between-pieces.patch`: round
+  each corner the ball's centre stays on the corner's axis, its contact on
+  the top at one point, and the rounding is a piece of the ball's sphere.
+  The walls' roundings are analytic and end where the ball reaches the
+  corner; the walk between them (its sections' mid-points in the guide's
+  normal planes, 0075) swept round the corner before the guide reached it,
+  as the guide climbs the steep top and its normal planes lean, and then
+  found no ball ("Path failed"). A gap between two pieces of the stripe
+  whose piece before ends, or whose piece after starts, with its contact on
+  an edge into a face on a cylinder of the ball's radius about an axis
+  through the ball's centre, the other contact inside its face
+  (`ChFi3d_StandingBall`), now gets the piece of that ball's sphere from
+  that section to the one where the contact's sweep round the corner
+  reaches the corner's other edge (`ChFi3d_StandingBallPiece`, its side on
+  the top a degenerated edge of the blend's face); the walk takes the rest
+  of the gap, if any, from where its sections put that ball
+  (`ChFi3d_StandingBallSection`). Also the gap across the period's end of a
+  closed spine.
+- `0671-chfi3d-kpart-chamfer-cut-across-its-width-by-faces-beyond-at-both-ends.patch`:
+  a thread's groove in a bore ends in a flat face; the edge where that
+  face meets the bore is chamfered further than the groove is deep. The
+  contact on the flat face leaves it across the tip's edge, the contact on
+  the bore leaves it where the next turn begins, both before the edge's
+  ends; SplitKPart left one short piece and the corners at both ends
+  failed ("OneCorner : bouchon non ecrit"). At each end of an open spine
+  of a chamfer that takes material off, `ChFi3d_KPartCutChainToEnd` now
+  cuts the chamfer from the end piece's section on by a chain of faces
+  beyond (the tip's rounding, then a flank), their edges prolonged past
+  their vertices on the flat face along lines, circles or their faces'
+  isolines (`ChFi3d_KPartEdgeCrossing`, `ChFi3d_ProlongEdgeAlongIso`), up
+  to the face whose surface meets the other contact at Q, where the
+  chamfer ends in a point. Q lies inside an edge of the other contact's
+  face (that edge's part from Q to the end vertex is replaced by a curve
+  bounding its face beyond and the grown face) or on its prolongation
+  past the end vertex (the edge is prolonged to Q). The edges under the
+  chamfer at the end vertex bound no face any more. `ChFi3d_KPartCutPiece`,
+  `ChFi3d_MakeExtremities` and `ChFi3d_FilDS` take an end in a point at a
+  vertex of its own; such a stripe is not computed again as a walked
+  chamfer over a narrow face. Mitcad's chamfer joins the contacts' pieces
+  at the vertices they leave between them (`piece_vertices` in
+  `geometry/src/dressup.cpp`): the files keep one edge there, and OCCT's
+  roundings of the crests beside them failed at those vertices.
+
+The patch 0680 comes from a spiral stair's join of its slabs, treads and
+helical stringers (mitcad#400):
+
+- `0680-shapeupgrade-unifysamedomain-faces-round-a-period-without-winding.patch`:
+  the face merge takes faces on a surface periodic in u, none of them with
+  a seam, whose u reach round the whole period to wind round the surface,
+  and builds their union's wires with seams reconstructed from removed
+  edges (`ReconstructMissedSeam`). The rim of the stair's slabs, split by
+  the sketch's lines into 80 pieces each, is cut through from its bottom
+  to its top by the treads' inner sides rising on it step by step, or by a
+  helical stringer's band along it: what is left reaches from one side of
+  the cut round to the other, the whole period, without winding round the
+  cylinder. Built with seams, the merged face used an edge with two
+  pcurves on its surface once (`BRepCheck_InvalidMultiConnexity`) and left
+  pieces of the rim under it; the result was invalid, the union was
+  computed again without the merge (twice the time), and kept a thousand
+  pieces of the rim, which every later boolean met. `IntUnifyFaces` now
+  first follows the contours of the merged face's edges, moving each
+  pcurve by whole periods onto the end of the one before it
+  (`RelocateContoursNotWinding`); when each contour closes in 2d and each
+  hole lies inside the outer contour at one place, the face is built
+  without a seam, its pcurves spanning more than the period, on a copy of
+  the surface (as faces covering less than the period are built on a
+  trimmed one). A contour that winds round the surface, a vertex with more
+  than one way on, a hole that cannot be placed or a surface periodic in
+  both directions take the seams as before.
+
 The patch 0540 goes on with the corners where a rounding ends (mitcad#236,
 eighth round): a rounding that runs on into an earlier rounding's tube.
 
@@ -1944,7 +2167,8 @@ where they can; for 0020 to 0023, mitcad#122 and
 `geometry/tests/test_fillet_kernel.cpp`; for 0024 to 0026, mitcad#133
 and `geometry/tests/test_fillet_ends.cpp`; for 0030 to 0032, mitcad#132
 and `geometry/tests/test_allocation.cpp`; for 0033, mitcad#203 and the
-helix cases of `geometry/tests/test_sweeps.cpp`; for 0060, mitcad#60 and
+helix cases of `geometry/tests/test_sweeps.cpp`; for 0034, the ctests
+`cli.occt_crash` and `cli.occt_crash_section` on Windows; for 0060, mitcad#60 and
 `geometry/tests/test_shapefix.cpp`, whose expected results are OCCT's
 without the patch; for 0090 and 0091, mitcad#160 and
 `geometry/tests/test_chamfer_kernel.cpp`, which aborts without them; for
@@ -2024,8 +2248,36 @@ mitcad#343 and the pocket rounded over ribs up to flush blocks in
 rounding's section); for 0600, mitcad#343 and the plate with an overhanging
 tongue in `geometry/tests/test_fillet_corners.cpp` (the tongue's left edge
 rounded so that the contact runs off it, against a tongue wide enough for
-the contact); each
-fails without its patch.
+the contact); for 0590, mitcad#235 and the nut threaded past its bore's
+bottom, intersected with the cylinder inside the bore, in
+`geometry/tests/test_sweeps.cpp`; for 0591 to 0593, mitcad#235 and the
+threaded block's 32-turn flanks in `geometry/tests/test_multi_turn_faces.cpp`
+(the samples of a face on a third of a turn of a flank, fail without 0591;
+the grid nodes of a projection onto a flank, fail without 0593; 0592's
+merge after a cut keeps the result, its work is not observable from
+outside the merge); for 0620, mitcad#343 and the wall on a
+floor that narrows before the end in `geometry/tests/test_fillet_corners.cpp`
+(the volume added against the full rounding's section and the rolling
+ball's); for 0650, mitcad#235 and the flange under a ring of teeth in
+`geometry/tests/test_chamfer_overflow.cpp` (its rim chamfered a little
+past the teeth's roots and exactly up to them, by distance and angle and
+by two distances, its top circle in one or two edges: the volume against
+the revolved section less the teeth extended down); for 0651, mitcad#235
+and the cylinder under two tilted planes in
+`geometry/tests/test_fillet_kernel.cpp` (the rounding of one arc of its
+top, walked past its end from the cylinder's seam: the stripe is made);
+for 0670, mitcad#235 and the boss topped by a steep bowl in
+`geometry/tests/test_fillet_results.cpp` (its top's outline rounded past
+corners of the ball's radius: each corner one face on the ball's sphere,
+its area the spherical triangle's); for 0671, mitcad#235 and the groove's
+end wall chamfered past its flanks in
+`geometry/tests/test_chamfer_overflow.cpp` (three reaches: the removed
+volume against the chamfer's wedge within the groove carried on past the
+wall; one edge between the chamfer and the top through Mitcad's chamfer);
+for 0680, mitcad#400 and two slabs of four quarters with treads on their
+rim in `geometry/tests/test_helical_joins.cpp` (the rim merged into one
+face; the slabs alone, a ring with a seam, as before);
+each fails without its patch.
 Sending them upstream is the
 maintainers' step. When the
 baseline moves to a newer OCCT, check which of the changes OCCT has made;

@@ -11,6 +11,7 @@
 #include <TopoDS_Face.hxx>
 
 #include "check.hpp"
+#include "mitcad/geometry/contact.hpp"
 #include "mitcad/geometry/import.hpp"
 
 namespace test {
@@ -190,6 +191,29 @@ void test_mesh_bodies_move() {
   CHECK_NEAR(volume(*far), 2 * 48000.0);
 }
 
+// A mesh body in the surface operations (mitcad#399): the booleans,
+// unions, dressups and face operations refuse it before OCCT's algorithms
+// get it (their face intersection read its null surface, mitcad#392);
+// a tool's contacts take it as apart, and its face's geometry is "mesh".
+void test_mesh_bodies_refused() {
+  const ShapePtr mesh = mesh_block();
+  const ShapePtr solid = block();
+  const char* refused = "a mesh body (faces without surfaces) cannot be used";
+  CHECK(throws_with([&] { boolean(BooleanOp::Join, {solid.get()}, *mesh); }, refused));
+  CHECK(throws_with([&] { boolean(BooleanOp::Cut, {mesh.get()}, *solid); }, refused));
+  CHECK(throws_with([&] { unite({solid.get(), mesh.get()}); }, refused));
+  CHECK(throws_with([&] { fillet("F9", *mesh, std::vector<std::string>{"E{a|b}"}, 1.0); }, refused));
+  ShellSpec shell;
+  shell.inside = 1.0;
+  CHECK(throws_with([&] { ::mitcad::geometry::shell("F9", *mesh, shell); }, refused));
+  CHECK(throws_with([&] { split_body("F9", *mesh, Tool::of_plane(gp_Pln(gp_Pnt(10, 0, 0), gp_Dir(1, 0, 0))), true); },
+                    refused));
+  CHECK(throws_with([&] { split_body("F9", *solid, Tool::of_body(mesh), true); }, refused));
+  const std::vector<ToolContact> contacts = tool_contacts(*solid, {mesh.get()});
+  CHECK(contacts.size() == 1 && contacts[0] == ToolContact::Apart);
+  CHECK(face_geometry(*mesh, mitcad::geometry::face_name("F7", "import", "0")).type == "mesh");
+}
+
 void test_unions_keep_names() {
   // The reference model comb_join: A (x 0..40) and B (x 20..60), 20 mm cubes overlapping.
   const ShapePtr a = extrude("F2", {rectangle(1, 0, 0, 40, 20)}, 0, 20);
@@ -336,6 +360,7 @@ void transform_tests() {
   test_moves_keep_or_rename_faces();
   test_mirrors_and_scales();
   test_mesh_bodies_move();
+  test_mesh_bodies_refused();
   test_unions_keep_names();
   test_tools_of_faces();
   test_primitives_name_their_faces();

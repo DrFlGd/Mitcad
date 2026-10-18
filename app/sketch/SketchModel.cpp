@@ -132,6 +132,7 @@ bool SketchModel::load(const QJsonObject& sketch) {
       projection.entities << id.toString();
     }
     projection.stale = stale;
+    projection.section = flag(p, "section");
     projections.push_back(projection);
   }
   dof = sketch.value(QStringLiteral("dof")).toInt();
@@ -231,6 +232,7 @@ bool SketchModel::load(const QJsonObject& sketch) {
     d.expression = k.value(QStringLiteral("expression")).toString();
     d.comment = k.value(QStringLiteral("comment")).toString();
     d.measured = number(k, "measured");
+    d.signedOffset = flag(k, "signed");
     if (k.value(QStringLiteral("text")).isArray()) {
       d.text = v2(k.value(QStringLiteral("text")));
     }

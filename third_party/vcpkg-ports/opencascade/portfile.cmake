@@ -39,6 +39,7 @@ vcpkg_from_github(
         0031-osd-threadpool-failed-allocations-to-launching-thread.patch
         0032-ncollection-containers-intact-when-allocation-fails.patch
         0033-brepcheck-edge-curve-adaptor-per-context.patch
+        0034-osd-signal-handler-recursive-mutex.patch
         0050-chfi3d-kpart-end-runs-into-end-face.patch
         0051-chfi3d-rolling-on-across-surfdatas.patch
         0052-chfi3d-rolling-start-beside-tangent-face.patch
@@ -146,7 +147,17 @@ vcpkg_from_github(
         0560-boptools-pcurve-checked-at-its-own-copy-in-the-face.patch
         0580-chfi3d-kpart-contact-along-a-concave-edge-off-its-face.patch
         0581-chfi3d-roundings-joined-across-a-rib-with-square-sides.patch
+        0590-shapeupgrade-unifysamedomain-wire-repeating-itself-given-up.patch
+        0591-adaptor3d-bspline-samples-within-the-adaptors-range.patch
+        0592-shapeupgrade-unifysamedomain-planarity-once-per-surface.patch
+        0593-extrema-genextps-grid-of-very-many-knot-spans-sampled-evenly.patch
         0600-chfi3d-onsame-end-cut-along-its-side-by-the-face-at-the-end.patch
+        0620-chfi3d-contact-off-its-face-before-the-end-rolls-on-the-edge.patch
+        0650-chfi3d-kpart-cut-by-a-long-chain-of-faces-beyond.patch
+        0651-chfi3d-walk-from-a-seam-and-extension-ending-where-it-fails.patch
+        0670-chfi3d-standing-ball-sphere-in-a-gap-between-pieces.patch
+        0671-chfi3d-kpart-chamfer-cut-across-its-width-by-faces-beyond-at-both-ends.patch
+        0680-shapeupgrade-unifysamedomain-faces-round-a-period-without-winding.patch
 )
 
 if (VCPKG_LIBRARY_LINKAGE STREQUAL "dynamic")

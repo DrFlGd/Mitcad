@@ -507,9 +507,18 @@ fn export_writes_bodies_with_names_and_imported_colours() {
         Refinement::Preset(RefinementPreset::High).tolerance(),
         MeshTolerance {
             deviation: 0.01,
-            angle: 8f64.to_radians()
+            angle: 8f64.to_radians(),
+            face_triangles: 50_000
         }
     );
+    // Numbers are taken as they are: no limit unless one is given.
+    let given: Refinement =
+        serde_json::from_value(json!({"deviation": 0.05, "angle": 0.2})).unwrap();
+    assert_eq!(given.tolerance().face_triangles, 0);
+    let limited: Refinement =
+        serde_json::from_value(json!({"deviation": 0.05, "angle": 0.2, "face_triangles": 1000}))
+            .unwrap();
+    assert_eq!(limited.tolerance().face_triangles, 1000);
 }
 
 #[test]

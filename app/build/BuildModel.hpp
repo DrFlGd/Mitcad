@@ -26,21 +26,30 @@ namespace mitcad::build {
 
 // --- Components and occurrence paths (uids from the root, "O1/O4")
 
-QString activeComponent(const CommandContext& context);
 QString componentName(const QString& uid, const CommandContext& context);
-// The paths that place a component; the root's is the empty path.
-QStringList placingPaths(const QString& component, const CommandContext& context);
 // Where a path places its component in the design; identity for "".
 std::optional<gp_Trsf> worldOf(const QString& path, const CommandContext& context);
 // The component a path ends in ("" the root's).
 QString componentAt(const QString& path, const CommandContext& context);
-// An item's path from the active component ("" for its own geometry);
-// none when the item is not inside it.
-std::optional<QString> pathFromActive(const SelectionItem& item, const CommandContext& context);
-// A path from the active component as a path from the root.
-QString rootPath(const QString& fromActive, const CommandContext& context);
-// A point of the design in the active component's coordinates.
-gp_Pnt inActive(const gp_Pnt& world, const CommandContext& context);
+
+// The component BUILD places parts in (the `build_host` query, mitcad#394:
+// the active one when it takes components, else the nearest one up that
+// does; a new design's root while Part1 is active): its uid, name and
+// path from the root ("" for the root). The commands' paths are from it
+// and their points in its coordinates.
+struct Host {
+  QString component = QStringLiteral("C0");
+  QString name;
+  QString path;
+};
+Host buildHost(const CommandContext& context);
+// An item's path from the host ("" for its own geometry); none when the
+// item is not inside it.
+std::optional<QString> pathFromHost(const SelectionItem& item, const CommandContext& context);
+// A path from the host as a path from the root.
+QString rootPath(const QString& fromHost, const CommandContext& context);
+// A point of the design in the host's coordinates.
+gp_Pnt inHost(const gp_Pnt& world, const CommandContext& context);
 
 // --- Picks
 
@@ -51,14 +60,14 @@ void recordPick(const QString& key, const SelectionItem& item, CommandState& sta
 // else the middle of the item (an item given otherwise, as live MCP does).
 std::optional<gp_Pnt> pickPoint(const QString& key, const CommandState& state, const CommandContext& context);
 // `at` of build_place and build_panel for the input's first item:
-// `occurrence` (from the active component), `geometry`, `point` (in the
-// active component's coordinates). None, with the reason, when it cannot
+// `occurrence` (from the BUILD host), `geometry`, `point` (in the
+// host's coordinates). None, with the reason, when it cannot
 // be given.
 std::optional<QJsonObject> atOf(const QString& key, const CommandState& state, const CommandContext& context,
                                 QString& problem);
 // The item a reference of the model's answers stands for in the view
-// (`{"occurrence", "geometry"}`, the occurrence from the active
-// component): faces, edges and bodies.
+// (`{"occurrence", "geometry"}`, the occurrence from the BUILD
+// host): faces, edges and bodies.
 std::optional<SelectionItem> itemOfTarget(const QJsonObject& target, const CommandContext& context);
 
 // --- BUILD parts (the build_parts query)

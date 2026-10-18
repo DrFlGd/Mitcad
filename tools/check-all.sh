@@ -39,7 +39,12 @@
 #                   app/ and core/ it exercises, tools/cli when it makes
 #                   designs with mitcad-cli, ...), the build files and
 #                   options (UI_BASE), its script and the test library
-#                   (UI_LIBRARY). The smoke set (UI_SMOKE) depends on
+#                   (UI_LIBRARY), and the main window's layout as the
+#                   built application lays it out (tools/ui-layout.sh:
+#                   the window's size, where its bars, docks and view
+#                   are), so that a change of the window reruns every UI
+#                   test; when the layout cannot be read, none is
+#                   skipped. The smoke set (UI_SMOKE) depends on
 #                   everything the application is built from (UI_COMMON)
 #                   besides, so a change anywhere in app/, core/ or
 #                   geometry/ runs at least it. A test named in --only
@@ -211,7 +216,11 @@ if [ "$MEMORY" != none ] && [ -z "${MITCAD_CHECK_SCOPE:-}" ]; then
 fi
 [ -n "${MITCAD_CHECK_SCOPE:-}" ] && echo "== memory limit $MITCAD_CHECK_SCOPE (systemd scope)"
 export CMAKE_BUILD_PARALLEL_LEVEL=${CMAKE_BUILD_PARALLEL_LEVEL:-$(($(nproc) / 2))}
-export CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-$(($(nproc) / 2))}
+# At most 8 cargo jobs: ctest runs the debug and the release cargo builds
+# at once, and at 16 jobs each a fresh build peaked at 12.7G, past the
+# check's memory limit (17.10.2026); at 8 each it peaks at 10.7G.
+jobs=$(($(nproc) / 2))
+export CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-$((jobs > 8 ? 8 : jobs))}
 
 # The UI tests show no windows here, whatever the caller's environment says.
 unset MITCAD_UI_VISIBLE
@@ -413,18 +422,34 @@ ui_base_fingerprint() {
   } | md5sum | cut -d' ' -f1
 }
 
+# ui_layout_fingerprint: the digest of the main window's layout as the
+# built application lays it out (tools/ui-layout.sh: the window's size and
+# where its bars, docks and view are), which every UI test's clicks and
+# screenshots depend on, whatever areas it declares (mitcad#412: a row
+# added to the sketch palette made the window taller, and ui-report, which
+# declares only app/report, was skipped). Fails when the application could
+# not be asked; the line itself is kept as check-logs/ui-layout.txt.
+ui_layout_fingerprint() {
+  local layout
+  layout=$(timeout -k 10 120 bash tools/ui-layout.sh 2> "$LOGS/ui-layout.log" | grep '^Window layout: ') ||
+    return 1
+  echo "$layout" > "$LOGS/ui-layout.txt"
+  md5sum <<< "$layout" | cut -d' ' -f1
+}
+
 # ui_smoke name: the UI test is in the smoke set.
 ui_smoke() { [[ " ${UI_SMOKE[*]} " == *" $1 "* ]]; }
 
-# ui_fingerprint name base common: the digest of what the UI test depends
-# on: the base's digest, the areas it declares, its script and the test
-# library, and for the smoke set the digest of what the application is
-# built from (common).
+# ui_fingerprint name base common layout: the digest of what the UI test
+# depends on: the base's digest, the window's layout, the areas it
+# declares, its script and the test library, and for the smoke set the
+# digest of what the application is built from (common).
 ui_fingerprint() {
   local sources=()
   read -ra sources <<< "$(ui_declared "$1")"
   {
     echo "$2"
+    echo "layout $4"
     if ui_smoke "$1"; then echo "smoke $3"; fi
     files_digest "tools/ui-$1-test.sh" "${UI_LIBRARY[@]}" ${sources[@]+"${sources[@]}"}
   } | md5sum | cut -d' ' -f1
@@ -579,7 +604,7 @@ reap_ui() {
   echo "   $result ui-$name ($seconds s)"
   [ "$result" = ok ] || tail -n 40 "$LOGS/ui-$name.log"
   record "ui-$name" "$seconds" "$result"
-  if [ "$result" = ok ] && [ "$BUILT" = 1 ]; then
+  if [ "$result" = ok ] && [ "$BUILT" = 1 ] && [ "$UI_LAYOUT_FINGERPRINT" != unknown ]; then
     mkdir -p "$UI_PASSED"
     echo "${UI_FINGERPRINTS[$name]}" >> "$UI_PASSED/$name"
   fi
@@ -589,6 +614,7 @@ UI_TESTS=()
 UI_SKIPPED=()
 UI_BASE_FINGERPRINT=""
 UI_COMMON_FINGERPRINT=""
+UI_LAYOUT_FINGERPRINT=""
 for test in tools/ui-*-test.sh; do
   name=${test#tools/ui-}
   name=${name%-test.sh}
@@ -608,8 +634,19 @@ for test in tools/ui-*-test.sh; do
   if ui_smoke "$name" && [ -z "$UI_COMMON_FINGERPRINT" ]; then
     UI_COMMON_FINGERPRINT=$(files_digest "${UI_COMMON[@]}" | md5sum | cut -d' ' -f1)
   fi
-  UI_FINGERPRINTS[$name]=$(ui_fingerprint "$name" "$UI_BASE_FINGERPRINT" "$UI_COMMON_FINGERPRINT")
-  if [ "$UI" = auto ] && ! ui_named "$name" &&
+  # The window's layout, once (an application start); without it no UI
+  # test is skipped and no pass is kept.
+  if [ -z "$UI_LAYOUT_FINGERPRINT" ]; then
+    if UI_LAYOUT_FINGERPRINT=$(ui_layout_fingerprint); then
+      echo "== $(cat "$LOGS/ui-layout.txt")"
+    else
+      UI_LAYOUT_FINGERPRINT=unknown
+      echo "== window layout unknown (check-logs/ui-layout.log): no UI test is skipped"
+    fi
+  fi
+  UI_FINGERPRINTS[$name]=$(ui_fingerprint "$name" "$UI_BASE_FINGERPRINT" "$UI_COMMON_FINGERPRINT" \
+    "$UI_LAYOUT_FINGERPRINT")
+  if [ "$UI" = auto ] && ! ui_named "$name" && [ "$UI_LAYOUT_FINGERPRINT" != unknown ] &&
     grep -qxF "${UI_FINGERPRINTS[$name]}" "$UI_PASSED/$name" 2> /dev/null; then
     UI_SKIPPED+=("$name")
     record "ui-$name" 0 skipped

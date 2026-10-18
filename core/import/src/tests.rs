@@ -4936,6 +4936,78 @@ fn fillet_and_chamfer_options_come_in_as_their_definitions() {
     assert_eq!(Candidate::new(plain).tolerance(), history::RELATIVE);
 }
 
+/// A distance and angle chamfer whose face the file does not say (no
+/// `isFlipped`, as the `.ipt` import reads it): the distance may lie on
+/// either face of the edge, and the history state chooses (mitcad#235).
+#[test]
+fn a_distance_and_angle_chamfers_face_comes_from_the_history() {
+    let block_items = vec![
+        rectangle_sketch(0),
+        extrude(1, 0, "NewBodyFeatureOperation", "d2"),
+    ];
+    let mut block = Document::new(TestKernel::default());
+    import_design(
+        &mut block,
+        &timeline_dump(block_items.clone()),
+        &mut NoGeometry,
+        &Options::default(),
+    );
+    let (a, b) = shapes(&block)[0].edges[0].clone();
+    let p = edge_point(&a, &b);
+    let edge = json!({"kind": "edge", "mid_point": [p[0] / 10.0, p[1] / 10.0, p[2] / 10.0],
+                      "length": 0.1});
+    let mut items = block_items.clone();
+    items.push(
+        json!({"index": 2, "name": "Chamfer1", "objectType": "ChamferFeature",
+        "detail": {"edgeSets": [{"_type": "DistanceAndAngleChamferEdgeSet", "edges": [edge],
+                                 "distance": param("d5", "2 mm", 0.2, "mm"),
+                                 "angle": param("d6", "15 deg", 0.2617993877991494, "rad")}]}}),
+    );
+    let full = timeline_dump(items);
+    let import = |geometry: &mut dyn StoredGeometry<MockShape>| {
+        let mut doc = Document::new(TestKernel {
+            edge_points: true,
+            ..TestKernel::default()
+        });
+        let report = import_design(&mut doc, &full, geometry, &Options::default());
+        let uid = report.items[2].features[0].clone();
+        let def: Value = serde_json::from_str::<Value>(
+            &doc.query(&format!(r#"{{"query": "feature", "uid": "{uid}"}}"#))
+                .unwrap(),
+        )
+        .unwrap()["def"]
+            .clone();
+        (doc, report, def)
+    };
+    // Without the history: the distance on the edge's first face.
+    let (mut reference, report, def) = import(&mut NoGeometry);
+    assert_eq!(report.items[2].outcome, Outcome::Parametric);
+    assert_ne!(def["flip"], true, "{def}");
+    let before = shapes(&reference);
+    // The file's state: the distance on the other face.
+    let mut flipped = def.clone();
+    flipped["flip"] = json!(true);
+    let uid: mitcad_model::FeatureUid = report.items[2].features[0].parse().unwrap();
+    reference
+        .edit_feature(uid, &serde_json::from_value(flipped).unwrap())
+        .unwrap();
+    let mut geometry = TestGeometry {
+        states: vec![Vec::new(), shapes(&block), shapes(&reference)],
+        items: HashMap::from([(1, 1), (2, 2)]),
+        ..TestGeometry::default()
+    };
+    assert_ne!(before, shapes(&reference));
+    let (_, report, def) = import(&mut geometry);
+    assert_eq!(
+        report.items[2].outcome,
+        Outcome::Parametric,
+        "{}",
+        report.text()
+    );
+    assert_eq!(report.items[2].verified, Some(true), "{}", report.text());
+    assert_eq!(def["flip"], true, "{def}");
+}
+
 #[test]
 fn patterns_of_features_with_a_chamfer_repeat_it_on_the_copies() {
     // The block with a chamfer on its first edge, and a circular pattern
@@ -8772,6 +8844,150 @@ fn constraints_the_stored_positions_break_are_left_out_alone() {
     assert_eq!(at(&s, &point_at(&s, [40.0, 20.0])), [40.0, 20.0]);
 }
 
+/// A profile's corner the file holds on a linked spline lies 1.3 µm off
+/// the spline's stored control points (mitcad#396): solved with the
+/// coincidence, the corner moves that far, within the import's geometric
+/// tolerance (mitcad#224) and with the sketch's regions the file's, so the
+/// coincidence stays and the sketch is parametric. 50 µm off, beyond the
+/// tolerance, it is left out as before.
+#[test]
+fn a_corner_micrometres_off_a_linked_spline_keeps_its_coincidence() {
+    for (off, kept) in [(1.3e-4, true), (5e-3, false)] {
+        // The spline (4t, 4t(1 - t)) cm; its point at t = 1/4 is (1, 0.75).
+        let mut spline = json!({
+            "id": "c0", "type": "SketchFixedSpline", "isLinked": true, "isReference": true,
+            "geometry": {"type": "NurbsCurve3D", "nurbs": {
+                "degree": 2, "isRational": false, "isPeriodic": false, "controlPointCount": 3,
+                "knots": [0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+                "controlPoints": [[0.0, 0.0, 0.0], [2.0, 2.0, 0.0], [4.0, 0.0, 0.0]],
+                "weights": []}}});
+        spline["startSketchPoint"] = json!("p0");
+        spline["endSketchPoint"] = json!("p1");
+        let points = vec![
+            gpoint("p0", 0.0, 0.0),
+            gpoint("p1", 4.0, 0.0),
+            gpoint("p3", 1.0, 0.75 + off),
+            gpoint("p4", 1.0, 3.0),
+            gpoint("p5", 3.0, 3.0),
+        ];
+        let curves = vec![
+            spline,
+            gline("c1", "p3", "p4"),
+            gline("c2", "p4", "p5"),
+            gline("c3", "p5", "p3"),
+        ];
+        let constraints = json!([
+            {"id": "k0", "type": "CoincidentConstraint", "refs": {"entities": ["p3", "c0"]}},
+            {"id": "k1", "type": "VerticalConstraint", "refs": {"entities": ["c1"]}},
+        ]);
+        let dump = group_sketch_dump(Vec::new(), points, curves, constraints, json!([]));
+        let mut doc = Document::new(MockKernel::default());
+        let report = import(&mut doc, &dump);
+        let note = report.items[0].note.clone().unwrap_or_default();
+        let s = sketch_query(&doc);
+        let kinds: Vec<&str> = s["constraints"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|k| k["type"].as_str())
+            .collect();
+        if kept {
+            assert_parametric(&report);
+            assert!(
+                note.contains("solved within the geometric tolerance"),
+                "{note}"
+            );
+            assert!(kinds.contains(&"coincident"), "{s}");
+            // The corner on the spline, 1.3 µm from the file's.
+            let uid = report.items[0]
+                .features
+                .iter()
+                .filter_map(|f| f.parse::<mitcad_model::FeatureUid>().ok())
+                .find(|uid| doc.sketch_output(*uid).is_some())
+                .expect("the sketch");
+            let corner = doc
+                .sketch_output(uid)
+                .unwrap()
+                .solved
+                .points
+                .values()
+                .copied()
+                .find(|p| (p[0] - 10.0).hypot(p[1] - 7.5) < 0.01)
+                .unwrap_or_else(|| panic!("{s}"));
+            let moved = (corner[0] - 10.0).hypot(corner[1] - 7.5 - off * 10.0);
+            assert!(moved > 1e-4 && moved < 2e-3, "{corner:?}");
+            // On the spline: y = x (1 - x / 40) mm.
+            let on = corner[1] - corner[0] * (1.0 - corner[0] / 40.0);
+            assert!(on.abs() < 1e-7, "{corner:?}");
+        } else {
+            assert_eq!(report.items[0].outcome, Outcome::Partial, "{note}");
+            assert!(note.contains("1 constraints and dimensions"), "{note}");
+            assert!(!kinds.contains(&"coincident"), "{s}");
+        }
+    }
+}
+
+/// A solve within the geometric tolerance that changes the sketch's
+/// regions is not the file's sketch (mitcad#396): a line 2 µm short of a
+/// rectangle's top edge, its length dimensioned 4 µm longer than the
+/// file's positions make it, would cross the edge and split the
+/// rectangle; the dimension stays driven.
+#[test]
+fn a_solve_within_the_tolerance_that_changes_the_regions_drives_the_dimension() {
+    for (end, kept) in [(1.5, true), (1.9998, false)] {
+        let points = vec![
+            gpoint("p0", 0.0, 0.0),
+            gpoint("p1", 4.0, 0.0),
+            gpoint("p2", 4.0, 2.0),
+            gpoint("p3", 0.0, 2.0),
+            gfixed("p4", 2.0, -0.5),
+            gpoint("p5", 2.0, end),
+        ];
+        let curves = vec![
+            gline("c0", "p0", "p1"),
+            gline("c1", "p1", "p2"),
+            gline("c2", "p2", "p3"),
+            gline("c3", "p3", "p0"),
+            gline("c4", "p4", "p5"),
+        ];
+        let constraints = json!([
+            {"id": "k0", "type": "HorizontalConstraint", "refs": {"entities": ["c0"]}},
+            {"id": "k1", "type": "VerticalConstraint", "refs": {"entities": ["c1"]}},
+            {"id": "k2", "type": "HorizontalConstraint", "refs": {"entities": ["c2"]}},
+            {"id": "k3", "type": "VerticalConstraint", "refs": {"entities": ["c4"]}},
+        ]);
+        // The file's length plus 4 µm.
+        let length = (end + 0.5) * 10.0 + 4e-3;
+        let dimensions = json!([
+            {"id": "d0", "type": "SketchLinearDimension",
+             "parameter": param("d1", &format!("{length} mm"), length / 10.0, "mm"),
+             "props": {"orientation": "VerticalDimensionOrientation"},
+             "refs": {"entities": ["p4", "p5"]}, "textPosition": [2.5, 0.5, 0.0]},
+        ]);
+        let dump = group_sketch_dump(
+            vec![json!({"name": "d1", "expression": format!("{length} mm"),
+                        "value": length / 10.0, "unit": "mm"})],
+            points,
+            curves,
+            constraints,
+            dimensions,
+        );
+        let mut doc = Document::new(MockKernel::default());
+        let report = import(&mut doc, &dump);
+        let note = report.items[0].note.clone().unwrap_or_default();
+        if kept {
+            assert_parametric(&report);
+            assert!(
+                note.contains("solved within the geometric tolerance"),
+                "{note}"
+            );
+        } else {
+            assert_eq!(report.items[0].outcome, Outcome::Partial, "{note}");
+            assert!(note.contains("1 constraints and dimensions"), "{note}");
+        }
+    }
+}
+
 #[test]
 fn a_tangent_distance_dimension_is_the_gap_between_a_circle_and_a_line() {
     // A circle of 12 mm about the fixed origin and a line 37 mm below its
@@ -9680,3 +9896,58 @@ fn symptoms_and_kernel_failures_of_definitions() {
 
 // Derives: bodies of other documents (mitcad#324).
 mod derive_tests;
+
+/// A construction plane offset from a face of another component's body,
+/// linked to it (mitcad#389), goes into the item's component, where its
+/// link's target leads: not into the face's component, whose coordinates
+/// put it where the other component is placed instead.
+#[test]
+fn a_linked_plane_goes_into_the_items_component() {
+    let mut doc = Document::new(TestKernel::default());
+    let (a, _) = doc
+        .create_component(
+            Some("A"),
+            mitcad_model::Transform::translation([0.0, 0.0, 10.0]),
+            true,
+        )
+        .unwrap();
+    let sketch = doc
+        .add_sketch(mitcad_model::features::SketchPlane::Xy)
+        .unwrap()
+        .uid;
+    let region = doc
+        .add_rectangle(
+            sketch,
+            [0.0, 0.0],
+            &mitcad_model::ValueInput::Number(10.0),
+            &mitcad_model::ValueInput::Number(10.0),
+        )
+        .unwrap()
+        .region;
+    let added: Value = serde_json::from_str(
+        &doc.command(
+            &json!({"cmd": "add_feature", "def": {"type": "extrude",
+                    "profiles": [{"sketch": sketch.to_string(), "region": region.to_string()}],
+                    "extent": {"type": "distance", "distance": 5}, "operation": "new_body"}})
+            .to_string(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let body = format!("{}.b0", added["uid"].as_str().unwrap());
+    doc.activate_component(mitcad_model::ComponentUid::ROOT)
+        .unwrap();
+    let (b, _) = doc
+        .create_component(Some("B"), mitcad_model::Transform::IDENTITY, true)
+        .unwrap();
+    let face = format!("{}:end({region})", added["uid"].as_str().unwrap());
+    let plane = json!({"type": "construction_plane",
+                       "definition": {"type": "offset", "plane": {"body": body, "face": face},
+                                      "distance": 5},
+                       "links": {body.clone(): {"source": "O1", "target": "O2"}}});
+    assert_eq!(def_component(&doc, &plane, b), b);
+    // Without the link the face's body names its component.
+    let mut unlinked = plane.clone();
+    unlinked.as_object_mut().unwrap().remove("links");
+    assert_eq!(def_component(&doc, &unlinked, b), a);
+}

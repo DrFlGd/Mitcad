@@ -6,12 +6,18 @@
 # synthetic BUILD parts made here (mitcad-cli; no supplier's files), fetched
 # from a local git repository; skipped where git is not installed:
 #   1. The BUILD tab beside SOLID.
-#   2. Profile: a frame of four (one new end mitred, the fourth's length
-#      bound to the third; Tab steps the auto length).
-#   3. Connector at a junction (shown on the hover), previewed in place.
-#   4. Panel from an inner face.
-#   5. Linear Part: a rail, a carriage on it; Ends: a mitred, bored end.
-#   6. Save, reopen; Cut List: rows, Copy as CSV, Save as PDF.
+#   2. A new design, Part1 active (mitcad#394): Profile adds to the root,
+#      no policy message; the first profile by a pick on the XY plane,
+#      then (undone) by Enter at the origin; then only profiles' faces,
+#      the planes hidden; a side click flush with an end; Mitre on an end
+#      pick; Close shows the planes again.
+#   3. Profile on a design with only its root: a frame of four (two flush
+#      with the first's ends by offset 0, the fourth's length bound to the
+#      third; Tab steps the auto length).
+#   4. Connector at a junction (shown on the hover), previewed in place.
+#   5. Panel from an inner face.
+#   6. Linear Part: a rail, a carriage on it; Ends: a mitred, bored end.
+#   7. Save, reopen; Cut List: rows, Copy as CSV, Save as PDF.
 #
 # Usage: powershell -ExecutionPolicy Bypass -File tools\ui-windows-build-test.ps1 [-App build\dev\mitcad.exe] [-Out dir] [-QtBin dir]
 param(
@@ -192,8 +198,28 @@ function Place([string]$What) {
   Ui-ExpectNew "Placed $What as " "$What placed" 30
 }
 $side = ':part(F2:side('
+# Expect-Row INPUT shown|hidden description: Profile's panel row INPUT as
+# the panel laid it out last ("Panel Profile input <id> at x,y", with
+# " (hidden)" when hidden).
+function Expect-Row([string]$Row, [string]$State, [string]$Description) {
+  $line = $null
+  for ($i = 0; $i -lt 30; $i++) {
+    $line = Ui-LogLines | Where-Object { $_.Contains("Panel Profile input $Row at ") } | Select-Object -Last 1
+    $hidden = "$line".EndsWith('(hidden)')
+    if ($line -and (($State -eq 'hidden') -eq $hidden)) { Write-Host "ok   $Description"; return }
+    Start-Sleep -Milliseconds 200
+  }
+  Ui-Fail "${Description}: Panel Profile input $Row is not $State ($line)"
+}
+# No-PolicyMessage: no design-policy refusal reached the log.
+function No-PolicyMessage {
+  $refused = Ui-LogLines | Where-Object { $_.Contains('does not allow') } | Select-Object -First 1
+  if ($refused) { Ui-Fail "a policy refusal: $refused" }
+  Write-Host 'ok   no policy message'
+}
 
-Ui-StartApp 'build' @('--open', $start)
+# A new design (mitcad#394): Part1 active, the root with the Assembly policy.
+Ui-StartApp 'build-new'
 
 Write-Host '--- 1. The BUILD tab'
 Ui-ExpectLog 'Ribbon tab BUILD at' 'the BUILD tab beside SOLID'
@@ -201,7 +227,77 @@ Ui-Mark
 Ui-Step 'the BUILD tab'                  { Ui-ClickLogged 'Ribbon tab BUILD' }
 Ui-ExpectNew 'Ribbon BUILD/PROFILE at' 'its PROFILE group'
 
-Write-Host '--- 2. Profile: a frame of four'
+Write-Host '--- 2. The first profiles of a new design, Part1 active'
+Ui-Mark
+Ui-Step 'Profile (F3)'                   { Ui-Key 'F3' }
+Ui-ExpectNew 'Command Profile started' 'Profile started'
+Ui-ExpectNew 'BUILD profile adds to Root (a ground placement)' 'BUILD adds to the root while Part1 is active'
+Ui-ExpectNew 'View hint Profile: Click a plane or a face, or press Enter' "the view's hint for the first part"
+Ui-ExpectNew 'Inspect Profile: place grounded, length 1000.00 mm (typed), square ends; adds to Root' 'at the origin with its stock length'
+Expect-Row 'axis=z' 'shown' "the Direction's X, Y and Z buttons"
+Expect-Row 'mitre' 'hidden' 'no Mitre before an end pick'
+Expect-Row 'use_offset' 'hidden' 'no Offset before a side pick'
+Expect-Row 'place' 'hidden' 'Placement under More'
+Ui-Mark
+Ui-Step "on the root's XY plane"         { Ui-ClickLogged 'Datum xy' }
+Ui-ExpectNew 'Inspect Profile: place geometry, length 1000.00 mm (typed), square ends; adds to Root' 'on the XY plane, without activating Root'
+Place 'Profile 20 test'
+No-PolicyMessage
+Ui-Step 'Close (Escape)'                 { Ui-Key 'Escape' }
+Ui-Step 'undo it (Ctrl+Z)'               { Ui-Key 'ctrl+z' }
+Ui-Mark
+Ui-Step 'Profile again (F3)'             { Ui-Key 'F3' }
+Ui-ExpectNew 'BUILD profile adds to Root (a ground placement)' 'a new design again'
+Ui-Step '60 mm long'                     { Ui-TypeIn 'Panel Profile input length' '60' }
+Ui-Mark
+Ui-Step 'along X'                        { Ui-ClickLogged 'Panel Profile input axis=x' }
+Ui-ExpectNew '; along x' 'the preview along X'
+Ui-Mark
+Ui-Step 'standing (Z)'                   { Ui-ClickLogged 'Panel Profile input axis=z' }
+Ui-ExpectNew '; along z' 'the preview standing'
+Place 'Profile 20 test'
+No-PolicyMessage
+$b0 = Placed-Body
+if (-not $b0) { Ui-Fail 'no body of the first profile' }
+Ui-ExpectNew 'Profile Place On takes now: faces' "only a profile's faces once one is there"
+Ui-ExpectNew 'Construction geometry hidden for the command' 'the planes hidden for side and end placements'
+Refresh-Picks 'Profile'
+$sides0 = @(Faces-Of $b0 $side)
+if ($sides0.Count -eq 0) { Ui-Fail "no side of the first profile ($b0) to pick" }
+Ui-Mark
+Ui-Step 'its side, 60 mm long'           { Pick-Face $b0 $sides0[0] }
+Ui-ExpectNew 'Inspect Profile: place side' 'on the side'
+Ui-ExpectNew '; snap end_' 'flush with the end near the click'
+Expect-Row 'use_offset' 'shown' 'Offset for a side pick'
+Expect-Row 'mitre' 'hidden' 'no Mitre for a side pick'
+Place 'Profile 20 test'
+$b1 = Placed-Body
+Refresh-Picks 'Profile'
+# An end of the first profile, or of the second where the first's end is
+# out of sight in session 0's smaller window: the step is about an end pick.
+$endBody = $b0
+$tops0 = @(Faces-Of $b0 ':end_b')
+if ($tops0.Count -eq 0 -and $b1) { $endBody = $b1; $tops0 = @(Faces-Of $b1 ':end_b') + @(Faces-Of $b1 ':end_a') }
+if ($tops0.Count -eq 0) { Ui-Fail "no end face of the first two profiles ($b0, $b1) to pick" }
+Ui-Mark
+Ui-Step 'an end face'                    { Pick-Face $endBody $tops0[0] }
+Ui-ExpectNew 'Inspect Profile: place end' 'on the end'
+Expect-Row 'mitre' 'shown' 'Mitre for an end pick'
+Ui-Mark
+Ui-Step 'mitre the new part'             { Ui-WheelLogged 'Panel Profile input mitre' -1 }
+Ui-ExpectNew 'ends A 45 deg' "the new part's end mitred"
+Place 'Profile 20 test'
+No-PolicyMessage
+Ui-Mark
+Ui-Step 'Close (Escape)'                 { Ui-Key 'Escape' }
+Ui-ExpectNew 'Closed Profile after 3' 'Close keeps them'
+Ui-ExpectNew 'Construction geometry shown again' 'the planes shown again when the command ends'
+
+# The rest on a design with only its root, the active component.
+Ui-StartApp 'build' @('--open', $start)
+Ui-Step 'the BUILD tab'                  { Ui-ClickLogged 'Ribbon tab BUILD' }
+
+Write-Host '--- 3. Profile: a frame of four'
 Ui-Mark
 Ui-Step 'Profile (F3)'                   { Ui-Key 'F3' }
 Ui-ExpectNew 'Command Profile started' 'Profile started'
@@ -215,28 +311,30 @@ Ui-ExpectNew 'Applied Profile (1)' 'the panel stays open'
 $p1 = Placed-Occurrence
 $b1 = Placed-Body
 if (-not $p1 -or -not $b1) { Ui-Fail 'no occurrence or body of the first profile' }
-Ui-Step 'Offset from an End'             { Ui-ClickLogged 'Panel Profile input use_offset' }
-Ui-Step 'offset 0'                       { Ui-TypeIn 'Panel Profile input offset' '0' }
-Ui-Step 'mitre the new part'             { Ui-WheelLogged 'Panel Profile input mitre' -1 }
-Ui-ExpectNew 'Profile: Mitre = Cut the new part' 'the new part mitred'
-Ui-Step 'length 300'                     { Ui-TypeIn 'Panel Profile input length' '300' }
 Refresh-Picks 'Profile'
-# The two on a side of the first one that a click can reach.
+# The two on a side of the first one that a click can reach, flush with
+# its ends: offset 0 from A, and from B.
 $sides1 = @(Faces-Of $b1 $side)
 if ($sides1.Count -eq 0) { Ui-Fail "no side of the first profile ($b1) to pick" }
 $side1 = $sides1[0]
 Ui-Mark
 Ui-Step "the first profile's side"       { Pick-Face $b1 $side1 }
 Ui-ExpectNew 'Inspect Profile: place side' 'on the side'
+Ui-Mark
+Ui-Step 'Offset from an End'             { Ui-ClickLogged 'Panel Profile input use_offset' }
+Ui-Step 'offset 0'                       { Ui-TypeIn 'Panel Profile input offset' '0' }
+Ui-Step 'length 300'                     { Ui-TypeIn 'Panel Profile input length' '300' }
+Ui-ExpectNew 'snap none at 0.0 mm' 'offset 0 from end A: flush with end A'
 Place 'Profile 20 test'
 $p2 = Placed-Occurrence
 $b2 = Placed-Body
-Ui-Step 'no mitre'                       { Ui-WheelLogged 'Panel Profile input mitre' 1 }
-Ui-Step 'from end B'                     { Ui-WheelLogged 'Panel Profile input from' -1 }
 Refresh-Picks 'Profile'
 Ui-Mark
 Ui-Step "the first profile's side again" { Pick-Face $b1 $side1 }
 Ui-ExpectNew 'Inspect Profile: place side' 'on the side'
+Ui-Mark
+Ui-Step 'from end B'                     { Ui-WheelLogged 'Panel Profile input from' -1 }
+Ui-ExpectNew 'snap none at 380.0 mm' 'offset 0 from end B: flush with end B'
 Place 'Profile 20 test'
 $p3 = Placed-Occurrence
 $b3 = Placed-Body
@@ -275,7 +373,7 @@ Ui-Mark
 Ui-Step 'Close (Escape)'                 { Ui-Key 'Escape' }
 Ui-ExpectNew 'Closed Profile after 4' 'Close keeps the four profiles'
 
-Write-Host '--- 3. Connector'
+Write-Host '--- 4. Connector'
 Ui-Step 'fit the view (F6)'              { Ui-Key 'F6' }
 Ui-Mark
 Ui-Step 'Connector (F8)'                 { Ui-Key 'F8' }
@@ -305,7 +403,7 @@ Ui-Step 'Connect (Enter)'                { Ui-Key 'Return' }
 Ui-ExpectNew 'Connected Bracket 20 test at junction ' 'the connector placed' 30
 Ui-Step 'Close (Escape)'                 { Ui-Key 'Escape' }
 
-Write-Host '--- 4. Panel'
+Write-Host '--- 5. Panel'
 Ui-Mark
 Ui-Step 'Panel (F5)'                     { Ui-Key 'F5' }
 Ui-ExpectNew 'BUILD parts panel: 1' 'the picker lists the panel'
@@ -316,7 +414,7 @@ Ui-Step 'Place (Enter)'                  { Ui-Key 'Return' }
 Ui-ExpectNew 'Placed panel Panel test as ' 'the panel placed' 30
 Ui-Step 'Close (Escape)'                 { Ui-Key 'Escape' }
 
-Write-Host '--- 5. Linear Part: a rail and a carriage'
+Write-Host '--- 6. Linear Part: a rail and a carriage'
 Ui-Mark
 Ui-Step 'Linear Part (F7)'               { Ui-Key 'F7' }
 Ui-ExpectNew 'BUILD parts linear: 2' 'the rail and the carriage'
@@ -341,7 +439,7 @@ Ui-ExpectNew 'Inspect Linear Part: ' "the carriage's preview"
 Place 'Carriage 15 test'
 Ui-Step 'Close (Escape)'                 { Ui-Key 'Escape' }
 
-Write-Host '--- 5b. Ends: an end of the third profile mitred and bored'
+Write-Host '--- 6b. Ends: an end of the third profile mitred and bored'
 Ui-Step 'fit the view (F6)'              { Ui-Key 'F6' }
 Ui-Mark
 Ui-Step 'Ends (F11)'                     { Ui-Key 'F11' }
@@ -356,7 +454,7 @@ Ui-Step 'OK (Enter)'                     { Ui-Key 'Return' }
 Ui-ExpectNew 'Ends of ' 'the end edited'
 Ui-ExpectNew 'machining D6.8' 'with its bore'
 
-Write-Host '--- 6. Save, reopen, Cut List'
+Write-Host '--- 7. Save, reopen, Cut List'
 Ui-Mark
 Ui-Step 'save as (Ctrl+Shift+S)'         { Ui-Key 'ctrl+shift+s' }
 Ui-FocusDialog '^Save As$'
@@ -374,7 +472,7 @@ Ui-Step 'Cut List (F9)'                  { Ui-Key 'F9' }
 Ui-FocusDialog '^Cut List$'
 Ui-ExpectNew 'Cut list row: ' "the cut list's rows"
 Ui-ExpectNew 'x Profile 20 test' 'the profiles in it'
-Ui-ExpectNew 'A 45 deg' 'the mitred end'
+Ui-ExpectNew ' 45 deg (' 'the mitred end'
 Ui-ExpectNew 'x Rail 15 test' 'the rail in it'
 Ui-ExpectNew 'machining D6.8' 'the bored end'
 $rows = Ui-LastMatch '^Cut list: (\d+) row\(s\)'

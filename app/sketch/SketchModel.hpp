@@ -69,6 +69,13 @@ struct DimensionData {
   QString comment;    // its parameter's comment ("Sketch1 distance")
   double measured = 0.0; // mm or radians
   std::optional<V2> text; // where its value is shown, when placed
+  // A signed horizontal or vertical distance (mitcad#404): the offset b - a,
+  // which may be negative.
+  bool signedOffset = false;
+
+  bool isAxisDistance() const {
+    return type == QStringLiteral("horizontal_distance") || type == QStringLiteral("vertical_distance");
+  }
 };
 
 struct TextData {
@@ -124,6 +131,7 @@ struct ProjectionData {
   bool linked = false; // it has a link (geometry of another component)
   QStringList entities;
   bool stale = false; // it did not follow its source all the way (kept, lost, unfollowed, stale)
+  bool section = false; // section curves: where the sketch's plane cuts the source face (mitcad#389)
 };
 
 class SketchModel {

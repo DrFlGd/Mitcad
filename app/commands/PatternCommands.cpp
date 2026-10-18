@@ -46,6 +46,7 @@ QVector<InputDef> patternObjects() {
           })
           .withVisible(choiceIs(QStringLiteral("object_type"), QStringLiteral("features"))),
       selectionInput(QStringLiteral("faces"), QObject::tr("Objects"), SelectKind::Face, 1, 0)
+          .withoutMeshes()
           .withVisible(choiceIs(QStringLiteral("object_type"), QStringLiteral("faces"))),
       choiceInput(QStringLiteral("compute"), QObject::tr("Compute Option"), kComputes, QStringLiteral("adjust"))
           .withTooltip(QObject::tr("Adjust computes each copy where it is; Identical moves the "

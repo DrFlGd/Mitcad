@@ -75,10 +75,11 @@ fn a_profile_on_a_side_stands_on_the_slot_for_each_system() {
         all_ok(&doc);
         assert_eq!(p["place"], "side");
         let at = placed(&doc, occurrence(&p));
-        // End A on the slot's centre line, 100 from the target's end A,
-        // the profile out along +X.
+        // End A on the slot's centre line, its near face 100 from the
+        // target's end A (its centre half a section further), the profile
+        // out along +X.
         assert!(
-            close(at.translation, [w / 2.0, 0.0, 100.0]),
+            close(at.translation, [w / 2.0, 0.0, 100.0 + w / 2.0]),
             "{component_id}: {at:?}"
         );
         assert!(close(axis(&at), [1.0, 0.0, 0.0]), "{component_id}: {at:?}");
@@ -146,20 +147,21 @@ fn a_pick_on_a_face_decides_side_or_end() {
     let at = placed(&doc, occurrence(&e));
     assert!(close(at.translation, [0.0, 0.0, 1000.0]), "{at:?}");
     assert!(close(axis(&at), [0.0, 0.0, 1.0]));
-    // A side face near a point: the nearest slot, at the point's distance
-    // along the profile.
+    // A side face near a point: the nearest slot, centred on the point's
+    // distance along the profile (between the snaps: its near face 407
+    // from end A, not near a grid point of 30).
     let s = place(
         &mut doc,
         json!({"part": {"source": "S1"},
                "at": {"occurrence": t["occurrence"],
                       "geometry": {"body": format!("{tp}.b0"), "face": format!("{tp}:part(F2:side(c1))")},
-                      "point": [0.0, 15.0, 400.0]},
+                      "point": [0.0, 15.0, 422.0]},
                "length": 200}),
     );
     all_ok(&doc);
     assert_eq!(s["place"], "side");
     let at = placed(&doc, occurrence(&s));
-    assert!(close(at.translation, [0.0, 15.0, 400.0]), "{at:?}");
+    assert!(close(at.translation, [0.0, 15.0, 422.0]), "{at:?}");
     assert!(close(axis(&at), [0.0, 1.0, 0.0]));
     // `place: end` on a side pick takes the nearest end.
     let n = place(
@@ -190,7 +192,7 @@ fn offsets_from_end_b_follow_the_target_s_length() {
     );
     all_ok(&doc);
     let at = placed(&doc, occurrence(&p));
-    assert!(close(at.translation, [0.0, 15.0, 950.0]), "{at:?}");
+    assert!(close(at.translation, [0.0, 15.0, 935.0]), "{at:?}");
     assert!(close(axis(&at), [0.0, 1.0, 0.0]));
     // Rotated a quarter turn about its axis.
     let x = at.apply_vector([1.0, 0.0, 0.0]);
@@ -206,7 +208,7 @@ fn offsets_from_end_b_follow_the_target_s_length() {
     all_ok(&doc);
     assert!(close(
         placed(&doc, occurrence(&p)).translation,
-        [0.0, 15.0, 1150.0]
+        [0.0, 15.0, 1135.0]
     ));
     // Edited to 80 from end A, then flipped: end B on the slot.
     let c = p["component"].clone();
@@ -217,7 +219,7 @@ fn offsets_from_end_b_follow_the_target_s_length() {
     .unwrap();
     assert!(close(
         placed(&doc, occurrence(&p)).translation,
-        [0.0, 15.0, 80.0]
+        [0.0, 15.0, 95.0]
     ));
     command(
         &mut doc,
@@ -228,10 +230,10 @@ fn offsets_from_end_b_follow_the_target_s_length() {
     let at = placed(&doc, occurrence(&p));
     // End B on the slot: end A 200 out along +Y.
     assert!(
-        close(at.apply_point([0.0, 0.0, 200.0]), [0.0, 15.0, 80.0]),
+        close(at.apply_point([0.0, 0.0, 200.0]), [0.0, 15.0, 95.0]),
         "{at:?}"
     );
-    assert!(close(at.translation, [0.0, 215.0, 80.0]), "{at:?}");
+    assert!(close(at.translation, [0.0, 215.0, 95.0]), "{at:?}");
 }
 
 #[test]

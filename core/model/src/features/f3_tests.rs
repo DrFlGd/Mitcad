@@ -165,6 +165,52 @@ fn a_profile_sweeps_along_a_helix_path() {
 }
 
 #[test]
+fn a_sweep_with_a_fixed_binormal() {
+    // (mitcad#397) The binormal reaches the kernel as a unit vector and
+    // round-trips through the definition.
+    let (mut b, _) = with_path();
+    let uid = add(
+        &mut b.doc,
+        sweep(&["c1", "c4", "c7"], json!({"binormal": [0, 0, 2]})),
+    )
+    .unwrap();
+    assert_eq!(status(&b.doc, uid), FeatureStatus::Ok);
+    assert_eq!(
+        last_spec(&b.doc),
+        "sweep F5 path c1,c4,c7 extents 1 1 Perpendicular twist 0 taper 0 rail none binormal 0 0 1"
+    );
+    let answer: Value = serde_json::from_str(
+        &b.doc
+            .query(&json!({"query": "feature", "uid": uid}).to_string())
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(answer["def"]["binormal"], json!([0.0, 0.0, 2.0]));
+    // Not with the parallel orientation, a guide rail, a twist or a taper,
+    // and not of no length.
+    for (extra, expected) in [
+        (
+            json!({"binormal": [0, 0, 1], "orientation": "parallel"}),
+            "perpendicular orientation",
+        ),
+        (
+            json!({"binormal": [0, 0, 1], "guide_rail": {"sketch": "F3", "curves": ["c7"]}}),
+            "guide rail",
+        ),
+        (
+            json!({"binormal": [0, 0, 1], "twist_angle": 0.5}),
+            "twist or a taper",
+        ),
+        (json!({"binormal": [0, 0, 0]}), "of some length"),
+    ] {
+        match b.doc.edit_feature(uid, &def(sweep(&["c1"], extra))) {
+            Err(e) => assert!(e.to_string().contains(expected), "{e}"),
+            Ok(_) => panic!("accepted; expected {expected}"),
+        }
+    }
+}
+
+#[test]
 fn sweep_paths_and_values_are_checked() {
     let (mut b, _) = with_path();
     for (value, expected) in [

@@ -140,7 +140,7 @@ impl<K: Kernel> Evaluate<K> for DraftDef {
             None if self.symmetric => Some(angle),
             None => None,
         };
-        let shape = ctx.body(self.body)?;
+        let shape = ctx.surface_body(self.body)?;
         let faces = require_faces(ctx, self.body, &shape, &self.faces)?;
         let plane = resolve_tool(ctx, &self.plane, self.offset, None)?;
         let spec = DraftSpec {

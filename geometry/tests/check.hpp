@@ -13,6 +13,16 @@
 
 #include "mitcad/geometry/geometry.hpp"
 
+// windows.h (which OCCT headers such as OSD_Parallel.hxx bring in on Windows)
+// defines near and far as empty macros, which would break near() below in
+// every test that includes an OCCT header first.
+#ifdef near
+#undef near
+#endif
+#ifdef far
+#undef far
+#endif
+
 namespace test {
 
 inline int failures = 0;
@@ -178,5 +188,7 @@ void fillet_chain_tests();
 void tangent_chain_tests();
 // Roundings that run over cut-outs of their faces (mitcad#311).
 void fillet_cutout_tests();
+// Section curves of sketches (mitcad#389).
+void section_curve_tests();
 
 } // namespace test

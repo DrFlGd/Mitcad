@@ -15,10 +15,12 @@
 
 namespace mitcad::bridge {
 
-TriangleMesh triangle_mesh(const geometry::Shape& shape, double deviation, double angle) {
+TriangleMesh triangle_mesh(const geometry::Shape& shape, double deviation, double angle,
+                           std::uint64_t face_triangles) {
   io::MeshOptions options;
   options.linear_deflection = deviation;
   options.angular_deflection = angle;
+  options.face_triangles = static_cast<std::size_t>(face_triangles);
   const io::IndexedMesh mesh = io::indexed_mesh(shape.occt(), options);
   TriangleMesh out;
   out.vertices.reserve(mesh.vertices.size() * 3);

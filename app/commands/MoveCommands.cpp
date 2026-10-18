@@ -582,8 +582,8 @@ CommandDef combineCommand(const CommandContext& context) {
   def.keywords = {QStringLiteral("boolean"), QStringLiteral("union"), QStringLiteral("subtract")};
   def.featureType = QStringLiteral("combine");
   def.inputs = {
-      selectionInput(QStringLiteral("target"), QObject::tr("Target Body"), SelectKind::Body, 1, 1),
-      selectionInput(QStringLiteral("tools"), QObject::tr("Tool Bodies"), SelectKind::Body, 1, 0),
+      selectionInput(QStringLiteral("target"), QObject::tr("Target Body"), SelectKind::Body, 1, 1).withoutMeshes(),
+      selectionInput(QStringLiteral("tools"), QObject::tr("Tool Bodies"), SelectKind::Body, 1, 0).withoutMeshes(),
       choiceInput(QStringLiteral("operation"), QObject::tr("Operation"),
                   {{QStringLiteral("join"), QStringLiteral("Join")},
                    {QStringLiteral("cut"), QStringLiteral("Cut")},

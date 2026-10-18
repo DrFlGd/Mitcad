@@ -44,6 +44,9 @@ commands:
       shape: box DX DY DZ | cylinder R H | sphere R | filleted-block | holed-block
   convert IN OUT [--ascii] [--refinement low|medium|high] [--deflection MM]
                  [--angle DEG] [--schema ap214|ap242] [--unit mm|cm|m|in|ft]
+      the refinements (medium by default) bound each doubly curved face at
+      about 5 000, 20 000 and 50 000 triangles (a larger face meshes
+      coarser); --deflection holds on every face
   props FILE... [--density G_PER_CM3]
   compare A B [--samples N] [--fuzzy MM] [--max-deviation MM] [--max-relative X]
       exits with 1 when a given limit is exceeded
@@ -322,6 +325,8 @@ int convert(const Arguments& args) {
   }
   if (const auto deflection = args.option("--deflection")) {
     options.mesh.linear_deflection = number(*deflection, "deflection");
+    // An explicit deviation holds on every face (no per-face triangle bound).
+    options.mesh.face_triangles = 0;
   }
   if (const auto angle = args.option("--angle")) {
     options.mesh.angular_deflection = number(*angle, "angle") * 3.14159265358979323846 / 180.0;

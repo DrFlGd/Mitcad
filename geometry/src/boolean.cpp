@@ -1114,6 +1114,10 @@ bool detail::shapes_touch(const Shape& a, const Shape& b) { return touches(a, b)
 
 BooleanResult boolean(BooleanOp op, const std::vector<const Shape*>& targets, const Shape& tool,
                       double within) {
+  for (const Shape* target : targets) {
+    detail::require_surfaces(target->occt(), operation_name(op));
+  }
+  detail::require_surfaces(tool.occt(), operation_name(op));
   return detail::run(operation_name(op), [&] {
     PhaseTrace trace(std::string("whole-") + operation_name(op) + " targets=" + std::to_string(targets.size()));
     BooleanResult result;

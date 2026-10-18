@@ -116,7 +116,7 @@ impl<K: Kernel> Evaluate<K> for ShellDef {
             None => 0.0,
         };
         thicknesses(inside, outside)?;
-        let shape = ctx.body(self.body)?;
+        let shape = ctx.surface_body(self.body)?;
         let faces = require_faces(ctx, self.body, &shape, &self.faces)?;
         let spec = ShellSpec {
             faces: &faces,

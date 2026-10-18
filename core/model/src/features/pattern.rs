@@ -947,6 +947,10 @@ pub(crate) fn repeat<K: Kernel>(
             let count = bodies.len() as u32;
             for (j, body) in bodies.iter().enumerate() {
                 let shape = ctx.body(*body)?;
+                if combine {
+                    // Copies of a mesh body are not joined (mitcad#399).
+                    ctx.require_surfaces(*body, &shape)?;
+                }
                 let mut merged = None;
                 for element in elements {
                     let copy = ctx
@@ -1136,7 +1140,7 @@ pub(crate) fn repeat<K: Kernel>(
             })
         }
         PatternObjects::Faces { body, faces } => {
-            let shape = ctx.body(*body)?;
+            let shape = ctx.surface_body(*body)?;
             // A face a sketch change renamed is found again (mitcad#272).
             let mut found = Vec::with_capacity(faces.len());
             for face in faces {
@@ -1280,7 +1284,13 @@ impl Copying<'_> {
         let participants = if self.original_bodies && tool_use.participants.is_empty() {
             changed_bodies(ctx, place.feature, set)?
         } else {
-            tool_use.participants.clone()
+            present_participants(
+                ctx,
+                place.feature,
+                tool_use.operation,
+                &tool_use.participants,
+                set,
+            )?
         };
         Ok(Some(participants))
     }
@@ -1397,7 +1407,7 @@ impl Copying<'_> {
         let participants = if self.original_bodies && tool_use.participants.is_empty() {
             changed_bodies(ctx, *uid, set)?
         } else {
-            tool_use.participants.clone()
+            present_participants(ctx, *uid, tool_use.operation, &tool_use.participants, set)?
         };
         // The place's steps, composed: where the copy at an element goes is
         // the element's transform after them.
@@ -1477,6 +1487,96 @@ fn changed_bodies<K: Kernel>(
         .into_iter()
         .filter(|b| set.get(*b).is_some())
         .collect())
+}
+
+/// The participants of feature `uid` for its copies, as the bodies are at
+/// the pattern's point (mitcad#406): a participant the feature itself
+/// merged into another (a join that touched both) is the body it went
+/// into ([`merged_into`]), each body listed once. A participant that is not
+/// there otherwise fails the pattern, saying so when the feature consumed
+/// it itself (a cut that left nothing of it).
+fn present_participants<K: Kernel>(
+    ctx: &mut EvalContext<'_, K>,
+    uid: FeatureUid,
+    operation: Operation,
+    participants: &[BodyUid],
+    set: &BodySet<K::Shape>,
+) -> Result<Vec<BodyUid>, String> {
+    let mut present: Vec<BodyUid> = Vec::with_capacity(participants.len());
+    for (i, body) in participants.iter().enumerate() {
+        let body = if set.get(*body).is_some() {
+            *body
+        } else {
+            merged_into(ctx, uid, operation, &participants[..i], *body)?
+        };
+        if !present.contains(&body) {
+            present.push(body);
+        }
+    }
+    Ok(present)
+}
+
+/// The body that participant `body`, which is not there at the pattern's
+/// point, went into when feature `uid` merged it. A join keeps a merged
+/// body under the first of its participants among it (the others are
+/// removed), so it is one of `earlier`, the participants before `body`,
+/// that the feature set; of several, the one whose shape after the feature
+/// holds the box of `body` before it (the smallest such box), else the
+/// first. (Those are there: [`present_participants`] has checked them.)
+fn merged_into<K: Kernel>(
+    ctx: &mut EvalContext<'_, K>,
+    uid: FeatureUid,
+    operation: Operation,
+    earlier: &[BodyUid],
+    body: BodyUid,
+) -> Result<BodyUid, String> {
+    let changes = ctx.feature_body_changes(uid)?;
+    if !changes.iter().any(|(b, s)| *b == body && s.is_none()) {
+        return Err(format!(
+            "body {body} does not exist at this point of the timeline"
+        ));
+    }
+    let name = ctx.feature_name(uid);
+    let candidates: Vec<(BodyUid, &K::Shape)> = earlier
+        .iter()
+        .filter_map(|e| {
+            changes
+                .iter()
+                .find_map(|(b, s)| (b == e).then_some(s.as_ref()).flatten())
+                .map(|s| (*e, s))
+        })
+        .collect();
+    if operation != Operation::Join || candidates.is_empty() {
+        return Err(format!(
+            "participant {body} of {name} was consumed by {name} itself"
+        ));
+    }
+    let mut target = candidates[0].0;
+    if candidates.len() > 1 {
+        let before = ctx.body_before(uid, body);
+        let measure = |shape: &K::Shape| ctx.kernel.enclosing_box(shape).ok().flatten();
+        let holds = |outer: &BoundingBox, inner: &BoundingBox| {
+            (0..3).all(|i| {
+                outer.min[i] <= inner.min[i] + REACH && inner.max[i] <= outer.max[i] + REACH
+            })
+        };
+        let volume = |b: &BoundingBox| {
+            (0..3)
+                .map(|i| (b.max[i] - b.min[i]).max(0.0))
+                .product::<f64>()
+        };
+        if let Some(inner) = before.as_ref().and_then(measure) {
+            let holding = candidates
+                .iter()
+                .filter_map(|(c, shape)| measure(shape).map(|b| (*c, b)))
+                .filter(|(_, b)| holds(b, &inner))
+                .min_by(|a, b| volume(&a.1).total_cmp(&volume(&b.1)));
+            if let Some((c, _)) = holding {
+                target = c;
+            }
+        }
+    }
+    Ok(target)
 }
 
 /// How far (mm) a mirror image may lie from the body and still count as

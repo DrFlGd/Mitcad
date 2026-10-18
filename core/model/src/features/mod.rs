@@ -95,6 +95,8 @@ pub mod bound_length;
 pub mod derived_part;
 pub use bound_length::BoundLengthDef;
 pub use derived_part::DerivedPartDef;
+// Mesh bodies refused by surface operations (mitcad#399).
+pub(crate) mod surface_bodies;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -180,6 +182,9 @@ mod face_copy;
 pub(crate) mod renamed;
 #[cfg(test)]
 mod renamed_tests;
+// Body ids of a split's pieces kept by matching remembered pieces (mitcad#408).
+pub mod pieces;
+pub use pieces::{PieceGroup, PieceMark, SplitPieces};
 
 use crate::assembly::Assembly;
 use crate::datum::Datum;
@@ -600,6 +605,12 @@ pub(crate) struct Env<'a, S> {
     pub join_tolerance: Option<f64>,
     /// The design's library sources, read by derived parts (mitcad#375).
     pub sources: &'a crate::build::LibrarySources,
+    /// The pieces each feature remembers of the bodies it split, and the
+    /// bodies that are other pieces than before or pieces no longer made,
+    /// at this point (mitcad#408, `pieces.rs`).
+    pub split_pieces: &'a SplitPieces,
+    pub changed_pieces: &'a BTreeMap<BodyUid, String>,
+    pub gone_pieces: &'a BTreeMap<BodyUid, FeatureUid>,
 }
 
 /// Inputs of an evaluating feature. Every read is recorded, so the
@@ -627,11 +638,15 @@ pub struct EvalContext<'a, K: Kernel> {
     /// in their components and moved into the feature's coordinates.
     pub(crate) geom_links: std::collections::BTreeMap<BodyUid, crate::links::OccurrenceLink>,
     next_body: u32,
+    /// The pieces of bodies it splits (mitcad#408).
+    pub(crate) pieces: pieces::PieceState,
 }
 
 impl<'a, K: Kernel> EvalContext<'a, K> {
     pub(crate) fn new(kernel: &'a K, uid: FeatureUid, env: Env<'a, K::Shape>) -> Self {
+        let pieces = pieces::PieceState::new(uid, env.split_pieces.get(&uid).cloned());
         Self {
+            pieces,
             sheet_footprint: BTreeSet::new(),
             kernel,
             uid,
@@ -733,6 +748,27 @@ impl<'a, K: Kernel> EvalContext<'a, K> {
         self.kernel.boolean(op, targets, tool)
     }
 
+    /// [`Kernel::unite`]; within the document's join tolerance where it has
+    /// one ([`Kernel::unite_within`], mitcad#397: a Combine's join of an
+    /// importer's bodies whose faces lie on each other only within the
+    /// file's geometric tolerance). A kernel without it unites exactly.
+    pub(crate) fn unite(
+        &mut self,
+        shapes: &[&K::Shape],
+    ) -> Result<K::Shape, crate::kernel::KernelError> {
+        let read = Read::JoinTolerance(self.env.join_tolerance.map(f64::to_bits));
+        if !self.reads.contains(&read) {
+            self.reads.push(read);
+        }
+        if let Some(tolerance) = self.env.join_tolerance {
+            match self.kernel.unite_within(shapes, tolerance) {
+                Err(crate::kernel::KernelError::Unsupported(_)) => {}
+                result => return result,
+            }
+        }
+        self.kernel.unite(shapes)
+    }
+
     pub fn param(&mut self, id: ParamId) -> Result<f64, String> {
         let value = self.env.params.value(id);
         self.reads.push(Read::Param(id, value.map(f64::to_bits)));
@@ -770,18 +806,25 @@ impl<'a, K: Kernel> EvalContext<'a, K> {
     pub fn body(&mut self, uid: BodyUid) -> Result<K::Shape, String> {
         let body = self.env.bodies.get(&uid);
         self.reads.push(Read::Body(uid, body.map(|b| b.version)));
-        body.map(|b| b.value.clone()).ok_or_else(|| {
-            let creator = self.feature_name(uid.feature);
-            match self.env.owners.get(&uid) {
-                Some(owner) => format!(
-                    "body {uid} (from {creator}) belongs to {}; a feature works on the bodies \
-                     of its own component (activate that component)",
-                    self.env.assembly.name(*owner)
-                ),
+        if let Some(body) = body {
+            let shape = body.value.clone();
+            // Another piece of a split than before (mitcad#408).
+            self.warn_changed_piece(uid);
+            return Ok(shape);
+        }
+        let creator = self.feature_name(uid.feature);
+        Err(match self.env.owners.get(&uid) {
+            Some(owner) => format!(
+                "body {uid} (from {creator}) belongs to {}; a feature works on the bodies \
+                 of its own component (activate that component)",
+                self.env.assembly.name(*owner)
+            ),
+            None => match self.gone_piece(uid) {
+                Some(gone) => gone,
                 None => format!(
                     "body {uid} (from {creator}) does not exist at this point of the timeline"
                 ),
-            }
+            },
         })
     }
 
@@ -862,6 +905,9 @@ impl<'a, K: Kernel> EvalContext<'a, K> {
         let body = components.get(&component).and_then(|b| b.get(&uid));
         self.reads
             .push(Read::BodyIn(component, uid, body.map(|b| b.version)));
+        if body.is_some() {
+            self.warn_changed_piece(uid);
+        }
         body.map(|b| b.value.clone()).ok_or_else(|| {
             format!(
                 "body {uid} (from {}) is not in {} at this point of the timeline",
@@ -893,10 +939,19 @@ impl<'a, K: Kernel> EvalContext<'a, K> {
             .collect()
     }
 
-    /// The id of the next body this feature creates.
+    /// The id of the next body this feature creates; ids of pieces it
+    /// remembers are passed by (mitcad#408).
     pub fn new_body(&mut self) -> BodyUid {
-        self.next_body += 1;
-        BodyUid::new(self.uid, self.next_body - 1)
+        if !self.pieces.reserved.is_empty() {
+            self.pieces.used = true;
+        }
+        loop {
+            self.next_body += 1;
+            let index = self.next_body - 1;
+            if !self.pieces.reserved.contains(&index) {
+                return BodyUid::new(self.uid, index);
+            }
+        }
     }
 
     pub fn feature_name(&self, uid: FeatureUid) -> String {

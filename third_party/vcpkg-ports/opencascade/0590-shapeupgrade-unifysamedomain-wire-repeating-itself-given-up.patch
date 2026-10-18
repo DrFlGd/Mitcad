@@ -1,0 +1,51 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+ShapeUpgrade_UnifySameDomain: a wire that keeps going back and forth over
+the same seams is given up, and its faces stay as they are (mitcad#235).
+
+The face merge builds the merged face's wires edge by edge; where no edge
+left continues from the current vertex, it takes a removed seam edge there
+(ReconstructMissedSeam). A thread whose turns meet in one edge, as the
+bodies stored in files have them, leaves on a cylinder through the meeting
+edges (the intersection of the threaded part with the cylinder of the
+thread's crest, past the end of a blind bore) seven pieces of the one
+cylindrical surface, cut by the helix and by lines along the axis that end
+on it. Merging them, the wire went from a removed edge to the removed
+seam and back again without end: in 15 s it held 1.5 million edges, and
+it ran on until the memory was gone.
+
+A wire runs along each edge left at most once and along each removed edge
+at most twice (once each way along a seam), so a wire with more edges than
+that repeats itself; it now counts its edges and is given up past that
+bound, as when no next edge is found (isWireBuildingFailed): the faces are
+left unmerged. Nothing changes for wires within the bound.
+
+--- a/src/ModelingAlgorithms/TKShHealing/ShapeUpgrade/ShapeUpgrade_UnifySameDomain.cxx
++++ b/src/ModelingAlgorithms/TKShHealing/ShapeUpgrade/ShapeUpgrade_UnifySameDomain.cxx
+@@ -4026,6 +4026,12 @@
+         gp_Pnt2d CurPoint   = StartPCurve->Value(CurParam);
+ 
+         TopoDS_Edge CurEdge = StartEdge;
++        // A wire runs along each of the edges left at most once and along
++        // each removed seam at most twice (mitcad#235): a longer one repeats
++        // itself, going back and forth over seams found again and again by
++        // ReconstructMissedSeam, and never closes.
++        const int aMaxWireEdges = edges.Length() + 2 * RemovedEdges.Length() + 1;
++        int       aNbWireEdges  = 1;
+         for (;;) // loop till the end of current new wire
+         {
+           TopoDS_Edge NextEdge;
+@@ -4242,6 +4248,12 @@
+               break;
+             }
+           }
++          if (++aNbWireEdges > aMaxWireEdges)
++          {
++            // The faces stay as they are.
++            isWireBuildingFailed = true;
++            break;
++          }
+           CurPoint  = NextPoint;
+           CurEdge   = NextEdge;
+           CurVertex = TopExp::LastVertex(CurEdge, true); // with orientation

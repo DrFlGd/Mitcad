@@ -681,12 +681,12 @@ impl Document {
         else {
             return SharedPtr::null();
         };
+        // Every piece of a region a sketch change split (mitcad#407).
         self.0
-            .profile_region(sketch, &region)
-            .and_then(|(frame, region)| {
-                OcctKernel
-                    .profile(&frame, std::slice::from_ref(region))
-                    .ok()
+            .profile_pieces(sketch, &region)
+            .and_then(|(frame, regions, _)| {
+                let regions: Vec<_> = regions.into_iter().cloned().collect();
+                OcctKernel.profile(&frame, &regions).ok()
             })
             .unwrap_or_else(SharedPtr::null)
     }

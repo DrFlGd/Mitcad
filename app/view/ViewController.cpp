@@ -69,6 +69,7 @@
 #include "../render/RenderMode.hpp"
 // Texture folders for Edit Appearances (mitcad#315).
 #include "../materials/TexturePreferences.hpp"
+#include "../mcp/AgentFolders.hpp"
 
 namespace mitcad {
 namespace {
@@ -209,6 +210,8 @@ const PreferencePage kPreferencePages[] = {
     {"diagnostics", QT_TRANSLATE_NOOP("View", "Diagnostics"), "debug log logging trace problem report"},
     // Texture folders for Edit Appearances (mitcad#315).
     {"textures", QT_TRANSLATE_NOOP("View", "Textures"), "texture folders maps materials appearance images"},
+    // The folders MCP agents may save to and open from (mitcad#402).
+    {"agents", QT_TRANSLATE_NOOP("View", "Agents"), "mcp agent ai folders save open connection"},
 };
 
 QString onOff(bool on) { return on ? QStringLiteral("on") : QStringLiteral("off"); }
@@ -1072,6 +1075,9 @@ void ViewController::showPreferences(const QString& page) {
   // Texture folders for Edit Appearances (mitcad#315).
   auto* texturesBox = new TexturePreferencesBox;
   groups.insert(QStringLiteral("textures"), texturesBox);
+  // Folders for MCP agents (mitcad#402).
+  auto* agentsBox = new mcp::AgentPreferencesBox;
+  groups.insert(QStringLiteral("agents"), agentsBox);
 
   QWidget* navigationBox = section(tr("Navigation"));
   auto* navigation = new QFormLayout(navigationBox);
@@ -1184,7 +1190,15 @@ void ViewController::showPreferences(const QString& page) {
 
   *commit = [this, general, top, bottom, scheme, zoomToCursor, reverseZoom, constrained, animate, camera, background,
              autosave, minutes, importTolerance, cacheBox, updatesBox, slicerBox, remoteBox, renderDevice, debugLog,
-             debugLogApplied, texturesBox] {
+             debugLogApplied, texturesBox, agentsBox] {
+    // Folders for MCP agents (mitcad#402).
+    const QStringList agentFolders = agentsBox->chosen();
+    if (agentFolders != mcp::savedAgentFolders()) {
+      mcp::saveAgentFolders(agentFolders);
+      qDebug().noquote() << QStringLiteral("Preferences: agent folders %1")
+                                .arg(agentFolders.isEmpty() ? QStringLiteral("none")
+                                                            : agentFolders.join(QStringLiteral(", ")));
+    }
     // Texture folders (mitcad#315).
     const TextureSettings textures = texturesBox->chosen();
     if (textures != TextureSettings::load()) {
@@ -1296,6 +1310,7 @@ void ViewController::showPreferences(const QString& page) {
         {"print", "printer", ""},
         {"diagnostics", "ladybug", "wrench"},
         {"textures", "photo.on.rectangle", "photo"},
+        {"agents", "person.badge.key", "person.crop.circle"},
     };
     for (const PreferencePage& entry : kPreferencePages) {
       QWidget* group = groups.value(QLatin1String(entry.id));
@@ -1335,6 +1350,7 @@ void ViewController::showPreferences(const QString& page) {
     connect(importTolerance, &QDoubleSpinBox::valueChanged, host, changed);
     connect(cacheBox, &CachePreferencesBox::changed, host, changed);
     connect(texturesBox, &TexturePreferencesBox::changed, host, changed);
+    connect(agentsBox, &mcp::AgentPreferencesBox::changed, host, changed);
     // The boxes of the other pages tell no change of their own: their
     // controls do.
     for (QWidget* box : std::initializer_list<QWidget*>{updatesBox, slicerBox, remoteBox}) {

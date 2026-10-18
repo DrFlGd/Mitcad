@@ -750,6 +750,11 @@ pub enum Item {
         profile: Profile,
         directrix: Path,
         reference: Option<[f64; 3]>,
+        /// A fixed binormal direction the profile keeps its angles to along
+        /// the curve (mitcad#397: the `.rvt` import's sloped elliptical
+        /// rail pieces, their profile level all along); none from IFC.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        binormal: Option<[f64; 3]>,
     },
     /// A circular section swept along the directrix.
     SweptDisk {
@@ -1759,6 +1764,7 @@ impl<'a> Decoder<'a> {
                     profile,
                     directrix,
                     reference,
+                    binormal: None,
                 }
             }
             "IFCSWEPTDISKSOLID" | "IFCSWEPTDISKSOLIDPOLYGONAL" => {

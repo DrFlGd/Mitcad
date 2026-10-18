@@ -47,6 +47,7 @@ fn fully_dimensioned_rectangle() {
         a: r.p[0],
         b: r.p[1],
         value: 40.0,
+        signed: false,
     })
     .unwrap();
     let h = s
@@ -54,6 +55,7 @@ fn fully_dimensioned_rectangle() {
             a: r.p[1],
             b: r.p[2],
             value: 20.0,
+            signed: false,
         })
         .unwrap();
     solve_ok(&mut s);
@@ -200,6 +202,7 @@ fn symmetric_profile_about_a_centreline() {
         a: l0,
         b: l2,
         value: 30.0,
+        signed: false,
     })
     .unwrap();
     solve_ok(&mut s);
@@ -253,6 +256,7 @@ fn tangent_arc_chain_is_smooth() {
             a: p1,
             b: q,
             value: 10.0,
+            signed: false,
         })
         .unwrap();
     solve_ok(&mut s);
@@ -431,4 +435,41 @@ fn triangle_with_angles_and_lengths() {
     assert!(an.redundant.is_empty());
     assert_near(line_len(&s, bc), 10.0, "equilateral");
     assert_near(line_len(&s, ca), 10.0, "equilateral");
+}
+
+/// A point already on a long spline stays where it is when held on it
+/// (mitcad#396): the parameter the solve starts from is the curve's
+/// closest, not the nearest of a sampling, which left a gap the solve
+/// shared between the parameter and the point (the point slid along
+/// the curve).
+#[test]
+fn a_point_on_a_long_spline_stays_put() {
+    // A wave of 60 control points, 400 long.
+    let wave: Vec<[f64; 2]> = (0..60)
+        .map(|i| {
+            [
+                i as f64 * 400.0 / 59.0,
+                if i % 2 == 0 { 20.0 } else { -20.0 },
+            ]
+        })
+        .collect();
+    let build = |at: [f64; 2]| {
+        let mut s = System::new();
+        let ctrl: Vec<PointId> = wave.iter().map(|c| s.add_point(c[0], c[1])).collect();
+        for p in &ctrl {
+            s.add_constraint(FixPoint(*p)).unwrap();
+        }
+        let sp = s.add_bspline(3, &ctrl, None, None).unwrap();
+        let p = s.add_point(at[0], at[1]);
+        s.add_constraint(PointOnCurve(p, sp)).unwrap();
+        (s, p)
+    };
+    // Put on the curve first, then held on it from there.
+    let (mut s, p) = build([123.4, 3.0]);
+    solve_ok(&mut s);
+    let on = pt(&s, p);
+    let (mut s, p) = build(on);
+    solve_ok(&mut s);
+    let moved = dist(pt(&s, p), on);
+    assert!(moved < 1e-7, "moved {moved}");
 }

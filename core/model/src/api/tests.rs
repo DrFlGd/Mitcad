@@ -285,7 +285,9 @@ fn commands_build_a_part_and_queries_describe_it() {
     );
     assert_eq!(
         changed,
-        json!({"changed": ["d4"], "recomputed": 1, "error": "Fillet1: fillet failed"})
+        json!({"changed": ["d4"], "recomputed": 1, "error": "Fillet1: fillet failed",
+               "failed_features": [{"uid": "F3", "name": "Fillet1", "error": "fillet failed",
+                                    "edited": false, "new": true}]})
     );
     assert_eq!(
         query(&doc, json!({"query": "timeline"}))["features"][2]["status"],

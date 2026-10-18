@@ -664,6 +664,7 @@ impl Kernel for OcctKernel {
             },
             deviation: tolerance.deviation,
             angle: tolerance.angle,
+            face_triangles: tolerance.face_triangles,
             ascii: options.ascii,
         };
         exchange::ffi::write_file(path, &list, &infos, &settings).map_err(failed)
@@ -1144,8 +1145,13 @@ impl Kernel for OcctKernel {
         shape: &Self::Shape,
         tolerance: &mitcad_model::exchange::MeshTolerance,
     ) -> Result<mitcad_model::exchange::TriangleMesh, KernelError> {
-        let mesh = mesh::ffi::triangle_mesh(occt(shape)?, tolerance.deviation, tolerance.angle)
-            .map_err(failed)?;
+        let mesh = mesh::ffi::triangle_mesh(
+            occt(shape)?,
+            tolerance.deviation,
+            tolerance.angle,
+            tolerance.face_triangles,
+        )
+        .map_err(failed)?;
         Ok(mitcad_model::exchange::TriangleMesh {
             vertices: mesh.vertices.as_chunks::<3>().0.to_vec(),
             triangles: mesh.triangles.as_chunks::<3>().0.to_vec(),
@@ -1312,8 +1318,13 @@ impl Kernel for OcctKernel {
         shape: &Self::Shape,
         tolerance: &mitcad_model::exchange::MeshTolerance,
     ) -> Result<mitcad_model::exchange::FaceMeshes, KernelError> {
-        let mesh = face_mesh::ffi::face_meshes(occt(shape)?, tolerance.deviation, tolerance.angle)
-            .map_err(failed)?;
+        let mesh = face_mesh::ffi::face_meshes(
+            occt(shape)?,
+            tolerance.deviation,
+            tolerance.angle,
+            tolerance.face_triangles,
+        )
+        .map_err(failed)?;
         Ok(mitcad_model::exchange::FaceMeshes {
             vertices: mesh.vertices.as_chunks::<3>().0.to_vec(),
             normals: mesh.normals.as_chunks::<3>().0.to_vec(),
@@ -1562,6 +1573,52 @@ impl Kernel for OcctKernel {
         let from: Vec<String> = renames.iter().map(|(f, _)| f.to_string()).collect();
         let to: Vec<String> = renames.iter().map(|(_, t)| t.to_string()).collect();
         build::ffi::rename_faces(occt(shape)?, prefix, &from, &to).map_err(failed)
+    }
+
+    // Section curves of sketches (mitcad#389).
+
+    fn section_curves(
+        &self,
+        shape: &Self::Shape,
+        face: Option<&FaceName>,
+        plane: &DatumPlane,
+    ) -> Result<Vec<mitcad_model::SectionCurve>, KernelError> {
+        let name = face.map(ToString::to_string).unwrap_or_default();
+        let pieces =
+            sketch_ref::ffi::section_curves(occt(shape)?, &name, plane.origin, plane.normal())
+                .map_err(failed)?;
+        pieces
+            .iter()
+            .map(|p| {
+                let faces = p
+                    .faces
+                    .iter()
+                    .map(|f| {
+                        f.parse::<FaceName>()
+                            .map_err(|e| KernelError::failed(format!("face name {f}: {e}")))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(mitcad_model::SectionCurve {
+                    curve: sketch_ref::curve(&p.curve),
+                    faces,
+                })
+            })
+            .collect()
+    }
+
+    // Unions within a tolerance (mitcad#397).
+
+    fn unite_within(
+        &self,
+        shapes: &[&Self::Shape],
+        tolerance: f64,
+    ) -> Result<Self::Shape, KernelError> {
+        let mut list = shape::ffi::new_shape_list();
+        for shape in shapes {
+            occt(shape)?;
+            list.pin_mut().push((*shape).clone());
+        }
+        transform::ffi::unite_within(&list, tolerance).map_err(failed)
     }
 }
 

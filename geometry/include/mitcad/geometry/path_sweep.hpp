@@ -6,10 +6,12 @@
 // loft.hpp, ribs and webs in rib.hpp. Lengths are millimetres, angles
 // radians; the Rust side documents the semantics (core/model/src/sweeps.rs).
 
+#include <optional>
 #include <string>
 #include <vector>
 
 #include <gp_Ax1.hxx>
+#include <gp_Dir.hxx>
 
 #include "mitcad/geometry/profile.hpp"
 #include "mitcad/geometry/shape.hpp"
@@ -69,6 +71,15 @@ struct SweepSpec {
   Path rail; // empty: no guide rail
   ProfileScaling scaling = ProfileScaling::Scale;
   std::vector<GuideFace> guide; // empty: no guide surface
+  // A fixed binormal direction (mitcad#397): the profile keeps its angles
+  // to it and to the path's tangent (its frame the tangent, binormal x
+  // tangent, and the binormal made square to the tangent), so a profile
+  // level at the start stays level along a sloped path with the binormal
+  // up. Perpendicular orientation only, without twist, taper, a guide rail
+  // or guide surfaces, along a path without corners that never runs along
+  // the binormal. None: the profile keeps its angle to the path without
+  // twisting about it.
+  std::optional<gp_Dir> binormal;
 };
 
 ShapePtr sweep(const SweepSpec& spec);

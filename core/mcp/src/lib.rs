@@ -283,7 +283,7 @@ impl<B: Backend> Session<B> {
                 "Local headless CAD documents. Read mitcad://reference/commands for model operations. Use the explicit document handle on every call. Files are confined to the configured workspace. Commands are single objects; lengths default to millimetres. Documents last until closed or the server exits."
             }
             Profile::Live => {
-                "Control the document already open in the Mitcad application, alongside its user. Call document_list to obtain its current handle; handles become invalid when the document is replaced. Read mitcad://reference/commands for model operations. Commands and queries are single objects; lengths default to millimetres. Queries work at any time except while the model computes (the result then says busy and when to retry). While a sketch is open, its sketch.* commands go through the sketch session; other model commands wait until the sketch or command panel is finished, and editing is refused when the document is read-only. ui_state shows what the user sees (mode, selection, Sketch Palette warnings, messages), ui_log the application's log, ui_screenshot the view; ui_select points at entities, ui_command runs the application's commands by id, document_save saves to the document's own path. Changes you make are labelled (agent) in the undo text and undo with Ctrl+Z. File imports, opening, closing, saving elsewhere and exporting are not available through this connection. Disconnecting leaves the application's document open, including unsaved changes."
+                "Control the document already open in the Mitcad application, alongside its user. Call document_list to obtain its current handle; handles become invalid when the document is replaced. Read mitcad://reference/commands for model operations. Commands and queries are single objects; lengths default to millimetres. Queries work at any time except while the model computes (the result then says busy and when to retry). While a sketch is open, its sketch.* commands go through the sketch session; other model commands wait until the sketch or command panel is finished, and editing is refused when the document is read-only. ui_state shows what the user sees (mode, selection, Sketch Palette warnings, messages), ui_log the application's log, ui_screenshot the view; ui_select points at entities, ui_command runs the application's commands by id, ui_camera reads or sets the view's camera (and frames a box, the shown bodies or the selection) for screenshots. document_save saves to the document's own path, or with path (Save As) into a folder the user allows agents to use; document_open opens a design from such a folder in place of the open document; document_list lists the allowed folders. Changes you make are labelled (agent) in the undo text and undo with Ctrl+Z. File imports, closing and exporting are not available through this connection. Disconnecting leaves the application's document open, including unsaved changes."
             }
         };
         success(
@@ -364,7 +364,8 @@ impl PreparedMessage {
 /// The application retains ownership and executes tools on its model worker.
 pub struct LiveSession {
     session: Session<DeferredBackend>,
-    pending: Option<Value>,
+    /// The request ID and the tool of the call being completed.
+    pending: Option<(Value, String)>,
 }
 
 impl Default for LiveSession {
@@ -419,23 +420,51 @@ impl LiveSession {
                 name,
                 arguments,
             } => {
-                self.pending = Some(id);
+                self.pending = Some((id, name.clone()));
                 PreparedMessage::Tool { name, arguments }
             }
         })
     }
 
     /// Wrap the application's result and release the pending request ID.
-    pub fn finish(&mut self, value: Value, is_error: bool) -> Result<Value, String> {
-        let id = self
+    /// `is_error` is the application's refusal; an applied model command
+    /// is an error only by [`command_outcome`].
+    pub fn finish(&mut self, mut value: Value, is_error: bool) -> Result<Value, String> {
+        let (id, name) = self
             .pending
             .take()
             .ok_or_else(|| "no live MCP tool call is pending".to_owned())?;
+        let is_error = if !is_error && name == "model_command" && value.is_object() {
+            command_outcome(&mut value)
+        } else {
+            is_error
+        };
         Ok(bounded_response(success(
             &id,
             tool_content(value, is_error),
         )))
     }
+}
+
+/// The outcome of a model command the model applied (mitcad#401): `value`
+/// is the tool's result object, with the model's answer in `result`.
+///
+/// The answer's `failed_features` (every feature in error, see the
+/// command reference) go to the top level, an empty list when none failed.
+/// The command failed (true: `isError`) only when a feature it added or
+/// edited fails; a failure elsewhere in the timeline is listed, not the
+/// command's error.
+pub fn command_outcome(value: &mut Value) -> bool {
+    let failed = value
+        .pointer("/result/failed_features")
+        .filter(|failed| failed.is_array())
+        .cloned()
+        .unwrap_or_else(|| json!([]));
+    let is_error = failed
+        .as_array()
+        .is_some_and(|failed| failed.iter().any(|f| f["edited"] == true));
+    value["failed_features"] = failed;
+    is_error
 }
 
 fn valid_id(id: &Value) -> bool {

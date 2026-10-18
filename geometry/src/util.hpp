@@ -28,6 +28,19 @@ namespace mitcad::geometry::detail {
 void require_positive(const char* what, double value);
 void require_finite(const char* what, double value);
 
+// Whether the shape has a face without a surface: a mesh body's triangles
+// (STL, OBJ, the meshes of imported models; import.hpp's BodyKind::Mesh).
+bool has_mesh_faces(const TopoDS_Shape& shape);
+
+// Throws "<operation>: a mesh body (faces without surfaces) cannot be
+// used; ..." when the shape has such a face (mitcad#399). OCCT's booleans,
+// distances, fillets and face operations read the surface of every face
+// they get and fail on a null one, inside the boolean's face intersection
+// with an access violation on Windows (mitcad#392). The model refuses mesh
+// bodies by name before it calls the kernel; this keeps OCCT from getting
+// one from any other caller.
+void require_surfaces(const TopoDS_Shape& shape, const char* operation);
+
 // For tests of OCCT's crash handlers (guard.hpp): crashes as an access
 // violation inside OCCT would when the environment variable
 // MITCAD_TEST_OCCT_CRASH names this operation ("fillet").

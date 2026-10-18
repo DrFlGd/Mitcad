@@ -423,8 +423,8 @@ else {
   else {
     $driver = Join-Path $Out 'renamed.script'
     @'
-expect-log 'Feature warnings: Fillet1: edge E\{F2:side\(c14\[c9,c8\]\)\|F2:side\(c9\[c14,c11\]\)\} found as E\{F2:side\(c14\[c9,c8\]\)\|F2:side\(c9\[c14,c15\]\)\} after a change in Sketch1' 30
-expect-log 'Warnings badge: Fillet1: edge E\{F2:side\(c14\[c9,c8\]\)\|F2:side\(c9\[c14,c11\]\)\} found as ' 30
+expect-log 'Feature warnings: .*Fillet1: edge E\{F2:side\(c14\[c9,c8\]\)\|F2:side\(c9\[c14,c11\]\)\} found as E\{F2:side\(c14\[c9,c8\]\)\|F2:side\(c9\[c14,c15\]\)\} after a change in Sketch1' 30
+expect-log 'Warnings badge: .*Fillet1: edge E\{F2:side\(c14\[c9,c8\]\)\|F2:side\(c9\[c14,c11\]\)\} found as ' 30
 expect-log 'found as E\{F2:side\(c10\[c15,c12\]\)\|F2:side\(c12\[c7,c10\]\)\} after a change in Sketch1' 30
 '@ | Set-Content -Encoding ascii $driver
     $log = Invoke-Mitcad 'renamed' @('--no-recovery', '--open', $renamed) @{ 'MITCAD_TEST_INPUT' = $driver }

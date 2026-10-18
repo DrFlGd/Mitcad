@@ -264,12 +264,14 @@ impl<K: Kernel> Evaluate<K> for BaseDef {
             ctx.kernel.compound(&shapes).map_err(|e| e.to_string())?
         };
         output.tool = Some(tool.clone());
+        // Mesh bodies are left out of all bodies and refused when listed
+        // (mitcad#399).
         let participants = if self.participants.is_empty() {
-            ctx.bodies()
+            ctx.surface_bodies()
         } else {
             self.participants
                 .iter()
-                .map(|uid| ctx.body(*uid).map(|shape| (*uid, shape)))
+                .map(|uid| ctx.surface_body(*uid).map(|shape| (*uid, shape)))
                 .collect::<Result<_, _>>()?
         };
         output.changes = apply_tool(ctx, op, &participants, &tool, "base feature")?;
@@ -337,15 +339,14 @@ pub(crate) fn apply_tool<K: Kernel>(
                     continue;
                 }
                 let own = lump_needles(ctx.kernel, std::mem::take(&mut pieces[i]));
-                let mut own = own.into_iter();
-                match own.next() {
-                    None => changes.push(BodyChange::Remove(*uid)),
-                    Some(first) => {
-                        changes.push(BodyChange::Set(*uid, first));
-                        for piece in own {
-                            changes.push(BodyChange::Set(ctx.new_body(), piece));
-                        }
-                    }
+                // The pieces' ids (mitcad#408); none left for the body
+                // removes it.
+                let named = ctx.piece_ids(*uid, own);
+                if !named.iter().any(|(id, _)| id == uid) {
+                    changes.push(BodyChange::Remove(*uid));
+                }
+                for (id, piece) in named {
+                    changes.push(BodyChange::Set(id, piece));
                 }
             }
         }

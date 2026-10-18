@@ -159,7 +159,7 @@ impl<K: Kernel> Document<K> {
             },
             PreviewInput::Panel(input) => match self.plan_panel(&input) {
                 Ok(plan) => {
-                    let world = self.active_placement().after(&plan.placement);
+                    let world = self.host_placement().after(&plan.placement);
                     json!({
                         "frame": frame_json(&world),
                         "place": "panel",
@@ -178,7 +178,7 @@ impl<K: Kernel> Document<K> {
             },
             PreviewInput::Connect(input) => match self.plan_connect(&input) {
                 Ok(plan) => {
-                    let active = self.active_placement();
+                    let active = self.host_placement();
                     let machining: Vec<Value> = plan
                         .holes
                         .iter()
@@ -212,7 +212,7 @@ impl<K: Kernel> Document<K> {
 
     /// A placing's preview.
     fn place_preview_json(&self, input: &PlaceInput, plan: &Plan) -> Value {
-        let active = self.active_placement();
+        let active = self.host_placement();
         let world = active.after(&plan.placement);
         let end_a = plan.mounts.get("end_a").map_or([0.0; 3], |t| t.translation);
         let frame = crate::build::frame(
@@ -282,36 +282,25 @@ impl<K: Kernel> Document<K> {
             }
             (None, None) => Value::Null,
         };
-        // Snaps along the slot of a side placement.
+        // Snaps along the slot of a side placement (mitcad#394): where the
+        // new part's near face may go, and the point on the slot where the
+        // part then stands (its middle along the slot).
         let mut snaps = Vec::new();
+        let mut snapped = Value::Null;
         if plan.place == "side"
             && let (Some(target), Spot::Joint(joint)) = (&plan.target, &plan.spot)
             && let GeomRef::Mount { name, .. } = &joint.b.geometry
             && let Some(slot) = target.info.mount(name)
+            && let Some(side) = &joint.side
         {
-            let length = target.info.length.map_or(0.0, |(_, l)| l);
-            let mut offsets = vec![0.0, length / 2.0, length];
-            if let Some(grid) = target
-                .info
-                .meta
-                .system
-                .as_ref()
-                .and_then(|s| s.grid)
-                .filter(|g| *g > 0.0)
-            {
-                let mut d = grid;
-                while d < length - 1e-9 && offsets.len() < 1000 {
-                    offsets.push(d);
-                    d += grid;
-                }
-            }
-            offsets.sort_by(f64::total_cmp);
-            offsets.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
             let to_world = active.after(&target.placement).after(slot);
-            for offset in offsets {
-                snaps.push(json!({"offset": offset,
-                                  "point": to_world.apply_point([offset, 0.0, 0.0])}));
+            let middle = (side.near + side.far) / 2.0;
+            let at = |offset: f64| to_world.apply_point([offset - side.near + middle, 0.0, 0.0]);
+            for (kind, offset) in side.snaps() {
+                snaps.push(json!({"kind": kind, "offset": offset, "point": at(offset)}));
             }
+            snapped = json!({"kind": side.snapped, "offset": side.offset,
+                             "point": at(side.offset), "width": side.far - side.near});
         }
         json!({
             "frame": frame_json(&frame),
@@ -324,6 +313,8 @@ impl<K: Kernel> Document<K> {
             },
             "ends": ends,
             "snaps": snaps,
+            "side": snapped,
+            "host": self.host_json(),
             "designation": plan.designation,
             "box": plan.bounds.as_ref().map(|b| json!({"min": b.min, "max": b.max})),
             "warnings": plan.warnings,
@@ -344,14 +335,14 @@ impl<K: Kernel> Document<K> {
     ) -> Option<(Vec<OccurrenceUid>, GeomRef, f64)> {
         use crate::build::{box_along, dot, in_box, moved_box, ray_plane, unit, z_axis};
         let along = unit(along)?;
-        let active = self.active_placement();
+        let active = self.host_placement();
         let mut best: Option<(f64, Vec<OccurrenceUid>, GeomRef, f64)> = None;
         for info in self.build_parts_info() {
             if Some(info.component) == except {
                 continue;
             }
             let (Some(path), Some(part), Some(bounds)) = (
-                self.placed_in_active(info.component),
+                self.placed_in_host(info.component),
                 info.part,
                 self.part_bounds(info.component),
             ) else {
@@ -429,7 +420,7 @@ impl<K: Kernel> Document<K> {
             crate::build::parts::source_state(&source.def, source.config.as_deref(), &numbers)
                 .map_err(ApiError)?;
         let evaluated = evaluate_source(self.kernel(), &state).map_err(ApiError)?;
-        let world = self.active_placement().after(&placement);
+        let world = self.host_placement().after(&placement);
         let kernel = self.kernel();
         let mut shapes = Vec::new();
         for body in &evaluated.bodies {
@@ -447,6 +438,29 @@ impl<K: Kernel> Document<K> {
                     .compound(&shapes)
                     .map_err(|e| ApiError(e.to_string()))?,
             ),
+        })
+    }
+
+    /// The `build_host` query (mitcad#394): the component BUILD places
+    /// parts in, its name, its path from the root (uids, "" for the root)
+    /// and the active component; paths and points of the BUILD commands
+    /// are from and in it.
+    pub(crate) fn host_json(&self) -> Value {
+        let a = self.assembly();
+        let host = self.build_host();
+        let path = if host.is_root() {
+            String::new()
+        } else {
+            a.paths_to(host)
+                .first()
+                .map(|p| path_text(p))
+                .unwrap_or_default()
+        };
+        json!({
+            "component": host,
+            "name": a.name(host),
+            "path": path,
+            "active": a.active,
         })
     }
 
@@ -541,7 +555,7 @@ impl<K: Kernel> Document<K> {
             ),
             None => None,
         };
-        let active = self.active_placement();
+        let active = self.host_placement();
         let side = |s: &crate::build::JunctionSide| {
             // The part's own axes at end A.
             let world = active.after(&self.path_transform(&s.occurrence));

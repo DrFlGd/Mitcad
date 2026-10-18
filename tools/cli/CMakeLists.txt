@@ -46,7 +46,7 @@ if(BUILD_TESTING)
   # of the T0 reference models (MITCAD_F3D_MODELS) and analytic ones.
   foreach(script f4_combine f4_mirror f4_mirror_feature f4_move f4_align_scale
                  f4_pattern_bodies f4_pattern_features f4_pattern_circular f4_primitives
-                 pattern_at_points f4_pattern_face_copy)
+                 pattern_at_points f4_pattern_face_copy f4_pattern_merging_join)
     add_test(NAME cli.${script} COMMAND mitcad-cli run "${scripts}/${script}.json")
   endforeach()
 
@@ -134,10 +134,11 @@ if(BUILD_TESTING)
   # OCCT's handler names the signal (on macOS it is SIGSEGV or SIGBUS, as a
   # fault can arrive as either). On Windows a crash outside OCCT's own
   # code (compiled with /EHa) reaches OCCT's handler through the C
-  # runtime's SIGSEGV, where OCCT 8 locks its mutex twice: the error is
-  # "resource deadlock would occur", an error all the same.
+  # runtime's SIGSEGV, which names the access violation (with the OCCT
+  # port's patch 0034; without it OCCT 8 locked its mutex twice and the
+  # error was "resource deadlock would occur").
   if(WIN32)
-    set(crash_error "error: ")
+    set(crash_error "error: fillet: ACCESS VIOLATION")
   elseif(APPLE)
     set(crash_error "error: fillet: SIG(SEGV|BUS)")
   else()
@@ -146,6 +147,18 @@ if(BUILD_TESTING)
   add_test(NAME cli.occt_crash COMMAND mitcad-cli info "${scripts}/v1_boss.mitcad")
   set_tests_properties(cli.occt_crash PROPERTIES ENVIRONMENT "MITCAD_TEST_OCCT_CRASH=fillet"
     PASS_REGULAR_EXPRESSION "F6 Fillet1 \\(fillet\\): ${crash_error}.*Body1 \\(F2\\.b0\\): volume")
+  # So is a crash in the section analysis' booleans (mitcad#392): the
+  # section query of the analysis script fails with the error.
+  if(WIN32)
+    set(crash_error "section: ACCESS VIOLATION")
+  elseif(APPLE)
+    set(crash_error "section: SIG(SEGV|BUS)")
+  else()
+    set(crash_error "section: SIGSEGV")
+  endif()
+  add_test(NAME cli.occt_crash_section COMMAND mitcad-cli run "${scripts}/analysis.json")
+  set_tests_properties(cli.occt_crash_section PROPERTIES ENVIRONMENT "MITCAD_TEST_OCCT_CRASH=section"
+    PASS_REGULAR_EXPRESSION "steps\\[[0-9]+\\]: .*${crash_error}")
 
   # Saving the result of a script, then reading it back.
   set(saved "${CMAKE_CURRENT_BINARY_DIR}/join.mitcad")
@@ -223,6 +236,12 @@ if(BUILD_TESTING)
     COMMAND mitcad-cli export "${exchange}/exchange.mitcad" "${exchange}/out.3mf" --refinement high)
   set_tests_properties(cli.export_3mf PROPERTIES FIXTURES_REQUIRED cli_exchange PASS_REGULAR_EXPRESSION
     "\"format\":\"3mf\",\"meshes\":\\[{\"body\":\"F2\\.b0\",\"name\":\"Bracket\",\"triangles\":[0-9]+,\"volume\":2394[56]\\.")
+  # Mesh bodies (an STL file's triangles) in surface operations
+  # (mitcad#399): refused by name, left out of all bodies.
+  set(mesh_bodies "${CMAKE_CURRENT_BINARY_DIR}/mesh-bodies")
+  file(MAKE_DIRECTORY "${mesh_bodies}")
+  add_test(NAME cli.mesh_bodies COMMAND mitcad-cli run "${scripts}/mesh_bodies.json")
+  set_tests_properties(cli.mesh_bodies PROPERTIES WORKING_DIRECTORY "${mesh_bodies}")
   # USDZ for AR viewers (mitcad#123): the exchange design's shown bodies
   # as shaded meshes with their materials.
   add_test(NAME cli.export_usdz
@@ -693,6 +712,9 @@ if(BUILD_TESTING)
     COMMAND "${CMAKE_COMMAND}" "-DCLI=$<TARGET_FILE:mitcad-cli>" "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/build-profiles"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/build-profiles-test.cmake")
   set_tests_properties(build.profiles PROPERTIES SKIP_REGULAR_EXPRESSION "build profiles: skipped")
+  # A sketch edit that splits the regions an extrusion uses (mitcad#407):
+  # every piece stays extruded, with a warning naming them.
+  add_test(NAME cli.region_split_pieces COMMAND mitcad-cli run "${scripts}/region_split_pieces.json")
 endif()
 
 # Live updates (mitcad#89): mitcad-cli live test. Its tests need no broker:
@@ -902,6 +924,15 @@ if(WIN32)
   target_link_libraries(mitcad-cli PRIVATE advapi32)
 endif()
 if(BUILD_TESTING)
+  # model_command's isError and failed_features, and add_feature after a
+  # feature, through the stdio transport (mitcad#401, mitcad#403).
+  add_test(NAME cli.mcp_results
+    COMMAND "${CMAKE_COMMAND}" "-DCLI=$<TARGET_FILE:mitcad-cli>" "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/mcp-results"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/mcp-results-test.cmake")
+  if(WIN32)
+    set_property(TEST cli.mcp_results APPEND PROPERTY ENVIRONMENT_MODIFICATION
+      "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+  endif()
   find_package(Python3 COMPONENTS Interpreter QUIET)
   if(Python3_Interpreter_FOUND)
     add_test(NAME cli.mcp

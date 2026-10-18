@@ -316,8 +316,11 @@ void CommandPanel::applyControlStyles() {
     if (row->edit != nullptr) {
       styleLineEdit(row->edit, accent, errorColor(palette()));
     }
-    if (auto* toggle = qobject_cast<QToolButton*>(row->check)) {
+    if (auto* toggle = qobject_cast<QToolButton*>(row->check); toggle != nullptr && !row->input->disclosure) {
       styleToggle(toggle, accent);
+    }
+    for (QToolButton* button : row->choiceButtons) {
+      styleToggle(button, accent);
     }
   }
 }
@@ -433,6 +436,34 @@ CommandPanel::Row* CommandPanel::createRow(const InputDef& input, const QString&
     break;
   }
   case InputDef::Type::Choice: {
+    if (!input.choiceIcons.isEmpty() && !input.choicesFor) {
+      // A row of icon buttons, the chosen one pressed (mitcad#394: BUILD's
+      // X / Y / Z).
+      auto* line = new QWidget;
+      auto* box = new QHBoxLayout(line);
+      box->setContentsMargins(0, 0, 0, 0);
+      box->setSpacing(4);
+      for (const auto& option : input.choices) {
+        const QString value = option.first;
+        const QString label = option.second;
+        auto* button = new QToolButton;
+        button->setIcon(themeIcon(input.choiceIcons.value(value)));
+        button->setIconSize(QSize(20, 20));
+        button->setCheckable(true);
+        button->setAutoRaise(true);
+        button->setFocusPolicy(Qt::NoFocus);
+        button->setToolTip(input.tooltip.isEmpty() ? label : QStringLiteral("%1: %2").arg(label, input.tooltip));
+        button->setObjectName(QStringLiteral("input_%1_%2").arg(key, value));
+        connect(button, &QToolButton::clicked, this, [this, key, value] {
+          emit choiceChanged(key, value);
+        });
+        row.choiceButtons.insert(value, button);
+        box->addWidget(button);
+      }
+      box->addStretch();
+      field = line;
+      break;
+    }
     row.combo = new QComboBox;
     // No keyboard focus: choosing leaves it in the value field, where the
     // typed value goes.
@@ -454,6 +485,21 @@ CommandPanel::Row* CommandPanel::createRow(const InputDef& input, const QString&
     break;
   }
   case InputDef::Type::Check: {
+    if (input.disclosure) {
+      // A small button that opens the inputs that follow it ("More",
+      // mitcad#394).
+      auto* more = new QToolButton;
+      more->setCheckable(true);
+      more->setAutoRaise(true);
+      more->setFocusPolicy(Qt::NoFocus);
+      more->setToolButtonStyle(Qt::ToolButtonTextOnly);
+      more->setText(QStringLiteral("▸ %1").arg(input.label));
+      more->setToolTip(input.tooltip);
+      connect(more, &QToolButton::clicked, this, [this, key](bool on) { emit checkChanged(key, on); });
+      row.check = more;
+      field = more;
+      break;
+    }
     auto* check = new QCheckBox;
     check->setFocusPolicy(Qt::NoFocus);
     check->setToolTip(input.tooltip);
@@ -533,7 +579,8 @@ CommandPanel::Row* CommandPanel::createRow(const InputDef& input, const QString&
       row.title = heading;
       form->addRow(heading);
     }
-    row.label = new QLabel(input.label);
+    // A disclosure button carries its label itself.
+    row.label = new QLabel(input.disclosure ? QString() : input.label);
     row.label->setToolTip(input.tooltip);
     if (form != nullptr) {
       form->addRow(row.label, container);
@@ -736,6 +783,14 @@ void CommandPanel::refreshRow(Row& row, const CommandState& scope, const Command
     }
     break;
   case InputDef::Type::Choice: {
+    if (row.combo == nullptr) {
+      // Icon buttons: the chosen one pressed.
+      for (auto it = row.choiceButtons.cbegin(); it != row.choiceButtons.cend(); ++it) {
+        const QSignalBlocker blockButton(it.value());
+        it.value()->setChecked(it.key() == scope.choice(id));
+      }
+      break;
+    }
     const QSignalBlocker block(row.combo);
     if (input.choicesFor) {
       QVector<QPair<QString, QString>> options = input.choicesFor(scope);
@@ -785,6 +840,10 @@ void CommandPanel::refreshRow(Row& row, const CommandState& scope, const Command
   case InputDef::Type::Flip: {
     const QSignalBlocker block(row.check);
     row.check->setChecked(scope.checked(id));
+    if (input.disclosure) {
+      row.check->setText(QStringLiteral("%1 %2").arg(scope.checked(id) ? QStringLiteral("▾") : QStringLiteral("▸"),
+                                                     input.label));
+    }
     break;
   }
   case InputDef::Type::List:
@@ -981,6 +1040,13 @@ void CommandPanel::logLayout() const {
     qDebug().noquote() << QStringLiteral("Panel %1 input %2 at %3%4")
                               .arg(m_def.name, row->key, position(widget),
                                    hidden ? QStringLiteral(" (hidden)") : QString());
+    if (!hidden) {
+      // Each icon button of a choice (InputDef::choiceIcons).
+      for (auto it = row->choiceButtons.cbegin(); it != row->choiceButtons.cend(); ++it) {
+        qDebug().noquote() << QStringLiteral("Panel %1 input %2=%3 at %4")
+                                  .arg(m_def.name, row->key, it.key(), position(it.value()));
+      }
+    }
     if (row->order != nullptr && !hidden) {
       for (const char* button : {"up_", "down_"}) {
         if (const auto* move = findChild<QToolButton*>(QString::fromLatin1(button) + row->key)) {

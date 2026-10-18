@@ -604,6 +604,9 @@ impl Model {
         let mut ids: Vec<i64> = facts.keys().copied().collect();
         ids.sort_unstable();
         for id in ids {
+            if let Some(owner) = facts.get(&id).and_then(|f| f.owner) {
+                model.building.owners.insert(id, owner);
+            }
             match facts.get_mut(&id).and_then(|f| f.building.take()) {
                 Some(Raw::LinkSymbol { name, path }) => {
                     link_symbols.insert(id, (name, path));
@@ -717,6 +720,30 @@ impl Model {
         self.elements.iter().find(|e| e.id == id)
     }
 
+    /// Where a multistory stair repeats an element of one of its stairs
+    /// (mitcad#391): the stair it belongs to (through its owners, see
+    /// [`crate::building::Building::owners`]) and per copy the level and
+    /// how far up (feet) the copy lies, the level's elevation less the
+    /// stair's base level's. Empty for an element of no repeated stair.
+    pub fn multistory_copies(&self, id: i64) -> Option<(i64, Vec<(i64, f64)>)> {
+        let b = &self.building;
+        let mut at = id;
+        for _ in 0..6 {
+            if let Some(m) = b.multistory.get(&at) {
+                let base = self.level(m.base_level)?.elevation;
+                let copies = m
+                    .levels
+                    .iter()
+                    .filter_map(|l| Some((*l, self.level(*l)?.elevation - base)))
+                    .filter(|(_, dz)| dz.abs() > 1e-9)
+                    .collect();
+                return Some((at, copies));
+            }
+            at = *b.owners.get(&at)?;
+        }
+        None
+    }
+
     pub fn level(&self, id: i64) -> Option<&Level> {
         self.levels.iter().find(|l| l.id == id)
     }
@@ -796,6 +823,8 @@ struct Facts {
     meshes: Vec<Mesh>,
     /// What it gives the building model.
     building: Option<Raw>,
+    /// What it belongs to as an element of a stair (mitcad#391).
+    owner: Option<i64>,
 }
 
 /// Element ids a value holds, appended in order.
@@ -847,6 +876,7 @@ impl Facts {
             meshes: Vec::new(),
             foreign: Vec::new(),
             building: None,
+            owner: building::owner(schema, record),
         };
         let own_id = root.get(schema, "m_id").and_then(Value::as_id);
         if let Some(id) = own_id {

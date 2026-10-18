@@ -21,7 +21,7 @@ use crate::sketch::geometry::Curve2;
 use crate::sketch::legacy::{LegacyShape, convert};
 use crate::sketch::offset::{self, SketchOffset, derived_entities};
 use crate::sketch::pattern::{self, Binding, SketchPattern};
-use crate::sketch::regions::{Region, RegionCurve, best_match, regions};
+use crate::sketch::regions::{Layout, Region, RegionCurve, best_match, regions_and_layout};
 use crate::sketch::solve::{
     DimensionInput, Extra, Goal, SketchStatus, SolveError, Solved, drag_extra, solve_extra,
 };
@@ -291,6 +291,56 @@ impl<'de, P: Deserialize<'de>> Deserialize<'de> for SketchDef<P> {
     }
 }
 
+/// The regions a profile reference finds ([`SketchOutput::found`]).
+#[derive(Debug, Clone)]
+pub struct FoundRegions<'a> {
+    /// The main region first, then the other pieces in key order.
+    pub regions: Vec<&'a Region>,
+    /// Whether the key is the region's own.
+    pub exact: bool,
+}
+
+impl FoundRegions<'_> {
+    /// The regions as features use them for the reference `key`: the main
+    /// one carries it, so that the faces made from it keep their names;
+    /// the other pieces their own keys.
+    pub fn profiles(&self, key: &RegionKey) -> Vec<ProfileRegion> {
+        self.regions
+            .iter()
+            .enumerate()
+            .map(|(i, region)| ProfileRegion {
+                key: if i == 0 {
+                    key.clone()
+                } else {
+                    region.profile.key.clone()
+                },
+                loops: region.profile.loops.clone(),
+            })
+            .collect()
+    }
+
+    /// The current keys, joined as a warning names them (`r{…} + r{…}`).
+    pub fn keys(&self) -> String {
+        self.regions
+            .iter()
+            .map(|r| r.profile.key.to_string())
+            .collect::<Vec<_>>()
+            .join(" + ")
+    }
+
+    /// The warning of a feature whose reference `key` to a region of
+    /// `sketch` (its name) found these regions under other keys
+    /// (mitcad#407); None for the region's own key.
+    pub fn warning(&self, key: &RegionKey, sketch: &str) -> Option<String> {
+        (!self.exact).then(|| {
+            format!(
+                "region {key} found as {} after a change in {sketch}",
+                self.keys()
+            )
+        })
+    }
+}
+
 /// Evaluated sketch: its frame, solved geometry and profile regions.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SketchOutput {
@@ -298,6 +348,9 @@ pub struct SketchOutput {
     pub regions: Vec<ProfileRegion>,
     /// Areas, centroids and outlines of the regions, in the same order.
     pub region_info: Vec<Region>,
+    /// How the regions lie against each other, for references whose
+    /// region a change renamed or split (mitcad#407).
+    pub layout: Arc<Layout>,
     pub solved: Arc<Solved>,
     /// The texts' glyph outlines.
     pub texts: Arc<Vec<TextOutline>>,
@@ -315,8 +368,39 @@ impl SketchOutput {
         self.regions.iter().find(|r| &r.key == key)
     }
 
-    /// The region a reference means: the one with its key, else the one
-    /// with the most curves in common (the sketch changed), carrying the
+    /// The regions a reference means now, the main one first (mitcad#407):
+    /// the region with its key; else the regions inside the outline its
+    /// key traces on the changed curves (see [`Layout::pieces`]: the region
+    /// renamed, or its pieces when the change split it), the one with the
+    /// most curves in common first; else, when the key traces no outline,
+    /// the region with the most curves in common. None when no region
+    /// shares a curve with it.
+    pub fn found(&self, key: &RegionKey) -> Option<FoundRegions<'_>> {
+        if let Some(region) = self.region_info.iter().find(|r| &r.profile.key == key) {
+            return Some(FoundRegions {
+                regions: vec![region],
+                exact: true,
+            });
+        }
+        let pieces: Vec<&Region> = self
+            .layout
+            .pieces(key)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|i| self.region_info.get(i))
+            .collect();
+        let main = best_match(pieces.iter().copied(), key)
+            .or_else(|| pieces.first().copied())
+            .or_else(|| best_match(&self.region_info, key))?;
+        let mut regions = vec![main];
+        regions.extend(pieces.into_iter().filter(|r| !std::ptr::eq(*r, main)));
+        Some(FoundRegions {
+            regions,
+            exact: false,
+        })
+    }
+
+    /// The main region a reference means ([`Self::found`]), carrying the
     /// referenced key so that the faces made from it keep their names.
     /// None when no region shares a curve with it.
     pub fn resolve_region(&self, key: &RegionKey) -> Option<ProfileRegion> {
@@ -326,12 +410,11 @@ impl SketchOutput {
         })
     }
 
-    /// The region a reference means (as [`Self::resolve_region`] finds
-    /// it) under its own, current key: what the application highlights for
-    /// the reference and compares two references by (mitcad#199).
+    /// The main region a reference means (as [`Self::found`] finds it)
+    /// under its own, current key: what the application compares two
+    /// references by (mitcad#199).
     pub fn resolved(&self, key: &RegionKey) -> Option<&ProfileRegion> {
-        self.region(key)
-            .or_else(|| best_match(&self.region_info, key).map(|region| &region.profile))
+        self.found(key).map(|found| &found.regions[0].profile)
     }
 
     pub fn status(&self) -> &SketchStatus {
@@ -540,6 +623,15 @@ impl SketchDef {
 
     /// The profile regions of solved geometry and laid out texts.
     pub fn regions_of(&self, solved: &Solved, texts: &[TextOutline]) -> Vec<Region> {
+        self.regions_and_layout_of(solved, texts).0
+    }
+
+    /// [`Self::regions_of`] with how the regions lie against each other.
+    pub fn regions_and_layout_of(
+        &self,
+        solved: &Solved,
+        texts: &[TextOutline],
+    ) -> (Vec<Region>, Layout) {
         let mut curves: Vec<RegionCurve> = self
             .profile_curves()
             .filter_map(|e| Some(RegionCurve::new(e.id, solved.curves.get(&e.id)?.clone())))
@@ -547,7 +639,7 @@ impl SketchDef {
         for t in texts {
             curves.extend(t.region_curves());
         }
-        regions(&curves)
+        regions_and_layout(&curves)
     }
 
     /// The texts laid out with the kernel's fonts. Without font support
@@ -593,6 +685,7 @@ fn check_range(range: ValueRange, v: f64) -> Result<(), String> {
         ValueRange::Positive => v.is_finite() && v > 0.0,
         ValueRange::NotNegative => v.is_finite() && v >= 0.0,
         ValueRange::Angle => (0.0..=std::f64::consts::PI).contains(&v),
+        ValueRange::Signed => v.is_finite(),
     };
     if ok {
         Ok(())
@@ -600,6 +693,7 @@ fn check_range(range: ValueRange, v: f64) -> Result<(), String> {
         Err(match range {
             ValueRange::Positive => format!("must be greater than zero, got {v}"),
             ValueRange::NotNegative => format!("must not be negative, got {v}"),
+            ValueRange::Signed => format!("must be a finite number, got {v}"),
             ValueRange::Angle => format!(
                 "must be between 0 and 180 degrees, got {} deg",
                 v.to_degrees()
@@ -833,8 +927,8 @@ impl<P> SketchDef<P> {
             let cv = Ref::Curve;
             let refs: Vec<(Ref, &[&str])> = match &d.kind {
                 D::Distance { a, b }
-                | D::HorizontalDistance { a, b }
-                | D::VerticalDistance { a, b } => {
+                | D::HorizontalDistance { a, b, .. }
+                | D::VerticalDistance { a, b, .. } => {
                     if a == b {
                         return Err(format!("{what}: two different points"));
                     }
@@ -1103,12 +1197,13 @@ impl<K: Kernel> Evaluate<K> for SketchDef {
                 ));
             }
         }
-        let region_info = def.regions_of(&solved, &texts);
+        let (region_info, layout) = def.regions_and_layout_of(&solved, &texts);
         Ok(FeatureOutput {
             sketch: Some(SketchOutput {
                 frame,
                 regions: region_info.iter().map(|r| r.profile.clone()).collect(),
                 region_info,
+                layout: Arc::new(layout),
                 solved: Arc::new(solved),
                 texts: Arc::new(texts),
                 moved: Arc::new(moved),

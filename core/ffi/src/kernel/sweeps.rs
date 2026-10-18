@@ -43,6 +43,9 @@ pub mod ffi {
         scaling: u8,
         guide_faces: Vec<String>,
         guide_bodies: Vec<usize>,
+        /// A fixed binormal (mitcad#397) when `fixed_binormal`.
+        fixed_binormal: bool,
+        binormal: [f64; 3],
     }
 
     /// A loft section: `kind` 0 a region (`index` into the frames and
@@ -305,6 +308,8 @@ pub fn surface_sweep(
             Some(ProfileScaling::None) => 2,
             _ => 0,
         },
+        fixed_binormal: spec.binormal.is_some(),
+        binormal: spec.binormal.unwrap_or([0.0, 0.0, 1.0]),
     };
     ffi::sweep_solid(
         &spec.feature.to_string(),

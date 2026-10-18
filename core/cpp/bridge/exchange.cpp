@@ -212,6 +212,7 @@ void write_file(rust::Str path_text, const ShapeList& shapes, rust::Slice<const 
   io::MeshOptions mesh;
   mesh.linear_deflection = settings.deviation;
   mesh.angular_deflection = settings.angle;
+  mesh.face_triangles = static_cast<std::size_t>(settings.face_triangles);
   const io::LengthUnit unit = length_unit(settings.unit);
   switch (settings.format) {
   case ExportFormat::Step:

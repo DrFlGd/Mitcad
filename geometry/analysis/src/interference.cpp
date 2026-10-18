@@ -44,6 +44,11 @@ std::vector<Interference> interferences(const std::vector<TopoDS_Shape>& bodies,
       common.SetTools(tool);
       // The model's bodies, which other results share, stay as they are.
       common.SetNonDestructive(true);
+      // On all cores, as the model's booleans: a slab whose rim a sketch's
+      // lines split into 80 faces against a helical stringer on its
+      // cylinder took 2 s on one, and the 42 bodies of a spiral stair
+      // 36 s (mitcad#400).
+      common.SetRunParallel(true);
       if (options.fuzzy > 0.0) {
         common.SetFuzzyValue(options.fuzzy);
       }

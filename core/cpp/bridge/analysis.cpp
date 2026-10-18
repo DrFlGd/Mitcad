@@ -50,6 +50,7 @@
 #include "mitcad/analysis/compare.hpp"
 #include "mitcad/analysis/measure.hpp"
 #include "mitcad/analysis/properties.hpp"
+#include "mitcad/geometry/guard.hpp"
 #include "mitcad/geometry/query.hpp"
 #include "mitcad/io/step.hpp"
 #include "mitcad_bridge/kernel/analysis.h"
@@ -470,6 +471,17 @@ AnalysisDeviation deviation(const analysis::Deviation& d) {
   return result;
 }
 
+// Runs an analysis the application asks for (Section Analysis, Measure,
+// Interference, Physical Properties) as an operation of the geometry
+// library: a crash inside OCCT is an error, also on the UI thread, where
+// Section Analysis clips the bodies shown (mitcad#392).
+template <class Work>
+auto guarded(const char* operation, Work&& work) -> decltype(work()) {
+  std::optional<decltype(work())> result;
+  geometry::run_operation(operation, [&] { result.emplace(work()); });
+  return std::move(*result);
+}
+
 } // namespace
 
 std::shared_ptr<geometry::Shape> AnalysisInterferences::shape(std::size_t index) const {
@@ -485,11 +497,11 @@ std::shared_ptr<geometry::Shape> AnalysisSection::faces() const {
 }
 
 AnalysisProperties analysis_properties(const geometry::Shape& shape, double density) {
-  const geometry::CheckedOperation check("physical properties");
   if (!(density > 0.0)) {
     throw std::invalid_argument("the density must be greater than zero");
   }
-  const analysis::PhysicalProperties p = analysis::physical_properties(shape.occt(), density);
+  const analysis::PhysicalProperties p = guarded(
+      "physical properties", [&] { return analysis::physical_properties(shape.occt(), density); });
   AnalysisProperties result{};
   result.volume = p.volume;
   result.area = p.area;
@@ -510,92 +522,96 @@ AnalysisProperties analysis_properties(const geometry::Shape& shape, double dens
 }
 
 AnalysisMeasure analysis_measure(const geometry::Shape& shape, rust::Str name) {
-  const geometry::CheckedOperation check("measure");
-  const Selected selected = select(shape, std::string(name));
-  AnalysisMeasure result{};
-  result.kind = rust::String(selected.kind);
-  if (selected.kind == "body") {
-    const analysis::PhysicalProperties p = analysis::physical_properties(selected.shape, 1.0);
-    result.has_volume = true;
-    result.volume = p.volume;
-    result.has_area = true;
-    result.area = p.area;
-  } else if (selected.kind == "face") {
-    result.has_area = true;
-    result.area = analysis::area(selected.shape);
-  } else if (selected.kind == "edge") {
-    result.has_length = true;
-    result.length = analysis::length(selected.shape);
-  } else if (selected.count == 1) {
-    result.has_point = true;
-    result.point = xyz(analysis::point(selected.shape));
-  }
-  if (selected.count == 1 && (selected.kind == "face" || selected.kind == "edge")) {
-    if (const std::optional<analysis::Circle> circle = analysis::circle(selected.shape)) {
-      result.has_circle = true;
-      result.center = xyz(circle->center);
-      result.axis = xyz(circle->axis);
-      result.radius = circle->radius;
-      result.sweep = circle->sweep;
+  return guarded("measure", [&] {
+    const Selected selected = select(shape, std::string(name));
+    AnalysisMeasure result{};
+    result.kind = rust::String(selected.kind);
+    if (selected.kind == "body") {
+      const analysis::PhysicalProperties p = analysis::physical_properties(selected.shape, 1.0);
+      result.has_volume = true;
+      result.volume = p.volume;
+      result.has_area = true;
+      result.area = p.area;
+    } else if (selected.kind == "face") {
+      result.has_area = true;
+      result.area = analysis::area(selected.shape);
+    } else if (selected.kind == "edge") {
+      result.has_length = true;
+      result.length = analysis::length(selected.shape);
+    } else if (selected.count == 1) {
+      result.has_point = true;
+      result.point = xyz(analysis::point(selected.shape));
     }
-  }
-  return result;
+    if (selected.count == 1 && (selected.kind == "face" || selected.kind == "edge")) {
+      if (const std::optional<analysis::Circle> circle = analysis::circle(selected.shape)) {
+        result.has_circle = true;
+        result.center = xyz(circle->center);
+        result.axis = xyz(circle->axis);
+        result.radius = circle->radius;
+        result.sweep = circle->sweep;
+      }
+    }
+    return result;
+  });
 }
 
 AnalysisSeparation analysis_between(const geometry::Shape& a, rust::Str a_name,
                                     const geometry::Shape& b, rust::Str b_name) {
-  const geometry::CheckedOperation check("distance between");
-  const Selected first = select(a, std::string(a_name));
-  const Selected second = select(b, std::string(b_name));
-  const analysis::Distance distance = analysis::min_distance(first.shape, second.shape);
-  AnalysisSeparation result{};
-  result.distance = distance.value;
-  result.on_a = xyz(distance.on_a);
-  result.on_b = xyz(distance.on_b);
-  result.inside = distance.inside;
-  try {
-    result.angle = analysis::angle(first.shape, second.shape);
-    result.has_angle = true;
-  } catch (const analysis::Error&) {
-    // Only planar faces and straight edges have an angle.
-  }
-  return result;
+  return guarded("distance between", [&] {
+    const Selected first = select(a, std::string(a_name));
+    const Selected second = select(b, std::string(b_name));
+    const analysis::Distance distance = analysis::min_distance(first.shape, second.shape);
+    AnalysisSeparation result{};
+    result.distance = distance.value;
+    result.on_a = xyz(distance.on_a);
+    result.on_b = xyz(distance.on_b);
+    result.inside = distance.inside;
+    try {
+      result.angle = analysis::angle(first.shape, second.shape);
+      result.has_angle = true;
+    } catch (const analysis::Error&) {
+      // Only planar faces and straight edges have an angle.
+    }
+    return result;
+  });
 }
 
 std::unique_ptr<AnalysisInterferences> analysis_interferences(const ShapeList& bodies,
                                                               double min_volume) {
-  const geometry::CheckedOperation check("interference");
   analysis::InterferenceOptions options;
   options.min_volume = min_volume;
-  return std::make_unique<AnalysisInterferences>(
-      analysis::interferences(occt(bodies), options));
+  return guarded("interference", [&] {
+    return std::make_unique<AnalysisInterferences>(analysis::interferences(occt(bodies), options));
+  });
 }
 
 std::unique_ptr<AnalysisSection> analysis_section(const geometry::Shape& shape,
                                                   const AnalysisPlane& plane) {
-  const geometry::CheckedOperation check("section");
-  return std::make_unique<AnalysisSection>(analysis::section(shape.occt(), plane_of(plane)));
+  return guarded("section", [&] {
+    return std::make_unique<AnalysisSection>(analysis::section(shape.occt(), plane_of(plane)));
+  });
 }
 
 std::shared_ptr<geometry::Shape> analysis_clip(const geometry::Shape& shape,
                                                const AnalysisPlane& plane) {
-  const geometry::CheckedOperation check("clip");
-  std::vector<analysis::ClippedFace> faces;
-  TopoDS_Shape clipped = analysis::clip(shape.occt(), plane_of(plane), &faces);
-  // What is left of each face keeps the body's names, and so do the edges
-  // and vertices between them: picks on the clipped view refer to the
-  // body (mitcad#233). The caps have none and cannot be picked.
-  std::vector<geometry::Shape::NamedFace> named;
-  for (const analysis::ClippedFace& face : faces) {
-    const int i = shape.face_index(face.face);
-    if (i < 0 || shape.face_names(i).empty()) {
-      continue;
+  return guarded("clip", [&] {
+    std::vector<analysis::ClippedFace> faces;
+    TopoDS_Shape clipped = analysis::clip(shape.occt(), plane_of(plane), &faces);
+    // What is left of each face keeps the body's names, and so do the
+    // edges and vertices between them: picks on the clipped view refer to
+    // the body (mitcad#233). The caps have none and cannot be picked.
+    std::vector<geometry::Shape::NamedFace> named;
+    for (const analysis::ClippedFace& face : faces) {
+      const int i = shape.face_index(face.face);
+      if (i < 0 || shape.face_names(i).empty()) {
+        continue;
+      }
+      for (const TopoDS_Shape& piece : face.pieces) {
+        named.push_back({piece, shape.face_names(i)});
+      }
     }
-    for (const TopoDS_Shape& piece : face.pieces) {
-      named.push_back({piece, shape.face_names(i)});
-    }
-  }
-  return std::make_shared<geometry::Shape>(std::move(clipped), named);
+    return std::make_shared<geometry::Shape>(std::move(clipped), named);
+  });
 }
 
 AnalysisComparison analysis_compare_step(const ShapeList& bodies, rust::Str path,

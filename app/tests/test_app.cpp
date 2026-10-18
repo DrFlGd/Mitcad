@@ -1717,7 +1717,7 @@ void selectionEntryTests() {
   int asked = 0;
   const mitcad::ItemResolver resolve = [&](const SelectionItem& item) {
     ++asked;
-    return item.name == old.name ? current.name : item.name;
+    return QStringList{item.name == old.name ? current.name : item.name};
   };
   CHECK(!mitcad::sameEntry(old, current));
   CHECK(mitcad::sameEntry(old, current, resolve));
@@ -1726,7 +1726,7 @@ void selectionEntryTests() {
   CHECK(!mitcad::toggleEntry(loaded, current, resolve));
   CHECK(loaded.size() == 1 && loaded.first() == disc);
   // A resolver that cannot tell (empty) leaves different keys apart.
-  const mitcad::ItemResolver unknown = [](const SelectionItem&) { return QString(); };
+  const mitcad::ItemResolver unknown = [](const SelectionItem&) { return QStringList(); };
   CHECK(!mitcad::sameEntry(old, current, unknown));
   // A list given as a whole keeps each profile once, the first in place
   // (the old key, the disc without an occurrence), and other items as they
@@ -1736,6 +1736,40 @@ void selectionEntryTests() {
   CHECK(unique.size() == 4);
   CHECK(unique.size() == 4 && unique[0] == old && unique[1] == face && unique[2] == disc && unique[3] == face);
   CHECK(mitcad::removeEntry(backward, placed) == 1);
+  // A region a sketch edit split (mitcad#410): the old key means all its
+  // pieces, the main one first; the view shows each piece under its own
+  // key. Every piece is part of the entry, and a click on one takes just
+  // that piece out: the others stay, each under its own key, in the
+  // entry's place.
+  const SelectionItem split = placedProfile("F1", "r{c1[c2,c3],c2[c3,c1],c3[c1,c2]}", "O1");
+  const SelectionItem mainPiece = profile("F1", "r{c1[c2,c4],c2[c4,c1],c4[c1,c2]}");
+  const SelectionItem side = profile("F1", "r{c3[c4,c5],c4[c5,c3],c5[c3,c4]}");
+  const SelectionItem tip = profile("F1", "r{c3[c5,c6],c5[c6,c3],c6[c3,c5]}");
+  const mitcad::ItemResolver pieces = [&](const SelectionItem& item) {
+    return item.name == split.name ? QStringList{mainPiece.name, side.name, tip.name} : QStringList{item.name};
+  };
+  CHECK(!mitcad::sameEntry(split, side, pieces));
+  CHECK(mitcad::containsEntry({split}, mainPiece, pieces) && mitcad::containsEntry({split}, side, pieces));
+  CHECK(!mitcad::containsEntry({mainPiece}, split, pieces)); // the piece is not all of the region
+  Selection clicked{disc, split, inner};
+  CHECK(!mitcad::toggleEntry(clicked, side, pieces));
+  CHECK(clicked.size() == 4 && clicked[0] == disc && clicked[1].name == mainPiece.name &&
+        clicked[2].name == tip.name && clicked[3] == inner);
+  CHECK(clicked[1].occurrence == QStringLiteral("O1")); // placed where the entry was
+  // The same piece again gives back the area selected before.
+  CHECK(mitcad::toggleEntry(clicked, side, pieces));
+  CHECK(clicked.size() == 5 && mitcad::containsEntry(clicked, side, pieces));
+  // The main piece (which carries the old key in the model) the same.
+  Selection mainOff{split};
+  CHECK(mitcad::removeEntry(mainOff, mainPiece, pieces) == 1);
+  CHECK(mainOff.size() == 2 && mainOff[0].name == side.name && mainOff[1].name == tip.name);
+  // A piece listed after its region goes; before it, both stay (the region
+  // means more), and a click on another piece keeps the listed one once.
+  CHECK(mitcad::uniqueProfiles({split, tip}, pieces).size() == 1);
+  Selection both = mitcad::uniqueProfiles({tip, split}, pieces);
+  CHECK(both.size() == 2);
+  CHECK(mitcad::removeEntry(both, mainPiece, pieces) == 1);
+  CHECK(both.size() == 2 && both[0] == tip && both[1].name == side.name);
 }
 
 // Whether a rendered image still fits the view (mitcad#216): the same
@@ -1908,6 +1942,7 @@ int textureMapsTests();
 int textureSourceTests();
 int polyHavenSourceTests();
 int renderMeshTests();
+int agentFolderTests();
 
 int main(int argc, char* argv[]) {
   QApplication app(argc, argv);
@@ -1953,6 +1988,7 @@ int main(int argc, char* argv[]) {
     failures += textureSourceTests();
     failures += polyHavenSourceTests();
     failures += renderMeshTests();
+    failures += agentFolderTests();
   }
   if (failures != 0) {
     std::fprintf(stderr, "%d check(s) failed\n", failures);

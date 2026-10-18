@@ -346,7 +346,12 @@ design in a project.
   driven dimensions do, before the derived part that takes it as its
   length. The rules that place, mitre, connect, size panels and list cuts
   plan everything against the document and make it in one undo step;
-  components record what BUILD made (`build`). Everything else treats
+  components record what BUILD made (`build`). They work in the **BUILD
+  host** (mitcad#394, `Document::build_host`): the active component when
+  its policy takes components, else the nearest one up that does (a new
+  design's root while Part1 is active), so the design policy never
+  refuses where a part goes; bound lengths count as assembly features
+  there, as joints do. Everything else treats
   them as ordinary components, features, joints and parameters
   ([commands.md](../core/model/src/api/commands.md), "BUILD: profile
   assemblies").
@@ -458,6 +463,22 @@ the `Shape` type.
   copies are joined whole.
 - Joins with several bodies near the tool first find the bodies it
   touches (`touches` in `geometry/src/boolean.cpp`) and fuse only those.
+- A union of several bodies (`unite`, a `combine` join with several
+  tools; mitcad#400) joins the bodies whose faces are all elementary
+  (planes, cylinders, cones, spheres, tori) first and the bodies with
+  free-form faces then with their union, its faces merged. OCCT's boolean
+  intersects every pair of faces that meet: a spiral stair's slabs and
+  treads, whose rims a sketch's lines split into hundreds of faces on one
+  cylinder, met its helical stringers lying on that cylinder piece by
+  piece (5 664 face pairs for seven slabs, eight treads and two stringers
+  in `geometry/tests/test_helical_joins.cpp`, 309 joined first). OCCT's
+  face merge builds a ring of cylinder pieces cut through from end to end
+  (the stringer's band along the rim, the treads rising on it) as one face
+  without a seam (port patch 0680); before, it built such rings with
+  seams, the result was invalid, and the union was computed again
+  without the merge, keeping every piece. The `interference` query's
+  booleans of pairs of bodies run on all cores, as the model's do (such a
+  slab against the stringer took 2 s on one).
 - Large bodies (mitcad#181): OCCT's checker runs on OCCT's thread pool
   (its jobs count their failed allocations as the calling thread's,
   mitcad#132), where it checks whole bodies (operation results, the
@@ -541,9 +562,21 @@ the `Shape` type.
 - OCCT crashes become errors where possible (`catch_occt_crashes`; on
   Linux and macOS needs `OCC_CONVERT_SIGNALS`, defined in the root
   `CMakeLists.txt`; on macOS a fault is SIGSEGV or SIGBUS).
-  Handlers are installed on the app's model worker thread, in
-  `mitcad-cli`'s `main` and on the import's threads.
-  `MITCAD_TEST_OCCT_CRASH=<operation>` forces a crash (`cli.occt_crash`).
+  Handlers are installed on the app's model worker thread, on its UI
+  thread at start (`app/main.cpp`), in `mitcad-cli`'s `main` and on the
+  import's threads. The analyses the app asks for run as operations too
+  (mitcad#392): the analysis bridge (`core/cpp/bridge/analysis.cpp`) runs
+  section, clip, measure, distance, interference and physical properties
+  through `geometry::run_operation` (`guard.hpp`, the public form of
+  `run`), so a crash in Section Analysis' booleans on the UI thread is an
+  error: the body is shown whole and the panel shows the error. The crash
+  that was reported came from mesh bodies: OCCT's booleans need surfaces
+  and read a null handle on a face without one, so the analysis sections
+  and clips mesh bodies on their triangles instead
+  (`geometry/analysis/src/mesh_section.cpp`).
+  `MITCAD_TEST_OCCT_CRASH=<operation>` forces a crash (`cli.occt_crash`,
+  `cli.occt_crash_section`, `geometry.guard_operation`,
+  `tools/ui-section-crash-test.sh` with `clip` and `section`).
   On Linux and macOS OCCT's handlers are the process's; a crash outside
   an operation that catches it (`Standard_ErrorHandler::IsInTryBlock`)
   goes to the handler installed before them, the application's crash
@@ -572,7 +605,15 @@ the `Shape` type.
   (`core/model/src/exchange/usdz.rs`, `core/usdz`).
 - A mesh body (STL, OBJ) is a face with a triangulation and no surface.
   `geometry::transform_shape` moves a copy of the triangulation, and the
-  validity check skips such faces.
+  validity check skips such faces. Surface operations do not take one
+  (mitcad#399): the features refuse a mesh body they name, with its
+  name, and leave mesh bodies out of all bodies
+  (`core/model/src/features/surface_bodies.rs`, through
+  `Kernel::body_kind`); the geometry facade refuses faces without
+  surfaces before OCCT's booleans, dressups and face operations get them
+  (`detail::require_surfaces`, `geometry/src/util.cpp`); and the app's
+  inputs of those features do not offer them (`InputDef::withoutMeshes`,
+  the pick item's geometry `mesh`).
 
 ## Topological naming
 
@@ -603,8 +644,12 @@ them through operations and derives edge names.
   curve's direction: `c3[c2,c4]`. Several curves at one point: `c2+c5`;
   free end: `-`; whole circle: `c5`.
 - **Region:** sorted set of the outer loop's segments,
-  `r{c1[c4,c2],c2[c1,c3],…}`. A key that no longer exists matches the
-  region with the most curves in common and keeps the old key.
+  `r{c1[c4,c2],c2[c1,c3],…}`. A key that no longer exists is traced on
+  the current curves (`sketch::regions::Layout`, mitcad#407): its segments
+  as stretches of their curves between the same neighbours; when they close
+  a loop, the regions inside it are its pieces (a region an edit split stays
+  selected whole); else the region with the most curves in common. The main
+  piece keeps the old key, and the feature warns.
 - **Renamed faces** (mitcad#272, `core/model/src/features/renamed.rs`):
   a sketch edit that gives a segment another neighbour renames its side
   face. A face reference that finds no face takes the face of the same
@@ -625,8 +670,18 @@ them through operations and derives edge names.
 - **Edge:** `E{<face A>|<face B>}` (sorted), `#k` when the same faces meet
   more than once; a seam has the same face twice. **Vertex:** the set of
   faces meeting at it. Sorting is byte-wise in both languages.
-- Splitting a body: the first piece in geometric order keeps the body id,
-  the others get ids of the splitting feature.
+- Splitting a body: the first time, the first piece in geometric order
+  keeps the body id and the others get ids of the splitting feature. The
+  feature remembers each piece's volume and centre of mass (saved with it
+  as `split_pieces`), and later evaluations give the ids by matching the
+  pieces with the remembered ones, so an upstream edit that reorders or
+  changes the pieces keeps later features on the same pieces; a body that
+  becomes another piece warns where it is named, and a piece no longer
+  made is passed by (remove body) or fails its readers, its id given to no
+  other piece (mitcad#408, `core/model/src/features/pieces.rs`). The memory
+  is a cache read of the feature (`Read::Pieces`) that fits both the memory
+  evaluated with and the one left, so taking it into the document costs no
+  second evaluation.
 - Imports resolve the source file's references geometrically against the
   replayed body and store Mitcad names.
 
@@ -710,6 +765,16 @@ mitcad#252) removes those nothing uses, trims stale lines to the regions
 later features use (only when those keep their names and areas) and
 unlinks the projections that still cannot follow; it never links one
 again by geometry, as following would move its curves.
+Two kinds of linked record share this machinery (mitcad#389): section
+curves (`Projection::section`, `sketch.project` with `section`), where
+the sketch's plane cuts a face, computed by the kernel
+(`Kernel::section_curves`: each face cut by itself, B-spline pieces that
+meet end to end joined into one), with the plane moved into the source
+component's coordinates by the link; and a projection of a chain of edges
+(`Projection::chain`, made by the `.f3d` import for a curve the model
+splits into pieces, a thread's helix of an edge per turn), the edges'
+curves joined end to end into one B-spline in the model
+(`sketch::project::join_curves`) before they are projected.
 
 Editing operations (trim, extend, offset, mirror, patterns, project,
 move/copy, fillet, chamfer, slots, polygons) are model commands producing
@@ -788,7 +853,14 @@ not recompute.
   Queries run on the UI thread between jobs; reads during a job
   are refused (`ModelBusy`), and deferred work waits for idle
   (`MainWindow::whenIdle`). `MITCAD_COMPUTE_INLINE=1` runs jobs on the UI
-  thread for debugging.
+  thread for debugging. The jobs that change what the view draws
+  (opening, model commands but a sketch's own, previews) end with the
+  view's meshes of the shown bodies, the previewed ones and the tool
+  (`app/framework/DisplayMeshes`, mitcad#398): made on the worker as the
+  view makes them, so that the view only finds and keeps them, and a
+  design of large curved faces keeps the window (and live MCP, which then
+  answers busy) responsive; the job's Cancel stops that meshing only, and
+  the view meshes what is left.
 - **Document owner** (`app/framework/DocumentSession`): owns the Rust
   document, model worker, active command, selection, mode and file/recovery
   state. `MainWindow` retains reference aliases for existing workflows.
@@ -801,11 +873,18 @@ not recompute.
   synchronous wait presentation through an injected handler.
 - **MCP** (`core/mcp`, `core/ffi/src/mcp.rs`, `app/mcp`): the live
   application profile exposes `document_list`, `model_query`,
-  `model_command`, `document_save` and the application's own `ui_state`,
-  `ui_log`, `ui_screenshot`, `ui_select` and `ui_command` against the
+  `model_command`, `document_save`, `document_open` and the application's
+  own `ui_state`, `ui_log`, `ui_screenshot`, `ui_select`, `ui_command` and
+  `ui_camera` against the
   window's actual `DocumentSession` (mitcad#265, `app/MainWindowMcp.cpp`,
-  `app/MainWindowMcpUi.cpp`). Each connection has a Rust `LiveSession` for
-  protocol state and a pending request; it owns no detached document. The
+  `app/MainWindowMcpUi.cpp`). Save As (`document_save` with a path) and
+  Open reach only the folders the user allows agents (`app/mcp/AgentFolders`:
+  Preferences › Agents, `--mcp-folder`; none by default, mitcad#402), live
+  mode's counterpart of headless mode's workspace. Replies that move the
+  view (`ui_camera`, `ui_select`'s reveal, `view.*` commands) end the
+  view's animation and any pending fit first (`OcctViewer::settleCamera`,
+  mitcad#405), so their camera and the next screenshot agree. Each
+  connection has a Rust `LiveSession` for protocol state and a pending request; it owns no detached document. The
   FFI prepares a validated tool and wraps its completed result. What MCP
   allows follows each command's and query's class in the model's API
   (`core/model/src/api/classes.rs`: model, file IO, remote, internal),
@@ -827,6 +906,11 @@ not recompute.
   the token on stdout. Bridge EOF leaves the GUI and unsaved document open.
   `--no-mcp` disables the listener. The separate headless `--workspace`
   mode retains its own documents and confined file tools ([mcp.md](mcp.md)).
+  In both, a `model_command` is an error only when it is refused or a
+  feature it added or edited fails; the model's `failed_features` (each
+  failed feature, `edited`, `new`; `core/model/src/document/command_outcome.rs`)
+  go to the top of the result, and `mitcad_mcp::command_outcome` decides
+  for both profiles (mitcad#401).
 - **Logging** (`app/mcp/LogRing`, `app/framework/DebugLog`, mitcad#269):
   one message handler for the whole run, installed by `main()` after the
   UI test driver's and passing every message on to it: a ring of the
@@ -960,7 +1044,16 @@ not recompute.
   top-level window's `NSView`. The GL assumptions stay in the surface
   format and `occtDrawable()`, so that another backend stays local (OCCT
   has no Metal one). The orientation cube and pick widths scale with the
-  device pixel ratio.
+  device pixel ratio. The view meshes at an absolute 0.01 mm and 5°, and
+  each doubly curved face within about 20 000 triangles
+  (`app/view/ViewTessellation.hpp`, mitcad#398): a face that would take
+  more (a sphere of metres took millions) meshes with a deviation that
+  grows with its size (`geometry/io` `mesh.hpp`, `face_deviation_floor`).
+  OCCT's presentations mesh through that algorithm
+  (`use_bounded_presentation_meshes`, BRepMesh's default for the process);
+  the model's worker makes the same meshes beforehand (`mesh_in_place`),
+  and the exports' presets bound their faces the same way
+  ([commands.md](../core/model/src/api/commands.md), Mesh refinement).
 - **Theme and icons** (`app/framework/Theme`, `Icons`): dark mode is read
   from the application palette (`isDarkPalette`), and the error, warning
   and accent colours and the `set*StyleSheet` helpers follow palette
@@ -1123,7 +1216,9 @@ A design is one `.mitcad` file. **Single-file design** (format 2):
 [{"uid": "F3", "type": "extrude", ...}], "bodies", "marker"}`, plus
 `components`, `occurrences`, `active_component`, `root_component`, a
 feature's `component` when present, named `views` and `analyses`. Version 1 files
-are converted on open. Parametric geometry is not stored. Imported bodies
+are converted on open. Parametric geometry is not stored; a feature that
+split bodies keeps the volume and centre of each piece (`split_pieces`,
+mitcad#408) so the pieces keep their ids. Imported bodies
 live in base features as OCCT binary BRep, zlib + base64
 (`{"format": "occt", "compression": "zlib", "size": n, "data": "…"}`,
 `core/model/src/features/base.rs`); their faces are named

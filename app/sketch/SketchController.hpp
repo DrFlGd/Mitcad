@@ -196,6 +196,9 @@ public:
   void updateConvertAction();
   void toggleFixed();
   void editDimension(const QString& id);
+  // A horizontal or vertical distance made signed or unsigned, its point
+  // kept where it is (`sketch.set_signed`, mitcad#409).
+  void setDimensionSigned(const QString& id, bool on);
 
   // --- Options of the sketch palette
   bool construction() const { return m_construction; }
@@ -219,6 +222,11 @@ public:
   enum class DimensionText { Value, Name, NameValue };
   DimensionText dimensionTextMode() const { return m_dimensionText; }
   void setDimensionTextMode(DimensionText mode);
+  // The Dimension tool makes horizontal and vertical distances signed: the
+  // offset from the first point picked, negative to the left or below it
+  // (mitcad#409).
+  bool signedDistances() const { return m_signedDistances; }
+  void setSignedDistances(bool on);
 
   // --- Auto constraints while drawing (mitcad#189): the session of the
   // active drawing tool, which the palette's Auto constraint section shows.
@@ -250,6 +258,7 @@ public:
   SketchHost& host() { return m_host; }
   const SketchHost& host() const { return m_host; }
   OcctViewer& viewer() { return m_viewer; }
+  const SketchOverlay& overlay() const { return *m_overlay; }
   QPointF toScreen(const V2& p) const;
   // The sketch plane point under a view position.
   std::optional<V2> sketchAt(const QPointF& screen) const;
@@ -414,6 +423,7 @@ private:
 
   bool m_paused = false;
   bool m_construction = false;
+  bool m_signedDistances = false;
   bool m_gridSnap = true;
   double m_gridStep = 0.0;
   bool m_showDimensions = true;

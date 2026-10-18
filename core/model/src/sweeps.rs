@@ -81,6 +81,15 @@ pub struct SweepSpec<'a> {
     pub twist: f64,
     pub taper: f64,
     pub guide: Option<SweepGuide<'a>>,
+    /// A fixed binormal direction (mitcad#397, a unit vector): the profile
+    /// keeps its angles to this direction and to the path's tangent (its
+    /// frame the tangent, `binormal × tangent` and the binormal made square
+    /// to the tangent), so a profile whose x is level at the start stays
+    /// level along a sloped path when the binormal is up. Only with the
+    /// perpendicular orientation, without twist, taper, a guide rail or
+    /// guide surfaces, along a path without corners; `None` keeps the
+    /// profile's angle to the path without twisting about it.
+    pub binormal: Option<[f64; 3]>,
 }
 
 /// A face of a sweep's guide surfaces (mitcad#157), for

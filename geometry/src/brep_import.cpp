@@ -59,6 +59,7 @@
 #include <NCollection_IndexedDataMap.hxx>
 #include <NCollection_IndexedMap.hxx>
 #include <NCollection_List.hxx>
+#include <Precision.hxx>
 #include <ShapeBuild_ReShape.hxx>
 #include <ShapeFix.hxx>
 #include <ShapeFix_Edge.hxx>
@@ -365,7 +366,12 @@ Handle(Geom_Surface) make_surface(Reader& in, int kind) {
     const double radius = in.real();
     const double half_angle = in.real();
     const gp_Ax3 frame(origin, axis, ref);
-    if (half_angle == 0.0) {
+    // A cone whose half angle is zero within the angular precision is the
+    // cylinder it parametrizes the same way: a file may keep a thread's
+    // cylinder as a cone of 1e-13 rad, its apex 1e14 mm away, on which
+    // OCCT's intersections with other faces of revolution about its axis
+    // lose their curves (mitcad#389).
+    if (std::abs(half_angle) <= Precision::Angular()) {
       return new Geom_CylindricalSurface(frame, radius);
     }
     return new Geom_ConicalSurface(frame, half_angle, radius);

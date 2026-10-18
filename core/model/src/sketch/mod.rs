@@ -747,19 +747,25 @@ pub enum DimensionKind {
         #[serde(with = "point_serde")]
         b: EntityUid,
     },
-    /// `|Δx|` between two points in sketch axes.
+    /// `|Δx|` between two points in sketch axes, on the side `b` is; with
+    /// `signed` (mitcad#404), `b.x - a.x` itself, which may be negative.
     HorizontalDistance {
         #[serde(with = "point_serde")]
         a: EntityUid,
         #[serde(with = "point_serde")]
         b: EntityUid,
+        #[serde(default, skip_serializing_if = "is_false")]
+        signed: bool,
     },
-    /// `|Δy|` between two points in sketch axes.
+    /// `|Δy|` between two points in sketch axes; with `signed`,
+    /// `b.y - a.y`.
     VerticalDistance {
         #[serde(with = "point_serde")]
         a: EntityUid,
         #[serde(with = "point_serde")]
         b: EntityUid,
+        #[serde(default, skip_serializing_if = "is_false")]
+        signed: bool,
     },
     /// Distance of a point from a line (its infinite extension).
     PointLineDistance {
@@ -838,12 +844,14 @@ pub enum DimensionKind {
     Spacing { constraint: ConstraintUid },
 }
 
-/// How a dimension value must be: positive, not negative, or an angle.
+/// How a dimension value must be: positive, not negative, an angle, or any
+/// finite number (a signed distance).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ValueRange {
     Positive,
     NotNegative,
     Angle,
+    Signed,
 }
 
 impl DimensionKind {
@@ -852,7 +860,7 @@ impl DimensionKind {
         let p = Ref::Point;
         let c = Ref::Curve;
         match self {
-            Distance { a, b } | HorizontalDistance { a, b } | VerticalDistance { a, b } => {
+            Distance { a, b } | HorizontalDistance { a, b, .. } | VerticalDistance { a, b, .. } => {
                 vec![p(*a), p(*b)]
             }
             PointLineDistance { point, line } => vec![p(*point), c(*line)],
@@ -911,6 +919,9 @@ impl DimensionKind {
     pub fn range(&self) -> ValueRange {
         use DimensionKind::*;
         match self {
+            HorizontalDistance { signed: true, .. } | VerticalDistance { signed: true, .. } => {
+                ValueRange::Signed
+            }
             HorizontalDistance { .. }
             | VerticalDistance { .. }
             | PointLineDistance { .. }
@@ -1059,6 +1070,17 @@ pub struct Projection {
     /// the same order and joined the same way (mitcad#249).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub by_geometry: bool,
+    /// Section curves (mitcad#389): the entities are where the sketch's
+    /// plane cuts the source, a face (every face of a name without `#k`),
+    /// not the source projected onto it ([`crate::Kernel::section_curves`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub section: bool,
+    /// Edges the source continues into, in order (mitcad#389): a curve the
+    /// model splits into pieces (a thread's helix, an edge per turn) is one
+    /// curve of the sketch, the projection of the edges joined end to end
+    /// ([`project::join_curves`]). Each name gives one curve.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chain: Vec<TopoName>,
 }
 
 /// Text: the outlines of its characters' glyphs

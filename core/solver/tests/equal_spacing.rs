@@ -343,6 +343,7 @@ fn a_contradicting_distance_conflicts_with_the_spacing() {
             a: p[0],
             b: p[2],
             value: 30.0,
+            signed: false,
         })
         .unwrap();
     let r = s.solve(&opts());

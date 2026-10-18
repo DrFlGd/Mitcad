@@ -1,5 +1,5 @@
 [
-  {"comment": "BUILD (mitcad#375), opened on build_parts.mitcad: T (O1, F1) at the origin, P (O2, F2) on T's x+ slot 500 up, 300 long: a T junction of P's end A on T's side."},
+  {"comment": "BUILD (mitcad#375), opened on build_parts.mitcad: T (O1, F1) at the origin, P (O2, F2) on T's x+ slot, its near face 500 up, 300 long: a T junction of P's end A on T's side."},
   {"cmd": "build_place", "part": {"source": "S1"}, "at": {"point": [0, 0, 0]}, "length": 1000},
   {"cmd": "build_place", "part": {"source": "S1"},
    "at": {"occurrence": "O1", "geometry": {"mount": "F1:mount(slot_x+_1)"}, "offset": 500}, "length": 300},

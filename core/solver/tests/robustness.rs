@@ -145,6 +145,7 @@ fn tangent_circle_keeps_its_side_when_the_radius_grows() {
         a,
         b: c,
         value: 10.0,
+        signed: false,
     })
     .unwrap();
     let r = s
@@ -201,6 +202,7 @@ fn build_reference(s: &mut System) -> Vec<PointId> {
         a: c1,
         b: c3,
         value: 10.0,
+        signed: false,
     })
     .unwrap();
     vec![c1, c2, tl, tr, br, bl, c3]

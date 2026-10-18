@@ -470,6 +470,7 @@ ShapePtr shell(const std::string& feature, const Shape& body, const ShellSpec& s
   if (spec.inside == 0.0 && spec.outside == 0.0) {
     throw std::invalid_argument("the shell needs an inside or an outside thickness");
   }
+  detail::require_surfaces(body.occt(), "shell");
   std::vector<int> faces;
   if (!spec.faces.empty()) {
     faces = detail::resolve_faces(body, spec.faces, "faces to remove");
@@ -618,6 +619,10 @@ ShapePtr draft(const std::string& feature, const Shape& body, const DraftSpec& s
   if (spec.plane.kind != Tool::Kind::Plane && spec.plane.kind != Tool::Kind::Face) {
     throw std::invalid_argument("the fixed plane must be a plane or a planar face");
   }
+  detail::require_surfaces(body.occt(), "draft");
+  if (spec.plane.shape) {
+    detail::require_surfaces(spec.plane.shape->occt(), "the fixed plane");
+  }
   const gp_Pln neutral = detail::tool_plane(spec.plane, "the fixed plane");
   gp_Dir pull = neutral.Axis().Direction();
   if (spec.plane.kind == Tool::Kind::Face) {
@@ -723,6 +728,7 @@ ShapePtr offset_faces(const std::string& feature, const Shape& body,
   if (distance == 0.0) {
     throw std::invalid_argument("the offset distance must not be zero");
   }
+  detail::require_surfaces(body.occt(), "offset faces");
   const std::vector<int> chosen = detail::resolve_faces(body, faces, "faces to offset");
   return detail::run("offset faces", [&] {
     std::vector<std::pair<int, double>> moves;
@@ -741,6 +747,7 @@ ShapePtr offset_faces(const std::string& feature, const Shape& body,
 ShapePtr delete_faces(const std::string& feature, const Shape& body,
                       const std::vector<std::string>& faces) {
   (void)feature;
+  detail::require_surfaces(body.occt(), "delete faces");
   const std::vector<int> chosen = detail::resolve_faces(body, faces, "faces to delete");
   return detail::run("delete faces", [&] {
     BRepAlgoAPI_Defeaturing maker;
@@ -775,6 +782,10 @@ ShapePtr replace_faces(const std::string& feature, const Shape& body,
                        bool tangent_chain) {
   if (target.kind == Tool::Kind::Curves) {
     throw std::invalid_argument("the target must be a plane, a face or a body");
+  }
+  detail::require_surfaces(body.occt(), "replace faces");
+  if (target.shape) {
+    detail::require_surfaces(target.shape->occt(), "the target");
   }
   std::vector<int> chosen = detail::resolve_faces(body, faces, "faces to replace");
   if (tangent_chain) {

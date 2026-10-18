@@ -264,7 +264,10 @@ std::optional<double> measure(const DimensionData& d, const SketchModel& model) 
       const V2 dir = unit(b->curve.b - b->curve.a);
       return std::abs(cross(dir, a->curve.a - b->curve.a));
     }
-    return std::abs(dot(linear->b - linear->a, linear->u));
+    // A signed horizontal or vertical distance: the offset itself
+    // (mitcad#404).
+    const double offset = dot(linear->b - linear->a, linear->u);
+    return d.json.value(QStringLiteral("signed")).toBool() ? offset : std::abs(offset);
   }
   if (t == QStringLiteral("angle")) {
     // As the model measures it: without a side, between the directions.
@@ -524,6 +527,9 @@ QString SketchOverlay::dimensionText(const DimensionData& d) const {
     value = QStringLiteral("Ø") + value;
   } else if (d.type == QStringLiteral("arc_length")) {
     value = QStringLiteral("⌒") + value;
+  } else if (d.json.value(QStringLiteral("signed")).toBool() && !value.startsWith(QLatin1Char('-'))) {
+    // A signed distance shows its sign, + too (mitcad#409).
+    value = QStringLiteral("+") + value;
   }
   if (!d.driven && !plainNumber(d.expression)) {
     value = QStringLiteral("fx: ") + value;

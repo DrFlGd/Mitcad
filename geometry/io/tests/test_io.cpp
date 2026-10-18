@@ -18,6 +18,7 @@
 #include <string>
 #include <utility>
 
+#include <BRepAdaptor_Surface.hxx>
 #include <BRepAlgoAPI_Cut.hxx>
 #include <BRepBndLib.hxx>
 #include <BRepFilletAPI_MakeFillet.hxx>
@@ -279,11 +280,122 @@ void test_triangulate_keeps_original() {
   CHECK(!mitcad::io::is_mesh(block));
   bool threw = false;
   try {
-    mitcad::io::triangulate(block, mitcad::io::MeshOptions{0.0, 0.5, false});
+    mitcad::io::triangulate(block, mitcad::io::MeshOptions{0.0, 0.5, false, 0});
   } catch (const mitcad::io::Error&) {
     threw = true;
   }
   CHECK(threw);
+}
+
+// A hemispherical dome shell (mitcad#398): sphere faces of radii 4450 and
+// 4550 mm times `scale`, and a flat ring.
+TopoDS_Shape dome(double scale) {
+  const double quarter = 2.0 * std::atan(1.0);
+  const gp_Ax2 axis;
+  const TopoDS_Shape outer = BRepPrimAPI_MakeSphere(axis, 4550.0 * scale, 0.0, quarter).Shape();
+  const TopoDS_Shape inner = BRepPrimAPI_MakeSphere(axis, 4450.0 * scale, 0.0, quarter).Shape();
+  return BRepAlgoAPI_Cut(outer, inner).Shape();
+}
+
+// Per face: its surface type and triangle count.
+std::vector<std::pair<GeomAbs_SurfaceType, int>> face_triangles(const TopoDS_Shape& meshed) {
+  std::vector<std::pair<GeomAbs_SurfaceType, int>> faces;
+  for (TopExp_Explorer it(meshed, TopAbs_FACE); it.More(); it.Next()) {
+    const TopoDS_Face& face = TopoDS::Face(it.Current());
+    TopLoc_Location location;
+    const auto triangulation = BRep_Tool::Triangulation(face, location);
+    faces.emplace_back(BRepAdaptor_Surface(face).GetType(),
+                       triangulation.IsNull() ? -1 : triangulation->NbTriangles());
+  }
+  return faces;
+}
+
+// Building-scale doubly curved faces (mitcad#398): the default export
+// mesh gives each sphere face of a 9 m dome at most about the preset's
+// triangles (with the absolute 0.03 mm, about 1.5 million in all), while
+// a dome of 9 cm meshes exactly as without the limit. Counts, not times.
+void test_building_scale_sphere(const std::string& dir) {
+  using mitcad::io::MeshOptions;
+  using mitcad::io::Refinement;
+  const MeshOptions medium = MeshOptions::from(Refinement::Medium);
+  CHECK(medium.face_triangles == 20000);
+  const TopoDS_Shape big = dome(1.0);
+  const TopoDS_Shape small = dome(0.01);
+  CHECK(count(big, TopAbs_FACE) == 3);
+
+  // The floor: none for the small dome's faces, the ring or a large
+  // cylinder (whose triangles do not grow with its size).
+  for (TopExp_Explorer it(small, TopAbs_FACE); it.More(); it.Next()) {
+    CHECK(mitcad::io::face_deviation_floor(TopoDS::Face(it.Current()), 0.03, 20000) == 0.0);
+  }
+  for (TopExp_Explorer it(big, TopAbs_FACE); it.More(); it.Next()) {
+    const TopoDS_Face& face = TopoDS::Face(it.Current());
+    const double floor = mitcad::io::face_deviation_floor(face, 0.03, 20000);
+    if (BRepAdaptor_Surface(face).GetType() == GeomAbs_Sphere) {
+      // 0.8 * 2 pi R / 20000: 1.13 mm for R 4.5 m.
+      CHECK(floor > 1.0 && floor < 1.25);
+    } else {
+      CHECK(floor == 0.0);
+    }
+  }
+  const TopoDS_Shape tank = BRepPrimAPI_MakeCylinder(5000.0, 20000.0).Shape();
+  for (TopExp_Explorer it(tank, TopAbs_FACE); it.More(); it.Next()) {
+    CHECK(mitcad::io::face_deviation_floor(TopoDS::Face(it.Current()), 0.03, 20000) == 0.0);
+  }
+
+  // The default export mesh of the big dome: bounded per sphere face.
+  std::size_t total = 0;
+  for (const auto& [type, triangles] : face_triangles(mitcad::io::triangulate(big, medium))) {
+    CHECK(triangles > 0);
+    if (type == GeomAbs_Sphere) {
+      std::printf("Dome sphere face: %d triangles\n", triangles);
+      CHECK(triangles > 5000 && triangles <= 30000);
+    }
+    total += static_cast<std::size_t>(std::max(triangles, 0));
+  }
+  CHECK(total <= 70000);
+  // An STL file of it with the default options: a few megabytes.
+  const std::string path = dir + "/dome.stl";
+  mitcad::io::write_stl(path, {big}, mitcad::io::StlWriteOptions{});
+  const auto size = std::filesystem::file_size(path);
+  std::printf("Dome STL: %llu bytes\n", static_cast<unsigned long long>(size));
+  CHECK(size < 84 + 50 * 70000);
+
+  // The small dome: the same triangles with the limit as without it.
+  MeshOptions unlimited = medium;
+  unlimited.face_triangles = 0;
+  const auto limited = face_triangles(mitcad::io::triangulate(small, medium));
+  const auto absolute = face_triangles(mitcad::io::triangulate(small, unlimited));
+  CHECK(limited == absolute);
+
+  // Meshed in place (the 3D view's meshes, made on the model's thread):
+  // every face triangulated within the bound; meshing again keeps them.
+  const TopoDS_Shape shown = dome(1.0);
+  const MeshOptions view{0.01, 5.0 * std::atan(1.0) / 45.0, false, 20000};
+  CHECK(!mitcad::io::has_triangulation(shown));
+  CHECK(mitcad::io::mesh_in_place(shown, view));
+  CHECK(mitcad::io::has_triangulation(shown));
+  std::vector<const Poly_Triangulation*> first;
+  for (TopExp_Explorer it(shown, TopAbs_FACE); it.More(); it.Next()) {
+    TopLoc_Location location;
+    const auto triangulation = BRep_Tool::Triangulation(TopoDS::Face(it.Current()), location);
+    first.push_back(triangulation.get());
+  }
+  for (const auto& [type, triangles] : face_triangles(shown)) {
+    if (type == GeomAbs_Sphere) {
+      std::printf("Dome sphere face in place: %d triangles\n", triangles);
+      CHECK(triangles > 5000 && triangles <= 30000);
+    }
+  }
+  CHECK(mitcad::io::mesh_in_place(shown, view));
+  std::size_t kept = 0;
+  std::size_t index = 0;
+  for (TopExp_Explorer it(shown, TopAbs_FACE); it.More(); it.Next(), ++index) {
+    TopLoc_Location location;
+    const auto triangulation = BRep_Tool::Triangulation(TopoDS::Face(it.Current()), location);
+    kept += triangulation.get() == first[index] ? 1 : 0;
+  }
+  CHECK(kept == first.size());
 }
 
 void test_stl(const std::string& dir) {
@@ -672,6 +784,7 @@ int main(int argc, char** argv) {
     test_step_multi_solid_part();
     test_iges(dir);
     test_triangulate_keeps_original();
+    test_building_scale_sphere(dir);
     test_stl(dir);
     test_indexed_mesh(dir);
     test_face_meshes(dir);

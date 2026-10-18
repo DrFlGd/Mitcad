@@ -81,6 +81,7 @@
 #include "framework/Appearances.hpp"
 #include "framework/AutoselectPanel.hpp"
 #include "framework/Dialogs.hpp"
+#include "framework/DisplayMeshes.hpp"
 #include "framework/CommandRegistry.hpp"
 #include "framework/ChromeStyle.hpp"
 #include "framework/CommandSearch.hpp"
@@ -401,6 +402,40 @@ void MainWindow::present() {
   show();
 }
 
+void MainWindow::logLayout() const {
+  const auto place = [](const QWidget* widget) {
+    const QRect r = widget->geometry();
+    return QStringLiteral("%1,%2 %3x%4").arg(r.x()).arg(r.y()).arg(r.width()).arg(r.height());
+  };
+  const QSize minimum = minimumSizeHint().expandedTo(minimumSize());
+  QStringList parts{QStringLiteral("window %1x%2, minimum %3x%4")
+                        .arg(width())
+                        .arg(height())
+                        .arg(minimum.width())
+                        .arg(minimum.height())};
+  if (menuWidget() != nullptr && menuWidget()->isVisible()) {
+    parts << QStringLiteral("menu ") + place(menuWidget());
+  }
+  if (centralWidget() != nullptr) {
+    parts << QStringLiteral("central ") + place(centralWidget());
+  }
+  // The bars and docks, by name, so that the order of the children does
+  // not count.
+  QStringList bars;
+  for (const QWidget* child : findChildren<QWidget*>(QString(), Qt::FindDirectChildrenOnly)) {
+    if ((qobject_cast<const QDockWidget*>(child) != nullptr || qobject_cast<const QToolBar*>(child) != nullptr ||
+         qobject_cast<const QStatusBar*>(child) != nullptr) &&
+        child->isVisible()) {
+      const QString name = child->objectName();
+      bars << (name.isEmpty() ? QString::fromLatin1(child->metaObject()->className()) : name) + QLatin1Char(' ') +
+                  place(child);
+    }
+  }
+  bars.sort();
+  parts << bars;
+  qDebug().noquote() << QStringLiteral("Window layout: ") + parts.join(QStringLiteral("; "));
+}
+
 // ---------------------------------------------------------------------------
 // Commands
 
@@ -512,8 +547,7 @@ void MainWindow::registerCommands() {
   };
   m_registry->add(redoDef);
 
-  CommandDef fit = action("view.fit", tr("Fit"), "fit", CommandDef::Mode::Any,
-                          [this] { m_viewer->fitAll(); });
+  CommandDef fit = action("view.fit", tr("Fit"), "fit", CommandDef::Mode::Any, [this] { fitView(); });
 #ifdef Q_OS_MACOS
   // The F keys are media keys on Mac laptops: Cmd+0 fits, F6 still does.
   fit.shortcut = QKeySequence(Qt::CTRL | Qt::Key_0);
@@ -854,6 +888,7 @@ void MainWindow::createPanels() {
     m_idleInfo->setWordWrap(true);
     createIdlePage();
     m_palette = new sketch::SketchPalette(*m_sketch, *m_registry, sketchConstraintCommands());
+    m_palettePage = m_palette;
     m_commandPages->addWidget(m_palette);
     m_commandPages->hide();
     setCentralWidget(m_viewer);
@@ -889,7 +924,30 @@ void MainWindow::createPanels() {
   m_idleInfo->setMargin(6);
   createIdlePage();
   m_palette = new sketch::SketchPalette(*m_sketch, *m_registry, sketchConstraintCommands());
-  m_commandPages->addWidget(m_palette);
+  // The palette scrolls when it is longer than the dock, as a command's
+  // panel does: the stacked widget reserves every page's minimum height,
+  // also the hidden palette's, so each row added to the palette made the
+  // window taller (mitcad#412).
+  auto* paletteScroll = new QScrollArea;
+  paletteScroll->setObjectName(QStringLiteral("sketchPaletteScroll"));
+  paletteScroll->setWidgetResizable(true);
+  paletteScroll->setFrameShape(QFrame::NoFrame);
+  paletteScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+  paletteScroll->setWidget(m_palette);
+  // The Auto constraint section, which shows once a drawing tool has drawn,
+  // comes into view; the palette's places are logged again when it
+  // scrolls, for UI tests.
+  connect(m_palette, &sketch::SketchPalette::autoSectionShown, paletteScroll,
+          [paletteScroll](QWidget* section) { paletteScroll->ensureWidgetVisible(section, 0, 0); });
+  connect(paletteScroll->verticalScrollBar(), &QScrollBar::valueChanged, m_palette, [palette = m_palette] {
+    TestSync::singleShot(0, palette, [palette] {
+      if (palette->isVisible()) {
+        palette->logPlaces();
+      }
+    });
+  });
+  m_palettePage = paletteScroll;
+  m_commandPages->addWidget(m_palettePage);
   auto* commandDock = new QDockWidget(tr("Command"), this);
   commandDock->setObjectName(QStringLiteral("commandDock"));
   commandDock->setWidget(m_commandPages);
@@ -937,6 +995,7 @@ void MainWindow::createFloatingPanels() {
   m_idleInfo->setMargin(6);
   createIdlePage();
   m_palette = new sketch::SketchPalette(*m_sketch, *m_registry, sketchConstraintCommands());
+  m_palettePage = m_palette;
   m_commandPages->addWidget(m_palette);
   m_commandCard = new GlassCard;
   m_commandCard->setObjectName(QStringLiteral("commandDock"));
@@ -1366,8 +1425,7 @@ void MainWindow::onCommandFinished(bool committed) {
   m_sketch->setPaused(false);
   // The sketch's selection filter as it was before (mitcad#217).
   endCommandScope();
-  m_commandPages->setCurrentWidget(m_mode == Mode::Sketch ? static_cast<QWidget*>(m_palette)
-                                                          : m_idlePage);
+  m_commandPages->setCurrentWidget(m_mode == Mode::Sketch ? m_palettePage : m_idlePage);
   if (session != nullptr) {
     session->deleteLater();
   }
@@ -1610,6 +1668,10 @@ void MainWindow::showSectionCaps(const std::vector<BodyDisplay>& bodies) {
     std::vector<TopoDS_Face> found;
     for (TopExp_Explorer faces(shape, TopAbs_FACE); faces.More(); faces.Next()) {
       const TopoDS_Face& face = TopoDS::Face(faces.Current());
+      TopLoc_Location location;
+      if (BRep_Tool::Surface(face, location).IsNull()) {
+        continue; // a mesh body's triangles; a clipped one's caps are planar faces
+      }
       const BRepAdaptor_Surface surface(face);
       if (surface.GetType() != GeomAbs_Plane) {
         continue;
@@ -2238,8 +2300,10 @@ std::vector<BodyDisplay> MainWindow::modelBodies() const {
         if (clipped) {
           shape = clipped;
         }
-      } catch (const std::exception&) {
-        // A body the plane does not cut is shown whole.
+      } catch (const std::exception& e) {
+        // A body the plane does not cut is shown whole, and so is one whose
+        // clip failed (a crash inside OCCT is its error, mitcad#392).
+        qWarning().noquote() << QStringLiteral("Section: %1 shown whole: %2").arg(uid, errorText(e));
       }
     }
     const QJsonArray rows = instance.value(QStringLiteral("transform")).toArray();
@@ -2526,6 +2590,9 @@ void MainWindow::showDatums() {
     if (kOriginDatums.contains(uid) ? !origin : !m_snapshot.featureShown.value(uid, true)) {
       continue;
     }
+    if (m_constructionHidden) {
+      continue; // an input that takes none hides them (mitcad#394)
+    }
     const SelectKind kind = datumKind(datum.value(QStringLiteral("type")).toString());
     DatumDisplay display{uid, kind, datumShape(datum, kDatumSize)};
     // A component's datum where its occurrence places it.
@@ -2632,6 +2699,16 @@ void MainWindow::logDatumPlaces() {
   for (const QString& line : std::as_const(lines)) {
     qDebug().noquote() << line;
   }
+}
+
+void MainWindow::setConstructionHidden(bool hidden) {
+  if (hidden == m_constructionHidden) {
+    return;
+  }
+  m_constructionHidden = hidden;
+  qDebug().noquote() << (hidden ? QStringLiteral("Construction geometry hidden for the command")
+                                : QStringLiteral("Construction geometry shown again"));
+  showDatums();
 }
 
 void MainWindow::inputActivated(SelectFilter filter) {
@@ -2888,6 +2965,33 @@ void MainWindow::showNamedView(const QString& view) {
     return;
   }
   m_viewController->showStandardView(view);
+}
+
+void MainWindow::fitView() {
+  // The selection, outside commands and sketches (whose picks are inputs).
+  if (m_mode == Mode::Idle && !m_selection.isEmpty()) {
+    std::vector<gp_Pnt> corners;
+    mcpItemCorners(m_selection, corners, nullptr);
+    if (!corners.empty()) {
+      Bnd_Box box;
+      for (const gp_Pnt& corner : corners) {
+        box.Add(corner);
+      }
+      m_viewer->frameBox(box);
+      qDebug().noquote() << QStringLiteral("Fit: the selection");
+      return;
+    }
+  }
+  // Isolated bodies: those, not the origin and what else is shown.
+  if (!m_isolation.isEmpty()) {
+    const Bnd_Box box = m_viewer->bodiesBox();
+    if (!box.IsVoid()) {
+      m_viewer->frameBox(box);
+      qDebug().noquote() << QStringLiteral("Fit: the isolated bodies");
+      return;
+    }
+  }
+  m_viewer->fitAll();
 }
 
 void MainWindow::saveNamedView(const QString& name, bool replace) {
@@ -3215,6 +3319,14 @@ void MainWindow::showContextMenu(const QPoint& globalPosition, const SelectionIt
         if (m_selection.size() == 1 && m_selection.first().kind == SelectKind::SketchDimension) {
           const QString id = m_selection.first().name;
           addCall(QStringLiteral("dimension"), tr("Edit Dimension"), [this, id] { m_sketch->editDimension(id); });
+          // A horizontal or vertical distance switches between signed and
+          // unsigned, its point kept where it is (mitcad#409).
+          const sketch::DimensionData* d = m_sketch->model().dimension(id);
+          if (d != nullptr && d->isAxisDistance()) {
+            const bool on = !d->signedOffset;
+            addCall(QStringLiteral("dimension"), on ? tr("Make Distance Signed") : tr("Make Distance Unsigned"),
+                    [this, id, on] { m_sketch->setDimensionSigned(id, on); });
+          }
         }
         // Texts, patterns, offsets and equal spacings have edit panels (P3,
         // P4, mitcad#221).
@@ -3498,7 +3610,7 @@ void MainWindow::enterSketch(const QString& uid, bool existing) {
   m_viewer->lookAtSketchPlane();
   m_viewer->setGridPlane(toAx3(m_sketch->model().frame)); // the grid on the sketch plane
   m_ribbon->setSketchMode(true);
-  m_commandPages->setCurrentWidget(m_palette);
+  m_commandPages->setCurrentWidget(m_palettePage);
   refreshScene();
   showHint(tr("Sketch: %1, %2, %3, %4; %5.")
                .arg(m_registry->shortcutHint(QStringLiteral("sketch.line")),
@@ -4104,6 +4216,7 @@ bool MainWindow::installDocument(const QString& label, const QString& path, cons
   std::optional<rust::Box<Document>> made;
   QJsonObject recomputed;
   QJsonObject persisted;
+  DisplayMeshing meshing;
   double milliseconds = 0.0;
   // The result store (P7d): costly features come from it, and what was
   // costly to compute goes to it.
@@ -4129,6 +4242,8 @@ bool MainWindow::installDocument(const QString& label, const QString& path, cons
         job.setStage(tr("Saving results of %1").arg(label));
         persisted = parseObject(document->persist_results(minMs));
       }
+      // The view's meshes, here rather than on the UI thread (mitcad#398).
+      meshing = meshForDisplay(shownBodyShapes(*document), job);
       made.emplace(std::move(document));
     });
     if (!done) {
@@ -4139,6 +4254,7 @@ bool MainWindow::installDocument(const QString& label, const QString& path, cons
     error = errorText(e);
     return false;
   }
+  logDisplayMeshing(meshing, label);
   // Another design: the old one's versions are sent and its edit lock
   // released first (mitcad#89); a sync that needs a choice may keep it.
   const bool readOnlyOpen = m_openingReadOnly;

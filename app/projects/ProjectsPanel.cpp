@@ -31,6 +31,7 @@
 #include "../framework/Dialogs.hpp"
 #include "../framework/GlassCard.hpp"
 #include "../framework/Icons.hpp"
+#include "../framework/PanelTree.hpp"
 #include "../framework/TestSync.hpp"
 #include "../framework/WindowStyle.hpp"
 
@@ -401,6 +402,9 @@ ProjectsPanel::ProjectsPanel(Host host, QWidget* parent) : QWidget(parent), m_ho
   m_tree->setContextMenuPolicy(Qt::CustomContextMenu);
   m_tree->setUniformRowHeights(true);
   m_tree->setIconSize(QSize(16, 16));
+  // The Browser's indentation per level, so that a narrow panel's nested
+  // rows do not drift to the right (mitcad#393).
+  m_tree->setIndentation(panel::kTreeIndentation);
   m_tree->setExpandsOnDoubleClick(true);
   // Only a click gives the tree the keyboard, so that the view keeps the
   // single-letter shortcuts.
@@ -931,6 +935,8 @@ void ProjectsPanel::logLayout() {
     return;
   }
   QStringList lines;
+  // The indentation per level, the same as the Browser's (mitcad#393).
+  lines << QStringLiteral("Projects indentation %1").arg(m_tree->indentation());
   const QRect viewport = m_tree->viewport()->rect();
   for (QTreeWidgetItemIterator it(m_tree); *it != nullptr; ++it) {
     const QRect row = m_tree->visualItemRect(*it);

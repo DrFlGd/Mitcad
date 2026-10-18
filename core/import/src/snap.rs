@@ -844,7 +844,7 @@ pub(crate) fn snap_linked_keeping(
 /// first, then the stored ones) and its radius or minor radius `radius`
 /// where one replaces the stored; None for a kind no contact is counted
 /// for (splines, texts).
-fn curve_of(
+pub(crate) fn curve_of(
     entity: &Value,
     at: &dyn Fn(&Value) -> Option<P>,
     radius: Option<f64>,

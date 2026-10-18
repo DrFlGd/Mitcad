@@ -22,6 +22,8 @@
 #      at the top of the tree (mitcad#173: no location row above it), shown
 #      by its shared folder's path, with its sync state; Remove from List
 #      takes it out and deletes nothing.
+#      (After step 2: the Projects and Browser trees indent a level by the
+#      same amount, mitcad#393.)
 #   7. Open Project (the project picker) opens the design opened last;
 #      the panel stays shown at the next start. The Floating layout has
 #      the panel in a card.
@@ -151,6 +153,17 @@ ui_expect_new "Projects panel: new_design recorded as " "recorded" 20
 opened "$SHOP/bracket.mitcad" "the new design opened"
 expect_git "$SHOP" "log -1 --format=%s" "Add bracket.mitcad" "a version of its own"
 ui_expect_new "Projects tree: Shop (local, current): bracket.mitcad v1, open" "listed, the open one" 20
+
+echo "--- The Projects tree indents each level as the Browser does (mitcad#393)"
+# Both panels log their tree's indentation per level; one definition
+# (framework/PanelTree.hpp) gives it to both.
+ui_expect_log "Browser indentation " "the Browser logs its tree's indentation"
+ui_expect_log "Projects indentation " "the Projects panel logs its tree's indentation"
+projects_indent=$(grep -o "^Projects indentation [0-9]*" "$UI_LOG" | tail -1 | cut -d" " -f3)
+browser_indent=$(grep -o "^Browser indentation [0-9]*" "$UI_LOG" | tail -1 | cut -d" " -f3)
+{ [ -n "$projects_indent" ] && [ "$projects_indent" = "$browser_indent" ]; } ||
+  ui_fail "indentation per level: Projects ${projects_indent:-?}, Browser ${browser_indent:-?}"
+echo "ok   both trees indent $projects_indent px per level"
 
 echo "--- New Folder and New Design in it (context menu)"
 row "Shop"

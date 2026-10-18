@@ -986,6 +986,18 @@ pub fn advanced(faces: &[AdvancedFace]) -> Result<BoundaryBody, String> {
 /// each way (points at one position are one: face sets often repeat
 /// their points per face).
 pub fn mesh_closed(points: &[[f64; 3]], triangles: &[[u32; 3]]) -> bool {
+    mesh_edges(points, triangles, false)
+}
+
+/// Whether every edge of the triangles joins an even number of them, as
+/// many each way (mitcad#397): a closed surface that may touch itself along
+/// edges, as a run's treads and risers do where they meet edge to edge.
+/// Its volume ([`mesh_measures`]) is the volume it encloses.
+pub fn mesh_balanced(points: &[[f64; 3]], triangles: &[[u32; 3]]) -> bool {
+    mesh_edges(points, triangles, true)
+}
+
+fn mesh_edges(points: &[[f64; 3]], triangles: &[[u32; 3]], touching: bool) -> bool {
     let mut first: HashMap<[i64; 3], u32> = HashMap::new();
     let welded: Vec<u32> = points
         .iter()
@@ -1013,7 +1025,9 @@ pub fn mesh_closed(points: &[[f64; 3]], triangles: &[[u32; 3]]) -> bool {
         }
     }
     !triangles.is_empty()
-        && count.values().all(|n| *n == 2)
+        && count
+            .values()
+            .all(|n| *n == 2 || (touching && n % 2 == 0 && *n > 0))
         && uses.values().all(|balance| *balance == 0)
 }
 
@@ -1037,6 +1051,43 @@ pub fn mesh_measures(points: &[[f64; 3]], triangles: &[[u32; 3]]) -> (f64, f64) 
 mod tests {
     use super::*;
     use mitcad_ifc::geometry::{Bound, Edge};
+
+    #[test]
+    fn a_mesh_that_touches_itself_along_an_edge_is_balanced() {
+        // (mitcad#397) Two unit cubes meeting edge to edge (a riser on its
+        // tread): that edge joins four triangles; the mesh is not closed
+        // as a manifold but balanced, and encloses both cubes.
+        let mut points = Vec::new();
+        let mut triangles = Vec::new();
+        for o in [[0.0, 0.0, 0.0], [1.0, 1.0, 0.0]] {
+            let base = points.len() as u32;
+            for k in 0..8 {
+                points.push([
+                    o[0] + f64::from(k & 1),
+                    o[1] + f64::from((k >> 1) & 1),
+                    o[2] + f64::from((k >> 2) & 1),
+                ]);
+            }
+            // Each face's corners counter-clockwise seen from outside.
+            for q in [
+                [0, 2, 3, 1],
+                [4, 5, 7, 6],
+                [0, 1, 5, 4],
+                [2, 6, 7, 3],
+                [0, 4, 6, 2],
+                [1, 3, 7, 5],
+            ] {
+                triangles.push([base + q[0], base + q[1], base + q[2]]);
+                triangles.push([base + q[0], base + q[2], base + q[3]]);
+            }
+        }
+        assert!(!mesh_closed(&points, &triangles));
+        assert!(mesh_balanced(&points, &triangles));
+        assert!((mesh_measures(&points, &triangles).0 - 2.0).abs() < 1e-12);
+        // An open box is neither.
+        triangles.truncate(10);
+        assert!(!mesh_balanced(&points, &triangles));
+    }
 
     #[test]
     fn a_cube_of_poly_loops() {

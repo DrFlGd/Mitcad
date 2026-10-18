@@ -27,6 +27,7 @@
 #include <AIS_Shape.hxx>
 #include <AIS_ViewController.hxx>
 #include <AIS_ViewCube.hxx>
+#include <Bnd_Box.hxx>
 #include <Graphic3d_Camera.hxx>
 #include <Graphic3d_Texture2D.hxx>
 #include <Graphic3d_ZLayerId.hxx>
@@ -424,6 +425,20 @@ public:
   void lookAtSketchPlane(bool saveCamera = true);
   void restoreCamera();
   void fitAll();
+  // Fits the view to a box (model coordinates) as Fit fits everything:
+  // along the current view direction, with Fit's margin, in the part of the
+  // view no card covers; at once (mitcad#405).
+  void frameBox(const Bnd_Box& box);
+  // The box of the bodies shown as placed (not previews, ghosts, datums,
+  // sketches or the grid); void when none is shown.
+  Bnd_Box bodiesBox() const;
+  // Ends a camera animation at its end and makes a pending fit now, so that
+  // camera() and the next frame are where the view is going (live MCP's
+  // replies and screenshots, mitcad#405).
+  void settleCamera();
+  // The perspective camera's vertical field of view, degrees.
+  double fieldOfView() const;
+  void setFieldOfView(double degrees);
   // Looks at a plane from the side its normal points to, `up` upwards, and
   // fits the view (Look At, named views; U3).
   void lookAlong(const gp_Dir& normal, const gp_Dir& up);
@@ -700,6 +715,10 @@ private:
   // The whole bodies highlighted, as last logged ("View body highlights:",
   // for UI tests: the bodies a command's selection input holds).
   QString m_loggedBodyHighlights = QStringLiteral("none");
+  // The profiles highlighted with their faces, as last logged ("View
+  // profile highlights:", for UI tests: every piece of a split region,
+  // mitcad#410).
+  QString m_loggedProfileHighlights = QStringLiteral("none");
   // What each pickable object shows.
   std::map<const AIS_InteractiveObject*, PickInfo> m_pickInfo;
   occ::handle<AIS_Shape> m_preview;

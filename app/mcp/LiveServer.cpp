@@ -8,7 +8,6 @@
 
 #include <QCoreApplication>
 #include <QHostAddress>
-#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QPointer>
@@ -35,13 +34,6 @@ QByteArray protocolError(int code, const QString& message) {
                                   {QStringLiteral("error"), QJsonObject{{QStringLiteral("code"), code},
                                                                       {QStringLiteral("message"), message}}}})
              .toJson(QJsonDocument::Compact) + '\n';
-}
-
-bool geometryFailed(const QJsonObject& value) {
-  const auto features = value.value(QStringLiteral("timeline")).toObject().value(QStringLiteral("features")).toArray();
-  return std::any_of(features.begin(), features.end(), [](const QJsonValue& feature) {
-    return feature.toObject().value(QStringLiteral("status")).toString() == QStringLiteral("error");
-  });
 }
 
 } // namespace
@@ -143,11 +135,9 @@ struct LiveServer::State {
         const QString tool = plan.value(QStringLiteral("tool")).toString();
         const auto arguments = plan.value(QStringLiteral("arguments")).toObject();
         // The live catalog (mitcad#265): MainWindowMcp.cpp, MainWindowMcpUi.cpp.
+        // An applied model command is an error only when a feature it
+        // added or edited fails; finish_mcp decides (mitcad#401).
         value = window->mcpTool(tool, arguments);
-        if (tool == QStringLiteral("model_command")) {
-          const auto nativeError = value.value(QStringLiteral("result")).toObject().value(QStringLiteral("error"));
-          error = geometryFailed(value) || (!nativeError.isUndefined() && !nativeError.isNull());
-        }
       } catch (const Refusal& refusal) {
         // Busy (when to retry), a panel's state.
         error = true;

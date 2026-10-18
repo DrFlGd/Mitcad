@@ -23,6 +23,7 @@
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakePolygon.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
+#include <BRepBuilderAPI_Transform.hxx>
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepFilletAPI_MakeChamfer.hxx>
 #include <BRepFilletAPI_MakeFillet.hxx>
@@ -37,7 +38,9 @@
 #include <TopExp_Explorer.hxx>
 #include <TopoDS.hxx>
 #include <gp_Lin.hxx>
+#include <gp_Ax1.hxx>
 #include <gp_Ax2.hxx>
+#include <gp_Trsf.hxx>
 
 #include "check.hpp"
 
@@ -577,6 +580,51 @@ void test_boss_rim_rounded_across_a_stepped_seam() {
   }
 }
 
+// A cylinder of radius 10 (its seam at the angle given) cut on top by two
+// planes, z = 15 + 0.3 y for y > 0 and z = 15 - 0.1 y for y < 0: the top's
+// edge with the cylinder is two arcs meeting where y = 0.
+TopoDS_Shape ridged_cylinder(double seam) {
+  const TopoDS_Shape cylinder =
+      BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1), gp_Dir(std::cos(seam), std::sin(seam), 0)),
+                               10, 30)
+          .Shape();
+  const auto above = [](double slope, bool positive) {
+    gp_Trsf tilt;
+    tilt.SetRotation(gp_Ax1(gp_Pnt(0, 0, 15), gp_Dir(1, 0, 0)), std::atan(slope));
+    return BRepBuilderAPI_Transform(
+               BRepPrimAPI_MakeBox(gp_Pnt(-20, positive ? 0 : -20, 15), gp_Pnt(20, positive ? 20 : 0, 40)).Shape(),
+               tilt, true)
+        .Shape();
+  };
+  const TopoDS_Shape once = BRepAlgoAPI_Cut(cylinder, above(0.3, true)).Shape();
+  BRepAlgoAPI_Cut twice(once, above(-0.1, false));
+  twice.SimplifyResult();
+  return twice.Shape();
+}
+
+// The arc for y < 0 rounded with 1 (patch 0651): its end at y = 0, x = 10
+// is where the cylinder's seam lies, and the rounding's walk past that end
+// (for the corner there) starts on the seam, the cylinder's contact leaving
+// the face across it at the first step. It now starts on the seam's other
+// side, a period on, and the stripe is computed; before, the walk could not
+// take a step and the stripe failed. (The corner at that vertex, where the
+// seam passes, stays OCCT's limitation, as it is where the seam lies a
+// little way past the vertex; with the seam elsewhere the rounding is made.)
+void test_rounding_walked_past_its_end_across_a_seam() {
+  const TopoDS_Shape body = ridged_cylinder(0.0);
+  BRepFilletAPI_MakeFillet maker(body);
+  maker.Add(1.0, edge_nearest(body, gp_Pnt(0, -10, 16)));
+  CHECK(maker.NbContours() == 1);
+  build(maker);
+  CHECK(maker.NbFaultyContours() == 0);
+  // The same rounding with the seam away from the end.
+  const TopoDS_Shape turned = ridged_cylinder(kPi / 6);
+  BRepFilletAPI_MakeFillet reference(turned);
+  reference.Add(1.0, edge_nearest(turned, gp_Pnt(0, -10, 16)));
+  CHECK(build(reference));
+  CHECK(reference.IsDone() && BRepCheck_Analyzer(reference.Shape()).IsValid());
+}
+
 } // namespace
 
 void fillet_kernel_tests() {
@@ -588,6 +636,7 @@ void fillet_kernel_tests() {
   guarded("test_which_corner_a_fillet_fails_at", test_which_corner_a_fillet_fails_at);
   guarded("test_rounding_rolled_on_a_straight_edge", test_rounding_rolled_on_a_straight_edge);
   guarded("test_boss_rim_rounded_across_a_stepped_seam", test_boss_rim_rounded_across_a_stepped_seam);
+  guarded("test_rounding_walked_past_its_end_across_a_seam", test_rounding_walked_past_its_end_across_a_seam);
 }
 
 } // namespace test

@@ -204,7 +204,9 @@ function(on occurrence feature frame out_var)
 endfunction()
 on(O1 F1 slot_x+_1 at_p2)
 on(O2 F2 slot_y+_1 at_rail)
-string(REPLACE "}}" "}, \"offset\": 400}" at_p2 "${at_p2}")
+# Its near face 385 up (mitcad#394: an offset is to the near face): its
+# middle 400 up.
+string(REPLACE "}}" "}, \"offset\": 385}" at_p2 "${at_p2}")
 on(O3 F4 rail at_carriage)
 on(O1 F1 end_b at_bar)
 on(O5 F8 shaft at_bearing)

@@ -7,10 +7,14 @@
 // Windows OCCT's handlers are per thread and stay as they were.
 //   test_guard inside   -> "converted: ..." and exit 0
 //   test_guard outside  -> "earlier handler: signal 11" and exit 0
+// The public wrapper for OCCT algorithms called from outside the library
+// (run_operation, mitcad#392), with MITCAD_TEST_OCCT_CRASH=clip:
+//   test_guard operation -> "error: clip: SIGSEGV ..." and exit 0
 
 #include <csignal>
 #include <cstdio>
 #include <cstring>
+#include <stdexcept>
 
 #include <signal.h>
 #include <unistd.h>
@@ -35,7 +39,7 @@ void earlier(int number, siginfo_t*, void*) {
 
 int main(int argc, char* argv[]) {
   if (argc != 2) {
-    std::fprintf(stderr, "usage: test_guard inside|outside\n");
+    std::fprintf(stderr, "usage: test_guard inside|outside|operation\n");
     return 2;
   }
   struct sigaction action {};
@@ -53,6 +57,15 @@ int main(int argc, char* argv[]) {
       return 1;
     } catch (const Standard_Failure& failure) {
       std::printf("converted: %s\n", failure.what());
+      return 0;
+    }
+  }
+  if (std::strcmp(argv[1], "operation") == 0) {
+    try {
+      mitcad::geometry::run_operation("clip", [] { std::printf("not crashed\n"); });
+      return 1;
+    } catch (const std::runtime_error& error) {
+      std::printf("error: %s\n", error.what());
       return 0;
     }
   }

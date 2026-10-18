@@ -6,6 +6,7 @@
 #include "MainWindow.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <functional>
 #include <limits>
@@ -44,8 +45,12 @@
 
 #include <BRepBndLib.hxx>
 #include <Bnd_Box.hxx>
+#include <Precision.hxx>
 #include <TopoDS_Shape.hxx>
+#include <gp_Dir.hxx>
 #include <gp_Pnt.hxx>
+#include <gp_Vec.hxx>
+#include <gp_XYZ.hxx>
 
 #include "framework/ChromeStyle.hpp"
 #include "framework/CommandRegistry.hpp"
@@ -63,6 +68,8 @@
 
 namespace mitcad {
 namespace {
+
+constexpr double kPi = 3.14159265358979323846;
 
 // The selection's kinds by the names MCP clients use.
 const std::pair<SelectKind, const char*> kKinds[] = {
@@ -479,43 +486,9 @@ QJsonObject MainWindow::mcpSelect(const QJsonObject& arguments) {
     // Faces, edges, bodies, profiles, ...: each must be in the model, as
     // the view shows it.
     std::vector<gp_Pnt> places;
-    for (const SelectionItem& item : items) {
-      // Geometry must be there; datums, components, features and sketches
-      // are shown when they have a shape.
-      const bool required = item.kind == SelectKind::Face || item.kind == SelectKind::Edge ||
-                            item.kind == SelectKind::Vertex || item.kind == SelectKind::Body ||
-                            item.kind == SelectKind::Profile || item.kind == SelectKind::SketchCurve ||
-                            item.kind == SelectKind::SketchPoint;
-      TopoDS_Shape shape;
-      try {
-        shape = itemShape(item);
-      } catch (const std::exception&) {
-        shape.Nullify();
-      }
-      if (shape.IsNull()) {
-        if (required) {
-          refuse(tr("Not in the model: %1").arg(item.describe()));
-        }
-        continue;
-      }
-      Bnd_Box box;
-      BRepBndLib::Add(shape, box);
-      if (!box.IsVoid()) {
-        double x0 = 0.0;
-        double y0 = 0.0;
-        double z0 = 0.0;
-        double x1 = 0.0;
-        double y1 = 0.0;
-        double z1 = 0.0;
-        box.Get(x0, y0, z0, x1, y1, z1);
-        for (const double x : {x0, x1}) {
-          for (const double y : {y0, y1}) {
-            for (const double z : {z0, z1}) {
-              places.emplace_back(x, y, z);
-            }
-          }
-        }
-      }
+    QString missing;
+    if (!mcpItemCorners(items, places, &missing)) {
+      refuse(tr("Not in the model: %1").arg(missing));
     }
     setSelection(items);
     if (reveal != QStringLiteral("none")) {
@@ -528,6 +501,188 @@ QJsonObject MainWindow::mcpSelect(const QJsonObject& arguments) {
                      {QStringLiteral("selection"), selectionJson(m_selection)}};
   if (!sketchItems) {
     result.insert(QStringLiteral("view"), moved);
+  }
+  if (reveal != QStringLiteral("none")) {
+    // Where the view goes, not where its animation is now: the reply's
+    // camera and the next screenshot show it (mitcad#405).
+    m_viewer->settleCamera();
+    result.insert(QStringLiteral("camera"), mcpCameraJson());
+  }
+  return result;
+}
+
+bool MainWindow::mcpItemCorners(const Selection& items, std::vector<gp_Pnt>& corners, QString* missing) const {
+  for (const SelectionItem& item : items) {
+    // Geometry must be there; datums, components, features and sketches
+    // are shown when they have a shape.
+    const bool required = item.kind == SelectKind::Face || item.kind == SelectKind::Edge ||
+                          item.kind == SelectKind::Vertex || item.kind == SelectKind::Body ||
+                          item.kind == SelectKind::Profile || item.kind == SelectKind::SketchCurve ||
+                          item.kind == SelectKind::SketchPoint;
+    TopoDS_Shape shape;
+    try {
+      shape = itemShape(item);
+    } catch (const std::exception&) {
+      shape.Nullify();
+    }
+    if (shape.IsNull()) {
+      if (required && missing != nullptr) {
+        *missing = item.describe();
+        return false;
+      }
+      continue;
+    }
+    Bnd_Box box;
+    BRepBndLib::Add(shape, box);
+    if (box.IsVoid()) {
+      continue;
+    }
+    double x0 = 0.0;
+    double y0 = 0.0;
+    double z0 = 0.0;
+    double x1 = 0.0;
+    double y1 = 0.0;
+    double z1 = 0.0;
+    box.Get(x0, y0, z0, x1, y1, z1);
+    for (const double x : {x0, x1}) {
+      for (const double y : {y0, y1}) {
+        for (const double z : {z0, z1}) {
+          corners.emplace_back(x, y, z);
+        }
+      }
+    }
+  }
+  return true;
+}
+
+QJsonObject MainWindow::mcpCameraJson() const {
+  const CameraState camera = m_viewer->camera();
+  const auto xyz = [](const gp_XYZ& v) { return QJsonArray{v.X(), v.Y(), v.Z()}; };
+  const double distance = camera.eye.Distance(camera.target);
+  const gp_XYZ direction = distance > 0.0 ? (camera.target.XYZ() - camera.eye.XYZ()) / distance : gp_XYZ(0, 0, -1);
+  const double aspect = m_viewer->height() > 0 ? double(m_viewer->width()) / double(m_viewer->height()) : 1.0;
+  return {{QStringLiteral("eye"), xyz(camera.eye.XYZ())},
+          {QStringLiteral("target"), xyz(camera.target.XYZ())},
+          {QStringLiteral("up"), xyz(camera.up.XYZ())},
+          {QStringLiteral("direction"), xyz(direction)},
+          {QStringLiteral("distance"), distance},
+          {QStringLiteral("height"), camera.height},
+          {QStringLiteral("width"), camera.height * aspect},
+          {QStringLiteral("projection"), camera.perspective ? QStringLiteral("perspective") : QStringLiteral("orthographic")},
+          {QStringLiteral("fov"), m_viewer->fieldOfView()},
+          {QStringLiteral("view_size"), QJsonArray{m_viewer->width(), m_viewer->height()}}};
+}
+
+QJsonObject MainWindow::mcpCamera(const QJsonObject& arguments) {
+  if (m_viewer->isPainting()) {
+    refuseWith(tr("busy: the view is drawing; retry in 100 ms"),
+               {{QStringLiteral("busy"), true}, {QStringLiteral("retry_after_ms"), 100}});
+  }
+  const auto pointOf = [](const QString& key, const QJsonValue& given) {
+    const QJsonArray array = given.toArray();
+    if (array.size() != 3 || !array[0].isDouble() || !array[1].isDouble() || !array[2].isDouble()) {
+      refuse(tr("%1 must be three numbers (x, y, z in mm).").arg(key));
+    }
+    return gp_XYZ(array[0].toDouble(), array[1].toDouble(), array[2].toDouble());
+  };
+  // Where the view is going, as the starting point.
+  m_viewer->settleCamera();
+  CameraState camera = m_viewer->camera();
+  const bool hasEye = arguments.contains(QStringLiteral("eye"));
+  const bool hasTarget = arguments.contains(QStringLiteral("target"));
+  const bool hasHeight = arguments.contains(QStringLiteral("height"));
+  bool set = false;
+  if (arguments.contains(QStringLiteral("projection"))) {
+    camera.perspective = arguments.value(QStringLiteral("projection")).toString() == QStringLiteral("perspective");
+    set = true;
+  }
+  if (hasEye) {
+    camera.eye = gp_Pnt(pointOf(QStringLiteral("eye"), arguments.value(QStringLiteral("eye"))));
+  }
+  if (hasTarget) {
+    camera.target = gp_Pnt(pointOf(QStringLiteral("target"), arguments.value(QStringLiteral("target"))));
+  }
+  if (camera.eye.Distance(camera.target) <= Precision::Confusion()) {
+    refuse(tr("The eye and the target must be apart."));
+  }
+  if (arguments.contains(QStringLiteral("up"))) {
+    const gp_XYZ up = pointOf(QStringLiteral("up"), arguments.value(QStringLiteral("up")));
+    const gp_XYZ direction = camera.target.XYZ() - camera.eye.XYZ();
+    if (up.Modulus() <= Precision::Confusion() || up.Crossed(direction).Modulus() <= 1e-9 * up.Modulus() * direction.Modulus()) {
+      refuse(tr("up must be a vector across the view direction."));
+    }
+    camera.up = gp_Dir(up);
+    set = true;
+  } else if (gp_Vec(camera.up).Crossed(gp_Vec(camera.eye, camera.target)).Magnitude() <=
+             1e-9 * camera.eye.Distance(camera.target)) {
+    // Looking along the current up: another up across the new direction.
+    const gp_Dir direction(gp_Vec(camera.eye, camera.target));
+    camera.up = std::abs(direction.Z()) < 0.9 ? gp_Dir(0, 0, 1) : gp_Dir(0, 1, 0);
+  }
+  if (arguments.contains(QStringLiteral("fov"))) {
+    // Before the height: a perspective camera's height sets its distance
+    // through the field of view.
+    m_viewer->setFieldOfView(arguments.value(QStringLiteral("fov")).toDouble());
+    set = true;
+  }
+  if (hasHeight) {
+    const double height = arguments.value(QStringLiteral("height")).toDouble();
+    if (!(height > 0.0)) {
+      refuse(tr("height must be more than 0 mm."));
+    }
+    camera.height = height;
+  } else if (camera.perspective && (hasEye || hasTarget)) {
+    // The eye given stays where it is: the height follows from its distance.
+    camera.height = 2.0 * camera.eye.Distance(camera.target) * std::tan(m_viewer->fieldOfView() * kPi / 360.0);
+  }
+  set = set || hasEye || hasTarget || hasHeight;
+  if (set) {
+    m_viewer->setCamera(camera);
+    m_viewer->settleCamera();
+  }
+  // Then what to frame, along the view direction now.
+  QString framed = QStringLiteral("none");
+  Bnd_Box box;
+  const QString frame = arguments.value(QStringLiteral("frame")).toString(QStringLiteral("none"));
+  if (arguments.contains(QStringLiteral("box"))) {
+    if (frame != QStringLiteral("none")) {
+      refuse(tr("Give either box or frame, not both."));
+    }
+    const QJsonObject given = arguments.value(QStringLiteral("box")).toObject();
+    box.Add(gp_Pnt(pointOf(QStringLiteral("box.min"), given.value(QStringLiteral("min")))));
+    box.Add(gp_Pnt(pointOf(QStringLiteral("box.max"), given.value(QStringLiteral("max")))));
+    framed = QStringLiteral("box");
+  } else if (frame == QStringLiteral("shown")) {
+    box = m_viewer->bodiesBox();
+    if (box.IsVoid()) {
+      refuse(tr("No body is shown to frame."));
+    }
+    framed = frame;
+  } else if (frame == QStringLiteral("selection")) {
+    std::vector<gp_Pnt> corners;
+    mcpItemCorners(m_selection, corners, nullptr);
+    if (corners.empty()) {
+      refuse(tr("Nothing with a shape is selected to frame."));
+    }
+    for (const gp_Pnt& corner : corners) {
+      box.Add(corner);
+    }
+    framed = frame;
+  }
+  if (!box.IsVoid()) {
+    m_viewer->frameBox(box);
+    m_viewer->settleCamera();
+  }
+  const QJsonObject result{{QStringLiteral("camera"), mcpCameraJson()}, {QStringLiteral("framed"), framed},
+                           {QStringLiteral("changed"), set || framed != QStringLiteral("none")}};
+  if (set || framed != QStringLiteral("none")) {
+    const QJsonObject now = result.value(QStringLiteral("camera")).toObject();
+    qInfo().noquote() << QStringLiteral("MCP: an agent set the camera: target %1, height %2 mm, %3%4")
+                             .arg(QString::fromUtf8(QJsonDocument(now.value(QStringLiteral("target")).toArray())
+                                                        .toJson(QJsonDocument::Compact)))
+                             .arg(now.value(QStringLiteral("height")).toDouble(), 0, 'f', 2)
+                             .arg(now.value(QStringLiteral("projection")).toString())
+                             .arg(framed == QStringLiteral("none") ? QString() : QStringLiteral(", framed ") + framed);
   }
   return result;
 }
@@ -719,6 +874,12 @@ QJsonObject MainWindow::mcpUiCommand(const QJsonObject& arguments) {
     if (inSketchBefore && m_mode == Mode::Sketch) {
       m_mcpSketchEdited = true;
     }
+  }
+  if (id.startsWith(QStringLiteral("view."))) {
+    // A view command (Home, Fit, a standard view, ...): the camera where it
+    // goes, at once, and in the reply (mitcad#405).
+    m_viewer->settleCamera();
+    result.insert(QStringLiteral("camera"), mcpCameraJson());
   }
   const QJsonArray lines = logTexts(logStart, 200);
   QJsonArray previews;

@@ -9,6 +9,7 @@
 #include <stdexcept>
 #include <string>
 
+#include <BRepAdaptor_Curve.hxx>
 #include <BRepAdaptor_Surface.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
@@ -23,7 +24,10 @@
 #include <Geom_BSplineCurve.hxx>
 #include <Geom_CylindricalSurface.hxx>
 #include <Geom_TrimmedCurve.hxx>
+#include <NCollection_IndexedDataMap.hxx>
+#include <TopExp.hxx>
 #include <TopExp_Explorer.hxx>
+#include <TopTools_ShapeMapHasher.hxx>
 #include <TopoDS.hxx>
 #include <gp.hxx>
 #include <gp_Ax3.hxx>
@@ -36,12 +40,12 @@ namespace {
 
 using namespace mitcad::geometry;
 
-// Adaptive integration, exact enough for B-spline faces.
-double precise_volume(const Shape& shape) {
-  GProp_GProps props;
-  BRepGProp::VolumeProperties(shape.occt(), props, 1.0e-8);
-  return props.Mass();
-}
+// The analysis library's integrals (query.hpp), exact enough for B-spline
+// faces, also for faces that run many turns: OCCT's adaptive integration
+// gave a nut threaded with such faces (a thread built as a B-rep,
+// mitcad#235) 0.056 mm³ too much of its 269.28 mm³, and 1.40 too little
+// with 18 turns.
+double precise_volume(const Shape& shape) { return mitcad::geometry::volume(shape); }
 
 ModelCurve line3(const gp_Pnt& a, const gp_Pnt& b) {
   ModelCurve curve;
@@ -1474,9 +1478,11 @@ void test_helix_sides_on_cylinders_exact() {
 
 // A thread with touching turns cut into a blind bore and running out past
 // its bottom into the material there, and a ring joined over its end
-// (mitcad#235): the sides moved off the bore's cylinder (kOffCylinder)
-// leave the material inside the cylinder beyond the bore whole, so that
-// the ring fills the thread's end without a slot 0.1 um thick.
+// (mitcad#235): the material inside the bore's cylinder beyond the bore
+// stays whole, so that the ring fills the thread's end without a slot. The
+// turns meet in one edge on that cylinder past the bottom too; the face
+// merge after the intersection with the cylinder inside the bore went back
+// and forth over the same seams there without end (OCCT port patch 0590).
 void test_helix_slivers_within_the_bodies_faces() {
   struct Case {
     const char* what;
@@ -1571,8 +1577,163 @@ void test_helix_slivers_within_the_bodies_faces() {
   }
 }
 
+// A thread whose profile's side on the bore's cylinder is as long as the
+// pitch has turns that meet in one edge there, as the bodies stored in files
+// keep them (mitcad#235): no strip of the cylinder is left between the
+// turns, and a rolling ball rounds that crest. The nut is cut through by a
+// thread from below it to above it; the rounding of the crests within the
+// nut removes the ball's analytic volume (the section of the material the
+// ball cuts off at the crest, turned about the axis over the nut's height).
+void test_helix_turns_meet_in_one_edge() {
+  const double bore = 5;
+  const double pitch = 1.5;
+  const double depth = 0.6;
+  const double height = 10;
+  const double ball = 0.1;
+  const ShapePtr nut = ring_body(bore, 10, 0, height);
+  Frame xz;
+  xz.x_axis = gp_Dir(1, 0, 0);
+  xz.y_axis = gp_Dir(0, 0, 1);
+  HelixSweepSpec spec;
+  spec.feature = "F2";
+  spec.frame = xz;
+  spec.axis = gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1));
+  spec.pitch = pitch;
+  spec.revolutions = 9;
+  spec.regions = {polygon({{bore, -2}, {bore + depth, -2 + pitch / 2}, {bore, -2 + pitch}})};
+  spec.bodies = {nut};
+  const BooleanResult cut = boolean(BooleanOp::Cut, {nut.get()}, *helix_sweep(spec));
+  CHECK(cut.pieces.size() == 1);
+  if (cut.pieces.size() != 1) {
+    return;
+  }
+  const ShapePtr threaded = cut.pieces.front().shape;
+  CHECK(detail::is_valid(threaded->occt()));
+  // The thread takes a triangle of the section's material every pitch.
+  const double removed = 0.5 * pitch * depth * 2 * kPi * (bore + depth / 3) * height / pitch;
+  CHECK_NEAR_TOL(precise_volume(*threaded), precise_volume(*nut) - removed, 1e-6);
+  // No face is left on the bore's cylinder, and the crests are edges
+  // between the flanks (side(c1) below a turn, side(c2) above it).
+  std::vector<std::string> crests;
+  NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher> faces_of;
+  TopExp::MapShapesAndAncestors(threaded->occt(), TopAbs_EDGE, TopAbs_FACE, faces_of);
+  for (TopExp_Explorer f(threaded->occt(), TopAbs_FACE); f.More(); f.Next()) {
+    const BRepAdaptor_Surface surface(TopoDS::Face(f.Current()));
+    CHECK(surface.GetType() != GeomAbs_Cylinder || std::abs(surface.Cylinder().Radius() - bore) > 1e-3);
+  }
+  for (int i = 1; i <= faces_of.Extent(); ++i) {
+    bool lower = false;
+    bool upper = false;
+    for (const TopoDS_Shape& face : faces_of(i)) {
+      for (const std::string& name : threaded->names_of_face(face)) {
+        lower = lower || name.rfind("F2:side(c1", 0) == 0;
+        upper = upper || name.rfind("F2:side(c2", 0) == 0;
+      }
+    }
+    BRepAdaptor_Curve curve(TopoDS::Edge(faces_of.FindKey(i)));
+    const gp_Pnt middle = curve.Value((curve.FirstParameter() + curve.LastParameter()) / 2);
+    if (lower && upper && std::abs(std::hypot(middle.X(), middle.Y()) - bore) < 1e-5) {
+      if (const auto name = threaded->name_of_edge(faces_of.FindKey(i))) {
+        crests.push_back(*name);
+      }
+    }
+  }
+  CHECK(!crests.empty());
+  // The section the ball cuts off at the crest, x from the crest outwards
+  // (the material between the flanks 2 x tan(half) wide, `half` the half
+  // angle of its wedge from the radial direction): its area and its moment
+  // about the axis.
+  const double half = std::atan2(pitch / 2, depth);
+  const double centre = ball / std::sin(half);
+  const double tangent = ball / std::tan(half) * std::cos(half);
+  double area = 0;
+  double moment = 0;
+  constexpr int kSteps = 200000;
+  for (int k = 0; k < kSteps; ++k) {
+    const double x = tangent * (k + 0.5) / kSteps;
+    double width = 2 * x * std::tan(half);
+    if (std::abs(centre - x) < ball) {
+      width -= 2 * std::sqrt(ball * ball - (centre - x) * (centre - x));
+    }
+    area += width * tangent / kSteps;
+    moment += (bore + x) * width * tangent / kSteps;
+  }
+  try {
+    const ShapePtr rounded = fillet("F3", *threaded, crests, ball);
+    CHECK(detail::is_valid(rounded->occt()));
+    // The ball rolls across the crest's helix, which leans 2.7 degrees from
+    // the axial section: the axial section's rounding turned about the axis
+    // is within a percent of it (0.4 %).
+    const double expected = 2 * kPi * moment * height / pitch;
+    const double change = precise_volume(*threaded) - precise_volume(*rounded);
+    if (std::abs(change - expected) > 1e-2 * expected) {
+      std::fprintf(stderr, "turns that meet: the crests' rounding removed %.9g, expected %.9g (%zu edges)\n", change,
+                   expected, crests.size());
+      ++failures;
+    }
+  } catch (const std::exception& error) {
+    std::fprintf(stderr, "turns that meet: the crests' rounding failed: %s\n", error.what());
+    ++failures;
+  }
+}
+
+// A fixed binormal (mitcad#397): a 20 x 2 profile, its 20 level, swept
+// along a quarter of a circle of radius 50 in a plane tilted 20 degrees
+// about X (a sloped arc, rising from (50, 0, 0) to its top, where it runs
+// along -X). With the binormal up the profile stays level, so the end cap
+// stands 2 high; keeping its angle to the arc's plane it is tilted there
+// by 20 degrees. Either way the volume is the area times the length.
+void test_fixed_binormal() {
+  const double tilt = kPi / 9;
+  const gp_Dir normal(0, -std::sin(tilt), std::cos(tilt));
+  const gp_Dir ahead(0, std::cos(tilt), std::sin(tilt));
+  SweepSpec spec;
+  spec.feature = "F5";
+  spec.frame.origin = gp_Pnt(50, 0, 0);
+  spec.frame.x_axis = gp_Dir(1, 0, 0);
+  spec.frame.y_axis = ahead.Crossed(gp_Dir(1, 0, 0));
+  spec.regions = {rectangle(1, -10, -1, 20, 2)};
+  spec.path = {{"c1", arc3(gp_Pnt(0, 0, 0), normal, gp_Dir(1, 0, 0), 50, 0, kPi / 2)}};
+  const auto cap_height = [](const Shape& shape) {
+    const std::vector<int> caps = shape.find_faces(end_cap("F5", 1));
+    if (caps.size() != 1) {
+      return -1.0;
+    }
+    const BoundingBox box = bounding_box(Shape(shape.face(caps.front())));
+    return box.max.Z() - box.min.Z();
+  };
+  const ShapePtr tilted = sweep(spec);
+  CHECK_NEAR_TOL(precise_volume(*tilted), 40 * 50 * kPi / 2, 1e-6);
+  CHECK(near(cap_height(*tilted), 20 * std::sin(tilt) + 2 * std::cos(tilt), 1e-6));
+  spec.binormal = gp_Dir(0, 0, 1);
+  const ShapePtr level = sweep(spec);
+  CHECK_NEAR_TOL(precise_volume(*level), 40 * 50 * kPi / 2, 1e-6);
+  CHECK_NEAR_TOL(cap_height(*level), 2, 1e-6);
+  CHECK(faces_named(*level, start_cap("F5", 1)) == 1 && faces_named(*level, side("F5", 1, 0)) == 1);
+  // A sloped line before the arc, on into it.
+  SweepSpec longer = spec;
+  const gp_Pnt before = gp_Pnt(50, 0, 0).Translated(gp_Vec(ahead) * -30);
+  longer.frame.origin = before;
+  longer.path.insert(longer.path.begin(), {"c2", line3(before, gp_Pnt(50, 0, 0))});
+  const ShapePtr on = sweep(longer);
+  CHECK_NEAR_TOL(precise_volume(*on), 40 * (30 + 50 * kPi / 2), 1e-6);
+  CHECK_NEAR_TOL(cap_height(*on), 2, 1e-6);
+  // Not round a corner (the frames on either side do not meet in a mitre).
+  SweepSpec corner = longer;
+  corner.path.back() = {"c1", line3(gp_Pnt(50, 0, 0), gp_Pnt(20, 0, 0))};
+  CHECK(throws_with([&] { sweep(corner); }, "unsupported: a fixed binormal along a path with corners"));
+  // Not with a twist, nor along a path that runs along the binormal.
+  spec.twist = 0.5;
+  CHECK(throws_with([&] { sweep(spec); }, "unsupported: a fixed binormal"));
+  spec.twist = 0;
+  spec.binormal = ahead;
+  spec.path = {{"c1", line3(gp_Pnt(50, 0, 0), gp_Pnt(50, 0, 0).Translated(gp_Vec(ahead) * 30))}};
+  CHECK(throws_with([&] { sweep(spec); }, "runs along the sweep's binormal"));
+}
+
 void sweeps_tests() {
   guarded("sweeps", test_sweeps);
+  guarded("fixed binormal", test_fixed_binormal);
   guarded("backward sweeps", test_backward_sweeps);
   guarded("parallel turns", test_parallel_turns);
   guarded("rail regions", test_rail_regions);
@@ -1585,6 +1746,7 @@ void sweeps_tests() {
   guarded("shifted helix pieces", test_shifted_helix_pieces);
   guarded("helix sides on cylinders exact", test_helix_sides_on_cylinders_exact);
   guarded("helix slivers within the bodies' faces", test_helix_slivers_within_the_bodies_faces);
+  guarded("helix turns that meet in one edge", test_helix_turns_meet_in_one_edge);
   guarded("lofts", test_lofts);
   guarded("ribs", test_ribs);
   guarded("guide surfaces", test_guide_surfaces);

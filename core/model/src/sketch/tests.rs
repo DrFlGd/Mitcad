@@ -607,6 +607,7 @@ fn changed_sketches_find_the_closest_region() {
         frame: crate::profile::SketchFrame::XY,
         regions: info.iter().map(|r| r.profile.clone()).collect(),
         region_info: info,
+        layout: Default::default(),
         solved: std::sync::Arc::new(solved),
         texts: Default::default(),
         moved: Default::default(),

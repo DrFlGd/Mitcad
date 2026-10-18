@@ -115,6 +115,12 @@ result as a `.mitcad` design. More in [.f3d import](#f3d-import).
   (a STEP file is then an assembly with the parts placed as the
   components are). In a design with components, the Coordinates row
   writes each body in its own component's coordinates instead.
+  The refinements Low, Medium and High keep each curved face of a mesh
+  (STL, OBJ, 3MF, USDZ) within about 5 000, 20 000 and 50 000
+  triangles: a large doubly curved face, such as a dome of metres, meshes
+  a little coarser instead of taking millions of triangles; faces smaller
+  than about 15 cm are not affected. A custom deviation holds on
+  every face.
 - **3D Print** (the MAKE group): sends the selected bodies, or every
   visible one, to a slicer ([3D printing](#3d-printing)).
 - A file dropped on the window opens or is imported; Open opens any of
@@ -131,8 +137,11 @@ Keyboard Shortcuts), and Help › Keyboard and Mouse Overview lists them
 all. Commands without a shortcut are in command search (S) and in the
 groups' menus. Tools › Preferences has a page for each kind of setting
 (General, Navigation, Display, Cache, Cloud, Updates,
-3D Print, Diagnostics, Textures); command search finds each page by its name or by what it
+3D Print, Diagnostics, Textures, Agents); command search finds each page by its name or by what it
 sets ("autosave", "slicer", "git"), as *Preferences: Cache* and so on.
+The Agents page lists the folders an agent connected through MCP
+(`mitcad-cli mcp --connect`) may save the open design to and open designs
+from; there are none until you add one ([mcp.md](mcp.md)).
 
 | Command | Key | Action |
 |---|---|---|
@@ -145,14 +154,14 @@ sets ("autosave", "slicer", "git"), as *Preferences: Cache* and so on.
 | Version History | Ctrl+Shift+H | The design's versions: compare, open, restore or save a copy of one |
 | Sync | Ctrl+Alt+Y | Take the remote's newer versions and send yours (a Cloud project) |
 | Undo, Redo | Ctrl+Z, Ctrl+Y | Undo, redo (also a dimension change and a drag of the timeline marker) |
-| Fit | F6 | Fit the model to the view |
+| Fit | F6 | Fit the model to the view: the selection when something is selected, only the isolated bodies when some are isolated |
 | OK, Cancel | Enter, Esc | Accept or cancel a command; Esc also clears the selection |
 | Create Sketch | Alt+S (Option+S) | A plane or a planar face (or select it first); outside a sketch |
 | Finish Sketch | Ctrl+Enter | Back to the 3D view |
 | Line | L | Lines one after another; drag from the last point for a tangent arc |
 | 2-Point Rectangle | R | Also 3-Point and Center Rectangle |
 | Center Diameter Circle | C | Also 2- and 3-Point, 2- and 3-Tangent |
-| Sketch Dimension | D | Length, distance (horizontal, vertical, aligned), angle (the one on the side where the value is placed), radius, diameter; also to body edges and corners in the sketch plane |
+| Sketch Dimension | D | Length, distance (horizontal, vertical, aligned; horizontal and vertical also signed), angle (the one on the side where the value is placed), radius, diameter; also to body edges and corners in the sketch plane |
 | Trim | T | Remove the part of a curve between intersections (also Extend) |
 | Offset, Project, Move/Copy | O, P, M | In a sketch: offset curve, projection (also in the context menu of a face, edge or vertex), move |
 | Construction | X | Selected curves to construction geometry and back |
@@ -479,8 +488,9 @@ other variants. The keyboard shortcuts and the command search reach every
 tool as before.
 
 On the right is the sketch palette: degrees of freedom,
-options (construction, snap to grid, showing dimensions, constraints and
-profiles, Hide Above Sketch, Look At) and the constraint buttons.
+options (construction, signed distances, snap to grid, showing
+dimensions, constraints and profiles, Hide Above Sketch, Look At) and the
+constraint buttons.
 *Hide Above Sketch* cuts the bodies at the sketch plane, so that a sketch
 on a face below other parts of a body is not hidden by them (the cut
 bodies cannot be picked meanwhile). The faces where it cuts the bodies are
@@ -530,6 +540,18 @@ stays on for the next sketch.
   value follow the pointer, so moving across a line switches between the
   angle and its supplement. The dimension keeps that side when its value
   changes; moving the value afterwards moves only the text.
+- **Signed distances:** a horizontal or vertical distance is normally a
+  size (never negative), kept on the side where the point is. With the
+  palette's *Signed distances* option checked, Sketch Dimension makes them
+  signed: the value is the offset from the first point picked, negative
+  to its left or below it, shown with its sign (`+25.98`, `-15.00`). A
+  point dimensioned from a centre with `r * cos(a)` and `r * sin(a)` then
+  follows `a` through all four quadrants. A negative value typed into a
+  new horizontal or vertical distance makes it signed too (the point goes
+  to that side). The context menu of an existing one offers *Make
+  Distance Signed* or *Make Distance Unsigned*; the point stays where it
+  is (a value on the negative side is negated: `-30`, or `-(r * 0.6)` for
+  an expression).
 - **Auto constraint:** once the line, circle or arc tool has drawn its
   first entity, the palette shows an *Auto constraint* section that
   constrains each next entity of the same tool to the first one it drew
@@ -872,27 +894,46 @@ Update in Insert from Library); each lists its supplier and part number. A
 part placed once is kept in the design, so placing more of it needs no
 library.
 
+You do not need to activate a component first. BUILD puts its parts into
+the active component when it can hold components, else into the nearest
+one above it that can: in a new design (where Part1 is active) that is the
+root. The panel says where (*Adds to: Root*).
+
 **PROFILE**
 
 - **Profile:** the panel's picker finds a profile by its name, size,
   system, slots, supplier or part number (Search), and narrows to one
-  system (System: `B8 30` is B-type slot 8 on a 30 mm grid). The first
-  profile goes on a plane, a point or a face; later ones on a profile you
-  click: near an end on its side it goes on the side, along that slot, at
-  the click (or at an Offset from end A or B); on its end face it goes on
-  the end, along that profile or turned to an axis (**Direction**: a
-  corner, cut on the bisector with a Shared mitre). *Grounded at the
-  origin* places a first profile without a pick. Its **length** runs to the profile in its way and stays bound to
-  it: when that one moves, the length follows. The preview highlights that
+  system (System: `B8 30` is B-type slot 8 on a 30 mm grid). At first the
+  panel shows only the part, its **Length** (the profile's stock length,
+  or 500 mm) and its **Direction**.
+- **The first profile:** the view says *Click a plane or a face, or press
+  Enter*. Click one of the origin's planes, a construction plane or a face,
+  or press Enter to place it at the origin. The X, Y and Z buttons choose
+  the axis it runs along (Z: standing). Drag the handle at its free end, or
+  type a length, which also shows in a box at the cursor.
+- **The next profiles** go on a profile you click; only the profiles'
+  faces highlight, and the planes are hidden until you close the panel.
+  - **On a side** (a click near an end on its side) it goes along that
+    slot. Within one profile width of an end it sits flush with that end;
+    near the middle or a grid point of the profile system it snaps there,
+    and the preview marks the snap. It never sticks out past an end.
+    **Offset from an End** places it exactly: the offset is to the new
+    profile's near face, so 0 is flush.
+  - **On an end** (a click on its end face) it continues that profile, or
+    turns to an axis (**Direction**: a corner). **Mitre** cuts the existing
+    profile, the new one or both (Shared, on the bisector).
+  - **Rotate** turns it about its axis in 90 degree steps, **Flip** puts
+    its other end first.
+  - **More** › Placement makes the click go on the side or the end, or
+    places a profile on a plane again.
+- Its **length** runs to the profile in its way and stays bound to it:
+  when that one moves, the length follows. The preview highlights that
   profile's face and shows the length at the free end and in a box at the
   cursor; **Tab** steps the length to the face, to the profile's centre or
   through it, and typing a length (in the box at the cursor or in the
-  panel, or dragging its handle) makes it a plain number. **Mitre**: on an
-  end the existing profile, the new one or both (Shared, on the bisector)
-  are cut; on a side only the new one. **Rotate** turns it about its axis
-  in 90 degree steps, **Flip** puts its other end first. **Place** (Enter)
-  places it, and the panel stays open for the next one; **Close** (Esc)
-  ends, keeping what you placed.
+  panel, or dragging its handle) makes it a plain number. **Place**
+  (Enter) places it, and the panel stays open for the next one; **Close**
+  (Esc) ends, keeping what you placed.
 - **Panel:** click the inner face of a frame's profile and the panel fills
   the frame in its slots, sized to the frame (a sheet sold in fixed widths
   keeps its width and says when it does not fit); an outer face puts it on
@@ -1554,7 +1595,13 @@ An imported file comes onto the timeline as a **base feature**: bodies
 without a history. STEP and IGES bodies keep their names and colours;
 STL and OBJ bring mesh bodies, which cannot take part in boolean
 operations. Later features can still use an imported body's faces and
-edges (a fillet, for example).
+edges (a fillet, for example). A mesh body has triangles but no surfaces:
+Combine, the face tools, Fillet, Chamfer, Split Body and the Join, Cut and
+Intersect of Extrude and the other features do not offer it, and a feature
+that names one fails with a message naming the body. An extrusion that
+cuts or joins all bodies leaves mesh bodies as they are. Mesh bodies can
+still be moved, copied, patterned, mirrored, measured, sectioned and
+exported.
 
 ### 3D printing
 
@@ -1797,7 +1844,10 @@ roofs, columns, beams, doors, windows, furniture, fixtures, ducts and pipes,
 …), named `Family:Type:Id` as the project names it. Walls, floors, roofs,
 ceilings, columns, beams and stair runs are rebuilt as features; every
 other element (doors, windows, furniture, curtain panels and mullions,
-railings, …) is a mesh of the shape the file keeps of it. An IFC export
+railings, …) is a mesh of the shape the file keeps of it. A stair repeated
+up a multistory stair comes in on every storey it is repeated on: its runs,
+landings, supports, rails and their supports, each copy named after its
+level (`… (on L4)`). An IFC export
 of the project next to it (of the same name, `project.ifc`) is used to
 check the elements and stands in for an element whose shape the file does
 not keep; without one, each element built as features is checked against

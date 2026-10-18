@@ -28,6 +28,7 @@
 #include "framework/TestSync.hpp"
 #include "framework/TypedTextLog.hpp"
 #include "mitcad/geometry/guard.hpp"
+#include "mcp/AgentFolders.hpp"
 #include "mcp/LiveServer.hpp"
 #include "mcp/LogRing.hpp"
 #include "report/CrashHandler.hpp"
@@ -49,6 +50,12 @@ int main(int argc, char* argv[]) {
     mitcad::ReportCenter::notePanics();
     return mitcad::runImportWorker(argc, argv);
   }
+  // OCCT's crash handlers on the UI thread too (on Windows they are per
+  // thread; the model worker installs its own): Section Analysis clips the
+  // bodies shown and measures sections here, and a crash inside OCCT in
+  // such an operation is its error (mitcad#392). Any other crash goes to
+  // the crash report installed above.
+  mitcad::geometry::catch_occt_crashes();
 
 #ifdef __linux__
   // OCCT's OpenGL driver uses GLX on Linux, so Qt must use the X11 (xcb)
@@ -197,6 +204,14 @@ int main(int argc, char* argv[]) {
   const QCommandLineOption noMcpOption(QStringLiteral("no-mcp"),
                                       QStringLiteral("Disable the local MCP connection to this application."));
   parser.addOption(noMcpOption);
+  // Folders an MCP agent may save to and open from for this run, besides
+  // Preferences > Agents (mitcad#402); repeatable.
+  const QCommandLineOption mcpFolderOption(
+      QStringLiteral("mcp-folder"),
+      QStringLiteral("Allow an MCP agent to save designs to and open them from <dir> for this run (besides the "
+                     "folders of Preferences > Agents); may be given more than once."),
+      QStringLiteral("dir"));
+  parser.addOption(mcpFolderOption);
   parser.addOption(screenshotOption);
   parser.addOption(setOption);
   parser.addOption(demoOption);
@@ -315,9 +330,15 @@ int main(int argc, char* argv[]) {
     }
   }
   window.present();
+  // The window's layout once it shows, which tools/check-all.sh compares
+  // to decide whether the UI tests must run (tools/ui-layout.sh, mitcad#412).
+  if (!window.usesNativeUi()) {
+    mitcad::TestSync::singleShot(0, &window, [&window] { window.logLayout(); });
+  }
 
   mitcad::mcp::LiveServer mcpServer(&window);
   if (!parser.isSet(noMcpOption)) {
+    mitcad::mcp::setRunAgentFolders(parser.values(mcpFolderOption));
     QString error;
     if (!mcpServer.start(&error)) {
       qWarning().noquote() << "Local MCP connection unavailable:" << error;

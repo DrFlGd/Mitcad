@@ -7,7 +7,8 @@
 //!
 //! The pieces come in order along a planar tool's normal (else in geometric
 //! order): the first keeps the body (its id and name), the others become new
-//! bodies of the split (`<split>.b0`, ...), named `Body<n>` like new bodies.
+//! bodies of the split (`<split>.b0`, ...), named `Body<n>` like new bodies;
+//! later evaluations keep the pieces' ids (`pieces.rs`, mitcad#408).
 //! The cut faces are `<split>:split`, after a face tool
 //! `<split>:split(<tool face>)`; split faces of the body get `#k`.
 //!
@@ -167,7 +168,7 @@ impl<K: Kernel> Evaluate<K> for SplitBodyDef {
         }
         let mut output = FeatureOutput::default();
         for body in &self.bodies {
-            let shape = ctx.body(*body)?;
+            let shape = ctx.surface_body(*body)?;
             let label = |message: String| {
                 if self.bodies.len() > 1 {
                     format!("body {body}: {message}")
@@ -207,13 +208,17 @@ impl<K: Kernel> Evaluate<K> for SplitBodyDef {
                 }
                 pieces = next;
             }
-            let mut pieces = pieces.into_iter();
-            let first = pieces
-                .next()
-                .ok_or_else(|| format!("body {body} has no pieces"))?;
-            output.changes.push(BodyChange::Set(*body, first));
-            for piece in pieces {
-                output.changes.push(BodyChange::Set(ctx.new_body(), piece));
+            if pieces.is_empty() {
+                return Err(format!("body {body} has no pieces"));
+            }
+            // The pieces' ids (mitcad#408); none left for the body removes
+            // it.
+            let named = ctx.piece_ids(*body, pieces);
+            if !named.iter().any(|(id, _)| id == body) {
+                output.changes.push(BodyChange::Remove(*body));
+            }
+            for (id, piece) in named {
+                output.changes.push(BodyChange::Set(id, piece));
             }
         }
         Ok(output)
@@ -237,6 +242,7 @@ fn split_tool<K: Kernel>(
     };
     let (component, transform) = ctx.linked(link).map_err(|e| format!("tool {body}: {e}"))?;
     let shape = ctx.body_in(component, body)?;
+    ctx.require_surfaces(body, &shape)?;
     let shape = ctx
         .kernel
         .transform_shape(&shape, &transform, None)

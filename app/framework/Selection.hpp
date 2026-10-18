@@ -8,6 +8,7 @@
 #include <QFlags>
 #include <QJsonValue>
 #include <QString>
+#include <QStringList>
 #include <QVector>
 
 namespace mitcad {
@@ -90,17 +91,23 @@ SelectKind preferredKind(const Selection& items);
 // region of a sketch: the occurrence that places the sketch in the view is
 // not part of the region, and a region keeps the key a definition stored
 // for it after the sketch changed while the view names it by its current
-// key. A resolver names the region an item means now (the model's
-// `profile` query), empty when it cannot tell.
-using ItemResolver = std::function<QString(const SelectionItem&)>;
+// key. A resolver names the regions an item means now (the model's
+// `profile` query's `regions`, the main one first: several when a sketch
+// edit split the region, mitcad#407), empty when it cannot tell.
+using ItemResolver = std::function<QStringList(const SelectionItem&)>;
 
 // Whether two items are one entry of a selection input: equal, or profiles
 // of the same sketch with the same key or keys the resolver resolves to
-// the same region.
+// the same regions.
 bool sameEntry(const SelectionItem& a, const SelectionItem& b, const ItemResolver& resolve = {});
+// Whether `item` is in the selection: one of its entries, or a piece of a
+// profile entry whose region a sketch edit split (every region the item
+// means is one the entry means, mitcad#410).
 bool containsEntry(const Selection& items, const SelectionItem& item,
                    const ItemResolver& resolve = {});
-// Takes out every entry that is `item`; how many went.
+// Takes `item` out: the entries that are it go, and an entry it is a piece
+// of keeps its other pieces, under their own current keys in its place
+// (mitcad#410). How many entries went or changed.
 int removeEntry(Selection& items, const SelectionItem& item, const ItemResolver& resolve = {});
 // A click on `item`: takes out the entries that are it, else appends it.
 // True when it was appended. Clicking the same region twice gives back the
@@ -108,7 +115,8 @@ int removeEntry(Selection& items, const SelectionItem& item, const ItemResolver&
 bool toggleEntry(Selection& items, const SelectionItem& item, const ItemResolver& resolve = {});
 // A list given as a whole (a definition loaded for editing, the selection
 // made before a command): each profile once, the first entry kept in its
-// place; other items as they are.
+// place (a piece of a split region after its entry goes); other items as
+// they are.
 Selection uniqueProfiles(const Selection& items, const ItemResolver& resolve = {});
 
 // Text such as "2 edges, 1 face".

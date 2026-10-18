@@ -26,6 +26,11 @@
 //!   (of a kind [`plan::kind_of`] names).
 //! - **Groups**: the members a placed group places where they are come in
 //!   as any element.
+//! - **Multistory stairs** (mitcad#391): the runs, landings, supports,
+//!   rails' supports and balusters of a stair repeated on further storeys
+//!   come in again on each, moved up (`… (on L4)`); a rail builds its
+//!   copies with itself, and a stair's own mesh leaves out its runs,
+//!   landings and supports (elements of their own).
 //! - **Materials** become appearances (colour, transparency) of the bodies
 //!   built as features: a layered type's exterior layer's material, a
 //!   family type's first.
@@ -186,8 +191,15 @@ pub struct Report {
     pub curtain_walls: usize,
     /// Railings whose rails and balusters are their shape.
     pub railings: usize,
+    /// Stairs whose runs, landings and supports are their shape
+    /// (mitcad#391).
+    pub stairs: usize,
     /// Meshes of group members placed away from their definitions.
     pub group_copies: usize,
+    /// Copies of stairs' runs, landings, supports and balusters a
+    /// multistory stair places on further storeys (mitcad#391; a rail's
+    /// copies are its own).
+    pub multistory_copies: usize,
     pub oriented_boxes: usize,
     pub boxes: usize,
     /// Construction planes of the levels, axes and sketches of the grids,
@@ -272,6 +284,19 @@ fn left_out(model: &Model, e: &Element, groups: &GroupPlacements) -> Option<Stri
             .is_some_and(|ts| ts.iter().any(|(_, t)| is_identity(t)))
     {
         return Some("in a group's definition (not placed where it is)".into());
+    }
+    // (mitcad#391) A family instance naming a rail as its owner that the
+    // rail does not list among its supports: no support of it (an earlier
+    // layout's, which nothing places).
+    if let Some(rail) = model
+        .building
+        .owners
+        .get(&e.id)
+        .and_then(|o| model.building.sweeps.get(o))
+        .filter(|r| r.path3d.is_some())
+        && !rail.supports.contains(&e.id)
+    {
+        return Some("a rail's support the rail does not list (nothing places it)".into());
     }
     let has_mesh = model.meshes.contains_key(&e.id);
     let solid_box = e
@@ -555,6 +580,9 @@ pub fn reference_openings(
 /// What an element built as features was checked against without a
 /// reference: the geometry the file keeps of it.
 pub const KEPT: &str = "the geometry the file keeps";
+/// ... or its box, both ways (a rail's, mitcad#391: its thin profile
+/// meshes within a chord that takes up to a tenth of its volume).
+pub const KEPT_BOX: &str = "the box of the geometry the file keeps";
 /// Fraction of the volume of the geometry the file keeps the built volume
 /// may differ by (a little more than the reference's: the file's walls
 /// are cleaned up at their joins in ways the features follow only
@@ -595,6 +623,47 @@ struct Pending<'m> {
     /// where that meshes closed: what it is checked against without a
     /// reference.
     kept: Option<(f64, Bbox)>,
+    /// A rail's: the box of that geometry where it does not mesh closed
+    /// (mitcad#391).
+    kept_box: Option<Bbox>,
+    /// How far up (feet) a copy of the element lies (mitcad#391: a
+    /// multistory stair's), 0 for the element itself.
+    shift: f64,
+}
+
+/// The copies of an element of a stair that a multistory stair repeats
+/// (mitcad#391), each its level and how far up (feet), that come in as
+/// elements of their own: a run's, landing's, stair support's, rail
+/// support's or baluster's, which the stair's, railing's or rail's
+/// geometry places again on each storey (its own geometry holds it once).
+/// None for the stair itself, and for a railing or a rail, whose own
+/// geometry places its symbol on every storey (a rail builds its copies
+/// with itself, [`plan`]).
+fn multistory_copies(model: &Model, e: &Element) -> Option<(i64, Vec<(i64, f64)>)> {
+    if matches!(
+        e.class.as_deref(),
+        Some("StairsElement" | "BaseRailing" | "MultistoryStairs")
+    ) || model
+        .building
+        .sweeps
+        .get(&e.id)
+        .is_some_and(|s| s.path3d.is_some())
+    {
+        return None;
+    }
+    model
+        .multistory_copies(e.id)
+        .filter(|(stair, copies)| *stair != e.id && !copies.is_empty())
+}
+
+/// Where an element comes in (mitcad#391): its level's slot, how far up
+/// (feet) and, for a copy up its multistory stair, the stair and the
+/// copy's level.
+type Place = (usize, f64, Option<(i64, i64)>);
+
+/// A box (feet) moved up by `dz` (feet).
+fn moved_box(b: Option<[f64; 6]>, dz: f64) -> Option<[f64; 6]> {
+    b.map(|b| [b[0], b[1], b[2] + dz, b[3], b[4], b[5] + dz])
 }
 
 /// An element's features and notes in a batch, or why they did not build;
@@ -677,11 +746,12 @@ pub fn box_difference(a: &Bbox, b: &Bbox) -> f64 {
 /// against, or why it disagrees.
 fn check(
     line: &mut ElementLine,
-    e: &Element,
+    stored: Option<[f64; 6]>,
     reference: Option<&Reference>,
     volume: Option<f64>,
     bbox: Option<Bbox>,
     kept: Option<(f64, Bbox)>,
+    kept_box: Option<Bbox>,
 ) -> Result<&'static str, String> {
     let bbox = bbox.ok_or("its features made no body")?;
     let volume = volume
@@ -726,6 +796,18 @@ fn check(
                 d * 100.0
             ));
         }
+        // (A stair run's box both ways, mitcad#397: one too short would
+        // pass inside the box of the geometry the file keeps.)
+        if let Some(kb2) = kept_box {
+            let d = box_difference(&bbox, &kb2);
+            line.box_difference = Some(d);
+            if d > BOX_TOLERANCE_MM {
+                return Err(format!(
+                    "its box lies {d:.1} mm from the box of the geometry the file keeps"
+                ));
+            }
+            return Ok(KEPT);
+        }
         let out = (0..3)
             .map(|k| (kb.0[k] - bbox.0[k]).max(bbox.1[k] - kb.1[k]))
             .fold(f64::NEG_INFINITY, f64::max);
@@ -737,10 +819,22 @@ fn check(
         }
         return Ok(KEPT);
     }
+    // A rail's geometry as the file keeps it (its thin profile meshed
+    // within a chord that takes up to a tenth of its volume), within its box
+    // both ways (mitcad#391: a rail missing its copy up a multistory stair
+    // lies inside the stored box, which holds the copy too).
+    if let Some(kb) = kept_box {
+        let d = box_difference(&bbox, &kb);
+        line.box_difference = Some(d);
+        if d > BOX_TOLERANCE_MM {
+            return Err(format!(
+                "its box lies {d:.1} mm from the box of the geometry the file keeps"
+            ));
+        }
+        return Ok(KEPT_BOX);
+    }
     // Else the element's stored box must hold it.
-    let stored = e
-        .bbox
-        .ok_or("no reference solid and no stored box to check against")?;
+    let stored = stored.ok_or("no reference solid and no stored box to check against")?;
     let s: Bbox = (
         [stored[0], stored[1], stored[2]].map(|v| v * FOOT_MM),
         [stored[3], stored[4], stored[5]].map(|v| v * FOOT_MM),
@@ -786,14 +880,14 @@ fn expected_openings(
 /// (mitcad#348): checked against the stored box alone, a wall too low
 /// (its top not reaching its roof) would pass.
 fn check_heights(
-    e: &Element,
+    stored_box: Option<[f64; 6]>,
     bbox: Option<Bbox>,
     attached: &[String],
     kept: Option<(f64, Bbox)>,
 ) -> Result<(), String> {
     let stored = kept
         .map(|(_, b)| (b.0[2], b.1[2]))
-        .or_else(|| e.bbox.map(|s| (s[2] * FOOT_MM, s[5] * FOOT_MM)));
+        .or_else(|| stored_box.map(|s| (s[2] * FOOT_MM, s[5] * FOOT_MM)));
     let (Some(bbox), Some((lo, hi))) = (bbox, stored) else {
         return Ok(());
     };
@@ -837,6 +931,11 @@ struct Importer<'r, 'o, K: Kernel> {
     /// The model's railing parts: balusters, rails and the rails' types,
     /// left out of their railings' meshes.
     parts: HashSet<i64>,
+    /// The model's rails' symbols (`ContinuousRailSymbol`), and its
+    /// elements that are not types (mitcad#391: what a stair's geometry
+    /// places of them is left out of its mesh).
+    rail_symbols: HashSet<i64>,
+    own_elements: HashSet<i64>,
     /// The model's inserts without their openings (mitcad#345): insert,
     /// wall, why; noted on the inserts' lines at the end.
     missing: Vec<(i64, i64, String)>,
@@ -914,14 +1013,78 @@ impl<K: Kernel> Importer<'_, '_, K> {
     }
 
     /// The volume (mm³) and box of the geometry the file keeps of an
-    /// element, where it meshes closed with every face.
-    fn kept(&mut self, model: &Model, e: &Element) -> Option<(f64, Bbox)> {
-        let mesh = geometry::element_mesh(model, e.id, &mut self.tess, &self.parts)?.ok()?;
-        if !mesh.closed || mesh.faces_left_out > 0 {
-            return None;
+    /// element, where it meshes closed with every face; for a rail, the
+    /// box of that mesh where it has every face (mitcad#391).
+    fn kept(&mut self, model: &Model, e: &Element) -> (Option<(f64, Bbox)>, Option<Bbox>) {
+        let skip = self.skip_of(model, e).unwrap_or_else(|| self.parts.clone());
+        let Some(Ok(mesh)) = geometry::element_mesh(model, e.id, &mut self.tess, &skip) else {
+            return (None, None);
+        };
+        if mesh.faces_left_out > 0 {
+            return (None, None);
         }
-        let volume = mesh.volume.filter(|v| *v > 0.0)?;
-        Some((volume, mesh.bounds()?))
+        // (A rail's thin profile meshes within a chord of its curves that
+        // takes up to a tenth of its volume: its box is what is compared.)
+        let rail = model
+            .building
+            .sweeps
+            .get(&e.id)
+            .is_some_and(|s| s.path3d.is_some());
+        if rail {
+            return (None, mesh.bounds());
+        }
+        // A stair run's treads and risers meet edge to edge (mitcad#397):
+        // its mesh may touch itself along those edges. It is checked
+        // against the volume that encloses and its box, both ways.
+        if model.building.stair_runs.contains_key(&e.id) {
+            let volume = mesh.volume.or_else(|| {
+                crate::ifc::brep::mesh_balanced(&mesh.points, &mesh.triangles).then(|| {
+                    crate::ifc::brep::mesh_measures(&mesh.points, &mesh.triangles)
+                        .0
+                        .abs()
+                })
+            });
+            if let Some(volume) = volume.filter(|v| *v > 0.0) {
+                return (mesh.bounds().map(|b| (volume, b)), mesh.bounds());
+            }
+        }
+        if let (true, Some(volume)) = (mesh.closed, mesh.volume.filter(|v| *v > 0.0)) {
+            return (mesh.bounds().map(|b| (volume, b)), None);
+        }
+        (None, None)
+    }
+
+    /// What the geometry the file keeps of an element places that are
+    /// elements of their own, to leave out of its mesh (None: nothing
+    /// particular): a railing's rails and balusters; a stair's runs,
+    /// landings and supports (mitcad#391); a rail's supports, but not its
+    /// own symbol (mitcad#391: placed once on every storey of a
+    /// multistory stair).
+    fn skip_of(&self, model: &Model, e: &Element) -> Option<HashSet<i64>> {
+        match e.class.as_deref() {
+            Some("BaseRailing") => Some(self.parts.clone()),
+            Some("StairsElement") => Some(self.own_elements.clone()),
+            _ if model
+                .building
+                .sweeps
+                .get(&e.id)
+                .is_some_and(|s| s.path3d.is_some()) =>
+            {
+                let own: HashSet<i64> = model
+                    .geometry
+                    .get(&e.id)
+                    .map(|g| g.instances.iter().filter_map(|p| p.symbol).collect())
+                    .unwrap_or_default();
+                Some(
+                    self.parts
+                        .iter()
+                        .copied()
+                        .filter(|p| !(own.contains(p) && self.rail_symbols.contains(p)))
+                        .collect(),
+                )
+            }
+            _ => None,
+        }
     }
 
     /// An element's plan made ready for a batch: its label, appearance,
@@ -937,17 +1100,25 @@ impl<K: Kernel> Importer<'_, '_, K> {
         component: ComponentUid,
         slot: usize,
         line: ElementLine,
+        shift: f64,
     ) -> Pending<'m> {
-        let label = e.display_name();
+        let label = line.name.clone();
         let appearance = plan
             .material
             .and_then(|m| self.appearance(model_key, model, m));
         let body_name = self.unique_body(&label);
-        let kept = self.kept(model, e);
+        let up = shift * FOOT_MM;
+        let moved =
+            |(lo, hi): Bbox| -> Bbox { ([lo[0], lo[1], lo[2] + up], [hi[0], hi[1], hi[2] + up]) };
+        let (kept, kept_box) = self.kept(model, e);
+        let kept = kept.map(|(v, b)| (v, moved(b)));
+        let kept_box = kept_box.map(moved);
         let kernel = self.document.kernel();
         Pending {
             e,
             kept,
+            kept_box,
+            shift,
             kind,
             line,
             slot,
@@ -1046,11 +1217,12 @@ impl<K: Kernel> Importer<'_, '_, K> {
     /// remove nothing (to suppress), or why not.
     fn judge(
         &self,
-        e: &Element,
+        stored: Option<[f64; 6]>,
         features: &[FeatureUid],
         line: &mut ElementLine,
         attached: &[String],
         kept: Option<(f64, Bbox)>,
+        kept_box: Option<Bbox>,
     ) -> Result<(&'static str, Vec<FeatureUid>), String> {
         // A cut that removes nothing stays, suppressed; another failing
         // feature fails the element.
@@ -1071,9 +1243,17 @@ impl<K: Kernel> Importer<'_, '_, K> {
         let (volume, bbox, bodies) = measure(self.document, features);
         line.volume = volume;
         line.bodies = bodies;
-        let against = check(line, e, self.options.reference, volume, bbox, kept)?;
+        let against = check(
+            line,
+            stored,
+            self.options.reference,
+            volume,
+            bbox,
+            kept,
+            kept_box,
+        )?;
         if against != "reference" && !attached.is_empty() {
-            check_heights(e, bbox, attached, kept)?;
+            check_heights(stored, bbox, attached, kept)?;
         }
         Ok((against, misses))
     }
@@ -1106,8 +1286,14 @@ impl<K: Kernel> Importer<'_, '_, K> {
                 .map(|((b, p), line)| {
                     let (features, notes, cuts) = b?;
                     line.notes.extend(notes);
-                    let (against, misses) =
-                        self.judge(p.e, &features, line, &p.attached, p.kept)?;
+                    let (against, misses) = self.judge(
+                        moved_box(p.e.bbox, p.shift),
+                        &features,
+                        line,
+                        &p.attached,
+                        p.kept,
+                        p.kept_box,
+                    )?;
                     Ok((against, features, misses, cuts))
                 })
                 .collect(),
@@ -1191,6 +1377,7 @@ impl<K: Kernel> Importer<'_, '_, K> {
                         line,
                         curtain_hosts,
                         &p.openings,
+                        p.shift,
                     );
                 }
             }
@@ -1356,6 +1543,7 @@ impl<K: Kernel> Importer<'_, '_, K> {
         mut line: ElementLine,
         curtain_hosts: &HashSet<i64>,
         openings: &[plan::WallOpening],
+        shift: f64,
     ) {
         // A curtain wall: its panels and mullions are its shape, elements
         // of their own (mitcad#333).
@@ -1392,7 +1580,7 @@ impl<K: Kernel> Importer<'_, '_, K> {
             return;
         }
         *self.report.fallbacks.entry(kind.to_string()).or_default() += 1;
-        self.fallback(model, e, plan::structural(kind), group, &mut line);
+        self.fallback(model, e, plan::structural(kind), group, &mut line, shift);
         self.openings_fallen_back(e, &mut line, openings);
         self.report.elements.push(line);
     }
@@ -1404,7 +1592,7 @@ impl<K: Kernel> Importer<'_, '_, K> {
     /// it): what it was checked against.
     fn check_mesh(
         &self,
-        e: &Element,
+        stored: Option<[f64; 6]>,
         line: &mut ElementLine,
         mesh: &geometry::ElementMesh,
     ) -> Result<&'static str, String> {
@@ -1436,7 +1624,7 @@ impl<K: Kernel> Importer<'_, '_, K> {
             }
             return Ok("reference");
         }
-        let Some(stored) = e.bbox else {
+        let Some(stored) = stored else {
             return Ok("nothing (no stored box)");
         };
         let s: Bbox = (
@@ -1470,7 +1658,7 @@ impl<K: Kernel> Importer<'_, '_, K> {
     ) {
         line.bodies = 1;
         group.entry.elements.push(e.id);
-        let name = self.unique_body(&e.display_name());
+        let name = self.unique_body(&line.name.clone());
         group.bodies.push(ImportBody {
             name: Some(name),
             color: None,
@@ -1497,14 +1685,16 @@ impl<K: Kernel> Importer<'_, '_, K> {
         structural: bool,
         group: &mut LevelGroup<K::Shape>,
         line: &mut ElementLine,
+        shift: f64,
     ) {
         let mut why: Vec<String> = Vec::new();
         // 1. The geometry the file keeps.
-        // A railing's rails and balusters are elements of their own.
+        // A railing's rails and balusters, a stair's runs, landings and
+        // supports, a rail's supports are elements of their own.
         let railing = e.class.as_deref() == Some("BaseRailing");
-        let empty = HashSet::new();
-        let skip = if railing { &self.parts } else { &empty };
-        let mesh = geometry::element_mesh(model, e.id, &mut self.tess, skip);
+        let stair = e.class.as_deref() == Some("StairsElement");
+        let skip = self.skip_of(model, e).unwrap_or_default();
+        let mut mesh = geometry::element_mesh(model, e.id, &mut self.tess, &skip);
         if railing && !matches!(mesh, Some(Ok(_))) {
             line.outcome = "parts".into();
             line.notes
@@ -1512,8 +1702,22 @@ impl<K: Kernel> Importer<'_, '_, K> {
             self.report.railings += 1;
             return;
         }
+        if stair && !matches!(mesh, Some(Ok(_))) {
+            line.outcome = "parts".into();
+            line.notes.push(
+                "a stair: its runs, landings and supports come in as elements of their own".into(),
+            );
+            self.report.stairs += 1;
+            return;
+        }
+        // (A copy up a multistory stair, mitcad#391: moved up.)
+        if let Some(Ok(m)) = &mut mesh {
+            for p in &mut m.points {
+                p[2] += shift * FOOT_MM;
+            }
+        }
         match mesh {
-            Some(Ok(mesh)) => match self.check_mesh(e, line, &mesh) {
+            Some(Ok(mesh)) => match self.check_mesh(moved_box(e.bbox, shift), line, &mesh) {
                 Ok(against) => match self
                     .document
                     .kernel()
@@ -1602,7 +1806,11 @@ impl<K: Kernel> Importer<'_, '_, K> {
                 let mut triangles = Vec::new();
                 for m in meshes {
                     let first = vertices.len() as u32;
-                    vertices.extend(m.points.iter().map(|p| p.map(|v| v * FOOT_MM)));
+                    vertices.extend(
+                        m.points
+                            .iter()
+                            .map(|p| [p[0] * FOOT_MM, p[1] * FOOT_MM, (p[2] + shift) * FOOT_MM]),
+                    );
                     triangles.extend(m.triangles.iter().map(|t| t.map(|i| i + first)));
                 }
                 self.document
@@ -1610,10 +1818,12 @@ impl<K: Kernel> Importer<'_, '_, K> {
                     .triangle_body(&vertices, &triangles)
                     .map(|s| (s, 0))
             }
-            Some(Shape::Oriented(frame, size)) => {
+            Some(Shape::Oriented(mut frame, size)) => {
+                frame.origin[2] += shift * FOOT_MM;
                 make_box(self.document, frame, size).map(|s| (s, 1))
             }
-            Some(Shape::Aligned(frame, size)) => {
+            Some(Shape::Aligned(mut frame, size)) => {
+                frame.origin[2] += shift * FOOT_MM;
                 make_box(self.document, frame, size).map(|s| (s, 2))
             }
             None => {
@@ -1827,6 +2037,18 @@ impl<K: Kernel> Importer<'_, '_, K> {
             })
             .map(|e| e.id)
             .collect();
+        self.rail_symbols = model
+            .elements
+            .iter()
+            .filter(|e| e.class.as_deref() == Some("ContinuousRailSymbol"))
+            .map(|e| e.id)
+            .collect();
+        self.own_elements = model
+            .elements
+            .iter()
+            .filter(|e| !e.is_type)
+            .map(|e| e.id)
+            .collect();
         // The curtain walls: the hosts of panels and mullions.
         let curtain_hosts: HashSet<i64> = model
             .elements
@@ -1912,8 +2134,7 @@ impl<K: Kernel> Importer<'_, '_, K> {
         let global_ids = model.global_ids();
         let mut count = 0;
         let mut pending: Vec<Pending<'_>> = Vec::new();
-        for (slot, level) in order.iter().enumerate() {
-            let component = levels[slot].component;
+        for (own_slot, level) in order.iter().enumerate() {
             for e in &groups[level] {
                 if self.memory_low() {
                     self.report.memory_low += 1;
@@ -1925,64 +2146,101 @@ impl<K: Kernel> Importer<'_, '_, K> {
                 } else {
                     plan::kind_of(model, e)
                 };
-                let mut line = ElementLine {
-                    id: e.id,
-                    link,
-                    global_id: global_ids.get(&e.id).cloned(),
-                    kind: kind.unwrap_or("other").to_string(),
-                    category: e
-                        .category_name
-                        .map(str::to_string)
-                        .or_else(|| e.category.map(|c| format!("category {c}")))
-                        .unwrap_or_default(),
-                    name: e.display_name(),
-                    level: Some(levels[slot].entry.name.clone()),
-                    ..ElementLine::default()
-                };
-                *self
-                    .report
-                    .categories
-                    .entry(line.category.clone())
-                    .or_default() += 1;
-                if let Some(kind) = kind {
-                    match plan::plan(model, e) {
-                        Ok(mut p) => {
-                            if link.is_none() {
-                                self.reference_cuts(&mut p, &global_ids);
-                            }
-                            line.notes.extend(p.notes.iter().cloned());
-                            let ready =
-                                self.prepare(model_key, model, e, kind, p, component, slot, line);
-                            pending.push(ready);
-                            if pending.len() >= BATCH {
-                                self.flush(model, &mut pending, &mut levels, &curtain_hosts);
-                            }
-                        }
-                        Err(why) => {
-                            line.notes.push(format!("not built as features: {why}"));
-                            let openings = expected_openings(model, e, &curtain_hosts);
-                            self.fail(
-                                model,
-                                e,
-                                kind,
-                                &mut levels[slot],
-                                line,
-                                &curtain_hosts,
-                                &openings,
-                            );
-                        }
+                // The element where it is, then its copies up its
+                // multistory stair (mitcad#391), each on its level: (slot,
+                // how far up in feet, the copy's stair and level).
+                let mut places: Vec<Place> = vec![(own_slot, 0.0, None)];
+                if let Some((stair, copies)) = multistory_copies(model, e) {
+                    for (l, dz) in copies {
+                        let at = group_of.get(&l).copied().unwrap_or(l);
+                        let slot = order
+                            .iter()
+                            .position(|o| *o == Some(at))
+                            .unwrap_or(own_slot);
+                        places.push((slot, dz, Some((stair, l))));
                     }
-                    continue;
-                } else {
-                    line.notes.push(if self.options.mesh_only {
-                        "not built as features (none asked for)".to_string()
-                    } else {
-                        "not an element of a kind built as features".to_string()
-                    });
                 }
-                let structural = plan::kind_of(model, e).is_some_and(plan::structural);
-                self.fallback(model, e, structural, &mut levels[slot], &mut line);
-                self.report.elements.push(line);
+                for (slot, shift, copy) in places {
+                    let component = levels[slot].component;
+                    let mut line = ElementLine {
+                        id: e.id,
+                        link,
+                        global_id: global_ids.get(&e.id).cloned().filter(|_| copy.is_none()),
+                        kind: kind.unwrap_or("other").to_string(),
+                        category: e
+                            .category_name
+                            .map(str::to_string)
+                            .or_else(|| e.category.map(|c| format!("category {c}")))
+                            .unwrap_or_default(),
+                        name: e.display_name(),
+                        level: Some(levels[slot].entry.name.clone()),
+                        ..ElementLine::default()
+                    };
+                    if let Some((stair, l)) = copy {
+                        let name = model.level(l).map_or(l.to_string(), |l| l.name.clone());
+                        line.name = format!("{} (on {name})", e.display_name());
+                        line.notes.push(format!(
+                            "a copy its multistory stair places on level {name} (stair {stair}): \
+                             it moved {:.0} mm up",
+                            shift * FOOT_MM
+                        ));
+                        self.report.multistory_copies += 1;
+                    } else {
+                        *self
+                            .report
+                            .categories
+                            .entry(line.category.clone())
+                            .or_default() += 1;
+                    }
+                    if let Some(kind) = kind {
+                        let made = plan::plan(model, e).and_then(|p| {
+                            if shift == 0.0 {
+                                Ok(p)
+                            } else {
+                                plan::moved_plan(p, shift)
+                            }
+                        });
+                        match made {
+                            Ok(mut p) => {
+                                if link.is_none() && copy.is_none() {
+                                    self.reference_cuts(&mut p, &global_ids);
+                                }
+                                line.notes.extend(p.notes.iter().cloned());
+                                let ready = self.prepare(
+                                    model_key, model, e, kind, p, component, slot, line, shift,
+                                );
+                                pending.push(ready);
+                                if pending.len() >= BATCH {
+                                    self.flush(model, &mut pending, &mut levels, &curtain_hosts);
+                                }
+                            }
+                            Err(why) => {
+                                line.notes.push(format!("not built as features: {why}"));
+                                let openings = expected_openings(model, e, &curtain_hosts);
+                                self.fail(
+                                    model,
+                                    e,
+                                    kind,
+                                    &mut levels[slot],
+                                    line,
+                                    &curtain_hosts,
+                                    &openings,
+                                    shift,
+                                );
+                            }
+                        }
+                        continue;
+                    } else {
+                        line.notes.push(if self.options.mesh_only {
+                            "not built as features (none asked for)".to_string()
+                        } else {
+                            "not an element of a kind built as features".to_string()
+                        });
+                    }
+                    let structural = plan::kind_of(model, e).is_some_and(plan::structural);
+                    self.fallback(model, e, structural, &mut levels[slot], &mut line, shift);
+                    self.report.elements.push(line);
+                }
             }
         }
 
@@ -2188,6 +2446,11 @@ pub fn import_rvt<K: Kernel>(
 ) -> Result<Report, ModelError> {
     let label = format!("Import {file}");
     let depth = document.undo_depth();
+    // The joins and cuts fuse within the import's geometric tolerance where
+    // they fail exactly (mitcad#298, mitcad#397: a rail's pieces meet in the
+    // faces the file keeps of it, which lie on each other only within a
+    // micrometre). The design keeps it; the import's undo step sets it.
+    let _ = document.set_join_tolerance(Some(crate::refs::DEFAULT_GEOMETRIC_TOLERANCE));
     let feature_names: HashSet<String> = document.features().map(|f| f.name.clone()).collect();
     let body_names: HashSet<String> = document.bodies().iter().map(|b| b.name.clone()).collect();
     let mut importer = Importer {
@@ -2206,6 +2469,8 @@ pub fn import_rvt<K: Kernel>(
         notes: Vec::new(),
         tess: geometry::Cache::new(),
         parts: HashSet::new(),
+        rail_symbols: HashSet::new(),
+        own_elements: HashSet::new(),
         missing: Vec::new(),
     };
     importer.import_model(0, file, model, ComponentUid::ROOT, None)?;
@@ -2754,5 +3019,125 @@ mod tests {
         assert!(!document.body_attributes(chair).visible);
         document.set_body_visible(chair, true).unwrap();
         assert!(document.body_attributes(chair).visible);
+    }
+
+    #[test]
+    fn a_multistory_stair_s_supports_come_in_on_each_storey() {
+        // (mitcad#391) A stair (1) on level 10 repeated on level 11, 10 ft
+        // up; its railing (3), the railing's rail (4, a path of its own)
+        // and the rail's support (5) and an earlier support (6) the rail
+        // does not list. The stair's geometry places the support (an
+        // element of its own) on both storeys: the stair has no body of its
+        // own, the support comes in where it is and 10 ft up, the earlier
+        // support not at all.
+        use mitcad_rvt::brep::{GRep, Placed};
+        let level = |id, elevation| mitcad_rvt::elements::Level {
+            id,
+            name: format!("L{id}"),
+            elevation,
+            building_story: None,
+        };
+        let support = |id| Element {
+            id,
+            partition: Some(1),
+            class: Some("FamilyInstance".into()),
+            category: Some(-2_000_948),
+            level: Some(10),
+            bbox: Some([0.0, 0.0, 0.0, 0.1, 0.1, 3.0]),
+            ..Element::default()
+        };
+        let mut model = Model {
+            levels: vec![level(10, 0.0), level(11, 10.0)],
+            elements: vec![
+                Element {
+                    id: 1,
+                    partition: Some(1),
+                    class: Some("StairsElement".into()),
+                    category: Some(-2_000_120),
+                    level: Some(10),
+                    bbox: Some([0.0, 0.0, 0.0, 1.0, 1.0, 13.0]),
+                    ..Element::default()
+                },
+                support(5),
+                support(6),
+            ],
+            ..Model::default()
+        };
+        let mut t = IDENTITY;
+        let placed = |transform| Placed {
+            symbol: Some(5),
+            transform,
+            embedded: None,
+        };
+        let here = placed(t);
+        t[11] = 10.0;
+        model.geometry.insert(
+            1,
+            GRep {
+                instances: vec![here, placed(t)],
+                ..GRep::default()
+            },
+        );
+        let b = &mut model.building;
+        b.multistory.insert(
+            1,
+            mitcad_rvt::building::Multistory {
+                base_level: 10,
+                levels: vec![11],
+            },
+        );
+        for (e, owner) in [(3, 1), (4, 3), (5, 4), (6, 4)] {
+            b.owners.insert(e, owner);
+        }
+        b.sweeps.insert(
+            4,
+            mitcad_rvt::building::Sweep {
+                id: 4,
+                class: "HandRail".into(),
+                paths: Vec::new(),
+                sides: Vec::new(),
+                path3d: Some(7),
+                profile: None,
+                type_id: None,
+                up: None,
+                offsets: [0.0, 0.0],
+                flipped: false,
+                host: None,
+                cut_by: Vec::new(),
+                returns: Vec::new(),
+                joined: Vec::new(),
+                supports: vec![5],
+            },
+        );
+        let mut document = Document::new(MockKernel::default());
+        let report =
+            import_rvt(&mut document, "project.rvt", &model, &RvtOptions::default()).unwrap();
+        assert_eq!((report.stairs, report.multistory_copies), (1, 1));
+        assert_eq!(
+            report
+                .left_out
+                .get("a rail's support the rail does not list (nothing places it)"),
+            Some(&1)
+        );
+        let lines: Vec<(i64, &str, &str, Option<&str>)> = report
+            .elements
+            .iter()
+            .map(|l| {
+                (
+                    l.id,
+                    l.name.as_str(),
+                    l.outcome.as_str(),
+                    l.level.as_deref(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            lines,
+            vec![
+                (1, "StairsElement-1", "parts", Some("L10")),
+                (5, "FamilyInstance-5", "box", Some("L10")),
+                (5, "FamilyInstance-5 (on L11)", "box", Some("L11")),
+            ]
+        );
     }
 }

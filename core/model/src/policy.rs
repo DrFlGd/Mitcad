@@ -9,7 +9,8 @@
 //!   components (child occurrences, also those a feature makes) by
 //!   `components`. Assembly features that arrange the owner's occurrences
 //!   (joints, rigid groups, assembly constraints, occurrence moves and
-//!   captured positions, patterns of occurrences) and Component from
+//!   captured positions, patterns of occurrences, BUILD's bound lengths
+//!   measured between them) and Component from
 //!   Bodies (whose component counts under `components`) are not
 //!   modelling features.
 //! - Sketch attachment: a sketch whose plane is another owner's face or
@@ -255,7 +256,8 @@ pub fn containment<P>(def: &FeatureDef<P>) -> Option<Setting> {
         | FeatureDef::JointOrigin(_)
         | FeatureDef::RigidGroup(_)
         | FeatureDef::ConstraintSet(_)
-        | FeatureDef::PatternAtPoints(_) => None,
+        | FeatureDef::PatternAtPoints(_)
+        | FeatureDef::BoundLength(_) => None,
         _ => Some(Setting::Features),
     }
 }

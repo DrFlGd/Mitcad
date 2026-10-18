@@ -13,6 +13,7 @@
 
 #include "CommandSession.hpp"
 #include "Diagnostics.hpp"
+#include "DisplayMeshes.hpp"
 #include "Json.hpp"
 #include "ResultCache.hpp"
 
@@ -226,31 +227,46 @@ QJsonObject DocumentSession::command(const QJsonObject& request) {
   Document& document = *m_state.document;
   ScopedTiming timing("command");
   timing.setDetail(name);
-  const bool done = runJob(name, commandStage(name), [&document, &json, &answer](ModelJob& job) {
-    const AttachedJob attached(document, job);
-    answer = document.command(rustStr(json));
+  // The bodies the view will draw are meshed in the job (DisplayMeshes.hpp,
+  // mitcad#398); a sketch's own commands do not change them.
+  const bool display = !name.startsWith(QStringLiteral("sketch."));
+  DisplayMeshing meshing;
+  const bool done = runJob(name, commandStage(name), [&document, &json, &answer, display, &meshing](ModelJob& job) {
+    {
+      const AttachedJob attached(document, job);
+      answer = document.command(rustStr(json));
+    }
+    if (display) {
+      meshing = meshForDisplay(shownBodyShapes(document), job);
+    }
   }, JobLog::WhenSlow);
   if (!done) {
     throw ComputationCancelled();
   }
   timing.finish();
+  logDisplayMeshing(meshing, name);
   return parseObject(answer);
 }
 
 QJsonObject DocumentSession::preview(const QByteArray& request, const QString& name) {
   rust::String answer;
+  DisplayMeshing meshing;
   Document& document = *m_state.document;
   ScopedTiming timing("preview");
   timing.setDetail(name);
   const bool done = runJob(QStringLiteral("preview"), tr("Preview of %1").arg(name),
-                          [&document, &request, &answer](ModelJob& job) {
-    const AttachedJob attached(document, job);
-    answer = document.preview(rustStr(request));
+                          [&document, &request, &answer, &meshing](ModelJob& job) {
+    {
+      const AttachedJob attached(document, job);
+      answer = document.preview(rustStr(request));
+    }
+    meshing = meshForDisplay(previewShapes(document, parseObject(answer)), job);
   }, JobLog::WhenSlow);
   if (!done) {
     throw ComputationCancelled();
   }
   timing.finish();
+  logDisplayMeshing(meshing, QStringLiteral("preview"));
   return parseObject(answer);
 }
 
@@ -259,21 +275,38 @@ bool DocumentSession::commandAsync(const QJsonObject& request, QObject* context,
   const QByteArray json = compactJson(request);
   auto result = std::make_shared<AsyncResult>();
   Document* document = &*m_state.document;
-  return startAsync(name, commandStage(name), [document, json, result](ModelJob& job) {
-    const AttachedJob attached(*document, job);
-    result->answer = parseObject(document->command(rustStr(json)));
-  }, result, context, std::move(completion));
+  const bool display = !name.startsWith(QStringLiteral("sketch."));
+  auto meshing = std::make_shared<DisplayMeshing>();
+  return startAsync(name, commandStage(name), [document, json, result, display, meshing](ModelJob& job) {
+    {
+      const AttachedJob attached(*document, job);
+      result->answer = parseObject(document->command(rustStr(json)));
+    }
+    if (display) {
+      *meshing = meshForDisplay(shownBodyShapes(*document), job);
+    }
+  }, result, context, [meshing, name, completion = std::move(completion)](const AsyncResult& outcome) {
+    logDisplayMeshing(*meshing, name);
+    if (completion) { completion(outcome); }
+  });
 }
 
 bool DocumentSession::previewAsync(const QByteArray& request, const QString& name, QObject* context,
                                    Completion completion) {
   auto result = std::make_shared<AsyncResult>();
   Document* document = &*m_state.document;
+  auto meshing = std::make_shared<DisplayMeshing>();
   return startAsync(QStringLiteral("preview"), tr("Preview of %1").arg(name),
-                    [document, request, result](ModelJob& job) {
-    const AttachedJob attached(*document, job);
-    result->answer = parseObject(document->preview(rustStr(request)));
-  }, result, context, std::move(completion));
+                    [document, request, result, meshing](ModelJob& job) {
+    {
+      const AttachedJob attached(*document, job);
+      result->answer = parseObject(document->preview(rustStr(request)));
+    }
+    *meshing = meshForDisplay(previewShapes(*document, result->answer), job);
+  }, result, context, [meshing, completion = std::move(completion)](const AsyncResult& outcome) {
+    logDisplayMeshing(*meshing, QStringLiteral("preview"));
+    if (completion) { completion(outcome); }
+  });
 }
 
 bool DocumentSession::inspectionAsync(const QString& name, QObject* context, InspectionTask task,

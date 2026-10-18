@@ -146,6 +146,11 @@ pub(crate) struct Output<S> {
     pub mounts: Option<crate::features::derived_part::Mounts>,
     /// Reference parameters it measured (a bound length, mitcad#375).
     pub measured: Vec<(ParamId, f64)>,
+    /// What it remembers of the pieces it split bodies into, when it used
+    /// that memory, and the bodies that are other pieces than before, with
+    /// their warnings (mitcad#408).
+    pub split_pieces: Option<Arc<Vec<crate::features::PieceGroup>>>,
+    pub changed_pieces: Vec<(BodyUid, String)>,
 }
 
 pub(crate) struct FeatureResult<S> {
@@ -209,6 +214,10 @@ pub(crate) enum Read {
     JoinTolerance(Option<u64>),
     /// A library source of the design (mitcad#375), None when missing.
     Source(crate::build::SourceId, Option<Version>),
+    /// What the feature remembers of the pieces it split bodies into
+    /// (mitcad#408): the fingerprints the result fits, the memory it was
+    /// evaluated with and the memory it leaves.
+    Pieces(FeatureUid, Vec<u128>),
 }
 
 /// A placement's matrix as bits, for [`Read::Placement`].
@@ -265,6 +274,9 @@ impl Read {
             Self::Assembly(key) => crate::features::extrude_scope::assembly_key(env) == *key,
             Self::JoinTolerance(bits) => env.join_tolerance.map(f64::to_bits) == *bits,
             Self::Source(id, version) => env.sources.version(*id) == *version,
+            Self::Pieces(uid, fits) => fits.contains(&crate::features::pieces::fingerprint(
+                env.split_pieces.get(uid),
+            )),
         }
     }
 
@@ -335,6 +347,12 @@ impl Read {
                 });
             }
             Self::Source(id, v) => version(fingerprint.u8(13).u32(id.0), *v),
+            Self::Pieces(uid, fits) => {
+                fingerprint.u8(14).u64(uid.0).u64(fits.len() as u64);
+                for fit in fits {
+                    fingerprint.u128(*fit);
+                }
+            }
         }
     }
 }
@@ -596,6 +614,9 @@ impl<S: Clone> Recomputed<S> {
             restore_times: Vec::new(),
             joints: self.joints.clone(),
             measured: self.measured.clone(),
+            split_pieces: self.split_pieces.clone(),
+            changed_pieces: self.changed_pieces.clone(),
+            gone_pieces: self.gone_pieces.clone(),
         }
     }
 }
@@ -777,6 +798,14 @@ pub(crate) struct Recomputed<S> {
     /// reference parameters' (mitcad#231): later features used them, and
     /// the document takes them.
     pub measured: Vec<(ParamId, f64)>,
+    /// What the features that used it remember of the pieces they split
+    /// bodies into (mitcad#408): the document takes it.
+    pub split_pieces: crate::features::SplitPieces,
+    /// Bodies that are other pieces of a split than before, with the
+    /// warning of the features that name them, and pieces no longer made,
+    /// with the feature that made them, at the marker.
+    pub changed_pieces: BTreeMap<BodyUid, String>,
+    pub gone_pieces: BTreeMap<BodyUid, FeatureUid>,
 }
 
 impl<S> Default for Recomputed<S> {
@@ -796,6 +825,9 @@ impl<S> Default for Recomputed<S> {
             restore_times: Vec::new(),
             joints: crate::joints::JointsState::default(),
             measured: Vec::new(),
+            split_pieces: BTreeMap::new(),
+            changed_pieces: BTreeMap::new(),
+            gone_pieces: BTreeMap::new(),
         }
     }
 }
@@ -873,6 +905,9 @@ pub(crate) fn recompute<K: Kernel>(
             written_from: &written_from,
             join_tolerance: state.join_tolerance,
             sources: &state.library_sources,
+            split_pieces: &state.split_pieces,
+            changed_pieces: &done.changed_pieces,
+            gone_pieces: &done.gone_pieces,
         };
         let output = match cache.lookup(entry, &env) {
             Some(output) => output,
@@ -1011,6 +1046,9 @@ pub(crate) fn recompute<K: Kernel>(
                     }
                 }
             }
+            if status.is_ok() {
+                follow_pieces(&mut done, entry.uid, &output);
+            }
         }
         if let FeatureStatus::Failed(message) = &status {
             crate::sheet::block(
@@ -1039,6 +1077,51 @@ pub(crate) fn recompute<K: Kernel>(
         monitor.finish(total);
     }
     Ok(done)
+}
+
+/// Keeps the pieces of splits up to date after a feature that succeeded
+/// (mitcad#408): what it remembers, the bodies that are other pieces than
+/// before (a body keeps that warning while it lasts, until a split gives it
+/// a piece that matches) and the pieces no longer made.
+fn follow_pieces<S>(done: &mut Recomputed<S>, feature: FeatureUid, output: &Output<S>) {
+    let groups = output.split_pieces.as_deref().map_or(&[][..], |g| &g[..]);
+    let matched = |body: &BodyUid| {
+        groups
+            .iter()
+            .flat_map(|g| &g.pieces)
+            .any(|p| p.body == *body && !p.gone)
+    };
+    let mut set = Vec::new();
+    for change in &output.changes {
+        match change {
+            Change::Set(uid, _) => {
+                set.push(*uid);
+                done.gone_pieces.remove(uid);
+                match output.changed_pieces.iter().find(|(b, _)| b == uid) {
+                    Some((_, message)) => {
+                        done.changed_pieces.insert(*uid, message.clone());
+                    }
+                    None if matched(uid) => {
+                        done.changed_pieces.remove(uid);
+                    }
+                    None => {}
+                }
+            }
+            Change::Remove(uid) => {
+                done.changed_pieces.remove(uid);
+            }
+        }
+    }
+    // A piece remembered as gone, or one of the feature's own the feature
+    // did not make this time, is no longer made.
+    for piece in groups.iter().flat_map(|g| &g.pieces) {
+        if !set.contains(&piece.body) && (piece.gone || piece.body.feature == feature) {
+            done.gone_pieces.insert(piece.body, feature);
+        }
+    }
+    if let Some(groups) = &output.split_pieces {
+        done.split_pieces.insert(feature, groups.clone());
+    }
 }
 
 /// Sets the reference parameters of a sketch's driven dimensions to the
@@ -1126,6 +1209,8 @@ fn evaluate<K: Kernel>(
         crate::sheet::complete_changes(&ctx, produced);
     }
     let time = start.elapsed();
+    // (Records the memory of pieces as read, mitcad#408.)
+    let (split_pieces, changed_pieces) = ctx.finish_pieces();
     let reads = std::mem::take(&mut ctx.reads);
     let warnings = std::mem::take(&mut ctx.warnings);
     let elements = std::mem::take(&mut ctx.elements);
@@ -1176,6 +1261,8 @@ fn evaluate<K: Kernel>(
             placements: produced.placements,
             mounts: (!produced.mounts.is_empty()).then(|| std::sync::Arc::new(produced.mounts)),
             measured: produced.measured,
+            split_pieces,
+            changed_pieces,
         },
         Err(message) => Output {
             sheet_rules: None,
@@ -1199,6 +1286,8 @@ fn evaluate<K: Kernel>(
             placements: Vec::new(),
             mounts: None,
             measured: Vec::new(),
+            split_pieces: None,
+            changed_pieces: Vec::new(),
         },
     };
     Arc::new(output)

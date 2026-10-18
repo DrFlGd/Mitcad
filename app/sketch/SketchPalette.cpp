@@ -150,6 +150,10 @@ SketchPalette::SketchPalette(SketchController& controller, CommandRegistry& regi
   };
   m_construction = check(tr("Construction (X)"), QStringLiteral("paletteConstruction"),
                          tr("New geometry is construction geometry: not in profiles"));
+  m_signed = check(tr("Signed distances"), QStringLiteral("paletteSignedDistances"),
+                   tr("Sketch Dimension makes horizontal and vertical distances signed: the offset from the "
+                      "first point picked, negative to its left or below it, so that an expression such as "
+                      "r * cos(a) may change sign"));
   m_grid = check(tr("Snap to grid"), QStringLiteral("paletteGrid"),
                  tr("Points that snap to nothing else snap to a grid that follows the zoom"));
   m_dimensions = check(tr("Show dimensions"), QStringLiteral("paletteDimensions"), QString());
@@ -186,6 +190,7 @@ SketchPalette::SketchPalette(SketchController& controller, CommandRegistry& regi
   layout->addWidget(options.box);
 
   connect(m_construction, &QCheckBox::toggled, &m_c, &SketchController::setConstruction);
+  connect(m_signed, &QCheckBox::toggled, &m_c, &SketchController::setSignedDistances);
   connect(m_grid, &QCheckBox::toggled, &m_c, &SketchController::setGridSnap);
   connect(m_dimensions, &QCheckBox::toggled, &m_c, &SketchController::setShowDimensions);
   connect(m_constraints, &QCheckBox::toggled, &m_c, &SketchController::setShowConstraints);
@@ -337,6 +342,7 @@ void SketchPalette::refresh() {
     box->setChecked(on);
   };
   set(m_construction, m_c.construction());
+  set(m_signed, m_c.signedDistances());
   set(m_grid, m_c.gridSnap());
   set(m_dimensions, m_c.showDimensions());
   set(m_constraints, m_c.showConstraints());
@@ -387,8 +393,16 @@ void SketchPalette::refreshAuto() {
   qDebug().noquote() << QStringLiteral("Palette %1: %2").arg(m_autoSection->accessibleName(), summary);
   if (shown) {
     // Once the section is laid out.
-    TestSync::singleShot(50, this, [this] { logAutoLayout(); });
+    TestSync::singleShot(50, this, [this] {
+      emit autoSectionShown(m_autoSection);
+      logAutoLayout();
+    });
   }
+}
+
+void SketchPalette::logPlaces() {
+  logLayout();
+  logAutoLayout();
 }
 
 void SketchPalette::logAutoLayout() {
@@ -422,7 +436,8 @@ bool SketchPalette::eventFilter(QObject* watched, QEvent* event) {
 }
 
 void SketchPalette::logLayout() const {
-  for (const QCheckBox* box : {m_construction, m_grid, m_dimensions, m_constraints, m_profiles, m_hideAbove}) {
+  for (const QCheckBox* box :
+       {m_construction, m_signed, m_grid, m_dimensions, m_constraints, m_profiles, m_hideAbove}) {
     // The box's indicator: a click there toggles it whatever the width of
     // the label, which a click on the widget's middle may miss.
     QStyleOptionButton option;

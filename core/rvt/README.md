@@ -478,7 +478,9 @@ within 0.1 %, its box within 0.001 mm). Elsewhere the features are
 checked against the geometry the file keeps of the element where that
 meshes closed (the volume within 2 %, the box within 5 mm: a wall's
 stored box also holds the sheets of its layers' boundaries, which reach
-its unconnected height), else against its stored box (`rvt.corpus`
+its unconnected height; a rail's, mitcad#391, against that geometry's box
+both ways, its thin profile meshing within a chord that takes up to a
+tenth of its volume), else against its stored box (`rvt.corpus`
 imports a structural sample with the architectural sample it links).
 
 ## The geometry (mitcad#333)
@@ -584,16 +586,50 @@ shape described (`mitcad-rvt-inspect geometry <id> --points`).
   - a mullion's ends are trimmed to its neighbours (`m_trimEnd0`,
     `m_trimEnd1`: `MullionTrimNeighbor`, its `m_trimPath` the neighbour's
     path through the end, `m_nbrSymbolId` the neighbour's type, `m_flags`,
-    `m_trimPathNorm`, `m_direction`, `m_flip`, `m_cornerAngles`): the end
-    stops at the neighbour's side or meets it in a mitre, by rules not
-    decoded (flags 1, 2, 3, 6 and 7 against the types' widths and the
-    border flag give different cuts among the 14 trimmed symbols of
-    `33271010`, the same flags sometimes none); the symbol's stored
-    geometry keeps the result, one planar end face per end (and the
-    untrimmed ends' planes as faces without loops), and the import cuts
-    the mullion's prism along those faces' planes, mitcad#385 *(verified:
-    the 14 trimmed mullions of `33271010` within 1e-11 mm of their
-    stored boxes; `1447005`'s volume equal to its stored body's)*;
+    `m_trimPathNorm`, `m_direction`, `m_flip`, `m_cornerAngles`; a
+    mullion type's sizes are read from its own record as an instance
+    symbol's are). In the curtain's plane the mullion and its neighbour
+    are strips across their paths, the trim's path having one end at the
+    mullion's end (mitcad#387). The trim's flags: 2 a mitre, else a butt
+    (the end stops along the neighbour's side facing it); 1 the neighbour
+    is a border mullion, its full width (-1007300 plus -1007301) on the
+    corner's inside (for a border mullion trimmed, the side its own width
+    lies on turned towards the neighbour; else the shorter way round; at a
+    neighbour running on past the joint, the side facing the mullion); 4
+    *(seen; not read)*. A border mullion's strip runs from its path to its
+    full width towards `m_pathNorm × path`; a corner neighbour's (quad) is
+    half its depth -1007357, an L's its leg -1007354, either side; any
+    other rectangular mullion's is its width -1007301 either side, whatever
+    its -1007300 (the off-centre mullions of `33271010` mitre so). A mitre
+    runs between the strips' overlap's corners farthest out and in along
+    the two members' directions from the joint; a neighbour in line leaves
+    the end square, and a cut reaching past the mullion's other end leaves
+    both its ends square. A neighbour of two pieces meeting at the end
+    (the trim's path of two curves) that bend there (mitcad#390): the end
+    stops at each piece's near side, on that piece's side of where the two
+    near sides cross, an end of two planes *(verified: 127 of the 130
+    trimmed ends of `33271010`, `ff791052` and `bb62c161` where their
+    symbols' stored bodies end, within 1e-9 ft along their sides, the end
+    of two faces of `ff791052` among them; not so: two butts of `33271010`
+    nearly square (88°) to a sloped border running on past them, whose
+    stored ends are not cut, and the end of `1448325` at a corner mullion,
+    not cut, the mirror image of `1448308`'s end 0, which is)*. The import cuts the
+    mullion's prism along the rule's planes and checks them against the
+    symbol's stored end faces (a planar face per end, faces of one plane
+    one end; two planes split where their faces meet across the path,
+    mitcad#390); where they differ the stored face is taken and the report
+    says by how much (mitcad#385, mitcad#387) *(verified: the 14 trimmed
+    mullions of `33271010` within 1e-11 mm of their stored boxes)*. For
+    the three ends the rule does not give, nothing else the file keeps of
+    those joints decides (mitcad#391): the curtain wall's join overrides
+    (`WallCGDriver.m_mullionJoins`, `GridJoinInfo`: the grid segments'
+    ends meeting at a node) name none of their nodes, the border
+    segments there are trimmed against each other (border to border, in
+    line) as at the cut ends of `ff791052` and `bb62c161`, their
+    `MullionFamRef`s are alike, and neither the grid's unlocked
+    mullions (`CurtainGrid.m_unlockedMullions`: only `1448325`'s) nor
+    their geometry's regeneration episodes set them apart *(seen)*: their
+    stored end faces stay;
   - a panel's `SysPanelFamSym` holds a `CurtainCellSymFamRef`: its cell's
     loops (`m_pCurveLoops`) on its plane (`m_pSurf`), `m_flipped`, and the
     symbol's `m_thickness` and `m_offset`: the panel is the cell's loops
@@ -623,9 +659,91 @@ shape described (`mitcad-rvt-inspect geometry <id> --points`).
   stair's 4 rails run along helices, mitcad#385: the profile swept along
   the one helix their pieces make, its ends cut by vertical planes
   through the helix's ends, square to it in plan, as the stored rails
-  end)*. An elliptical rail's stored body rounds its corners (surfaces of
-  revolution about each corner); the import mitres them *(seen: `1501328`
-  within 1e-5 mm of its stored box)*.
+  end)*. The rail's type (`ContinuousRailType`: `TopRailType`,
+  `HandRailType`) gives its joins, `m_defaultContinuousRailJoinType` (1 a
+  fillet) and `m_filletRadius` (mitcad#387): where its path's lines meet at
+  an angle the stored rail rounds the corner, the profile swept round an
+  arc of the fillet radius tangent to both lines (its surfaces of
+  revolution about the arc's axis, the profile's centre the radius from
+  it) *(verified: the elliptical rail `1501328`, 6 corners of a 2.5 in
+  radius, its arcs' centres the stored surfaces' and its box within 1e-12
+  mm of the stored body's; `660284`, two 2 in fillets)*. The import
+  fillets the corners of a chain where the fillets fit on their lines.
+  Along a chain that is not planar (a rail up a stair, mitcad#390) the
+  stored rail is the profile (its x square to up) along each line and
+  turned about each fillet's axis, where the corner turns about up (in
+  plan) or about the profile's x (in a vertical plane); the import builds
+  it so, piece by piece *(verified: the 82 such rails of `33271010`, 450
+  arcs, each about a stored surface's axis within 3e-14 ft and by its
+  angle within 3e-13 rad; the 43 whose stored geometry is the rail alone
+  within 0.0005 mm of its box; the others' stored geometry also holds
+  their supports or a copy one storey up)*. A corner turning about
+  neither (mitcad#391) is rounded in plan: an arc of the fillet radius
+  tangent to the two lines' plan directions, lifted to a helix about the
+  vertical through its centre, from the first line's point above the
+  arc's start to the second line's point above its end (rising at one
+  slope), the profile swept along it with its x level towards the axis;
+  the helix leaves and joins the lines at kinks, mitred (the planes
+  square to the sum of the two directions there) *(verified: the one such
+  corner of the corpus, `1270819`'s: the 100 nodes of its stored
+  `HermiteSurf`s, a quarter of the profile per face, lie on that sweep's
+  sections within 1e-14 ft; its mitre faces' normals are the sums')*.
+  A chain that is not planar and has elliptical pieces (sloped arcs: 3
+  road stripings of `33271010`) is not filleted; its pieces are swept
+  along it one by one (mitcad#395). Along an elliptical piece the stored
+  rail keeps the profile square to the piece and its x level (mitcad#397);
+  where it meets another piece at an angle (a level arc), the two meet in
+  the first one's end section, the second cut in it *(verified: the
+  Hermite edges the file keeps along `2150352`'s elliptical piece, their
+  corners level across the profile at its start, middle and end and its
+  thickness square to the piece there; at every such joint of the 3 rails
+  each straight edge the file keeps lies along the first piece's end
+  section within 1e-5 rad; the `Path3d`'s joint of `2150352` lies 0.3 mm
+  on along the path from the stored one)*.
+  Where a rail's type does not
+  fillet its joins (a join type other than 1, or a radius of 0), the
+  stored rail up a stair is the profile along each line, the lines mitred
+  at their corners (mitcad#395: the planes square to the sum of the two
+  directions) *(verified: the plane faces and edges the file keeps of the
+  5 such rails of `33271010`, `832432` among them, lie in those planes
+  within 1e-4 mm)*. A rail's free end on a sloped
+  line is cut plumb (mitcad#391): by the vertical plane through the
+  path's end, square to the line in plan *(verified: the 12 such ends of
+  `33271010` and `bb62c161`, spiral rails and a chain of elliptical
+  pieces apart; their stored end faces
+  are vertical)*. A rail's per-join settings
+  (`ContinuousRailJoinInfoCell.m_joinInfoItems`) are empty on every rail
+  of the corpus *(seen: the 243 rails of `33271010`, `bb62c161`,
+  `41f1893a` and `bc547fe9`; not read)*.
+- **Rails' supports** (mitcad#391): `ContinuousRail.m_supportIds` lists
+  a rail's supports (wall mounts, pickets: family instances of category
+  -2000948 whose `m_ownerElemId` is the rail); the rail's geometry places
+  them where they are (and on every storey a multistory stair repeats it
+  on). A family instance naming the rail as its owner that the rail does
+  not list is an earlier layout's: nothing places it *(verified: 2,293
+  listed supports of `33271010`, each placed; 315 not listed, none
+  placed, each beside a listed one)*: the import
+  leaves it out.
+- **Multistory stairs** (`MultistoryStairs`, mitcad#391): a stair of one
+  (`StairsElement` with a `MultistoryStairsDataCell` among its cells)
+  is repeated on the levels of `m_levelIdIndexPairSet` (`m_data`:
+  `ElementIdPlusIndex.m_elementId`, the copy's `m_index`; up to
+  `m_instancesUpToLevelId`), each copy moved straight up by the level's
+  elevation less the stair's base level's (`m_baseLevelId`). What belongs
+  to the stair: its runs and landings (`m_stairsId`), their supports
+  (`StairsSupport.m_hostCompId`), its railings (`BaseRailing.m_stairsId`),
+  their rails (`ContinuousRail.m_railSystemId`), the rails' supports and
+  the railings' balusters (`FamilyInstance.m_ownerElemId`). The stair's
+  geometry places its runs, landings and supports (elements of their own)
+  on each storey; a railing's and a rail's own geometry place their
+  symbols on each storey, the railing's balusters and the rail's supports
+  likewise *(verified: 425 copied elements of `33271010`'s 3 repeated
+  stairs and 64 of `ff791052`'s 5 at exactly those heights, and no other
+  element placed straight up by another's geometry)*. The import builds
+  a rail's copies with the rail (its stored geometry and box hold them),
+  and every other element's as an element of its own on the copy's level
+  (`… (on L4)`, the same features or mesh moved up); the stair itself has
+  no body of its own.
 - **Profile families** (category -2003000): each type keeps its profile
   at its own dimensions in its record, `FamilySymbol.m_arrProfileLoops`
   (`CurveLoop`s in the family's xy plane, its origin where the sweep's
@@ -676,13 +794,45 @@ shape described (`mitcad-rvt-inspect geometry <id> --points`).
   `m_pathLoop`s of its `SweepHostLoopData` with `m_driveVec` (the
   profile's up), the profile its type's `m_profileId`, the offsets the
   parameters -1012825 (across) and -1012827 (up); which of the profile's
-  mirror images is taken from the stored box *(verified as above)*.
+  mirror images is taken from the box of the element's stored body: the
+  element's own box (its header's) can reach far past it (a slab edge's
+  three feet out and up), where a mirror image on the slab's side of its
+  edge fitted as well as the right one and gave volumes about 2 % low at
+  convex corners (mitcad#387) *(verified: the 75 slab edges of `33271010`;
+  69 of the 72 whose stored meshes measure within 0.5 % of them, the other
+  three 0.76 % below meshes whose concave arcs' chords add to them: their
+  stored ends are square and their profile the type's, `2089027`; their
+  boxes against their stored bodies' boxes: 57 within 0.01 mm, 9 within
+  0.015 mm, 9 cut by other elements within 1.5 mm)*.
 - **Stair runs of treads and risers** (`StairsRun` of a
   non-monolithic `StairsRunType`): the type's `m_hasTread`,
   `m_treadThickness`, `m_hasRiser`, `m_riserThickness`, `m_nosingLength`;
   the treads' depths run from nosing to nosing, a riser stands the nosing
-  length behind its tread's front edge *(verified: 40 of 43 runs of
-  `33271010`)*.
+  length behind its tread's front edge (mitcad#397): riser k's front from
+  its base up to the bottom of the tread above, the last riser's too (to
+  where the tread above it would be); with slanted risers
+  (`m_riserIsSlanted`) it leans from its base up to tread k's front, its
+  thickness square to its face. With `m_riserTreadConnection` 1 a riser
+  stands on the tread below, which reaches under it to its back; with 0
+  it reaches down behind that tread to its bottom, the tread reaching to
+  its front, and the first riser reaches down behind the landing the run
+  leaves (a landing that is the run's tread). Tread k (its top at its
+  step's height, its thickness below) runs from its front (along riser k's
+  front where they slant) to the next riser, or where there are none to
+  where it would stand (the nosing length on past the next tread's
+  front); a top tread (as many treads as risers) to its depth. The run
+  type's nosing profile (`m_nosingProfileTypeId`) shapes each tread's
+  front as a landing's (its x into the tread from the front, its y up from
+  the top, the strip it spans cut to it) and, with `m_nosingPlacement` 3,
+  runs out along each tread's two sides (the corners mitred, the ends
+  square) *(verified: all 36 straight runs of `33271010` of the four types
+  there (30 of slanted risers on their treads, 4 and 1 of risers behind
+  their treads with a front nosing profile, 3 of no risers and side
+  nosings), with their copies up multistory stairs, within 7e-11 of the
+  volume and 1e-11 mm of the box, both ways, of the geometry the file
+  keeps; the stored treads and risers meet edge to edge, a mesh that is
+  balanced but not a manifold. Not read: a nosing profile with slanted
+  risers, `m_nosingPlacement` 1 and 2)*.
 - **Monolithic runs**: the steps of the same depths, each riser leaning
   from its base the nosing length behind its tread's front up to that
   front, each tread reaching back to the next riser's base; the support
@@ -706,7 +856,31 @@ shape described (`mitcad-rvt-inspect geometry <id> --points`).
   0.17 % above their stored meshes' volumes, whose arcs are chords)*.
 - **Landings** (`StairsLanding`): the boundary `m_oBoundary` at the top
   `m_baseElevation`, down by its type's (`StairsLandingType`) `m_thickness`
-  when monolithic, else its `m_treadThickness` *(verified: 17 of 17)*.
+  when monolithic, else its `m_treadThickness`. A non-monolithic landing
+  type with `m_useSameTriserAsRun` (mitcad#395) takes its treads and
+  risers from its stair's run type: the landing is that run type's tread,
+  as thick as its `m_treadThickness`. Its runs are its
+  `m_logicJoinInfo.m_logiciJoins` (`m_peerElementId`, `m_peerJoinEndType`:
+  1 the run's start meets it, 2 its end). Where a run leaves it, it
+  reaches on past the run's start riser line by the nosing length and,
+  where a riser stands on the tread below (`m_riserTreadConnection` 1;
+  0: the riser reaches down behind it), under the first riser to its
+  back. With slanted risers (`m_riserIsSlanted`: each leans from its base
+  the nosing length behind its tread's front up to that front, the
+  riser's height the run's height over its risers) the edge there runs
+  along the riser's back face, and where a run arrives along its last
+  riser's front face, which meets the landing's top at the end riser
+  line. The run type's nosing profile (`m_nosingProfileTypeId`) lies at
+  the front where a run arrives (the profile's x into the landing from
+  the front, its y up from the top), the strip it spans cut to it, and
+  with `m_nosingPlacement` 3 (front and sides) along every other edge
+  too, outwards (its x's far end at the edge), the corners mitred and the
+  ends square, its strip at the front cut across those ends *(verified:
+  all 17 landings of `33271010` (3 with slanted risers on the treads, 1
+  with no risers and side nosings) and 5 of `ff791052` (risers behind the
+  treads, a front nosing), with their copies up multistory stairs, within
+  1e-11 of the volume and of the box of the geometry the file keeps;
+  `m_nosingPlacement` 1 and 2 (one side) are not read)*.
 - **Groups**: a placed group (`ElementGroup`) places its members by
   their element ids (a `GInstance` each, at its transform); the members of
   every group type, placed or not, carry `m_unplacedOwnerId` *(verified on
@@ -718,8 +892,27 @@ planar chain of lines and arcs one sweep (the profile square to the
 chain's start, its x across the path, `Item::Sweep` with the profile's
 frame as the sweep starts: no other placement, so the solid lies on the
 path; a closed chain starts in the middle of a line), a chain that is not
-planar (a rail up a stair) an extrusion per line, a chain of helices one
-sweep along a fixed helix path (mitcad#385).
+planar (a rail up a stair) one solid of its pieces, each line's piece run
+on past a corner and cut at the mitre there (the plane square to the sum
+of the two directions: the stored rails' faces, mitcad#395) and an
+elliptical piece (a sloped arc) swept with the binormal up (the sweep's
+fixed binormal, mitcad#397: the profile level and square to the piece all
+along, as the file keeps it, where keeping its angle to the arc's plane
+left it 0.3° apart at the end, 0.27 mm at the profile's edge), the piece
+after it at an angle cut in its end section *(verified: the plane faces
+and edges the file keeps of the 5 such rails of `33271010` lie in those
+planes within 1e-4 mm)*, a chain of helices one
+sweep along a fixed helix path (mitcad#385); a rail whose type fillets its
+joins with arcs at its chains' corners (mitcad#387), along a chain that
+is not planar the profile extruded along each line and turned about each
+arc's axis, the pieces joined (mitcad#390); a corner rounded in plan along
+a helix swept, mitred to its lines, and a free end on a sloped line cut
+plumb (mitcad#391); a rail's copies up a multistory stair moved up with
+it (mitcad#391). The design the import makes has the default geometric
+tolerance (0.01 mm) as its join tolerance (mitcad#397, [commands.md](../model/src/api/commands.md#combines-joins-within-the-join-tolerance-the-rvt-imports-tolerance)):
+its joins, cuts and unions fuse within it where they fail exactly (a
+rail's sloped elliptical piece and the level arc after it meet in faces
+1.2 µm apart).
 
 `mitcad-rvt-inspect geometry` counts the faces by surface and the seam
 gaps; with an element id it lists that element's bodies and placed types,
@@ -780,5 +973,15 @@ metadata there).
 family (container, pages, members, metadata, schema, walks, chains,
 element views, saved meshes) and `tests/corpus.rs` on the corpus (skipped
 without `MITCAD_RVT_CORPUS`). The import: `core/import/src/rvt.rs` (mock
-kernel), `core.exchange`, `cli.import_rvt`, `cli.import_rfa`,
+kernel), `core/import/tests/rvt_mullion_trims.rs` (the trimmed mullions' rule
+against their stored ends on three projects),
+`core/import/tests/rvt_rails.rs` (mitcad#391: the multistory stairs' copies
+where the file places them, the helix corner on its stored Hermite
+faces; mitcad#395: the landings with their run's treads against their
+stored treads, the mitred rails against their stored faces; mitcad#397:
+the runs of treads and risers against the volume and box of their stored
+runs, the sloped elliptical rail pieces' joints against their stored
+edges),
+`core.exchange`,
+`cli.import_rvt`, `cli.import_rfa`,
 `rvt.corpus` and `tools/ui-rvt-import-test.sh`.

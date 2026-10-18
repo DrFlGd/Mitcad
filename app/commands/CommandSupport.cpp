@@ -367,6 +367,7 @@ QVector<InputDef> operationInputs(bool newComponent) {
               .withTooltip(QObject::tr("Make a new body or component, or join to, cut from or "
                                        "intersect with bodies")),
           selectionInput(QStringLiteral("objects"), QObject::tr("Objects"), SelectKind::Body, 0, 0)
+              .withoutMeshes()
               .withTooltip(QObject::tr("The bodies to join, cut or intersect; none: every body "
                                        "the feature reaches"))
               .withVisible([](const CommandState& state) {
@@ -406,6 +407,7 @@ QVector<InputDef> objectInputs(const QString& suffix, std::function<bool(const C
   return {
       selectionInput(object, QObject::tr("Object"),
                      SelectKind::Plane | SelectKind::Face | SelectKind::Body, 1, 1)
+          .withoutMeshes()
           .withTooltip(QObject::tr("A plane, a face or a body the extent ends at"))
           .withVisible(shown),
       choiceInput(object + QStringLiteral("_extend"), QObject::tr("Extend"),

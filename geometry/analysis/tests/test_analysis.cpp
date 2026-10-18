@@ -37,6 +37,8 @@
 #include <BRepAdaptor_Surface.hxx>
 #include <BRep_Builder.hxx>
 #include <BRep_Tool.hxx>
+#include <Poly_Triangulation.hxx>
+#include <TopLoc_Location.hxx>
 #include <TopExp.hxx>
 #include <TopExp_Explorer.hxx>
 #include <TopoDS.hxx>
@@ -929,6 +931,106 @@ void test_sections() {
   CHECK(throws([&] { section(a, Plane{{0, 0, 0}, {0, 0, 0}}); }));
 }
 
+// A mesh body as the STL and OBJ imports make it: one face with the
+// triangles of a box and no surface, the nodes given once per triangle
+// (as STL repeats them).
+TopoDS_Shape mesh_box(double dx, double dy, double dz) {
+  const gp_Pnt c[8] = {{0, 0, 0},   {dx, 0, 0},   {dx, dy, 0},   {0, dy, 0},
+                       {0, 0, dz}, {dx, 0, dz}, {dx, dy, dz}, {0, dy, dz}};
+  // Counter-clockwise seen from outside.
+  const int t[12][3] = {{0, 2, 1}, {0, 3, 2}, {4, 5, 6}, {4, 6, 7}, {0, 1, 5}, {0, 5, 4},
+                        {1, 2, 6}, {1, 6, 5}, {2, 3, 7}, {2, 7, 6}, {3, 0, 4}, {3, 4, 7}};
+  const occ::handle<Poly_Triangulation> mesh = new Poly_Triangulation(36, 12, false);
+  for (int i = 0; i < 12; ++i) {
+    for (int k = 0; k < 3; ++k) {
+      mesh->SetNode(3 * i + k + 1, c[t[i][k]]);
+    }
+    mesh->SetTriangle(i + 1, Poly_Triangle(3 * i + 1, 3 * i + 2, 3 * i + 3));
+  }
+  TopoDS_Face face;
+  BRep_Builder().MakeFace(face, mesh);
+  return face;
+}
+
+// Sections and clips of mesh bodies work on the triangles (mitcad#392):
+// OCCT's booleans read a null surface handle on a face without a surface
+// and crash (Windows) or fail, so Section Analysis through a mesh body
+// crashed the application or showed nothing.
+void test_mesh_sections() {
+  using mitcad::analysis::clip;
+  using mitcad::analysis::section;
+  const TopoDS_Shape a = mesh_box(10, 20, 30);
+  const auto s = section(a, Plane{{0, 0, 10}, {0, 0, 1}});
+  CHECK(s.edge_count == 8 && s.face_count == 1);
+  CHECK(near(s.length, 60.0, 1e-9) && near(s.area, 200.0, 1e-9));
+  const auto x = section(a, Plane{{5, 0, 0}, {2, 0, 0}});
+  CHECK(x.face_count == 1 && near(x.area, 600.0, 1e-9) && near(x.length, 100.0, 1e-9));
+  // In the plane of the top: its edges once, its triangles add nothing.
+  const auto top = section(a, Plane{{0, 0, 30}, {0, 0, 1}});
+  CHECK(top.edge_count == 4 && near(top.length, 60.0, 1e-9) && near(top.area, 200.0, 1e-9));
+  const auto miss = section(a, Plane{{0, 0, 100}, {0, 0, 1}});
+  CHECK(miss.edge_count == 0 && miss.face_count == 0 && miss.area == 0.0);
+
+  // Clipping keeps the triangles behind the plane, cut along it, and caps
+  // the closed mesh with the section face, facing along the normal.
+  std::vector<mitcad::analysis::ClippedFace> faces;
+  const TopoDS_Shape cut = clip(a, Plane{{0, 0, 10}, {0, 0, 1}}, &faces);
+  CHECK(faces.size() == 1 && faces[0].pieces.size() == 1);
+  CHECK(faces.size() == 1 && faces[0].pieces.size() == 1 &&
+        near(mitcad::analysis::surface_properties(faces[0].pieces[0]).Mass(), 800.0, 1e-9));
+  CHECK(near(mitcad::analysis::bounds(cut).max.z, 10.0, 1e-9));
+  CHECK(near(mitcad::analysis::surface_properties(cut).Mass(), 1000.0, 1e-9));
+  int caps = 0;
+  for (TopExp_Explorer it(cut, TopAbs_FACE); it.More(); it.Next()) {
+    const TopoDS_Face& face = TopoDS::Face(it.Current());
+    TopLoc_Location location;
+    if (BRep_Tool::Surface(face, location).IsNull()) {
+      continue;
+    }
+    ++caps;
+    gp_Dir normal = BRepAdaptor_Surface(face).Plane().Axis().Direction();
+    if (face.Orientation() == TopAbs_REVERSED) {
+      normal.Reverse();
+    }
+    CHECK(normal.Dot(gp::DZ()) > 0.0);
+  }
+  CHECK(caps == 1);
+  // The other side: the cut triangles in the other half.
+  const TopoDS_Shape other = clip(a, Plane{{0, 0, 10}, {0, 0, -1}});
+  CHECK(near(mitcad::analysis::surface_properties(other).Mass(), 200.0 + 1200.0 + 200.0, 1e-9));
+  // Nothing removed: the body itself; everything removed: no faces.
+  CHECK(clip(a, Plane{{0, 0, 30}, {0, 0, 1}}, &faces).IsSame(a));
+  CHECK(faces.size() == 1 && faces[0].pieces.size() == 1 && faces[0].pieces[0].IsSame(a));
+  const TopoDS_Shape gone = clip(a, Plane{{0, 0, -50}, {0, 0, 1}}, &faces);
+  CHECK(!TopExp_Explorer(gone, TopAbs_FACE).More() && faces.size() == 1 && faces[0].pieces.empty());
+
+  // An open mesh (one side of the box) has section curves but no faces.
+  TopoDS_Face side;
+  {
+    const occ::handle<Poly_Triangulation> mesh = new Poly_Triangulation(4, 2, false);
+    mesh->SetNode(1, gp_Pnt(0, 0, 0));
+    mesh->SetNode(2, gp_Pnt(10, 0, 0));
+    mesh->SetNode(3, gp_Pnt(10, 0, 30));
+    mesh->SetNode(4, gp_Pnt(0, 0, 30));
+    mesh->SetTriangle(1, Poly_Triangle(1, 2, 3));
+    mesh->SetTriangle(2, Poly_Triangle(1, 3, 4));
+    BRep_Builder().MakeFace(side, mesh);
+  }
+  const auto open = section(side, Plane{{0, 0, 10}, {0, 0, 1}});
+  CHECK(open.edge_count == 2 && near(open.length, 10.0, 1e-9) && open.face_count == 0);
+  CHECK(near(mitcad::analysis::surface_properties(clip(side, Plane{{0, 0, 10}, {0, 0, 1}})).Mass(),
+             100.0, 1e-9));
+
+  // A shape mixing mesh faces with faces on surfaces is refused.
+  TopoDS_Compound mixed;
+  BRep_Builder builder;
+  builder.MakeCompound(mixed);
+  builder.Add(mixed, a);
+  builder.Add(mixed, box(50, 0, 0, 10, 10, 10));
+  CHECK(throws([&] { section(mixed, Plane{{0, 0, 5}, {0, 0, 1}}); }));
+  CHECK(throws([&] { clip(mixed, Plane{{0, 0, 5}, {0, 0, 1}}); }));
+}
+
 void test_compare() {
   using mitcad::analysis::compare;
   const TopoDS_Shape a = box(0, 0, 0, 10, 20, 30);
@@ -1022,6 +1124,7 @@ int main() {
     test_lengths_and_circles();
     test_interference();
     test_sections();
+    test_mesh_sections();
     test_compare();
   } catch (const std::exception& error) {
     std::fprintf(stderr, "unexpected exception: %s\n", error.what());

@@ -200,3 +200,10 @@ mod auto_operation_tests;
 // The BUILD tab: library sources, derived parts, bound lengths and the
 // placement rules of slot-profile assemblies (mitcad#375).
 pub mod build;
+// Section curves of sketches (mitcad#389).
+pub use kernel::SectionCurve;
+#[cfg(test)]
+mod section_curve_tests;
+// Body ids of a split's pieces after upstream edits (mitcad#408).
+#[cfg(test)]
+mod piece_ids_tests;

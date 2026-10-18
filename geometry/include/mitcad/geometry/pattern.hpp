@@ -13,8 +13,12 @@ namespace mitcad::geometry {
 
 // The union of the shapes, their face names carried through: one shape of
 // one or more solids (shapes that do not touch stay separate solids).
-// Coplanar faces that meet merge, as after a Join.
-ShapePtr unite(const std::vector<const Shape*>& shapes);
+// Coplanar faces that meet merge, as after a Join. `within` (mm, 0 for none;
+// mitcad#397): a union whose result is invalid (faces of the shapes that lie
+// on each other only within an importer's geometric tolerance) is retried
+// with the smallest fuzzy value up to `within` that gives a valid one; a
+// union that works exactly stays exact.
+ShapePtr unite(const std::vector<const Shape*>& shapes, double within = 0.0);
 
 // The closed solid the named faces of a body bound together with planar
 // caps across the openings where they meet the rest of the body; the faces

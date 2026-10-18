@@ -3,13 +3,20 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include <BRepAlgoAPI_Cut.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
+#include <BRepBuilderAPI_Copy.hxx>
+#include <BRepBuilderAPI_MakeFace.hxx>
+#include <Geom_SurfaceOfLinearExtrusion.hxx>
+#include <gp_Dir2d.hxx>
+#include <gp_Pnt2d.hxx>
 #include <gp_Ax2.hxx>
 #include <BRepAdaptor_Curve.hxx>
 #include <BRepAdaptor_Surface.hxx>
@@ -22,6 +29,7 @@
 #include <gp_Cylinder.hxx>
 #include <gp_Lin.hxx>
 #include <gp_Pln.hxx>
+#include <gp_Vec.hxx>
 #include <BRepBndLib.hxx>
 #include <BRepFill_Edge3DLaw.hxx>
 #include <BRepFill_ShapeLaw.hxx>
@@ -72,6 +80,7 @@
 #include <gp_Trsf.hxx>
 
 #include "canonical.hpp"
+#include "helix_brep.hpp"
 #include "history.hpp"
 #include "spine.hpp"
 #include "sweep.hpp"
@@ -470,6 +479,80 @@ constexpr double kBesideGuide = 1.0;
 // The tolerance of the swept surfaces (`detail::pipe_shell`'s default), mm.
 constexpr double kPipeTolerance = 1.0e-4;
 
+// How far the surface a path sweeps along a fixed binormal reaches from
+// the path (mm; mitcad#397: only its normal along the path is used).
+constexpr double kBinormalReach = 10.0;
+
+// How far (radians) a path along a fixed binormal may turn where its
+// curves meet (mitcad#397).
+constexpr double kBinormalKink = 1.0e-6;
+
+// A fixed binormal (mitcad#397): the surfaces the path's curves sweep
+// moved along the binormal, each curve's own (a surface of linear
+// extrusion, moved the other way along a curve reversed in the wire, so
+// that every normal is the path's tangent x the binormal), and a copy of
+// the path whose curves carry their curves on them (v = 0), for a pipe
+// shell's `Support` mode: its frames are then the tangent, the level
+// normal tangent x binormal and the binormal made square to the tangent.
+TopoDS_Compound binormal_support(const TopoDS_Wire& wire, const gp_Dir& binormal, TopoDS_Wire& spine) {
+  // (At a corner the frames on either side do not meet in a mitre.)
+  std::vector<std::pair<gp_Vec, gp_Vec>> ends;
+  for (BRepTools_WireExplorer e(wire); e.More(); e.Next()) {
+    const BRepAdaptor_Curve curve(e.Current());
+    gp_Pnt p;
+    gp_Vec a;
+    gp_Vec b;
+    curve.D1(curve.FirstParameter(), p, a);
+    curve.D1(curve.LastParameter(), p, b);
+    if (e.Current().Orientation() == TopAbs_REVERSED) {
+      ends.emplace_back(-b, -a);
+    } else {
+      ends.emplace_back(a, b);
+    }
+  }
+  const std::size_t joints =
+      ends.size() < 2 ? 0 : (BRep_Tool::IsClosed(wire) ? ends.size() : ends.size() - 1);
+  for (std::size_t i = 0; i < joints; ++i) {
+    const gp_Vec& out = ends[i].second;
+    const gp_Vec& in = ends[(i + 1) % ends.size()].first;
+    if (out.Magnitude() > 0.0 && in.Magnitude() > 0.0 && out.Angle(in) > kBinormalKink) {
+      throw std::invalid_argument("unsupported: a fixed binormal along a path with corners");
+    }
+  }
+  BRepBuilderAPI_Copy copy(wire, true, false);
+  spine = TopoDS::Wire(copy.Shape());
+  BRep_Builder builder;
+  TopoDS_Compound support;
+  builder.MakeCompound(support);
+  for (TopExp_Explorer e(spine, TopAbs_EDGE); e.More(); e.Next()) {
+    const TopoDS_Edge& edge = TopoDS::Edge(e.Current());
+    if (BRep_Tool::Degenerated(edge)) {
+      continue;
+    }
+    TopLoc_Location location;
+    double first = 0.0;
+    double last = 0.0;
+    occ::handle<Geom_Curve> curve = BRep_Tool::Curve(edge, location, first, last);
+    if (curve.IsNull()) {
+      throw std::invalid_argument("a path curve has no geometry");
+    }
+    if (!location.IsIdentity()) {
+      curve = occ::handle<Geom_Curve>::DownCast(curve->Transformed(location.Transformation()));
+    }
+    const gp_Dir along = edge.Orientation() == TopAbs_REVERSED ? binormal.Reversed() : binormal;
+    const occ::handle<Geom_SurfaceOfLinearExtrusion> surface = new Geom_SurfaceOfLinearExtrusion(curve, along);
+    BRepBuilderAPI_MakeFace face(surface, first, last, -kBinormalReach, kBinormalReach, Precision::Confusion());
+    if (!face.IsDone()) {
+      throw std::runtime_error("the path could not be swept along the binormal");
+    }
+    // (The edge's own location is taken into account by the builder.)
+    builder.UpdateEdge(edge, new Geom2d_Line(gp_Pnt2d(0.0, 0.0), gp_Dir2d(1.0, 0.0)), face.Face(),
+                       BRep_Tool::Tolerance(edge));
+    builder.Add(support, face.Face());
+  }
+  return support;
+}
+
 // The faces of a sweep's guide surfaces (every piece of each name).
 std::vector<TopoDS_Face> guide_faces(const std::vector<GuideFace>& guide) {
   std::vector<TopoDS_Face> faces;
@@ -658,6 +741,22 @@ ShapePtr sweep(const SweepSpec& spec) {
     if (varied && range.around) {
       throw std::invalid_argument("unsupported: twists, tapers and guide rails round a whole closed path");
     }
+    // A fixed binormal (mitcad#397) only for a plain perpendicular sweep.
+    if (spec.binormal && (varied || on_surface || spec.orientation == SweepOrientation::Parallel)) {
+      throw std::invalid_argument(
+          "unsupported: a fixed binormal with twists, tapers, guide rails, guide surfaces or parallel orientation");
+    }
+    // (The frame is the tangent, binormal x tangent and the binormal square
+    // to the tangent: it has none where the path runs along the binormal.)
+    if (spec.binormal) {
+      constexpr int kStations = 64;
+      for (int i = 0; i <= kStations; ++i) {
+        const double s = range.from + (range.to - range.from) * i / kStations;
+        if (gp_Vec(path.tangent(s)).Crossed(gp_Vec(*spec.binormal)).Magnitude() < 1.0e-6) {
+          throw std::invalid_argument("the path runs along the sweep's binormal");
+        }
+      }
+    }
     ShapePtr result;
     if (varied) {
       Variation variation;
@@ -680,16 +779,21 @@ ShapePtr sweep(const SweepSpec& spec) {
       if (on_surface) {
         result = guided_sweep(spec, faces, part, at - range.from, range);
       } else {
-        const PipeMode mode = detail::perpendicular_mode(path, spec.path);
+        PipeMode mode = detail::perpendicular_mode(path, spec.path);
+        TopoDS_Wire spine = part;
+        if (spec.binormal) {
+          mode.kind = PipeMode::Kind::Support;
+          mode.support = binormal_support(part, *spec.binormal, spine);
+        }
         std::vector<ShapePtr> parts;
         for (const detail::SweepFace& face : faces) {
           const auto [first, last] = cap_order(range, detail::cap_names(spec.feature, "start", face),
                                                detail::cap_names(spec.feature, "end", face));
           const std::vector<NamedWire> loops = detail::face_loops(face.face, face.edges);
-          const ShapePtr outer = detail::pipe_shell(loops.front(), part, mode, first, last);
+          const ShapePtr outer = detail::pipe_shell(loops.front(), spine, mode, first, last);
           std::vector<ShapePtr> holes;
           for (std::size_t l = 1; l < loops.size(); ++l) {
-            holes.push_back(detail::pipe_shell(loops[l], part, mode, {}, {}));
+            holes.push_back(detail::pipe_shell(loops[l], spine, mode, {}, {}));
           }
           parts.push_back(detail::with_holes(outer, holes, "the sweep"));
         }
@@ -1519,6 +1623,10 @@ struct MovedSide {
   std::string name;
   gp_Dir out;
   double low = 0.0;
+  // The side in the profile's loop, and the way across it away from the
+  // profile.
+  TopoDS_Edge edge;
+  gp_Dir away;
 };
 
 // The edge cut back from its end `at_last` (in the loop's order) to where
@@ -1570,10 +1678,10 @@ std::optional<std::pair<TopoDS_Edge, gp_Pnt>> cut_back(const LoopEdge& e, bool a
 // the pitch moved off them (see kOffCylinder); the loop itself when there
 // are none. `on_cylinder` is set when any side lies on a cylinder. `rise`
 // is the helix's travel along the axis. The sides moved are added to
-// `moved_sides`.
+// `moved_sides`; `touching` is set when any side is as long as the pitch.
 NamedWire off_cylinders(const NamedWire& loop, const TopoDS_Face& face, const gp_Ax1& axis, double pitch,
                         double rise, const std::vector<AxialCylinder>& cylinders, bool& on_cylinder,
-                        std::vector<MovedSide>& moved_sides) {
+                        std::vector<MovedSide>& moved_sides, bool& touching) {
   const gp_Lin line(axis);
   const gp_Vec along(axis.Direction());
   std::vector<LoopEdge> edges;
@@ -1635,6 +1743,7 @@ NamedWire off_cylinders(const NamedWire& loop, const TopoDS_Face& face, const gp
     }
     on_cylinder = on_cylinder || e.on_cylinder;
     any = any || e.touching;
+    touching = touching || e.touching;
     edges.push_back(e);
   }
   if (!any || edges.size() < 3) {
@@ -1690,7 +1799,7 @@ NamedWire off_cylinders(const NamedWire& loop, const TopoDS_Face& face, const gp
     const double low =
         std::min(gp_Vec(axis.Location(), e.first).Dot(along), gp_Vec(axis.Location(), e.last).Dot(along));
     sides.push_back({line.Distance(e.first), gp_Vec(away[i]).Dot(from_axis) < 0.0, e.cylinders, e.name,
-                     gp_Dir(from_axis), low});
+                     gp_Dir(from_axis), low, e.edge, away[i]});
   }
   BRepBuilderAPI_MakeWire wire;
   NamedWire moved;
@@ -1761,9 +1870,16 @@ bool axial_range(const std::vector<TopoDS_Shape>& shapes, const gp_Ax1& axis, do
 // coincides with them, and the turns stay apart there by the corners cut
 // back. The helix turns `sign` (+1 or -1) about the axis and rises `pitch`
 // a turn. `helix` is returned when there is nothing to cut back, and when
-// the cut does not leave one valid solid smaller than it.
+// the cut does not leave one valid solid smaller than it. The shells reach
+// `far` beyond the cylinder and `near` into the profile's side; with
+// `everywhere` they run over the whole helix less the faces, not only
+// where the bodies reach (a core beyond the faces, see helix_brep, would be
+// joined to the bodies where it lies outside them). `failed` (if given) is
+// set when there was something to cut back and the cut did not do it.
 ShapePtr slivers_within_faces(const ShapePtr& helix, const std::vector<MovedSide>& sides, const gp_Ax1& axis,
-                              double pitch, double sign, const std::vector<ShapePtr>& bodies) {
+                              double pitch, double sign, const std::vector<ShapePtr>& bodies,
+                              double far = 10.0 * kOffCylinder, double near = 0.0, bool everywhere = false,
+                              bool* failed = nullptr) {
   if (sides.empty()) {
     return helix;
   }
@@ -1777,11 +1893,11 @@ ShapePtr slivers_within_faces(const ShapePtr& helix, const std::vector<MovedSide
   if (!axial_range({helix->occt()}, axis, z0, z1) || !axial_range(body_shapes, axis, b0, b1)) {
     return helix;
   }
-  // The shells about the cylinders, ten times as wide as the slivers'
-  // reach, over the helix's and the bodies' extent less the faces'.
-  constexpr double kShell = 10.0 * kOffCylinder;
-  const double low = std::max(z0, b0) - 1.0;
-  const double high = std::min(z1, b1) + 1.0;
+  // The shells about the cylinders, `far` beyond them (by default ten
+  // times as wide as the slivers' reach) and `near` into the profile's side,
+  // over the helix's and the bodies' extent less the faces'.
+  const double low = everywhere ? z0 - 1.0 : std::max(z0, b0) - 1.0;
+  const double high = everywhere ? z1 + 1.0 : std::min(z1, b1) + 1.0;
   NCollection_List<TopoDS_Shape> tools;
   std::vector<std::pair<TopoDS_Shape, std::string>> shells;
   for (const MovedSide& side : sides) {
@@ -1801,10 +1917,10 @@ ShapePtr slivers_within_faces(const ShapePtr& helix, const std::vector<MovedSide
     if (high > at + Precision::Confusion()) {
       gaps.emplace_back(at, high);
     }
-    const double inner = side.inwards ? side.radius - kShell : side.radius;
-    const double outer = side.inwards ? side.radius : side.radius + kShell;
+    const double inner = side.inwards ? side.radius - far : side.radius - near;
+    const double outer = side.inwards ? side.radius + near : side.radius + far;
     for (const auto& [from, to] : gaps) {
-      if (to <= std::max(z0, b0) || from >= std::min(z1, b1)) {
+      if (to <= z0 || from >= z1 || (!everywhere && (to <= b0 || from >= b1))) {
         continue;
       }
       // The shell's seam half a turn from where its ends inside the helix
@@ -1849,6 +1965,9 @@ ShapePtr slivers_within_faces(const ShapePtr& helix, const std::vector<MovedSide
   cut.SetNonDestructive(true);
   detail::build(cut);
   if (!cut.IsDone() || cut.HasErrors() || cut.HasWarnings()) {
+    if (failed != nullptr) {
+      *failed = true;
+    }
     return helix;
   }
   int solids = 0;
@@ -1859,7 +1978,13 @@ ShapePtr slivers_within_faces(const ShapePtr& helix, const std::vector<MovedSide
   GProp_GProps after;
   BRepGProp::VolumeProperties(helix->occt(), before, 1.0e-9);
   BRepGProp::VolumeProperties(cut.Shape(), after, 1.0e-9);
-  if (solids != 1 || after.Mass() >= before.Mass() || !detail::is_valid(cut.Shape())) {
+  // (A cut that removes nothing had nothing to cut back, but for the core
+  // beyond the faces, which every gap across the helix meets.)
+  const bool removed = after.Mass() < before.Mass() - 1.0e-9 * std::max(1.0, before.Mass());
+  if (solids != 1 || !removed || !detail::is_valid(cut.Shape())) {
+    if (failed != nullptr && (removed || solids != 1 || everywhere)) {
+      *failed = true;
+    }
     return helix;
   }
   detail::FaceNamer namer(cut.Shape());
@@ -1879,6 +2004,59 @@ ShapePtr slivers_within_faces(const ShapePtr& helix, const std::vector<MovedSide
     }
   }
   return namer.shape();
+}
+
+// A helix whose profile has a side on a cylinder of the bodies about the
+// axis, built as a B-rep whose faces each run all the turns
+// (detail::screwed_brep), as the bodies stored in files keep threads
+// (mitcad#235): the sweep in pieces left a thread's run-out past a body's
+// end face in many small faces, some of them slivers, that a later union
+// could not take. A side as long as the pitch (`sides`, at most one) makes
+// the turns meet in one edge there, as the stored bodies have them (the
+// sweep moved that side 0.1 um off the cylinder instead, which left a strip
+// of it 0.2 um wide between the turns that no rounding of the crest could
+// take). The solid then holds a core beyond that side, out to `depth` and twice that at its middle (a fifth of the
+// room to the next cylinder of the bodies beyond it, at most a tenth of the
+// pitch), so that the turns join along the core's faces; along the bodies'
+// faces on that cylinder the core lies where the boolean changes nothing.
+// Beyond those faces the core is cut away (slivers_within_faces), over the
+// whole helix (a join keeps what lies outside the bodies), and the turns
+// meet in an edge there too. The faces are split every kSpineTurns, the
+// pieces sharing their surface: the booleans meet faces that wind less than
+// half a turn, and the merge after them makes each face whole again.
+ShapePtr helix_brep(const HelixSweepSpec& spec, const detail::SweepFace& face,
+                    const std::vector<AxialCylinder>& cylinders, const std::vector<MovedSide>& sides) {
+  const NamedWire loop = detail::face_loops(face.face, face.edges).front();
+  std::optional<detail::MeetingSide> meeting;
+  double depth = 0.0;
+  if (!sides.empty() && spec.revolutions > 1.0 + 1.0e-9) {
+    const MovedSide& side = sides.front();
+    // The room beyond the side: to the axis, and to the bodies' other
+    // cylinders beyond it along its extent.
+    double room = side.inwards ? side.radius : std::numeric_limits<double>::infinity();
+    const double top = side.low + spec.pitch * (spec.revolutions + 1.0);
+    for (const AxialCylinder& c : cylinders) {
+      const double gap = side.inwards ? side.radius - c.radius : c.radius - side.radius;
+      if (gap > kOnCylinder && c.from < top && c.to > side.low) {
+        room = std::min(room, gap);
+      }
+    }
+    depth = std::min(0.1 * spec.pitch, 0.2 * room);
+    meeting = detail::MeetingSide{side.edge, side.away, depth};
+  }
+  ShapePtr helix =
+      detail::screwed_brep(loop, spec.axis, spec.pitch, spec.revolutions, spec.left_handed,
+                           detail::cap_names(spec.feature, "start", face), detail::cap_names(spec.feature, "end", face),
+                           meeting, kSpineTurns);
+  if (meeting) {
+    bool failed = false;
+    helix = slivers_within_faces(helix, sides, spec.axis, spec.pitch, spec.left_handed ? -1.0 : 1.0, spec.bodies,
+                                 3.0 * depth, 0.0, true, &failed);
+    if (failed) {
+      throw std::runtime_error("the helix's core beyond the bodies' faces could not be cut away");
+    }
+  }
+  return detail::finished(*helix, "the helix");
 }
 
 // How far the faces reach along the axis.
@@ -2060,12 +2238,13 @@ ShapePtr helix_sweep(const HelixSweepSpec& spec) {
     std::vector<std::vector<NamedWire>> face_loops;
     bool on_cylinder = false;
     std::vector<MovedSide> moved_sides;
+    bool touching = false;
     for (const detail::SweepFace& face : faces) {
       std::vector<NamedWire> loops = detail::face_loops(face.face, face.edges);
       if (!cylinders.empty()) {
         for (NamedWire& loop : loops) {
           loop = off_cylinders(loop, face.face, spec.axis, spec.pitch, spec.pitch * spec.revolutions, cylinders,
-                               on_cylinder, moved_sides);
+                               on_cylinder, moved_sides, touching);
         }
       }
       face_loops.push_back(std::move(loops));
@@ -2079,6 +2258,17 @@ ShapePtr helix_sweep(const HelixSweepSpec& spec) {
     // (HelixSweepSpec::piece_shift) always edges of kSpineTurns, the first
     // `piece_shift` long.
     const bool shifted = spec.piece_shift > 0.0;
+    // A single profile of corners (no closed curve) with a side on a
+    // cylinder of the bodies: built as a B-rep whose faces run all the turns
+    // (helix_brep); a side as long as the pitch makes its turns meet. The
+    // booleans on such faces sample, project and merge only the parts of the
+    // faces they work on (OCCT port 0591 to 0593).
+    const bool cornered = faces.size() == 1 && face_loops.front().size() == 1 &&
+                          face_loops.front().front().edges.size() >= 2;
+    if (on_cylinder && !overlapping && !shifted && cornered &&
+        (moved_sides.empty() || (touching && moved_sides.size() == 1 && spec.revolutions > 1.0 + 1.0e-9))) {
+      return helix_brep(spec, faces.front(), cylinders, moved_sides);
+    }
     const std::vector<double> cuts = shifted ? shifted_cuts(spec.revolutions, spec.piece_shift) : std::vector<double>{};
     const int count = shifted ? static_cast<int>(cuts.size()) - 1
                       : on_cylinder || overlapping

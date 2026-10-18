@@ -82,13 +82,13 @@ pub enum EndFrom {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PlaceAt {
-    /// A path from the active component (uids or names); empty for its own
+    /// A path from the BUILD host (uids or names); empty for its own
     /// geometry.
     #[serde(default)]
     pub occurrence: String,
     #[serde(default)]
     pub geometry: Option<GeomRef>,
-    /// Where it was picked, in the active component's coordinates.
+    /// Where it was picked, in the BUILD host's coordinates.
     #[serde(default)]
     pub point: Option<V3>,
     #[serde(default)]
@@ -97,7 +97,7 @@ pub struct PlaceAt {
     pub offset: Option<ValueInput>,
     #[serde(default)]
     pub from: EndFrom,
-    /// On an end: the new part's axis, in the active component's
+    /// On an end: the new part's axis, in the BUILD host's
     /// coordinates; along the target's axis when left out.
     #[serde(default)]
     pub direction: Option<V3>,
@@ -266,7 +266,7 @@ pub(crate) struct SourceUse {
 pub(crate) struct Target {
     pub path: Vec<OccurrenceUid>,
     pub info: PartInfo,
-    /// From its coordinates into the active component's.
+    /// From its coordinates into the BUILD host's.
     pub placement: Transform,
 }
 
@@ -277,7 +277,7 @@ impl Target {
             .ok_or_else(|| refuse(format!("{} has no derived part", self.info.name)))
     }
 
-    /// A frame in the active component's coordinates.
+    /// A frame in the BUILD host's coordinates.
     pub fn frame(&self, name: &str) -> Option<Transform> {
         Some(self.placement.after(self.info.mount(name)?))
     }
@@ -302,7 +302,7 @@ pub(crate) struct RayPlan {
     pub shift: [f64; 3],
     pub shift_by_joint: bool,
     pub direction: RayDirection,
-    /// The start and direction now, in the active component's coordinates
+    /// The start and direction now, in the BUILD host's coordinates
     /// (for previews).
     #[allow(dead_code)]
     pub start: V3,
@@ -318,11 +318,106 @@ pub(crate) struct JointPlan {
     /// The new part's frame that mates.
     pub own: String,
     pub b: JointOrigin,
-    /// b's frame in the active component's coordinates, at the slide.
+    /// b's frame in the BUILD host's coordinates, at the slide.
     pub frame_b: Transform,
     pub flip: bool,
     pub slide_value: Option<(Motion, ValueInput, f64)>,
     pub ray: Option<RayPlan>,
+    /// On a side: how the part stands along the slot (mitcad#394).
+    pub side: Option<SidePlan>,
+    pub warnings: Vec<String>,
+}
+
+/// The new part as planning sees it: its frames and box in its own
+/// coordinates, and its rotation about the axis.
+pub(crate) struct NewPart<'a> {
+    pub mounts: &'a BTreeMap<String, Transform>,
+    pub bounds: Option<&'a BoundingBox>,
+    pub rotate: f64,
+}
+
+/// How far a part reaches along the x axis of the frame its frame `own`
+/// mates with (turned by `rotate`, flipped as joints flip): the least and
+/// the most, 0 without a box.
+pub(crate) fn reach_along_x(
+    bounds: Option<&BoundingBox>,
+    own: &Transform,
+    rotate: f64,
+    flip: bool,
+) -> (f64, f64) {
+    let Some(bounds) = bounds else {
+        return (0.0, 0.0);
+    };
+    let to_frame = crate::joints::alignment(rotate, 0.0, flip).after(&inverse(own));
+    bounds
+        .corners()
+        .map(|c| to_frame.apply_point(c)[0])
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), x| {
+            (lo.min(x), hi.max(x))
+        })
+}
+
+/// A value moved by `by` mm: a number added to, an expression with the
+/// shift written after it.
+fn shifted(value: &ValueInput, by: f64) -> ValueInput {
+    match value {
+        ValueInput::Number(n) => ValueInput::Number(n + by),
+        ValueInput::Name(text) if by.abs() < 1e-9 => ValueInput::Name(text.clone()),
+        ValueInput::Name(text) if by > 0.0 => {
+            ValueInput::Name(format!("({text}) + {}", super::round(by)))
+        }
+        ValueInput::Name(text) => ValueInput::Name(format!("({text}) - {}", super::round(-by))),
+    }
+}
+
+/// A part on a side, along the slot: where it reaches from its joint's
+/// slide, the length it stays within, and the snap a click took.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct SidePlan {
+    /// The part's reach along the slot's x from where its frame meets the
+    /// slot: its near face is at `tx + near`, its far one at `tx + far`.
+    pub near: f64,
+    pub far: f64,
+    /// The target's length along the slot (from end A), when it has one.
+    pub length: Option<f64>,
+    /// How near a snap point a click snaps, mm: one section width at the
+    /// ends, a quarter of it at the middle and the grid points.
+    pub snap: f64,
+    /// The slot's grid (the system's), 0 when it has none.
+    pub grid: f64,
+    /// The snap a click took (`end_a`, `end_b`, `middle`, `grid`), or the
+    /// clamp at an end (`clamped`); None for a click between them or a
+    /// typed offset that fits.
+    pub snapped: Option<&'static str>,
+    /// The near face's distance from end A.
+    pub offset: f64,
+}
+
+impl SidePlan {
+    /// The snap points along the slot: (kind, the near face's distance
+    /// from end A).
+    pub fn snaps(&self) -> Vec<(&'static str, f64)> {
+        let Some(length) = self.length else {
+            return Vec::new();
+        };
+        let width = self.far - self.near;
+        let mut out = vec![("end_a", 0.0)];
+        if length - width > 1e-9 {
+            out.push(("end_b", length - width));
+            out.push(("middle", (length - width) / 2.0));
+        }
+        if self.grid > 1e-9 {
+            let mut d = self.grid;
+            while d < length - width - 1e-9 && out.len() < 1000 {
+                if out.iter().all(|(_, o)| (o - d).abs() > 1e-9) {
+                    out.push(("grid", d));
+                }
+                d += self.grid;
+            }
+        }
+        out.sort_by(|a, b| a.1.total_cmp(&b.1));
+        out
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -361,7 +456,7 @@ pub(crate) struct Plan {
     /// The new part's frames and box in its coordinates, at its length.
     pub mounts: BTreeMap<String, Transform>,
     pub bounds: Option<BoundingBox>,
-    /// Where the new part goes in the active component's coordinates.
+    /// Where the new part goes in the BUILD host's coordinates.
     pub placement: Transform,
     pub target: Option<Target>,
 }
@@ -400,11 +495,12 @@ pub(crate) fn bounds_of<K: Kernel>(kernel: &K, shapes: &[K::Shape]) -> Option<Bo
 }
 
 impl<K: Kernel> Document<K> {
-    /// An occurrence path from the active component.
-    pub(crate) fn path_from_active(&self, text: &str) -> Result<Vec<OccurrenceUid>, ModelError> {
+    /// An occurrence path from the BUILD host ([`Document::build_host`]).
+    pub(crate) fn path_from_host(&self, text: &str) -> Result<Vec<OccurrenceUid>, ModelError> {
         let a = self.assembly();
-        crate::joints::find_path_from(a, a.active, text)
-            .ok_or_else(|| refuse(format!("no occurrence {text} in {}", a.name(a.active))))
+        let host = self.build_host();
+        crate::joints::find_path_from(a, host, text)
+            .ok_or_else(|| refuse(format!("no occurrence {text} in {}", a.name(host))))
     }
 
     /// The source a part input names: the design's, else read through the
@@ -488,7 +584,7 @@ impl<K: Kernel> Document<K> {
     /// The BUILD part a pick names, with its placement.
     pub(crate) fn target(&self, path: &[OccurrenceUid]) -> Option<Target> {
         let component =
-            crate::joints::path_component(self.assembly(), self.assembly().active, path).ok()?;
+            crate::joints::path_component(self.assembly(), self.build_host(), path).ok()?;
         if path.is_empty() {
             return None;
         }
@@ -553,7 +649,7 @@ impl<K: Kernel> Document<K> {
                     }
                     Some(LengthInput::Bound { bind, mode, add }) => LengthPlan::Bound {
                         to: Box::new(BoundTo {
-                            occurrence: OccurrencePath(self.path_from_active(&bind.occurrence)?),
+                            occurrence: OccurrencePath(self.path_from_host(&bind.occurrence)?),
                             geometry: bind.geometry.clone(),
                         }),
                         mode: *mode,
@@ -593,17 +689,33 @@ impl<K: Kernel> Document<K> {
         let touch = if input.flip { "end_b" } else { "end_a" };
         let at = input.at.clone().unwrap_or_default();
         let mut target = None;
+        let new = NewPart {
+            mounts: &mounts,
+            bounds: bounds.as_ref(),
+            rotate,
+        };
         let (spot, place) = match &at.geometry {
             None => {
+                // At the point (the origin), along `at.direction` (+Z).
                 let point = at.point.unwrap_or([0.0; 3]);
-                (Spot::Grounded(Transform::translation(point)), "grounded")
+                let grounded = match at.direction.and_then(unit) {
+                    Some(d) => {
+                        let hint = [super::geometry::X, super::geometry::Y, super::geometry::Z]
+                            .into_iter()
+                            .find(|a| dot(*a, d).abs() < 1.0 - 1e-6)
+                            .unwrap_or(super::geometry::X);
+                        super::geometry::frame(point, hint, d)
+                    }
+                    None => Transform::translation(point),
+                };
+                (Spot::Grounded(grounded), "grounded")
             }
             Some(geometry) => {
-                let path = self.path_from_active(&at.occurrence)?;
+                let path = self.path_from_host(&at.occurrence)?;
                 match self.target(&path) {
                     Some(t) => {
                         let (spot, place) =
-                            self.plan_on_part(&source, &t, geometry, &at, touch, &mounts, &length)?;
+                            self.plan_on_part(&source, &t, geometry, &at, touch, &new, &length)?;
                         target = Some(t);
                         (spot, place)
                     }
@@ -614,6 +726,9 @@ impl<K: Kernel> Document<K> {
                 }
             }
         };
+        if let Spot::Joint(j) = &spot {
+            warnings.extend(j.warnings.iter().cloned());
+        }
         // Where the new part goes.
         let placement = match &spot {
             Spot::Grounded(t) => *t,
@@ -764,10 +879,11 @@ impl<K: Kernel> Document<K> {
         geometry: &GeomRef,
         at: &PlaceAt,
         touch: &str,
-        mounts: &BTreeMap<String, Transform>,
+        new: &NewPart<'_>,
         length: &LengthPlan,
     ) -> Result<(Spot, &'static str), ModelError> {
         let label = source.def.label();
+        let mounts = new.mounts;
         let target_part = target.part()?;
         let point_local = at.point.map(|p| inverse(&target.placement).apply_point(p));
         // What was picked: a frame or a face.
@@ -907,6 +1023,8 @@ impl<K: Kernel> Document<K> {
                         flip,
                         slide_value: None,
                         ray,
+                        side: None,
+                        warnings: Vec::new(),
                     })),
                     "end",
                 ))
@@ -914,10 +1032,10 @@ impl<K: Kernel> Document<K> {
             Pick::Frame(name) => self
                 .plan_mate(source, target, &name, "", None, at, mounts)
                 .map(|spot| (spot, "frame")),
-            Pick::Slot(slot) => self.plan_side(source, target, &slot, at, touch, mounts, length),
+            Pick::Slot(slot) => self.plan_side(source, target, &slot, at, touch, new, length),
             Pick::Face(face) => {
                 let slot = self.pick_slot(target, face.as_ref(), point_local)?;
-                self.plan_side(source, target, &slot, at, touch, mounts, length)
+                self.plan_side(source, target, &slot, at, touch, new, length)
             }
         }
     }
@@ -1016,8 +1134,11 @@ impl<K: Kernel> Document<K> {
         Ok(slots[0].0.clone())
     }
 
-    /// Plans a part on a slot of a profile's side, at the offset from an
-    /// end along it.
+    /// Plans a part on a slot of a profile's side (mitcad#394): its near
+    /// face at the offset from end A (its far face from end B), else where
+    /// the click was, snapped flush with an end within one section width
+    /// of it, or to the middle or a grid point, and kept within the
+    /// target's length.
     #[allow(clippy::too_many_arguments)]
     fn plan_side(
         &self,
@@ -1026,18 +1147,16 @@ impl<K: Kernel> Document<K> {
         slot: &str,
         at: &PlaceAt,
         touch: &str,
-        mounts: &BTreeMap<String, Transform>,
+        new: &NewPart<'_>,
         length: &LengthPlan,
     ) -> Result<(Spot, &'static str), ModelError> {
         let label = source.def.label();
+        let mounts = new.mounts;
         self.check_fits(source, target, slot)?;
         let slot_local = *target
             .info
             .mount(slot)
             .ok_or_else(|| refuse(format!("{} has no frame {slot}", target.info.name)))?;
-        let target_length = target.info.length;
-        let point_local = at.point.map(|p| inverse(&target.placement).apply_point(p));
-        let (value, tx) = self.slide_value(at, &slot_local, point_local, target_length)?;
         // A profile stands on the slot with its end; another part with its
         // frame that mounts on a slot.
         let mounting = own_frame(&source.meta, mounts, &["slot", "face", "hole"]);
@@ -1053,6 +1172,40 @@ impl<K: Kernel> Document<K> {
         };
         // Mating frames face each other: z against z.
         let flip = true;
+        // How far the new part reaches along the slot from its frame.
+        let own_local = mounts.get(&own).copied().unwrap_or(Transform::IDENTITY);
+        let (near, far) = reach_along_x(new.bounds, &own_local, new.rotate, flip);
+        let section = match (new.bounds, source.meta.length.is_some()) {
+            (Some(b), true) => (b.max[0] - b.min[0]).max(b.max[1] - b.min[1]),
+            _ => f64::INFINITY,
+        };
+        let mut side = SidePlan {
+            near,
+            far,
+            length: target.info.length.map(|(_, l)| l),
+            snap: (far - near).min(section).max(0.0),
+            grid: target
+                .info
+                .meta
+                .system
+                .as_ref()
+                .and_then(|s| s.grid)
+                .filter(|g| *g > 0.0)
+                .unwrap_or(0.0),
+            snapped: None,
+            offset: 0.0,
+        };
+        let point_local = at.point.map(|p| inverse(&target.placement).apply_point(p));
+        let mut warnings = Vec::new();
+        let (value, tx) = self.side_value(
+            at,
+            &slot_local,
+            point_local,
+            target.info.length,
+            &mut side,
+            &mut warnings,
+            &format!("{label} stays on {}", target.info.name),
+        )?;
         let frame_b = target
             .placement
             .after(&slot_local)
@@ -1083,13 +1236,103 @@ impl<K: Kernel> Document<K> {
                 flip,
                 slide_value: Some((Motion::Tx, value, tx)),
                 ray,
+                side: Some(side),
+                warnings,
             })),
             "side",
         ))
     }
 
-    /// The offset along a slot or rail: `at.offset` from end A or B, else
-    /// the pick's distance along it, between the ends.
+    /// The slide along a slot of a part on a side (`position.tx`, the
+    /// distance of the part's frame from end A): from `at.offset` to the
+    /// near face (from end A) or the far face (from end B), else from the
+    /// click, snapped; kept within the target's length (a typed offset
+    /// that would overhang is clamped with a warning, `what` naming it).
+    #[allow(clippy::too_many_arguments)]
+    fn side_value(
+        &self,
+        at: &PlaceAt,
+        slot_local: &Transform,
+        point_local: Option<V3>,
+        target_length: Option<(ParamId, f64)>,
+        side: &mut SidePlan,
+        warnings: &mut Vec<String>,
+        what: &str,
+    ) -> Result<(ValueInput, f64), ModelError> {
+        let (near, far) = (side.near, side.far);
+        let along = |p: V3| dot(sub(p, slot_local.translation), x_axis(slot_local));
+        let (value, tx) = match (&at.offset, at.from) {
+            (Some(offset), EndFrom::A) => {
+                let distance = value_in(self, offset, Unit::MM)?;
+                (shifted(offset, -near), distance - near)
+            }
+            (Some(offset), EndFrom::B) => {
+                let Some((id, l)) = target_length else {
+                    return Err(refuse("the part has no end B to measure from"));
+                };
+                let distance = value_in(self, offset, Unit::MM)?;
+                let name = self.parameters().name(id);
+                let text = match offset {
+                    ValueInput::Number(n) => format!("{name} - {}", super::round(*n + far)),
+                    ValueInput::Name(text) if far.abs() < 1e-9 => format!("{name} - ({text})"),
+                    ValueInput::Name(text) => {
+                        format!("{name} - ({text}) - {}", super::round(far))
+                    }
+                };
+                (ValueInput::Name(text), l - distance - far)
+            }
+            (None, _) => {
+                // The part centred on the click, then snapped.
+                let middle = (near + far) / 2.0;
+                let mut tx = point_local.map_or(-near, along) - middle;
+                if let Some(l) = side.length {
+                    let face = tx + near;
+                    let fine = side.snap / 4.0;
+                    if face < side.snap {
+                        tx = -near;
+                        side.snapped = Some("end_a");
+                    } else if l - (tx + far) < side.snap {
+                        tx = l - far;
+                        side.snapped = Some("end_b");
+                    } else if (tx + middle - l / 2.0).abs() < fine {
+                        tx = l / 2.0 - middle;
+                        side.snapped = Some("middle");
+                    } else if side.grid > 0.0 {
+                        let grid = (face / side.grid).round() * side.grid;
+                        if (face - grid).abs() < fine.min(side.grid / 4.0) {
+                            tx = grid - near;
+                            side.snapped = Some("grid");
+                        }
+                    }
+                }
+                (ValueInput::Number(tx), tx)
+            }
+        };
+        // Never past an end of the target (a part longer than the target
+        // stays flush with end A).
+        let kept = match side.length {
+            Some(l) => tx.min(l - far).max(-near),
+            None => tx,
+        };
+        side.offset = kept + near;
+        if (kept - tx).abs() <= 1e-9 {
+            return Ok((value, tx));
+        }
+        if at.offset.is_some() {
+            warnings.push(format!(
+                "{what}: the offset from end A is {} mm instead",
+                super::round(kept + near)
+            ));
+        }
+        if side.snapped.is_none() {
+            side.snapped = Some("clamped");
+        }
+        Ok((ValueInput::Number(kept), kept))
+    }
+
+    /// The offset along a rail a part that moves on it slides by
+    /// (`at.offset` from end A or B, else the pick's distance along it),
+    /// between the ends.
     fn slide_value(
         &self,
         at: &PlaceAt,
@@ -1203,12 +1446,14 @@ impl<K: Kernel> Document<K> {
             flip,
             slide_value,
             ray: None,
+            side: None,
+            warnings: Vec::new(),
         })))
     }
 
-    /// Plans the first part: on a plane, a point or a face (of the active
-    /// component, or of an occurrence that is no BUILD part), at the
-    /// picked point.
+    /// Plans the first part: on a plane, a point or a face (of the BUILD host,
+    /// or of an occurrence that is no BUILD part), at the picked point, along
+    /// `at.direction` when given.
     fn plan_on_geometry(
         &self,
         source: &SourceUse,
@@ -1230,11 +1475,30 @@ impl<K: Kernel> Document<K> {
                 .or_else(|| mounts.keys().next().cloned())
                 .ok_or_else(|| refuse(format!("{label} has no frames")))?
         };
-        let override_frame = point_local.map(|p| FrameOverride {
-            origin: Some(p),
-            z_axis: None,
-            x_axis: None,
+        // The axis the part runs along (`at.direction`, in the host's
+        // coordinates, mitcad#394): the frame's z turned to it, unless it is
+        // the frame's own; its first axis not along it keeps the roll.
+        let turn = at
+            .direction
+            .and_then(unit)
+            .map(|d| unit(inverse(&placement).apply_vector(d)).unwrap_or(d))
+            .filter(|d| dot(*d, z_axis(&local)) < 1.0 - 1e-9);
+        let hint = turn.map(|d| {
+            let [_, ex, ey, ez] = parts(&local);
+            [ex, ey, ez]
+                .into_iter()
+                .find(|a| dot(*a, d).abs() < 1.0 - 1e-6)
+                .unwrap_or(ex)
         });
+        let override_frame = (point_local.is_some() || turn.is_some()).then_some(FrameOverride {
+            origin: point_local,
+            z_axis: turn,
+            x_axis: hint,
+        });
+        let direction = match turn {
+            Some(d) => RayDirection::Vector(inverse(&local).apply_vector(d)),
+            None => RayDirection::default(),
+        };
         let mut at_point = local;
         if let Some(o) = &override_frame {
             at_point = crate::joints::apply_override(&local, o).map_err(refuse)?;
@@ -1261,17 +1525,21 @@ impl<K: Kernel> Document<K> {
                 },
                 shift: [shift[0], shift[1], 0.0],
                 shift_by_joint: false,
-                direction: RayDirection::default(),
+                direction,
                 start: frame_b.translation,
                 along: z_axis(&frame_b),
             }),
+            side: None,
+            warnings: Vec::new(),
         })))
     }
 
     /// Places a part (`build_place`).
     pub fn build_place(&mut self, input: &PlaceInput) -> Result<Placed, ModelError> {
         let plan = self.plan_place(input)?;
-        let active = self.active_component();
+        // In the BUILD host: the active component, or the nearest one up
+        // that takes components (mitcad#394).
+        let active = self.build_host();
         self.state().editable(active)?;
         let label = format!(
             "Place {}",
@@ -1540,9 +1808,13 @@ pub(crate) fn make_part(
                 },
                 shift: t.translation,
                 shift_by_joint: false,
-                direction: RayDirection::default(),
+                direction: if dot(z_axis(t), super::geometry::Z) > 1.0 - 1e-9 {
+                    RayDirection::default()
+                } else {
+                    RayDirection::Vector(z_axis(t))
+                },
                 start: t.translation,
-                along: super::geometry::Z,
+                along: z_axis(t),
             }),
         }
         .ok_or_else(|| refuse("the length cannot be bound here"))?;
@@ -1621,15 +1893,16 @@ impl<K: Kernel> Document<K> {
             .part
             .ok_or_else(|| refuse(format!("{} has no derived part", info.name)))?;
         let length_name = info.meta.length.as_ref().map(|l| l.parameter.clone());
+        let host = self.build_host();
         // Checks that need the document as it is.
         let mut bind_plan = None;
         if let Some(LengthInput::Bound { bind, mode, add }) = &input.length {
             let length_name = length_name
                 .clone()
                 .ok_or_else(|| refuse(format!("{} is not cut to length", info.name)))?;
-            let to_path = self.path_from_active(&bind.occurrence)?;
+            let to_path = self.path_from_host(&bind.occurrence)?;
             let to_component =
-                crate::joints::path_component(self.assembly(), self.active_component(), &to_path)
+                crate::joints::path_component(self.assembly(), self.build_host(), &to_path)
                     .map_err(refuse)?;
             self.check_bind(component, to_component)?;
             let ray = self.part_ray(&info)?;
@@ -1707,21 +1980,28 @@ impl<K: Kernel> Document<K> {
                 from,
             }) => {
                 let joint = joint.ok_or_else(|| refuse(format!("{} has no joint", info.name)))?;
-                let (target_length, target_name) = self.joint_target_length(joint);
+                let (_, target_name) = self.joint_target_length(joint);
+                // On a side the offset is to the part's near face (from
+                // end A) or its far face (from end B), as `build_place`
+                // measures it (mitcad#394).
+                let (near, far) = self.side_reach(&info, joint, rotate);
                 let value = match (from.unwrap_or_default(), offset) {
-                    (EndFrom::A, value) => value.clone(),
+                    (EndFrom::A, value) => shifted(value, -near),
                     (EndFrom::B, value) => {
                         let Some(name) = target_name else {
                             return Err(refuse("the part it is on has no end B to measure from"));
                         };
-                        let _ = target_length;
                         match value {
                             ValueInput::Number(n) => {
-                                ValueInput::Name(format!("{name} - {}", super::round(*n)))
+                                ValueInput::Name(format!("{name} - {}", super::round(*n + far)))
                             }
-                            ValueInput::Name(text) => {
+                            ValueInput::Name(text) if far.abs() < 1e-9 => {
                                 ValueInput::Name(format!("{name} - ({text})"))
                             }
+                            ValueInput::Name(text) => ValueInput::Name(format!(
+                                "{name} - ({text}) - {}",
+                                super::round(far)
+                            )),
                         }
                     }
                 };
@@ -1807,9 +2087,10 @@ impl<K: Kernel> Document<K> {
                         } else {
                             None
                         };
-                        let active = state.assembly.active;
+                        // In the BUILD host, whose paths `to` and the
+                        // joint use.
                         let uid = add_bound(
-                            state, active, part, &name, &ray, shift_x, &to, mode, add, first,
+                            state, host, part, &name, &ray, shift_x, &to, mode, add, first,
                         )?;
                         if let Some(record) = state
                             .assembly
@@ -1934,6 +2215,42 @@ impl<K: Kernel> Document<K> {
             Some((id, v)) => (Some(v), Some(self.parameters().name(id))),
             None => (None, None),
         }
+    }
+
+    /// How far a part on a profile's side reaches along the slot from its
+    /// joint's slide ([`reach_along_x`]), at the rotation `rotate` (else
+    /// its joint's); (0, 0) for a part placed otherwise (on an end, on a
+    /// rail).
+    fn side_reach(&self, info: &PartInfo, joint: FeatureUid, rotate: Option<f64>) -> (f64, f64) {
+        let Some(entry) = self.feature(joint) else {
+            return (0.0, 0.0);
+        };
+        let FeatureDef::Joint(j) = &entry.def else {
+            return (0.0, 0.0);
+        };
+        let (GeomRef::Mount { name: own, .. }, GeomRef::Mount { name: on, .. }) =
+            (&j.a.geometry, &j.b.geometry)
+        else {
+            return (0.0, 0.0);
+        };
+        let on_slot =
+            crate::joints::path_component(self.assembly(), entry.component, &j.b.occurrence.0)
+                .ok()
+                .and_then(|c| self.part_info(c))
+                .is_some_and(|t| t.frame_kind(on) == "slot");
+        if j.kind != JointKind::Slider || !on_slot {
+            return (0.0, 0.0);
+        }
+        let own = info.mount(own).copied().unwrap_or(Transform::IDENTITY);
+        let angle = rotate
+            .or_else(|| j.angle.and_then(|id| self.parameters().value(id)))
+            .unwrap_or(0.0);
+        reach_along_x(
+            self.part_bounds(info.component).as_ref(),
+            &own,
+            angle,
+            j.flip,
+        )
     }
 
     /// The ray a placed part's length is measured along: from the frame its

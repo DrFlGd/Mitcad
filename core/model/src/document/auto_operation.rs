@@ -106,6 +106,10 @@ fn choose_operation<K: Kernel>(
     };
     let mut near = Vec::new();
     for (uid, shape) in bodies {
+        // Mesh bodies are neither joined nor cut (mitcad#399).
+        if crate::features::surface_bodies::is_mesh(kernel, *shape) {
+            continue;
+        }
         let meets = match (&tool_box, kernel.enclosing_box(shape)) {
             (_, Ok(None)) => false,
             (Some(tool_box), Ok(Some(body_box))) => boxes_meet(tool_box, &body_box, BOX_SLACK),

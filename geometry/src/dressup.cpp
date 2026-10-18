@@ -563,6 +563,36 @@ ShapePtr join_at_turn_stops(const ShapePtr& rounded,
   return joined;
 }
 
+// Where OCCT's chamfer is made of pieces on one surface (cut by the faces
+// beyond over a gap or up to its ends, port patches 0650 and 0671), its
+// contacts along the pieces meet at vertices of their own, two edges each
+// between the same two faces. The chamfers in the files have one edge there
+// (and OCCT's later roundings of the edges beside them fail at those
+// vertices): the result's vertices that are not the input's and where only
+// two edges meet, for join_at_turn_stops to join.
+NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> piece_vertices(const Shape& result, const Shape& input) {
+  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> pieces;
+  NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher> edges_of;
+  TopExp::MapShapesAndUniqueAncestors(result.occt(), TopAbs_VERTEX, TopAbs_EDGE, edges_of);
+  ShapeMap old;
+  TopExp::MapShapes(input.occt(), TopAbs_VERTEX, old);
+  for (int v = 1; v <= edges_of.Extent(); ++v) {
+    if (edges_of(v).Extent() != 2 || old.Contains(edges_of.FindKey(v))) {
+      continue;
+    }
+    const TopoDS_Vertex& vertex = TopoDS::Vertex(edges_of.FindKey(v));
+    const gp_Pnt p = BRep_Tool::Pnt(vertex);
+    bool at_old = false;
+    for (int o = 1; o <= old.Extent() && !at_old; ++o) {
+      at_old = BRep_Tool::Pnt(TopoDS::Vertex(old(o))).Distance(p) <= BRep_Tool::Tolerance(vertex);
+    }
+    if (!at_old) {
+      pieces.Add(vertex);
+    }
+  }
+  return pieces;
+}
+
 // The two faces of a body edge; throws for a free edge.
 std::pair<int, int> edge_face_pair(const Shape& body, int edge) {
   const std::vector<int> faces = detail::faces_at_edge(body, edge);
@@ -1490,6 +1520,7 @@ ShapePtr bevel(const std::string& feature, const Shape& body, const std::vector<
     throw std::runtime_error("chamfer failed; the distance may be too large for the edges");
   }
   ShapePtr result = join_at_turn_stops(name_result(maker, feature, "chamfer", body), maker.ChainTurnStops());
+  result = join_at_turn_stops(result, piece_vertices(*result, body));
   if (!setbacks.empty()) {
     return detail::setback_corners(feature, "chamfer", body, *result, setbacks);
   }
@@ -2104,6 +2135,7 @@ ShapePtr fillet(const std::string& feature, const Shape& input, const std::vecto
   for (const FilletSet& set : sets) {
     check_fillet_set(set);
   }
+  detail::require_surfaces(input.occt(), "fillet");
   const std::vector<int> owner = select_edges(input, sets);
   std::vector<char> blended(sets.size(), 0);
   bool any_blended = false;
@@ -2162,6 +2194,7 @@ ShapePtr fillet(const std::string& feature, const Shape& body, const std::vector
 
 ShapePtr chamfer(const std::string& feature, const Shape& input, const std::vector<ChamferSet>& sets,
                  ChamferCorner corner) {
+  detail::require_surfaces(input.occt(), "chamfer");
   for (const ChamferSet& set : sets) {
     const ChamferSpec& spec = set.spec;
     detail::require_positive("chamfer distance", spec.distance);

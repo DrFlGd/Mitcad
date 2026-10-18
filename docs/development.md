@@ -430,7 +430,7 @@ Run in the isolated environments:
 | `MITCAD_AUTOSAVE_DIR`, `MITCAD_TEST_AUTOSAVE_SECONDS` | Recovery folder and autosave interval. |
 | `MITCAD_TEST_RECOMPUTE_DELAY_MS=n[,job=m...]` | Every feature computed in a job takes n ms longer (`400,undo=800`), to exercise the progress dialog. |
 | `MITCAD_COMPUTE_INLINE=1` | Jobs on the UI thread, for a debugger. |
-| `MITCAD_TEST_OCCT_CRASH=<operation>` | That kernel operation (e.g. `fillet`) crashes like an access violation in OCCT; also in `mitcad-cli`. |
+| `MITCAD_TEST_OCCT_CRASH=<operation>` | That kernel operation (e.g. `fillet`, or Section Analysis' `clip` and `section`) crashes like an access violation in OCCT; also in `mitcad-cli`. |
 | `MITCAD_TEST_OCCT_OUT_OF_MEMORY=<operation>` | An allocation in that kernel operation (e.g. `extrude`) fails with `std::bad_alloc`: the operation fails "out of memory" (mitcad#80). |
 | `MITCAD_TEST_OCCT_ALLOCATION_FAILS=<operation>` | An allocation of OCCT's collections fails in that kernel operation (e.g. `extrude`) or in the healing of a body built from B-rep data (`heal`), and is caught there as OCCT's checker catches its failures: only OCCT's count of failed allocations tells, and the operation or the body's build fails "out of memory" (mitcad#132). |
 | `MITCAD_CHECK_INPUTS=1` | Report operations that modify their input shapes ([architecture](architecture.md#geometry-kernel)). |
@@ -774,6 +774,18 @@ or corpus test reads them):
   the build type);
 - its script and the test library (`UI_LIBRARY`: `tools/ui-test-lib.sh`,
   `ui-image-stats.py`, `xwd2png.py`);
+- the main window's layout as the built application lays it out:
+  `tools/ui-layout.sh` starts Mitcad with the demo design on a hidden Xvfb
+  display once per check (also in a dry run, with the last build) and
+  takes its `Window layout:` line, the window's size and minimum size and
+  where the menu bar, the toolbars, the docks, the status bar and the 3D
+  view are (kept as `check-logs/ui-layout.txt`). Every UI test clicks and
+  takes screenshots in that window, so a change that moves or resizes any
+  of it reruns every UI test, whichever files it was in (mitcad#412: a row
+  added to the sketch palette made the window 9 px taller, and
+  `ui-report`, which declares only `app/report`, was skipped until main
+  failed). When the layout cannot be read, no UI test is skipped and no
+  pass is kept;
 - for the smoke set (`UI_SMOKE`: `ui-smoke`, `ui-workflow`, `ui-command`,
   `ui-file`) also everything the application is built from (`UI_COMMON`:
   `app/`, `geometry/`, `core/`).
@@ -781,8 +793,17 @@ or corpus test reads them):
 So a change in `app/sketch` reruns the sketch tests and the smoke set, one
 in `app/MainWindow.cpp`, `geometry/` or `core/model` only the smoke set
 (the full check runs the rest), and one only in `core/vcs` the tests that
-declare it and the smoke set. A test that comes to exercise another area
-must declare it, else changes there skip it until the full check.
+declare it and the smoke set; a change anywhere that alters the window's
+layout reruns them all. A test that comes to exercise another area
+must declare it, else changes there skip it until the full check. The
+rule for what to declare: the areas whose behaviour the test checks (the
+dialogs, panels and commands it drives, the crates behind them, the tools
+that make its designs); what every test shares, the window and its
+layout, is covered by the layout line, so a test does not declare
+`app/MainWindow.cpp` only because it runs in the window. A panel or page
+that is longer than its dock scrolls (command panels, the docked sketch
+palette) rather than raising the window's minimum size, so adding rows to
+it leaves the layout, and the other tests, as they were.
 `--ui all` runs every UI test; a test named in `--only` (`--only
 ui-sketch`) always runs. Passes of the ctests, the UI tests and the corpus
 are kept only from runs that built (the build step ran), so a run on an
@@ -957,6 +978,9 @@ whose sketch holds a projection that no longer follows: queries and
 `document_save` and `ui_log`. `app.ui-windows-mcp`
 (`tools/ui-windows-mcp-test.ps1`) drives the same flow from PowerShell
 through `mitcad-cli.exe mcp --connect` in the Windows VM's session 0.
+The Linux UI test `ui-mcp-files-camera` (`tools/ui-mcp-files-camera-test.sh`)
+drives the bridge from the shell (jq, two FIFOs) for Save As and Open into
+the folders agents may use and for the camera (mitcad#402, mitcad#405).
 
 Follow the focused checks with `tools/check-all.sh` in the Linux isolated
 environment and the documented Windows and macOS builds with CTest.

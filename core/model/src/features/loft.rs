@@ -402,6 +402,14 @@ impl<K: Kernel> Evaluate<K> for LoftDef {
                     };
                     let (output, mut regions) =
                         profile_regions(ctx, std::slice::from_ref(&profile)).map_err(at)?;
+                    // A section a sketch change split (mitcad#407) lofts its
+                    // main piece, the one listed first in the warning.
+                    if regions.len() > 1 {
+                        ctx.warn(at(format!(
+                            "a loft section is one region; of the pieces of {} the first is used",
+                            profile.region
+                        )));
+                    }
                     let region = regions.remove(0);
                     if region.loops.len() > 1 {
                         return Err(at(format!(
@@ -412,7 +420,7 @@ impl<K: Kernel> Evaluate<K> for LoftDef {
                     Found::Region(output.frame, region)
                 }
                 LoftSectionDef::Face { body, face } => {
-                    let shape = ctx.body(*body).map_err(at)?;
+                    let shape = ctx.surface_body(*body).map_err(at)?;
                     let face = ctx
                         .face_or(&shape, face, || format!("body {body} has no face {face}"))
                         .map_err(at)?;

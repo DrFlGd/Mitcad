@@ -146,13 +146,38 @@ impl<K: Kernel> Document<K> {
         all
     }
 
-    /// The placement of a component in the active component's
-    /// coordinates, by the path from it, and the path.
-    pub(crate) fn placed_in_active(&self, component: ComponentUid) -> Option<Vec<OccurrenceUid>> {
+    /// The component BUILD places parts in (mitcad#394): the active one
+    /// when its policy takes components, else the nearest one up from it
+    /// that takes them and can be edited, as the design policy puts a new
+    /// component beside a part ("goes beside it", mitcad#292). In a new
+    /// design (Part1 active) that is the root. The active component when
+    /// none up takes components.
+    pub(crate) fn build_host(&self) -> ComponentUid {
         let a = self.assembly();
         let active = a.active;
+        if a.policy(active).components {
+            return active;
+        }
+        let Ok(path) = crate::links::first_path(a, active, None) else {
+            return active;
+        };
+        (0..path.len())
+            .rev()
+            .find_map(|i| {
+                let parent = a.occurrence(path[i])?.parent;
+                (a.policy(parent).components && self.state().editable(parent).is_ok())
+                    .then_some(parent)
+            })
+            .unwrap_or(active)
+    }
+
+    /// The path of a component from the BUILD host
+    /// ([`Document::build_host`]): its placement there is the path's.
+    pub(crate) fn placed_in_host(&self, component: ComponentUid) -> Option<Vec<OccurrenceUid>> {
+        let a = self.assembly();
+        let host = self.build_host();
         let mut found = None;
-        let mut todo: Vec<(ComponentUid, Vec<OccurrenceUid>)> = vec![(active, Vec::new())];
+        let mut todo: Vec<(ComponentUid, Vec<OccurrenceUid>)> = vec![(host, Vec::new())];
         while let Some((c, path)) = todo.pop() {
             if c == component && !path.is_empty() {
                 found = Some(path);
@@ -170,13 +195,14 @@ impl<K: Kernel> Document<K> {
         found
     }
 
-    /// The active component's placement in the design.
-    pub(crate) fn active_placement(&self) -> Transform {
+    /// The BUILD host's placement in the design.
+    pub(crate) fn host_placement(&self) -> Transform {
         let a = self.assembly();
-        if a.active.is_root() {
+        let host = self.build_host();
+        if host.is_root() {
             return Transform::IDENTITY;
         }
-        a.paths_to(a.active)
+        a.paths_to(host)
             .first()
             .map_or(Transform::IDENTITY, |path| self.path_transform(path))
     }

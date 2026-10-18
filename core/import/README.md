@@ -35,7 +35,7 @@ Entry points:
 | Module | |
 |---|---|
 | `params.rs` | User and model parameters with the file's names and expressions, in dependency order. Expressions that do not evaluate become values; names Mitcad reserves get `_1`. A model parameter is adopted by the feature or sketch that made it (`Document::adopt_parameters`). |
-| `sketch.rs` | Points, lines, circles, arcs (counter-clockwise), ellipses, splines (control points, weights, full knots), texts (style, flips, multi-line frame and alignment, text along or fitted to a path), constraints and dimensions by type. Ids are renumbered into Mitcad's one id space (points first). Positions are the file's stored solution; the sketch is accepted when Mitcad's solve keeps them (1e-4 mm), else retried with driven dimensions, then without constraints (`partial`). `sketch/groups.rs`: polygons, sketch patterns, offsets and concentric circle dimensions (*Sketch patterns, offsets and polygons* below). |
+| `sketch.rs` | Points, lines, circles, arcs (counter-clockwise), ellipses, splines (control points, weights, full knots), texts (style, flips, multi-line frame and alignment, text along or fitted to a path), constraints and dimensions by type. Ids are renumbered into Mitcad's one id space (points first). Positions are the file's stored solution; the sketch is accepted when Mitcad's solve keeps them (1e-4 mm), or keeps them within the import's geometric tolerance with the sketch's regions the file's (*A sketch solved within the geometric tolerance* below), else retried with driven dimensions, then without constraints (`partial`). `sketch/groups.rs`: polygons, sketch patterns, offsets and concentric circle dimensions (*Sketch patterns, offsets and polygons* below). |
 | `features.rs` | Sketch planes (origin planes; imported construction planes with the exact frame as `frame`; planar faces found geometrically; else a fixed construction plane), construction planes (from the entities the decoder reads, mitcad#178: offset, angle, tangent, mid plane, two edges, along a path; through three points, tangent at a point, offset through a point, mitcad#186; else offset from an origin plane or a face found by distance; each checked against the file's plane; else fixed), construction points (at a vertex, at the centre of a circle, where three planes meet) and axes (through two points, along an edge or sketch line, through a round face, where two planes meet) checked against where the file has them (mitcad#186; else fixed), extrude, revolve, fillet, chamfer. |
 | `ops.rs` | Combine, mirror, circular and rectangular patterns, shell, offset faces, move, split body, hole, thread, replace face — from external dumps (SCHEMA.md §2), or from the history when the stream decoder gives no inputs (see below). |
 | `sweeps.rs` | Sweeps, pipes and lofts (*Sweeps, pipes and lofts* below). |
@@ -8052,6 +8052,184 @@ designs' items unchanged with the patch):
 | two roundings ending at a sliver's crease | 0 / 1 | `61526c66` 12 (11 of 14, unchanged) |
 | roundings onto an earlier rounding across a sharp edge | 0 / 2 | `6418ebb1`, `920a1cef` 45 (40 of 50 each, unchanged) |
 
+### Fillet corners left after round 5 of mitcad#343
+
+The two items the section above left, traced again on the history's stored
+bodies before and after the item and through OCCT's fillet alone.
+
+**A rounding whose narrow face runs out before the end of its chain**
+(`61526c66` item 12, radius 0.1). The file names, on each side, the
+torus's edge with the B-spline face (a), a piece 6.7 µm long (b) and the
+torus's edge with the planar sliver up to its cusp (c), as one tangent
+chain; the history's stored body before the item has exactly those edges.
+
+- The chain: in the file's own state the edges a, b and c continue each
+  other to 1e-14 rad at both vertices on both sides (the turn of 1e-4 rad
+  seen before is the replay's, whose sliver edge runs 1e-4 rad off). No
+  angle stops the chain, and the file's references take c in. The stored
+  body after the item rounds c only near A, differently on the two mirrored
+  sides although the input is mirror-symmetric: on one side the blend runs
+  0.28 past A until its contact on the torus meets c, cut there by the
+  sliver's plane; on the other the sliver's plane, grown, cuts the blend
+  0.24 before A. Beyond that the stored bodies keep c sharp. No rule of the
+  geometry gives either end; the rounding along the rest of c is left to
+  the kernel (below).
+- The first deviation was OCCT's: the B-spline face's contact leaves that
+  face across its convex edge with another torus 0.0965 before A (inside
+  the spine), where the ball has to roll on that edge (as the stored bodies
+  do, within 3 µm). The chain's one guide reaches both ends of the spine,
+  so the walk's end handling took that edge for the end region and ran the
+  blend on over the B-spline's surface beyond it until the torus's contact
+  met c; the stripe stopped there and the corner at the end failed. Fixed
+  in OCCT (port patch 0620, `ChFi3d_ObstacleBeforeEnd`): such an edge (a
+  convex edge whose face beyond does not hold the end vertex) is an
+  obstacle, and the walk goes on rolling on it and on the sliver's edge
+  that continues it.
+
+Now the file's definition builds on the replay's body: valid, 195 faces
+(the stored body after the item 193), its change of volume 0.0097 mm³
+against the file's 0.0012 (2.8e-6 of the body): the rounding goes on along
+c, the ball touching the torus and rolling on the sliver's far edge, where
+the file keeps c sharp. The item is parametric and verified. The next item
+(13, a fillet of the item's result) still falls back: its walk between the
+two faces fails.
+Test: a wall on a floor that narrows before the end in
+`geometry/tests/test_fillet_corners.cpp` (OCCT only; without the patch the
+rounding stopped where the floor's contact met the floor's far edge).
+
+**Two roundings across a sharp edge at 20 degrees** (`6418ebb1`,
+`920a1cef` item 45, radius 0.5). The import now takes the two lost
+references as the edges that join the found ones end to end along their
+common face (the torus's edges with the two narrow cylinders): the file's
+five edges, after the three found ones alone (`joining_edges`, as many as
+the references lost, on one face only; unit test in
+`core/import/src/features.rs`). OCCT fails on them as before. Its walk of
+each narrow cylinder's rounding (the cylinder a strip 1.3 wide between the
+big torus, an earlier rounding of 0.6 and the plane at both ends) has its
+contact on the cylinder reach the cylinder's short edges with the plane
+0.9 before each vertex, where the plane holds the vertex: the end handling
+runs the blend on over the cylinder's surface past them up to where the
+torus's contact meets an edge; the file's rounding rolls on over the
+earlier rounding there. The corner of that stripe with the big one at each
+20-degree vertex then fails ("two faces met round the vertex share no
+edge"). The stored body before the item is itself invalid (edge and vertex
+tolerances up to 0.46). What is needed: the cylinder's rounding run on
+over the earlier rounding up to the vertex, and a corner of two roundings
+across the sharp edge between the plane and the cylinder.
+
+Imported again by content id (features parametric, before → after; final
+bodies as before; with the patch the other designs' items are as without it:
+`5ef2dbd5` 80 of 98, `a9e82a9a` and `de7b8b9d` 181 of 199, `52ba7a15` and
+`0c99fb88` 97 of 110):
+
+| Class | Items achieved / target | Designs |
+|---|---|---|
+| a narrow face running out before the end of the chain | 1 / 1 | `61526c66` 12: 11 → 12 of 14 (inputs read 6, inferred 0 → 1) |
+| roundings onto an earlier rounding across a sharp edge | 0 / 2 | `6418ebb1`, `920a1cef` 45 (40 of 50 each, unchanged) |
+
+### Fillet corners left after round 6 of mitcad#343
+
+Traced again on the dumped inputs (the history's stored body before the
+item) through OCCT's fillet alone, with traces of the walks, the stripes'
+ends and the corners. Nothing in the import or the port changed in this
+round: no item below was brought to build the file's result.
+
+**`6418ebb1`, `920a1cef` item 45 (radius 0.5): one rounding over two narrow
+strips, cut by them in a notch.** The torus's three edges with the plane
+are three stripes, broken by two strips of one cylinder (r 2.5, a boss
+standing on the plane, 1.3 wide) between the torus and earlier roundings of
+0.6 (tori tangent to the plane), the plane's contact running onto those
+roundings there. The bodies stored in the file have
+one rounding face across each strip: the ball keeps touching the torus and
+the earlier rounding over the strip, the strip's edge with the torus lies
+under it, and of the strip only a lens is left (area 1.2 of 2.3), between
+the rounding and the earlier one.
+
+- The first deviation: the two stripes on either side of the first strip
+  are one rolling ball. Walked on from the end of one (the earlier
+  rounding's surface unbounded), its contact on the earlier rounding leaves
+  that face across its edge with the strip at the file's lens vertex
+  (503.058, −289.287, −3.482) and comes back across the same edge at the
+  other lens vertex (503.333, −288.959, −3.263), where the other stripe's
+  walk starts: the two sections agree within 1.4e-5 and 4e-6. OCCT instead
+  cut the first walk back to the spine's end (the walk past it, `0077`'s
+  speed rule) and ended each stripe at its own vertex of the strip, a corner
+  of one stripe each, which fails ("Failed to find edge" and "Failed to get
+  p-curve of edge"; with the file's five edges, the corners of two stripes
+  across the strip's sharp edge with the plane fail the same way).
+- What the join needs, and why OCCT's stripes cannot hold it: the boss cuts
+  the joined blend along a curve 3.80 long between those two vertices
+  0.48 apart (the file's edge between the rounding and the lens). From the
+  point where the contact leaves the earlier rounding the cut runs back,
+  through the band between the contacts, to the section where both
+  contacts are still on their faces (it crosses the end section of the
+  walk past the spine's end, at least 0.33 back along the guide, where the boss pierces
+  the middle of the band), and on to the other vertex. The rounding face is
+  one face with a notch in its side: over that stretch each section of the
+  blend is two spans, the boss's part between them. A stripe's pieces
+  (`ChFiDS_SurfData`, `ChFi3d_KPartCutPiece`) hold one span per section, a
+  side cut by a face beyond only where the contact itself is off its face;
+  a trial join of the two stripes (walk on, cut by the strip, meet at the
+  common section as free ends, as `ChFi3d_JoinAcrossNotches` does for
+  analytic blends) found the common section but no cut piece: the
+  intersection of the blend with the boss is two lines meeting outside the
+  piece. What is needed: a blend face trimmed by the boss as a face of the
+  result, not as a piece of a stripe.
+- The second strip: the stripe walked on past its start covers the third
+  stripe's whole spine and over the strip (that stripe is dropped as
+  coincident); its contact on the other earlier rounding passes the strip's
+  edge within a step and is not cut, where the file has a lens of that strip
+  too.
+
+**`61526c66` item 12's other end**: not taken further. The stored bodies end
+the two mirrored sides differently (0.28 past and 0.24 before the vertex),
+with no rule in the geometry, and the item is parametric and verified as it
+is. The next item (13, radius 0.5 along the edge of two planes, the plane
+x = −5.848 narrowing to an edge 0.02 long at its end) fails on the stored
+body too ("unorientable"; with the history's edge, the walk stops where it
+rolls on an edge of a neighbouring face): mitcad#121's edge overflow at the
+end of the rounding, not a consequence of item 12's end.
+
+**`db73863f` (mitcad#379), the corner items**, traced as far as the first
+failure:
+
+- item 143 (radius 0.5, the file's five edges on a cone between faces that
+  are nearly tangent to it, the rounding a sliver 0.02 wide at its lower
+  ends): at both lower ends the walk ends exactly at the file's end section
+  (on the cylinder below the cone, its points within 4e-4 of the file's)
+  and then runs on past it. At one end the OnSame corner's cap (0.017 long)
+  is found, but the prolongation of the cone's edge with the cylinder past
+  the vertex, 0.008 long, is not (the intersection of the two surfaces, where
+  the edge's own circle continued lies on both); at the other the cap, the
+  intersection of the whole blend (a surface 95 long) with the cylinder, is
+  not found until the blend is bounded about its end section. With both
+  handled (the circle continued, the blend bounded; trials only, not in the
+  port) every corner builds, but the result is
+  invalid (unorientable faces round the cone's wall faces): the two stripes
+  that meet tangentially at the top vertex each walk on past it over the
+  other's spine (one by 10.7 along its guide), where the file's rounding
+  leaves the first wall face for the next one about 5 before that vertex, in
+  one face from there.
+- item 27 (along a thread's edges): two OnSame ends find no face at the end
+  ("bouchon non ecrit"), the third end's pieces are not taken
+  (`PerformMoreSurfdata`).
+- items 74 and 75 (radius 20, three and six roundings at a housing corner):
+  every corner builds; 74's result has unorientable faces, 75's new faces do
+  not close (the shell classification of the rebuilt solid throws in
+  `TopoDS_Builder::Add`).
+- item 133 (radius 0.8 along a thread's long edges): both ends'
+  `PerformIntersectionAtEnd` walks round the faces at the end reach their
+  limit of faces.
+- item 137: one of the three edges' stripes has no piece (its walk fails).
+- item 142 (radius 0.1): the result has an unorientable cone and cylinder.
+
+| Item | Achieved / target | Cause of the gap |
+|---|---|---|
+| `6418ebb1`, `920a1cef` 45 | 0 / 2 | the rounding over the strips needs a face with a notch cut by the boss, which the stripes cannot hold |
+| `61526c66` 12's other end | not taken | no geometric rule; item 13 fails on the stored body (mitcad#121) |
+| `db73863f` 143 | 0 / 1 | sliver rounding: corners only with trials; then two tangent stripes overlapping past their common vertex |
+| `db73863f` 27, 74, 75, 133, 137, 142 | 0 / 6 | traced to the first failure only (above) |
+
 ### Chamfers left after mitcad#240 (mitcad#263)
 
 The import chamfers item 4 of mitcad#263 left after port patches 0380 and
@@ -8239,7 +8417,14 @@ that did not come in parametric, traced to its first deviation:
   circle of radius 27.5 judging by the ring it leaves, is not in the
   file). No region of the sketch is its profile; the note says so now
   (`features::profile_curves_gone`). Not to be built from the history's
-  faces (a substitute).
+  faces (a substitute). No record of the file keeps the curve
+  (mitcad#389): the profile names it by its ids (`crv_primary_id` 136),
+  and of the design stream's objects that carry such ids (every one looked
+  at, also those no sketch lists, `mitcad-f3d-inspect attrs <file>
+  crv_primary_id`) none is of that sketch: the two with the same id are
+  curves of two other sketches, and the sketch's own container lists only
+  the projected circle. The item stays skipped with its note; nothing is
+  left to recover.
 - **Revolve4 (item 132).** The triangle revolved about Axis1 lies where
   the file's sketch puts it (the axis through the sketch's origin, the
   sketch's frame the file's), and the file's cut removes 151.90 mm³ from
@@ -8255,7 +8440,17 @@ that did not come in parametric, traced to its first deviation:
   them): a kernel fault, on the replay's body ("does not cut into any
   participant body") as on the stored one (`--retry-bodies replace`). What
   is needed: OCCT's classification of the split faces fixed for these
-  flanks.
+  flanks. **Now parametric (mitcad#389):** the flanks were not the cause.
+  The body's four cylinders round the bore (its thread's crest among
+  them, one face running 3.4 turns) are stored as cones of a half angle
+  of 1e-13 rad, their apexes 1e14 mm away; OCCT's intersection of the
+  revolved triangle's cone with such a face found no curve (with the
+  face as the cylinder it is, the circle), so the cut's section missed
+  the crest and the split faces could not be classified. Cones whose half
+  angle is zero within the angular precision (1e-12 rad) are now read as
+  cylinders (`convert.rs` `cone_half_angle`, `brep_import.cpp`): on the
+  stored body the cut then removes 151.913 mm³ (the file 151.904) and the
+  item builds its state.
 - **Fillet1 (item 120).** A rounding of radius 10 of a circle's concave
   edge (a boss of radius 10 on a face 20 wide each side) adds 852.7 mm³ in
   the file; OCCT's rounding of the same edges (the replay's body is the
@@ -8272,12 +8467,35 @@ that did not come in parametric, traced to its first deviation:
   design at that point of the timeline (opened again, marker after the
   captured position) gives 43.43, and so does it on one thread. So the
   link's move is lost when the import adds the plane, not in the inputs;
-  where in the model's evaluation is not found.
+  where in the model's evaluation is not found. **Now parametric (mitcad#389):**
+  the import put the plane into the component of the face it is offset
+  from (`def_component` counted the linked body as the plane's own), where
+  its link's target (the nut's occurrence) does not lead: the link fell
+  back to the face's own path and moved the face by nothing. A
+  construction plane's linked bodies no longer count, as an extrusion's
+  objects and a sweep's bodies do not.
 - **Sketch14 (item 140), partial.** Its four linked curves (two lines,
   two fixed splines) are where the sketch's plane cuts the body, not
   projections of edges (their ends 3.8 and 4.7 mm from any edge of the
   replay): kept as fixed reference geometry; one coincidence the file's
-  own positions keep only within 7.2 µm is left out.
+  own positions keep only within 7.2 µm is left out. **Now projections
+  (mitcad#389):** they are not section curves but the boundary of the
+  thread's root face projected onto the plane through the thread's axis:
+  two lines, its end edges seen edge on, and two splines, its helices of
+  5 turns, which the replay's thread splits into an edge per turn. A
+  linked curve now becomes the projection of an edge of any kind (a
+  B-spline seen edge on projects to a line) or of a chain of edges end to
+  end (`linked.rs` `chains`; the model's `Projection::chain`, the pieces
+  joined into one B-spline), where every point of the pieces' projection
+  lies within the geometric tolerance of the curve (here 6e-9 mm for the
+  lines, 8.1 µm for the splines) and the sketch's regions stay those of
+  the file (with the points the file holds on a curve on it). The
+  coincidence of the profile's corner with a spline is still left out:
+  solved with it the corner moves 1.3 µm, beyond the sketch's tolerance
+  of 0.1 µm; the item stays partial for it. **Now parametric (mitcad#396):**
+  the corner lies on the replay's spline within 4e-8 mm; the solver's start
+  on the spline moved it (*A sketch solved within the geometric tolerance*
+  below).
 - **Sweep1 (item 9):** unchanged, the known sweep over itself (*Sweeps*).
 - **Fillets** (items 27, 74, 75, 88, 121, 133, 137, 142, 143): see the
   table. Imported with `--retry-bodies replace`, each was tried again on
@@ -8306,6 +8524,53 @@ skipped; final bodies 6 / 6 the file's exactly, before and after):
 |---|---|---|
 | default | 122 / 2 / 14 / 7 | 122 / 2 / 14 / 7 (Thread1 parametric, Fillet7 109 a fallback) |
 | `--accept-deviations all` | | 125 / 2 / 11 / 7 (items 88, 109, 120 kept; the bodies after them the file's again where a later fallback brought them) |
+| default, mitcad#389 | 122 / 2 / 14 / 7 | 124 / 1 / 13 / 7 (Plane1 and Revolve4 parametric; Sketch14's 4 linked curves projections, the design's linked curves as projections 84 → 96 of 197) |
+| default, mitcad#396 | 124 / 1 / 13 / 7 | 125 / 0 / 13 / 7 (Sketch14 parametric; final bodies 6 / 6 the file's, modelling inputs 69 read / 14 inferred, unchanged) |
+
+### A sketch solved within the geometric tolerance (mitcad#396)
+
+`db73863f`'s Sketch14 (item 140) left out the coincidence of a profile's
+corner with a linked spline: solved with it, the corner moved 1.3 µm,
+beyond the sketch's tolerance of 1e-4 mm. Traced:
+
+- **The file's spline is an approximation.** Its two linked splines are
+  the thread root's helices (radius 20.66495 mm, 5 turns) projected onto
+  the plane through the thread's axis; the file stores each as 50 cubic
+  pieces (151 control points, interior knots of multiplicity 3) whose
+  extremes reach 20.6563 mm instead of the radius: up to 8.1 µm off the
+  exact curve. The file's corner lies on the exact curve: 7.2 µm off the
+  stored spline (what mitcad#389's first look saw as "kept only within
+  7.2 µm").
+- **The replay's curve is exact.** The replay's six root edges keep their
+  radius within 1.3e-6 mm, the chain joins them exactly
+  (`join_curves`), and the file's corner lies 4e-8 mm off the joined
+  projection. Neither the knots nor the join moved it.
+- **The solver's start moved it.** A point on a spline is solved with the
+  spline's parameter as an unknown, started at the best of a uniform
+  sampling (32 samples per control point; on the joined spline of 105
+  control points over 5 turns, a step of about 0.1 mm along the curve).
+  The solve shared the gap between the parameter and the point, and the
+  corner slid 1.3 µm along the curve. The start is now refined between the
+  samples next to the best one (golden section, `mitcad-solver`
+  `System::spline_param`): the corner stays within 1e-7 mm, and the
+  sketch comes in parametric with every constraint.
+
+The sketch's acceptance follows the import's geometric tolerance
+(mitcad#224) too: a solve that moves the file's points by more than
+1e-4 mm but within the tolerance (0.01 mm by default, `--geometric-tolerance`)
+is the file's sketch where the regions the solved sketch bounds are the
+file's (`linked::regions_kept`, the regions with the solved positions
+against those with the file's, the points held on a curve put on it);
+its note says how far the points moved ("solved within the geometric
+tolerance: points up to … mm from the file's"), and the item's
+`geometric_deviation` records it above 1e-3 mm. A corner 7 µm off a
+stored approximate spline keeps its coincidence that way; a solve that
+would split a region (a line 2 µm short of an edge, lengthened across it
+by its dimension) keeps the file's positions with the constraint left
+out or the dimension driven, as before. Tests:
+`a_point_on_a_long_spline_stays_put` (solver),
+`a_corner_micrometres_off_a_linked_spline_keeps_its_coincidence`,
+`a_solve_within_the_tolerance_that_changes_the_regions_drives_the_dimension`.
 
 ## FreeCAD import (.FCStd)
 

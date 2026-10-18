@@ -745,6 +745,16 @@ fn positive(v: f64) -> bool {
 fn check_value(c: &Constraint) -> Result<(), Error> {
     use Constraint::*;
     let ok = match *c {
+        HorizontalDistance {
+            value,
+            signed: true,
+            ..
+        }
+        | VerticalDistance {
+            value,
+            signed: true,
+            ..
+        } => value.is_finite(),
         Distance { value, .. }
         | Length { value, .. }
         | Radius { value, .. }
@@ -766,6 +776,9 @@ fn check_value(c: &Constraint) -> Result<(), Error> {
     } else {
         Err(Error::InvalidValue(match c {
             Angle { .. } => "the angle must be between 0 and pi",
+            HorizontalDistance { signed: true, .. } | VerticalDistance { signed: true, .. } => {
+                "the signed distance must be a finite number"
+            }
             PointLineDistance { .. }
             | LineDistance { .. }
             | TangentDistance { .. }
@@ -1049,13 +1062,14 @@ impl System {
                 let (c, _) = self.round(circle)?;
                 rec.side = sign(self.signed_dist(self.xy(c), a1, a2));
             }
-            HorizontalDistance { a, b, .. } => {
+            // A signed one keeps side 1: its value carries the side.
+            HorizontalDistance { a, b, signed, .. } => {
                 let (a, b) = (self.xy(self.pidx(a)?), self.xy(self.pidx(b)?));
-                rec.side = sign(b.x - a.x);
+                rec.side = if signed { 1.0 } else { sign(b.x - a.x) };
             }
-            VerticalDistance { a, b, .. } => {
+            VerticalDistance { a, b, signed, .. } => {
                 let (a, b) = (self.xy(self.pidx(a)?), self.xy(self.pidx(b)?));
-                rec.side = sign(b.y - a.y);
+                rec.side = if signed { 1.0 } else { sign(b.y - a.y) };
             }
             Radius { entity, .. } | Diameter { entity, .. } => {
                 self.round(entity)?;
@@ -1265,7 +1279,8 @@ impl System {
         self.new_param(t, ParamKind::SplineT { lo, hi }, w)
     }
 
-    /// Parameter minimizing `cost(point, derivative)` over a dense sampling.
+    /// Parameter minimizing `cost(point, derivative)` over a dense sampling,
+    /// refined between the samples next to the best one.
     fn spline_param(
         &self,
         basis: &SplineBasis,
@@ -1274,17 +1289,47 @@ impl System {
     ) -> f64 {
         let c: Vec<V2<f64>> = ctrl.iter().map(|&p| self.xy(p)).collect();
         let (lo, hi) = basis.domain();
+        let f = |t: f64| {
+            let e = basis.eval(&c, t, 1);
+            cost(e.p, e.d1)
+        };
         let n = 32 * ctrl.len();
         let mut best = (f64::INFINITY, lo);
         for i in 0..=n {
             let t = lo + (hi - lo) * i as f64 / n as f64;
-            let e = basis.eval(&c, t, 1);
-            let v = cost(e.p, e.d1);
+            let v = f(t);
             if v < best.0 {
                 best = (v, t);
             }
         }
-        best.1
+        // The sampling alone leaves the parameter up to half a step off:
+        // the solve then shares the gap between the parameter and the
+        // point, and a point already on the curve slides along it (1.3 µm
+        // on a spline of 105 control points, mitcad#396). A golden-section
+        // search between the neighbouring samples finds the minimum.
+        const G: f64 = 0.618_033_988_749_894_9;
+        let step = (hi - lo) / n as f64;
+        let (mut a, mut b) = ((best.1 - step).max(lo), (best.1 + step).min(hi));
+        let (mut x1, mut x2) = (b - G * (b - a), a + G * (b - a));
+        let (mut f1, mut f2) = (f(x1), f(x2));
+        for _ in 0..100 {
+            if b - a <= 4.0 * f64::EPSILON * (hi - lo).abs().max(1.0) {
+                break;
+            }
+            if f1 < f2 {
+                b = x2;
+                (x2, f2) = (x1, f1);
+                x1 = b - G * (b - a);
+                f1 = f(x1);
+            } else {
+                a = x1;
+                (x1, f1) = (x2, f2);
+                x2 = a + G * (b - a);
+                f2 = f(x2);
+            }
+        }
+        let t = 0.5 * (a + b);
+        if f(t) < best.0 { t } else { best.1 }
     }
 
     pub(crate) fn measure_rec(&self, rec: &ConstraintRec) -> Option<f64> {

@@ -40,6 +40,13 @@ pub mod ffi {
         curves: Vec<ModelCurve>,
     }
 
+    /// Section curves of sketches (mitcad#389): a curve where a plane cuts
+    /// faces, with the names of the faces it lies on.
+    struct SectionPiece {
+        curve: ModelCurve,
+        faces: Vec<String>,
+    }
+
     unsafe extern "C++" {
         include!("bridge/sketch_ref.hpp");
 
@@ -52,6 +59,16 @@ pub mod ffi {
         /// The face (`b'F'`), edge (`b'E'`) or vertex (`b'V'`) `index` in
         /// OCCT's order.
         fn indexed_element(shape: &Shape, kind: u8, index: usize) -> Result<IndexedElement>;
+
+        /// Where the plane through `origin` with `normal` cuts the faces of
+        /// the name (every face for an empty name), B-spline pieces that meet
+        /// end to end joined (`geometry::section_curves`).
+        fn section_curves(
+            shape: &Shape,
+            name: &str,
+            origin: [f64; 3],
+            normal: [f64; 3],
+        ) -> Result<Vec<SectionPiece>>;
     }
 }
 

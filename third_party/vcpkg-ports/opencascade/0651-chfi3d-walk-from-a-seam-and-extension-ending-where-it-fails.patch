@@ -1,0 +1,213 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Walked roundings: a walk that starts on the seam of a face closed round a
+periodic surface and leaves the face across it, and the extension past a
+spine's end where its walk or its surface fails (mitcad#235).
+
+The case: a thread's crests rounded with 0.15 along all their turns (two
+contours of five and six edges, about 700 mm long), the crest's strip of
+each turn a face of a cylinder closed round it, its seam where the thread
+and the rounding start. The walk past the spine's start (the extension for
+the corner there) starts at the end of the walk before it, which stopped
+where the other contact reached its face's end: there the crest's contact
+lies on the crest's seam, at the end of the face's parameters, and the
+walk runs out of the face across the seam. Its first step left the face
+and was halved until it failed ("Path failed"). Past the other end of the
+spine, the extension (half the spine's length for the corner there) walked
+on over faces where the rounding vanishes (the thread's run-out): its guide
+nearly stopped while the sections went on, and the surface approximated
+over them had weights below zero ("Weights values too small") or strayed
+far from the sections.
+
+- BRepBlend_Walking::Perform: where the start's parameters on a surface
+  periodic in u or v lie on the face's bounds there, the face closing round
+  the period (a seam), and the solution a little way on lies beyond those
+  bounds, the start is taken a period on, on the seam's other side.
+- ChFi3d_Builder::CallPerformSurf: a step wholly past the spine's end (in
+  its extension) whose surface throws or strays from its sections by more
+  than 100 times the approximation's tolerance fails, as a step whose walk
+  fails.
+- PerformSetOfSurfOnElSpine: a failed step wholly past the spine's end ends
+  the extension where it started, as an extension that leaves its faces
+  does; before, the stripe failed.
+
+Nothing else changes: walks that do not start on a seam and steps within
+the spine are made as before; a failure within the spine fails the stripe
+as before.
+
+Upstream: new.
+--- a/src/ModelingAlgorithms/TKFillet/BRepBlend/BRepBlend_Walking.cxx
++++ b/src/ModelingAlgorithms/TKFillet/BRepBlend/BRepBlend_Walking.cxx
+@@ -259,6 +259,55 @@
+   {
+     sol = ParDep;
+   }
++  // A start on the seam of a face closed round a periodic surface, the walk
++  // running out of the face across the seam (a contact along a thread's
++  // crest, the crest's strip starting at its seam where the rounding starts):
++  // the same point on the seam's other side, a period on, from which the walk
++  // runs into the face. Before, the first step left the face and the walk
++  // failed.
++  for (int s = 1; s <= 2; s++)
++  {
++    const occ::handle<Adaptor3d_Surface>& aS = s == 1 ? surf1 : surf2;
++    for (const bool inU : {true, false})
++    {
++      if (!(inU ? aS->IsUPeriodic() : aS->IsVPeriodic()))
++      {
++        continue;
++      }
++      const double aT  = inU ? aS->UPeriod() : aS->VPeriod();
++      const double aLo = inU ? aS->FirstUParameter() : aS->FirstVParameter();
++      const double aHi = inU ? aS->LastUParameter() : aS->LastVParameter();
++      const int    k   = 2 * s - (inU ? 1 : 0);
++      const double aTolP = 1.e-9 * std::max(1., aT);
++      if (aHi - aLo < aT - 1.e3 * aTolP)
++      {
++        continue; // (no seam: the face does not close round the period)
++      }
++      const bool atLo = std::abs(sol(k) - aLo) <= aTolP, atHi = std::abs(sol(k) - aHi) <= aTolP;
++      if (!atLo && !atHi)
++      {
++        continue;
++      }
++      // (Where the solution goes a little way on.)
++      math_Vector aTol(1, 4), aInf(1, 4), aSup(1, 4), aTry(1, 4);
++      Func.GetTolerance(aTol, tolpoint3d);
++      Func.GetBounds(aInf, aSup);
++      const double aStep = std::min(std::max(100. * tolgui, 1.e-3 * pasmax), 0.5 * std::abs(Pmax - Pdep));
++      Func.Set(Pdep + sens * aStep);
++      math_FunctionSetRoot aRoot(Func, aTol, 30);
++      aRoot.Perform(Func, sol, aInf, aSup);
++      Func.Set(Pdep);
++      if (!aRoot.IsDone())
++      {
++        continue;
++      }
++      aRoot.Root(aTry);
++      if ((atHi && aTry(k) > aHi + aTolP) || (atLo && aTry(k) < aLo - aTolP))
++      {
++        sol(k) += atHi ? -aT : aT;
++      }
++    }
++  }
+ 
+ #ifdef OCCT_DEBUG
+   sectioncalculee = 0;
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+@@ -772,27 +772,66 @@
+   }
+   else
+   {
+-    isdone = PerformSurf(SeqSD,
+-                         HGuide,
+-                         Spine,
+-                         Choix,
+-                         HS1,
+-                         It1,
+-                         HS2,
+-                         It2,
+-                         MaxStep,
+-                         Fleche,
+-                         tolesp,
+-                         First,
+-                         Last,
+-                         Inside,
+-                         Inside,
+-                         forward,
+-                         RecOnS1,
+-                         RecOnS2,
+-                         Soldep,
+-                         intf,
+-                         intl);
++    // (A step wholly past an end of the spine, in its extension: where its
++    // surface cannot be made, the step fails, as one whose walk fails;
++    // the caller ends the extension there.)
++    const double aW0     = Spine->FirstParameter(1);
++    const double aW1     = Spine->LastParameter(Spine->NbEdges());
++    const bool   aBeyond = !Spine->IsPeriodic()
++                         && (forward ? std::min(First, Last) >= aW1 - tolesp : std::max(First, Last) <= aW0 + tolesp);
++    try
++    {
++      OCC_CATCH_SIGNALS
++      isdone = PerformSurf(SeqSD,
++                           HGuide,
++                           Spine,
++                           Choix,
++                           HS1,
++                           It1,
++                           HS2,
++                           It2,
++                           MaxStep,
++                           Fleche,
++                           tolesp,
++                           First,
++                           Last,
++                           Inside,
++                           Inside,
++                           forward,
++                           RecOnS1,
++                           RecOnS2,
++                           Soldep,
++                           intf,
++                           intl);
++    }
++    catch (Standard_Failure const&)
++    {
++      if (!aBeyond)
++      {
++        throw;
++      }
++      isdone = false;
++    }
++    // (So too where the surface strays from the walked sections far more
++    // than the approximation's tolerance: the walk dragged, its guide
++    // nearly stopped while the sections went on.)
++    for (int i = 1; aBeyond && isdone && i <= SeqSD.Length(); i++)
++    {
++      const occ::handle<ChFiDS_SurfData>& aSD = SeqSD.Value(i);
++      if (aSD->Surf() > 0 && myDS->DS().Surface(aSD->Surf()).Tolerance() > 100. * tolapp3d)
++      {
++        isdone = false;
++      }
++    }
++    if (aBeyond && !isdone)
++    {
++      done  = false;
++      First = thef;
++      Last  = thel;
++      Surf1 = HSon1;
++      Surf2 = HSon2;
++      return;
++    }
+   }
+ 
+   // Case of error
+@@ -4979,6 +5018,25 @@
+         done   = true;
+         Inside = false;
+         if (forward)
++        {
++          intl = 1;
++        }
++        else
++        {
++          intf = 1;
++        }
++      }
++      else if (!Spine->IsPeriodic() && !Simul
++               && (forward ? std::min(First, Last) >= Spine->LastParameter(Spine->NbEdges()) - tolesp
++                           : std::max(First, Last) <= Spine->FirstParameter(1) + tolesp))
++      {
++        // The step lay wholly past the spine's end, in its extension for the
++        // corner there (a part of the spine's length: on a long spine far
++        // past the end, over faces where the blend vanishes, its walk or
++        // its surface failed): the extension ends where the step started.
++        done   = true;
++        Inside = false;
++        if (forward)
+         {
+           intl = 1;
+         }

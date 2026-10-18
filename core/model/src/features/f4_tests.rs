@@ -1556,3 +1556,164 @@ fn remove_body_takes_bodies_out_of_the_design() {
             .is_err()
     );
 }
+
+/// A join that touched two of its participants merged the second into the
+/// first; a pattern of it joins its copies to the body they went into
+/// (mitcad#406), and says so when a participant is gone.
+#[test]
+fn copies_of_a_join_use_the_body_its_participants_went_into() {
+    // Two rings turned about z by one revolve (F2.b0 and F2.b1) and a post
+    // from the lower ring to the upper one, joined to both.
+    let mut doc = Document::new(MockKernel::default());
+    let section = doc.add_sketch(SketchPlane::Xz).unwrap().uid;
+    let mut rings = Vec::new();
+    for z in [0.0, 100.0] {
+        let region = doc
+            .add_rectangle(section, [20.0, z], &num(5.0), &num(5.0))
+            .unwrap()
+            .region;
+        rings.push(json!({"sketch": section, "region": region}));
+    }
+    let revolve = add(
+        &mut doc,
+        json!({"type": "revolve", "profiles": rings, "axis": "z",
+               "extent": {"type": "full"}, "operation": "new_body"}),
+    );
+    assert_eq!(
+        uids(&doc),
+        [format!("{revolve}.b0"), format!("{revolve}.b1")]
+    );
+    let sketch = doc.add_sketch(SketchPlane::Xy).unwrap().uid;
+    let region = doc
+        .add_circle(sketch, [22.5, 0.0], &num(2.0))
+        .unwrap()
+        .region;
+    let post = add(
+        &mut doc,
+        json!({"type": "extrude", "profiles": [{"sketch": sketch, "region": region}],
+               "extent": {"type": "distance", "distance": 105}, "operation": "join",
+               "participants": [format!("{revolve}.b0"), format!("{revolve}.b1")]}),
+    );
+    assert_eq!(status(&doc, post), FeatureStatus::Ok);
+    assert_eq!(uids(&doc), [format!("{revolve}.b0")]);
+    let circular = |compute: &str| {
+        json!({"type": "circular_pattern", "objects": {"type": "features", "features": [post]},
+               "axis": {"type": "origin", "axis": "z"}, "quantity": 6,
+               "angle": std::f64::consts::TAU, "compute": compute})
+    };
+    let joins = doc.kernel().count("join");
+    let pattern = add(&mut doc, circular("identical"));
+    assert_eq!(status(&doc, pattern), FeatureStatus::Ok);
+    // The copies join the merged rings, once.
+    assert_eq!(doc.kernel().count("join"), joins + 1);
+    assert_eq!(uids(&doc), [format!("{revolve}.b0")]);
+    let history = shape(&doc, &format!("{revolve}.b0")).history;
+    assert!(
+        history.contains("inst1") && history.contains("inst5"),
+        "{history}"
+    );
+
+    // The participants the other way round: the upper ring keeps its id,
+    // and the copies go to it.
+    doc.edit_feature(
+        post,
+        &def(
+            json!({"type": "extrude", "profiles": [{"sketch": sketch, "region": region}],
+                   "extent": {"type": "distance", "distance": 105}, "operation": "join",
+                   "participants": [format!("{revolve}.b1"), format!("{revolve}.b0")]}),
+        ),
+    )
+    .unwrap();
+    assert_eq!(status(&doc, pattern), FeatureStatus::Ok);
+    assert_eq!(uids(&doc), [format!("{revolve}.b1")]);
+    let history = shape(&doc, &format!("{revolve}.b1")).history;
+    assert!(history.contains("inst5"), "{history}");
+
+    // Adjust rebuilds a bridge up to a plane at each copy, without the
+    // participant it merged: two blocks of one extrusion (x 0..10 and
+    // 50..60) and a bridge between them, joined to both, repeated along y.
+    let mut doc = Document::new(MockKernel::default());
+    let sketch = doc.add_sketch(SketchPlane::Xy).unwrap().uid;
+    let mut blocks = Vec::new();
+    for x in [0.0, 50.0] {
+        let region = doc
+            .add_rectangle(sketch, [x, 0.0], &num(10.0), &num(40.0))
+            .unwrap()
+            .region;
+        blocks.push(json!({"sketch": sketch, "region": region}));
+    }
+    let pair = add(
+        &mut doc,
+        json!({"type": "extrude", "profiles": blocks,
+               "extent": {"type": "distance", "distance": 20}, "operation": "new_body"}),
+    );
+    let sketch = doc.add_sketch(SketchPlane::Xy).unwrap().uid;
+    let region = doc
+        .add_rectangle(sketch, [5.0, 0.0], &num(50.0), &num(5.0))
+        .unwrap()
+        .region;
+    let bridge = add(
+        &mut doc,
+        json!({"type": "extrude", "profiles": [{"sketch": sketch, "region": region}],
+               "extent": {"type": "to_object", "object": {"type": "plane",
+                   "plane": {"origin": [0.0, 0.0, 20.0], "normal": [0.0, 0.0, 1.0]}}},
+               "operation": "join",
+               "participants": [format!("{pair}.b0"), format!("{pair}.b1")]}),
+    );
+    assert_eq!(uids(&doc), [format!("{pair}.b0")]);
+    let pattern = add(
+        &mut doc,
+        json!({"type": "rectangular_pattern",
+               "objects": {"type": "features", "features": [bridge]},
+               "direction1": {"axis": {"type": "origin", "axis": "y"}, "quantity": 3,
+                              "distance": 10},
+               "distance_type": "spacing", "compute": "adjust"}),
+    );
+    assert_eq!(status(&doc, pattern), FeatureStatus::Ok);
+    let built = doc
+        .kernel()
+        .specs
+        .borrow()
+        .iter()
+        .filter(|s| s.starts_with(&format!("extrude {bridge} ")))
+        .count();
+    assert_eq!(built, 3);
+    let history = shape(&doc, &format!("{pair}.b0")).history;
+    assert!(history.contains("inst2"), "{history}");
+
+    // A cut that left nothing of one of its participants: its copies have
+    // nothing to cut there.
+    let mut b = block();
+    let other = second_block(&mut b.doc);
+    let sketch = b.doc.add_sketch(SketchPlane::Xy).unwrap().uid;
+    let region = b
+        .doc
+        .add_circle(sketch, [40.0, 10.0], &num(5.0))
+        .unwrap()
+        .region;
+    *b.doc.kernel().touch.borrow_mut() = Some(vec![false, true]);
+    b.doc.kernel().split.set(Some(0));
+    let cut = add(
+        &mut b.doc,
+        json!({"type": "extrude", "profiles": [{"sketch": sketch, "region": region}],
+               "extent": {"type": "through_all"}, "operation": "cut",
+               "participants": ["F2.b0", format!("{other}.b0")]}),
+    );
+    *b.doc.kernel().touch.borrow_mut() = None;
+    b.doc.kernel().split.set(None);
+    assert_eq!(status(&b.doc, cut), FeatureStatus::Ok);
+    assert_eq!(uids(&b.doc), ["F2.b0"]);
+    let pattern = add(
+        &mut b.doc,
+        json!({"type": "rectangular_pattern", "objects": {"type": "features", "features": [cut]},
+               "direction1": {"axis": {"type": "origin", "axis": "y"}, "quantity": 2,
+                              "distance": 20},
+               "distance_type": "spacing", "compute": "identical"}),
+    );
+    assert!(
+        matches!(status(&b.doc, pattern), FeatureStatus::Failed(m)
+            if m.contains(&format!("{other}.b0 of Extrude3 was consumed by Extrude3 itself"))),
+        "{:?}",
+        status(&b.doc, pattern)
+    );
+}

@@ -130,6 +130,12 @@ gp_Dir canonical(const gp_Dir& axis) {
 // than the analytic ones gets only its type.
 SurfaceDescription describe(const TopoDS_Face& face, bool planar_splines = true) {
   SurfaceDescription result;
+  TopLoc_Location location;
+  if (BRep_Tool::Surface(face, location).IsNull()) {
+    // A mesh body's triangles (mitcad#399): no surface to describe.
+    result.type = "mesh";
+    return result;
+  }
   const BRepAdaptor_Surface surface(face);
   std::optional<gp_Pln> plane;
   switch (surface.GetType()) {

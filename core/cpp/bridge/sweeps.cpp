@@ -8,6 +8,9 @@
 #include <string>
 #include <vector>
 
+#include <gp_Dir.hxx>
+#include <gp_Vec.hxx>
+
 #include "bridge/profile.hpp"
 #include "mitcad/geometry/loft.hpp"
 #include "mitcad/geometry/path_sweep.hpp"
@@ -116,6 +119,14 @@ std::shared_ptr<geometry::Shape> sweep_solid(rust::Str feature, const Frame& fra
   spec.scaling = input.scaling == 1   ? geometry::ProfileScaling::Stretch
                  : input.scaling == 2 ? geometry::ProfileScaling::None
                                       : geometry::ProfileScaling::Scale;
+  // A fixed binormal (mitcad#397).
+  if (input.fixed_binormal) {
+    const gp_Vec binormal(input.binormal[0], input.binormal[1], input.binormal[2]);
+    if (binormal.Magnitude() < 1.0e-12) {
+      throw std::invalid_argument("the binormal has no length");
+    }
+    spec.binormal = gp_Dir(binormal);
+  }
   // Guide surfaces (mitcad#157).
   if (input.guide_faces.size() != input.guide_bodies.size()) {
     throw std::invalid_argument("a guide surface's body is missing");

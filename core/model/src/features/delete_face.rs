@@ -58,7 +58,7 @@ impl FeatureInfo for DeleteFaceDef {
 
 impl<K: Kernel> Evaluate<K> for DeleteFaceDef {
     fn evaluate(&self, ctx: &mut EvalContext<'_, K>) -> Result<FeatureOutput<K::Shape>, String> {
-        let shape = ctx.body(self.body)?;
+        let shape = ctx.surface_body(self.body)?;
         let faces = require_faces(ctx, self.body, &shape, &self.faces)?;
         let healed = ctx
             .kernel

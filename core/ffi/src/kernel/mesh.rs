@@ -20,8 +20,14 @@ pub mod ffi {
 
         /// The body triangulated within the surface deviation (mm) and the
         /// angle between neighbouring facets (radians), on a copy; a mesh
-        /// body's own triangles.
-        fn triangle_mesh(shape: &Shape, deviation: f64, angle: f64) -> Result<TriangleMesh>;
+        /// body's own triangles. At most about `face_triangles`
+        /// triangles a doubly curved face (0: no limit; mitcad#398).
+        fn triangle_mesh(
+            shape: &Shape,
+            deviation: f64,
+            angle: f64,
+            face_triangles: u64,
+        ) -> Result<TriangleMesh>;
 
         /// A mesh body (as an STL file gives) of triangles: `vertices` x,
         /// y, z after each other (millimetres), `triangles` three vertex

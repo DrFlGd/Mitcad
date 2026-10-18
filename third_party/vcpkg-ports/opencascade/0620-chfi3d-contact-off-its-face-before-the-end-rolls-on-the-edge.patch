@@ -1,0 +1,305 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: a contact that leaves its face across a convex edge before the
+end of the spine, where the face beyond that edge does not hold the end
+vertex, rolls on that edge as in the middle of the rounding (mitcad#343).
+
+The case: a concave edge between a revolve's torus and a narrow B-spline
+face, rounded with 0.1 along its tangent chain (on into the torus's edge
+with a planar sliver tangent to the B-spline face, up to a cusp). The
+B-spline face is narrower than the rounding near the chain's middle: its
+contact leaves the face across its convex edge with another torus 0.63
+along a chain 2.28 long, and the ball rolls on that edge and on the
+sliver's edge that continues it. The one guide of the chain reaches both
+ends of the spine, so the walk's end handling (ComputeData) took the edge
+the contact met for the end region: it is a few edges from the end vertex
+(IsObst), so the walk went on over the B-spline's surface beyond its edge,
+unclassified, until the other contact met the torus's edge with the
+sliver; the stripe stopped there, short of the spine's end, and the corner
+at the end failed.
+
+- ChFi3d_ObstacleBeforeEnd (ChFi3d_Builder_0): a contact on a convex edge
+  of its face more than 10 tolesp (along the guide) before the spine's end,
+  whose one face beyond does not hold the end vertex: an obstacle.
+  ComputeData (between two faces) takes such a point as an obstacle at
+  either end of its walk, which then ends there.
+- PerformSetOfSurfOnElSpine: a walk between two faces that ended at such a
+  point does not end the stripe at that end of the guide: the next StartSol
+  finds the obstacle and the next piece rolls on the edge (and on the edges
+  that continue it), as where a walk meets an edge in the middle of a
+  rounding.
+
+Nothing else changes: a contact that reaches an edge of a face holding the
+end vertex, a concave or tangent edge, or an edge within 10 tolesp of the
+spine's end, is handled as before.
+
+Upstream: new.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
+index 4c26d65..b37ee33 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
+@@ -7717,3 +7717,117 @@ bool ChFi3d_IsSmooth(const occ::handle<Geom_Curve>& C)
+ 
+   return true;
+ }
++
++// Whether edge E is a sharp convex edge of the solid between faces F1 and
++// F2 at its parameter W: the faces' outward normals there turn about the
++// edge's direction in F1 the way of a convex edge, and are not tangent.
++static bool ChFi3d_ConvexEdgeAt(const TopoDS_Edge& E, const TopoDS_Face& F1, const TopoDS_Face& F2, const double W)
++{
++  double                          f, l;
++  const occ::handle<Geom2d_Curve> C1 = BRep_Tool::CurveOnSurface(E, F1, f, l);
++  const occ::handle<Geom2d_Curve> C2 = BRep_Tool::CurveOnSurface(E, F2, f, l);
++  if (C1.IsNull() || C2.IsNull() || F1.IsSame(F2))
++  {
++    return false;
++  }
++  BRepAdaptor_Curve C(E);
++  gp_Pnt            P;
++  gp_Vec            T;
++  C.D1(W, P, T);
++  if (T.SquareMagnitude() <= gp::Resolution())
++  {
++    return false;
++  }
++  T.Normalize();
++  if (BRepTools::OriEdgeInFace(E, F1) == TopAbs_REVERSED)
++  {
++    T.Reverse();
++  }
++  if (F1.Orientation() == TopAbs_REVERSED)
++  {
++    T.Reverse();
++  }
++  gp_Vec N[2];
++  for (int k = 0; k < 2; k++)
++  {
++    const TopoDS_Face&              Fk = k == 0 ? F1 : F2;
++    const gp_Pnt2d                  uv = (k == 0 ? C1 : C2)->Value(W);
++    const occ::handle<Geom_Surface> S  = BRep_Tool::Surface(Fk);
++    gp_Vec                          DU, DV;
++    S->D1(uv.X(), uv.Y(), P, DU, DV);
++    N[k] = DU.Crossed(DV);
++    if (N[k].SquareMagnitude() <= gp::Resolution())
++    {
++      return false;
++    }
++    N[k].Normalize();
++    if (Fk.Orientation() == TopAbs_REVERSED)
++    {
++      N[k].Reverse();
++    }
++  }
++  const gp_Vec Pro = N[0].Crossed(N[1]);
++  return Pro.Magnitude() >= 1.e-4 && T.Dot(Pro) > 0.;
++}
++
++//=======================================================================
++// function : ChFi3d_ObstacleBeforeEnd
++// purpose  : A contact that left its face F across a convex edge E more
++//            than Tol before the spine's end, where the face beyond E
++//            does not hold the end vertex Vend: no face at the end lies
++//            there, the ball rolls on E (an obstacle, as in the middle of
++//            the rounding); the walk is not to go on past E over F's
++//            surface towards the end.
++//=======================================================================
++
++bool ChFi3d_ObstacleBeforeEnd(const ChFiDS_CommonPoint& CP,
++                              const TopoDS_Face&        F,
++                              const TopoDS_Vertex&      Vend,
++                              const double              W,
++                              const double              WEnd,
++                              const bool                AtFirst,
++                              const double              Tol,
++                              const ChFiDS_Map&         EFMap,
++                              const ChFiDS_Map&         VFMap)
++{
++  if (!CP.IsOnArc() || CP.IsVertex() || F.IsNull() || Vend.IsNull() || !EFMap.Contains(CP.Arc())
++      || !VFMap.Contains(Vend))
++  {
++    return false;
++  }
++  if ((AtFirst ? W - WEnd : WEnd - W) <= Tol)
++  {
++    return false;
++  }
++  const TopoDS_Edge& E = CP.Arc();
++  if (TopExp::FirstVertex(E).IsSame(Vend) || TopExp::LastVertex(E).IsSame(Vend))
++  {
++    return false;
++  }
++  TopoDS_Face Fin, Fbeyond;
++  for (const TopoDS_Shape& aFace : EFMap.FindFromKey(E))
++  {
++    if (aFace.IsSame(F))
++    {
++      Fin = TopoDS::Face(aFace);
++      continue;
++    }
++    if (!Fbeyond.IsNull() && !Fbeyond.IsSame(aFace))
++    {
++      return false;
++    }
++    Fbeyond = TopoDS::Face(aFace);
++  }
++  if (Fin.IsNull() || Fbeyond.IsNull())
++  {
++    return false;
++  }
++  for (const TopoDS_Shape& aFaceAtEnd : VFMap.FindFromKey(Vend))
++  {
++    if (aFaceAtEnd.IsSame(Fbeyond))
++    {
++      return false;
++    }
++  }
++  return ChFi3d_ConvexEdgeAt(E, Fin, Fbeyond, CP.ParameterOnArc());
++}
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.hxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.hxx
+index 7960340..85987f5 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.hxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.hxx
+@@ -587,4 +587,19 @@ void ChFi3d_JoinAcrossNotches(TopOpeBRepDS_DataStructure&
+ //! moved.
+ bool ChFi3d_PCurveInFacePeriod(ChFiDS_FaceInterference& FI, const TopoDS_Face& F);
+ 
++//! A contact (CP, at guide parameter W) that left its face F across an
++//! edge more than Tol before the spine's end WEnd (its first end if
++//! AtFirst), a convex edge whose face beyond does not hold the end vertex
++//! Vend: the ball rolls on that edge there (an obstacle, as in the middle
++//! of the rounding); no face at the end lies beyond it.
++bool ChFi3d_ObstacleBeforeEnd(const ChFiDS_CommonPoint& CP,
++                              const TopoDS_Face&        F,
++                              const TopoDS_Vertex&      Vend,
++                              const double              W,
++                              const double              WEnd,
++                              const bool                AtFirst,
++                              const double              Tol,
++                              const ChFiDS_Map&         EFMap,
++                              const ChFiDS_Map&         VFMap);
++
+ #endif
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+index 26d16b7..8dc12f1 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+@@ -4178,6 +4178,35 @@ void ChFi3d_Builder::PerformSetOfSurfOnElSpine(const occ::handle<ChFiDS_ElSpine>
+ 
+   TopOpeBRepDS_DataStructure& DStr = myDS->ChangeDS();
+ 
++  // Whether the walk of SurfData theSD between two faces ended (at its first
++  // end or its last) where a contact left its face across an edge before
++  // the spine's end, no face at the end beyond it: an obstacle the next
++  // piece rolls on.
++  const auto StoppedOnObstacleBeforeEnd = [&](const occ::handle<ChFiDS_SurfData>& theSD,
++                                              const bool                          theFirst) {
++    if (theSD.IsNull() || Spine->IsPeriodic() || theSD->IsOnCurve1() || theSD->IsOnCurve2())
++    {
++      return false;
++    }
++    const TopoDS_Vertex Vend = theFirst ? Spine->FirstVertex() : Spine->LastVertex();
++    const double        WEnd = theFirst ? Spine->FirstParameter(1) : Spine->LastParameter(Spine->NbEdges());
++    const double        W    = theFirst ? theSD->FirstSpineParam() : theSD->LastSpineParam();
++    for (int k = 1; k <= 2; k++)
++    {
++      if (theSD->Index(k) <= 0)
++      {
++        continue;
++      }
++      const TopoDS_Face Fk = TopoDS::Face(DStr.Shape(theSD->Index(k)));
++      if (ChFi3d_ObstacleBeforeEnd(theSD->Vertex(theFirst, k), Fk, Vend, W, WEnd, theFirst, 10. * tolesp,
++                                   myEFMap, myVFMap))
++      {
++        return true;
++      }
++    }
++    return false;
++  };
++
+   occ::handle<ChFiDS_SurfData> ref = Guide.Previous();
+   occ::handle<ChFiDS_SurfData> refbis, SD;
+   occ::handle<ChFiDS_SurfData> raf = Guide.Next();
+@@ -5074,6 +5103,13 @@ void ChFi3d_Builder::PerformSetOfSurfOnElSpine(const occ::handle<ChFiDS_ElSpine>
+     {
+       fini =
+         ((wl - Last) <= 10. * tolesp || (intl && !(obstacleon1 || obstacleon2))); // General case
++      // A walk between two faces that stopped where a contact left its face
++      // across an edge before the spine's end, no face at the end beyond it
++      // (ChFi3d_ObstacleBeforeEnd): the next piece rolls on that edge.
++      if (fini && intl && !(obstacleon1 || obstacleon2) && StoppedOnObstacleBeforeEnd(ref, false))
++      {
++        fini = false;
++      }
+       // A blend rolling on an obstacle up to the end of the spine, or up to
+       // the face at the end, ends there.
+       if (!fini && intl && (obstacleon1 || obstacleon2) && !Spine->IsPeriodic()
+@@ -5132,6 +5168,11 @@ void ChFi3d_Builder::PerformSetOfSurfOnElSpine(const occ::handle<ChFiDS_ElSpine>
+     if (!forward)
+     {
+       fini     = ((First - wf) <= 10. * tolesp || (intf && !(obstacleon1 || obstacleon2)));
++      // (The same at the spine's start.)
++      if (fini && intf && !(obstacleon1 || obstacleon2) && StoppedOnObstacleBeforeEnd(ref, true))
++      {
++        fini = false;
++      }
+       if (!fini && intf && (obstacleon1 || obstacleon2) && !Spine->IsPeriodic()
+           && (First <= Spine->FirstParameter(1) + 10. * tolesp
+               || ObstacleAtSpineEnd(ref, true, obstacleon1 ? 2 : 1, Spine->FirstVertex())))
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_6.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_6.cxx
+index 494a134..a53b083 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_6.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_6.cxx
+@@ -2317,7 +2317,11 @@ bool ChFi3d_Builder::ComputeData(occ::handle<ChFiDS_SurfData>&           Data,
+           }
+           else
+           {
+-            debobst1 = IsObst(Data->VertexFirstOnS1(), Spine->FirstVertex(), myVEMap);
++            debobst1 = IsObst(Data->VertexFirstOnS1(), Spine->FirstVertex(), myVEMap)
++                       || ChFi3d_ObstacleBeforeEnd(Data->VertexFirstOnS1(), F1, Spine->FirstVertex(),
++                                                   Lin->StartPointOnFirst().ParameterOnGuide(),
++                                                   Spine->FirstParameter(1), true, 10. * tolesp, myEFMap,
++                                                   myVFMap);
+           }
+         }
+       }
+@@ -2346,7 +2350,11 @@ bool ChFi3d_Builder::ComputeData(occ::handle<ChFiDS_SurfData>&           Data,
+           }
+           else
+           {
+-            debobst2 = IsObst(Data->VertexFirstOnS2(), Spine->FirstVertex(), myVEMap);
++            debobst2 = IsObst(Data->VertexFirstOnS2(), Spine->FirstVertex(), myVEMap)
++                       || ChFi3d_ObstacleBeforeEnd(Data->VertexFirstOnS2(), F2, Spine->FirstVertex(),
++                                                   Lin->StartPointOnSecond().ParameterOnGuide(),
++                                                   Spine->FirstParameter(1), true, 10. * tolesp, myEFMap,
++                                                   myVFMap);
+           }
+         }
+       }
+@@ -2499,7 +2507,11 @@ bool ChFi3d_Builder::ComputeData(occ::handle<ChFiDS_SurfData>&           Data,
+         fincas1 = true;
+         if (!Spine.IsNull())
+         {
+-          finobst1 = IsObst(Data->VertexLastOnS1(), Spine->LastVertex(), myVEMap);
++          finobst1 = IsObst(Data->VertexLastOnS1(), Spine->LastVertex(), myVEMap)
++                     || ChFi3d_ObstacleBeforeEnd(Data->VertexLastOnS1(), F1, Spine->LastVertex(),
++                                                 Lin->EndPointOnFirst().ParameterOnGuide(),
++                                                 Spine->LastParameter(Spine->NbEdges()), false, 10. * tolesp,
++                                                 myEFMap, myVFMap);
+         }
+       }
+       else
+@@ -2521,7 +2533,11 @@ bool ChFi3d_Builder::ComputeData(occ::handle<ChFiDS_SurfData>&           Data,
+         fincas2 = true;
+         if (!Spine.IsNull())
+         {
+-          finobst2 = IsObst(Data->VertexLastOnS2(), Spine->LastVertex(), myVEMap);
++          finobst2 = IsObst(Data->VertexLastOnS2(), Spine->LastVertex(), myVEMap)
++                     || ChFi3d_ObstacleBeforeEnd(Data->VertexLastOnS2(), F2, Spine->LastVertex(),
++                                                 Lin->EndPointOnSecond().ParameterOnGuide(),
++                                                 Spine->LastParameter(Spine->NbEdges()), false, 10. * tolesp,
++                                                 myEFMap, myVFMap);
+         }
+       }
+       else

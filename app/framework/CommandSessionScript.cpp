@@ -137,7 +137,7 @@ bool CommandSession::scriptInputs(const QJsonObject& inputs, const ItemReader& r
           error = tr("%1: %2: %3").arg(m_def.name, key, problem);
           return false;
         }
-        if (!input.accepts(*item)) {
+        if (!input.acceptsIn(*item, m_state)) {
           error = tr("%1: %2 does not take %3").arg(m_def.name, input.label, item->describe());
           return false;
         }

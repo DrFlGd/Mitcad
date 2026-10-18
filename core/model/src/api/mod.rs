@@ -94,6 +94,14 @@ enum Command {
         /// The component (uid or name); the active one when left out.
         #[serde(default)]
         component: Option<String>,
+        /// Inserted just after this feature instead of at the marker
+        /// (mitcad#403).
+        #[serde(default)]
+        after: Option<FeatureUid>,
+        /// Inserted at this timeline position (the number of features
+        /// before it) instead of at the marker (mitcad#403).
+        #[serde(default)]
+        index: Option<usize>,
     },
     EditFeature {
         uid: FeatureUid,
@@ -539,6 +547,8 @@ enum Query {
     BuildParts,
     BuildJunctions(build::JunctionsQuery),
     BuildCutList(build::CutListQuery),
+    // The component BUILD places parts in (mitcad#394, `build.rs`).
+    BuildHost,
 }
 
 fn names(names: &[String]) -> Value {
@@ -574,6 +584,9 @@ impl<K: Kernel> Document<K> {
 
     fn run_checked_command(&mut self, value: Value) -> Result<Value, ApiError> {
         let recomputes = self.recompute_count();
+        // What failed before, and the feature the command names (mitcad#401).
+        let before = self.timeline_before();
+        let target = command_target(&value);
         let is_sketch = value
             .get("cmd")
             .and_then(Value::as_str)
@@ -635,6 +648,12 @@ impl<K: Kernel> Document<K> {
             result["restored"] = json!(stats.restored.len());
         }
         result["error"] = json!(stats.error.map(|e| e.to_string()));
+        // Every failed feature, and whether this command made it
+        // (mitcad#401), when any failed.
+        let failed = self.failed_features(&before, target);
+        if !failed.is_empty() {
+            result["failed_features"] = json!(failed);
+        }
         Ok(result)
     }
 
@@ -653,13 +672,35 @@ impl<K: Kernel> Document<K> {
                 def,
                 name,
                 component,
+                after,
+                index,
             } => {
                 let component = component
                     .as_deref()
                     .map(|c| self.component_ref(c))
                     .transpose()?;
                 let requested = component.unwrap_or(self.active_component());
-                let added = self.add_feature_to(&def, name.as_deref(), component)?;
+                // At a timeline position (mitcad#403).
+                let position = match (after, index) {
+                    (Some(_), Some(_)) => {
+                        return Err(ApiError(
+                            "add_feature takes either after or index, not both".to_owned(),
+                        ));
+                    }
+                    (Some(after), None) => Some(
+                        self.features()
+                            .position(|f| f.uid == after)
+                            .map(|i| i + 1)
+                            .ok_or_else(|| ApiError(format!("feature {after} does not exist")))?,
+                    ),
+                    (None, index) => index,
+                };
+                let added = match position {
+                    Some(position) => {
+                        self.add_feature_at(&def, name.as_deref(), component, position)?
+                    }
+                    None => self.add_feature_to(&def, name.as_deref(), component)?,
+                };
                 let mut reply = json!({"uid": added.uid, "name": added.name,
                                        "parameters": names(&added.parameters)});
                 // A new component placed beside a part (mitcad#292).
@@ -1260,9 +1301,11 @@ impl<K: Kernel> Document<K> {
             // Move Features into a Component (mitcad#171).
             Query::MoveToComponent(selection) => self.move_plan_json(&selection)?,
             Query::FeatureReferences(query) => self.feature_references_json(&query),
-            Query::Profile { sketch, region } => match self.profile_region(sketch, &region) {
-                Some((_, found)) => json!({"sketch": sketch, "region": found.key,
-                                           "exact": found.key == region}),
+            Query::Profile { sketch, region } => match self.profile_pieces(sketch, &region) {
+                Some((_, found, exact)) => json!({"sketch": sketch, "region": found[0].key,
+                                                  "exact": exact,
+                                                  "regions": found.iter().map(|r| &r.key)
+                                                      .collect::<Vec<_>>()}),
                 None => Value::Null,
             },
             // Sheet-metal Flat Patterns (mitcad#208).
@@ -1302,6 +1345,7 @@ impl<K: Kernel> Document<K> {
             Query::BuildParts => self.build_parts_json(),
             Query::BuildJunctions(query) => self.build_junctions_json(&query)?,
             Query::BuildCutList(query) => self.build_cut_list_json(&query)?,
+            Query::BuildHost => self.host_json(),
         };
         Ok(result.to_string())
     }
@@ -1390,6 +1434,11 @@ impl<K: Kernel> Document<K> {
                 value["component"] = json!(component);
             }
             self.add_body_attributes(body.uid, &mut value);
+            // The app's inputs of surface operations leave mesh bodies out
+            // (mitcad#399).
+            if crate::features::surface_bodies::is_mesh(self.kernel(), body.shape) {
+                value["mesh"] = json!(true);
+            }
             if volumes && !properties {
                 let mass = self
                     .kernel()
@@ -1645,6 +1694,26 @@ mod regular_polygon_tests;
 // Texture map sets embedded once per image, with their source (mitcad#313).
 #[cfg(test)]
 mod texture_map_tests;
+// Failed features in command results (mitcad#401) and add_feature at a
+// timeline position (mitcad#403).
+#[cfg(test)]
+mod failed_features_tests;
+#[cfg(test)]
+mod insert_feature_tests;
+
+/// The feature a command edits by name (mitcad#401): `edit_feature`,
+/// `suppress_feature` and `reorder_feature` its `uid`, a sketch command
+/// its `sketch`. An edit that changes only the values of its dimensions
+/// leaves the definition as it was, so it is not found by comparing them.
+fn command_target(value: &Value) -> Option<FeatureUid> {
+    let cmd = value.get("cmd")?.as_str()?;
+    let field = match cmd {
+        "edit_feature" | "suppress_feature" | "reorder_feature" => "uid",
+        _ if cmd.starts_with("sketch.") => "sketch",
+        _ => return None,
+    };
+    value.get(field)?.as_str()?.parse().ok()
+}
 
 // A Face with new rules of its own (mitcad#210): `add_feature` (and its
 // preview) of a `sheet_face` whose `rules` is the rules' definition adds a

@@ -511,15 +511,17 @@ impl Built {
                 b: p(*b)?,
                 value,
             },
-            D::HorizontalDistance { a, b } => S::HorizontalDistance {
+            D::HorizontalDistance { a, b, signed } => S::HorizontalDistance {
                 a: p(*a)?,
                 b: p(*b)?,
                 value,
+                signed: *signed,
             },
-            D::VerticalDistance { a, b } => S::VerticalDistance {
+            D::VerticalDistance { a, b, signed } => S::VerticalDistance {
                 a: p(*a)?,
                 b: p(*b)?,
                 value,
+                signed: *signed,
             },
             D::PointLineDistance { point, line } => S::PointLineDistance {
                 point: p(*point)?,
@@ -832,8 +834,8 @@ pub fn measure(kind: &DimensionKind, solved: &Solved) -> Option<f64> {
     };
     Some(match kind {
         D::Distance { a, b } => dist(p(a)?, p(b)?),
-        D::HorizontalDistance { a, b } => (p(b)?[0] - p(a)?[0]).abs(),
-        D::VerticalDistance { a, b } => (p(b)?[1] - p(a)?[1]).abs(),
+        D::HorizontalDistance { a, b, signed } => signed_or_abs(p(b)?[0] - p(a)?[0], *signed),
+        D::VerticalDistance { a, b, signed } => signed_or_abs(p(b)?[1] - p(a)?[1], *signed),
         D::PointLineDistance { point, line: l } => point_line(p(point)?, line(l)?),
         D::LineDistance { a, b } => {
             let (b0, b1) = line(b)?;
@@ -884,6 +886,11 @@ pub fn measure(kind: &DimensionKind, solved: &Solved) -> Option<f64> {
         // Measured on its constraint: see `measure_in`.
         D::Spacing { .. } => return None,
     })
+}
+
+/// A signed dimension's offset as it is, another one's size.
+fn signed_or_abs(offset: f64, signed: bool) -> f64 {
+    if signed { offset } else { offset.abs() }
 }
 
 /// [`measure`], also of a spacing dimension: the size of its equal

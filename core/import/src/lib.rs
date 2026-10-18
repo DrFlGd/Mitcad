@@ -184,8 +184,9 @@ pub struct Options {
     /// decoded edges, faces and vertices in the replay (within 1e-3 mm
     /// first; `refs::geometric_tolerance` on the import's thread, for the
     /// crate's own matchers) and the face distance of the
-    /// geometric check of an item's new faces. Volume and area checks keep
-    /// their relative tolerances. The report gives it
+    /// geometric check of an item's new faces, and how far a sketch's
+    /// solved points may move where its regions stay (mitcad#396). Volume
+    /// and area checks keep their relative tolerances. The report gives it
     /// ([`DesignReport::geometric_tolerance`]) and each item's largest
     /// deviation beyond the exact tolerance.
     pub geometric_tolerance: f64,
@@ -2815,6 +2816,11 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                                         item_name(item),
                                         moved.join(", ")
                                     );
+                                    // (In its component: where the link's target leads.)
+                                    if let Some(f) = uids.last().and_then(|u| self.doc.feature(*u))
+                                    {
+                                        trace!("{}: made in {}", item_name(item), f.component);
+                                    }
                                 }
                             }
                             self.undo_to(depth);
@@ -5818,7 +5824,9 @@ fn def_component<K: Kernel>(
     }
     // A sweep along another component's body (mitcad#161) goes where its
     // profile is: the linked bodies do not count; nor do those an
-    // extrusion's objects are on.
+    // extrusion's objects are on, nor the bodies of other components' faces
+    // a construction plane is made from (mitcad#389: it went into that
+    // component, where its link's target does not lead).
     let linked: BTreeSet<String> = match (def.get("body_links"), def.get("object_links")) {
         (Some(Value::Object(links)), _) if def["type"] == "sweep" => {
             links.keys().cloned().collect()
@@ -5826,7 +5834,12 @@ fn def_component<K: Kernel>(
         (_, Some(Value::Object(links))) if def["type"] == "extrude" => {
             links.keys().cloned().collect()
         }
-        _ => BTreeSet::new(),
+        _ => match def.get("links") {
+            Some(Value::Object(links)) if def["type"] == "construction_plane" => {
+                links.keys().cloned().collect()
+            }
+            _ => BTreeSet::new(),
+        },
     };
     let mut found = BTreeSet::new();
     let mut texts = Vec::new();

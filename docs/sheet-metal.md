@@ -600,9 +600,10 @@ Decisions made while implementing the production Cut and the reliefs:
 - **Several sketches and contours.** Each profile is mapped from its own
   sketch frame into the fixed panel's chart; each sketch must lie on that
   panel's front or back surface. Profiles resolve like extrusion profiles: a
-  region key that no longer exists after a sketch edit takes the region with
-  the most curves in common, so a dimension edit that changes which seams a
-  contour crosses keeps the cut. Tools may overlap; holes in a region are kept.
+  region key that no longer exists after a sketch edit takes the regions
+  inside the outline it traces now (all pieces of a split region), else the
+  region with the most curves in common, with a warning, so a dimension edit
+  that changes which seams a contour crosses keeps the cut. Tools may overlap; holes in a region are kept.
 - **Cuts ending on a tangent line.** A tool boundary lying exactly on a seam
   removes material on one side only. The trim now ends the seam there instead
   of refusing it: the interval is no longer a port and the surviving side

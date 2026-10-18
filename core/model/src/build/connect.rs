@@ -113,7 +113,7 @@ pub(crate) struct Hole {
 }
 
 /// A connector planned: the piece, its fasteners, its holes and where it
-/// goes in the active component's coordinates.
+/// goes in the BUILD host's coordinates.
 #[derive(Debug, Clone)]
 pub(crate) struct ConnectPlan {
     pub connector: Piece,
@@ -154,7 +154,7 @@ pub(crate) struct PanelBound {
     pub first: f64,
 }
 
-/// The joint origin of a part's frame in the active component.
+/// The joint origin of a part's frame in the BUILD host.
 fn origin_of(path: &[OccurrenceUid], part: FeatureUid, name: &str) -> JointOrigin {
     JointOrigin {
         occurrence: OccurrencePath(path.to_vec()),
@@ -416,8 +416,8 @@ impl<K: Kernel> Document<K> {
             .get(&mate_a.frame)
             .ok_or_else(|| refuse(format!("{label} has no frame {}", mate_a.frame)))?;
         let a_path = self
-            .placed_in_active(a.component)
-            .ok_or_else(|| refuse(format!("{} is not placed in the active component", a.name)))?;
+            .placed_in_host(a.component)
+            .ok_or_else(|| refuse(format!("{} is not placed in the BUILD host", a.name)))?;
         let a_part = a
             .part
             .ok_or_else(|| refuse(format!("{} has no derived part", a.name)))?;
@@ -425,7 +425,7 @@ impl<K: Kernel> Document<K> {
         let a_end_b = a_end == "end_b";
         // a's frame of the mate's kind facing the inner corner: the one
         // turned most towards b.
-        let world_a = self.active_placement().after(&self.path_transform(&a_path));
+        let world_a = self.host_placement().after(&self.path_transform(&a_path));
         let b_axis = junction.b_axis;
         let candidates: Vec<(&String, &Transform)> = a
             .mounts
@@ -571,11 +571,7 @@ impl<K: Kernel> Document<K> {
         if input.machining {
             for machining in &connector.machining {
                 let (profile, path, at) = if machining.on == "b" {
-                    (
-                        &b,
-                        self.placed_in_active(b.component),
-                        junction.b.at.clone(),
-                    )
+                    (&b, self.placed_in_host(b.component), junction.b.at.clone())
                 } else {
                     (&a, Some(a_path.clone()), a_end.clone())
                 };
@@ -637,7 +633,7 @@ impl<K: Kernel> Document<K> {
     /// Places a connector at a junction (`build_connect`).
     pub fn build_connect(&mut self, input: &ConnectInput) -> Result<Placed, ModelError> {
         let plan = self.plan_connect(input)?;
-        let active = self.active_component();
+        let active = self.build_host();
         self.state().editable(active)?;
         let label = format!(
             "Connect {}",
@@ -705,7 +701,7 @@ impl<K: Kernel> Document<K> {
             .geometry
             .clone()
             .ok_or_else(|| refuse("pick a face of one of the frame's profiles"))?;
-        let path = self.path_from_active(&input.at.occurrence)?;
+        let path = self.path_from_host(&input.at.occurrence)?;
         let target = self
             .target(&path)
             .ok_or_else(|| refuse("pick a face of one of the frame's profiles"))?;
@@ -1115,7 +1111,7 @@ impl<K: Kernel> Document<K> {
     /// Places a panel (`build_panel`).
     pub fn build_panel(&mut self, input: &PanelInput) -> Result<Placed, ModelError> {
         let plan = self.plan_panel(input)?;
-        let active = self.active_component();
+        let active = self.build_host();
         self.state().editable(active)?;
         let label = format!("Place {}", plan.panel.name);
         self.apply(|state| {
@@ -1319,8 +1315,8 @@ impl<K: Kernel> Document<K> {
 
 /// A part's placement in the design.
 pub(crate) fn world_of<K: Kernel>(doc: &Document<K>, part: &PartInfo) -> Transform {
-    let path = doc.placed_in_active(part.component).unwrap_or_default();
-    doc.active_placement().after(&doc.path_transform(&path))
+    let path = doc.placed_in_host(part.component).unwrap_or_default();
+    doc.host_placement().after(&doc.path_transform(&path))
 }
 
 /// The end frame of a profile nearest the junction.
@@ -1368,7 +1364,7 @@ pub(crate) fn hole_def(
 pub(crate) struct Facing {
     pub frame: Transform,
     pub origin: JointOrigin,
-    /// The part's component and its placement in the active component.
+    /// The part's component and its placement in the BUILD host.
     pub component: ComponentUid,
     pub placement: Transform,
 }
@@ -1387,7 +1383,7 @@ fn facing_slot<K: Kernel>(
         if part.component == except || part.meta.role != BuildRole::Profile {
             continue;
         }
-        let Some(path) = doc.placed_in_active(part.component) else {
+        let Some(path) = doc.placed_in_host(part.component) else {
             continue;
         };
         let Some(feature) = part.part else {

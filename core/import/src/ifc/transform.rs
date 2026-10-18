@@ -279,6 +279,7 @@ pub fn transformed(item: &Item, a: &Matrix) -> Result<Item, String> {
             profile,
             directrix,
             reference,
+            binormal,
         } => {
             let s = similarity.ok_or("a sweep under a non-uniform scale")?;
             if det < 0.0 {
@@ -293,6 +294,7 @@ pub fn transformed(item: &Item, a: &Matrix) -> Result<Item, String> {
                 profile: profile.transformed(&scaled),
                 directrix: directrix.transformed(&m),
                 reference: reference.and_then(|r| math::normalize(math::apply_vector(&m, r))),
+                binormal: binormal.and_then(|b| math::normalize(math::apply_vector(&m, b))),
             }
         }
         Item::SweptDisk {

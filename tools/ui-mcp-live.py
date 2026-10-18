@@ -40,8 +40,8 @@ import time
 PROTOCOL = "2025-11-25"
 TIMEOUT = 60
 FRAME_LIMIT = 8 * 1024 * 1024
-LIVE_TOOLS = {"document_list", "model_query", "model_command", "document_save", "ui_state", "ui_log",
-              "ui_screenshot", "ui_select", "ui_command"}
+LIVE_TOOLS = {"document_list", "model_query", "model_command", "document_save", "document_open", "ui_state", "ui_log",
+              "ui_screenshot", "ui_select", "ui_command", "ui_camera"}
 # The projection of the block's bottom face in the sketch F4, as the
 # design's definition lists it.
 PROJECTED = ["p1", "p2", "c3", "p4", "c5", "p6", "c7", "c8"]

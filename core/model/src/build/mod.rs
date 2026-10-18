@@ -39,6 +39,8 @@ mod bound_tests;
 #[cfg(test)]
 mod cut_list_tests;
 #[cfg(test)]
+mod easy_tests;
+#[cfg(test)]
 mod junction_tests;
 #[cfg(test)]
 mod place_tests;

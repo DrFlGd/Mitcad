@@ -330,8 +330,12 @@ def run(app, cli, out, ui):
             check(body_volume(bridge, document) == (0, 0), "Initial GUI document was not empty")
             bridge.notify("tools/call", {"name": "model_command", "arguments": {"document": document, "command": BOX}})
             check(body_volume(bridge, document) == (0, 0), "A notification mutated the GUI")
+            # No folder is allowed for agents in this run (mitcad#402):
+            # document_save's path is refused by the application.
             refused = bridge.request("tools/call", {"name": "document_save", "arguments": {"document": document, "path": "outside.mitcad"}})
-            check("error" in refused, "Live socket exposed file writes")
+            check(refused.get("result", {}).get("isError") is True
+                  and "No folder is allowed" in refused["result"]["structuredContent"]["error"],
+                  "Live socket exposed file writes: " + repr(refused)[:2000])
             bridge.tool("model_command", {"document": document, "command": {"cmd": "load_design", "json": "{}"}}, error=True)
             check(body_volume(bridge, document) == (0, 0), "A refused command changed the model")
 

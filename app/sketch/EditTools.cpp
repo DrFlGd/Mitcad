@@ -180,8 +180,7 @@ public:
 
   void press(const Snap& snap) override {
     m_cursor = snap.at;
-    const QString entity = entityAt(snap.screen);
-    switch (m_state) {
+    const QString entity = entityAt(snap.screen);    switch (m_state) {
     case State::Pick:
       if (entity.isEmpty()) {
         return;
@@ -489,6 +488,12 @@ private:
     } else {
       return std::nullopt;
     }
+    // The palette's Signed distances (mitcad#409): the offset from the
+    // first point, which may be negative.
+    if (m_c.signedDistances() && d.isAxisDistance()) {
+      d.json.insert(QStringLiteral("signed"), true);
+      d.signedOffset = true;
+    }
     if (const auto value = measure(d, model)) {
       d.measured = *value;
     } else {
@@ -534,7 +539,18 @@ private:
     cmd.insert(QStringLiteral("text"), xy(at));
     QJsonObject result;
     bool driven = false;
-    if (!op.run(cmd, &result)) {
+    bool ok = op.run(cmd, &result);
+    const QString type = definition.value(QStringLiteral("type")).toString();
+    if (!ok && op.error().contains(QStringLiteral("must not be negative")) &&
+        (type == QStringLiteral("horizontal_distance") || type == QStringLiteral("vertical_distance")) &&
+        !dimension.value(QStringLiteral("signed")).toBool()) {
+      // A negative value typed for a horizontal or vertical distance makes
+      // it signed (mitcad#409): the point goes to that side of the first.
+      dimension.insert(QStringLiteral("signed"), true);
+      cmd.insert(QStringLiteral("dimension"), dimension);
+      ok = op.run(cmd, &result);
+    }
+    if (!ok) {
       if (!op.error().contains(QStringLiteral("over-constrain"))) {
         const QString reason = op.error();
         op.rollback();
@@ -557,13 +573,17 @@ private:
     op.commit();
     const QString id = result.value(QStringLiteral("dimensions")).toArray().first().toString();
     const DimensionData* d = m_c.model().dimension(id);
+    // "horizontal_distance signed" for a signed one (mitcad#409).
+    const QString kind = d != nullptr && d->signedOffset ? type + QStringLiteral(" signed") : type;
     if (driven) {
       m_c.hint(QObject::tr("The dimension would over-constrain the sketch: added as a driven dimension."));
-      qDebug().noquote() << QStringLiteral("Added driven dimension %1 %2").arg(id, definition.value(QStringLiteral("type")).toString());
+      qDebug().noquote() << QStringLiteral("Added driven dimension %1 %2").arg(id, kind);
     } else {
       qDebug().noquote() << QStringLiteral("Added dimension %1 %2 %3 = %4")
-                                .arg(id, definition.value(QStringLiteral("type")).toString(),
-                                     d != nullptr ? d->parameter : QString(), expression);
+                                .arg(id, kind, d != nullptr ? d->parameter : QString(), expression);
+    }
+    if (d != nullptr && d->signedOffset) {
+      qDebug().noquote() << QStringLiteral("Dimension %1 shows %2").arg(id, m_c.overlay().dimensionText(*d));
     }
     // For UI tests: the sector an angle measures, as drawn (mitcad#296).
     if (d != nullptr && d->type == QStringLiteral("angle")) {

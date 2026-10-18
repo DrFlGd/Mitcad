@@ -79,6 +79,7 @@ struct DocumentSnapshot {
     QString name;
     QString component;
     bool visible = true;
+    bool mesh = false; // triangles without surfaces (mitcad#399)
   };
 
   QVector<Feature> features; // in timeline order

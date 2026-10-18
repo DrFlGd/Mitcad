@@ -150,6 +150,7 @@ DocumentSnapshot DocumentSnapshot::read(const CommandContext& model) {
     body.name = text(b, "name");
     body.component = b.value(QStringLiteral("component")).toString(kRoot);
     body.visible = b.value(QStringLiteral("visible")).toBool(true);
+    body.mesh = b.value(QStringLiteral("mesh")).toBool();
     snapshot.bodies.insert(body.uid, body);
   }
   return snapshot;

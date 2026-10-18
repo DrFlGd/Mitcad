@@ -192,6 +192,9 @@ struct FeatureOut<'a> {
     /// What the importer that made it said (mitcad#170).
     #[serde(skip_serializing_if = "Option::is_none")]
     import_note: Option<&'a str>,
+    /// What it remembers of the pieces it split bodies into (mitcad#408).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    split_pieces: Option<&'a [crate::features::PieceGroup]>,
     #[serde(flatten)]
     def: FeatureDef<String>,
 }
@@ -284,6 +287,7 @@ pub(super) fn save(state: &DocState) -> String {
                 component: f.component,
                 visible: state.feature_visibility.get(&f.uid).copied(),
                 import_note: state.import_notes.get(&f.uid).map(String::as_str),
+                split_pieces: state.split_pieces.get(&f.uid).map(|g| &g[..]),
                 def: f
                     .def
                     .map_params(&mut |_, id| Ok::<_, ()>(parameters.name(*id)))
@@ -548,6 +552,8 @@ struct FeatureIn {
     visible: Option<bool>,
     /// What the importer that made it said (mitcad#170).
     import_note: Option<String>,
+    /// What it remembers of the pieces of its splits (mitcad#408).
+    split_pieces: Vec<crate::features::PieceGroup>,
     def: FeatureDef<String>,
     /// A sketch of rectangles and circles (`"shapes"`, early version 2):
     /// converted again with the parameter values once they are loaded, so
@@ -664,6 +670,11 @@ fn feature_in(i: usize, value: Value) -> Result<FeatureIn, FileError> {
             )));
         }
     };
+    let split_pieces = match fields.remove("split_pieces") {
+        None => Vec::new(),
+        Some(value) => serde_json::from_value(value)
+            .map_err(|e| schema(format!("features[{i}] ({name}): split_pieces: {e}")))?,
+    };
     let shapes = fields.get("shapes").cloned();
     let def = serde_json::from_value(Value::Object(fields))
         .map_err(|e| schema(format!("features[{i}] ({name}): {e}")))?;
@@ -674,6 +685,7 @@ fn feature_in(i: usize, value: Value) -> Result<FeatureIn, FileError> {
         component,
         visible,
         import_note,
+        split_pieces,
         def,
         shapes,
     })
@@ -970,6 +982,11 @@ pub(super) fn load(value: Value) -> Result<(DocState, Vec<String>), FileError> {
         }
         if let Some(note) = &f.import_note {
             state.import_notes.insert(f.uid, note.clone());
+        }
+        if !f.split_pieces.is_empty() {
+            state
+                .split_pieces
+                .insert(f.uid, Arc::new(f.split_pieces.clone()));
         }
     }
     let feature_uids: BTreeSet<FeatureUid> = uids.iter().copied().collect();

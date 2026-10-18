@@ -174,7 +174,7 @@ impl Operation {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtrudeDef<P = ParamId> {
-    /// Regions of one sketch, a set (see [`selected_regions`]).
+    /// Regions of one sketch, a set (see `selected_regions`).
     #[serde(deserialize_with = "profile_set")]
     pub profiles: Vec<ProfileRef>,
     #[serde(
@@ -373,7 +373,7 @@ pub(crate) fn profile_set<'de, D: serde::Deserializer<'de>>(
 /// Region keys depend on the solved geometry, so evaluation finds them (or
 /// the best match when the sketch changed, see
 /// [`SketchOutput::resolve_region`]). A region referenced more than once is
-/// no error: the references are a set ([`selected_regions`]).
+/// no error: the references are a set (`selected_regions`).
 pub(crate) fn check_profiles(
     ctx: &CheckContext<'_>,
     profiles: &[ProfileRef],
@@ -421,45 +421,64 @@ pub(crate) fn check_participants(
 /// regions do). Toggling is the application's: a click on a selected
 /// region takes its reference out instead of listing it again.
 ///
-/// Each reference finds its region by its key, or the best match when the
-/// sketch changed (the region keeps the referenced key, so the faces made
-/// from it keep their names); two references that find the same region,
-/// such as a key listed twice or an old key and the current one, use it
-/// once. Err: the first reference that finds no region.
+/// Each reference finds its regions by its key; when the sketch changed,
+/// the regions inside the outline its key traces now (the region renamed,
+/// or all its pieces when the change split it), else the best match (see
+/// [`SketchOutput::found`]; the main region keeps the referenced key, so
+/// the faces made from it keep their names). Two references that find the
+/// same region, such as a key listed twice or an old key and the current
+/// one, use it once. Err: the first reference that finds no region.
+#[cfg(test)]
 pub(crate) fn selected_regions<'a>(
     sketch: &SketchOutput,
     profiles: &'a [ProfileRef],
 ) -> Result<Vec<ProfileRegion>, &'a ProfileRef> {
+    found_regions(sketch, profiles, "").map(|(regions, _)| regions)
+}
+
+/// `selected_regions` with the warnings of the references found under
+/// other keys (`FoundRegions::warning`, for the sketch named `name`).
+pub(crate) fn found_regions<'a>(
+    sketch: &SketchOutput,
+    profiles: &'a [ProfileRef],
+    name: &str,
+) -> Result<(Vec<ProfileRegion>, Vec<String>), &'a ProfileRef> {
     let mut regions: Vec<ProfileRegion> = Vec::new();
+    let mut warnings = Vec::new();
     for p in profiles {
-        let region = sketch.resolve_region(&p.region).ok_or(p)?;
-        if !regions.iter().any(|r| r.loops == region.loops) {
-            regions.push(region);
+        let found = sketch.found(&p.region).ok_or(p)?;
+        warnings.extend(found.warning(&p.region, name));
+        for region in found.profiles(&p.region) {
+            if !regions.iter().any(|r| r.loops == region.loops) {
+                regions.push(region);
+            }
         }
     }
-    Ok(regions)
+    Ok((regions, warnings))
 }
 
 /// The evaluated sketch of the profiles and the regions they select
-/// ([`selected_regions`]).
+/// (`selected_regions`). A reference found under other keys warns
+/// (`region r{…} found as r{…} + r{…} after a change in Sketch1`), as
+/// renamed faces do (mitcad#272, mitcad#407).
 pub(crate) fn profile_regions<K: Kernel>(
     ctx: &mut EvalContext<'_, K>,
     profiles: &[ProfileRef],
 ) -> Result<(Arc<SketchOutput>, Vec<ProfileRegion>), String> {
     let sketch_uid = profiles.first().ok_or("no profiles selected")?.sketch;
     let sketch = ctx.sketch(sketch_uid)?;
-    let regions = selected_regions(&sketch, profiles).map_err(|p| {
-        format!(
-            "{} has no profile {}",
-            ctx.feature_name(sketch_uid),
-            p.region
-        )
-    })?;
+    let name = ctx.feature_name(sketch_uid);
+    let (regions, warnings) = found_regions(&sketch, profiles, &name)
+        .map_err(|p| format!("{name} has no profile {}", p.region))?;
+    for warning in warnings {
+        ctx.warn(warning);
+    }
     Ok((sketch, regions))
 }
 
 /// The bodies an operation works on: none for new bodies, the listed ones,
-/// or all.
+/// or all. Mesh bodies are left out of all bodies and refused when listed
+/// (mitcad#399).
 pub(crate) fn participant_bodies<K: Kernel>(
     ctx: &mut EvalContext<'_, K>,
     operation: Operation,
@@ -468,11 +487,11 @@ pub(crate) fn participant_bodies<K: Kernel>(
     if operation.makes_bodies() {
         Ok(Vec::new())
     } else if participants.is_empty() {
-        Ok(ctx.bodies())
+        Ok(ctx.surface_bodies())
     } else {
         participants
             .iter()
-            .map(|uid| ctx.body(*uid).map(|shape| (*uid, shape)))
+            .map(|uid| ctx.surface_body(*uid).map(|shape| (*uid, shape)))
             .collect()
     }
 }
@@ -706,9 +725,29 @@ impl<K: Kernel> Evaluate<K> for ExtrudeDef {
             Ok(p) => p,
             Err(e) => return Some(Err(e)),
         };
-        let participants = match participant_bodies(ctx, self.operation, &self.participants) {
-            Ok(p) => p,
-            Err(e) => return Some(Err(e)),
+        let participants = if self.operation.makes_bodies() || self.participants.is_empty() {
+            match participant_bodies(ctx, self.operation, &self.participants) {
+                Ok(p) => p,
+                Err(e) => return Some(Err(e)),
+            }
+        } else {
+            // A participant the original merged into another is not there
+            // at the pattern; the body it went into, another participant,
+            // stands for it (mitcad#406; the pattern has checked them).
+            let mut present = Vec::with_capacity(self.participants.len());
+            let mut missing = None;
+            for uid in &self.participants {
+                match ctx.body(*uid) {
+                    Ok(shape) => present.push((*uid, shape)),
+                    Err(e) => {
+                        missing.get_or_insert(e);
+                    }
+                }
+            }
+            match missing {
+                Some(e) if present.is_empty() => return Some(Err(e)),
+                _ => present,
+            }
         };
         // Objects the original took away are found as it found them.
         let outer = ctx.objects_before.replace(feature);

@@ -135,8 +135,13 @@ struct Arrangement<'a> {
 /// Computes the regions of the curves (in any order; the result is sorted
 /// by key).
 pub fn regions(curves: &[RegionCurve]) -> Vec<Region> {
+    regions_and_layout(curves).0
+}
+
+/// [`regions`] with how they lie against each other.
+pub fn regions_and_layout(curves: &[RegionCurve]) -> (Vec<Region>, Layout) {
     if curves.is_empty() {
-        return Vec::new();
+        return (Vec::new(), Layout::default());
     }
     let mut min = [f64::INFINITY; 2];
     let mut max = [f64::NEG_INFINITY; 2];
@@ -945,7 +950,7 @@ impl<'a> Arrangement<'a> {
         loops
     }
 
-    fn regions(&self) -> Vec<Region> {
+    fn regions(&self) -> (Vec<Region>, Layout) {
         let keys = self.keys();
         // The segments of a half-edge in loop order: one, or the pieces of
         // a composite curve (backward along a backward half-edge).
@@ -1113,7 +1118,7 @@ impl<'a> Arrangement<'a> {
             }
         }
 
-        let mut regions: Vec<Region> = face_ids
+        let mut regions: Vec<(usize, Region)> = face_ids
             .into_iter()
             .map(|f| {
                 let outer = &loops[f];
@@ -1140,7 +1145,7 @@ impl<'a> Arrangement<'a> {
                     moment = add(moment, hole.moments);
                     holes.push(hole.outline.clone());
                 }
-                Region {
+                let region = Region {
                     profile: ProfileRegion {
                         key: RegionKey::new(outer.segments.iter().map(|s| s.key.clone()))
                             .expect("a loop has segments"),
@@ -1154,11 +1159,391 @@ impl<'a> Arrangement<'a> {
                     },
                     outline: outer.outline.clone(),
                     holes,
+                };
+                (f, region)
+            })
+            .collect();
+        regions.sort_by(|a, b| a.1.profile.key.cmp(&b.1.profile.key));
+
+        // The region on each side of every half-edge, for the layout.
+        let mut side: Vec<Option<LayoutSide>> = vec![None; 2 * self.edges.len()];
+        for (index, (f, _)) in regions.iter().enumerate() {
+            let mut mark = |l: usize, outer: bool| {
+                for &h in &loops[l].halves {
+                    side[h] = Some(LayoutSide {
+                        region: index,
+                        outer,
+                    });
+                }
+            };
+            mark(*f, true);
+            for &hole in holes.get(f).into_iter().flatten() {
+                mark(hole, false);
+            }
+        }
+        let layout = self.layout(&side);
+        (regions.into_iter().map(|(_, r)| r).collect(), layout)
+    }
+
+    /// The live edges with the regions on their sides ([`Layout`]).
+    fn layout(&self, side: &[Option<LayoutSide>]) -> Layout {
+        let mut curves_at: Vec<Vec<CurveId>> = vec![Vec::new(); self.vertices.len()];
+        let live: Vec<usize> = (0..self.edges.len())
+            .filter(|&e| self.edges[e].alive)
+            .collect();
+        for &e in &live {
+            let edge = &self.edges[e];
+            for v in [edge.v0, edge.v1].into_iter().flatten() {
+                curves_at[v].push(self.curves[edge.curve].uid);
+            }
+        }
+        for list in &mut curves_at {
+            list.sort_unstable();
+            list.dedup();
+        }
+        let mut starting: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+        for (i, &e) in live.iter().enumerate() {
+            if let Some(v) = self.edges[e].v0 {
+                starting.entry(v).or_default().push(i);
+            }
+        }
+        let edges = live
+            .iter()
+            .map(|&e| {
+                let edge = &self.edges[e];
+                let next = edge.v1.and_then(|v| {
+                    starting.get(&v)?.iter().copied().find(|&i| {
+                        let f = live[i];
+                        self.edges[f].curve == edge.curve && self.continues(e, f)
+                    })
+                });
+                let samples = self.samples(e);
+                let area = samples.windows(2).map(|w| cross(w[0], w[1]) / 2.0).sum();
+                LayoutEdge {
+                    curve: self.curves[edge.curve].uid,
+                    ends: edge.v0.zip(edge.v1),
+                    next,
+                    area,
+                    sides: [side[2 * e], side[2 * e + 1]],
                 }
             })
             .collect();
-        regions.sort_by(|a, b| a.profile.key.cmp(&b.profile.key));
-        regions
+        Layout { curves_at, edges }
+    }
+}
+
+/// How the regions of a sketch lie against each other: the pieces of the
+/// curves between the vertices, each with the region on either side
+/// (mitcad#407). A reference whose region a sketch change renamed or
+/// split finds its pieces on it ([`Layout::pieces`]).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Layout {
+    /// The curves that meet at each vertex.
+    curves_at: Vec<Vec<CurveId>>,
+    edges: Vec<LayoutEdge>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct LayoutEdge {
+    curve: CurveId,
+    /// The vertices at its start and end, in the curve's direction; None
+    /// for a closed curve that is a loop by itself.
+    ends: Option<(usize, usize)>,
+    /// The edge that goes on along the curve from its end.
+    next: Option<usize>,
+    /// The area it sweeps about the origin forwards (counter-clockwise
+    /// positive): a loop's sum is its signed area.
+    area: f64,
+    /// The region on its left (forwards) and on its right; None outside
+    /// every region.
+    sides: [Option<LayoutSide>; 2],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct LayoutSide {
+    /// The index of the region in the sorted regions.
+    region: usize,
+    /// Whether the edge is on the region's outer boundary (else a hole's).
+    outer: bool,
+}
+
+/// A stretch of edges of one curve, along it.
+#[derive(Debug, Clone)]
+struct Run {
+    edges: Vec<usize>,
+    /// The vertices at its start and end; None for a closed curve that is
+    /// a loop by itself.
+    ends: Option<(usize, usize)>,
+}
+
+/// How many choices the loop search tries before it gives up.
+const LOOP_SEARCH_LIMIT: usize = 20_000;
+
+impl Layout {
+    /// The regions (indices into the sorted regions) that make up the area
+    /// a region key outlines (mitcad#407): each of its segments `c[a,b]`
+    /// is traced as the edges of curve `c` from where it meets the curves
+    /// `a` to where it meets the curves `b`; when these stretches close one
+    /// loop, the regions inside it are the pieces of the old region (one,
+    /// renamed, or several, split by the change). A region inside the loop
+    /// that lies in a hole of the others stays out, as the old region's
+    /// holes did. None when the key's segments do not close a loop on the
+    /// current curves.
+    pub fn pieces(&self, key: &RegionKey) -> Option<Vec<usize>> {
+        let candidates: Vec<Vec<Run>> = key.segments().map(|s| self.runs(s)).collect();
+        if candidates.iter().any(Vec::is_empty) {
+            return None;
+        }
+        let mut chosen = Vec::with_capacity(candidates.len());
+        let mut budget = LOOP_SEARCH_LIMIT;
+        let runs = self.close_loop(&candidates, &mut chosen, &mut budget)?;
+        let mut on_loop = vec![false; self.edges.len()];
+        // Each loop edge with whether the loop runs along it forwards.
+        let mut walk: Vec<(usize, bool)> = Vec::new();
+        for (e, forward) in self.walk(&runs)? {
+            if std::mem::replace(&mut on_loop[e], true) {
+                return None;
+            }
+            walk.push((e, forward));
+        }
+        // The loop's inside is on its left when it runs counter-clockwise.
+        let area: f64 = walk
+            .iter()
+            .map(|&(e, forward)| {
+                let a = self.edges[e].area;
+                if forward { a } else { -a }
+            })
+            .sum();
+        let mut inside = self.spread(&walk, &on_loop, area > 0.0)?;
+        inside.sort_unstable();
+        Some(inside)
+    }
+
+    /// The stretches of edges a segment of a key can be now, shortest
+    /// first from each start.
+    fn runs(&self, segment: &SegmentKey) -> Vec<Run> {
+        let mine: Vec<usize> = (0..self.edges.len())
+            .filter(|&e| self.edges[e].curve == segment.curve)
+            .collect();
+        let others = |v: usize| -> Vec<CurveId> {
+            self.curves_at[v]
+                .iter()
+                .copied()
+                .filter(|c| *c != segment.curve)
+                .collect()
+        };
+        let meets = |v: usize, wanted: &[CurveId]| {
+            let at = others(v);
+            wanted.iter().all(|c| at.contains(c))
+        };
+        let Some(ends) = &segment.ends else {
+            // A closed curve by itself: the whole curve, around.
+            let first = *mine.first().unwrap_or(&usize::MAX);
+            if first == usize::MAX {
+                return Vec::new();
+            }
+            if self.edges[first].ends.is_none() {
+                return vec![Run {
+                    edges: vec![first],
+                    ends: None,
+                }];
+            }
+            let mut edges = vec![first];
+            let mut e = first;
+            while let Some(n) = self.edges[e].next {
+                if n == first {
+                    break;
+                }
+                if edges.contains(&n) {
+                    return Vec::new();
+                }
+                edges.push(n);
+                e = n;
+            }
+            if self.edges[e].next != Some(first) || edges.len() != mine.len() {
+                return Vec::new();
+            }
+            let v = self.edges[first].ends.map(|(v, _)| v).unwrap_or_default();
+            return vec![Run {
+                edges,
+                ends: Some((v, v)),
+            }];
+        };
+        let (start, end) = (&ends.0, &ends.1);
+        let mut out = Vec::new();
+        for &first in &mine {
+            let Some((v0, _)) = self.edges[first].ends else {
+                continue;
+            };
+            if !meets(v0, start) {
+                continue;
+            }
+            let mut edges = vec![first];
+            let mut e = first;
+            loop {
+                let (_, v1) = self.edges[e].ends.expect("an edge with ends");
+                if meets(v1, end) {
+                    out.push(Run {
+                        edges: edges.clone(),
+                        ends: Some((v0, v1)),
+                    });
+                    break;
+                }
+                match self.edges[e].next {
+                    Some(n) if !edges.contains(&n) => {
+                        edges.push(n);
+                        e = n;
+                    }
+                    _ => break,
+                }
+            }
+        }
+        out.sort_by_key(|r| r.edges.len());
+        out
+    }
+
+    /// One run for each segment such that they close one loop: every
+    /// vertex they end at is met twice and none of their edges repeats.
+    fn close_loop(
+        &self,
+        candidates: &[Vec<Run>],
+        chosen: &mut Vec<usize>,
+        budget: &mut usize,
+    ) -> Option<Vec<Run>> {
+        if *budget == 0 {
+            return None;
+        }
+        *budget -= 1;
+        let k = chosen.len();
+        let runs: Vec<&Run> = chosen
+            .iter()
+            .enumerate()
+            .map(|(i, &c)| &candidates[i][c])
+            .collect();
+        if k == candidates.len() {
+            let mut degree: BTreeMap<usize, usize> = BTreeMap::new();
+            for run in &runs {
+                if let Some((a, b)) = run.ends {
+                    *degree.entry(a).or_default() += 1;
+                    *degree.entry(b).or_default() += 1;
+                }
+            }
+            if degree.values().any(|&d| d != 2) {
+                return None;
+            }
+            let owned: Vec<Run> = runs.into_iter().cloned().collect();
+            return self.walk(&owned).map(|_| owned);
+        }
+        for c in 0..candidates[k].len() {
+            let run = &candidates[k][c];
+            let clash = runs
+                .iter()
+                .any(|r| r.edges.iter().any(|e| run.edges.contains(e)));
+            let crowded = run.ends.is_some_and(|(a, b)| {
+                let degree = |v: usize| {
+                    runs.iter()
+                        .filter_map(|r| r.ends)
+                        .map(|(x, y)| usize::from(x == v) + usize::from(y == v))
+                        .sum::<usize>()
+                };
+                if a == b {
+                    degree(a) > 0
+                } else {
+                    degree(a) > 1 || degree(b) > 1
+                }
+            });
+            if clash || crowded {
+                continue;
+            }
+            chosen.push(c);
+            if let Some(found) = self.close_loop(candidates, chosen, budget) {
+                return Some(found);
+            }
+            chosen.pop();
+            if *budget == 0 {
+                return None;
+            }
+        }
+        None
+    }
+
+    /// The edges of runs that close one loop, in order around it, each with
+    /// whether the loop goes along it forwards; None when they make no
+    /// single loop.
+    fn walk(&self, runs: &[Run]) -> Option<Vec<(usize, bool)>> {
+        let along = |run: &Run, forward: bool| -> Vec<(usize, bool)> {
+            if forward {
+                run.edges.iter().map(|&e| (e, true)).collect()
+            } else {
+                run.edges.iter().rev().map(|&e| (e, false)).collect()
+            }
+        };
+        let first = runs.first()?;
+        let Some((start, mut at)) = first.ends else {
+            return (runs.len() == 1).then(|| along(first, true));
+        };
+        let mut used = vec![false; runs.len()];
+        used[0] = true;
+        let mut out = along(first, true);
+        while at != start || used.iter().any(|u| !u) {
+            let (i, forward) = runs.iter().enumerate().find_map(|(i, r)| {
+                let (a, b) = r.ends?;
+                if used[i] {
+                    None
+                } else if a == at {
+                    Some((i, true))
+                } else if b == at {
+                    Some((i, false))
+                } else {
+                    None
+                }
+            })?;
+            used[i] = true;
+            let (a, b) = runs[i].ends?;
+            at = if forward { b } else { a };
+            out.extend(along(&runs[i], forward));
+            if at == start && used.iter().any(|u| !u) {
+                return None;
+            }
+        }
+        Some(out)
+    }
+
+    /// The regions on one side of the loop (its left when `left`), spread
+    /// across the edges off the loop that are outer boundaries on both
+    /// sides (not into a hole: an island inside stays out); None when they
+    /// reach the outside of every region.
+    fn spread(&self, walk: &[(usize, bool)], on_loop: &[bool], left: bool) -> Option<Vec<usize>> {
+        let mut found: Vec<usize> = Vec::new();
+        for &(e, forward) in walk {
+            let side = self.edges[e].sides[usize::from(forward != left)]?;
+            if !found.contains(&side.region) {
+                found.push(side.region);
+            }
+        }
+        let mut k = 0;
+        while k < found.len() {
+            let region = found[k];
+            k += 1;
+            for (e, edge) in self.edges.iter().enumerate() {
+                if on_loop[e] {
+                    continue;
+                }
+                for (mine, other) in [(0, 1), (1, 0)] {
+                    let Some(here) = edge.sides[mine] else {
+                        continue;
+                    };
+                    if here.region != region || !here.outer {
+                        continue;
+                    }
+                    let there = edge.sides[other]?;
+                    if there.outer && !found.contains(&there.region) {
+                        found.push(there.region);
+                    }
+                }
+            }
+        }
+        Some(found)
     }
 }
 
@@ -1166,11 +1551,14 @@ impl<'a> Arrangement<'a> {
 /// the most curves in common with the key, then the most identical
 /// segments, then the fewest other curves, then the largest; None when no
 /// region shares a curve.
-pub fn best_match<'a>(regions: &'a [Region], key: &RegionKey) -> Option<&'a Region> {
+pub fn best_match<'a>(
+    regions: impl IntoIterator<Item = &'a Region>,
+    key: &RegionKey,
+) -> Option<&'a Region> {
     let wanted: Vec<CurveId> = key.segments().map(|s| s.curve).collect();
     let wanted_segments: Vec<&SegmentKey> = key.segments().collect();
     regions
-        .iter()
+        .into_iter()
         .map(|r| {
             let curves: Vec<CurveId> = r.profile.key.segments().map(|s| s.curve).collect();
             let common = curves.iter().filter(|c| wanted.contains(c)).count();

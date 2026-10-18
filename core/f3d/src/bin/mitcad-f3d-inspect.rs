@@ -51,7 +51,11 @@ const USAGE: &str = "usage: mitcad-f3d-inspect <command> ...
   edge-curves <file>          the curves the edge inputs store (classes,
                               how many decode), each edge input with how
                               the edge found lies to its curve, and the
-                              inputs of other names that found one edge";
+                              inputs of other names that found one edge
+  attrs <file> <key> [value]  the design stream's objects whose root part
+                              has the attribute (with that value), every
+                              object of the stream looked at (also those
+                              no sketch or feature lists any more)";
 
 fn open(path: &str) -> Result<F3dFile, String> {
     F3dFile::open(Path::new(path)).map_err(|e| format!("{path}: {e}"))
@@ -1121,6 +1125,61 @@ fn cmd_edge_curves(path: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The objects whose root part has the attribute `key` (equal to `value`
+/// when given): a sketch curve's ids (`crv_primary_id`) are found this way
+/// also in objects nothing refers to any more.
+fn cmd_attrs(path: &str, key: &str, value: Option<&str>) -> Result<(), String> {
+    use mitcad_f3d::design;
+    use mitcad_f3d::design::stream::AttrValue;
+    let mut found = 0;
+    for (label, doc) in design::documents(Path::new(path))? {
+        let Some(s) = design::find_design_streams(&doc).map_err(|e| e.to_string())? else {
+            continue;
+        };
+        let seg = design::Segment::parse(&s.meta, s.bulk).map_err(|e| e.to_string())?;
+        for o in &seg.objects {
+            let Some(root) = seg.root_part(seg.data(o)) else {
+                continue;
+            };
+            let Some(a) = root.attrs.iter().find(|a| a.key == key) else {
+                continue;
+            };
+            let text = match &a.value {
+                AttrValue::U64(v) => v.to_string(),
+                AttrValue::Bool(v) => v.to_string(),
+                AttrValue::Text(t) => t.clone(),
+            };
+            if value.is_some_and(|v| v != text) {
+                continue;
+            }
+            found += 1;
+            let attrs: Vec<String> = root
+                .attrs
+                .iter()
+                .map(|a| match &a.value {
+                    AttrValue::U64(v) => format!("{}={v}", a.key),
+                    AttrValue::Bool(v) => format!("{}={v}", a.key),
+                    AttrValue::Text(t) => format!("{}={t:?}", a.key),
+                })
+                .collect();
+            let refs: Vec<String> = root
+                .refs
+                .iter()
+                .map(|r| r.map_or_else(|| "-".to_owned(), |r| r.to_string()))
+                .collect();
+            println!(
+                "{label} object {} class {} refs [{}] {}",
+                o.id,
+                seg.guid(o).unwrap_or("?"),
+                refs.join(","),
+                attrs.join(" ")
+            );
+        }
+    }
+    println!("{found} objects");
+    Ok(())
+}
+
 fn cmd_objects(path: &str, class: &str, max: Option<usize>) -> Result<(), String> {
     use mitcad_f3d::design;
     let prefix = class.to_uppercase();
@@ -1225,6 +1284,8 @@ fn run(args: &[String]) -> Result<(), String> {
         [cmd, file, class] if cmd == "objects" => cmd_objects(file, class, None),
         [cmd, file, class, n] if cmd == "objects" => cmd_objects(file, class, n.parse().ok()),
         [cmd, file] if cmd == "edge-curves" => cmd_edge_curves(file),
+        [cmd, file, key] if cmd == "attrs" => cmd_attrs(file, key, None),
+        [cmd, file, key, value] if cmd == "attrs" => cmd_attrs(file, key, Some(value)),
         _ => Err(USAGE.to_string()),
     }
 }

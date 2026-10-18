@@ -135,6 +135,7 @@ bool toolEditable(const QJsonObject& feature, const CommandContext& context) {
 InputDef toolInput() {
   return selectionInput(QStringLiteral("tool"), QObject::tr("Splitting Tool"),
                         SelectKind::Plane | SelectKind::Face | SelectKind::Body | SelectKind::SketchCurve, 1, 0)
+      .withoutMeshes()
       .withTooltip(QObject::tr("A plane, a face, a body, or sketch curves of one sketch"));
 }
 
@@ -180,6 +181,7 @@ CommandDef shellCommand(const CommandContext& context) {
   const auto outside = [](const CommandState& s) { return s.choice(QStringLiteral("direction")) != QStringLiteral("inside"); };
   def.inputs = {
       selectionInput(QStringLiteral("faces"), QObject::tr("Faces/Body"), SelectKind::Face | SelectKind::Body, 1, 0)
+          .withoutMeshes()
           .withTooltip(QObject::tr("Faces to remove, or a body to hollow closed"))
           .withHoverChain(SelectKind::Face, QStringLiteral("tangent_chain")),
       checkInput(QStringLiteral("tangent_chain"), QObject::tr("Tangent Chain"), true),
@@ -276,6 +278,7 @@ CommandDef draftCommand(const CommandContext& context) {
           .withTooltip(QObject::tr("The fixed plane: its normal is the pull direction"))
           .withAccepts(isPlanar),
       selectionInput(QStringLiteral("faces"), QObject::tr("Faces"), SelectKind::Face, 1, 0)
+          .withoutMeshes()
           .withHoverChain(SelectKind::Face, QStringLiteral("tangent_chain")),
       choiceInput(QStringLiteral("draft_type"), QObject::tr("Draft Sides"),
                   {{QStringLiteral("one"), QStringLiteral("One Side")},
@@ -358,7 +361,7 @@ CommandDef offsetFaceCommand(const CommandContext& context) {
   def.keywords = {QStringLiteral("press pull"), QStringLiteral("move face"), QStringLiteral("push")};
   def.featureType = QStringLiteral("offset_face");
   def.inputs = {
-      selectionInput(QStringLiteral("faces"), QObject::tr("Faces"), SelectKind::Face, 1, 0),
+      selectionInput(QStringLiteral("faces"), QObject::tr("Faces"), SelectKind::Face, 1, 0).withoutMeshes(),
       valueInput(QStringLiteral("distance"), QObject::tr("Distance"), ValueKind::Length, QStringLiteral("2 mm"))
           .withTooltip(QObject::tr("Positive out of the material"))
           .withManipulator([](const CommandState& state, const CommandContext& model) {
@@ -413,6 +416,7 @@ CommandDef replaceFaceCommand(const CommandContext& context) {
   def.featureType = QStringLiteral("replace_face");
   def.inputs = {
       selectionInput(QStringLiteral("faces"), QObject::tr("Source Faces"), SelectKind::Face, 1, 0)
+          .withoutMeshes()
           .withHoverChain(SelectKind::Face, QStringLiteral("tangent_chain")),
       selectionInput(QStringLiteral("target"), QObject::tr("Target Faces"), kPlaneKinds | SelectKind::Body, 1, 1)
           .withTooltip(QObject::tr("A plane, a face of another body (also curved) or a surface body"))
@@ -475,7 +479,7 @@ CommandDef splitFaceCommand(const CommandContext& context) {
   def.group = QStringLiteral("MODIFY");
   def.featureType = QStringLiteral("split_face");
   def.inputs = {
-      selectionInput(QStringLiteral("faces"), QObject::tr("Faces to Split"), SelectKind::Face, 1, 0),
+      selectionInput(QStringLiteral("faces"), QObject::tr("Faces to Split"), SelectKind::Face, 1, 0).withoutMeshes(),
       toolInput(),
       checkInput(QStringLiteral("extend"), QObject::tr("Extend Splitting Tool"), true),
       toolOffsetInput(),
@@ -519,7 +523,7 @@ CommandDef splitBodyCommand(const CommandContext& context) {
   def.keywords = {QStringLiteral("cut"), QStringLiteral("divide")};
   def.featureType = QStringLiteral("split_body");
   def.inputs = {
-      selectionInput(QStringLiteral("bodies"), QObject::tr("Bodies to Split"), SelectKind::Body, 1, 0),
+      selectionInput(QStringLiteral("bodies"), QObject::tr("Bodies to Split"), SelectKind::Body, 1, 0).withoutMeshes(),
       toolInput(),
       checkInput(QStringLiteral("extend"), QObject::tr("Extend Splitting Tool"), true),
       toolOffsetInput(),
@@ -560,7 +564,7 @@ CommandDef deleteFaceCommand(const CommandContext& context) {
   def.keywords = {QStringLiteral("delete"), QStringLiteral("remove"), QStringLiteral("heal"), QStringLiteral("defeature")};
   def.featureType = QStringLiteral("delete_face");
   def.inputs = {
-      selectionInput(QStringLiteral("faces"), QObject::tr("Faces"), SelectKind::Face, 1, 0),
+      selectionInput(QStringLiteral("faces"), QObject::tr("Faces"), SelectKind::Face, 1, 0).withoutMeshes(),
   };
   def.enabled = [&context] { return hasBodies(context); };
   def.build = [](const CommandState& state, const CommandContext&) {

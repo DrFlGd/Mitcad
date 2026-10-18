@@ -443,7 +443,7 @@ enum Size {
 impl<K: Kernel> Evaluate<K> for FilletDef {
     fn evaluate(&self, ctx: &mut EvalContext<'_, K>) -> Result<FeatureOutput<K::Shape>, String> {
         let (sizes, weights) = self.values(ctx)?;
-        let shape = ctx.body(self.body)?;
+        let shape = ctx.surface_body(self.body)?;
         // The names the kernel gets: a face or edge a sketch change renamed
         // is found again (mitcad#272); the definition keeps its names.
         let mut found = self.clone();

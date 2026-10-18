@@ -9,6 +9,8 @@ add_library(mitcad_geometry_analysis STATIC
   src/face_integral.hpp
   src/interference.cpp
   src/measure.cpp
+  src/mesh_section.cpp
+  src/mesh_section.hpp
   src/properties.cpp
   src/section.cpp
   include/mitcad/analysis/common.hpp

@@ -1000,3 +1000,31 @@ fn a_copied_component_keeps_its_derive_on_its_own_hidden_source() {
     assert_eq!(link.source.0.len(), 2);
     assert_ne!(link.source.0[0], ob);
 }
+
+/// A plane of B offset from a face of A's block just after a captured
+/// position moved B (mitcad#389): it lies where B is at that point of the
+/// timeline, also with B's own placement elsewhere.
+#[test]
+fn a_linked_plane_after_a_captured_position_is_where_it_moved_the_occurrence() {
+    let (mut doc, body, face, b) = siblings();
+    // B's own placement is where a later position leaves it; the captured
+    // position at this point puts it 10 up from where it starts.
+    doc.set_occurrence_transform(OccurrenceUid(2), shift(0.0, 50.0, 17.0), false)
+        .unwrap();
+    doc.activate_component(ComponentUid::ROOT).unwrap();
+    doc.set_occurrence_transform(OccurrenceUid(2), shift(0.0, 50.0, 7.0), true)
+        .unwrap();
+    doc.activate_component(b).unwrap();
+    let added = command(
+        &mut doc,
+        json!({"cmd": "add_feature", "def": {"type": "construction_plane",
+               "definition": {"type": "offset", "plane": {"face": face, "body": body},
+                              "distance": 5},
+               "links": {body.to_string(): {"source": "O1", "target": "O2"}}}}),
+    );
+    let datum = query(&doc, json!({"query": "datum", "uid": added["uid"]}));
+    // A's top face is at z = 15 in the design, B at z = 7: the plane is 5
+    // above the face, z = 13 in B.
+    let z = datum["origin"][2].as_f64().unwrap();
+    assert!((z - 13.0).abs() < 1e-9, "{datum}");
+}

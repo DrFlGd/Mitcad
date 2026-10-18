@@ -183,17 +183,22 @@ pub enum Constraint {
         line: EntityId,
         value: f64,
     },
-    /// Horizontal distance between two points.
+    /// Horizontal distance between two points: `|b.x - a.x|`, on the side
+    /// `b` is when the dimension is added; with `signed` (mitcad#404),
+    /// `b.x - a.x` itself, which may be negative.
     HorizontalDistance {
         a: PointId,
         b: PointId,
         value: f64,
+        signed: bool,
     },
-    /// Vertical distance between two points.
+    /// Vertical distance between two points: as [`Self::HorizontalDistance`]
+    /// in y.
     VerticalDistance {
         a: PointId,
         b: PointId,
         value: f64,
+        signed: bool,
     },
     /// Length of a line.
     Length {

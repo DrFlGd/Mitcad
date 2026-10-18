@@ -12,6 +12,10 @@ use crate::ids::{BodyUid, FeatureUid};
 use crate::kernel::{BooleanOp, Kernel};
 use crate::recompute::{Change, FeatureStatus, Read};
 
+/// A feature's changes of bodies: each body it set with its shape, each
+/// body it removed with None ([`EvalContext::feature_body_changes`]).
+pub(crate) type BodyChanges<S> = Vec<(BodyUid, Option<S>)>;
+
 /// The bodies as a feature changes them; [`BodySet::changes`] gives the
 /// feature's output.
 #[derive(Clone)]
@@ -148,8 +152,15 @@ pub(crate) fn apply_tool_strays<K: Kernel>(
         }
         return Ok(true);
     };
+    // Mesh bodies are left out of all bodies and refused when listed
+    // (mitcad#399).
     let uids: Vec<BodyUid> = if participants.is_empty() {
-        bodies.current.keys().copied().collect()
+        bodies
+            .current
+            .iter()
+            .filter(|(_, shape)| !ctx.is_mesh(shape))
+            .map(|(uid, _)| *uid)
+            .collect()
     } else {
         participants.to_vec()
     };
@@ -159,6 +170,7 @@ pub(crate) fn apply_tool_strays<K: Kernel>(
             .get(*uid)
             .cloned()
             .ok_or_else(|| format!("body {uid} does not exist at this point of the timeline"))?;
+        ctx.require_surfaces(*uid, &shape)?;
         targets.push(shape);
     }
     if targets.is_empty() {
@@ -197,16 +209,13 @@ pub(crate) fn apply_tool_strays<K: Kernel>(
         if !result.touched[i] {
             continue;
         }
-        let mut own = pieces[i].drain(..);
-        match own.next() {
-            None => bodies.remove(*uid),
-            Some(first) => {
-                bodies.set(*uid, first);
-                for piece in own {
-                    let new = ctx.new_body();
-                    bodies.set(new, piece);
-                }
-            }
+        // The pieces' ids (mitcad#408); none left for the body removes it.
+        let named = ctx.piece_ids(*uid, std::mem::take(&mut pieces[i]));
+        if !named.iter().any(|(id, _)| id == uid) {
+            bodies.remove(*uid);
+        }
+        for (id, piece) in named {
+            bodies.set(id, piece);
         }
     }
     Ok(true)
@@ -278,6 +287,33 @@ impl<K: Kernel> EvalContext<'_, K> {
                 .iter()
                 .map(|change| match change {
                     Change::Set(body, _) | Change::Remove(body) => *body,
+                })
+                .collect()),
+            _ => Err(format!("{name} has no result")),
+        }
+    }
+
+    /// The changes of an earlier feature's result in their order: each body
+    /// it set with its shape, each body it removed with None. The read
+    /// covers the feature's whole result.
+    pub(crate) fn feature_body_changes(
+        &mut self,
+        uid: FeatureUid,
+    ) -> Result<BodyChanges<K::Shape>, String> {
+        let result = self.env.history.iter().find(|r| r.uid == uid);
+        let output = result.and_then(|r| r.output.as_ref());
+        self.reads
+            .push(Read::Output(uid, output.map(|o| o.version)));
+        let name = self.feature_name(uid);
+        match (result.map(|r| &r.status), output) {
+            (Some(FeatureStatus::Suppressed), _) => Err(format!("{name} is suppressed")),
+            (Some(FeatureStatus::Failed(_)), _) => Err(format!("{name} failed")),
+            (_, Some(output)) => Ok(output
+                .changes
+                .iter()
+                .map(|change| match change {
+                    Change::Set(body, shape) => (*body, Some(shape.value.clone())),
+                    Change::Remove(body) => (*body, None),
                 })
                 .collect()),
             _ => Err(format!("{name} has no result")),

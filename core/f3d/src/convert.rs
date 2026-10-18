@@ -288,6 +288,22 @@ fn ptr_index(file: &AsmFile, p: i64) -> Option<usize> {
 /// Upper bound for linked lists (faces of a shell, coedges of a loop).
 const MAX_LIST: usize = 1_000_000;
 
+/// Angles (rad) within this of each other are the same: the geometry
+/// kernel's angular precision.
+const ANGULAR: f64 = 1e-12;
+
+/// A cone's half angle from its sine and cosine; zero within [`ANGULAR`]
+/// (a cylinder, which the cone parametrizes the same way): a file may keep
+/// a thread's cylinder as a cone of 1e-13 rad, its apex 1e14 mm away, on
+/// which the geometry kernel's intersections lose their curves
+/// (mitcad#389).
+fn cone_half_angle(sin: f64, cos: f64) -> f64 {
+    match (sin / cos).atan() {
+        a if a.abs() <= ANGULAR => 0.0,
+        a => a,
+    }
+}
+
 impl<'a> Ctx<'a> {
     fn issue(&mut self, msg: String) {
         if self.issues.len() < 200 {
@@ -650,7 +666,7 @@ impl<'a> Ctx<'a> {
                         *cos < 0.0,
                     ));
                 }
-                let half_angle = (sin / cos).atan();
+                let half_angle = cone_half_angle(*sin, *cos);
                 Ok((
                     Surface::Cone {
                         origin: brep::scale(*center, k),
@@ -1400,6 +1416,15 @@ mod tests {
             loops,
             vec![vec![forward(0), forward(1), forward(2)], vec![forward(4)]]
         );
+    }
+
+    #[test]
+    fn cones_of_a_tiny_half_angle_are_cylinders() {
+        assert_eq!(cone_half_angle(-1e-13, 1.0), 0.0);
+        assert_eq!(cone_half_angle(1e-12, 1.0), 0.0);
+        let draft = cone_half_angle(1e-6, 1.0);
+        assert!((draft - 1e-6).abs() < 1e-18);
+        assert!((cone_half_angle(0.5, 0.75f64.sqrt()) - std::f64::consts::FRAC_PI_6).abs() < 1e-12);
     }
 
     #[test]

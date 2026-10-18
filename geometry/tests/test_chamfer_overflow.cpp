@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: MIT
 // Chamfers wider than a face beside them (mitcad#240, mitcad#263), with the
-// OCCT port's patches 0140 and later (third_party/vcpkg-ports/opencascade),
+// OCCT port's patches 0140 and later (third_party/vcpkg-ports/opencascade;
+// a groove's end wall chamfered past its flanks, 0671, mitcad#235),
 // on synthetic shapes and OCCT's chamfer alone. The cross-sections are
 // exact, so are the volumes.
 
 #include <cmath>
 #include <cstdio>
 #include <algorithm>
+#include <array>
 #include <functional>
+#include <string>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -27,6 +30,7 @@
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepFilletAPI_MakeChamfer.hxx>
 #include <BRepFilletAPI_MakeFillet.hxx>
+#include <BRepFilletAPI_MakeFillet2d.hxx>
 #include <BRepGProp.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
@@ -39,7 +43,9 @@
 #include <Geom_Curve.hxx>
 #include <Geom_BSplineCurve.hxx>
 #include <Geom_Surface.hxx>
+#include <ShapeUpgrade_UnifySameDomain.hxx>
 #include <NCollection_Array1.hxx>
+#include <NCollection_IndexedDataMap.hxx>
 #include <NCollection_IndexedMap.hxx>
 #include <NCollection_List.hxx>
 #include <Standard_ErrorHandler.hxx>
@@ -58,6 +64,7 @@
 
 #include "check.hpp"
 #include "mitcad/analysis/properties.hpp"
+#include "mitcad/geometry/dressup.hpp"
 
 namespace test {
 namespace {
@@ -1218,6 +1225,260 @@ void test_chamfer_wider_than_a_fin_side_strip(double dip, bool by_angle) {
   CHECK_NEAR_TOL(exact_volume_of(body) - exact_volume_of(result), expected, 1e-4);
 }
 
+// The outline of a ring of 12 teeth on z = 0 (patch 0650): between the
+// teeth arcs of the root circle (radius 11, each 6 degrees wide, centred at
+// 0, 30, 60 ... degrees), straight flanks out to the tip circle (radius
+// 12.5, arcs 10 degrees wide), the flanks' corners rounded, 0.5 at the root
+// and 0.4 at the tip: round each tooth seven faces.
+TopoDS_Face teeth_outline() {
+  const int n = 12;
+  const double root = 11.0, tip = 12.5;
+  const double pitch = 2.0 * kPi / n, half_root = 3.0 * kPi / 180.0, half_tip = 5.0 * kPi / 180.0;
+  const auto at = [](double r, double a) { return gp_Pnt(r * std::cos(a), r * std::sin(a), 0.0); };
+  const auto arc = [](double r, double a0, double a1) {
+    const gp_Circ circle(gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)), r);
+    return BRepBuilderAPI_MakeEdge(circle, a0, a1).Edge();
+  };
+  BRepBuilderAPI_MakeWire wire;
+  for (int k = 0; k < n; ++k) {
+    const double c = k * pitch;
+    const double tooth = c + 0.5 * pitch;
+    wire.Add(arc(root, c - half_root, c + half_root));
+    wire.Add(BRepBuilderAPI_MakeEdge(at(root, c + half_root), at(tip, tooth - half_tip)).Edge());
+    wire.Add(arc(tip, tooth - half_tip, tooth + half_tip));
+    wire.Add(BRepBuilderAPI_MakeEdge(at(tip, tooth + half_tip), at(root, c + pitch - half_root)).Edge());
+  }
+  const TopoDS_Face face = BRepBuilderAPI_MakeFace(wire.Wire(), true).Face();
+  BRepFilletAPI_MakeFillet2d rounded(face);
+  NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> vertices;
+  TopExp::MapShapes(face, TopAbs_VERTEX, vertices);
+  for (int i = 1; i <= vertices.Extent(); ++i) {
+    const TopoDS_Vertex& vertex = TopoDS::Vertex(vertices(i));
+    const gp_Pnt p = BRep_Tool::Pnt(vertex);
+    const double r = std::hypot(p.X(), p.Y());
+    rounded.AddFillet(vertex, r < 0.5 * (root + tip) ? 0.5 : 0.4);
+  }
+  rounded.Build();
+  return TopoDS::Face(rounded.Shape());
+}
+
+// A flange of radius 14.5 from z = -6 to 0 with the 12 teeth standing on it
+// up to z = 8 (`split`: the flange's top circle in two edges, its vertices
+// at 0 and 180 degrees, as a body built of two halves keeps it).
+TopoDS_Shape flange_under_teeth(bool split) {
+  const TopoDS_Shape teeth = BRepPrimAPI_MakePrism(teeth_outline(), gp_Vec(0, 0, 8)).Shape();
+  const gp_Ax2 axis(gp_Pnt(0, 0, -6), gp_Dir(0, 0, 1), gp_Dir(1, 0, 0));
+  NCollection_List<TopoDS_Shape> arguments, tools;
+  if (split) {
+    arguments.Append(BRepPrimAPI_MakeCylinder(axis, 14.5, 6.0, kPi).Shape());
+    tools.Append(
+        BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(0, 0, -6), gp_Dir(0, 0, 1), gp_Dir(-1, 0, 0)), 14.5, 6.0, kPi).Shape());
+  } else {
+    arguments.Append(BRepPrimAPI_MakeCylinder(axis, 14.5, 6.0).Shape());
+  }
+  tools.Append(teeth);
+  BRepAlgoAPI_Fuse op;
+  op.SetArguments(arguments);
+  op.SetTools(tools);
+  op.Build();
+  // (Faces merged, edges kept: the split circle stays in two.)
+  ShapeUpgrade_UnifySameDomain unify(op.Shape(), false, true, false);
+  unify.Build();
+  return unify.Shape();
+}
+
+// The flange's top circle chamfered past the strip of its top between the
+// circle and the teeth (patch 0650), as a pulley's or a pinion's flange is:
+// on the top as far as radius `reach`, the second leg 0.6 down the
+// flange's side (by distance and angle, or by two distances). The strip is
+// narrower than that between the teeth only where the root circle is (and
+// at `reach` 11 the chamfer ends exactly on the root arcs); under each
+// tooth the contact runs past the strip into the tooth's seven faces, which
+// grow down to the chamfer: the chain of faces cutting the blend over each
+// gap is seven long, its cut on the root rounding is the arc of the
+// rounding's cylinder nearest the blend's piece (the intersection's other
+// arc runs round the cylinder's far side), the gaps end at the root arcs'
+// vertices where `reach` is 11, and a root arc holds the closed spine's
+// start (or, `split`, its two edges' vertices). The material taken away is
+// the revolved triangle of the chamfer's section less the teeth extended
+// down. Before, the chain of faces was not found (four at most), and the
+// stripe was left to a walking that chamfers do not have.
+void test_chamfer_of_a_flange_under_teeth(double reach, bool by_angle, bool split) {
+  const TopoDS_Shape body = flange_under_teeth(split);
+  TopoDS_Face top;
+  for (TopExp_Explorer ex(body, TopAbs_FACE); ex.More(); ex.Next()) {
+    BRepAdaptor_Surface surface(TopoDS::Face(ex.Current()));
+    if (surface.GetType() == GeomAbs_Plane && std::abs(surface.Plane().Location().Z()) < 1e-9 &&
+        std::abs(surface.Plane().Axis().Direction().Z()) > 0.5) {
+      top = TopoDS::Face(ex.Current());
+    }
+  }
+  const std::vector<TopoDS_Edge> rim = edges_where(body, [](const gp_Pnt& p) {
+    return std::abs(p.Z()) < 1e-6 && std::abs(std::hypot(p.X(), p.Y()) - 14.5) < 1e-6;
+  });
+  CHECK(!top.IsNull());
+  CHECK(rim.size() == (split ? 2u : 1u));
+  if (top.IsNull() || rim.empty()) {
+    return;
+  }
+  const double leg = 14.5 - reach, down = 0.6;
+  BRepFilletAPI_MakeChamfer maker(body);
+  if (by_angle) {
+    maker.AddDA(leg, std::atan2(down, leg), rim.front(), top);
+  } else {
+    maker.Add(leg, down, rim.front(), top);
+  }
+  for (std::size_t i = 1; i < rim.size(); ++i) {
+    if (maker.Contour(rim[i]) == 0) {
+      maker.Add(leg, down, rim[i], top);
+    }
+  }
+  try {
+    OCC_CATCH_SIGNALS
+    maker.Build();
+  } catch (const Standard_Failure& failure) {
+    std::fprintf(stderr, "chamfer overflow test: %s\n", failure.what());
+  }
+  CHECK(maker.IsDone());
+  if (!maker.IsDone()) {
+    return;
+  }
+  const TopoDS_Shape result = maker.Shape();
+  CHECK(BRepCheck_Analyzer(result).IsValid());
+  CHECK(pcurves_fit(result));
+  // The section's triangle revolved, less the teeth extended down.
+  BRepBuilderAPI_MakePolygon section(gp_Pnt(reach, 0, 0), gp_Pnt(14.5 + 1.0, 0, 0),
+                                     gp_Pnt(14.5 + 1.0, 0, -down * (14.5 + 1.0 - reach) / leg), true);
+  const TopoDS_Shape wedge = BRepPrimAPI_MakeRevol(BRepBuilderAPI_MakeFace(section.Wire(), true).Face(),
+                                                   gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)))
+                                 .Shape();
+  TopoDS_Face low = teeth_outline();
+  gp_Trsf move;
+  move.SetTranslation(gp_Vec(0, 0, -1.0));
+  low = TopoDS::Face(BRepBuilderAPI_Transform(low, move, true).Shape());
+  const TopoDS_Shape teeth = BRepPrimAPI_MakePrism(low, gp_Vec(0, 0, 2.0)).Shape();
+  const TopoDS_Shape expected = cut(body, cut(wedge, teeth));
+  CHECK_NEAR_TOL(exact_volume_of(result), exact_volume_of(expected), 1e-7);
+}
+
+// A V groove (mouth 2 wide on the top z = 0, flanks down to a tip rounded
+// with 0.3, 1.2 deep) whose profile lies in the plane x = 0 centred at y =
+// yc, swept from there to x = x1 along (1, -0.1, 0) (a thread's turn
+// drifting along the axis).
+TopoDS_Shape slanted_groove(double yc, double x1) {
+  const double r = 0.3, cz = -0.9, half = 1.0, slope = -0.1;
+  const double a = std::atan2(-cz, half) - std::acos(r / std::hypot(half, cz));
+  const gp_Pnt right(0, yc + r * std::cos(a), cz + r * std::sin(a)), left(0, yc - r * std::cos(a), cz + r * std::sin(a));
+  BRepBuilderAPI_MakeWire profile;
+  profile.Add(BRepBuilderAPI_MakeEdge(gp_Pnt(0, yc - half, 0), gp_Pnt(0, yc + half, 0)).Edge());
+  profile.Add(BRepBuilderAPI_MakeEdge(gp_Pnt(0, yc + half, 0), right).Edge());
+  profile.Add(BRepBuilderAPI_MakeEdge(gp_Circ(gp_Ax2(gp_Pnt(0, yc, cz), gp_Dir(1, 0, 0)), r), left, right).Edge());
+  profile.Add(BRepBuilderAPI_MakeEdge(left, gp_Pnt(0, yc - half, 0)).Edge());
+  return BRepPrimAPI_MakePrism(BRepBuilderAPI_MakeFace(profile.Wire(), true).Face(), gp_Vec(x1, slope * x1, 0)).Shape();
+}
+
+void test_chamfer_of_a_groove_end_wall(double along, double down) {
+  // A block with two such grooves side by side, their mouths meeting at y =
+  // 1: the first ends at x = 0 in a flat wall, the second runs on. The edge
+  // where the wall meets the top is chamfered, `along` on the top, `down`
+  // the wall, below the flanks' ends: both contacts leave their faces
+  // before the edge's ends (port patch 0671). The flanks, grown on past
+  // the wall, cut the chamfer across its whole width: at y < 0 the first
+  // groove's flank meets the contact on the top on its mouth edge carried
+  // on past the wall; at y > 0 where the second groove's mouth leaves the
+  // top. Before, the corners at both ends failed.
+  BRepAlgoAPI_Cut first(BRepPrimAPI_MakeBox(gp_Pnt(-5, -3, -3), gp_Pnt(5, 5, 0)).Shape(), slanted_groove(0.0, -6.0));
+  first.SimplifyResult();
+  // (The second from x = -6 to 6, centred at y = 2 at x = 0.)
+  gp_Trsf back;
+  back.SetTranslation(gp_Vec(-6.0, 0.6, 0.0));
+  const TopoDS_Shape second = BRepBuilderAPI_Transform(slanted_groove(2.0, 12.0), back, true).Shape();
+  BRepAlgoAPI_Cut grooves(first.Shape(), second);
+  grooves.SimplifyResult();
+  const TopoDS_Shape body = grooves.Shape();
+  CHECK(BRepCheck_Analyzer(body).IsValid());
+  const std::vector<TopoDS_Edge> foot = edges_where(body, [](const gp_Pnt& p) {
+    return std::abs(p.X()) < 1e-6 && std::abs(p.Z()) < 1e-6 && std::abs(p.Y()) < 1.0 + 1e-6;
+  });
+  CHECK(foot.size() == 1u);
+  if (foot.size() != 1u) {
+    return;
+  }
+  // The top beside the edge, and the wall.
+  NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher> faces_of;
+  TopExp::MapShapesAndUniqueAncestors(body, TopAbs_EDGE, TopAbs_FACE, faces_of);
+  TopoDS_Face top, wall;
+  for (const TopoDS_Shape& f : faces_of.FindFromKey(foot.front())) {
+    BRepAdaptor_Surface surface(TopoDS::Face(f));
+    (std::abs(surface.Plane().Axis().Direction().Z()) > 0.5 ? top : wall) = TopoDS::Face(f);
+  }
+  CHECK(!top.IsNull() && !wall.IsNull());
+  if (top.IsNull() || wall.IsNull()) {
+    return;
+  }
+  BRepFilletAPI_MakeChamfer maker(body);
+  maker.Add(along, down, foot.front(), top);
+  try {
+    OCC_CATCH_SIGNALS
+    maker.Build();
+  } catch (const Standard_Failure& failure) {
+    std::fprintf(stderr, "chamfer overflow test: %s\n", failure.what());
+  }
+  CHECK(maker.IsDone());
+  if (!maker.IsDone()) {
+    return;
+  }
+  const TopoDS_Shape result = maker.Shape();
+  CHECK(BRepCheck_Analyzer(result).IsValid());
+  CHECK(pcurves_fit(result));
+  // The chamfer's wedge within the first groove carried on past the wall.
+  BRepBuilderAPI_MakePolygon section(gp_Pnt(0, -4, 0), gp_Pnt(along, -4, 0), gp_Pnt(0, -4, -down), true);
+  const TopoDS_Shape wedge =
+      BRepPrimAPI_MakePrism(BRepBuilderAPI_MakeFace(section.Wire(), true).Face(), gp_Vec(0, 8, 0)).Shape();
+  const TopoDS_Shape removed = BRepAlgoAPI_Common(slanted_groove(0.0, 6.0), wedge).Shape();
+  CHECK_NEAR_TOL(exact_volume_of(body) - exact_volume_of(result), exact_volume_of(removed), 1e-7);
+  // Mitcad's chamfer: the pieces' contacts on the top and on the flanks
+  // meet at vertices of their own, which it joins (one edge between the
+  // chamfer's face and the top, as in the files).
+  std::vector<mitcad::geometry::Shape::NamedFace> named;
+  std::string top_name, wall_name;
+  int k = 0;
+  for (TopExp_Explorer ex(body, TopAbs_FACE); ex.More(); ex.Next()) {
+    const std::string name = "F1:import(" + std::to_string(++k) + ")";
+    named.push_back({ex.Current(), {name}});
+    if (ex.Current().IsSame(top)) {
+      top_name = name;
+    } else if (ex.Current().IsSame(wall)) {
+      wall_name = name;
+    }
+  }
+  const mitcad::geometry::Shape shape(body, named);
+  mitcad::geometry::ChamferSpec spec;
+  spec.type = mitcad::geometry::ChamferType::TwoDistances;
+  spec.distance = along;
+  spec.distance2 = down;
+  spec.reference_face = top_name;
+  const mitcad::geometry::ShapePtr bevelled = mitcad::geometry::chamfer("F2", shape, {edge(top_name, wall_name)}, spec);
+  CHECK(BRepCheck_Analyzer(bevelled->occt()).IsValid());
+  const std::string bevel_face = "F2:chamfer(" + edge(top_name, wall_name) + ")";
+  int with_top = 0;
+  for (int e = 0; e < bevelled->edge_count(); ++e) {
+    const std::array<int, 2> faces = bevelled->edge_faces(e);
+    if (faces[0] < 0 || faces[1] < 0) {
+      continue;
+    }
+    bool on_bevel = false, on_top = false;
+    for (const int f : faces) {
+      for (const std::string& name : bevelled->face_names(f)) {
+        on_bevel = on_bevel || name == bevel_face;
+        on_top = on_top || name == top_name;
+      }
+    }
+    with_top += on_bevel && on_top ? 1 : 0;
+  }
+  CHECK(with_top == 1);
+}
+
 void chamfer_overflow_tests() {
   guarded("test_chamfer_as_wide_as_a_step_ring", test_chamfer_as_wide_as_a_step_ring);
   // (The lug's ends away from the bore's seam, its end and its start on it.)
@@ -1298,6 +1559,21 @@ void chamfer_overflow_tests() {
       guarded("test_chamfer_wider_than_a_fin_side_strip",
               [&] { test_chamfer_wider_than_a_fin_side_strip(dip, by_angle); });
     }
+  }
+  // (the chamfer's reach on the flange's top, by distance and angle, the
+  // top circle in two edges)
+  for (const auto& [reach, by_angle, split] : {std::tuple<double, bool, bool>{11.05, true, false},
+                                               {11.05, false, true},
+                                               {11.0, false, false},
+                                               {11.0, true, true}}) {
+    guarded("test_chamfer_of_a_flange_under_teeth", [&, reach = reach, by_angle = by_angle, split = split] {
+      test_chamfer_of_a_flange_under_teeth(reach, by_angle, split);
+    });
+  }
+  // (the chamfer's reach on the top and down the wall)
+  for (const auto& [along, down] : {std::pair<double, double>{1.5, 1.15}, {2.0, 1.18}, {1.0, 1.12}}) {
+    guarded("test_chamfer_of_a_groove_end_wall",
+            [&, along = along, down = down] { test_chamfer_of_a_groove_end_wall(along, down); });
   }
 }
 

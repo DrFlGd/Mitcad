@@ -27,6 +27,7 @@
 #include "../framework/ChromeStyle.hpp"
 #include "../framework/GlassCard.hpp"
 #include "../framework/Icons.hpp"
+#include "../framework/PanelTree.hpp"
 #include "../framework/PlaceWatcher.hpp"
 #include "../framework/TestSync.hpp"
 #include "../framework/Theme.hpp"
@@ -60,10 +61,8 @@ constexpr int kGap = 4;
 // The browser's width when it opens (mitcad#10).
 constexpr int kDefaultWidth = 240;
 // The indentation per level, which is also the width the style centres a
-// branch's arrow in. The styles' own (20 to 30 pixels: Qt's cross-platform
-// style, Windows 11) waste the narrow browser's width and leave the arrows
-// far from the names.
-constexpr int kIndentation = 16;
+// branch's arrow in: the side panels' common one (framework/PanelTree.hpp).
+constexpr int kIndentation = panel::kTreeIndentation;
 
 const QColor kHiddenText(0x90, 0x90, 0x90);
 const QColor kFailedText(0xb0, 0x00, 0x20);
@@ -394,6 +393,9 @@ SelectionItem BrowserNode::item() const {
   switch (type) {
   case Type::Body:
     item.kind = SelectKind::Body;
+    if (mesh) {
+      item.geometry = QStringLiteral("mesh"); // as the view's picks have it
+    }
     break;
   case Type::Sketch:
     item.kind = SelectKind::Sketch;
@@ -806,6 +808,7 @@ void BrowserPanel::addComponentRows(QTreeWidgetItem* parent, const DocumentSnaps
       node.name = body.name.isEmpty() ? uid : body.name;
       node.visible = body.visible;
       node.hasEye = true;
+      node.mesh = body.mesh;
       const QString feature = uid.section(QLatin1Char('.'), 0, 0);
       const DocumentSnapshot::Feature* made = snapshot.feature(feature);
       QTreeWidgetItem* row = addRow(bodies, node, QStringLiteral("body"),
@@ -1497,6 +1500,8 @@ void BrowserPanel::logLayout() {
                .arg(width())
                .arg(m_tree->horizontalScrollBar()->isVisible() ? QStringLiteral(", scrolls sideways")
                                                                : QString());
+  // The indentation per level, the same as the Projects panel's (mitcad#393).
+  lines << QStringLiteral("Browser indentation %1").arg(m_tree->indentation());
   // Where the rows are scrolled to (mitcad#318: a pick in the tree keeps it).
   lines << QStringLiteral("Browser scroll %1").arg(m_tree->verticalScrollBar()->value());
   const QRect viewport = m_tree->viewport()->rect();

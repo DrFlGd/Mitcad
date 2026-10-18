@@ -40,6 +40,8 @@ pub mod ffi {
         /// A mapped copy; `rename` (e.g. `F9:inst2`) wraps every face name.
         fn transform_shape(shape: &Shape, map: &Affine, rename: &str) -> Result<SharedPtr<Shape>>;
         fn unite(shapes: &ShapeList) -> Result<SharedPtr<Shape>>;
+        /// The union within a tolerance (mm, mitcad#397).
+        fn unite_within(shapes: &ShapeList, within: f64) -> Result<SharedPtr<Shape>>;
         fn face_tool(body: &Shape, faces: &[String]) -> Result<UniquePtr<FaceTool>>;
         fn tool(self: &FaceTool) -> SharedPtr<Shape>;
         fn material(self: &FaceTool) -> bool;

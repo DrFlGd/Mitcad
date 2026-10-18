@@ -59,4 +59,18 @@ struct IndexedElement {
 
 IndexedElement indexed_element(const Shape& shape, char kind, int index);
 
+// Section curves of sketches (mitcad#389): where `plane` cuts the faces a
+// name resolves to (every face of the shape for an empty name), each piece
+// as curves_of gives an edge's curve, with the names of the faces it lies
+// on (the first name of each). Pieces of B-spline curves that meet end to
+// end where no other piece meets are joined into one B-spline, exactly
+// (continuous in position where they meet), as are the pieces of a closed
+// loop of them; lines and conics stay pieces of their own.
+struct SectionCurve {
+  ModelCurve curve;
+  std::vector<std::string> faces;
+};
+std::vector<SectionCurve> section_curves(const Shape& shape, const std::string& name, const gp_Pnt& origin,
+                                         const gp_Dir& normal);
+
 } // namespace mitcad::geometry

@@ -28,7 +28,11 @@ struct Section {
   double area = 0.0;   // of the faces, mm^2
 };
 
-// Intersects a shape with a plane.
+// Intersects a shape with a plane. A mesh body (faces with triangles and
+// no surface) is cut triangle by triangle: one straight edge for each
+// triangle the plane crosses, and faces only when its triangles close up
+// (mitcad#392: OCCT's booleans crash on faces without a surface). A shape
+// mixing mesh faces with faces on surfaces throws Error.
 Section section(const TopoDS_Shape& shape, const Plane& plane);
 
 // A face of a clipped shape and what is left of it: its faces in the
@@ -43,7 +47,11 @@ struct ClippedFace {
 // Faces lying on the plane stay whole: the removed half-space only touches
 // them. With `faces`, what became of each face of the shape, in TopExp
 // order (the caps on the plane come from none), so that the clipped
-// shape's faces can keep the shape's names (mitcad#233).
+// shape's faces can keep the shape's names (mitcad#233). A mesh body is
+// clipped triangle by triangle: each mesh face's piece is a new mesh face
+// (the face itself when the plane removes nothing of it), and a closed
+// mesh gets its section faces as planar caps facing along the normal;
+// when nothing is removed at all, the result is the shape itself.
 TopoDS_Shape clip(const TopoDS_Shape& shape, const Plane& plane,
                   std::vector<ClippedFace>* faces = nullptr);
 

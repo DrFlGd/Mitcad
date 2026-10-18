@@ -9,10 +9,12 @@
 
 namespace mitcad::bridge {
 
-FaceMeshes face_meshes(const geometry::Shape& shape, double deviation, double angle) {
+FaceMeshes face_meshes(const geometry::Shape& shape, double deviation, double angle,
+                       std::uint64_t face_triangles) {
   io::MeshOptions options;
   options.linear_deflection = deviation;
   options.angular_deflection = angle;
+  options.face_triangles = static_cast<std::size_t>(face_triangles);
   const io::FaceMeshes mesh = io::face_meshes(shape.occt(), options);
   FaceMeshes out;
   out.vertices.reserve(mesh.vertices.size() * 3);

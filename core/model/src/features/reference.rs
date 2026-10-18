@@ -99,12 +99,14 @@ impl ExtentObject {
         ctx: &mut EvalContext<'_, K>,
         links: &BTreeMap<BodyUid, OccurrenceLink>,
     ) -> Result<Target<K::Shape>, String> {
+        // An extent up to a mesh body is refused (mitcad#399).
         let body_of = |ctx: &mut EvalContext<'_, K>, uid: BodyUid| match links.get(&uid) {
-            None => ctx.body(uid),
+            None => ctx.surface_body(uid),
             Some(link) => {
                 let (component, transform) =
                     ctx.linked(link).map_err(|e| format!("body {uid}: {e}"))?;
                 let shape = ctx.body_in(component, uid)?;
+                ctx.require_surfaces(uid, &shape)?;
                 ctx.kernel
                     .transform_shape(&shape, &transform, None)
                     .map_err(|e| format!("body {uid}: {e}"))

@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 #include "mitcad/geometry/sketch_ref.hpp"
 #include "mitcad_bridge/kernel/sketch_ref.h"
@@ -81,6 +82,22 @@ IndexedElement indexed_element(const geometry::Shape& shape, std::uint8_t kind, 
     out.curves.push_back(convert(c));
   }
   return out;
+}
+
+rust::Vec<SectionPiece> section_curves(const geometry::Shape& shape, rust::Str name, std::array<double, 3> origin,
+                                       std::array<double, 3> normal) {
+  rust::Vec<SectionPiece> result;
+  for (const geometry::SectionCurve& c :
+       geometry::section_curves(shape, std::string(name), gp_Pnt(origin[0], origin[1], origin[2]),
+                                gp_Dir(normal[0], normal[1], normal[2]))) {
+    SectionPiece piece{};
+    piece.curve = convert(c.curve);
+    for (const std::string& face : c.faces) {
+      piece.faces.push_back(rust::String(face));
+    }
+    result.push_back(std::move(piece));
+  }
+  return result;
 }
 
 } // namespace mitcad::bridge

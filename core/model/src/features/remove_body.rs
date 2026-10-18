@@ -63,8 +63,14 @@ impl<K: Kernel> Evaluate<K> for RemoveBodyDef {
         let mut changes = Vec::with_capacity(self.bodies.len());
         for body in &self.bodies {
             // Read it, so the cache key holds the body it removes.
-            ctx.body(*body)?;
-            changes.push(BodyChange::Remove(*body));
+            match ctx.body(*body) {
+                Ok(_) => changes.push(BodyChange::Remove(*body)),
+                Err(error) => match ctx.gone_piece(*body) {
+                    // A piece its split no longer makes (mitcad#408).
+                    Some(gone) => ctx.warn(format!("{gone}: nothing to remove")),
+                    None => return Err(error),
+                },
+            }
         }
         Ok(FeatureOutput {
             changes,

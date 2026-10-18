@@ -1058,6 +1058,47 @@ pub trait Kernel {
     ) -> Result<Self::Shape, KernelError> {
         Err(KernelError::Unsupported("renaming faces"))
     }
+
+    // Section curves of sketches (mitcad#389).
+
+    /// Where `plane` cuts the faces `face` resolves to (every face of a name
+    /// without `#k`; all of the shape's faces when None), in model space:
+    /// a curve per piece, except that B-spline pieces which meet end to end
+    /// where no other piece ends (a thread's flanks cut along its axis)
+    /// become one B-spline, exactly. Each with the faces its pieces lie on.
+    /// Empty when the plane misses them.
+    fn section_curves(
+        &self,
+        _shape: &Self::Shape,
+        _face: Option<&FaceName>,
+        _plane: &DatumPlane,
+    ) -> Result<Vec<SectionCurve>, KernelError> {
+        Err(KernelError::Unsupported("section curves"))
+    }
+
+    // Unions within a tolerance (an importer's bodies whose faces lie on
+    // each other only within its geometric tolerance, mitcad#397).
+
+    /// [`Kernel::unite`], widened where it fails exactly: a union whose
+    /// result is invalid is retried with the smallest fuzzy value up to
+    /// `tolerance` mm that gives a valid one. A union that works exactly is
+    /// the same as `unite`'s.
+    fn unite_within(
+        &self,
+        _shapes: &[&Self::Shape],
+        _tolerance: f64,
+    ) -> Result<Self::Shape, KernelError> {
+        Err(KernelError::Unsupported("unions within a tolerance"))
+    }
+}
+
+/// A curve where a plane cuts faces ([`Kernel::section_curves`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SectionCurve {
+    pub curve: Curve3,
+    /// The faces it lies on, by their names (unnamed faces left out), in
+    /// the order of its pieces.
+    pub faces: Vec<FaceName>,
 }
 
 /// How a tool lies against a body ([`Kernel::tool_contacts`]).

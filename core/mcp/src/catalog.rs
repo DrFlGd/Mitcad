@@ -50,7 +50,7 @@ pub(crate) fn tools() -> Vec<Value> {
         ),
         tool(
             "model_command",
-            "Apply one JSON model command to a document. Read mitcad://reference/commands first. Script arrays, file imports and external links are not supported through this tool.",
+            "Apply one JSON model command to a document. Read mitcad://reference/commands first. Script arrays, file imports and external links are not supported through this tool. isError is true only when the command is refused or a feature it added or edited fails; failed_features lists every failed feature in the timeline (edited, new).",
             json!({"document": document, "command": {"type": "object", "description": "One JSON command object; lengths use millimetres unless explicitly specified"}}),
             &["document", "command"],
             false,
@@ -98,6 +98,11 @@ pub(crate) fn live_tools() -> Vec<Value> {
         .collect();
     for tool in &mut tools {
         match tool["name"].as_str() {
+            Some("document_list") => {
+                tool["description"] = json!(
+                    "List the application's open document (its handle, path, name and state) and the folders the user allows agents to save to and open from (folders; empty: none allowed)."
+                );
+            }
             Some("model_query") => {
                 tool["description"] = json!(
                     "Read the open document with one JSON model query, also while a sketch or command is open. Refused only while the model computes: the result then says busy and retry_after_ms. Read mitcad://reference/commands for query names, arguments, identities and units."
@@ -105,7 +110,7 @@ pub(crate) fn live_tools() -> Vec<Value> {
             }
             Some("model_command") => {
                 tool["description"] = json!(
-                    "Apply one JSON model command to the open document through its normal undo workflow; the change is labelled (agent) in the undo text. While a sketch is open, sketch.* commands on it (and edit_feature of it, undo, redo) go through the sketch session as the user's would; other commands wait until it is finished. Read mitcad://reference/commands first. File, remote and internal commands are refused."
+                    "Apply one JSON model command to the open document through its normal undo workflow; the change is labelled (agent) in the undo text. While a sketch is open, sketch.* commands on it (and edit_feature of it, undo, redo) go through the sketch session as the user's would; other commands wait until it is finished. Read mitcad://reference/commands first. File, remote and internal commands are refused. isError is true only when the command is refused or a feature it added or edited fails; failed_features lists every failed feature in the timeline (edited, new)."
                 );
             }
             _ => {}
@@ -153,12 +158,29 @@ fn ui_tools() -> Vec<Value> {
         "required": ["kind", "owner"],
         "additionalProperties": false
     });
+    let folder_path = json!({"type": "string", "minLength": 1, "description": "A .mitcad file in a folder the user allows agents to use (Preferences > Agents, or the application's --mcp-folder); a relative path is relative to the first allowed folder; '..' is refused"});
+    let point = json!({"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3, "description": "x, y, z in millimetres"});
     vec![
         tool(
             "document_save",
-            "Save the open document to its own path as File > Save does, with the project's version and commit message when it is in a project. Refused for a document never saved (no path), a read-only document and while a dialog would have to ask the user.",
-            json!({"document": document}),
+            "Save the open document. Without path: to its own path as File > Save does, with the project's version and commit message when it is in a project. With path: as Save As, to that file in a folder the user allows agents to use (document_list lists them); the document then is that file. An existing file requires overwrite: true. Refused for a read-only document, while a command panel is open and while a dialog would have to ask the user.",
+            json!({
+                "document": document,
+                "path": folder_path,
+                "overwrite": {"type": "boolean", "default": false, "description": "Explicitly allow replacement of an existing file"}
+            }),
             &["document"],
+            false,
+            true,
+        ),
+        tool(
+            "document_open",
+            "Open a Mitcad design (.mitcad) in the application's window in place of the open document, as File > Open does, from a folder the user allows agents to use (document_list lists them). The previous document handle becomes invalid; the result carries the new one. Refused while the open document has unsaved changes unless discard is true, while a sketch or command panel is open, and while a dialog would have to ask the user.",
+            json!({
+                "path": folder_path,
+                "discard": {"type": "boolean", "default": false, "description": "Explicitly discard the open document's unsaved changes (they and their recovery data are lost)"}
+            }),
+            &["path"],
             false,
             true,
         ),
@@ -218,6 +240,29 @@ fn ui_tools() -> Vec<Value> {
             false,
             true,
         ),
+        tool(
+            "ui_camera",
+            "Read or set the 3D view's camera, for inspection screenshots; the view changes at once (no animation) and the result is the camera as it then is. Without arguments it only reads. Given values replace the current camera's: eye and target (points), up, height (mm of the model the view shows at the target, top to bottom), fov (the perspective's vertical field of view in degrees), projection. Then box frames that box, or frame frames the shown bodies (only the isolated ones when the design isolates some) or the selection, seen along the resulting view direction with a small margin, in the part of the view no panel covers.",
+            json!({
+                "eye": point,
+                "target": point,
+                "up": point,
+                "height": {"type": "number", "minimum": 0.000001, "description": "Millimetres of the model the view shows at the target, top to bottom"},
+                "fov": {"type": "number", "minimum": 1, "maximum": 170, "description": "Vertical field of view of the perspective camera, degrees"},
+                "projection": {"type": "string", "enum": ["orthographic", "perspective"]},
+                "box": {
+                    "type": "object",
+                    "description": "A box in model coordinates to frame",
+                    "properties": {"min": point, "max": point},
+                    "required": ["min", "max"],
+                    "additionalProperties": false
+                },
+                "frame": {"type": "string", "enum": ["none", "shown", "selection"], "default": "none", "description": "shown: the shown bodies (the isolated ones when some are isolated); selection: the selected entities"}
+            }),
+            &[],
+            false,
+            false,
+        ),
     ]
 }
 
@@ -255,6 +300,7 @@ pub(crate) fn validate(value: &Value, schema: &Value, path: &str) -> Result<(), 
         Some("string") => value.is_string(),
         Some("boolean") => value.is_boolean(),
         Some("integer") => value.is_i64() || value.is_u64(),
+        Some("number") => value.is_number(),
         _ => true,
     };
     if !valid_type {
@@ -298,6 +344,18 @@ pub(crate) fn validate(value: &Value, schema: &Value, path: &str) -> Result<(), 
             } else if schema.get("additionalProperties") == Some(&Value::Bool(false)) {
                 return Err(format!("Unknown argument {path}.{key}"));
             }
+        }
+    }
+    if let Some(array) = value.as_array() {
+        if let Some(minimum) = schema.get("minItems").and_then(Value::as_u64)
+            && (array.len() as u64) < minimum
+        {
+            return Err(format!("{path} must have at least {minimum} items"));
+        }
+        if let Some(maximum) = schema.get("maxItems").and_then(Value::as_u64)
+            && (array.len() as u64) > maximum
+        {
+            return Err(format!("{path} must have at most {maximum} items"));
         }
     }
     if let Some(array) = value.as_array()

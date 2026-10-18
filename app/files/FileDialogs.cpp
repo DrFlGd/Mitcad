@@ -1099,9 +1099,9 @@ void showImportReport(QWidget* parent, const QString& file, const QJsonObject& r
   QStringList deviations;
   for (const QJsonValue& value : design.value(QStringLiteral("items")).toArray()) {
     const QJsonObject item = value.toObject();
-    const QJsonObject kept = item.value(QStringLiteral("accepted_deviation")).toObject();
+    const QJsonObject accepted = item.value(QStringLiteral("accepted_deviation")).toObject();
     const QJsonObject stored = item.value(QStringLiteral("deviation")).toObject();
-    const QJsonObject deviation = kept.isEmpty() ? stored : kept;
+    const QJsonObject deviation = accepted.isEmpty() ? stored : accepted;
     if (deviation.isEmpty()) {
       continue;
     }
@@ -1110,7 +1110,7 @@ void showImportReport(QWidget* parent, const QString& file, const QJsonObject& r
     const QJsonValue largest = deviation.value(QStringLiteral("largest_distance"));
     deviations << QObject::tr("%1: %2; volume change %3 mm³ against the file's %4%5")
                       .arg(item.value(QStringLiteral("name")).toString(),
-                           kept.isEmpty() ? QObject::tr("the file's stored geometry")
+                           accepted.isEmpty() ? QObject::tr("the file's stored geometry")
                                           : QObject::tr("kept parametric"))
                       .arg(change, 0, 'f', 3)
                       .arg(fileChange, 0, 'f', 3)

@@ -62,7 +62,11 @@ between entities: a shared point is a join; an explicit `Coincident` works too.
 
 Internal unknowns (curve parameters of point-on-curve and spline tangency,
 hidden control points of fitted splines) are balanced by their equations, so
-they do not change the DOF count.
+they do not change the DOF count. A spline's curve parameter starts at the
+best of a sampling (32 samples per control point) refined by a golden-section
+search between the neighbouring samples: started half a sample off, the step
+would share the gap between the parameter and the point, and a point already
+on the curve would slide along it (mitcad#396).
 
 ## Constraints and dimensions
 
@@ -86,7 +90,7 @@ they do not change the DOF count.
 | `Distance`, `Length`, `MajorRadius` | `|q - p| - d` |
 | `PointLineDistance`, `LineDistance` | signed distance `- side * d` |
 | `TangentDistance(circle, line)` | signed distance of the centre `- side * (r + d)` |
-| `HorizontalDistance`, `VerticalDistance` | `dx - side * d`, `dy - side * d` |
+| `HorizontalDistance`, `VerticalDistance` | `dx - side * d`, `dy - side * d`; `signed` (mitcad#404): `side` is 1 and `d` may be negative |
 | `Angle(a, b)` | oriented angle from `a` to `flip * b` minus `sigma * value` (wrapped) |
 | `Radius`, `Diameter`, `MinorRadius`, `ArcLength` | `r - d`, `2r - d`, `b - d`, `r * sweep - d` |
 | `EqualSpacing { anchors, mode }` (mitcad#221) | `I(a[i], a[i+1]) - I(a[i+1], a[i+2])` for successive anchors (n - 2); an anchor is a point or the middle of two points (a line's midpoint); `I` is `dx`, `dy`, the offset projected on a line's unit direction (`Along`; the line is a reference: its direction counts as a constant in the Jacobian, so a spacing moves its anchors along the line and never turns it, while a line turned by other constraints carries the anchors along), or the distance (`PointToPoint`) |
@@ -94,7 +98,9 @@ they do not change the DOF count.
 
 `side`, `flip` and `sigma` (and internal vs external tangency) are chosen from
 the geometry when the constraint is added and stored, so later dimension
-changes cannot mirror the geometry. An angle's `flip` is -1 when its
+changes cannot mirror the geometry. A signed horizontal or vertical
+distance has no side to choose: its value's sign is the side, so a value
+that changes sign moves the point across. An angle's `flip` is -1 when its
 `supplement` is `Some(true)`, 1 for `Some(false)`, and for `None` whichever
 of the two angles is closer to the value (mitcad#296).
 

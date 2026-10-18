@@ -1,13 +1,20 @@
 // SPDX-License-Identifier: MIT
 #include "mitcad/geometry/sketch_ref.hpp"
 
+#include <algorithm>
+#include <array>
 #include <stdexcept>
+#include <utility>
 
 #include <BRepAdaptor_Curve.hxx>
+#include <BRepAlgoAPI_Section.hxx>
+#include <BRepBndLib.hxx>
 #include <BRep_Tool.hxx>
+#include <Bnd_Box.hxx>
 #include <GeomAdaptor_Curve.hxx>
 #include <GeomConvert.hxx>
 #include <GeomConvert_ApproxCurve.hxx>
+#include <GeomConvert_CompCurveToBSplineCurve.hxx>
 #include <Geom_BSplineCurve.hxx>
 #include <Geom_BezierCurve.hxx>
 #include <Geom_TrimmedCurve.hxx>
@@ -15,6 +22,8 @@
 #include <TopoDS.hxx>
 #include <gp_Circ.hxx>
 #include <gp_Elips.hxx>
+#include <gp_Pln.hxx>
+#include <gp_Vec.hxx>
 
 #include "util.hpp"
 
@@ -45,6 +54,25 @@ occ::handle<Geom_BSplineCurve> as_bspline(const BRepAdaptor_Curve& curve) {
     spline->Segment(first, last);
   }
   return spline;
+}
+
+ModelCurve curve_of(const occ::handle<Geom_BSplineCurve>& spline) {
+  ModelCurve out;
+  out.kind = ModelCurveKind::BSpline;
+  out.degree = spline->Degree();
+  for (int i = 1; i <= spline->NbPoles(); ++i) {
+    out.poles.push_back(spline->Pole(i));
+  }
+  if (spline->IsRational()) {
+    for (int i = 1; i <= spline->NbPoles(); ++i) {
+      out.weights.push_back(spline->Weight(i));
+    }
+  }
+  const auto& knots = spline->KnotSequence();
+  for (int i = knots.Lower(); i <= knots.Upper(); ++i) {
+    out.knots.push_back(knots(i));
+  }
+  return out;
 }
 
 ModelCurve curve_of(const TopoDS_Edge& edge) {
@@ -80,24 +108,8 @@ ModelCurve curve_of(const TopoDS_Edge& edge) {
     out.closed = last - first >= kTwoPi - 1e-9;
     return out;
   }
-  default: {
-    out.kind = ModelCurveKind::BSpline;
-    const occ::handle<Geom_BSplineCurve> spline = as_bspline(curve);
-    out.degree = spline->Degree();
-    for (int i = 1; i <= spline->NbPoles(); ++i) {
-      out.poles.push_back(spline->Pole(i));
-    }
-    if (spline->IsRational()) {
-      for (int i = 1; i <= spline->NbPoles(); ++i) {
-        out.weights.push_back(spline->Weight(i));
-      }
-    }
-    const auto& knots = spline->KnotSequence();
-    for (int i = knots.Lower(); i <= knots.Upper(); ++i) {
-      out.knots.push_back(knots(i));
-    }
-    return out;
-  }
+  default:
+    return curve_of(as_bspline(curve));
   }
 }
 
@@ -117,6 +129,194 @@ std::vector<int> face_edges(const Shape& shape, int f) {
     }
   }
   return edges;
+}
+
+// How far apart (mm) the ends of two section pieces may be and still meet:
+// each face is cut by itself, so the pieces of neighbouring faces end
+// where each intersection put the common edge.
+constexpr double kMeet = 1e-4;
+
+// A curve where the plane cuts a face (or faces: an edge in the plane).
+struct Piece {
+  TopoDS_Edge edge;
+  std::vector<int> faces;
+  gp_Pnt first;
+  gp_Pnt last;
+  bool spline = false;
+};
+
+bool beside(const gp_Pnt& a, const gp_Pnt& b) { return a.Distance(b) <= kMeet; }
+
+double side_of(const gp_Pln& plane, const gp_Pnt& p) {
+  return gp_Vec(plane.Location(), p).Dot(gp_Vec(plane.Axis().Direction()));
+}
+
+// Whether the face's box reaches both sides of the plane (or touches it).
+bool straddles(const TopoDS_Face& face, const gp_Pln& plane) {
+  Bnd_Box box;
+  BRepBndLib::Add(face, box);
+  if (box.IsVoid()) {
+    return false;
+  }
+  double x[2];
+  double y[2];
+  double z[2];
+  box.Get(x[0], y[0], z[0], x[1], y[1], z[1]);
+  bool below = false;
+  bool above = false;
+  for (int i = 0; i < 8; ++i) {
+    const double d = side_of(plane, gp_Pnt(x[i & 1], y[(i >> 1) & 1], z[(i >> 2) & 1]));
+    below = below || d <= kMeet;
+    above = above || d >= -kMeet;
+  }
+  return below && above;
+}
+
+// The pieces of the plane's section of the faces, each once.
+std::vector<Piece> section_pieces(const Shape& shape, const std::vector<int>& faces, const gp_Pln& plane) {
+  std::vector<Piece> pieces;
+  for (const int f : faces) {
+    const TopoDS_Face& face = shape.face(f);
+    if (!straddles(face, plane)) {
+      continue;
+    }
+    // OCCT's section reads the face's surface (mitcad#399).
+    TopLoc_Location location;
+    if (BRep_Tool::Surface(face, location).IsNull()) {
+      throw std::invalid_argument("a mesh body's face (triangles without a surface) has no section curves");
+    }
+    BRepAlgoAPI_Section section(face, plane, false);
+    section.Approximation(true);
+    section.ComputePCurveOn1(false);
+    section.Build();
+    if (!section.IsDone()) {
+      throw std::runtime_error("the plane's section of a face failed");
+    }
+    for (TopExp_Explorer it(section.Shape(), TopAbs_EDGE); it.More(); it.Next()) {
+      const TopoDS_Edge& edge = TopoDS::Edge(it.Current());
+      if (BRep_Tool::Degenerated(edge)) {
+        continue;
+      }
+      BRepAdaptor_Curve curve(edge);
+      const double t0 = curve.FirstParameter();
+      const double t1 = curve.LastParameter();
+      Piece piece;
+      piece.edge = edge;
+      piece.faces.push_back(f);
+      piece.first = curve.Value(t0);
+      piece.last = curve.Value(t1);
+      const gp_Pnt middle = curve.Value((t0 + t1) / 2.0);
+      if (beside(piece.first, piece.last) && beside(piece.first, middle)) {
+        continue;
+      }
+      const GeomAbs_CurveType type = curve.GetType();
+      piece.spline = type != GeomAbs_Line && type != GeomAbs_Circle && type != GeomAbs_Ellipse;
+      // An edge in the plane is cut from both its faces: one piece.
+      bool same = false;
+      for (Piece& known : pieces) {
+        const bool ends = (beside(known.first, piece.first) && beside(known.last, piece.last)) ||
+                          (beside(known.first, piece.last) && beside(known.last, piece.first));
+        if (!ends) {
+          continue;
+        }
+        BRepAdaptor_Curve other(known.edge);
+        if (beside(other.Value((other.FirstParameter() + other.LastParameter()) / 2.0), middle)) {
+          known.faces.push_back(f);
+          same = true;
+          break;
+        }
+      }
+      if (!same) {
+        pieces.push_back(piece);
+      }
+    }
+  }
+  return pieces;
+}
+
+// A piece's curve as a B-spline, reversed when asked.
+occ::handle<Geom_BSplineCurve> spline_of(const Piece& piece, bool reversed) {
+  occ::handle<Geom_BSplineCurve> spline = as_bspline(BRepAdaptor_Curve(piece.edge));
+  if (reversed) {
+    spline->Reverse();
+  }
+  return spline;
+}
+
+// Where a piece goes on: the other piece at one of its ends and whether
+// that piece meets it with its last end.
+struct Neighbour {
+  int piece = -1;
+  bool at_last = false;
+};
+
+// The B-spline pieces in chains: per chain its pieces in order, each with
+// whether it runs reversed. A B-spline piece goes on into another where
+// those two are the only pieces that end there.
+std::vector<std::vector<std::pair<int, bool>>> chains(const std::vector<Piece>& pieces) {
+  const int n = static_cast<int>(pieces.size());
+  const auto meeting = [&](const gp_Pnt& p) {
+    int count = 0;
+    for (const Piece& q : pieces) {
+      count += (beside(p, q.first) ? 1 : 0) + (beside(p, q.last) ? 1 : 0);
+    }
+    return count;
+  };
+  // [0]: at the piece's first end, [1]: at its last.
+  std::vector<std::array<Neighbour, 2>> next(static_cast<std::size_t>(n));
+  for (int i = 0; i < n; ++i) {
+    const Piece& piece = pieces[static_cast<std::size_t>(i)];
+    if (!piece.spline) {
+      continue;
+    }
+    for (int end = 0; end < 2; ++end) {
+      const gp_Pnt& p = end == 0 ? piece.first : piece.last;
+      if (meeting(p) != 2) {
+        continue;
+      }
+      for (int j = 0; j < n; ++j) {
+        const Piece& other = pieces[static_cast<std::size_t>(j)];
+        if (j == i || !other.spline) {
+          continue;
+        }
+        if (beside(p, other.first) || beside(p, other.last)) {
+          next[static_cast<std::size_t>(i)][static_cast<std::size_t>(end)] = {j, beside(p, other.last)};
+          break;
+        }
+      }
+    }
+  }
+  std::vector<std::vector<std::pair<int, bool>>> out;
+  std::vector<bool> used(static_cast<std::size_t>(n), false);
+  for (int i = 0; i < n; ++i) {
+    if (!pieces[static_cast<std::size_t>(i)].spline || used[static_cast<std::size_t>(i)]) {
+      continue;
+    }
+    // Back to the chain's start (round a closed chain once).
+    int current = i;
+    bool reversed = false;
+    for (int step = 0; step < n; ++step) {
+      const Neighbour behind = next[static_cast<std::size_t>(current)][reversed ? 1U : 0U];
+      if (behind.piece < 0 || behind.piece == i || used[static_cast<std::size_t>(behind.piece)]) {
+        break;
+      }
+      reversed = !behind.at_last;
+      current = behind.piece;
+    }
+    std::vector<std::pair<int, bool>> chain;
+    for (int step = 0; step < n; ++step) {
+      chain.emplace_back(current, reversed);
+      used[static_cast<std::size_t>(current)] = true;
+      const Neighbour ahead = next[static_cast<std::size_t>(current)][reversed ? 0U : 1U];
+      if (ahead.piece < 0 || used[static_cast<std::size_t>(ahead.piece)]) {
+        break;
+      }
+      reversed = ahead.at_last;
+      current = ahead.piece;
+    }
+    out.push_back(chain);
+  }
+  return out;
 }
 
 } // namespace
@@ -196,6 +396,73 @@ IndexedElement indexed_element(const Shape& shape, char kind, int index) {
       break;
     default:
       throw std::invalid_argument(std::string("an element kind F, E or V, not ") + kind);
+    }
+    return out;
+  });
+}
+
+std::vector<SectionCurve> section_curves(const Shape& shape, const std::string& name, const gp_Pnt& origin,
+                                         const gp_Dir& normal) {
+  return detail::run("section curves", [&] {
+    std::vector<int> faces;
+    if (name.empty()) {
+      for (int f = 0; f < shape.face_count(); ++f) {
+        faces.push_back(f);
+      }
+    } else {
+      faces = shape.find_faces(name);
+    }
+    const std::vector<Piece> pieces = section_pieces(shape, faces, gp_Pln(origin, normal));
+    const auto names = [&](const std::vector<int>& of, std::vector<std::string>& into) {
+      for (const int f : of) {
+        const NameList& found = shape.face_names(f);
+        if (!found.empty() && std::find(into.begin(), into.end(), found.front()) == into.end()) {
+          into.push_back(found.front());
+        }
+      }
+    };
+    // Each chain where its first piece is.
+    const std::vector<std::vector<std::pair<int, bool>>> joined = chains(pieces);
+    std::vector<int> chain_at(pieces.size(), -1);
+    for (std::size_t c = 0; c < joined.size(); ++c) {
+      for (const auto& step : joined[c]) {
+        chain_at[static_cast<std::size_t>(step.first)] = static_cast<int>(c);
+      }
+    }
+    std::vector<SectionCurve> out;
+    std::vector<bool> done(joined.size(), false);
+    for (std::size_t i = 0; i < pieces.size(); ++i) {
+      const int c = chain_at[i];
+      if (c < 0) {
+        SectionCurve curve;
+        curve.curve = curve_of(pieces[i].edge);
+        names(pieces[i].faces, curve.faces);
+        out.push_back(curve);
+        continue;
+      }
+      if (done[static_cast<std::size_t>(c)]) {
+        continue;
+      }
+      done[static_cast<std::size_t>(c)] = true;
+      const std::vector<std::pair<int, bool>>& chain = joined[static_cast<std::size_t>(c)];
+      SectionCurve curve;
+      if (chain.size() == 1) {
+        curve.curve = curve_of(pieces[static_cast<std::size_t>(chain[0].first)].edge);
+      } else {
+        GeomConvert_CompCurveToBSplineCurve concat(
+            spline_of(pieces[static_cast<std::size_t>(chain[0].first)], chain[0].second));
+        for (std::size_t k = 1; k < chain.size(); ++k) {
+          const Piece& piece = pieces[static_cast<std::size_t>(chain[k].first)];
+          if (!concat.Add(spline_of(piece, chain[k].second), kMeet, true)) {
+            throw std::runtime_error("the section's pieces could not be joined");
+          }
+        }
+        curve.curve = curve_of(concat.BSplineCurve());
+      }
+      for (const auto& step : chain) {
+        names(pieces[static_cast<std::size_t>(step.first)].faces, curve.faces);
+      }
+      out.push_back(curve);
     }
     return out;
   });

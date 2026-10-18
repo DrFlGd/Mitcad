@@ -218,7 +218,7 @@ bool sameCurve(const Curve2& a, const Curve2& b, double tolerance) {
 
 std::optional<ProjectedItem> existingProjection(const SketchModel& model, const BodyItem& item) {
   for (const ProjectionData& p : model.projections) {
-    if (p.stale || p.source != item.source || p.body != item.body || p.linked != item.linked ||
+    if (p.stale || p.section || p.source != item.source || p.body != item.body || p.linked != item.linked ||
         (item.linked && p.occurrence != item.occurrence)) {
       continue;
     }

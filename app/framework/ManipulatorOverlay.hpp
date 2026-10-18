@@ -36,6 +36,9 @@ public:
   ~ManipulatorOverlay() override;
 
   void setHandles(std::vector<Handle> handles);
+  // A line over the top of the view (Inspection::viewHint, mitcad#394);
+  // none when empty. Logged as "View hint <command>: <text>".
+  void setHint(const QString& text);
   bool isDragging() const { return m_drag >= 0; }
 
 signals:
@@ -82,6 +85,7 @@ private:
   double m_angleLast = 0.0; // a ring: the cursor's last angle
   double m_turned = 0.0;    // and how far it turned since the drag began
   QString m_logged;
+  QString m_hint;
 };
 
 } // namespace mitcad

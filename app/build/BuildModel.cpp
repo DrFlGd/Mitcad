@@ -95,14 +95,6 @@ BuildPart buildPartOf(const QJsonObject& entry) {
 
 } // namespace
 
-QString activeComponent(const CommandContext& context) {
-  try {
-    return componentsOf(context).value(QStringLiteral("active")).toString(kRoot);
-  } catch (const std::exception&) {
-    return kRoot;
-  }
-}
-
 QString componentName(const QString& uid, const CommandContext& context) {
   try {
     for (const QJsonValue& value : componentsOf(context).value(QStringLiteral("components")).toArray()) {
@@ -114,23 +106,6 @@ QString componentName(const QString& uid, const CommandContext& context) {
     // The uid then.
   }
   return uid;
-}
-
-QStringList placingPaths(const QString& component, const CommandContext& context) {
-  if (component.isEmpty() || component == kRoot) {
-    return {QString()};
-  }
-  QStringList paths;
-  try {
-    eachOccurrence(componentsOf(context), [&](const QJsonObject& node, const QString& path) {
-      if (text(node, "component") == component) {
-        paths << path;
-      }
-    });
-  } catch (const std::exception&) {
-    // None then.
-  }
-  return paths;
 }
 
 std::optional<gp_Trsf> worldOf(const QString& path, const CommandContext& context) {
@@ -167,36 +142,50 @@ QString componentAt(const QString& path, const CommandContext& context) {
   return component;
 }
 
-std::optional<QString> pathFromActive(const SelectionItem& item, const CommandContext& context) {
-  for (const QString& prefix : placingPaths(activeComponent(context), context)) {
-    if (prefix.isEmpty()) {
-      return item.occurrence;
-    }
-    if (item.occurrence == prefix) {
-      return QString();
-    }
-    if (item.occurrence.startsWith(prefix + QLatin1Char('/'))) {
-      return item.occurrence.mid(prefix.size() + 1);
-    }
+Host buildHost(const CommandContext& context) {
+  Host host;
+  try {
+    const QJsonObject answer = context.queryObject({{QStringLiteral("query"), QStringLiteral("build_host")}});
+    host.component = answer.value(QStringLiteral("component")).toString(kRoot);
+    host.name = text(answer, "name");
+    host.path = text(answer, "path");
+  } catch (const std::exception&) {
+    // The root then.
+  }
+  if (host.name.isEmpty()) {
+    host.name = componentName(host.component, context);
+  }
+  return host;
+}
+
+std::optional<QString> pathFromHost(const SelectionItem& item, const CommandContext& context) {
+  const QString prefix = buildHost(context).path;
+  if (prefix.isEmpty()) {
+    return item.occurrence;
+  }
+  if (item.occurrence == prefix) {
+    return QString();
+  }
+  if (item.occurrence.startsWith(prefix + QLatin1Char('/'))) {
+    return item.occurrence.mid(prefix.size() + 1);
   }
   return std::nullopt;
 }
 
-QString rootPath(const QString& fromActive, const CommandContext& context) {
-  const QStringList paths = placingPaths(activeComponent(context), context);
-  const QString prefix = paths.isEmpty() ? QString() : paths.first();
+QString rootPath(const QString& fromHost, const CommandContext& context) {
+  const QString prefix = buildHost(context).path;
   if (prefix.isEmpty()) {
-    return fromActive;
+    return fromHost;
   }
-  return fromActive.isEmpty() ? prefix : prefix + QLatin1Char('/') + fromActive;
+  return fromHost.isEmpty() ? prefix : prefix + QLatin1Char('/') + fromHost;
 }
 
-gp_Pnt inActive(const gp_Pnt& world, const CommandContext& context) {
-  const QStringList paths = placingPaths(activeComponent(context), context);
-  if (paths.isEmpty() || paths.first().isEmpty()) {
+gp_Pnt inHost(const gp_Pnt& world, const CommandContext& context) {
+  const QString path = buildHost(context).path;
+  if (path.isEmpty()) {
     return world;
   }
-  const std::optional<gp_Trsf> placement = worldOf(paths.first(), context);
+  const std::optional<gp_Trsf> placement = worldOf(path, context);
   if (!placement) {
     return world;
   }
@@ -238,9 +227,11 @@ std::optional<QJsonObject> atOf(const QString& key, const CommandState& state, c
     return std::nullopt;
   }
   const SelectionItem& item = items.first();
-  const std::optional<QString> path = pathFromActive(item, context);
+  const std::optional<QString> path = pathFromHost(item, context);
   if (!path) {
-    problem = QObject::tr("%1 is not in the active component.").arg(item.describe());
+    // Only what is under the host highlights (the inputs' pick rules), so
+    // this is an item given otherwise (live MCP).
+    problem = QObject::tr("%1 is not in %2, where BUILD places parts.").arg(item.describe(), buildHost(context).name);
     return std::nullopt;
   }
   QJsonObject at{{QStringLiteral("geometry"), item.reference()}};
@@ -248,7 +239,7 @@ std::optional<QJsonObject> atOf(const QString& key, const CommandState& state, c
     at.insert(QStringLiteral("occurrence"), *path);
   }
   if (const std::optional<gp_Pnt> point = pickPoint(key, state, context)) {
-    at.insert(QStringLiteral("point"), pointJson(inActive(*point, context)));
+    at.insert(QStringLiteral("point"), pointJson(inHost(*point, context)));
   }
   return at;
 }

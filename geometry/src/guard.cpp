@@ -216,6 +216,8 @@ void catch_occt_crashes() {
 #endif
 }
 
+void run_operation(const char* operation, const std::function<void()>& work) { detail::run(operation, work); }
+
 std::size_t failed_allocations() { return Standard_OutOfMemory::NbRaised(); }
 
 std::size_t failed_allocations_in_thread() { return Standard_OutOfMemory::NbRaisedInThread(); }

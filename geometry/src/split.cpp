@@ -40,6 +40,7 @@ double along(const TopoDS_Shape& solid, const gp_Dir& normal) {
 
 std::vector<ShapePtr> split_body(const std::string& feature, const Shape& body, const Tool& tool,
                                  bool extend) {
+  detail::require_surfaces(body.occt(), "split body");
   return detail::run("split body", [&] {
     const detail::Cutter cutter = detail::make_cutter(tool, detail::box_of(body.occt()), extend);
     BRepAlgoAPI_Splitter splitter;
@@ -89,6 +90,7 @@ std::vector<ShapePtr> split_body(const std::string& feature, const Shape& body, 
 ShapePtr split_faces(const std::string& feature, const Shape& body,
                      const std::vector<std::string>& faces, const Tool& tool, bool extend) {
   (void)feature;
+  detail::require_surfaces(body.occt(), "split faces");
   const std::vector<int> chosen = detail::resolve_faces(body, faces, "faces to split");
   return detail::run("split faces", [&] {
     const detail::Cutter cutter = detail::make_cutter(tool, detail::box_of(body.occt()), extend);

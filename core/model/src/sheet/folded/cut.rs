@@ -648,31 +648,13 @@ fn sketch_tools<K: Kernel>(
             y_axis: [dot(s.y_axis, frame.x_axis), dot(s.y_axis, frame.y_axis)],
         };
         for profile in d.profiles.iter().filter(|p| p.sketch == sketch_uid) {
-            // A changed sketch keeps resolving the region with the most curves
-            // in common, so a dimension edit that changes adjacency keeps the cut.
-            let region = sketch
-                .resolve_region(&profile.region)
-                .ok_or_else(|| format!("cut profile {} is unavailable", profile.region))?;
-            let material = MaterialRegion::from_legacy(&SheetRegion {
-                loops: region
-                    .loops
-                    .iter()
-                    .map(|l| SheetLoop {
-                        segments: l
-                            .segments
-                            .iter()
-                            .map(|s| SheetSegment {
-                                id: SheetCurveId::Sketch {
-                                    sketch: sketch_uid,
-                                    segment: s.key.clone(),
-                                },
-                                geometry: s.geometry.clone(),
-                            })
-                            .collect(),
-                    })
-                    .collect(),
-            })?;
-            tools.extend(mapped_regions(&[material], to_chart));
+            // A changed sketch keeps resolving the region as extrusions do
+            // (all pieces of a split one, with a warning; mitcad#407), so a
+            // dimension edit that changes adjacency keeps the cut.
+            for region in found_profiles(ctx, &sketch, sketch_uid, &profile.region)? {
+                let material = MaterialRegion::from_legacy(&sheet_region(sketch_uid, &region))?;
+                tools.extend(mapped_regions(&[material], to_chart));
+            }
         }
     }
     Ok(tools)
@@ -818,33 +800,52 @@ pub(crate) fn straight_profiles<K: Kernel>(
     let frame = sketch.frame;
     let mut profiles = Vec::new();
     for profile in &d.profiles {
-        let region = sketch
-            .resolve_region(&profile.region)
-            .ok_or_else(|| format!("cut profile {} is unavailable", profile.region))?;
-        profiles.push((
-            profile.region.clone(),
-            SheetRegion {
-                loops: region
-                    .loops
-                    .iter()
-                    .map(|l| SheetLoop {
-                        segments: l
-                            .segments
-                            .iter()
-                            .map(|s| SheetSegment {
-                                id: SheetCurveId::Sketch {
-                                    sketch: sketch_uid,
-                                    segment: s.key.clone(),
-                                },
-                                geometry: s.geometry.clone(),
-                            })
-                            .collect(),
-                    })
-                    .collect(),
-            },
-        ));
+        for region in found_profiles(ctx, &sketch, sketch_uid, &profile.region)? {
+            profiles.push((region.key.clone(), sheet_region(sketch_uid, &region)));
+        }
     }
     Ok((frame, profiles))
+}
+
+/// The regions a cut profile means in its evaluated sketch, as extrusions
+/// find them (the main one under the referenced key, the other pieces of a
+/// split one under their own), warning when the key changed (mitcad#407).
+fn found_profiles<K: Kernel>(
+    ctx: &mut EvalContext<'_, K>,
+    sketch: &crate::features::SketchOutput,
+    sketch_uid: FeatureUid,
+    key: &crate::topo::RegionKey,
+) -> Result<Vec<crate::profile::ProfileRegion>, String> {
+    let found = sketch
+        .found(key)
+        .ok_or_else(|| format!("cut profile {key} is unavailable"))?;
+    if let Some(warning) = found.warning(key, &ctx.feature_name(sketch_uid)) {
+        ctx.warn(warning);
+    }
+    Ok(found.profiles(key))
+}
+
+/// A sketch region as a sheet region, its segments named in the sketch.
+fn sheet_region(sketch: FeatureUid, region: &crate::profile::ProfileRegion) -> SheetRegion {
+    SheetRegion {
+        loops: region
+            .loops
+            .iter()
+            .map(|l| SheetLoop {
+                segments: l
+                    .segments
+                    .iter()
+                    .map(|s| SheetSegment {
+                        id: SheetCurveId::Sketch {
+                            sketch,
+                            segment: s.key.clone(),
+                        },
+                        geometry: s.geometry.clone(),
+                    })
+                    .collect(),
+            })
+            .collect(),
+    }
 }
 
 /// The straight cut of `profiles` in `frame` along `direction` from the

@@ -548,6 +548,7 @@ CommandDef holeCommand(const CommandContext& context) {
   def.inputs += {
       flipInput(QStringLiteral("flip"), QObject::tr("Flip")),
       selectionInput(QStringLiteral("objects"), QObject::tr("Objects to Cut"), SelectKind::Body, 0, 0)
+          .withoutMeshes()
           .withTooltip(QObject::tr("The bodies the holes cut; none: every body they reach")),
   };
   def.enabled = [&context] { return hasBodies(context); };

@@ -3,7 +3,7 @@
 //! becomes new bodies or joins, cuts or intersects bodies: perpendicular
 //! or parallel orientation, twist and taper, a guide rail that turns and
 //! scales the profile, guide surfaces whose normal turns it (mitcad#157),
-//! and partial extents.
+//! partial extents and a fixed binormal (mitcad#397).
 
 use serde::{Deserialize, Serialize};
 
@@ -181,6 +181,12 @@ pub struct SweepDef<P = ParamId> {
     /// sweep's coordinates by the placements at its point of the timeline.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub body_links: BTreeMap<BodyUid, OccurrenceLink>,
+    /// A fixed binormal direction (mitcad#397): the profile keeps its
+    /// angles to it along the path (a level profile along a sloped path
+    /// stays level with the binormal up). Perpendicular orientation only,
+    /// without a guide rail, guide surfaces, twist or taper.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binormal: Option<[f64; 3]>,
 }
 
 fn is_perpendicular(orientation: &SweepOrientation) -> bool {
@@ -221,6 +227,7 @@ impl<P> SweepDef<P> {
             operation: self.operation,
             participants: self.participants.clone(),
             body_links: self.body_links.clone(),
+            binormal: self.binormal,
         })
     }
 }
@@ -239,11 +246,13 @@ impl SweepDef {
         ctx: &mut EvalContext<'_, K>,
         uid: BodyUid,
     ) -> Result<K::Shape, String> {
+        // A mesh body has no edges or surfaces to sweep along (mitcad#399).
         let Some(link) = self.body_links.get(&uid) else {
-            return ctx.body(uid);
+            return ctx.surface_body(uid);
         };
         let (component, transform) = ctx.linked(link).map_err(|e| format!("body {uid}: {e}"))?;
         let shape = ctx.body_in(component, uid)?;
+        ctx.require_surfaces(uid, &shape)?;
         ctx.kernel
             .transform_shape(&shape, &transform, None)
             .map_err(|e| format!("body {uid}: {e}"))
@@ -288,6 +297,17 @@ impl FeatureInfo for SweepDef {
                 face.check(ctx).map_err(|e| format!("guide surface: {e}"))?;
             }
         }
+        if let Some(binormal) = self.binormal {
+            check_binormal(binormal)?;
+            if self.orientation == SweepOrientation::Parallel {
+                return Err("a fixed binormal needs the perpendicular orientation".to_owned());
+            }
+            if self.guide_rail.is_some() || !self.guide_surfaces.is_empty() {
+                return Err(
+                    "a fixed binormal is not taken with a guide rail or guide surfaces".to_owned(),
+                );
+            }
+        }
         if let Some(body) = self.body_links.keys().find(|b| !self.linkable(**b)) {
             return Err(format!(
                 "body {body} is linked but neither the path's nor a guide surface's"
@@ -305,6 +325,15 @@ impl FeatureInfo for SweepDef {
             && !value(twist).is_finite()
         {
             return Err("the twist angle must be a number".to_owned());
+        }
+        if self.binormal.is_some()
+            && self
+                .twist_angle
+                .into_iter()
+                .chain(self.taper_angle)
+                .any(|v| value(v) != 0.0)
+        {
+            return Err("a fixed binormal is not taken with a twist or a taper".to_owned());
         }
         Ok(())
     }
@@ -327,6 +356,17 @@ impl FeatureInfo for SweepDef {
             participants: self.participants.clone(),
         })
     }
+}
+
+/// A fixed binormal (mitcad#397): finite, of some length; its unit vector.
+fn check_binormal(binormal: [f64; 3]) -> Result<[f64; 3], String> {
+    let length = binormal.iter().map(|v| v * v).sum::<f64>().sqrt();
+    if !length.is_finite() || length < 1e-12 {
+        return Err(format!(
+            "the binormal must be a direction of some length, got {binormal:?}"
+        ));
+    }
+    Ok(binormal.map(|v| v / length))
 }
 
 fn check_taper(taper: f64) -> Result<(), String> {
@@ -393,6 +433,7 @@ impl<K: Kernel> Evaluate<K> for SweepDef {
                 rail,
                 scaling: self.profile_scaling,
             }),
+            binormal: self.binormal.map(check_binormal).transpose()?,
         };
         let tool = if surfaces.is_empty() {
             ctx.kernel.sweep(&spec).map_err(|e| e.to_string())?

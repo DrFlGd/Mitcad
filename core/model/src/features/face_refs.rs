@@ -120,13 +120,14 @@ pub(crate) fn resolve_tool<K: Kernel>(
     direction: Option<Vec3>,
 ) -> Result<Resolved<K::Shape>, String> {
     Ok(match tool {
+        // A mesh body's face has no surface to cut along (mitcad#399).
         GeomRef::Face { body, face } => {
-            let shape = ctx.body(*body)?;
+            let shape = ctx.surface_body(*body)?;
             let face = ctx.face_on(*body, &shape, face)?;
             Resolved::Face { shape, face }
         }
         GeomRef::Body(body) => Resolved::Body {
-            shape: ctx.body(*body)?,
+            shape: ctx.surface_body(*body)?,
         },
         GeomRef::SketchCurves { sketch, curves } => {
             let output = ctx.sketch(*sketch)?;

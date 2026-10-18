@@ -57,6 +57,8 @@ const ExportType kTypes[] = {
     {"3mf", "", "3mf", QT_TRANSLATE_NOOP("Export", "3MF for 3D printing (*.3mf)")},
     // For AR and 3D viewers: shaded meshes with appearances (mitcad#123).
     {"usdz", "", "usdz", QT_TRANSLATE_NOOP("Export", "USDZ for AR and 3D viewers (*.usdz)")},
+    // One self-contained page with the web viewer and the design (mitcad#423).
+    {"html", "", "html", QT_TRANSLATE_NOOP("Export", "Web page (*.html)")},
 };
 
 // The type a file's extension asks for (the first of a format), or -1.
@@ -93,6 +95,9 @@ int typeOfSuffix(const QString& suffix, int current) {
   }
   if (is({"usdz"})) {
     return 8;
+  }
+  if (is({"html", "htm"})) {
+    return 9;
   }
   return -1;
 }
@@ -196,9 +201,13 @@ std::optional<ExportChoice> askExport(QWidget* parent, const QString& path, int 
   const auto showRows = [=] {
     const QString format = QLatin1String(kTypes[type->currentIndex()].format);
     const bool mesh = format == QStringLiteral("stl") || format == QStringLiteral("obj") ||
-                      format == QStringLiteral("3mf") || format == QStringLiteral("usdz");
-    form->setRowVisible(bodies, format != QStringLiteral("dxf"));
-    form->setRowVisible(coordinates, occurrences && format != QStringLiteral("dxf"));
+                      format == QStringLiteral("3mf") || format == QStringLiteral("usdz") ||
+                      format == QStringLiteral("html");
+    // A web page shows the design as the view does: every visible body
+    // where the design places it.
+    const bool page = format == QStringLiteral("html");
+    form->setRowVisible(bodies, format != QStringLiteral("dxf") && !page);
+    form->setRowVisible(coordinates, occurrences && format != QStringLiteral("dxf") && !page);
     form->setRowVisible(unit, format == QStringLiteral("step") || format == QStringLiteral("iges"));
     form->setRowVisible(refinement, mesh);
     form->setRowVisible(stlFormat, format == QStringLiteral("stl"));

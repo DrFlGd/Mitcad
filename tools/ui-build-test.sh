@@ -17,9 +17,11 @@
 #      check box); a click in the middle of its end face continues it
 #      straight (Mitre: cut the new part), the hover near an edge shows
 #      the part turned before the click, the click there turns it (a
-#      corner, its mitre Auto: shared at offset 0, none at offset 10) and
-#      places it (mitcad#417); Close shows the planes again.
-#      The same panel in the Floating chrome (More opens Placement).
+#      corner on the end face with square ends, its mitre Auto: none;
+#      Shared chosen mitres it at offset 0) and places it (mitcad#417,
+#      #427); Close shows the planes again.
+#      The same panel in the Floating chrome (Placement's icon buttons once
+#      a part is there, mitcad#427).
 #   3. Profile on a design with only its root: the first profile on the
 #      XY plane (typed length); two on its side flush with its ends by
 #      clicks at the flush snaps (From End A and End B, Offset 0; for the
@@ -31,18 +33,20 @@
 #   4. Connector at a junction (shown on the hover, the chosen one
 #      always), from the fitting connectors, previewed in place.
 #   5. Panel in the frame from an inner face.
-#   6. Linear Part: a rail on the first profile, a carriage on the rail;
+#   6. Linear Part: a rail on the first profile, a carriage on the rail
+#      (each chosen in the part picker from the Part tile);
 #      Ends: an end of the third profile mitred and bored (end machining).
 #   7. Save, reopen: the parts are there (their sources in the design);
 #      Cut List: its rows (one with a 45 degree end), Copy as CSV, Save as
 #      PDF.
 #   8. The part picker (mitcad#418), with a 30 profile of another system
-#      in the library's next version: opened from Profile's Part, a group,
-#      a search, a click choosing the 30 profile that the preview then
-#      uses, a star (first in its group), pinned it follows Connector,
-#      where a click chooses the bracket; Profile again opens it with the
-#      panel's System, Favourites has the starred profile, In this design
-#      lists it after its placement, and its system follows the panel's.
+#      in the library's next version: opened from Profile's Part tile
+#      (mitcad#427), a group, a search, a click choosing the 30 profile that
+#      the preview then uses, a star (first in its group), pinned it follows
+#      Connector, where a click chooses the bracket; Profile again starts
+#      with the 30 profile and opens the picker filtered to its system,
+#      Favourites has the starred profile, In this design lists it after
+#      its placement.
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
 # Usage: tools/ui-build-test.sh
@@ -216,6 +220,22 @@ expect_row() {
   done
   ui_fail "$3: Panel Profile input $1 is not $2 (${line:-never laid out})"
 }
+# choose_in_picker COMMAND PART: the panel's Part tile opens the part picker
+# (mitcad#427), a click on the part's tile there chooses it, and Escape
+# closes the picker again (it would cover the view's clicks).
+choose_in_picker() {
+  ui_mark
+  ui_step "the Part tile"                  ui_click_logged "Panel $1 input part"
+  ui_expect_new "$1: Part button" "the Part tile opens the part picker"
+  ui_expect_new "Part picker opened: " "the part picker for $1"
+  ui_expect_new "Part picker tile $2 at " "$2's tile in the picker"
+  ui_focus_dialog "^Part Picker - $1\$"
+  ui_mark
+  ui_step "$2 in the picker"               ui_click_logged "Part picker tile $2"
+  ui_expect_new "Part picker chose $2" "$2 chosen in the picker"
+  ui_step "close the picker (Escape)"      ui_key Escape
+  ui_focus_main
+}
 # marker_at LABEL: the screen position of Profile's last preview marker
 # LABEL (an extended regex; also the taken one, "> LABEL"): "Preview marker
 # Profile flush B world x,y,z at x,y". Its point is on the face picked, so
@@ -304,10 +324,13 @@ ui_expect_new "View hint Profile: Click a plane or a face, or press Enter" "the 
 ui_expect_new "Inspect Profile: place grounded, length 1000.00 mm (typed), square ends; adds to Part1" \
   "at the origin with its stock length, adding to Part1"
 expect_row axis=z shown "the Direction's X, Y and Z buttons"
+ui_expect_new "Panel Profile tile part: Profile 20 test" "the Part tile shows the chosen profile (mitcad#427)"
+expect_row search hidden "no Search row: the part picker has it"
+expect_row system hidden "no System row: the part picker has it"
 expect_row mitre hidden "no Mitre before an end pick"
 expect_row offset hidden "no Offset before a side pick"
 expect_row rotate hidden "no Rotate before another part is picked"
-expect_row place hidden "Placement under More"
+expect_row place hidden "no Placement before a part to go on (mitcad#427)"
 ui_mark
 ui_step "on the root's XY plane"           ui_click_logged "Datum xy"
 ui_expect_new "Inspect Profile: place grounded, length 1000.00 mm (typed), square ends; adds to Part1" \
@@ -340,6 +363,8 @@ B1=$(placed_body)
 ui_expect_new "Profile Place On takes now: faces" "only a profile's faces once one is there"
 ui_expect_new "Construction geometry hidden for the command" "the planes hidden for side and end placements"
 ui_expect_new "View hint Profile: Click a profile's side or end" "the view's hint for the next one"
+expect_row place=auto shown "Placement's icon buttons once a part is there (mitcad#427)"
+expect_row length_mode=face shown "the length mode's icon buttons (mitcad#427)"
 refresh_picks "Profile"
 SIDE0=$(faces_of "$B1" "$SIDE" | head -1)
 [ -n "$SIDE0" ] || ui_fail "no side of the first profile ($B1) to pick"
@@ -384,14 +409,18 @@ expect_inspect "; end edge towards " "; on the hover" "the hover previews the tu
 ui_mark
 ui_step "a click there"                    xdotool click 1
 ui_expect_new "BUILD end click: edge towards " "a click near an edge turns the part"
-expect_inspect "; end edge towards " "mitre shared, offset 0.0 mm" "a corner, its mitre Auto: shared at offset 0"
+expect_inspect "; end edge towards " "mitre none, offset 0.0 mm" "square ends" \
+  "a square corner on the end face, flush with the outer side: its mitre Auto: none (mitcad#427)"
 expect_row corner_offset shown "the corner's Offset"
 ui_mark
 ui_step "the corner's offset 10"           ui_type_in "Panel Profile input corner_offset" "10"
 expect_inspect "; end edge towards " "mitre none, offset 10.0 mm" "at another offset the mitre is none"
 ui_mark
 ui_step "the corner's offset 0"            ui_type_in "Panel Profile input corner_offset" "0"
-expect_inspect "; end edge towards " "mitre shared, offset 0.0 mm" "ends A 45 deg" "shared again at offset 0"
+expect_inspect "; end edge towards " "mitre none, offset 0.0 mm" "square ends" "on the end face again at offset 0"
+ui_mark
+ui_step "Mitre: Shared"                    ui_choose "Panel Profile input mitre" 2
+expect_inspect "; end edge towards " "mitre shared, offset 0.0 mm" "ends A 45 deg" "Shared chosen: both on the bisector"
 ui_step "Place (Enter)"                    ui_key Return
 ui_expect_new "Placed Profile 20 test as " "the third profile placed at the corner, mitred" 30
 no_policy_message
@@ -407,14 +436,12 @@ ui_mark
 ui_step "Profile (command search)"         ui_command "Profile"
 ui_expect_new "BUILD profile adds to Part1 (a ground placement)" "a new design: adds to Part1"
 expect_row axis=x shown "the X button in a floating card"
-expect_row more shown "More in a floating card"
-expect_row place hidden "Placement closed under More"
-ui_step "More"                             ui_click_logged "Panel Profile input more"
-expect_row place shown "Placement under More, opened"
+expect_row place hidden "no Placement before a part to go on"
 ui_mark
 ui_step "Place without a pick (Enter)"     ui_key Return
 ui_expect_new "Placed Profile 20 test as " "placed at the origin by Enter" 30
 no_policy_message
+expect_row place=side shown "Placement's icon buttons in a floating card (no More, mitcad#427)"
 ui_step "Close (Escape)"                   ui_key Escape
 ui_stop_app
 
@@ -527,11 +554,11 @@ done
 echo "ok   $found of the second profile runs to the third: bound"
 ui_mark
 ui_step "to the centre (Tab)"              ui_key Tab
-ui_expect_new "Profile: Length = Auto: to the centre" "Tab: to the centre"
+ui_expect_new "Profile: Length = Auto: to its centre" "Tab: to the centre"
 ui_step "through (Tab)"                    ui_key Tab
-ui_expect_new "Profile: Length = Auto: through" "Tab: through"
+ui_expect_new "Profile: Length = Auto: through it" "Tab: through"
 ui_step "to the face (Tab)"                ui_key Tab
-ui_expect_new "Profile: Length = Auto: to the face" "Tab: to the face again"
+ui_expect_new "Profile: Length = Auto: to the face it meets" "Tab: to the face again"
 ui_expect_new "Cursor box Profile length: " "the auto length in the box at the cursor"
 ui_expect_new "(bound, auto: to the face to " "bound to the third profile's face"
 ui_step "Place (Enter)"                    ui_key Return
@@ -549,7 +576,7 @@ ui_expect_new "Command Connector started" "Connector started"
 ui_expect_new "BUILD connectors for junction " "the connectors of a junction asked"
 ui_expect_new "Inspect Connector: junction " "the junction and its connectors"
 ui_expect_new ", preview Bracket 20 test with " "the chosen connector previewed in place"
-ui_expect_new "Panel Connector option pictures part: " "the connectors listed with their pictures"
+ui_expect_new "Panel Connector tile part: Bracket 20 test" "the chosen connector shown as a picture tile (mitcad#427)"
 ui_expect_new "BUILD preview image of test-profiles/bracket-20-test: " "its picture asked of the library"
 ui_mark
 FACE3=$(faces_of "$B3" "$SIDE" | head -1)
@@ -583,7 +610,7 @@ echo "--- 6. Linear Part: a rail and a carriage"
 ui_mark
 ui_step "Linear Part (command search)"     ui_command "Linear Part"
 ui_expect_new "BUILD parts linear: 2" "the rail and the carriage"
-ui_step "search rail"                      ui_type_in "Panel Linear Part input search" "rail"
+choose_in_picker "Linear Part" "test-profiles/rail-test"
 ui_step "a typed length of 200"            ui_type_in "Panel Linear Part input length" "200"
 # Another side of the first profile than the frame's, else that one.
 RAILFACE=$(faces_of "$B1" "$SIDE" | grep -vxF -- "$SIDE1" | head -1)
@@ -594,7 +621,7 @@ ui_mark
 ui_step "Place (Enter)"                    ui_key Return
 ui_expect_new "Placed Rail 15 test as " "the rail placed" 30
 BRAIL=$(placed_body)
-ui_step "search carriage"                  ui_type_in "Panel Linear Part input search" "carriage"
+choose_in_picker "Linear Part" "test-profiles/carriage-test"
 refresh_picks "Linear Part"
 RAILTOP=$(faces_of "$BRAIL" "$SIDE" | grep -F "side(c3[" | head -1)
 [ -n "$RAILTOP" ] || RAILTOP=$(faces_of "$BRAIL" "$SIDE" | head -1)
@@ -701,15 +728,13 @@ expect_picker_place() { ui_expect_new "$1 at " "$2"; }
 ui_mark
 ui_step "Profile (command search)"         ui_command "Profile"
 ui_expect_new "BUILD parts profile: 2 (1 in the design)" "the 30 profile listed beside the design's"
-ui_step "search p20 in the panel"          ui_type_in "Panel Profile input search" "p20"
-ui_step "More"                             ui_click_logged "Panel Profile input more"
-expect_row place shown "Placement under More"
+ui_expect_new "Panel Profile tile part: " "the Part tile (mitcad#427)"
 ui_mark
-ui_step "Placement: on a plane"            ui_choose "Panel Profile input place" 3
-expect_inspect "place grounded" "; part Profile 20 test" "a ground placement of the 20 profile"
+ui_step "Placement: on a plane"            ui_click_logged "Panel Profile input place=plane"
+expect_inspect "place grounded" "; part Profile " "a ground placement of the chosen profile"
 ui_mark
-ui_step "the part picker (... beside Part)" ui_click_logged "Panel Profile button_part"
-ui_expect_new "Profile: Part button" "the button beside Part"
+ui_step "the part picker (the Part tile)"  ui_click_logged "Panel Profile input part"
+ui_expect_new "Profile: Part button" "the Part tile opens the picker"
 ui_expect_new "Part picker opened: 2 parts for build.profile" "the picker opened with the two profiles"
 ui_expect_new "Part picker in this design: " "the design's library parts read"
 ui_expect_new "test-profiles/p20-test x" "the placed 20 profiles in this design, with their count"
@@ -763,18 +788,15 @@ ui_expect_new "Part picker closed with build.connector" "the picker closes with 
 ui_mark
 ui_step "Profile again"                    ui_command "Profile"
 ui_expect_new "BUILD parts profile: 2 (1 in the design)" "Profile again"
+ui_expect_new "Panel Profile tile part: Profile 30 test" "the profile chosen last in the Part tile"
 ui_mark
-ui_step "System I6 30 in the panel"        ui_choose "Panel Profile input system" 2
-ui_expect_new "Profile: System = I6 30" "the panel's system"
-ui_step "More"                             ui_click_logged "Panel Profile input more"
-expect_row place shown "Placement under More"
+ui_step "Placement: on a plane"            ui_click_logged "Panel Profile input place=plane"
+expect_inspect "place grounded" "; part Profile 30 test" "a ground placement of the 30 profile"
 ui_mark
-ui_step "Placement: on a plane"            ui_choose "Panel Profile input place" 3
-expect_inspect "place grounded" "; part Profile 30 test" "the 30 profile, the only one of I6 30"
-ui_mark
-ui_step "the part picker again"            ui_click_logged "Panel Profile button_part"
+ui_step "the part picker again (the tile)" ui_click_logged "Panel Profile input part"
 ui_expect_new "Part picker opened: 2 parts for build.profile" "the picker opened again"
-ui_expect_new "Part picker group All parts: 1 parts, first test-profiles/p30-test" "with the panel's system"
+ui_expect_new "Part picker group All parts: 1 parts, first test-profiles/p30-test" \
+  "filtered to the system chosen last, I6 30 (mitcad#427)"
 expect_picker_place "Part picker group row Favourites" "the groups' places"
 ui_focus_dialog '^Part Picker - Profile$'
 ui_mark
@@ -792,11 +814,6 @@ ui_step "In this design"                   ui_click_logged "Part picker group ro
 ui_expect_new "Part picker group In this design: 1 parts, first test-profiles/p30-test" \
   "In this design lists the placed profile (System I6 30)"
 ui_focus_main
-ui_mark
-ui_step "System I5 20 in the panel"        ui_choose "Panel Profile input system" -1
-ui_expect_new "Part picker group In this design: 1 parts, first test-profiles/p20-test" \
-  "the picker's system follows the panel's"
-expect_inspect "; part Profile 20 test" "the panel's part follows its system"
 ui_mark
 ui_step "Close (Escape)"                   ui_key Escape
 ui_expect_new "Part picker closed with build.profile" "the picker closes with Profile"

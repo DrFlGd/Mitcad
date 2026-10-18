@@ -827,8 +827,8 @@ QRegion BrowserPanel::rowsRegion() const {
     }
     region += m_tree->rowBox(index).intersected(inside).translated(origin);
   }
-  for (const QScrollBar* bar : {m_tree->verticalScrollBar(), m_tree->horizontalScrollBar()}) {
-    if (bar->isVisible()) {
+  for (const QScrollBar* bar : {m_tree->verticalScrollBar(), m_tree->horizontalScrollBar(), m_leftBar}) {
+    if (bar != nullptr && bar->isVisible()) {
       region += QRect(bar->mapTo(this, QPoint(0, 0)), bar->size());
     }
   }
@@ -860,6 +860,12 @@ bool BrowserPanel::eventFilter(QObject* watched, QEvent* event) {
   if (watched == m_tree->viewport()) {
     switch (event->type()) {
     case QEvent::Resize:
+      queueFit(); // a design opened before the panel had its size fits now
+      queueRowsRegion();
+      break;
+    case QEvent::Show:
+      queueFit();
+      break;
     case QEvent::ChildAdded:
     case QEvent::ChildRemoved:
       queueRowsRegion();
@@ -1453,27 +1459,87 @@ void BrowserPanel::rebuild(const DocumentSnapshot& snapshot, bool originShown) {
   m_tree->verticalScrollBar()->setValue(scroll);
   emit contentHeightChanged();
   QTimer::singleShot(0, this, &BrowserPanel::logLayout);
+  queueFit(); // a design opened: its rows are here now (designOpened)
 }
 
 void BrowserPanel::collapseAll() {
-  // The states of rows that are gone are forgotten too, and every row now
-  // present is remembered as folded, also where a row opens by default.
-  m_expanded.clear();
   m_foldedSelection = m_shownSelection;
+  foldBelowTop();
+  qDebug().noquote() << QStringLiteral("Browser collapsed all");
+}
+
+void BrowserPanel::foldBelowTop() {
+  // The states of rows that are gone are forgotten too, and every row now
+  // present below the top row is remembered as folded, also where a row
+  // opens by default; the top row (the root) as open (mitcad#426).
+  m_expanded.clear();
   const bool wasBuilding = m_building;
   m_building = true; // the signals below remember nothing
   for (QTreeWidgetItemIterator it(m_tree); *it != nullptr; ++it) {
-    (*it)->setExpanded(false);
-    m_expanded.insert(keyOf(nodeOf(*it)), false);
+    const bool top = (*it)->parent() == nullptr;
+    (*it)->setExpanded(top);
+    m_expanded.insert(keyOf(nodeOf(*it)), top);
   }
   m_building = wasBuilding;
   emit contentHeightChanged();
   QTimer::singleShot(0, this, &BrowserPanel::logLayout);
-  qDebug().noquote() << QStringLiteral("Browser collapsed all");
 }
 
-int BrowserPanel::contentHeight() const {
-  // The rows in sight: those whose parents are all open.
+void BrowserPanel::designOpened() {
+  // The design before's open and folded rows are not this one's.
+  m_expanded.clear();
+  m_foldedSelection.clear();
+  m_fitPending = true;
+  queueFit();
+}
+
+int BrowserPanel::availableHeight() const {
+  // The layout's largest height of the panel (the tree and its frame);
+  // negative before its first layout.
+  const int largest = m_availableHeight ? m_availableHeight() : -1;
+  return largest >= 0 ? std::max(largest - 2 * m_tree->frameWidth(), 0) : m_tree->viewport()->height();
+}
+
+void BrowserPanel::setAvailableHeight(std::function<int()> height) { m_availableHeight = std::move(height); }
+
+void BrowserPanel::queueFit() {
+  if (!m_fitPending || m_fitQueued) {
+    return;
+  }
+  m_fitQueued = true;
+  // After the rebuild and the layout in hand (a panel that shows lays out
+  // its window first).
+  TestSync::singleShot(0, this, [this] {
+    m_fitQueued = false;
+    fitOpenedDesign();
+  });
+}
+
+void BrowserPanel::fitOpenedDesign() {
+  // Not before the rows are there and the panel shows with its size (a
+  // design opened at the start is read before the window shows): a resize
+  // or a show of the rows' viewport queues it again.
+  if (!m_fitPending || m_building || m_tree->topLevelItemCount() == 0 || !m_tree->viewport()->isVisible()) {
+    return;
+  }
+  const int height = availableHeight();
+  if (height <= 0) {
+    return;
+  }
+  m_fitPending = false;
+  const int rows = shownRows();
+  const int visible = height / rowHeight();
+  if (rows <= visible) {
+    qDebug().noquote() << QStringLiteral("Browser opened expanded: %1 rows (%2 visible)").arg(rows).arg(visible);
+    return;
+  }
+  foldBelowTop();
+  m_tree->scrollToTop();
+  qDebug().noquote()
+      << QStringLiteral("Browser opened folded: %1 rows would not fit (%2 visible)").arg(rows).arg(visible);
+}
+
+int BrowserPanel::shownRows() const {
   int rows = 0;
   for (QTreeWidgetItemIterator it(m_tree); *it != nullptr; ++it) {
     bool shown = !(*it)->isHidden();
@@ -1482,8 +1548,17 @@ int BrowserPanel::contentHeight() const {
     }
     rows += shown ? 1 : 0;
   }
-  const int row = rows > 0 ? m_tree->sizeHintForRow(0) : 0;
-  return rows * std::max(row, 20) + 2 * m_tree->frameWidth();
+  return rows;
+}
+
+int BrowserPanel::rowHeight() const {
+  return m_tree->topLevelItemCount() > 0 ? std::max(m_tree->sizeHintForRow(0), 20) : 20;
+}
+
+int BrowserPanel::contentHeight() const {
+  // The rows in sight: those whose parents are all open.
+  const int rows = shownRows();
+  return (rows > 0 ? rows * rowHeight() : 0) + 2 * m_tree->frameWidth();
 }
 
 void BrowserPanel::showSelection(const Selection& items, const QStringList& features, bool scroll) {
@@ -1718,6 +1793,16 @@ void BrowserPanel::logLayout() {
   lines << QStringLiteral("Browser indentation %1").arg(m_tree->indentation());
   // Where the rows are scrolled to (mitcad#318: a pick in the tree keeps it).
   lines << QStringLiteral("Browser scroll %1").arg(m_tree->verticalScrollBar()->value());
+  // Whether the rows overflow (mitcad#425: a floating card grows to the card
+  // below it first), and the vertical scroll bar in sight: the tree's, or the
+  // Rows background's at the left (setScrollBarOnLeft).
+  lines << QStringLiteral("Browser scroll range %1").arg(m_tree->verticalScrollBar()->maximum());
+  if (const QScrollBar* bar = (m_leftBar != nullptr && m_scrollBarLeft) ? m_leftBar : m_tree->verticalScrollBar();
+      bar->isVisible()) {
+    const QPoint at = GlassCard::mapToHost(bar, bar->rect().center());
+    lines << QStringLiteral("Browser scroll bar at %1,%2").arg(at.x()).arg(at.y());
+    places.insert(QStringLiteral("Browser scroll bar"));
+  }
   const QRect viewport = m_tree->viewport()->rect();
   const auto place = [this, &lines, &places](const QString& what, const QRect& rect) {
     const QPoint point = GlassCard::mapToHost(m_tree->viewport(), rect.center());
@@ -1792,6 +1877,58 @@ void BrowserPanel::logLayout() {
     }
   }
   m_loggedPlaces = places;
+}
+
+} // namespace mitcad
+
+namespace mitcad {
+
+void BrowserPanel::setScrollBarOnLeft(bool left) {
+  if (left == m_scrollBarLeft) {
+    return;
+  }
+  m_scrollBarLeft = left;
+  if (m_leftBar == nullptr) {
+    // The tree's bar keeps the range and the value (the wheel and the keys
+    // scroll it); this one mirrors it and scrolls it when dragged.
+    m_leftBar = new QScrollBar(Qt::Vertical, this);
+    m_leftBar->setObjectName(QStringLiteral("browserLeftScrollBar"));
+    m_leftBar->hide();
+    QScrollBar* tree = m_tree->verticalScrollBar();
+    connect(tree, &QScrollBar::rangeChanged, this, &BrowserPanel::placeLeftScrollBar);
+    connect(tree, &QScrollBar::valueChanged, m_leftBar, &QScrollBar::setValue);
+    connect(m_leftBar, &QScrollBar::valueChanged, tree, &QScrollBar::setValue);
+    new PlaceWatcher(m_tree, [this] { placeLeftScrollBar(); });
+  }
+  m_tree->setVerticalScrollBarPolicy(left ? Qt::ScrollBarAlwaysOff : Qt::ScrollBarAsNeeded);
+  placeLeftScrollBar();
+}
+
+void BrowserPanel::placeLeftScrollBar() {
+  if (m_leftBar == nullptr) {
+    return;
+  }
+  const QScrollBar* tree = m_tree->verticalScrollBar();
+  const bool shown = m_scrollBarLeft && tree->maximum() > tree->minimum();
+  m_leftBar->setRange(tree->minimum(), tree->maximum());
+  m_leftBar->setPageStep(tree->pageStep());
+  m_leftBar->setSingleStep(tree->singleStep());
+  m_leftBar->setValue(tree->value());
+  const int width = m_leftBar->sizeHint().width();
+  // The tree moves right of the bar while it is shown.
+  const QMargins margins(shown ? width : 0, 0, 0, 0);
+  if (layout()->contentsMargins() != margins) {
+    layout()->setContentsMargins(margins);
+  }
+  if (shown) {
+    m_leftBar->setGeometry(0, m_tree->y(), width, m_tree->height());
+    m_leftBar->raise();
+  }
+  if (m_leftBar->isHidden() == shown) {
+    m_leftBar->setVisible(shown);
+  }
+  queueRowsRegion();
+  TestSync::singleShot(0, this, [this] { logLayout(); });
 }
 
 } // namespace mitcad

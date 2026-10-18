@@ -5,8 +5,8 @@
 //! keeps the part in place; a click on an end face continues straight in
 //! its inner half and turns towards the edge of the band it is in; a
 //! corner lies in the target's plane, on its end face flush with its outer
-//! side, or mitred with the outer corners meeting; `at.snap` widens the
-//! snaps.
+//! side (a square corner's default), or mitred with the outer corners
+//! meeting (the default at another angle); `at.snap` widens the snaps.
 
 use serde_json::{Value, json};
 
@@ -372,7 +372,11 @@ fn corner(doc: &mut Document<MockKernel>, t: &Value, extra: Value) -> Value {
 fn a_corner_without_a_mitre_lies_on_the_end_face_flush_with_the_outer_side() {
     let mut doc = design();
     let t = first(&mut doc, "p30", [0.0; 3], 1000.0);
-    let p = corner(&mut doc, &t, json!({"mitre": {"cut": "none"}}));
+    // A square corner's default: no mitre, as the preview says.
+    let shown = end_preview(&doc, json!({"at": end_at(&doc, &t, 0.0, 12.0)}));
+    assert_eq!(shown["end"]["zone"], "edge");
+    assert_eq!(shown["end"]["mitre"]["cut"], "none", "{shown}");
+    let p = corner(&mut doc, &t, json!({}));
     all_ok(&doc);
     let at = placed(&doc, occurrence(&p));
     assert!(close(at.apply_vector([0.0, 0.0, 1.0]), [0.0, 1.0, 0.0]));
@@ -403,11 +407,14 @@ fn a_corner_without_a_mitre_lies_on_the_end_face_flush_with_the_outer_side() {
 }
 
 #[test]
-fn a_corner_s_default_shared_mitre_meets_at_the_outer_corners() {
+fn a_corner_s_shared_mitre_meets_at_the_outer_corners() {
     let mut doc = design();
     let t = first(&mut doc, "p30", [0.0; 3], 1000.0);
-    // The preview says the corner's mitre: shared at offset 0.
-    let shown = end_preview(&doc, json!({"at": end_at(&doc, &t, 0.0, 12.0)}));
+    // A shared mitre asked for on a square corner, at offset 0.
+    let shown = end_preview(
+        &doc,
+        json!({"at": end_at(&doc, &t, 0.0, 12.0), "mitre": {"cut": "shared"}}),
+    );
     assert_eq!(shown["end"]["zone"], "edge");
     assert_eq!(shown["end"]["offset"], 0.0);
     assert_eq!(shown["end"]["mitre"]["cut"], "shared", "{shown}");
@@ -416,7 +423,7 @@ fn a_corner_s_default_shared_mitre_meets_at_the_outer_corners() {
         shown["end"]["mitre"]["angle"].as_f64().unwrap(),
         quarter
     ));
-    let p = corner(&mut doc, &t, json!({}));
+    let p = corner(&mut doc, &t, json!({"mitre": {"cut": "shared"}}));
     all_ok(&doc);
     // Both ends cut by 45 degrees.
     for (part, b) in [
@@ -558,4 +565,21 @@ fn a_corner_s_offset_moves_its_end_and_takes_no_mitre() {
     refused["at"]["offset"] = json!(10);
     let error = command(&mut doc, refused).unwrap_err();
     assert!(error.contains("a shared mitre needs offset 0"), "{error}");
+}
+
+#[test]
+fn a_square_corner_lies_on_the_end_another_angle_is_mitred() {
+    // Owner 18.10.2026: a square corner's default is no mitre (on the end
+    // face); a corner at another angle takes the shared mitre at offset 0.
+    let mut doc = design();
+    let t = first(&mut doc, "p30", [0.0; 3], 1000.0);
+    let half = std::f64::consts::FRAC_1_SQRT_2;
+    let mut at = end_at(&doc, &t, 0.0, 0.0);
+    at["direction"] = json!([0.0, half, half]);
+    let shown = end_preview(&doc, json!({"at": at.clone()}));
+    assert_eq!(shown["end"]["zone"], "given", "{shown}");
+    assert_eq!(shown["end"]["mitre"]["cut"], "shared", "{shown}");
+    at["direction"] = json!([0.0, 1.0, 0.0]);
+    let shown = end_preview(&doc, json!({"at": at}));
+    assert_eq!(shown["end"]["mitre"]["cut"], "none", "{shown}");
 }

@@ -41,6 +41,11 @@ The renderer (mitcad-render.exe)
 Droid Sans (bundled font for sketch text)
   Apache License 2.0; see licenses\droid-sans\LICENSE.txt.
 
+three.js r170 (https://threejs.org/), inside mitcad.exe and in every web
+page that Export > Web page and the project's web viewer write
+  MIT licence, Copyright 2010-2024 three.js authors; see
+  licenses\three\LICENSE. The pages carry the licence text with it.
+
 QtKeychain (https://github.com/frankosterfeld/qtkeychain), linked
 statically into mitcad.exe
   The live updates' credentials in Windows' Credential Manager.

@@ -109,8 +109,10 @@ result as a `.mitcad` design. More in [.f3d import](#f3d-import).
   [Support for multiple CAD formats](../README.md#support-for-multiple-cad-formats).
 - **File › Export:** STEP (AP214 or AP242), IGES, STL (refinement,
   binary or text), OBJ, BRep, 3MF and USDZ ([USDZ for AR and 3D
-  viewers](#usdz-for-ar-and-3d-viewers)) of all or the selected bodies, and a
-  sketch as DXF (also Save As DXF in the sketch's context menu). Bodies
+  viewers](#usdz-for-ar-and-3d-viewers)) of all or the selected bodies, a
+  sketch as DXF (also Save As DXF in the sketch's context menu), and the
+  design as a web page that opens in any browser ([Web
+  viewer](#web-viewer)). Bodies
   are written where the design shows them, also those of moved components
   (a STEP file is then an assembly with the parts placed as the
   components are). In a design with components, the Coordinates row
@@ -145,8 +147,9 @@ from; there are none until you add one ([mcp.md](mcp.md)).
 The Display page's **Layout** chooses how the window is arranged:
 **Docked** (the panels in docks around the 3D view, the default on Windows
 and Linux) or **Floating** (the panels as cards over a full-window 3D view,
-the default on macOS; [The Mac layout](#the-mac-layout) describes it, and
-on Windows and Linux the menu bar stays above it). The layout takes effect
+the default on macOS; [The Mac layout](#the-mac-layout) describes it; on
+Windows and Linux only the menu bar stays above the view, and the title row
+and the toolbar's groups float over it as cards). The layout takes effect
 when Mitcad starts: after a change Mitcad asks whether to restart now.
 Restart Now closes the window as quitting does (a design with unsaved
 changes is saved or asked about first; Cancel keeps Mitcad open) and
@@ -443,15 +446,19 @@ when edited; opening an existing cut does not add other component targets.
 
 On macOS the window follows the system's own apps; Preferences › Display
 › Layout (Docked) or `--chrome=docked` brings back the layout of the other
-systems, and Floating brings this layout to Windows and Linux. The cards
-always start below the whole bar at the top (the title bar row, the
-workspace switch, the ribbon's groups and, on Windows and Linux, the menu
-bar), at any window size.
+systems, and Floating brings this layout to Windows and Linux. On macOS the
+title bar row and the ribbon's groups are a bar at the top; on Windows and
+Linux only the menu bar is, the 3D view starts right below it, and the
+title bar row is a card floating over the top of the view, with each of the
+ribbon's groups a card of its own in a row below it: a click, drag or wheel
+between and beside these cards works in the view. The other cards always
+start below the bar and the floating rows, at any window size.
 
 - **Title bar row:** Undo and Redo, the workspace tabs as a segmented
   control, the document's name, the command search and, in a sketch,
   Finish Sketch. Under it the ribbon's groups as capsules; a group's name
   opens a menu of all its commands.
+  In a narrow window the groups at the right show their names only.
 - **Cards:** the Browser (upper left, collapsible), the Command panel
   (upper right, only while it has something to show) and the Timeline
   (along the bottom) float over the 3D view; the Projects panel, when
@@ -463,9 +470,13 @@ bar), at any window size.
   gives each row, and the Browser's header, a small box of its own, as wide
   as its content. The model shows between and beside the rows, and a click,
   drag or wheel there works in the view (select, orbit, zoom); only the
-  boxes belong to the Browser. The change applies at once.
+  boxes belong to the Browser; its scroll bar is at the left, beside the
+  rows. The change applies at once.
+- **The Browser's height** follows its rows: it grows as folders open,
+  down to the Timeline, and only then scrolls; it shrinks as they fold.
 - **Messages** appear for a few seconds in a capsule above the Timeline;
-  update and remote notices appear under the ribbon. The remote's state is
+  update and remote notices appear under the ribbon (on Windows and Linux
+  in a card under the groups). The remote's state is
   not shown; its commands are in File › Project.
 - **Glass:** on macOS 26 and later the cards are Liquid Glass; with
   `--no-glass` or on older systems they are translucent panels.
@@ -746,15 +757,24 @@ sketch.
   moves that place it go with it), Ground, Create Components from Bodies,
   Move to Component (bodies and sketches), Create Sketch, Look At,
   Rename, Delete, Find in Timeline. **Collapse All**, the last entry of
-  every row's menu, folds the whole tree whichever row you clicked, with
-  everything below folded rows; only the top row stays. Its arrow then
-  opens just that row, and each row below opens with its own arrow, so you
-  reopen the tree one level at a time. It changes only what the browser
+  every row's menu, folds the whole tree below the top row whichever row
+  you clicked, with everything below folded rows: the top row (the root)
+  stays open, so its children are in sight, each folded. Each row opens
+  with its own arrow, so you reopen the tree one level at a time; the top
+  row's arrow still folds it. It changes only what the browser
   shows: nothing in the design and no light bulb changes. In the floating
   layout (the Mac layout, or `--chrome=floating`) Preferences › Display ›
   **Browser background** chooses between the Browser's card and **Rows**:
   each row on a small box of its own, the model visible and clickable
   between and beside them (see [The Mac layout](#the-mac-layout)).
+- **Opening a design:** a design opens with its root active, whatever
+  component was active when it was saved (also a version, a copy, a
+  recovered document and an import); this is no undo step and does not
+  mark the design modified. When its Browser tree would be longer than the
+  Browser, it opens with the root open and every row under it folded: the
+  root's components and folders are in sight with their arrows closed. A
+  tree that fits opens as it is. Later changes keep the rows as you left
+  them.
 - **Timeline:** features as icons in their component's colour, a failed
   one in red with its error, one with a warning in yellow with the
   warning in its tooltip (also what an import says about a feature, see
@@ -953,21 +973,21 @@ active and holds components. The panel says where (*Adds to: Part1*).
 
 **PROFILE**
 
-- **Profile:** the panel's picker finds a profile by its name, size,
-  system, slots, supplier or part number (Search), and narrows to one
-  system (System: `B8 30` is B-type slot 8 on a 30 mm grid). At first the
-  panel shows only the part, its **Length** (the profile's stock length,
-  or 500 mm) and its **Direction**.
-- **Choosing by picture:** the **...** button beside **Part** opens the
-  [part picker](#part-picker) with the profiles of the System chosen in
-  the panel, your favourites first and the profiles this design already
-  uses in *In this design*. Click a picture: that profile is chosen and
-  the preview shows it at once, while the view stays yours to click in.
-  Choosing in the panel's list works as before, and the picker follows
-  it. The picker closes with the command unless you pin it; a pinned
-  picker stays open and shows the parts of the next BUILD command that
-  chooses one (Panel, Linear Part, Connector). Panel and Linear Part
-  have the same button.
+- **Profile:** at first the panel shows only the **Part**, its **Length**
+  (the profile's stock length, or 500 mm) and its **Direction**. The Part
+  is a tile with the chosen profile's picture, its name, and its supplier
+  and part number.
+- **Choosing by picture:** a click on the **Part** tile (or Enter or
+  Space when it has the keyboard) opens the [part picker](#part-picker):
+  search by name, size, system, slots, supplier or part number, narrow
+  to one system (`B8 30` is B-type slot 8 on a 30 mm grid), with your
+  favourites first and the profiles this design already uses in *In this
+  design*. It opens with the system of the profile you chose last. Click
+  a picture: that profile is chosen and the preview shows it at once,
+  while the view stays yours to click in. The picker closes with the
+  command unless you pin it; a pinned picker stays open and shows the
+  parts of the next BUILD command that chooses one (Panel, Linear Part,
+  Connector). Panel and Linear Part have the same tile.
 - **The first profile:** the view says *Click a plane or a face, or press
   Enter*. Click one of the origin's planes, a construction plane or a face,
   or press Enter to place it at the origin. The X, Y and Z buttons choose
@@ -996,22 +1016,26 @@ active and holds components. The panel says where (*Adds to: Part1*).
     click, and the face's zones are marked (*straight*, *turn +X*, ...).
     **Direction** changes it afterwards: Straight, or one of the four
     sides, named by the axis it runs along (+X, -Y, ...) when it does. A
-    corner lies in the profile's plane with its outer faces flush: with
-    the default mitre (Auto: *Shared*, both cut on the bisector) their
-    outer corners meet; without one the new profile sits on the end face,
-    its end flush with the outer side. The corner's **Offset** moves the
-    new profile's end from that outer side towards the turn; a shared
-    mitre meets only at 0, so at any other offset the mitre is none.
-    **Mitre** also cuts only the existing profile or only the new one.
+    corner lies in the profile's plane with its outer faces flush: by
+    default (Mitre *Auto (none)*) the new profile sits on the end face,
+    its end flush with the outer side, both ends square; with Mitre
+    *Shared* both are cut on the bisector and their outer corners meet.
+    The corner's **Offset** moves the new profile's end from that outer
+    side towards the turn; a shared mitre meets only at 0, so at any
+    other offset Shared is not offered. **Mitre** also cuts only the
+    existing profile or only the new one.
   - **Rotate** turns it about its axis in 90 degree steps, **Flip** puts
     its other end first.
-  - **More** › Placement makes the click go on the side or the end, or
-    places a profile on a plane again.
+  - **Placement**, four buttons shown once there is a profile to go on:
+    *Automatic* (where the click is, the default), *On a profile's side*,
+    *On a profile's end*, or *On a plane* to place a profile as the
+    first one again.
 - Its **length** runs to the profile in its way and stays bound to it:
   when that one moves, the length follows. The preview highlights that
   profile's face and shows the length at the free end and in a box at the
-  cursor; **Tab** steps the length to the face, to the profile's centre or
-  through it, and typing a length (in the box at the cursor or in the
+  cursor. The **Length** buttons choose to the face it meets, to its
+  centre, through it, or a typed length; **Tab** steps the first three,
+  and typing a length (in the box at the cursor or in the
   panel, or dragging its handle) makes it a plain number. **Place**
   (Enter) places it, and the panel stays open for the next one; **Close**
   (Esc) ends, keeping what you placed.
@@ -1033,8 +1057,8 @@ active and holds components. The panel says where (*Adds to: Part1*).
   and greys out those that nearly fit with the reason; the chosen
   connector is previewed in
   place with its nuts and screws, and choosing another one in the list
-  previews that one. The **...** button beside **Connector** shows them
-  in the part picker: the fitting ones first, the nearly fitting ones
+  previews that one. The **Connector** tile (its picture, name, supplier
+  and part number) shows them in the part picker when you click it: the fitting ones first, the nearly fitting ones
   greyed with the reason; a click on a picture previews that connector,
   and the picker follows the junction you move on to. **Connect** places the
   chosen one with its nuts and screws and the end machining it needs (a
@@ -1559,12 +1583,12 @@ grid of pictures, each with its name and main sizes.
   you on this computer, not to the design, and survive library updates;
   a part no longer in the library just drops out of Favourites. Search
   and the system filter work inside Favourites too.
-- For a BUILD command (the **...** button beside its Part or Connector
-  field) the picker is a floating window: move it, resize it or put it
-  on another screen (it keeps its place and size), and the view stays
-  usable. It shows only the parts the command takes (parts that nearly
-  fit are greyed, with the reason), starting with the System chosen in
-  the panel. A click on a tile chooses the part, and the command
+- For a BUILD command (a click on its Part or Connector tile) the
+  picker is a floating window: move it, resize it or put it on another
+  screen (it keeps its place and size), and the view stays usable. It
+  shows only the parts the command takes (parts that nearly fit are
+  greyed, with the reason), starting with the system of the part chosen
+  last. A click on a tile chooses the part, and the command
   previews it at once. The window closes with the command unless you
   **Pin** it; a pinned picker follows the next command that chooses
   parts.
@@ -1785,6 +1809,110 @@ programs open with the design's look.
 - The file is written with Mitcad's own code; nothing else needs to be
   installed. `mitcad-cli export design.mitcad design.usdz` writes the
   same file from the command line.
+
+### Web viewer
+
+Mitcad's web viewer shows a design in any web browser, without Mitcad,
+without a server and without the internet: each page is one HTML file
+with the viewer, its libraries and the design inside, opened by a double
+click (`file://`) or from any static web host, on a computer, a tablet or
+a phone.
+
+#### Exporting a page
+
+File › Export with the type *Web page* (or a file name ending in
+`.html`) writes the design as one web page: a single file that holds the
+viewer and the design together. Send it, put it on a USB stick or on any
+web server; a double click opens it in the browser.
+
+- **What goes in:** every visible body, where the design shows it, with
+  its appearance (colours, metal, roughness, see-through glass, textures)
+  and faces with appearances of their own; the components as a tree
+  whose parts can be shown and hidden in the viewer; the named views and
+  a Home view; the design's units, so that distances measured in the
+  viewer are in them and a person walking through a building model has
+  their real size.
+- **Refinement** (Low, Medium, High) chooses how finely curved faces are
+  divided into triangles, as for STL and OBJ: Low makes the smallest
+  file, which loads fastest on a phone.
+- **Size:** when the page is written, the status bar says how large the
+  file is. Textures go into the file too (large images scaled down to
+  2048 pixels a side); a texture whose image cannot be found keeps its
+  colour, and the log says so.
+- The page works offline: everything it needs is inside it. It opens in
+  current versions of the common browsers.
+
+#### In the viewer
+
+The toolbar at the top has **Home**, **Views** (the design's named
+views), **Components**, **Person**, **Measure** and **?** (the keys and
+controls, also H).
+
+- **Looking around:** a left drag orbits, a middle or right drag pans,
+  the wheel zooms at the cursor. W A S D fly forward, left, back and
+  right, Q and E down and up, and Shift flies four times as fast. Home
+  (the key or the button) returns to the design's home view; Views turns
+  to a named view, orthographic when the view is.
+- **Names and components:** a click on a body shows its component and
+  name at the bottom and outlines it. Components opens the component
+  tree: its boxes show and hide a component with everything under it,
+  and a click on a name shows its bodies.
+- **Walking as a person:** Person, then a click on a floor puts a person
+  there, and the view is the person's eyes (Eye height in the toolbar,
+  1.65 m at first). The mouse looks around (the page takes the mouse
+  pointer), W A S D walk and Shift runs. The person stays on the floor
+  below, climbs steps of up to 0.25 m (stairs), falls down from an edge
+  and is stopped by walls. **Holding the right mouse button walks through
+  walls** and turns gravity off while it is held, so floors can be passed
+  too: the person then moves where they look, and Q and E move down and
+  up; a hint on the screen says so. Esc gives the mouse pointer back (a
+  click takes it again), and Esc again returns to the free camera where
+  you were. Lengths follow the design's units, so a building drawn in
+  millimetres is walked at its real size. Hidden components are neither
+  seen nor walked into.
+- **Measuring:** Measure, then a click on two points shows the distance
+  between them in the design's units, with its X, Y and Z parts. A point
+  snaps to a corner or an edge near the cursor (orange: a corner, blue:
+  an edge, grey: a point on a face). Esc clears the measurement, a second
+  Esc stops measuring.
+- **Touch:** one finger orbits, two fingers pan and pinch to zoom, a tap
+  names the item. As a person, the stick at the bottom left walks, a
+  drag elsewhere looks around, and holding Through walls passes walls and
+  floors.
+
+#### A project's viewer
+
+People without Mitcad can look at a project's designs in a web browser:
+**File › Project › Web Viewer** turns the project's web viewer on. Mitcad
+writes a folder `web` into the project:
+
+- `web/index.html`: the project's name and a card per design with its
+  thumbnail, name, folder, and who saved it last and when. Open it from
+  the disk in any browser (it needs no server and no internet), or let a
+  static web host serve the project's repository.
+- a page per design (`web/parts--bracket.html` for
+  `parts/bracket.mitcad`): the design's newest version in the viewer,
+  one file that also opens on its own;
+- its thumbnail: the preview of the version Version History shows (a
+  design not saved, opened or restored in Mitcad yet has none until its
+  next Save);
+- `web/designs.json`: the same list for other programs.
+
+The folder is part of the project's versions: Web Viewer records it as a
+version (with the setting), so others get it with the project and a
+Cloud project sends it to the repository. From then on each Save that
+records a version also writes that design's page and the index again, in
+the same version. **Project Settings › Web viewer › Update the web viewer
+on each Save** turns that off (or on again) for everyone in the project;
+when it is off, **File › Project › Update Web Viewer** writes every page
+and the index when you want. Update Web Viewer also removes the pages of
+designs that were deleted or renamed. Both commands work in projects that
+keep versions; writing every page computes each design, with a progress
+dialog whose Cancel stops between designs (nothing is recorded then).
+
+When two people save different designs at the same time, both change the
+index: Sync then asks which one to keep; either is fine, and Update Web
+Viewer writes it again from all designs.
 
 ### .f3d import
 

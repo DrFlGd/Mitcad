@@ -283,7 +283,7 @@ ui_stop_app
 
 echo "--- --open at start-up, cancelled"
 # Slower, so that the dialog is still there when Esc comes.
-if [ "${UI_GDB:-1}" = 1 ] && command -v gdb > /dev/null; then
+if [ "${UI_GDB:-0}" = 1 ] && command -v gdb > /dev/null; then
   MITCAD_TEST_RECOMPUTE_DELAY_MS=1500 gdb -q -batch -ex "set debuginfod enabled off" -ex run -ex bt \
     --args "$UI_APP" --no-recovery --open "$FILE" > "$UI_LOG" 2>&1 &
 else

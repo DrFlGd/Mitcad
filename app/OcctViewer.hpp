@@ -304,6 +304,11 @@ public:
   // them, and the view itself is not picked there.
   void setCoveredRects(const std::vector<QRect>& rects);
   bool isCovered(const QPointF& position) const;
+  // The cards floating at the top of the view (mitcad#425: the title card and
+  // the toolbar's group cards) and the bottom of their rows (widget
+  // pixels; 0: none): the free area starts below them, and the view is not
+  // picked inside a card's own rectangle, but is between the cards.
+  void setTopCards(const std::vector<QRect>& cards, int bottom);
   // The cube's area in widget pixels, with the insets applied.
   QRect overlayCubeArea() const { return cubeArea().toRect(); }
   // Whether a point of the widget is on the orientation cube.
@@ -894,6 +899,8 @@ private:
   QMargins m_overlayInsets;
   int m_badgeWidth = 0;
   std::vector<QRect> m_covered;
+  std::vector<QRect> m_topCards; // setTopCards
+  int m_topCardsBottom = 0;
   qreal m_cubeRatio = 1.0;       // the device pixel ratio applied to the cube
   double m_cubeBaseSize = 0.0;   // the cube's size and font height at ratio 1
   double m_cubeBaseFont = 0.0;

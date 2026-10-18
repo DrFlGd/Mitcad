@@ -2,6 +2,7 @@
 #include "FloatingLayout.hpp"
 
 #include <algorithm>
+#include <utility>
 
 #include <QEvent>
 #include <QShowEvent>
@@ -48,7 +49,7 @@ void FloatingLayout::adopt(GlassCard* card) {
 void FloatingLayout::addCard(GlassCard* card, Anchor anchor, const Sizing& sizing) {
   adopt(card);
   connect(card, &GlassCard::collapsedChanged, this, &FloatingLayout::requestLayout);
-  m_entries.push_back({card, anchor, sizing});
+  m_entries.push_back({card, anchor, sizing, -1});
   card->setVisible(sizing.shown);
   if (!m_windowed) {
     card->raise();
@@ -57,6 +58,37 @@ void FloatingLayout::addCard(GlassCard* card, Anchor anchor, const Sizing& sizin
 }
 
 void FloatingLayout::watchContent(QWidget* content) { content->installEventFilter(this); }
+
+void FloatingLayout::addTopRow(QWidget* row, RowCards cards, const QList<QWidget*>& parts) {
+  row->setParent(this);
+  row->installEventFilter(this);
+  Row entry{row, std::move(cards), {}};
+  for (QWidget* part : parts) {
+    entry.parts.emplace_back(part);
+    part->installEventFilter(this); // shown and hidden: the row follows
+  }
+  if (entry.parts.empty()) {
+    row->show();
+  }
+  m_rows.push_back(std::move(entry));
+  requestLayout();
+}
+
+std::vector<std::pair<QString, QRect>> FloatingLayout::cardsOf(const Row& row) {
+  if (row.cards) {
+    return row.cards();
+  }
+  return {{row.widget->objectName(), row.widget->rect()}};
+}
+
+int FloatingLayout::maximumContentHeight(const QWidget* content) const {
+  for (const Entry& entry : m_entries) {
+    if (entry.card != nullptr && entry.card->content() == content) {
+      return entry.maxContent;
+    }
+  }
+  return -1;
+}
 
 void FloatingLayout::requestLayout() {
   if (m_layoutQueued || m_inLayout) {
@@ -126,6 +158,8 @@ bool FloatingLayout::eventFilter(QObject* watched, QEvent* event) {
     break;
   case QEvent::Show:
   case QEvent::Hide:
+  case QEvent::ShowToParent: // a top row's part, also while the row is hidden
+  case QEvent::HideToParent:
   case QEvent::LayoutRequest:
     if (watched != m_viewer) {
       requestLayout();
@@ -253,16 +287,63 @@ void FloatingLayout::layoutCards() {
   if (m_header != nullptr && !m_header->isHidden()) {
     barBottom = std::max(barBottom, m_header->geometry().bottom() + 1);
   }
+  // The rows floating at the top of the view (mitcad#425): one under the
+  // other, as wide as the view less the margins; the other cards and the
+  // orientation cube below the last one.
+  int rowTop = barBottom + kMargin;
+  int rowsBottom = -1; // none shown
+  std::vector<QRect> rowCards; // in the view's coordinates
+  for (const Row& row : m_rows) {
+    QWidget* widget = row.widget;
+    if (widget == nullptr) {
+      continue;
+    }
+    if (!row.parts.empty()) {
+      const bool any = std::any_of(row.parts.begin(), row.parts.end(),
+                                   [](const QPointer<QWidget>& part) { return part != nullptr && !part->isHidden(); });
+      if (widget->isHidden() == any) {
+        widget->setVisible(any);
+      }
+    }
+    if (widget->isHidden()) {
+      continue;
+    }
+    // The height it asks for, within its minimum and maximum: a fixed
+    // height is not in a layout's size hint (mitcad#429: the title row's
+    // card had its layout's hint, lower than the row's fixed height, and cut
+    // the row's controls at the bottom).
+    const auto hinted = [](const QWidget* hinting) {
+      return std::clamp(hinting->sizeHint().height(), hinting->minimumHeight(), hinting->maximumHeight());
+    };
+    auto* card = qobject_cast<GlassCard*>(widget);
+    const int height = card != nullptr && card->content() != nullptr ? card->heightForContent(hinted(card->content()))
+                                                                     : hinted(widget);
+    const QRect slot(view.left() + kMargin, rowTop, std::max(0, view.width() - 2 * kMargin), height);
+    if (card != nullptr) {
+      card->setSlot(slot);
+    } else {
+      widget->setGeometry(slot);
+    }
+    if (!m_windowed) {
+      widget->raise();
+    }
+    rowTop = slot.bottom() + 1 + kGap;
+    rowsBottom = slot.bottom() + 1;
+    for (const auto& named : cardsOf(row)) {
+      rowCards.push_back(named.second.translated(slot.topLeft() - view.topLeft()));
+    }
+  }
   // The cards on the left, then the free area for the view's overlays: the
-  // cube's corner, pushed down under a card that reaches it.
-  const int topLimit = barBottom + kMargin;
-  int insetTop = 0;
-  const QRect cubeCorner(view.right() + 1 - OcctViewer::kCubeArea, view.top(), OcctViewer::kCubeArea,
+  // cube's corner, below the rows and pushed down under a card that reaches
+  // it.
+  const int topLimit = rowsBottom >= 0 ? rowsBottom + kGap : barBottom + kMargin;
+  int insetTop = rowsBottom >= 0 ? rowsBottom + kGap - view.top() : 0;
+  const QRect cubeCorner(view.right() + 1 - OcctViewer::kCubeArea, view.top() + insetTop, OcctViewer::kCubeArea,
                          OcctViewer::kCubeArea);
   // Several upper left cards (the Projects card and the Browser) stack in
   // the order they were added.
   int leftTop = topLimit;
-  for (const Entry& entry : m_entries) {
+  for (Entry& entry : m_entries) {
     if (!visible(entry) || entry.anchor != Anchor::TopLeft) {
       continue;
     }
@@ -270,12 +351,13 @@ void FloatingLayout::layoutCards() {
                                cardsBottom - leftTop);
     const QSize size = sized(entry, entry.sizing.width > 0 ? entry.sizing.width : 260, limit);
     entry.card->setSlot(QRect(view.left() + kMargin, leftTop, size.width(), size.height()));
+    entry.maxContent = std::max(0, limit - entry.card->heightForContent(0));
     leftTop = entry.card->slot().bottom() + 1 + kGap;
     if (entry.card->slot().intersects(cubeCorner)) {
       insetTop = std::max(insetTop, entry.card->slot().bottom() + 1 + kGap - view.top());
     }
   }
-  for (const Entry& entry : m_entries) {
+  for (Entry& entry : m_entries) {
     if (!visible(entry) || entry.anchor != Anchor::TopRight) {
       continue;
     }
@@ -285,6 +367,7 @@ void FloatingLayout::layoutCards() {
                                cardsBottom - top);
     const QSize size = sized(entry, entry.sizing.width > 0 ? entry.sizing.width : 300, limit);
     entry.card->setSlot(QRect(view.right() + 1 - kMargin - size.width(), top, size.width(), size.height()));
+    entry.maxContent = std::max(0, limit - entry.card->heightForContent(0));
   }
   if (m_pill != nullptr && m_pill->isShown()) {
     // Bottom centre of the free area between the side cards, above the
@@ -334,6 +417,9 @@ void FloatingLayout::layoutCards() {
     }
   }
   m_viewer->setCoveredRects(covered);
+  // The rows' cards: the free area starts below them, and the view picks
+  // between them.
+  m_viewer->setTopCards(rowCards, rowsBottom >= 0 ? rowsBottom - view.top() : 0);
   m_inLayout = false;
   logCards();
 }
@@ -354,27 +440,61 @@ void FloatingLayout::logCards() {
   if (m_header != nullptr && m_header->isVisible()) {
     barBottom = std::max(barBottom, m_header->mapTo(host, QPoint(0, m_header->height())).y());
   }
+  const auto entryText = [](const QString& name, const QPoint& at, const QSize& size) {
+    return QStringLiteral("%1 %2,%3 %4x%5").arg(name).arg(at.x()).arg(at.y()).arg(size.width()).arg(size.height());
+  };
+  // The rows' cards first (mitcad#425), and the bottom of the lowest.
   QStringList cards;
+  int rowsBottom = barBottom;
+  QString gap;
+  for (const Row& row : m_rows) {
+    if (row.widget == nullptr || !row.widget->isVisible()) {
+      continue;
+    }
+    const auto named = cardsOf(row);
+    if (row.cards) {
+      // A row of cards of its own (the title row, the ribbon), then its
+      // cards.
+      const QPoint at = GlassCard::mapToHost(row.widget.data(), QPoint(0, 0));
+      cards << entryText(row.widget->objectName(), at, row.widget->size());
+      rowsBottom = std::max(rowsBottom, at.y() + row.widget->height());
+    }
+    for (const auto& [name, rect] : named) {
+      const QPoint at = GlassCard::mapToHost(row.widget.data(), rect.topLeft());
+      cards << entryText(name, at, rect.size());
+      rowsBottom = std::max(rowsBottom, at.y() + rect.height());
+    }
+    if (named.size() >= 2 && named[1].second.left() - named[0].second.right() > 2) {
+      // A click here reaches the view, between two cards: of the lowest row
+      // that has a gap (the group cards, below the title row).
+      const QRect& first = named[0].second;
+      const QPoint at = GlassCard::mapToHost(
+          row.widget.data(), QPoint((first.right() + 1 + named[1].second.left()) / 2, first.center().y()));
+      gap = QStringLiteral("Floating view between the cards at %1,%2").arg(at.x()).arg(at.y());
+    }
+  }
   for (const Entry& entry : m_entries) {
     if (entry.card == nullptr || !entry.card->isShown()) {
       continue;
     }
-    const QPoint at = GlassCard::mapToHost(entry.card.data(), QPoint(0, 0));
-    cards << QStringLiteral("%1 %2,%3 %4x%5")
-                 .arg(entry.card->objectName())
-                 .arg(at.x())
-                 .arg(at.y())
-                 .arg(entry.card->width())
-                 .arg(entry.card->height());
+    cards << entryText(entry.card->objectName(), GlassCard::mapToHost(entry.card.data(), QPoint(0, 0)),
+                       entry.card->size());
   }
-  const QString line = QStringLiteral("Floating cards: window %1x%2, top bar bottom %3; %4")
+  const QString line = QStringLiteral("Floating cards: window %1x%2, top bar bottom %3, view top %4, floating rows "
+                                      "bottom %5; %6")
                            .arg(host->width())
                            .arg(host->height())
                            .arg(barBottom)
+                           .arg(m_viewer->mapTo(host, QPoint(0, 0)).y())
+                           .arg(rowsBottom)
                            .arg(cards.join(QStringLiteral("; ")));
   if (line != m_loggedCards) {
     m_loggedCards = line;
     qDebug().noquote() << line;
+  }
+  if (!gap.isEmpty() && gap != m_loggedGap) {
+    m_loggedGap = gap;
+    qDebug().noquote() << gap;
   }
 }
 

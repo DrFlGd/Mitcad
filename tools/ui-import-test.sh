@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# check-all sources: app/files app/projects
+# check-all sources: app/files app/projects app/web third_party/three
 # Files (U6) through the File menu, on the demo block (60 x 40 x 20 mm):
 #   - STEP, STL and DXF round trips: File > Export writes the block (its
 #     sketch for DXF), File > Import brings the file back: a base feature
 #     of the same volume, a mesh body, a sketch with the rectangle's profile.
+#   - Export > Web page (mitcad#423): one .html file with the design's data,
+#     its size in the log.
 #   - USDZ export (mitcad#123): the Export dialog takes the type from the
 #     extension; the package holds the binary layer first, 64-byte aligned.
 #   - Insert DXF's placement and layers (P9): a layered drawing placed by
@@ -146,6 +148,18 @@ ui_expect_new "Exported $WORK/block.usdz: usdz, 1 body(ies), 1 material(s)" "the
 [ "$(dd if="$WORK/block.usdz" bs=1 skip=64 count=8 2> /dev/null)" = 'PXR-USDC' ] || ui_fail "no aligned layer"
 echo "ok   the package's layer at 64"
 
+echo "--- Web page (mitcad#423)"
+ui_mark
+ui_step "File > Export a web page"         export_to "$WORK/block.html"
+ui_expect_new "Export dialog: Web page (*.html) to $WORK/block.html" "the extension chose the web page type"
+ui_expect_new "Exported $WORK/block.html: html, 1 body(ies), " "the block written as a web page"
+[ -s "$WORK/block.html" ] || ui_fail "no web page"
+ui_expect_new "Exported $WORK/block.html: html, 1 body(ies), $(stat -c %s "$WORK/block.html") bytes" \
+  "the log says the page's size"
+grep -qF 'id="mitcad-data"' "$WORK/block.html" || ui_fail "no design data in the page"
+if grep -qF '<!--MITCAD:' "$WORK/block.html"; then ui_fail "a placeholder left in the page"; fi
+echo "ok   the page holds the design's data"
+
 echo "--- DXF"
 ui_mark
 ui_step "File > Export the sketch to DXF"  export_to "$WORK/sketch.dxf"
@@ -193,13 +207,12 @@ ui_step "undo the insert (Ctrl+Z)"         ui_key ctrl+z
 ui_expect_new "Undo: Insert plate.dxf" "one undo step; the document is as saved"
 
 echo "--- Insert Component"
-ui_step "new design (Ctrl+N)"              ui_key ctrl+n
-ui_expect_log "New document" "an empty document"
-# The component goes into the root, activated first (a new design's
-# active Part1 would take it too, mitcad#421).
 ui_mark
-ui_step "activate the root"                ui_click_logged "Browser radio Root"
-ui_expect_new "Activated Root" "the root is active"
+ui_step "new design (Ctrl+N)"              ui_key ctrl+n
+ui_expect_new "New document" "an empty document"
+# The component goes into the root: a new design opens with the root
+# active, not its Part1 (which would take it too, mitcad#421, mitcad#426).
+ui_expect_new "Opened with the root active; C1 was active in the file (unmodified)" "the root is active"
 ui_mark
 ui_step "Insert Component (search)"        ui_command "Insert Component"
 type_into_dialog 'Insert Component' "$WORK/block.mitcad"

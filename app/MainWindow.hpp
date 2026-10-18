@@ -63,6 +63,7 @@ class RemoteController;
 class LiveController;
 class Ribbon;
 class SelectionFilterPanel;
+class TitleBar;
 class UpdateController;
 class ReportCenter;
 class ViewController;
@@ -889,8 +890,11 @@ private:
   OcctViewer* m_viewer = nullptr;
   CommandRegistry* m_registry = nullptr;
   Ribbon* m_ribbon = nullptr;
-  // Floating chrome: the title bar and ribbon above the view; placed by createPanels().
+  // Floating chrome on macOS: the title bar and ribbon above the view; placed by createPanels().
   QWidget* m_header = nullptr;
+  // Floating chrome elsewhere (floatingTopCards(), mitcad#425, mitcad#429): the title bar row over the
+  // view without a card; it and the ribbon's group cards are rows of createFloatingPanels().
+  TitleBar* m_titleRow = nullptr;
   CommandSearch* m_search = nullptr;
   ViewController* m_viewController = nullptr;
   UpdateController* m_updates = nullptr; // automatic updates (mitcad#9)
@@ -1038,6 +1042,21 @@ private:
   void createWaitCursorRecovery();
   void registerWaitCursorTestCommands();
   void nestedWaitForTest();
+
+  // A project's web viewer (mitcad#423, web/MainWindowWeb.cpp): File >
+  // Project > Web Viewer (`turnOn`) and Update Web Viewer write the current
+  // project's web/ folder (every design's page, its thumbnail, designs.json,
+  // the index) and record it as one version (turned on: with the project's
+  // setting), by recordWebViewer (the version's id, or "").
+  void registerWebViewerCommands();
+  void writeWebViewer(bool turnOn);
+  QString recordWebViewer(const QString& root, QJsonObject command, const QString& title);
+  // Save (writeFile), before it records the version of the file at `path`:
+  // in a project whose web viewer is on and updated on each Save, the
+  // design's page from the open document, its thumbnail and the index
+  // written; returns those files (and those removed) for the version. None
+  // when the file did not change (unless `renamed`).
+  QStringList webViewerOnSave(const Project& project, const QString& path, const QString& author, bool renamed);
 };
 
 } // namespace mitcad

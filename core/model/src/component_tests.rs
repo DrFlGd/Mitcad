@@ -1072,3 +1072,55 @@ fn renaming_a_component_leaves_named_bodies_two_bodies_the_root_and_taken_names(
     assert_eq!(doc.body_name(body), default);
     assert_eq!(doc.assembly().name(ComponentUid(1)), "Bracket");
 }
+
+#[test]
+fn activating_as_the_document_opens_is_no_undo_step_and_no_change() {
+    // A design saved with a component active (mitcad#426).
+    let mut doc = Document::new(MockKernel::default());
+    small_block(&mut doc);
+    doc.create_component(Some("Bracket"), Transform::IDENTITY, true)
+        .unwrap();
+    small_block(&mut doc);
+    let json = doc.to_json();
+    let file: Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(file["active_component"], "C1");
+
+    // Opened and marked saved as the application does, then the root
+    // activated: unmodified, no undo step, the same revision.
+    let mut opened = Document::from_json(&json, MockKernel::default()).unwrap();
+    opened.recompute();
+    command(&mut opened, json!({"cmd": "mark_saved"}));
+    let document = query(&opened, json!({"query": "document"}));
+    let reply = command(
+        &mut opened,
+        json!({"cmd": "activate_component", "component": "C0", "opening": true}),
+    );
+    assert_eq!(reply["component"], "C0");
+    assert_eq!(reply["previous"], "C1");
+    assert_eq!(reply["recomputed"], 0);
+    assert_eq!(opened.active_component(), ComponentUid::ROOT);
+    let after = query(&opened, json!({"query": "document"}));
+    assert_eq!(after["modified"], false);
+    assert_eq!(after["revision"], document["revision"]);
+    assert_eq!(opened.undo_depth(), 0);
+    // Saving stores the root active.
+    let saved: Value = serde_json::from_str(&opened.to_json()).unwrap();
+    assert_eq!(saved.get("active_component"), None);
+
+    // A plain activation is still an undo step.
+    command(
+        &mut opened,
+        json!({"cmd": "activate_component", "component": "Bracket"}),
+    );
+    assert_eq!(opened.undo_depth(), 1);
+    assert_eq!(
+        query(&opened, json!({"query": "document"}))["modified"],
+        true
+    );
+    // A component that does not exist is refused.
+    let error = opened
+        .activate_component_on_open(ComponentUid(9))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("does not exist"), "{error}");
+}

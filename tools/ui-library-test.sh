@@ -293,11 +293,12 @@ ui_expect_new "Part picker group Favourites: 1 parts, first mitcad-parts/iso4032
 ui_step "Insert (Alt+I)"                   ui_key alt+i
 ui_focus_main
 ui_expect_new "Part picker chose mitcad-parts/iso4032" "chosen in the picker"
-ui_expect_new "Inserted component ISO 4032 M5 (linked) from mitcad-parts " "the nut inserted"
+# The nut copied in 3. has the name: the new component is "(1)".
+ui_expect_new "Inserted component ISO 4032 M5 (1) (linked) from mitcad-parts " "the nut inserted"
 ui_mark
 ui_step "Insert from Library again"        ui_command "Insert from Library"
 ui_focus_dialog '^Insert from Library$'
-ui_expect_new "mitcad-parts/iso4032 x" "the nut in this design after the placement"
+ui_expect_new "mitcad-parts/iso4032 x2" "the nut in this design after the placement: the copy and this one"
 ui_mark
 ui_step "In this design (Alt+O, I)"        eval 'ui_key alt+o; ui_sync; xdotool type --delay 40 "I"'
 ui_expect_new "Part picker group In this design: " "the design's parts as a group"

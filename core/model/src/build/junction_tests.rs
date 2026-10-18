@@ -64,7 +64,7 @@ fn an_end_on_a_side_is_a_t_or_near_an_end_an_l() {
 
 #[test]
 fn two_ends_meet_inline_or_at_a_corner_and_sides_cross() {
-    let end = |direction: Option<[f64; 3]>| {
+    let end = |direction: Option<[f64; 3]>, mitre: Option<&str>| {
         let mut doc = design();
         let t = first(&mut doc, "p30", [0.0; 3], 1000.0);
         let tp = derived(&doc, component(&t));
@@ -73,17 +73,26 @@ fn two_ends_meet_inline_or_at_a_corner_and_sides_cross() {
         if let Some(d) = direction {
             at["direction"] = json!(d);
         }
-        place(
-            &mut doc,
-            json!({"part": {"source": "S1"}, "at": at, "length": 300}),
-        );
+        let mut fields = json!({"part": {"source": "S1"}, "at": at, "length": 300});
+        if let Some(cut) = mitre {
+            fields["mitre"] = json!({"cut": cut});
+        }
+        place(&mut doc, fields);
         all_ok(&doc);
         doc
     };
-    assert_eq!(kinds(&end(None)), vec!["inline"]);
-    let corner = end(Some([0.0, 1.0, 0.0]));
+    assert_eq!(kinds(&end(None, None)), vec!["inline"]);
+    // A square corner by default lies on the end face (mitcad#427): T's end
+    // on the new part's side near its end, an L.
+    let corner = end(Some([0.0, 1.0, 0.0]), None);
     assert_eq!(kinds(&corner), vec!["L"]);
     let j = &corner.build_junctions(None)[0];
+    assert_eq!(j.a.at.as_str(), "end_b", "{:?}", j.a.at);
+    assert!((j.angle - std::f64::consts::FRAC_PI_2).abs() < 1e-9);
+    // Mitred: the two ends meet.
+    let mitred = end(Some([0.0, 1.0, 0.0]), Some("shared"));
+    assert_eq!(kinds(&mitred), vec!["L"]);
+    let j = &mitred.build_junctions(None)[0];
     assert_eq!((j.a.at.as_str(), j.b.at.as_str()), ("end_a", "end_b"));
     assert!((j.angle - std::f64::consts::FRAC_PI_2).abs() < 1e-9);
     // A profile beside T, across it.

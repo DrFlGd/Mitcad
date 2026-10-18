@@ -10,6 +10,7 @@
 #include <QEvent>
 #include <QFrame>
 #include <QHBoxLayout>
+#include <QMargins>
 #include <QMenu>
 #include <QMouseEvent>
 #include <QResizeEvent>
@@ -17,6 +18,7 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QPointer>
+#include <QRegion>
 #include <QStackedWidget>
 #include <QStyleOptionToolButton>
 #include <QTabBar>
@@ -412,6 +414,11 @@ void RibbonButton::paintEvent(QPaintEvent*) {
 
 CapsuleFrame::CapsuleFrame(int radius, QWidget* parent) : QWidget(parent), m_radius(radius) {}
 
+void CapsuleFrame::setCardMaterial(bool card) {
+  m_cardMaterial = card;
+  update();
+}
+
 void CapsuleFrame::paintEvent(QPaintEvent*) {
   QPainter painter(this);
   painter.setRenderHint(QPainter::Antialiasing);
@@ -420,11 +427,24 @@ void CapsuleFrame::paintEvent(QPaintEvent*) {
   const qreal radius = m_radius < 0 ? box.height() / 2 : m_radius;
   QColor shadow = cardShadowColor(pal);
   shadow.setAlpha(shadow.alpha() / 3);
+  if (m_cardMaterial) {
+    // The card's fill is translucent: the shadow only where the card is not.
+    QPainterPath outside;
+    outside.addRect(QRectF(rect()));
+    QPainterPath card;
+    card.addRoundedRect(box, radius, radius);
+    painter.setClipPath(outside.subtracted(card));
+  }
   painter.setPen(Qt::NoPen);
   painter.setBrush(shadow);
   painter.drawRoundedRect(box.translated(0, 1), radius, radius);
+  painter.setClipping(false);
   painter.setPen(QPen(cardBorderColor(pal), 1));
-  painter.setBrush(isDarkPalette(pal) ? textTint(pal, 20) : pal.color(QPalette::Base));
+  if (m_cardMaterial) {
+    painter.setBrush(cardFillColor(pal)); // as GlassCard's material
+  } else {
+    painter.setBrush(isDarkPalette(pal) ? textTint(pal, 20) : pal.color(QPalette::Base));
+  }
   painter.drawRoundedRect(box, radius, radius);
 }
 
@@ -453,6 +473,8 @@ Ribbon::Ribbon(CommandRegistry& registry, Presentation presentation, QWidget* pa
     layout->setSizeConstraint(QLayout::SetNoConstraint);
   }
   layout->addWidget(m_pages);
+  // The group cards' mask follows the page shown (setGroupCards).
+  connect(m_pages, &QStackedWidget::currentChanged, this, [this] { updateGroupMask(); });
   connect(m_tabs, &QTabBar::currentChanged, this, [this](int index) {
     if (index >= 0) {
       m_pages->setCurrentIndex(m_tabs->tabData(index).toInt());
@@ -679,6 +701,8 @@ QWidget* Ribbon::createGroup(const QString& tab, const QString& group, GroupInfo
   column->addWidget(menuButton, 0, Qt::AlignHCenter);
   column->addStretch();
   if (mac) {
+    // A card of its own in the Floating layout's group cards (mitcad#425).
+    widget->setObjectName(QStringLiteral("ribbonGroup_") + key(tab, group));
     const int caption = menuButton->sizeHint().width() + 16;
     // The capsule is as wide as its caption at least.
     widget->setMinimumWidth(caption);
@@ -715,6 +739,7 @@ QSize Ribbon::minimumSizeHint() const {
 void Ribbon::resizeEvent(QResizeEvent* event) {
   QWidget::resizeEvent(event);
   fitGroups();
+  updateGroupMask();
 }
 
 void Ribbon::showEvent(QShowEvent* event) {
@@ -726,11 +751,12 @@ void Ribbon::fitGroups() {
   if (m_presentation != Presentation::Mac) {
     return;
   }
-  constexpr int kPageMargins = 24;
+  // The page's margins (none as group cards: the layout keeps the margin).
+  const int pageMargins = m_groupCards ? 0 : 24;
   constexpr int kSpacing = 8;
   for (auto it = m_groupsOfPage.begin(); it != m_groupsOfPage.end(); ++it) {
     QList<GroupInfo>& infos = it.value();
-    int total = kPageMargins + kSpacing * std::max<int>(0, static_cast<int>(infos.size()) - 1);
+    int total = pageMargins + kSpacing * std::max<int>(0, static_cast<int>(infos.size()) - 1);
     for (const GroupInfo& info : infos) {
       total += info.collapsible ? info.fullWidth : info.collapsedWidth;
     }
@@ -751,6 +777,100 @@ void Ribbon::fitGroups() {
   }
 }
 
+void Ribbon::setGroupCards(bool cards) {
+  if (m_presentation != Presentation::Mac || cards == m_groupCards) {
+    return;
+  }
+  m_groupCards = cards;
+  // The cards start at the ribbon's edges (the layout keeps the margin to
+  // the view's), without the hairline's row. The ribbon is placed, not laid
+  // out: its layout does not make it as wide as all the groups, which clip
+  // and collapse at its right instead (fitGroups).
+  layout()->setContentsMargins(0, 0, 0, cards ? 0 : 1);
+  layout()->setSizeConstraint(cards ? QLayout::SetNoConstraint : QLayout::SetDefaultConstraint);
+  if (cards) {
+    setMinimumSize(0, 0);
+  }
+  for (auto it = m_groupsOfPage.begin(); it != m_groupsOfPage.end(); ++it) {
+    if (QLayout* row = it.key()->layout()) {
+      row->setContentsMargins(cards ? QMargins(0, 0, 0, 0) : QMargins(12, 4, 12, 6));
+    }
+    for (const GroupInfo& info : std::as_const(it.value())) {
+      if (auto* frame = qobject_cast<CapsuleFrame*>(info.capsule)) {
+        frame->setCardMaterial(cards);
+      }
+      if (cards) {
+        info.capsule->installEventFilter(this);
+      } else {
+        info.capsule->removeEventFilter(this);
+      }
+    }
+  }
+  if (cards) {
+    updateGroupMask();
+  } else {
+    clearMask();
+  }
+  fitGroups();
+  update();
+}
+
+std::vector<std::pair<QString, QRect>> Ribbon::groupCards() const {
+  std::vector<std::pair<QString, QRect>> cards;
+  QWidget* page = m_pages->currentWidget();
+  const auto infos = m_groupsOfPage.constFind(page);
+  if (page == nullptr || infos == m_groupsOfPage.cend()) {
+    return cards;
+  }
+  for (const GroupInfo& info : *infos) {
+    if (info.capsule == nullptr || info.capsule->isHidden()) {
+      continue;
+    }
+    const QRect rect = QRect(info.capsule->mapTo(this, QPoint(0, 0)), info.capsule->size()) & this->rect();
+    if (rect.isEmpty()) {
+      continue;
+    }
+    QString name = info.capsule->objectName();
+    name.replace(QLatin1Char(' '), QLatin1Char('_'));
+    cards.emplace_back(name, rect);
+  }
+  return cards;
+}
+
+void Ribbon::updateGroupMask() {
+  if (!m_groupCards) {
+    return;
+  }
+  QRegion region;
+  for (const auto& card : groupCards()) {
+    region += card.second;
+  }
+  if (region.isEmpty()) {
+    // An empty mask is none at all: the whole ribbon would take the mouse.
+    region = QRegion(0, 0, 1, 1);
+  }
+  if (region != mask()) {
+    setMask(region);
+    emit groupCardsChanged();
+  }
+}
+
+bool Ribbon::eventFilter(QObject* watched, QEvent* event) {
+  if (m_groupCards) {
+    switch (event->type()) {
+    case QEvent::Move:
+    case QEvent::Resize:
+    case QEvent::Show:
+    case QEvent::Hide:
+      updateGroupMask();
+      break;
+    default:
+      break;
+    }
+  }
+  return QWidget::eventFilter(watched, event);
+}
+
 void Ribbon::changeEvent(QEvent* event) {
   QWidget::changeEvent(event);
   if (event->type() == QEvent::ApplicationPaletteChange && m_tabs != nullptr) {
@@ -764,6 +884,9 @@ void Ribbon::paintEvent(QPaintEvent* event) {
   if (m_presentation != Presentation::Mac) {
     QWidget::paintEvent(event);
     return;
+  }
+  if (m_groupCards) {
+    return; // the cards paint themselves; the view shows between them
   }
   // The hairline between the toolbar and the view.
   QPainter painter(this);

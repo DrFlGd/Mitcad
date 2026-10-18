@@ -367,6 +367,12 @@ ui_stop_app
   { cat "$WORK/cli-many.log"; ui_fail "mitcad-cli (many bodies)"; }
 ui_start_app --open "$WORK/many.mitcad"
 ui_step "fit (F6)"                       ui_key F6
+# A tree longer than the browser opens folded below the root (mitcad#426):
+# Construction, then Bodies are opened (Bodies' place stays where it is).
+ui_expect_log "Browser opened folded: " "the long tree opened folded"
+ui_sync
+ui_step "open Construction"              ui_click_logged "Browser arrow Root/Construction"
+ui_step "open Bodies"                    ui_click_logged "Browser arrow Root/Bodies"
 ui_expect_log "Browser Root/Bodies/Body1 at" "the rows from the top"
 # Plane1's pick place is logged once the camera rests in the laid-out view
 # (one logged when the design opened, before the view had its size, is

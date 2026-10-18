@@ -890,3 +890,41 @@ endif()
 target_sources(mitcad PRIVATE
   library/PartPicker.cpp
   library/PartPicker.hpp)
+# The web viewer's pages (mitcad#423, app/web, app/COMMANDS.md "Web
+# page"): a design as one self-contained HTML file, File > Export > Web
+# page. The viewer's files (app/web/viewer, its libraries in
+# third_party/three) are resources under :/web-viewer/<repository path>,
+# found by a glob that may find none (pageHtml then names the file the
+# build lacks).
+target_sources(mitcad PRIVATE
+  web/WebGlb.cpp
+  web/WebGlb.hpp
+  web/WebPage.cpp
+  web/WebPage.hpp
+  web/WebPageHtml.cpp)
+file(GLOB_RECURSE MITCAD_WEB_VIEWER_FILES CONFIGURE_DEPENDS
+  "${PROJECT_SOURCE_DIR}/app/web/viewer/*" "${PROJECT_SOURCE_DIR}/third_party/three/*")
+if(MITCAD_WEB_VIEWER_FILES)
+  foreach(web_viewer_file IN LISTS MITCAD_WEB_VIEWER_FILES)
+    file(RELATIVE_PATH web_viewer_alias "${PROJECT_SOURCE_DIR}" "${web_viewer_file}")
+    set_source_files_properties("${web_viewer_file}" PROPERTIES QT_RESOURCE_ALIAS "${web_viewer_alias}")
+  endforeach()
+  qt_add_resources(mitcad web_viewer PREFIX /web-viewer FILES ${MITCAD_WEB_VIEWER_FILES})
+endif()
+if(BUILD_TESTING)
+  # The page's HTML from fixture files of the viewer, and the glb's nodes
+  # with the tree: Qt Core and Gui and the renderer's plain types.
+  target_sources(test_app PRIVATE tests/web_page.cpp
+                 web/WebGlb.cpp web/WebGlb.hpp web/WebPage.hpp web/WebPageHtml.cpp)
+endif()
+# A project's web viewer (mitcad#423, app/web): File > Project > Web Viewer
+# and Update Web Viewer, the Save that updates a design's page, the web/
+# folder's index and designs.json (the pages: web/WebPage.hpp).
+target_sources(mitcad PRIVATE
+  web/MainWindowWeb.cpp
+  web/ProjectWeb.cpp
+  web/ProjectWeb.hpp)
+if(BUILD_TESTING)
+  # The designs' slugs, designs.json and the index: plain Qt Core.
+  target_sources(test_app PRIVATE tests/project_web.cpp web/ProjectWeb.cpp web/ProjectWeb.hpp)
+endif()

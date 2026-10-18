@@ -124,6 +124,8 @@ void MainWindow::registerProjectCommands() {
   m_registry->add(move);
   // The Projects panel and File > New Design (mitcad#145).
   registerProjectsPanelCommands();
+  // The project's web viewer (mitcad#423).
+  registerWebViewerCommands();
 }
 
 // ---------------------------------------------------------------------------

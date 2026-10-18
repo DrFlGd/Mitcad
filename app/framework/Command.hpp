@@ -75,6 +75,15 @@ public:
 
 enum class ValueKind { Length, Angle, Unitless };
 
+// What a choice shown as a tile shows (InputDef::choiceTile, mitcad#427):
+// the chosen option's picture (null: none), its name and a smaller line
+// under it (BUILD: the supplier and part number).
+struct ChoiceTile {
+  QImage image;
+  QString title;
+  QString detail;
+};
+
 // A handle in the view that drags a value input (U4): an arrow for a
 // distance along a direction, a ring for an angle about an axis. Model
 // coordinates of the design (placed by occurrences).
@@ -220,6 +229,14 @@ struct InputDef {
   QString buttonText;
   QString buttonTooltip;
   std::function<void(const CommandState&, const CommandContext&)> onButton;
+  // Choice: shown as a tile instead of the drop-down and its button
+  // (BUILD's part, mitcad#427): the chosen option's picture, name and a
+  // smaller line under it, from the state. A click on it, or Enter or Space
+  // while it has the keyboard, calls `onButton` (BUILD: the part picker,
+  // whose choice sets the input). It takes the keyboard by Tab only, so
+  // that Enter after a click still confirms the command. A frontend without
+  // tiles shows the drop-down and its button.
+  std::function<ChoiceTile(const CommandState&)> choiceTile;
   // Value: also a box at the cursor in the view (BUILD's length), in step
   // with the panel's field: what is typed in either is the input's text.
   // The shown inspection's report may give the box another text while the
@@ -348,6 +365,10 @@ struct InputDef {
     buttonText = text;
     buttonTooltip = tip;
     onButton = std::move(call);
+    return *this;
+  }
+  InputDef& withChoiceTile(std::function<ChoiceTile(const CommandState&)> tile) {
+    choiceTile = std::move(tile);
     return *this;
   }
 

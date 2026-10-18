@@ -197,10 +197,13 @@ public static class Shot {
 '@
 
 # Invoke-Mitcad name arguments...: runs the app until it exits and returns
-# its log (Qt messages go to stderr with QT_FORCE_STDERR_LOGGING). With
-# -Crash the app is to crash instead of exiting.
+# its log (Qt messages go to stderr with QT_FORCE_STDERR_LOGGING), in the
+# Docked layout unless the arguments choose one (--chrome; Floating is the
+# default since mitcad#429). With -Crash the app is to crash instead of
+# exiting.
 function Invoke-Mitcad([string]$Name, [string[]]$Arguments, [hashtable]$Environment = @{}, [switch]$Crash) {
   $info = New-Object System.Diagnostics.ProcessStartInfo $App
+  if (-not ($Arguments | Where-Object { $_ -like '--chrome*' })) { $Arguments = @('--chrome=docked') + $Arguments }
   $info.Arguments = ($Arguments | ForEach-Object { '"' + $_ + '"' }) -join ' '
   $info.UseShellExecute = $false
   $info.RedirectStandardOutput = $true

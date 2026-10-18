@@ -223,18 +223,26 @@ ui_start_display() {
   exit 1
 }
 
-# ui_start_app [app arguments...]: starts Mitcad (under gdb when available).
-# UI_GDB=0 runs it without gdb; UI_WINDOW_WAIT is how long the window may
-# take to appear (seconds, default 20; a large design opens first). The app
+# ui_start_app [app arguments...]: starts Mitcad, without gdb: gdb loads the
+# debug build's symbols at every start, and the app's crash handler logs a
+# crash's stack itself. UI_GDB=1 runs it under gdb (when available) for
+# gdb's backtrace; tools/check-all.sh reruns a crashed test so.
+# UI_WINDOW_WAIT is how long the window may take to appear (seconds, default 20; a large design opens first). The app
 # does not offer to recover work at start-up (--no-recovery: a test that
 # killed it and starts it again would get the question) unless
 # UI_RECOVERY=1.
 ui_start_app() {
   local options=(--no-recovery) before window
+  # Never on the caller's desktop: a test that forgot ui_start_display
+  # would show the window there and type its keys into whatever has focus.
+  if [ -z "$UI_XVFB_PID" ] && [ "${MITCAD_UI_VISIBLE:-0}" != 1 ]; then
+    echo "FAIL: ui_start_app without ui_start_display (the test's own Xvfb display)"
+    exit 1
+  fi
   [ "${UI_RECOVERY:-0}" = 1 ] && options=()
   # The windows of other instances (ui_instance) are not this one's.
   before=" $(xdotool search --onlyvisible --name ' - Mitcad$' 2> /dev/null | tr '\n' ' ')"
-  if [ "${UI_GDB:-1}" = 1 ] && command -v gdb > /dev/null; then
+  if [ "${UI_GDB:-0}" = 1 ] && command -v gdb > /dev/null; then
     gdb -q -batch -ex "set debuginfod enabled off" -ex run -ex bt --args "$UI_APP" "${options[@]}" "$@" \
       > "$UI_LOG" 2>&1 &
   else

@@ -997,6 +997,23 @@ not recompute.
   (`analysis_shape` `flat_pattern`), and its DXF is written by the model from
   the evaluated outline (`export_flat_pattern_dxf`, [sheet-metal.md](sheet-metal.md)).
 - **Updates** (`app/update/`): see [updates.md](updates.md).
+- **Web pages** (`app/web/`, mitcad#423): a design as one self-contained
+  HTML file, since browsers block module scripts and `fetch()` from
+  `file://`. `WebGlb` writes the visible bodies as a binary glTF file in
+  the design's unit and frame (Z up, as the model; the viewer turns the
+  data's `up` itself): one node per placed body (`n1`, `n2`, …; the
+  component tree in the page's data names them), each body meshed once on
+  a copy of its shape (`io::triangulate`, the export's tolerances), the
+  appearances as metallic-roughness materials with their texture images
+  inside and texture coordinates by the rendered view's projection.
+  `WebPage` adds the data (units, tree, named views, Home) and inlines it,
+  with the viewer's `viewer.js` and its modules as `data:` URLs of an
+  import map, into the viewer's `template.html`; the viewer's files are Qt
+  resources (`:/web-viewer/<repository path>`). `writePage` reads the open
+  design through `CommandContext` (Export › Web page, on the UI thread
+  while the model is idle); `writePageOfFile` loads a design file without
+  a window (`load_design`, links followed, computed with the result
+  store) and may run on any thread.
 - **Texture sources** (`app/materials/`, mitcad#315): where Edit
   Appearances finds sets of texture maps. Each source is one class behind
   `TextureSource` (asynchronous categories, search, thumbnails and fetch;
@@ -1176,7 +1193,12 @@ Floating is a full-window 3D view with the panels over it:
   indicator beside it, the command search and, in a sketch, Finish Sketch.
   Under it the ribbon in
   `Presentation::Mac` (capsule groups whose name opens a menu of all their
-  commands), and the update and remote notices.
+  commands), and the update and remote notices. That is macOS's header
+  above the view; on Windows and Linux (`floatingTopCards()`, mitcad#425)
+  only the menu bar is above the view, and the title bar row (a `GlassCard`,
+  `titleCard`), the ribbon's groups (`Ribbon::setGroupCards`: each group a
+  card, the ribbon masked to them) and the notices (`noticeCard`) are rows
+  of cards over the view's top (`FloatingLayout::addTopRow`).
 - `GlassCard`: the rounded Browser, Command and Timeline cards and the
   status pill. The Command card shows only while it has something to say.
   There is no status bar; messages go to the pill.
@@ -1190,7 +1212,12 @@ Floating is a full-window 3D view with the panels over it:
   named views fit the model into the free area (`fitToFreeArea`). Cards
   take the mouse only inside their rounded rectangle. No card starts above
   the bottom of the header (the title bar row, the ribbon, the notices),
-  whose size and place the layout follows too (mitcad#419).
+  whose size and place the layout follows too (mitcad#419), or above the
+  last row of top cards (mitcad#425), whose cards the view gets as well
+  (`OcctViewer::setTopCards`: the free area starts below them, picks are
+  refused inside them only, so that the view picks between them). The
+  Browser's card is as high as its rows down to the card below it, then
+  scrolls (`maximumContentHeight`).
 
 **Why the cards are windows.** With `glassActive()` (macOS 26+, Floating,
 no `--no-glass`) a card's material is the system's Liquid Glass

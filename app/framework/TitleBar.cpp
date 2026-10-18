@@ -1,17 +1,22 @@
 // SPDX-License-Identifier: MIT
 #include "TitleBar.hpp"
 
+#include <algorithm>
+#include <initializer_list>
+
 #include <QAction>
 #include <QEvent>
 #include <QFontMetrics>
 #include <QHBoxLayout>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QRegion>
 #include <QTabBar>
 #include <QToolButton>
 #include <QWindow>
 #include <QtGlobal>
 
+#include "GlassCard.hpp"
 #include "Ribbon.hpp"
 #include "Theme.hpp"
 #include "platform/MacChrome.hpp"
@@ -21,6 +26,12 @@ namespace {
 
 constexpr int kRowHeight = 52;
 constexpr int kControlHeight = 30;
+// The Floating title row on Windows and Linux (setFloatingRow): the
+// controls and the title's box, without the macOS toolbar's room.
+constexpr int kFloatingRowHeight = 40;
+// The room around the document's name in its box.
+constexpr int kTitlePadX = 12;
+constexpr int kTitlePadY = 4;
 // The traffic lights' width, from the window's edge to past the green one.
 constexpr int kTrafficLights = 78;
 
@@ -131,6 +142,7 @@ TitleBar::TitleBar(Ribbon* ribbon, QAction* undo, QAction* redo, QAction* search
   row->addWidget(m_inset);
 
   auto* history = new CapsuleFrame(-1);
+  m_history = history;
   history->setObjectName(QStringLiteral("titleHistory"));
   auto* pair = new QHBoxLayout(history);
   pair->setContentsMargins(4, 2, 4, 3);
@@ -173,7 +185,95 @@ void TitleBar::setIndicator(QWidget* indicator) {
   indicator->setFixedHeight(kControlHeight);
   row->insertWidget(row->indexOf(m_search), indicator);
   indicator->show();
+  if (m_floatingRow) {
+    indicator->installEventFilter(this);
+    updateRowMask();
+  }
   update();
+}
+
+void TitleBar::setFloatingRow(bool floating) {
+  if (floating == m_floatingRow) {
+    return;
+  }
+  m_floatingRow = floating;
+  setObjectName(floating ? QStringLiteral("titleRow") : QStringLiteral("titleBar"));
+  setFixedHeight(floating ? kFloatingRowHeight : kRowHeight);
+  // The row starts and ends at the layout's margin to the view's edges, as
+  // the ribbon's group cards below it; no traffic lights to leave room for.
+  layout()->setContentsMargins(floating ? 0 : 12, 0, floating ? 0 : 12, 0);
+  m_inset->setVisible(!floating);
+  m_history->setCardMaterial(floating);
+  for (QWidget* part : std::initializer_list<QWidget*>{m_history, m_tabs, m_search, m_finish, m_indicator.data()}) {
+    if (part == nullptr) {
+      continue;
+    }
+    if (floating) {
+      part->installEventFilter(this);
+    } else {
+      part->removeEventFilter(this);
+    }
+  }
+  if (floating) {
+    updateRowMask();
+  } else {
+    clearMask();
+  }
+  update();
+}
+
+std::vector<std::pair<QString, QRect>> TitleBar::rowParts() const {
+  std::vector<std::pair<QString, QRect>> parts;
+  const auto add = [this, &parts](const char* name, const QWidget* widget) {
+    if (widget != nullptr && !widget->isHidden()) {
+      const QRect rect = widget->geometry() & this->rect();
+      if (!rect.isEmpty()) {
+        parts.emplace_back(QString::fromLatin1(name), rect);
+      }
+    }
+  };
+  add("titleHistory", m_history);
+  add("titleTabs", m_tabs);
+  add("titleIndicator", m_indicator.data());
+  add("titleSearch", m_search);
+  add("titleFinishSketch", m_finish);
+  const QRect box = titleBox();
+  if (!box.isEmpty()) {
+    parts.emplace_back(QStringLiteral("titleBox"), box);
+  }
+  std::sort(parts.begin(), parts.end(), [](const auto& a, const auto& b) { return a.second.left() < b.second.left(); });
+  return parts;
+}
+
+QRect TitleBar::titleBox() const {
+  const TitleText text = titleText();
+  if (!text.valid) {
+    return {};
+  }
+  return text.block.adjusted(-kTitlePadX, -kTitlePadY, kTitlePadX, kTitlePadY) & rect();
+}
+
+void TitleBar::updateRowMask() {
+  if (!m_floatingRow) {
+    return;
+  }
+  QRegion region;
+  for (const auto& part : rowParts()) {
+    region += part.second;
+  }
+  if (region.isEmpty()) {
+    // An empty mask is none at all: the whole row would take the mouse.
+    region = QRegion(0, 0, 1, 1);
+  }
+  if (region != mask()) {
+    setMask(region);
+    emit rowPartsChanged();
+  }
+}
+
+void TitleBar::resizeEvent(QResizeEvent* event) {
+  QWidget::resizeEvent(event);
+  updateRowMask();
 }
 
 bool TitleBar::underNativeTitleBar() const {
@@ -237,12 +337,25 @@ bool TitleBar::eventFilter(QObject* watched, QEvent* event) {
     case QEvent::ModifiedChange:
     case QEvent::WindowStateChange:
       updateInset();
+      updateRowMask(); // the title's box follows the name
       update();
       break;
     case QEvent::WinIdChange:
     case QEvent::Show:
       watchWindow();
       updateInset();
+      break;
+    default:
+      break;
+    }
+  } else if (m_floatingRow) {
+    // A control of the row moved, resized, came or went: the mask follows.
+    switch (event->type()) {
+    case QEvent::Move:
+    case QEvent::Resize:
+    case QEvent::Show:
+    case QEvent::Hide:
+      updateRowMask();
       break;
     default:
       break;
@@ -261,42 +374,79 @@ QString TitleBar::documentTitle() const {
   return title;
 }
 
-void TitleBar::paintEvent(QPaintEvent*) {
-  QPainter painter(this);
-  const QPalette pal = palette();
+TitleBar::TitleText TitleBar::titleText() const {
+  TitleText text;
   // Between the tabs and the search field; the middle of the window when the
   // text fits there.
   const int freeLeft = m_tabs->geometry().right() + 16;
-  const QWidget* right = m_indicator != nullptr && m_indicator->isVisible() ? m_indicator.data() : m_search;
+  const QWidget* right = m_indicator != nullptr && !m_indicator->isHidden() ? m_indicator.data() : m_search;
   const int freeRight = right->geometry().left() - 16;
   if (freeRight - freeLeft < 60) {
-    return;
+    return text;
   }
   const QString title = documentTitle();
-  const QString subtitle = window()->isWindowModified() ? tr("Edited") : QString();
+  text.subtitle = window()->isWindowModified() ? tr("Edited") : QString();
   QFont titleFont = font();
   titleFont.setWeight(QFont::DemiBold);
   QFont subFont = font();
   subFont.setPointSizeF(subFont.pointSizeF() * 0.85);
   const QFontMetrics titleMetrics(titleFont);
   const QFontMetrics subMetrics(subFont);
-  const int available = freeRight - freeLeft;
-  const QString shown = titleMetrics.elidedText(title, Qt::ElideMiddle, available);
-  const int textWidth = qMax(titleMetrics.horizontalAdvance(shown), subMetrics.horizontalAdvance(subtitle));
+  // The box's padding stays within the free part too.
+  const int padding = m_floatingRow ? kTitlePadX : 0;
+  const int available = freeRight - freeLeft - 2 * padding;
+  text.title = titleMetrics.elidedText(title, Qt::ElideMiddle, available);
+  const int textWidth =
+      qMax(titleMetrics.horizontalAdvance(text.title), subMetrics.horizontalAdvance(text.subtitle));
   int left = width() / 2 - textWidth / 2;
-  left = qBound(freeLeft, left, freeRight - textWidth);
+  left = qBound(freeLeft + padding, left, freeRight - padding - textWidth);
   const int lineHeight = titleMetrics.height();
-  const int block = subtitle.isEmpty() ? lineHeight : lineHeight + subMetrics.height() - 2;
-  const int top = (height() - block) / 2;
-  const QRect titleRect(left, top, textWidth, lineHeight);
+  const int block = text.subtitle.isEmpty() ? lineHeight : lineHeight + subMetrics.height() - 2;
+  text.block = QRect(left, (height() - block) / 2, textWidth, block);
+  text.valid = true;
+  return text;
+}
+
+void TitleBar::paintEvent(QPaintEvent*) {
+  QPainter painter(this);
+  const QPalette pal = palette();
+  if (m_floatingRow) {
+    // Over the view (mitcad#429): the cards' fill and hairline behind the
+    // tabs, the project indicator and the search field (capsules; the Undo
+    // and Redo pair has its own, Finish Sketch is opaque), and behind the
+    // document's name a box as a bare card's header.
+    painter.setRenderHint(QPainter::Antialiasing);
+    const qreal hairline = 1.0 / devicePixelRatioF();
+    painter.setPen(QPen(cardBorderColor(pal), hairline));
+    painter.setBrush(cardFillColor(pal));
+    for (const auto& [name, rect] : rowParts()) {
+      if (name == QLatin1String("titleHistory") || name == QLatin1String("titleFinishSketch")) {
+        continue;
+      }
+      const QRectF box = QRectF(rect).adjusted(hairline / 2, hairline / 2, -hairline / 2, -hairline / 2);
+      const qreal radius = name == QLatin1String("titleBox") ? qreal(GlassCard::kBoxRadius) : box.height() / 2;
+      painter.drawRoundedRect(box, radius, radius);
+    }
+  }
+  const TitleText text = titleText();
+  if (!text.valid) {
+    return;
+  }
+  QFont titleFont = font();
+  titleFont.setWeight(QFont::DemiBold);
+  QFont subFont = font();
+  subFont.setPointSizeF(subFont.pointSizeF() * 0.85);
+  const int lineHeight = QFontMetrics(titleFont).height();
+  const QRect titleRect(text.block.left(), text.block.top(), text.block.width(), lineHeight);
   painter.setFont(titleFont);
   painter.setPen(pal.color(QPalette::WindowText));
-  painter.drawText(titleRect, Qt::AlignHCenter | Qt::AlignVCenter, shown);
-  if (!subtitle.isEmpty()) {
+  painter.drawText(titleRect, Qt::AlignHCenter | Qt::AlignVCenter, text.title);
+  if (!text.subtitle.isEmpty()) {
     painter.setFont(subFont);
     painter.setPen(tint(pal, 140));
-    painter.drawText(QRect(left, top + lineHeight - 2, textWidth, subMetrics.height()),
-                     Qt::AlignHCenter | Qt::AlignVCenter, subtitle);
+    painter.drawText(QRect(text.block.left(), text.block.top() + lineHeight - 2, text.block.width(),
+                           QFontMetrics(subFont).height()),
+                     Qt::AlignHCenter | Qt::AlignVCenter, text.subtitle);
   }
 }
 

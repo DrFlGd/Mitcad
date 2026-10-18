@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: MIT -->
+<!--
+  The web viewer's tests: the logic's unit tests (logic.test.js) and a
+  fixture glb (a stair) read with three.js's loader and walked up as the
+  viewer does. Browsers load modules only over http(s), so serve the
+  repository's root with any static server and open
+  /app/web/viewer/tests.html, or let the page writer's test helper inline
+  it like a viewer page. The title becomes "PASS" or "FAIL" when done.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Web viewer tests</title>
+<script type="importmap">
+{
+  "imports": {
+    "three": "../../../third_party/three/three.module.js",
+    "three/addons/loaders/GLTFLoader.js": "../../../third_party/three/addons/loaders/GLTFLoader.js",
+    "three/addons/utils/BufferGeometryUtils.js": "../../../third_party/three/addons/utils/BufferGeometryUtils.js",
+    "mitcad/logic.js": "./logic.js"
+  }
+}
+</script>
+<style>
+  body { font: 14px/1.4 ui-monospace, monospace; margin: 16px; }
+  .fail { color: #b00020; font-weight: 600; }
+</style>
+</head>
+<body>
+<h1>Web viewer tests</h1>
+<pre id="log"></pre>
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { runTests, fixtureGlb, stairPositions, logic } from './logic.test.js';
+
+const out = document.getElementById('log');
+const log = (line) => {
+  const span = document.createElement('span');
+  span.textContent = `${line}\n`;
+  if (line.startsWith('FAIL')) {
+    span.className = 'fail';
+  }
+  out.appendChild(span);
+};
+
+// The fixture glb through three.js's loader: its triangles in world
+// coordinates, as viewer.js collects them, then a walk up the stair.
+async function glbTest() {
+  const gltf = await new GLTFLoader().parseAsync(fixtureGlb(stairPositions(), 'Stair'), '');
+  gltf.scene.updateMatrixWorld(true);
+  const corners = [];
+  const v = new THREE.Vector3();
+  let named = false;
+  gltf.scene.traverse((object) => {
+    named ||= object.userData.name === 'Stair';
+    if (!object.isMesh) {
+      return;
+    }
+    const position = object.geometry.attributes.position;
+    const index = object.geometry.index;
+    const n = index ? index.count : position.count;
+    for (let i = 0; i < n; i++) {
+      v.fromBufferAttribute(position, index ? index.getX(i) : i).applyMatrix4(object.matrixWorld);
+      corners.push(v.x, v.y, v.z);
+    }
+  });
+  if (!named) {
+    throw new Error('the glb node keeps its name in userData.name');
+  }
+  const grid = logic.buildGrid(new Float32Array(corners));
+  const person = logic.createPerson([0, 0, 0], { unitScale: 0.001 });
+  for (let i = 0; i < 210; i++) {
+    logic.stepPerson(grid, person, { forward: 1 }, 1 / 60);
+  }
+  if (Math.abs(person.z - 900) > 1) {
+    throw new Error(`the person is at z = ${person.z} mm, not on the stair's top at 900 mm`);
+  }
+}
+
+let failed = 0;
+try {
+  ({ failed } = await runTests(log));
+  await glbTest();
+  log('ok   a fixture glb loads with three.js and its stair is climbed');
+} catch (error) {
+  failed++;
+  log(`FAIL ${error.message}`);
+}
+document.title = failed ? 'FAIL' : 'PASS';
+</script>
+</body>
+</html>

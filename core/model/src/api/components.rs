@@ -82,6 +82,9 @@ pub(crate) enum ComponentCommand {
     },
     ActivateComponent {
         component: String,
+        /// As the document opens (mitcad#426): no undo step, no new revision.
+        #[serde(default)]
+        opening: bool,
     },
     RenameComponent {
         component: String,
@@ -283,10 +286,16 @@ impl<K: Kernel> Document<K> {
                     .collect();
                 json!({"components": items})
             }
-            ComponentCommand::ActivateComponent { component } => {
+            ComponentCommand::ActivateComponent { component, opening } => {
                 let uid = self.component_ref(&component)?;
-                self.activate_component(uid)?;
-                json!({"component": uid})
+                if opening {
+                    let previous = self.active_component();
+                    self.activate_component_on_open(uid)?;
+                    json!({"component": uid, "previous": previous})
+                } else {
+                    self.activate_component(uid)?;
+                    json!({"component": uid})
+                }
             }
             ComponentCommand::RenameComponent { component, name } => {
                 let uid = self.component_ref(&component)?;

@@ -11,9 +11,9 @@
 #      then (undone) by Enter at the origin; then only profiles' faces,
 #      the planes hidden; a side click flush with an end fills Offset and
 #      From (no check box); an end click in the middle straight on (Mitre),
-#      the hover near an edge turned, the click there a corner (mitre
-#      Auto: shared at offset 0, none at 10; mitcad#417); Close shows the
-#      planes again.
+#      the hover near an edge turned, the click there a square corner on
+#      the end face (mitre Auto: none, mitcad#427; Shared chosen mitres it
+#      at offset 0; mitcad#417); Close shows the planes again.
 #   3. Profile on a design with only its root: a frame of four (two flush
 #      with the first's ends by clicks at the flush snaps, From End A and
 #      End B; a typed offset stays from end B, From changed keeps the part
@@ -21,15 +21,17 @@
 #      length).
 #   4. Connector at a junction (shown on the hover), previewed in place.
 #   5. Panel from an inner face.
-#   6. Linear Part: a rail, a carriage on it; Ends: a mitred, bored end.
+#   6. Linear Part: a rail, a carriage on it (each chosen in the part
+#      picker from the Part tile); Ends: a mitred, bored end.
 #   7. Save, reopen; Cut List: rows, Copy as CSV, Save as PDF.
 #   8. The part picker (mitcad#418), with a 30 profile of another system in
-#      the library's next version: opened from Profile's Part, a group, a
-#      click choosing the 30 profile that the preview then uses, a star
-#      (first in its group), pinned it follows Connector (a click chooses
-#      the bracket); Profile again opens it with the panel's System,
-#      Favourites, In this design after the placement, its system follows
-#      the panel's. Its clicks are posted to the picker's own window.
+#      the library's next version: opened from Profile's Part tile
+#      (mitcad#427), a group, a click choosing the 30 profile that the
+#      preview then uses, a star (first in its group), pinned it follows
+#      Connector (a click chooses the bracket); Profile again starts with
+#      the 30 profile and opens it filtered to its system, Favourites, In
+#      this design after the placement. Its clicks are posted to the
+#      picker's own window.
 #
 # Usage: powershell -ExecutionPolicy Bypass -File tools\ui-windows-build-test.ps1 [-App build\dev\mitcad.exe] [-Out dir] [-QtBin dir]
 param(
@@ -286,6 +288,43 @@ function No-PolicyMessage {
   Write-Host 'ok   no policy message'
 }
 
+# Picker-Click TEXT: a click on a place of the part picker that it logged
+# ("Part picker tile <part> at x,y; in the picker x,y"), posted to the
+# picker's own window at its own coordinates (a window of its own, which
+# the main window's clicks do not reach).
+function Picker-Click([string]$Text) {
+  $place = $null
+  for ($i = 0; $i -lt 30 -and -not $place; $i++) {
+    $line = Ui-LogLines | Where-Object { $_.Contains("$Text at ") } | Select-Object -Last 1
+    $match = [regex]::Match("$line", 'in the picker (-?\d+),(-?\d+)$')
+    if ($match.Success) { $place = @([int]$match.Groups[1].Value, [int]$match.Groups[2].Value) }
+    else { Start-Sleep -Milliseconds 200 }
+  }
+  if (-not $place) { Ui-Fail "no place of the part picker logged for '$Text'" }
+  # Ui-Windows gives the array itself (as one object): no @( ) around it.
+  $picker = Ui-Windows '^Part Picker'
+  if ($picker.Count -eq 0) { Ui-Fail 'no part picker window' }
+  $b = $script:UiButtons[1]
+  [UiInput]::Move($picker[0], $place[0], $place[1], 0)
+  Start-Sleep -Milliseconds 80
+  [UiInput]::Button($picker[0], $b[0], $place[0], $place[1], $b[3])
+  Start-Sleep -Milliseconds 60
+  [UiInput]::Button($picker[0], $b[1], $place[0], $place[1], 0)
+}
+
+# Choose-InPicker COMMAND PART: the panel's Part tile opens the part picker
+# (mitcad#427) and a click on the part's tile there chooses it; the picker
+# stays open beside the view until the command ends.
+function Choose-InPicker([string]$Command, [string]$Part) {
+  Ui-Mark
+  Ui-Step 'the Part tile'                { Ui-ClickLogged "Panel $Command input part" }
+  Ui-ExpectNew "${Command}: Part button" 'the Part tile opens the part picker'
+  Ui-ExpectNew "Part picker tile $Part at " "${Part}'s tile in the picker"
+  Ui-Mark
+  Ui-Step "$Part in the picker"          { Picker-Click "Part picker tile $Part" }
+  Ui-ExpectNew "Part picker chose $Part" "$Part chosen in the picker"
+}
+
 # A new design (mitcad#394): Part1 active, the root with the Assembly policy.
 Ui-StartApp 'build-new'
 
@@ -303,9 +342,12 @@ Ui-ExpectNew 'BUILD profile adds to Part1 (a ground placement)' 'BUILD adds to t
 Ui-ExpectNew 'View hint Profile: Click a plane or a face, or press Enter' "the view's hint for the first part"
 Ui-ExpectNew 'Inspect Profile: place grounded, length 1000.00 mm (typed), square ends; adds to Part1' 'at the origin with its stock length'
 Expect-Row 'axis=z' 'shown' "the Direction's X, Y and Z buttons"
+Ui-ExpectNew 'Panel Profile tile part: Profile 20 test' 'the Part tile shows the chosen profile (mitcad#427)'
+Expect-Row 'search' 'hidden' 'no Search row: the part picker has it'
+Expect-Row 'system' 'hidden' 'no System row: the part picker has it'
 Expect-Row 'mitre' 'hidden' 'no Mitre before an end pick'
 Expect-Row 'offset' 'hidden' 'no Offset before a side pick'
-Expect-Row 'place' 'hidden' 'Placement under More'
+Expect-Row 'place' 'hidden' 'no Placement before a part to go on (mitcad#427)'
 Ui-Mark
 Ui-Step "on the root's XY plane"         { Ui-ClickLogged 'Datum xy' }
 Ui-ExpectNew 'Inspect Profile: place grounded, length 1000.00 mm (typed), square ends; adds to Part1' 'on the root''s XY plane, picked from Part1: grounded at the click'
@@ -329,6 +371,8 @@ $b0 = Placed-Body
 if (-not $b0) { Ui-Fail 'no body of the first profile' }
 Ui-ExpectNew 'Profile Place On takes now: faces' "only a profile's faces once one is there"
 Ui-ExpectNew 'Construction geometry hidden for the command' 'the planes hidden for side and end placements'
+Expect-Row 'place=auto' 'shown' "Placement's icon buttons once a part is there (mitcad#427)"
+Expect-Row 'length_mode=face' 'shown' "the length mode's icon buttons (mitcad#427)"
 Refresh-Picks 'Profile'
 $sides0 = @(Faces-Of $b0 $side)
 if ($sides0.Count -eq 0) { Ui-Fail "no side of the first profile ($b0) to pick" }
@@ -376,14 +420,17 @@ Expect-Inspect @('; end edge towards ', '; on the hover') 'the hover previews th
 Ui-Mark
 Ui-Step 'a click there'                  { Ui-Click $turn[0] $turn[1] }
 Ui-ExpectNew 'BUILD end click: edge towards ' 'a click near an edge turns the part'
-Expect-Inspect @('; end edge towards ', 'mitre shared, offset 0.0 mm') 'a corner, its mitre Auto: shared at offset 0'
+Expect-Inspect @('; end edge towards ', 'mitre none, offset 0.0 mm', 'square ends') 'a square corner on the end face, flush with the outer side: its mitre Auto: none (mitcad#427)'
 Expect-Row 'corner_offset' 'shown' "the corner's Offset"
 Ui-Mark
 Ui-Step "the corner's offset 10"         { Ui-TypeIn 'Panel Profile input corner_offset' '10' }
 Expect-Inspect @('; end edge towards ', 'mitre none, offset 10.0 mm') 'at another offset the mitre is none'
 Ui-Mark
 Ui-Step "the corner's offset 0"          { Ui-TypeIn 'Panel Profile input corner_offset' '0' }
-Expect-Inspect @('; end edge towards ', 'mitre shared, offset 0.0 mm', 'ends A 45 deg') 'shared again at offset 0'
+Expect-Inspect @('; end edge towards ', 'mitre none, offset 0.0 mm', 'square ends') 'on the end face again at offset 0'
+Ui-Mark
+Ui-Step 'Mitre: Shared'                  { Wheel-Choice 'mitre' 2 }
+Expect-Inspect @('; end edge towards ', 'mitre shared, offset 0.0 mm', 'ends A 45 deg') 'Shared chosen: both on the bisector'
 Place 'Profile 20 test'
 No-PolicyMessage
 Ui-Mark
@@ -487,10 +534,10 @@ if (-not $found) { Ui-Fail 'no side of the second profile a click reaches has it
 Write-Host "ok   $found of the second profile runs to the third"
 Ui-Mark
 Ui-Step 'to the centre (Tab)'            { Ui-Key 'Tab' }
-Ui-ExpectNew 'Profile: Length = Auto: to the centre' 'Tab: to the centre'
+Ui-ExpectNew 'Profile: Length = Auto: to its centre' 'Tab: to the centre'
 Ui-Step 'through (Tab)'                  { Ui-Key 'Tab' }
 Ui-Step 'to the face (Tab)'              { Ui-Key 'Tab' }
-Ui-ExpectNew 'Profile: Length = Auto: to the face' 'Tab: to the face again'
+Ui-ExpectNew 'Profile: Length = Auto: to the face it meets' 'Tab: to the face again'
 Ui-ExpectNew 'Cursor box Profile length: ' 'the auto length in the box at the cursor'
 Place 'Profile 20 test'
 Ui-ExpectNew 'length bound, auto: to the face' 'its length is bound'
@@ -504,7 +551,7 @@ Ui-Mark
 Ui-Step 'Connector (F8)'                 { Ui-Key 'F8' }
 Ui-ExpectNew 'Inspect Connector: junction ' 'the junction and its connectors'
 Ui-ExpectNew ', preview Bracket 20 test with ' 'the chosen connector previewed in place'
-Ui-ExpectNew 'Panel Connector option pictures part: ' 'the connectors listed with their pictures'
+Ui-ExpectNew 'Panel Connector tile part: Bracket 20 test' 'the chosen connector shown as a picture tile (mitcad#427)'
 $faces3 = @(Faces-Of $b3 $side)
 if ($faces3.Count -eq 0) { Ui-Fail "no side of the third profile ($b3) to hover" }
 Ui-Mark
@@ -543,7 +590,7 @@ Write-Host '--- 6. Linear Part: a rail and a carriage'
 Ui-Mark
 Ui-Step 'Linear Part (F7)'               { Ui-Key 'F7' }
 Ui-ExpectNew 'BUILD parts linear: 2' 'the rail and the carriage'
-Ui-Step 'search rail'                    { Ui-TypeIn 'Panel Linear Part input search' 'rail' }
+Choose-InPicker 'Linear Part' 'test-profiles/rail-test'
 Ui-Step 'a typed length of 200'          { Ui-TypeIn 'Panel Linear Part input length' '200' }
 # Another side of the first profile than the frame's, else that one.
 $outer = @(Faces-Of $b1 $side | Where-Object { $_ -ne $side1 })
@@ -552,7 +599,7 @@ Ui-Step "the first profile's $railFace"  { Pick-Face $b1 $railFace }
 Ui-ExpectNew 'Inspect Linear Part: place ' "the rail's preview"
 Place 'Rail 15 test'
 $bRail = Placed-Body
-Ui-Step 'search carriage'                { Ui-TypeIn 'Panel Linear Part input search' 'carriage' }
+Choose-InPicker 'Linear Part' 'test-profiles/carriage-test'
 Refresh-Picks 'Linear Part'
 $railFaces = @(Faces-Of $bRail $side)
 if ($railFaces.Count -eq 0) { Ui-Fail "no side of the rail ($bRail) to pick" }
@@ -650,45 +697,19 @@ foreach ($arguments in @(@('add', '-A'), @('commit', '-q', '-m', 'A 30 profile')
 }
 Run-Cli 'library fetch of v1.1.0' @('library', 'fetch', $library)
 
-# Picker-Click TEXT: a click on a place of the part picker that it logged
-# ("Part picker tile <part> at x,y; in the picker x,y"), posted to the
-# picker's own window at its own coordinates (a window of its own, which
-# the main window's clicks do not reach).
-function Picker-Click([string]$Text) {
-  $place = $null
-  for ($i = 0; $i -lt 30 -and -not $place; $i++) {
-    $line = Ui-LogLines | Where-Object { $_.Contains("$Text at ") } | Select-Object -Last 1
-    $match = [regex]::Match("$line", 'in the picker (-?\d+),(-?\d+)$')
-    if ($match.Success) { $place = @([int]$match.Groups[1].Value, [int]$match.Groups[2].Value) }
-    else { Start-Sleep -Milliseconds 200 }
-  }
-  if (-not $place) { Ui-Fail "no place of the part picker logged for '$Text'" }
-  # Ui-Windows gives the array itself (as one object): no @( ) around it.
-  $picker = Ui-Windows '^Part Picker'
-  if ($picker.Count -eq 0) { Ui-Fail 'no part picker window' }
-  $b = $script:UiButtons[1]
-  [UiInput]::Move($picker[0], $place[0], $place[1], 0)
-  Start-Sleep -Milliseconds 80
-  [UiInput]::Button($picker[0], $b[0], $place[0], $place[1], $b[3])
-  Start-Sleep -Milliseconds 60
-  [UiInput]::Button($picker[0], $b[1], $place[0], $place[1], 0)
-}
-
 Ui-StartApp 'build-picker' @('--open', $file)
 Ui-ExpectLog "Opened $fileLogged" 'reopened'
 Ui-Step 'the BUILD tab'                  { Ui-ClickLogged 'Ribbon tab BUILD' }
 Ui-Mark
 Ui-Step 'Profile (F3)'                   { Ui-Key 'F3' }
 Ui-ExpectNew 'BUILD parts profile: 2 (1 in the design)' "the 30 profile listed beside the design's"
-Ui-Step 'search p20 in the panel'        { Ui-TypeIn 'Panel Profile input search' 'p20' }
-Ui-Step 'More'                           { Ui-ClickLogged 'Panel Profile input more' }
-Expect-Row 'place' 'shown' 'Placement under More'
+Ui-ExpectNew 'Panel Profile tile part: ' 'the Part tile (mitcad#427)'
 Ui-Mark
-Ui-Step 'Placement: on a plane'          { Wheel-Choice 'place' 3 }
-Expect-Inspect @('place grounded', '; part Profile 20 test') 'a ground placement of the 20 profile'
+Ui-Step 'Placement: on a plane'          { Ui-ClickLogged 'Panel Profile input place=plane' }
+Expect-Inspect @('place grounded', '; part Profile ') 'a ground placement of the chosen profile'
 Ui-Mark
-Ui-Step 'the part picker (... beside Part)' { Ui-ClickLogged 'Panel Profile button_part' }
-Ui-ExpectNew 'Profile: Part button' 'the button beside Part'
+Ui-Step 'the part picker (the Part tile)' { Ui-ClickLogged 'Panel Profile input part' }
+Ui-ExpectNew 'Profile: Part button' 'the Part tile opens the picker'
 Ui-ExpectNew 'Part picker opened: 2 parts for build.profile' 'the picker opened with the two profiles'
 Ui-ExpectNew 'Part picker in this design: ' "the design's library parts read"
 Ui-ExpectNew 'test-profiles/p20-test x' 'the placed 20 profiles in this design, with their count'
@@ -728,18 +749,14 @@ Ui-ExpectNew 'Part picker closed with build.connector' 'the picker closes with t
 Ui-Mark
 Ui-Step 'Profile again (F3)'             { Ui-Key 'F3' }
 Ui-ExpectNew 'BUILD parts profile: 2 (1 in the design)' 'Profile again'
+Ui-ExpectNew 'Panel Profile tile part: Profile 30 test' 'the profile chosen last in the Part tile'
 Ui-Mark
-Ui-Step 'System I6 30 in the panel'      { Wheel-Choice 'system' 2 }
-Ui-ExpectNew 'Profile: System = I6 30' "the panel's system"
-Ui-Step 'More'                           { Ui-ClickLogged 'Panel Profile input more' }
-Expect-Row 'place' 'shown' 'Placement under More'
+Ui-Step 'Placement: on a plane'          { Ui-ClickLogged 'Panel Profile input place=plane' }
+Expect-Inspect @('place grounded', '; part Profile 30 test') 'a ground placement of the 30 profile'
 Ui-Mark
-Ui-Step 'Placement: on a plane'          { Wheel-Choice 'place' 3 }
-Expect-Inspect @('place grounded', '; part Profile 30 test') 'the 30 profile, the only one of I6 30'
-Ui-Mark
-Ui-Step 'the part picker again'          { Ui-ClickLogged 'Panel Profile button_part' }
+Ui-Step 'the part picker again (the tile)' { Ui-ClickLogged 'Panel Profile input part' }
 Ui-ExpectNew 'Part picker opened: 2 parts for build.profile' 'the picker opened again'
-Ui-ExpectNew 'Part picker group All parts: 1 parts, first test-profiles/p30-test' "with the panel's system"
+Ui-ExpectNew 'Part picker group All parts: 1 parts, first test-profiles/p30-test' 'filtered to the system chosen last, I6 30 (mitcad#427)'
 Ui-ExpectNew 'Part picker group row Favourites at ' "the groups' places"
 Ui-Mark
 Ui-Step 'Favourites'                     { Picker-Click 'Part picker group row Favourites' }
@@ -750,10 +767,6 @@ Ui-ExpectNew 'Part picker group row In this design at ' "the groups' places agai
 Ui-Mark
 Ui-Step 'In this design'                 { Picker-Click 'Part picker group row In this design' }
 Ui-ExpectNew 'Part picker group In this design: 1 parts, first test-profiles/p30-test' 'In this design lists the placed profile (System I6 30)'
-Ui-Mark
-Ui-Step 'System I5 20 in the panel'      { Wheel-Choice 'system' -1 }
-Ui-ExpectNew 'Part picker group In this design: 1 parts, first test-profiles/p20-test' "the picker's system follows the panel's"
-Expect-Inspect @('; part Profile 20 test') "the panel's part follows its system"
 Ui-Mark
 Ui-Step 'Close (Escape)'                 { Ui-Key 'Escape' }
 Ui-ExpectNew 'Part picker closed with build.profile' 'the picker closes with Profile'

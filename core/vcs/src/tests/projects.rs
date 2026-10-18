@@ -1461,3 +1461,75 @@ fn the_users_public_key_is_found() {
     let answer = projects_run(json!({"cmd": "ssh_public_key"}), &context);
     assert_eq!(answer["text"], key.text.as_str());
 }
+
+#[test]
+fn the_web_viewer_is_turned_on_with_its_files() {
+    // mitcad#423: turned on with the folder the application wrote, in one
+    // version; its update on each save turned off; paths outside the
+    // project refused before anything is written.
+    let scratch = Scratch::new("web-viewer");
+    let (repo, _) = ProjectRepo::init(&scratch.join("project"), Some(&author())).unwrap();
+    let settings = run(&repo, json!({"cmd": "project_settings"}));
+    assert_eq!(
+        settings["shared"]["web_viewer"],
+        Value::Null,
+        "off by default"
+    );
+    let web = repo.root().join("web");
+    fs::create_dir_all(&web).unwrap();
+    let index = web.join("index.html");
+    fs::write(&index, "<!doctype html>\n").unwrap();
+    let marker = repo.root().join(PROJECT_MARKER);
+    let before = fs::read(&marker).unwrap();
+    let refused = repo.command(
+        &json!({"cmd": "set_project_settings", "shared": {"web_viewer": {}},
+                "paths": [scratch.join("elsewhere.html").to_string_lossy()], "author": AUTHOR})
+        .to_string(),
+    );
+    assert!(refused.is_err());
+    assert_eq!(fs::read(&marker).unwrap(), before, "nothing written");
+    let answer = run(
+        &repo,
+        json!({"cmd": "set_project_settings", "shared": {"web_viewer": {}},
+               "paths": [index.to_string_lossy()], "author": AUTHOR}),
+    );
+    assert!(answer["commit"].is_string(), "{answer}");
+    assert_eq!(answer["shared"]["web_viewer"]["update_on_save"], true);
+    let history = repo.history(&marker).unwrap();
+    assert_eq!(history[0].summary, "Change project settings: web viewer on");
+    assert_eq!(
+        repo.history(&index).unwrap().len(),
+        1,
+        "the page in the same version"
+    );
+    let inspected = inspect_folder(repo.root()).unwrap();
+    assert_eq!(
+        inspected.settings.as_ref().unwrap()["web_viewer"]["update_on_save"],
+        true
+    );
+    let answer = run(
+        &repo,
+        json!({"cmd": "set_project_settings", "author": AUTHOR,
+               "shared": {"web_viewer": {"update_on_save": false}}}),
+    );
+    assert!(answer["commit"].is_string(), "{answer}");
+    assert_eq!(
+        repo.history(&marker).unwrap()[0].summary,
+        "Change project settings: web viewer not updated on each save"
+    );
+    let text = repo.command_text(r#"{"cmd": "project_settings"}"#).unwrap();
+    assert!(
+        text.contains("Web viewer: on, updated by Update Web Viewer only\n"),
+        "{text}"
+    );
+    let answer = run(
+        &repo,
+        json!({"cmd": "set_project_settings", "author": AUTHOR, "shared": {"web_viewer": null}}),
+    );
+    assert_eq!(answer["shared"]["web_viewer"], Value::Null);
+    let marker_json: Value = serde_json::from_slice(&fs::read(&marker).unwrap()).unwrap();
+    assert!(marker_json.get("web_viewer").is_none());
+    if system_git().is_some() {
+        clean(repo.root());
+    }
+}

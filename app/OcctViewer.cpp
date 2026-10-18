@@ -2819,7 +2819,7 @@ QRectF OcctViewer::freeArea() const {
   const QRectF whole(0.0, 0.0, width(), height());
   qreal left = 0.0;
   qreal right = whole.right();
-  qreal top = 0.0;
+  qreal top = m_topCardsBottom; // below the rows of cards at the top (mitcad#425)
   qreal bottom = whole.bottom();
   for (const QRect& card : m_covered) {
     if (card.width() > 0.6 * width()) {
@@ -2946,7 +2946,17 @@ void OcctViewer::applyCubePlacement() {
 
 void OcctViewer::setCoveredRects(const std::vector<QRect>& rects) { m_covered = rects; }
 
+void OcctViewer::setTopCards(const std::vector<QRect>& cards, int bottom) {
+  m_topCards = cards;
+  m_topCardsBottom = std::max(0, bottom);
+}
+
 bool OcctViewer::isCovered(const QPointF& position) const {
+  // The top cards exactly: the gaps between them are narrower than the margin.
+  if (std::any_of(m_topCards.begin(), m_topCards.end(),
+                  [&position](const QRect& rect) { return QRectF(rect).contains(position); })) {
+    return true;
+  }
   return std::any_of(m_covered.begin(), m_covered.end(), [&position](const QRect& rect) {
     return QRectF(rect).adjusted(-6, -6, 6, 6).contains(position);
   });

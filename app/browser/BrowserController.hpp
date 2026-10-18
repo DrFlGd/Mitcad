@@ -46,6 +46,10 @@ public:
 
   // After the model or the origin's visibility changed.
   void refresh(const DocumentSnapshot& snapshot);
+  // A design was opened (mitcad#426), before its refresh: the browser is
+  // rebuilt with the rows' default states, folded when they would not fit
+  // (BrowserPanel::designOpened).
+  void designOpened();
   // Whether the row's light bulb works in every mode, during commands and
   // while Create Sketch asks for a plane too (mitcad#295); the others only
   // when the model can change.

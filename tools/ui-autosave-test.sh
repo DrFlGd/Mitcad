@@ -122,7 +122,7 @@ expect_exit() {
     sleep 0.2
   done
   kill -0 "$UI_RUNNER" 2> /dev/null && ui_fail "$1: Mitcad did not exit"
-  if command -v gdb > /dev/null; then
+  if command -v gdb > /dev/null && [ "${UI_GDB:-0}" = 1 ]; then
     grep -q "exited normally" "$UI_LOG" || ui_fail "$1: abnormal exit"
   else
     wait "$UI_RUNNER" || ui_fail "$1: exit code $?"

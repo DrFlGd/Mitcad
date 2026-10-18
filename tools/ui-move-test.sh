@@ -93,6 +93,16 @@ EOF
 ui_start_display
 ui_start_app --open "$FILE"
 ui_step "fit (F6)"                       ui_key F6
+# A tree longer than the browser opens folded below the root (mitcad#426):
+# Frame:1, Assembly:1 and Sketches are opened, the lowest first (the rows
+# above keep their places).
+ui_expect_log "Browser opened " "the browser fitted the design"
+ui_sync
+if grep -q "Browser opened folded" "$UI_LOG"; then
+  ui_step "open Frame:1"                 ui_click_logged "Browser arrow Root/Frame:1"
+  ui_step "open Assembly:1"              ui_click_logged "Browser arrow Root/Assembly:1"
+  ui_step "open Sketches"                ui_click_logged "Browser arrow Root/Sketches"
+fi
 ui_expect_log "Bodies shown: F2.b0 in O1/O2" "the block shown in Assembly:1/Part:1"
 ui_expect_log "Browser Root/Sketches/Sketch2 at" "the root's sketch in the browser"
 ui_expect_log "Browser Root/Assembly:1/Part:1 at" "Part:1 in Assembly:1"

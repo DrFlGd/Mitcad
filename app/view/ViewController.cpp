@@ -1212,9 +1212,11 @@ void ViewController::showPreferences(const QString& page) {
   // The layout chosen when the window opened or last applied.
   const auto layoutApplied = std::make_shared<int>(layoutChoice != nullptr ? layoutChoice->currentData().toInt() : -1);
   // The Browser's background in the Floating layout (mitcad#419): its card,
-  // or a box of its own behind each row; it applies at once.
+  // or a box of its own behind each row; it applies at once. Also in the
+  // Docked layout (mitcad#429), for the Floating layout's next start, so that
+  // the layout and the background are chosen in one visit.
   QComboBox* browserBackground = nullptr;
-  if (chromeStyle() == ChromeStyle::Floating) {
+  if (chromeStyle() == ChromeStyle::Floating || layoutChoosable()) {
     browserBackground = new QComboBox;
     browserBackground->setObjectName(QStringLiteral("browserBackground"));
     browserBackground->addItem(tr("Card"), browserBackgroundId(BrowserBackground::Card));
@@ -1225,6 +1227,12 @@ void ViewController::showPreferences(const QString& page) {
                                      "view between and beside them, where clicks, drags and the wheel reach "
                                      "the view"));
     display->addRow(tr("&Browser background:"), browserBackground);
+    if (chromeStyle() != ChromeStyle::Floating) {
+      auto* note = new QLabel(tr("Applies in the Floating layout."));
+      note->setObjectName(QStringLiteral("browserBackgroundNote"));
+      note->setEnabled(false); // the quiet colour of a hint
+      display->addRow(QString(), note);
+    }
     if (window == nullptr) {
       // Where it is once the dialog shows (UI tests).
       QTimer::singleShot(0, browserBackground, [this, browserBackground] {

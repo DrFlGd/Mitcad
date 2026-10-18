@@ -25,6 +25,7 @@
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QLocale>
 #include <QMimeData>
 #include <QSettings>
 #include <QTimer>
@@ -35,11 +36,14 @@
 #include "../framework/CommandRegistry.hpp"
 #include "../framework/Json.hpp"
 #include "../framework/SettingsWindow.hpp"
+#include "../framework/WaitCursor.hpp"
+#include "../web/WebPage.hpp"
 #include "Autosave.hpp"
 #include "FileDialogs.hpp"
 #include "FileFormats.hpp"
 #include "F3dImport.hpp"
 #include "ImportDeviations.hpp"
+#include "mitcad/io/mesh.hpp"
 
 namespace mitcad {
 namespace {
@@ -231,6 +235,10 @@ void MainWindow::createFileMenu() {
   project->addSeparator();
   command(project, "file.move_to_project", tr("&Move to a Project..."));
   command(project, "file.project_settings", tr("Project Se&ttings..."));
+  // The project's web viewer (mitcad#423).
+  project->addSeparator();
+  command(project, "file.web_viewer", tr("&Web Viewer..."));
+  command(project, "file.update_web_viewer", tr("&Update Web Viewer"));
   file->addSeparator();
   command(file, "file.import", tr("&Import..."));
   command(file, "file.export", tr("&Export..."));
@@ -958,6 +966,42 @@ void MainWindow::exportFile() {
   const std::optional<ExportChoice> choice = askExport(this, suggested, static_cast<int>(selected.size()), sketches,
                                                        sketch, !m_snapshot.occurrences.isEmpty());
   if (!choice) {
+    return;
+  }
+  if (choice->format == QStringLiteral("html")) {
+    // A web page (mitcad#423, web/WebPage.hpp): the visible bodies meshed
+    // within the refinement's tolerances (as STL and OBJ), the viewer and
+    // the design in one file; its size in the log and the status bar.
+    const io::Refinement refinement = choice->refinement == QLatin1String("low")    ? io::Refinement::Low
+                                      : choice->refinement == QLatin1String("high") ? io::Refinement::High
+                                                                                    : io::Refinement::Medium;
+    const io::MeshOptions tolerance = io::MeshOptions::from(refinement);
+    web::PageOptions options;
+    options.linearDeflection = tolerance.linear_deflection;
+    options.angularDeflection = tolerance.angular_deflection;
+    options.title = base;
+    options.designFolder = documentFolder();
+    web::PageResult page;
+    {
+      const WaitCursor wait(QStringLiteral("Export web page"));
+      page = web::writePage(model(), choice->path, options);
+    }
+    if (!page.ok) {
+      qWarning().noquote() << QStringLiteral("Export of %1 failed: %2").arg(choice->path, page.error);
+      sheetWarning(this, tr("Export"), tr("Could not export:\n%1").arg(page.error));
+      return;
+    }
+    for (const QString& warning : std::as_const(page.warnings)) {
+      qWarning().noquote() << QStringLiteral("Export: %1").arg(warning);
+    }
+    qInfo().noquote() << QStringLiteral("Exported %1: html, %2 body(ies), %3 bytes")
+                             .arg(choice->path)
+                             .arg(page.bodies)
+                             .arg(page.bytes);
+    showHint(tr("Exported %1 (%2 body(ies), %3).")
+                 .arg(QDir::toNativeSeparators(choice->path))
+                 .arg(page.bodies)
+                 .arg(QLocale().formattedDataSize(page.bytes)));
     return;
   }
   QJsonObject command;

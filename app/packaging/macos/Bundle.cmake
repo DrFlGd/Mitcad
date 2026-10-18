@@ -120,6 +120,9 @@ install(FILES "${PROJECT_SOURCE_DIR}/LICENSE"
   DESTINATION "${MITCAD_LICENSES_DIR}" RENAME Mitcad-LICENSE.txt)
 install(FILES "${PROJECT_SOURCE_DIR}/third_party/fonts/droid-sans/LICENSE.txt"
   DESTINATION "${MITCAD_LICENSES_DIR}" RENAME DroidSans-Apache-2.0.txt)
+# three.js, embedded for the web viewer (app/web/viewer).
+install(FILES "${PROJECT_SOURCE_DIR}/third_party/three/LICENSE"
+  DESTINATION "${MITCAD_LICENSES_DIR}" RENAME three.js-MIT.txt)
 # QtKeychain, linked statically (cmake/Keychain.cmake).
 install(FILES "${MITCAD_QTKEYCHAIN_LICENSE}"
   DESTINATION "${MITCAD_LICENSES_DIR}" RENAME QtKeychain-BSD-3-Clause.txt)
@@ -211,6 +214,9 @@ Open CASCADE Technology ${OpenCASCADE_VERSION}: GNU LGPL-2.1 with the Open CASCA
 FreeType: used under the FreeType Licence (FTL), not the GPL, which the package
   offers as an alternative.
 Droid Sans (the font of sketch texts, embedded): Apache-2.0 (DroidSans-Apache-2.0.txt).
+three.js r170 (https://threejs.org/), embedded, and in every web page that Export > Web
+  page and the project's web viewer write: MIT, Copyright 2010-2024 three.js authors
+  (three.js-MIT.txt); the pages carry the licence text with it.
 QtKeychain ${MITCAD_QTKEYCHAIN_VERSION} (https://github.com/frankosterfeld/qtkeychain), the live updates'
   credentials in the macOS Keychain: BSD-3-Clause, Copyright (C) 2011-2015 Frank
   Osterfeld and its contributors, linked statically into the mitcad executable

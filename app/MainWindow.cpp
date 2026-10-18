@@ -405,6 +405,31 @@ MainWindow::MainWindow(bool demo, QWidget* parent, bool nativeUi)
         bar->setVisible(shown);
       }
     }
+  } else if (m_titleRow != nullptr && m_floating != nullptr) {
+    // Windows and Linux (mitcad#425): the notices in a card of their own
+    // below the group cards, shown while one of them is.
+    auto* notices = new QWidget;
+    auto* column = new QVBoxLayout(notices);
+    column->setContentsMargins(0, 0, 0, 0);
+    column->setSpacing(0);
+    QList<QWidget*> bars;
+    for (const char* name : {"updateBar", "remoteBar", "liveBar", "lockBar"}) {
+      if (auto* bar = findChild<QToolBar*>(QLatin1String(name), Qt::FindDirectChildrenOnly)) {
+        const bool shown = !bar->isHidden();
+        removeToolBar(bar);
+        column->addWidget(bar);
+        bar->setVisible(shown);
+        bars << bar;
+      }
+    }
+    if (bars.isEmpty()) {
+      delete notices;
+    } else {
+      auto* card = new GlassCard;
+      card->setObjectName(QStringLiteral("noticeCard"));
+      card->setContent(notices, QMargins(8, 4, 8, 4));
+      m_floating->addTopRow(card, {}, bars);
+    }
   }
 }
 
@@ -904,15 +929,25 @@ void MainWindow::createRibbon() {
     // Qt would keep the content below the title bar by a content margin.
     setAttribute(Qt::WA_ContentsMarginsRespectsSafeArea, false);
 #endif
+    auto* titleBar = new TitleBar(m_ribbon, m_registry->action(QStringLiteral("edit.undo")),
+                                  m_registry->action(QStringLiteral("edit.redo")),
+                                  m_registry->action(QStringLiteral("tools.search")),
+                                  m_registry->action(QStringLiteral("sketch.finish")));
+    if (floatingTopCards()) {
+      // Windows and Linux (mitcad#425): only the menu bar is a bar; the title
+      // row floats over the view without a card, its controls and the
+      // document's name on boxes of their own (mitcad#429), and each of the
+      // ribbon's groups is a card (createFloatingPanels places them).
+      titleBar->setFloatingRow(true);
+      m_titleRow = titleBar;
+      m_ribbon->setGroupCards(true);
+      return;
+    }
     m_header = new QWidget;
     m_header->setObjectName(QStringLiteral("ribbonHeader"));
     auto* column = new QVBoxLayout(m_header);
     column->setContentsMargins(0, 0, 0, 0);
     column->setSpacing(0);
-    auto* titleBar = new TitleBar(m_ribbon, m_registry->action(QStringLiteral("edit.undo")),
-                                  m_registry->action(QStringLiteral("edit.redo")),
-                                  m_registry->action(QStringLiteral("tools.search")),
-                                  m_registry->action(QStringLiteral("sketch.finish")));
     column->addWidget(titleBar);
     column->addWidget(m_ribbon);
     return;
@@ -1062,12 +1097,24 @@ void MainWindow::createFloatingPanels() {
   m_commandCard->hide(); // nothing to say while idle (updateCommandCard)
 
   m_floating = new FloatingLayout(m_viewer, m_header, this);
+  if (m_titleRow != nullptr) {
+    // Windows and Linux (mitcad#425): the title row, below it a row of the
+    // ribbon's group cards, at the top of the view; the cards below them.
+    // Both take the mouse only on their controls and cards.
+    m_floating->addTopRow(m_titleRow, [row = m_titleRow] { return row->rowParts(); });
+    connect(m_titleRow, &TitleBar::rowPartsChanged, m_floating, &FloatingLayout::requestLayout);
+    m_floating->addTopRow(m_ribbon, [ribbon = m_ribbon] { return ribbon->groupCards(); });
+    connect(m_ribbon, &Ribbon::groupCardsChanged, m_floating, &FloatingLayout::requestLayout);
+  }
   // The Projects card above the browser's (mitcad#145).
   addProjectsCard();
+  // Windows and Linux: as high as its rows, down to the card below it (the
+  // timeline) before it scrolls (mitcad#425); macOS as before (owner
+  // 18.10.2026: its layout stays as it is).
   m_floating->addCard(browserCard, FloatingLayout::Anchor::TopLeft,
                       {260,
                        [browser = m_controller->browser()] { return browser->contentHeight(); },
-                       0.55});
+                       floatingTopCards() ? 1.0 : 0.55});
   m_floating->addCard(timelineCard, FloatingLayout::Anchor::Bottom);
   m_floating->addCard(m_commandCard, FloatingLayout::Anchor::TopRight,
                       {300, [this] { return commandContentHeight(); }, 1.0, false});
@@ -1075,6 +1122,10 @@ void MainWindow::createFloatingPanels() {
           &FloatingLayout::requestLayout);
   // Its card, or a box behind each row (Preferences, mitcad#419).
   followBrowserBackground(browserCard, m_controller->browser());
+  // A design that opens is folded when its rows would not fit the card at
+  // its largest (mitcad#426).
+  m_controller->browser()->setAvailableHeight(
+      [this, browser = m_controller->browser()] { return m_floating->maximumContentHeight(browser); });
   connect(m_commandPages, &QStackedWidget::currentChanged, this, [this] { updateCommandCard(); });
   setCentralWidget(m_floating);
   m_floating->watchContent(m_idlePage);
@@ -4177,6 +4228,9 @@ bool MainWindow::writeFile(const QString& path, const QString& description, Vers
   }
   VersionRecord status;
   if (project) {
+    // The project's web viewer (mitcad#423): the design's page and the
+    // index go into the same version.
+    paths << webViewerOnSave(**project, absolute, author, paths.size() > 1);
     status = recordVersion(**project, absolute, paths, message, author);
   }
   afterSaved(path, QByteArrayView(json->data(), static_cast<qsizetype>(json->size())), status.status, status.problem);
@@ -4299,6 +4353,8 @@ bool MainWindow::installDocument(const QString& label, const QString& path, cons
   QJsonObject persisted;
   DisplayMeshing meshing;
   double milliseconds = 0.0;
+  QString previousActive; // the component the file had active (mitcad#426)
+  QString activateError;
   // The result store (P7d): costly features come from it, and what was
   // costly to compute goes to it.
   const QByteArray store = resultStoreDirectory().toUtf8();
@@ -4310,6 +4366,18 @@ bool MainWindow::installDocument(const QString& label, const QString& path, cons
   try {
     const bool done = runJob(label, tr("Opening %1").arg(label), [&](ModelJob& job) {
       rust::Box<Document> document = make(job);
+      // Every design opens with its root active (mitcad#426), whatever the
+      // file stores: no undo step, no new revision, so not modified.
+      try {
+        previousActive = parseObject(document->command(rustStr(compactJson(
+                                         {{QStringLiteral("cmd"), QStringLiteral("activate_component")},
+                                          {QStringLiteral("component"), QStringLiteral("C0")},
+                                          {QStringLiteral("opening"), true}}))))
+                             .value(QStringLiteral("previous"))
+                             .toString();
+      } catch (const std::exception& e) {
+        activateError = errorText(e);
+      }
       // An import's results come from the store its process handed them
       // over in (mitcad#413); the user's store is the document's after.
       document->set_result_store(rustStr(handOff.isEmpty() ? store : handOff), rustStr(buildId),
@@ -4370,6 +4438,13 @@ bool MainWindow::installDocument(const QString& label, const QString& path, cons
   }
   updateVersionStatus();
   m_profileFaces.clear();
+  if (!activateError.isEmpty()) {
+    qWarning().noquote() << QStringLiteral("The root could not be activated on opening: %1").arg(activateError);
+  } else if (!previousActive.isEmpty() && previousActive != QStringLiteral("C0")) {
+    qInfo().noquote() << QStringLiteral("Opened with the root active; %1 was active in the file (%2)")
+                             .arg(previousActive, isModified() ? QStringLiteral("modified")
+                                                               : QStringLiteral("unmodified"));
+  }
   reportRecompute(recomputed, milliseconds);
   if (!handOff.isEmpty()) {
     qInfo().noquote() << QStringLiteral("Results handed over for %1: restored %2, evaluated %3")
@@ -4379,6 +4454,11 @@ bool MainWindow::installDocument(const QString& label, const QString& path, cons
   }
   if (!store.isEmpty()) {
     reportStored(recomputed, persisted);
+  }
+  // Its browser rows as a design opens: folded when they would not fit
+  // (mitcad#426).
+  if (m_controller != nullptr) {
+    m_controller->designOpened();
   }
   refreshScene();
   if (!m_keepView) {

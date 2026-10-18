@@ -114,6 +114,7 @@ private:
     QLineEdit* edit = nullptr;
     QComboBox* combo = nullptr;
     QToolButton* button = nullptr; // beside the combo (InputDef::onButton)
+    QToolButton* tile = nullptr;   // a choice shown as a tile (InputDef::choiceTile)
     // A choice shown as icon buttons (InputDef::choiceIcons), by option.
     QHash<QString, QToolButton*> choiceButtons;
     QAbstractButton* check = nullptr;

@@ -96,6 +96,11 @@ ui_start_app --open "$FILE"
 ui_step "fit (F6)"                       ui_key F6
 ui_expect_log "Bodies shown: F2.b0 in O1" "Part's block shown"
 ui_expect_log "Browser radio Root/Cover:1 at" "Cover in the browser"
+# A design opens with the root active (mitcad#426): Cover is activated here.
+ui_expect_log "Opened with the root active; C2 was active in the file" "the design opened with the root active"
+ui_mark
+ui_step "activate Cover (radio)"         ui_click_logged "Browser radio Root/Cover:1"
+ui_expect_new "Activated Cover" "Cover is active"
 ui_expect_log "Timeline filter: all components" "the timeline shows every component"
 
 echo "--- A sketch in Cover on a face of Part (mitcad#100)"

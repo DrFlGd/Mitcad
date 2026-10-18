@@ -80,6 +80,12 @@ if ($LASTEXITCODE -ne 0 -or -not (Test-Path $design)) { Ui-Fail "mitcad-cli: $($
 Ui-StartApp 'browser' @('--open', $design)
 Ui-ExpectLog 'many.mitcad' 'the design opened'
 Ui-Step 'fit (F6)'                       { Ui-Key 'F6' }
+# A tree longer than the browser opens folded below the root (mitcad#426):
+# Construction, then Bodies are opened (Bodies' place stays where it is).
+Ui-ExpectLog 'Browser opened folded: ' 'the long tree opened folded'
+Ui-Sync
+Ui-Step 'open Construction'              { Ui-ClickLogged 'Browser arrow Root/Construction' }
+Ui-Step 'open Bodies'                    { Ui-ClickLogged 'Browser arrow Root/Bodies' }
 Ui-ExpectLog 'Browser Root/Bodies/Body1 at' 'the rows from the top'
 # Plane1's pick place is logged once the camera rests in the laid-out view
 # (the one logged when the design opened, before the view had its size, is

@@ -247,6 +247,25 @@ if(MITCAD_MESA_DIR)
               -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-inactive-ghost"
               -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
     set_tests_properties(app.ui-windows-inactive-ghost PROPERTIES TIMEOUT 300)
+    # A project's web viewer (mitcad#423): File > Project > Web Viewer
+    # writes both designs' pages and the index in one version; a Save
+    # writes the design's page again; Project Settings' Update on each Save
+    # off leaves it.
+    add_test(NAME app.ui-windows-web-viewer
+      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+              -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-web-viewer-test.ps1"
+              -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-web-viewer"
+              -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
+    set_tests_properties(app.ui-windows-web-viewer PROPERTIES TIMEOUT 600)
+    # A design as it opens (mitcad#426): the root active whatever the file
+    # had active, unmodified; a tree longer than the browser folded below
+    # the root, a small one expanded; Collapse All keeps the root open.
+    add_test(NAME app.ui-windows-browser-open
+      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+              -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-browser-open-test.ps1"
+              -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-browser-open"
+              -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
+    set_tests_properties(app.ui-windows-browser-open PROPERTIES TIMEOUT 300)
   endif()
 elseif(WIN32 AND CMAKE_RUNTIME_OUTPUT_DIRECTORY)
   # Turned off again: remove earlier copies, or they would stay in use.

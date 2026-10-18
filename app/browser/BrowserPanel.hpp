@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
+#include <functional>
+
 #include <QHash>
 #include <QPoint>
 #include <QRegion>
@@ -13,6 +15,7 @@
 #include "../framework/Selection.hpp"
 #include "DocumentSnapshot.hpp"
 
+class QScrollBar;
 class QTreeWidgetItem;
 
 namespace mitcad {
@@ -114,12 +117,29 @@ public:
   // The same for the row of a body (of a face, edge or vertex picked in
   // the view), a sketch or a datum.
   bool revealItem(const SelectionItem& item);
-  // Collapses every row, the descendants of a folded row too, and forgets
-  // what was open: the remembered states of all rows are "folded", so neither
-  // an arrow click (which opens only that row) nor a rebuild reopens a
-  // subtree (mitcad#312). The top row stays, to be opened again. Only the
-  // presentation changes.
+  // Collapses every row below the top row, the descendants of a folded row
+  // too, and forgets what was open: the remembered states of those rows are
+  // "folded", so neither an arrow click (which opens only that row) nor a
+  // rebuild reopens a subtree (mitcad#312). The top row (the root) is open,
+  // its children in sight and folded (mitcad#426); its own arrow still folds
+  // it. Only the presentation changes.
   void collapseAll();
+  // A design was opened (mitcad#426): the next rebuild gives the rows their
+  // default states (what the design before left open is forgotten). Once the
+  // panel shows with its size, a tree with more rows in sight than
+  // availableHeight holds opens with the top row open and every row under it
+  // folded; a tree that fits stays as it opened. Logged: "Browser opened
+  // folded: <n> rows would not fit (<visible> visible)" or "Browser opened
+  // expanded: <n> rows (<visible> visible)". Later rebuilds keep the rows as
+  // they are.
+  void designOpened();
+  // The height the rows can have without scrolling, which designOpened fits
+  // them to: the tree's viewport (the Docked layout's dock), unless a
+  // layout whose panel grows with its rows gives its largest height here
+  // (the Floating layout: FloatingLayout::maximumContentHeight; a negative
+  // height, before its first layout, falls back to the viewport).
+  int availableHeight() const;
+  void setAvailableHeight(std::function<int()> height);
   // Renames a row in place.
   void startRename(const BrowserNode& node);
   // Closes an open rename editor without renaming; false when none is open.
@@ -149,6 +169,12 @@ public:
   // coordinates: the rows' boxes in sight, the scroll bars shown and an
   // open rename editor.
   QRegion rowsRegion() const;
+  // The Rows background's vertical scroll bar at the left edge, beside the
+  // rows' start (mitcad#425), instead of the tree's at the right: a bar of
+  // the panel's own that mirrors the tree's, shown while the rows overflow
+  // (the tree moves right of it); in rowsRegion. Logged with the rows
+  // ("Browser scroll bar at x,y", either bar).
+  void setScrollBarOnLeft(bool left);
 
 signals:
   // With the Rows background, rowsRegion changed (the rows scrolled, opened,
@@ -181,6 +207,14 @@ private:
   // With the Rows background: rowsRegionChanged once the changes in hand
   // are laid out.
   void queueRowsRegion();
+  // designOpened: the fit, once the panel shows with its size.
+  void queueFit();
+  void fitOpenedDesign();
+  // Folds every row below the top row, which is opened; remembered so.
+  void foldBelowTop();
+  // The rows in sight: those whose parents are all open; and a row's height.
+  int shownRows() const;
+  int rowHeight() const;
 
   // The features under each sketch (mitcad#177), by the sketch's uid, and
   // the components each feature's bodies are in, by the feature's uid.
@@ -222,6 +256,13 @@ private:
   QString m_loggedSelection;
   bool m_rows = false; // the Rows background (mitcad#419)
   bool m_rowsQueued = false;
+  // setScrollBarOnLeft (mitcad#425): the bar at the left, and its place.
+  void placeLeftScrollBar();
+  bool m_scrollBarLeft = false;
+  QScrollBar* m_leftBar = nullptr;
+  bool m_fitPending = false; // designOpened, until the panel showed with its size
+  bool m_fitQueued = false;
+  std::function<int()> m_availableHeight; // setAvailableHeight
 };
 
 } // namespace mitcad

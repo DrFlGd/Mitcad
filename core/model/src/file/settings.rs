@@ -6,7 +6,9 @@
 //! - **Shared** ([`SharedSettings`]): edit locks (on or off, the idle time
 //!   and the poll interval) and live updates (an MQTT broker and a topic
 //!   prefix). A marker without them means locks on with the defaults and no
-//!   live updates.
+//!   live updates. The web viewer (mitcad#423): whether File > Project > Web
+//!   Viewer turned it on, and whether a Save that records a version updates
+//!   its pages; a marker without it means it is off.
 //! - **This computer** ([`LocalSettings`]): live updates for this project
 //!   (the project's broker, off, or another broker: `mqtt.json`) and sync
 //!   (send each version at once, how often to check the remote:
@@ -237,17 +239,60 @@ impl LiveUpdates {
     }
 }
 
+/// The project's web viewer (mitcad#423): its `web/` folder, a page per
+/// design and an index, written by the application and recorded with the
+/// versions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WebViewer {
+    /// Whether a Save that records a version rewrites the design's page and
+    /// the index (else only File > Project > Update Web Viewer does).
+    pub update_on_save: bool,
+}
+
+impl Default for WebViewer {
+    fn default() -> Self {
+        Self {
+            update_on_save: true,
+        }
+    }
+}
+
+impl WebViewer {
+    fn to_json(self) -> Value {
+        json!({"update_on_save": self.update_on_save})
+    }
+
+    /// Reads `{"update_on_save"}`; missing or null: on.
+    fn from_json(value: &Value) -> Result<Self, String> {
+        let object = value
+            .as_object()
+            .ok_or("the web viewer must be an object with \"update_on_save\"")?;
+        let mut viewer = Self::default();
+        match object.get("update_on_save") {
+            None | Some(Value::Null) => {}
+            Some(Value::Bool(on)) => viewer.update_on_save = *on,
+            Some(_) => {
+                return Err("\"update_on_save\" of the web viewer must be true or false".to_owned());
+            }
+        }
+        Ok(viewer)
+    }
+}
+
 /// What everyone in a project shares: kept in its marker, versioned.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SharedSettings {
     pub edit_locks: EditLocks,
     /// None: no live updates.
     pub live_updates: Option<LiveUpdates>,
+    /// None: the web viewer is not turned on.
+    pub web_viewer: Option<WebViewer>,
 }
 
 impl SharedSettings {
     /// `{"edit_locks": {"enabled", "idle_minutes", "poll_seconds"},
-    /// "live_updates": {"broker", "prefix"} | null}`.
+    /// "live_updates": {"broker", "prefix"} | null,
+    /// "web_viewer": {"update_on_save"} | null}`.
     pub fn to_json(&self) -> Value {
         json!({
             "edit_locks": {
@@ -256,6 +301,7 @@ impl SharedSettings {
                 "poll_seconds": self.edit_locks.poll_seconds,
             },
             "live_updates": self.live_updates.as_ref().map(LiveUpdates::to_json),
+            "web_viewer": self.web_viewer.map(WebViewer::to_json),
         })
     }
 
@@ -315,6 +361,14 @@ impl SharedSettings {
                 Ok(live) => settings.live_updates = Some(live),
                 Err(problem) if strict => return Err(problem),
                 Err(problem) => problems.push(format!("live updates are off: {problem}")),
+            },
+        }
+        match value.get("web_viewer") {
+            None | Some(Value::Null) => {}
+            Some(viewer) => match WebViewer::from_json(viewer) {
+                Ok(viewer) => settings.web_viewer = Some(viewer),
+                Err(problem) if strict => return Err(problem),
+                Err(problem) => problems.push(format!("the web viewer is off: {problem}")),
             },
         }
         Ok((settings, problems))
@@ -583,6 +637,14 @@ pub fn write_shared(root: &Path, settings: &SharedSettings) -> io::Result<bool> 
             marker.remove("live_updates");
         }
     }
+    match &settings.web_viewer {
+        Some(_) => {
+            marker.insert("web_viewer".to_owned(), value["web_viewer"].clone());
+        }
+        None => {
+            marker.remove("web_viewer");
+        }
+    }
     let mut text = serde_json::to_string_pretty(&Value::Object(marker)).expect("serializable");
     text.push('\n');
     if text.as_bytes() == old.as_slice() {
@@ -718,6 +780,35 @@ mod tests {
         assert_eq!(live.prefix, DEFAULT_PREFIX);
         assert_eq!(live.broker.port, 8883);
         assert!(SharedSettings::from_json(&json!({"edit_locks": 3}), false).is_err());
+
+        // The web viewer (mitcad#423): off without it, on with updates on
+        // each save by default, a bad value refused or turned off.
+        assert_eq!(settings_web_viewer(json!({}), true), Ok((None, 0)));
+        assert_eq!(
+            settings_web_viewer(json!({"web_viewer": {}}), true),
+            Ok((Some(WebViewer::default()), 0))
+        );
+        assert!(WebViewer::default().update_on_save);
+        assert_eq!(
+            settings_web_viewer(json!({"web_viewer": {"update_on_save": false}}), true),
+            Ok((
+                Some(WebViewer {
+                    update_on_save: false
+                }),
+                0
+            ))
+        );
+        let bad = json!({"web_viewer": {"update_on_save": "yes"}});
+        assert!(settings_web_viewer(bad.clone(), true).is_err());
+        assert_eq!(settings_web_viewer(bad, false), Ok((None, 1)));
+        assert!(settings_web_viewer(json!({"web_viewer": 3}), true).is_err());
+    }
+
+    fn settings_web_viewer(
+        value: Value,
+        strict: bool,
+    ) -> Result<(Option<WebViewer>, usize), String> {
+        SharedSettings::from_json(&value, strict).map(|(s, p)| (s.web_viewer, p.len()))
     }
 
     #[test]
@@ -790,6 +881,9 @@ mod tests {
                 broker: BrokerAddress::parse("mqtts://broker.example.com").unwrap(),
                 prefix: "mitcad".to_owned(),
             }),
+            web_viewer: Some(WebViewer {
+                update_on_save: false,
+            }),
         };
         assert!(write_shared(root, &shared).unwrap());
         assert!(!write_shared(root, &shared).unwrap(), "unchanged");
@@ -798,6 +892,7 @@ mod tests {
         assert_eq!(marker["format"], "mitcad-project");
         assert_eq!(marker["version"], 1);
         assert_eq!(marker["edit_locks"]["idle_minutes"], 15);
+        assert_eq!(marker["web_viewer"]["update_on_save"], false);
 
         let local = LocalSettings {
             live: LiveHere::Off,
@@ -826,6 +921,7 @@ mod tests {
         let marker: Value =
             serde_json::from_slice(&fs::read(root.join(PROJECT_MARKER)).unwrap()).unwrap();
         assert!(marker.get("live_updates").is_none());
+        assert!(marker.get("web_viewer").is_none());
 
         fs::write(root.join(PROJECT_MARKER), vec![b' '; 70 * 1024]).unwrap();
         let (settings, problems) = ProjectSettings::read(root);

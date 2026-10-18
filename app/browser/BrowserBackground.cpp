@@ -46,11 +46,13 @@ void apply(GlassCard* card, BrowserPanel* browser, BrowserBackground background)
   if (rows) {
     glass(false);
     browser->setRowsBackground(true);
+    browser->setScrollBarOnLeft(true); // beside the rows (mitcad#425)
     card->setBare(true);
     card->setContentRegion(browser->rowsRegion());
   } else {
     card->setBare(false);
     browser->setRowsBackground(false);
+    browser->setScrollBarOnLeft(false);
     glass(true);
   }
   qDebug().noquote() << QStringLiteral("Browser background: %1").arg(browserBackgroundId(background));
@@ -58,9 +60,21 @@ void apply(GlassCard* card, BrowserPanel* browser, BrowserBackground background)
 
 } // namespace
 
+BrowserBackground defaultBrowserBackground() {
+  // Rows where the Floating layout's top floats over the view as well
+  // (Windows and Linux, mitcad#429); the card on macOS.
+  return floatingTopCards() ? BrowserBackground::Rows : BrowserBackground::Card;
+}
+
 BrowserBackground savedBrowserBackground() {
-  return QSettings().value(kKey).toString() == QLatin1String("rows") ? BrowserBackground::Rows
-                                                                       : BrowserBackground::Card;
+  const QString saved = QSettings().value(kKey).toString();
+  if (saved == QLatin1String("rows")) {
+    return BrowserBackground::Rows;
+  }
+  if (saved == QLatin1String("card")) {
+    return BrowserBackground::Card;
+  }
+  return defaultBrowserBackground();
 }
 
 void saveBrowserBackground(BrowserBackground background) {

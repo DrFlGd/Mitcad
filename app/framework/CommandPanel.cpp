@@ -2,17 +2,21 @@
 #include "CommandPanel.hpp"
 
 #include <algorithm>
+#include <functional>
 #include <iterator>
+#include <utility>
 
 #include <QCheckBox>
 #include <QComboBox>
 #include <QCoreApplication>
 #include <QEvent>
+#include <QFont>
 #include <QFormLayout>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QIcon>
 #include <QImage>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
 #include <QStyle>
@@ -121,6 +125,109 @@ void styleLineEdit(QLineEdit* edit, const QColor& accent, const QColor& error) {
       "QLineEdit:disabled { background: rgba(128, 128, 128, 12); }")
                           .arg(accent.name(), error.name()));
 }
+
+// A choice shown as a tile (InputDef::choiceTile, mitcad#427): the chosen
+// option's picture, its name and a smaller line under it. A click, or Enter
+// or Space while it has the keyboard, calls `activated`. It takes the
+// keyboard by Tab only: after a click Enter still confirms the command.
+class TileButton : public QToolButton {
+public:
+  explicit TileButton(std::function<void()> activated) : m_activated(std::move(activated)) {
+    setFocusPolicy(Qt::TabFocus);
+    setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
+    auto* box = new QHBoxLayout(this);
+    box->setContentsMargins(6, 4, 6, 4);
+    box->setSpacing(8);
+    m_image = new QLabel;
+    m_image->setFixedSize(kImageSize, kImageSize);
+    m_image->setAlignment(Qt::AlignCenter);
+    m_title = new QLabel;
+    m_title->setWordWrap(true);
+    m_detail = new QLabel;
+    m_detail->setWordWrap(true);
+    m_detail->setForegroundRole(QPalette::PlaceholderText);
+    QFont small = m_detail->font();
+    if (small.pointSizeF() > 0.0) {
+      small.setPointSizeF(small.pointSizeF() * 0.85);
+    } else if (small.pixelSize() > 0) {
+      small.setPixelSize(std::max(1, small.pixelSize() * 85 / 100));
+    }
+    m_detail->setFont(small);
+    for (QLabel* label : {m_image, m_title, m_detail}) {
+      label->setAttribute(Qt::WA_TransparentForMouseEvents);
+    }
+    auto* texts = new QVBoxLayout;
+    texts->setSpacing(0);
+    texts->addStretch(1);
+    texts->addWidget(m_title);
+    texts->addWidget(m_detail);
+    texts->addStretch(1);
+    box->addWidget(m_image);
+    box->addLayout(texts, 1);
+    setMinimumHeight(kImageSize + 8);
+    connect(this, &QToolButton::clicked, this, [this] {
+      if (m_activated) {
+        m_activated();
+      }
+    });
+  }
+
+  // Shows a tile; false when it shows that already.
+  bool setTile(const ChoiceTile& tile) {
+    const qint64 key = tile.image.isNull() ? 0 : tile.image.cacheKey();
+    if (m_shown && tile.title == m_title->text() && tile.detail == m_detail->text() && key == m_imageKey) {
+      return false;
+    }
+    m_shown = true;
+    m_imageKey = key;
+    if (tile.image.isNull()) {
+      m_image->clear();
+    } else {
+      const qreal ratio = devicePixelRatioF();
+      QPixmap pixmap = QPixmap::fromImage(tile.image.scaled(QSize(kImageSize, kImageSize) * ratio,
+                                                            Qt::KeepAspectRatio, Qt::SmoothTransformation));
+      pixmap.setDevicePixelRatio(ratio);
+      m_image->setPixmap(pixmap);
+    }
+    m_image->setVisible(!tile.image.isNull());
+    m_title->setText(tile.title);
+    m_detail->setText(tile.detail);
+    m_detail->setVisible(!tile.detail.isEmpty());
+    return true;
+  }
+
+protected:
+  bool event(QEvent* event) override {
+    // Enter and Space open it rather than confirming the command (the main
+    // window's shortcut) while it has the keyboard.
+    if (event->type() == QEvent::ShortcutOverride) {
+      const auto* key = static_cast<QKeyEvent*>(event);
+      if (key->modifiers() == Qt::NoModifier &&
+          (key->key() == Qt::Key_Return || key->key() == Qt::Key_Enter || key->key() == Qt::Key_Space)) {
+        event->accept();
+        return true;
+      }
+    }
+    return QToolButton::event(event);
+  }
+  void keyPressEvent(QKeyEvent* event) override {
+    if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) {
+      event->accept();
+      click();
+      return;
+    }
+    QToolButton::keyPressEvent(event); // Space: pressed and released, a click
+  }
+
+private:
+  static constexpr int kImageSize = 40;
+  std::function<void()> m_activated;
+  QLabel* m_image = nullptr;
+  QLabel* m_title = nullptr;
+  QLabel* m_detail = nullptr;
+  qint64 m_imageKey = 0;
+  bool m_shown = false;
+};
 
 } // namespace
 
@@ -328,6 +435,16 @@ void CommandPanel::applyControlStyles() {
     for (QToolButton* button : row->choiceButtons) {
       styleToggle(button, accent);
     }
+    if (row->tile != nullptr) {
+      // A tile: rounded like the fields, the accent colour as its focus ring.
+      row->tile->setStyleSheet(QStringLiteral(
+          "QToolButton { border: 1px solid rgba(128, 128, 128, 70); background: rgba(128, 128, 128, 25);"
+          " border-radius: 7px; }"
+          "QToolButton:hover { background: rgba(128, 128, 128, 55); }"
+          "QToolButton:pressed { background: rgba(128, 128, 128, 90); }"
+          "QToolButton:focus { border: 1.5px solid %1; }")
+                                   .arg(accent.name()));
+    }
   }
 }
 
@@ -442,6 +559,15 @@ CommandPanel::Row* CommandPanel::createRow(const InputDef& input, const QString&
     break;
   }
   case InputDef::Type::Choice: {
+    if (input.choiceTile && input.onButton) {
+      // A tile: the chosen option's picture and name; a click on it does
+      // what the button would (mitcad#427: BUILD's part picker).
+      auto* tile = new TileButton([this, key] { emit buttonClicked(key); });
+      tile->setToolTip(input.tooltip);
+      row.tile = tile;
+      field = tile;
+      break;
+    }
     if (!input.choiceIcons.isEmpty() && !input.choicesFor) {
       // A row of icon buttons, the chosen one pressed (mitcad#394: BUILD's
       // X / Y / Z).
@@ -805,6 +931,16 @@ void CommandPanel::refreshRow(Row& row, const CommandState& scope, const Command
     }
     break;
   case InputDef::Type::Choice: {
+    if (row.tile != nullptr) {
+      // A tile: the chosen option as the input says it is.
+      const ChoiceTile tile = input.choiceTile(scope);
+      if (static_cast<TileButton*>(row.tile)->setTile(tile)) {
+        qDebug().noquote() << QStringLiteral("Panel %1 tile %2: %3%4")
+                                  .arg(m_def.name, row.key, tile.title,
+                                       tile.detail.isEmpty() ? QString() : QStringLiteral(" (%1)").arg(tile.detail));
+      }
+      break;
+    }
     if (row.combo == nullptr) {
       // Icon buttons: the chosen one pressed.
       for (auto it = row.choiceButtons.cbegin(); it != row.choiceButtons.cend(); ++it) {

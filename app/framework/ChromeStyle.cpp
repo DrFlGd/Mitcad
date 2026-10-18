@@ -22,11 +22,9 @@ ChromeStyle chromeStyle() { return g_style; }
 void setChromeStyle(ChromeStyle style) { g_style = style; }
 
 ChromeStyle defaultChromeStyle() {
-#ifdef Q_OS_MACOS
+  // Floating everywhere: macOS from the start, Windows and Linux since
+  // mitcad#429.
   return ChromeStyle::Floating;
-#else
-  return ChromeStyle::Docked;
-#endif
 }
 
 QString chromeStyleName(ChromeStyle style) {
@@ -55,5 +53,13 @@ bool glassRequested() { return g_glass; }
 void setGlassRequested(bool requested) { g_glass = requested; }
 
 bool glassActive() { return g_glass && g_style == ChromeStyle::Floating && mac::glassAvailable(); }
+
+bool floatingTopCards() {
+#ifdef Q_OS_MACOS
+  return false;
+#else
+  return true;
+#endif
+}
 
 } // namespace mitcad

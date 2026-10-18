@@ -188,6 +188,11 @@ void BrowserController::refresh(const DocumentSnapshot& snapshot) {
   }
 }
 
+void BrowserController::designOpened() {
+  m_shown = false; // rebuilt, also when it reads as the design before did
+  m_browser->designOpened();
+}
+
 void BrowserController::showSelection(const Selection& items) {
   // A pick of features shows their rows under the sketches too (mitcad#177),
   // also when the same selection is shown again; another selection (in the

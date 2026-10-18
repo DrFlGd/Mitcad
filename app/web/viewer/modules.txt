@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: MIT
+# The web viewer's modules: "<specifier> <path>" a line, the path from the
+# repository's root. The page writer inlines each as a data: URL in the
+# page's import map; the modules import each other only by these
+# specifiers. Lines starting with # are comments.
+three third_party/three/three.module.js
+three/addons/loaders/GLTFLoader.js third_party/three/addons/loaders/GLTFLoader.js
+three/addons/controls/OrbitControls.js third_party/three/addons/controls/OrbitControls.js
+three/addons/utils/BufferGeometryUtils.js third_party/three/addons/utils/BufferGeometryUtils.js
+three/addons/environments/RoomEnvironment.js third_party/three/addons/environments/RoomEnvironment.js
+mitcad/logic.js app/web/viewer/logic.js

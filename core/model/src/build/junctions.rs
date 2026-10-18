@@ -138,7 +138,12 @@ impl<K: Kernel> Document<K> {
                 } else {
                     (q, p)
                 };
-                if let Some(mut junction) = meet(p, q).or_else(|| meet(q, p)) {
+                // An end on the other part (either way round) before sides
+                // crossing: a square corner lying on an end face is an L, not
+                // a cross (mitcad#427).
+                if let Some(mut junction) =
+                    meet(p, q).or_else(|| meet(q, p)).or_else(|| cross(p, q))
+                {
                     junction.connectors = connectors
                         .iter()
                         .filter(|(_, id)| *id == junction.id)
@@ -152,7 +157,7 @@ impl<K: Kernel> Document<K> {
     }
 }
 
-/// How `p` meets `q`: an end of p on q's end or side, or crossing.
+/// How `p` meets `q`: an end of p on q's end or side.
 fn meet(p: &Placed, q: &Placed) -> Option<Junction> {
     let ends = ["end_a", "end_b"];
     // Two ends at one point.
@@ -237,7 +242,11 @@ fn meet(p: &Placed, q: &Placed) -> Option<Junction> {
         j.space[1] = point[2].max(q.length - point[2]);
         return Some(j);
     }
-    // Two sides crossing.
+    None
+}
+
+/// Two sides of `p` (the newer) and `q` crossing.
+fn cross(p: &Placed, q: &Placed) -> Option<Junction> {
     if p.info.component > q.info.component {
         let pa = p.axis();
         let qa = q.axis();

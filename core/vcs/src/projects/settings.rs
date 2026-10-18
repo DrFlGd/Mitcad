@@ -6,7 +6,7 @@
 //! opened last.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use gix::bstr::ByteSlice;
 use mitcad_model::file::PROJECT_MARKER;
@@ -72,6 +72,20 @@ fn what_changed(old: &SharedSettings, new: &SharedSettings) -> String {
             }
         }
         (None, None) => {}
+    }
+    // The web viewer (mitcad#423).
+    match (old.web_viewer, new.web_viewer) {
+        (None, Some(_)) => parts.push("web viewer on".to_owned()),
+        (Some(_), None) => parts.push("web viewer off".to_owned()),
+        (Some(a), Some(b)) if a.update_on_save != b.update_on_save => parts.push(format!(
+            "web viewer {} on each save",
+            if b.update_on_save {
+                "updated"
+            } else {
+                "not updated"
+            }
+        )),
+        _ => {}
     }
     parts.join(", ")
 }
@@ -158,10 +172,26 @@ impl ProjectRepo {
     /// settings as they are and checked strictly (an error, nothing
     /// written); a change of the shared ones written into the marker and
     /// recorded as the version `Change project settings: <what changed>`
-    /// (by `author`, else git's configured one, else `fallback_author`).
+    /// (by `author`, else git's configured one, else `fallback_author`),
+    /// with the files `paths` names (the web viewer's, mitcad#423).
     fn set_project_settings(&self, command: &Value) -> Result<Value, VcsError> {
         let (current, _) = ProjectSettings::read(self.root());
         let invalid = |problem: String| VcsError::Command(problem);
+        // Checked before anything is written: files of the project.
+        let mut extra = Vec::new();
+        match command.get("paths").filter(|v| !v.is_null()) {
+            None => {}
+            Some(Value::Array(paths)) => {
+                for path in paths {
+                    let path = path
+                        .as_str()
+                        .ok_or_else(|| invalid("\"paths\" are text".to_owned()))?;
+                    self.relative(Path::new(path))?;
+                    extra.push(PathBuf::from(path));
+                }
+            }
+            Some(_) => return Err(invalid("\"paths\" must be a list".to_owned())),
+        }
         let shared = match command.get("shared").filter(|v| !v.is_null()) {
             Some(changes) => {
                 let value = merged(&current.shared.to_json(), changes);
@@ -207,7 +237,9 @@ impl ProjectRepo {
                 "Change project settings: {}",
                 what_changed(&current.shared, &shared)
             );
-            let outcome = self.commit(&[marker], &message, &author)?;
+            let mut files = vec![marker];
+            files.append(&mut extra);
+            let outcome = self.commit(&files, &message, &author)?;
             commit = outcome.commit;
             skipped = outcome.skipped;
         }

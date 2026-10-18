@@ -194,6 +194,12 @@ ui_expect_log "Joint Origin Offset: 5 = 5 mm" "5 mm"
 ui_mark
 ui_step "OK (Enter)"                     ui_key Return
 ui_expect_new "Added joint origin JointOrigin1: origin (5, 5, 10), normal (0, 0, 1)" "a frame 5 mm above the cap's top"
+# A design longer than the browser opened folded below the root (mitcad#426):
+# Cap:1 is opened to show its new Joints folder.
+if grep -q "Browser opened folded" "$UI_LOG"; then
+  ui_step "scroll the browser to Cap:1"  ui_browser_reveal "Browser Root/Cap:1"
+  ui_step "open Cap:1"                   ui_click_logged "Browser arrow Root/Cap:1"
+fi
 # The tree is taller than the panel by now: the new row may be below the rows in sight.
 ui_step "scroll the browser to the new row"  ui_browser_reveal "Browser Root/Cap:1/Joints/JointOrigin1"
 ui_expect_log "Browser Root/Cap:1/Joints/JointOrigin1 at" "in the cap's Joints folder"

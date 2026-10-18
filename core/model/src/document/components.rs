@@ -626,6 +626,18 @@ impl<K: Kernel> Document<K> {
         })
     }
 
+    /// Makes a component active as the document opens (mitcad#426): the
+    /// application activates the root of every design it opens, whatever
+    /// active component the file stores. No undo step and no new revision,
+    /// so a design opened unmodified stays unmodified and the undo and redo
+    /// steps stay as they were; nothing evaluation reads changes, so
+    /// nothing is recomputed. Saving stores the component active then.
+    pub fn activate_component_on_open(&mut self, uid: ComponentUid) -> Result<(), ModelError> {
+        self.state.editable(uid)?;
+        self.state.assembly.active = uid;
+        Ok(())
+    }
+
     /// Renames a component. A component (not the root) whose only body
     /// still has a default name (`Body<n>`) gives the body its new name too,
     /// unless another body has that name (mitcad#291): one undo step.

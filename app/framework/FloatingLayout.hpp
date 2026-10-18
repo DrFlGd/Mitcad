@@ -2,9 +2,13 @@
 #pragma once
 
 #include <functional>
+#include <utility>
 #include <vector>
 
+#include <QList>
 #include <QPointer>
+#include <QRect>
+#include <QString>
 #include <QWidget>
 
 class QLabel;
@@ -21,9 +25,12 @@ class OcctViewer;
 // window, and GlassCards as children over the view, anchored to its corners
 // with a margin that is concentric with the window's corner radius; no card
 // starts above the header's bottom (mitcad#419), which is followed as it
-// grows, shrinks or moves. A card
-// has the size of its content up to a share of the view, and scrolls
-// inside when it is longer (the content's own scroll area).
+// grows, shrinks or moves. On Windows and Linux there is no header
+// (mitcad#425): the view starts below the menu bar, and the title row and the
+// toolbar's groups float over its top as rows of cards (addTopRow), which
+// the other cards start below. A card has the size of its content up to a
+// share of the view and the card below it, and scrolls inside when it is
+// longer (the content's own scroll area).
 //
 // Cards take mouse events only inside their own rounded rectangle (their
 // shadows are mouse-transparent), so picking, orbiting and sketch clicks
@@ -72,6 +79,29 @@ public:
   void addCard(GlassCard* card, Anchor anchor, const Sizing& sizing);
   void addCard(GlassCard* card, Anchor anchor) { addCard(card, anchor, Sizing()); }
 
+  // The cards a top row is made of: their names and rectangles in the row's
+  // coordinates.
+  using RowCards = std::function<std::vector<std::pair<QString, QRect>>()>;
+  // A row floating at the top of the view (mitcad#425, floatingTopCards():
+  // the title row, the toolbar's group cards, the notices): below the
+  // header (if any) and the rows added before it, as wide as the view less
+  // the margins, as high as its size hint within its minimum and maximum
+  // height; the anchored cards start below the last row shown, and the
+  // orientation cube under it. `cards`: the cards of a row that takes the
+  // mouse only on them (a mask of its own: the title row's controls and the
+  // box of its title, mitcad#429; the ribbon's group cards); null: the row is
+  // one card, named by its object name. `parts`: the row is shown while any
+  // of them is (the notices' bars, which come and go); none: while the row
+  // is. Not for windowed cards.
+  void addTopRow(QWidget* row, RowCards cards = {}, const QList<QWidget*>& parts = {});
+
+  // The height that the content of the card holding `content` may take at
+  // the card's place before it scrolls: to the card below it (the timeline)
+  // or the view's bottom margin, less the card's header and margins, from
+  // the last layout (mitcad#425: the Browser's card grows to it); -1 when
+  // `content` is no card's content or the card was not placed yet.
+  int maximumContentHeight(const QWidget* content) const;
+
   // Shows a message in the status pill; it fades out after `milliseconds`.
   void showStatus(const QString& text, bool error, int milliseconds);
 
@@ -95,12 +125,28 @@ private:
     QPointer<GlassCard> card;
     Anchor anchor;
     Sizing sizing;
+    int maxContent = -1; // maximumContentHeight, from the last layout
+  };
+  struct Row {
+    QPointer<QWidget> widget;
+    RowCards cards;
+    std::vector<QPointer<QWidget>> parts;
   };
 
+  // A top row's cards in its coordinates (the row itself without `cards`).
+  static std::vector<std::pair<QString, QRect>> cardsOf(const Row& row);
+
   void layoutCards();
-  // "Floating cards: window 1280x800, top bar bottom 140; browserDock
-  // 12,152 260x300; ..." in the window's coordinates, when it changed (UI
-  // tests check that no card is under the top bar, mitcad#419).
+  // "Floating cards: window 1280x800, top bar bottom 21, view top 21, floating
+  // rows bottom 160; titleRow 12,33 1256x40; titleHistory 12,36 64x34; ...;
+  // ribbon 12,81 1256x67; ribbonGroup_SOLID/CREATE 12,81 200x67; ...;
+  // browserDock 12,168 260x300; ..." in the window's coordinates, the rows
+  // first (a row of cards of its own by its name, then its cards), when it
+  // changed (UI tests check that
+  // no card is under the top bar, mitcad#419, and no other card under the
+  // rows, mitcad#425); and "Floating view between the cards at x,y", the
+  // middle of the gap between the first two cards of the lowest row that
+  // has one (the group cards).
   void logCards();
   void adopt(GlassCard* card);
   void elidePill(int room = 0);
@@ -109,10 +155,12 @@ private:
   OcctViewer* m_viewer;
   QWidget* m_header;
   std::vector<Entry> m_entries;
+  std::vector<Row> m_rows; // addTopRow
   bool m_layoutQueued = false;
   bool m_inLayout = false;
   bool m_windowed; // the cards are windows (native glass)
   QString m_loggedCards;
+  QString m_loggedGap; // "Floating view between the cards at x,y"
   QPointer<QWidget> m_hostWindow; // watched for moves and state changes
 
   GlassCard* m_pill = nullptr;

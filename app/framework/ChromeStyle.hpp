@@ -8,9 +8,10 @@
 namespace mitcad {
 
 // How the window's panels are arranged: Docked is the classic layout (docks
-// around the 3D view, a ribbon in a toolbar), Floating is the macOS one (a
+// around the 3D view, a ribbon in a toolbar), Floating the modern one (a
 // full-window 3D view with panels that float over it as rounded cards).
-// Floating is the default on macOS, Docked elsewhere; Preferences' Layout
+// Floating is the default everywhere (Windows and Linux since mitcad#429;
+// Docked keeps working on every platform); Preferences' Layout
 // (layoutPreference) chooses another for the next starts, and
 // --chrome=docked|floating overrides both for one run. Set it before the
 // main window is created.
@@ -18,7 +19,8 @@ enum class ChromeStyle { Docked, Floating };
 
 ChromeStyle chromeStyle();
 void setChromeStyle(ChromeStyle style);
-// The platform's layout when none is chosen: Floating on macOS, else Docked.
+// The layout when none is chosen: Floating (mitcad#429: on Windows and Linux
+// too).
 ChromeStyle defaultChromeStyle();
 // "docked" or "floating", as --chrome and the setting name them.
 QString chromeStyleName(ChromeStyle style);
@@ -42,5 +44,11 @@ void setLayoutChoosable(bool choosable);
 bool glassRequested();
 void setGlassRequested(bool requested);
 bool glassActive();
+
+// The Floating layout's top (mitcad#425): on macOS the title bar row and the
+// toolbar's groups are a bar above the view (the content extends under
+// the native title bar there); elsewhere only the menu bar is a bar, and the
+// title row and each of the toolbar's groups float over the view as cards.
+bool floatingTopCards();
 
 } // namespace mitcad

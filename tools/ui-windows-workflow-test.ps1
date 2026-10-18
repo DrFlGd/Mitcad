@@ -15,8 +15,9 @@
 #      autosaved files; New (Ctrl+N); Open (Ctrl+O) the file again: the
 #      body recomputed with the saved volume (Physical Properties), so the
 #      recovered design was the filleted one.
-#   7. Export a STEP file through the Export dialog; New; Import it: a base
-#      feature of the same volume; undo (Ctrl+Z).
+#   7. Export a STEP file through the Export dialog, and a web page (mitcad#423:
+#      one .html file with the design's data, its size in the log); New;
+#      Import the STEP file: a base feature of the same volume; undo (Ctrl+Z).
 #   8. Version history (P12d, mitcad#89): the saved design opened with a
 #      change, Move to a Project makes its folder a Local project (New
 #      Project with the folder offered; the author typed there, as git's
@@ -219,6 +220,18 @@ Ui-Step 'export (F9)'                    { Ui-Key 'F9' }
 Ui-Step 'type the path'                  { Type-Into-Dialog '^Export$' $step }
 Ui-ExpectNew "Exported ${step}: step, 1 body(ies)" 'the body written as STEP'
 if (-not (Test-Path $step)) { Ui-Fail 'no STEP file' }
+Write-Host '--- Export a web page (mitcad#423)'
+$html = Join-Path $work 'block.html'
+Ui-Mark
+Ui-Step 'export (F9)'                    { Ui-Key 'F9' }
+Ui-Step 'type the path'                  { Type-Into-Dialog '^Export$' $html }
+Ui-ExpectNew "Exported ${html}: html, 1 body(ies), " 'the body written as a web page'
+if (-not (Test-Path $html)) { Ui-Fail 'no web page' }
+$size = (Get-Item $html).Length
+Ui-ExpectNew "Exported ${html}: html, 1 body(ies), $size bytes" 'the log says the page''s size'
+if (-not (Select-String -Path $html -SimpleMatch 'id="mitcad-data"' -Quiet)) { Ui-Fail 'no design data in the page' }
+if (Select-String -Path $html -SimpleMatch '<!--MITCAD:' -Quiet) { Ui-Fail 'a placeholder left in the page' }
+Write-Host 'ok   the page holds the design''s data'
 Ui-Step 'new (Ctrl+N)'                   { Ui-Key 'ctrl+n' }
 Ui-ExpectNew 'New document' 'an empty document'
 Ui-Mark
@@ -286,8 +299,8 @@ if ($git) {
   if (($log -join "`n") -ne ($expected -join "`n")) { Ui-Fail "git log: $($log -join ' / ')" }
   Write-Host "ok   git's log has the three versions"
   $status = & $git.Source -C $work status --porcelain 2>&1
-  # The STEP file of the export is the user's, not a version's.
-  if (($status -join "`n") -ne '?? block.step') { Ui-Fail "git status: $($status -join ' / ')" }
+  # The STEP and web page files of the exports are the user's, not a version's.
+  if (($status -join "`n") -ne "?? block.html`n?? block.step") { Ui-Fail "git status: $($status -join ' / ')" }
   Write-Host 'ok   git status shows only the file Mitcad does not record'
 } else {
   Write-Host 'note: git is not installed; the versions are checked through the log only'
@@ -600,6 +613,11 @@ $made = & $cli run $toggleScript --save $toggle
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path $toggle)) { Ui-Fail "mitcad-cli: $($made -join ' / ')" }
 Ui-StartApp 'toggle' @('--open', $toggle)
 Ui-ExpectLog "Opened $workLogged/toggle.mitcad" 'the design opened'
+# A design opens with the root active (mitcad#426): Part, which the file
+# had active, is activated here.
+Ui-Mark
+Ui-Step 'activate Part (radio)'          { Ui-ClickLogged 'Browser radio Root/Part:1' }
+Ui-ExpectNew 'Activated Part' 'Part is active'
 Ui-Step 'fit (F6)'                       { Ui-Key 'F6' }
 Ui-Mark
 Ui-Step 'extrude (E)'                    { Ui-Key 'e' }

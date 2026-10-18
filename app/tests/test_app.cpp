@@ -1944,6 +1944,8 @@ int polyHavenSourceTests();
 int renderMeshTests();
 int agentFolderTests();
 int partPickerDataTests();
+int webPageTests();
+int projectWebTests();
 
 int main(int argc, char* argv[]) {
   QApplication app(argc, argv);
@@ -1991,6 +1993,8 @@ int main(int argc, char* argv[]) {
     failures += renderMeshTests();
     failures += agentFolderTests();
     failures += partPickerDataTests();
+    failures += webPageTests();
+    failures += projectWebTests();
   }
   if (failures != 0) {
     std::fprintf(stderr, "%d check(s) failed\n", failures);

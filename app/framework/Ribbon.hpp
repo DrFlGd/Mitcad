@@ -1,8 +1,12 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
+#include <utility>
+#include <vector>
+
 #include <QHash>
 #include <QList>
+#include <QRect>
 #include <QString>
 #include <QStringList>
 #include <QToolButton>
@@ -61,15 +65,32 @@ public:
   // ribbon's layout: whoever hosts it (the title bar) places it.
   QTabBar* tabBar() const { return m_tabs; }
 
+  // The Floating layout's group cards (mitcad#425, floatingTopCards(): Windows
+  // and Linux): the ribbon floats over the 3D view, each group a card of its
+  // own in the cards' material (CapsuleFrame::setCardMaterial). The ribbon
+  // paints nothing else and takes the mouse only on the shown page's cards
+  // (a mask), so that a click, drag or wheel between and beside them reaches
+  // the view. Mac presentation only; call it after build().
+  void setGroupCards(bool cards);
+  bool hasGroupCards() const { return m_groupCards; }
+  // The shown page's group cards in sight: their names
+  // ("ribbonGroup_SOLID/SHEET_METAL": spaces as underscores) and rectangles
+  // in the ribbon's coordinates, left to right (clipped to the ribbon).
+  std::vector<std::pair<QString, QRect>> groupCards() const;
+
 signals:
   // The SKETCH tab was shown (true) or hidden.
   void sketchModeChanged(bool sketching);
+  // setGroupCards: the shown group cards moved, resized, came or went.
+  void groupCardsChanged();
 
 protected:
   // The SKETCH tab's colour follows the palette.
   void changeEvent(QEvent* event) override;
   void paintEvent(QPaintEvent* event) override;
   void resizeEvent(QResizeEvent* event) override;
+  // The group cards' places, for the mask (setGroupCards).
+  bool eventFilter(QObject* watched, QEvent* event) override;
 
 public:
   // Classic (Docked): a width that always fits the toolbar (it expands to
@@ -103,6 +124,8 @@ private:
   // Mac presentation: when the groups do not fit the width, the ones at the
   // right show their names only; the names still open their menus.
   void fitGroups();
+  // setGroupCards: the mask of the shown page's group cards.
+  void updateGroupMask();
 
   CommandRegistry& m_registry;
   Presentation m_presentation;
@@ -116,6 +139,7 @@ private:
   // The subgroups' split buttons (mitcad#222), by "tab/group/subgroup".
   QHash<QString, QToolButton*> m_splitButtons;
   QHash<QWidget*, QList<GroupInfo>> m_groupsOfPage;
+  bool m_groupCards = false; // setGroupCards
 };
 
 // A command button of the Mac presentation (also the title bar's Undo and
@@ -149,11 +173,17 @@ public:
   // A radius below zero is half the height.
   explicit CapsuleFrame(int radius = 12, QWidget* parent = nullptr);
 
+  // The Floating chrome's card material (cardFillColor, a hairline of
+  // cardBorderColor), for a group that is a card of its own over the 3D view
+  // (Ribbon::setGroupCards, mitcad#425).
+  void setCardMaterial(bool card);
+
 protected:
   void paintEvent(QPaintEvent* event) override;
 
 private:
   int m_radius;
+  bool m_cardMaterial = false;
 };
 
 // "CREATE" -> "Create", "FINISH SKETCH" -> "Finish Sketch": the names the Mac

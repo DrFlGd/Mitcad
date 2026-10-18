@@ -3227,7 +3227,7 @@ Examples: `tools/cli/tests/f6_*.json`.
 |---|---|---|
 | `create_component` | `name` (optional), `transform` (optional), `activate` (default true), `policy` (optional: a preset name or settings, [Design policy](#design-policy)) | `component`, `occurrence`, `name`; `placed_in`, `instead_of`, `placement_warning` when it went beside an active component that takes no components ([Design policy](#design-policy)) |
 | `components_from_bodies` | `bodies` | `components`: `feature`, `component`, `name` |
-| `activate_component` | `component` (uid or name; `C0` the root) | `component` |
+| `activate_component` | `component` (uid or name; `C0` the root), `opening` (default false: one undo step; true: as the document opens, mitcad#426, with no undo step and no new revision, so the document stays as modified as it was and nothing is recomputed; the application activates the root of every design it opens) | `component`; with `opening` also `previous`, the component that was active |
 | `rename_component` | `component`, `name` (unique) | `renamed_body`: `uid`, `name` of the body renamed with it, or null |
 | `ground_occurrence` | `occurrence`, `grounded` (default true) | |
 | `set_occurrence_visible` | `occurrence`, `visible` | |
@@ -5475,8 +5475,8 @@ use the network):
 
 | Command | Fields | Result |
 |---|---|---|
-| `project_settings` | | `kind` (`local`, `cloud`: the repository has a remote), `shared` ({`edit_locks`: {`enabled`, `idle_minutes`, `poll_seconds`}, `live_updates`: {`broker`, `prefix`} or null}), `local` ({`live`: {`mode`: `project`, `off` or `broker`, `broker`, `prefix`}, `sync`: {`send_at_once`, `check_minutes`}, null meaning the application's default, `name`: the project's display name in the Projects panel or null, below}), `live_updates` (what this computer uses, or null), `problems` (`mitcad_model::file::settings`), `authors` (who made the versions on HEAD's history, what sharing the project publishes: [{`name` (cleaned), `email`, `versions`}], most versions first, up to 10 000 versions read) |
-| `set_project_settings` | `shared` (optional), `local` (optional), `author`, `fallback_author` | `shared`, `local`, `written_local`, `commit` (null when the shared settings did not change), `skipped` (why no version was recorded: HEAD detached, a merge in progress; else null). `shared` is merged into the settings as they are, object by object (`{"edit_locks": {"enabled": false}}` keeps the times; `live_updates` is replaced whole, null: none); `local`'s `live` is replaced whole, its `sync` merged and its `name` replaced (null or empty: none). Values are checked strictly (an error, nothing written). A change of the shared ones is written into the marker (its other fields kept) and recorded as a version, `Change project settings: <what changed>` (`edit locks off, idle time 15 min, live updates through mqtts://broker.example.com:8883`), by `author`, else git's configured author, else `fallback_author`, which the application then sends as a saved version |
+| `project_settings` | | `kind` (`local`, `cloud`: the repository has a remote), `shared` ({`edit_locks`: {`enabled`, `idle_minutes`, `poll_seconds`}, `live_updates`: {`broker`, `prefix`} or null, `web_viewer`: {`update_on_save`} or null (not turned on; below)}), `local` ({`live`: {`mode`: `project`, `off` or `broker`, `broker`, `prefix`}, `sync`: {`send_at_once`, `check_minutes`}, null meaning the application's default, `name`: the project's display name in the Projects panel or null, below}), `live_updates` (what this computer uses, or null), `problems` (`mitcad_model::file::settings`), `authors` (who made the versions on HEAD's history, what sharing the project publishes: [{`name` (cleaned), `email`, `versions`}], most versions first, up to 10 000 versions read) |
+| `set_project_settings` | `shared` (optional), `local` (optional), `paths` (optional: files of the project recorded in the same version as a change of the shared settings), `author`, `fallback_author` | `shared`, `local`, `written_local`, `commit` (null when the shared settings did not change), `skipped` (why no version was recorded: HEAD detached, a merge in progress; else null). `shared` is merged into the settings as they are, object by object (`{"edit_locks": {"enabled": false}}` keeps the times; `live_updates` is replaced whole, null: none; `web_viewer` likewise merged, null: off); `local`'s `live` is replaced whole, its `sync` merged and its `name` replaced (null or empty: none). Values are checked strictly (an error, nothing written). A change of the shared ones is written into the marker (its other fields kept) and recorded as a version, `Change project settings: <what changed>` (`edit locks off, idle time 15 min, live updates through mqtts://broker.example.com:8883`), by `author`, else git's configured author, else `fallback_author`, which the application then sends as a saved version |
 | `set_identity` | `name`, `email` (both empty: removed) | `name`, `email` (null when removed): the repository's own `user.name` and `user.email` in `.git/config` (a name and an email address without `<`, `>` or control characters, at most 200 characters each). `identity` and the author of versions then come from them first, before git's other configuration and `GIT_AUTHOR_*` |
 | `remember_design` | `path` | `path` (relative to the project): written to `.mitcad/local/recent.json` as the design opened last (`inspect_folder`'s `last_design`) |
 | `remote_check` | `url` | as before, and `files`, `latest`, `versions` as `check_remote` |
@@ -5496,6 +5496,21 @@ the folder across restarts and moves, and is never recorded as a version
 or sent. It never renames the folder or the repository. Trimmed, at most
 200 characters, no control characters (an error when set; when read, an
 unusable one is a problem and not used, a longer one cut).
+
+**The web viewer** (mitcad#423) is `shared`'s `web_viewer`: null until
+the application's File › Project › Web Viewer turns it on
+(`{"web_viewer": {}}`, with the `web/` folder it wrote in `paths`: one
+version, `Change project settings: web viewer on`), then
+{`update_on_save`} (default true: a Save that records a version rewrites
+that design's page and the index; false: `web viewer not updated on each
+save`). It is kept in the marker (`"web_viewer": {"update_on_save":
+true}`), removed with null. A marker's value that is not such an object
+is a problem and the viewer off. `project_settings` in text adds `Web
+viewer: on, updated on each save` (or `updated by Update Web Viewer
+only`) when it is on. The folder itself is the application's
+(`app/COMMANDS.md`, "Project web viewer"); the model only records it.
+Test: `the_web_viewer_is_turned_on_with_its_files` in
+`core/vcs/src/tests/projects.rs`.
 
 `mitcad-cli project inspect <folder>`, `project create <folder> --author A
 [--url U] [--no-push] [--design <name.mitcad>]` (`--design`: a new empty
@@ -8171,7 +8186,7 @@ points*).
 
 | Command | Fields | Result |
 |---|---|---|
-| `build_place` | `part` (`{"library", "url", "rev", "component", "config"}`, or `{"source": "S1", "config"}` to reuse a source), `at` (below), `rotate` (an angle: 0, 90, 180 or 270 deg; a number is radians), `flip` (true: the other end first), `length` (a value, or `{"bind": {"occurrence", "geometry"}, "mode": "face"/"centre"/"through", "add"}`; left out: the source's default), `mitre` (`{"angle", "cut": "new"/"existing"/"shared"/"none"}`; left out on a corner: `shared` at offset 0, else none), `parameters` (other source parameters), `name` | `component`, `occurrence`, `name`, `features` (everything it added), `joint`, `bound`, `adds`, `warnings`, `place` (`side`, `end`, `frame`, `geometry` or `grounded`); undo step `Place <designation>` |
+| `build_place` | `part` (`{"library", "url", "rev", "component", "config"}`, or `{"source": "S1", "config"}` to reuse a source), `at` (below), `rotate` (an angle: 0, 90, 180 or 270 deg; a number is radians), `flip` (true: the other end first), `length` (a value, or `{"bind": {"occurrence", "geometry"}, "mode": "face"/"centre"/"through", "add"}`; left out: the source's default), `mitre` (`{"angle", "cut": "new"/"existing"/"shared"/"none"}`; left out: none, also on a square corner; `shared` on a corner at another angle at offset 0, mitcad#427), `parameters` (other source parameters), `name` | `component`, `occurrence`, `name`, `features` (everything it added), `joint`, `bound`, `adds`, `warnings`, `place` (`side`, `end`, `frame`, `geometry` or `grounded`); undo step `Place <designation>` |
 | `build_edit` | `component`, and any of `at.offset`, `at.from` (on a side or a rail, mitcad#417: `a`, `b` or `middle`; an offset alone is from the part's reference, a `from` alone keeps the part where it is and recomputes its offset), `rotate`, `flip` (true or false: which end meets), `length` (a value detaches, a `bind` binds), `ends` (`{"a": {"angle", "tilt"}, "b": ...}`; null squares an end), `config`, `parameters`, `machining` (`[{"end": "a"/"b", "hole": {"diameter", "depth", "thread"}}]`: the part's own end machining, not a connector's; it replaces the whole list, an empty list takes it away) | `changed` (`offset`, `from`, `rotate`, `flip`, `detached`, `length`, `bound`, `ends`, `config`, `parameters`, `machining`); undo step `Edit <name>` |
 | `build_connect` | `junction` (an id from `build_junctions`), `part` (as `build_place`'s), `fasteners` (default true), `machining` (default true), `name` | `component`, `occurrence`, `adds`, `warnings` (a fastener that cannot be read is left out with a warning); undo step `Connect <designation>` |
 | `build_panel` | `at` (`{"occurrence", "geometry", "point"}`: a face or a slot frame of one of the frame's profiles), `part`, `thickness` (for a part whose thickness is a parameter), `parameters`, `name` | `component`, `occurrence`, `bound`, `fits` (false, with `reason`, when a fixed-width sheet is too narrow or too wide), `adds` (the clamps of a surface panel); undo step `Place <designation>` |
@@ -8282,10 +8297,13 @@ continues it straight or turns 90° at a corner:
   - `at.offset` moves the new part's end from the target's outer side
     along its axis, positive towards the turn (0: flush; negative: past
     the outer side).
-- A corner's mitre left out is `shared` at offset 0 (by half the angle
-  the corner has, 45° at 90°), none at another offset; `cut: "none"`
-  places it without one. A shared mitre at another offset is refused (`a
-  shared mitre needs offset 0`).
+- A corner's mitre left out (mitcad#427): a square corner (90°, as the
+  four `turns` are) has none, lying on the target's end face flush with
+  its outer side; a corner at another angle is `shared` at offset 0 (by
+  half the angle the corner has), none at another offset. `cut: "none"`
+  places it without one, `cut: "shared"` mitres a square corner at 45°. A
+  shared mitre at another offset is refused (`a shared mitre needs
+  offset 0`).
 - A direction back along the target is refused.
 
 **Mitres.**

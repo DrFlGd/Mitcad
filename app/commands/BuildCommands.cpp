@@ -3,8 +3,8 @@
 // profile assemblies"; app/COMMANDS.md, "BUILD"): frames of slot profiles
 // with their connectors, panels and linear parts.
 //
-//   PROFILE  Profile, Panel, Linear Part: a searchable picker of the
-//            library's parts, then clicks; Place (Enter) keeps the panel
+//   PROFILE  Profile, Panel, Linear Part: the part as a tile that opens
+//            the part picker, then clicks; Place (Enter) keeps the panel
 //            open for the next one.
 //   CONNECT  Connector (a junction, the fitting connectors), Fasteners.
 //   MODIFY   Length (bind, detach), Ends (mitres), Flip, Rotate 90 deg.
@@ -92,8 +92,11 @@ struct Shared {
   // The design's BUILD parts and which component each occurrence path places.
   QVector<BuildPart> parts;
   QHash<QString, QString> components;
-  // The part placed last, per role: the picker starts with it.
+  // The part chosen or placed last, per role: the picker starts with it.
   QHash<QString, QString> lastPart;
+  // The system of the part chosen last, per role (mitcad#427): the part
+  // picker opens filtered to it.
+  QHash<QString, QString> lastSystem;
   // The configuration rows of a source's component (Fasteners' sizes).
   QHash<QString, Choices> rows;
   // The library's preview image of a part, by "<library>|<component>",
@@ -300,7 +303,8 @@ void followFilter(const Shared& shared, const QString& role, CommandState& state
 // --- The part picker (mitcad#418; app/COMMANDS.md, "Part picker")
 //
 // The parts a command takes as pictures, in a floating window of the main
-// window: the button beside Part (Connector's Connector) opens it, a tile
+// window: the Part tile (Connector's Connector; mitcad#427, the button
+// beside the drop-down where a frontend has no tiles) opens it, a tile
 // clicked there is chosen as the drop-down chooses it (the same key, so the
 // preview follows at once), and it closes with the command unless pinned;
 // a pinned picker that is open follows the next command that chooses
@@ -380,51 +384,83 @@ PickerRequest roleRequest(const Shared& shared, const QString& role, const Comma
   return request;
 }
 
-// A part of another system than System's (chosen in the picker with its
-// own system filter): System becomes the part's, so that the two agree.
-void followSystem(const Shared& shared, CommandState& state) {
+// The part chosen (in the part picker, or live MCP's `part`) sets the
+// hidden System (mitcad#427): the part's own system, unless it fits
+// several; the picker opens filtered to it, also the next time.
+void systemFromPart(Shared& shared, const QString& role, CommandState& state) {
   Part part;
-  const QString system = state.choice(kSystem);
-  if (system.isEmpty() || !chosenPart(shared, state, part) || part.systemText().contains(system)) {
+  if (!chosenPart(shared, state, part)) {
     return;
   }
   const QString own = part.systemText();
-  state.setChoice(kSystem, own.contains(QLatin1Char(',')) ? QString() : own);
+  if (!own.isEmpty() && !own.contains(QLatin1Char(','))) {
+    state.setChoice(kSystem, own);
+  }
+  shared.lastPart.insert(role, part.key);
+  shared.lastSystem.insert(role, state.choice(kSystem));
 }
 
-// The picker open for the command shows what its panel chose: the system
-// and the part.
-void syncPicker(const Shared& shared, const QString& role, const CommandState& state) {
+// The picker open for the command shows what its panel chose: the part
+// and, with `system`, the system (set through live MCP's `system` or
+// `search`; a part chosen in the picker leaves the picker's filter alone).
+void syncPicker(const Shared& shared, const QString& role, const CommandState& state, bool system) {
   if (PartPicker* picker = shownPicker(shared, commandOf(role))) {
-    picker->grid()->setSystem(state.choice(kSystem));
+    if (system) {
+      picker->grid()->setSystem(state.choice(kSystem));
+    }
     picker->setCurrent(state.choice(kPart));
   }
 }
 
+// The tile of the part chosen (mitcad#427): the library's picture of it,
+// its name, and its supplier and part number (else its system) under it.
+ChoiceTile partTile(Shared& shared, const CommandState& state) {
+  Part part;
+  if (!chosenPart(shared, state, part)) {
+    return {QImage(), QObject::tr("No part"), QString()};
+  }
+  QString detail = QStringList{part.supplier, part.partNumber}.join(QLatin1Char(' ')).trimmed();
+  if (detail.isEmpty()) {
+    detail = part.systemText();
+  }
+  const QString title = part.config.isEmpty() ? part.name : QStringLiteral("%1 (%2)").arg(part.name, part.config);
+  return {shared.thumbnail(part), title, detail};
+}
+
 QVector<InputDef> pickerInputs(const SharedPtr& shared, const QString& role) {
+  // Search and System are not shown (mitcad#427: the part picker has
+  // them); they stay as inputs for live MCP: Search chooses the first part
+  // its words match, System the first part of that system.
+  const auto hidden = [](const CommandState&) { return false; };
   return {
       textInput(kSearch, QObject::tr("Search"))
+          .withVisible(hidden)
           .withTooltip(QObject::tr("Words of the part's name, size, system, slots, supplier or part number"))
           .withOnChange([shared, role](CommandState& state, const CommandContext& context) {
             followFilter(*shared, role, state, context);
-            syncPicker(*shared, role, state);
+            syncPicker(*shared, role, state, true);
           }),
       choiceInput(kSystem, QObject::tr("System"), {}, QString())
+          .withVisible(hidden)
           .withChoices([shared, role](const CommandState&) { return build::systemChoices(shared->catalog.parts(role)); })
           .withOnChange([shared, role](CommandState& state, const CommandContext& context) {
             followFilter(*shared, role, state, context);
-            syncPicker(*shared, role, state);
+            shared->lastSystem.insert(role, state.choice(kSystem));
+            syncPicker(*shared, role, state, true);
           })
           .withTooltip(QObject::tr("The profile system: type, slot width and grid (B8 30: B-type slot 8, 30 mm)")),
+      // The part as a tile (mitcad#427): a click on it, or Enter or Space,
+      // opens the part picker, whose choice sets it. Every part of the
+      // role is a choice (live MCP's `part`).
       choiceInput(kPart, QObject::tr("Part"), {}, QString())
           .withChoices([shared, role](const CommandState& state) {
-            return build::partChoices(shared->catalog.parts(role), state.text(kSearch), state.choice(kSystem),
-                                      state.choice(kPart));
+            return build::partChoices(shared->catalog.parts(role), QString(), QString(), state.choice(kPart));
           })
+          .withChoiceTile([shared](const CommandState& state) { return partTile(*shared, state); })
           .withOnChange([shared, role](CommandState& state, const CommandContext& context) {
             followPart(*shared, state, context);
-            followSystem(*shared, state);
-            syncPicker(*shared, role, state);
+            systemFromPart(*shared, role, state);
+            syncPicker(*shared, role, state, false);
           })
           .withButton(kButtonText, buttonTip(),
                       [shared, role](const CommandState& state, const CommandContext&) {
@@ -432,8 +468,8 @@ QVector<InputDef> pickerInputs(const SharedPtr& shared, const QString& role) {
                           picker->ask(roleRequest(*shared, role, state));
                         }
                       })
-          .withTooltip(QObject::tr("The library's parts that match, with their supplier and part number; ... "
-                                   "beside it: the part picker")),
+          .withTooltip(QObject::tr("The part chosen: a click (or Enter) opens the part picker with the library's "
+                                   "parts as pictures, your favourites first")),
   };
 }
 
@@ -446,12 +482,16 @@ std::function<void(bool)> pickerEnded(const SharedPtr& shared, const QString& co
   };
 }
 
-// The picker's parts read again; the part chosen last stays, else the one
-// placed last, else the first.
+// The picker's parts read again; the part chosen in the panel stays, else
+// the one chosen or placed last, else the first.
 void startPicker(Shared& shared, const QString& role, CommandState& state, const CommandContext& context) {
   shared.catalog.refresh(role, context);
   shared.refreshDesign(context);
   const QVector<Part> parts = shared.catalog.parts(role);
+  // The part picker opens filtered to the system chosen last (mitcad#427).
+  if (state.choice(kSystem).isEmpty()) {
+    state.setChoice(kSystem, shared.lastSystem.value(role));
+  }
   Part known;
   if (!state.choice(kPart).isEmpty() && shared.catalog.find(state.choice(kPart), known)) {
     followPart(shared, state, context);
@@ -483,18 +523,24 @@ QString noPartsText(const Shared& shared, const QString& role) {
 // The panel grows as the placement needs it (mitcad#394): at first the
 // part, its length and, for a ground placement, its direction (X, Y, Z);
 // an end pick adds the corner's direction and the mitre, a side pick the
-// offset, a pick on another part rotate and flip; Placement goes under
-// More. Only what the placement can use highlights: in a ground placement
+// offset, a pick on another part rotate and flip; once the design has a
+// part to go on, Placement shows as four icon buttons (mitcad#427: no More).
+// Only what the placement can use highlights: in a ground placement
 // (the design has no part to go on, or Placement "On a plane") planes,
 // points and faces that are no BUILD part's, with the origin's planes
 // shown and Enter placing the part at the origin; else only the faces of
 // the parts it goes on, construction geometry hidden. The parts go into
 // the BUILD host (the `build_host` query), shown as "Adds to".
 
-const Choices kPlaces = {{QStringLiteral("auto"), QStringLiteral("Automatic: the click decides")},
-                         {QStringLiteral("side"), QStringLiteral("On the side")},
-                         {QStringLiteral("end"), QStringLiteral("On the end")},
-                         {QStringLiteral("plane"), QStringLiteral("On a plane, a face or the origin")}};
+// Placement's icon buttons (mitcad#427), their labels the tooltips.
+const Choices kPlaces = {{QStringLiteral("auto"), QStringLiteral("Automatic: where the click is")},
+                         {QStringLiteral("side"), QStringLiteral("On a profile's side")},
+                         {QStringLiteral("end"), QStringLiteral("On a profile's end")},
+                         {QStringLiteral("plane"), QStringLiteral("On a plane (as the first part)")}};
+const QHash<QString, QString> kPlaceIcons = {{QStringLiteral("auto"), QStringLiteral("build-place-auto")},
+                                             {QStringLiteral("side"), QStringLiteral("build-place-side")},
+                                             {QStringLiteral("end"), QStringLiteral("build-place-end")},
+                                             {QStringLiteral("plane"), QStringLiteral("build-place-plane")}};
 // A ground placement's axis (at.direction): X, Y or Z of the host.
 const Choices kAxes = {{QStringLiteral("x"), QStringLiteral("Along X")},
                        {QStringLiteral("y"), QStringLiteral("Along Y")},
@@ -527,9 +573,20 @@ const Choices kLengthModes = {{QStringLiteral("face"), QStringLiteral("Auto: to 
                               {QStringLiteral("centre"), QStringLiteral("Auto: to the centre")},
                               {QStringLiteral("through"), QStringLiteral("Auto: through")},
                               {kTyped, QStringLiteral("Typed length")}};
+// The length mode's icon buttons (mitcad#427), their labels the tooltips;
+// kLengthModes names the bound length in the inspection.
+const Choices kLengthButtons = {{QStringLiteral("face"), QStringLiteral("Auto: to the face it meets")},
+                                {QStringLiteral("centre"), QStringLiteral("Auto: to its centre")},
+                                {QStringLiteral("through"), QStringLiteral("Auto: through it")},
+                                {kTyped, QStringLiteral("Typed length")}};
+const QHash<QString, QString> kLengthIcons = {{QStringLiteral("face"), QStringLiteral("build-length-face")},
+                                              {QStringLiteral("centre"), QStringLiteral("build-length-centre")},
+                                              {QStringLiteral("through"), QStringLiteral("build-length-through")},
+                                              {kTyped, QStringLiteral("build-length-typed")}};
 const QStringList kAutoModes = {QStringLiteral("face"), QStringLiteral("centre"), QStringLiteral("through")};
-// Auto: the model's default (mitcad#417: shared on a corner at offset 0,
-// else none), its label saying which.
+// Auto: the model's default (mitcad#427: none on a square corner, as the
+// panel's turns are; shared on a corner at another angle at offset 0),
+// its label saying which.
 const Choices kMitres = {{QStringLiteral("auto"), QStringLiteral("Auto")},
                          {QStringLiteral("none"), QStringLiteral("None")},
                          {QStringLiteral("shared"), QStringLiteral("Shared: both on the bisector")},
@@ -715,8 +772,9 @@ Choices directionChoices(const CommandState& state) {
 }
 
 // The mitre Auto takes: what the click's preview said while Direction and
-// the corner's offset are as then, else the model's rule (shared on a
-// corner at offset 0, none otherwise).
+// the corner's offset are as then, else none: the panel's turns are square
+// to the part they meet, and a square corner lies on the end face without
+// a mitre (mitcad#427; only a corner at another angle is shared).
 QString autoMitre(const CommandState& state) {
   const bool offset = cmd::nonZero(state, QStringLiteral("corner_offset"));
   const QJsonObject end = endPick(state);
@@ -724,7 +782,7 @@ QString autoMitre(const CommandState& state) {
   if (!clicked.isEmpty() && state.choice(QStringLiteral("direction")) == kAuto && !offset) {
     return clicked;
   }
-  return turnsCorner(state) && !offset ? QStringLiteral("shared") : QStringLiteral("none");
+  return QStringLiteral("none");
 }
 
 Choices mitreChoices(const CommandState& state) {
@@ -802,7 +860,7 @@ Placement placement(const Shared& shared, const QString& role, const CommandStat
     fields.insert(QStringLiteral("rotate"), angleValue(state.choice(QStringLiteral("rotate"))));
     fields.insert(QStringLiteral("flip"), state.checked(QStringLiteral("flip")));
     // Auto (or nothing chosen) leaves the mitre to the model; None says
-    // so (a corner's default is shared).
+    // so (a corner at an angle other than 90 degrees defaults to shared).
     const QString mitre = state.choice(QStringLiteral("mitre"));
     if (profile && result.how == Against::End && !mitre.isEmpty() && mitre != kAuto) {
       QJsonObject cut{{QStringLiteral("cut"), mitre}};
@@ -1383,7 +1441,6 @@ QVector<InputDef> placementInputs(const SharedPtr& shared, const QString& role, 
     return how(state) == Against::Side || how(state) == Against::End;
   };
   const auto cornered = [onEnd](const CommandState& state) { return onEnd(state) && turnsCorner(state); };
-  const auto more = [](const CommandState& state) { return state.checked(QStringLiteral("more")); };
   QVector<InputDef> inputs = {
       selectionInput(kAt, QObject::tr("Place On"),
                      SelectKind::Face | SelectKind::Plane | SelectKind::Point | SelectKind::Vertex, 0, 1)
@@ -1406,7 +1463,10 @@ QVector<InputDef> placementInputs(const SharedPtr& shared, const QString& role, 
           .withHiddenConstruction()
           .withTooltip(QObject::tr("The first part: a plane, a point or a face, or none (Enter: at the origin). "
                                    "Then a profile: near an end on its side, or its end face")),
-      choiceInput(QStringLiteral("length_mode"), QObject::tr("Length"), kLengthModes, QStringLiteral("face"))
+      // Icon buttons (mitcad#427), each one's tooltip naming it; Tab steps
+      // face, centre, through.
+      choiceInput(QStringLiteral("length_mode"), QObject::tr("Length"), kLengthButtons, QStringLiteral("face"))
+          .withChoiceIcons(kLengthIcons)
           .withVisible([cut, ground](const CommandState& state) { return cut(state) && !ground(state); })
           .withTabCycle(kAutoModes)
           .withOnChange([shared](CommandState& state, const CommandContext& context) {
@@ -1418,9 +1478,7 @@ QVector<InputDef> placementInputs(const SharedPtr& shared, const QString& role, 
                 state.setValue(QStringLiteral("length"), kNaN);
               }
             }
-          })
-          .withTooltip(QObject::tr("Auto: up to the part in the way (bound: it follows that part); Tab steps "
-                                   "face, centre, through")),
+          }),
       valueInput(QStringLiteral("length"), QObject::tr("Length"), ValueKind::Length, QString())
           .withVisible(cut)
           .withCursorBox()
@@ -1480,7 +1538,7 @@ QVector<InputDef> placementInputs(const SharedPtr& shared, const QString& role, 
     inputs.append(choiceInput(QStringLiteral("mitre"), QObject::tr("Mitre"), kMitres, kAuto)
                       .withChoices([](const CommandState& state) { return mitreChoices(state); })
                       .withVisible([cut, onEnd](const CommandState& state) { return cut(state) && onEnd(state); })
-                      .withTooltip(QObject::tr("On an end: Auto (a corner at offset 0 shared, else none), none, "
+                      .withTooltip(QObject::tr("On an end: Auto (none: a square corner lies on the end face), none, "
                                                "both on the bisector (shared), the new part or the existing one")));
     inputs.append(valueInput(QStringLiteral("mitre_angle"), QObject::tr("Mitre Angle"), ValueKind::Angle,
                              QStringLiteral("45 deg"))
@@ -1511,11 +1569,11 @@ QVector<InputDef> placementInputs(const SharedPtr& shared, const QString& role, 
                     .withVisible(onPart)
                     .withTooltip(QObject::tr("About the part's axis, in 90 degree steps")));
   inputs.append(flipInput(QStringLiteral("flip"), QObject::tr("Flip")).withVisible(onPart));
-  inputs.append(checkInput(QStringLiteral("more"), QObject::tr("More"), false)
-                    .withDisclosure()
-                    .withTooltip(QObject::tr("How the click places the part")));
+  // Placement as icon buttons (mitcad#427: shown directly, no More), once
+  // the design has a part to go on; each button's tooltip names it.
   inputs.append(choiceInput(QStringLiteral("place"), QObject::tr("Placement"), kPlaces, QStringLiteral("auto"))
-                    .withVisible(more)
+                    .withChoiceIcons(kPlaceIcons)
+                    .withVisible([shared, role](const CommandState&) { return shared->hasTargets(role); })
                     .withOnChange([shared, role](CommandState& state, const CommandContext&) {
                       // What the pick takes changes with it: a pick it no
                       // longer takes is picked again.
@@ -1524,9 +1582,7 @@ QVector<InputDef> placementInputs(const SharedPtr& shared, const QString& role, 
                         state.setItems(kAt, {});
                         state.setObject(QStringLiteral("at_pick"), {});
                       }
-                    })
-                    .withTooltip(QObject::tr("On a profile's side (along its slot) or on its end; Automatic: where "
-                                             "the click was; On a plane: as the first part (Enter: at the origin)")));
+                    }));
   return inputs;
 }
 
@@ -1881,6 +1937,8 @@ CommandDef connectorCommand(const SharedPtr& shared, DocumentHost& host, const C
           .withOnChange([shared](CommandState& state, const CommandContext&) {
             syncConnectorPicker(*shared, state, false);
           })
+          // A tile that opens the part picker (mitcad#427).
+          .withChoiceTile([shared](const CommandState& state) { return partTile(*shared, state); })
           .withButton(kButtonText, buttonTip(),
                       [shared](const CommandState& state, const CommandContext&) {
                         if (PartPicker* picker = partPicker(*shared, true)) {
@@ -1903,7 +1961,8 @@ CommandDef connectorCommand(const SharedPtr& shared, DocumentHost& host, const C
             Part part;
             return shared->catalog.find(key, part) ? shared->thumbnail(part) : QImage();
           })
-          .withTooltip(QObject::tr("The connectors that fit the junction's systems and room, best first")),
+          .withTooltip(QObject::tr("The connector chosen among those that fit the junction's systems and room: a "
+                                   "click (or Enter) opens the part picker, the best fitting first")),
       checkInput(QStringLiteral("fasteners"), QObject::tr("With Nuts and Screws"), true),
       checkInput(QStringLiteral("machining"), QObject::tr("With End Machining"), true),
       checkInput(QStringLiteral("all_junctions"), QObject::tr("Show All Junctions"), false)

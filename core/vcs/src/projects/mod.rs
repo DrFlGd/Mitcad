@@ -704,6 +704,12 @@ pub(crate) fn describe_project(name: &str, answer: &Value) -> Option<String> {
             ),
             None => writeln!(out, "Live updates: none"),
         };
+        // The web viewer (mitcad#423), when it is on.
+        let _ = match shared["web_viewer"]["update_on_save"].as_bool() {
+            Some(true) => writeln!(out, "Web viewer: on, updated on each save"),
+            Some(false) => writeln!(out, "Web viewer: on, updated by Update Web Viewer only"),
+            None => Ok(()),
+        };
         let _ = match local["live"]["mode"].as_str() {
             Some("off") => writeln!(out, "Live updates on this computer: off"),
             Some("broker") => writeln!(

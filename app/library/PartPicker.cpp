@@ -1007,8 +1007,10 @@ bool PartGrid::passes(const PickerPart& part) const {
   }
   const QString system = m_system->currentData().toString();
   if (!system.isEmpty()) {
+    // A part made for no system fits any (as library_build_candidates
+    // says): a linear part's carriage beside its rail of a system.
     const QStringList systems = part.system.split(QStringLiteral(", "), Qt::SkipEmptyParts);
-    if (!systems.contains(system)) {
+    if (!systems.isEmpty() && !systems.contains(system)) {
       return false;
     }
   }

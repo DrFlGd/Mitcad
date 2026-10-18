@@ -167,7 +167,8 @@ pub enum MitreCut {
     New,
     Existing,
     Shared,
-    /// No mitre (on a corner, where the default is `shared`).
+    /// No mitre (on a corner not at 90 degrees, where the default is
+    /// `shared`).
     None,
 }
 
@@ -1158,8 +1159,10 @@ impl<K: Kernel> Document<K> {
                         "the direction runs back along the part it meets: turn it to a side",
                     ));
                 }
-                // A corner's offset and mitre: shared at offset 0 unless
-                // the command says otherwise, none at another offset.
+                // A corner's offset and mitre: a square corner (90 degrees)
+                // lies on the end face without a mitre; another angle is
+                // shared at offset 0 unless the command says otherwise; none
+                // at another offset (owner 18.10.2026).
                 let corner = bend.is_some();
                 let offset = match (corner, &at.offset) {
                     (true, Some(value)) => value_in(self, value, Unit::MM)?,
@@ -1176,6 +1179,7 @@ impl<K: Kernel> Document<K> {
                         Some(m.clone())
                     }
                     None if corner
+                        && bend.is_some_and(|d| dot(d, u).abs() > 1e-6)
                         && offset.abs() <= 1e-9
                         && cut_to_length
                         && target.info.is_cut_to_length() =>

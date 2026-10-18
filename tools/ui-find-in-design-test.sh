@@ -88,6 +88,12 @@ search() {
 ui_start_display
 ui_start_app --open "$FILE" --no-native-dialogs
 ui_step "fit (F6)"                       ui_key F6
+# A tree longer than the browser opens folded below the root (mitcad#426).
+ui_expect_log "Browser opened " "the browser fitted the design"
+ui_sync
+if grep -q "Browser opened folded" "$UI_LOG"; then
+  ui_step "open Bodies"                  ui_click_logged "Browser arrow Root/Bodies"
+fi
 ui_expect_log "Browser Root/Bodies/Plate at" "the browser lists the root's body"
 ui_expect_log "Find in Design button at" "the magnifier is on the browser's title row"
 

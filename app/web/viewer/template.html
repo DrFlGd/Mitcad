@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: MIT -->
+<!--
+  Mitcad's web viewer: one self-contained page per design. Mitcad's page
+  writer replaces the three MITCAD placeholders with the import map of the
+  inlined modules (modules.txt), the viewer (viewer.js) and the design's
+  data, so the page runs offline from file:// as well as from any static
+  host. The viewer is Mitcad's (MIT licence); it contains three.js
+  (https://threejs.org/), whose licence follows:
+
+  The MIT License
+
+  Copyright © 2010-2024 three.js authors
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in
+  all copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+  THE SOFTWARE.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="generator" content="Mitcad">
+<title>{{TITLE}}</title>
+<style>
+  :root {
+    --bg: #e9edf2;
+    --panel: rgba(255, 255, 255, 0.92);
+    --text: #1d2430;
+    --muted: #5b6575;
+    --line: #c9d0da;
+    --accent: #1f6feb;
+    --accent-text: #ffffff;
+    --warn: #b35900;
+    color-scheme: light;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--text);
+    font: 14px/1.35 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  #view { position: fixed; inset: 0; }
+  #view canvas { display: block; width: 100%; height: 100%; touch-action: none; outline: none; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12); }
+  #toolbar { position: fixed; top: 8px; left: 8px; right: 8px; display: flex; flex-wrap: wrap; gap: 6px;
+    align-items: center; padding: 6px; pointer-events: none; background: none; border: 0; box-shadow: none; }
+  #toolbar > * { pointer-events: auto; }
+  #title { font-weight: 600; padding: 0 6px; max-width: 40vw; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; }
+  button, select, input { font: inherit; color: var(--text); }
+  button, select { background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
+    padding: 5px 10px; cursor: pointer; min-height: 32px; }
+  button:hover, select:hover { border-color: var(--accent); }
+  button[aria-pressed="true"] { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+  #eye-field { display: none; align-items: center; gap: 4px; padding: 3px 8px; }
+  #eye-field input { width: 4.5em; padding: 3px 4px; border: 1px solid var(--line); border-radius: 4px; }
+  body.person #eye-field, body.place #eye-field { display: inline-flex; }
+  #tree { position: fixed; top: 56px; left: 8px; bottom: 56px; width: min(300px, 80vw); overflow: auto;
+    padding: 6px 4px; display: none; }
+  body.tree-open #tree { display: block; }
+  #tree ul { list-style: none; margin: 0; padding-left: 16px; }
+  #tree > ul { padding-left: 2px; }
+  #tree li > div { display: flex; align-items: center; gap: 4px; padding: 2px 4px; border-radius: 4px;
+    white-space: nowrap; }
+  #tree li > div.picked { background: rgba(31, 111, 235, 0.15); }
+  #tree li > div > span { cursor: pointer; overflow: hidden; text-overflow: ellipsis; }
+  #tree .toggle { width: 16px; text-align: center; cursor: pointer; color: var(--muted); user-select: none; }
+  #tree li.closed > ul { display: none; }
+  #info { position: fixed; left: 50%; bottom: 10px; transform: translateX(-50%); max-width: calc(100vw - 20px);
+    padding: 6px 12px; display: none; text-align: center; }
+  #info.shown { display: block; }
+  #hint { position: fixed; left: 50%; top: 56px; transform: translateX(-50%); max-width: calc(100vw - 20px);
+    padding: 6px 12px; display: none; text-align: center; }
+  #hint.shown { display: block; }
+  #hint.through { background: var(--warn); color: #fff; border-color: var(--warn); }
+  #status { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+    font-size: 16px; color: var(--muted); pointer-events: none; }
+  #status.error { color: #b00020; }
+  #status.hidden { display: none; }
+  #measure-label { position: fixed; padding: 3px 8px; pointer-events: none; display: none;
+    transform: translate(-50%, -130%); white-space: nowrap; }
+  #measure-label.shown { display: block; }
+  #help { position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
+    background: rgba(0, 0, 0, 0.35); }
+  #help.shown { display: flex; }
+  #help .panel { max-width: min(640px, calc(100vw - 24px)); max-height: calc(100vh - 24px); overflow: auto;
+    padding: 12px 18px; }
+  #help h2 { font-size: 16px; margin: 4px 0 8px; }
+  #help h3 { font-size: 14px; margin: 12px 0 4px; }
+  #help dl { display: grid; grid-template-columns: max-content 1fr; gap: 3px 14px; margin: 0; }
+  #help dt { font-weight: 600; }
+  #help dd { margin: 0; }
+  kbd { font: 12px ui-monospace, monospace; border: 1px solid var(--line); border-radius: 3px; padding: 0 4px;
+    background: #fff; }
+  #stick { position: fixed; left: 24px; bottom: 24px; width: 120px; height: 120px; border-radius: 50%;
+    display: none; touch-action: none; background: rgba(255, 255, 255, 0.35); border: 2px solid rgba(0, 0, 0, 0.25); }
+  #stick-knob { position: absolute; left: 35px; top: 35px; width: 50px; height: 50px; border-radius: 50%;
+    background: rgba(31, 111, 235, 0.7); pointer-events: none; }
+  #through { position: fixed; right: 24px; bottom: 40px; display: none; touch-action: none; min-height: 48px; }
+  body.person.touch #stick, body.person.touch #through { display: block; }
+  body.place #view canvas, body.measure #view canvas { cursor: crosshair; }
+</style>
+<!--MITCAD:IMPORTMAP-->
+</head>
+<body>
+<div id="view"></div>
+<div id="toolbar">
+  <span id="title" class="panel" style="padding:5px 10px"></span>
+  <button id="home-button" type="button" title="Home view (Home)">Home</button>
+  <select id="views" title="Named views"><option value="">Views</option></select>
+  <button id="tree-button" type="button" aria-pressed="false" title="Components">Components</button>
+  <button id="person-button" type="button" aria-pressed="false" title="Walk as a person">Person</button>
+  <label id="eye-field" class="panel" title="The person's eye height above the floor">Eye height
+    <input id="eye-height" type="number" min="0.3" max="3" step="0.05" value="1.65"> m</label>
+  <button id="measure-button" type="button" aria-pressed="false" title="Measure a distance">Measure</button>
+  <button id="help-button" type="button" title="Keys and controls (H)">?</button>
+</div>
+<div id="tree" class="panel"></div>
+<div id="hint" class="panel"></div>
+<div id="info" class="panel"></div>
+<div id="measure-label" class="panel"></div>
+<div id="stick"><div id="stick-knob"></div></div>
+<button id="through" type="button">Through walls</button>
+<div id="status">Loading…</div>
+<div id="help">
+  <div class="panel" role="dialog" aria-label="Keys and controls">
+    <h2>Keys and controls</h2>
+    <h3>Looking around</h3>
+    <dl>
+      <dt>Left drag</dt><dd>Orbit</dd>
+      <dt>Middle or right drag</dt><dd>Pan</dd>
+      <dt>Wheel</dt><dd>Zoom at the cursor</dd>
+      <dt><kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd></dt><dd>Fly forward, left, back, right</dd>
+      <dt><kbd>Q</kbd> <kbd>E</kbd></dt><dd>Fly down, up</dd>
+      <dt><kbd>Shift</kbd></dt><dd>Faster</dd>
+      <dt>Click</dt><dd>The name of the item under the cursor</dd>
+      <dt><kbd>Home</kbd></dt><dd>The home view; Views lists the design's named views</dd>
+      <dt>Components</dt><dd>The component tree: the boxes show and hide components</dd>
+    </dl>
+    <h3>Walking as a person</h3>
+    <dl>
+      <dt>Person</dt><dd>Then click a floor to stand there</dd>
+      <dt>Mouse</dt><dd>Looks around</dd>
+      <dt><kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd></dt><dd>Walk; steps up to 0.25 m are climbed, walls stop you</dd>
+      <dt><kbd>Shift</kbd></dt><dd>Run</dd>
+      <dt>Right button held</dt><dd>Walk through walls and floors, no gravity; <kbd>Q</kbd> <kbd>E</kbd> down, up</dd>
+      <dt>Eye height</dt><dd>In metres, 1.65 m at first</dd>
+      <dt><kbd>Esc</kbd></dt><dd>Releases the mouse; a click takes it again, <kbd>Esc</kbd> again leaves the person</dd>
+    </dl>
+    <h3>Measuring</h3>
+    <dl>
+      <dt>Measure</dt><dd>Then click two points; they snap to corners and edges near the cursor</dd>
+      <dt><kbd>Esc</kbd></dt><dd>Clears the measurement; again leaves measuring</dd>
+    </dl>
+    <h3>Touch</h3>
+    <dl>
+      <dt>One finger</dt><dd>Orbit; a tap names the item</dd>
+      <dt>Two fingers</dt><dd>Pan and pinch to zoom</dd>
+      <dt>As a person</dt><dd>The stick walks, a drag looks, hold Through walls to pass walls</dd>
+    </dl>
+    <p><kbd>H</kbd> or <kbd>?</kbd> shows and hides this help. <button id="help-close" type="button">Close</button></p>
+  </div>
+</div>
+<!--MITCAD:DATA-->
+<!--MITCAD:VIEWER-->
+</body>
+</html>

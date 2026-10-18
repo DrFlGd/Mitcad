@@ -497,6 +497,9 @@ visibly on a desktop in use.
 - No network: update checks are off (`MITCAD_NO_UPDATE_CHECK=1`);
   `ui-update-test.sh` uses its own local HTTPS server.
 - Xvfb runs with `-noreset` so a restarted app finds the display at once.
+- The app runs without gdb: gdb loads the debug build's symbols (about
+  1 GB) at every start, and the app's crash handler logs a crash's signal
+  and stack itself. `UI_GDB=1` starts it under gdb for gdb's backtrace.
 
 ### Windows UI tests
 
@@ -816,7 +819,11 @@ Results: `build/dev/check-timings.tsv` (plus ctest tests ≥ 10 s as
 test that fails keeps the application's whole log there too
 (`ui-<name>.app.log`, `MITCAD_UI_LOG_DIR`), and a rerun of a failed UI
 test first renames its logs to `ui-<name>.failed.log` and
-`ui-<name>.failed.app.log`, so the failure's logs stay for a look.
+`ui-<name>.failed.app.log`, so the failure's logs stay for a look. A
+UI test that crashed runs once more under gdb (`UI_GDB=1`), its log
+`ui-<name>.gdb.log` and the app's in `ui-<name>.gdb/`; the test stays
+failed whatever that run gives. UI tests run `--ui-jobs` at once, by
+default `MITCAD_UI_JOBS`, else 4 (each takes about 0.5 G without gdb).
 
 Test steps hold one of two machine-wide slots (`flock` on
 `MITCAD_TEST_LOCK`, default `~/.mitcad-test.lock` and `.2`;

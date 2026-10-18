@@ -28,8 +28,13 @@
 #          [--memory SIZE] [--fresh] [--only STEP,...]
 #   --full          the full check, before a release build: --ctest all,
 #                   --corpus always, --ui all (--release is the same).
-#   --ui-jobs N     UI tests at once (default 4). The longest ones start
-#                   first, by their last times in the history.
+#   --ui-jobs N     UI tests at once (default $MITCAD_UI_JOBS, else 4). The
+#                   longest ones start first, by their last times in the
+#                   history. The app runs without gdb (UI_GDB=0, its own
+#                   crash handler logs the stack); a test that crashed runs
+#                   once more under gdb (UI_GDB=1) for gdb's backtrace, as
+#                   ui-<name>.gdb.log, and stays failed whatever that run
+#                   gives.
 #   --ui MODE       "all", or "auto" (default): a UI test runs only when the
 #                   files it depends on differ from every run in which it
 #                   passed on this machine (kept in
@@ -158,7 +163,7 @@ CTEST_PASSED=${XDG_CACHE_HOME:-$HOME/.cache}/mitcad/ctest-passed
 CORPUS_MEMORY=${MITCAD_CORPUS_MEMORY:-1536M}
 CORPUS_TIMEOUT=${MITCAD_CORPUS_TIMEOUT:-300}
 
-UI_JOBS=4
+UI_JOBS=${MITCAD_UI_JOBS:-4}
 UI=auto
 CTEST=auto
 CTEST_JOBS=$(($(nproc) / 4))
@@ -604,6 +609,15 @@ reap_ui() {
   echo "   $result ui-$name ($seconds s)"
   [ "$result" = ok ] || tail -n 40 "$LOGS/ui-$name.log"
   record "ui-$name" "$seconds" "$result"
+  # A crash (the app's crash handler logged its stack) runs the test once
+  # more under gdb, for gdb's backtrace with lines; the test stays failed.
+  if [ "$result" = FAIL ] && grep -qsE "crashed during|SIGSEGV|SIGABRT|terminate called|Segmentation fault" \
+    "$LOGS/ui-$name.log" "$LOGS/ui-$name".*app.log "$LOGS/ui-$name".app.log; then
+    echo "   ui-$name crashed: once more under gdb (ui-$name.gdb.log)"
+    mkdir -p "$LOGS/ui-$name.gdb"
+    UI_GDB=1 MITCAD_UI_LOG_DIR=$LOGS/ui-$name.gdb timeout -k 30 "$UI_TIMEOUT" \
+      bash "tools/ui-$name-test.sh" > "$LOGS/ui-$name.gdb.log" 2>&1 9>&-
+  fi
   if [ "$result" = ok ] && [ "$BUILT" = 1 ] && [ "$UI_LAYOUT_FINGERPRINT" != unknown ]; then
     mkdir -p "$UI_PASSED"
     echo "${UI_FINGERPRINTS[$name]}" >> "$UI_PASSED/$name"

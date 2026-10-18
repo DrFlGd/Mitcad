@@ -9,7 +9,8 @@
 # Cover:1 (O3, C3) empty and active, saved so (the policies as in
 # tools/ui-component-sketch-test.sh: Cover's sketches may lie on Part's
 # faces):
-#   - Opened, Part's block and the shield are ghosts (Cover is active).
+#   - Opened with the root active (mitcad#426): no ghosts; Cover activated,
+#     Part's block and the shield are ghosts.
 #   - A ghost stays pickable: a click on Part's block from the top selects
 #     its top face; a sketch of Cover on that face; Project's hover shows
 #     the face under the pointer and a click projects it.
@@ -74,8 +75,15 @@ ui_start_display
 ui_start_app --open "$FILE"
 ui_expect_log "F2.b0 in O1" "Part's block shown"
 ui_expect_log "F3.b0 in O2" "the shield shown"
-ui_expect_log "View inactive ghosts: 2 bodies (active Cover:1)" "opened with Cover active: the block and the shield are ghosts"
-ui_expect_log "Browser radio Root at" "the root is not the active component"
+ui_expect_log "Opened with the root active; C3 was active in the file (unmodified)" "opened with the root active (mitcad#426)"
+ui_sync
+# After the design opened: the empty design of the start has Part1 active.
+sed -n '/^Opened with the root active/,$p' "$UI_LOG" | grep "^View inactive ghosts: " | grep -qv ": none$" && ui_fail "ghosts with the root active"
+echo "ok   nothing is a ghost with the root active"
+ui_mark
+ui_step "activate Cover (radio)"         ui_click_logged "Browser radio Root/Cover:1"
+ui_expect_new "Activated Cover" "Cover active"
+ui_expect_new "View inactive ghosts: 2 bodies (active Cover:1)" "the block and the shield are ghosts"
 
 echo "--- A ghost stays pickable: a sketch on its face, a projection of it"
 ui_mark

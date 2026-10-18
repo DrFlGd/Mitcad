@@ -354,13 +354,18 @@ function Ui-Init([string]$App, [string]$Out, [string]$QtBin = '', [hashtable]$Sh
   Remove-Item -Recurse -Force $script:UiThumbnails -ErrorAction SilentlyContinue
 }
 
-# Ui-StartApp name arguments... [-Recovery] [-Updates]: starts Mitcad with
-# its log in <out>\<name>.log and waits for the main window ("<document> -
-# Mitcad"). The app offers no recovery of autosaved work at start-up
-# (--no-recovery: a test that killed it and starts it again would get the
-# question) unless -Recovery is given, and checks for no updates unless
-# -Updates is given (a test with a server of its own: MITCAD_UPDATE_URL).
-function Ui-StartApp([string]$Name, [string[]]$Arguments = @(), [switch]$Recovery, [switch]$Updates) {
+# Ui-StartApp name arguments... [-Recovery] [-Updates] [-DefaultChrome]:
+# starts Mitcad with its log in <out>\<name>.log and waits for the main
+# window ("<document> - Mitcad"). The app offers no recovery of autosaved
+# work at start-up (--no-recovery: a test that killed it and starts it
+# again would get the question) unless -Recovery is given, and checks for
+# no updates unless -Updates is given (a test with a server of its own:
+# MITCAD_UPDATE_URL). The window is Docked (--chrome=docked), which the
+# tests were written for, unless the arguments choose a layout (--chrome)
+# or -DefaultChrome leaves it to the preference and the default (Floating
+# since mitcad#429).
+function Ui-StartApp([string]$Name, [string[]]$Arguments = @(), [switch]$Recovery, [switch]$Updates,
+                     [switch]$DefaultChrome) {
   Ui-StopApp
   $script:UiLog = Join-Path $script:UiOut "$Name.log"
   Remove-Item -Force $script:UiLog -ErrorAction SilentlyContinue
@@ -395,6 +400,7 @@ function Ui-StartApp([string]$Name, [string[]]$Arguments = @(), [switch]$Recover
   # so the helpers read it meanwhile.
   $options = @('--no-native-dialogs')
   if (-not $Recovery) { $options += '--no-recovery' }
+  if (-not $DefaultChrome -and -not ($Arguments | Where-Object { $_ -like '--chrome*' })) { $options += '--chrome=docked' }
   $arguments = ($options + $Arguments | ForEach-Object { '"' + $_ + '"' }) -join ' '
   $script:UiProcess = Start-Process -FilePath $script:UiApp -ArgumentList $arguments -PassThru `
     -RedirectStandardError $script:UiLog -RedirectStandardOutput (Join-Path $script:UiOut "$Name.out")

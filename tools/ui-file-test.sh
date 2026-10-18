@@ -75,7 +75,7 @@ expect_exit() {
     sleep 0.2
   done
   kill -0 "$UI_RUNNER" 2> /dev/null && ui_fail "$1: Mitcad did not exit"
-  if command -v gdb > /dev/null; then
+  if command -v gdb > /dev/null && [ "${UI_GDB:-0}" = 1 ]; then
     grep -q "exited normally" "$UI_LOG" || ui_fail "$1: abnormal exit"
   else
     wait "$UI_RUNNER" || ui_fail "$1: exit code $?"
@@ -92,7 +92,7 @@ expect_title "Untitled - Mitcad"
 # New and New Design are one entry; 3D Print, Insert Component and Render
 # Image are on the ribbon only; the project commands in a submenu.
 project_menu="New Project | Open Project | Open from Cloud | - | Sync | Check for Newer Versions | Open in Browser"
-project_menu="$project_menu | - | Move to a Project | Project Settings"
+project_menu="$project_menu | - | Move to a Project | Project Settings | - | Web Viewer | Update Web Viewer"
 file_menu="New Design | Open | Open Recent > | Open Read-Only | Close | - | Save | Save As | Save with Description"
 file_menu="$file_menu | Version History | - | Project > [$project_menu] | - | Import | Export | - | Recover Documents"
 file_menu="$file_menu | - | Exit"

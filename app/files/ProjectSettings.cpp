@@ -139,6 +139,9 @@ private:
   void writeLocal();
   void writeAuthor();
   void writeDisplayName();
+  // The web viewer's update on each Save (mitcad#423): for everyone, a
+  // version when changed.
+  void writeWebViewer();
   // The name the Projects panel shows without a display name: a Cloud
   // project's repository address without the scheme, else the folder's
   // name (mitcad#173).
@@ -187,6 +190,9 @@ private:
   QLabel* m_progressText = nullptr;
   bool m_probed = false;
   QLabel* m_problem = nullptr;
+  QGroupBox* m_webBox = nullptr;
+  QCheckBox* m_webUpdate = nullptr;
+  QLabel* m_webNote = nullptr;
 };
 
 ProjectSettingsDialog::ProjectSettingsDialog(QWidget* parent, QString root, const ProjectSettingsHost& host)
@@ -291,6 +297,19 @@ ProjectSettingsDialog::ProjectSettingsDialog(QWidget* parent, QString root, cons
   m_fields = new ProjectSettingsFields(ProjectSettingsFields::Host::ProjectSettings, this);
   layout->addWidget(m_fields);
 
+  // The project's web viewer (mitcad#423): File > Project > Web Viewer
+  // turns it on; whether a Save updates it is for everyone (a version).
+  m_webBox = new QGroupBox(tr("Web viewer (saved as a version)"));
+  auto* webColumn = new QVBoxLayout(m_webBox);
+  m_webUpdate = new QCheckBox(tr("&Update the web viewer on each Save"));
+  m_webUpdate->setObjectName(QStringLiteral("projectWebViewerUpdate"));
+  m_webUpdate->setToolTip(tr("A Save that records a version also writes that design's page in the project's web "
+                             "folder and its index again; off: only File > Project > Update Web Viewer does"));
+  m_webNote = note();
+  webColumn->addWidget(m_webUpdate);
+  webColumn->addWidget(m_webNote);
+  layout->addWidget(m_webBox);
+
   m_problem = note();
   setErrorStyleSheet(m_problem);
   layout->addWidget(m_problem);
@@ -357,6 +376,7 @@ ProjectSettingsDialog::ProjectSettingsDialog(QWidget* parent, QString root, cons
   });
   connect(m_fields->m_hereBroker, &QLineEdit::editingFinished, this, [this] { writeLocal(); });
   connect(m_fields->m_herePrefix, &QLineEdit::editingFinished, this, [this] { writeLocal(); });
+  connect(m_webUpdate, &QCheckBox::toggled, this, [this] { writeWebViewer(); });
   connect(buttons, &QDialogButtonBox::rejected, this, &ProjectSettingsDialog::reject);
   logState();
 }
@@ -388,6 +408,15 @@ void ProjectSettingsDialog::read() {
   m_fields->m_prefix->setText(live.value(QStringLiteral("prefix")).toString());
   m_fields->m_broker->setEnabled(!live.isEmpty());
   m_fields->m_prefix->setEnabled(!live.isEmpty());
+  const QJsonValue web = shared.value(QStringLiteral("web_viewer"));
+  m_webUpdate->setEnabled(web.isObject());
+  m_webUpdate->setChecked(web.isObject() &&
+                          web.toObject().value(QStringLiteral("update_on_save")).toBool(true));
+  m_webNote->setText(web.isObject()
+                         ? tr("Its pages are in the project's web folder: open web/index.html in a browser, or let a "
+                              "static web host serve the repository.")
+                         : tr("Not turned on: File > Project > Web Viewer writes a page per design into the "
+                              "project's web folder."));
   m_fields->m_test->setVisible(true);
   m_fields->m_test->setEnabled(static_cast<bool>(m_host.testBroker));
   const QJsonObject local = m_settings.value(QStringLiteral("local")).toObject();
@@ -487,6 +516,10 @@ void ProjectSettingsDialog::logState() const {
                                 QStringLiteral("%1 <%2>").arg(m_fields->m_name->text(), m_fields->m_email->text()),
                                 m_fields->m_sendAtOnce->isChecked() ? QStringLiteral("on") : QStringLiteral("off"),
                                 m_fields->m_check->currentText(), m_fields->m_liveHere->currentData().toString());
+  qInfo().noquote() << QStringLiteral("Project Settings web viewer: %1")
+                           .arg(!m_webUpdate->isEnabled()   ? QStringLiteral("not turned on")
+                                : m_webUpdate->isChecked() ? QStringLiteral("on, updated on each Save")
+                                                           : QStringLiteral("on, not updated on Save"));
 }
 
 void ProjectSettingsDialog::changeEvent(QEvent* event) {
@@ -855,6 +888,44 @@ void ProjectSettingsDialog::writeDisplayName() {
   m_settings = projectCommand(m_root, named("project_settings"));
   qInfo().noquote() << (name.isEmpty() ? QStringLiteral("Project Settings: display name cleared: %1").arg(defaultName())
                                        : QStringLiteral("Project Settings: display name %1").arg(name));
+  if (m_host.settingsChanged) {
+    m_host.settingsChanged(m_settings);
+  }
+}
+
+void ProjectSettingsDialog::writeWebViewer() {
+  if (m_reading) {
+    return;
+  }
+  const bool on = m_webUpdate->isChecked();
+  const auto back = [this, on](const QString& problem) {
+    m_problem->setText(problem);
+    const QSignalBlocker blocker(m_webUpdate);
+    m_webUpdate->setChecked(!on);
+  };
+  if (author().isEmpty()) {
+    back(tr("A change for everyone is recorded as a version: give the project's author first."));
+    return;
+  }
+  const QJsonObject answer = projectCommand(
+      m_root, {{QStringLiteral("cmd"), QStringLiteral("set_project_settings")},
+               {QStringLiteral("shared"),
+                QJsonObject{{QStringLiteral("web_viewer"), QJsonObject{{QStringLiteral("update_on_save"), on}}}}},
+               {QStringLiteral("author"), author()}});
+  if (!errorClassOf(answer).isEmpty()) {
+    qInfo().noquote() << QStringLiteral("Project Settings: web viewer refused: %1").arg(errorMessageOf(answer));
+    back(errorMessageOf(answer));
+    return;
+  }
+  m_problem->clear();
+  m_settings = projectCommand(m_root, named("project_settings"));
+  const QString commit = answer.value(QStringLiteral("commit")).toString();
+  qInfo().noquote() << QStringLiteral("Project Settings: web viewer updated on each Save %1, recorded: %2")
+                           .arg(on ? QStringLiteral("on") : QStringLiteral("off"),
+                                commit.isEmpty() ? QStringLiteral("no change") : commit.left(7));
+  if (!commit.isEmpty() && m_host.versionRecorded) {
+    m_host.versionRecorded();
+  }
   if (m_host.settingsChanged) {
     m_host.settingsChanged(m_settings);
   }

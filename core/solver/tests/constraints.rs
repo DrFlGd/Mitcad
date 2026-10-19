@@ -534,6 +534,62 @@ fn tangent_distance_is_the_gap_between_a_circle_and_a_line() {
 }
 
 #[test]
+fn radius_gap_is_the_difference_of_two_concentric_radii() {
+    // mitcad#445: a Ø10 circle fixed by its diameter and a concentric outer
+    // one; the gap sets the outer radius.
+    let mut s = System::new();
+    let c = s.add_point(1.0, 2.0);
+    s.add_constraint(FixPoint(c)).unwrap();
+    let inner = s.add_circle(c, 5.0).unwrap();
+    let outer = s.add_circle(c, 25.0).unwrap();
+    s.add_constraint(Diameter {
+        entity: inner,
+        value: 10.0,
+    })
+    .unwrap();
+    let gap = s
+        .add_constraint(RadiusGap {
+            a: inner,
+            b: outer,
+            value: 20.0,
+        })
+        .unwrap();
+    assert_near(s.measure(gap).unwrap(), 20.0, "measure");
+    s.set_dimension_value(gap, 12.0).unwrap();
+    solve_ok(&mut s);
+    assert_near(s.radius(outer).unwrap(), 17.0, "outer at 5 + 12");
+    // Picked the other way round: the side the outer circle started on is
+    // kept, so the value stays a positive gap.
+    let mut s = System::new();
+    let c = s.add_point(0.0, 0.0);
+    s.add_constraint(FixPoint(c)).unwrap();
+    let inner = s.add_circle(c, 5.0).unwrap();
+    let outer = s.add_circle(c, 9.0).unwrap();
+    s.add_constraint(Radius {
+        entity: outer,
+        value: 9.0,
+    })
+    .unwrap();
+    s.add_constraint(RadiusGap {
+        a: outer,
+        b: inner,
+        value: 3.0,
+    })
+    .unwrap();
+    solve_ok(&mut s);
+    assert_near(s.radius(inner).unwrap(), 6.0, "inner at 9 - 3");
+    // A negative gap is refused.
+    assert!(
+        s.add_constraint(RadiusGap {
+            a: inner,
+            b: outer,
+            value: -1.0,
+        })
+        .is_err()
+    );
+}
+
+#[test]
 fn length_and_angle() {
     let mut s = System::new();
     let o = s.add_point(0.0, 0.0);

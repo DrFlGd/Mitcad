@@ -13,12 +13,16 @@
 #      From (no check box); an end click in the middle straight on (Mitre),
 #      the hover near an edge turned, the click there a square corner on
 #      the end face (mitre Auto: none, mitcad#427; Shared chosen mitres it
-#      at offset 0; mitcad#417); Close shows the planes again.
-#   3. Profile on a design with only its root: a frame of four (two flush
-#      with the first's ends by clicks at the flush snaps, From End A and
-#      End B; a typed offset stays from end B, From changed keeps the part
-#      in place; the fourth's length bound to the third; Tab steps the auto
-#      length).
+#      at offset 0; mitcad#417); a brace on its side by Tilt (its foot cut
+#      by the tilt, mitcad#444; the Tilt row only on a side); Close shows
+#      the planes again.
+#   3. Profile on a design with only its root: a frame of four (the mouse
+#      on the first's side previews a part there before the click,
+#      mitcad#431; two flush with the first's ends by clicks at the flush
+#      snaps, From End A and End B; a typed offset stays from end B, From
+#      changed keeps the part in place; the fourth's length bound to the
+#      third; Tab steps the auto length, the preview's body as long as the
+#      length in each mode, mitcad#431).
 #   4. Connector at a junction (shown on the hover), previewed in place.
 #   5. Panel from an inner face.
 #   6. Linear Part: a rail, a carriage on it (each chosen in the part
@@ -33,11 +37,14 @@
 #      this design after the placement. Its clicks are posted to the
 #      picker's own window.
 #
-# Usage: powershell -ExecutionPolicy Bypass -File tools\ui-windows-build-test.ps1 [-App build\dev\mitcad.exe] [-Out dir] [-QtBin dir]
+# Usage: powershell -ExecutionPolicy Bypass -File tools\ui-windows-build-test.ps1 [-App build\dev\mitcad.exe] [-Out dir] [-QtBin dir] [-Shots dir]
+# -Shots (default: UI_BUILD_SHOTS, as in the Linux test) saves a screenshot
+# of the window there for each length mode of the bound fourth profile.
 param(
   [string]$App = (Join-Path $PSScriptRoot '..\build\dev\mitcad.exe'),
   [string]$Out = (Join-Path $env:TEMP 'mitcad-ui-windows-build'),
-  [string]$QtBin = '')
+  [string]$QtBin = '',
+  [string]$Shots = $env:UI_BUILD_SHOTS)
 
 . (Join-Path $PSScriptRoot 'ui-windows-lib.ps1')
 
@@ -238,7 +245,11 @@ function Marker-At([string]$Label) {
 # the middle half of the view, the view zoomed out step by step at its
 # centre until then: fitted to the parts, a profile's end can come under
 # the orientation cube in the view's corner (session 0's window is small),
-# where a click turns the view instead of picking.
+# where a click turns the view instead of picking. The zoom rests the mouse
+# at the view's centre, which can be on a side, where the preview and its
+# markers are the hover's (mitcad#431): the mouse goes off the parts (to a
+# corner of the view, Pick-Markers) and the pick's markers are read again
+# before each look.
 function Marker-InMiddle([string]$Label) {
   $area = @((Ui-LastMatch 'View area (\d+ \d+ \d+ \d+)') -split ' ' | ForEach-Object { [int]$_ })
   if ($area.Count -lt 4) { Ui-Fail 'the app did not log its view area' }
@@ -247,6 +258,7 @@ function Marker-InMiddle([string]$Label) {
   $sign = -1
   $last = $null
   for ($i = 0; $i -lt 16; $i++) {
+    Pick-Markers $area
     $at = Marker-At $Label
     $off = [Math]::Max([Math]::Abs($at[0] - $cx) / $area[2], [Math]::Abs($at[1] - $cy) / $area[3])
     if ($off -lt 0.25) { return $at }
@@ -272,6 +284,86 @@ function Expect-Inspect([string[]]$Texts, [string]$Description) {
     Start-Sleep -Milliseconds 200
   }
   Ui-Fail "${Description}: no 'Inspect Profile:' line since the mark with $($Texts -join ' / ')"
+}
+# Expect-BodyLength description: the last "Inspect Profile:" line since the
+# mark that logs the preview body's length ("; body <n> mm", mitcad#431)
+# has it equal to the length shown ("length <n> mm").
+function Expect-BodyLength([string]$Description) {
+  $line = $null
+  for ($i = 0; $i -lt 30 -and -not $line; $i++) {
+    $line = Ui-LogLines | Select-Object -Skip $script:UiMark |
+      Where-Object { $_.StartsWith('Inspect Profile: ') -and $_.Contains('; body ') } | Select-Object -Last 1
+    if (-not $line) { Start-Sleep -Milliseconds 200 }
+  }
+  if (-not $line) { Ui-Fail "${Description}: no 'Inspect Profile:' line with the body's length since the mark" }
+  $length = if ($line -match '^Inspect Profile: place [a-z]*, length ([0-9.]*) mm') { $Matches[1] } else { '?' }
+  $body = if ($line -match '; body ([0-9.]*) mm') { $Matches[1] } else { '?' }
+  if ($length -eq '?' -or $length -ne $body) { Ui-Fail "${Description}: length $length mm, body $body mm ($line)" }
+  Write-Host "ok   ${Description}: $body mm"
+}
+# Pick-Markers AREA: the mouse moved off the parts and the pick's markers
+# logged again: with the mouse on a part's side or end the preview shows
+# what a click there places, with that place's markers (mitcad#431), as
+# its "Inspect Profile:" line says ("; on the hover"). The Linux test moves
+# the mouse out of the view; in session 0 the view gets its Leave right
+# after each posted move, before the frame that finds the hover, and none
+# when the mouse then goes elsewhere: the mouse goes to a corner of the
+# view instead (AREA: x y width height of the view), where nothing is
+# found, the next corner while the preview stays the hover's (not the top
+# right one, under the orientation cube).
+function Pick-Markers([int[]]$Area) {
+  $inset = 6
+  $corners = @(@(($Area[0] + $inset), ($Area[1] + $inset)),
+               @(($Area[0] + $inset), ($Area[1] + $Area[3] - $inset)),
+               @(($Area[0] + $Area[2] - $inset), ($Area[1] + $Area[3] - $inset)))
+  $inspect = -1
+  foreach ($corner in $corners) {
+    [UiInput]::Move($script:UiWindow, $corner[0], $corner[1], 0x04)
+    for ($i = 0; $i -lt 20 -and $inspect -lt 0; $i++) {
+      Ui-Sync
+      $lines = @(Ui-LogLines)
+      $lastLine = -1
+      for ($j = $lines.Count - 1; $j -ge 0; $j--) { if ($lines[$j].StartsWith('Inspect Profile: ')) { $lastLine = $j; break } }
+      if ($lastLine -lt 0 -or -not $lines[$lastLine].Contains('; on the hover')) { $inspect = [Math]::Max($lastLine, 0) }
+      else { Start-Sleep -Milliseconds 100 }
+    }
+    if ($inspect -ge 0) { break }
+  }
+  if ($inspect -lt 0) { Ui-Fail "the hover's preview stayed with the mouse in the view's corners" }
+  # The markers come after the inspection's line.
+  for ($i = 0; $i -lt 25; $i++) {
+    if (Ui-LogLines | Select-Object -Skip $inspect | Where-Object { $_.StartsWith('Preview marker Profile ') }) { return }
+    Start-Sleep -Milliseconds 100
+  }
+}
+# Shot NAME: with -Shots, a screenshot of the window there as NAME.png. The
+# app runs a test driver script for it (MITCAD_TEST_INPUT,
+# app/framework/TestDriver.hpp; Start-Shots) that takes one on each F12,
+# which no command has: the posted input of this test cannot capture a
+# window in session 0.
+$shotNames = @('431-bound-face', '431-bound-centre', '431-bound-through')
+function Start-Shots {
+  if (-not $Shots) { return }
+  New-Item -ItemType Directory -Force $Shots | Out-Null
+  $script:Shots = (Resolve-Path $Shots).Path
+  $steps = foreach ($name in $shotNames) {
+    "wait-log '^Key press: F12' 3600"
+    "screenshot '$(Join-Path $script:Shots "$name.png")'"
+    'mark'
+  }
+  $driver = Join-Path $script:UiOut 'shots.txt'
+  Set-Content -Encoding ascii $driver (@($steps) + 'stay')
+  foreach ($name in $shotNames) { Remove-Item -Force (Join-Path $script:Shots "$name.png") -ErrorAction SilentlyContinue }
+  $env:MITCAD_TEST_INPUT = $driver
+}
+function Shot([string]$Name) {
+  if (-not $Shots) { return }
+  $path = Join-Path $script:Shots "$Name.png"
+  Ui-Step "screenshot $Name (F12)"       { Ui-Key 'F12' }
+  for ($i = 0; $i -lt 100 -and -not (Test-Path $path); $i++) { Start-Sleep -Milliseconds 200 }
+  if (-not (Test-Path $path)) { Ui-Fail "no screenshot $path" }
+  Start-Sleep -Milliseconds 500
+  Write-Host "note: screenshot $path"
 }
 # Wheel-Choice INPUT STEPS: a panel drop-down of Profile moved by STEPS
 # entries (positive: down the list), one wheel step at a time.
@@ -348,6 +440,7 @@ Expect-Row 'system' 'hidden' 'no System row: the part picker has it'
 Expect-Row 'mitre' 'hidden' 'no Mitre before an end pick'
 Expect-Row 'offset' 'hidden' 'no Offset before a side pick'
 Expect-Row 'place' 'hidden' 'no Placement before a part to go on (mitcad#427)'
+Expect-Row 'tilt' 'hidden' 'no Tilt before a side pick (mitcad#444)'
 Ui-Mark
 Ui-Step "on the root's XY plane"         { Ui-ClickLogged 'Datum xy' }
 Ui-ExpectNew 'Inspect Profile: place grounded, length 1000.00 mm (typed), square ends; adds to Part1' 'on the root''s XY plane, picked from Part1: grounded at the click'
@@ -384,6 +477,7 @@ Ui-ExpectNew 'BUILD side click: From End ' 'the click fills From with the end it
 Expect-Row 'offset' 'shown' 'Offset for a side pick (no check box)'
 Expect-Row 'from' 'shown' 'From for a side pick'
 Expect-Row 'mitre' 'hidden' 'no Mitre for a side pick'
+Expect-Row 'tilt' 'shown' 'Tilt for a side pick (mitcad#444)'
 Place 'Profile 20 test'
 $b1 = Placed-Body
 Refresh-Picks 'Profile'
@@ -403,6 +497,7 @@ Expect-Row 'direction' 'shown' 'Direction for an end pick'
 Expect-Row 'mitre' 'shown' 'Mitre for an end pick'
 Expect-Row 'offset' 'hidden' 'no side Offset for an end pick'
 Expect-Row 'corner_offset' 'hidden' 'no corner Offset straight on'
+Expect-Row 'tilt' 'hidden' 'no Tilt for an end pick (mitcad#444)'
 Ui-Mark
 Ui-Step 'mitre the new part'             { Wheel-Choice 'mitre' 3 }
 Ui-ExpectNew 'ends A 45 deg' "the new part's end mitred"
@@ -433,13 +528,29 @@ Ui-Step 'Mitre: Shared'                  { Wheel-Choice 'mitre' 2 }
 Expect-Inspect @('; end edge towards ', 'mitre shared, offset 0.0 mm', 'ends A 45 deg') 'Shared chosen: both on the bisector'
 Place 'Profile 20 test'
 No-PolicyMessage
+# A brace on the first one's side (mitcad#444): Tilt, its foot cut by the
+# tilt to lie on the side.
+Refresh-Picks 'Profile'
+$sides0 = @(Faces-Of $b0 $side)
+if ($sides0.Count -eq 0) { Ui-Fail "no side of the first profile ($b0) to pick for the brace" }
+Ui-Mark
+Ui-Step "the first profile's side again" { Pick-Face $b0 $sides0[0] }
+Ui-ExpectNew 'Inspect Profile: place side' 'on the side'
+Expect-Row 'tilt' 'shown' 'Tilt for a side pick again'
+Ui-Mark
+Ui-Step 'tilt 30 deg'                    { Ui-TypeIn 'Panel Profile input tilt' '30 deg' }
+Expect-Inspect @('Inspect Profile: place side, ', 'ends A 30 deg', '; tilt 30.00 deg') 'the preview tilted 30 deg, its foot cut by 30 deg'
+Place 'Profile 20 test'
+No-PolicyMessage
 Ui-Mark
 Ui-Step 'Close (Escape)'                 { Ui-Key 'Escape' }
-Ui-ExpectNew 'Closed Profile after 3' 'Close keeps them'
+Ui-ExpectNew 'Closed Profile after 4' 'Close keeps them'
 Ui-ExpectNew 'Construction geometry shown again' 'the planes shown again when the command ends'
 
 # The rest on a design with only its root, the active component.
+Start-Shots
 Ui-StartApp 'build' @('--open', $start)
+Remove-Item Env:MITCAD_TEST_INPUT -ErrorAction SilentlyContinue
 Ui-Step 'the BUILD tab'                  { Ui-ClickLogged 'Ribbon tab BUILD' }
 
 Write-Host '--- 3. Profile: a frame of four'
@@ -463,6 +574,14 @@ Refresh-Picks 'Profile'
 $sides1 = @(Faces-Of $b1 $side)
 if ($sides1.Count -eq 0) { Ui-Fail "no side of the first profile ($b1) to pick" }
 $side1 = $sides1[0]
+# The mouse on the side before a click shows what a click there places
+# (mitcad#431), the body as long as the length it shows.
+$hover = Ui-PickAt "$b1/$side1 at"
+Ui-Mark
+Ui-Step "the mouse on the first profile's side" { [UiInput]::Move($script:UiWindow, $hover[0], $hover[1], 0x04) }
+Ui-ExpectNew 'BUILD hover on ' 'the hover on the side'
+Expect-Inspect @('Inspect Profile: place side, ', '; on the hover') 'the hover previews the part on the side before the click'
+Expect-BodyLength "the hover's body as long as its length"
 Ui-Mark
 Ui-Step "the first profile's side"       { Pick-Face $b1 $side1 }
 Ui-ExpectNew 'Inspect Profile: place side' 'on the side'
@@ -532,13 +651,25 @@ foreach ($face in @(Faces-Of $b2 $side)) {
 }
 if (-not $found) { Ui-Fail 'no side of the second profile a click reaches has its auto length to the third' }
 Write-Host "ok   $found of the second profile runs to the third"
+# The preview's body ends at the third profile, in each mode (mitcad#431).
+Expect-BodyLength "the body to the third profile's face"
+Shot '431-bound-face'
 Ui-Mark
 Ui-Step 'to the centre (Tab)'            { Ui-Key 'Tab' }
 Ui-ExpectNew 'Profile: Length = Auto: to its centre' 'Tab: to the centre'
+Ui-ExpectNew '(bound, auto: to the centre to ' "bound to the third profile's centre"
+Expect-BodyLength "the body to the third profile's centre"
+Shot '431-bound-centre'
+Ui-Mark
 Ui-Step 'through (Tab)'                  { Ui-Key 'Tab' }
+Ui-ExpectNew 'Profile: Length = Auto: through it' 'Tab: through'
+Ui-ExpectNew '(bound, auto: through to ' 'bound through the third profile'
+Expect-BodyLength 'the body through the third profile'
+Shot '431-bound-through'
 Ui-Step 'to the face (Tab)'              { Ui-Key 'Tab' }
 Ui-ExpectNew 'Profile: Length = Auto: to the face it meets' 'Tab: to the face again'
 Ui-ExpectNew 'Cursor box Profile length: ' 'the auto length in the box at the cursor'
+Ui-ExpectNew '(bound, auto: to the face to ' "bound to the third profile's face"
 Place 'Profile 20 test'
 Ui-ExpectNew 'length bound, auto: to the face' 'its length is bound'
 Ui-Mark

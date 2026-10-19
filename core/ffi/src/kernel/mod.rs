@@ -80,7 +80,12 @@ use mitcad_model::RecomputeMonitor;
 pub use shape::ffi::Shape;
 
 fn failed(error: cxx::Exception) -> KernelError {
-    match error.what() {
+    failed_with(error.what())
+}
+
+/// The error of a C++ exception's message (`what`), as `failed` makes it.
+fn failed_with(what: &str) -> KernelError {
+    match what {
         // A C++ allocation that failed outside the geometry's operations,
         // which say so themselves (mitcad#80): std::bad_alloc's message of
         // libstdc++ and libc++, and of MSVC's library.
@@ -879,18 +884,91 @@ impl Kernel for OcctKernel {
     ) -> Result<Section<Self::Shape>, KernelError> {
         let section = analysis::ffi::analysis_section(occt(shape)?, &analysis_plane(plane))
             .map_err(failed)?;
-        Ok(Section {
-            curves: section.curves(),
-            faces: section.faces(),
-            edge_count: section.edge_count(),
-            face_count: section.face_count(),
-            length: section.length(),
-            area: section.area(),
-        })
+        Ok(section_of(&section))
     }
 
     fn clip(&self, shape: &Self::Shape, plane: &DatumPlane) -> Result<Self::Shape, KernelError> {
-        analysis::ffi::analysis_clip(occt(shape)?, &analysis_plane(plane)).map_err(failed)
+        let clipped =
+            analysis::ffi::analysis_clip(occt(shape)?, &analysis_plane(plane)).map_err(failed)?;
+        // Null: the plane leaves the body whole, which is then the body's
+        // own shape (the view keeps it drawn as it is, mitcad#438).
+        Ok(if clipped.is_null() {
+            shape.clone()
+        } else {
+            clipped
+        })
+    }
+
+    fn section_all(
+        &self,
+        items: &[(&Self::Shape, DatumPlane)],
+    ) -> Vec<Result<Section<Self::Shape>, KernelError>> {
+        let shapes: Vec<&Self::Shape> = items.iter().map(|(shape, _)| *shape).collect();
+        let Ok(list) = shape_list(&shapes) else {
+            return items
+                .iter()
+                .map(|(shape, plane)| self.section(shape, plane))
+                .collect();
+        };
+        let planes: Vec<_> = items
+            .iter()
+            .map(|(_, plane)| analysis_plane(plane))
+            .collect();
+        match analysis::ffi::analysis_section_all(&list, &planes) {
+            Ok(sections) => (0..items.len())
+                .map(|i| {
+                    let section = sections.section(i);
+                    match section.as_ref() {
+                        Some(section) => Ok(section_of(section)),
+                        None => Err(failed_with(&sections.error(i))),
+                    }
+                })
+                .collect(),
+            Err(error) => {
+                let error = failed(error);
+                items.iter().map(|_| Err(error.clone())).collect()
+            }
+        }
+    }
+
+    fn clip_all(
+        &self,
+        items: &[(&Self::Shape, DatumPlane)],
+    ) -> Vec<Result<Self::Shape, KernelError>> {
+        let shapes: Vec<&Self::Shape> = items.iter().map(|(shape, _)| *shape).collect();
+        let Ok(list) = shape_list(&shapes) else {
+            return items
+                .iter()
+                .map(|(shape, plane)| self.clip(shape, plane))
+                .collect();
+        };
+        let planes: Vec<_> = items
+            .iter()
+            .map(|(_, plane)| analysis_plane(plane))
+            .collect();
+        match analysis::ffi::analysis_clip_all(&list, &planes) {
+            Ok(clips) => items
+                .iter()
+                .enumerate()
+                .map(|(i, (shape, _))| {
+                    let error = clips.error(i);
+                    if !error.is_empty() {
+                        return Err(failed_with(&error));
+                    }
+                    let clipped = clips.shape(i);
+                    // Null: the body whole, as `clip` gives it.
+                    Ok(if clipped.is_null() {
+                        (*shape).clone()
+                    } else {
+                        clipped
+                    })
+                })
+                .collect(),
+            Err(error) => {
+                let error = failed(error);
+                items.iter().map(|_| Err(error.clone())).collect()
+            }
+        }
     }
 
     fn compare_step(
@@ -1642,5 +1720,16 @@ fn analysis_plane(plane: &DatumPlane) -> analysis::ffi::AnalysisPlane {
     analysis::ffi::AnalysisPlane {
         origin: plane.origin,
         normal: plane.normal(),
+    }
+}
+
+fn section_of(section: &analysis::ffi::AnalysisSection) -> Section<SharedPtr<Shape>> {
+    Section {
+        curves: section.curves(),
+        faces: section.faces(),
+        edge_count: section.edge_count(),
+        face_count: section.face_count(),
+        length: section.length(),
+        area: section.area(),
     }
 }

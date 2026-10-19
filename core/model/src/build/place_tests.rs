@@ -261,7 +261,10 @@ fn a_bent_end_and_the_shared_mitre() {
     all_ok(&doc);
     assert_eq!(p["place"], "end");
     let at = placed(&doc, occurrence(&p));
-    assert!(close(at.translation, [0.0, 0.0, 1000.0]), "{at:?}");
+    // The outer corners meet at the target's long point (0, -15, 1000): the
+    // new part's end there, its outer side (+z) flush with the target's end
+    // (mitcad#443).
+    assert!(close(at.translation, [0.0, -15.0, 985.0]), "{at:?}");
     assert!(close(axis(&at), [0.0, 1.0, 0.0]), "{at:?}");
     let quarter = std::f64::consts::FRAC_PI_4;
     let end = |part: crate::ids::FeatureUid, b: bool| {
@@ -452,4 +455,196 @@ fn derived_parts_save_reopen_and_undo() {
     assert!(doc.state().library_sources.is_empty());
     doc.redo();
     assert_eq!(doc.state().library_sources.0.len(), 1);
+}
+
+/// The body box of a placed part in the design (the mock kernel's cuts
+/// clip it as half-spaces, `MockKernel::half_space_cuts`).
+fn world_box(
+    doc: &crate::Document<crate::testing::MockKernel>,
+    answer: &serde_json::Value,
+) -> crate::kernel::BoundingBox {
+    let local = doc.part_bounds(component(answer)).unwrap();
+    super::moved_box(&local, &placed(doc, occurrence(answer)))
+}
+
+/// The cut plane of a placed 20 x 20 part's end in the design, as
+/// `derived_part` cuts it: a point on it and its outward normal.
+fn world_plane(
+    doc: &crate::Document<crate::testing::MockKernel>,
+    answer: &serde_json::Value,
+    b: bool,
+) -> ([f64; 3], [f64; 3]) {
+    let FeatureDef::DerivedPart(d) = &doc.feature(derived(doc, component(answer))).unwrap().def
+    else {
+        panic!("a derived part");
+    };
+    let cut = d.ends.end(b).unwrap();
+    let angle = doc.parameters().value(cut.angle).unwrap();
+    let length = doc.part_info(component(answer)).unwrap().length.unwrap().1;
+    let section = crate::kernel::BoundingBox {
+        min: [-10.0, -10.0, 0.0],
+        max: [10.0, 10.0, length],
+    };
+    let (point, normal) = crate::features::derived_part::end_plane(
+        Some(&section),
+        b,
+        length,
+        angle,
+        cut.tilt.unwrap_or_default(),
+    )
+    .unwrap();
+    let at = placed(doc, occurrence(answer));
+    (at.apply_point(point), at.apply_vector(normal))
+}
+
+fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+#[test]
+fn an_angled_end_keeps_the_part_within_its_length() {
+    // mitcad#443: the length is the long point; the cut runs through the
+    // section's edge on the long side, the short point 20 x tan 45 shorter.
+    let mut doc = design();
+    doc.kernel().half_space_cuts.set(true);
+    let t = first(&mut doc, "p20", [0.0; 3], 500.0);
+    command(
+        &mut doc,
+        json!({"cmd": "build_edit", "component": t["component"],
+               "ends": {"b": {"angle": "45 deg", "tilt": "x"}}}),
+    )
+    .unwrap();
+    all_ok(&doc);
+    let b = world_box(&doc, &t);
+    assert!(
+        (b.min[2] - 0.0).abs() < 1e-6 && (b.max[2] - 500.0).abs() < 1e-6,
+        "{b:?}"
+    );
+    // Long point at y = -10 (the cut leans towards +y), short point at
+    // y = +10, 480.
+    let (point, normal) = world_plane(&doc, &t, true);
+    assert!(close(point, [0.0, -10.0, 500.0]), "{point:?}");
+    let short = [0.0, 10.0, 480.0];
+    let gap = dot3(normal, std::array::from_fn(|i| short[i] - point[i]));
+    assert!(gap.abs() < 1e-9, "{gap}");
+    // The same at end A, and the cut list keeps the length.
+    command(
+        &mut doc,
+        json!({"cmd": "build_edit", "component": t["component"],
+               "ends": {"a": {"angle": "30 deg", "tilt": "-y"}}}),
+    )
+    .unwrap();
+    all_ok(&doc);
+    let b = world_box(&doc, &t);
+    assert!(
+        (b.min[2] - 0.0).abs() < 1e-6 && (b.max[2] - 500.0).abs() < 1e-6,
+        "{b:?}"
+    );
+    let (point, _) = world_plane(&doc, &t, false);
+    assert!(close(point, [10.0, 0.0, 0.0]), "{point:?}");
+    let list = doc.build_cut_list(super::CutListOptions::default());
+    assert_eq!(list.rows.len(), 1, "{:?}", list.rows);
+    assert!((list.rows[0].length - 500.0).abs() < 1e-9);
+}
+
+#[test]
+fn a_shared_mitre_corner_measures_its_lengths_outside() {
+    // Two 500 parts at a square corner with a shared mitre: 500 x 500
+    // outside, both 500 in the cut list (mitcad#443).
+    let mut doc = design();
+    doc.kernel().half_space_cuts.set(true);
+    let t = first(&mut doc, "p20", [0.0; 3], 500.0);
+    let tp = derived(&doc, component(&t));
+    let p = place(
+        &mut doc,
+        json!({"part": {"source": "S1"},
+               "at": {"occurrence": t["occurrence"], "geometry": {"mount": format!("{tp}:mount(end_b)")},
+                      "direction": [0, 1, 0]},
+               "length": 500, "mitre": {"cut": "shared"}}),
+    );
+    all_ok(&doc);
+    let (a, b) = (world_box(&doc, &t), world_box(&doc, &p));
+    let all = a.union(&b);
+    assert!(
+        (all.max[1] - all.min[1] - 500.0).abs() < 1e-6,
+        "{a:?} {b:?}"
+    );
+    assert!(
+        (all.max[2] - all.min[2] - 500.0).abs() < 1e-6,
+        "{a:?} {b:?}"
+    );
+    // The new part's outer side flush with the target's end, its end flush
+    // with the target's outer side.
+    assert!(
+        (b.max[2] - 500.0).abs() < 1e-6 && (b.min[1] + 10.0).abs() < 1e-6,
+        "{b:?}"
+    );
+    // One cut plane through the shared outer corner.
+    let (tp_point, tp_normal) = world_plane(&doc, &t, true);
+    let (pp_point, pp_normal) = world_plane(&doc, &p, false);
+    assert!(close(tp_point, [0.0, -10.0, 500.0]), "{tp_point:?}");
+    assert!(close(pp_point, [0.0, -10.0, 500.0]), "{pp_point:?}");
+    assert!(
+        close(tp_normal, pp_normal.map(|v| -v)),
+        "{tp_normal:?} {pp_normal:?}"
+    );
+    let list = doc.build_cut_list(super::CutListOptions::default());
+    assert_eq!(
+        list.rows.iter().map(|r| r.quantity).sum::<usize>(),
+        2,
+        "{:?}",
+        list.rows
+    );
+    for row in &list.rows {
+        assert!((row.length - 500.0).abs() < 1e-9, "{row:?}");
+    }
+    // The two ends meet: an L of ends, though the end frames are apart.
+    let junctions = doc.build_junctions(None);
+    assert_eq!(junctions.len(), 1, "{junctions:?}");
+    assert_eq!(junctions[0].kind, "L");
+    assert_eq!(
+        (junctions[0].a.at.as_str(), junctions[0].b.at.as_str()),
+        ("end_a", "end_b")
+    );
+}
+
+#[test]
+fn a_shared_mitre_at_another_angle_meets_at_the_outer_corner() {
+    // A 45 degree turn (the default there is a shared mitre of 22.5 each):
+    // both parts' long points at the target's outer edge at its end, on one
+    // cut plane (mitcad#443).
+    let mut doc = design();
+    doc.kernel().half_space_cuts.set(true);
+    let t = first(&mut doc, "p20", [0.0; 3], 500.0);
+    let tp = derived(&doc, component(&t));
+    let half = std::f64::consts::FRAC_1_SQRT_2;
+    let p = place(
+        &mut doc,
+        json!({"part": {"source": "S1"},
+               "at": {"occurrence": t["occurrence"], "geometry": {"mount": format!("{tp}:mount(end_b)")},
+                      "direction": [0.0, half, half]},
+               "length": 300}),
+    );
+    all_ok(&doc);
+    let FeatureDef::DerivedPart(d) = &doc.feature(derived(&doc, component(&p))).unwrap().def else {
+        panic!("a derived part");
+    };
+    let angle = doc
+        .parameters()
+        .value(d.ends.a.as_ref().unwrap().angle)
+        .unwrap();
+    assert!(
+        (angle - std::f64::consts::FRAC_PI_8).abs() < 1e-9,
+        "{angle}"
+    );
+    let (tp_point, tp_normal) = world_plane(&doc, &t, true);
+    let (pp_point, pp_normal) = world_plane(&doc, &p, false);
+    assert!(close(tp_point, [0.0, -10.0, 500.0]), "{tp_point:?}");
+    assert!(close(pp_point, [0.0, -10.0, 500.0]), "{pp_point:?}");
+    assert!(
+        close(tp_normal, pp_normal.map(|v| -v)),
+        "{tp_normal:?} {pp_normal:?}"
+    );
+    // The target does not reach past its length.
+    assert!((world_box(&doc, &t).max[2] - 500.0).abs() < 1e-6);
 }

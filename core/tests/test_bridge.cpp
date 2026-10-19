@@ -589,6 +589,80 @@ void test_section_occurrence_coordinates() {
   CHECK(near(area(), 400.0));
 }
 
+// Section Analysis clips every body shown at once, on all cores
+// (mitcad#438): a body behind the plane is its own shape (the view keeps it
+// drawn as it is), one in front has no faces, one across is clipped as on
+// its own, and a body that cannot be clipped has its error without
+// stopping the others. The world section measures them all at once.
+void test_clips_together() {
+  auto document = mitcad::new_document();
+  // Blocks of 20 x 20 x 10 at x = 0, 30 and 60 (F2.b0, F4.b0, F6.b0).
+  for (int i = 0; i < 3; ++i) {
+    const std::string sketch = "F" + std::to_string(2 * i + 1);
+    run(*document, R"({"cmd":"sketch.create"})");
+    run(*document, R"({"cmd":"sketch.add_rectangle","sketch":")" + sketch + R"(","corner":[)" +
+                       std::to_string(30 * i) + R"(,0],"width":20,"height":20})");
+    run(*document, extrude(sketch, kRectangle, 10, "new_body"));
+  }
+  const auto unnamed = [](const mitcad::geometry::Shape& shape) {
+    int count = 0;
+    for (int i = 0; i < shape.face_count(); ++i) {
+      count += shape.face_names(i).empty() ? 1 : 0;
+    }
+    return count;
+  };
+  const auto clipOne = [&](const std::string& plane, const char* body) {
+    return document->analysis_shape(R"({"shape":"clip","plane":)" + plane + R"(,"body":")" + body + "\"}");
+  };
+  const auto clipAll = [&](const std::string& plane, const std::string& bodies) {
+    return document->analysis_clips(R"({"plane":)" + plane + R"(,"bodies":[)" + bodies + "]}");
+  };
+
+  // At x = 40: F2.b0 behind, F4.b0 across, F6.b0 in front; F9.b0 is none.
+  const std::string at40 = R"({"origin":[40,0,0],"normal":[1,0,0]})";
+  const auto clips = clipAll(at40, R"({"body":"F2.b0"},{"body":"F4.b0"},{"body":"F9.b0"},{"body":"F6.b0"})");
+  CHECK(clips->count() == 4);
+  CHECK(clips->shape(0) && clips->shape(0) == document->body_shape("F2.b0"));
+  CHECK(clipOne(at40, "F2.b0") == document->body_shape("F2.b0"));
+  CHECK(std::string(clips->error(0)).empty());
+  const auto across = clips->shape(1);
+  const auto alone = clipOne(at40, "F4.b0");
+  CHECK(across && alone && near(mitcad::geometry::volume(*across), 2000.0) &&
+        near(mitcad::geometry::volume(*alone), 2000.0));
+  CHECK(across && alone && across->face_count() == alone->face_count() && unnamed(*across) == 1 &&
+        unnamed(*alone) == 1);
+  CHECK(!clips->shape(2) && contains(std::string(clips->error(2)), "F9.b0"));
+  const auto front = clips->shape(3);
+  CHECK(front && !TopExp_Explorer(front->occt(), TopAbs_FACE).More());
+  const auto frontAlone = clipOne(at40, "F6.b0");
+  CHECK(frontAlone && !TopExp_Explorer(frontAlone->occt(), TopAbs_FACE).More());
+
+  // At y = 5 the plane crosses all three: each clipped together as alone.
+  const std::string at5 = R"({"origin":[0,5,0],"normal":[0,1,0]})";
+  const auto all = clipAll(at5, R"({"body":"F2.b0"},{"body":"F4.b0"},{"body":"F6.b0"})");
+  CHECK(all->count() == 3);
+  const char* uids[] = {"F2.b0", "F4.b0", "F6.b0"};
+  for (std::size_t i = 0; i < 3 && i < all->count(); ++i) {
+    const auto together = all->shape(i);
+    const auto single = clipOne(at5, uids[i]);
+    CHECK(together && single && near(mitcad::geometry::volume(*together), 1000.0) &&
+          near(mitcad::geometry::volume(*single), 1000.0));
+    CHECK(together && single && together->face_count() == single->face_count() &&
+          unnamed(*together) == unnamed(*single));
+    if (together) {
+      const auto box = mitcad::geometry::bounding_box(*together);
+      CHECK(!box.empty && near(box.min.X(), 30.0 * static_cast<double>(i)) && near(box.max.Y(), 5.0));
+    }
+  }
+  CHECK(throws_with([&] { clipAll(at5, R"({"uid":"F2.b0"})"); }, "uid"));
+
+  // The world section at x = 40 meets F4.b0 only: 20 x 10 mm. (JSON
+  // object keys are sorted, so the first area is the total.)
+  const std::string world(document->query(R"({"query":"section","world":true,"plane":)" + at40 + "}"));
+  const auto at = world.find("\"area\":");
+  CHECK(at != std::string::npos && near(std::strtod(world.c_str() + at + 7, nullptr), 200.0));
+}
+
 // Background computation (P7): a document computed on another thread.
 
 // A thread that runs one job at a time and hands the document back, as the
@@ -988,6 +1062,78 @@ void test_boundary_distances_of_a_plate_with_holes() {
   CHECK(!mitcad::bridge::analysis_face_point(body, {top}, {3.2, 3.0, 2.5}, point, normal));
 }
 
+// The boundary distances of points off free-form faces (mitcad#442): a
+// wavy spline of many knot spans (a projection let go after each call, as
+// a stored thread's flanks) on a prism whose sides are extruded curves.
+// Each point is measured as OCCT's distance query measures it, from the
+// faces' grids kept with the shape: the query itself (a search over the
+// whole surface and a classifier set up anew, for every point) is not run.
+void test_boundary_distances_off_free_form_faces() {
+  constexpr int kU = 160;
+  constexpr int kV = 12;
+  NCollection_Array2<gp_Pnt> heights(1, kU, 1, kV);
+  for (int i = 1; i <= kU; ++i) {
+    for (int j = 1; j <= kV; ++j) {
+      heights(i, j) = gp_Pnt(0.5 * i, 2.0 * j, 1.5 * std::sin(0.15 * i) * std::cos(0.4 * j));
+    }
+  }
+  GeomAPI_PointsToBSplineSurface interpolation;
+  interpolation.Interpolate(heights);
+  const Handle(Geom_BSplineSurface) wave = interpolation.Surface();
+  CHECK(static_cast<double>(wave->NbUKnots() * wave->UDegree()) * 44.0 > 20000.0);
+  const TopoDS_Face top = BRepBuilderAPI_MakeFace(wave, 1e-7);
+  const mitcad::geometry::Shape body(BRepPrimAPI_MakePrism(top, gp_Vec(0.0, 0.0, -5.0)).Shape());
+  double u0 = 0.0;
+  double u1 = 0.0;
+  double v0 = 0.0;
+  double v1 = 0.0;
+  wave->Bounds(u0, u1, v0, v1);
+  std::vector<gp_Pnt> off;
+  // Above the spline and inside the body under it, near and farther; beside
+  // the sides and beyond the corners; far above the waves (as near to
+  // several crests).
+  for (const double s : {0.07, 0.31, 0.55, 0.78, 0.96}) {
+    for (const double t : {0.15, 0.5, 0.9}) {
+      gp_Pnt p;
+      gp_Vec du;
+      gp_Vec dv;
+      wave->D1(u0 + s * (u1 - u0), v0 + t * (v1 - v0), p, du, dv);
+      const gp_Vec normal = du.Crossed(dv).Normalized();
+      for (const double h : {1e-3, 0.05, 0.4, -0.05, 2.5}) {
+        off.push_back(p.Translated(normal * h));
+      }
+    }
+  }
+  for (const gp_Pnt& p : {gp_Pnt(-0.3, 10.0, -2.0), gp_Pnt(40.0, -0.4, -1.0), gp_Pnt(81.0, 25.0, 0.5),
+                          gp_Pnt(-1.0, -1.0, 3.0), gp_Pnt(40.0, 12.0, 30.0)}) {
+    off.push_back(p);
+  }
+  std::vector<double> points;
+  for (const gp_Pnt& p : off) {
+    points.insert(points.end(), {p.X(), p.Y(), p.Z()});
+  }
+  BRep_Builder builder;
+  TopoDS_Compound faces;
+  builder.MakeCompound(faces);
+  for (int i = 0; i < body.face_count(); ++i) {
+    builder.Add(faces, body.face(i));
+  }
+  const std::size_t searches = mitcad::bridge::analysis_whole_face_searches();
+  // Half the points in each call: the spline's projection is let go between.
+  const std::size_t half = 3 * (off.size() / 2);
+  const rust::Vec<double> first =
+      mitcad::bridge::analysis_boundary_distances(body, rust::Slice<const double>(points.data(), half));
+  const rust::Vec<double> second = mitcad::bridge::analysis_boundary_distances(
+      body, rust::Slice<const double>(points.data() + half, points.size() - half));
+  CHECK(first.size() + second.size() == off.size());
+  CHECK(mitcad::bridge::analysis_whole_face_searches() == searches);
+  for (std::size_t k = 0; k < off.size(); ++k) {
+    const double d = k < first.size() ? first[k] : second[k - first.size()];
+    BRepExtrema_DistShapeShape occt(BRepBuilderAPI_MakeVertex(off[k]).Vertex(), faces);
+    CHECK(occt.IsDone() && std::abs(d - occt.Value()) < 1e-6);
+  }
+}
+
 // A Rust panic's message reaches the application's sink (mitcad#62),
 // before the hook that prints it.
 std::string g_panic_note;
@@ -1134,6 +1280,7 @@ int main() {
   test_design_file_errors();
   test_datums_and_analysis_shapes();
   test_section_occurrence_coordinates();
+  test_clips_together();
   test_job_cancelled_from_another_thread();
   test_jobs_handed_between_threads();
   test_kernel_operation_cancelled_inside();
@@ -1141,6 +1288,7 @@ int main() {
   test_linked_projection_follows_its_source();
   test_boundary_distances_on_spline_faces();
   test_boundary_distances_of_a_plate_with_holes();
+  test_boundary_distances_off_free_form_faces();
   test_panic_note();
   test_segment_crossings();
   test_out_of_memory_in_an_operation();

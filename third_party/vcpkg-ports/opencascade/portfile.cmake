@@ -167,6 +167,21 @@ vcpkg_from_github(
         0740-chfi3d-end-face-split-round-the-vertex-pieces-of-one-surface.patch
         0741-chfi3d-kpart-contact-end-at-a-vertex-on-the-edge-to-the-spines-end.patch
         0742-chfi3d-guide-past-an-open-end-along-the-end-edges-own-curve.patch
+        0750-chfi3d-thread-crest-rounded-on-both-edges-cut-by-the-ends.patch
+        0770-chfi3d-rolling-on-an-edge-into-the-end-vertex-where-it-vanishes.patch
+        0771-chfi3d-contour-stops-where-the-rounding-vanishes.patch
+        0772-chfi3d-stripes-joined-across-a-corner-of-the-solid.patch
+        0790-chfi3d-tangent-end-face-cuts-the-blend-back-along-the-stripe.patch
+        0800-chfi3d-onsame-cap-points-in-one-period-of-a-stored-cylinder.patch
+        0801-chfi3d-tangent-faces-within-ten-times-the-edge-tolerance.patch
+        0802-chfi3d-contact-on-its-own-edge-near-a-vertex-passes-it.patch
+        0803-chfi3d-onsame-cap-leaving-the-prolongation-tangentially.patch
+        0820-chfi3d-stripes-joined-across-a-corner-one-face-each.patch
+        0821-chfi3d-lens-rounded-on-both-edges-s-shaped-section.patch
+        0822-chfi3d-rounding-rolling-on-both-edges-into-a-lens-end.patch
+        0840-chfi3d-contour-never-takes-its-own-edge-again.patch
+        0860-chfi3d-contour-runs-on-into-a-near-tangent-edge-asked-for.patch
+        0861-chfi3d-contact-at-the-vertex-where-the-blend-vanishes-cuts-the-own-edge.patch
 )
 
 if (VCPKG_LIBRARY_LINKAGE STREQUAL "dynamic")

@@ -1,0 +1,254 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: a rounding whose contact runs off its face across an edge that
+leads into the end vertex tangent to the rounding's other face rolls on
+that edge up to the vertex, where it vanishes (mitcad#343).
+
+The case: a post of radius 10 under a block as wide as the post (the
+post's top circle touches the block's long bottom edges at two points,
+where the block's underside narrows to nothing and the post's side is
+tangent to the block's long sides). The post's foot rounded with 10: the
+underside's contact (20 from the axis) runs off the underside across its
+long edges 30 degrees from the long axis; from there the ball rolls on
+those edges, touching the post, up to the points where they touch the
+post's top circle: the edges run into those points tangent to the post's
+side, the ball has no room left and the rounding vanishes there (as in
+the bodies stored in the file). OCCT took those edges, which end at the
+rounding's end vertex, for no obstacle there (StartSol: an arc at the
+end vertex is the face at the end's), ended each side's rounding where
+the contact left the underside and extended it with tangent planes; the
+corners at the two points filled the rest wrongly, an invalid result.
+
+- StartSol: an arc that holds the end vertex is still an obstacle, the
+  ball rolling on it, where it runs into the vertex tangent to the
+  blend's other face (ChFi3d_ArcTangentToFaceAt: its direction there in
+  that face's tangent plane within 0.01 rad). No face at the end can cut
+  such a blend at the vertex.
+- PerformFilletOnVertex: several roundings ending at one vertex, each
+  vanishing there (its contacts within a hundredth of its radius of the
+  vertex, its faces' normals there parallel within 0.002 rad, or already
+  ending in a point at it), each end in a point at the vertex
+  (ChFi3d_ShrinkVanishingEnd, so far for a rounding ending alone there),
+  and the corner is the singular one. ChFi3d_ShrinkVanishingEnd: the
+  faces' normals are taken at the contacts' ends (a face's surface may
+  degenerate at the vertex itself), an end whose contacts coincide short
+  of the vertex is moved too, a check without moving (theApply), the end
+  parameters matched within a thousand times the parametric confusion
+  (they are carried through sums), and before the end poles are moved
+  the contact curves are cut by full knots where they are twice the
+  end's distance from the vertex, so that only that last piece bends.
+
+Upstream: new.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.cxx
+index 0c5245f..e5dfb65 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.cxx
+@@ -2959,7 +2959,9 @@ static occ::handle<TheBSpline> ChFi3d_BSplineEndingAt(const occ::handle<TheCurve
+   {
+     return nullptr;
+   }
+-  const double aTol = Precision::PConfusion();
++  // (Within a thousand times the parametric confusion: the end
++  // parameters of a stripe's pieces are carried through sums.)
++  const double aTol = 1.e3 * Precision::PConfusion();
+   if (std::abs(P - aBS->FirstParameter()) < aTol && std::abs(P - C->FirstParameter()) < aTol)
+   {
+     thePole = 1;
+@@ -2989,20 +2991,25 @@ static occ::handle<TheBSpline> ChFi3d_BSplineEndingAt(const occ::handle<TheCurve
+ //           ends of the contact curves (in 3d and on the faces) are moved
+ //           to it, the blend's surface keeps its own end within the
+ //           curves' tolerance, and the blend ends in a point there
+-//           (PerformSingularCorner).
++//           (PerformSingularCorner). The faces' normals are taken at the
++//           contacts' ends (a face's surface may degenerate at the vertex
++//           itself). Without theApply, only whether the end can be so put.
+ //=======================================================================
+ 
+ static bool ChFi3d_ShrinkVanishingEnd(TopOpeBRepDS_DataStructure&         DStr,
+                                       const occ::handle<ChFiDS_SurfData>& Fd,
+                                       const bool                          isfirst,
+                                       const TopoDS_Vertex&                Vtx,
+-                                      const double                        theMaxDist)
++                                      const double                        theMaxDist,
++                                      const bool                          theApply = true)
+ {
+   ChFiDS_CommonPoint& CV1 = Fd->ChangeVertex(isfirst, 1);
+   ChFiDS_CommonPoint& CV2 = Fd->ChangeVertex(isfirst, 2);
+   const gp_Pnt        PV  = BRep_Tool::Pnt(Vtx);
+-  if (CV1.Point().IsEqual(CV2.Point(), 0) || CV1.Point().Distance(PV) > theMaxDist
+-      || CV2.Point().Distance(PV) > theMaxDist)
++  // (An end already a point at the vertex is left as it is; a point short
++  // of the vertex, where the walk's sections got singular, is moved.)
++  if ((CV1.Point().IsEqual(CV2.Point(), 0) && CV1.Point().Distance(PV) <= Precision::Confusion())
++      || CV1.Point().Distance(PV) > theMaxDist || CV2.Point().Distance(PV) > theMaxDist)
+   {
+     return false;
+   }
+@@ -3024,10 +3031,15 @@ static bool ChFi3d_ShrinkVanishingEnd(TopOpeBRepDS_DataStructure&         DStr,
+     {
+       return false;
+     }
+-    const gp_Pnt2d      aUV = BRep_Tool::Parameters(Vtx, aFace);
+-    BRepAdaptor_Surface aSurf(aFace, false);
+-    gp_Pnt              aP;
+-    gp_Vec              aDU, aDV;
++    // (The face's normal at the contact's end, a hair from the vertex: at
++    // the vertex itself a corner of the face's surface may degenerate.)
++    BRepAdaptor_Surface             aSurf(aFace, false);
++    gp_Pnt                          aP;
++    gp_Vec                          aDU, aDV;
++    const ChFiDS_FaceInterference& aFi = Fd->Interference(k + 1);
++    const gp_Pnt2d                  aUV =
++      aFi.PCurveOnFace().IsNull() ? BRep_Tool::Parameters(Vtx, aFace)
++                                  : aFi.PCurveOnFace()->Value(aFi.Parameter(isfirst));
+     aSurf.D1(aUV.X(), aUV.Y(), aP, aDU, aDV);
+     aNorm[k] = aDU.Crossed(aDV);
+     if (aNorm[k].Magnitude() < gp::Resolution())
+@@ -3062,10 +3074,41 @@ static bool ChFi3d_ShrinkVanishingEnd(TopOpeBRepDS_DataStructure&         DStr,
+       return false;
+     }
+   }
++  if (!theApply)
++  {
++    return true;
++  }
+   for (int k = 0; k < 2; k++)
+   {
+     ChFiDS_FaceInterference& aFi   = Fd->ChangeInterference(k + 1);
+     const TopoDS_Face&       aFace = TopoDS::Face(DStr.Shape(Fd->Index(k + 1)));
++    // (The curves first cut, by full knots, a little before the end, where
++    // they are twice the end's distance from the vertex: the moved end pole
++    // bends only that last piece, not a whole span of the approximation,
++    // which on a face degenerate at the vertex, its parameters there those
++    // of the vertex on another edge, swept the p-curve across the face.)
++    {
++      const double P  = aFi.Parameter(isfirst);
++      const double P0 = aFi.Parameter(!isfirst);
++      const gp_Pnt CE = aC3d[k]->Value(P);
++      double       lo = P, hi = P0;
++      if (aC3d[k]->Value(hi).Distance(CE) > 2. * aTol)
++      {
++        for (int it = 0; it < 60; it++)
++        {
++          const double m = 0.5 * (lo + hi);
++          (aC3d[k]->Value(m).Distance(CE) > 2. * aTol ? hi : lo) = m;
++        }
++        const double aCut = 0.5 * (lo + hi);
++        if (std::abs(aCut - P) > 10. * Precision::PConfusion())
++        {
++          aC3d[k]->InsertKnot(aCut, aC3d[k]->Degree());
++          aC2d[k]->InsertKnot(aCut, aC2d[k]->Degree());
++          aPole3d[k] = aPole3d[k] == 1 ? 1 : aC3d[k]->NbPoles();
++          aPole2d[k] = aPole2d[k] == 1 ? 1 : aC2d[k]->NbPoles();
++        }
++      }
++    }
+     aC3d[k]->SetPole(aPole3d[k], PV);
+     aC2d[k]->SetPole(aPole2d[k], BRep_Tool::Parameters(Vtx, aFace));
+     TopOpeBRepDS_Curve& aCurve = DStr.ChangeCurve(aFi.LineIndex());
+@@ -3108,6 +3151,25 @@ void ChFi3d_Builder::PerformFilletOnVertex(const int Index)
+   bool                         nondegenere      = true;
+   bool                         toujoursdegenere = true;
+   bool                         isfirst          = false;
++  // (Several fillets ending at the vertex, each vanishing there: each its
++  // contacts within a hundredth of its radius of the vertex, its faces
++  // tangent there, or already ending in a point at it.)
++  bool aAllVanish = myVDataMap(Index).Extent() > 1;
++  for (It.Initialize(myVDataMap(Index)); It.More() && aAllVanish; It.Next())
++  {
++    const occ::handle<ChFiDS_FilSpine> fsp = occ::down_cast<ChFiDS_FilSpine>(It.Value()->Spine());
++    int                                sens = 0;
++    const int                          num  = ChFi3d_IndexOfSurfData(Vtx, It.Value(), sens);
++    const occ::handle<ChFiDS_SurfData> D    = It.Value()->SetOfSurfData()->Sequence().Value(num);
++    const gp_Pnt                       PV   = BRep_Tool::Pnt(Vtx);
++    const bool                         aPointAtV =
++      D->Vertex(sens == 1, 1).Point().Distance(PV) <= Precision::Confusion()
++      && D->Vertex(sens == 1, 2).Point().Distance(PV) <= Precision::Confusion();
++    aAllVanish = !fsp.IsNull() && fsp->IsConstant()
++                 && (aPointAtV
++                     || ChFi3d_ShrinkVanishingEnd(myDS->ChangeDS(), D, sens == 1, Vtx, 0.01 * fsp->Radius(),
++                                                  false));
++  }
+   for (It.Initialize(myVDataMap(Index)), i = 0; It.More(); It.Next(), i++)
+   {
+     stripe = It.Value();
+@@ -3119,9 +3181,9 @@ void ChFi3d_Builder::PerformFilletOnVertex(const int Index)
+     Fd                            = stripe->SetOfSurfData()->Sequence().Value(num);
+     // A fillet ending alone at a vertex where its faces come tangent ends
+     // in a point there (its contacts within a hundredth of its radius of the
+-    // vertex).
++    // vertex); so do several there, each vanishing at the vertex.
+     const occ::handle<ChFiDS_FilSpine> fsp = occ::down_cast<ChFiDS_FilSpine>(sp);
+-    if (!fsp.IsNull() && fsp->IsConstant() && myVDataMap(Index).Extent() == 1)
++    if (!fsp.IsNull() && fsp->IsConstant() && (myVDataMap(Index).Extent() == 1 || aAllVanish))
+     {
+       ChFi3d_ShrinkVanishingEnd(myDS->ChangeDS(), Fd, isfirst, Vtx, 0.01 * fsp->Radius());
+     }
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+index 0668fd5..066cf84 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+@@ -2507,6 +2507,45 @@ static bool ChFi3d_ConcaveCreaseAt(const TopoDS_Vertex& V,
+   return false;
+ }
+ 
++//=======================================================================
++// function : ChFi3d_ArcTangentToFaceAt
++// purpose  : Whether the edge E, which ends at the vertex V, runs into V
++//            tangent to the face F that holds V (its direction there in
++//            F's tangent plane, within 0.01 rad).
++//=======================================================================
++
++static bool ChFi3d_ArcTangentToFaceAt(const TopoDS_Edge& E, const TopoDS_Face& F, const TopoDS_Vertex& V)
++{
++  if (E.IsNull() || F.IsNull() || V.IsNull() || BRep_Tool::Degenerated(E))
++  {
++    return false;
++  }
++  bool aHolds = false;
++  for (TopExp_Explorer ex(F, TopAbs_VERTEX); ex.More() && !aHolds; ex.Next())
++  {
++    aHolds = ex.Current().IsSame(V);
++  }
++  if (!aHolds)
++  {
++    return false;
++  }
++  BRepAdaptor_Curve aC(E);
++  gp_Pnt            P;
++  gp_Vec            T;
++  aC.D1(BRep_Tool::Parameter(V, E), P, T);
++  const gp_Pnt2d      aUV = BRep_Tool::Parameters(V, F);
++  BRepAdaptor_Surface aS(F, false);
++  gp_Pnt              Q;
++  gp_Vec              Du, Dv;
++  aS.D1(aUV.X(), aUV.Y(), Q, Du, Dv);
++  const gp_Vec N = Du.Crossed(Dv);
++  if (T.Magnitude() <= gp::Resolution() || N.Magnitude() <= gp::Resolution())
++  {
++    return false;
++  }
++  return std::abs(T.Normalized().Dot(N.Normalized())) < 0.01;
++}
++
+ bool ChFi3d_Builder::StartSol(
+   const occ::handle<ChFiDS_Spine>&    Spine,
+   occ::handle<BRepAdaptor_Surface>&   HS,   // New face
+@@ -2984,7 +3023,15 @@ bool ChFi3d_Builder::StartSol(
+         {
+           if (ex.Current().IsSame(Vref))
+           {
+-            c1obstacle = false;
++            // (Unless the arc runs into the end vertex tangent to the
++            // blend's other face: the ball rolling on it, between it and
++            // that face, vanishes at the vertex, where no face at the end
++            // can cut it.)
++            const int notons = ons == 1 ? 2 : 1;
++            c1obstacle = SD->Index(notons) > 0
++                         && ChFi3d_ArcTangentToFaceAt(anArcEdge,
++                                                      TopoDS::Face(DStr.Shape(SD->Index(notons))),
++                                                      Vref);
+             break;
+           }
+         }

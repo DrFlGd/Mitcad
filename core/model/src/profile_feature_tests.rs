@@ -1342,3 +1342,78 @@ fn modelled_threads_that_take_their_whole_face_are_listed() {
     assert!(!has(&doc, "F2:side(c1)"));
     assert_eq!(query(&doc, json!({"query": "threads"})), listed);
 }
+
+#[test]
+fn modelled_tapped_holes_that_take_their_whole_wall_are_listed() {
+    // A modelled M6x1 6H tapped hole over its whole wall: the bore is the
+    // minor diameter D1, the crest lies on the wall, pieces of which stay.
+    let mut b = block();
+    let body = b.body;
+    let has = |doc: &Document<MockKernel>, name: &str| {
+        let shape = doc.body_shape(body).unwrap();
+        shape.faces.iter().any(|f| f.to_string() == name)
+    };
+    let tapped = |thread: Value| {
+        let on_top =
+            json!({"type": "face", "body": "F2.b0", "face": TOP, "points": [[10, 10, 20]]});
+        let mut extra = json!({"designation": "M6x1", "class": "6H", "modeled": true});
+        for (key, field) in thread.as_object().unwrap() {
+            extra[key] = field.clone();
+        }
+        hole_def(on_top, json!({"thread": extra}))
+    };
+    let uid = b.doc.add_feature(&tapped(json!({})), None).unwrap().uid;
+    assert_eq!(status(&b.doc, uid), FeatureStatus::Ok);
+    assert!(has(&b.doc, "F3:hole0.wall"));
+    assert!(has(&b.doc, "F3:thread(F3:hole0.wall)"));
+    let listed = query(&b.doc, json!({"query": "threads"}));
+    let minor = 6.0 - 5.0 * 3f64.sqrt() / 8.0;
+    let near =
+        |value: &Value, expected: f64| value.as_f64().is_some_and(|v| (v - expected).abs() < 1e-9);
+    let at = |point: &Value, expected: [f64; 3]| (0..3).all(|i| near(&point[i], expected[i]));
+    let thread = &listed[0];
+    assert_eq!(listed.as_array().map(Vec::len), Some(1), "{listed}");
+    assert_eq!(thread["feature"], "F3");
+    assert_eq!(thread["face"], "F3:hole0.wall");
+    assert_eq!(thread["designation"], "M6x1");
+    assert_eq!(thread["class"], "6H");
+    assert_eq!(thread["modeled"], true);
+    assert_eq!(thread["internal"], true);
+    assert!(near(&thread["major_diameter"], 6.0), "{listed}");
+    assert!(near(&thread["minor_diameter"], minor), "{listed}");
+    assert!(near(&thread["radius"], minor / 2.0), "{listed}");
+    // The mock's wall runs along the block's height.
+    assert!(at(&thread["start"], [30.0, 20.0, 0.0]), "{listed}");
+    assert!(at(&thread["end"], [30.0, 20.0, 20.0]), "{listed}");
+
+    // A radial clearance puts the crest off the wall (D1 + 0.2), so no
+    // piece of the wall is left; the hole made the wall in the same step,
+    // so no body before the hole has it (mitcad#436). The thread is listed
+    // just the same, on the wall as the hole measured it before the
+    // thread.
+    b.doc
+        .edit_feature(uid, &tapped(json!({"radial_clearance": 0.1})))
+        .unwrap();
+    assert_eq!(status(&b.doc, uid), FeatureStatus::Ok);
+    assert!(!has(&b.doc, "F3:hole0.wall"));
+    assert!(has(&b.doc, "F3:thread(F3:hole0.wall)"));
+    assert_eq!(query(&b.doc, json!({"query": "threads"})), listed);
+
+    // Suppressed, it is no thread; back again, it is.
+    b.doc.set_suppressed(uid, true).unwrap();
+    assert_eq!(query(&b.doc, json!({"query": "threads"})), json!([]));
+    b.doc.undo();
+    assert_eq!(query(&b.doc, json!({"query": "threads"})), listed);
+
+    // A part of the wall keeps the rest of it: measured there, as before.
+    b.doc
+        .edit_feature(
+            uid,
+            &tapped(json!({"radial_clearance": 0.1, "length": 8, "offset": 1})),
+        )
+        .unwrap();
+    assert_eq!(status(&b.doc, uid), FeatureStatus::Ok);
+    assert!(has(&b.doc, "F3:hole0.wall"));
+    let threads = query(&b.doc, json!({"query": "threads"}));
+    assert_eq!(threads.as_array().map(Vec::len), Some(1), "{threads}");
+}

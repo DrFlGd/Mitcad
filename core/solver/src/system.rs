@@ -765,6 +765,7 @@ fn check_value(c: &Constraint) -> Result<(), Error> {
         PointLineDistance { value, .. }
         | LineDistance { value, .. }
         | TangentDistance { value, .. }
+        | RadiusGap { value, .. }
         | HorizontalDistance { value, .. }
         | VerticalDistance { value, .. } => value == 0.0 || positive(value),
         Angle { value, .. } => (0.0..=PI).contains(&value),
@@ -782,6 +783,7 @@ fn check_value(c: &Constraint) -> Result<(), Error> {
             PointLineDistance { .. }
             | LineDistance { .. }
             | TangentDistance { .. }
+            | RadiusGap { .. }
             | HorizontalDistance { .. }
             | VerticalDistance { .. } => "the distance must not be negative",
             _ => "the dimension must be positive",
@@ -817,6 +819,7 @@ pub(crate) fn constraint_entities(c: &Constraint) -> Vec<EntityId> {
         | TangentDistance {
             circle: a, line: b, ..
         }
+        | RadiusGap { a, b, .. }
         | Angle { a, b, .. }
         | EqualSize(a, b) => vec![a, b],
         SymmetricEntities { a, b, axis } => vec![a, b, axis],
@@ -1061,6 +1064,11 @@ impl System {
                 let (a1, a2) = self.line(line)?;
                 let (c, _) = self.round(circle)?;
                 rec.side = sign(self.signed_dist(self.xy(c), a1, a2));
+            }
+            RadiusGap { a, b, .. } => {
+                let (_, ra) = self.round(a)?;
+                let (_, rb) = self.round(b)?;
+                rec.side = sign(rb - ra);
             }
             // A signed one keeps side 1: its value carries the side.
             HorizontalDistance { a, b, signed, .. } => {
@@ -1359,6 +1367,7 @@ impl System {
                 let (c, radius) = self.round(circle).ok()?;
                 rec.side * self.signed_dist(self.xy(c), a, b) - radius
             }
+            RadiusGap { a, b, .. } => rec.side * (self.round(b).ok()?.1 - self.round(a).ok()?.1),
             HorizontalDistance { a, b, .. } => rec.side * (pt(b).x - pt(a).x),
             VerticalDistance { a, b, .. } => rec.side * (pt(b).y - pt(a).y),
             Angle { a, b, .. } => {

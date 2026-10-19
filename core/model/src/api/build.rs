@@ -327,7 +327,11 @@ impl<K: Kernel> Document<K> {
             // it, as `at.from` and `at.offset` take them (mitcad#417).
             snapped = json!({"kind": side.snapped, "from": side.from.as_str(),
                              "offset": side.from_offset, "point": at(side.offset),
-                             "width": side.far - side.near});
+                             "width": side.far - side.near,
+                             "long_point": side.long_point,
+                             "foot": active.apply_point(joint.frame_b.translation),
+                             "normal": active.apply_vector(crate::build::z_axis(&to_world)),
+                             "along": active.apply_vector(crate::build::x_axis(&to_world))});
         }
         // On an end (mitcad#417): straight or turned, the turns the panel
         // offers, a corner's offset and the mitre it gets.
@@ -372,6 +376,7 @@ impl<K: Kernel> Document<K> {
                 "mode": mode.as_str(),
             },
             "ends": ends,
+            "tilt": plan.tilt,
             "snaps": snaps,
             "side": snapped,
             "end": end,
@@ -461,6 +466,7 @@ impl<K: Kernel> Document<K> {
     ) -> Result<Option<K::Shape>, ApiError> {
         // The end that touches the target (end B when flipped), kept where
         // the plan put it when the length differs from the plan's.
+        let mut ends = None;
         let (source, values, mut placement, touch) = match self.preview_input(fields)? {
             PreviewInput::Place(input) => {
                 let plan = self.preview_place(&input)?;
@@ -475,6 +481,9 @@ impl<K: Kernel> Document<K> {
                     values.insert(meta.parameter.clone(), ValueInput::Number(length));
                     let end = if input.flip { "end_b" } else { "end_a" };
                     touch = plan.mounts.get(end).map(|t| (end, t.translation));
+                    // Its end cuts as the part will have them (mitres, a
+                    // tilt's foot, mitcad#443 and #444).
+                    ends = Some((plan.own_ends.clone(), length));
                 }
                 (plan.source, values, plan.placement, touch)
             }
@@ -503,12 +512,48 @@ impl<K: Kernel> Document<K> {
         }
         let world = self.host_placement().after(&placement);
         let kernel = self.kernel();
+        let failed = |e: crate::kernel::KernelError| ApiError(e.to_string());
+        let section = crate::build::place::bounds_of(kernel, &evaluated.bodies);
         let mut shapes = Vec::new();
         for body in &evaluated.bodies {
+            let mut body = body.clone();
+            if let Some((cuts, length)) = &ends {
+                for b in [false, true] {
+                    let Some(cut) = cuts.end(b) else { continue };
+                    let angle = value_in(self, &cut.angle, Unit::DEG)?;
+                    if angle.abs() <= 1e-12 {
+                        continue;
+                    }
+                    let Some(plane) = crate::features::derived_part::end_plane(
+                        section.as_ref(),
+                        b,
+                        *length,
+                        angle,
+                        cut.tilt.unwrap_or_default(),
+                    ) else {
+                        continue;
+                    };
+                    let tool = crate::features::derived_part::end_tool(
+                        kernel,
+                        crate::ids::FeatureUid(0),
+                        b,
+                        *length,
+                        plane,
+                    )
+                    .map_err(failed)?;
+                    let output = kernel
+                        .boolean(crate::kernel::BooleanOp::Cut, &[&body], &tool)
+                        .map_err(failed)?;
+                    if let Some(piece) = output.pieces.into_iter().find(|p| p.sources.contains(&0))
+                    {
+                        body = piece.shape;
+                    }
+                }
+            }
             shapes.push(
                 kernel
-                    .transform_shape(body, &world, None)
-                    .map_err(|e| ApiError(e.to_string()))?,
+                    .transform_shape(&body, &world, None)
+                    .map_err(failed)?,
             );
         }
         Ok(match shapes.len() {
@@ -616,6 +661,7 @@ impl<K: Kernel> Document<K> {
                     "bound": bound,
                     "flip": flip,
                     "rotate": rotate,
+                    "tilt": info.record.tilt.unwrap_or(0.0),
                     "added_by": info.record.added_by,
                     "adds": info.record.adds,
                     "junction": info.record.junction,

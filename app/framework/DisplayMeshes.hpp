@@ -43,8 +43,10 @@ struct DisplayMeshing {
 };
 
 // Meshes the shapes that have faces without a triangulation as the view
-// does, in the job (its stage says so; its cancel stops the meshing). A
-// shape OCCT fails on is left to the view.
+// does, in the job (its stage says so; its cancel stops the meshing), all
+// of them together, so that their faces are meshed in parallel on every
+// core (io::mesh_all_in_place, mitcad#438). A shape OCCT fails on is left
+// to the view.
 DisplayMeshing meshForDisplay(const DisplayShapes& shapes, ModelJob& job);
 
 // On the UI thread after the job: "Display meshes of <label>: 2 bodies in

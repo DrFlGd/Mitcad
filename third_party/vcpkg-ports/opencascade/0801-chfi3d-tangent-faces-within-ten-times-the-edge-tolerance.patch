@@ -1,0 +1,44 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Mitcad patch (mitcad#343): faces taken for tangent along an edge whose
+curves on them lie apart by up to ten times its tolerance.
+
+ChFi3d::IsTangentFaces compares the two faces along the edge with
+LocalAnalysis_SurfaceContinuity, the points of the edge's curves on the two
+faces within max(0.001, 1.5 x the edge's tolerance) of each other. Each of
+those curves may lie within the tolerance of the edge's own curve, so the
+two up to twice the tolerance apart; on the bodies stored in files the
+approximated edges of a thread (helices of seven turns, tolerances of 1.4
+to 3.7 micrometres) have curves on their faces up to 4.8 micrometres off
+their own. A thread's crest rounded on both edges by an earlier rounding,
+the crest band and the two roundings tangent to each other (within 1e-3
+radian) and to the flanks: the edges between them failed the position test,
+and so the faces were taken for faces meeting at an angle. A rounding round
+the thread's chamfer cone then stopped its contour at the vertices of those
+edges (FaceTangency) and was three roundings meeting end to end, which
+walked past their common vertices over each other; and the walk of one
+rounding across such an edge stopped there (IsG1 in SearchFace). The
+positions are now compared within ten times the edge's tolerance (at least
+0.001 as before; the normals within a tenth of a radian as before).
+
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d.cxx
+index e76af29..ee4e145 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d.cxx
+@@ -167,7 +167,14 @@ bool ChFi3d::IsTangentFaces(const TopoDS_Edge&  theEdge,
+     return true;
+   }
+ 
+-  double TolC0 = std::max(0.001, 1.5 * BRep_Tool::Tolerance(theEdge));
++  // The edge's curves on its two faces each lie within its tolerance of
++  // its own curve, so up to twice that apart; on the edges of stored bodies
++  // approximated by B-splines (a thread's helices of several turns,
++  // tolerances of a few micrometres) they lie up to three times as far
++  // apart. Tangent faces were taken for faces meeting at an angle there:
++  // the positions are compared within ten times the edge's tolerance (the
++  // normals within a tenth of a radian as before).
++  double TolC0 = std::max(0.001, 10. * BRep_Tool::Tolerance(theEdge));
+ 
+   double aFirst;
+   double aLast;

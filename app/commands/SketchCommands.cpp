@@ -12,16 +12,17 @@
 #include <QFontDatabase>
 #include <QJsonArray>
 #include <QKeySequence>
-#include <QRegularExpression>
 #include <QSet>
 
 #include "../framework/CommandRegistry.hpp"
 #include "../sketch/SketchController.hpp"
 #include "../sketch/SketchTool.hpp"
+#include "CommandSupport.hpp"
 
 namespace mitcad {
 namespace {
 
+using cmd::negated;
 using sketch::SketchController;
 
 const QString kSketchTab = QStringLiteral("SKETCH");
@@ -66,17 +67,6 @@ QJsonArray names(const Selection& items) {
 
 QJsonObject base(SketchController& c, const char* command) {
   return {{QStringLiteral("cmd"), QString::fromLatin1(command)}, {QStringLiteral("sketch"), c.uid()}};
-}
-
-// "5 mm" gives "-5 mm", an expression "-(d1 / 2)".
-QString negated(const QString& expression) {
-  static const QRegularExpression number(QStringLiteral(R"(^\s*([-+]?)\s*(\d+\.?\d*|\.\d+)(.*)$)"));
-  const auto match = number.match(expression);
-  if (match.hasMatch() && !match.captured(3).contains(QRegularExpression(QStringLiteral("[-+*/^()]")))) {
-    return (match.captured(1) == QStringLiteral("-") ? QString() : QStringLiteral("-")) + match.captured(2) +
-           match.captured(3);
-  }
-  return QStringLiteral("-(%1)").arg(expression);
 }
 
 // The curves joined to the picked ones end to end, as a chain
@@ -238,6 +228,19 @@ void addCircularPattern(CommandRegistry& registry, SketchController& c) {
   registry.add(def);
 }
 
+// A rectangular pattern's spacings, signed (mitcad#447): a negative one
+// goes against its direction. The panels' Flip negates the spacing that is
+// built; Edit Pattern shows the stored signed spacings with Flip off.
+QJsonArray signedSpacings(const CommandState& s) {
+  QJsonArray spacings;
+  for (const char* n : {"1", "2"}) {
+    const QString suffix = QString::fromLatin1(n);
+    const QString spacing = s.expression(QStringLiteral("distance") + suffix);
+    spacings.append(s.checked(QStringLiteral("flip") + suffix) ? negated(spacing) : spacing);
+  }
+  return spacings;
+}
+
 void addRectangularPattern(CommandRegistry& registry, SketchController& c) {
   CommandDef def = sketchCommand("sketch.rectangular_pattern", QObject::tr("Rectangular Pattern"),
                                  "rectangular-pattern", "CREATE/Patterns", CommandDef::Kind::Feature);
@@ -251,8 +254,11 @@ void addRectangularPattern(CommandRegistry& registry, SketchController& c) {
           .withAccepts(linesOf(c)),
       valueInput(QStringLiteral("quantity1"), QObject::tr("Quantity"), ValueKind::Unitless, QStringLiteral("3")),
       valueInput(QStringLiteral("distance1"), QObject::tr("Spacing"), ValueKind::Length, QStringLiteral("10")),
+      flipInput(QStringLiteral("flip1"), QObject::tr("Flip")).withTooltip(QObject::tr("Copies against the direction")),
       valueInput(QStringLiteral("quantity2"), QObject::tr("Quantity 2"), ValueKind::Unitless, QStringLiteral("1")),
       valueInput(QStringLiteral("distance2"), QObject::tr("Spacing 2"), ValueKind::Length, QStringLiteral("10")),
+      flipInput(QStringLiteral("flip2"), QObject::tr("Flip 2"))
+          .withTooltip(QObject::tr("Copies against the second direction")),
   };
   def.build = [&c](const CommandState& s, const CommandContext&) -> Built {
     const int n1 = static_cast<int>(std::lround(s.value(QStringLiteral("quantity1"))));
@@ -272,8 +278,7 @@ void addRectangularPattern(CommandRegistry& registry, SketchController& c) {
     cmd.insert(QStringLiteral("entities"), names(s.items(QStringLiteral("entities"))));
     cmd.insert(QStringLiteral("direction"), direction);
     cmd.insert(QStringLiteral("count"), QJsonArray{n1, n2});
-    cmd.insert(QStringLiteral("spacing"),
-               QJsonArray{s.expression(QStringLiteral("distance1")), s.expression(QStringLiteral("distance2"))});
+    cmd.insert(QStringLiteral("spacing"), signedSpacings(s));
     return Built::of(cmd);
   };
   def.describe = [](const CommandState& s, const CommandContext&) {
@@ -530,9 +535,15 @@ void addEditPattern(CommandRegistry& registry, SketchController& c) {
           .withVisible(circular),
       valueInput(QStringLiteral("distance1"), QObject::tr("Spacing"), ValueKind::Length, QStringLiteral("10"))
           .withVisible(rectangular),
+      flipInput(QStringLiteral("flip1"), QObject::tr("Flip"))
+          .withTooltip(QObject::tr("Copies against the direction"))
+          .withVisible(rectangular),
       valueInput(QStringLiteral("quantity2"), QObject::tr("Quantity 2"), ValueKind::Unitless, QStringLiteral("1"))
           .withVisible(rectangular),
       valueInput(QStringLiteral("distance2"), QObject::tr("Spacing 2"), ValueKind::Length, QStringLiteral("10"))
+          .withVisible(rectangular),
+      flipInput(QStringLiteral("flip2"), QObject::tr("Flip 2"))
+          .withTooltip(QObject::tr("Copies against the second direction"))
           .withVisible(rectangular),
   };
   def.init = [&c](CommandState& s, const CommandContext&) {
@@ -549,6 +560,8 @@ void addEditPattern(CommandRegistry& registry, SketchController& c) {
       s.setText(QStringLiteral("quantity2"), QString::number(p->count2));
       s.setText(QStringLiteral("distance1"), p->values.value(0));
       s.setText(QStringLiteral("distance2"), p->values.value(1));
+      s.setChecked(QStringLiteral("flip1"), false);
+      s.setChecked(QStringLiteral("flip2"), false);
     }
   };
   def.build = [&c](const CommandState& s, const CommandContext&) -> Built {
@@ -572,8 +585,7 @@ void addEditPattern(CommandRegistry& registry, SketchController& c) {
         return Built::failure(QObject::tr("The quantities make no copies."), QStringLiteral("quantity"));
       }
       cmd.insert(QStringLiteral("count"), QJsonArray{n1, n2});
-      cmd.insert(QStringLiteral("spacing"),
-                 QJsonArray{s.expression(QStringLiteral("distance1")), s.expression(QStringLiteral("distance2"))});
+      cmd.insert(QStringLiteral("spacing"), signedSpacings(s));
     }
     return Built::of(cmd);
   };

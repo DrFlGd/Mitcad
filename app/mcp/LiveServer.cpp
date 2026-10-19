@@ -266,6 +266,9 @@ bool LiveServer::start(QString* error) {
   if (!prepareDiscoveryDirectory(error)) {
     return false;
   }
+  // Removes the records of killed instances (mitcad#437) before a client
+  // has to skip them.
+  discover();
   if (!m_state->listener.listen(QHostAddress::LocalHost, 0)) {
     if (error) {
       *error = m_state->listener.errorString();

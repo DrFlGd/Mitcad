@@ -3,6 +3,7 @@
 
 #include <set>
 #include <string>
+#include <vector>
 
 #include <QCoreApplication>
 #include <QElapsedTimer>
@@ -86,26 +87,24 @@ DisplayMeshing meshForDisplay(const DisplayShapes& shapes, ModelJob& job) {
   DisplayMeshing meshing;
   QElapsedTimer clock;
   clock.start();
-  bool staged = false;
-  const occ::handle<JobBreak> progress = new JobBreak(job);
+  // The shapes the view would mesh, meshed together so that OCCT spreads
+  // the faces of all of them over the cores (mitcad#438); one at a time,
+  // a design of many small bodies used a core or two.
+  std::vector<TopoDS_Shape> pending;
   for (const std::shared_ptr<geometry::Shape>& shape : shapes) {
-    if (job.control().is_cancelled()) {
-      break;
-    }
     const TopoDS_Shape& occt = shape->occt();
-    if (io::has_triangulation(occt) || io::is_mesh(occt)) {
-      continue;
+    if (!io::has_triangulation(occt) && !io::is_mesh(occt)) {
+      pending.push_back(occt);
     }
-    if (!staged) {
-      job.setStage(QCoreApplication::translate("DisplayMeshes", "Meshing the bodies for display"));
-      staged = true;
-    }
+  }
+  if (!pending.empty() && !job.control().is_cancelled()) {
+    job.setStage(QCoreApplication::translate("DisplayMeshes", "Meshing the bodies for display"));
+    const occ::handle<JobBreak> progress = new JobBreak(job);
     try {
-      if (io::mesh_in_place(occt, viewMeshOptions(), progress->Start())) {
-        ++meshing.bodies;
-      }
+      // A body OCCT fails on is left to the view, which meshes it when it
+      // draws it, as before.
+      meshing.bodies = io::mesh_all_in_place(pending, viewMeshOptions(), progress->Start());
     } catch (const Standard_Failure&) {
-      // The view meshes it when it draws it, as before.
     } catch (const std::exception&) {
     }
   }

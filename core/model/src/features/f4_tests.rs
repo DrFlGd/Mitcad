@@ -159,6 +159,48 @@ fn rectangular_patterns_of_bodies_make_new_bodies() {
 }
 
 #[test]
+fn a_negative_pattern_distance_goes_against_the_axis() {
+    // mitcad#447: the distance is signed; the block is 0..60 along x.
+    let mut b = block();
+    let pattern = add(&mut b.doc, x_pattern(3.0, -20.0, json!({})));
+    assert_eq!(status(&b.doc, pattern), FeatureStatus::Ok);
+    assert_bounds(&b.doc, "F3.b0", [-20.0, 0.0, 0.0], [40.0, 40.0, 20.0]);
+    assert_bounds(&b.doc, "F3.b1", [-40.0, 0.0, 0.0], [20.0, 40.0, 20.0]);
+    // A negative extent spans the elements backwards.
+    b.doc
+        .edit_feature(
+            pattern,
+            &def(x_pattern(3.0, -40.0, json!({"distance_type": "extent"}))),
+        )
+        .unwrap();
+    assert_bounds(&b.doc, "F3.b1", [-40.0, 0.0, 0.0], [20.0, 40.0, 20.0]);
+    // Symmetric: the copies of the positive distance (element 1 the other
+    // side).
+    let mut symmetric = x_pattern(3.0, -20.0, json!({}));
+    symmetric["direction1"]["symmetric"] = json!(true);
+    b.doc.edit_feature(pattern, &def(symmetric)).unwrap();
+    assert_bounds(&b.doc, "F3.b0", [-20.0, 0.0, 0.0], [40.0, 40.0, 20.0]);
+    assert_bounds(&b.doc, "F3.b1", [20.0, 0.0, 0.0], [80.0, 40.0, 20.0]);
+    // A second direction turns as well.
+    let mut two = x_pattern(2.0, -20.0, json!({}));
+    two["direction2"] =
+        json!({"axis": {"type": "origin", "axis": "y"}, "quantity": 2, "distance": -50});
+    b.doc.edit_feature(pattern, &def(two)).unwrap();
+    assert_bounds(&b.doc, "F3.b2", [-20.0, -50.0, 0.0], [40.0, -10.0, 20.0]);
+    // Zero is refused, in either direction.
+    let error = b
+        .doc
+        .edit_feature(pattern, &def(x_pattern(3.0, 0.0, json!({}))))
+        .unwrap_err();
+    assert!(error.to_string().contains("must not be zero"), "{error}");
+    let mut zero = x_pattern(2.0, -20.0, json!({}));
+    zero["direction2"] =
+        json!({"axis": {"type": "origin", "axis": "y"}, "quantity": 2, "distance": 0});
+    let error = b.doc.edit_feature(pattern, &def(zero)).unwrap_err();
+    assert!(error.to_string().contains("must not be zero"), "{error}");
+}
+
+#[test]
 fn patterns_scale_their_copies_about_the_carried_centre() {
     // A pattern's `scale` (mitcad#59): element e of n scaled by
     // 1 + (scale - 1) e / (n - 1) about the original's centre carried to

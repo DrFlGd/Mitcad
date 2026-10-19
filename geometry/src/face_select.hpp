@@ -77,8 +77,19 @@ private:
 // that no set selects and that meets an edge of a set that `follows` (by
 // set) end to end with the same direction (within
 // kTangentChainAngle) and lies between two faces at an angle (not a smooth
-// edge, which no dressup rounds), then the same from those edges. Returns
+// edge, which no dressup rounds) that is convex where the edge's is convex
+// and concave where it is concave, then the same from those edges. Returns
 // how many it added.
+//
+// The convexity: a rounding's ball lies inside the material's angle at a
+// convex edge and outside it at a concave one, so a rounding cannot run on
+// from one into the other; where such edges meet end to end, the rounding
+// vanishes (a post's top circle under a block as wide as the post: the
+// circle touches the block's long bottom edges where the underside narrows
+// to nothing, the convex long edges running on from the concave circle's
+// arcs there; the file's tangent chain from one arc takes the other arcs
+// only, mitcad#439). OCCT's contour has one type of concavity too
+// (ChFiDS_Spine::SetTypeOfConcavity).
 //
 // The angle: in the reference data of imported designs, the edges a
 // file's tangent chain added met within 5.3e-4 rad; the next larger
@@ -98,15 +109,22 @@ public:
   // rounds); worked out once per edge.
   bool sharp(int edge) const;
   // The sharp edges that meet the edge end to end in the same direction
-  // (within kTangentChainAngle), the edge itself left out.
+  // (within kTangentChainAngle), the edge itself left out, except those
+  // convex where the edge is concave or concave where it is convex.
   std::vector<int> next(int edge) const;
 
 private:
+  // 1 for a convex edge, 0 for a concave one, -2 for neither (a seam, a
+  // free edge, one of mixed or unknown convexity); worked out once per
+  // edge.
+  int convexity(int edge) const;
+
   const Shape& m_body;
   NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>
       m_edgesOf;
   EdgeFaces m_edgeFaces;
-  mutable std::vector<signed char> m_sharp; // -1: not worked out yet
+  mutable std::vector<signed char> m_sharp;     // -1: not worked out yet
+  mutable std::vector<signed char> m_convexity; // -1: not worked out yet
 };
 
 // The faces plus every face connected to them through smooth edges

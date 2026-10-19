@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <limits>
 #include <map>
@@ -46,6 +47,15 @@
 #include <TopoDS_Face.hxx>
 #include <TopoDS_Vertex.hxx>
 #include <gp_Pnt2d.hxx>
+#include <OSD_Parallel.hxx>
+// OSD_Parallel.hxx brings in windows.h on Windows, whose empty near and far
+// macros would remove those names below.
+#ifdef near
+#undef near
+#endif
+#ifdef far
+#undef far
+#endif
 
 #include "mitcad/analysis/compare.hpp"
 #include "mitcad/analysis/measure.hpp"
@@ -168,6 +178,13 @@ constexpr int kGridSide = 400;
 // local search only (see BoundaryIndex::Probe::large): a body of a few
 // dozen coils otherwise held gigabytes in such grids.
 constexpr double kLargeSpline = 20000.0;
+// The local searches at most that place a point on a free-form face (see
+// BoundaryIndex::free_form_distance).
+constexpr std::size_t kSeeds = 64;
+
+// How many times OCCT's distance query measured a point against a face
+// (analysis_whole_face_searches).
+std::atomic<std::size_t> whole_face_searches{0};
 
 // What boundary_distances keeps of a shape between calls: its faces with
 // their boxes, each face's projection and classifier once a point near it
@@ -193,6 +210,9 @@ struct BoundaryIndex {
     std::vector<gp_Pnt> grid;
     std::vector<gp_Pnt2d> grid_uv;
     double reach = 0.0;
+    // The grid's points in u and in v (grid[i * grid_v + j]).
+    int grid_u = 0;
+    int grid_v = 0;
     // The grid is made (the projection may have been let go since).
     bool prepared = false;
     // A spline of many knot spans: its projection's own search grid (one
@@ -276,6 +296,16 @@ struct BoundaryIndex {
     if (boundary_distance(probe, probe.surface->Value(uv), kNearBoundary) < kNearBoundary) {
       return uv;
     }
+    if (!on_face(probe, uv)) {
+      return std::nullopt;
+    }
+    return uv;
+  }
+
+  // Whether the surface's point at `uv` is on the face (inside it or on its
+  // boundary), by OCCT's exact classifier as its distance query classifies
+  // (with the face's tolerance), its view of the face kept.
+  static bool on_face(Probe& probe, const gp_Pnt2d& uv) {
     if (!probe.explorer) {
       probe.explorer = std::make_unique<BRepClass_FaceExplorer>(probe.face);
       BRepTools::UVBounds(probe.face, probe.bounds[0], probe.bounds[1], probe.bounds[2], probe.bounds[3]);
@@ -292,10 +322,7 @@ struct BoundaryIndex {
                                 probe.bounds[2] - 1e-9));
     BRepClass_FClassifier classifier;
     classifier.Perform(*probe.explorer, at, BRep_Tool::Tolerance(probe.face));
-    if (classifier.State() == TopAbs_OUT) {
-      return std::nullopt;
-    }
-    return uv;
+    return classifier.State() != TopAbs_OUT;
   }
 
   // The distance from `p` to the edges of the face, those whose boxes are
@@ -341,7 +368,8 @@ struct BoundaryIndex {
   // than `bound`): a simple face's projection where it lies on the face,
   // or its edges where nearer (an edge's curve may lie off the surface
   // within its tolerance, and OCCT's distance query measures it too);
-  // other faces measured by OCCT's distance query.
+  // free-form faces from their grids (free_form_distance); cones and tori
+  // measured by OCCT's distance query.
   static double face_distance(Probe& probe, const gp_Pnt& p, double bound) {
     if (probe.simple) {
       double d = bound;
@@ -350,9 +378,101 @@ struct BoundaryIndex {
       }
       return boundary_distance(probe, p, d);
     }
+    if (!probe.analytic) {
+      if (const std::optional<double> d = free_form_distance(probe, p, bound)) {
+        return *d;
+      }
+    }
+    return whole_face_distance(probe, p);
+  }
+
+  // OCCT's distance query from `p` to the face. On a free-form face it
+  // builds a search grid over the whole surface and classifies every
+  // extremum it finds (one a turn on a thread's flank) with a classifier set
+  // up anew, for every point: tens of milliseconds a point on a stored
+  // thread's splines (mitcad#442).
+  static double whole_face_distance(Probe& probe, const gp_Pnt& p) {
+    ++whole_face_searches;
     BRepExtrema_DistShapeShape distance(BRepBuilderAPI_MakeVertex(p).Vertex(), probe.face);
     return distance.IsDone() && distance.NbSolution() > 0 ? distance.Value()
                                                           : std::numeric_limits<double>::infinity();
+  }
+
+  // The distance from `p` to a free-form face (`bound` or less when it is
+  // nearer than `bound`) from what the probe keeps of the face (its grid,
+  // surface, edges and classifier), as OCCT's distance query measures it:
+  // the nearer of the face's edges and the surface's extrema on the face.
+  // Any extremum nearer than the edges has a grid point within `reach` of
+  // it, so each region of grid points nearer than the edges plus `reach`
+  // holds a grid point nearer than its neighbours: the extrema are searched
+  // locally from those only, the nearest first. None when the regions hold
+  // more such points than kSeeds (a point about as far from much of the
+  // face, e.g. on a surface of revolution's axis): the distance query
+  // measures it.
+  static std::optional<double> free_form_distance(Probe& probe, const gp_Pnt& p, double bound) {
+    if (!probe.prepared) {
+      prepare(probe);
+    } else if (probe.surface.IsNull()) {
+      probe.surface = new ShapeAnalysis_Surface(BRep_Tool::Surface(probe.face));
+    }
+    const std::size_t nu = static_cast<std::size_t>(probe.grid_u);
+    const std::size_t nv = static_cast<std::size_t>(probe.grid_v);
+    if (probe.grid.empty() || nu * nv != probe.grid.size()) {
+      return std::nullopt;
+    }
+    double best = boundary_distance(probe, p, bound);
+    std::vector<double> squared(probe.grid.size());
+    for (std::size_t k = 0; k < probe.grid.size(); ++k) {
+      squared[k] = p.SquareDistance(probe.grid[k]);
+    }
+    const double limit = best + probe.reach;
+    std::vector<std::pair<double, std::size_t>> seeds;
+    for (std::size_t i = 0; i < nu; ++i) {
+      for (std::size_t j = 0; j < nv; ++j) {
+        const std::size_t k = i * nv + j;
+        if (!(std::sqrt(squared[k]) < limit)) {
+          continue;
+        }
+        bool lowest = true;
+        for (std::size_t a = i > 0 ? i - 1 : 0; lowest && a <= std::min(i + 1, nu - 1); ++a) {
+          for (std::size_t b = j > 0 ? j - 1 : 0; b <= std::min(j + 1, nv - 1); ++b) {
+            if (squared[a * nv + b] < squared[k]) {
+              lowest = false;
+              break;
+            }
+          }
+        }
+        if (lowest) {
+          seeds.emplace_back(squared[k], k);
+          if (seeds.size() > kSeeds) {
+            return std::nullopt;
+          }
+        }
+      }
+    }
+    std::sort(seeds.begin(), seeds.end());
+    const GeomAdaptor_Surface& surface = *probe.surface->Adaptor3d();
+    for (const auto& [squared_distance, k] : seeds) {
+      if (std::sqrt(squared_distance) >= best + probe.reach) {
+        break;
+      }
+      Extrema_GenLocateExtPS locate(surface);
+      locate.Perform(p, probe.grid_uv[k].X(), probe.grid_uv[k].Y());
+      if (!locate.IsDone()) {
+        continue;
+      }
+      const double d = std::sqrt(locate.SquareDistance());
+      if (d >= best) {
+        continue;
+      }
+      double u = 0.0;
+      double v = 0.0;
+      locate.Point().Parameter(u, v);
+      if (on_face(probe, gp_Pnt2d(u, v))) {
+        best = d;
+      }
+    }
+    return best;
   }
 
   // The distance from `p` to the nearest face, the faces taken by the
@@ -428,6 +548,8 @@ struct BoundaryIndex {
         nv = std::max(9, nv * 3 / 4);
       }
     }
+    probe.grid_u = nu;
+    probe.grid_v = nv;
     probe.grid.reserve(static_cast<std::size_t>(nu) * static_cast<std::size_t>(nv));
     for (int i = 0; i < nu; ++i) {
       for (int j = 0; j < nv; ++j) {
@@ -480,6 +602,143 @@ auto guarded(const char* operation, Work&& work) -> decltype(work()) {
   std::optional<decltype(work())> result;
   geometry::run_operation(operation, [&] { result.emplace(work()); });
   return std::move(*result);
+}
+
+// The plane passes this much farther from a body than its tolerances
+// before its section is taken as empty without a boolean.
+constexpr double kSectionMargin = 1.0e-6;
+
+// The body's exact box, kept with it once measured (geometry::bounding_box:
+// Section Analysis asks again at every distance); none for an empty one.
+std::optional<analysis::Bounds> kept_bounds(const geometry::Shape& shape) {
+  const geometry::BoundingBox box = geometry::bounding_box(shape);
+  if (box.empty) {
+    return std::nullopt;
+  }
+  analysis::Bounds bounds;
+  bounds.min = {box.min.X(), box.min.Y(), box.min.Z()};
+  bounds.max = {box.max.X(), box.max.Y(), box.max.Z()};
+  bounds.empty = false;
+  return bounds;
+}
+
+// The largest tolerance of the shape's vertices, edges and faces: a
+// boolean meets the plane within it.
+double max_tolerance(const TopoDS_Shape& shape) {
+  double tolerance = 0.0;
+  for (TopExp_Explorer it(shape, TopAbs_VERTEX); it.More(); it.Next()) {
+    tolerance = std::max(tolerance, BRep_Tool::Tolerance(TopoDS::Vertex(it.Current())));
+  }
+  for (TopExp_Explorer it(shape, TopAbs_EDGE); it.More(); it.Next()) {
+    tolerance = std::max(tolerance, BRep_Tool::Tolerance(TopoDS::Edge(it.Current())));
+  }
+  for (TopExp_Explorer it(shape, TopAbs_FACE); it.More(); it.Next()) {
+    tolerance = std::max(tolerance, BRep_Tool::Tolerance(TopoDS::Face(it.Current())));
+  }
+  return tolerance;
+}
+
+// The section of a body as analysis::section takes it; an empty one,
+// without a boolean, when the plane passes the body's box farther than its
+// tolerances (mitcad#438: Section Analysis measures every body shown, and
+// most lie on one side of the plane).
+analysis::Section section_of(const geometry::Shape& shape, const analysis::Plane& plane) {
+  if (const std::optional<analysis::Bounds> box = kept_bounds(shape)) {
+    const analysis::PlaneReach reach = analysis::plane_reach(*box, plane);
+    const double gap = std::max(reach.min, -reach.max);
+    if (gap > kSectionMargin && gap > max_tolerance(shape.occt()) + kSectionMargin) {
+      analysis::Section none;
+      BRep_Builder builder;
+      TopoDS_Compound curves;
+      builder.MakeCompound(curves);
+      none.curves = curves;
+      TopoDS_Compound faces;
+      builder.MakeCompound(faces);
+      none.faces = faces;
+      return none;
+    }
+  }
+  return guarded("section", [&] { return analysis::section(shape.occt(), plane); });
+}
+
+// What Section Analysis shows of a body cut at the plane: null when the
+// plane leaves it whole, for the caller to show the body's own Shape (the
+// same B-rep, which the view keeps drawn as it is, mitcad#438), and no
+// faces when the plane removes all of it. A body the plane does not reach
+// is told from its box, without a boolean. What is left of each face keeps
+// the body's names, and so do the edges and vertices between them: picks
+// on the clipped view refer to the body (mitcad#233). The caps have none
+// and cannot be picked.
+std::shared_ptr<geometry::Shape> clip_of(const geometry::Shape& shape, const analysis::Plane& plane) {
+  if (const std::optional<analysis::Bounds> box = kept_bounds(shape)) {
+    switch (analysis::clip_side(*box, plane)) {
+    case analysis::ClipSide::Kept:
+      return nullptr;
+    case analysis::ClipSide::Removed: {
+      TopoDS_Compound nothing;
+      BRep_Builder().MakeCompound(nothing);
+      return std::make_shared<geometry::Shape>(nothing);
+    }
+    case analysis::ClipSide::Cut:
+      break;
+    }
+  }
+  return guarded("clip", [&]() -> std::shared_ptr<geometry::Shape> {
+    std::vector<analysis::ClippedFace> faces;
+    TopoDS_Shape clipped = analysis::clip(shape.occt(), plane, &faces);
+    if (clipped.IsEqual(shape.occt())) {
+      return nullptr;
+    }
+    std::vector<geometry::Shape::NamedFace> named;
+    for (const analysis::ClippedFace& face : faces) {
+      const int i = shape.face_index(face.face);
+      if (i < 0 || shape.face_names(i).empty()) {
+        continue;
+      }
+      for (const TopoDS_Shape& piece : face.pieces) {
+        named.push_back({piece, shape.face_names(i)});
+      }
+    }
+    return std::make_shared<geometry::Shape>(std::move(clipped), named);
+  });
+}
+
+// Runs work(i) for each of `count` items on all cores (OCCT's thread
+// pool), each item's work an operation of its own (clip_of, section_of):
+// its error, also a crash inside OCCT, is its own, and the other items go
+// on. Returns the errors, empty for the items that worked.
+template <class Work>
+std::vector<std::string> each_on_all_cores(std::size_t count, Work&& work) {
+  std::vector<std::string> errors(count);
+  OSD_Parallel::For(
+      0, static_cast<int>(count),
+      [&](int i) {
+        const auto k = static_cast<std::size_t>(i);
+        try {
+          work(k);
+        } catch (const std::exception& error) {
+          errors[k] = error.what();
+          if (errors[k].empty()) {
+            errors[k] = "failed";
+          }
+        } catch (...) {
+          errors[k] = "failed";
+        }
+      },
+      count < 2);
+  return errors;
+}
+
+std::vector<analysis::Plane> planes_of(const ShapeList& shapes, rust::Slice<const AnalysisPlane> planes) {
+  if (planes.size() != shapes.size()) {
+    throw std::invalid_argument("one plane per shape is needed");
+  }
+  std::vector<analysis::Plane> result;
+  result.reserve(planes.size());
+  for (const AnalysisPlane& plane : planes) {
+    result.push_back(plane_of(plane));
+  }
+  return result;
 }
 
 } // namespace
@@ -587,31 +846,45 @@ std::unique_ptr<AnalysisInterferences> analysis_interferences(const ShapeList& b
 
 std::unique_ptr<AnalysisSection> analysis_section(const geometry::Shape& shape,
                                                   const AnalysisPlane& plane) {
-  return guarded("section", [&] {
-    return std::make_unique<AnalysisSection>(analysis::section(shape.occt(), plane_of(plane)));
-  });
+  return std::make_unique<AnalysisSection>(section_of(shape, plane_of(plane)));
 }
 
 std::shared_ptr<geometry::Shape> analysis_clip(const geometry::Shape& shape,
                                                const AnalysisPlane& plane) {
-  return guarded("clip", [&] {
-    std::vector<analysis::ClippedFace> faces;
-    TopoDS_Shape clipped = analysis::clip(shape.occt(), plane_of(plane), &faces);
-    // What is left of each face keeps the body's names, and so do the
-    // edges and vertices between them: picks on the clipped view refer to
-    // the body (mitcad#233). The caps have none and cannot be picked.
-    std::vector<geometry::Shape::NamedFace> named;
-    for (const analysis::ClippedFace& face : faces) {
-      const int i = shape.face_index(face.face);
-      if (i < 0 || shape.face_names(i).empty()) {
-        continue;
-      }
-      for (const TopoDS_Shape& piece : face.pieces) {
-        named.push_back({piece, shape.face_names(i)});
-      }
+  return clip_of(shape, plane_of(plane));
+}
+
+std::unique_ptr<AnalysisSection> AnalysisSections::section(std::size_t index) const {
+  const std::optional<analysis::Section>& found = m_sections.at(index);
+  return found ? std::make_unique<AnalysisSection>(*found) : nullptr;
+}
+
+std::unique_ptr<AnalysisSections> analysis_section_all(const ShapeList& shapes,
+                                                       rust::Slice<const AnalysisPlane> planes) {
+  const std::vector<analysis::Plane> each = planes_of(shapes, planes);
+  std::vector<std::optional<analysis::Section>> sections(each.size());
+  std::vector<std::string> errors = each_on_all_cores(each.size(), [&](std::size_t k) {
+    const std::shared_ptr<geometry::Shape> shape = shapes.at(k);
+    if (!shape) {
+      throw std::invalid_argument("the body has no shape");
     }
-    return std::make_shared<geometry::Shape>(std::move(clipped), named);
+    sections[k] = section_of(*shape, each[k]);
   });
+  return std::make_unique<AnalysisSections>(std::move(sections), std::move(errors));
+}
+
+std::unique_ptr<AnalysisClips> analysis_clip_all(const ShapeList& shapes,
+                                                 rust::Slice<const AnalysisPlane> planes) {
+  const std::vector<analysis::Plane> each = planes_of(shapes, planes);
+  std::vector<std::shared_ptr<geometry::Shape>> clipped(each.size());
+  std::vector<std::string> errors = each_on_all_cores(each.size(), [&](std::size_t k) {
+    const std::shared_ptr<geometry::Shape> shape = shapes.at(k);
+    if (!shape) {
+      throw std::invalid_argument("the body has no shape");
+    }
+    clipped[k] = clip_of(*shape, each[k]);
+  });
+  return std::make_unique<AnalysisClips>(std::move(clipped), std::move(errors));
 }
 
 AnalysisComparison analysis_compare_step(const ShapeList& bodies, rust::Str path,
@@ -712,7 +985,7 @@ rust::Vec<double> analysis_boundary_distances(const geometry::Shape& shape,
   // The point's distance from the face's surface where it projects inside
   // the face, else none (also when it is far from a free-form surface's
   // grid, or the projection from the nearest grid point finds no nearer
-  // point: the distance query then measures it).
+  // point: BoundaryIndex::nearest then measures it).
   const auto gap = [](BoundaryIndex::Probe& probe, const gp_Pnt& p) -> std::optional<double> {
     if (!probe.prepared) {
       BoundaryIndex::prepare(probe);
@@ -739,7 +1012,7 @@ rust::Vec<double> analysis_boundary_distances(const geometry::Shape& shape,
         // A local search from the nearest grid point only: when it fails,
         // NextValueOfUV falls back to the general projection, whose
         // search grid on such a spline takes gigabytes (memory limits
-        // then end the process in OCCT). The distance query measures a
+        // then end the process in OCCT). BoundaryIndex::nearest measures a
         // point it does not place.
         Extrema_GenLocateExtPS locate(*probe.surface->Adaptor3d());
         locate.Perform(p, probe.grid_uv[nearest].X(), probe.grid_uv[nearest].Y());
@@ -812,6 +1085,8 @@ rust::Vec<double> analysis_boundary_distances(const geometry::Shape& shape,
   }
   return out;
 }
+
+std::size_t analysis_whole_face_searches() { return whole_face_searches.load(); }
 
 bool analysis_face_point(const geometry::Shape& shape, const std::vector<int>& faces,
                          const std::array<double, 3>& near, std::array<double, 3>& point,

@@ -160,6 +160,18 @@ mod ffi {
         /// A shape for display: a datum, a section, a clipped body or the
         /// overlap of two bodies (commands.md); null when there is none.
         fn analysis_shape(self: &Document, request: &str) -> Result<SharedPtr<Shape>>;
+        /// Several bodies clipped at one plane, as the `clip` shape clips
+        /// each, worked out together on all cores (commands.md,
+        /// `analysis_clips`; mitcad#438).
+        fn analysis_clips(self: &Document, request: &str) -> Result<Box<ClippedBodies>>;
+        /// `analysis_clips`' results, one per body in the request's order.
+        type ClippedBodies;
+        fn count(self: &ClippedBodies) -> usize;
+        /// The clipped body (the body's own shape when the plane leaves it
+        /// whole); null when its clip failed.
+        fn shape(self: &ClippedBodies, index: usize) -> SharedPtr<Shape>;
+        /// Why its clip failed; empty when it did not.
+        fn error(self: &ClippedBodies, index: usize) -> String;
         // Base features from shapes and .f3d bodies (exchange.rs; files
         // are imported and exported with JSON commands).
 
@@ -715,5 +727,32 @@ impl Document {
             .0
             .analysis_shape(request)?
             .unwrap_or_else(SharedPtr::null))
+    }
+
+    fn analysis_clips(&self, request: &str) -> Result<Box<ClippedBodies>, ApiError> {
+        Ok(Box::new(ClippedBodies(self.0.analysis_clips(request)?)))
+    }
+}
+
+/// `Document::analysis_clips`' results (mitcad#438).
+pub struct ClippedBodies(Vec<Result<SharedPtr<Shape>, ApiError>>);
+
+impl ClippedBodies {
+    fn count(&self) -> usize {
+        self.0.len()
+    }
+
+    fn shape(&self, index: usize) -> SharedPtr<Shape> {
+        match self.0.get(index) {
+            Some(Ok(shape)) => shape.clone(),
+            _ => SharedPtr::null(),
+        }
+    }
+
+    fn error(&self, index: usize) -> String {
+        match self.0.get(index) {
+            Some(Err(error)) => error.to_string(),
+            _ => String::new(),
+        }
     }
 }

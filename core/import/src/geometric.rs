@@ -14,8 +14,9 @@
 //! result agrees when every main face lies on the other side's faces
 //! (within [`tolerance`]) and what does not is confined to corner patches
 //! (small faces, each at most [`CORNER`] of its side's new area, together at
-//! most [`CORNERS`], none further off than [`CORNER_DISTANCE`]); a main
-//! face off is a different result.
+//! most [`CORNERS`], none further off than [`CORNER_DISTANCE`], none on a
+//! body the other side's item left as it was); a main face off is a
+//! different result.
 
 use mitcad_model::{BodyUid, Kernel, KernelError};
 
@@ -73,11 +74,14 @@ const FEWEST: usize = 4;
 
 /// A face one side made or changed: its area (mm²) and the largest
 /// distance (mm) of its points from the other side's faces; None when it
-/// is too thin to place points on.
+/// is too thin to place points on. `alone`: the face is on a body whose
+/// counterpart the other side's item left as it was (the other side made
+/// no face there).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct Deviation {
     pub area: f64,
     pub largest: Option<f64>,
+    pub alone: bool,
 }
 
 impl Deviation {
@@ -110,6 +114,8 @@ struct Side {
     /// The volume (mm³) the faces can put between the two sides: each
     /// face's area times its distance, at least [`SPAN_FLOOR`].
     span: f64,
+    /// The faces off on bodies the other side's item left as they were.
+    stray: usize,
 }
 
 impl Side {
@@ -126,14 +132,21 @@ impl Side {
                 side.off_area += f.area;
                 side.worst = side.worst.max(largest);
                 side.largest_off = side.largest_off.max(f.area);
+                side.stray += usize::from(f.alone);
             }
         }
         side
     }
 
-    /// Whether the faces off are corner patches only.
+    /// Whether the faces off are corner patches only. A face off on a body
+    /// the other side's item left as it was is none: a corner patch is
+    /// where two roundings of one edge differ, and there the other side has
+    /// no rounding (a guessed rounding of an edge the file's item does not
+    /// round, accepted by its corner's size, cut the next item's edges:
+    /// mitcad#343).
     fn corners_only(&self) -> bool {
-        self.largest_off <= CORNER * self.area
+        self.stray == 0
+            && self.largest_off <= CORNER * self.area
             && self.off_area <= CORNERS * self.area
             && self.worst <= CORNER_DISTANCE
     }
@@ -141,8 +154,16 @@ impl Side {
     /// The faces off, for the report (None without any).
     fn describe(&self, whose: &str) -> Option<String> {
         (self.off > 0).then(|| {
+            let stray = if self.stray > 0 {
+                format!(
+                    " ({} on a body the other side's item leaves as it was)",
+                    self.stray
+                )
+            } else {
+                String::new()
+            };
             format!(
-                "{} of {whose} new faces ({:.1} % of their area) up to {:.3} mm off",
+                "{} of {whose} new faces ({:.1} % of their area) up to {:.3} mm off{stray}",
                 self.off,
                 100.0 * self.off_area / self.area.max(1e-12),
                 self.worst
@@ -157,8 +178,9 @@ impl Side {
 /// file's change. The faces must account for that volume: the volume
 /// between two sides is about their faces' area times their distance (at
 /// most [`SPAN_SLACK`] times what the points measured give: they are a
-/// sample, and a part of a face they miss still shows in the volume). None
-/// when neither side has a face to measure.
+/// sample, and a part of a face they miss still shows in the volume). A
+/// face off on a body the other side's item left as it was is never a
+/// corner patch. None when neither side has a face to measure.
 pub(crate) fn judge(ours: &[Deviation], theirs: &[Deviation], volume: f64) -> Option<Verdict> {
     let (a, b) = (Side::of(ours), Side::of(theirs));
     if a.area <= 0.0 && b.area <= 0.0 {
@@ -191,53 +213,59 @@ pub(crate) fn judge(ours: &[Deviation], theirs: &[Deviation], volume: f64) -> Op
     }))
 }
 
-/// The new faces of one side, each with the shape to measure it against.
+/// The new faces of one side, each with the shape to measure it against
+/// and whether that shape is a body the other side's item left as it was.
 struct NewFaces<'s, S> {
-    faces: Vec<(mitcad_model::NewFace, &'s S)>,
+    faces: Vec<(mitcad_model::NewFace, &'s S, bool)>,
 }
 
 impl<'s, S> NewFaces<'s, S> {
     /// The faces of `after` that the shapes `before` do not have, to be
-    /// measured against `other`.
+    /// measured against `other` (`alone`: a body the other side's item left
+    /// as it was).
     fn add<K: Kernel<Shape = S>>(
         &mut self,
         kernel: &K,
         before: &[&S],
         after: &S,
         other: &'s S,
+        alone: bool,
     ) -> Result<(), KernelError> {
         let faces = kernel.new_faces(before, after, POINTS)?;
         crate::tick();
-        self.faces.extend(faces.into_iter().map(|f| (f, other)));
+        self.faces
+            .extend(faces.into_iter().map(|f| (f, other, alone)));
         Ok(())
     }
 
     /// Each face with the largest distance of its points from its other
     /// shape's faces, measuring at most [`ALL_POINTS`] points (at least
     /// [`FEWEST`] a face). The largest faces first, and no further than
-    /// a main face off, corner patches off beyond [`CORNERS`] or one off
-    /// beyond [`CORNER_DISTANCE`]: the faces left then count as on the
-    /// other side's (each point measured off a face takes the kernel
-    /// milliseconds on a large body).
+    /// a main face off, corner patches off beyond [`CORNERS`], one off
+    /// beyond [`CORNER_DISTANCE`] or one off on a body the other side left
+    /// as it was: the faces left then count as on the other side's (each
+    /// point measured off a face takes the kernel milliseconds on a large
+    /// body).
     fn measure<K: Kernel<Shape = S>>(mut self, kernel: &K) -> Result<Vec<Deviation>, KernelError> {
         self.faces.sort_by(|a, b| b.0.area.total_cmp(&a.0.area));
         let total: f64 = self
             .faces
             .iter()
-            .filter(|(f, _)| !f.points.is_empty())
-            .map(|(f, _)| f.area)
+            .filter(|(f, _, _)| !f.points.is_empty())
+            .map(|(f, _, _)| f.area)
             .sum();
         let each = (ALL_POINTS / self.faces.len().max(1)).clamp(FEWEST, POINTS);
         let mut out = Vec::new();
         let mut off_area = 0.0;
         let mut decided = false;
-        for (f, other) in &self.faces {
+        for &(ref f, other, alone) in &self.faces {
             let n = f.points.len();
             if n == 0 || decided {
                 let largest = (n > 0).then_some(0.0);
                 out.push(Deviation {
                     area: f.area,
                     largest,
+                    alone,
                 });
                 continue;
             }
@@ -253,10 +281,12 @@ impl<'s, S> NewFaces<'s, S> {
             let face = Deviation {
                 area: f.area,
                 largest: Some(largest),
+                alone,
             };
             if face.off() {
                 off_area += f.area;
-                decided = f.area > CORNER * total
+                decided = alone
+                    || f.area > CORNER * total
                     || off_area > CORNERS * total
                     || largest > CORNER_DISTANCE;
             }
@@ -345,8 +375,9 @@ fn nearest<'b, S>(sig: &Sig, among: &[&'b Body<S>]) -> Option<&'b Body<S>> {
 
 /// The new faces of one side measured against the other: those of each
 /// body of `changed` that the bodies `gone` (which it replaced) do not
-/// have, against the nearest body of `others` (of the other side's changed
-/// bodies, else of all of its bodies).
+/// have, against the nearest body of the other side's changed bodies
+/// `others`; where a body the other side left as it was is nearer (or the
+/// other side changed none), against that one, and the faces are `alone`.
 fn side<K: Kernel>(
     kernel: &K,
     changed: &[&Body<K::Shape>],
@@ -358,15 +389,11 @@ fn side<K: Kernel>(
     let gone: Vec<&K::Shape> = gone.iter().map(|b| &b.2).collect();
     let mut faces = NewFaces { faces: Vec::new() };
     for body in changed {
-        let pool = if others.is_empty() {
-            all_others
-        } else {
-            others
-        };
-        let Some(other) = nearest(&body.1, pool) else {
+        let Some(other) = nearest(&body.1, all_others) else {
             continue;
         };
-        faces.add(kernel, &gone, &body.2, &other.2)?;
+        let alone = !others.iter().any(|o| std::ptr::eq(*o, other));
+        faces.add(kernel, &gone, &body.2, &other.2, alone)?;
     }
     let (count, listed) = (faces.faces.len(), clock.elapsed().as_secs_f64());
     let measured = faces.measure(kernel)?;
@@ -751,6 +778,15 @@ mod tests {
         Deviation {
             area,
             largest: Some(largest),
+            alone: false,
+        }
+    }
+
+    /// A face on a body the other side's item left as it was.
+    fn stray(area: f64, largest: f64) -> Deviation {
+        Deviation {
+            alone: true,
+            ..face(area, largest)
         }
     }
 
@@ -843,6 +879,7 @@ mod tests {
         let thin = Deviation {
             area: 1.0,
             largest: None,
+            alone: false,
         };
         assert_eq!(judge(&[thin], &[], 0.0), None);
         assert_eq!(judge(&[], &[], 0.0), None);
@@ -1026,6 +1063,88 @@ mod tests {
             Some(Verdict::Differs(why)) => assert!(why.contains("0.070 mm"), "{why}"),
             v => panic!("{v:?}"),
         }
+    }
+
+    #[test]
+    fn no_corner_patch_where_the_file_changes_nothing() {
+        // A guessed rounding on a body the file's item leaves as it was
+        // (mitcad#343): the faces it trims lie on the file's, its blend of
+        // 18.7 mm² 0.045 mm off, 1.3 % of the new area. That is no corner
+        // patch: the file has no rounding there to differ from.
+        let ours = [
+            stray(800.0, 0.0),
+            stray(500.0, 0.0),
+            stray(100.0, 0.0),
+            stray(18.7, 0.045),
+        ];
+        match judge(&ours, &[], 0.53) {
+            Some(Verdict::Differs(why)) => assert!(why.contains("leaves as it was"), "{why}"),
+            v => panic!("{v:?}"),
+        }
+        // Rebuilt within the tolerance, such a body is the file's.
+        let ours = [stray(800.0, 0.005), stray(500.0, 0.0)];
+        assert!(matches!(judge(&ours, &[], 0.0), Some(Verdict::Agrees(_))));
+        // The same patch on a body both sides changed stays a corner.
+        let ours = [face(800.0, 0.0), face(500.0, 0.0), face(18.7, 0.045)];
+        let theirs = [face(800.0, 0.0), face(500.0, 0.0), face(18.0, 0.04)];
+        assert!(matches!(
+            judge(&ours, &theirs, 0.53),
+            Some(Verdict::Agrees(_))
+        ));
+        // The file's face off on a body the result left as it was: a part
+        // of the file's change the result lacks.
+        let theirs = [face(800.0, 0.0), stray(5.0, 0.04)];
+        assert!(matches!(
+            judge(&ours, &theirs, 0.0),
+            Some(Verdict::Differs(_))
+        ));
+    }
+
+    #[test]
+    fn a_body_the_file_leaves_is_measured_alone() {
+        // The replay rounds an edge of body 1 and a corner of body 2; the
+        // file's item changes body 2 only.
+        let before = [
+            body(Some(1), 100.0, "a:400,b:300,edge:20"),
+            body(Some(2), 50.0, "c:100,d:100"),
+        ];
+        let after = [
+            body(Some(1), 99.9, "xa:400,xb:300,xedge:5"),
+            body(Some(2), 49.01, "c:100,round:60,xcorner:1"),
+        ];
+        let reference = [
+            body(None, 100.0, "a:400,b:300,edge:20"),
+            body(None, 50.0, "c:100,d:100"),
+        ];
+        let target = [
+            body(None, 100.0, "a:400,b:300,edge:20"),
+            body(None, 49.0, "c:100,round:60,corner:1"),
+        ];
+        let (ours, theirs) =
+            measure(&Faces, &before, &after, &reference, &target).expect("measured");
+        // Body 1's faces against the file's body 1, alone; its trimmed
+        // faces on the file's, its blend 0.04 mm off.
+        let alone: Vec<_> = ours.iter().filter(|d| d.alone).collect();
+        assert_eq!(alone.len(), 3);
+        assert_eq!(alone.iter().filter(|d| d.off()).count(), 1);
+        // (That settles it: the file's are not measured.)
+        assert!(theirs.is_empty());
+        match judge(&ours, &theirs, 0.1) {
+            Some(Verdict::Differs(why)) => assert!(why.contains("leaves as it was"), "{why}"),
+            v => panic!("{v:?}"),
+        }
+        // Without the rounding on body 1 the corner of body 2 is a corner.
+        let after = [
+            body(Some(1), 100.0, "a:400,b:300,edge:20"),
+            body(Some(2), 49.01, "c:100,round:60,xcorner:1"),
+        ];
+        let (ours, theirs) =
+            measure(&Faces, &before, &after, &reference, &target).expect("measured");
+        assert!(ours.iter().chain(&theirs).all(|d| !d.alone));
+        assert!(matches!(
+            judge(&ours, &theirs, 0.0),
+            Some(Verdict::Agrees(_))
+        ));
     }
 
     #[test]

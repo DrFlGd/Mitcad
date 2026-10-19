@@ -361,3 +361,28 @@ fn without_a_store_nothing_is_written_or_read() {
     assert!(doc.stats().restored.is_empty());
     assert_eq!(doc.kernel().count("shape_bytes"), 0);
 }
+
+#[test]
+fn stored_tapped_holes_keep_the_walls_their_threads_took() {
+    // A modelled tapped hole whose radial clearance leaves no piece of its
+    // wall: the threads query lists it from the wall the hole measured
+    // before the thread (mitcad#436), which a restored result keeps.
+    let folder = Folder::new();
+    let mut b = block();
+    let hole = def(json!({"type": "hole",
+        "placement": {"type": "face", "body": "F2.b0",
+                      "face": "F2:end(r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]})",
+                      "points": [[10, 10, 20]]},
+        "diameter": 6, "extent": {"type": "distance", "depth": 10},
+        "thread": {"designation": "M6x1", "class": "6H", "modeled": true,
+                   "radial_clearance": 0.1}}));
+    let uid = b.doc.add_feature(&hole, None).unwrap().uid;
+    let threads = b.doc.query(r#"{"query": "threads"}"#).unwrap();
+    assert!(threads.contains("F3:hole0.wall"), "{threads}");
+    b.doc.set_result_store(Some(folder.store()));
+    assert_eq!(b.doc.persist_results(Duration::ZERO).failed, 0);
+    let opened = open(&b.doc.to_json(), Some(folder.store()));
+    assert!(opened.stats().restored.contains(&uid));
+    assert_eq!(opened.kernel().count("thread"), 0);
+    assert_eq!(opened.query(r#"{"query": "threads"}"#).unwrap(), threads);
+}

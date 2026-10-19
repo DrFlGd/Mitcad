@@ -1,0 +1,985 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Mitcad patch (mitcad#343): roundings of both edges of a thread's crest
+narrower than the roundings, one blend between the two flanks cut by the
+faces at the thread's ends.
+
+A thread's crest 0.8 wide, both its edges rounded with 0.8: the two
+roundings' contacts on the crest cross each other, and OverlappingStripes
+computes each again overflowing the crest, the ball touching both flanks.
+At each end of the thread the face at the end (a plane square to the axis,
+a chamfer cone) meets the helix at about a degree, and it cuts that blend
+along a curve 83 long: one flank's contact runs on past the spine's end by
+17 before it meets the face, the other's meets it 65 before. Five things
+kept OCCT from that blend:
+
+- The walk past the spine's end follows the guide, prolonged along the end
+  edge's own curve or its face's iso-line as far as these go on (0742),
+  then towards a far point along its end tangent (ChFi3d_PerformElSpine);
+  the crest's helices and the flanks' iso-lines stop about where their
+  faces do. 60 past the end of a helix of radius 28 the sections turned
+  more than a radian away from the ball's path, and
+  ChFi3d_CutSingularExtension cut the walk back before its contacts
+  reached the face at the end. A guide that a screw motion maps onto
+  itself (within a ten-thousandth of its length) is now continued by that
+  motion where 0742's extension does not reach far enough, a turn at most
+  (ChFi3d_ScrewContinuedCurve: a copy of its end moved by the motion,
+  joined with a knot of multiplicity the degree, the guide itself kept).
+- The flank whose contact runs on past the spine's end is a B-spline
+  surface ending about where its face ends; the walk evaluated it far past
+  its bounds, on its end spans' polynomials, and lost the ball. The walks'
+  surfaces (ConexFaces, StartSolOverflow) now take a B-spline surface that
+  a screw motion sweeps along one of its parameters as continued by that
+  motion past both ends, by a turn or its own length at most
+  (ChFi3d_ScrewContinued, ChFi3d_LoadScrewContinued): its own poles and
+  knots over its range, so that the contacts' p-curves are the face's.
+- At the chamfer cone the flank's contact crosses onto the cone, which
+  meets the flank at 0.8 degree, within the tenth of a radian SearchFace
+  takes for a face continued: the next walk rolled the ball on the cone.
+  A face at that end of the spine (holding its end vertex) whose normals
+  along the edge are nowhere within the angular tolerance of the face left
+  is now the face at the end, which cuts the blend (KinkIntoEndFace in
+  ComputeData).
+- The two stripes' blends are one, but each stripe ran out to the faces at
+  the ends at one end only (or the second's start section lay on faces
+  elsewhere): RemoveCoincidentStripes kept both and their corners
+  failed. Where one of the pair is a single piece on the two faces beyond
+  the crest whose contacts both end on edges at both its ends, the other is
+  dropped with its corners (DropOverlapsRunOutByOther).
+- Two robustness fixes on the way: a start section of a stripe computed
+  again over the crest is taken only where the ball touches the face
+  across the other stripe's edge and its own edge's other face
+  (StartSolOverflow: near the crest's end a section ran on to the root and
+  the end plane), and the test whether two contacts overlap
+  (contactBeyond) takes the contact at its interference's parameters and
+  projects on the other within its range (on a line of three turns a
+  projection landed a turn away, and the pair went undetected).
+
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.cxx
+index 0c5245f..880d5e8 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.cxx
+@@ -374,22 +374,22 @@ static bool contactBeyond(const TopOpeBRepDS_DataStructure&   DStr,
+   {
+     return false;
+   }
+-  double       d1 = 0., d2 = 0.;
+-  const double ua1 = projectOn(CA, A->Vertex(true, onA).Point(), d1);
+-  const double ua2 = projectOn(CA, A->Vertex(false, onA).Point(), d2);
+-  if (std::max(d1, d2) > Tol)
+-  {
+-    return false;
+-  }
++  // A's contact between its ends, at the interference's parameters, and
++  // its points projected on B's contact within B's range (a projection on
++  // the whole of a line along a helix of several turns may land a turn
++  // away, its ends' points off it where the contact left its face).
++  const double ua1 = IA.FirstParameter(), ua2 = IA.LastParameter();
++  const double ub1 = std::min(IB.FirstParameter(), IB.LastParameter());
++  const double ub2 = std::max(IB.FirstParameter(), IB.LastParameter());
+   for (int i = 1; i <= 3; i++)
+   {
+-    const gp_Pnt Pa = CA->Value(ua1 + (ua2 - ua1) * i / 4.);
+-    double       dq = 0.;
+-    const double uq = projectOn(CB, Pa, dq);
+-    if (dq == RealLast())
++    const gp_Pnt                Pa = CA->Value(ua1 + (ua2 - ua1) * i / 4.);
++    GeomAPI_ProjectPointOnCurve aProj(Pa, CB, ub1, ub2);
++    if (aProj.NbPoints() == 0)
+     {
+       return false;
+     }
++    const double uq = aProj.LowerDistanceParameter();
+     const double dA = distanceToEdge(Pa, EB);
+     const double dB = distanceToEdge(CB->Value(uq), EB);
+     if (dA == RealLast() || dB == RealLast() || dA > dB - Tol)
+@@ -919,6 +919,91 @@ void ChFi3d_Builder::RemoveCoincidentStripes()
+   }
+ }
+ 
++//=======================================================================
++// function : DropOverlapsRunOutByOther
++// purpose  : See the header. The pairs of myOverlapStripes; the faces of
++//            the single piece must be the ones the pair's edges do not
++//            share (the faces beyond the narrow face between the edges).
++//=======================================================================
++
++bool ChFi3d_Builder::DropOverlapsRunOutByOther()
++{
++  const TopOpeBRepDS_DataStructure& DStr = myDS->DS();
++  bool                              any  = false;
++  // (S a single piece on two faces other than the common face of its edge
++  // and the other stripe's, both its ends on edges.)
++  const auto runsOut = [&](const occ::handle<ChFiDS_Stripe>& S, const TopoDS_Shape& Common) {
++    if (S->SetOfSurfData().IsNull() || S->SetOfSurfData()->Length() != 1 || S->Spine()->IsPeriodic())
++    {
++      return false;
++    }
++    const occ::handle<ChFiDS_SurfData>& Fd = S->SetOfSurfData()->Value(1);
++    if (Fd->Index(1) <= 0 || Fd->Index(2) <= 0 || Fd->IsOnCurve1() || Fd->IsOnCurve2()
++        || DStr.Shape(Fd->Index(1)).IsSame(Common) || DStr.Shape(Fd->Index(2)).IsSame(Common))
++    {
++      return false;
++    }
++    for (const bool isFirst : {true, false})
++    {
++      if (!Fd->Vertex(isFirst, 1).IsOnArc() || !Fd->Vertex(isFirst, 2).IsOnArc())
++      {
++        return false;
++      }
++    }
++    return true;
++  };
++  NCollection_List<occ::handle<ChFiDS_Stripe>>::Iterator itS(myOverlapStripes);
++  NCollection_List<TopoDS_Shape>::Iterator               itF(myOverlapFaces);
++  while (itS.More())
++  {
++    const occ::handle<ChFiDS_Stripe> A  = itS.Value();
++    const TopoDS_Shape               FA = itF.Value();
++    itS.Next();
++    itF.Next();
++    if (!itS.More())
++    {
++      break;
++    }
++    const occ::handle<ChFiDS_Stripe> B = itS.Value();
++    itS.Next();
++    itF.Next();
++    if (myDroppedStripes.Contains(A) || myDroppedStripes.Contains(B))
++    {
++      continue;
++    }
++    if (runsOut(A, FA))
++    {
++      myDroppedStripes.Append(B);
++      any = true;
++    }
++    else if (runsOut(B, FA))
++    {
++      myDroppedStripes.Append(A);
++      any = true;
++    }
++  }
++  if (any)
++  {
++    myVDataMap.Clear();
++    for (NCollection_List<occ::handle<ChFiDS_Stripe>>::Iterator it(myListStripe); it.More(); it.Next())
++    {
++      if (myDroppedStripes.Contains(it.Value()))
++      {
++        continue;
++      }
++      if (it.Value()->Spine()->FirstStatus() <= ChFiDS_BreakPoint)
++      {
++        myVDataMap.Add(it.Value()->Spine()->FirstVertex(), it.Value());
++      }
++      if (it.Value()->Spine()->LastStatus() <= ChFiDS_BreakPoint)
++      {
++        myVDataMap.Add(it.Value()->Spine()->LastVertex(), it.Value());
++      }
++    }
++  }
++  return any;
++}
++
+ // Removes the entries of stripe S from parallel lists of stripes and shapes.
+ static void removeEntriesOf(const occ::handle<ChFiDS_Stripe>&             S,
+                             NCollection_List<occ::handle<ChFiDS_Stripe>>& Stripes,
+@@ -2267,6 +2352,9 @@ void ChFi3d_Builder::Compute()
+   if (done)
+   {
+     RemoveCoincidentStripes();
++    // (One blend over a face narrower than both roundings computed whole by
++    // one of the two stripes: the other is dropped.)
++    DropOverlapsRunOutByOther();
+     // Stripes whose balls are one ball rolling over a narrow face between
+     // them, joined (before their contacts, run on to the ends of their
+     // faces, are taken for one below); stripes under such a ball dropped.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.hxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.hxx
+index 6c5162d..3f1818c 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.hxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.hxx
+@@ -1011,6 +1011,14 @@ private:
+   //! vertices are given the corners of the stripes kept.
+   Standard_EXPORT void RemoveCoincidentStripes();
+ 
++  //! Two stripes made one blend over the face between their edges
++  //! (OverlappingStripes) whose computations differ at their ends: one of
++  //! them a single piece on the two faces beyond that face that runs out
++  //! on edges at both its ends (both contacts cut by the faces at the
++  //! ends) takes the other's place, which is dropped with its corners.
++  //! Returns whether any was dropped.
++  Standard_EXPORT bool DropOverlapsRunOutByOther();
++
+   //! Two stripes A (the earlier) and B whose blends overlap on face F and
+   //! cannot be made one (their recomputation overflowing F failed): A is
+   //! computed again on the faces of its edge, and B rolls on A's contact
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
+index b0da246..1641937 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
+@@ -70,9 +70,13 @@
+ #include <IntWalk_PWalking.hxx>
+ #include <Law_Composite.hxx>
+ #include <ProjLib_ProjectedCurve.hxx>
++#include <Standard_ErrorHandler.hxx>
+ #include <Standard_NotImplemented.hxx>
+ #include <gp_Pnt.hxx>
+ #include <NCollection_Array1.hxx>
++#include <NCollection_Array2.hxx>
++#include <gp_Ax3.hxx>
++#include <gp_Trsf.hxx>
+ #include <gp_XYZ.hxx>
+ #include <TopAbs.hxx>
+ #include <TopExp.hxx>
+@@ -6749,6 +6753,14 @@ static void ChFi3d_AdjustGuideEndsLocally(occ::handle<Geom_BSplineCurve>& BS,
+ 
+ //=================================================================================================
+ 
++namespace
++{
++occ::handle<Geom_BSplineCurve> ChFi3d_ScrewContinuedCurve(const occ::handle<Geom_BSplineCurve>& C,
++                                                          const bool                            AtStart,
++                                                          const double                          L,
++                                                          const double                          Tol);
++} // namespace
++
+ Standard_EXPORT void ChFi3d_PerformElSpine(occ::handle<ChFiDS_ElSpine>& HES,
+                                            occ::handle<ChFiDS_Spine>&   Spine,
+                                            const GeomAbs_Shape          continuity,
+@@ -7130,6 +7142,30 @@ Standard_EXPORT void ChFi3d_PerformElSpine(occ::handle<ChFiDS_ElSpine>& HES,
+         goodext = true;
+       }
+     }
++    // (Else a guide along a helix is continued by the screw motion that maps
++    // it onto itself: the walks past the spine's end follow the helix, their
++    // sections square to it. The guide is the edges' approximation: a
++    // ten-thousandth of its length off the motion.)
++    if (!goodext && !BSpline->IsRational())
++    {
++      const occ::handle<Geom_BSplineCurve> aScrewed = ChFi3d_ScrewContinuedCurve(
++        BSpline,
++        true,
++        2. * rabdist,
++        std::max(tol, 1.e-4 * (BSpline->LastParameter() - BSpline->FirstParameter())));
++      if (!aScrewed.IsNull())
++      {
++        const double anExt = std::min(rabdist, 0.999 * (BSpline->FirstParameter() - aScrewed->FirstParameter()));
++        gacurve.Load(aScrewed);
++        GCPnts_AbscissaPoint GCP(gacurve, -anExt, Wrefdeb, Wrefdeb - anExt);
++        if (GCP.IsDone())
++        {
++          newc    = aScrewed;
++          WF      = GCP.Parameter();
++          goodext = true;
++        }
++      }
++    }
+     for (int icont = 3; icont >= 1 && !goodext; icont--)
+     {
+       occ::handle<Geom_BoundedCurve> anExtCurve = aBase;
+@@ -7198,6 +7234,27 @@ Standard_EXPORT void ChFi3d_PerformElSpine(occ::handle<ChFiDS_ElSpine>& HES,
+         goodext = true;
+       }
+     }
++    // (Else the screw motion's continuation, the same at the end.)
++    if (!goodext && !BSpline->IsRational())
++    {
++      const occ::handle<Geom_BSplineCurve> aScrewed = ChFi3d_ScrewContinuedCurve(
++        BSpline,
++        false,
++        2. * rabdist,
++        std::max(tol, 1.e-4 * (BSpline->LastParameter() - BSpline->FirstParameter())));
++      if (!aScrewed.IsNull())
++      {
++        const double anExt = std::min(rabdist, 0.999 * (aScrewed->LastParameter() - BSpline->LastParameter()));
++        gacurve.Load(aScrewed);
++        GCPnts_AbscissaPoint GCP(gacurve, anExt, Wreffin, Wreffin + anExt);
++        if (GCP.IsDone())
++        {
++          newc    = aScrewed;
++          WL      = GCP.Parameter();
++          goodext = true;
++        }
++      }
++    }
+     for (int icont = 3; icont >= 1 && !goodext; icont--)
+     {
+       occ::handle<Geom_BoundedCurve> anExtCurve = aBase;
+@@ -8109,3 +8166,413 @@ bool ChFi3d_ObstacleBeforeEnd(const ChFiDS_CommonPoint& CP,
+   }
+   return ChFi3d_ConvexEdgeAt(E, Fin, Fbeyond, CP.ParameterOnArc());
+ }
++
++namespace
++{
++// The screw motion of parameter s about Axis: rotation by s * Ang, then
++// translation by s * D along Axis.
++gp_Trsf ChFi3d_ScrewMotion(const gp_Ax1& theAxis, const double theAng, const double theD, const double theS)
++{
++  gp_Trsf aRot, aMove;
++  aRot.SetRotation(theAxis, theS * theAng);
++  aMove.SetTranslation(gp_Vec(theAxis.Direction()) * (theS * theD));
++  return aMove * aRot;
++}
++
++// The screw motion (about Axis by Ang, along it by D) that moves points A
++// onto points B (three points not on a line); false where that motion is
++// no rotation (a translation).
++bool ChFi3d_ScrewOf(const gp_Pnt A[3], const gp_Pnt B[3], gp_Ax1& theAxis, double& theAng, double& theD)
++{
++  const auto frame = [](const gp_Pnt P[3], gp_Ax3& theF) {
++    const gp_Vec e1(P[0], P[1]), e2(P[0], P[2]);
++    const gp_Vec n = e1.Crossed(e2);
++    if (e1.Magnitude() <= Precision::Confusion() || n.Magnitude() <= 1.e-6 * e1.Magnitude() * e2.Magnitude())
++    {
++      return false;
++    }
++    theF = gp_Ax3(P[0], gp_Dir(n), gp_Dir(e1));
++    return true;
++  };
++  gp_Ax3 aFA, aFB;
++  if (!frame(A, aFA) || !frame(B, aFB))
++  {
++    return false;
++  }
++  gp_Trsf aM;
++  aM.SetDisplacement(aFA, aFB);
++  gp_XYZ anAxis;
++  if (!aM.GetRotation(anAxis, theAng) || std::abs(theAng) < 1.e-6 || anAxis.Modulus() < gp::Resolution())
++  {
++    return false;
++  }
++  // M as a screw about an axis along anAxis: its point C is fixed by the
++  // rotation followed by the translation across the axis.
++  const gp_Dir aDir(anAxis);
++  const gp_XYZ aT  = aM.TranslationPart();
++  theD             = aT.Dot(aDir.XYZ());
++  const gp_XYZ aTp = aT - aDir.XYZ() * theD;
++  const gp_XYZ aC  = 0.5 * (aTp + aDir.XYZ().Crossed(aTp) / std::tan(0.5 * theAng));
++  theAxis          = gp_Ax1(gp_Pnt(aC), aDir);
++  return true;
++}
++
++// ChFi3d_ScrewContinued along v.
++occ::handle<Geom_BSplineSurface> ChFi3d_ScrewContinuedInV(const occ::handle<Geom_BSplineSurface>& theS,
++                                                          const double                            theTol)
++{
++  if (theS->IsVPeriodic() || theS->IsURational() || theS->IsVRational())
++  {
++    return nullptr;
++  }
++  double u0 = 0., u1 = 0., v0 = 0., v1 = 0.;
++  theS->Bounds(u0, u1, v0, v1);
++  const double aRange = v1 - v0, du = u1 - u0;
++  if (aRange <= Precision::PConfusion() || du <= Precision::PConfusion())
++  {
++    return nullptr;
++  }
++  // The motion M from three points of S to their images dv further.
++  const double dv    = aRange / 8.;
++  const double va    = v0 + 0.25 * aRange;
++  const gp_Pnt A[3]  = {theS->Value(u0 + 0.2 * du, va),
++                        theS->Value(u0 + 0.8 * du, va),
++                        theS->Value(u0 + 0.2 * du, va + 0.5 * dv)};
++  const gp_Pnt B[3]  = {theS->Value(u0 + 0.2 * du, va + dv),
++                        theS->Value(u0 + 0.8 * du, va + dv),
++                        theS->Value(u0 + 0.2 * du, va + 1.5 * dv)};
++  gp_Ax1 aScrew;
++  double anAng = 0., aD = 0.;
++  if (!ChFi3d_ScrewOf(A, B, aScrew, anAng, aD))
++  {
++    return nullptr;
++  }
++  // S is swept by it: checked at dv and at 4 dv over S.
++  for (int i = 0; i <= 4; i++)
++  {
++    const double u = u0 + du * i / 4.;
++    for (int j = 0; j <= 8; j++)
++    {
++      const double v = v0 + 0.5 * aRange * j / 8.;
++      const gp_Pnt P = theS->Value(u, v);
++      if (P.Transformed(ChFi3d_ScrewMotion(aScrew, anAng, aD, 1.)).Distance(theS->Value(u, v + dv)) > theTol
++          || P.Transformed(ChFi3d_ScrewMotion(aScrew, anAng, aD, 4.)).Distance(theS->Value(u, v + 4. * dv))
++               > theTol)
++      {
++        return nullptr;
++      }
++    }
++  }
++  // Copies of S's ends, a turn long at most, moved past its ends.
++  const double                     aTurn = dv * 2. * M_PI / std::abs(anAng);
++  const double                     E     = std::min(aRange, aTurn);
++  occ::handle<Geom_BSplineSurface> aL    = new Geom_BSplineSurface(*theS);
++  occ::handle<Geom_BSplineSurface> aU    = new Geom_BSplineSurface(*theS);
++  aL->Segment(u0, u1, v0, v0 + E);
++  aU->Segment(u0, u1, v1 - E, v1);
++  aL->Transform(ChFi3d_ScrewMotion(aScrew, anAng, aD, -E / dv));
++  aU->Transform(ChFi3d_ScrewMotion(aScrew, anAng, aD, E / dv));
++  const int nU = theS->NbUPoles(), p = theS->VDegree();
++  if (aL->NbUPoles() != nU || aU->NbUPoles() != nU || aL->VDegree() != p || aU->VDegree() != p
++      || aL->NbUKnots() != theS->NbUKnots() || aU->NbUKnots() != theS->NbUKnots())
++  {
++    return nullptr;
++  }
++  const NCollection_Array2<gp_Pnt>& PL = aL->Poles();
++  const NCollection_Array2<gp_Pnt>& PO = theS->Poles();
++  const NCollection_Array2<gp_Pnt>& PU = aU->Poles();
++  const int NL = aL->NbVPoles(), NO = theS->NbVPoles(), NU = aU->NbVPoles();
++  // (Arrays from 1, as Geom_BSplineSurface keeps them.)
++  if (PL.LowerRow() != 1 || PL.LowerCol() != 1 || PO.LowerRow() != 1 || PO.LowerCol() != 1 || PU.LowerRow() != 1
++      || PU.LowerCol() != 1)
++  {
++    return nullptr;
++  }
++  for (int i = 1; i <= nU; i++)
++  {
++    if (PL(i, NL).Distance(PO(i, 1)) > theTol || PU(i, 1).Distance(PO(i, NO)) > theTol)
++    {
++      return nullptr;
++    }
++  }
++  const NCollection_Array1<double>& kL = aL->VKnots();
++  const NCollection_Array1<double>& kO = theS->VKnots();
++  const NCollection_Array1<double>& kU = aU->VKnots();
++  const NCollection_Array1<int>&    mL = aL->VMultiplicities();
++  const NCollection_Array1<int>&    mO = theS->VMultiplicities();
++  const NCollection_Array1<int>&    mU = aU->VMultiplicities();
++  if (kL.Lower() != 1 || kO.Lower() != 1 || kU.Lower() != 1)
++  {
++    return nullptr;
++  }
++  if (mL(1) != p + 1 || mL(mL.Upper()) != p + 1 || mO(1) != p + 1 || mO(mO.Upper()) != p + 1 || mU(1) != p + 1
++      || mU(mU.Upper()) != p + 1)
++  {
++    return nullptr;
++  }
++  // The knots: L's moved below v0, S's, U's moved above v1; S's ends of
++  // multiplicity p, so that S's spans are its own.
++  const int                  nK = kL.Length() + kO.Length() + kU.Length() - 2;
++  NCollection_Array1<double> K(1, nK);
++  NCollection_Array1<int>    M(1, nK);
++  int                        k = 1;
++  for (int i = 1; i < kL.Length(); i++, k++)
++  {
++    K(k) = kL(i) - E;
++    M(k) = mL(i);
++  }
++  K(k)   = kO(1);
++  M(k++) = p;
++  for (int i = 2; i < kO.Length(); i++, k++)
++  {
++    K(k) = kO(i);
++    M(k) = mO(i);
++  }
++  K(k)   = kO(kO.Upper());
++  M(k++) = p;
++  for (int i = 2; i <= kU.Length(); i++, k++)
++  {
++    K(k) = kU(i) + E;
++    M(k) = mU(i);
++  }
++  for (int i = 2; i <= nK; i++)
++  {
++    if (K(i) <= K(i - 1))
++    {
++      return nullptr;
++    }
++  }
++  NCollection_Array2<gp_Pnt> P(1, nU, 1, NL + NO + NU - 2);
++  for (int i = 1; i <= nU; i++)
++  {
++    int c = 1;
++    for (int j = 1; j < NL; j++)
++    {
++      P(i, c++) = PL(i, j);
++    }
++    for (int j = 1; j <= NO; j++)
++    {
++      P(i, c++) = PO(i, j);
++    }
++    for (int j = 2; j <= NU; j++)
++    {
++      P(i, c++) = PU(i, j);
++    }
++  }
++  return new Geom_BSplineSurface(P,
++                                 theS->UKnots(),
++                                 K,
++                                 theS->UMultiplicities(),
++                                 M,
++                                 theS->UDegree(),
++                                 p,
++                                 theS->IsUPeriodic(),
++                                 false);
++}
++// B-spline curve C (a guide along a helix) continued past its start
++// (AtStart) or its end by the screw motion that maps it onto itself, over
++// length L at most (and its own length, a turn): C's poles and knots over
++// its range, a moved copy of its end beyond, joined with a knot of
++// multiplicity the degree. Null when C is no such curve (within Tol).
++occ::handle<Geom_BSplineCurve> ChFi3d_ScrewContinuedCurve(const occ::handle<Geom_BSplineCurve>& C,
++                                                          const bool                            AtStart,
++                                                          const double                          L,
++                                                          const double                          Tol)
++{
++  if (C.IsNull() || C->IsPeriodic() || C->IsRational())
++  {
++    return nullptr;
++  }
++  const double t0 = C->FirstParameter(), t1 = C->LastParameter(), R = t1 - t0;
++  if (R <= Precision::PConfusion())
++  {
++    return nullptr;
++  }
++  // (The motion from the curve's middle, checked over its middle half: a
++  // curve continued at one end already is continued at the other.)
++  const double dt   = R / 8., a = t0 + 0.5 * R - dt;
++  const gp_Pnt A[3] = {C->Value(a), C->Value(a + dt / 3.), C->Value(a + 2. * dt / 3.)};
++  const gp_Pnt B[3] = {C->Value(a + dt), C->Value(a + dt + dt / 3.), C->Value(a + dt + 2. * dt / 3.)};
++  gp_Ax1       aScrew;
++  double       anAng = 0., aD = 0.;
++  if (!ChFi3d_ScrewOf(A, B, aScrew, anAng, aD))
++  {
++    return nullptr;
++  }
++  for (int j = 0; j <= 16; j++)
++  {
++    const double t = t0 + 0.125 * R + 0.375 * R * j / 16.;
++    const gp_Pnt P = C->Value(t);
++    if (P.Transformed(ChFi3d_ScrewMotion(aScrew, anAng, aD, 1.)).Distance(C->Value(t + dt)) > Tol
++        || P.Transformed(ChFi3d_ScrewMotion(aScrew, anAng, aD, 4.)).Distance(C->Value(t + 4. * dt)) > Tol)
++    {
++      return nullptr;
++    }
++  }
++  const double E = std::min({R, dt * 2. * M_PI / std::abs(anAng), L});
++  if (E <= Precision::PConfusion())
++  {
++    return nullptr;
++  }
++  occ::handle<Geom_BSplineCurve> aP = new Geom_BSplineCurve(*C);
++  aP->Segment(AtStart ? t0 : t1 - E, AtStart ? t0 + E : t1);
++  aP->Transform(ChFi3d_ScrewMotion(aScrew, anAng, aD, AtStart ? -E / dt : E / dt));
++  const int                         p   = C->Degree();
++  const NCollection_Array1<gp_Pnt>& PC  = C->Poles();
++  const NCollection_Array1<gp_Pnt>& PP  = aP->Poles();
++  const NCollection_Array1<double>& KC  = C->Knots();
++  const NCollection_Array1<double>& KP  = aP->Knots();
++  const NCollection_Array1<int>&    MC  = C->Multiplicities();
++  const NCollection_Array1<int>&    MP  = aP->Multiplicities();
++  const int                         nPC = PC.Length(), nPP = PP.Length();
++  if (aP->Degree() != p || PC.Lower() != 1 || PP.Lower() != 1 || KC.Lower() != 1 || KP.Lower() != 1
++      || MC(1) != p + 1 || MC(MC.Upper()) != p + 1 || MP(1) != p + 1 || MP(MP.Upper()) != p + 1
++      || (AtStart ? PP(nPP).Distance(PC(1)) : PP(1).Distance(PC(nPC))) > Tol)
++  {
++    return nullptr;
++  }
++  const int                  nK = KC.Length() + KP.Length() - 1;
++  NCollection_Array1<double> K(1, nK);
++  NCollection_Array1<int>    M(1, nK);
++  NCollection_Array1<gp_Pnt> P(1, nPC + nPP - 1);
++  int                        k = 1, c = 1;
++  if (AtStart)
++  {
++    for (int i = 1; i < KP.Length(); i++, k++)
++    {
++      K(k) = KP(i) - E;
++      M(k) = MP(i);
++    }
++    K(k)   = KC(1);
++    M(k++) = p;
++    for (int i = 2; i <= KC.Length(); i++, k++)
++    {
++      K(k) = KC(i);
++      M(k) = MC(i);
++    }
++    for (int i = 1; i < nPP; i++)
++    {
++      P(c++) = PP(i);
++    }
++    for (int i = 1; i <= nPC; i++)
++    {
++      P(c++) = PC(i);
++    }
++  }
++  else
++  {
++    for (int i = 1; i < KC.Length(); i++, k++)
++    {
++      K(k) = KC(i);
++      M(k) = MC(i);
++    }
++    K(k)   = KC(KC.Upper());
++    M(k++) = p;
++    for (int i = 2; i <= KP.Length(); i++, k++)
++    {
++      K(k) = KP(i) + E;
++      M(k) = MP(i);
++    }
++    for (int i = 1; i <= nPC; i++)
++    {
++      P(c++) = PC(i);
++    }
++    for (int i = 2; i <= nPP; i++)
++    {
++      P(c++) = PP(i);
++    }
++  }
++  for (int i = 2; i <= nK; i++)
++  {
++    if (K(i) <= K(i - 1))
++    {
++      return nullptr;
++    }
++  }
++  return new Geom_BSplineCurve(P, K, M, p);
++}
++} // namespace
++
++//=================================================================================================
++
++occ::handle<Geom_Surface> ChFi3d_ScrewContinued(const occ::handle<Geom_Surface>& S, const double Tol)
++{
++  const occ::handle<Geom_BSplineSurface> aBS = occ::down_cast<Geom_BSplineSurface>(S);
++  if (aBS.IsNull())
++  {
++    return nullptr;
++  }
++  try
++  {
++    OCC_CATCH_SIGNALS
++    occ::handle<Geom_BSplineSurface> aRes = ChFi3d_ScrewContinuedInV(aBS, Tol);
++    if (aRes.IsNull())
++    {
++      occ::handle<Geom_BSplineSurface> aSwapped = new Geom_BSplineSurface(*aBS);
++      aSwapped->ExchangeUV();
++      aRes = ChFi3d_ScrewContinuedInV(aSwapped, Tol);
++      if (!aRes.IsNull())
++      {
++        aRes->ExchangeUV();
++      }
++    }
++    return aRes;
++  }
++  catch (Standard_Failure const&)
++  {
++    return nullptr;
++  }
++}
++
++//=================================================================================================
++
++void ChFi3d_LoadScrewContinued(BRepAdaptor_Surface& HS, const double Tol)
++{
++  if (HS.GetType() != GeomAbs_BSplineSurface)
++  {
++    return;
++  }
++  const occ::handle<Geom_Surface> S = HS.GeomSurfaceOriginal();
++  // (The last surfaces seen in this thread and their continuations.)
++  static thread_local occ::handle<Geom_Surface> aSeen[8], aCont[8];
++  static thread_local int                       aNext = 0;
++  occ::handle<Geom_Surface>                     aExt;
++  bool                                          aFound = false;
++  for (int i = 0; i < 8 && !aFound; i++)
++  {
++    if (aSeen[i] == S)
++    {
++      aFound = true;
++      aExt   = aCont[i];
++    }
++  }
++  if (!aFound)
++  {
++    aExt         = ChFi3d_ScrewContinued(S, Tol);
++    aSeen[aNext] = S;
++    aCont[aNext] = aExt;
++    aNext        = (aNext + 1) % 8;
++  }
++  if (aExt.IsNull())
++  {
++    return;
++  }
++  double su0 = 0., su1 = 0., sv0 = 0., sv1 = 0., eu0 = 0., eu1 = 0., ev0 = 0., ev1 = 0.;
++  S->Bounds(su0, su1, sv0, sv1);
++  aExt->Bounds(eu0, eu1, ev0, ev1);
++  double u0 = HS.FirstUParameter(), u1 = HS.LastUParameter(), v0 = HS.FirstVParameter(),
++         v1 = HS.LastVParameter();
++  // (Bounds of the whole surface become the continuation's.)
++  const double eps = Precision::PConfusion();
++  if (std::abs(u0 - su0) < eps && std::abs(u1 - su1) < eps)
++  {
++    u0 = eu0;
++    u1 = eu1;
++  }
++  if (std::abs(v0 - sv0) < eps && std::abs(v1 - sv1) < eps)
++  {
++    v0 = ev0;
++    v1 = ev1;
++  }
++  HS.Load(aExt, u0, u1, v0, v1, HS.Trsf());
++}
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.hxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.hxx
+index 85987f5..d914501 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.hxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.hxx
+@@ -602,4 +602,17 @@ bool ChFi3d_ObstacleBeforeEnd(const ChFiDS_CommonPoint& CP,
+                               const ChFiDS_Map&         EFMap,
+                               const ChFiDS_Map&         VFMap);
+ 
++//! B-spline surface S continued past both ends of one parameter by the
++//! screw motion that maps its isolines of that parameter onto each other
++//! (a thread's flank, swept along a helix; a surface of revolution), by a
++//! turn or its own length in that parameter at most: S's poles and knots
++//! over S's range, moved copies of its ends beyond. Null when S is no such
++//! sweep (within Tol).
++occ::handle<Geom_Surface> ChFi3d_ScrewContinued(const occ::handle<Geom_Surface>& S, const double Tol);
++
++//! Loads into adaptor HS the screw continuation of its surface
++//! (ChFi3d_ScrewContinued), its bounds kept, so that a walk past its face's
++//! surface follows the sweep instead of the end spans' polynomials.
++void ChFi3d_LoadScrewContinued(BRepAdaptor_Surface& HS, const double Tol);
++
+ #endif
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+index 0668fd5..ffe8a2f 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+@@ -1021,6 +1021,9 @@ void ChFi3d_Builder::ConexFaces(const occ::handle<ChFiDS_Spine>&  Spine,
+ 
+   Sb1.Initialize(ff1);
+   Sb2.Initialize(ff2);
++  // (A thread's flank continued along its helix for walks past its ends.)
++  ChFi3d_LoadScrewContinued(Sb1, tolapp3d);
++  ChFi3d_LoadScrewContinued(Sb2, tolapp3d);
+ }
+ 
+ //=======================================================================
+@@ -1826,6 +1829,7 @@ int ChFi3d_Builder::StartSolOverflow(const occ::handle<ChFiDS_Stripe>&      Stri
+       for (int k = 0; k < 2; k++)
+       {
+         S[k] = new BRepAdaptor_Surface(face[k], bounded);
++        ChFi3d_LoadScrewContinued(*S[k], tolapp3d);
+       }
+       Sol(1) = uv[0].X();
+       Sol(2) = uv[0].Y();
+@@ -2058,6 +2062,27 @@ int ChFi3d_Builder::StartSolOverflow(const occ::handle<ChFiDS_Stripe>&      Stri
+           roll(k);
+           break;
+         }
++        // (Computed again overflowing a face narrower than this rounding and
++        // another stripe's, OverlappingStripes: the ball touches the face
++        // across that stripe's edge and this edge's other face, no others; a
++        // section near the face's end may have run on to faces elsewhere.)
++        bool aBeyondOverlap = true;
++        for (int k = 0; k < 2 && touches; k++)
++        {
++          const TopoDS_Face Fk = k == 0 ? f1 : f2;
++          const TopoDS_Edge Eo = OverlapEdge(Stripe, Fk);
++          if (!Eo.IsNull())
++          {
++            const TopoDS_Face Fb = otherFace(myEFMap, Eo, Fk);
++            aBeyondOverlap       = face[k].IsSame(Fb) && face[1 - k].IsSame(k == 0 ? f2 : f1);
++          }
++        }
++        if (touches && !aBeyondOverlap)
++        {
++          failed    = true; // (here; a section further along the spine may do)
++          elsewhere = true;
++          break;
++        }
+         if (touches)
+         {
+           HS1 = S[0];
+@@ -2189,6 +2214,7 @@ int ChFi3d_Builder::StartSolOverflow(const occ::handle<ChFiDS_Stripe>&      Stri
+     for (int k = 0; k < 2 && ok; k++)
+     {
+       HS[k] = new BRepAdaptor_Surface(face[k]);
++      ChFi3d_LoadScrewContinued(*HS[k], tolapp3d);
+       if (!rolls[k])
+       {
+         Pk[k] = uv[k];
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_6.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_6.cxx
+index a53b083..e4340f2 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_6.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_6.cxx
+@@ -192,6 +192,78 @@ static bool IsVois(const TopoDS_Edge&                                      E,
+   return false;
+ }
+ 
++//=======================================================================
++// function : KinkIntoEndFace
++// purpose  : A contact that left face F across the arc of CP onto face
++//            Fnext, which SearchFace takes for F continued (their normals
++//            within its tangency check's tenth of a radian): Fnext holds
++//            the vertex Vend at that end of the spine, and their normals
++//            along the arc are nowhere within the angular tolerance Ang (a
++//            kink of a degree, a thread's flank running into the chamfer
++//            cone at its end). Fnext is then the face at the end, which cuts
++//            the blend, not a face the ball rolls on.
++//=======================================================================
++
++static bool KinkIntoEndFace(const ChFiDS_CommonPoint& CP,
++                            const TopoDS_Face&        F,
++                            const TopoDS_Face&        Fnext,
++                            const TopoDS_Vertex&      Vend,
++                            const ChFiDS_Map&         VFMap,
++                            const double              Ang)
++{
++  if (!CP.IsOnArc() || CP.IsVertex() || F.IsNull() || Fnext.IsNull() || Fnext.IsSame(F) || Vend.IsNull()
++      || !VFMap.Contains(Vend))
++  {
++    return false;
++  }
++  bool atEnd = false;
++  for (const TopoDS_Shape& aFace : VFMap.FindFromKey(Vend))
++  {
++    atEnd = atEnd || aFace.IsSame(Fnext);
++  }
++  if (!atEnd)
++  {
++    return false;
++  }
++  const TopoDS_Edge&        E      = CP.Arc();
++  double                    aFirst = 0., aLast = 0.;
++  occ::handle<Geom2d_Curve> aC1 = BRep_Tool::CurveOnSurface(E, F, aFirst, aLast);
++  occ::handle<Geom2d_Curve> aC2 = BRep_Tool::CurveOnSurface(E, Fnext, aFirst, aLast);
++  if (aC1.IsNull() || aC2.IsNull())
++  {
++    return false;
++  }
++  BRepAdaptor_Surface aS1(F, false), aS2(Fnext, false);
++  for (int i = 0; i < 5; i++)
++  {
++    const double   aT  = aFirst + (aLast - aFirst) * (i + 0.5) / 5.;
++    const gp_Pnt2d aP1 = aC1->Value(aT), aP2 = aC2->Value(aT);
++    gp_Pnt         aP;
++    gp_Vec         aDU, aDV;
++    aS1.D1(aP1.X(), aP1.Y(), aP, aDU, aDV);
++    gp_Vec aN1 = aDU.Crossed(aDV);
++    aS2.D1(aP2.X(), aP2.Y(), aP, aDU, aDV);
++    gp_Vec aN2 = aDU.Crossed(aDV);
++    if (aN1.SquareMagnitude() < 1.e-24 || aN2.SquareMagnitude() < 1.e-24)
++    {
++      return false;
++    }
++    if (F.Orientation() == TopAbs_REVERSED)
++    {
++      aN1.Reverse();
++    }
++    if (Fnext.Orientation() == TopAbs_REVERSED)
++    {
++      aN2.Reverse();
++    }
++    if (aN1.Angle(aN2) <= Ang)
++    {
++      return false;
++    }
++  }
++  return true;
++}
++
+ static bool IsObst(const ChFiDS_CommonPoint& CP, const TopoDS_Vertex& Vref, const ChFiDS_Map& VEMap)
+ {
+   if (!CP.IsOnArc())
+@@ -1931,6 +2003,18 @@ bool ChFi3d_Builder::ComputeData(occ::handle<ChFiDS_SurfData>&           Data,
+                                  const bool                              RecOnS1,
+                                  const bool                              RecOnS2)
+ {
++  // (A contact that left its face onto a face at that end of the spine
++  // across a kink of a degree: that face cuts the blend, KinkIntoEndFace.)
++  const auto aKinkIntoEndFace =
++    [&](const ChFiDS_CommonPoint& CP, const TopoDS_Face& F, const TopoDS_Face& Fnext, const bool isFirst) {
++      return !Spine.IsNull()
++             && KinkIntoEndFace(CP,
++                                F,
++                                Fnext,
++                                isFirst ? Spine->FirstVertex() : Spine->LastVertex(),
++                                myVFMap,
++                                angular);
++    };
+   // Get offset guide if exists
+   occ::handle<ChFiDS_ElSpine> OffsetHGuide;
+   if (!Spine.IsNull() && Spine->Mode() == ChFiDS_ConstThroatWithPenetrationChamfer)
+@@ -2305,7 +2389,8 @@ bool ChFi3d_Builder::ComputeData(occ::handle<ChFiDS_SurfData>&           Data,
+                             Data->ChangeVertexFirstOnS1(),
+                             tolapp3d);
+       debarc1 = true;
+-      if (!SearchFace(Spine, Data->VertexFirstOnS1(), F1, bif))
++      if (!SearchFace(Spine, Data->VertexFirstOnS1(), F1, bif)
++          || aKinkIntoEndFace(Data->VertexFirstOnS1(), F1, bif, true))
+       {
+         // It is checked if there is not an obstacle.
+         debcas1 = true;
+@@ -2338,7 +2423,8 @@ bool ChFi3d_Builder::ComputeData(occ::handle<ChFiDS_SurfData>&           Data,
+                             Data->ChangeVertexFirstOnS2(),
+                             tolapp3d);
+       debarc2 = true;
+-      if (!SearchFace(Spine, Data->VertexFirstOnS2(), F2, bif))
++      if (!SearchFace(Spine, Data->VertexFirstOnS2(), F2, bif)
++          || aKinkIntoEndFace(Data->VertexFirstOnS2(), F2, bif, true))
+       {
+         // It is checked if it is not an obstacle.
+         debcas2 = true;
+@@ -2415,7 +2501,8 @@ bool ChFi3d_Builder::ComputeData(occ::handle<ChFiDS_SurfData>&           Data,
+                                 Data->ChangeVertexFirstOnS1(),
+                                 tolapp3d);
+           debarc1 = true;
+-          if (!SearchFace(Spine, Data->VertexFirstOnS1(), F1, bif))
++          if (!SearchFace(Spine, Data->VertexFirstOnS1(), F1, bif)
++              || aKinkIntoEndFace(Data->VertexFirstOnS1(), F1, bif, true))
+           {
+             // It is checked if it is not an obstacle.
+             debcas1 = true;
+@@ -2451,7 +2538,8 @@ bool ChFi3d_Builder::ComputeData(occ::handle<ChFiDS_SurfData>&           Data,
+                                 Data->ChangeVertexFirstOnS2(),
+                                 tolapp3d);
+           debarc2 = true;
+-          if (!SearchFace(Spine, Data->VertexFirstOnS2(), F2, bif))
++          if (!SearchFace(Spine, Data->VertexFirstOnS2(), F2, bif)
++              || aKinkIntoEndFace(Data->VertexFirstOnS2(), F2, bif, true))
+           {
+             // It is checked if it is not an obstacle.
+             debcas2 = true;
+@@ -2501,7 +2589,8 @@ bool ChFi3d_Builder::ComputeData(occ::handle<ChFiDS_SurfData>&           Data,
+                             Data->ChangeVertexLastOnS1(),
+                             tolapp3d);
+       finarc1 = true;
+-      if (!SearchFace(Spine, Data->VertexLastOnS1(), F1, bif))
++      if (!SearchFace(Spine, Data->VertexLastOnS1(), F1, bif)
++          || aKinkIntoEndFace(Data->VertexLastOnS1(), F1, bif, false))
+       {
+         // It is checked if it is not an obstacle.
+         fincas1 = true;
+@@ -2527,7 +2616,8 @@ bool ChFi3d_Builder::ComputeData(occ::handle<ChFiDS_SurfData>&           Data,
+                             Data->ChangeVertexLastOnS2(),
+                             tolapp3d);
+       finarc2 = true;
+-      if (!SearchFace(Spine, Data->VertexLastOnS2(), F2, bif))
++      if (!SearchFace(Spine, Data->VertexLastOnS2(), F2, bif)
++          || aKinkIntoEndFace(Data->VertexLastOnS2(), F2, bif, false))
+       {
+         // It is checked if it is not an obstacle.
+         fincas2 = true;
+@@ -2597,7 +2687,8 @@ bool ChFi3d_Builder::ComputeData(occ::handle<ChFiDS_SurfData>&           Data,
+                                 Data->ChangeVertexLastOnS1(),
+                                 tolapp3d);
+           finarc1 = true;
+-          if (!SearchFace(Spine, Data->VertexLastOnS1(), F1, bif))
++          if (!SearchFace(Spine, Data->VertexLastOnS1(), F1, bif)
++              || aKinkIntoEndFace(Data->VertexLastOnS1(), F1, bif, false))
+           {
+             // It is checked if it is not an obstacle.
+             fincas1 = true;
+@@ -2628,7 +2719,8 @@ bool ChFi3d_Builder::ComputeData(occ::handle<ChFiDS_SurfData>&           Data,
+                                 Data->ChangeVertexLastOnS2(),
+                                 tolapp3d);
+           finarc2 = true;
+-          if (!SearchFace(Spine, Data->VertexLastOnS2(), F2, bif))
++          if (!SearchFace(Spine, Data->VertexLastOnS2(), F2, bif)
++              || aKinkIntoEndFace(Data->VertexLastOnS2(), F2, bif, false))
+           {
+             // On regarde si ce n'est pas un obstacle.
+             fincas2 = true;

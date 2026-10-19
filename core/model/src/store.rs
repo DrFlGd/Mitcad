@@ -24,7 +24,8 @@
 //!
 //! A variant (at most four per file, the newest first) is a JSON head
 //! (reads, error, warnings, pattern elements, body changes, tool, the
-//! evaluation's time) and its shapes ([`Kernel::shape_bytes`],
+//! evaluation's time, the walls a tapped hole's thread took whole) and its
+//! shapes ([`Kernel::shape_bytes`],
 //! zlib-compressed). Results stored by another build (`build_id`: the
 //! kernel's format and the program, `geometry::kernel_build_id` in the
 //! bridge) are not used, and are replaced when the feature is stored
@@ -313,6 +314,10 @@ struct VariantHead {
     split_pieces: Option<Vec<crate::features::PieceGroup>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     changed_pieces: Vec<(BodyUid, String)>,
+    /// A tapped hole's walls its modelled thread took whole, as they were
+    /// (mitcad#436).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    threaded_walls: Vec<crate::features::hole::ThreadedWall>,
 }
 
 /// A stored result: its head and its shapes, zlib-compressed.
@@ -543,6 +548,7 @@ impl ResultStore {
                 ms: output.time.as_secs_f64() * 1000.0,
                 split_pieces: output.split_pieces.as_deref().cloned(),
                 changed_pieces: output.changed_pieces.clone(),
+                threaded_walls: output.threaded_walls.clone(),
             },
             shapes,
         };
@@ -656,6 +662,7 @@ fn restore<K: Kernel>(
         measured: Vec::new(),
         split_pieces: head.split_pieces.clone().map(std::sync::Arc::new),
         changed_pieces: head.changed_pieces.clone(),
+        threaded_walls: head.threaded_walls.clone(),
     })
 }
 

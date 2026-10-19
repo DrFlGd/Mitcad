@@ -1,0 +1,84 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: a contour never takes an edge of its own again, so that the walk
+along a tangent chain ends (mitcad#434).
+
+The case: a closed chain of edges whose edges turn at a vertex W, the faces
+going on tangentially across it, and the contour started from an edge
+selected for the turns (StopChainsAtTurns, patch 0180) while the edge
+beyond W is not. PerformElement's downstream walk stops at W (StopsAtTurn:
+a turn before an edge not selected). Its upstream walk from the contour's
+start goes round the chain the other way and comes to W from the other
+side, where the edge beyond is the downstream walk's last edge, selected:
+StopsAtTurn lets it pass, and the walk went on over the contour's edges,
+prepending them to the spine for ever. Nothing stops it: the downstream
+walk ends where it comes back to its start vertex, the upstream walk has no
+such check, and BRepFilletAPI_MakeFillet::Add has no progress range, so a
+request to stop does not reach it either. In the `.f3d` import a definition
+of a fillet with some of a closed chain's edges ran for hours.
+
+- PerformElement: the edges of the contour so far are kept in a map, and
+  neither walk adds an edge that is in it; the walk stops there as at an
+  edge it does not take. Round such a chain the contour is every edge of
+  the chain once, both its ends at W.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_1.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_1.cxx
+index 7bc592e4..26465aa8 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_1.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_1.cxx
+@@ -1082,6 +1082,14 @@ bool ChFi3d_Builder::PerformElement(const occ::handle<ChFiDS_Spine>& Spine,
+   TopAbs_Orientation curor = Ec.Orientation();
+   TopExp::Vertices(Ec, VStart, LVEc);
+ 
++  // The edges of the contour so far. A walk never takes one of them again:
++  // round a closed chain whose downstream walk stopped short of its start
++  // (at a turn before an edge not selected, StopsAtTurn), the upstream walk
++  // comes round to the stop from the other side, where the edge beyond is
++  // selected, and went on over the contour's edges for ever.
++  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aContour;
++  aContour.Add(Ec);
++
+   bool         Fini = false;
+   int          Nb;
+   ChFiDS_State CurSt = ChFiDS_Closed;
+@@ -1166,6 +1174,12 @@ bool ChFi3d_Builder::PerformElement(const occ::handle<ChFiDS_Spine>& Spine,
+                 OnAjoute = false;
+               }
+             }
++            // (An edge of the contour already: the contour has come round
++            // to itself and stops.)
++            if (OnAjoute && aContour.Contains(Ev))
++            {
++              OnAjoute = false;
++            }
+             if (OnAjoute && StopsAtTurn(av1v2, rev, Ev))
+             {
+               OnAjoute = false;
+@@ -1184,6 +1198,7 @@ bool ChFi3d_Builder::PerformElement(const occ::handle<ChFiDS_Spine>& Spine,
+             Wl   = Wf;
+             LVEc = LVEv;
+             Spine->SetEdges(Ec);
++            aContour.Add(Ec);
+             TopoDS_Face CurF1, CurF2;
+             ChFi3d_conexfaces(Ec, CurF1, CurF2, myEFMap);
+             ReorderFaces(CurF1, CurF2, FirstFace, PrevEdge, CommonVertex, myEFMap);
+@@ -1283,6 +1298,11 @@ bool ChFi3d_Builder::PerformElement(const occ::handle<ChFiDS_Spine>& Spine,
+                   OnAjoute = false;
+                 }
+               }
++              // (The same upstream.)
++              if (OnAjoute && aContour.Contains(Ev))
++              {
++                OnAjoute = false;
++              }
+               if (OnAjoute && StopsAtTurn(av1v2, rev, Ev))
+               {
+                 OnAjoute = false;
+@@ -1300,6 +1320,7 @@ bool ChFi3d_Builder::PerformElement(const occ::handle<ChFiDS_Spine>& Spine,
+               Wl   = Wf;
+               FVEc = FVEv;
+               Spine->PutInFirst(Ec);
++              aContour.Add(Ec);
+               TopoDS_Face CurF1, CurF2;
+               ChFi3d_conexfaces(Ec, CurF1, CurF2, myEFMap);
+               ReorderFaces(CurF1, CurF2, FirstFace, PrevEdge, CommonVertex, myEFMap);

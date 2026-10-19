@@ -1331,6 +1331,11 @@ void CommandSession::manipulatorDragged(const QString& key, double value) {
     // As a typed value (mitcad#375).
     slot->def->onChange(m_state, m_host);
   }
+  // The box at the cursor shows the value whose handle is dragged
+  // (mitcad#444: BUILD's tilt beside its length).
+  if (slot->def->cursorBox && m_cursorBox && key != m_cursorKey) {
+    setCursorKey(key);
+  }
   inputsChanged();
 }
 
@@ -1786,6 +1791,8 @@ void CommandSession::showPreview(const Preview& preview, const QString& operatio
   } else if (operation == QStringLiteral("new_body") ||
              operation == QStringLiteral("new_component")) {
     viewer.setPreview(TopoDS_Shape());
+  } else if (preview.report.contains(QStringLiteral("datum"))) {
+    viewer.setPreview(preview.tool, OcctViewer::PreviewStyle::Datum);
   } else {
     viewer.setPreview(preview.tool, OcctViewer::PreviewStyle::Add);
   }
@@ -2914,9 +2921,6 @@ void CommandSession::createCursorBox() {
   auto* box = new QLineEdit(&m_host.viewer());
   box->setObjectName(QStringLiteral("cursorValueBox"));
   box->setFixedWidth(120);
-  if (const auto slot = slotOf(m_cursorKey)) {
-    box->setToolTip(tr("%1: type a value; Enter confirms, Esc closes").arg(slot->def->label));
-  }
   box->hide();
   connect(box, &QLineEdit::textEdited, this, [this](const QString& text) {
     if (!m_done && m_presenter != nullptr && m_presenter->actions().textEdited) {
@@ -2924,6 +2928,21 @@ void CommandSession::createCursorBox() {
     }
   });
   m_cursorBox = box;
+  setCursorKey(m_cursorKey);
+}
+
+void CommandSession::setCursorKey(const QString& key) {
+  m_cursorKey = key;
+  if (!m_cursorBox) {
+    return;
+  }
+  if (const auto slot = slotOf(key)) {
+    m_cursorBox->setToolTip(tr("%1: type a value; Enter confirms, Esc closes").arg(slot->def->label));
+  }
+  if (!m_cursorBox->hasFocus()) {
+    m_cursorBox->setText(m_state.text(key));
+  }
+  qDebug().noquote() << QStringLiteral("Cursor box %1 shows %2").arg(m_def.name, key);
 }
 
 void CommandSession::moveCursorBox(const QPoint& at) {
@@ -2942,6 +2961,16 @@ void CommandSession::moveCursorBox(const QPoint& at) {
 void CommandSession::updateCursorBox() {
   if (!m_cursorBox || m_done) {
     return;
+  }
+  // A hidden input's box goes to the first shown one that has a box.
+  if (const auto now = slotOf(m_cursorKey); !now || !isShown(*now)) {
+    for (const Slot& other : slotsOf(false)) {
+      if (other.def->type == InputDef::Type::Value && other.def->cursorBox && other.key != m_cursorKey &&
+          isShown(other)) {
+        setCursorKey(other.key);
+        break;
+      }
+    }
   }
   const auto slot = slotOf(m_cursorKey);
   const bool shown = slot && isShown(*slot) && m_cursorBox->property("placed").toBool();

@@ -81,6 +81,14 @@ impl Placed {
         }
     }
 
+    /// Whether the end (`end_a`, `end_b`) has a cut.
+    fn is_cut(&self, end: &str) -> bool {
+        self.info
+            .def
+            .as_ref()
+            .is_some_and(|d| d.ends.end(end == "end_b").is_some())
+    }
+
     /// The section's size across the axis.
     fn section(&self) -> f64 {
         let b = &self.bounds;
@@ -160,12 +168,20 @@ impl<K: Kernel> Document<K> {
 /// How `p` meets `q`: an end of p on q's end or side.
 fn meet(p: &Placed, q: &Placed) -> Option<Junction> {
     let ends = ["end_a", "end_b"];
-    // Two ends at one point.
+    // Two ends at one point, or two cut ends each in the other's box (a
+    // shared mitre: the outer corners meet, the end frames do not,
+    // mitcad#443).
+    let to_p = inverse(&p.world);
+    let to_q = inverse(&q.world);
     for e in ends {
         let Some(pe) = p.frame(e) else { continue };
         for f in ends {
             let Some(qf) = q.frame(f) else { continue };
-            if norm(sub(pe.translation, qf.translation)) <= TOLERANCE {
+            let mitred = p.is_cut(e)
+                && q.is_cut(f)
+                && in_box(to_q.apply_point(pe.translation), &q.bounds, TOLERANCE)
+                && in_box(to_p.apply_point(qf.translation), &p.bounds, TOLERANCE);
+            if mitred || norm(sub(pe.translation, qf.translation)) <= TOLERANCE {
                 let angle = angle_between(scale(z_axis(&pe), -1.0), z_axis(&qf));
                 let kind = if dot(z_axis(&pe), z_axis(&qf)) < -1.0 + 1e-6 {
                     "inline"
@@ -185,7 +201,6 @@ fn meet(p: &Placed, q: &Placed) -> Option<Junction> {
         }
     }
     // An end of p on a side of q.
-    let to_q = inverse(&q.world);
     for e in ends {
         let Some(pe) = p.frame(e) else { continue };
         let point = to_q.apply_point(pe.translation);

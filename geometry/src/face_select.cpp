@@ -12,6 +12,8 @@
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepLProp_SLProps.hxx>
 #include <BRep_Tool.hxx>
+#include <ChFi3d.hxx>
+#include <ChFiDS_TypeOfConcavity.hxx>
 #include <Geom2d_Curve.hxx>
 #include <GeomAbs_SurfaceType.hxx>
 #include <NCollection_IndexedDataMap.hxx>
@@ -204,7 +206,8 @@ int follow_tangent_chains(const Shape& body, std::vector<int>& owner, const std:
 }
 
 EdgeContinuations::EdgeContinuations(const Shape& body)
-    : m_body(body), m_edgeFaces(body), m_sharp(static_cast<std::size_t>(body.edge_count()), -1) {
+    : m_body(body), m_edgeFaces(body), m_sharp(static_cast<std::size_t>(body.edge_count()), -1),
+      m_convexity(static_cast<std::size_t>(body.edge_count()), -1) {
   TopExp::MapShapesAndUniqueAncestors(body.occt(), TopAbs_VERTEX, TopAbs_EDGE, m_edgesOf);
 }
 
@@ -223,6 +226,26 @@ bool EdgeContinuations::sharp(int edge) const {
     }
   }
   return known == 1;
+}
+
+int EdgeContinuations::convexity(int edge) const {
+  signed char& known = m_convexity[static_cast<std::size_t>(edge)];
+  if (known == -1) {
+    known = -2;
+    const std::vector<int> faces = m_edgeFaces.at(edge);
+    if (faces.size() == 2) {
+      try {
+        OCC_CATCH_SIGNALS
+        // (At the edge's middle, as OCCT types its contours.)
+        const ChFiDS_TypeOfConcavity type = ChFi3d::DefineConnectType(
+            m_body.edge(edge), m_body.face(faces[0]), m_body.face(faces[1]), 1.0e-4, false);
+        known = static_cast<signed char>(type == ChFiDS_Convex ? 1 : type == ChFiDS_Concave ? 0 : -2);
+      } catch (const Standard_Failure&) {
+        known = -2;
+      }
+    }
+  }
+  return known;
 }
 
 std::vector<int> EdgeContinuations::next(int e) const {
@@ -252,7 +275,10 @@ std::vector<int> EdgeContinuations::next(int e) const {
             continues = continues || from.Angle(-out) <= kTangentChainAngle;
           }
         }
-        if (continues && sharp(o)) {
+        // A convex edge does not run on into a concave one or back: the
+        // rounding vanishes between them.
+        if (continues && sharp(o) &&
+            (convexity(e) < 0 || convexity(o) < 0 || convexity(e) == convexity(o))) {
           add_once(found, o);
         }
       }

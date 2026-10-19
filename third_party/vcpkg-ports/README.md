@@ -174,6 +174,49 @@ the vertex (the recess's rim of 0691 and 0692), and 0742 extends a
 blend's guide past an open end of its spine along the curve the end edge
 is a piece of (a thread's root rounded up to the faces that cut it;
 mitcad#415).
+0750 rounds both edges of a thread's crest narrower than the roundings
+with one blend between the flanks, cut by the faces at the thread's ends
+along their long oblique curves: a guide along a helix and a B-spline face
+swept along one are continued by their screw motion past their ends, a
+face at the end met at a kink of a degree cuts the blend, and a stripe
+computed over the crest that runs out at both ends takes the other's
+place (mitcad#343).
+0770 rolls a rounding on an edge that runs into its end vertex tangent to
+its other face up to that vertex, where it vanishes, and 0771 stops a
+contour at a vertex where the faces of both its edges come tangent, each
+side's rounding vanishing there (a block on a post as wide as the block,
+mitcad#343). 0772 joins two stripes on the same face and on one plane
+whose edges a corner of the solid interrupts into one blend over the
+corner, cut by the corner's sides, which grow up to it (a bulge's foot on a
+housing's rounded corner, mitcad#343).
+0790 ends a rounding whose edge runs on tangentially into an edge not
+rounded, the face at the end going on tangentially from the rounding's
+face, where that face's surface, followed back along the rounding, cuts it
+across, a face on that surface closing the end (a thread's crest rounded
+down to its run-out; mitcad#422).
+0800 to 0803 take the traits of stored bodies into OCCT's fillet: an OnSame
+end's cap points brought into one period however many periods apart (a
+cylinder trimmed turns below its basis's parameters), faces taken for
+tangent within ten times the tolerance of their edge, a contact ending on
+the spine's own edge near the vertex where the spine goes on passed
+through that vertex, and the point where a cap leaves the prolongation
+tangentially given a tolerance that takes in their crossings near it (a
+thread's chamfer and a groove's floor, mitcad#343).
+0840 keeps a fillet's contour from taking an edge of its own again, so
+that its walk round a closed chain that stops at a turn ends (it went
+round for ever; mitcad#434).
+0820 makes the blend 0772 joins across a corner one face per stripe, as
+the stored designs' roundings are. 0821 rounds both edges of a lens (a
+face of two edges, one concave and one convex, narrower than the
+roundings) with one S-shaped section, the convex blend's ball touching the
+concave blend's from outside. 0822 rolls a rounding on both edges of such a
+lens into its ends, where the edges meet and the rounding vanishes in a
+point (a key on a shaft, mitcad#343).
+0860 carries a fillet's contour on into an edge asked for whose faces meet
+at a few hundredths of a radian, and 0861 cuts the spine's own edge from
+the face of a contact that ends at the vertex where the blend comes to
+nothing, on another edge of that face (a thread's chamfer cone rounded down
+to the root; mitcad#441).
 
 - `0006-shapeupgrade-unifysamedomain-seam-search-by-vertex.patch`: the face
   merge after booleans (`ShapeUpgrade_UnifySameDomain`) looks up the edges
@@ -2258,6 +2301,37 @@ The patches 0740 to 0742 go on with the `.ipt` import's replay gaps
   own part keeps its parameters); else the smooth extension continues from
   as far as one goes.
 
+The patch 0790 goes on with the `.ipt` import's replay gaps (mitcad#422,
+after mitcad#415).
+
+- `0790-chfi3d-tangent-end-face-cuts-the-blend-back-along-the-stripe.patch`:
+  a thread's crest (between the post's cylinder and the groove's lower
+  flank) rounded down to the thread's run-out, a straight cut whose lower
+  flank is the plane tangent to the groove's flank along the start
+  profile. The crest runs on there into the run-out's crest, which is not
+  rounded: an OnSame end whose face at the end goes on tangentially from
+  the flank. Its plane only touches the rounding near the vertex; OCCT's
+  corner cut the rounding there by that touch, running it on down to the
+  run-out. The bodies the `.ipt` files store end such a rounding where the
+  plane cuts it across a turn back (331 degrees up, where the crest rises
+  out of the plane again), a face of 0.006 mm² on the plane closing it and
+  the crest staying sharp from there down. `PerformCapAtTangentEndFace`
+  (before the other ends of a lone stripe at a vertex of three edges):
+  where the end is OnSame and the face at the end goes on tangentially
+  (G1, across an edge at the vertex) from a face of the spine's edge, each
+  contact is followed back from the end to where it first passes from that
+  face's solid's side of its surface to the outside; where both do so on
+  one surfdata more than four radii from the vertex, the surfdatas past the
+  cut are dropped, the last one ends on the curve where the surface cuts it,
+  and a corner stripe on that surface closes the end up to the point where
+  the surface crosses the spine's edge, which is cut there; the spine's end
+  becomes a free one. A cut whose two contacts fall on two surfdatas (the
+  stripe split there, as at a face's seam) is not made: the corner at the
+  vertex is tried as before. Elsewhere nothing changes (the end of the same
+  thread's other crest at the run-out, whose flank's plane never cuts its
+  rounding across, keeps its corner at the vertex, as the files' bodies
+  have a corner patch there).
+
 The patch 0690 goes on with the `.ipt` import's replay gaps (mitcad#235): a
 bar's top edge rounded where the bar meets a bore's wall at the wall's
 seam.
@@ -2350,6 +2424,339 @@ rounding, of the strip only a lens being left.
     the curve is a hole of the blend's face and the whole edge of C's lens
     (the part of C outside the blend); C's edges are cut at their vertices
     so that the builder drops them. Before, the blend ran through C.
+
+The patch 0750 comes from the ninth round of mitcad#343: an external
+thread's crest (a cylinder band 0.8 wide, three turns) rounded with 0.8 on
+both its edges. The two roundings' contacts on the crest cross, and
+OverlappingStripes (0013) computes each again overflowing the crest, the
+ball touching both flanks; the bodies stored in the file have that one
+blend, the crest consumed. At the thread's ends a plane square to the axis
+and a chamfer cone at 60 degrees meet the helix at about a degree and cut
+the blend along curves 83 long, one flank's contact running on 17 past the
+end of its edge, the other's meeting the face 65 before.
+
+- `0750-chfi3d-thread-crest-rounded-on-both-edges-cut-by-the-ends.patch`:
+  - The guide of the walks past a spine's end follows the end edge's own
+    curve or its face's iso-line as far as these go on (0742), then turns
+    towards a far point along its end tangent (`ChFi3d_PerformElSpine`); the
+    crest's helices and the flanks' iso-lines stop about where their faces
+    do. Past the end of a helix the sections turn away from the ball's
+    path (more than a radian 60 past a helix of radius 28) and
+    `ChFi3d_CutSingularExtension` cut the walk back before the contacts
+    reached the face at the end. A guide that a screw motion maps onto
+    itself, within a ten-thousandth of its length (the edges'
+    approximation), is now continued by that motion where 0742's extension
+    does not reach far enough, by a turn at most
+    (`ChFi3d_ScrewContinuedCurve`: a copy of its end moved by the motion,
+    joined with a knot of multiplicity the degree, the guide itself
+    unchanged).
+  - The walks' face surfaces (`ConexFaces`, `StartSolOverflow`): a B-spline
+    surface that a screw motion sweeps along one of its parameters (a
+    thread's flank; a surface of revolution) is evaluated as continued by
+    that motion past both ends of that parameter, by a turn or its own
+    length at most (`ChFi3d_ScrewContinued`, `ChFi3d_LoadScrewContinued`:
+    its own poles and knots over its range, moved copies of its ends
+    beyond, so that the contacts' p-curves are the face's). The flank
+    whose contact runs on past the spine's end is stored ending about
+    where its face ends; past its bounds the walk ran on the end spans'
+    polynomials and lost the ball.
+  - A contact that leaves its face onto a face that holds the vertex at
+    that end of the spine, the two faces' normals along the edge nowhere
+    within the builder's angular tolerance but within the tenth of a
+    radian `SearchFace` takes for a face continued (a flank running into
+    the chamfer cone at 0.8 degree), now ends on that face, which cuts the
+    blend (`KinkIntoEndFace` in `ComputeData`). Before, the next walk
+    rolled the ball on the cone.
+  - Of two stripes computed again over the face between their edges
+    (`myOverlapStripes`), one that is a single piece on the two faces
+    beyond that face, both its contacts ending on edges at both its ends,
+    takes the other's place, which is dropped with its corners
+    (`DropOverlapsRunOutByOther`). The two blends are one, but each stripe
+    may run out to the faces at the ends at one end only, or its start
+    section lie elsewhere, so that `RemoveCoincidentStripes` kept both and
+    their corners failed.
+  - A start section of a stripe computed again over such a face is taken
+    only where the ball touches the face across the other stripe's edge
+    and its own edge's other face (`StartSolOverflow`; near the face's end
+    a section ran on to the thread's root and the end plane), and the test
+    whether the two contacts overlap (`contactBeyond`) samples the contact
+    at its interference's parameters and projects on the other within its
+    range (on a contact line of several turns a projection landed a turn
+    away, its ends' points off the line where the contact left its face).
+  - Walks of more than three turns of a thread still fail where their
+    surface's approximation fails ("Failed approximation"), not split.
+
+The patches 0770 and 0771 come from the ninth round of mitcad#343: a block
+on a post as wide as the block (the post's top circle touches the block's
+long bottom edges at two points, where the block's underside narrows to
+nothing and the post's side is tangent to the block's long sides), the
+post's foot rounded with the post's radius, then the block's bottom outline
+rounded over that rounding.
+
+- `0770-chfi3d-rolling-on-an-edge-into-the-end-vertex-where-it-vanishes.patch`:
+  the foot's rounding: its contact on the underside runs off across the
+  long edges, and from there the ball rolls on those edges, touching the
+  post, up to the two points, where the edges run into the post's top
+  tangent to its side and the rounding vanishes. OCCT took those edges,
+  which end at the rounding's end vertex, for no obstacle (an arc at the
+  end vertex was the face at the end's: `StartSol`), ended each side where
+  the contact left the underside and extended it by tangent planes; the
+  corners at the points filled the rest wrongly. An arc into the end vertex
+  tangent to the blend's other face (`ChFi3d_ArcTangentToFaceAt`, within
+  0.01 rad) is now an obstacle, rolled on up to the vertex. Several
+  roundings that all vanish at one vertex each end in a point there
+  (`ChFi3d_ShrinkVanishingEnd`, so far for a rounding ending alone there:
+  the faces' normals taken at the contacts' ends, as a surface may
+  degenerate at the vertex, an end of coinciding contacts short of the
+  vertex moved too, the end parameters matched within a thousand times the
+  parametric confusion, and the contact curves cut by full knots where they
+  are twice the end's distance from the vertex before their end poles are
+  moved, so that only that last piece bends), and the corner is the
+  singular one.
+- `0771-chfi3d-contour-stops-where-the-rounding-vanishes.patch`: the bottom
+  outline: along each long side its edge runs over the foot's rounding,
+  whose face comes tangent to the side at the point (the foot's rounding
+  ends in a point there, its surface degenerate at that corner). OCCT
+  carried the contour on through the point (the edges continue each other
+  there); its walk crawled into the point, or its last section, the
+  singular one given at the point, took parameters on the degenerate
+  face's iso far from the contact's, and the approximation between failed
+  or wandered (p-curve tolerances of tens of millimetres). The faces'
+  normals at a vertex where a surface has none are now their limits along
+  the edge (`TangentExtremity`), the contour stops at a vertex where the
+  faces of both edges come tangent (`PerformElement`), a walk into such a
+  vertex also ends where its section has no width within a hundredth of
+  the radius (`ContactsAtTangentEnd`), and the line's end there is solved
+  again from its last section at least 5e-4 of the radius wide, each
+  section from the one before (its step on the faces no longer than the
+  walk's before), until narrower within a hundredth of the radius of the
+  vertex (`ChFi3d_EndBeforeVanishing`); the corner moves that end to the
+  vertex (0770).
+- `0772-chfi3d-stripes-joined-across-a-corner-of-the-solid.patch`: from the
+  same round, a housing whose top is a plane with a bulge (a tilted
+  cylinder) on its rounded vertical corner, the bulge's foot on the top
+  rounded. The foot is two edges, each from inside the top to the corner's
+  rounding, reached just past its tangent lines; the ball of each rounding
+  rolls on between the top's plane and the bulge past that end, its contact
+  on the plane leaving the top across the first side's edge and coming
+  back across the second's. OCCT ended each stripe at its edge's end, and
+  the corners there filled the gap wrongly. `JoinAcrossCorners` (after
+  `JoinOverNarrowFaces`) now pairs such free ends (one constant radius, at
+  most 8 radii apart, the last pieces on the same face and on faces of one
+  plane, their vertices on a third face, the corner) and walks one blend
+  from the middle of the first stripe's last piece along a guide through
+  both last pieces' ball centres, the plane unbounded. The edges the
+  contact crosses give the sides; the edges between the sides and the
+  corner's face, run on, meet the blend at the junctions; the blend is cut
+  by the three faces between those points (their surfaces' intersection,
+  interpolated with its p-curves) and split into five pieces up to a
+  section inside the second stripe's last piece, where the two stripes
+  share an edge. Where the contact crosses the sides' edges, each edge
+  keeps its part beyond the blend (the point's transition set by the side
+  its vertex on the corner's face lies on, as the walk may run either way
+  along the spine). The edges between the sides run on to new vertices at
+  the junctions, and the corner face's edges now under the blend are
+  dropped.
+
+The patches 0800 to 0803 come from the tenth round of mitcad#343: the
+traits of the bodies stored in files that kept OCCT's fillet from the
+roundings round a thread's chamfer cone and up to a groove's floor.
+
+- `0800-chfi3d-onsame-cap-points-in-one-period-of-a-stored-cylinder.patch`:
+  a thread's flank rounded round its chamfer cone from where the flank
+  comes out of the root cylinder: an OnSame end whose face at the end is
+  that cylinder. Stored bodies hold such a cylinder trimmed to one period
+  starting turns below the basis surface's parameters (u from -11.82 to
+  -5.54), the edges' curves on it in that range; the cap's point on the
+  arc came from the arc's curve (u = -11.824), the opposite contact's
+  point from its projection on the surface (u = 0.743), two periods apart.
+  `ChFi3d_Recale` moved one of them by one period, so the box for the
+  blend's intersection with the cylinder spanned a period beside the cap,
+  which was not found ("echec calcul intersection"). It now brings the
+  point within half a period of the other however many periods apart (for
+  points under one and a half periods apart nothing changes).
+- `0801-chfi3d-tangent-faces-within-ten-times-the-edge-tolerance.patch`:
+  `ChFi3d::IsTangentFaces` compared the points of the edge's curves on the
+  two faces within max(0.001, 1.5 times the edge's tolerance); each curve
+  may lie within the tolerance of the edge's own curve, so the two up to
+  twice that apart, and the approximated helices of stored threads have
+  curves on their faces up to 4.8 micrometres off their own (tolerances of
+  1.4 to 3.7 micrometres). A crest band and the roundings beside it,
+  tangent within 1e-3 radian, were taken for faces meeting at an angle: a
+  rounding round the chamfer cone stopped its contour at those edges'
+  vertices (`FaceTangency`), three roundings meeting end to end that
+  walked past each other, and a walk across such an edge stopped there
+  (`IsG1` in `SearchFace`). The positions are compared within ten times
+  the edge's tolerance now (at least 0.001; the normals within a tenth of
+  a radian as before).
+- `0802-chfi3d-contact-on-its-own-edge-near-a-vertex-passes-it.patch`: that
+  rounding, one contour now, runs along the cone's edges with an earlier
+  rounding of the crest and then with the flank, which goes on
+  tangentially from it across an edge ending at the vertex V between the
+  contour's two edges. Cone and rounding meet at 1.7 degrees at V, so the
+  blend is 0.015 wide there, its contacts 7.5 micrometres from the edge;
+  the stored edges lie up to 4 micrometres off their faces. The contact on
+  the rounding met the edge with the cone itself 0.034 before V and the
+  walk ended there (`SearchFace` found the cone beyond). A contact point on
+  the spine's edge between the contact's face and the blend's other face,
+  within ten times its tolerance or its vertex's of the vertex ahead where
+  the spine goes on into another of its edges, a face tangent to the
+  contact's face holding that edge, is taken at that vertex with the
+  contact's way as its vector (`ChFi3d_OwnEdgeNearVertex` in
+  `ComputeData`): the walk goes on through the vertex into that face
+  (`SearchFaceOnV`).
+- `0803-chfi3d-onsame-cap-leaving-the-prolongation-tangentially.patch`: a
+  thread cut as a groove, its crest's edges rounded up to the groove's
+  floor. Each rounding ends where its contact on the crest's cylinder meets
+  the floor, the floor's edge with the cylinder prolonged up to there; the
+  floor cuts the rounding along a cap that leaves that circle tangentially
+  and runs inside it a few micrometres off for a while. The cap's
+  approximation crossed the circle 0.053 from their common point (its
+  tolerance 5e-5, the circle's 1e-7): the floor's wire was
+  self-intersecting. Where the two meet tangentially at that point (within
+  a hundredth of a radian), their crossings within a hundredth of the
+  cap's length are added to the box the point's tolerance is made from
+  (`ChFi3d_TangentCapCrossings`).
+The patch 0840 ends a fillet contour's walk that went round a closed chain
+for ever (mitcad#434, found in the `.f3d` import after the ninth round of
+mitcad#343).
+
+- `0840-chfi3d-contour-never-takes-its-own-edge-again.patch`: a closed
+  chain of edges whose edges turn at a vertex W, the faces going on
+  tangentially across it, rounded from an edge selected for the turns
+  (`StopChainsAtTurns`, 0180) while the edge beyond W is not.
+  `PerformElement`'s downstream walk stops at W. Its upstream walk from the
+  contour's start goes round the chain the other way and comes to W from
+  the other side, where the edge beyond is the downstream walk's last edge,
+  selected; `StopsAtTurn` lets it pass, and the walk went on over the
+  contour's edges, prepending them to the spine for ever. The downstream
+  walk ends where it comes back to its start vertex; the upstream walk had
+  no such check, and `BRepFilletAPI_MakeFillet::Add` has no progress range,
+  so a request to stop did not reach it either (the import's definition of
+  `db73863f` item 88 that named some of a closed chain's edges ran for
+  hours). Now neither walk adds an edge already in the contour: it stops
+  there as at an edge it does not take, and round such a chain the contour
+  is every edge of the chain once, both its ends at W.
+
+The patches 0820 to 0822 come from the tenth round of mitcad#343: the
+housing's corner of 0772 again, and a key on a shaft (a cylinder standing
+out of the shaft's side), each end of the key a lens between the key's
+convex arc and the shaft's concave arc.
+
+- `0820-chfi3d-stripes-joined-across-a-corner-one-face-each.patch`: 0772
+  walked the joined blend from the middle of the first stripe's last piece
+  to a section inside the second's, so that each corner had three faces
+  (the first piece's rest, the walked blend, the second piece's rest), and
+  the walked face was generated by no edge. The stored bodies have two,
+  one of each edge, the first's holding the cut by the first side and the
+  second's the cuts by the corner's face and by the second side; a later
+  rounding of the sides' edges names its edges by those faces. Now the
+  walk runs from the first stripe's last piece's far end (the other face's
+  surface taken within its own period about the face, else widened by its
+  size and ten radii, as the contacts at the pieces' far ends lie past
+  their faces) to the second's far end; the first stripe takes the walk's
+  pieces up to the section through the first side's junction, the second
+  the rest, on a copy of the walked surface, its lines and p-curves in its
+  own spine parameter and its sides in its own order; the two stripes end
+  on that section. The walk starts on the stripe whose edge runs out of
+  the corner where the other's runs into it, whichever order the edges are
+  given in. The faces generated by the edges are the walked surface and
+  its copy. Where a corner at a stripe's far end extends the last piece's
+  surface (`PerformIntersectionAtEnd`), the stripe's other pieces on that
+  surface take the extended surface too, so that they stay one face.
+- `0821-chfi3d-lens-rounded-on-both-edges-s-shaped-section.patch`: both
+  edges of the key's lens rounded with a radius wider than the lens. The
+  stored designs' concave rounding is a ball touching the shaft and
+  rolling on the lens's convex edge; their convex rounding is a ball
+  touching the key and that concave ball from outside; the concave face
+  lies between its contact on the shaft and the convex blend's contact on
+  it, and towards the lens's ends, where the convex blend's contact comes
+  down to the concave one's on the shaft, the shaft cuts the convex blend
+  up to where its contact on the key reaches the key's sides. OCCT rolled
+  each rounding on the other's edge; the concave one found no start. A
+  failed stripe of one edge and a constant radius whose face on one side
+  has two edges, it concave, the other convex and the edge of another such
+  stripe, is now taken out with that stripe while the others are done
+  (`DeferLensRoundings`, only where nothing else failed) and joined with it
+  after `JoinAcrossCorners` (`FinishLensRoundings`, `JoinLensPair`): the
+  concave blend walked rolling on the convex edge from the start the
+  stripe's overflow start finds; the balls at the ends Q, touching the
+  shaft at its contact and the key from inside; the pipe of the concave
+  radius round the concave balls' centres (the concave blend's surface,
+  run on past its contacts) up to where those centres turn more sharply
+  than the radius; the convex blend walked between the key's surface and
+  the pipe, first along the convex edge (where its balls fold back before
+  Q) and then along a guide through those balls' centres and on to the
+  balls at Q; its cuts by the shaft from where its contact leaves the key
+  (E) to Q (`ChFi3d_CutBetween`, 0772's cut shared); the convex stripe in
+  three pieces (on the cut, on the key, on the cut), its other side the
+  edge the two blends share, the concave stripe in three pieces on the
+  pipe, both ending in Q, the lens's edges dropped. The two stripes'
+  blends are not intersected with each other (`IsLensPair`). Where the
+  join fails, the concave stripe fails as before.
+- `0822-chfi3d-rounding-rolling-on-both-edges-into-a-lens-end.patch`: the
+  key's other lens, only its convex arc rounded, wider than the lens. The
+  ball touches the key and rolls on the lens's concave edge; where its
+  contact on the key reaches the key's sides it rolls on those too, up to
+  the lens's ends, where the two edges meet and the rounding vanishes in a
+  point (the stored designs' faces there: the piece rolling on both edges,
+  split where the key's side is split by a vertex, and a three-sided piece
+  ending in that point). The walk's first step starts in the middle and
+  ends at both sides; OCCT went on rolling on both edges at its last end,
+  but then walked back from its first end with the faces and edges of the
+  steps at the other end and failed; where a side's edge ended at a vertex
+  short of the lens's end, the walk stopped there (the edge's other face
+  holds the end vertex), and the corners failed. The walk back now goes on
+  with the first step's faces, edges and obstacles (saved after it), its
+  contacts at its start taken to be on their edges; a blend rolling on two
+  edges, one of which ended at a vertex short of the spine's end vertex
+  where another edge of its reference face, not tangent across, takes it
+  on, goes on rolling (`RollsOnPastVertex`). The line's sections narrower
+  than 5e-4 of the radius at an end where both contacts lie within a
+  hundredth of the radius of the spine's end vertex are dropped
+  (`ChFi3d_EndRstRstBeforeVanishing`; the approximation fails on sections
+  of almost no width), and the corner moves that end to the vertex
+  (`ChFi3d_ShrinkVanishingEnd`). Where the side's edge runs into the lens's
+  end unsplit, the walk still ends where the contact reaches it and the
+  corner cuts the blend by the shaft (within 0.016 mm of the rolling
+  ball's faces).
+
+The patches 0860 and 0861 make one rounding of a thread's chamfer cone
+along its five edges down to the root, the last of them between faces 0.03
+radian apart (mitcad#441, after the tenth round of mitcad#343).
+
+- `0860-chfi3d-contour-runs-on-into-a-near-tangent-edge-asked-for.patch`:
+  `ChFi3d::IsTangentFaces` takes faces up to 0.1 rad apart for tangent, and
+  0022 rounds an edge between such faces where a contour starts from it
+  (its faces farther apart than the angular tolerance, `MinNormalAngle`). A
+  contour coming to the edge from the edges before it stopped there:
+  `FaceTangency` takes the next edge only when its faces meet at an angle.
+  The edge then started a contour of its own, whose walks took the edges
+  before it again from the other side, two stripes over the same edges that
+  met at no corner. Which happened depended on which edge comes first among
+  the body's edges: on the stored body the near-tangent edge came first and
+  the rounding was built; on the replay's body another edge did. Now
+  `FaceTangency` takes such an edge as one at an angle where it is one of
+  the edges asked for (`StopChainsAtTurns`) and its faces meet at more than
+  the angular tolerance; without `StopChainsAtTurns` nothing changes.
+- `0861-chfi3d-contact-at-the-vertex-where-the-blend-vanishes-cuts-the-own-edge.patch`:
+  the one contour's blend comes to nothing at the vertex V where the
+  contour passes from the cone's edge with an earlier rounding of the crest
+  to its edge with the flank, the flank going on tangentially from the
+  rounding across an edge from V. The cone and the rounding meet at 1.7
+  degrees at V, the blend there thinner than V's tolerance, and the walk's
+  contact on the rounding ended at V on the rounding's edge with the flank
+  (`ChFi3d_FilCommonPoint` takes the vertex within its tolerance), not on
+  the spine's edge. The data structure held no point of the blend on that
+  spine edge, and the rounding's face kept the whole edge beside the
+  blend's end, though the blend takes it away: the face's wire was open and
+  BRepCheck rejected the result (0802 handles the same contact where it
+  ends on the spine's own edge near V). `ChFi3d_OwnEdgesAtVertices`, after
+  `ChFi3d_FilDS`, adds for such a contact (on face F, at a vertex V of the
+  edge E between F and the blend's other face Fo, on an edge of F across
+  which a face Fn goes on tangentially from F, Fn meeting Fo along an edge
+  from V) a vertex interference on E at V, with the contact's transition
+  carried over to E as E lies in F.
 
 The patch 0540 goes on with the corners where a rounding ends (mitcad#236,
 eighth round): a rounding that runs on into an earlier rounding's tube.
@@ -2526,7 +2933,66 @@ for 0742, mitcad#415 and the ring whose bore is threaded from below it to
 above it, the thread's root rounded up to the ring's faces, in
 `geometry/tests/test_sweeps.cpp` (valid, its vertices within 1e-3, the
 volume added and each face's gain against the section the ball fills);
-each fails without its patch.
+for 0750, mitcad#343 and the thread whose crest is rounded on both edges
+between end planes in `geometry/tests/test_fillet_thread_crests.cpp`
+(valid, the crest consumed, and a turn of thread more taking away the
+section's volume swept round the axis at its centroid);
+for 0770 and 0771, mitcad#343 and the block on a post as wide as the block
+in `geometry/tests/test_fillet_lens_overflow.cpp` (the post's foot rounded:
+valid, its quarters alike, the material added between the torus within 30
+degrees of the block's axis and the whole torus; then the block's bottom
+outline rounded: valid, the two points kept, its quarters alike);
+for 0772, mitcad#343 and the bulge on a housing's rounded corner in the
+same file (valid, the junctions at the height of the blend within 1e-4,
+nothing beyond the first side above the top, the material added alike on
+both sides of the corner's bisector; and with the two edges given in the
+other order, the blend walked the other way);
+for 0790, mitcad#422 and the post whose thread runs out along a straight
+cut, its lower crest rounded down to the run-out, in
+`geometry/tests/test_sweeps.cpp` (valid, one small face on the run-out's
+flank plane where it cuts the rounding a turn back, the crest left sharp
+from there down to the run-out against the helix's length);
+for 0800, 0801 and 0803, mitcad#343 and, in
+`geometry/tests/test_fillet_crest_corners.cpp`, the post with a rib under a
+chamfer cone whose cylinder is trimmed two turns below its basis's
+parameters (the rib's side rounded up to it: the cone's face and the
+volume removed as on the plain post), the block of two halves whose top's
+split edge has curves on the two halves 1.8e-3 apart (its top front edge
+one contour through the split: valid, the volume of the edge's rounding)
+and the shaft with a thread cut as a groove whose floor's and ceiling's
+rims are circles 2 micrometres inside the shaft (a crest edge rounded up to
+them: valid, the volume of the section along the edge);
+for 0840, mitcad#434 and the plate whose top outline turns twice in
+`geometry/tests/test_fillet_chain_loops.cpp` (the contour from a selected
+edge takes the outline's four edges once each; Mitcad's fillet of three of
+them ends; without the patch the test fails when the contour does not end
+in 30 s);
+for 0820, mitcad#343 and the same housing in
+`geometry/tests/test_fillet_lens_overflow.cpp` (the blend one face per
+edge: the first's with the cut by the first side, the second's with the
+cuts by the corner's rounding and the second side, sharing an edge from
+the first side's junction; in both orders of the edges);
+for 0821, mitcad#343 and the key on a shaft in the same file (both edges
+of the key's lens rounded: valid, the convex blend's contact ending on the
+key's sides within 1e-3, no face left on the lens's plane, the material
+added alike on both sides within 0.01 mm3, the two blends' faces as large
+as the stored design's within 0.01 mm2);
+for 0822, mitcad#343 and the key on a shaft whose side is split near the
+key's other end, in the same file (that end's convex arc rounded, the
+split at two heights: valid, the contacts' ends within 1e-3, no face left
+on the lens's plane, a face past each split ending in a point at the
+lens's end, the material removed alike on both sides within 1e-3 mm3 and
+in all as the rounding's within 0.002);
+for 0860 and 0861, mitcad#441 and the block whose top meets a wall along
+three edges, the first between faces 0.05 radian apart, in
+`geometry/tests/test_fillet_near_tangent_contour.cpp` (the contour started
+from the second edge is one contour of the three, valid, with the volume of
+the one started from the first; with the vertex between the first two edges
+at a tolerance of 0.02, above the blend's half width there: valid, no part
+of the second edge left);
+each fails without its patch (0802 has no such test: its contact meets the
+spine's own edge only through the stored bodies' micrometre deviations at
+the walk's steps there, which no synthetic body reproduced).
 Sending them upstream is the
 maintainers' step. When the
 baseline moves to a newer OCCT, check which of the changes OCCT has made;

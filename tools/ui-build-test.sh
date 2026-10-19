@@ -19,7 +19,9 @@
 #      the part turned before the click, the click there turns it (a
 #      corner on the end face with square ends, its mitre Auto: none;
 #      Shared chosen mitres it at offset 0) and places it (mitcad#417,
-#      #427); Close shows the planes again.
+#      #427); a brace on its side by Tilt (its foot cut by the tilt,
+#      mitcad#444; the Tilt row only on a side); Close shows the planes
+#      again.
 #      The same panel in the Floating chrome (Placement's icon buttons once
 #      a part is there, mitcad#427).
 #   3. Profile on a design with only its root: the first profile on the
@@ -383,6 +385,7 @@ expect_row mitre hidden "no Mitre before an end pick"
 expect_row offset hidden "no Offset before a side pick"
 expect_row rotate hidden "no Rotate before another part is picked"
 expect_row place hidden "no Placement before a part to go on (mitcad#427)"
+expect_row tilt hidden "no Tilt before a side pick (mitcad#444)"
 ui_mark
 ui_step "on the root's XY plane"           ui_click_logged "Datum xy"
 ui_expect_new "Inspect Profile: place grounded, length 1000.00 mm (typed), square ends; adds to Part1" \
@@ -429,6 +432,7 @@ expect_row offset shown "Offset for a side pick (no check box)"
 expect_row from shown "From for a side pick"
 expect_row mitre hidden "no Mitre for a side pick"
 expect_row rotate shown "Rotate against another part"
+expect_row tilt shown "Tilt for a side pick (mitcad#444)"
 ui_step "Place (Enter)"                    ui_key Return
 ui_expect_new "Placed Profile 20 test as " "the second profile placed flush" 30
 refresh_picks "Profile"
@@ -444,6 +448,7 @@ expect_row direction shown "Direction for an end pick"
 expect_row mitre shown "Mitre for an end pick"
 expect_row offset hidden "no side Offset for an end pick"
 expect_row corner_offset hidden "no corner Offset straight on"
+expect_row tilt hidden "no Tilt for an end pick (mitcad#444)"
 ui_mark
 ui_step "mitre the new part"               ui_choose "Panel Profile input mitre" 3
 ui_expect_new "ends A 45 deg" "the new part's end mitred"
@@ -476,9 +481,25 @@ expect_inspect "; end edge towards " "mitre shared, offset 0.0 mm" "ends A 45 de
 ui_step "Place (Enter)"                    ui_key Return
 ui_expect_new "Placed Profile 20 test as " "the third profile placed at the corner, mitred" 30
 no_policy_message
+# A brace on the first one's side (mitcad#444): Tilt, its foot cut by the
+# tilt to lie on the side.
+refresh_picks "Profile"
+SIDE0=$(faces_of "$B1" "$SIDE" | head -1)
+[ -n "$SIDE0" ] || ui_fail "no side of the first profile ($B1) to pick for the brace"
+ui_mark
+ui_step "its side again"                   pick_face "$B1" "$SIDE0"
+ui_expect_new "Inspect Profile: place side" "on the side"
+expect_row tilt shown "Tilt for a side pick again"
+ui_mark
+ui_step "tilt 30 deg"                      ui_type_in "Panel Profile input tilt" "30 deg"
+expect_inspect "Inspect Profile: place side, " "ends A 30 deg" "; tilt 30.00 deg" \
+  "the preview tilted 30 deg, its foot cut by 30 deg"
+ui_step "Place (Enter)"                    ui_key Return
+ui_expect_new "Placed Profile 20 test as " "the brace placed" 30
+no_policy_message
 ui_mark
 ui_step "Close (Escape)"                   ui_key Escape
-ui_expect_new "Closed Profile after 3" "Close keeps them"
+ui_expect_new "Closed Profile after 4" "Close keeps them"
 ui_expect_new "Construction geometry shown again" "the planes shown again when the command ends"
 ui_stop_app
 

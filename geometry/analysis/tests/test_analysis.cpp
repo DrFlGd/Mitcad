@@ -929,6 +929,69 @@ void test_sections() {
   }
   CHECK(near(mitcad::analysis::surface_properties(touched).Mass(), 2200.0, 1e-7));
   CHECK(throws([&] { section(a, Plane{{0, 0, 0}, {0, 0, 0}}); }));
+
+  // A shape the plane does not reach is not cut (mitcad#438): behind the
+  // plane (touching it at most) the result is the shape itself, each face
+  // its own piece; in front (touching at most) an empty compound, no face
+  // with a piece. A boolean would have made new shapes.
+  CHECK(touched.IsEqual(a));
+  for (const Plane& plane : {Plane{{0, 0, 40}, {0, 0, 1}}, Plane{{0, 0, 0}, {0, 0, -1}},
+                             Plane{{10, 20, 30}, {1, 1, 1}}}) {
+    CHECK(clip(a, plane, &faces).IsEqual(a) && faces.size() == 6);
+    for (const auto& face : faces) {
+      CHECK(face.pieces.size() == 1 && face.pieces[0].IsEqual(face.face));
+    }
+  }
+  for (const Plane& plane : {Plane{{0, 0, -5}, {0, 0, 1}}, Plane{{0, 0, 0}, {0, 0, 1}},
+                             Plane{{0, 0, 0}, {1, 1, 1}}}) {
+    const TopoDS_Shape gone = clip(a, plane, &faces);
+    CHECK(gone.ShapeType() == TopAbs_COMPOUND && !TopExp_Explorer(gone, TopAbs_FACE).More());
+    CHECK(faces.size() == 6);
+    for (const auto& face : faces) {
+      CHECK(face.pieces.empty());
+    }
+  }
+  // A plane across the corner (10, 20, 30) is cut as before: 3 mm along
+  // each edge from it.
+  const TopoDS_Shape corner = clip(a, Plane{{9, 19, 29}, {1, 1, 1}});
+  CHECK(!corner.IsEqual(a) &&
+        near(mitcad::analysis::physical_properties(corner).volume, 6000.0 - 27.0 / 6.0, 1e-7));
+}
+
+// Which side of a plane a box lies on, for clip (mitcad#438).
+void test_clip_sides() {
+  using mitcad::analysis::Bounds;
+  using mitcad::analysis::clip_side;
+  using mitcad::analysis::ClipSide;
+  Bounds box;
+  box.min = {0, 0, 0};
+  box.max = {10, 20, 30};
+  box.empty = false;
+  const auto reach = mitcad::analysis::plane_reach(box, Plane{{0, 0, 10}, {0, 0, 2}});
+  CHECK(near(reach.min, -10.0) && near(reach.max, 20.0));
+  const auto oblique = mitcad::analysis::plane_reach(box, Plane{{0, 0, 0}, {1, 1, 1}});
+  CHECK(near(oblique.min, 0.0) && near(oblique.max, 60.0 / std::sqrt(3.0)));
+  CHECK(clip_side(box, Plane{{0, 0, 30}, {0, 0, 1}}) == ClipSide::Kept);
+  CHECK(clip_side(box, Plane{{0, 0, 40}, {0, 0, 1}}) == ClipSide::Kept);
+  CHECK(clip_side(box, Plane{{0, 0, 0}, {0, 0, 1}}) == ClipSide::Removed);
+  CHECK(clip_side(box, Plane{{0, 0, -1}, {0, 0, 1}}) == ClipSide::Removed);
+  CHECK(clip_side(box, Plane{{0, 0, 10}, {0, 0, 1}}) == ClipSide::Cut);
+  CHECK(clip_side(box, Plane{{0, 0, 10}, {0, 0, -1}}) == ClipSide::Cut);
+  // Within Precision::Confusion of touching it still touches; beyond, it
+  // crosses.
+  CHECK(clip_side(box, Plane{{0, 0, 30 - 5e-8}, {0, 0, 1}}) == ClipSide::Kept);
+  CHECK(clip_side(box, Plane{{0, 0, 30 - 1e-3}, {0, 0, 1}}) == ClipSide::Cut);
+  CHECK(clip_side(box, Plane{{0, 0, 1e-3}, {0, 0, 1}}) == ClipSide::Cut);
+  // An oblique plane is told from the box's corners.
+  CHECK(clip_side(box, Plane{{10, 20, 30}, {1, 1, 1}}) == ClipSide::Kept);
+  CHECK(clip_side(box, Plane{{0, 0, 0}, {1, 1, 1}}) == ClipSide::Removed);
+  CHECK(clip_side(box, Plane{{5, 10, 15}, {1, 1, 1}}) == ClipSide::Cut);
+  // A sheet lying in the plane stays, as clip leaves faces on the plane.
+  Bounds flat = box;
+  flat.max.z = 0.0;
+  CHECK(clip_side(flat, Plane{{0, 0, 0}, {0, 0, 1}}) == ClipSide::Kept);
+  CHECK(clip_side(Bounds{}, Plane{{0, 0, 0}, {0, 0, 1}}) == ClipSide::Cut);
+  CHECK(throws([&] { clip_side(box, Plane{{0, 0, 0}, {0, 0, 0}}); }));
 }
 
 // A mesh body as the STL and OBJ imports make it: one face with the
@@ -1124,6 +1187,7 @@ int main() {
     test_lengths_and_circles();
     test_interference();
     test_sections();
+    test_clip_sides();
     test_mesh_sections();
     test_compare();
   } catch (const std::exception& error) {

@@ -1241,14 +1241,40 @@ pub struct Across {
     pub convex: bool,
 }
 
+/// Faces whose normals at an edge are within this angle (radians) meet
+/// tangentially there: the edge is no fillet's or chamfer's input.
+pub const SMOOTH_WEDGE: f64 = 1e-3;
+
+/// How far (mm) an edge's midpoint must be from the next state's faces to
+/// count as gone, for an edge of this length.
+fn gone_at(length: f64) -> f64 {
+    1e-4 * length.max(1.0)
+}
+
+/// Two measured distances closer than this (mm) are not told apart.
+const NOISE: f64 = 1e-6;
+
 /// The edges of `shape` that are gone in `after`: their midpoints are no
 /// longer on any face of `after` (a fillet or chamfer cut or filled
 /// them). Seams (a face against itself) are left out: they are no
 /// fillet's input.
+///
+/// With `before`, the file's bodies before the item (mitcad#440), an edge
+/// is gone only where its midpoint is farther from `after` than from
+/// `before` by as much: an edge as far off the state before (the replay
+/// split the faces there otherwise, or its body deviates) was not taken
+/// away by the item. And an edge between faces so nearly tangent that the
+/// item's dressup there would lie within that distance of it (`depth`:
+/// the least of the item's dressups at the edge's wedge) is gone where its
+/// midpoint is farther from `after` than from `before` by half that depth
+/// at least; such edges are looked for on the faces of the edges found
+/// gone (a dressup the state cannot show alone is not looked for).
 pub fn consumed_edges<K: Kernel>(
     kernel: &K,
     shape: &K::Shape,
     after: &[&K::Shape],
+    before: &[&K::Shape],
+    depth: &dyn Fn(f64) -> f64,
 ) -> Result<Vec<GoneEdge>, String> {
     let mut edges = edge_middles(kernel, shape);
     edges.retain(|(name, _, _, _)| {
@@ -1260,28 +1286,119 @@ pub fn consumed_edges<K: Kernel>(
     }
     let points: Vec<Vec3> = edges.iter().map(|(_, p, _, _)| *p).collect();
     let nearest = nearest_boundary(kernel, after, &points)?;
-    // Each edge with its tangent and its faces' normals at the midpoint.
+    let mut picked: Vec<usize> = (0..edges.len())
+        .filter(|&k| nearest[k] > gone_at(edges[k].3) && nearest[k].is_finite())
+        .collect();
+    // Each edge's wedge, and its tangent and its faces' normals at the
+    // midpoint.
     type Frame = Option<(Vec3, [Vec3; 2])>;
-    let mut gone: Vec<(GoneEdge, Frame)> = edges
+    let frame_of = |k: usize| -> (Option<f64>, Frame) {
+        crate::tick();
+        let (name, mid, tangent, _) = &edges[k];
+        let [a, b] = name.faces();
+        let normal = |face| {
+            kernel
+                .face_point_normal(shape, face, *mid)
+                .ok()
+                .and_then(|p| geom::unit(p.normal))
+        };
+        let normals = normal(a).zip(normal(b));
+        let wedge = normals
+            .map(|(n1, n2)| std::f64::consts::PI - geom::dot(n1, n2).clamp(-1.0, 1.0).acos());
+        let frame = normals.and_then(|(n1, n2)| Some((geom::unit(*tangent)?, [n1, n2])));
+        (wedge, frame)
+    };
+    let mut frames: std::collections::HashMap<usize, (Option<f64>, Frame)> =
+        std::collections::HashMap::new();
+    // How far each midpoint moved off the faces with the item; none where
+    // the state before cannot be measured (the edges are then judged by the
+    // state after alone).
+    let moved = |ks: &[usize]| -> Option<Vec<f64>> {
+        let mids: Vec<Vec3> = ks.iter().map(|&k| edges[k].1).collect();
+        match nearest_boundary(kernel, before, &mids) {
+            Ok(was) => Some(ks.iter().zip(was).map(|(&k, w)| nearest[k] - w).collect()),
+            Err(e) => {
+                if crate::tracing() {
+                    eprintln!("import: the state before the item not measured: {e}");
+                }
+                None
+            }
+        }
+    };
+    if !before.is_empty()
+        && !picked.is_empty()
+        && let Some(off) = moved(&picked)
+    {
+        let kept: Vec<usize> = picked
+            .iter()
+            .zip(&off)
+            .filter(|&(&k, m)| *m > gone_at(edges[k].3))
+            .map(|(&k, _)| k)
+            .collect();
+        if crate::tracing() {
+            for (&k, m) in picked.iter().zip(&off) {
+                if !kept.contains(&k) {
+                    eprintln!(
+                        "import: not gone with the item: {} ({:.4} off the next state, {:.4} more than off the state before)",
+                        edges[k].0, nearest[k], m
+                    );
+                }
+            }
+        }
+        picked = kept;
+        // Nearly tangent edges on the faces of those gone.
+        let faces: Vec<&FaceName> = picked.iter().flat_map(|&k| edges[k].0.faces()).collect();
+        let near: Vec<usize> = (0..edges.len())
+            .filter(|&k| {
+                !picked.contains(&k)
+                    && nearest[k] > NOISE
+                    && nearest[k] <= gone_at(edges[k].3)
+                    && edges[k].0.faces().iter().any(|f| faces.contains(&f))
+            })
+            .collect();
+        let mut shallow = Vec::new();
+        for k in near {
+            let (wedge, frame) = frame_of(k);
+            if let Some(w) = wedge
+                && w < std::f64::consts::PI - SMOOTH_WEDGE
+                && depth(w) <= gone_at(edges[k].3)
+                && depth(w) > 2.0 * NOISE
+            {
+                frames.insert(k, (wedge, frame));
+                shallow.push(k);
+            }
+        }
+        if !shallow.is_empty()
+            && let Some(off) = moved(&shallow)
+        {
+            for (&k, m) in shallow.iter().zip(&off) {
+                let d = frames[&k].0.map_or(f64::INFINITY, depth);
+                let gone = *m >= 0.5 * d && *m > NOISE;
+                if crate::tracing() {
+                    eprintln!(
+                        "import: nearly tangent edge {}: {:.2e} off the next state, {:.2e} more than off the state before, its dressup {:.2e} deep: {}",
+                        edges[k].0,
+                        nearest[k],
+                        m,
+                        d,
+                        if gone { "gone" } else { "not gone" }
+                    );
+                }
+                if gone {
+                    picked.push(k);
+                }
+            }
+            picked.sort_unstable();
+        }
+    }
+    let mut gone: Vec<(GoneEdge, Frame)> = picked
         .into_iter()
-        .zip(nearest)
-        .filter(|((_, _, _, len), d)| *d > 1e-4 * len.max(1.0) && d.is_finite())
-        .map(|((name, mid, tangent, length), distance)| {
-            crate::tick();
-            let [a, b] = name.faces();
-            let normal = |face| {
-                kernel
-                    .face_point_normal(shape, face, mid)
-                    .ok()
-                    .and_then(|p| geom::unit(p.normal))
-            };
-            let normals = normal(a).zip(normal(b));
-            let wedge = normals
-                .map(|(n1, n2)| std::f64::consts::PI - geom::dot(n1, n2).clamp(-1.0, 1.0).acos());
-            let frame = normals.and_then(|(n1, n2)| Some((geom::unit(tangent)?, [n1, n2])));
+        .map(|k| {
+            let (wedge, frame) = frames.remove(&k).unwrap_or_else(|| frame_of(k));
+            let (name, mid, _, length) = edges[k].clone();
             let edge = GoneEdge {
                 name,
-                distance,
+                distance: nearest[k],
                 wedge,
                 mid,
                 length,
@@ -3837,5 +3954,231 @@ mod dressup_tests {
             dressup_edge_match(&replay([14.5995, 14.6005], apart), &f),
             Err(DressupEdgeFailure::AmbiguousInReplay(_))
         ));
+    }
+}
+
+/// The edges a dressup took away, against the file's states after and
+/// before the item (mitcad#440).
+#[cfg(test)]
+mod gone_edge_tests {
+    use super::*;
+    use mitcad_model::KernelError;
+    use mitcad_model::testing::MockShape;
+
+    /// The angle between the faces of a nearly tangent edge, radians.
+    const THETA: f64 = 0.03;
+
+    /// A body of planar faces (a point on each and its outward normal, by
+    /// name) whose edges are given by their faces, middles, tangents and
+    /// lengths, with the distances of those middles from the file's states
+    /// (each state a shape whose history is its name).
+    struct Planes {
+        faces: Vec<(&'static str, Vec3, Vec3)>,
+        edges: Vec<(&'static str, &'static str, Vec3, Vec3, f64)>,
+        distances: Vec<(&'static str, Vec3, f64)>,
+    }
+
+    impl Kernel for Planes {
+        type Shape = MockShape;
+
+        fn extrude(&self, _: &mitcad_model::ExtrudeSpec<'_>) -> Result<MockShape, KernelError> {
+            Err(KernelError::Unsupported("extrude"))
+        }
+
+        fn solids(&self, shape: &MockShape) -> Result<Vec<MockShape>, KernelError> {
+            Ok(vec![shape.clone()])
+        }
+
+        fn boolean(
+            &self,
+            _: mitcad_model::BooleanOp,
+            _: &[&MockShape],
+            _: &MockShape,
+        ) -> Result<mitcad_model::BooleanOutput<MockShape>, KernelError> {
+            Err(KernelError::Unsupported("boolean"))
+        }
+
+        fn fillet(
+            &self,
+            _: mitcad_model::FeatureUid,
+            _: &MockShape,
+            _: &[mitcad_model::FilletSet<'_>],
+            _: bool,
+        ) -> Result<MockShape, KernelError> {
+            Err(KernelError::Unsupported("fillet"))
+        }
+
+        fn count_edges(&self, _: &MockShape, _: &EdgeName) -> usize {
+            0
+        }
+
+        fn edge_middles(
+            &self,
+            _: &MockShape,
+        ) -> Result<Vec<mitcad_model::EdgeMiddle>, KernelError> {
+            Ok(self
+                .edges
+                .iter()
+                .map(|&(a, b, point, tangent, length)| mitcad_model::EdgeMiddle {
+                    name: edge(a, b).to_string(),
+                    point,
+                    tangent,
+                    length,
+                })
+                .collect())
+        }
+
+        fn face_point_normal(
+            &self,
+            _: &MockShape,
+            face: &FaceName,
+            near: Vec3,
+        ) -> Result<mitcad_model::datum::SurfacePoint, KernelError> {
+            let &(_, origin, normal) = self
+                .faces
+                .iter()
+                .find(|(name, _, _)| face.to_string() == *name)
+                .ok_or(KernelError::Unsupported("face normals"))?;
+            let off = geom::dot(geom::sub(near, origin), normal);
+            Ok(mitcad_model::datum::SurfacePoint {
+                point: geom::sub(near, geom::scale(normal, off)),
+                normal,
+            })
+        }
+
+        fn boundary_distances(
+            &self,
+            shape: &MockShape,
+            points: &[Vec3],
+        ) -> Result<Vec<f64>, KernelError> {
+            Ok(points
+                .iter()
+                .map(|p| {
+                    self.distances
+                        .iter()
+                        .find(|(state, q, _)| *state == shape.history && q == p)
+                        .map_or(1.0, |&(_, _, d)| d)
+                })
+                .collect())
+        }
+    }
+
+    fn edge(a: &str, b: &str) -> EdgeName {
+        EdgeName::new(a.parse().expect("face"), b.parse().expect("face"))
+    }
+
+    fn state(name: &str) -> MockShape {
+        MockShape {
+            history: name.to_owned(),
+            faces: Vec::new(),
+            edges: Vec::new(),
+            bounds: None,
+            parts: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn edges_gone_with_the_item_and_a_nearly_tangent_one() {
+        let (s, c) = (THETA.sin(), THETA.cos());
+        let kernel = Planes {
+            faces: vec![
+                ("F1:import(0)", [0.0, 0.0, 0.0], [0.0, 0.0, 1.0]),
+                ("F1:import(1)", [10.0, 0.0, 0.0], [1.0, 0.0, 0.0]),
+                // Nearly tangent to the first, beyond x = -10.
+                ("F1:import(2)", [-10.0, 0.0, 0.0], [-s, 0.0, c]),
+                ("F1:import(3)", [0.0, 30.0, 0.0], [0.0, 1.0, 0.0]),
+                ("F1:import(4)", [0.0, 30.0, 0.0], [0.0, 0.0, 1.0]),
+                // Nearly tangent to the second, below z = -5.
+                ("F1:import(5)", [10.0, 0.0, -5.0], [c, 0.0, -s]),
+                ("F1:import(6)", [0.0, -30.0, 0.0], [0.0, 0.0, 1.0]),
+                ("F1:import(7)", [0.0, -30.0, 0.0], [s, 0.0, c]),
+            ],
+            edges: vec![
+                // The rounded edge (a quarter turn).
+                (
+                    "F1:import(0)",
+                    "F1:import(1)",
+                    [10.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0],
+                    10.0,
+                ),
+                // Rounded too, its blend 0.015 wide: the item's state lies
+                // 5.6e-5 from its middle.
+                (
+                    "F1:import(0)",
+                    "F1:import(2)",
+                    [-10.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0],
+                    3.0,
+                ),
+                // An edge the replay built otherwise than the file, which
+                // lacks it before the item as after it.
+                (
+                    "F1:import(3)",
+                    "F1:import(4)",
+                    [0.0, 30.0, 0.0],
+                    [1.0, 0.0, 0.0],
+                    4.0,
+                ),
+                // Nearly tangent on a face of the rounded edge, left.
+                (
+                    "F1:import(1)",
+                    "F1:import(5)",
+                    [10.0, 0.0, -5.0],
+                    [0.0, 1.0, 0.0],
+                    3.0,
+                ),
+                // Nearly tangent on faces of no edge gone: not looked at.
+                (
+                    "F1:import(6)",
+                    "F1:import(7)",
+                    [0.0, -30.0, 0.0],
+                    [0.0, 1.0, 0.0],
+                    3.0,
+                ),
+            ],
+            // The replay lies 2 µm off the file's state before.
+            distances: vec![
+                ("after", [10.0, 0.0, 0.0], 0.5 * (2f64.sqrt() - 1.0)),
+                ("before", [10.0, 0.0, 0.0], 2e-6),
+                ("after", [-10.0, 0.0, 0.0], 5.8e-5),
+                ("before", [-10.0, 0.0, 0.0], 2e-6),
+                ("after", [0.0, 30.0, 0.0], 0.004),
+                ("before", [0.0, 30.0, 0.0], 0.004),
+                ("after", [10.0, 0.0, -5.0], 2e-6),
+                ("before", [10.0, 0.0, -5.0], 2e-6),
+                ("after", [0.0, -30.0, 0.0], 5.8e-5),
+                ("before", [0.0, -30.0, 0.0], 2e-6),
+            ],
+        };
+        let (replay, after, before) = (state("replay"), state("after"), state("before"));
+        let depth = |wedge: f64| Section::Fillet(0.5).depth(wedge);
+        let names = |gone: Vec<GoneEdge>| -> Vec<String> {
+            gone.iter().map(|e| e.name.to_string()).collect()
+        };
+        let gone = consumed_edges(&kernel, &replay, &[&after], &[&before], &depth).expect("gone");
+        let near = gone
+            .iter()
+            .find(|e| e.name == edge("F1:import(0)", "F1:import(2)"))
+            .and_then(|e| e.wedge)
+            .expect("the nearly tangent edge");
+        assert!((near - (std::f64::consts::PI - THETA)).abs() < 1e-9);
+        assert_eq!(
+            names(gone),
+            [
+                edge("F1:import(0)", "F1:import(1)").to_string(),
+                edge("F1:import(0)", "F1:import(2)").to_string()
+            ]
+        );
+        // Without the state before: by the distances from the state after
+        // alone.
+        let gone = consumed_edges(&kernel, &replay, &[&after], &[], &depth).expect("gone");
+        assert_eq!(
+            names(gone),
+            [
+                edge("F1:import(0)", "F1:import(1)").to_string(),
+                edge("F1:import(3)", "F1:import(4)").to_string()
+            ]
+        );
     }
 }

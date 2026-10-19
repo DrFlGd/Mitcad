@@ -111,6 +111,8 @@ pub(crate) enum EqKind {
     /// Signed distance of the centre `c` from the line `a b` minus
     /// `side * (r + value)`: the gap between the circle and the line.
     CircleLine { c: P, r: Rad, a: P, b: P, side: f64 },
+    /// `r_b - r_a - side * value`: the gap between two concentric circles.
+    RadGap { a: Rad, b: Rad, side: f64 },
     /// Signed distance of the midpoint of `b1 b2` from the line `a1 a2`
     /// minus `side * value`.
     LineLine {
@@ -332,6 +334,7 @@ impl EqKind {
                 pt(x, *a2).sub(pt(x, *a1)).norm() - pt(x, *b2).sub(pt(x, *b1)).norm()
             }
             RadDiff { a, b } => rad(x, a) - rad(x, b),
+            RadGap { a, b, side } => rad(x, b) - rad(x, a) - T::cst(side * value),
             Radius { r, factor } => rad(x, r).mulf(*factor) - T::cst(value),
             OnCircle { p, c, r } => pt(x, *p).sub(pt(x, *c)).norm() - rad(x, r),
             Angle {
@@ -574,6 +577,11 @@ mod tests {
             EqKind::RadDiff {
                 a: Rad::Param(8),
                 b: Rad::Dist([0, 1], [2, 3]),
+            },
+            EqKind::RadGap {
+                a: Rad::Dist([0, 1], [2, 3]),
+                b: Rad::Param(8),
+                side: -1.0,
             },
             EqKind::OnCircle {
                 p: [4, 5],

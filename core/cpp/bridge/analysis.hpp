@@ -9,6 +9,9 @@
 #include <array>
 #include <cstddef>
 #include <memory>
+#include <optional>
+#include <string>
+#include <utility>
 #include <vector>
 
 #include "bridge/shape.hpp"
@@ -59,6 +62,41 @@ private:
   analysis::Section m_section;
 };
 
+// Section Analysis of many bodies at once (mitcad#438): each body's
+// section or clip, worked out on all cores, with its error.
+class AnalysisSections {
+public:
+  AnalysisSections(std::vector<std::optional<analysis::Section>> sections, std::vector<std::string> errors)
+      : m_sections(std::move(sections)), m_errors(std::move(errors)) {}
+
+  std::size_t count() const { return m_sections.size(); }
+  // Null when the section failed.
+  std::unique_ptr<AnalysisSection> section(std::size_t index) const;
+  // Why it failed; empty when it did not.
+  rust::String error(std::size_t index) const { return rust::String::lossy(m_errors.at(index)); }
+
+private:
+  std::vector<std::optional<analysis::Section>> m_sections;
+  std::vector<std::string> m_errors;
+};
+
+class AnalysisClips {
+public:
+  AnalysisClips(std::vector<std::shared_ptr<geometry::Shape>> shapes, std::vector<std::string> errors)
+      : m_shapes(std::move(shapes)), m_errors(std::move(errors)) {}
+
+  std::size_t count() const { return m_shapes.size(); }
+  // The clipped body; null when the plane leaves the body whole (it is
+  // shown as it is) or when its clip failed.
+  std::shared_ptr<geometry::Shape> shape(std::size_t index) const { return m_shapes.at(index); }
+  // Why the clip failed; empty when it did not.
+  rust::String error(std::size_t index) const { return rust::String::lossy(m_errors.at(index)); }
+
+private:
+  std::vector<std::shared_ptr<geometry::Shape>> m_shapes;
+  std::vector<std::string> m_errors;
+};
+
 AnalysisProperties analysis_properties(const geometry::Shape& shape, double density);
 AnalysisMeasure analysis_measure(const geometry::Shape& shape, rust::Str name);
 AnalysisSeparation analysis_between(const geometry::Shape& a, rust::Str a_name,
@@ -67,8 +105,15 @@ std::unique_ptr<AnalysisInterferences> analysis_interferences(const ShapeList& b
                                                               double min_volume);
 std::unique_ptr<AnalysisSection> analysis_section(const geometry::Shape& shape,
                                                   const AnalysisPlane& plane);
+// Null when the plane leaves the body whole.
 std::shared_ptr<geometry::Shape> analysis_clip(const geometry::Shape& shape,
                                                const AnalysisPlane& plane);
+// The section and the clip of each shape at its plane (one plane per
+// shape), on all cores.
+std::unique_ptr<AnalysisSections> analysis_section_all(const ShapeList& shapes,
+                                                       rust::Slice<const AnalysisPlane> planes);
+std::unique_ptr<AnalysisClips> analysis_clip_all(const ShapeList& shapes,
+                                                 rust::Slice<const AnalysisPlane> planes);
 AnalysisComparison analysis_compare_step(const ShapeList& bodies, rust::Str path,
                                          rust::Str step_body, std::size_t samples, double fuzzy);
 
@@ -78,6 +123,11 @@ AnalysisComparison analysis_compare_shapes(const ShapeList& a, const ShapeList& 
                                            double booleans_above);
 rust::Vec<double> analysis_boundary_distances(const geometry::Shape& shape,
                                               rust::Slice<const double> points);
+// How many times analysis_boundary_distances has measured a point against a
+// face with OCCT's distance query (cones, tori, and free-form faces it
+// cannot place a point on from their grids), since the process started; for
+// tests (mitcad#442).
+std::size_t analysis_whole_face_searches();
 // The point of the faces (indices into the shape's) nearest to `near` and
 // the face's normal there, as geometry::face_point_normal finds them,
 // where each face is a plane, cylinder or sphere onto which `near`

@@ -136,7 +136,32 @@ pub mod ffi {
         fn curves(self: &AnalysisSection) -> SharedPtr<Shape>;
         fn faces(self: &AnalysisSection) -> SharedPtr<Shape>;
 
+        /// Null when the plane leaves the body whole.
         fn analysis_clip(shape: &Shape, plane: &AnalysisPlane) -> Result<SharedPtr<Shape>>;
+
+        // Section Analysis of many bodies at once (mitcad#438): one plane
+        // per shape, worked out on all cores, each with its own error.
+        type AnalysisSections;
+        type AnalysisClips;
+        fn analysis_section_all(
+            shapes: &ShapeList,
+            planes: &[AnalysisPlane],
+        ) -> Result<UniquePtr<AnalysisSections>>;
+        fn count(self: &AnalysisSections) -> usize;
+        /// Null when the section failed.
+        fn section(self: &AnalysisSections, index: usize) -> UniquePtr<AnalysisSection>;
+        /// Why it failed; empty when it did not.
+        fn error(self: &AnalysisSections, index: usize) -> String;
+        fn analysis_clip_all(
+            shapes: &ShapeList,
+            planes: &[AnalysisPlane],
+        ) -> Result<UniquePtr<AnalysisClips>>;
+        fn count(self: &AnalysisClips) -> usize;
+        /// Null when the plane leaves the body whole, or when its clip
+        /// failed.
+        fn shape(self: &AnalysisClips, index: usize) -> SharedPtr<Shape>;
+        /// Why the clip failed; empty when it did not.
+        fn error(self: &AnalysisClips, index: usize) -> String;
 
         /// The bodies together against a STEP file's bodies: all of them
         /// with an empty `step_body`, else the one with that name, or that

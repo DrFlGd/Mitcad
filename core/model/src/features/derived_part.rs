@@ -6,15 +6,15 @@
 //! the `parameters` set, its visible bodies are copied in (`<F>.b<i>`, in
 //! the source's order, faces `<F>:part(<the source's face>)`), and a
 //! cut-to-length part's ends are cut: end A at z = 0 and end B at z = L,
-//! each through the centre of the section there, by `angle` from square
-//! about the section axis `tilt`. The end faces are always `<F>:end_a` and
-//! `<F>:end_b`, cut or not. Every `mount:<name>` joint origin of the
-//! source becomes a frame of the feature, `<F>:mount(<name>)`, which
-//! joints and other features name as `{"mount": ...}`.
-//!
-//! An angled end needs material beyond its centre on the side the cut
-//! leans away from: the source is evaluated again that much longer and
-//! moved back, the frames staying those of the length itself.
+//! by `angle` from square about the section axis `tilt`. The length is the
+//! outer length, the long point (mitcad#443): each cut plane runs through
+//! the section's outermost edge on its long side (the side the cut leans
+//! away from) at the end, so the body never reaches past 0 and L, and its
+//! short point is the section's width across the tilt times tan(angle)
+//! shorter. The end faces are always `<F>:end_a` and `<F>:end_b`, cut or
+//! not. Every `mount:<name>` joint origin of the source becomes a frame of
+//! the feature, `<F>:mount(<name>)`, which joints and other features name
+//! as `{"mount": ...}`.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -468,53 +468,20 @@ impl<K: Kernel> Evaluate<K> for DerivedPartDef {
                 if let Some(problem) = meta.length.as_ref().and_then(|l| l.outside(length)) {
                     ctx.warn(problem);
                 }
-                Some((id, length))
+                Some(length)
             }
             None => None,
         };
         let kernel = ctx.kernel;
         let at_length = evaluate_source(kernel, &state).map_err(|e| format!("{label}: {e}"))?;
-        let mut bodies = at_length.bodies;
-        if let Some((id, length)) = length
-            && (angled[0] || angled[1])
-        {
-            // The material beyond each angled end's centre.
-            let bounds = bounds_of(kernel, &bodies).unwrap_or(BoundingBox {
-                min: [-length; 3],
-                max: [length; 3],
-            });
-            let reach = |tilt: Tilt| {
-                let lean = tilt.lean();
-                let (low, high) = if lean[0] != 0.0 {
-                    (bounds.min[0], bounds.max[0])
-                } else {
-                    (bounds.min[1], bounds.max[1])
-                };
-                low.abs().max(high.abs())
-            };
-            let extra = |i: usize| {
-                if angled[i] {
-                    reach(tilts[i]) * angles[i].tan() + 1.0
-                } else {
-                    0.0
-                }
-            };
-            let (extra_a, extra_b) = (extra(0), extra(1));
-            let mut longer = state.clone();
-            longer
-                .parameters
-                .set_value(id, length + extra_a + extra_b)
-                .map_err(|e| format!("{label}: {e}"))?;
-            let evaluated =
-                evaluate_source(kernel, &longer).map_err(|e| format!("{label}: {e}"))?;
-            let back = Transform::translation([0.0, 0.0, -extra_a]);
-            bodies = evaluated
-                .bodies
-                .iter()
-                .map(|b| kernel.transform_shape(b, &back, None))
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|e| format!("{label}: {e}"))?;
-        }
+        let bodies = at_length.bodies;
+        // The section's bounds, where the angled ends' long sides are; the
+        // cuts take away material only, the body stays within its length.
+        let section = if angled[0] || angled[1] {
+            bounds_of(kernel, &bodies)
+        } else {
+            None
+        };
         let uid = ctx.uid;
         let prefix = format!("{uid}:part");
         let end_name = |b: bool| FaceName::new(uid, if b { "end_b" } else { "end_a" }, None);
@@ -523,7 +490,7 @@ impl<K: Kernel> Evaluate<K> for DerivedPartDef {
             // Square ends take the end names; angled ones get them from
             // their cuts.
             let mut renames = Vec::new();
-            if let Some((_, length)) = length {
+            if let Some(length) = length {
                 for (b, z) in [(false, 0.0), (true, length)] {
                     if !angled[usize::from(b)] {
                         for face in end_faces(kernel, body, z, b) {
@@ -535,13 +502,15 @@ impl<K: Kernel> Evaluate<K> for DerivedPartDef {
             let mut shape = kernel
                 .rename_faces(body, &prefix, &renames)
                 .map_err(|e| format!("{label}: {e}"))?;
-            if let Some((_, length)) = length {
+            if let Some(length) = length {
                 for b in [false, true] {
                     let end = usize::from(b);
                     if !angled[end] {
                         continue;
                     }
-                    shape = cut_end(ctx, &shape, b, length, angles[end], tilts[end])?;
+                    let plane = end_plane(section.as_ref(), b, length, angles[end], tilts[end])
+                        .ok_or("the cut has no normal")?;
+                    shape = cut_end(ctx, &shape, b, length, plane)?;
                 }
             }
             changes.push(BodyChange::Set(BodyUid::new(uid, i as u32), shape));
@@ -554,56 +523,45 @@ impl<K: Kernel> Evaluate<K> for DerivedPartDef {
     }
 }
 
-/// Cuts end B (`b`) or A of a body by the plane through the end's centre,
-/// its outward normal leaning by `angle` towards the tilt's side; the cut
-/// face is the end's face.
+/// The plane end B (`b`) or A of a part `length` long is cut by, as a
+/// point on it and its outward normal (mitcad#443): the normal leans from
+/// the end's axis by `angle` towards the tilt's side, and the plane runs
+/// through the section's outermost edge on the other side, the long side,
+/// at the end (z = 0 or `length`), so the long point is the length. With
+/// no `section` bounds known it runs through the end's centre.
+pub(crate) fn end_plane(
+    section: Option<&BoundingBox>,
+    b: bool,
+    length: f64,
+    angle: f64,
+    tilt: Tilt,
+) -> Option<([f64; 3], [f64; 3])> {
+    use crate::build::{add, scale, unit};
+    let lean = tilt.lean();
+    let axis = [0.0, 0.0, if b { 1.0 } else { -1.0 }];
+    let normal = unit(add(scale(axis, angle.cos()), scale(lean, angle.sin())))?;
+    // The least of the section along the lean: its long side.
+    let k = if lean[0] != 0.0 { 0 } else { 1 };
+    let long = section.map_or(0.0, |s| (lean[k] * s.min[k]).min(lean[k] * s.max[k]));
+    let mut point = scale(lean, long);
+    point[2] = if b { length } else { 0.0 };
+    Some((point, normal))
+}
+
+/// Cuts end B (`b`) or A of a body by the plane `(point, normal)`, taking
+/// away what is beyond it along the normal; the cut face is the end's face.
 fn cut_end<K: Kernel>(
     ctx: &mut EvalContext<'_, K>,
     body: &K::Shape,
     b: bool,
     length: f64,
-    angle: f64,
-    tilt: Tilt,
+    (centre, normal): ([f64; 3], [f64; 3]),
 ) -> Result<K::Shape, String> {
-    use crate::build::{add, cross, norm, perpendicular, scale, unit};
     let uid = ctx.uid;
     let key = if b { "b" } else { "a" };
-    let centre = [0.0, 0.0, if b { length } else { 0.0 }];
-    let axis = [0.0, 0.0, if b { 1.0 } else { -1.0 }];
-    let normal = unit(add(
-        scale(axis, angle.cos()),
-        scale(tilt.lean(), angle.sin()),
-    ))
-    .ok_or("the cut has no normal")?;
-    let size = 4.0 * (length.abs() + 1000.0);
-    let u = perpendicular(normal);
-    let v = cross(normal, u);
-    let corner = add(centre, add(scale(u, -size / 2.0), scale(v, -size / 2.0)));
-    debug_assert!(norm(v) > 0.5);
-    let spec = PrimitiveSpec {
-        feature: uid,
-        frame: SketchFrame {
-            origin: corner,
-            x_axis: u,
-            y_axis: v,
-        },
-        shape: PrimitiveShape::Box {
-            length: size,
-            width: size,
-            height: size,
-        },
-    };
     let kernel = ctx.kernel;
     let failed = |e: crate::kernel::KernelError| format!("end {key}: {e}");
-    let tool = kernel.primitive(&spec).map_err(failed)?;
-    let end = FaceName::new(uid, if b { "end_b" } else { "end_a" }, None);
-    let tool = kernel
-        .rename_faces(
-            &tool,
-            &format!("{uid}:cut_{key}"),
-            &[(FaceName::new(uid, "bottom", None), end)],
-        )
-        .map_err(failed)?;
+    let tool = end_tool(kernel, uid, b, length, (centre, normal)).map_err(failed)?;
     let output = ctx
         .boolean(BooleanOp::Cut, &[body], &tool)
         .map_err(failed)?;
@@ -625,6 +583,45 @@ fn cut_end<K: Kernel>(
         ));
     }
     Ok(first)
+}
+
+/// The tool an end's cut takes away: a box beyond the plane `(point,
+/// normal)`, its face on the plane named the end's (`<F>:end_a`,
+/// `<F>:end_b`).
+pub(crate) fn end_tool<K: Kernel>(
+    kernel: &K,
+    uid: FeatureUid,
+    b: bool,
+    length: f64,
+    (centre, normal): ([f64; 3], [f64; 3]),
+) -> Result<K::Shape, crate::kernel::KernelError> {
+    use crate::build::{add, cross, norm, perpendicular, scale};
+    let key = if b { "b" } else { "a" };
+    let size = 4.0 * (length.abs() + 1000.0);
+    let u = perpendicular(normal);
+    let v = cross(normal, u);
+    let corner = add(centre, add(scale(u, -size / 2.0), scale(v, -size / 2.0)));
+    debug_assert!(norm(v) > 0.5);
+    let spec = PrimitiveSpec {
+        feature: uid,
+        frame: SketchFrame {
+            origin: corner,
+            x_axis: u,
+            y_axis: v,
+        },
+        shape: PrimitiveShape::Box {
+            length: size,
+            width: size,
+            height: size,
+        },
+    };
+    let tool = kernel.primitive(&spec)?;
+    let end = FaceName::new(uid, if b { "end_b" } else { "end_a" }, None);
+    kernel.rename_faces(
+        &tool,
+        &format!("{uid}:cut_{key}"),
+        &[(FaceName::new(uid, "bottom", None), end)],
+    )
 }
 
 /// The name a derived part gives a face of its source.

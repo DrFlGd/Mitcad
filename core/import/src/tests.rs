@@ -364,6 +364,9 @@ struct SlowExtrusions {
     /// Against the sketch's normal only (mitcad#95).
     against: bool,
     seconds: f64,
+    /// Not checking for a request to stop: a kernel call that runs on past
+    /// the end of its time (mitcad#434).
+    deaf: bool,
 }
 
 impl TestKernel {
@@ -504,7 +507,9 @@ impl Kernel for TestKernel {
         {
             self.slow_calls.set(self.slow_calls.get() + 1);
             self.began.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            if slow_call_for(&self.mock, slow.seconds) {
+            if slow.deaf {
+                std::thread::sleep(std::time::Duration::from_secs_f64(slow.seconds));
+            } else if slow_call_for(&self.mock, slow.seconds) {
                 self.stopped
                     .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             }
@@ -6585,6 +6590,7 @@ fn a_slow_definition_gives_way_to_the_next_ones() {
         along: true,
         against: false,
         seconds: 30.0,
+        deaf: false,
     };
     for known in [true, false] {
         let (report, def, slow, elapsed) =
@@ -6613,6 +6619,7 @@ fn a_definition_that_gave_way_gets_the_rest_of_the_time() {
         along: true,
         against: false,
         seconds: 1.0,
+        deaf: false,
     };
     for known in [true, false] {
         let (report, def, slow, _) = slow_profile_import(known, (LARGE, 10.0, false), slow, 2.0);
@@ -6640,6 +6647,7 @@ fn an_item_out_of_time_names_the_definition_its_time_went_to() {
         along: true,
         against: false,
         seconds: 30.0,
+        deaf: false,
     };
     for known in [true, false] {
         let (report, _, slow, elapsed) =
@@ -7131,6 +7139,7 @@ fn the_first_definition_that_gives_the_state_is_taken() {
             along: true,
             against: false,
             seconds: 0.5,
+            deaf: false,
         }),
         ..TestKernel::default()
     };
@@ -7162,6 +7171,7 @@ fn definitions_after_the_one_taken_are_cut_short() {
             along: false,
             against: true,
             seconds: 30.0,
+            deaf: false,
         }),
         began: Arc::clone(&began),
         stopped: Arc::clone(&stopped),
@@ -7182,6 +7192,35 @@ fn definitions_after_the_one_taken_are_cut_short() {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     assert_eq!(load(&stopped), load(&began));
+}
+
+#[test]
+fn a_definition_evaluated_ahead_that_does_not_stop_is_given_up() {
+    // The third definition (the large rectangle along the sketch's normal),
+    // evaluated ahead, runs 15 s in a kernel call that does not check for a
+    // request to stop, as a fillet's contour round a closed chain did for
+    // hours (mitcad#434); the fourth (against the normal) gives the state.
+    // The importer waits for the third until its share of the item's 6 s
+    // (2 s) and another share have passed, takes it as cut short at its
+    // share, and the fourth comes in. Before, the import waited the 15 s
+    // (or for ever).
+    let kernel = || TestKernel {
+        directed: true,
+        slow: Some(SlowExtrusions {
+            regions: &[LARGE],
+            along: true,
+            against: false,
+            seconds: 15.0,
+            deaf: true,
+        }),
+        ..TestKernel::default()
+    };
+    let (report, features, elapsed, _) = ahead_import(8, false, (LARGE, 10.0, true), kernel, 6.0);
+    assert_eq!(report.items[1].verified, Some(true), "{}", report.text());
+    let def = &features.last().unwrap()["def"];
+    assert_eq!(def["profiles"][0]["region"], LARGE, "{}", report.text());
+    assert_eq!(def["flip"], true, "{}", report.text());
+    assert!(elapsed < 10.0, "{elapsed} s");
 }
 
 #[test]

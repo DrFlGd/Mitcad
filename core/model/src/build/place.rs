@@ -196,6 +196,10 @@ pub struct PlaceInput {
     pub length: Option<LengthInput>,
     #[serde(default)]
     pub mitre: Option<MitreInput>,
+    /// On a side (mitcad#444): the lean along the host, an angle, positive
+    /// towards its end B; 0 or left out: square.
+    #[serde(default)]
+    pub tilt: Option<ValueInput>,
     #[serde(default)]
     pub parameters: BTreeMap<String, ValueInput>,
     #[serde(default)]
@@ -251,6 +255,9 @@ pub struct EditInput {
     pub length: Option<LengthInput>,
     #[serde(default)]
     pub ends: Option<EndsInput>,
+    /// A part on a side (mitcad#444): its tilt along the host; 0 squares it.
+    #[serde(default)]
+    pub tilt: Option<ValueInput>,
     #[serde(default)]
     pub config: Option<String>,
     #[serde(default)]
@@ -337,6 +344,9 @@ pub(crate) struct RayPlan {
     pub from: JointOrigin,
     pub shift: [f64; 3],
     pub shift_by_joint: bool,
+    /// Added to the joint's slide when it shifts the start (a tilted
+    /// part's far end, mitcad#444).
+    pub slide_extra: f64,
     pub direction: RayDirection,
     /// The start and direction now, in the BUILD host's coordinates
     /// (for previews).
@@ -363,6 +373,10 @@ pub(crate) struct JointPlan {
     pub side: Option<SidePlan>,
     /// On an end: straight or turned, and the corner's mitre (mitcad#417).
     pub end: Option<EndPlan>,
+    /// A tilted part on a side (mitcad#444): its end frame on the slot
+    /// turned (joint side a) and its end cuts (end B, angle, tilt).
+    pub own_override: Option<FrameOverride>,
+    pub cuts: Vec<(bool, f64, Tilt)>,
     /// What a slide's offset is measured from (kept in the record).
     pub from: Option<SideFrom>,
     pub warnings: Vec<String>,
@@ -374,6 +388,8 @@ pub(crate) struct NewPart<'a> {
     pub mounts: &'a BTreeMap<String, Transform>,
     pub bounds: Option<&'a BoundingBox>,
     pub rotate: f64,
+    /// Its tilt on a side (mitcad#444), radians.
+    pub tilt: f64,
 }
 
 /// How far a part reaches along the x axis of the frame its frame `own`
@@ -521,6 +537,10 @@ pub(crate) struct SidePlan {
     /// the part's middle from the target's.
     pub from: SideFrom,
     pub from_offset: f64,
+    /// Offsets are to the foot's long point (a tilted part, mitcad#444),
+    /// not to its near or far face or its middle; `near` and `far` are
+    /// still its foot's reach.
+    pub long_point: bool,
 }
 
 /// A part on an end (mitcad#417): what the click chose, the new part's
@@ -595,6 +615,8 @@ pub(crate) struct Plan {
     /// The target's derived part with its end cut (`existing`, `shared`).
     pub target_ends: Option<(FeatureUid, bool, EndCut<ValueInput>)>,
     pub rotate: f64,
+    /// The tilt on a side (mitcad#444), radians; 0 square.
+    pub tilt: f64,
     pub name: Option<String>,
     pub designation: String,
     pub place: &'static str,
@@ -832,6 +854,12 @@ impl<K: Kernel> Document<K> {
         if (quarter - quarter.round()).abs() > 1e-6 {
             return Err(refuse("the rotation is 0, 90, 180 or 270 degrees"));
         }
+        // A tilt along the host (mitcad#444), only on a side.
+        let tilt = match &input.tilt {
+            Some(value) => value_in(self, value, Unit::DEG)?,
+            None => 0.0,
+        };
+        super::tilt::check_tilt(tilt).map_err(refuse)?;
         let touch = if input.flip { "end_b" } else { "end_a" };
         let at = input.at.clone().unwrap_or_default();
         let mut target = None;
@@ -839,6 +867,7 @@ impl<K: Kernel> Document<K> {
             mounts: &mounts,
             bounds: bounds.as_ref(),
             rotate,
+            tilt,
         };
         let (spot, place) = match &at.geometry {
             None => {
@@ -883,11 +912,19 @@ impl<K: Kernel> Document<K> {
         if let Spot::Joint(j) = &spot {
             warnings.extend(j.warnings.iter().cloned());
         }
+        if tilt.abs() > 1e-12 && place != "side" {
+            return Err(refuse(
+                "only a part on a side tilts (on an end its direction turns it)",
+            ));
+        }
         // Where the new part goes.
         let placement = match &spot {
             Spot::Grounded(t) => *t,
             Spot::Joint(j) => {
-                let own = mounts.get(&j.own).copied().unwrap_or(Transform::IDENTITY);
+                let mut own = mounts.get(&j.own).copied().unwrap_or(Transform::IDENTITY);
+                if let Some(o) = &j.own_override {
+                    own = crate::joints::apply_override(&own, o).map_err(refuse)?;
+                }
                 j.frame_b
                     .after(&crate::joints::alignment(rotate, 0.0, j.flip))
                     .after(&inverse(&own))
@@ -897,6 +934,21 @@ impl<K: Kernel> Document<K> {
         // mitcad#417), elsewhere the command's.
         let mut own_ends = Ends { a: None, b: None };
         let mut target_ends = None;
+        // A tilted part's cuts (mitcad#444): its foot, and its far end
+        // with a bound length.
+        if let Spot::Joint(j) = &spot {
+            for (b, angle, cut_tilt) in &j.cuts {
+                let cut = Some(EndCut {
+                    angle: ValueInput::Number(*angle),
+                    tilt: Some(*cut_tilt),
+                });
+                if *b {
+                    own_ends.b = cut;
+                } else {
+                    own_ends.a = cut;
+                }
+            }
+        }
         let mitre = match &spot {
             Spot::Joint(j) if j.end.is_some() => j.end.as_ref().and_then(|e| e.mitre.clone()),
             _ => input.mitre.clone().filter(|m| m.cut != MitreCut::None),
@@ -905,6 +957,11 @@ impl<K: Kernel> Document<K> {
             let Some(target) = &target else {
                 return Err(refuse("a mitre needs a profile's side or end to meet"));
             };
+            if tilt.abs() > 1e-12 {
+                return Err(refuse(
+                    "a tilted part's foot is cut by its tilt: it takes no mitre",
+                ));
+            }
             if source.meta.length.is_none() {
                 return Err(refuse(format!(
                     "{label} is not cut to length: it has no mitres"
@@ -1018,6 +1075,7 @@ impl<K: Kernel> Document<K> {
             own_ends,
             target_ends,
             rotate,
+            tilt,
             name: input.name.clone(),
             designation,
             place,
@@ -1242,6 +1300,7 @@ impl<K: Kernel> Document<K> {
                             from: target.origin(&end)?,
                             shift: inverse(&end_frame_local).apply_vector(shift),
                             shift_by_joint: false,
+                            slide_extra: 0.0,
                             direction,
                             start: frame_b.translation,
                             along: z_axis(&frame_b),
@@ -1268,6 +1327,8 @@ impl<K: Kernel> Document<K> {
                         ray,
                         side: None,
                         end: Some(plan),
+                        own_override: None,
+                        cuts: Vec::new(),
                         from: None,
                         warnings: Vec::new(),
                     })),
@@ -1419,7 +1480,37 @@ impl<K: Kernel> Document<K> {
         let flip = true;
         // How far the new part reaches along the slot from its frame.
         let own_local = mounts.get(&own).copied().unwrap_or(Transform::IDENTITY);
-        let (near, far) = reach_along_x(new.bounds, &own_local, new.rotate, flip);
+        // Tilted along the host (mitcad#444): its foot cut to lie on the
+        // side, its long point where the slide puts it.
+        let length_now = match length {
+            LengthPlan::Value(_, v) => Some(*v),
+            LengthPlan::Bound { first, .. } => Some(*first),
+            LengthPlan::None => None,
+        };
+        let tilted = if new.tilt.abs() > 1e-12 {
+            let (Some(section), Some(length_now), true) = (new.bounds, length_now, own == touch)
+            else {
+                return Err(refuse(format!(
+                    "{label} does not stand on the slot with an end: it cannot tilt"
+                )));
+            };
+            let plan = super::tilt::tilt_plan(
+                section,
+                &own_local,
+                new.rotate,
+                own == "end_b",
+                length_now,
+                new.tilt,
+            )
+            .ok_or_else(|| refuse(format!("{label} cannot tilt along the slot")))?;
+            Some((plan, *section, length_now))
+        } else {
+            None
+        };
+        let (near, far) = match &tilted {
+            Some((plan, ..)) => plan.reach,
+            None => reach_along_x(new.bounds, &own_local, new.rotate, flip),
+        };
         let section = match (new.bounds, source.meta.length.is_some()) {
             (Some(b), true) => (b.max[0] - b.min[0]).max(b.max[1] - b.min[1]),
             _ => f64::INFINITY,
@@ -1441,6 +1532,7 @@ impl<K: Kernel> Document<K> {
             offset: 0.0,
             from: SideFrom::A,
             from_offset: 0.0,
+            long_point: tilted.is_some(),
         };
         let point_local = at.point.map(|p| inverse(&target.placement).apply_point(p));
         let mut warnings = Vec::new();
@@ -1457,14 +1549,46 @@ impl<K: Kernel> Document<K> {
             .placement
             .after(&slot_local)
             .after(&Transform::translation([tx, 0.0, 0.0]));
+        // A tilted part's foot cut, and with a bound length its far end
+        // flush with the plane the length ends on, measured to its long
+        // point (mitcad#444).
+        let mut cuts = Vec::new();
+        let mut far_end = None;
+        if let Some((plan, section, length_now)) = &tilted {
+            cuts.push((plan.foot_b, plan.foot.0, plan.foot.1));
+            if let LengthPlan::Bound { to, .. } = length {
+                let normal = self
+                    .bound_normal(to)
+                    .map(|n| inverse(&target.placement.after(&slot_local)).apply_vector(n))
+                    .ok_or_else(|| refuse("the length's target is no plane"))?;
+                let end = super::tilt::far_end(plan, section, *length_now, normal)
+                    .map_err(|e| refuse(format!("{label}: {e}")))?;
+                if let Some((angle, cut_tilt)) = end.cut {
+                    cuts.push((!plan.foot_b, angle, cut_tilt));
+                }
+                far_end = Some(end);
+            }
+        }
         let ray = match length {
-            LengthPlan::Bound { .. } if own == touch => Some(RayPlan {
-                from: target.origin(slot)?,
-                shift: [tx, 0.0, 0.0],
-                shift_by_joint: true,
-                direction: RayDirection::default(),
-                start: frame_b.translation,
-                along: z_axis(&frame_b),
+            LengthPlan::Bound { .. } if own == touch => Some(match &far_end {
+                Some(end) => RayPlan {
+                    from: target.origin(slot)?,
+                    shift: [tx + end.start[0], end.start[1], end.start[2]],
+                    shift_by_joint: true,
+                    slide_extra: end.start[0],
+                    direction: RayDirection::Vector(end.along),
+                    start: frame_b.apply_point(end.start),
+                    along: frame_b.apply_vector(end.along),
+                },
+                None => RayPlan {
+                    from: target.origin(slot)?,
+                    shift: [tx, 0.0, 0.0],
+                    shift_by_joint: true,
+                    slide_extra: 0.0,
+                    direction: RayDirection::default(),
+                    start: frame_b.translation,
+                    along: z_axis(&frame_b),
+                },
             }),
             LengthPlan::Bound { .. } => {
                 return Err(refuse(format!(
@@ -1486,6 +1610,8 @@ impl<K: Kernel> Document<K> {
                 from: Some(side.from),
                 side: Some(side),
                 end: None,
+                own_override: tilted.as_ref().map(|(plan, ..)| plan.own),
+                cuts,
                 warnings,
             })),
             "side",
@@ -1511,13 +1637,20 @@ impl<K: Kernel> Document<K> {
         what: &str,
     ) -> Result<(ValueInput, f64), ModelError> {
         let (near, far) = (side.near, side.far);
+        // What the offsets are to: the near and far faces, or a tilted
+        // part's long point (mitcad#444).
+        let (rn, rf) = if side.long_point {
+            (0.0, 0.0)
+        } else {
+            (near, far)
+        };
         let length = side.length;
         let along = |p: V3| dot(sub(p, slot_local.translation), x_axis(slot_local));
         let (mut from, mut offset, tx) = match &at.offset {
             Some(offset) => {
                 let from = at.from.unwrap_or_default();
                 let distance = value_in(self, offset, Unit::MM)?;
-                let tx = slide_of(from, distance, near, far, length)?;
+                let tx = slide_of(from, distance, rn, rf, length)?;
                 (from, offset.clone(), tx)
             }
             None => {
@@ -1559,10 +1692,10 @@ impl<K: Kernel> Document<K> {
                     (None, _, Some(l)) if l - (tx + far) < tx + near => SideFrom::B,
                     (None, _, Some(_)) => SideFrom::A,
                 };
-                let distance = offset_of(from, tx, near, far, length);
+                let distance = offset_of(from, tx, rn, rf, length);
                 // A click is no finer than a thousandth of a millimetre.
                 let distance = (distance * 1000.0).round() / 1000.0;
-                let tx = slide_of(from, distance, near, far, length)?;
+                let tx = slide_of(from, distance, rn, rf, length)?;
                 (from, ValueInput::Number(distance), tx)
             }
         };
@@ -1588,13 +1721,14 @@ impl<K: Kernel> Document<K> {
                 side.snapped = Some("clamped");
             }
             from = flush;
-            offset = ValueInput::Number(0.0);
+            // 0 for the faces; a tilted part's long point is in from them.
+            offset = ValueInput::Number(offset_of(flush, kept, rn, rf, length));
         }
         let name = target_length.map(|(id, _)| self.parameters().name(id));
-        let value = slide_value_of(from, &offset, near, far, name.as_deref())?;
+        let value = slide_value_of(from, &offset, rn, rf, name.as_deref())?;
         side.offset = kept + near;
         side.from = from;
-        side.from_offset = offset_of(from, kept, near, far, length);
+        side.from_offset = offset_of(from, kept, rn, rf, length);
         Ok((value, kept))
     }
 
@@ -1713,6 +1847,8 @@ impl<K: Kernel> Document<K> {
             ray: None,
             side: None,
             end: None,
+            own_override: None,
+            cuts: Vec::new(),
             from: matches!(motion, Some(Motion::Tx)).then(|| match at.offset {
                 Some(_) => at.from.unwrap_or_default(),
                 None => SideFrom::A,
@@ -1796,12 +1932,15 @@ impl<K: Kernel> Document<K> {
                 },
                 shift: [shift[0], shift[1], 0.0],
                 shift_by_joint: false,
+                slide_extra: 0.0,
                 direction,
                 start: frame_b.translation,
                 along: z_axis(&frame_b),
             }),
             side: None,
             end: None,
+            own_override: None,
+            cuts: Vec::new(),
             from: None,
             warnings: Vec::new(),
         })))
@@ -1894,8 +2033,12 @@ pub(crate) fn end_zone(
 /// - without a shared mitre on the target's end face, its end `offset`
 ///   from the target's outer side (the side away from the turn) towards
 ///   the turn: at 0 flush with it;
-/// - with a shared mitre where both ends cut through their centres on the
-///   bisector make the outer corners meet.
+/// - with a shared mitre, the outer corners meet (mitcad#443): the new
+///   part's outer side (away from the corner's inside) runs through the
+///   target's outer edge at its end, and its end lies on that edge, so the
+///   two overlap fully and both are cut on the bisector through the shared
+///   outer corner, each at its long point; the outer lengths are the
+///   lengths.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn corner_shift(
     e: V3,
@@ -1923,14 +2066,12 @@ pub(crate) fn corner_shift(
     let (nl, nh) = extent(&new_corners, n);
     let centred = scale(n, (tl + th) / 2.0 - (nl + nh) / 2.0);
     if shared {
-        // Both cut through their centres on the plane across `u + d`: the
-        // target's outer edge meets it where the new part's must.
-        let m = unit(add(u, d)).unwrap_or(u);
+        // The target's long point, its outer edge at its end, is the new
+        // part's: its end frame that far in from its outer side. Both cut
+        // planes (across `u + d`) run through that corner.
         let height = extent(&new_corners, t).1;
-        let lambda = outer * dot(m, s) / dot(m, u);
-        let mu = -height * dot(m, t) / dot(m, d);
-        let corner = add(scale(s, -outer), scale(u, lambda));
-        let start = sub(sub(corner, scale(t, height)), scale(d, mu));
+        let corner = scale(s, -outer);
+        let start = sub(corner, scale(t, height));
         return add(start, centred);
     }
     // On the end face: lifted by what reaches below it, then along its
@@ -2053,7 +2194,11 @@ pub(crate) fn add_bound(
     let mut shift = BTreeMap::new();
     match shift_x {
         Some(id) => {
-            shift.insert(ShiftAxis::X, ValueInput::Name(state.parameters.name(id)));
+            let slide = state.parameters.name(id);
+            shift.insert(
+                ShiftAxis::X,
+                ValueInput::Name(format!("{slide}{}", plus(ray.slide_extra))),
+            );
         }
         None if ray.shift[0].abs() > 1e-12 => {
             shift.insert(ShiftAxis::X, ValueInput::Number(ray.shift[0]));
@@ -2152,7 +2297,7 @@ pub(crate) fn make_part(
                     feature: part,
                     name: plan_joint.own.clone(),
                 },
-                frame_override: None,
+                frame_override: plan_joint.own_override,
             },
             b: plan_joint.b.clone(),
             offset: None,
@@ -2187,6 +2332,7 @@ pub(crate) fn make_part(
                 },
                 shift: t.translation,
                 shift_by_joint: false,
+                slide_extra: 0.0,
                 direction: if dot(z_axis(t), super::geometry::Z) > 1.0 - 1e-9 {
                     RayDirection::default()
                 } else {
@@ -2247,6 +2393,7 @@ pub(crate) fn make_part(
             Spot::Joint(j) => j.from,
             Spot::Grounded(_) => None,
         },
+        tilt: (plan.tilt.abs() > 1e-12).then_some(plan.tilt),
     };
     state.assembly.component_mut(made).expect("made").build = Some(record);
     Ok(Placed {
@@ -2399,6 +2546,27 @@ impl<K: Kernel> Document<K> {
             }
             _ => None,
         };
+        // A tilt on a side (mitcad#444): the one asked for, or the part's
+        // own again through a turn, a flip or a new length.
+        let tilt = match &input.tilt {
+            Some(value) => {
+                let tilt = value_in(self, value, Unit::DEG)?;
+                super::tilt::check_tilt(tilt).map_err(refuse)?;
+                Some(tilt)
+            }
+            None if super::tilt::is_tilted(info.record.tilt)
+                && (rotate.is_some() || input.flip.is_some() || input.length.is_some()) =>
+            {
+                info.record.tilt
+            }
+            None => None,
+        };
+        let retilt = match tilt {
+            Some(tilt) => {
+                Some(self.plan_retilt(&info, tilt, rotate, input.flip, input.length.as_ref())?)
+            }
+            None => None,
+        };
         self.apply(|state| {
             let mut changed = Vec::new();
             if let Some((motion, value, from, from_given)) = offset {
@@ -2498,6 +2666,50 @@ impl<K: Kernel> Document<K> {
                     changed.push("bound".to_owned());
                 }
                 None => {}
+            }
+            if let Some(r) = &retilt {
+                let joint = joint.ok_or_else(|| refuse(format!("{} has no joint", info.name)))?;
+                edit_joint(state, joint, |j| j.a.frame_override = r.own)?;
+                let [a, b] = r.ends.clone();
+                edit_part(state, part, |def| {
+                    def.ends.a = a;
+                    def.ends.b = b;
+                })?;
+                // Its bound length measured from the far end's long side
+                // along its axis.
+                let slide =
+                    joint_slide_param(state, joint, Motion::Tx).map(|id| state.parameters.name(id));
+                let (start, along) = r.ray;
+                for bound in current_bounds(state, component) {
+                    edit_bound(state, bound, |b| {
+                        if let Some(slide) = &slide {
+                            b.from.shift.insert(
+                                ShiftAxis::X,
+                                ValueInput::Name(format!("{slide}{}", plus(start[0]))),
+                            );
+                        }
+                        for (axis, value) in [(ShiftAxis::Y, start[1]), (ShiftAxis::Z, start[2])] {
+                            if value.abs() > 1e-12 {
+                                b.from.shift.insert(axis, ValueInput::Number(value));
+                            } else {
+                                b.from.shift.remove(&axis);
+                            }
+                        }
+                        b.direction = if dot(along, super::geometry::Z) > 1.0 - 1e-12 {
+                            RayDirection::default()
+                        } else {
+                            RayDirection::Vector(along)
+                        };
+                    })?;
+                }
+                if let Some(record) = state
+                    .assembly
+                    .component_mut(component)
+                    .and_then(|c| c.build.as_mut())
+                {
+                    record.tilt = (r.tilt.abs() > 1e-12).then_some(r.tilt);
+                }
+                changed.push("tilt".to_owned());
             }
             if let Some(ends) = &input.ends {
                 let ends = ends.clone();
@@ -2617,6 +2829,11 @@ impl<K: Kernel> Document<K> {
     /// its joint's); (0, 0) for a part placed otherwise (on an end, on a
     /// rail).
     fn side_reach(&self, info: &PartInfo, joint: FeatureUid, rotate: Option<f64>) -> (f64, f64) {
+        // A tilted part's offsets are to its foot's long point, where its
+        // slide is (mitcad#444).
+        if super::tilt::is_tilted(info.record.tilt) {
+            return (0.0, 0.0);
+        }
         let Some(entry) = self.feature(joint) else {
             return (0.0, 0.0);
         };
@@ -2692,6 +2909,7 @@ impl<K: Kernel> Document<K> {
             from,
             shift,
             shift_by_joint: j.kind == JointKind::Slider,
+            slide_extra: 0.0,
             direction,
             start: [0.0; 3],
             along: super::geometry::Z,

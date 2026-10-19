@@ -955,6 +955,12 @@ impl<P> SketchDef<P> {
                 D::TangentDistance { circle, line } => {
                     vec![(cv(*circle), ROUND), (cv(*line), LINE)]
                 }
+                D::ConcentricDistance { a, b } => {
+                    if a == b {
+                        return Err(format!("{what}: two different circles or arcs"));
+                    }
+                    vec![(cv(*a), ROUND), (cv(*b), ROUND)]
+                }
                 D::Length { line } => vec![(cv(*line), LINE)],
                 D::Radius { curve } | D::Diameter { curve } => vec![(cv(*curve), ROUND)],
                 D::ArcLength { arc } => vec![(cv(*arc), &["arc"][..])],

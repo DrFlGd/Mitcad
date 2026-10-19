@@ -303,6 +303,32 @@ if(BUILD_TESTING)
   add_executable(test_fillet_corner_cases tests/test_fillet_corner_cases.cpp)
   target_link_libraries(test_fillet_corner_cases PRIVATE mitcad_geometry mitcad_warnings)
   add_test(NAME geometry.fillet_corner_cases COMMAND test_fillet_corner_cases)
+  # A thread's crest narrower than the roundings of both its edges, with the
+  # port's patch 0750 (mitcad#343).
+  add_executable(test_fillet_thread_crests tests/test_fillet_thread_crests.cpp)
+  target_link_libraries(test_fillet_thread_crests PRIVATE mitcad_geometry mitcad_warnings)
+  add_test(NAME geometry.fillet_thread_crests COMMAND test_fillet_thread_crests)
+  # Roundings vanishing inside their chains, rolling over narrow faces and
+  # lenses, with the port's patches 0770 and later (mitcad#343).
+  add_executable(test_fillet_lens_overflow tests/test_fillet_lens_overflow.cpp)
+  target_link_libraries(test_fillet_lens_overflow PRIVATE mitcad_geometry mitcad_warnings)
+  add_test(NAME geometry.fillet_lens_overflow COMMAND test_fillet_lens_overflow)
+  # Roundings round a thread's chamfer and up to a groove's floor on bodies
+  # with the traits of stored ones, with the port's patches 0800 and later
+  # (mitcad#343).
+  add_executable(test_fillet_crest_corners tests/test_fillet_crest_corners.cpp)
+  target_link_libraries(test_fillet_crest_corners PRIVATE mitcad_geometry mitcad_warnings)
+  add_test(NAME geometry.fillet_crest_corners COMMAND test_fillet_crest_corners)
+  # A fillet contour round a closed chain that stops at a turn short of its
+  # start ends, with the port's patch 0840 (mitcad#434).
+  add_executable(test_fillet_chain_loops tests/test_fillet_chain_loops.cpp)
+  target_link_libraries(test_fillet_chain_loops PRIVATE mitcad_geometry mitcad_warnings)
+  add_test(NAME geometry.fillet_chain_loops COMMAND test_fillet_chain_loops)
+  # A fillet contour that runs on into an edge whose faces are nearly
+  # tangent, with the port's patches 0860 and 0861 (mitcad#441).
+  add_executable(test_fillet_near_tangent_contour tests/test_fillet_near_tangent_contour.cpp)
+  target_link_libraries(test_fillet_near_tangent_contour PRIVATE mitcad_geometry mitcad_warnings)
+  add_test(NAME geometry.fillet_near_tangent_contour COMMAND test_fillet_near_tangent_contour)
   # OCCT's crash handlers next to the application's crash report (mitcad#62).
   if(NOT WIN32)
     add_executable(test_guard tests/test_guard.cpp)

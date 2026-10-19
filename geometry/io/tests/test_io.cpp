@@ -30,16 +30,30 @@
 #include <BRep_Tool.hxx>
 #include <Bnd_Box.hxx>
 #include <GProp_GProps.hxx>
+#include <Message_ProgressIndicator.hxx>
+#include <Message_ProgressScope.hxx>
 #include <TopExp.hxx>
 #include <TopExp_Explorer.hxx>
+#include <TopLoc_Location.hxx>
 #include <TopoDS.hxx>
 #include <TopoDS_Compound.hxx>
 #include <gp_Ax2.hxx>
 #include <gp_Pnt.hxx>
+#include <gp_Trsf.hxx>
 #include <gp_Vec.hxx>
 #include <NCollection_IndexedMap.hxx>
 #include <TopTools_ShapeMapHasher.hxx>
 #include <vector>
+
+// windows.h (which OCCT headers such as Message_ProgressIndicator.hxx may
+// bring in on Windows) defines near and far as empty macros, which would
+// break near() below.
+#ifdef near
+#undef near
+#endif
+#ifdef far
+#undef far
+#endif
 
 namespace {
 
@@ -396,6 +410,85 @@ void test_building_scale_sphere(const std::string& dir) {
     kept += triangulation.get() == first[index] ? 1 : 0;
   }
   CHECK(kept == first.size());
+}
+
+// The faces' triangulations, in the shape's order.
+std::vector<const Poly_Triangulation*> triangulation_pointers(const TopoDS_Shape& shape) {
+  std::vector<const Poly_Triangulation*> meshes;
+  for (TopExp_Explorer it(shape, TopAbs_FACE); it.More(); it.Next()) {
+    TopLoc_Location location;
+    meshes.push_back(BRep_Tool::Triangulation(TopoDS::Face(it.Current()), location).get());
+  }
+  return meshes;
+}
+
+// A cancel pressed before the meshing starts.
+class StopAtOnce : public Message_ProgressIndicator {
+public:
+  bool UserBreak() override { return true; }
+  void Show(const Message_ProgressScope&, const bool) override {}
+};
+
+// The view's meshes of several bodies at once (mitcad#438): one meshing of
+// all their faces gives each face the triangulation that meshing the bodies
+// one by one gives it (the face bound included), a body's copy in another
+// placement shares its faces' triangulations, a mesh body is left as it
+// is, triangulations already made are kept, and a stopped range stops it.
+// Counts, not times.
+void test_mesh_all_in_place() {
+  using mitcad::io::MeshOptions;
+  const MeshOptions view{0.01, 5.0 * std::atan(1.0) / 45.0, false, 20000};
+  const auto bodies = [] {
+    return std::vector<TopoDS_Shape>{dome(1.0), dome(0.01), filleted_block(), holed_block()};
+  };
+  const std::vector<TopoDS_Shape> alone = bodies();
+  for (const TopoDS_Shape& body : alone) {
+    CHECK(mitcad::io::mesh_in_place(body, view));
+  }
+
+  std::vector<TopoDS_Shape> together = bodies();
+  gp_Trsf aside;
+  aside.SetTranslation(gp_Vec(0.0, 200.0, 0.0));
+  const TopoDS_Shape copy = together[2].Moved(TopLoc_Location(aside));
+  together.push_back(copy);
+  const TopoDS_Shape plain = mitcad::io::triangulate(holed_block(), MeshOptions{});
+  TopLoc_Location location;
+  const occ::handle<Poly_Triangulation> facets =
+      BRep_Tool::Triangulation(TopoDS::Face(TopExp_Explorer(plain, TopAbs_FACE).Current()), location);
+  const TopoDS_Shape mesh = mitcad::io::mesh_body(facets);
+  together.push_back(mesh);
+  CHECK(mitcad::io::mesh_all_in_place(together, view) == together.size());
+  for (std::size_t i = 0; i < alone.size(); ++i) {
+    CHECK(mitcad::io::has_triangulation(together[i]));
+    CHECK(face_triangles(together[i]) == face_triangles(alone[i]));
+  }
+  for (const auto& [type, triangles] : face_triangles(together[0])) {
+    if (type == GeomAbs_Sphere) {
+      std::printf("Dome sphere face meshed with the others: %d triangles\n", triangles);
+      CHECK(triangles > 5000 && triangles <= 30000);
+    }
+  }
+  CHECK(mitcad::io::has_triangulation(copy));
+  CHECK(triangulation_pointers(copy) == triangulation_pointers(together[2]));
+  CHECK(triangulation_pointers(mesh) == std::vector<const Poly_Triangulation*>{facets.get()});
+
+  // Meshed already: kept, and counted with the one meshed now.
+  const auto first = triangulation_pointers(together[0]);
+  const TopoDS_Shape fresh = filleted_block();
+  CHECK(mitcad::io::mesh_all_in_place({together[0], fresh}, view) == 2);
+  CHECK(triangulation_pointers(together[0]) == first);
+  CHECK(face_triangles(fresh) == face_triangles(alone[2]));
+
+  // Stopped: nothing meshed, nothing counted.
+  const occ::handle<StopAtOnce> stop = new StopAtOnce();
+  const std::vector<TopoDS_Shape> stopped{dome(1.0), filleted_block()};
+  CHECK(mitcad::io::mesh_all_in_place(stopped, view, stop->Start()) == 0);
+  CHECK(!mitcad::io::has_triangulation(stopped[0]));
+  CHECK(!mitcad::io::has_triangulation(stopped[1]));
+
+  // Nothing to mesh.
+  CHECK(mitcad::io::mesh_all_in_place({}, view) == 0);
+  CHECK(mitcad::io::mesh_all_in_place({TopoDS_Shape()}, view) == 0);
 }
 
 void test_stl(const std::string& dir) {
@@ -785,6 +878,7 @@ int main(int argc, char** argv) {
     test_iges(dir);
     test_triangulate_keeps_original();
     test_building_scale_sphere(dir);
+    test_mesh_all_in_place();
     test_stl(dir);
     test_indexed_mesh(dir);
     test_face_meshes(dir);

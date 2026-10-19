@@ -172,17 +172,22 @@ void loadSuppressed(const QJsonObject& feature, CommandState& state) {
   state.setText(QStringLiteral("suppressed"), numbers.join(QStringLiteral(", ")));
 }
 
-// An arrow from the objects' middle along an axis input.
+// An arrow from the objects' middle along an axis input, against it while
+// the check input `flip` is on. The value is signed: a handle dragged past
+// the middle gives a negative distance.
 std::function<std::optional<Manipulator>(const CommandState&, const CommandContext&)>
-alongAxis(const QString& axis) {
-  return [axis](const CommandState& state, const CommandContext& model) -> std::optional<Manipulator> {
+alongAxis(const QString& axis, const QString& flip) {
+  return [axis, flip](const CommandState& state, const CommandContext& model) -> std::optional<Manipulator> {
     const Selection& axisItems = state.items(axis);
     const auto center = centerOf(state.items(objectsKey(state)), model);
     if (axisItems.isEmpty() || !center) {
       return std::nullopt;
     }
     const auto line = axisOf(axisItems.first(), model);
-    return line ? std::optional<Manipulator>(arrow(*center, line->second)) : std::nullopt;
+    if (!line) {
+      return std::nullopt;
+    }
+    return arrow(*center, state.checked(flip) ? line->second.Reversed() : line->second);
   };
 }
 
@@ -213,27 +218,34 @@ CommandDef rectangularPatternCommand(const CommandContext& context) {
   def.group = QStringLiteral("CREATE");
   def.keywords = {QStringLiteral("array"), QStringLiteral("linear pattern"), QStringLiteral("copy")};
   def.featureType = QStringLiteral("rectangular_pattern");
+  const auto second = [](const CommandState& s) { return !s.items(QStringLiteral("direction2")).isEmpty(); };
   def.inputs = patternObjects();
   def.inputs += {
       lineInput(QStringLiteral("direction1"), QObject::tr("Direction 1"), 1),
       valueInput(QStringLiteral("quantity1"), QObject::tr("Quantity"), ValueKind::Unitless, QStringLiteral("3")),
       valueInput(QStringLiteral("distance1"), QObject::tr("Distance"), ValueKind::Length, QStringLiteral("20 mm"))
-          .withManipulator(alongAxis(QStringLiteral("direction1"))),
+          .withManipulator(alongAxis(QStringLiteral("direction1"), QStringLiteral("flip1"))),
+      flipInput(QStringLiteral("flip1"), QObject::tr("Flip")).withTooltip(QObject::tr("Copies against the direction")),
       checkInput(QStringLiteral("symmetric1"), QObject::tr("Symmetric"), false),
       lineInput(QStringLiteral("direction2"), QObject::tr("Direction 2"), 0)
           .withTooltip(QObject::tr("A second direction; none: one row")),
       valueInput(QStringLiteral("quantity2"), QObject::tr("Quantity 2"), ValueKind::Unitless, QStringLiteral("2"))
-          .withVisible([](const CommandState& s) { return !s.items(QStringLiteral("direction2")).isEmpty(); }),
+          .withVisible(second),
       valueInput(QStringLiteral("distance2"), QObject::tr("Distance 2"), ValueKind::Length, QStringLiteral("20 mm"))
-          .withVisible([](const CommandState& s) { return !s.items(QStringLiteral("direction2")).isEmpty(); })
-          .withManipulator(alongAxis(QStringLiteral("direction2"))),
-      checkInput(QStringLiteral("symmetric2"), QObject::tr("Symmetric 2"), false)
-          .withVisible([](const CommandState& s) { return !s.items(QStringLiteral("direction2")).isEmpty(); }),
+          .withVisible(second)
+          .withManipulator(alongAxis(QStringLiteral("direction2"), QStringLiteral("flip2"))),
+      flipInput(QStringLiteral("flip2"), QObject::tr("Flip 2"))
+          .withTooltip(QObject::tr("Copies against the second direction"))
+          .withVisible(second),
+      checkInput(QStringLiteral("symmetric2"), QObject::tr("Symmetric 2"), false).withVisible(second),
       choiceInput(QStringLiteral("distance_type"), QObject::tr("Distance Type"), kSpacings, QStringLiteral("spacing")),
       suppressedInput(),
   };
   def.enabled = [&context] { return hasBodies(context); };
 
+  // The model keeps one signed distance per direction (mitcad#447): Flip
+  // negates the distance that is built, and a loaded pattern shows its
+  // stored signed distance with Flip off.
   def.build = [](const CommandState& state, const CommandContext&) {
     Built result;
     const QJsonObject objects = objectsOf(state, result);
@@ -242,9 +254,11 @@ CommandDef rectangularPatternCommand(const CommandContext& context) {
     }
     const auto direction = [&state](const char* suffix) {
       const QString n = QString::fromLatin1(suffix);
+      const QString distance = state.expression(QStringLiteral("distance") + n);
       QJsonObject d{{QStringLiteral("axis"), state.items(QStringLiteral("direction") + n).first().reference()},
                     {QStringLiteral("quantity"), countValue(state, QStringLiteral("quantity") + n)},
-                    {QStringLiteral("distance"), state.expression(QStringLiteral("distance") + n)}};
+                    {QStringLiteral("distance"),
+                     state.checked(QStringLiteral("flip") + n) ? negated(distance) : distance}};
       if (state.checked(QStringLiteral("symmetric") + n)) {
         d.insert(QStringLiteral("symmetric"), true);
       }
@@ -273,6 +287,7 @@ CommandDef rectangularPatternCommand(const CommandContext& context) {
       state.setItems(QStringLiteral("direction") + suffix, {itemOf(d.value(QStringLiteral("axis")), context)});
       loadCount(state, QStringLiteral("quantity") + suffix, d.value(QStringLiteral("quantity")), feature, context);
       loadValue(state, QStringLiteral("distance") + suffix, d.value(QStringLiteral("distance")), feature, context);
+      state.setChecked(QStringLiteral("flip") + suffix, false);
       state.setChecked(QStringLiteral("symmetric") + suffix, d.value(QStringLiteral("symmetric")).toBool());
     }
     state.setChoice(QStringLiteral("distance_type"), str(feature, "distance_type"));

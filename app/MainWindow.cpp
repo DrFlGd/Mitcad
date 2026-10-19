@@ -58,6 +58,7 @@
 #include <TopoDS_Shape.hxx>
 #include <TopTools_ShapeMapHasher.hxx>
 #include <Precision.hxx>
+#include <Standard_Failure.hxx>
 #include <gp.hxx>
 #include <gp_Ax2.hxx>
 #include <gp_Ax3.hxx>
@@ -116,6 +117,8 @@
 #include "update/UpdateController.hpp"
 #include "report/ReportCenter.hpp"
 #include "view/ViewController.hpp"
+#include "view/ViewTessellation.hpp"
+#include "mitcad/io/mesh.hpp"
 
 namespace mitcad {
 namespace {
@@ -225,6 +228,84 @@ OcctViewer::ActiveScope activeScopeOf(const DocumentSnapshot& snapshot, const QS
     scope.normal << editedSketch;
   }
   return scope;
+}
+
+bool hasMeshFaces(const TopoDS_Shape& shape) {
+  for (TopExp_Explorer faces(shape, TopAbs_FACE); faces.More(); faces.Next()) {
+    TopLoc_Location location;
+    if (BRep_Tool::Surface(TopoDS::Face(faces.Current()), location).IsNull()) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Meshes the clipped bodies as the view would (mitcad#438): together, on
+// all cores, before they are shown, so that the view keeps these
+// triangulations instead of meshing body after body as it draws them. The
+// faces a clip left as they were keep the meshes they have; mesh bodies
+// (and their caps) are left to the view, as before.
+void meshForView(const std::vector<TopoDS_Shape>& shapes) {
+  BRep_Builder builder;
+  TopoDS_Compound all;
+  builder.MakeCompound(all);
+  bool any = false;
+  for (const TopoDS_Shape& shape : shapes) {
+    if (!io::has_triangulation(shape) && !hasMeshFaces(shape)) {
+      builder.Add(all, shape);
+      any = true;
+    }
+  }
+  if (!any) {
+    return;
+  }
+  try {
+    io::mesh_in_place(all, viewMeshOptions());
+  } catch (const Standard_Failure&) {
+    // The view meshes them when it draws them, as before.
+  } catch (const std::exception&) {
+  }
+}
+
+// The bodies a section's plane cuts (Section Analysis, Hide Above Sketch),
+// `which` of `bodies`, each with its target in `targets` ({body,
+// occurrence}), clipped at `plane` (design coordinates) all at once: the
+// model clips them on all cores (`analysis_clips`, mitcad#438). A body the
+// plane leaves whole comes back as its own shape, which the view keeps
+// drawn as it is; one whose clip failed is shown whole (a crash inside OCCT
+// is its error, mitcad#392).
+void clipBodies(const Document& document, const QJsonValue& plane, const QJsonArray& targets,
+                const std::vector<std::size_t>& which, std::vector<BodyDisplay>& bodies) {
+  ScopedTiming timing("section clips");
+  const auto shownWhole = [&](std::size_t body, const QString& error) {
+    qWarning().noquote() << QStringLiteral("Section: %1 shown whole: %2")
+                                .arg(QString::fromStdString(bodies[body].uid), error);
+  };
+  std::vector<TopoDS_Shape> clipped;
+  try {
+    const rust::Box<ClippedBodies> results = document.analysis_clips(
+        rustStr(compactJson({{QStringLiteral("plane"), plane}, {QStringLiteral("bodies"), targets}})));
+    for (std::size_t i = 0; i < which.size() && i < results->count(); ++i) {
+      BodyDisplay& body = bodies[which[i]];
+      const std::shared_ptr<geometry::Shape> shape = results->shape(i);
+      if (!shape) {
+        const rust::String error = results->error(i);
+        shownWhole(which[i], QString::fromUtf8(error.data(), static_cast<qsizetype>(error.size())));
+        continue;
+      }
+      if (!shape->occt().IsSame(body.shape->occt())) {
+        clipped.push_back(shape->occt());
+      }
+      body.shape = shape;
+    }
+  } catch (const std::exception& e) {
+    for (const std::size_t body : which) {
+      shownWhole(body, errorText(e));
+    }
+    return;
+  }
+  timing.setDetail(QStringLiteral("%1 bodies, %2 new").arg(which.size()).arg(clipped.size()));
+  meshForView(clipped);
 }
 
 } // namespace
@@ -2399,6 +2480,9 @@ std::vector<BodyDisplay> MainWindow::modelBodies() const {
   } catch (const std::exception&) {
   }
   std::vector<BodyDisplay> bodies;
+  // The bodies the plane cuts, by index into `bodies`, and their targets.
+  std::vector<std::size_t> cutBodies;
+  QJsonArray cutTargets;
   for (const QJsonValue& value : queryArray(QStringLiteral("instances"))) {
     const QJsonObject instance = value.toObject();
     const QString uid = instance.value(QStringLiteral("body")).toString();
@@ -2421,22 +2505,10 @@ std::vector<BodyDisplay> MainWindow::modelBodies() const {
       }
     }
     if (!cut.isNull() && !flat.contains(uid)) {
-      try {
-        // The cut is in design coordinates. Clip in this occurrence's
-        // local coordinates, then retain its normal display placement.
-        const auto clipped = idleDocument().analysis_shape(
-            rustStr(compactJson({{QStringLiteral("shape"), QStringLiteral("clip")},
-                                 {QStringLiteral("plane"), cut},
-                                 {QStringLiteral("body"), uid},
-                                 {QStringLiteral("occurrence"), occurrence}})));
-        if (clipped) {
-          shape = clipped;
-        }
-      } catch (const std::exception& e) {
-        // A body the plane does not cut is shown whole, and so is one whose
-        // clip failed (a crash inside OCCT is its error, mitcad#392).
-        qWarning().noquote() << QStringLiteral("Section: %1 shown whole: %2").arg(uid, errorText(e));
-      }
+      // The cut is in design coordinates. Clip in this occurrence's local
+      // coordinates, then retain its normal display placement.
+      cutBodies.push_back(bodies.size());
+      cutTargets.append(QJsonObject{{QStringLiteral("body"), uid}, {QStringLiteral("occurrence"), occurrence}});
     }
     const QJsonArray rows = instance.value(QStringLiteral("transform")).toArray();
     BodyDisplay display;
@@ -2447,14 +2519,20 @@ std::vector<BodyDisplay> MainWindow::modelBodies() const {
       display.color = look->displayColor;
       display.appearance = look.value();
     }
-    if (faceAppearances.contains(uid)) {
-      display.faceLooks = faceLooksOf(uid, *shape);
-    }
     if (!isIdentity(rows)) {
       display.placement = TopLoc_Location(trsfOf(rows));
     }
     display.occurrence = utf8(occurrence);
     bodies.push_back(display);
+  }
+  if (!cutBodies.empty()) {
+    clipBodies(idleDocument(), cut, cutTargets, cutBodies, bodies);
+  }
+  for (BodyDisplay& body : bodies) {
+    const QString uid = QString::fromStdString(body.uid);
+    if (faceAppearances.contains(uid)) {
+      body.faceLooks = faceLooksOf(uid, *body.shape);
+    }
   }
   return bodies;
 }

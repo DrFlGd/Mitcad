@@ -1,0 +1,302 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: a rounding rolling on both edges of a lens into the lens's ends,
+where they meet and the rounding vanishes in a point (mitcad#343).
+
+The case: a key on a shaft ends in a lens between the key's convex arc and
+the shaft's concave arc; only the convex arc is rounded, with a radius
+wider than the lens. The ball touches the key and rolls on the lens's
+concave edge; where its contact on the key reaches the key's sides (the
+edges between the key and the shaft) it rolls on those too, up to the
+lens's ends, where the two edges meet and the rounding vanishes. The
+walk's first step starts in the middle and ends at both sides; the walk
+went on rolling on both edges at its last end, but then back from its
+first end with the faces and edges of the steps at the other end, and
+failed; where a side edge was split by a vertex short of the lens's end,
+the walk stopped there (the edge's other face holds the end vertex), and
+the corners failed.
+
+- ChFi3d_Builder::PerformSetOfSurfOnElSpine: the walk back from the first
+  step's start goes on with that step's faces, edges and obstacles (saved
+  after it), its contacts there taken to be on their edges; a blend
+  rolling on two edges, one of which ended at a vertex short of the
+  spine's end vertex where another edge of its reference face, not
+  tangent across, takes it on (as StartSol finds it), goes on rolling
+  (RollsOnPastVertex) instead of ending at the face at the end.
+- ChFi3d_FilBuilder::PerformSurf (rolling on two edges): the line's
+  sections narrower than 5e-4 of the radius at an end where both contacts
+  lie within a hundredth of the radius of the spine's end vertex are
+  dropped (ChFi3d_EndRstRstBeforeVanishing): the approximation fails on
+  sections of almost no width; the corner moves that end to the vertex
+  (ChFi3d_ShrinkVanishingEnd), the blend ending in a point.
+
+Upstream: new.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+index 7608be10..54ea22c1 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+@@ -4515,6 +4515,51 @@ void ChFi3d_Builder::PerformSetOfSurfOnElSpine(const occ::handle<ChFiDS_ElSpine>
+       }
+     }
+   }
++  // Whether a blend rolling on two edges (theSD, the step just walked) goes
++  // on past its end theFirst: one edge ended there in a vertex short of the
++  // spine's end vertex Bout, the other runs on, and another edge of the
++  // ended one's reference face at that vertex, not tangent across, takes
++  // it on (as StartSol finds it).
++  const auto RollsOnPastVertex =
++    [&](const occ::handle<ChFiDS_SurfData>& theSD, const bool theFirst, const TopoDS_Vertex& Bout) {
++      if (!(obstacleon1 && obstacleon2) || theSD.IsNull())
++      {
++        return false;
++      }
++      const bool v1 = theSD->Vertex(theFirst, 1).IsVertex(), v2 = theSD->Vertex(theFirst, 2).IsVertex();
++      if (v1 == v2)
++      {
++        return false;
++      }
++      const int                               k    = v1 ? 1 : 2;
++      const occ::handle<BRepAdaptor_Curve2d>& HCk  = k == 1 ? HC1 : HC2;
++      const occ::handle<BRepAdaptor_Surface>& HSrk = k == 1 ? HSref1 : HSref2;
++      const TopoDS_Vertex                     VCP  = theSD->Vertex(theFirst, k).Vertex();
++      if (HCk.IsNull() || HSrk.IsNull() || VCP.IsNull() || VCP.IsSame(Bout) || HCk->Edge().IsNull()
++          || HSrk->Face().IsNull())
++      {
++        return false;
++      }
++      const TopoDS_Face& Fref = HSrk->Face();
++      for (TopExp_Explorer ex(Fref, TopAbs_EDGE); ex.More(); ex.Next())
++      {
++        const TopoDS_Edge& E = TopoDS::Edge(ex.Current());
++        if (E.IsSame(HCk->Edge()) || !myEFMap.Contains(E))
++        {
++          continue;
++        }
++        for (TopExp_Explorer exv(E, TopAbs_VERTEX); exv.More(); exv.Next())
++        {
++          TopoDS_Face Fv;
++          if (exv.Current().IsSame(VCP) && !IsG1(myEFMap, E, Fref, Fv) && !Fv.IsNull())
++          {
++            return true;
++          }
++        }
++      }
++      return false;
++    };
++
+   bool fini     = false;
+   bool complete = Inside;
+   if (!Guide.IsPeriodic())
+@@ -4544,6 +4589,54 @@ void ChFi3d_Builder::PerformSetOfSurfOnElSpine(const occ::handle<ChFiDS_ElSpine>
+   }
+   double MaxStep  = (bidl - bidf) * 0.05 / nbed;
+   double Firstsov = 0.;
++  // The walk's faces and edges after its first step (both of whose ends
++  // are free), for the walk back from that step's start.
++  struct SideState
++  {
++    TopoDS_Face S, Sref, OnC, OnCref;
++    TopoDS_Edge C, Cref;
++  };
++  SideState  aSaved[2];
++  bool       aSavedObst[2] = {false, false};
++  bool       aSavedValid   = false;
++  const auto SaveSide      = [](SideState&                              St,
++                           const occ::handle<BRepAdaptor_Surface>& S,
++                           const occ::handle<BRepAdaptor_Surface>& Sref,
++                           const occ::handle<BRepAdaptor_Curve2d>& C,
++                           const occ::handle<BRepAdaptor_Curve2d>& Cref) {
++    St.S      = S.IsNull() ? TopoDS_Face() : S->Face();
++    St.Sref   = Sref.IsNull() ? TopoDS_Face() : Sref->Face();
++    St.C      = C.IsNull() ? TopoDS_Edge() : C->Edge();
++    St.OnC    = C.IsNull() ? TopoDS_Face() : C->Face();
++    St.Cref   = Cref.IsNull() ? TopoDS_Edge() : Cref->Edge();
++    St.OnCref = Cref.IsNull() ? TopoDS_Face() : Cref->Face();
++  };
++  const auto RestoreSide = [](const SideState&                  St,
++                              occ::handle<BRepAdaptor_Surface>& S,
++                              occ::handle<BRepAdaptor_Surface>& Sref,
++                              occ::handle<BRepAdaptor_Curve2d>& C,
++                              occ::handle<BRepAdaptor_Curve2d>& Cref) {
++    if (!St.S.IsNull())
++    {
++      S->Initialize(St.S);
++    }
++    if (!St.Sref.IsNull())
++    {
++      Sref->Initialize(St.Sref);
++    }
++    if (St.C.IsNull() || St.OnC.IsNull())
++    {
++      C.Nullify();
++    }
++    else
++    {
++      C = new BRepAdaptor_Curve2d(St.C, St.OnC);
++    }
++    if (!St.Cref.IsNull() && !St.OnCref.IsNull())
++    {
++      Cref->Initialize(St.Cref, St.OnCref);
++    }
++  };
+   int    intf = 0, intl = 0;
+   while (!fini)
+   {
+@@ -5246,6 +5339,11 @@ void ChFi3d_Builder::PerformSetOfSurfOnElSpine(const occ::handle<ChFiDS_ElSpine>
+     { // There are starting solutions for the next.
+       Inside   = false;
+       Firstsov = First;
++      SaveSide(aSaved[0], HS1, HSref1, HC1, HCref1);
++      SaveSide(aSaved[1], HS2, HSref2, HC2, HCref2);
++      aSavedObst[0] = obstacleon1;
++      aSavedObst[1] = obstacleon2;
++      aSavedValid   = true;
+       if (Guide.IsPeriodic())
+       {
+         complete = false;
+@@ -5268,7 +5366,8 @@ void ChFi3d_Builder::PerformSetOfSurfOnElSpine(const occ::handle<ChFiDS_ElSpine>
+       // the face at the end, ends there.
+       if (!fini && intl && (obstacleon1 || obstacleon2) && !Spine->IsPeriodic()
+           && (Last >= lastedlastp - 10. * tolesp
+-              || ObstacleAtSpineEnd(ref, false, obstacleon1 ? 2 : 1, Spine->LastVertex())))
++              || (ObstacleAtSpineEnd(ref, false, obstacleon1 ? 2 : 1, Spine->LastVertex())
++                  && !RollsOnPastVertex(ref, false, Spine->LastVertex()))))
+       {
+         fini = true;
+       }
+@@ -5312,6 +5411,19 @@ void ChFi3d_Builder::PerformSetOfSurfOnElSpine(const occ::handle<ChFiDS_ElSpine>
+         forward = false;
+         fini    = false;
+         First   = Firstsov;
++        // (The faces, edges and obstacles now those of the first step, the
++        // walk going on from its start: the steps forward changed them.)
++        if (aSavedValid)
++        {
++          RestoreSide(aSaved[0], HS1, HSref1, HC1, HCref1);
++          RestoreSide(aSaved[1], HS2, HSref2, HC2, HCref2);
++          obstacleon1 = aSavedObst[0];
++          obstacleon2 = aSavedObst[1];
++          // (Of the first step only its contacts at its forward end are known
++          // to have left an edge or not: at its start, on its edges.)
++          decroch1 = false;
++          decroch2 = false;
++        }
+       }
+       else
+       {
+@@ -5329,7 +5441,8 @@ void ChFi3d_Builder::PerformSetOfSurfOnElSpine(const occ::handle<ChFiDS_ElSpine>
+       }
+       if (!fini && intf && (obstacleon1 || obstacleon2) && !Spine->IsPeriodic()
+           && (First <= Spine->FirstParameter(1) + 10. * tolesp
+-              || ObstacleAtSpineEnd(ref, true, obstacleon1 ? 2 : 1, Spine->FirstVertex())))
++              || (ObstacleAtSpineEnd(ref, true, obstacleon1 ? 2 : 1, Spine->FirstVertex())
++                  && !RollsOnPastVertex(ref, true, Spine->FirstVertex()))))
+       {
+         fini = true;
+       }
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_FilBuilder.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_FilBuilder.cxx
+index 9b8f9483..c1b8e4f2 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_FilBuilder.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_FilBuilder.cxx
+@@ -22,6 +22,7 @@
+ #include <BRepBlend_CurvPointRadInv.hxx>
+ #include <BRepBlend_EvolRad.hxx>
+ #include <BRepBlend_EvolRadInv.hxx>
++#include <BRepBlend_Extremity.hxx>
+ #include <BRepBlend_Line.hxx>
+ #include <BRepBlend_RstRstConstRad.hxx>
+ #include <BRepBlend_RstRstEvolRad.hxx>
+@@ -2888,6 +2889,84 @@ void ChFi3d_FilBuilder::PerformSurf(NCollection_Sequence<occ::handle<ChFiDS_Surf
+   }
+ }
+ 
++//=======================================================================
++// function : ChFi3d_EndRstRstBeforeVanishing
++// purpose  : A ball of constant radius rolling on two edges that run into
++//            the spine's end vertex, where they meet: the section there
++//            has no width, the blend vanishes in a point. The walk crawls
++//            into the vertex with sections narrower than the approximation
++//            takes (about a ten-thousandth of the radius). The line's
++//            sections at such an end narrower than 5e-4 of the radius are
++//            dropped where the one left lies within a hundredth of the
++//            radius of the vertex; the corner moves that end to the vertex
++//            (ChFi3d_ShrinkVanishingEnd), as at the end of a rounding
++//            vanishing where its faces come tangent (ChFi3d_EndBeforeVanishing).
++//=======================================================================
++
++static void ChFi3d_EndRstRstBeforeVanishing(const occ::handle<BRepBlend_Line>& Lin,
++                                            const occ::handle<ChFiDS_Spine>&   Spine,
++                                            const double                       Tol)
++{
++  const occ::handle<ChFiDS_FilSpine> fsp = occ::down_cast<ChFiDS_FilSpine>(Spine);
++  if (Lin.IsNull() || fsp.IsNull() || !fsp->IsConstant() || Spine->IsPeriodic())
++  {
++    return;
++  }
++  const double aReach     = 0.01 * fsp->Radius();
++  const double aStopWidth = 5.e-4 * fsp->Radius();
++  for (int aSide = 0; aSide < 2; aSide++)
++  {
++    const bool          isFirst = aSide == 0;
++    const TopoDS_Vertex V       = isFirst ? Spine->FirstVertex() : Spine->LastVertex();
++    const int           nb      = Lin->NbPoints();
++    if (V.IsNull() || nb < 5)
++    {
++      continue;
++    }
++    const gp_Pnt PV   = BRep_Tool::Pnt(V);
++    const auto   near = [&](const Blend_Point& P) {
++      return P.PointOnC1().Distance(PV) <= aReach && P.PointOnC2().Distance(PV) <= aReach;
++    };
++    const auto width = [](const Blend_Point& P) { return P.PointOnC1().Distance(P.PointOnC2()); };
++    const int  iE    = isFirst ? 1 : nb;
++    if (!near(Lin->Point(iE)) || width(Lin->Point(iE)) >= aStopWidth)
++    {
++      continue;
++    }
++    // (The section kept at that end: the first from it at least aStopWidth
++    // wide, at least four sections left.)
++    int iK = iE;
++    while (iK >= 1 && iK <= nb && width(Lin->Point(iK)) < aStopWidth)
++    {
++      iK += isFirst ? 1 : -1;
++    }
++    if (iK < 1 || iK > nb || !near(Lin->Point(iK)) || (isFirst ? nb - iK + 1 : iK) < 4)
++    {
++      continue;
++    }
++    const Blend_Point PK = Lin->Point(iK);
++    if (isFirst)
++    {
++      Lin->Remove(1, iK - 1);
++    }
++    else
++    {
++      Lin->Remove(iK + 1, nb);
++    }
++    BRepBlend_Extremity E1, E2;
++    E1.SetValue(PK.PointOnC1(), PK.ParameterOnC1(), PK.Parameter(), Tol);
++    E2.SetValue(PK.PointOnC2(), PK.ParameterOnC2(), PK.Parameter(), Tol);
++    if (isFirst)
++    {
++      Lin->SetStartPoints(E1, E2);
++    }
++    else
++    {
++      Lin->SetEndPoints(E1, E2);
++    }
++  }
++}
++
+ //=================================================================================================
+ 
+ void ChFi3d_FilBuilder::PerformSurf(NCollection_Sequence<occ::handle<ChFiDS_SurfData>>& SeqData,
+@@ -3008,6 +3087,7 @@ void ChFi3d_FilBuilder::PerformSurf(NCollection_Sequence<occ::handle<ChFiDS_Surf
+       myWalkOnEdge = true;
+       throw Standard_Failure("PerformSurf : Failed processing!");
+     }
++    ChFi3d_EndRstRstBeforeVanishing(lin, Spine, tolapp3d);
+     TopAbs_Orientation Or = HS1->Face().Orientation();
+     done                  = CompleteData(Data, func, lin, HS1, HS2, Or);
+     if (!done)

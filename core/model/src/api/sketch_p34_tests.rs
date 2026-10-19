@@ -321,8 +321,67 @@ fn rectangular_pattern_spacing_and_count_change_afterwards() {
             json!({"cmd": "sketch.edit_pattern", "sketch": "F1", "pattern": pattern,
                    "spacing": [0, 5]})
         )
-        .contains("greater than zero")
+        .contains("must not be zero")
     );
+}
+
+#[test]
+fn a_negative_rectangular_pattern_spacing_goes_against_the_direction() {
+    // mitcad#447: a negative spacing turns its direction; zero is refused.
+    let mut d = with_sketch();
+    command(
+        &mut d,
+        json!({"cmd": "sketch.add_circle", "sketch": "F1", "center": [0, 0], "diameter": 4}),
+    );
+    let made = command(
+        &mut d,
+        json!({"cmd": "sketch.rectangular_pattern", "sketch": "F1", "entities": ["c1"],
+               "count": [3, 2], "spacing": [-10, -8]}),
+    );
+    let pattern = made["constraints"][0].as_str().unwrap().to_owned();
+    let s = sketch(&d);
+    assert_eq!(s["dof"], 0);
+    let copy_at = |s: &Value, index: [u32; 2]| -> [f64; 2] {
+        let copy = s["patterns"][0]["copies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["index"] == json!(index))
+            .unwrap();
+        at(s, copy["entities"]["p2"].as_str().unwrap())
+    };
+    assert!(near(copy_at(&s, [1, 0]), [-10.0, 0.0]));
+    assert!(near(copy_at(&s, [2, 1]), [-20.0, -8.0]));
+    assert!(
+        rejected(
+            &mut d,
+            json!({"cmd": "sketch.edit_pattern", "sketch": "F1", "pattern": pattern,
+                   "spacing": [0, 5]})
+        )
+        .contains("must not be zero")
+    );
+    // A symmetric direction gives the copies of the positive spacing.
+    let mut symmetric = with_sketch();
+    command(
+        &mut symmetric,
+        json!({"cmd": "sketch.add_circle", "sketch": "F1", "center": [0, 0], "diameter": 4}),
+    );
+    command(
+        &mut symmetric,
+        json!({"cmd": "sketch.rectangular_pattern", "sketch": "F1", "entities": ["c1"],
+               "count": [3, 1], "spacing": [-10, 10], "symmetric": [true, false]}),
+    );
+    let s = sketch(&symmetric);
+    assert_eq!(s["dof"], 0);
+    let mut xs: Vec<f64> = s["patterns"][0]["copies"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| at(&s, c["entities"]["p2"].as_str().unwrap())[0])
+        .collect();
+    xs.sort_by(f64::total_cmp);
+    assert_eq!(xs.len(), 2);
+    assert!(near([xs[0], xs[1]], [-10.0, 10.0]), "{xs:?}");
 }
 
 #[test]

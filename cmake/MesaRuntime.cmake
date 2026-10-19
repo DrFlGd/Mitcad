@@ -104,6 +104,22 @@ if(MITCAD_MESA_DIR)
               -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-dimension-names"
               -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
     set_tests_properties(app.ui-windows-dimension-names PROPERTIES TIMEOUT 300)
+    # The gap between two concentric circles from Sketch Dimension
+    # (mitcad#445).
+    add_test(NAME app.ui-windows-concentric-dimension
+      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+              -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-concentric-dimension-test.ps1"
+              -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-concentric-dimension"
+              -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
+    set_tests_properties(app.ui-windows-concentric-dimension PROPERTIES TIMEOUT 300)
+    # Tangent Plane (mitcad#446): the reference plane and angle filled in
+    # from the click, the preview drawn over the picked plane.
+    add_test(NAME app.ui-windows-tangent-plane
+      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+              -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-tangent-plane-test.ps1"
+              -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-tangent-plane"
+              -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
+    set_tests_properties(app.ui-windows-tangent-plane PROPERTIES TIMEOUT 300)
     # Sketch mode's view: fully constrained lines recoloured when the
     # background turns dark or light (mitcad#253), the sketch origin's place
     # and the pointer's sketch coordinates (mitcad#254).

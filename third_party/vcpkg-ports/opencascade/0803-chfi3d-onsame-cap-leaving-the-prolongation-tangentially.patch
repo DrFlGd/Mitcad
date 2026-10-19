@@ -1,0 +1,123 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Mitcad patch (mitcad#343): the tolerance of the point where an OnSame end's
+cap leaves the prolongation tangentially takes in their crossings near it.
+
+A thread cut as a groove, its crest's edges rounded up to the groove's
+floor (a plane square to the axis): each rounding ends where its contact on
+the crest's cylinder meets the floor, the floor's edge with the cylinder
+prolonged up to there, and the floor cuts the rounding along a cap that
+leaves that circle tangentially and runs inside it, a few micrometres from
+it for a while (both run round the axis). The cap's approximation passed
+over to the circle's side there and crossed it 0.053 from their common
+point, whose tolerance was 5e-5, the circle's 1e-7: the floor's wire was
+self-intersecting (BRepCheck). Where the cap and the prolongation meet
+tangentially at that point (within a hundredth of a radian), their
+crossings within a hundredth of the cap's length from it are added to the
+box the point's tolerance is made from (ChFi3d_TangentCapCrossings).
+
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
+index 66780ac..0ef8e8a 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
+@@ -69,6 +69,7 @@
+ #include <Geom_Surface.hxx>
+ #include <Geom_TrimmedCurve.hxx>
+ #include <GeomAbs_Shape.hxx>
++#include <Geom2dAPI_InterCurveCurve.hxx>
+ #include <GeomAdaptor_Curve.hxx>
+ #include <GeomAdaptor_Surface.hxx>
+ #include <GeomAPI_ProjectPointOnCurve.hxx>
+@@ -3284,6 +3285,71 @@ bool ChFi3d_Builder::PerformRolledPastEnd(const int Index)
+   return true;
+ }
+ 
++//=======================================================================
++// function : ChFi3d_TangentCapCrossings
++// purpose  : At an OnSame end, the cap Pc (on the face at the end S) and
++//            the prolongation Pz (from Uz1 to Uz2) meet at the opposite
++//            contact's end P. Where they meet tangentially there (within
++//            a hundredth of a radian), they cross again near P wherever
++//            the cap's approximation passes over to the prolongation's
++//            side, although the two stay within micrometres of each
++//            other: their crossings within a hundredth of the cap's length
++//            from P are added to Box, the box P's tolerance is made from.
++//=======================================================================
++
++static void ChFi3d_TangentCapCrossings(const occ::handle<Geom2d_Curve>& Pc,
++                                       const occ::handle<Geom2d_Curve>& Pz,
++                                       const double                     Uz1,
++                                       const double                     Uz2,
++                                       const occ::handle<Geom_Surface>& S,
++                                       const gp_Pnt&                    P,
++                                       Bnd_Box&                         Box)
++{
++  if (Pc.IsNull() || Pz.IsNull() || S.IsNull() || Uz2 - Uz1 <= Precision::PConfusion())
++  {
++    return;
++  }
++  const double uc1 = Pc->FirstParameter(), uc2 = Pc->LastParameter();
++  if (uc2 - uc1 <= Precision::PConfusion() || Precision::IsInfinite(uc1) || Precision::IsInfinite(uc2))
++  {
++    return;
++  }
++  // The ends of the cap and of the prolongation at P, and their tangents.
++  const gp_Pnt c1 = S->Value(Pc->Value(uc1).X(), Pc->Value(uc1).Y());
++  const gp_Pnt c2 = S->Value(Pc->Value(uc2).X(), Pc->Value(uc2).Y());
++  const gp_Pnt z1 = S->Value(Pz->Value(Uz1).X(), Pz->Value(Uz1).Y());
++  const gp_Pnt z2 = S->Value(Pz->Value(Uz2).X(), Pz->Value(Uz2).Y());
++  const double uc = c1.Distance(P) <= c2.Distance(P) ? uc1 : uc2;
++  const double uz = z1.Distance(P) <= z2.Distance(P) ? Uz1 : Uz2;
++  gp_Pnt2d     p2;
++  gp_Vec2d     tc, tz;
++  Pc->D1(uc, p2, tc);
++  Pz->D1(uz, p2, tz);
++  if (tc.Magnitude() <= gp::Resolution() || tz.Magnitude() <= gp::Resolution())
++  {
++    return;
++  }
++  const double anAngle = std::abs(tc.Angle(tz));
++  if (std::min(anAngle, M_PI - anAngle) > 0.01)
++  {
++    return;
++  }
++  const double aLength = c1.Distance(c2);
++  Geom2dAPI_InterCurveCurve anInter(new Geom2d_TrimmedCurve(Pc, uc1, uc2),
++                                    new Geom2d_TrimmedCurve(Pz, Uz1, Uz2),
++                                    Precision::PConfusion());
++  for (int i = 1; i <= anInter.NbPoints(); i++)
++  {
++    const gp_Pnt2d q = anInter.Point(i);
++    const gp_Pnt   Q = S->Value(q.X(), q.Y());
++    const double   d = Q.Distance(P);
++    if (d <= 0.01 * aLength)
++    {
++      Box.Add(Q);
++    }
++  }
++}
++
+ //=================================================================================================
+ 
+ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSame)
+@@ -5202,6 +5268,19 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
+       throw Standard_Failure("OneCorner : echec calcul intersection");
+     }
+ 
++    // The cap leaving the prolongation tangentially at the opposite
++    // contact's end (a thread's crest rounded up to the groove's floor:
++    // both run round the axis there, the cap inside the rim): the two stay
++    // within their approximations' tolerances of each other some way from
++    // that point, where they may cross. The point's tolerance takes in
++    // those crossings (ChFi3d_TangentCapCrossings).
++    ChFi3d_TangentCapCrossings(Pc,
++                               zob2dv,
++                               zob3d->FirstParameter(),
++                               zob3d->LastParameter(),
++                               BRep_Tool::Surface(Bs.Face()),
++                               Fd->Vertex(isfirst, IFopArc).Point(),
++                               IFopArc == 1 ? box1 : box2);
+     Udeb = zob3d->FirstParameter();
+     Ufin = zob3d->LastParameter();
+     TopOpeBRepDS_Curve Zob(zob3d, tolreached);

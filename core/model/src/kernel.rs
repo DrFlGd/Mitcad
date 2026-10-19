@@ -427,7 +427,8 @@ pub trait Kernel {
     }
 
     /// The shape without the half-space on the plane's normal side, as
-    /// section analysis shows it.
+    /// section analysis shows it; the shape itself when the plane leaves it
+    /// whole.
     fn clip(&self, _shape: &Self::Shape, _plane: &DatumPlane) -> Result<Self::Shape, KernelError> {
         Err(KernelError::Unsupported("sections"))
     }
@@ -1090,6 +1091,31 @@ pub trait Kernel {
     ) -> Result<Self::Shape, KernelError> {
         Err(KernelError::Unsupported("unions within a tolerance"))
     }
+
+    // Section Analysis of many bodies at once (mitcad#438). The defaults
+    // take one after another; the OCCT kernel works them out on all cores.
+
+    /// [`Kernel::section`] of each shape at its plane, in order.
+    fn section_all(
+        &self,
+        items: &[(&Self::Shape, DatumPlane)],
+    ) -> Vec<Result<Section<Self::Shape>, KernelError>> {
+        items
+            .iter()
+            .map(|(shape, plane)| self.section(shape, plane))
+            .collect()
+    }
+
+    /// [`Kernel::clip`] of each shape at its plane, in order.
+    fn clip_all(
+        &self,
+        items: &[(&Self::Shape, DatumPlane)],
+    ) -> Vec<Result<Self::Shape, KernelError>> {
+        items
+            .iter()
+            .map(|(shape, plane)| self.clip(shape, plane))
+            .collect()
+    }
 }
 
 /// A curve where a plane cuts faces ([`Kernel::section_curves`]).
@@ -1524,14 +1550,14 @@ pub struct Plane {
 }
 
 /// A directed line through `origin`; `direction` is a unit vector.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Axis {
     pub origin: [f64; 3],
     pub direction: [f64; 3],
 }
 
 /// A cylindrical face (all pieces of a split one).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Cylinder {
     /// On the cylinder's axis at the face's low end along the axis of the
     /// cylinder's surface, pointing along that axis.

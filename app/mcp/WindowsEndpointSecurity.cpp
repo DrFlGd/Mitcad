@@ -193,5 +193,20 @@ bool secureWindowsEndpointPath(const QString& path, bool directory) {
   return privateWindowsEndpointPath(path);
 }
 
+bool windowsProcessRunning(qint64 pid) {
+  if (pid <= 0 || pid > static_cast<qint64>(MAXDWORD)) {
+    return false;
+  }
+  HANDLE raw = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, static_cast<DWORD>(pid));
+  if (!raw) {
+    // No process has the id; access denied (another user's or a protected
+    // process) and other errors cannot tell.
+    return GetLastError() != ERROR_INVALID_PARAMETER;
+  }
+  const OwnedHandle process(raw);
+  // An exited process stays signalled while a handle keeps it open.
+  return WaitForSingleObject(process.get(), 0) != WAIT_OBJECT_0;
+}
+
 } // namespace mitcad::mcp
 #endif

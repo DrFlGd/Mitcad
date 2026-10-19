@@ -538,6 +538,11 @@ impl Built {
                 line: c(*line)?,
                 value,
             },
+            D::ConcentricDistance { a, b } => S::RadiusGap {
+                a: c(*a)?,
+                b: c(*b)?,
+                value,
+            },
             D::Length { line } => S::Length {
                 line: c(*line)?,
                 value,
@@ -848,6 +853,7 @@ pub fn measure(kind: &DimensionKind, solved: &Solved) -> Option<f64> {
             };
             point_line(centre, line(l)?) - radius(circle)?
         }
+        D::ConcentricDistance { a, b } => (radius(b)? - radius(a)?).abs(),
         D::Length { line: l } => {
             let (a, b) = line(l)?;
             dist(a, b)

@@ -161,6 +161,32 @@ struct Job<K: Kernel> {
     done: mpsc::Receiver<Done<K>>,
     /// The share of the item's time it was given.
     share: Option<f64>,
+    /// When it was given to the worker, and the end of the time it is given
+    /// of its own ([`candidate_seconds`]).
+    started: Instant,
+    own: Option<Instant>,
+}
+
+impl<K: Kernel> Job<K> {
+    /// When the importer stops waiting for the worker: `grace` seconds
+    /// after the end of the time the importer would give the definition
+    /// (the item's `deadline`, its own, or `share` seconds from when the
+    /// worker began); None without any. A kernel call that does not check
+    /// for a request to stop runs on past the end of its time (one ran for
+    /// hours, mitcad#434); the importer does not wait for it.
+    fn wait_limit(
+        &self,
+        deadline: Option<Instant>,
+        share: Option<f64>,
+        grace: f64,
+    ) -> Option<Instant> {
+        let shared = share.map(|s| self.started + seconds(s));
+        [deadline, self.own, shared]
+            .into_iter()
+            .flatten()
+            .min()
+            .map(|end| end + seconds(grace))
+    }
 }
 
 /// The candidates of one list being evaluated ahead; dropping it cancels
@@ -333,6 +359,8 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             );
             let (sender, done) = mpsc::channel();
             let candidate = candidates[j].clone();
+            let started = Instant::now();
+            let own = candidate_seconds(&candidate).map(|s| started + seconds(s));
             let owned_name = name.map(str::to_owned);
             let component = self.component;
             let deadline = self.deadline;
@@ -376,6 +404,8 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                     cancel,
                     done,
                     share,
+                    started,
+                    own,
                 },
             );
             ahead.next += 1;
@@ -437,6 +467,9 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             bodies: None,
             ran: None,
         };
+        // (Another share of the item's time past the end of its time.)
+        let grace = job.share.unwrap_or(SHARE * self.options.item_seconds);
+        let limit = job.wait_limit(self.deadline, share, grace);
         let done = loop {
             if self.abandoned() || self.stopped(index) {
                 job.cancel.cancel();
@@ -451,6 +484,37 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
                 // (Its thread ended without a result.)
                 Err(mpsc::RecvTimeoutError::Disconnected) => return None,
+            }
+            // (A worker that has ended is taken first, however late.)
+            if let Some(limit) = limit
+                && Instant::now() >= limit
+            {
+                // The worker's kernel call did not stop at the end of the
+                // definition's time and has run on for another share since:
+                // the definition is cut short, as if it had stopped then,
+                // and the worker is left to end on its own (its thread
+                // counts in `running_workers`).
+                job.cancel.cancel();
+                let ran = job.started.elapsed().as_secs_f64();
+                let past = |d: Option<Instant>| d.is_some_and(|d| Instant::now() >= d);
+                let reason = if past(self.deadline) {
+                    OUT_OF_TIME
+                } else if past(job.own) {
+                    CANDIDATE_OUT_OF_TIME
+                } else {
+                    GAVE_WAY
+                };
+                trace!(
+                    "{}: definition {} evaluated ahead did not stop at the end of its time; \
+                     given up after {ran:.2} s",
+                    name.unwrap_or("?"),
+                    k + 1
+                );
+                return Some(Evaluated {
+                    result: Err(reason.to_owned()),
+                    bodies: None,
+                    ran: Some(ran),
+                });
             }
         };
         let cancelled = |e: &str| e == mitcad_model::Cancelled::MESSAGE;

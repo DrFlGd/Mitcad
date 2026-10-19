@@ -1123,6 +1123,7 @@ impl<K: Kernel> Document<K> {
                     from: b.from.clone(),
                     shift: [0.0; 3],
                     shift_by_joint: false,
+                    slide_extra: 0.0,
                     direction: RayDirection::default(),
                     start: [0.0; 3],
                     along: super::geometry::Z,

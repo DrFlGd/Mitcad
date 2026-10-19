@@ -1112,6 +1112,75 @@ fn a_tangent_distance_is_the_gap_between_a_circle_and_a_line() {
     assert!(!error.is_empty());
 }
 
+#[test]
+fn a_concentric_distance_is_the_gap_between_two_circles() {
+    // mitcad#445: a circle of 10 at the origin (fixed) and a free one of
+    // radius 25 about the same centre.
+    let mut d = with_sketch();
+    let inner = command(
+        &mut d,
+        json!({"cmd": "sketch.add_circle", "sketch": "F1", "center": [0, 0], "diameter": 10}),
+    );
+    // Its fixed centre: the point it added.
+    let centre = inner["entities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .find(|id| id.starts_with('p'))
+        .unwrap()
+        .to_owned();
+    let inner = inner["curves"][0].as_str().unwrap().to_owned();
+    let outer = command(
+        &mut d,
+        json!({"cmd": "sketch.circle", "sketch": "F1", "mode": "center",
+               "center": centre, "radius": 25}),
+    );
+    let outer = outer["made"][0].as_str().unwrap().to_owned();
+    let radius = |s: &Value| {
+        s["entities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["id"] == outer.as_str())
+            .unwrap()["geometry"]["radius"]
+            .as_f64()
+            .unwrap()
+    };
+    let dim = command(
+        &mut d,
+        json!({"cmd": "sketch.add_dimension", "sketch": "F1",
+               "dimension": {"type": "concentric_distance", "a": inner, "b": outer},
+               "value": 12}),
+    );
+    let s = sketch(&d, "F1");
+    assert!(close(radius(&s), 17.0), "{s}");
+    assert!(close(
+        measured(&s, dim["dimensions"][0].as_str().unwrap()),
+        12.0
+    ));
+    // Picked the other way round, driven: the same gap.
+    let driven = command(
+        &mut d,
+        json!({"cmd": "sketch.add_dimension", "sketch": "F1",
+               "dimension": {"type": "concentric_distance", "a": outer, "b": inner},
+               "driven": true}),
+    );
+    let s = sketch(&d, "F1");
+    assert!(close(
+        measured(&s, driven["dimensions"][0].as_str().unwrap()),
+        12.0
+    ));
+    // A circle with itself is refused.
+    let error = rejected(
+        &mut d,
+        json!({"cmd": "sketch.add_dimension", "sketch": "F1",
+               "dimension": {"type": "concentric_distance", "a": inner, "b": inner},
+               "value": 3}),
+    );
+    assert!(!error.is_empty());
+}
+
 /// A trapezoid's lower left corner (mitcad#296): the fixed bottom line c1
 /// from (0, 0) to (40, 0) and the side c4 from a free point at (10, 20)
 /// down to the corner, 22.36 long. Their directions make 116.57 degrees,

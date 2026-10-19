@@ -66,8 +66,18 @@ On macOS the installed bundle includes the CLI:
 `--list-instances` prints `{"instances":[...]}` with each live instance's
 `instance`, `pid`, `host` and `port`. It never prints authentication tokens.
 If several instances are open, `--connect` refuses to choose; pass
-`--connect --instance ID` using an ID from the list. Stale records from a
-crashed app and records that fail authentication are ignored.
+`--connect --instance ID` using an ID from the list.
+
+An instance is live only when its record's token authenticates on its
+port; a port that another program reuses is not enough. A record whose
+`pid` is no longer a running process (an app that crashed or was killed)
+is skipped without connecting to its port, and the bridge and the app
+remove such records from the user's discovery directory. A process the
+user may not query counts as running. The remaining records are probed in
+parallel, so instances that do not answer cost one timeout in all (500 ms
+for `--list-instances`, 5 s for `--connect`). `--connect --instance ID`
+connects only to that record and uses the connection that authenticates
+it; `--connect` alone probes every record to find the single live one.
 
 Configure an MCP client to launch the stdio bridge:
 
@@ -448,7 +458,9 @@ geometry computations can still use substantial time and memory.
 ## Validation
 
 The integration source [tools/cli/mcp-test.py](../tools/cli/mcp-test.py)
-launches the actual CLI and covers initialization, discovery, two document
+launches the actual CLI and covers initialization, discovery (stale
+records skipped by `pid` and removed without a connection, `--instance`
+probing only its record, records probed in parallel), two document
 handles, box modeling and volume, save/open, STEP export, protocol errors,
 notifications, workspace boundaries, read-only mode, version negotiation
 and EOF cleanup, plus persisted geometry failures, symlink escapes and

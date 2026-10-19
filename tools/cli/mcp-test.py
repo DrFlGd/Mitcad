@@ -151,11 +151,155 @@ class Session:
         assert self.messages.empty(), "Unexpected output after EOF"
 
 
+def dead_pid():
+    """The id of a process that has exited, as a killed app's would be."""
+    process = subprocess.Popen([sys.executable, "-c", ""])
+    process.wait(timeout=TIMEOUT)
+    return process.pid
+
+
+class FakeInstance:
+    """A discovery record and a loopback listener standing in for the app.
+
+    The listener accepts and counts every connection. With answer=False it
+    never replies, like a hung app or another program on a reused port:
+    probing it can only time out, so a test sees whether the CLI probed it.
+    """
+
+    def __init__(self, discovery, instance, pid, answer=True):
+        self.instance = instance
+        self.token = instance[0] * 64
+        self.answer = answer
+        self.accepted = 0
+        self.errors = []
+        self.held = []
+        self.lock = threading.Lock()
+        self.stopping = threading.Event()
+        self.listener = socket.socket()
+        self.listener.bind(("127.0.0.1", 0))
+        self.listener.listen(8)
+        self.listener.settimeout(0.1)
+        self.record = discovery / (instance + ".json")
+        self.record.write_text(json.dumps({"protocol": 1, "host": "127.0.0.1",
+                                           "port": self.listener.getsockname()[1], "pid": pid,
+                                           "instance": instance, "token": self.token}), encoding="utf-8")
+        make_private(self.record, False)
+        self.thread = threading.Thread(target=self.serve, daemon=True)
+        self.thread.start()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.stopping.set()
+        self.thread.join(timeout=TIMEOUT)
+        for connection in self.held:
+            connection.close()
+        self.listener.close()
+
+    def serve(self):
+        while not self.stopping.is_set():
+            try:
+                connection, _ = self.listener.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                return
+            with self.lock:
+                self.accepted += 1
+            if not self.answer:
+                self.held.append(connection)
+                continue
+            try:
+                with connection:
+                    connection.settimeout(TIMEOUT)
+                    with connection.makefile("rb") as source:
+                        if json.loads(source.readline()) != {"mitcadAuth": self.token}:
+                            raise AssertionError("Unexpected authentication frame")
+                        connection.sendall(b'{"authenticated":true}\n')
+                        try:
+                            source.read()
+                        except ConnectionError:
+                            pass
+            except Exception as error:
+                self.errors.append(error)
+
+    def connections(self):
+        with self.lock:
+            return self.accepted
+
+
 class McpTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="session-", dir=WORK)
         self.addCleanup(self.temp.cleanup)
         self.workspace = Path(self.temp.name)
+
+    def private_discovery(self):
+        discovery = self.workspace / "discovery"
+        discovery.mkdir(mode=0o700)
+        make_private(discovery, True)
+        return discovery, dict(os.environ, MITCAD_MCP_DISCOVERY_DIR=str(discovery))
+
+    def test_stale_records_are_removed_without_probing(self):
+        # mitcad#437: a record whose process is gone is skipped by its pid and
+        # removed; its port, which would only time out, is never connected.
+        discovery, env = self.private_discovery()
+        with FakeInstance(discovery, "1" * 32, os.getpid()) as live, \
+                FakeInstance(discovery, "2" * 32, dead_pid(), answer=False) as stale:
+            result = subprocess.run([CLI, "mcp", "--list-instances"], env=env,
+                                    capture_output=True, timeout=TIMEOUT)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            listed = [item["instance"] for item in json.loads(result.stdout)["instances"]]
+            self.assertEqual(listed, [live.instance])
+            self.assertFalse(stale.record.exists(), "The stale record was not removed")
+            self.assertTrue(live.record.exists(), "The live record was removed")
+            self.assertEqual((live.connections(), stale.connections()), (1, 0))
+            with FakeInstance(discovery, "3" * 32, dead_pid(), answer=False) as crashed:
+                result = subprocess.run([CLI, "mcp", "--connect"], env=env, input=b"",
+                                        capture_output=True, timeout=TIMEOUT)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout, b"")
+                self.assertFalse(crashed.record.exists(), "The stale record was not removed")
+                self.assertEqual((live.connections(), crashed.connections()), (3, 0))
+        self.assertFalse(live.errors, live.errors)
+
+    def test_instance_probes_only_the_named_record(self):
+        # mitcad#437: --instance connects to that record alone, once; another
+        # instance that would only time out is not probed.
+        discovery, env = self.private_discovery()
+        with FakeInstance(discovery, "4" * 32, os.getpid()) as named, \
+                FakeInstance(discovery, "5" * 32, os.getpid(), answer=False) as hung:
+            result = subprocess.run([CLI, "mcp", "--connect", "--instance", named.instance], env=env,
+                                    input=b"", capture_output=True, timeout=TIMEOUT)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, b"")
+            self.assertEqual((named.connections(), hung.connections()), (1, 0))
+            unknown = subprocess.run([CLI, "mcp", "--connect", "--instance", "6" * 32], env=env,
+                                     input=b"", capture_output=True, timeout=TIMEOUT)
+            self.assertEqual(unknown.returncode, 1, unknown.stderr)
+            self.assertIn(b"No running Mitcad instance", unknown.stderr)
+            self.assertEqual((named.connections(), hung.connections()), (1, 0))
+            self.assertTrue(hung.record.exists(), "A running process's record was removed")
+        self.assertFalse(named.errors, named.errors)
+
+    def test_records_are_probed_in_parallel(self):
+        # mitcad#437: two running but unanswering instances cost one connect
+        # timeout (5 s) in all; probed one after the other they took 10 s.
+        discovery, env = self.private_discovery()
+        with FakeInstance(discovery, "7" * 32, os.getpid()) as live, \
+                FakeInstance(discovery, "8" * 32, os.getpid(), answer=False) as first, \
+                FakeInstance(discovery, "9" * 32, os.getpid(), answer=False) as second:
+            started = time.monotonic()
+            result = subprocess.run([CLI, "mcp", "--connect"], env=env, input=b"",
+                                    capture_output=True, timeout=TIMEOUT)
+            elapsed = time.monotonic() - started
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, b"")
+            self.assertLess(elapsed, 9, "The discovery records were probed one after the other")
+            self.assertNotIn(b"QSocketNotifier", result.stderr)
+            self.assertEqual((live.connections(), first.connections(), second.connections()), (2, 1, 1))
+        self.assertFalse(live.errors, live.errors)
 
     def test_connect_waits_for_busy_live_discovery(self):
         discovery = self.workspace / "discovery"

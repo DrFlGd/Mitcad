@@ -68,6 +68,20 @@ TopoDS_Shape triangulate(const TopoDS_Shape& shape, const MeshOptions& options);
 bool mesh_in_place(const TopoDS_Shape& shape, const MeshOptions& options,
                    const Message_ProgressRange& range = Message_ProgressRange());
 
+// mesh_in_place for several shapes at once (the view's meshes of all the
+// bodies of a job, mitcad#438): one meshing of all their faces, which OCCT
+// spreads over every core, where mesh_in_place spreads only one shape's
+// faces (a design of many small bodies used a core or two). Each face gets
+// the triangulation mesh_in_place gives it; a face that several shapes
+// share (a body's copy in another placement) is meshed once. Null shapes
+// are skipped; a shape with a face without a surface is left as it is.
+// When the joint meshing throws, the shapes it did not finish are meshed
+// one by one and a shape OCCT fails on is left as it is. Returns how many
+// shapes were meshed (or left as they are): all of them unless `range` was
+// stopped, then those whose faces all have triangulations.
+std::size_t mesh_all_in_place(const std::vector<TopoDS_Shape>& shapes, const MeshOptions& options,
+                              const Message_ProgressRange& range = Message_ProgressRange());
+
 // Whether every face of the shape has a triangulation.
 bool has_triangulation(const TopoDS_Shape& shape);
 

@@ -163,6 +163,17 @@ std::optional<Linear> linearOf(const DimensionData& d, const SketchModel& model,
     const V2 towards = dist(foot, centre) > 1e-9 ? unit(foot - centre) : perp(dir);
     return Linear{centre + towards * circle->curve.radius, foot, towards, &line->curve};
   }
+  if (t == QStringLiteral("concentric_distance")) {
+    // Between the rims along the radius toward the value (mitcad#445).
+    const CurveData* a = r.curve(d.json, "a");
+    const CurveData* b = r.curve(d.json, "b");
+    if (a == nullptr || b == nullptr || !a->isCircular() || !b->isCircular()) {
+      return std::nullopt;
+    }
+    const V2 centre = a->curve.center;
+    const V2 u = dist(text, centre) > 1e-9 ? unit(text - centre) : V2{1, 0};
+    return Linear{centre + u * a->curve.radius, b->curve.center + u * b->curve.radius, u};
+  }
   if (t == QStringLiteral("linear_diameter")) {
     const CurveData* axis = r.curve(d.json, "axis");
     const QString entity = d.json.value(QStringLiteral("entity")).toString();
@@ -304,6 +315,14 @@ V2 defaultTextPosition(const DimensionData& d, const SketchModel& model, double 
   const Resolver r{model};
   const QString& t = d.type;
   const double off = 26.0 * pixel;
+  if (t == QStringLiteral("concentric_distance")) {
+    // On the radius at 45 degrees, between the rims.
+    const CurveData* a = r.curve(d.json, "a");
+    const CurveData* b = r.curve(d.json, "b");
+    if (a != nullptr && b != nullptr && a->isCircular() && b->isCircular()) {
+      return a->curve.center + polar(kPi / 4.0, (a->curve.radius + b->curve.radius) / 2.0);
+    }
+  }
   if (const auto linear = linearOf(d, model, V2{})) {
     const V2 middle = (linear->a + linear->b) / 2.0;
     if (t == QStringLiteral("horizontal_distance")) {

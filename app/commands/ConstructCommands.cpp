@@ -7,7 +7,9 @@
 #include "Commands.hpp"
 
 #include <cmath>
+#include <limits>
 
+#include <QDebug>
 #include <QJsonArray>
 
 #include "../framework/CommandRegistry.hpp"
@@ -208,6 +210,63 @@ QJsonValue pathRef(const Selection& items, Built& error) {
   return pathOf(items, false, error, QStringLiteral("path"));
 }
 
+// Tangent Plane's reference plane at first (mitcad#446): the origin plane
+// whose normal, turned onto the face's axis at right angles, points closest
+// to the clicked point, so that angle 0 (180 deg when it points away from
+// it) gives the plane touching the face there. An origin plane at right
+// angles to the axis cannot be the reference. The click is in the face's
+// component's coordinates, the axis in the model's: the same for a body of
+// the design itself.
+void tangentReference(const SelectionItem& item, CommandState& state, const CommandContext& context) {
+  const QString plane = QStringLiteral("plane");
+  if (!item.at || !state.items(plane).isEmpty()) {
+    return;
+  }
+  const auto axis = axisOf(item, context);
+  if (!axis) {
+    return;
+  }
+  const gp_Vec along(axis->second);
+  gp_Vec towards(axis->first, gp_Pnt((*item.at)[0], (*item.at)[1], (*item.at)[2]));
+  towards -= along * towards.Dot(along);
+  if (towards.Magnitude() < 1e-9) {
+    return;
+  }
+  towards.Normalize();
+  SelectionItem best;
+  double closest = 0.0;
+  for (const char* origin : {"xy", "xz", "yz"}) {
+    const SelectionItem candidate = itemOf(QString::fromLatin1(origin), context);
+    const auto frame = frameOf(candidate, context);
+    if (!frame) {
+      continue;
+    }
+    gp_Vec normal(frame->normal);
+    normal -= along * normal.Dot(along);
+    if (normal.Magnitude() < 1e-6) {
+      continue;
+    }
+    const double cosine = normal.Normalized().Dot(towards);
+    if (std::abs(cosine) > std::abs(closest) + 1e-9) {
+      best = candidate;
+      closest = cosine;
+    }
+  }
+  if (!best.isValid()) {
+    return;
+  }
+  state.setItems(plane, {best});
+  // The side of the face, unless an angle was typed.
+  const QString angle = QStringLiteral("angle");
+  const QString typed = state.text(angle).trimmed();
+  if (typed.isEmpty() || typed == QStringLiteral("0 deg") || typed == QStringLiteral("180 deg")) {
+    state.setText(angle, closest < 0.0 ? QStringLiteral("180 deg") : QStringLiteral("0 deg"));
+    state.setValue(angle, std::numeric_limits<double>::quiet_NaN());
+  }
+  qDebug().noquote() << QStringLiteral("Tangent Plane: reference plane %1, angle %2")
+                            .arg(best.owner, state.text(angle));
+}
+
 CommandDef construction(const Spec& spec) {
   CommandDef def;
   def.id = QString::fromLatin1(spec.id);
@@ -224,6 +283,13 @@ CommandDef construction(const Spec& spec) {
   const QString base = firstSelection(spec);
   for (const FieldSpec& field : spec.fields) {
     InputDef input = fieldInput(field);
+    if (field.kind == Field::Angle && type == QStringLiteral("tangent")) {
+      // At the clicked side of the face by default (mitcad#446).
+      input.defaultText = QStringLiteral("0 deg");
+    }
+    if (field.kind == Field::Tangent) {
+      input.withOnPick(tangentReference, false);
+    }
     if (field.kind == Field::Distance) {
       // An arrow along the plane's normal from the plane picked.
       input.withManipulator([base](const CommandState& state,

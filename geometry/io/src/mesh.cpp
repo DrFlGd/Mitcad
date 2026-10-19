@@ -21,11 +21,14 @@
 #include <IMeshData_Model.hxx>
 #include <IMeshData_Status.hxx>
 #include <IMeshTools_Parameters.hxx>
+#include <Message_ProgressScope.hxx>
+#include <OSD_Parallel.hxx>
 #include <Precision.hxx>
 #include <Standard_Failure.hxx>
 #include <TopExp_Explorer.hxx>
 #include <TopLoc_Location.hxx>
 #include <TopoDS.hxx>
+#include <TopoDS_Compound.hxx>
 #include <TopoDS_Face.hxx>
 #include <gp_Pnt.hxx>
 #include <gp_Trsf.hxx>
@@ -129,7 +132,10 @@ double curvature_integral(const TopoDS_Face& face) {
 
 // BRepMesh's own context, with each face's deviation raised to its floor
 // once the healer has computed the deviations from the edges' (BRepMesh's
-// pre-processor then keeps a triangulation that meets it).
+// pre-processor then keeps a triangulation that meets it). The floors are
+// computed over the faces in parallel when the meshing is (each task
+// only reads its own face and sets its own deviation); a face whose floor
+// cannot be computed keeps BRepMesh's deviation.
 class BoundedContext : public BRepMesh_Context {
 public:
   explicit BoundedContext(std::size_t face_triangles) : m_faceTriangles(face_triangles) {}
@@ -142,13 +148,21 @@ public:
     if (m_faceTriangles == 0 || model.IsNull()) {
       return true;
     }
-    for (int i = 0; i < model->FacesNb(); ++i) {
-      const IMeshData::IFaceHandle& face = model->GetFace(i);
-      const double floor = face_deviation_floor(face->GetFace(), face->GetDeflection(), m_faceTriangles);
-      if (floor > face->GetDeflection()) {
-        face->SetDeflection(floor);
-      }
-    }
+    const std::size_t limit = m_faceTriangles;
+    OSD_Parallel::For(
+        0, model->FacesNb(),
+        [&model, limit](int i) {
+          const IMeshData::IFaceHandle& face = model->GetFace(i);
+          try {
+            const double floor = face_deviation_floor(face->GetFace(), face->GetDeflection(), limit);
+            if (floor > face->GetDeflection()) {
+              face->SetDeflection(floor);
+            }
+          } catch (const Standard_Failure&) {
+            // BRepMesh's own deviation.
+          }
+        },
+        !GetParameters().InParallel || model->FacesNb() < 8);
     return true;
   }
 
@@ -297,6 +311,78 @@ bool mesh_in_place(const TopoDS_Shape& shape, const MeshOptions& options, const 
   mesher.ChangeParameters() = parameters;
   mesher.Perform(range);
   return (mesher.GetStatusFlags() & IMeshData_UserBreak) == 0;
+}
+
+std::size_t mesh_all_in_place(const std::vector<TopoDS_Shape>& shapes, const MeshOptions& options,
+                              const Message_ProgressRange& range) {
+  const IMeshTools_Parameters parameters = parameters_of(options);
+  std::size_t meshed = 0;
+  // The shapes in one compound: it holds their own sub-shapes (TShapes), so
+  // BRepMesh triangulates the shapes' faces themselves, each face once
+  // (BRepMesh_ShapeExplorer skips a face met again in another placement,
+  // and commits the edges' polygons on one thread).
+  std::vector<const TopoDS_Shape*> joined;
+  BRep_Builder builder;
+  TopoDS_Compound all;
+  builder.MakeCompound(all);
+  for (const TopoDS_Shape& shape : shapes) {
+    if (shape.IsNull()) {
+      continue;
+    }
+    if (has_surfaceless_face(shape)) {
+      ++meshed; // left as it is, as mesh_in_place leaves it
+      continue;
+    }
+    builder.Add(all, shape);
+    joined.push_back(&shape);
+  }
+  if (joined.empty()) {
+    return meshed;
+  }
+  Message_ProgressScope scope(range, nullptr, 2);
+  bool failed = false;
+  try {
+    BoundedMesh mesher(options.face_triangles);
+    mesher.SetShape(all);
+    mesher.ChangeParameters() = parameters;
+    mesher.Perform(scope.Next());
+    if ((mesher.GetStatusFlags() & IMeshData_UserBreak) == 0 && !scope.UserBreak()) {
+      return meshed + joined.size();
+    }
+  } catch (const Standard_Failure&) {
+    failed = true;
+  } catch (const std::exception&) {
+    failed = true;
+  }
+  if (!failed) {
+    // Stopped: the shapes whose faces were all meshed by then.
+    for (const TopoDS_Shape* shape : joined) {
+      meshed += has_triangulation(*shape) ? 1 : 0;
+    }
+    return meshed;
+  }
+  // The joint meshing threw: the shapes it did not finish one by one, so
+  // that one shape OCCT fails on leaves only itself without triangulations.
+  Message_ProgressScope each(scope.Next(), nullptr, static_cast<double>(joined.size()));
+  for (const TopoDS_Shape* shape : joined) {
+    if (each.UserBreak()) {
+      break;
+    }
+    const Message_ProgressRange step = each.Next();
+    if (has_triangulation(*shape)) {
+      ++meshed;
+      continue;
+    }
+    try {
+      if (mesh_in_place(*shape, options, step)) {
+        ++meshed;
+      }
+    } catch (const Standard_Failure&) {
+      // Left as it is.
+    } catch (const std::exception&) {
+    }
+  }
+  return meshed;
 }
 
 MeshStats mesh_stats(const TopoDS_Shape& shape) {

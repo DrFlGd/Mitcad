@@ -114,16 +114,20 @@ impl<K: Kernel> Document<K> {
     }
 
     /// A thread on a face of a body at the marker, if the face is there or
-    /// the thread took its place (mitcad#433).
+    /// the thread took its place (mitcad#433, a tapped hole's wall
+    /// mitcad#436).
     fn thread_json(&self, of: &ThreadOf<'_>, body: BodyUid, face: &FaceName) -> Option<Value> {
         let shape = self.body_shape(body)?;
         let kernel = self.kernel();
         let entry = of.entry;
-        // The face the thread is on, the body to measure it on, and whether
-        // that face lost the ends the chamfers took (it is the body at the
-        // marker) or not (the body before the feature).
-        let (face, measured, trimmed) = match find_face(kernel, shape, face) {
-            Some(found) => (found, shape, true),
+        // The face the thread is on, its cylinder, and whether that face
+        // lost the ends the chamfers took (measured on the body at the
+        // marker) or not (as it was before the thread).
+        let (face, cylinder, trimmed) = match find_face(kernel, shape, face) {
+            Some(found) => {
+                let cylinder = kernel.face_cylinder(shape, &found).ok();
+                (found, cylinder, true)
+            }
             None if of.on_input => {
                 // A modelled thread whose crest is off its face (a class's
                 // diameters, a radial clearance) leaves no piece of the
@@ -138,9 +142,21 @@ impl<K: Kernel> Document<K> {
                 if !made {
                     return None;
                 }
-                (found, before, false)
+                let cylinder = kernel.face_cylinder(before, &found).ok();
+                (found, cylinder, false)
             }
-            None => return None,
+            None => {
+                // A tapped hole's modelled thread whose crest is off the
+                // wall (a radial clearance) leaves no piece of the wall,
+                // which the hole made in the same step, so no body before
+                // the hole has it: the hole measured it before the thread
+                // (mitcad#436). Its thread faces stand in its place.
+                let cylinder = *self.threaded_wall(entry.uid, body, face)?;
+                if !has_face(kernel, shape, &derived(entry, "thread", face)) {
+                    return None;
+                }
+                (face.clone(), Some(cylinder), false)
+            }
         };
         let face = &face;
         let size = &of.size;
@@ -159,7 +175,7 @@ impl<K: Kernel> Document<K> {
             "minor_diameter": data.minor,
             "pitch": data.pitch,
         });
-        if let Ok(cylinder) = kernel.face_cylinder(measured, face) {
+        if let Some(cylinder) = cylinder {
             // The cones of end chamfers take `low` and `high` off the face's
             // ends, and the thread starts where a cone meets the cylinder.
             // On the face at the marker that is a cosmetic thread's face

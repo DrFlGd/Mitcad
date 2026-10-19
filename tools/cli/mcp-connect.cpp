@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #include "mcp-connect.hpp"
 
+#include <algorithm>
 #include <condition_variable>
 #include <cstdio>
 #include <deque>
@@ -8,6 +9,7 @@
 #include <memory>
 #include <mutex>
 #include <thread>
+#include <vector>
 
 #include <QCoreApplication>
 #include <QElapsedTimer>
@@ -15,6 +17,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QTcpSocket>
+#include <QThread>
 #include <QTimer>
 
 #ifdef Q_OS_WIN
@@ -60,15 +63,33 @@ bool authenticate(QTcpSocket& socket, const mcp::Endpoint& endpoint, int timeout
   return answer.isObject() && answer.object().value(QStringLiteral("authenticated")) == QJsonValue(true);
 }
 
+// Private records can survive a crash. Only the instance owning the
+// record's token may authenticate it; a reused port is not sufficient.
+// discover() has dropped the records of processes no longer running; the
+// rest are probed in parallel, each on its own thread with its own socket,
+// so that unanswered records cost one timeout in all, not one each
+// (mitcad#437).
 QList<mcp::Endpoint> liveEndpoints(QString* error, int timeoutMs = 500) {
   const QList<mcp::Endpoint> records = mcp::discover(error);
+  std::vector<int> live(static_cast<std::size_t>(records.size()), 0);
+  // QThreads, not std::threads: a socket's notifiers need the thread's
+  // event dispatcher, even when only its blocking calls are used.
+  std::vector<std::unique_ptr<QThread>> probes;
+  probes.reserve(live.size());
+  for (std::size_t index = 0; index < live.size(); ++index) {
+    probes.emplace_back(QThread::create([&records, &live, index, timeoutMs] {
+      QTcpSocket probe;
+      live[index] = authenticate(probe, records[static_cast<qsizetype>(index)], timeoutMs) ? 1 : 0;
+    }));
+    probes.back()->start();
+  }
+  for (const std::unique_ptr<QThread>& probe : probes) {
+    probe->wait();
+  }
   QList<mcp::Endpoint> endpoints;
-  for (const mcp::Endpoint& record : records) {
-    QTcpSocket probe;
-    // Private records can survive a crash. Only the instance owning the
-    // record's token may authenticate it; a reused port is not sufficient.
-    if (authenticate(probe, record, timeoutMs)) {
-      endpoints.append(record);
+  for (std::size_t index = 0; index < live.size(); ++index) {
+    if (live[index] != 0) {
+      endpoints.append(records[static_cast<qsizetype>(index)]);
     }
   }
   return endpoints;
@@ -212,39 +233,36 @@ int mcpConnect(const std::string& instance) {
   char* argv[] = {name, nullptr};
   QCoreApplication app(argc, argv);
   QString error;
+  const QString requested = QString::fromUtf8(instance.data(), static_cast<qsizetype>(instance.size()));
+  QTcpSocket socket;
   // Connecting allows the GUI to finish a busy event-loop turn; a quick
   // listing probe must not classify that live instance as absent.
-  const QList<mcp::Endpoint> endpoints = liveEndpoints(&error, kConnectTimeoutMs);
-  if (!error.isEmpty()) {
-    return connectionError(error);
-  }
-  const QString requested = QString::fromUtf8(instance.data(), static_cast<qsizetype>(instance.size()));
-  mcp::Endpoint endpoint;
   if (requested.isEmpty()) {
+    const QList<mcp::Endpoint> endpoints = liveEndpoints(&error, kConnectTimeoutMs);
+    if (!error.isEmpty()) {
+      return connectionError(error);
+    }
     if (endpoints.isEmpty()) {
       return connectionError(QStringLiteral("No running Mitcad instance; open the desktop application first"));
     }
     if (endpoints.size() != 1) {
       return connectionError(QStringLiteral("Several Mitcad instances are running; use --list-instances and --instance ID"));
     }
-    endpoint = endpoints.front();
-  } else {
-    bool found = false;
-    for (const mcp::Endpoint& candidate : endpoints) {
-      if (candidate.instance == requested) {
-        endpoint = candidate;
-        found = true;
-        break;
-      }
+    if (!authenticate(socket, endpoints.front(), kConnectTimeoutMs)) {
+      return connectionError(QStringLiteral("Mitcad refused authentication; rediscover its running instances"));
     }
-    if (!found) {
+  } else {
+    // Only the named record is probed (mitcad#437), and the connection that
+    // authenticates it is the bridge's.
+    const QList<mcp::Endpoint> records = mcp::discover(&error);
+    if (!error.isEmpty()) {
+      return connectionError(error);
+    }
+    const auto named = std::find_if(records.cbegin(), records.cend(),
+                                    [&](const mcp::Endpoint& record) { return record.instance == requested; });
+    if (named == records.cend() || !authenticate(socket, *named, kConnectTimeoutMs)) {
       return connectionError(QStringLiteral("No running Mitcad instance '%1'").arg(requested));
     }
-  }
-
-  QTcpSocket socket;
-  if (!authenticate(socket, endpoint, kConnectTimeoutMs)) {
-    return connectionError(QStringLiteral("Mitcad refused authentication; rediscover its running instances"));
   }
 
   auto input = std::make_shared<Input>();

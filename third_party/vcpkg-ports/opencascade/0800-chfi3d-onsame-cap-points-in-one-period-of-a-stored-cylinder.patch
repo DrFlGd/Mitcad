@@ -1,0 +1,88 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Mitcad patch (mitcad#343): the points of an OnSame end's cap on the face
+at the end brought into one period however many periods apart.
+
+A thread's flank rounded round its chamfer cone up to the root cylinder:
+the rounding starts where the flank comes out of the root, an OnSame end
+whose face at the end is the root cylinder. The bodies stored in files hold
+such a cylinder trimmed to one period starting two turns below the basis
+surface's parameters (u from -11.82 to -5.54), the face's edges' curves in
+that range. The cap's point on the arc came from the arc's curve on the face
+(u = -11.824) and the opposite contact's point from its projection on the
+surface (u = 0.743, in the basis's range): two periods apart.
+ChFi3d_Recale moved one of them by one period only, so the face's box for
+the intersection spanned a whole period beside the cap and the blend's
+intersection with the cylinder was not found ("OneCorner : echec calcul
+intersection"). ChFi3d_Recale now brings the point not taken for reference
+within half a period of the other by as many periods as they lie apart; for
+points less than one and a half periods apart nothing changes.
+
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
+index 6abc67a..66780ac 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
+@@ -801,27 +801,24 @@ static void ChFi3d_Recale(const BRepAdaptor_Surface& Bs,
+   {
+     surf = ts->BasisSurface();
+   }
++  // The point not taken for reference is brought within half a period of
++  // the other, by as many periods as they lie apart: a face on a trimmed
++  // periodic surface (a stored body's cylinder whose parameters start
++  // turns below the basis's) has the arcs' points in its own range and a
++  // point projected on its surface in the basis's.
+   if (surf->IsUPeriodic())
+   {
+     double u1 = p1.X(), u2 = p2.X();
+     double uper = surf->UPeriod();
+     if (fabs(u2 - u1) > 0.5 * uper)
+     {
+-      if (u2 < u1 && refon1)
++      if (refon1)
+       {
+-        u2 += uper;
++        u2 = ElCLib::InPeriod(u2, u1 - 0.5 * uper, u1 + 0.5 * uper);
+       }
+-      else if (u2 < u1 && !refon1)
+-      {
+-        u1 -= uper;
+-      }
+-      else if (u1 < u2 && refon1)
+-      {
+-        u2 -= uper;
+-      }
+-      else if (u1 < u2 && !refon1)
++      else
+       {
+-        u1 += uper;
++        u1 = ElCLib::InPeriod(u1, u2 - 0.5 * uper, u2 + 0.5 * uper);
+       }
+     }
+     p1.SetX(u1);
+@@ -833,21 +830,13 @@ static void ChFi3d_Recale(const BRepAdaptor_Surface& Bs,
+     double vper = surf->VPeriod();
+     if (fabs(v2 - v1) > 0.5 * vper)
+     {
+-      if (v2 < v1 && refon1)
++      if (refon1)
+       {
+-        v2 += vper;
++        v2 = ElCLib::InPeriod(v2, v1 - 0.5 * vper, v1 + 0.5 * vper);
+       }
+-      else if (v2 < v1 && !refon1)
+-      {
+-        v1 -= vper;
+-      }
+-      else if (v1 < v2 && refon1)
+-      {
+-        v2 -= vper;
+-      }
+-      else if (v1 < v2 && !refon1)
++      else
+       {
+-        v1 += vper;
++        v1 = ElCLib::InPeriod(v1, v2 - 0.5 * vper, v2 + 0.5 * vper);
+       }
+     }
+     p1.SetY(v1);

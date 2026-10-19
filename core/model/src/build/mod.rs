@@ -22,6 +22,7 @@ mod meta;
 pub(crate) mod parts;
 pub(crate) mod place;
 pub(crate) mod sources;
+pub(crate) mod tilt;
 
 pub use connect::{ConnectInput, PanelInput, RemoveResult};
 pub use cut_list::{CutList, CutListOptions, CutRow, MachiningItem, StockEntry};
@@ -50,6 +51,8 @@ mod side_end_tests;
 mod source_tests;
 #[cfg(test)]
 mod test_library;
+#[cfg(test)]
+mod tilt_tests;
 
 use std::fmt;
 use std::str::FromStr;
@@ -142,6 +145,10 @@ pub struct BuildRecord {
     /// joint's slide is bound to that end or the middle.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from: Option<place::SideFrom>,
+    /// A profile on a side tilted along its host (mitcad#444), radians,
+    /// positive towards the host's end B.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tilt: Option<f64>,
 }
 
 /// What a BUILD part is (`docs/libraries.md`, "BUILD parts").

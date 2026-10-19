@@ -1411,6 +1411,42 @@ item as without the three patches), `a9e82a9a` and `de7b8b9d` 181 of 199,
 `52ba7a15` and `0c99fb88` 97 of 110, `61526c66` 12 of 14, `db73863f` 128
 of 145.
 
+Where the crest rounding stops (mitcad#422, 2026-10-18, dev build, the
+part run alone). `d9aec91e` Fillet4 rounds Coil2's two crests, each down to
+the thread's run-out (Extrusion7's straight cut along the tangent), where
+the crest runs on tangentially into the run-out's crest, which is not
+rounded. In the file's state after Fillet4 the upper crest's rounding ends
+at the run-out with a corner patch, as OCCT's corner there does. The lower
+crest's rounding ends 331° before it, at a face of 0.006 mm² on the plane
+of the run-out's lower flank (the stored face's plane, origin and normal):
+that plane, tangent to the groove's lower flank along the start profile,
+only touches the rounding near the run-out, the crest lies inside it over
+the next 331°, and there the crest rises out of it again and the plane
+cuts the rounding across. That is the rule: the face at the end, going on
+tangentially from the rounding's face, ends the rounding where its surface,
+followed back along it, cuts it across; where it never does (the upper
+crest's run-out plane), the corner at the vertex stays. OCCT port patch
+0790 ends such a rounding at that cut. The replay's face there is
+0.006442 mm² with its centre at the file's (0.006438 mm²), the crest stays
+sharp down to the run-out, and Fillet10 is built on the replay (verified,
+its edges found against the history state), with no base feature before
+it: 45 of 46 parametric as before (Fillet5 keeps no result in the file).
+The final body is 14053.131 mm³ against the file's 14050.214 (0.02 %, at
+most 0.026 mm off), where Base1 gave the file's own body before. The part
+takes 324 s instead of 178 s: Fillet4's result lies 2.8e-4 from the
+history state's measures (1.9e-4 before; the stored bodies' edge slack
+makes their volumes loose, 138 mm³ here), more than the bodies before it
+carried, so the import looks for a closer definition (three more
+evaluations, 20 s, the first kept), and every item after Fillet10
+compares the replay, 0.016 to 0.021 mm off the file's states as before
+Fillet10, where it compared the file's own state (7 to 20 s more each).
+The other named coil and thread parts keep their counts (`01fb13c9`
+30/31, `033448e3` 12/12, `2ac732ee` 14/14, `517c1204` 24/24, `9452d970`
+35/40, `c2ed6f98` 30/31, `547d59d1` 24/25), and so do the `.f3d` designs
+of mitcad#415's list, each run alone (`5ef2dbd5` 81 of 98, `a9e82a9a` and
+`de7b8b9d` 181 of 199, `52ba7a15` and `0c99fb88` 97 of 110, `61526c66`
+12 of 14, `db73863f` 128 of 145).
+
 Sketch texts (dev build, 2026-10-18, mitcad#414, each part run alone on
 the Linux machine, which has no Tahoma): `c2ed6f98` Sketch12 (a text in
 its frame, *Texts* above) comes in parametric as Mitcad's text, where it

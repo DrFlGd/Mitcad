@@ -343,9 +343,11 @@ design in a project.
   evaluated inside the feature with its row and values (a recompute of
   its own, with the document's kernel), its visible bodies copied and
   renamed `<F>:part(<source face>)` (`Kernel::rename_faces`), its ends
-  cut through their centres by booleans with a box (`<F>:end_a`,
-  `<F>:end_b`), and its `mount:<name>` joint origins published as frames
-  that joints and other features name (`{"mount": "F7:mount(end_b)"}`,
+  cut at their long points (the plane through the section's outer edge
+  on the long side: the length is the outer length) by booleans with a
+  box (`<F>:end_a`, `<F>:end_b`), and its `mount:<name>` joint origins
+  published as frames that joints and other features name
+  (`{"mount": "F7:mount(end_b)"}`,
   `Resolver::mount`). A `bound_length` measures a ray from one part's
   frame to another's face or frame and sets its reference parameter as
   driven dimensions do, before the derived part that takes it as its
@@ -573,8 +575,12 @@ the `Shape` type.
   (mitcad#392): the analysis bridge (`core/cpp/bridge/analysis.cpp`) runs
   section, clip, measure, distance, interference and physical properties
   through `geometry::run_operation` (`guard.hpp`, the public form of
-  `run`), so a crash in Section Analysis' booleans on the UI thread is an
-  error: the body is shown whole and the panel shows the error. The crash
+  `run`), so a crash in Section Analysis' booleans is an error: the body
+  is shown whole and the panel shows the error. Section Analysis clips and
+  sections the bodies shown together on OCCT's thread pool, each body its
+  own operation there (`analysis_clip_all`, `analysis_section_all`,
+  mitcad#438), and skips the booleans of bodies the plane does not reach
+  (from their kept boxes). The crash
   that was reported came from mesh bodies: OCCT's booleans need surfaces
   and read a null handle on a face without one, so the analysis sections
   and clips mesh bodies on their triangles instead
@@ -868,7 +874,12 @@ not recompute.
   view makes them, so that the view only finds and keeps them, and a
   design of large curved faces keeps the window (and live MCP, which then
   answers busy) responsive; the job's Cancel stops that meshing only, and
-  the view meshes what is left.
+  the view meshes what is left. All the bodies of a job are meshed
+  together in one compound (`io::mesh_all_in_place`, mitcad#438), so that
+  OCCT meshes the faces of all of them in parallel on every core (one body
+  at a time, a design of many small bodies used a core or two) and a face
+  that bodies share is meshed once; should that throw, the bodies are
+  meshed one by one and one OCCT fails on is left to the view.
 - **Document owner** (`app/framework/DocumentSession`): owns the Rust
   document, model worker, active command, selection, mode and file/recovery
   state. `MainWindow` retains reference aliases for existing workflows.
@@ -908,7 +919,9 @@ not recompute.
   lines (`mcp/LogRing`). The project indicator says "Agent connected"
   while an MCP session is initialized and can disconnect it. A listener binds only
   to IPv4 loopback on an allocated port; a private per-user discovery
-  record supplies an instance ID and authentication token.
+  record supplies an instance ID, the process id and authentication token;
+  records of processes no longer running are skipped and removed
+  (`mcp::processRunning`, mitcad#437).
   `mitcad-cli mcp --connect` discovers and authenticates a running instance,
   then bridges standard MCP stdio to its JSON-lines socket without exposing
   the token on stdout. Bridge EOF leaves the GUI and unsaved document open.
@@ -1080,7 +1093,8 @@ not recompute.
   grows with its size (`geometry/io` `mesh.hpp`, `face_deviation_floor`).
   OCCT's presentations mesh through that algorithm
   (`use_bounded_presentation_meshes`, BRepMesh's default for the process);
-  the model's worker makes the same meshes beforehand (`mesh_in_place`),
+  the model's worker makes the same meshes beforehand (`mesh_in_place`,
+  for all the bodies of a job at once `mesh_all_in_place`),
   and the exports' presets bound their faces the same way
   ([commands.md](../core/model/src/api/commands.md), Mesh refinement).
 - **Theme and icons** (`app/framework/Theme`, `Icons`): dark mode is read

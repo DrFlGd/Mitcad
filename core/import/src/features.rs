@@ -4983,6 +4983,25 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                 )
             })
             .collect();
+        // The file's state before the item, which the replay matches
+        // (mitcad#440): an edge as far off it as off the next state was not
+        // taken away by the item.
+        let before_state: Vec<(StoredBody<K::Shape>, Sig)> = match self.oracle.cursor {
+            Some(c) => self
+                .oracle
+                .state(kernel, c)
+                .map(|s| s.to_vec())
+                .unwrap_or_default(),
+            None => Vec::new(),
+        };
+        // The least depth of the item's dressups at an edge of a wedge.
+        let least_depth = |wedge: f64| {
+            sections
+                .iter()
+                .flatten()
+                .map(|s| s.depth(wedge))
+                .fold(f64::INFINITY, f64::min)
+        };
         let mut candidates = Vec::new();
         let mut last_error = None;
         let states = self.lookahead(4);
@@ -5038,6 +5057,22 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             if after.is_empty() {
                 continue;
             }
+            // The state before's bodies, but those the replay and this
+            // state both have as they are.
+            let mut kept = vec![false; before_state.len()];
+            for (j, _) in used.iter().enumerate().filter(|(_, u)| **u) {
+                if let Some(i) = (0..before_state.len())
+                    .find(|&i| !kept[i] && before_state[i].1.same(&state[j].1))
+                {
+                    kept[i] = true;
+                }
+            }
+            let before: Vec<&K::Shape> = before_state
+                .iter()
+                .zip(&kept)
+                .filter(|(_, k)| !**k)
+                .map(|((b, _), _)| &b.shape)
+                .collect();
             // Per body, each gone edge with the set it fits best: whose
             // dressup the state has there (where it meets the edge's faces
             // and its middle lie on the state's faces), else whose size
@@ -5045,13 +5080,14 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             let mut found: Vec<(BodyUid, Vec<SetGone>)> = Vec::new();
             for (uid, shape) in changed {
                 let clock = std::time::Instant::now();
-                let consumed = match refs::consumed_edges(kernel, shape, &after) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        last_error = Some(e);
-                        continue;
-                    }
-                };
+                let consumed =
+                    match refs::consumed_edges(kernel, shape, &after, &before, &least_depth) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            last_error = Some(e);
+                            continue;
+                        }
+                    };
                 if consumed.is_empty() {
                     continue;
                 }
@@ -5085,7 +5121,9 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                             off: off(set),
                             fit: fit[set],
                             fits: fit[set] <= FIT,
-                            smooth: gone.wedge.is_some_and(|w| w > std::f64::consts::PI - 1e-3),
+                            smooth: gone
+                                .wedge
+                                .is_some_and(|w| w > std::f64::consts::PI - refs::SMOOTH_WEDGE),
                         }
                     })
                     .collect();

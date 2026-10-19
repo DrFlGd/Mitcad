@@ -363,6 +363,9 @@ private:
   void createCursorBox();
   void updateCursorBox();
   void moveCursorBox(const QPoint& at);
+  // Which value input's box is at the cursor (the one whose handle was
+  // dragged last, mitcad#444).
+  void setCursorKey(const QString& key);
   QPointer<QLineEdit> m_cursorBox;
   QString m_cursorKey;
   QString m_loggedCursorBox;

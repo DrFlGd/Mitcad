@@ -151,6 +151,9 @@ pub(crate) struct Output<S> {
     /// their warnings (mitcad#408).
     pub split_pieces: Option<Arc<Vec<crate::features::PieceGroup>>>,
     pub changed_pieces: Vec<(BodyUid, String)>,
+    /// A tapped hole's walls its modelled thread took whole, as they were
+    /// (mitcad#436).
+    pub threaded_walls: Vec<crate::features::hole::ThreadedWall>,
 }
 
 pub(crate) struct FeatureResult<S> {
@@ -1271,6 +1274,7 @@ fn evaluate<K: Kernel>(
             measured: produced.measured,
             split_pieces,
             changed_pieces,
+            threaded_walls: produced.threaded_walls,
         },
         Err(message) => Output {
             sheet_rules: None,
@@ -1296,6 +1300,7 @@ fn evaluate<K: Kernel>(
             measured: Vec::new(),
             split_pieces: None,
             changed_pieces: Vec::new(),
+            threaded_walls: Vec::new(),
         },
     };
     Arc::new(output)

@@ -458,6 +458,10 @@ Graphic3d_MaterialAspect flatMaterial(float transparency) {
 constexpr float kHoverTransparency = 0.5f;
 constexpr float kSelectedTransparency = 0.35f;
 constexpr float kWholeTransparency = 0.55f;
+// A plane picked as a reference: light, so that the plane a construction
+// feature makes stands out over it (mitcad#446).
+constexpr float kPickedPlaneTransparency = 0.8f;
+constexpr float kDatumPreviewTransparency = 0.2f;
 // OCCT's own selection highlight; the selections shown are setHighlights'.
 const Quantity_Color kSelectedColor(0x1f / 255.0, 0x7a / 255.0, 0xff / 255.0, Quantity_TOC_sRGB);
 
@@ -2049,7 +2053,9 @@ void OcctViewer::setHighlights(const std::vector<HighlightDisplay>& highlights) 
       object->SetMaterial(flatMaterial(0.0f));
       const bool whole =
           highlight.item.kind == SelectKind::Body || highlight.item.kind == SelectKind::Component;
-      object->SetTransparency(whole ? kWholeTransparency : kSelectedTransparency);
+      object->SetTransparency(whole ? kWholeTransparency
+                              : highlight.item.kind == SelectKind::Plane ? kPickedPlaneTransparency
+                                                                         : kSelectedTransparency);
       // Drawn just in front of the face it covers.
       object->Attributes()->ShadingAspect()->Aspect()->SetPolygonOffsets(Aspect_POM_Fill, -1.0f,
                                                                          -4.0f);
@@ -2103,6 +2109,25 @@ void OcctViewer::setPreview(const TopoDS_Shape& shape, PreviewStyle style) {
     if (style == PreviewStyle::Failed) {
       setEdgeStyle(m_preview, kCutPreviewColor, 2.0, Aspect_TOL_DASH);
       m_context->Display(m_preview, AIS_WireFrame, -1, false);
+    } else if (style == PreviewStyle::Datum) {
+      // Stronger than the planes picked as its references, which are drawn
+      // light (mitcad#446), and in front of them.
+      setEdgeStyle(m_preview, kPreviewColor, 2.5);
+      m_preview->SetMaterial(flatMaterial(0.0f));
+      m_preview->SetTransparency(kDatumPreviewTransparency);
+      const occ::handle<Prs3d_Drawer>& drawer = m_preview->Attributes();
+      drawer->SetFaceBoundaryDraw(true);
+      drawer->SetFaceBoundaryAspect(new Prs3d_LineAspect(kPreviewColor, Aspect_TOL_SOLID, 2.5));
+      m_context->Display(m_preview, AIS_Shaded, -1, false);
+      m_context->SetZLayer(m_preview, Graphic3d_ZLayerId_Top);
+      // For UI tests, once.
+      static bool logged = false;
+      if (!logged) {
+        logged = true;
+        qDebug().noquote() << QStringLiteral("Preview datum drawn: transparency %1, picked planes %2")
+                                  .arg(kDatumPreviewTransparency)
+                                  .arg(kPickedPlaneTransparency);
+      }
     } else {
       m_preview->SetColor(style == PreviewStyle::Remove ? kCutPreviewColor : kPreviewColor);
       m_preview->SetTransparency(0.5);

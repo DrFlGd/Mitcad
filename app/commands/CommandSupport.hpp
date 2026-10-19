@@ -99,6 +99,9 @@ bool objectShowable(const QJsonObject& object, const CommandContext& context);
 // Fills a value input from a definition's parameter slot (null: left as is).
 void loadValue(CommandState& state, const QString& key, const QJsonValue& slot,
                const QJsonObject& def, const CommandContext& context);
+// The expression negated (a Flip): "5 mm" gives "-5 mm", "-5 mm" gives
+// "5 mm", an expression "-(d1 / 2)".
+QString negated(const QString& expression);
 // Whether the value is not zero (a taper of 0 makes no parameter).
 bool nonZero(const CommandState& state, const QString& key);
 // A count, factor or fraction for a slot the model reads as a length

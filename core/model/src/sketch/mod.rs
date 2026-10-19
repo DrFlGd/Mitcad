@@ -794,6 +794,14 @@ pub enum DimensionKind {
         #[serde(with = "curve_serde")]
         line: EntityUid,
     },
+    /// The gap between two concentric circles or arcs (mitcad#445): the
+    /// difference of their radii, on the side `b` is when it is added.
+    ConcentricDistance {
+        #[serde(with = "curve_serde")]
+        a: EntityUid,
+        #[serde(with = "curve_serde")]
+        b: EntityUid,
+    },
     /// Angle between two lines, 0 to 180 degrees (mitcad#296): between the
     /// rays `±(a's end - start)` and `±(b's end - start)`, reversed where
     /// `reverse_a` or `reverse_b` is true, which bound the sector of the
@@ -864,7 +872,9 @@ impl DimensionKind {
                 vec![p(*a), p(*b)]
             }
             PointLineDistance { point, line } => vec![p(*point), c(*line)],
-            LineDistance { a, b } | Angle { a, b, .. } => vec![c(*a), c(*b)],
+            LineDistance { a, b } | Angle { a, b, .. } | ConcentricDistance { a, b } => {
+                vec![c(*a), c(*b)]
+            }
             TangentDistance { circle, line } => vec![c(*circle), c(*line)],
             Length { line } => vec![c(*line)],
             Radius { curve } | Diameter { curve } => vec![c(*curve)],
@@ -887,6 +897,7 @@ impl DimensionKind {
             PointLineDistance { .. } => "point_line_distance",
             LineDistance { .. } => "line_distance",
             TangentDistance { .. } => "tangent_distance",
+            ConcentricDistance { .. } => "concentric_distance",
             Length { .. } => "length",
             Angle { .. } => "angle",
             Radius { .. } => "radius",
@@ -926,7 +937,8 @@ impl DimensionKind {
             | VerticalDistance { .. }
             | PointLineDistance { .. }
             | LineDistance { .. }
-            | TangentDistance { .. } => ValueRange::NotNegative,
+            | TangentDistance { .. }
+            | ConcentricDistance { .. } => ValueRange::NotNegative,
             Angle { .. } => ValueRange::Angle,
             _ => ValueRange::Positive,
         }

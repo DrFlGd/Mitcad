@@ -237,6 +237,8 @@ public:
     Add,    // blue: a new body or material a Join adds
     Remove, // red: material a Cut removes
     Failed, // red outline: the feature fails
+    Datum,  // blue, nearly opaque, over picked references: a construction
+            // feature's plane, axis or point (mitcad#446)
   };
 
   explicit OcctViewer(QWidget* parent = nullptr);

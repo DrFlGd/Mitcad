@@ -307,7 +307,9 @@ millimetres, angles radians. Build sketches with the
   dimensions](#signed-point-dimensions)), `point_line_distance` (`point`, `line`),
   `line_distance` (`a`, `b` parallel lines), `tangent_distance` (`circle`
   or arc, `line`: the gap between them, the centre's distance from the
-  line minus the radius), `length` (`line`), `angle`
+  line minus the radius),
+  `concentric_distance` (`a`, `b` circles or arcs about one centre: the gap
+  between them, the difference of their radii; mitcad#445), `length` (`line`), `angle`
   (`a`, `b` lines, and optional `reverse_a`, `reverse_b`; see [Angle
   dimensions](#angle-dimensions)), `radius`,
   `diameter` (`curve`), `arc_length` (`arc`), `major_radius`,
@@ -919,7 +921,9 @@ form lists edge sets:
 - `tangent_chain` (default true): the edges that continue an edge
   smoothly are rounded too: every edge that meets an edge of the set end
   to end in the same direction (within 0.01 rad) and lies between two
-  faces at an angle, and so on from those (Mitcad's own chain,
+  faces at an angle, convex where the edge is convex and concave where it
+  is concave (a rounding vanishes where a concave edge runs on into a
+  convex one, mitcad#439), and so on from those (Mitcad's own chain,
   mitcad#224; constant and chord length sets and chamfers; variable,
   asymmetric and G2 sets keep the kernel's chain), besides the edges the
   kernel follows itself where the faces at a vertex go on tangentially.
@@ -1683,6 +1687,14 @@ Patterns, mirrors, combine, moves and primitives: modules `pattern.rs`,
   full turn is not affected). Path distances are arc lengths along the path; `start` (0…1)
   is where the original sits on the path; `along_path` turns the copies
   with the path.
+- Signed distances (mitcad#447): a rectangular pattern's direction keeps
+  one signed `distance` (spacing or extent); a negative one puts the
+  copies against its axis, and a symmetric direction then has the copies
+  of the positive distance (an even quantity's extra element on the other
+  side). Zero is refused when there are copies. The panel's Flip of a
+  direction negates the distance it builds (`-(expression)` for an
+  expression); an edited pattern shows its stored signed distance with
+  Flip off. The arrows in the view follow the sign.
 - `scale` (optional, a factor; mitcad#59): the copies grow (or shrink)
   element by element up to that factor: element e of n is scaled by
   1 + (scale − 1) · e / (n − 1) about the centre of mass of the first
@@ -2729,7 +2741,7 @@ timeline marker.
 | `dependents` | `uid` | `dependents`: `uid`, `name` of the features that refer to it, directly or through others, in timeline order (what `delete_feature` with `dependents` deletes too) |
 | `can_reorder` | `uid`, `index` | `ok`, and `error` (the reason `reorder_feature` would give) when not |
 | `sketch` | `uid` | see [Sketch commands](#sketch-commands) |
-| `threads` | | threads on the bodies (thread features and tapped holes): `feature`, `name`, `body`, `face`, `standard`, `designation`, `class`, `right_handed`, `modeled`, `major_diameter`, `minor_diameter`, `pitch`, and from the face `internal`, `radius`, `start`, `end` (points on the axis where the thread begins and ends; a cosmetic thread's end chamfers move them to where their cones meet the cylinder). A modelled thread feature that leaves no piece of its face (its crest inside the face: a class's diameters, a radial clearance) is still listed, with the face measured on the body before the feature, as long as the faces it made from it are on the body; its end chamfers then move `start` and `end` to where their cones meet the crest (mitcad#433). A tapped hole's modelled thread that leaves no piece of its wall is not listed yet |
+| `threads` | | threads on the bodies (thread features and tapped holes): `feature`, `name`, `body`, `face`, `standard`, `designation`, `class`, `right_handed`, `modeled`, `major_diameter`, `minor_diameter`, `pitch`, and from the face `internal`, `radius`, `start`, `end` (points on the axis where the thread begins and ends; a cosmetic thread's end chamfers move them to where their cones meet the cylinder). A modelled thread feature that leaves no piece of its face (its crest inside the face: a class's diameters, a radial clearance) is still listed, with the face measured on the body before the feature, as long as the faces it made from it are on the body; its end chamfers then move `start` and `end` to where their cones meet the crest (mitcad#433). A tapped hole's modelled thread that leaves no piece of its wall (a radial clearance puts the crest off it) is listed on the wall as the hole measured it before cutting the thread, as long as the thread's faces made from it are on the body (mitcad#436) |
 | `thread_sizes` | `standard` (`iso_metric`, `unified`, `whitworth`, `npt`, `tyre_valve` or `forming_screw`; all when left out) | `standards`, ISO metric first, then Unified, Whitworth (bolt sizes, then the pipe sizes `G 1/4`), NPT and tyre valve threads: `standard`, `title` (the thread type's name), `default` (true for ISO metric), `sizes` (smallest first: `size` as the table names it, `10`, `1/4`, `#10`; `major_diameter` mm; `designations`, the coarse pitch or UNC first, each one `thread` and `hole` accept), `classes_external`, `classes_internal`, `default_class_external` (6g, 2A, Medium, Standard), `default_class_internal` (6H, 2B, Medium, Standard) |
 | `thread_chamfer` | `designation`, `standard` (`iso_metric` when left out), `internal` (false when left out) | the size's default end chamfer ([thread](#thread), mitcad#304): `diameter` (mm, from the size table), `angle` (45, degrees to the axis) |
 | `named_views` | | in the order added: `name`, `eye`, `target`, `up`, `perspective` (when true), `height` |
@@ -2788,7 +2800,7 @@ there is none:
 |---|---|---|
 | `datum` | `uid` (`F3`, `xy`), `size` (default 100) | a square face, an edge or a vertex |
 | `section` | `plane`, `body`, `occurrence` (optional), `curves` (default false) | the section faces, or curves |
-| `clip` | `plane`, `body`, `occurrence` (optional) | the body without the half-space on the plane's normal side; what is left of its faces, edges and vertices keeps the body's names (picks on the clipped view refer to the body), faces on the plane stay whole, and the caps have no names |
+| `clip` | `plane`, `body`, `occurrence` (optional) | the body without the half-space on the plane's normal side; what is left of its faces, edges and vertices keeps the body's names (picks on the clipped view refer to the body), faces on the plane stay whole, and the caps have no names. A body the plane does not reach is not cut (mitcad#438): one behind the plane (touching it at most) is the body's own shape, one wholly on the normal side an empty compound |
 | `interference` | `a`, `b` (bodies) | their overlap |
 
 Mesh bodies (triangles without surfaces, from STL, OBJ and the meshes of
@@ -2815,6 +2827,28 @@ coordinates and is transformed into that occurrence's local coordinates.
 The returned shape remains local: display it using the body's original
 placement. The path must own the body. This gives every displayed component
 the same physical cutting plane without applying placement twice.
+
+### Section Analysis of many bodies (mitcad#438)
+
+`analysis_clips(request)` (C++ `Document::analysis_clips`) clips several
+bodies at one plane at once, as the `clip` shape clips each:
+`{"plane": <plane>, "bodies": [{"body": "F2.b0", "occurrence": "O1/O2"}, …]}`
+(`occurrence` optional, as for `clip`). The result has one entry per body
+in the request's order (`count`, `shape(i)`, `error(i)`): the clipped
+shape, or null with the error the `clip` request would give that body (an
+unknown body, an occurrence that does not own it, a failed boolean); one
+body's error does not stop the others. Section Analysis and Hide Above
+Sketch clip the bodies shown with it (`MainWindow::modelBodies`).
+
+The bodies' booleans run on all cores (OCCT's thread pool, each body one
+operation of `geometry::run_operation`, so a crash inside OCCT is that
+body's error), and so do the sections of the `section` query with
+`world:true` (`Kernel::clip_all` and `Kernel::section_all`, whose defaults
+take one body after another). A body the plane does not reach needs no
+boolean: its kept bounding box tells the bridge
+(`core/cpp/bridge/analysis.cpp`) that the clip keeps or removes it whole,
+or that the plane passes it farther than the body's tolerances, which
+gives an empty section.
 
 ## Preview
 
@@ -2939,7 +2973,7 @@ made, in order) and `status` (as the `sketch` query: `dof`,
 | `sketch.edit_offset` | `offset` (`k8`), `distance` (value), `flip` | the distance changes, `flip` moves it to the other side; the curves keep their ids |
 | `sketch.mirror` | `entities`, `axis` (a line) | copies with symmetric constraints (an ellipse copy also keeps an equal minor radius); points on the axis are shared |
 | `sketch.circular_pattern` | `entities`, `center` (point input; a new point is fixed), `count` (originals included), `angle` (value, default a full turn) | a `patterns` record; result `constraints` [the pattern's id] |
-| `sketch.rectangular_pattern` | `entities`, `direction` (default [1, 0]), `count` [n1, n2], `spacing` [s1, s2] (values), `symmetric` ([bool, bool], default none: per direction the originals are the middle instance, an odd count, and the copies lie on both sides) | as above |
+| `sketch.rectangular_pattern` | `entities`, `direction` (default [1, 0]), `count` [n1, n2], `spacing` [s1, s2] (values, signed: a negative spacing goes against its direction, mitcad#447; not zero), `symmetric` ([bool, bool], default none: per direction the originals are the middle instance, an odd count, and the copies lie on both sides) | as above |
 | `sketch.edit_pattern` | `pattern` (`k5`), and any of `count` (n, or [n1, n2]), `angle`, `spacing`, `direction`, `center`, `entities` (the originals) | the copies follow |
 | `sketch.project` | `source`: an edge, a face (its boundary) or a vertex of the bodies before the sketch, `body` (optional), `linked` (default false), `occurrence` and `context` (optional: geometry of another component, see [Geometry of other components](#geometry-of-other-components)), `section` (default false: a face's section curves instead, see [Section curves in sketches](#section-curves-in-sketches)) | fixed reference entities, a curve or point the same as another of the source once; a planar B-spline seen edge on is the line between its extreme points (mitcad#389), as a conic is; a linked projection follows its source when the model changes, each entity the fresh curve of its kind most like it (`by_geometry` in its record, since 0.4.1); a projection without it (files of earlier versions, imports) follows only a source whose curves come back of the same kinds, in the same order and joined the same way, and otherwise keeps its geometry and warns (mitcad#249) |
 | `sketch.import_dxf` | `path` (.dxf), `unit` (of a drawing that names none: `mm` default, `cm`, `m`, `in`, `ft`), `at` (the sketch point the drawing's origin goes to, default [0, 0]), `layers` (only the entities on these layers; all when left out; a layer with nothing on it is refused) | as other edits, and `curves`, `points` (shared points made), `text_count`, `warnings`; undo step `Insert DXF into Sketch1`; see [DXF](#dxf-into-sketches) |
@@ -4940,14 +4974,18 @@ tolerances themselves (mitcad#398):
   `--deviation MM --angle DEG` the absolute tolerance.
 - The 3D view meshes with the same algorithm: 0.01 mm and 5°, about
   20 000 triangles a face at most (`app/view/ViewTessellation.hpp`), on
-  the model's worker thread after each job ([architecture](../../../../docs/architecture.md),
+  the model's worker thread after each job, all the bodies of the job
+  together so that their faces are meshed in parallel on every core
+  (`mesh_all_in_place`, mitcad#438; [architecture](../../../../docs/architecture.md),
   Application).
 
 Tests: `geometry.io` (`test_building_scale_sphere`: a 9 m dome's sphere
 faces within the bound, its STL a few megabytes, a 9 cm dome meshed as
-without the bound, meshing in place kept), `core.model`
-(`exchange_tests`: the presets' tolerances), `app.view_tessellation` (the
-view's meshes of the dome) and
+without the bound, meshing in place kept; `test_mesh_all_in_place`:
+bodies meshed together as one by one, shared faces, kept meshes, cancel),
+`core.model` (`exchange_tests`: the presets' tolerances),
+`app.view_tessellation` (the view's meshes of the dome, also meshed with
+another body) and
 [tools/ui-large-mesh-test.sh](../../../../tools/ui-large-mesh-test.sh).
 
 ## Files and version history
@@ -7723,7 +7761,8 @@ click (`Kernel::tangent_chains`, `geometry/include/mitcad/geometry/tangent_chain
   continues into every edge that meets it end to end in the same direction
   (within 0.01 rad) and lies between faces at an angle, and on from those,
   until the chain closes or stops. It stops where the edges turn, as the
-  fillet's contour does (mitcad#241). A rounding with a variable radius,
+  fillet's contour does (mitcad#241), and where a concave edge meets a
+  convex one (mitcad#439). A rounding with a variable radius,
   an asymmetric one or one of curvature continuous (G2) cross-sections
   follows the geometry kernel's own chain instead, which can be shorter
   (it also stops at a vertex where a third sharp edge meets). An edge
@@ -7956,12 +7995,15 @@ it, the model:
   - `tilt` is the section axis the cut turns about: `x` or `y` of the
     source's section, the cut leaning towards +y or +x; `-x` and `-y`
     lean the other way.
-  - End A is cut at z = 0 and end B at z = L, each through the centre of
-    the section at that end. So the length is measured along the axis
-    between the two ends' centres, as a mitre is set out. For an angled
-    end the source is evaluated that much longer (the material beyond the
-    centre on the long side) and cut back; its frames stay those of the
-    length itself.
+  - The length is the part's outer length, its long point (mitcad#443).
+    End A is cut at z = 0 and end B at z = L, each by the plane through
+    the section's outermost edge on the long side (the side the cut leans
+    away from, measured from the section's bounds, so an asymmetric
+    section works too). The body never reaches past 0 and L; the short
+    point is the section's width across the tilt × tan(angle) shorter (a
+    20 mm profile of 500 mm cut at 45°: 500 on the long side, 480 on the
+    short one). The cuts only take material away; the frames stay those
+    of the length itself.
   - The cut is made inside the feature, not as a cut feature of its own,
     so the cut list reads it from the definition.
 - **Names.**
@@ -8104,6 +8146,8 @@ The component records what BUILD made, in the design file too:
 - `bound` lists the part's bound lengths (a panel has one per size).
 - `from` (a part on a side or a rail, mitcad#417) is the reference its
   joint's slide is bound to: `a`, `b` or `middle` (*Side placements*).
+- `tilt` (a part on a side tilted along its target, mitcad#444) is its
+  tilt in radians, positive towards the target's end B (*Tilt*).
 - BUILD reads these records. Other commands treat the component as any
   other, and a component without `build` is not a BUILD part.
 
@@ -8186,8 +8230,8 @@ points*).
 
 | Command | Fields | Result |
 |---|---|---|
-| `build_place` | `part` (`{"library", "url", "rev", "component", "config"}`, or `{"source": "S1", "config"}` to reuse a source), `at` (below), `rotate` (an angle: 0, 90, 180 or 270 deg; a number is radians), `flip` (true: the other end first), `length` (a value, or `{"bind": {"occurrence", "geometry"}, "mode": "face"/"centre"/"through", "add"}`; left out: the source's default), `mitre` (`{"angle", "cut": "new"/"existing"/"shared"/"none"}`; left out: none, also on a square corner; `shared` on a corner at another angle at offset 0, mitcad#427), `parameters` (other source parameters), `name` | `component`, `occurrence`, `name`, `features` (everything it added), `joint`, `bound`, `adds`, `warnings`, `place` (`side`, `end`, `frame`, `geometry` or `grounded`); undo step `Place <designation>` |
-| `build_edit` | `component`, and any of `at.offset`, `at.from` (on a side or a rail, mitcad#417: `a`, `b` or `middle`; an offset alone is from the part's reference, a `from` alone keeps the part where it is and recomputes its offset), `rotate`, `flip` (true or false: which end meets), `length` (a value detaches, a `bind` binds), `ends` (`{"a": {"angle", "tilt"}, "b": ...}`; null squares an end), `config`, `parameters`, `machining` (`[{"end": "a"/"b", "hole": {"diameter", "depth", "thread"}}]`: the part's own end machining, not a connector's; it replaces the whole list, an empty list takes it away) | `changed` (`offset`, `from`, `rotate`, `flip`, `detached`, `length`, `bound`, `ends`, `config`, `parameters`, `machining`); undo step `Edit <name>` |
+| `build_place` | `part` (`{"library", "url", "rev", "component", "config"}`, or `{"source": "S1", "config"}` to reuse a source), `at` (below), `rotate` (an angle: 0, 90, 180 or 270 deg; a number is radians), `flip` (true: the other end first), `length` (a value, or `{"bind": {"occurrence", "geometry"}, "mode": "face"/"centre"/"through", "add"}`; left out: the source's default), `mitre` (`{"angle", "cut": "new"/"existing"/"shared"/"none"}`; left out: none, also on a square corner; `shared` on a corner at another angle at offset 0, mitcad#427; every cut keeps the lengths as long points and a shared one makes the outer corners meet, mitcad#443), `tilt` (on a side, mitcad#444: an angle from -80 to 80 deg, positive towards the target's end B; *Tilt*), `parameters` (other source parameters), `name` | `component`, `occurrence`, `name`, `features` (everything it added), `joint`, `bound`, `adds`, `warnings`, `place` (`side`, `end`, `frame`, `geometry` or `grounded`); undo step `Place <designation>` |
+| `build_edit` | `component`, and any of `at.offset`, `at.from` (on a side or a rail, mitcad#417: `a`, `b` or `middle`; an offset alone is from the part's reference, a `from` alone keeps the part where it is and recomputes its offset), `rotate`, `flip` (true or false: which end meets), `length` (a value detaches, a `bind` binds), `ends` (`{"a": {"angle", "tilt"}, "b": ...}`; null squares an end; the length stays the long point, mitcad#443), `tilt` (a part on a side, mitcad#444: its tilt again, its ends recut; 0 squares it), `config`, `parameters`, `machining` (`[{"end": "a"/"b", "hole": {"diameter", "depth", "thread"}}]`: the part's own end machining, not a connector's; it replaces the whole list, an empty list takes it away) | `changed` (`offset`, `from`, `rotate`, `flip`, `detached`, `length`, `bound`, `tilt`, `ends`, `config`, `parameters`, `machining`); undo step `Edit <name>` |
 | `build_connect` | `junction` (an id from `build_junctions`), `part` (as `build_place`'s), `fasteners` (default true), `machining` (default true), `name` | `component`, `occurrence`, `adds`, `warnings` (a fastener that cannot be read is left out with a warning); undo step `Connect <designation>` |
 | `build_panel` | `at` (`{"occurrence", "geometry", "point"}`: a face or a slot frame of one of the frame's profiles), `part`, `thickness` (for a part whose thickness is a parameter), `parameters`, `name` | `component`, `occurrence`, `bound`, `fits` (false, with `reason`, when a fixed-width sheet is too narrow or too wide), `adds` (the clamps of a surface panel); undo step `Place <designation>` |
 | `build_remove` | `component` | `removed`: `components` (it and what it `adds`), `features` (its bound lengths, its holes in other parts, and what depends on them) and `detached` (the bound lengths of other parts that end on it or start from it, detached first, so those parts keep their lengths); the parts placed on it keep where they are; undo step `Remove <name>` |
@@ -8275,6 +8319,40 @@ the reference the click resolved to:
 - `build_preview`'s `side` gives `from` and `offset` as `at.from` and
   `at.offset` take them.
 
+**Tilt (mitcad#444).** A profile on a side can lean along its host: a
+brace. `tilt` (an angle, `build_place`, `build_preview`, `build_edit`;
+0 or left out: square) leans it in the plane of the host's axis and the
+side's normal, positive towards the host's end B, negative towards end A,
+never across the slot. It is from -80° up to 80°; more is refused (`the
+tilt is 85 degrees; it is from -80 up to 80`). Only a part on a side
+tilts (a profile standing on the slot with an end); on an end its
+direction turns it, and a tilted part takes no `mitre`.
+
+- The foot (the end on the slot) is cut by the tilt's angle about the
+  section axis across the slot, so it lies flat on the side; the cut
+  keeps the length as its long point (*Ends* of the derived part), and
+  the foot's long point stands on the slot's centre line.
+- `at.offset` and `at.from` refer to the foot's long point on the slot:
+  from `a` its distance from end A, from `b` from end B, from `middle`
+  from the host's middle. A click and the snaps place the foot (its
+  reach along the slot is the foot's, the section's width / cos(tilt)),
+  and the foot stays within the host's length.
+- The far end: with a bound length (`face`, `centre`, `through`) it is
+  cut flush with the plane the length ends on (parallel to the face it
+  meets), and the length is measured along the axis to that end's long
+  point; with a typed length it stays square.
+- The cuts are ordinary end cuts (`ends`): the cut list shows them and
+  `build_edit`'s `ends` changes them. `build_edit`'s `tilt` sets the tilt
+  again and cuts both ends anew (0: square, square ends); a turn, a flip
+  or a new length of a tilted part keeps its tilt and recuts its ends.
+- How it is made: the joint's side a (the part's end frame) has a
+  `frame_override` that turns it and moves it to the foot's long point;
+  the slot's frame and the slide (`position.tx`, the long point's place)
+  stay as they are. A bound length's ray starts at the far end's long
+  side in the foot's plane (`from.shift.x` the slide plus that shift)
+  and runs along the part's axis (`direction`). The component's record
+  keeps `tilt` (radians).
+
 **End placements (mitcad#417).** On a profile's end the new part
 continues it straight or turns 90° at a corner:
 
@@ -8291,9 +8369,13 @@ continues it straight or turns 90° at a corner:
   of the two axes), centred on the target's section across the turn, and:
   - without a shared mitre it lies on the target's end face, its end
     flush with the target's outer side (the side away from the turn);
-  - with a shared mitre both are cut through their ends' centres on the
-    bisector of their axes, and their outer corners meet (for two
-    sections alike the axes meet at the end's centre);
+  - with a shared mitre the outer corners meet (mitcad#443): the two
+    overlap fully, the new part's outer side (away from the corner's
+    inside) through the target's outer edge at its end and its end on
+    that edge, and both are cut on the bisector of their axes through
+    that shared outer corner, each at its long point. Both lengths are
+    outer lengths: two 500 mm parts make a corner 500 × 500 mm outside,
+    at 90° or any other angle;
   - `at.offset` moves the new part's end from the target's outer side
     along its axis, positive towards the turn (0: flush; negative: past
     the outer side).
@@ -8323,6 +8405,11 @@ continues it straight or turns 90° at a corner:
   part's end leans along the slot. Later rotations do not change it;
   `build_edit` does.
 - Only cut-to-length parts have mitres.
+- Every cut (`new`, `existing`, `shared`, the Ends command's and
+  `build_edit`'s `ends`) keeps the part's length as its long point
+  (*Ends* of the derived part): a mitred part never reaches past its
+  length, and `build_cut_list`'s `length` is the length the body has on
+  its long side. Designs made before simply rebuild with this rule.
 
 **Refusals.** The command changes nothing when:
 
@@ -8349,10 +8436,10 @@ radians, as joints have them.
 
 | Query | Fields | Result |
 |---|---|---|
-| `build_preview` | `build_place`'s, `build_panel`'s or `build_connect`'s fields | what the command would do, without changing anything. A placing: `frame` (the new part's own axes at its end A, z running from A to B), `place` (`side`, `end`, `frame`, `geometry` or `grounded`, as `auto` decided), `length` (`value`: the length given, else what the part's ray gives in `mode`, else the source's default; `default`; `target`: what the ray meets first, `{occurrence, geometry}` with a frame of another BUILD part facing it, or the `bind` given, null when nothing; and `mode`), `ends` (`a`, `b`: `{angle, tilt}` or null; `target`: the target's end cut), `snaps` (on a side, mitcad#394: `{kind, offset, point}` for each place a click snaps to: `kind` `end_a`, `end_b`, `middle` or `grid`, `offset` the new part's near face from end A, `point` where its middle then stands on the slot, in the design), `side` (on a side: `{kind, from, offset, point, width}`: the snap the click took (`end_a`, `end_b`, `middle`, `grid`), null between snaps, or `clamped` when the placement was kept within the target; the reference and the offset from it the click resolved to, or the typed ones, as `at.from` and `at.offset` take them (mitcad#417); where the part stands; its width along the slot; null elsewhere), `end` (on an end, mitcad#417: `{zone, direction, turns, offset, mitre}`: `zone` `straight` or `edge` (what the click chose) or `given` (`at.direction`); `direction` the new part's axis in the host's coordinates; `turns` the four unit vectors square to the target in the host's coordinates, +x, +y, -x, -y of its end frame; `offset` a corner's offset, null when straight; `mitre` `{cut, angle}` the placement will use, the default resolved (`cut` `none`, `new`, `existing` or `shared`, `angle` in radians or null); null elsewhere), `host` (as `build_host` answers), `designation`, `warnings`. A panel: `frame`, `fits`, `reason`, `width`, `height`, `bound`. A connector: `frame`, `junction`, `fasteners` (`{frame, at}`), `fastener_parts`, `machining` (`{component, at, point, diameter, depth, thread}`). All: `body` (`"see analysis_shape"`) and `problems` (the refusal the command would give, then nothing else) |
-| `build_parts` | | `parts`: for each BUILD component, `component`, `name`, `role`, `source`, `part`, `joint`, `designation`, `supplier`, `part_number`, `config`, `length`, `ends`, `bound` (`{feature, parameter, to: {occurrence, geometry}, mode}`, or null), `flip`, `rotate`, `machining` (its own, as `build_edit` takes it), `added_by`, `adds`, `junction`, `from` (a part on a side or a rail: `a`, `b` or `middle`, else null) |
+| `build_preview` | `build_place`'s, `build_panel`'s or `build_connect`'s fields | what the command would do, without changing anything. A placing: `frame` (the new part's own axes at its end A, z running from A to B), `place` (`side`, `end`, `frame`, `geometry` or `grounded`, as `auto` decided), `length` (`value`: the length given, else what the part's ray gives in `mode`, else the source's default; `default`; `target`: what the ray meets first, `{occurrence, geometry}` with a frame of another BUILD part facing it, or the `bind` given, null when nothing; and `mode`), `ends` (`a`, `b`: `{angle, tilt}` or null; `target`: the target's end cut), `tilt` (radians, mitcad#444), `snaps` (on a side, mitcad#394: `{kind, offset, point}` for each place a click snaps to: `kind` `end_a`, `end_b`, `middle` or `grid`, `offset` the new part's near face from end A, `point` where its middle then stands on the slot, in the design), `side` (on a side: `{kind, from, offset, point, width}`: the snap the click took (`end_a`, `end_b`, `middle`, `grid`), null between snaps, or `clamped` when the placement was kept within the target; the reference and the offset from it the click resolved to, or the typed ones, as `at.from` and `at.offset` take them (mitcad#417); where the part stands; its width along the slot; `foot`, where the part's frame meets the slot, a tilted part's foot long point, in the design; null elsewhere), `end` (on an end, mitcad#417: `{zone, direction, turns, offset, mitre}`: `zone` `straight` or `edge` (what the click chose) or `given` (`at.direction`); `direction` the new part's axis in the host's coordinates; `turns` the four unit vectors square to the target in the host's coordinates, +x, +y, -x, -y of its end frame; `offset` a corner's offset, null when straight; `mitre` `{cut, angle}` the placement will use, the default resolved (`cut` `none`, `new`, `existing` or `shared`, `angle` in radians or null); null elsewhere), `host` (as `build_host` answers), `designation`, `warnings`. A panel: `frame`, `fits`, `reason`, `width`, `height`, `bound`. A connector: `frame`, `junction`, `fasteners` (`{frame, at}`), `fastener_parts`, `machining` (`{component, at, point, diameter, depth, thread}`). All: `body` (`"see analysis_shape"`) and `problems` (the refusal the command would give, then nothing else) |
+| `build_parts` | | `parts`: for each BUILD component, `component`, `name`, `role`, `source`, `part`, `joint`, `designation`, `supplier`, `part_number`, `config`, `length`, `ends`, `bound` (`{feature, parameter, to: {occurrence, geometry}, mode}`, or null), `flip`, `rotate`, `tilt` (radians, 0 square, mitcad#444), `machining` (its own, as `build_edit` takes it), `added_by`, `adds`, `junction`, `from` (a part on a side or a rail: `a`, `b` or `middle`, else null) |
 | `build_junctions` | `components` (optional: only the junctions of these) | `junctions`: `id` (`<a's component>:<a's at>\|<b's component>:<b's at>`, stable while the two parts and their meeting stay), `kind` (`L`, `T`, `cross`, `inline`), `a` and `b` (`component`, `occurrence`, `at` (`end_a`, `end_b`, the slot frame, or `side` on a closed side), `frame` (the part's own axes at its end A), `at_frame` (the `at` frame)), `angle` (between the axes), `systems` (`B8/30`), `space` (the free room in the inner corner: `{"x", "y", "z"}`: along a, along b to its farther end, across), `connectors` (components already there) |
-| `build_cut_list` | `kerf` (optional, default 3 mm) | `rows`, one per group of identical results (source, row, length, ends, machining and own features the same): `source`, `designation`, `supplier`, `part_number`, `config`, `length`, `ends` (`a`, `b`: `{angle, tilt}` or null), `machining` (`{at, diameter, depth, thread, connector}`: holes from connectors, and the part's own, `connector` null), `features` (how many own features the part has: holes, cuts), `quantity`, `mass` (each, kg), `components`. `stock`: per source, cut from its longest stock length, `{"source", "designation", "stock_length", "pieces": [lengths in cutting order], "bars" (where each stock piece's cuts end in `pieces`), "needed", "offcut", "too_long"}`, longest pieces first into the first stock piece they fit (a kerf after each). `kerf`. `other`: the parts list's rows for everything else |
+| `build_cut_list` | `kerf` (optional, default 3 mm) | `rows`, one per group of identical results (source, row, length, ends, machining and own features the same): `source`, `designation`, `supplier`, `part_number`, `config`, `length` (the part's length, its long point: the body's length on the long side of its angled ends, mitcad#443), `ends` (`a`, `b`: `{angle, tilt}` or null), `machining` (`{at, diameter, depth, thread, connector}`: holes from connectors, and the part's own, `connector` null), `features` (how many own features the part has: holes, cuts), `quantity`, `mass` (each, kg), `components`. `stock`: per source, cut from its longest stock length, `{"source", "designation", "stock_length", "pieces": [lengths in cutting order], "bars" (where each stock piece's cuts end in `pieces`), "needed", "offcut", "too_long"}`, longest pieces first into the first stock piece they fit (a kerf after each). `kerf`. `other`: the parts list's rows for everything else |
 | `build_host` | | the BUILD host (mitcad#394, *Where parts go*): `component` (its uid), `name`, `path` (its first occurrence path from the root, uids joined by `/`, `""` for the root) and `active` (the active component); the app gives paths from it and points in its coordinates |
 
 `analysis_shape` with `{"shape": "build_preview", ...}` and the same

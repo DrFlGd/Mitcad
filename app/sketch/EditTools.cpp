@@ -354,21 +354,18 @@ private:
     const SketchModel& model = view();
     const CurveData* first = model.curve(m_picks.first());
     const CurveData* second = model.curve(entity);
-    if (first == nullptr) {
-      return true;
-    }
-    if (first->isLine()) {
-      return second == nullptr || second->isLine() || second->isCircular();
-    }
-    if (first->isCircular()) {
-      return second == nullptr || second->isCircular() || second->isLine();
-    }
-    return false;
+    const bool kind = first == nullptr ||
+                      (first->isLine() && (second == nullptr || second->isLine() || second->isCircular())) ||
+                      (first->isCircular() && (second == nullptr || second->isCircular() || second->isLine()));
+    // Only one that makes a dimension with it (mitcad#445).
+    return kind && decide({m_picks.first(), entity}).has_value();
   }
 
   // The dimension the picks and the cursor make (without its value); while
   // the value is typed, the place it was put at.
-  std::optional<DimensionData> decide() const {
+  std::optional<DimensionData> decide() const { return decide(m_picks); }
+
+  std::optional<DimensionData> decide(const QStringList& picks) const {
     const SketchModel& model = view();
     const V2 cursor = m_state == State::Edit ? m_placed : m_cursor;
     DimensionData d;
@@ -398,8 +395,8 @@ private:
         set(QStringLiteral("distance"), {{"a", a}, {"b", b}});
       }
     };
-    if (m_picks.size() == 1) {
-      const CurveData* c = model.curve(m_picks.first());
+    if (picks.size() == 1) {
+      const CurveData* c = model.curve(picks.first());
       if (c == nullptr) {
         return std::nullopt;
       }
@@ -428,21 +425,29 @@ private:
       } else {
         return std::nullopt;
       }
-    } else if (m_picks.size() == 2) {
-      QString a = m_picks[0];
-      QString b = m_picks[1];
+    } else if (picks.size() == 2) {
+      QString a = picks[0];
+      QString b = picks[1];
       const CurveData* ca = model.curve(a);
       const CurveData* cb = model.curve(b);
-      // Circles count by their centres.
-      if (ca != nullptr && ca->isCircular()) {
+      // Two concentric circles or arcs make the gap between them
+      // (mitcad#445); other circles count by their centres.
+      const bool concentric = ca != nullptr && cb != nullptr && ca->isCircular() && cb->isCircular() &&
+                              dist(ca->curve.center, cb->curve.center) < 1e-9;
+      if (!concentric && ca != nullptr && ca->isCircular()) {
         a = ca->center;
         ca = nullptr;
       }
-      if (cb != nullptr && cb->isCircular()) {
+      if (!concentric && cb != nullptr && cb->isCircular()) {
         b = cb->center;
         cb = nullptr;
       }
-      if (ca == nullptr && cb == nullptr) {
+      if (concentric) {
+        if (std::abs(ca->curve.radius - cb->curve.radius) < 1e-9) {
+          return std::nullopt;
+        }
+        set(QStringLiteral("concentric_distance"), {{"a", a}, {"b", b}});
+      } else if (ca == nullptr && cb == nullptr) {
         if (!model.pointAt(a) || !model.pointAt(b) || a == b) {
           return std::nullopt;
         }

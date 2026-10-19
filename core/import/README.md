@@ -218,7 +218,11 @@ Matching rules:
   (`geometric::CORNER_DISTANCE`: the corners of roundings that are the
   file's lay 0.03–0.25 mm off, while corner faces 0.83 and 2.5 mm off were
   other corners), and together they hold at most
-  5 % (`geometric::CORNERS`), and when the faces account for the volume
+  5 % (`geometric::CORNERS`), none of them on a body the other side's item
+  left as it was (each new face is measured against the other side's
+  nearest body; where that body is one the other side did not change,
+  a face off is a face the other side has no counterpart for, not a
+  corner: mitcad#343), and when the faces account for the volume
   the change is off: at most twice their area times their distances
   (1e-5 mm at least each; the points are a sample, and a part of a face
   they miss shows in the volume: a cut whose end lay elsewhere on a face
@@ -761,7 +765,14 @@ candidates against the next state:
   distances found for later items; analytic faces are asked first, other
   faces project a point from the nearest point of a grid over them, and a
   point within 1e-5 mm of a face has its distance to it without a search
-  of all faces). An edge is assigned to an edge set
+  of all faces), by more than 1e-4 of their length (at least 1e-4 mm),
+  and by that much more than off the faces of the file's state before the
+  item (mitcad#440: an edge as far off that state was not taken away by
+  the item; its bodies but those the replay and the next state both have
+  as they are). An edge between faces so nearly tangent that the item's
+  dressup there would lie within that distance of its middle counts where
+  its middle moved off by half that depth at least (such edges are looked
+  for on the faces of the edges found). An edge is assigned to an edge set
   when a rounding or bevel of the set's size fits: the points where it
   would meet the edge's two faces (projected onto them) and the middle of
   its cross section (convex or concave by the side of the nearer of the
@@ -1432,6 +1443,19 @@ mitcad#95), and the import is the same as with one thread, only faster:
   `running_workers()` counts them, and `mitcad-ffi`'s
   `abandoned_imports()` includes them, so that the process ends with
   `std::_Exit` as after a hang.
+- **A worker that does not stop at the end of its time** (mitcad#434). A
+  kernel call that does not check for a request to stop runs on past the
+  definition's time. The import waits for such a worker until another
+  share of the item's time (the first round's) has passed after the end of
+  the time it would give the definition (its share, its own time or the
+  item's). Then the definition is cut short as if it had stopped there
+  (gave way, or out of time), and the import goes on. The worker is left to
+  end on its own and counts in `running_workers()`. The case behind it was
+  `db73863f` item 88, a fillet whose definition named some edges of a
+  closed tangent chain. Its contour's walk inside
+  `BRepFilletAPI_MakeFillet::Add`, which no progress range reaches, went
+  round the chain for hours, and the import, waiting for the worker, never
+  finished. The OCCT port's patch 0840 ends that walk.
 - **What stays on the import's thread.** The second round of definitions
   that gave way, the approximate definition taken after a loose match,
   the next history state's fillet and chamfer edge guesses (`Guesses`,
@@ -2012,6 +2036,52 @@ item by item where it is found by its content id under
 none falling back, no parametric item after a retry on the exact
 state, every input read, and reading and applying the appearances taking
 less time than the replay. Without the design it is skipped.
+
+### Measuring points against free-form faces (mitcad#442)
+
+The geometric check's first measurement of `db73863f` item 27 (a
+rounding of both crest edges of a thread cut as a groove: 49 new faces,
+16 points each, against the file's body, whose thread flanks are splines
+of 2484 mm² over the whole thread) took 19–40 s of the item's 60 s, so
+the item fell back when the closer definitions it looked for after it
+ended past its time. Sampled under a debugger, every stack in
+`analysis_boundary_distances` was in OCCT's distance query from a point
+to one face (`BRepExtrema_DistShapeShape`), called by the boundary
+index's `nearest` for each point not placed on a face by its projection
+(a point of the replay's rounding lies within 1e-4 mm of the file's
+spline approximation, not within the 1e-5 that places it): building the
+query's search grid over the whole flank (a third of the samples) and
+classifying each extremum it found, one a turn of the thread, with a
+classifier set up anew (the rest). The large-spline path that lets go of
+a projection after each call was not the cause: nothing it lets go of is
+rebuilt per point.
+
+A free-form face is now measured from what the boundary index keeps of
+it (`BoundaryIndex::free_form_distance`, `core/cpp/bridge/analysis.cpp`):
+the distance to its edges, then a local search of the surface
+(`Extrema_GenLocateExtPS`) from each of its grid's points nearer than
+their neighbours and nearer to the point than the edges plus the grid's
+reach (any extremum nearer than the edges has a grid point within the
+reach), the nearest first, each foot point taken where the face's kept
+exact classifier puts it on the face. Cones, tori and a point with more
+than 64 such grid points (about as far from much of the face) keep OCCT's
+query. Over the design's import, measured beside OCCT's query point by
+point (about 20 000 points), 80 distances differed by more than 1e-7 mm,
+each one nearer than the query's, with its foot point on the face by
+OCCT's own classifier: the query had missed or misplaced an extremum (by
+2e-3 mm at most for distances under 5 mm). The import's report is the
+same.
+
+| `db73863f` item 27, debug build | before | after |
+|---|---|---|
+| first measurement of its 49 new faces | 18.8 s | 2.5 s, 2.5 s |
+| its geometric check | 19.2 s (20.9 s sampled) | 2.9 s, 2.8 s |
+| the item | 29.8 s, parametric | 10.1 s, 10.7 s, parametric |
+
+`core.bridge` (`test_boundary_distances_off_free_form_faces`) measures
+points off a wavy spline of many knot spans and off its prism's extruded
+sides, in two calls: every distance OCCT's query's within 1e-6, and the
+query itself not run (`analysis_whole_face_searches`).
 
 ### Work beside the replay
 
@@ -8313,8 +8383,9 @@ fallbacks 12 → 10 (the final bodies the file's).
 - **Item 75 (Fillet2, radius 20, the concave edges between the cylinder
   and the plane pieces of item 74): 0 / 1.** Each rounding ends at a vertex
   of item 74's rounding (its end cap there). Its plane contact leaves the
-  narrowing piece across its convex edge with the housing's side (rolling
-  on it, as in the file), then at that edge's end OCCT rolls on the next
+  narrowing piece across its convex edge with the housing's side (OCCT
+  rolls on it; the file's ball keeps touching the plane extended past that
+  edge, see round 9 below), then at that edge's end OCCT rolls on the next
   edge, item 74's rounding's end circle, whose face holds the end vertex,
   and the corner's update runs the cylinder contact's p-curve out of its
   range (a point 3e12 off). The file's blend runs on and is cut across
@@ -8401,6 +8472,534 @@ of 98, `a9e82a9a` and `de7b8b9d` 181 of 199 (item 159's short stripes
 beyond its ribs are kept: the ball touches the wall beyond a rib), `52ba7a15`
 and `0c99fb88` 97 of 110, `db73863f` 126 of 145 (128 with 0720 and 0721,
 the port built with 0700 on top of them).
+
+### Thread crests rounded on both edges (round 9 of mitcad#343)
+
+The `db73863f` (mitcad#379) items round 8 left on a thread, traced again
+on the history's stored bodies before them through OCCT's fillet alone.
+Port patch 0750.
+
+**Item 133 (Fillet7, radius 0.8, both helical edges of the crest, three
+turns): parametric, verified.** The crest (a cylinder band 0.81 wide) is
+narrower than the two roundings (each 0.46 wide on it): their contacts on
+it cross, and port patch 0013 computes each again overflowing the crest,
+the ball touching both flanks, one blend, the crest consumed, as in the
+stored bodies. At the thread's ends the end plane (square to the axis) and
+the chamfer cone (60 degrees) meet the helix at about a degree and cut
+that blend along curves 83 long: on the plane the contact on one flank
+meets it 17 past the end of its edge, the other's 65 before. The first
+deviation: the walk of the joined blend stopped 9 from the end, where the
+other flank's stored surface ends (its B-spline about its face), and its
+contact rose to the crest's edge. Four things in OCCT, each needed:
+- the face surfaces of the walks continued by their screw motion past
+  their bounds (the flanks are swept along the helix);
+- the guide past the spine's ends continued along the helix (prolonged
+  along its end tangent, its sections turned a radian away 60 past the end
+  of a helix of radius 28, and the walk was cut back);
+- at the cone, which meets the flank at 0.8 degree, the contact's crossing
+  onto it taken as the end (it was taken for the flank continued, and the
+  ball rolled on the cone);
+- of the two stripes the one that ran out to both ends kept, the other
+  dropped (in the synthetic thread each ran out at one end only, and the
+  corners failed).
+On the stored body the definition gives a change of volume of -80.1539
+against the file's -80.181 (1.7e-7 of the body), 128 faces as in the
+file; the ends cut at the file's points within 0.001.
+Test: a thread rounded on both crest edges between end planes in
+`geometry/tests/test_fillet_thread_crests.cpp` (OCCT only; valid, the
+crest consumed, one more turn taking away the section's volume swept round
+the axis within 0.5 %); it fails without the patch.
+
+**Item 27 (Fillet4, radius 0.6, the crest edges of a thread cut as a
+groove, two chains of 13 and 12 edges over the per-turn faces): 0 / 1.**
+With 0750 the corners at the thread's start now build: the guide past the
+chains' ends follows the helix, so the walk runs on until the crest's
+contact meets the groove's floor (the plane z = 15.432) where the stored
+body's does, the cap from the flank's edge to the floor's rim the stored
+body's (its ends within 1e-4 of the file's). Two gaps are left:
+- the result is invalid: the floor's wire is reported self-intersecting
+  where the cap leaves the rim's prolongation (OnSame: the floor's edge
+  with the crest's cylinder prolonged from the vertex to the contact)
+  tangentially, at their common vertex (tolerance 2e-6); the cap lies
+  inside the rim all along;
+- the definition removes 34.73 against the file's 43.92 (both chains),
+  while the blend faces' areas are the stored ones' (562 each): the rest of
+  the difference lies outside the blends, not traced further.
+
+**Item 143 (Fillet6, radius 0.5, the five edges round the thread's
+chamfer cone): 0 / 1, unchanged by 0750.** The OnSame cap at the
+chain's end on the root cylinder is still not found over the whole blend
+(95 long along the helix), and the two stripes meeting tangentially across
+the crest's end (a cylinder band 0.36 wide) at the cone still walk past
+their common vertex over each other's spines. Needed (round 7): the cap
+found on the blend bounded about its end, and the two stripes joined
+across the crest's end into one blend that leaves the first flank for the
+second about 5 before that vertex, as the stored body's single face does.
+
+Round 9's items: 1 / 3 (133; 27 and 143 left as above). `db73863f`
+imported alone: 128 → 129 parametric of 145 (fallbacks 10 → 9). The other
+designs, each imported alone, keep their counts: `6418ebb1` 41 / 50,
+`920a1cef` 41 / 50, `5ef2dbd5` 80 / 98 (main gives 80 too), `a9e82a9a`
+181 / 199, `de7b8b9d` 181 / 199, `52ba7a15` 97 / 110, `61526c66` 12 / 14.
+One fallback there fails differently: `5ef2dbd5` item 86 (Chamfer2, 0.263
+at 45 degrees on the edges of a band of faces meeting at 1.4 and 2.2
+degrees). Each edge's chamfer now ends at the next face of the band (the
+kink rule) where OCCT failed before, but the walk past the end stops at the
+guide's extension (half the spine's length, `ExtentOneCorner`) before the
+far contact reaches that face's edge, and the corner closes the gap with a
+sliver: the plane's wire self-intersects. With an extension of one length
+the far contact reaches the edge and the result is valid (on the stored
+body, the four edges of the stored state: valid, -1.444 against the file's
+-2.2697, so still not the file's).
+
+### Lens, overflow and corner cases of `db73863f` (round 9 of mitcad#343)
+
+Items 75, 120, 121 and 137 of `db73863f`, traced through OCCT's fillet
+alone on the stored bodies before them (as in round 8), and item 86, which
+follows item 75 and changes with it. Three are fixed in
+the port (0770, 0771, 0772), each with an OCCT-only test in
+`geometry/tests/test_fillet_lens_overflow.cpp` that fails without its
+patch.
+
+- **Item 120 (radius 10, the foot of a post under a block as wide as the
+  post): parametric, verified (0770).** The underside's contact runs off
+  the underside across the block's long bottom edges; from there the file's
+  ball rolls on those edges, touching the post, up to the two points where
+  the post's top circle touches them (the post's side tangent to the
+  block's long sides there), where the rounding vanishes. OCCT took those
+  edges, which end at the rounding's end vertex, for no obstacle and ended
+  each side where the contact left the underside; the corners at the points
+  filled the rest wrongly (invalid). Now an arc into the end vertex tangent
+  to the blend's other face is an obstacle, rolled on up to the vertex,
+  and the roundings that all vanish at one vertex end in a point there. On
+  the stored body the change is 852.71 against the file's 852.70; 41 faces
+  against 40 (the torus split at its seam). Its inputs are read since
+  mitcad#439: the file names one arc of the post's top circle (half of it)
+  with its tangent chain, and the circle is three arcs, split at the two
+  points. There the next arc and the block's long bottom edge both run on
+  from an arc in its direction; Mitcad's own chain took the long edges
+  too, the rounding with them failed, and the fillet fell back to the
+  kernel's contour, the one arc (a change of 426.3 against the file's
+  852.7), so that the import took the arcs gone in history state 75
+  instead (inferred). The arcs are concave and the long
+  edges convex, and a rounding cannot run on from one into the other (it
+  vanishes where they meet): the chain now continues only into edges of the
+  same convexity (`geometry/src/face_select.cpp`, `EdgeContinuations`;
+  test `test_mitcad_fillet_chain_through_points_where_the_rounding_vanishes`
+  in `geometry/tests/test_fillet_chains.cpp`), and the one arc named gives
+  the three. `db73863f` imported again: 132 of 145 items parametric, 6
+  fallbacks, inputs inferred for 14 items (15 before); items 120 and 121
+  verified with their inputs read.
+- **Item 121 (radius 1, the block's bottom outline over item 120's
+  rounding): parametric, verified (0771).** Along each long side the edge
+  runs over item 120's rounding, whose face comes tangent to the side at
+  those points (the rounding ends in a point there, its surface degenerate
+  at that corner). OCCT carried the contour on through the points; its walk
+  crawled into the point and stopped, or its last section took parameters
+  on the degenerate face's iso far from the contact's and no p-curve
+  approximated it ("a common point's vector" above). Now the contour stops
+  at such a vertex, each side's rounding ending in a point there, and the
+  walk's last section before it is solved again step by step from the
+  contact's side. On the stored body the change is -26.782 against the
+  file's -26.715 (0.25 %, within the import's 1 %), with the file's 54
+  faces.
+- **Item 75 (radius 20, the cylinder's foot on the plane pieces of item
+  74): parametric, verified (0772).** The file's blend is the ball rolling
+  between the plane, extended past the housing's side, and the cylinder
+  (every centre 20 from the plane): over item 74's rounding it goes on
+  beyond the housing, cut by the housing's two sides and item 74's
+  rounding, which grow up to it (the edges between them run on to 0.3834
+  above the plane). It does not roll on the plane piece's edge with the
+  side, as round 8 had it. OCCT ended each stripe at its edge's end; the
+  corners there failed. Now two such stripe ends (one radius, on the same
+  face and on one plane, their vertices on a third face) are walked as one
+  blend over the corner, cut by the three faces and joined to the second
+  stripe. On the stored body the change is 822.54 against the file's
+  823.08 (0.07 %); the cuts and junctions are the file's edges (the
+  junctions at z = 0.3834, the crossings of the sides' edges the file's
+  within 1e-4), 60 faces against 57 (the blend split otherwise, its area
+  the same within 0.01 per corner). On the replay's body (its faces and
+  their surfaces reversed, a thread as B-splines) the walks run the other
+  way along the spine; the points where the contact crosses the sides'
+  edges now take their transition from the side of the edge's vertex on
+  the corner's face, and the change is 822.27.
+- **Item 86 (Fillet4, the plane pieces' edges with the housing's sides
+  beyond item 75's blend): parametric → fallback.** It was parametric on
+  item 75's stored body (its 15 edges found by their names in the file).
+  On item 75's own result only 7 of them are found (against an earlier
+  history state), and the rounding of those stops part of the way ("the
+  walk between the two faces fails"; OCCT's fillet alone on that input,
+  with a radius of 5, fails the same way with main's port: a change of
+  item 86's input, not of the patches' work on it). Item 75's blend is three
+  faces per corner where the file has two: OCCT's join splits the first
+  stripe where the walk starts (the middle of its last piece) and the
+  second where the walk meets it, while the file's two faces meet along an
+  edge from the first junction to the cylinder (not a section of the
+  ball). A trial walking each stripe from its last piece's far end (two
+  faces per corner, meeting at the section through the first junction)
+  left an inverted face at the stripes' other ends and was not kept.
+- **Item 137 (radius 2): 0 / 1.** The key's end face is a lens 0.67 wide
+  between its convex arc and the bore's concave arc, both rounded with 2.
+  The file's concave rounding is a ball touching the bore and rolling on
+  the lens's convex edge; its convex rounding is a ball touching the key's
+  side and externally tangent to that ball (an S-shaped section, checked
+  at the middle to 1e-4). The lens is consumed between x = ±2.0449, beyond
+  which the key meets the bore in a crease. OCCT rolls each rounding on the
+  other's edge (0430), and the concave one's walk fails. Needed: the
+  concave rounding rolling on the convex edge first, then the convex
+  rounding walked between the key's side and the concave rounding's
+  surface, the lens consumed where the two meet; not done in this round.
+
+| Item | Achieved / target | Cause of the gap |
+|---|---|---|
+| `db73863f` 120 | 1 / 1 parametric, verified (0770); inputs read 1 / 1 (mitcad#439) | |
+| `db73863f` 121 | 1 / 1 parametric, verified (0771) | |
+| `db73863f` 75 | 1 / 1 parametric, verified (0772) | |
+| `db73863f` 137 | 0 / 1 | the two roundings of a lens's sides meet tangentially (S-shaped), the lens consumed; no such construction in OCCT |
+| `db73863f` 86 (kept) | 0 / 1, was parametric | on item 75's result 7 of its 15 edges are found: item 75's blend is three faces per corner, the file's two |
+
+Imported again by content id (features parametric, before → after):
+`db73863f` 128 → 130 of 145 (items 120, 121 and 75 parametric, item 86 a
+fallback); the others item by item as with main's port: `6418ebb1` and
+`920a1cef` 41 of 50, `61526c66` 12 of 14, `5ef2dbd5` 80 of 98 (81 in round
+8; 80 with main's port too), `a9e82a9a` and `de7b8b9d` 182 of 199 (181 in
+round 8; not attributed), `52ba7a15` and `0c99fb88` 97 of 110.
+
+### A thread's chamfer and a groove's floor (round 10 of mitcad#343)
+
+Items 143 and 27 of `db73863f` (mitcad#379), traced again through OCCT's
+fillet alone on the bodies before them (the stored state's for item 143;
+for item 27 the replay's, on which its edges' names resolve, within 0.003
+mm³ of the stored body in every 3 mm of the thread). Each first deviation
+was a trait of the stored bodies OCCT did not allow for; four port patches
+(0800 to 0803), each with an OCCT-only test in
+`geometry/tests/test_fillet_crest_corners.cpp` that fails without it.
+
+**Item 143 (Fillet6, radius 0.5, the five edges round the thread's chamfer
+cone): verified on the stored body (0800, 0801, 0802); a fallback in the
+import.** The cone's loop of edges
+runs from where one flank comes out of the root cylinder along that flank
+(over two faces), the crest band left by an earlier rounding of both crest
+edges (0.36 wide, the two roundings tangent to it and to the flanks), the
+other rounding and the other flank down to the root again. The stored
+result is one rolling ball along the whole loop: a long blend on the first
+flank, a torus over the crest band, pieces on the rounding and the second
+flank, a sliver 0.015 wide where the cone meets that flank at 1.7 degrees.
+- The cap at the start, on the root cylinder, was not found. Not because
+  the blend is long (round 7's trial bounded it about its end; the cap,
+  15.29 long, a tongue between two points 0.87 apart, is found on the
+  whole blend): the stored cylinder is trimmed to one period starting two
+  turns below its basis's parameters, and the cap's two points lay two
+  periods apart, of which `ChFi3d_Recale` took out one. Port patch 0800
+  brings them together however many periods apart.
+- OCCT made three stripes of the loop, which met end to end at the crest
+  band's vertices and walked past each other (rounds 7 to 9). The edges
+  between the crest band, the roundings and the flanks are tangent within
+  1e-3 radian, but the stored helices' curves on their faces lie up to 4.8
+  micrometres off their own, beyond 1.5 times their tolerances (1.4 to 3.7
+  micrometres), where `ChFi3d::IsTangentFaces` compared them: the faces
+  were taken for faces at an angle, the contour stopped at those vertices,
+  and a walk across such an edge stopped there. Port patch 0801 compares
+  the positions within ten times the edge's tolerance.
+- The one contour's walk then ended 0.034 before the vertex where the
+  rounding gives way to the second flank: the blend is 0.015 wide there,
+  and its contact on the rounding met the rounding's own edge with the
+  cone, within the stored edges' deviation. Port patch 0802 takes such a
+  contact (on the spine's own edge, within ten times the tolerances of the
+  vertex ahead, a face tangent to the contact's face holding the spine's
+  next edge there) through the vertex.
+- On the stored body the definition gives a change of volume of -15.3854
+  against the file's -15.3941 (3.5e-7 of the body), with the file's 51
+  faces; the blend faces 92.6087, 2.7428, 0.1901, 0.5863 mm² against the
+  file's 92.6098, 2.7162, 0.1901, 0.5951 (the sliver as in the file).
+  OCCT's result alone keeps the stored helix between the crest band and
+  the first rounding, split by the blend, with its tolerance below its
+  curves' deviation (BRepCheck); the import's fillet makes it valid.
+- In the import the item runs on the replay's body, not the stored one,
+  and falls back; the first deviation is the item's edges, not the
+  rounding. Their names do not resolve ("missing in the replay"): one
+  file edge is 0.03 mm from its replay edge. The edges the item takes away
+  in the file then stand in for them, and two are wrong. The replay's
+  rounding of item 142 splits the faces near one thread edge differently
+  from the file's, so an edge of that rounding is taken although item 143
+  does not touch it (the file's states before and after the item are the
+  same there). The cone's edge down to the root (its faces 0.03 radian
+  apart) is left out, because its blend is 0.015 wide and the file's state
+  still has an edge within that of it. With the five right edges, OCCT's
+  contour still stops at the vertex before that edge: the walk from the
+  other edges takes the next edge only when its faces are at an angle,
+  which `ChFi3d::IsTangentFaces` denies within 0.1 radian. The edge then
+  starts a contour of its own, which takes the other four edges again from
+  the other side. Taking such an edge, as patch 0022 does for the first
+  edge of a contour (`MinNormalAngle` above the angular tolerance), gives
+  the stored blend faces within 0.01 mm, but a result BRepCheck does not
+  accept (a spline face's wire not closed). Not in this round. (The edges
+  taken away: *Edges taken away, against the state before the item
+  (mitcad#440)* below.)
+
+**Item 27 (Fillet4, radius 0.6, both crest edges of a thread cut as a
+groove, two chains over the per-turn faces): parametric when the item's
+time allows (0803).** Round 9
+left the floor's wire self-intersecting where the cap leaves the rim's
+prolongation tangentially, and the change of volume 34.73 against the
+file's 43.92.
+- The cap and the rim run round the axis there, the cap inside the rim, a
+  few micrometres from it for a while: the cap's approximation crossed the
+  rim 0.053 from their common point (0.017 at the other chain's), whose
+  tolerance was 5e-5, the rim's (an exact circle) 1e-7. Port patch 0803
+  gives that point a tolerance taking in such crossings near it, where the
+  two meet tangentially. The result is valid.
+- The volume: every face of the stored state lies on the result within 4.9
+  micrometres, and every face of the result on the state within 5.6 (the
+  root's aside, which the distance computation does not find on the
+  state's trimmed root cylinder, whose curves run six turns).
+  The stored roundings lie inside the result's by 1.5 micrometres on
+  average (at 197 of 200 samples), 1.7 mm³ over their 1125 mm²; the flanks
+  within 5e-6. The rest of the figure is the stored state's volume, which
+  its own integrations do not agree on: 30724.37 as the import measures it,
+  30530.55 integrated adaptively (the trimmed root cylinder alone 316 apart,
+  each flank of six turns 1 apart), 30728.70 from its triangulation (whose
+  value moves by 0.9 with the deflection); the replay's result integrates
+  alike all three ways (30733.56, 30733.56, 30733.57). The change is within
+  the matching rules' 1e-3 of the body (3e-4 as measured), and the
+  geometry within the geometric tolerance.
+- The item has 60 s. Its first definition's geometric check agrees
+  (within 0.01 mm), but the change matches its state only within 4.0e-4,
+  so the import looks for a closer definition and takes the first one
+  again after that. Of that time, 11.5 s go to translating the item and
+  40.25 s (38.0 s in another run) to the geometric check's first
+  measurement: 49 new faces, 16 points each, against the file's body,
+  whose thread flanks are splines of 2484 mm² over the whole thread.
+  Where the closer definitions end past the 60 s (61.4 s in one run), the
+  import does not take the first definition again, and the item falls
+  back. Where they end before (57.4 s), it is parametric. So the slow
+  measurement itself takes the item's time. The likely cause is the
+  boundary index's large-spline path (`analysis.cpp`), which lets go of a
+  projection grid after each point; this was read from the code, not
+  profiled.
+
+| Item | Achieved / target | Cause of the gap |
+|---|---|---|
+| `db73863f` 143, the stored body | 1 / 1 verified (0800–0802) | |
+| `db73863f` 143, the import | 0 / 1 parametric | the edges taken away stand in for unresolved names, one wrong and one missing; with the right edges, the contour split at a near-tangent edge and an invalid result |
+| `db73863f` 27 | parametric in 1 of 2 runs | the item's 60 s: 40 s of it measuring its new faces against the file's thread flanks |
+
+### A fillet contour that went round a closed chain for ever (mitcad#434)
+
+With item 86 a fallback, the import of `db73863f` stopped tracing in item 88
+(Fillet6, on item 86's stored body) and ran for over an hour. Two of the
+definitions evaluated ahead were inside `BRepFilletAPI_MakeFillet::Add`
+(`ChFi3d_Builder::PerformElement`, its upstream walk), prepending the 36
+edges of a closed tangent chain to the contour again and again, and the
+import waited for the first of them. The chain turns by 0.018 rad at three
+vertices (and by 1.3e-3 rad at others, above the tight angular tolerance
+of 1e-3). The downstream walk stopped at a turn before an edge not
+selected; the upstream walk came round to it from the other side, where the
+edge beyond is selected, and `StopsAtTurn` (port patch 0180) let it pass.
+`Add` has no progress range, so the item's time did not stop it. The same
+loop is there with main's port before the ninth round (a plate whose top
+outline turns twice, built with OCCT alone, loops with both builds).
+
+- Port patch 0840: neither walk of a contour adds an edge already in it, so
+  round such a chain the contour is the chain's edges once each.
+- The import stops waiting for a worker that does not end at its time
+  (*A worker that does not stop at the end of its time* above).
+
+`db73863f` now finishes in 5 min 23 s (debug build): 131 parametric, 7
+fallbacks, 7 skipped of 145. Item 88 falls back after 27.7 s of its 60 s
+(those definitions now fail: "the geometry kernel's computation of the
+rounding along edge … (and 35 more edges of its chain) fails"), as its
+other definitions do on item 86's stored body. Tests:
+`geometry/tests/test_fillet_chain_loops.cpp` (fails without 0840: the
+contour does not end in 30 s) and the import test
+`a_definition_evaluated_ahead_that_does_not_stop_is_given_up` (a worker
+whose kernel call ignores the stop for 15 s; the import ends in 4 s, the
+next definition taken; 15 s and a fallback without the change).
+
+### A guessed rounding where the file's item changes nothing (round 10 of mitcad#343)
+
+`db73863f` item 131 (Fillet4, in the nut's component) names one edge,
+12.82 long at a radius of 21.13 near the start of the nut's thread. That
+edge is in no body of the replay (`missing_in_replay`), and it is in none
+of the file's either: the decoder finds it only in an older state of the
+nut's stored history, 7 of the item's 113 edge references are lost in the
+file, the file's history step for the item leaves every body as it was
+(its state is the state before it), and the replay's nut is that state's
+body within 2.6e-4 mm. The item failed in the file; nothing before it
+deviates.
+
+The import then guessed edges from the next history states ("edges found
+against ASM history state 84"): a rounding of the end edge of the
+housing's thread crest, on a body of another component. The geometric
+check took it: its 5 new faces lay on the file's (unchanged) body but its
+blend of 18.74 mm², 0.045 mm off, 0.6 % of the new area, which passed as a
+corner patch, and the faces' slack (73.5 mm³) covered its -0.53 mm³ where
+the file's change is 0. That blend split the crest's helical edges, so the
+edges item 133 (Fillet7) names were not in the replay, and item 133 came
+in only by its retry on the file's exact state.
+
+A face off on a body the other side's item left as it was is now never a
+corner patch (`geometric::judge`; each new face is measured against the
+other side's nearest body, and flagged when that body is one the other
+side did not change). Item 131 is skipped as failed in the file, and item
+133 is parametric on the replay, its inputs read, its faces the file's
+within 0.01 mm. Tests: `no_corner_patch_where_the_file_changes_nothing`
+and `a_body_the_file_leaves_is_measured_alone` in `src/geometric.rs`.
+
+`db73863f` imported again by content id (debug build): 131 parametric,
+6 fallbacks, 8 skipped of 145 (before: 132 / 6 / 7, item 131 parametric
+by the guess and item 133 only by the retry on the exact state). The
+falling back items are those the design check names, and no item is
+parametric after a retry on the exact state.
+
+### Lens and corner faces of `db73863f` (round 10 of mitcad#343)
+
+Items 75, 86 and 137 of `db73863f` after round 9, traced through OCCT's
+fillet alone on the stored bodies before them; port patches 0820, 0821
+and 0822, each with an OCCT-only test in
+`geometry/tests/test_fillet_lens_overflow.cpp` that fails without it.
+
+- **Item 75 (0820): two faces per corner, as in the file.** 0772's join
+  made three faces per corner, the walked one generated by no edge. Now
+  the join is walked from the first stripe's last piece's far end to the
+  second's and split at the section through the first side's junction:
+  on the stored body 57 faces, the file's count; per corner 428.98 and
+  491.81 mm² against the file's 370.58 and 550.26 (the same sum within
+  0.05: the file's edge between the two faces is no section of the ball),
+  the plane pieces within 0.06, the other faces within 4e-4 mm of the
+  file's; the volume 200007.857 against the file's 200007.088 (0772:
+  200007.696).
+- **Item 86 (Fillet4): fallback → parametric, verified.** With item 75's
+  faces named by its two edges, all of its edges are found again on item
+  75's result.
+- **Item 137 (Fillet5, radius 2, three edges): 0 / 1 → parametric,
+  verified (0821, 0822).** The key's end at z = 21.432 is a lens rounded
+  on both edges, the S-shaped section of round 9's trace: the concave
+  blend rolls on the lens's convex edge, the convex blend touches the key
+  and the concave blend's pipe from outside, the shaft cuts the convex
+  blend towards the lens's ends (0821). The key's other end is a lens too,
+  only its convex arc rounded: the ball rolls on the lens's concave edge,
+  then also on the key's side edges (each split by a vertex short of the
+  lens's end) up to the lens's ends, where the rounding vanishes in a
+  point (0822); OCCT walked back from the first step's start with the
+  other end's edges, stopped at the split and failed at both corners. On
+  the stored body the new faces are the file's within 3e-5 mm at that end
+  (areas 0.0638, 0.1355, 0.2106, 0.2823 as the file's, 6.0214 against
+  6.0199) and 2.4e-4 mm at the first (4.8443 and 3.9172 against 4.8439 and
+  3.9223); the change in a box round each end -0.7785 against the file's
+  -0.7794 and +0.6321 against +0.6325 mm³.
+
+| Item | Achieved / target | Cause of the gap |
+|---|---|---|
+| `db73863f` 75 | 1 / 1, two faces per corner (0820) | |
+| `db73863f` 86 | 1 / 1 parametric, verified | |
+| `db73863f` 137 | 1 / 1 parametric, verified (0821, 0822) | |
+
+Where a key's side runs into the lens's end unsplit, 0822 leaves the walk
+ending where the contact reaches the side and the corner cutting the blend
+by the shaft, within 0.016 mm of the rolling ball's faces.
+
+Imported again by content id (features parametric, before → after):
+`db73863f` 132 → 133 of 145 against main (item 137; 4 fallbacks, 8 skipped;
+item 137 counts its inputs inferred, the fourth edge reference the file
+lost left out, as the design check now names it); the
+others unchanged against main: `6418ebb1` and `920a1cef` 41 of 50, `61526c66` 12 of 14,
+`5ef2dbd5` 80 of 98, `52ba7a15` and `0c99fb88` 97 of 110; `a9e82a9a` and
+`de7b8b9d` 183 of 199 (182 before main's merge, with 0822 alone too: item 11
+parametric with main's changes).
+
+### Edges taken away, against the state before the item (mitcad#440)
+
+`db73863f` item 143 (Fillet6, radius 0.5 round the thread's chamfer cone,
+round 10 above) took its edges from what the next state lost when their
+names did not resolve, and two of them were wrong:
+- An edge of item 142's rounding (4.26 long) was taken, 0.004 to 0.009 off
+  the next state. It is as far off the state before the item: the replay's
+  rounding of item 142 splits the faces there otherwise than the file's,
+  and item 143 does not touch it. So were ten edges of another body of the
+  component, which the replay builds 0.38 mm off the file's, and 17 short
+  edges between the replay's crest roundings (tangent, so no dressup's
+  anyway), each 0.0002 to 0.004 off both states.
+- The cone's edge down to the root (2.96 long, its faces 0.03 radian
+  apart) was left out. The rounding there is 0.015 wide and lies 6.0e-5
+  mm from the edge's middle, below the gone tolerance (1e-4 of the
+  length, 3.0e-4 mm here).
+
+`refs::consumed_edges` now measures the edges' middles against the file's
+state before the item too (the cursor's state; its bodies but those the
+replay and the next state both have as they are). An edge is gone only
+where its middle is farther off the next state than off that one by the
+gone tolerance. An edge between faces so nearly tangent that the item's
+dressup there (the least of its sections at the edge's wedge) would lie
+within the tolerance of its middle is gone where the middle moved off by
+half that depth at least (and by more than 1e-6 mm); such edges are looked
+for on the faces of the edges found gone, and not between faces within
+1e-3 radian (tangent). The cone's edge: 6.06e-5 off the next state, as much
+more than off the state before, its rounding 5.99e-5 deep. Where the state
+before cannot be measured, the edges are judged by the next state alone,
+as before. Test: `edges_gone_with_the_item_and_a_nearly_tangent_one` in
+`src/refs.rs` (a planar body whose quarter-turn edge and nearly tangent
+edge are rounded, beside an edge as far off the state before and two
+nearly tangent edges left).
+
+The first deviation of round 10, the names, is gone on main: item 131's
+guessed rounding of the crest's end (*A guessed rounding where the file's
+item changes nothing* above) was what made the crest band's edge 0.03 mm
+off the file's. The names now give the file's five edges (six of the
+replay's, which splits the long flank edge in two), and the edges the next
+state lost are the same six now (before: four of them, the edge of item
+142's rounding and the other body's ten). The item still falls back: OCCT's
+contour stops at the nearly tangent edge (mitcad#441).
+
+| `db73863f` | Achieved / target | Cause of the gap |
+|---|---|---|
+| item 143's edges by their names | 5 / 5 | |
+| item 143's edges from the next state | 5 / 5 (before: 4 / 5 and 11 others) | |
+| item 143 parametric | 0 / 1 | the contour split at the nearly tangent edge (mitcad#441) |
+| design, parametric (imported alone, debug build) | 132 / 145, 5 fallbacks, 8 skipped (before the same, item for item) | items 9, 88, 93, 137, 143 |
+
+No other item's edges changed: the gone-edge counts of the other fillets
+and chamfers that look at the next states (items in states 19, 51, 83 to
+86) are those before, and every outcome is the same.
+
+### A fillet contour into a near-tangent edge (mitcad#441)
+
+With the file's five edges (above), item 143 of `db73863f` (Fillet6,
+radius 0.5 round the thread's chamfer cone) fell back only in OCCT's
+fillet. Traced through OCCT's fillet alone on the bodies before the item,
+two first deviations, each with a port patch and an OCCT-only test in
+`geometry/tests/test_fillet_near_tangent_contour.cpp` that fails without
+it:
+- The contour stopped before the edge down to the root, whose faces are
+  0.03 radian apart. OCCT takes faces within 0.1 radian for tangent; port
+  patch 0022 rounds such an edge where a contour starts from it, but a
+  contour coming to it from the other edges stopped there, and the edge
+  started a second contour that took the other four edges again. Which
+  happened depended on which of the five edges comes first among the
+  body's edges: on the stored body the near-tangent edge did, and the
+  rounding was built (round 10); on the replay's body another edge did.
+  Started from each of the five edges in turn on the stored body, OCCT now
+  gives one contour and the same result (patch 0860).
+- On the replay's body the one contour's result was invalid: the earlier
+  rounding of the crest kept its whole edge with the cone beside the
+  blend's end, its wire open. The blend comes to nothing at the vertex
+  where that edge meets the edge down to the root (the cone and the
+  rounding meet at 1.7 degrees there), and the walk's contact on the
+  rounding ended at that vertex on the rounding's edge with the flank,
+  within the vertex's tolerance, so no point of the blend lay on the edge
+  with the cone (patch 0861 adds it there).
+
+On the stored body, started from any of the five edges: a change of volume
+of -15.3854 against the file's -15.3941, the file's 51 faces, valid after
+the import's fillet. On the replay's body: valid, -14.6396 (3e-5 of the
+body from the file's change), every new face within 0.01 mm of the stored
+state (the faces farther off lie as far off in the body before the item).
+In the import the item is parametric and verified: its new faces and the
+file's within 0.01 mm, the change 0.115 mm³ from the file's.
+
+`db73863f` imported again by content id (debug build): 133 parametric,
+4 fallbacks, 8 skipped of 145 (before: 132 / 5 / 8): item 143 parametric,
+items 9, 88, 93 and 137 fall back as before.
 
 ### Chamfers left after mitcad#240 (mitcad#263)
 

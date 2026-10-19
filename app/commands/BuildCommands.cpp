@@ -44,6 +44,7 @@
 #include <TopExp_Explorer.hxx>
 #include <TopoDS.hxx>
 #include <TopoDS_Shape.hxx>
+#include <gp_Dir.hxx>
 #include <gp_Pnt.hxx>
 #include <gp_Trsf.hxx>
 #include <gp_Vec.hxx>
@@ -110,8 +111,21 @@ struct Shared {
     double offset = kNaN;
     double width = kNaN;
     double length = kNaN;
+    // The offset is to a tilted part's foot long point (mitcad#444), not
+    // to its faces.
+    bool longPoint = false;
   };
   Side side;
+  // Where the part shown last stands on a slot (mitcad#444): the foot's
+  // long point, the slot's normal and its direction along the part it is
+  // on; the tilt's handle turns about their cross. Invalid off a side.
+  struct Foot {
+    bool valid = false;
+    gp_Pnt point;
+    gp_Dir normal;
+    gp_Dir along;
+  };
+  Foot foot;
   // The part picker (mitcad#418): the main window it belongs to, the host
   // its choices go through and the picker once wired. UI thread only.
   QWidget* window = nullptr;
@@ -125,6 +139,14 @@ struct Shared {
   Side shownSide() const {
     const std::lock_guard<std::mutex> lock(mutex);
     return side;
+  }
+  void setFoot(const Foot& shown) {
+    const std::lock_guard<std::mutex> lock(mutex);
+    foot = shown;
+  }
+  Foot shownFoot() const {
+    const std::lock_guard<std::mutex> lock(mutex);
+    return foot;
   }
 
   QImage thumbnail(const Part& part) {
@@ -859,6 +881,10 @@ Placement placement(const Shared& shared, const QString& role, const CommandStat
     }
     fields.insert(QStringLiteral("rotate"), angleValue(state.choice(QStringLiteral("rotate"))));
     fields.insert(QStringLiteral("flip"), state.checked(QStringLiteral("flip")));
+    // A profile on a side leans along the part it stands on (mitcad#444).
+    if (profile && result.how == Against::Side && cmd::nonZero(state, QStringLiteral("tilt"))) {
+      fields.insert(QStringLiteral("tilt"), state.expression(QStringLiteral("tilt")));
+    }
     // Auto (or nothing chosen) leaves the mitre to the model; None says
     // so (a corner at an angle other than 90 degrees defaults to shared).
     const QString mitre = state.choice(QStringLiteral("mitre"));
@@ -1018,6 +1044,7 @@ Shared::Side sideOf(const QJsonObject& answer, double targetLength) {
   shown.from = str(side, "from").isEmpty() ? QStringLiteral("a") : str(side, "from");
   shown.offset = side.value(QStringLiteral("offset")).toDouble(kNaN);
   shown.width = side.value(QStringLiteral("width")).toDouble(kNaN);
+  shown.longPoint = side.value(QStringLiteral("long_point")).toBool();
   shown.length = targetLength;
   for (const QJsonValue& value : answer.value(QStringLiteral("snaps")).toArray()) {
     const QJsonObject snap = value.toObject();
@@ -1263,6 +1290,30 @@ Inspection inspectPlacement(const SharedPtr& shared, const QString& role, const 
                   .arg(kind.isEmpty() ? QStringLiteral("none") : kind)
                   .arg(shown.offset, 0, 'f', 1)
                   .arg(shown.from);
+    // A tilt (mitcad#444): its handle at the foot.
+    const double tilt = answer.value(QStringLiteral("tilt")).toDouble(0.0) * 180.0 / kPi;
+    if (std::abs(tilt) > 1e-9) {
+      lines << QObject::tr("Tilted %1 deg towards end %2, its foot cut to lie on the side")
+                   .arg(std::abs(tilt), 0, 'f', 1)
+                   .arg(tilt > 0.0 ? QStringLiteral("B") : QStringLiteral("A"));
+      sideLog += QStringLiteral("; tilt %1 deg").arg(tilt, 0, 'f', 2);
+    }
+    if (!hovered) {
+      Shared::Foot foot;
+      const std::optional<gp_Pnt> point = pointOf(side.value(QStringLiteral("foot")));
+      const QJsonArray normal = side.value(QStringLiteral("normal")).toArray();
+      const QJsonArray along = side.value(QStringLiteral("along")).toArray();
+      if (point && normal.size() >= 3 && along.size() >= 3) {
+        const gp_Vec n(normal[0].toDouble(), normal[1].toDouble(), normal[2].toDouble());
+        const gp_Vec a(along[0].toDouble(), along[1].toDouble(), along[2].toDouble());
+        if (n.Magnitude() > 1e-9 && a.Magnitude() > 1e-9) {
+          foot = Shared::Foot{true, *point, gp_Dir(n), gp_Dir(a)};
+        }
+      }
+      shared->setFoot(foot);
+    }
+  } else if (!hovered) {
+    shared->setFoot({});
   }
   // On an end (mitcad#417): straight on or turned, a corner's offset and
   // the mitre the placement takes.
@@ -1432,7 +1483,8 @@ void keepPlace(const Shared& shared, CommandState& state, const CommandContext& 
   const Shared::Side side = shared.shownSide();
   const QString to = state.choice(QStringLiteral("from"));
   state.setChecked(kOffsetTyped, true);
-  const double width = side.width;
+  // A tilted part's offset is to its foot's long point, a point (mitcad#444).
+  const double width = side.longPoint ? 0.0 : side.width;
   const double length = side.length;
   const bool known = std::isfinite(side.offset) && std::isfinite(width) &&
                      (std::isfinite(length) || (side.from == QStringLiteral("a") && to == QStringLiteral("a")));
@@ -1590,6 +1642,33 @@ QVector<InputDef> placementInputs(const SharedPtr& shared, const QString& role, 
   inputs.append(choiceInput(QStringLiteral("rotate"), QObject::tr("Rotate"), kRotations, QStringLiteral("0"))
                     .withVisible(onPart)
                     .withTooltip(QObject::tr("About the part's axis, in 90 degree steps")));
+  if (profile) {
+    // On a side (mitcad#444): a brace leaning along the part it stands on,
+    // its foot cut to lie on the side; dragged by the arc at the foot, its
+    // angle in the box at the cursor while the arc is dragged.
+    inputs.append(valueInput(QStringLiteral("tilt"), QObject::tr("Tilt"), ValueKind::Angle, QStringLiteral("0 deg"))
+                      .withVisible([cut, onSide](const CommandState& state) { return cut(state) && onSide(state); })
+                      .withCursorBox()
+                      .withManipulator([shared](const CommandState&, const CommandContext&) -> std::optional<Manipulator> {
+                        const Shared::Foot foot = shared->shownFoot();
+                        if (!foot.valid) {
+                          return std::nullopt;
+                        }
+                        // Turning about the slot's cross axis: 0 upright,
+                        // positive towards end B of the part it is on.
+                        const gp_Vec across = gp_Vec(foot.normal).Crossed(gp_Vec(foot.along));
+                        if (across.Magnitude() < 1e-9) {
+                          return std::nullopt;
+                        }
+                        Manipulator handle = cmd::ring(foot.point, gp_Dir(across));
+                        handle.reference = foot.normal;
+                        return handle;
+                      })
+                      .withTooltip(QObject::tr("On a side: the lean along the part it stands on, towards its end B "
+                                               "(positive) or end A, up to 80 degrees; 0 stands square. The foot is "
+                                               "cut to lie on the side; an auto length ends flush on the face it "
+                                               "meets")));
+  }
   inputs.append(flipInput(QStringLiteral("flip"), QObject::tr("Flip")).withVisible(onPart));
   // Placement as icon buttons (mitcad#427: shown directly, no More), once
   // the design has a part to go on; each button's tooltip names it.

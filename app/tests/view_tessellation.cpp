@@ -115,6 +115,15 @@ std::vector<occ::handle<Poly_Triangulation>> triangulations(const TopoDS_Shape& 
   return meshes;
 }
 
+// Each face's triangle count (-1 without a triangulation).
+std::vector<int> triangleCounts(const TopoDS_Shape& shape) {
+  std::vector<int> counts;
+  for (const auto& mesh : triangulations(shape)) {
+    counts.push_back(mesh.IsNull() ? -1 : mesh->NbTriangles());
+  }
+  return counts;
+}
+
 int sphereTriangles(const TopoDS_Shape& shape, int& spheres) {
   int largest = 0;
   spheres = 0;
@@ -168,6 +177,19 @@ void checkDome(const occ::handle<Prs3d_Drawer>& drawer) {
     plainCounts.push_back(mesh.IsNull() ? -1 : mesh->NbTriangles());
   }
   CHECK(counts == plainCounts);
+
+  // Both domes meshed at once on the model's thread (mitcad#438, all the
+  // bodies of a job together): the meshes each gets alone, and the view
+  // keeps them.
+  const std::vector<TopoDS_Shape> together{dome(1.0), dome(0.004)};
+  CHECK(mitcad::io::mesh_all_in_place(together, mitcad::viewMeshOptions()) == together.size());
+  CHECK(triangleCounts(together[0]) == triangleCounts(shown));
+  CHECK(triangleCounts(together[1]) == counts);
+  for (const TopoDS_Shape& body : together) {
+    const auto made = triangulations(body);
+    StdPrs_ToolTriangulatedShape::Tessellate(body, drawer);
+    CHECK(triangulations(body) == made);
+  }
 }
 } // namespace
 

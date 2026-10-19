@@ -476,6 +476,10 @@ pub struct FeatureOutput<S> {
     /// The values of reference parameters the feature measured (a bound
     /// length, mitcad#375): the features after it use them.
     pub measured: Vec<(ParamId, f64)>,
+    /// A tapped hole's walls that its modelled thread left no piece of, as
+    /// they were before the thread (mitcad#436): the threads query lists
+    /// the thread from them.
+    pub threaded_walls: Vec<hole::ThreadedWall>,
 }
 
 impl<S> Default for FeatureOutput<S> {
@@ -491,6 +495,7 @@ impl<S> Default for FeatureOutput<S> {
             placements: Vec::new(),
             mounts: BTreeMap::new(),
             measured: Vec::new(),
+            threaded_walls: Vec::new(),
         }
     }
 }

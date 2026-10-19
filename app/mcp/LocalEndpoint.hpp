@@ -22,7 +22,14 @@ QString discoveryDirectory();
 bool prepareDiscoveryDirectory(QString* error);
 bool publishEndpoint(const Endpoint& endpoint, QString* error);
 void removeEndpoint(const Endpoint& endpoint);
+// The current user's private records. A record whose process is no longer
+// running (a killed or crashed app, mitcad#437) is removed, not returned;
+// a returned record is live only once its token authenticates.
 QList<Endpoint> discover(QString* error = nullptr);
 QByteArray encodeAuth(const Endpoint& endpoint);
+// Whether a process with this id is running, without waiting. True when
+// the system cannot tell (no right to query it), so that such a record is
+// still probed; false for an id no process can have.
+bool processRunning(qint64 pid);
 
 } // namespace mitcad::mcp

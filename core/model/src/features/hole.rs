@@ -25,7 +25,7 @@ use super::{
     ToolUse, is_false,
 };
 use crate::ids::{BodyUid, EntityUid, FeatureUid, curve_serde};
-use crate::kernel::{Axis, Bound, HoleEnd, HoleShape, HoleSpec, Kernel, ThreadSpec};
+use crate::kernel::{Axis, Bound, Cylinder, HoleEnd, HoleShape, HoleSpec, Kernel, ThreadSpec};
 use crate::parameters::ParamId;
 use crate::profile::{cross, dot};
 use crate::sketch::geometry::Curve2;
@@ -33,6 +33,18 @@ use crate::topo::{EdgeName, FaceName};
 
 /// The default drill point, 118 degrees.
 pub const DEFAULT_TIP_ANGLE: f64 = 118.0 * std::f64::consts::PI / 180.0;
+
+/// A wall of a tapped hole that its modelled thread left no piece of (the
+/// crest off the wall: a radial clearance), as the wall was before the
+/// thread was cut into it (mitcad#436). The hole makes the wall and threads
+/// it in one step, so no body before the hole has it; the threads query
+/// measures the thread on this.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ThreadedWall {
+    pub body: BodyUid,
+    pub wall: FaceName,
+    pub cylinder: Cylinder,
+}
 
 /// Where the holes are.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -814,8 +826,9 @@ impl<K: Kernel> Evaluate<K> for HoleDef {
             clearance,
         )?;
         let (radial_clearance, flank_clearance) = clearance;
+        let mut threaded = Vec::new();
         for change in &mut output.changes {
-            let BodyChange::Set(_, shape) = change else {
+            let BodyChange::Set(body, shape) = change else {
                 continue;
             };
             let mut faces = Vec::new();
@@ -854,11 +867,25 @@ impl<K: Kernel> Evaluate<K> for HoleDef {
                 groove: true,
                 chamfer: None,
             };
-            *shape = ctx
+            let cut = ctx
                 .kernel
                 .modeled_thread(shape, &spec)
                 .map_err(|e| e.to_string())?;
+            // The walls the thread left no piece of, as they were.
+            for wall in &faces {
+                if ctx.kernel.count_faces(&cut, wall).is_ok_and(|n| n == 0)
+                    && let Ok(cylinder) = ctx.kernel.face_cylinder(shape, wall)
+                {
+                    threaded.push(ThreadedWall {
+                        body: *body,
+                        wall: wall.clone(),
+                        cylinder,
+                    });
+                }
+            }
+            *shape = cut;
         }
+        output.threaded_walls = threaded;
         Ok(output)
     }
 }

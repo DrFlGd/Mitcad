@@ -441,26 +441,36 @@ fn a_corner_s_shared_mitre_meets_at_the_outer_corners() {
         .unwrap();
         assert!(near(doc.parameters().value(cut.angle).unwrap(), quarter));
     }
-    // The axes meet at the end's centre, the new part centred across.
+    // The new part's end at the target's long point (0, -15, 1000), its
+    // outer side flush with the target's end, centred across (mitcad#443).
     let at = placed(&doc, occurrence(&p));
-    assert!(close(at.translation, [0.0, 0.0, 1000.0]), "{at:?}");
+    assert!(close(at.translation, [0.0, -15.0, 985.0]), "{at:?}");
     // The outer corners meet: each part's outer edge (15 from its axis, on
     // the side away from the corner's inside) meets its own cut plane at
-    // (0, -15, 1015). (The mock kernel's cut bodies have no true boxes, so
-    // the cuts are taken as `derived_part` makes them: through each end's
-    // centre, its normal leaning by the angle towards its tilt.)
+    // (0, -15, 1000). (The cuts are taken as `derived_part` makes them:
+    // through the section's edge on the long side at the end, its normal
+    // leaning by the angle towards its tilt.)
+    let section = BoundingBox {
+        min: [-15.0, -15.0, 0.0],
+        max: [15.0, 15.0, 1000.0],
+    };
     let meets = |placement: &crate::transform::Transform,
                  b: bool,
                  cut: &crate::features::derived_part::EndCut<crate::parameters::ParamId>,
                  edge: [f64; 3],
                  along: [f64; 3]| {
         let angle = doc.parameters().value(cut.angle).unwrap();
-        let axis = [0.0, 0.0, if b { 1.0 } else { -1.0 }];
-        let lean = cut.tilt.unwrap_or_default().lean();
-        let normal = placement.apply_vector(std::array::from_fn(|i| {
-            axis[i] * angle.cos() + lean[i] * angle.sin()
-        }));
-        let centre = placement.apply_point([0.0, 0.0, if b { 1000.0 } else { 0.0 }]);
+        let length = if b { 1000.0 } else { 400.0 };
+        let (point, normal) = crate::features::derived_part::end_plane(
+            Some(&section),
+            b,
+            length,
+            angle,
+            cut.tilt.unwrap_or_default(),
+        )
+        .unwrap();
+        let normal = placement.apply_vector(normal);
+        let centre = placement.apply_point(point);
         let dot = |a: [f64; 3], c: [f64; 3]| a[0] * c[0] + a[1] * c[1] + a[2] * c[2];
         let delta: [f64; 3] = std::array::from_fn(|i| centre[i] - edge[i]);
         let k = dot(delta, normal) / dot(along, normal);
@@ -488,14 +498,14 @@ fn a_corner_s_shared_mitre_meets_at_the_outer_corners() {
         &at,
         false,
         &cut_of(derived(&doc, component(&p)), false),
-        [0.0, 0.0, 1015.0],
+        [0.0, 0.0, 1000.0],
         [0.0, 1.0, 0.0],
     );
     assert!(
-        close(target_corner, [0.0, -15.0, 1015.0]),
+        close(target_corner, [0.0, -15.0, 1000.0]),
         "{target_corner:?}"
     );
-    assert!(close(new_corner, [0.0, -15.0, 1015.0]), "{new_corner:?}");
+    assert!(close(new_corner, [0.0, -15.0, 1000.0]), "{new_corner:?}");
 }
 
 #[test]
@@ -529,11 +539,13 @@ fn a_corner_of_two_sections_aligns_their_outer_faces() {
         e, u, d, &target, &new, &to_target, 10.0, false,
     ));
     assert!(near(n.min[1], -5.0), "{n:?}");
-    // Mitred: the new part's axis 5 into the turn and 5 down, where its
-    // outer edge (z = 1015) meets the bisector through the end's centre
-    // (y + z = 1000) at y = -15, the target's outer edge.
+    // Mitred (mitcad#443): the new part's end at the target's long point
+    // (y = -15 at z = 1000), its outer side (z = 1000) flush with the
+    // target's end, its axis 20 below it.
     let shift = corner_shift(e, u, d, &target, &new, &to_target, 0.0, true);
-    assert!(close(shift, [0.0, 5.0, -5.0]), "{shift:?}");
+    assert!(close(shift, [0.0, -15.0, -20.0]), "{shift:?}");
+    let n = moved(shift);
+    assert!(near(n.max[2], 1000.0) && near(n.min[1], -15.0), "{n:?}");
 }
 
 #[test]

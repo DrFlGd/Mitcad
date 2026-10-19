@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# check-all sources: app/main.cpp app/MainWindow.cpp app/commands/InspectCommands.cpp app/framework/CommandSession.cpp core/cpp/bridge/analysis.cpp geometry/src/guard.cpp geometry/analysis/src/section.cpp tools/cli
+# check-all sources: app/main.cpp app/MainWindow.cpp app/commands/InspectCommands.cpp app/framework/CommandSession.cpp core/cpp/bridge/analysis.cpp geometry/src/guard.cpp geometry/analysis/src/section.cpp core/model/src/api/analysis.rs core/ffi/src/kernel/mod.rs tools/cli
 # A crash inside OCCT during Section Analysis is an error, not a crash of
-# the application (mitcad#392). Its booleans run on the UI thread: the clip
-# of each body shown (MainWindow::showBodies) and, here, the section the
-# panel measures. A test hook makes the boolean crash as an access
+# the application (mitcad#392). Its booleans run while the UI thread waits,
+# each body's on OCCT's thread pool (mitcad#438): the clip of each body
+# shown (MainWindow::showBodies) and, here, the section the panel
+# measures. A test hook makes the boolean crash as an access
 # violation inside OCCT would (MITCAD_TEST_OCCT_CRASH, geometry/src/guard.cpp).
 # On three blocks that cross x = 10:
 #   1. The clip crashes: the blocks are shown whole (no caps), the panel

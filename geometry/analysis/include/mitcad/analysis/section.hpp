@@ -51,8 +51,30 @@ struct ClippedFace {
 // clipped triangle by triangle: each mesh face's piece is a new mesh face
 // (the face itself when the plane removes nothing of it), and a closed
 // mesh gets its section faces as planar caps facing along the normal;
-// when nothing is removed at all, the result is the shape itself.
+// when nothing is removed at all, the result is the shape itself. Other
+// shapes the plane does not reach (clip_side) are not cut at all
+// (mitcad#438): the result is the shape itself when it lies behind the
+// plane (each face its own piece), and an empty compound when it lies
+// wholly on the normal side (no face has a piece).
 TopoDS_Shape clip(const TopoDS_Shape& shape, const Plane& plane,
                   std::vector<ClippedFace>* faces = nullptr);
+
+// The signed distances (mm, along the plane's normal) of a box's corners
+// from the plane: the least and the greatest. Throws Error for a zero
+// normal; both 0 for an empty box.
+struct PlaneReach {
+  double min = 0.0;
+  double max = 0.0;
+};
+PlaneReach plane_reach(const Bounds& box, const Plane& plane);
+
+// What clip does with a shape whose bounding box is `box` (bounds(), or
+// any box that holds the shape): keeps it whole when the box lies behind
+// the plane, touching it at most (within Precision::Confusion); removes it
+// all when the box lies on the normal side, touching the plane at most;
+// cuts it otherwise, and for an empty box. A looser box only cuts more
+// shapes, and a cut keeps or removes such a shape whole as well.
+enum class ClipSide { Kept, Removed, Cut };
+ClipSide clip_side(const Bounds& box, const Plane& plane);
 
 } // namespace mitcad::analysis

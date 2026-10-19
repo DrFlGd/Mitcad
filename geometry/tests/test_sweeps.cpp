@@ -1791,6 +1791,142 @@ void test_thread_roots_rounded_up_to_the_nuts_faces() {
   }
 }
 
+// A thread's crest rounded down to its run-out (mitcad#422): a post of
+// radius 22 has a groove of pitch 1.5 cut up through its top (2.5 turns
+// from 1.5 radians round, so that the cut below lies away from the
+// cylinder's seam), its flanks sloping 1 in 2, and the groove runs out at
+// its start along a straight cut, its profile carried on level along the
+// tangent backwards, so that the run-out's lower flank is the plane
+// tangent to the groove's lower flank along the start profile. The lower
+// crest (the edge between the post's cylinder and the lower flank) is
+// rounded with 0.15 from the top down to the run-out, where its edge runs
+// on tangentially into the run-out's crest, which is not rounded. Near the
+// start the plane only touches the rounding; a turn back, where the crest
+// rises out of it again (331 degrees up), it cuts the rounding across. The
+// rounding ends at that cut, as the `.ipt` files' history stores such a
+// rounding (port patch 0790): a small face on the plane closes it there,
+// and the crest stays sharp from there down to the run-out. Before, the
+// corner at the run-out failed (the plane does not cut the rounding there).
+void test_thread_crest_rounded_down_to_a_run_out() {
+  const double radius = 22;
+  const double pitch = 1.5;
+  const double ball = 0.15;
+  const double start = 1.5; // the groove's start angle
+  const ShapePtr post = ring_body(0, radius, -3, 3.6);
+  Frame xz;
+  xz.x_axis = gp_Dir(std::cos(start), std::sin(start), 0);
+  xz.y_axis = gp_Dir(0, 0, 1);
+  const Region groove = polygon({{radius + 0.5, 0}, {radius - 0.9, 0.7}, {radius + 0.5, 1.4}});
+  HelixSweepSpec spec;
+  spec.feature = "F2";
+  spec.frame = xz;
+  spec.axis = gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1));
+  spec.pitch = pitch;
+  spec.revolutions = 2.5;
+  spec.regions = {groove};
+  spec.bodies = {post};
+  const BooleanResult threaded = boolean(BooleanOp::Cut, {post.get()}, *helix_sweep(spec));
+  CHECK(threaded.pieces.size() == 1);
+  if (threaded.pieces.size() != 1) {
+    return;
+  }
+  ExtrudeSpec run_out;
+  run_out.feature = "F3";
+  run_out.frame = xz;
+  run_out.regions = {groove};
+  run_out.direction = gp_Dir(std::sin(start), -std::cos(start), 0);
+  run_out.start = 0;
+  run_out.end = 8;
+  const BooleanResult cut = boolean(BooleanOp::Cut, {threaded.pieces.front().shape.get()}, *extrude(run_out));
+  CHECK(cut.pieces.size() == 1);
+  if (cut.pieces.size() != 1) {
+    return;
+  }
+  const ShapePtr body = cut.pieces.front().shape;
+  // The lower crest: on the cylinder, at the height the lower flank (from
+  // z = 0 at radius 22.5 up by 1 in 2) meets it, risen by the pitch a turn.
+  const double crest0 = 0.25;
+  const auto on_crest = [&](const gp_Pnt& p) {
+    if (std::abs(std::hypot(p.X(), p.Y()) - radius) > 1e-4) {
+      return false;
+    }
+    const double turns = (std::atan2(p.Y(), p.X()) - start) / (2 * kPi);
+    const double k = std::round((p.Z() - crest0) / pitch - turns);
+    return std::abs(p.Z() - crest0 - pitch * (turns + k)) < 1e-4;
+  };
+  const auto along_crest = [&](const TopoDS_Edge& edge) {
+    const BRepAdaptor_Curve curve(edge);
+    for (int k = 0; k <= 4; ++k) {
+      if (!on_crest(curve.Value(curve.FirstParameter() + (curve.LastParameter() - curve.FirstParameter()) * k / 4))) {
+        return false;
+      }
+    }
+    return true;
+  };
+  std::vector<std::string> crest;
+  for (int i = 0; i < body->edge_count(); ++i) {
+    if (along_crest(body->edge(i))) {
+      if (const auto name = body->name_of_edge(body->edge(i))) {
+        crest.push_back(*name);
+      }
+    }
+  }
+  CHECK(!crest.empty());
+  // Where the run-out's lower flank, the plane through the start's crest
+  // point along the tangent there rising 1 in 2 inwards, cuts the crest a
+  // turn back: at the angle phi before the start where the crest, 2 pi -
+  // phi up the helix, comes back to the plane's height on the cylinder.
+  double phi = 0.5;
+  for (int it = 0; it < 100; ++it) {
+    const double f = pitch * (2 * kPi - phi) / (2 * kPi) - 0.5 * radius * (1 - std::cos(phi));
+    const double df = -pitch / (2 * kPi) - 0.5 * radius * std::sin(phi);
+    phi -= f / df;
+  }
+  const double sharp = radius * (2 * kPi - phi); // the crest left sharp, nearly
+  try {
+    const ShapePtr rounded = fillet("F4", *body, crest, ball);
+    CHECK(detail::is_valid(rounded->occt()));
+    // A small face on the run-out's plane where the cut is.
+    const gp_Pnt q(radius * std::cos(start - phi), radius * std::sin(start - phi),
+                   crest0 + pitch * (2 * kPi - phi) / (2 * kPi));
+    // (Across the flank line at the start, rising 1 in 2 inwards.)
+    const gp_Dir plane_normal(0.5 * std::cos(start), 0.5 * std::sin(start), 1);
+    int caps = 0;
+    for (TopExp_Explorer f(rounded->occt(), TopAbs_FACE); f.More(); f.Next()) {
+      const BRepAdaptor_Surface surface(TopoDS::Face(f.Current()));
+      if (surface.GetType() != GeomAbs_Plane || !surface.Plane().Axis().Direction().IsParallel(plane_normal, 1e-6)) {
+        continue;
+      }
+      GProp_GProps props;
+      BRepGProp::SurfaceProperties(f.Current(), props);
+      if (props.Mass() < 0.05 && props.CentreOfMass().Distance(q) < 0.3) {
+        ++caps;
+      }
+    }
+    if (caps != 1) {
+      std::fprintf(stderr, "crest to a run-out: %d small faces on the run-out's plane at the cut, expected 1\n", caps);
+      ++failures;
+    }
+    // The crest left sharp from the run-out up to the cut.
+    double left = 0;
+    for (int i = 0; i < rounded->edge_count(); ++i) {
+      const TopoDS_Edge& edge = rounded->edge(i);
+      if (along_crest(edge)) {
+        GProp_GProps props;
+        BRepGProp::LinearProperties(edge, props);
+        left += props.Mass();
+      }
+    }
+    if (std::abs(left - sharp) > 0.01 * sharp) {
+      std::fprintf(stderr, "crest to a run-out: %.6g of the crest left sharp, expected %.6g\n", left, sharp);
+      ++failures;
+    }
+  } catch (const std::exception& error) {
+    std::fprintf(stderr, "crest to a run-out: the rounding failed: %s\n", error.what());
+    ++failures;
+  }
+}
+
 // A fixed binormal (mitcad#397): a 20 x 2 profile, its 20 level, swept
 // along a quarter of a circle of radius 50 in a plane tilted 20 degrees
 // about X (a sloped arc, rising from (50, 0, 0) to its top, where it runs
@@ -1865,6 +2001,7 @@ void sweeps_tests() {
   guarded("ribs", test_ribs);
   guarded("guide surfaces", test_guide_surfaces);
   guarded("thread roots rounded up to the nut's faces", test_thread_roots_rounded_up_to_the_nuts_faces);
+  guarded("thread crest rounded down to a run-out", test_thread_crest_rounded_down_to_a_run_out);
 }
 
 } // namespace test

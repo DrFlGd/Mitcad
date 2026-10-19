@@ -81,6 +81,9 @@ impl MockShape {
     }
 }
 
+/// A box primitive's bottom plane: a point on it and its normal.
+pub type BoxPlane = ([f64; 3], [f64; 3]);
+
 #[derive(Default)]
 pub struct MockKernel {
     /// Measures shapes (`mass_properties` of their bounding boxes; scaled
@@ -161,6 +164,52 @@ pub struct MockKernel {
     /// bounding boxes in geometric order (mitcad#408): `#k` pieces with
     /// these bounds instead of `split`'s.
     pub piece_boxes: RefCell<Option<Vec<BoundingBox>>>,
+    /// The radius of each hole wall `hole_tool` made, by face name, which
+    /// `face_cylinder` gives such a wall (half the bounds' width otherwise;
+    /// mitcad#436).
+    pub hole_radii: RefCell<BTreeMap<String, f64>>,
+    /// A cut by a box primitive takes the box as the half-space beyond its
+    /// bottom face and clips the target's bounds by that plane (a derived
+    /// part's end cuts, mitcad#443); the box planes are kept by history.
+    pub half_space_cuts: Cell<bool>,
+    pub box_planes: RefCell<BTreeMap<String, BoxPlane>>,
+}
+
+/// The bounds of what of `b` lies on or below the plane through `point`
+/// with the normal `normal` (the corners kept and where the box's edges
+/// cross the plane); None when nothing is left.
+fn clipped(b: &BoundingBox, point: [f64; 3], normal: [f64; 3]) -> Option<BoundingBox> {
+    let side = |p: [f64; 3]| (0..3).map(|i| (p[i] - point[i]) * normal[i]).sum::<f64>();
+    let corners: Vec<[f64; 3]> = b.corners().collect();
+    let mut kept: Vec<[f64; 3]> = corners
+        .iter()
+        .copied()
+        .filter(|c| side(*c) <= 1e-9)
+        .collect();
+    for (i, a) in corners.iter().enumerate() {
+        for (j, c) in corners.iter().enumerate().skip(i + 1) {
+            // An edge: corners that differ in one axis.
+            if (i ^ j).count_ones() != 1 {
+                continue;
+            }
+            let (sa, sc) = (side(*a), side(*c));
+            if (sa < 0.0 && sc > 0.0) || (sa > 0.0 && sc < 0.0) {
+                let t = sa / (sa - sc);
+                kept.push(std::array::from_fn(|k| a[k] + (c[k] - a[k]) * t));
+            }
+        }
+    }
+    let first = *kept.first()?;
+    Some(kept.iter().fold(
+        BoundingBox {
+            min: first,
+            max: first,
+        },
+        |acc, p| BoundingBox {
+            min: std::array::from_fn(|k| acc.min[k].min(p[k])),
+            max: std::array::from_fn(|k| acc.max[k].max(p[k])),
+        },
+    ))
 }
 
 impl MockShape {
@@ -553,13 +602,22 @@ impl Kernel for MockKernel {
                     continue;
                 }
                 let count = self.split.get().unwrap_or(1);
+                let half_space = if op == BooleanOp::Cut && self.half_space_cuts.get() {
+                    self.box_planes.borrow().get(&tool.history).copied()
+                } else {
+                    None
+                };
                 for k in 0..count {
                     let mut history = format!("{verb}({},{})", target.history, tool.history);
                     if count > 1 {
                         history.push_str(&format!("#{k}"));
                     }
+                    let mut shape = MockShape::merged(history, &[target, tool], &lost);
+                    if let Some((point, normal)) = half_space {
+                        shape.bounds = target.bounds.and_then(|b| clipped(&b, point, normal));
+                    }
                     pieces.push(BooleanPiece {
-                        shape: MockShape::merged(history, &[target, tool], &lost),
+                        shape,
                         sources: vec![i],
                     });
                 }
@@ -1070,16 +1128,28 @@ impl Kernel for MockKernel {
             .flat_map(|(i, a)| faces[i + 1..].iter().map(move |b| (a.clone(), b.clone())))
             .collect();
         let o = spec.frame.origin;
+        let history = format!(
+            "{kind}({feature}:{}x{}x{}@{},{},{})",
+            number(size[0]),
+            number(size[1]),
+            number(size[2]),
+            number(o[0]),
+            number(o[1]),
+            number(o[2])
+        );
+        if kind == "box" && self.half_space_cuts.get() {
+            let (x, y) = (spec.frame.x_axis, spec.frame.y_axis);
+            let normal = [
+                x[1] * y[2] - x[2] * y[1],
+                x[2] * y[0] - x[0] * y[2],
+                x[0] * y[1] - x[1] * y[0],
+            ];
+            self.box_planes
+                .borrow_mut()
+                .insert(history.clone(), (o, normal));
+        }
         Ok(MockShape {
-            history: format!(
-                "{kind}({feature}:{}x{}x{}@{},{},{})",
-                number(size[0]),
-                number(size[1]),
-                number(size[2]),
-                number(o[0]),
-                number(o[1]),
-                number(o[2])
-            ),
+            history,
             faces,
             edges,
             bounds: Some(BoundingBox {
@@ -1191,6 +1261,11 @@ impl Kernel for MockKernel {
         let mut edges = Vec::new();
         for i in 0..spec.positions.len() {
             let face = |part: &str| FaceName::new(spec.feature, &format!("hole{i}.{part}"), None);
+            if spec.taper == 0.0 {
+                self.hole_radii
+                    .borrow_mut()
+                    .insert(face("wall").to_string(), spec.diameter / 2.0);
+            }
             faces.extend([face("wall"), face("tip")]);
             edges.push((face("wall"), face("tip")));
         }
@@ -1340,7 +1415,12 @@ impl Kernel for MockKernel {
                 ],
                 direction: [0.0, 0.0, 1.0],
             },
-            radius: (bounds.max[0] - bounds.min[0]) / 2.0,
+            radius: self
+                .hole_radii
+                .borrow()
+                .get(&face.to_string())
+                .copied()
+                .unwrap_or((bounds.max[0] - bounds.min[0]) / 2.0),
             length: bounds.max[2] - bounds.min[2],
             internal,
         })
@@ -1938,6 +2018,7 @@ impl Kernel for MockKernel {
             vertex_points: self.vertex_points.clone(),
             middles: self.middles.clone(),
             vertices: self.vertices.clone(),
+            hole_radii: self.hole_radii.clone(),
             ..MockKernel::default()
         })
     }

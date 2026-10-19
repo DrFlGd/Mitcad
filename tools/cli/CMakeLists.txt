@@ -32,7 +32,7 @@ if(BUILD_TESTING)
     add_test(NAME cli.${script} COMMAND mitcad-cli run "${scripts}/${script}.json")
   endforeach()
   # Profile features (F1), with the volumes of the T0 reference models.
-  foreach(script f1_extrude f1_revolve f1_hole f1_thread f1_thread_chamfer f1_failures)
+  foreach(script f1_extrude f1_revolve f1_hole f1_thread f1_thread_chamfer f1_failures f1_tapped_hole_threads)
     add_test(NAME cli.${script} COMMAND mitcad-cli run "${scripts}/${script}.json")
   endforeach()
   # Assembly cut scope preserves component-local geometry and split ownership.

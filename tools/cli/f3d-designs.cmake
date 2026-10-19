@@ -39,10 +39,21 @@ set(designs
     # parametric since the walk past a seam of mitcad#235. The housing's
     # corner rounded with 20 (item 74) and the rounding at the thread's
     # chamfer (item 142) are parametric since the port's patches 0720 and
-    # 0721 (mitcad#343). Falling back: a sweep that passes over itself,
-    # roundings the geometry kernel does not build or builds off the file's,
-    # an extrusion whose profile's curve the sketch no longer has.
-    "db73863f|Thread1,Revolve4|Sweep1,Fillet4,Fillet2,Fillet6,Extrude3,Fillet1,Fillet2,Fillet7,Fillet5,Fillet6|Axis1,C-Pattern1,Extrude3,Extrude6,Fillet4,GeometricRelationship1,Plane1,Plane2,Plane3,Thread1,Thread2")
+    # 0721 (mitcad#343). The foot of a post under a block (item 120)
+    # takes its circle's arcs from the one edge the file names, its tangent
+    # chain no longer running on into the block's convex long edges where
+    # they touch the circle (mitcad#439). The thread's rounding up to the
+    # groove's floor (item 27) is parametric with port patch 0803 and the
+    # faster measurement against the flanks' splines (mitcad#442). The
+    # rounding of a key's two lens ends (item 137) is parametric since the
+    # port's patches 0821 and 0822 (mitcad#343); its inputs count as
+    # inferred, as the file lost one of its four edge references, which is
+    # left out. The rounding of the thread's chamfer cone down to the root
+    # (item 143) is parametric since the port's patches 0860 and 0861
+    # (mitcad#441). Falling back: a sweep that passes over itself, a
+    # rounding the geometry kernel does not build (item 88), an
+    # extrusion whose profile's curve the sketch no longer has.
+    "db73863f|Thread1,Revolve4|Sweep1,Fillet6,Extrude3|Axis1,C-Pattern1,Extrude3,Extrude6,Fillet4,Fillet5,GeometricRelationship1,Plane1,Plane2,Plane3,Thread1,Thread2")
 
 # Seconds as the trace gives them (two decimals) in hundredths.
 function(hundredths seconds out)

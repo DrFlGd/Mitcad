@@ -13,6 +13,8 @@
 #include <TopoDS.hxx>
 #include <gp_Pln.hxx>
 
+#include <QRegularExpression>
+
 #include "../framework/ModelShapes.hpp"
 #include "../framework/Numbers.hpp"
 
@@ -497,6 +499,16 @@ void loadValue(CommandState& state, const QString& key, const QJsonValue& slot,
   if (slot.isString() && text != slot.toString()) {
     state.setParameterName(key, slot.toString());
   }
+}
+
+QString negated(const QString& expression) {
+  static const QRegularExpression number(QStringLiteral(R"(^\s*([-+]?)\s*(\d+\.?\d*|\.\d+)(.*)$)"));
+  const auto match = number.match(expression);
+  if (match.hasMatch() && !match.captured(3).contains(QRegularExpression(QStringLiteral("[-+*/^()]")))) {
+    return (match.captured(1) == QStringLiteral("-") ? QString() : QStringLiteral("-")) + match.captured(2) +
+           match.captured(3);
+  }
+  return QStringLiteral("-(%1)").arg(expression);
 }
 
 bool nonZero(const CommandState& state, const QString& key) {

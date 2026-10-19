@@ -46,7 +46,7 @@ pub enum PatternKind<P> {
     },
     /// Rows and columns: `count[0]` along `direction` (a unit vector in
     /// sketch coordinates), `count[1]` a quarter turn from it, `spacing`
-    /// apart.
+    /// apart; a negative spacing goes against its direction.
     Rectangular {
         direction: [f64; 2],
         count: [u32; 2],
@@ -457,7 +457,7 @@ impl SketchPattern<ParamId> {
 }
 
 /// Checks a pattern value: an angle not zero and at most a turn, a
-/// positive spacing.
+/// spacing not zero (negative: against the direction, mitcad#447).
 pub fn check_value(slot: &str, v: f64) -> Result<(), String> {
     if slot.ends_with(".angle") {
         if v.is_finite() && v != 0.0 && v.abs() <= TAU + 1e-9 {
@@ -468,10 +468,10 @@ pub fn check_value(slot: &str, v: f64) -> Result<(), String> {
                 v.to_degrees()
             ))
         }
-    } else if v.is_finite() && v > 0.0 {
+    } else if v.is_finite() && v != 0.0 {
         Ok(())
     } else {
-        Err(format!("must be greater than zero, got {v}"))
+        Err(format!("must not be zero, got {v}"))
     }
 }
 

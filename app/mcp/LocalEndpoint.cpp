@@ -11,6 +11,10 @@
 #include <QStandardPaths>
 
 #ifndef Q_OS_WIN
+#include <cerrno>
+
+#include <signal.h>
+#include <sys/types.h>
 #include <unistd.h>
 #else
 #include "WindowsEndpointSecurity.hpp"
@@ -167,6 +171,13 @@ QList<Endpoint> discover(QString* error) {
       continue;
     }
     endpoint.port = static_cast<quint16>(port);
+    if (!processRunning(endpoint.pid)) {
+      // Left by a killed app: probing its port would only time out (a
+      // closed loopback port is retried, not refused, on Windows).
+      file.close();
+      removeEndpoint(endpoint);
+      continue;
+    }
     endpoints.append(endpoint);
   }
   return endpoints;
@@ -174,6 +185,18 @@ QList<Endpoint> discover(QString* error) {
 
 QByteArray encodeAuth(const Endpoint& endpoint) {
   return QJsonDocument(QJsonObject{{QStringLiteral("mitcadAuth"), endpoint.token}}).toJson(QJsonDocument::Compact) + '\n';
+}
+
+bool processRunning(qint64 pid) {
+#ifdef Q_OS_WIN
+  return windowsProcessRunning(pid);
+#else
+  if (pid <= 0 || static_cast<qint64>(static_cast<pid_t>(pid)) != pid) {
+    return false;
+  }
+  // Signal 0 only checks: EPERM is another user's running process.
+  return kill(static_cast<pid_t>(pid), 0) == 0 || errno != ESRCH;
+#endif
 }
 
 } // namespace mitcad::mcp

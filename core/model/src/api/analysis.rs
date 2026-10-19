@@ -200,6 +200,23 @@ fn datum_size() -> f64 {
     100.0
 }
 
+/// `analysis_clips`: several bodies clipped at one plane (mitcad#438).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ClipsRequest {
+    plane: GeomRef,
+    bodies: Vec<ClipTarget>,
+}
+
+/// A body of `analysis_clips`, as the `clip` shape request gives it.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ClipTarget {
+    body: BodyUid,
+    #[serde(default)]
+    occurrence: Option<OccurrencePath>,
+}
+
 /// A query `analysis` answers as text.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "query", rename_all = "snake_case")]
@@ -601,21 +618,27 @@ impl<K: Kernel> Document<K> {
                 normal: plane.normal(),
                 x_axis: Some(plane.x_axis),
             };
-            let (mut length, mut area) = (0.0, 0.0);
-            let mut bodies = Vec::new();
+            // Each occurrence's body with the plane in its coordinates, all
+            // sectioned at once (on all cores in the OCCT kernel, mitcad#438).
+            let mut shown = Vec::new();
+            let mut items = Vec::new();
             for instance in self.instances().into_iter().filter(|i| {
                 i.visible && (query.bodies.is_empty() || query.bodies.contains(&i.body))
             }) {
                 let occurrence = OccurrencePath(instance.path);
                 let local = self.analysis_body_plane(&fixed, instance.body, Some(&occurrence))?;
-                let section = self
-                    .kernel()
-                    .section(self.require_body(instance.body)?, &local)
-                    .map_err(kernel_error(&instance.name))?;
+                items.push((self.require_body(instance.body)?, local));
+                shown.push((instance.body, instance.name, instance.component, occurrence));
+            }
+            let sections = self.kernel().section_all(&items);
+            let (mut length, mut area) = (0.0, 0.0);
+            let mut bodies = Vec::new();
+            for ((uid, name, component, occurrence), section) in shown.into_iter().zip(sections) {
+                let section = section.map_err(kernel_error(&name))?;
                 length += section.length;
                 area += section.area;
-                bodies.push(json!({"uid": instance.body, "name": instance.name,
-                    "occurrence": occurrence, "component": instance.component,
+                bodies.push(json!({"uid": uid, "name": name,
+                    "occurrence": occurrence, "component": component,
                     "edges": section.edge_count, "faces": section.face_count,
                     "length": section.length, "area": section.area}));
             }
@@ -904,6 +927,34 @@ impl<K: Kernel> Document<K> {
             }
             ShapeRequest::FlatPattern { body } => Ok(self.flat_pattern_shape(body)),
         }
+    }
+
+    /// The `clip` shapes of [`Document::analysis_shape`] for several bodies
+    /// at one plane, worked out together (the OCCT kernel clips them on
+    /// all cores, mitcad#438): one result per body, in the request's order,
+    /// each with the error `clip` would give it (see `commands.md`).
+    pub fn analysis_clips(&self, json: &str) -> Result<Vec<Result<K::Shape, ApiError>>, ApiError> {
+        let request: ClipsRequest = parse(read_json(json)?, "clips request")?;
+        let mut results = Vec::with_capacity(request.bodies.len());
+        let mut items = Vec::new();
+        let mut slots = Vec::new();
+        for target in &request.bodies {
+            let item = self
+                .analysis_body_plane(&request.plane, target.body, target.occurrence.as_ref())
+                .and_then(|plane| self.require_body(target.body).map(|shape| (shape, plane)));
+            match item {
+                Ok(item) => {
+                    slots.push(results.len());
+                    items.push(item);
+                    results.push(Err(ApiError("not clipped".to_owned())));
+                }
+                Err(error) => results.push(Err(error)),
+            }
+        }
+        for (slot, clipped) in slots.into_iter().zip(self.kernel().clip_all(&items)) {
+            results[slot] = clipped.map_err(kernel_error("section"));
+        }
+        Ok(results)
     }
 }
 

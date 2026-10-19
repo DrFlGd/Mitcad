@@ -1,0 +1,431 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: a contour stops at a vertex where the faces of both its edges
+come tangent, each side's rounding vanishing there, and a walk into such
+a vertex ends a hair before it, solved there step by step (mitcad#343).
+
+The case: the bottom outline of a block over a post as wide as the block,
+rounded with 1 after the post's foot was rounded with 10 (patch 0770):
+along each long side the edge runs over the foot's rounding, whose face
+comes tangent to the side at the point where the post touches it (the
+foot's rounding ends in a point there, its surface degenerate at that
+corner). OCCT carried the contour on through those points (the edges
+continue each other there, FaceTangency, and the single case of
+TangentOnVertex lets collinear edges go on); its walk crawled into the
+point and stopped short of it, or its last section, the singular one given
+at the point, took parameters on the degenerate face's iso far from the
+contact's, and the approximation of the line between failed or wandered
+(p-curve tolerances of tens of millimetres).
+
+- TangentExtremity: where a face's surface has no normal at the vertex (a
+  corner of a surface degenerate there), its normal is taken a little
+  inside along the edge (its limit): the vertex is recognised as one where
+  the faces come tangent.
+- PerformElement: at a vertex where the faces of both edges come tangent
+  the contour stops (downstream and upstream): each side is a stripe of
+  its own, ending in a point at the vertex.
+- ContactsAtTangentEnd: a walk towards such a vertex also ends where its
+  section has no width any more (its contacts within Tol of each other)
+  within a hundredth of the radius of the vertex.
+- ChFi3d_EndBeforeVanishing (ComputeData, after the line is complete): at
+  a tangency extremity the line's end is solved again from its last
+  section at least 5e-4 of the radius wide, sections on towards the vertex
+  each from the one before (its step on the faces no longer than the
+  walk's step before, so no jump along a degenerate iso) until narrower
+  than that within a hundredth of the radius of the vertex, where the line
+  ends; the corner moves that end to the vertex (ChFi3d_ShrinkVanishingEnd,
+  patch 0770), and the stripes there meet in the singular corner.
+
+Upstream: new.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_1.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_1.cxx
+index 93ed362..7bc592e 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_1.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_1.cxx
+@@ -779,40 +779,43 @@ static bool TangentExtremity(const TopoDS_Vertex&                    V,
+   }
+   double                    p1 = BRep_Tool::Parameter(V, e1, f1);
+   double                    p2 = BRep_Tool::Parameter(V, e2, f2);
+-  double                    u, v, f, l, Eps = 1.e-9;
+-  gp_Vec                    n1, n2; //   gp_Pnt pt1,pt2;
+-  occ::handle<Geom2d_Curve> pc1 = BRep_Tool::CurveOnSurface(e1, f1, f, l);
+-  pc1->Value(p1).Coord(u, v);
+-  BRepLProp_SLProps theProp1(*hs1, u, v, 1, Eps);
+-  if (theProp1.IsNormalDefined())
+-  {
+-    n1.SetXYZ(theProp1.Normal().XYZ());
+-    if (O1 == TopAbs_REVERSED)
++  // The normal of a face along the edge at its parameter p; where the face's
++  // surface has no normal there (a corner of a surface that degenerates to
++  // the vertex), its limit along the edge from inside the edge.
++  const auto normalAt = [&](const TopoDS_Edge&                      e,
++                            const TopoDS_Face&                      f,
++                            const occ::handle<BRepAdaptor_Surface>& hs,
++                            const TopAbs_Orientation                O,
++                            const double                            p,
++                            gp_Vec&                                 n) {
++    double                          f0 = 0., l0 = 0.;
++    const occ::handle<Geom2d_Curve> pc = BRep_Tool::CurveOnSurface(e, f, f0, l0);
++    if (pc.IsNull())
+     {
+-      n1.Reverse();
++      return false;
+     }
+-  }
+-  else
+-  {
+-    return false; // It is not known...
+-  }
+-
+-  occ::handle<Geom2d_Curve> pc2 = BRep_Tool::CurveOnSurface(e2, f2, f, l);
+-  pc2->Value(p2).Coord(u, v);
+-  BRepLProp_SLProps theProp2(*hs2, u, v, 1, Eps);
+-  if (theProp2.IsNormalDefined())
+-  {
+-    n2.SetXYZ(theProp2.Normal().XYZ());
+-    if (O2 == TopAbs_REVERSED)
++    const double aStep = (std::abs(p - f0) < std::abs(l0 - p) ? 1. : -1.) * 1.e-7 * (l0 - f0);
++    for (int k = 0; k <= 3; k++)
+     {
+-      n2.Reverse();
++      const gp_Pnt2d    uv = pc->Value(k == 0 ? p : p + aStep * std::pow(10., k - 1));
++      BRepLProp_SLProps aProp(*hs, uv.X(), uv.Y(), 1, 1.e-9);
++      if (aProp.IsNormalDefined())
++      {
++        n.SetXYZ(aProp.Normal().XYZ());
++        if (O == TopAbs_REVERSED)
++        {
++          n.Reverse();
++        }
++        return true;
++      }
+     }
+-  }
+-  else
++    return false; // It is not known...
++  };
++  gp_Vec n1, n2;
++  if (!normalAt(e1, f1, hs1, O1, p1, n1) || !normalAt(e2, f2, hs2, O2, p2, n2))
+   {
+-    return false; //  It is not known...
++    return false;
+   }
+-
+   return (n1.Angle(n2) < tang);
+ }
+ 
+@@ -1155,6 +1158,13 @@ bool ChFi3d_Builder::PerformElement(const occ::handle<ChFiDS_Spine>& Spine,
+             if (OnAjoute && (degeneOnEc || TangentOnVertex(LVEc, Ev, myEFMap, ta)))
+             {
+               OnAjoute = ((!rev && av1v2 < ta) || (rev && (M_PI - av1v2) < ta));
++              // (A vertex where the faces of both edges come tangent: the
++              // rounding vanishes there, which no walk passes; the contour
++              // stops, each side ending in a point at the vertex.)
++              if (OnAjoute && degeneOnEc && TangentOnVertex(LVEc, Ev, myEFMap, ta))
++              {
++                OnAjoute = false;
++              }
+             }
+             if (OnAjoute && StopsAtTurn(av1v2, rev, Ev))
+             {
+@@ -1267,6 +1277,11 @@ bool ChFi3d_Builder::PerformElement(const occ::handle<ChFiDS_Spine>& Spine,
+               if (OnAjoute && (degeneOnEc || TangentOnVertex(FVEc, Ev, myEFMap, ta)))
+               {
+                 OnAjoute = ((!rev && av1v2 < ta) || (rev && (M_PI - av1v2) < ta));
++                // (The same at the contour's start.)
++                if (OnAjoute && degeneOnEc && TangentOnVertex(FVEc, Ev, myEFMap, ta))
++                {
++                  OnAjoute = false;
++                }
+               }
+               if (OnAjoute && StopsAtTurn(av1v2, rev, Ev))
+               {
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+index 066cf84..365654d 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+@@ -4191,16 +4191,25 @@ static bool ChFi3d_ConcaveTurnWedge(TopOpeBRepDS_DataStructure&
+ static bool ContactsAtTangentEnd(const occ::handle<ChFiDS_SurfData>& SD,
+                                  const bool                          isFirst,
+                                  const TopoDS_Vertex&                V,
+-                                 const double                        Tol)
++                                 const double                        Tol,
++                                 const double                        Reach)
+ {
+   if (SD.IsNull() || V.IsNull())
+   {
+     return false;
+   }
+   const gp_Pnt P   = BRep_Tool::Pnt(V);
++  const gp_Pnt P1  = SD->Vertex(isFirst, 1).Point();
++  const gp_Pnt P2  = SD->Vertex(isFirst, 2).Point();
+   const double lim = BRep_Tool::Tolerance(V) + Tol;
+-  return SD->Vertex(isFirst, 1).Point().Distance(P) <= lim
+-         && SD->Vertex(isFirst, 2).Point().Distance(P) <= lim;
++  if (P1.Distance(P) <= lim && P2.Distance(P) <= lim)
++  {
++    return true;
++  }
++  // (Or the section has no width any more, its contacts within Tol of each
++  // other, within Reach of V: the walk got no nearer before its sections
++  // got singular.)
++  return P1.Distance(P2) <= Tol && P1.Distance(P) <= Reach && P2.Distance(P) <= Reach;
+ }
+ 
+ //=================================================================================================
+@@ -4270,6 +4279,11 @@ void ChFi3d_Builder::PerformSetOfSurfOnElSpine(const occ::handle<ChFiDS_ElSpine>
+   // occ::handle<ChFiDS_Spine>&  Spine = Stripe->ChangeSpine();
+   int    ii, nbed = Spine->NbEdges();
+   double lastedlastp = Spine->LastParameter(nbed);
++  // (How near its end vertex a rounding vanishing there may end: a
++  // hundredth of its radius, as ChFi3d_ShrinkVanishingEnd moves its end.)
++  const occ::handle<ChFiDS_FilSpine> aVanishSpine = occ::down_cast<ChFiDS_FilSpine>(Spine);
++  const double aVanishReach =
++    !aVanishSpine.IsNull() && aVanishSpine->IsConstant() ? 0.01 * aVanishSpine->Radius() : 10. * tolesp;
+ 
+   TopOpeBRepDS_DataStructure& DStr = myDS->ChangeDS();
+ 
+@@ -5237,7 +5251,7 @@ void ChFi3d_Builder::PerformSetOfSurfOnElSpine(const occ::handle<ChFiDS_ElSpine>
+       // short of the guide's end: past it both contacts would lie on the
+       // faces beyond, a section of no width.
+       if (!fini && !Spine->IsPeriodic() && Spine->IsTangencyExtremity(false)
+-          && ContactsAtTangentEnd(ref, false, Spine->LastVertex(), 10. * tolesp))
++          && ContactsAtTangentEnd(ref, false, Spine->LastVertex(), 10. * tolesp, aVanishReach))
+       {
+         fini = true;
+       }
+@@ -5295,7 +5309,7 @@ void ChFi3d_Builder::PerformSetOfSurfOnElSpine(const occ::handle<ChFiDS_ElSpine>
+       }
+       // (The same at the spine's start.)
+       if (!fini && !Spine->IsPeriodic() && Spine->IsTangencyExtremity(true)
+-          && ContactsAtTangentEnd(ref, true, Spine->FirstVertex(), 10. * tolesp))
++          && ContactsAtTangentEnd(ref, true, Spine->FirstVertex(), 10. * tolesp, aVanishReach))
+       {
+         fini = true;
+       }
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_6.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_6.cxx
+index a53b083..e92474b 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_6.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_6.cxx
+@@ -33,6 +33,7 @@
+ #include <BRepBlend_ConstRad.hxx>
+ #include <BRepBlend_ConstRadInv.hxx>
+ #include <BRepBlend_CSWalking.hxx>
++#include <BRepBlend_Extremity.hxx>
+ #include <BRepBlend_Line.hxx>
+ #include <BRepBlend_RstRstLineBuilder.hxx>
+ #include <BRepBlend_SurfRstLineBuilder.hxx>
+@@ -45,6 +46,7 @@
+ #include <ChFiDS_CommonPoint.hxx>
+ #include <ChFiDS_FaceInterference.hxx>
+ #include <ChFiDS_ElSpine.hxx>
++#include <ChFiDS_FilSpine.hxx>
+ #include <ChFiDS_Spine.hxx>
+ #include <ChFiDS_SurfData.hxx>
+ #include <Geom2d_BSplineCurve.hxx>
+@@ -64,6 +66,7 @@
+ #include <gp_Vec.hxx>
+ #include <gp_Vec2d.hxx>
+ #include <IntRes2d_IntersectionPoint.hxx>
++#include <math_FunctionSetRoot.hxx>
+ #include <math_Vector.hxx>
+ #include <Precision.hxx>
+ #include <TopExp.hxx>
+@@ -585,6 +588,178 @@ static void ChFi3d_CutSingularExtension(occ::handle<BRepBlend_Line>&     Lin,
+   }
+ }
+ 
++//=======================================================================
++// function : ChFi3d_EndBeforeVanishing
++// purpose  : A rounding of constant radius vanishing at an end of its
++//            spine, where its faces come tangent (a tangency extremity),
++//            walked up to that vertex. The walk's last step there may
++//            start from beyond a hundredth of the radius (to the singular
++//            section given to it), or it may crawl into the vertex with
++//            sections of no width. The approximation of the line then
++//            solves sections down to the vertex, where those on a face
++//            degenerate at it (a corner of a surface whose whole iso there
++//            is the vertex) take any parameters of that iso, away from
++//            those the contact came along (the p-curve's tolerance tens of
++//            millimetres), or it fails on sections narrower than about a
++//            ten-thousandth of the radius. The line's end is solved again
++//            from its last section at least aStopWidth wide: sections on
++//            towards the vertex, each from the one before, until narrower
++//            than aStopWidth within a hundredth of the radius of the
++//            vertex, where the line ends; the corner moves that end to the
++//            vertex (ChFi3d_ShrinkVanishingEnd), the blend ending in a
++//            point. Returns the ends so replaced (1 the first, 2 the last).
++//=======================================================================
++
++static int ChFi3d_EndBeforeVanishing(occ::handle<BRepBlend_Line>&     Lin,
++                                     const occ::handle<ChFiDS_Spine>& Spine,
++                                     occ::handle<ChFiDS_SurfData>&    Data,
++                                     Blend_Function&                  Func,
++                                     const double                     Tol)
++{
++  const occ::handle<ChFiDS_FilSpine> fsp = occ::down_cast<ChFiDS_FilSpine>(Spine);
++  if (Lin.IsNull() || fsp.IsNull() || !fsp->IsConstant() || Spine->IsPeriodic() || Lin->NbPoints() < 4)
++  {
++    return 0;
++  }
++  const double aReach = 0.01 * fsp->Radius();
++  int          aChanged = 0; // (the ends replaced: 1 the first, 2 the last)
++  for (int aSide = 0; aSide < 2; aSide++)
++  {
++    const bool isFirst = aSide == 0;
++    if (!Spine->IsTangencyExtremity(isFirst))
++    {
++      continue;
++    }
++    const gp_Pnt PV = BRep_Tool::Pnt(isFirst ? Spine->FirstVertex() : Spine->LastVertex());
++    const int    nb = Lin->NbPoints();
++    const int    step = isFirst ? 1 : -1;
++    {
++      const Blend_Point& PE = Lin->Point(isFirst ? 1 : nb);
++      if (PE.PointOnS1().Distance(PV) > aReach || PE.PointOnS2().Distance(PV) > aReach)
++      {
++        continue; // (The walk does not end there.)
++      }
++    }
++    {
++      const double aStopWidth = 5.e-4 * fsp->Radius();
++      const int    iE0        = isFirst ? 1 : nb;
++      int          iK         = 0;
++      for (int i = isFirst ? nb : 1; i != iE0 - step; i -= step)
++      {
++        const Blend_Point& Pi = Lin->Point(i);
++        if (Pi.PointOnS1().Distance(Pi.PointOnS2()) < aStopWidth)
++        {
++          break;
++        }
++        iK = i;
++      }
++      const int iQ0 = iK + step; // (The section before, inside.)
++      if (iK != 0 && iK != iE0 && iQ0 >= 1 && iQ0 <= nb)
++      {
++        const Blend_Point& PK = Lin->Point(iK);
++        const Blend_Point& PQ = Lin->Point(iQ0);
++        math_Vector        X(1, 4), Xinf(1, 4), Xsup(1, 4), Xtol(1, 4);
++        PK.ParametersOnS1(X(1), X(2));
++        PK.ParametersOnS2(X(3), X(4));
++        // (Each step on the faces no longer than the walk's step before: no
++        // jump along a degenerate iso.)
++        double aStepUV = 0.;
++        {
++          double a1, b1, a2, b2;
++          PQ.ParametersOnS1(a1, b1);
++          PQ.ParametersOnS2(a2, b2);
++          aStepUV = std::hypot(X(1) - a1, X(2) - b1) + std::hypot(X(3) - a2, X(4) - b2);
++        }
++        const double                      w0 = PK.Parameter(), w1 = Lin->Point(iE0).Parameter();
++        NCollection_Sequence<Blend_Point> aNew;
++        Func.GetTolerance(Xtol, Tol);
++        Func.GetBounds(Xinf, Xsup);
++        for (int k = 1; k <= 40; k++)
++        {
++          const double w = w0 + (w1 - w0) * (1. - std::pow(0.5, k));
++          Func.Set(w);
++          math_FunctionSetRoot aRoot(Func, Xtol, 30);
++          aRoot.Perform(Func, X, Xinf, Xsup);
++          if (!aRoot.IsDone())
++          {
++            break;
++          }
++          math_Vector Y(1, 4);
++          aRoot.Root(Y);
++          if (!Func.IsSolution(Y, Tol)
++              || std::hypot(Y(1) - X(1), Y(2) - X(2)) + std::hypot(Y(3) - X(3), Y(4) - X(4)) > aStepUV)
++          {
++            break;
++          }
++          X               = Y;
++          const gp_Pnt P1 = Func.PointOnS1(), P2 = Func.PointOnS2();
++          aNew.Append(Func.IsTangencyPoint() ? Blend_Point(P1, P2, w, X(1), X(2), X(3), X(4))
++                                              : Blend_Point(P1,
++                                                            P2,
++                                                            w,
++                                                            X(1),
++                                                            X(2),
++                                                            X(3),
++                                                            X(4),
++                                                            Func.TangentOnS1(),
++                                                            Func.TangentOnS2(),
++                                                            Func.Tangent2dOnS1(),
++                                                            Func.Tangent2dOnS2()));
++          if (P1.Distance(P2) < aStopWidth)
++          {
++            break;
++          }
++        }
++        if (!aNew.IsEmpty() && aNew.Last().PointOnS1().Distance(aNew.Last().PointOnS2()) < aStopWidth
++            && aNew.Last().PointOnS1().Distance(PV) <= aReach && aNew.Last().PointOnS2().Distance(PV) <= aReach)
++        {
++          if (isFirst)
++          {
++            Lin->Remove(1, iK - 1);
++          }
++          else
++          {
++            Lin->Remove(iK + 1, nb);
++          }
++          for (int k = 1; k <= aNew.Length(); k++)
++          {
++            if (isFirst)
++            {
++              Lin->Prepend(aNew(k));
++            }
++            else
++            {
++              Lin->Append(aNew(k));
++            }
++          }
++          const Blend_Point& PL = aNew.Last();
++          double             u1, v1, u2, v2;
++          PL.ParametersOnS1(u1, v1);
++          PL.ParametersOnS2(u2, v2);
++          BRepBlend_Extremity E1, E2;
++          E1.SetValue(PL.PointOnS1(), u1, v1, PL.Parameter(), Tol);
++          E2.SetValue(PL.PointOnS2(), u2, v2, PL.Parameter(), Tol);
++          if (isFirst)
++          {
++            Lin->SetStartPoints(E1, E2);
++          }
++          else
++          {
++            Lin->SetEndPoints(E1, E2);
++          }
++          if (!Data.IsNull())
++          {
++            Data->ChangeVertex(isFirst, 1).Reset();
++            Data->ChangeVertex(isFirst, 2).Reset();
++          }
++          aChanged |= isFirst ? 1 : 2;
++        }
++      }
++    }
++  }
++  return aChanged;
++}
++
+ //=======================================================================
+ // function : CompleteData
+ // purpose  : Calculates curves and CommonPoints from the data
+@@ -2659,6 +2834,18 @@ bool ChFi3d_Builder::ComputeData(occ::handle<ChFiDS_SurfData>&           Data,
+     }
+   }
+   ChFi3d_CutSingularExtension(Lin, Spine);
++  {
++    // (An end replaced at a vanishing end: no longer on the arcs found.)
++    const int aTidied = ChFi3d_EndBeforeVanishing(Lin, Spine, Data, Func, tolapp3d);
++    if ((aTidied & 1) != 0)
++    {
++      debarc1 = debarc2 = debcas1 = debcas2 = debobst1 = debobst2 = false;
++    }
++    if ((aTidied & 2) != 0)
++    {
++      finarc1 = finarc2 = fincas1 = fincas2 = finobst1 = finobst2 = false;
++    }
++  }
+   Nbpnt = Lin->NbPoints();
+   First = Lin->Point(1).Parameter();
+   Last  = Lin->Point(Nbpnt).Parameter();

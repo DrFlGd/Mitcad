@@ -239,6 +239,8 @@ struct InputDef {
   std::function<ChoiceTile(const CommandState&)> choiceTile;
   // Value: also a box at the cursor in the view (BUILD's length), in step
   // with the panel's field: what is typed in either is the input's text.
+  // With several, the box is the first shown one's, or the one whose
+  // handle was dragged last (BUILD's tilt, mitcad#444).
   // The shown inspection's report may give the box another text while the
   // input's own is not typed: {"cursor": {"<key>": "742.5 mm"}}.
   bool cursorBox = false;

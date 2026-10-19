@@ -3,7 +3,9 @@
 // tangentially across a shallow crease, built here with OCCT's fillet alone
 // on synthetic shapes: the case behind the patch 0180 of the OCCT port
 // (third_party/vcpkg-ports, mitcad#241); and Mitcad's fillets, which use it
-// and carry their contours across small notches (0260, mitcad#307).
+// and carry their contours across small notches (0260, mitcad#307), and
+// whose tangent chains do not run on from concave edges into convex ones
+// (mitcad#439).
 
 #include <algorithm>
 #include <cmath>
@@ -15,6 +17,7 @@
 #include <BRepAdaptor_Surface.hxx>
 #include <BRepAlgoAPI_Common.hxx>
 #include <BRepAlgoAPI_Cut.hxx>
+#include <BRepAlgoAPI_Fuse.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakePolygon.hxx>
@@ -36,6 +39,7 @@
 #include <GProp_GProps.hxx>
 #include <Geom_TrimmedCurve.hxx>
 #include <NCollection_Map.hxx>
+#include <ShapeUpgrade_UnifySameDomain.hxx>
 #include <Standard_ErrorHandler.hxx>
 #include <Standard_Failure.hxx>
 #include <TopExp.hxx>
@@ -486,6 +490,93 @@ void test_mitcad_fillet_carried_across_a_notch() {
   CHECK(edge_names_unique(*one));
 }
 
+// A block 60 long (x), 20 wide (y) and 20 high (z 50 to 70) on a post of
+// radius 10 (z 10 to 50) as wide as the block: the post's top circle
+// touches the block's long bottom edges y = +-10 at (0, +-10, 50), where
+// the block's underside narrows to nothing (as in
+// test_fillet_lens_overflow.cpp).
+TopoDS_Shape block_on_a_post() {
+  const TopoDS_Shape block = BRepPrimAPI_MakeBox(gp_Pnt(-30, -10, 50), gp_Pnt(30, 10, 70)).Shape();
+  const TopoDS_Shape post =
+    BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(0, 0, 10), gp_Dir(0, 0, 1), gp_Dir(-1, 0, 0)), 10.0, 40.0).Shape();
+  ShapeUpgrade_UnifySameDomain unify(BRepAlgoAPI_Fuse(block, post).Shape(), true, true, true);
+  unify.Build();
+  return unify.Shape();
+}
+
+// Mitcad's fillet of one arc of the post's top circle with its tangent
+// chain (mitcad#439): at (0, +-10, 50) the circle's next arc and the
+// block's long bottom edge both run on from the arc in its direction, but
+// the arcs are concave and the long edges convex, and the rounding
+// vanishes there. The chain is the circle's arcs (the file's tangent chain
+// from one arc rounds the whole circle), not the long edges; before, it took
+// them too, the rounding with them failed, and the fillet fell back to
+// OCCT's contour, the one arc.
+void test_mitcad_fillet_chain_through_points_where_the_rounding_vanishes() {
+  const ShapePtr body = import_body(block_on_a_post(), "F1", 0);
+  std::vector<int> arcs;
+  std::vector<int> long_edges;
+  for (int i = 0; i < body->edge_count(); ++i) {
+    BRepAdaptor_Curve curve(body->edge(i));
+    const gp_Pnt m = curve.Value(0.5 * (curve.FirstParameter() + curve.LastParameter()));
+    if (std::abs(m.Z() - 50.0) > 1e-6) {
+      continue;
+    }
+    if (std::abs(std::hypot(m.X(), m.Y()) - 10.0) < 1e-6) {
+      arcs.push_back(i);
+    } else if (std::abs(std::abs(m.Y()) - 10.0) < 1e-6 && std::abs(m.X()) < 30.0 - 1e-6) {
+      long_edges.push_back(i);
+    }
+  }
+  CHECK(arcs.size() >= 2);
+  CHECK(long_edges.size() == 4);
+  if (arcs.size() < 2) {
+    return;
+  }
+  // The tangent chain the hover shows (mitcad#290): the arcs, and each long
+  // side's two pieces (both convex) apart.
+  const std::vector<std::vector<int>> chains = mitcad::geometry::edge_tangent_chains(*body);
+  const auto chain_of = [&](int edge) {
+    for (const std::vector<int>& chain : chains) {
+      if (std::find(chain.begin(), chain.end(), edge) != chain.end()) {
+        return chain;
+      }
+    }
+    return std::vector<int>{edge};
+  };
+  std::vector<int> circle = arcs;
+  std::sort(circle.begin(), circle.end());
+  CHECK(chain_of(arcs.front()) == circle);
+  for (const int e : long_edges) {
+    CHECK(chain_of(e).size() == 2);
+  }
+  // The fillet of the one arc rounds them all as the arcs given together do
+  // (each rounding rolling on into the point, port patch 0770).
+  FilletSet set;
+  set.edges = {body->edge_name(arcs.front())};
+  set.radius = 10.0;
+  const ShapePtr one = mitcad::geometry::fillet("F2", *body, std::vector<FilletSet>{set});
+  std::vector<std::string> names;
+  for (const int e : arcs) {
+    names.push_back(body->edge_name(e));
+  }
+  const ShapePtr all = mitcad::geometry::fillet("F2", *body, names, 10.0);
+  CHECK(mitcad::geometry::detail::is_valid(one->occt()));
+  CHECK(one->notes().empty());
+  const auto names_of = [](const mitcad::geometry::Shape& shape) {
+    std::vector<std::string> list;
+    for (int i = 0; i < shape.face_count(); ++i) {
+      list.insert(list.end(), shape.face_names(i).begin(), shape.face_names(i).end());
+    }
+    std::sort(list.begin(), list.end());
+    return list;
+  };
+  CHECK(names_of(*one) == names_of(*all));
+  CHECK(one->face_count() == all->face_count());
+  CHECK_NEAR_TOL(volume_of(one->occt()), volume_of(all->occt()), 1e-9);
+  CHECK(volume_of(one->occt()) > volume_of(body->occt()));
+}
+
 } // namespace
 
 void fillet_chain_tests() {
@@ -495,6 +586,8 @@ void fillet_chain_tests() {
   guarded("test_ring_contour_stops_at_a_concave_crease", test_ring_contour_stops_at_a_concave_crease);
   guarded("test_mitcad_fillet_stops_at_a_drafted_crease", test_mitcad_fillet_stops_at_a_drafted_crease);
   guarded("test_mitcad_fillet_carried_across_a_notch", test_mitcad_fillet_carried_across_a_notch);
+  guarded("test_mitcad_fillet_chain_through_points_where_the_rounding_vanishes",
+          test_mitcad_fillet_chain_through_points_where_the_rounding_vanishes);
 }
 
 } // namespace test

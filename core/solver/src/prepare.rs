@@ -1029,6 +1029,11 @@ fn constraint_equations(
                 side: rec.side,
             }
         }),
+        RadiusGap { a, b: q, .. } => b.push(dim, |v, x| EqKind::RadGap {
+            a: x.rad(v, a.index()),
+            b: x.rad(v, q.index()),
+            side: rec.side,
+        }),
         LineDistance { a, b: l2, .. } => b.push(dim, |v, x| {
             let (a1, a2) = x.line(a.index());
             let (b1, b2) = x.line(l2.index());

@@ -183,6 +183,14 @@ pub enum Constraint {
         line: EntityId,
         value: f64,
     },
+    /// The gap between two circles or arcs (meant for concentric ones): the
+    /// difference of their radii, on the side `b` is when the dimension is
+    /// added (mitcad#445).
+    RadiusGap {
+        a: EntityId,
+        b: EntityId,
+        value: f64,
+    },
     /// Horizontal distance between two points: `|b.x - a.x|`, on the side
     /// `b` is when the dimension is added; with `signed` (mitcad#404),
     /// `b.x - a.x` itself, which may be negative.
@@ -301,6 +309,7 @@ impl Constraint {
             | PointLineDistance { value, .. }
             | LineDistance { value, .. }
             | TangentDistance { value, .. }
+            | RadiusGap { value, .. }
             | HorizontalDistance { value, .. }
             | VerticalDistance { value, .. }
             | Length { value, .. }
@@ -326,6 +335,7 @@ impl Constraint {
             | PointLineDistance { value, .. }
             | LineDistance { value, .. }
             | TangentDistance { value, .. }
+            | RadiusGap { value, .. }
             | HorizontalDistance { value, .. }
             | VerticalDistance { value, .. }
             | Length { value, .. }

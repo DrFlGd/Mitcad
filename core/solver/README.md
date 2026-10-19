@@ -90,6 +90,7 @@ on the curve would slide along it (mitcad#396).
 | `Distance`, `Length`, `MajorRadius` | `|q - p| - d` |
 | `PointLineDistance`, `LineDistance` | signed distance `- side * d` |
 | `TangentDistance(circle, line)` | signed distance of the centre `- side * (r + d)` |
+| `RadiusGap(a, b)` (mitcad#445) | `r_b - r_a - side * d`: the gap between concentric circles or arcs |
 | `HorizontalDistance`, `VerticalDistance` | `dx - side * d`, `dy - side * d`; `signed` (mitcad#404): `side` is 1 and `d` may be negative |
 | `Angle(a, b)` | oriented angle from `a` to `flip * b` minus `sigma * value` (wrapped) |
 | `Radius`, `Diameter`, `MinorRadius`, `ArcLength` | `r - d`, `2r - d`, `b - d`, `r * sweep - d` |

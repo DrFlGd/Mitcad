@@ -2423,6 +2423,23 @@ impl<K: Kernel> Document<K> {
             .flatten()
     }
 
+    /// The cylinder of a tapped hole's wall on a body that the hole's
+    /// modelled thread left no piece of, as the hole measured it before the
+    /// thread (mitcad#436); none for any other wall.
+    pub(crate) fn threaded_wall(
+        &self,
+        uid: FeatureUid,
+        body: BodyUid,
+        wall: &crate::topo::FaceName,
+    ) -> Option<&crate::kernel::Cylinder> {
+        let output = self.result.result(uid)?.output.as_deref()?;
+        output
+            .threaded_walls
+            .iter()
+            .find(|w| w.body == body && &w.wall == wall)
+            .map(|w| &w.cylinder)
+    }
+
     /// Projects model geometry into a sketch (Project): the curves
     /// of an edge, a face's boundary or a vertex of the bodies before the
     /// sketch, as fixed reference entities. A linked projection follows

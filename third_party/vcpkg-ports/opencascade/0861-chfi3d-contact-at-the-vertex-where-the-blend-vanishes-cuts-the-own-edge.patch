@@ -1,0 +1,211 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Mitcad patch (mitcad#441): a contact that ends at the vertex where its
+blend comes to nothing, on another edge of its face, ends on the spine's
+own edge there too.
+
+The rounding round a thread's chamfer cone (0860, one contour) runs along
+the cone's edge with an earlier rounding of the crest into the vertex V
+where the contour goes on along the cone's edge with the thread's flank;
+the flank goes on tangentially from the rounding across an edge from V.
+The cone and the rounding meet at 1.7 degrees at V, so the blend is thinner
+there than V's tolerance: the walk's contact on the rounding ended at V on
+the edge with the flank (ChFi3d_FilCommonPoint takes the vertex within its
+tolerance), not on the spine's edge with the cone. The data structure then
+held no point of the blend on that spine edge, and the rounding's face kept
+the whole edge beside the blend's end, though the blend takes it away: the
+face's wire was open and the result invalid. (Patch 0802 handles the same
+contact where it ends on the spine's own edge near V.)
+ChFi3d_OwnEdgesAtVertices, after ChFi3d_FilDS, adds for such a contact (on
+face F, at a vertex V of the edge E between F and the blend's other face
+Fo, on an edge of F across which a face Fn goes on tangentially from F, Fn
+meeting Fo along an edge from V) a vertex interference on E at V, with the
+contact's transition carried over to E as E lies in F.
+
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.cxx
+index 8d2944b..120fcb6 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.cxx
+@@ -2642,6 +2642,9 @@ void ChFi3d_Builder::Compute()
+       // Contacts along whole edges of their faces, once the corners are done.
+       ChFi3d_ContactsAlongFaceEdges(DStr, st, myEFMap, tolapp3d);
+       ChFi3d_FilDS(solidindex, st, DStr, myRegul, tolapp3d, tol2d);
++      // Contacts ending at a vertex of the spine where the blend comes to
++      // nothing: on the spine's own edge there as well.
++      ChFi3d_OwnEdgesAtVertices(st, DStr, myVEMap, myEFMap);
+       // Blends a face of the solid pokes through.
+       try
+       {
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
+index 1641937..71c2231 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
+@@ -8576,3 +8576,146 @@ void ChFi3d_LoadScrewContinued(BRepAdaptor_Surface& HS, const double Tol)
+   }
+   HS.Load(aExt, u0, u1, v0, v1, HS.Trsf());
+ }
++
++
++//=======================================================================
++// function : ChFi3d_OwnEdgeAtVertex
++// purpose  : CP, a contact on face F ending at a vertex V on another edge
++//            Ev of F than the edge E between F and the blend's other face
++//            Fo, where a face Fn across Ev goes on tangentially from F and
++//            meets Fo along an edge from V: E as it lies in F, and the
++//            transition of the contact on it (it leaves or enters F across
++//            E at V as it does across Ev). Null where CP is no such point.
++//=======================================================================
++
++static TopoDS_Edge ChFi3d_OwnEdgeAtVertex(const ChFiDS_CommonPoint& CP,
++                                          const TopoDS_Face&        F,
++                                          const TopoDS_Face&        Fo,
++                                          const ChFiDS_Map&         VEMap,
++                                          const ChFiDS_Map&         EFMap,
++                                          TopAbs_Orientation&       Tr)
++{
++  if (!CP.IsVertex() || !CP.IsOnArc() || F.IsSame(Fo))
++  {
++    return TopoDS_Edge();
++  }
++  const TopoDS_Vertex V  = CP.Vertex();
++  const TopoDS_Edge   Ev = CP.Arc();
++  if (!VEMap.Contains(V) || !EFMap.Contains(Ev))
++  {
++    return TopoDS_Edge();
++  }
++  // Whether the faces of an edge are A and B.
++  const auto between = [&](const TopoDS_Shape& theEdge, const TopoDS_Shape& A, const TopoDS_Shape& B) {
++    if (!EFMap.Contains(theEdge))
++    {
++      return false;
++    }
++    bool onA = false, onB = false;
++    for (const TopoDS_Shape& aFace : EFMap.FindFromKey(theEdge))
++    {
++      onA = onA || aFace.IsSame(A);
++      onB = onB || aFace.IsSame(B);
++    }
++    return onA && onB;
++  };
++  TopoDS_Face Fn;
++  bool        hasF = false;
++  for (const TopoDS_Shape& aFace : EFMap.FindFromKey(Ev))
++  {
++    if (aFace.IsSame(F))
++    {
++      hasF = true;
++    }
++    else
++    {
++      Fn = TopoDS::Face(aFace);
++    }
++  }
++  if (!hasF || Fn.IsNull() || Fn.IsSame(Fo) || !ChFi3d::IsTangentFaces(Ev, F, Fn))
++  {
++    return TopoDS_Edge();
++  }
++  TopoDS_Shape E;
++  bool         aNext = false;
++  for (const TopoDS_Shape& anEdge : VEMap.FindFromKey(V))
++  {
++    if (E.IsNull() && between(anEdge, F, Fo))
++    {
++      E = anEdge;
++    }
++    aNext = aNext || between(anEdge, Fn, Fo);
++  }
++  if (E.IsNull() || !aNext)
++  {
++    return TopoDS_Edge();
++  }
++  // The transition on E is that on Ev, reversed where the two lie in F the
++  // other way round.
++  TopoDS_Edge anOwn, anArc;
++  for (TopExp_Explorer ex(F, TopAbs_EDGE); ex.More(); ex.Next())
++  {
++    if (anOwn.IsNull() && ex.Current().IsSame(E))
++    {
++      anOwn = TopoDS::Edge(ex.Current());
++    }
++    if (anArc.IsNull() && ex.Current().IsSame(Ev))
++    {
++      anArc = TopoDS::Edge(ex.Current());
++    }
++  }
++  if (anOwn.IsNull() || anArc.IsNull())
++  {
++    return TopoDS_Edge();
++  }
++  Tr = anOwn.Orientation() == anArc.Orientation() ? CP.TransitionOnArc() : TopAbs::Reverse(CP.TransitionOnArc());
++  return anOwn;
++}
++
++void ChFi3d_OwnEdgesAtVertices(const occ::handle<ChFiDS_Stripe>& CorDat,
++                               TopOpeBRepDS_DataStructure&       DStr,
++                               const ChFiDS_Map&                 VEMap,
++                               const ChFiDS_Map&                 EFMap)
++{
++  if (CorDat.IsNull() || CorDat->SetOfSurfData().IsNull())
++  {
++    return;
++  }
++  const NCollection_Sequence<occ::handle<ChFiDS_SurfData>>& SeqFil = CorDat->SetOfSurfData()->Sequence();
++  for (int j = 1; j <= SeqFil.Length(); j++)
++  {
++    const occ::handle<ChFiDS_SurfData>& Fd = SeqFil(j);
++    if (Fd->IndexOfS1() <= 0 || Fd->IndexOfS2() <= 0 || Fd->IsOnCurve1() || Fd->IsOnCurve2())
++    {
++      continue;
++    }
++    const TopoDS_Shape& aS1 = DStr.Shape(Fd->IndexOfS1());
++    const TopoDS_Shape& aS2 = DStr.Shape(Fd->IndexOfS2());
++    if (aS1.ShapeType() != TopAbs_FACE || aS2.ShapeType() != TopAbs_FACE)
++    {
++      continue;
++    }
++    for (int aSide = 1; aSide <= 2; aSide++)
++    {
++      const TopoDS_Face& aF  = TopoDS::Face(aSide == 1 ? aS1 : aS2);
++      const TopoDS_Face& aFo = TopoDS::Face(aSide == 1 ? aS2 : aS1);
++      for (const bool aFirst : {true, false})
++      {
++        const ChFiDS_CommonPoint& aCP = Fd->Vertex(aFirst, aSide);
++        TopAbs_Orientation        aTr = TopAbs_FORWARD;
++        const TopoDS_Edge         E   = ChFi3d_OwnEdgeAtVertex(aCP, aF, aFo, VEMap, EFMap, aTr);
++        if (E.IsNull())
++        {
++          continue;
++        }
++        const int IE = DStr.AddShape(E);
++        const int IV = DStr.AddShape(aCP.Vertex());
++        QueryAddVertexInEdge(DStr.ChangeShapeInterferences(IE),
++                             IE,
++                             IV,
++                             BRep_Tool::Parameter(aCP.Vertex(), E),
++                             aTr);
++      }
++    }
++  }
++}
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.hxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.hxx
+index d914501..34cd509 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.hxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.hxx
+@@ -633,4 +633,16 @@ TopoDS_Face ChFi3d_WidenedFace(const TopoDS_Face& F, const double R);
+ //! the surface's bounds or F's bounds widened by F's size and ten radii.
+ TopoDS_Face ChFi3d_WidenedFace(const TopoDS_Face& F, const double R);
+
++//! A contact of the stripe's blend on face F that ends at a vertex V of the
++//! edge E between F and the blend's other face Fo (the blend thinner there
++//! than V's tolerance: it comes to nothing at V), on another edge of F
++//! across which a face Fn goes on tangentially from F, Fn meeting Fo along
++//! an edge from V (the spine goes on there): the contact ends on E at V as
++//! well (a vertex interference on E with the contact's transition), so that
++//! the blend cuts E from F.
++void ChFi3d_OwnEdgesAtVertices(const occ::handle<ChFiDS_Stripe>& CorDat,
++                               TopOpeBRepDS_DataStructure&       DStr,
++                               const ChFiDS_Map&                 VEMap,
++                               const ChFiDS_Map&                 EFMap);
++
+ #endif

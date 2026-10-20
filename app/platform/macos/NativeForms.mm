@@ -8,6 +8,7 @@
 #include <iterator>
 #include <vector>
 
+#include <QBuffer>
 #include <QHash>
 #include <QJsonObject>
 #include <QTextDocument>
@@ -16,6 +17,7 @@
 
 #include "../../framework/CommandSession.hpp"
 #include "../../framework/CutTargetsPanel.hpp"
+#include "../../framework/Icons.hpp"
 #include "../../framework/TestSync.hpp"
 
 namespace mitcad {
@@ -41,6 +43,20 @@ NSString* nativeString(const QString& value) {
 
 QString qtString(NSString* value) {
   return value == nil ? QString() : QString::fromUtf8(value.UTF8String);
+}
+
+NSImage* choiceImage(const QString& name, const QString& description) {
+  const QIcon icon = themeIcon(name);
+  if (icon.isNull()) { return nil; }
+  QByteArray data;
+  QBuffer buffer(&data);
+  buffer.open(QIODevice::WriteOnly);
+  icon.pixmap(40, 40).save(&buffer, "PNG");
+  NSImage* image = [[NSImage alloc] initWithData:[NSData dataWithBytes:data.constData()
+                                                              length:static_cast<NSUInteger>(data.size())]];
+  image.size = NSMakeSize(20, 20);
+  image.accessibilityDescription = nativeString(description);
+  return image;
 }
 
 NSStackView* column() {
@@ -210,6 +226,10 @@ public:
       case InputDef::Type::Check:
       case InputDef::Type::Flip:
         row.check.state = scope.checked(input.id) ? NSControlStateValueOn : NSControlStateValueOff;
+        if (input.disclosure) {
+          row.check.accessibilityValue = nativeString(scope.checked(input.id) ? QObject::tr("Expanded")
+                                                                              : QObject::tr("Collapsed"));
+        }
         break;
       case InputDef::Type::Selection: {
         const Selection& items = scope.items(input.id);
@@ -232,8 +252,7 @@ public:
       updateNote(row);
     }
     refreshControlAvailability();
-    [m_root layoutSubtreeIfNeeded];
-    m_logTimer.start();
+    requestLayout();
   }
 
   void setPreviewReport(const QJsonObject& report) override {
@@ -272,6 +291,7 @@ public:
     m_notes[key].first = text;
     if (Row* row = findRow(key)) {
       updateNote(*row);
+      requestLayout();
     }
   }
 
@@ -279,6 +299,7 @@ public:
     m_notes[key].second = text;
     if (Row* row = findRow(key)) {
       updateNote(*row);
+      requestLayout();
     }
   }
 
@@ -286,6 +307,7 @@ public:
     m_message.stringValue = nativeString(text);
     m_message.textColor = error ? NSColor.systemRedColor : NSColor.secondaryLabelColor;
     m_message.hidden = text.isEmpty();
+    requestLayout();
   }
 
   void setResult(const QString& text) override {
@@ -295,6 +317,7 @@ public:
     document.setHtml(text);
     m_result.stringValue = nativeString(document.toPlainText());
     m_result.hidden = text.isEmpty();
+    requestLayout();
   }
 
   void setOkEnabled(bool enabled) override { m_ok.enabled = enabled; }
@@ -387,6 +410,15 @@ public:
       qDebug().noquote() << QStringLiteral("Panel %1 input %2 at %3,%4%5")
                                 .arg(m_def.name, row.key).arg(x).arg(y)
                                 .arg(shown(row) ? QString() : QStringLiteral(" (hidden)"));
+      for (NSButton* button in row.choiceButtons) {
+        const NSPoint point = [button convertPoint:NSMakePoint(NSMidX(button.bounds), NSMidY(button.bounds))
+                                            toView:nil];
+        qDebug().noquote() << QStringLiteral("Panel %1 input %2=%3 at %4,%5%6")
+                                  .arg(m_def.name, row.key, qtString(button.identifier).section(QLatin1Char('|'), 2))
+                                  .arg(static_cast<int>(point.x))
+                                  .arg(static_cast<int>(content.bounds.size.height - point.y))
+                                  .arg(shown(row) ? QString() : QStringLiteral(" (hidden)"));
+      }
     }
   }
 
@@ -422,6 +454,10 @@ public:
     } else if (kind == QStringLiteral("clear")) {
       auto call = actions().selectionCleared;
       if (call) { call(key); }
+    } else if (kind == QStringLiteral("iconChoice")) {
+      const QString value = parts.value(2);
+      auto call = actions().choiceChanged;
+      if (call) { call(key, value); }
     } else if (kind == QStringLiteral("choice")) {
       NSPopUpButton* popup = static_cast<NSPopUpButton*>(sender);
       const QString value = qtString(static_cast<NSString*>(popup.selectedItem.representedObject));
@@ -485,6 +521,14 @@ public:
   }
 
 private:
+  void requestLayout() {
+    [m_root layoutSubtreeIfNeeded];
+    // The enclosing card measures the form and applies its height cap.
+    // Messages and results can change that height after an input refresh.
+    m_root.window.contentView.needsLayout = YES;
+    m_logTimer.start();
+  }
+
   struct Row {
     const InputDef* input = nullptr;
     QString key;
@@ -494,6 +538,7 @@ private:
     NSTextField* __strong note = nil;
     NSTextField* __strong edit = nil;
     NSPopUpButton* __strong popup = nil;
+    NSMutableArray<NSButton*>* __strong choiceButtons = nil;
     NSButton* __strong check = nil;
     NSButton* __strong select = nil;
     NSButton* __strong clear = nil;
@@ -630,7 +675,7 @@ private:
       heading.font = [NSFont boldSystemFontOfSize:[NSFont systemFontSize]];
       addFullWidth(row.box, heading);
     }
-    addFullWidth(row.box, label(input.label));
+    if (!input.disclosure) { addFullWidth(row.box, label(input.label)); }
     NSView* control = nil;
     switch (input.type) {
     case InputDef::Type::Value:
@@ -650,6 +695,28 @@ private:
       control = row.edit;
       break;
     case InputDef::Type::Choice:
+      if (!input.choiceIcons.isEmpty() && !input.choicesFor) {
+        NSStackView* choices = line();
+        row.choiceButtons = [NSMutableArray array];
+        for (const auto& option : input.choices) {
+          NSButton* choice = button(QString(), QStringLiteral("iconChoice|%1|%2").arg(key, option.first));
+          [choice setButtonType:NSButtonTypePushOnPushOff];
+          choice.bezelStyle = NSBezelStyleSmallSquare;
+          choice.image = choiceImage(input.choiceIcons.value(option.first), option.second);
+          choice.imagePosition = choice.image == nil ? NSNoImage : NSImageOnly;
+          if (choice.image == nil) { choice.title = nativeString(option.second); }
+          choice.accessibilityIdentifier = nativeString(QStringLiteral("input_%1_%2").arg(key, option.first));
+          choice.accessibilityLabel = nativeString(option.second);
+          choice.toolTip = nativeString(input.tooltip.isEmpty() ? option.second
+                                      : QStringLiteral("%1: %2").arg(option.second, input.tooltip));
+          [choice.widthAnchor constraintGreaterThanOrEqualToConstant:32].active = YES;
+          [choice.heightAnchor constraintGreaterThanOrEqualToConstant:28].active = YES;
+          [choices addArrangedSubview:choice];
+          [row.choiceButtons addObject:choice];
+        }
+        control = choices;
+        break;
+      }
       row.popup = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
       row.popup.identifier = nativeString(QStringLiteral("choice|") + key);
       row.popup.accessibilityIdentifier = nativeString(QStringLiteral("input_") + key);
@@ -662,6 +729,22 @@ private:
       row.check = button(input.type == InputDef::Type::Flip ? QObject::tr("Reverse direction") : input.label,
                          QStringLiteral("check|") + key);
       row.check.accessibilityIdentifier = nativeString(QStringLiteral("input_") + key);
+      if (input.disclosure) {
+        // Never initialise this cell as a switch: AppKit keeps the switch's
+        // checkbox artwork when only its type and bezel style change later.
+        [row.check setButtonType:NSButtonTypePushOnPushOff];
+        row.check.bezelStyle = NSBezelStyleDisclosure;
+        row.check.image = nil;
+        row.check.alternateImage = nil;
+        row.check.title = @"";
+        row.check.accessibilityLabel = nativeString(input.label);
+        row.check.toolTip = nativeString(input.tooltip);
+        NSStackView* disclosure = line();
+        [disclosure addArrangedSubview:row.check];
+        [disclosure addArrangedSubview:label(input.label)];
+        control = disclosure;
+        break;
+      }
       [row.check setButtonType:input.type == InputDef::Type::Flip ? NSButtonTypeToggle : NSButtonTypeSwitch];
       if (input.type == InputDef::Type::Flip) {
         row.check.image = [NSImage imageWithSystemSymbolName:@"arrow.up.arrow.down" accessibilityDescription:nil];
@@ -730,6 +813,14 @@ private:
   }
 
   void refreshChoices(Row& row, const CommandState& scope) {
+    if (row.choiceButtons != nil) {
+      const QString value = scope.choice(row.input->id);
+      for (NSButton* button in row.choiceButtons) {
+        button.state = qtString(button.identifier).section(QLatin1Char('|'), 2) == value
+                           ? NSControlStateValueOn : NSControlStateValueOff;
+      }
+      return;
+    }
     QVector<QPair<QString, QString>> options = row.input->choicesIn(scope);
     const QString value = scope.choice(row.input->id);
     if (!value.isEmpty() && std::none_of(options.cbegin(), options.cend(), [&value](const auto& option) {
@@ -747,8 +838,10 @@ private:
       [row.popup removeAllItems];
       QStringList labels;
       for (const auto& option : options) {
-        [row.popup addItemWithTitle:nativeString(option.second)];
-        row.popup.lastItem.representedObject = nativeString(option.first);
+        NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:nativeString(option.second)
+                                                   action:nil keyEquivalent:@""];
+        item.representedObject = nativeString(option.first);
+        [row.popup.menu addItem:item];
         labels.append(option.second);
       }
       qDebug().noquote() << QStringLiteral("Panel %1 options %2: %3")

@@ -1,0 +1,175 @@
+# mitcad-dwg
+
+Reader for `.dwg` drawings, R13 to R2018, for the import of their 3D
+content (mitcad#453). Read-only, no geometry: the bodies are built by the
+import (`core/ffi/src/dwg_import.rs`, the `import_dwg` command,
+`mitcad-cli import-dwg`).
+
+The format knowledge comes from the *Open Design Specification for .dwg
+files* (Open Design Alliance, version 5.4.1), a published description of
+the format. No other reader's code is used. Where the specification is
+unclear or its chapters disagree, the reader's choice is noted below.
+
+## What real drawings showed
+
+The trial corpus (`MITCAD_DWG_CORPUS`: eight drawings of R2000, R2004,
+R2013 and R2018 with 3D solids, blocks and inserts) confirmed the R2004
+compression and copy offsets, the page and section maps, the object map,
+the R2010+ handle streams and string streams, the header variables, the
+classes and the B-rep record's masking, and corrected these points, each
+with a test that writes the layout found field by field:
+
+- **No links bit from R2004:** the common entity data has the bit for the
+  previous and next links only up to R2000 (the specification lists it as
+  "always 1" from R2004; drawings have no such bit).
+- **No xref index from R2007:** a table entry (layer, block header) has
+  its 64-flag and xref dependency bits, but no xref index between them
+  (seen in R2013 and R2018; R2007 and R2010 assumed the same).
+- **Data storage records:** a data segment's record headers lie at their
+  local offsets after the segment's header; the records start at the
+  header's object data alignment offset (in 16 bytes).
+- **The text form of R2000 drawings is version 400:** no end marker, and
+  the topology lacks fields the later layout has (edge parameters, a
+  vertex's end integer, a coedge's integer before its pcurve); an edge's
+  parameters are then where its vertices lie on its curve
+  (`mitcad_f3d::convert::project_on_curve`).
+- **The binary form of R2004 drawings is ASM 208** (the older magic): its
+  vertices have no end integer either.
+- **Extents never computed** are stored empty (minimum 1e20, maximum
+  -1e20).
+
+Not met in the trial drawings, so still as the specification reads: the
+R2007 container and compression, the BLL width, entity colours with RGB
+or colour book flags, `MESH` entities, polyface and polygon meshes,
+surfaces, and the text form of R2004-R2010 drawings.
+
+## Versions and containers
+
+| Version | Id | Container |
+|---|---|---|
+| R13, R14, R2000 | `AC1012`, `AC1014`, `AC1015` | Section locators after the version; header variables, classes and the object map at absolute addresses; objects at the absolute addresses the map gives (`container::read_r13`) |
+| R2004, R2010, R2013, R2018 | `AC1018`, `AC1024`, `AC1027`, `AC1032` | The masked file header data at 0x80 (XOR with the generated sequence), the page map and the section map (system pages), data sections in pages with masked 32-byte headers, each compressed (`lz`) |
+| R2007 | `AC1021` | The file header at 0x80 and the system pages Reed-Solomon coded (255, 239) and interleaved, data pages (255, 251), the R2007 compression (`r2007`) |
+
+Releases before R13 and drawings saved with a password (encrypted data)
+are refused with a message.
+
+- **Reed-Solomon (R2007):** the code is systematic, so the reader takes
+  the data bytes and ignores the parity (it corrects no errors).
+- **R2004 compression:** a copy's offset counts back from the last byte
+  written, plus one (offset 0 is the byte just written).
+- **R2007 compression:** literal runs are stored in the byte order of the
+  specification's table (5.10.1), which the reader applies per run of up
+  to 32 bytes; an opcode with high nibble 0 after a copy starts a literal
+  run.
+- The R2004 masked page header's mask is `0x4164536b` XOR the page's file
+  address.
+
+## Bit codes and objects
+
+`bits`: B, BB, 3B, BS, BL, BLL, BD, DD, BT, BE, RC, RS, RL, RD, MC, MS,
+H (handle references, offsets applied to the referring object's handle),
+T/TU/TV, OT (a bit short before R2010, a bit pair and one or two bytes
+after), and from R2007 the object's string stream (the flag bit before
+the end of the data, the size before it, and the 0x8000 extension).
+
+- **BLL:** the byte count is read as three bits (0 to 7); the
+  specification's "3B" cannot give every count.
+- **Objects:** MS size; from R2010 the handle stream's size (MC); OT;
+  from R2000 to R2007 the data's size in bits; the handle; extended data;
+  for entities the graphics flag (and data); R13-R14 the size in bits.
+  The data then starts with the common entity or object data
+  (20.4.1, 20.1); the handle stream starts where the data ends.
+- **Entity colours (R2004 on):** the flags are the high byte of the bit
+  short, an RGB value (0x8000) is read as a bit long, a transparency
+  (0x2000) as a bit long, a colour book handle (0x4000) is in the handle
+  stream.
+- **The common entity handles:** owner (entity mode 0), reactors, the
+  extension dictionary, R13-R14 layer and line type, R13-R2000 previous
+  and next (when not implied), R2004 the colour book handle, the layer,
+  line type, material (R2007), plot style, visual styles (R2010); the
+  entity's own handles follow.
+- **INSERT and MINSERT:** from R2004 the owned object count only when
+  attributes follow.
+
+## Header variables
+
+`header` reads the variables of chapter 9 up to `$INSUNITS`, taking the
+model space's `$EXTMIN` and `$EXTMAX` on the way. Texts and handles of
+R2007 and later are in their own streams, which the reader skips; the
+start of the data (an R2007 bit size, the R2013 `$REQUIREDVERSIONS`) is
+found by the first value, which is 412148564080.0 followed by three 1.0
+in every drawing.
+
+## Classes
+
+`classes`: the class number (from 500), the names and whether it makes
+entities. The section's start differs between the versions and the
+chapters (10.2 and 5.8) do not agree on every width; the reader tries the
+layouts they describe and takes the one whose records number from 500.
+Only the class entities the import uses need them: `MESH` and the
+surfaces.
+
+## The data storage (R2013 on)
+
+`datastore`: the segment index, the data index and the data segments'
+records with their objects' handles; a record larger than a segment is a
+blob of pages. The B-rep record of a solid or region is the record whose
+bytes are the binary ASM form.
+
+## 3D content
+
+| Entity | Comes in as |
+|---|---|
+| `3DSOLID`, `BODY`, `REGION`, surfaces with B-rep data (`PLANESURFACE`, `EXTRUDEDSURFACE`, `LOFTEDSURFACE`, `REVOLVEDSURFACE`, `SWEPTSURFACE`, `NURBSURFACE`) | Bodies: the B-rep record (text form in blocks, masked c → 0x9F - c, up to R2010; binary form in the entity or in the data storage) parsed by `mitcad_f3d::asm` (`AsmFile`, the text through `asm::text`) |
+| `3DFACE` | Mesh bodies: one per block, layer and colour |
+| `POLYLINE` polyface mesh (with its vertices and face records) | A mesh body |
+| `POLYLINE` polygon mesh (M × N vertices, closed in M or N) | A mesh body |
+| `MESH` (subdivision mesh) | A mesh body of its control mesh |
+| `INSERT`, `MINSERT` | Occurrences of the block's component (`scene::Plan`), or copies |
+| 2D entities, 2D and 3D polylines, paper space | Left out, counted by type with why |
+
+- **The text form:** its records as in the binary form; `asm::text`
+  writes them as the binary form for `AsmFile`. Logical words become
+  booleans (`reversed`, `double`, `in`, ... true; interval ends `I`
+  infinite, `F` finite), positions and enumerations are read by the
+  geometry cursor in their text spelling. Versions before 700 get the
+  history integer and pointer after the attribute pointer; files without
+  an `asmheader` record get one.
+- **Subdivision meshes:** read as version, blend crease, level, the
+  vertices, the face list (each face its vertex count and indices), the
+  edges and the creases (the order DXF writes them in); a mesh that does
+  not read so is left out with why.
+- **Polylines' vertices:** from R2004 the polyline's list; before, the
+  chain from its first to its last vertex; else the vertices it owns, by
+  handle.
+
+## Plan of components
+
+`scene::Scene` collects each block's bodies, meshes and inserts (model
+space too), the layers and their colours, and accounts for every entity.
+`Scene::plan` makes the components: a named block with 3D content is a
+component placed by each insert whose transform (OCS of the extrusion,
+insertion point, rotation, scale, base point) is rigid; anonymous blocks
+and inserts that scale or mirror are copied into the inserting component
+with the transform; an array insert places one occurrence per cell.
+Colours: the entity's own, `BYLAYER` the layer's, `BYBLOCK` the
+inserting entity's.
+
+## Tests
+
+- `core.dwg`: the bit codes (the specification's examples), the CRCs, both
+  compressions, the object map and the data storage round trips, and a
+  test drawing (`testfile`: a small truss of blocks, solids in both forms,
+  3D faces, a polyface and a subdivision mesh, a line) written and read
+  back in every version: header variables, classes, objects, the B-rep
+  records parsed and converted, the scene and the plan.
+- `asm::text` in `core.f3d`: Mitcad's ASM test bodies written in the text
+  form convert exactly as their binary form.
+- `cli.import_dwg_<version>`: the test drawing imported through OCCT.
+- `dwg.corpus`: the trial models under `MITCAD_DWG_CORPUS`
+  ([development.md](../../docs/development.md#dwg-corpus)).
+
+`mitcad-dwg-inspect <file.dwg>` prints what the reader finds (sections,
+header, classes, object counts, objects not read, the account and the
+plan, each B-rep record's parse).

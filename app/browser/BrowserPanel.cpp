@@ -370,6 +370,24 @@ QString jointTooltip(const DocumentSnapshot& snapshot, const DocumentSnapshot::F
     }
     return feature.name;
   }
+  // A motion link (mitcad#466): "MotionLink1: gear, Joint1 rz to Joint2 rz,
+  // placed".
+  if (feature.isMotionLink()) {
+    for (const QJsonValue& value : snapshot.joints.value(QStringLiteral("links")).toArray()) {
+      const QJsonObject link = value.toObject();
+      if (link.value(QStringLiteral("uid")).toString() == feature.uid) {
+        const auto side = [&link](const char* key) {
+          const QJsonObject s = link.value(QLatin1String(key)).toObject();
+          return QStringLiteral("%1 %2").arg(s.value(QStringLiteral("name")).toString(),
+                                             s.value(QStringLiteral("motion")).toString());
+        };
+        return QObject::tr("%1: %2, %3 to %4, %5")
+            .arg(feature.name, link.value(QStringLiteral("coupling")).toString(), side("a"), side("b"),
+                 link.value(QStringLiteral("state")).toString());
+      }
+    }
+    return feature.name;
+  }
   if (feature.type == QStringLiteral("rigid_group")) {
     for (const QJsonValue& value : snapshot.joints.value(QStringLiteral("rigid_groups")).toArray()) {
       const QJsonObject group = value.toObject();
@@ -954,6 +972,16 @@ QString BrowserPanel::keyOf(const BrowserNode& node) const {
     return QStringLiteral("sheetrules:%1<%2").arg(node.uid, node.sketch) + at;
   case BrowserNode::Type::FlatPattern:
     return QStringLiteral("flat:") + node.uid + at;
+  case BrowserNode::Type::MotionStudies:
+    return QStringLiteral("studies");
+  case BrowserNode::Type::MotionStudy:
+    return QStringLiteral("study:") + node.uid;
+  case BrowserNode::Type::ContactSets:
+    return QStringLiteral("contacts");
+  case BrowserNode::Type::ContactSet:
+    return QStringLiteral("contact:") + node.uid;
+  case BrowserNode::Type::MotionLinks:
+    return QStringLiteral("links") + at;
   case BrowserNode::Type::None:
     break;
   }
@@ -979,6 +1007,8 @@ QTreeWidgetItem* BrowserPanel::addRow(QTreeWidgetItem* parent, const BrowserNode
                          node.type == BrowserNode::Type::Datum ||
                          node.type == BrowserNode::Type::Analysis || node.type == BrowserNode::Type::Joint ||
                          node.type == BrowserNode::Type::Feature ||
+                         node.type == BrowserNode::Type::MotionStudy ||
+                         node.type == BrowserNode::Type::ContactSet ||
                          (node.type == BrowserNode::Type::NamedView &&
                           node.uid.startsWith(QStringLiteral("named:")));
   if (renamable) {
@@ -989,7 +1019,8 @@ QTreeWidgetItem* BrowserPanel::addRow(QTreeWidgetItem* parent, const BrowserNode
   const bool open = node.type == BrowserNode::Type::Component || node.type == BrowserNode::Type::Bodies ||
                     node.type == BrowserNode::Type::Sketches ||
                     node.type == BrowserNode::Type::Construction || node.type == BrowserNode::Type::Analyses ||
-                    node.type == BrowserNode::Type::Joints;
+                    node.type == BrowserNode::Type::Joints || node.type == BrowserNode::Type::MotionStudies ||
+                    node.type == BrowserNode::Type::ContactSets || node.type == BrowserNode::Type::MotionLinks;
   item->setExpanded(m_expanded.value(key, open));
   return item;
 }
@@ -1142,6 +1173,43 @@ void BrowserPanel::addComponentRows(QTreeWidgetItem* parent, const DocumentSnaps
     // A constraint set's rows nested under it (mitcad#148).
     if (feature->type == QStringLiteral("constraint_set")) {
       addConstraintRows(snapshot, *feature, row, shown && !failed);
+    }
+  }
+
+  // Motion links (mitcad#466): the component's links before the marker,
+  // in a folder of their own beside the joints.
+  QVector<const DocumentSnapshot::Feature*> links;
+  for (const DocumentSnapshot::Feature& feature : snapshot.features) {
+    if (feature.component == component && feature.isActive() && feature.isMotionLink()) {
+      links.append(&feature);
+    }
+  }
+  if (links.isEmpty()) {
+    return;
+  }
+  BrowserNode linksFolder;
+  linksFolder.type = BrowserNode::Type::MotionLinks;
+  linksFolder.occurrence = occurrence;
+  linksFolder.component = component;
+  linksFolder.name = tr("Motion Links");
+  QTreeWidgetItem* linkRows = addRow(parent, linksFolder, QStringLiteral("folder"));
+  gray(linkRows, shown);
+  for (const DocumentSnapshot::Feature* feature : links) {
+    BrowserNode node;
+    node.type = BrowserNode::Type::Joint;
+    node.uid = feature->uid;
+    node.occurrence = occurrence;
+    node.component = component;
+    node.featureType = feature->type;
+    node.name = feature->name;
+    const bool failed = feature->status == QStringLiteral("error");
+    QTreeWidgetItem* row = addRow(linkRows, node, featureIcon(feature->type),
+                                  failed ? QStringLiteral("%1: %2").arg(feature->name, feature->error)
+                                         : jointTooltip(snapshot, *feature));
+    if (failed) {
+      row->setForeground(kName, kFailedText);
+    } else {
+      gray(row, shown);
     }
   }
 }
@@ -1445,6 +1513,62 @@ void BrowserPanel::rebuild(const DocumentSnapshot& snapshot, bool originShown) {
       if (!error.isEmpty()) {
         item->setForeground(kName, kFailedText);
       } else if (!row.visible) {
+        item->setForeground(kName, kHiddenText);
+      }
+    }
+  }
+
+  // Motion studies and contact sets (mitcad#454), folders of their own
+  // beside the Joints.
+  if (!snapshot.motionStudies.isEmpty()) {
+    BrowserNode folder;
+    folder.type = BrowserNode::Type::MotionStudies;
+    folder.component = rootNode.uid;
+    folder.name = tr("Motion Studies");
+    QTreeWidgetItem* studies = addRow(rootItem, folder, QStringLiteral("folder"));
+    for (const QJsonValue& value : snapshot.motionStudies) {
+      const QJsonObject study = value.toObject();
+      BrowserNode row;
+      row.type = BrowserNode::Type::MotionStudy;
+      row.component = rootNode.uid;
+      row.uid = study.value(QStringLiteral("name")).toString();
+      row.name = row.uid;
+      QStringList keyed;
+      for (const QJsonValue& key : study.value(QStringLiteral("keys")).toArray()) {
+        const QJsonObject k = key.toObject();
+        keyed << QStringLiteral("%1 %2").arg(k.value(QStringLiteral("joint_name")).toString(),
+                                             k.value(QStringLiteral("motion")).toString());
+      }
+      addRow(studies, row, QStringLiteral("motion-study"),
+             tr("%1: %2 steps; keys: %3")
+                 .arg(row.name)
+                 .arg(study.value(QStringLiteral("steps")).toInt())
+                 .arg(keyed.isEmpty() ? tr("none") : keyed.join(QStringLiteral(", "))));
+    }
+  }
+  if (!snapshot.contactSets.isEmpty()) {
+    BrowserNode folder;
+    folder.type = BrowserNode::Type::ContactSets;
+    folder.component = rootNode.uid;
+    folder.name = tr("Contact Sets");
+    QTreeWidgetItem* sets = addRow(rootItem, folder, QStringLiteral("folder"));
+    for (const QJsonValue& value : snapshot.contactSets) {
+      const QJsonObject set = value.toObject();
+      BrowserNode row;
+      row.type = BrowserNode::Type::ContactSet;
+      row.component = rootNode.uid;
+      row.uid = set.value(QStringLiteral("name")).toString();
+      row.name = row.uid;
+      QStringList names;
+      for (const QJsonValue& occurrence : set.value(QStringLiteral("occurrences")).toArray()) {
+        names << occurrence.toObject().value(QStringLiteral("name")).toString();
+      }
+      const bool suppressed = set.value(QStringLiteral("suppressed")).toBool();
+      QTreeWidgetItem* item =
+          addRow(sets, row, QStringLiteral("contact-set"),
+                 tr("%1: %2%3").arg(row.name, names.join(QStringLiteral(", ")),
+                                    suppressed ? tr(" (suppressed)") : QString()));
+      if (suppressed) {
         item->setForeground(kName, kHiddenText);
       }
     }

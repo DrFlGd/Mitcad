@@ -164,7 +164,17 @@ CommandDef extrudeCommand(const CommandContext& context) {
                    {QStringLiteral("thin"), QStringLiteral("Thin Extrude")}},
                   QStringLiteral("solid"))
           .withTooltip(QObject::tr("A solid of the profiles, or walls along their curves")),
-      selectionInput(QStringLiteral("profiles"), QObject::tr("Profiles"), SelectKind::Profile, 1, 0),
+      // A thin extrusion also takes sketch curves, open chains as well as
+      // closed loops, instead of profiles (mitcad#463).
+      selectionInput(QStringLiteral("profiles"), QObject::tr("Profiles"),
+                     SelectKind::Profile | SelectKind::SketchCurve, 1, 0)
+          .withTooltip(QObject::tr("Profiles; for a thin extrusion, sketch curves instead"))
+          .withPickRule(
+              [thin](const CommandState& state) -> SelectFilter {
+                return thin(state) ? SelectKind::Profile | SelectKind::SketchCurve
+                                   : SelectFilter(SelectKind::Profile);
+              },
+              [](const SelectionItem&, const CommandState&) { return true; }),
       choiceInput(QStringLiteral("start"), QObject::tr("Start"),
                   {{QStringLiteral("profile_plane"), QStringLiteral("Profile Plane")},
                    {QStringLiteral("offset"), QStringLiteral("Offset")},
@@ -204,7 +214,7 @@ CommandDef extrudeCommand(const CommandContext& context) {
   def.inputs += sideInputs(QStringLiteral("2"), twoSides, QStringLiteral("2"));
   def.inputs.append(choiceInput(QStringLiteral("wall"), QObject::tr("Wall Location"), kWalls,
                                 QStringLiteral("side1"))
-                        .withTooltip(QObject::tr("Side 1 lies away from the profile's material"))
+                        .withTooltip(QObject::tr("Side 1 lies away from the profile's material, or right of an open curve"))
                         .withVisible(thin));
   def.inputs.append(valueInput(QStringLiteral("thickness"), QObject::tr("Wall Thickness"),
                                ValueKind::Length, QStringLiteral("1 mm"))
@@ -245,13 +255,33 @@ CommandDef extrudeCommand(const CommandContext& context) {
                                                               {QStringLiteral("excluded_bodies"), QJsonArray()}}}});
     state.setChecked(QStringLiteral("cut_context_from_profile"), true);
   };
-  def.enabled = [&context] { return hasProfiles(context); };
+  // Thin walls follow sketch curves too, so a sketch of open curves is
+  // enough (mitcad#463).
+  def.enabled = [&context] { return hasProfiles(context) || hasSketches(context); };
 
   def.build = [](const CommandState& state, const CommandContext&) {
     Built result;
-    const Selection& profiles = state.items(QStringLiteral("profiles"));
-    if (oneSketch(profiles, result, QStringLiteral("profiles")).isEmpty()) {
+    const Selection& picked = state.items(QStringLiteral("profiles"));
+    const QString sketch = oneSketch(picked, result, QStringLiteral("profiles"));
+    if (sketch.isEmpty()) {
       return result;
+    }
+    // Sketch curves, for walls along them (mitcad#463), or profiles.
+    Selection profiles;
+    const QJsonArray curves = names(picked, SelectKind::SketchCurve);
+    for (const SelectionItem& item : picked) {
+      if (item.kind == SelectKind::Profile) {
+        profiles.append(item);
+      }
+    }
+    const bool thinType = state.choice(QStringLiteral("type")) == QStringLiteral("thin");
+    if (!curves.isEmpty() && !thinType) {
+      return Built::failure(QObject::tr("Only a thin extrusion follows sketch curves."),
+                            QStringLiteral("profiles"));
+    }
+    if (!curves.isEmpty() && !profiles.isEmpty()) {
+      return Built::failure(QObject::tr("Select profiles or sketch curves, not both."),
+                            QStringLiteral("profiles"));
     }
     const QString direction = state.choice(QStringLiteral("direction"));
     QJsonObject extent;
@@ -285,9 +315,10 @@ CommandDef extrudeCommand(const CommandContext& context) {
         }
       }
     }
-    result.def = {{QStringLiteral("type"), QStringLiteral("extrude")},
-                  {QStringLiteral("profiles"), refsOf(profiles)},
-                  {QStringLiteral("extent"), extent}};
+    result.def = {{QStringLiteral("type"), QStringLiteral("extrude")}, {QStringLiteral("extent"), extent}};
+    if (curves.isEmpty()) {
+      result.def.insert(QStringLiteral("profiles"), refsOf(profiles));
+    }
     const QString start = state.choice(QStringLiteral("start"));
     if (start == QStringLiteral("offset")) {
       result.def.insert(QStringLiteral("start"),
@@ -308,9 +339,13 @@ CommandDef extrudeCommand(const CommandContext& context) {
       }
       result.def.insert(QStringLiteral("start"), begin);
     }
-    if (state.choice(QStringLiteral("type")) == QStringLiteral("thin")) {
+    if (thinType) {
       QJsonObject walls{{QStringLiteral("location"), state.choice(QStringLiteral("wall"))},
                         {QStringLiteral("thickness"), state.expression(QStringLiteral("thickness"))}};
+      if (!curves.isEmpty()) {
+        walls.insert(QStringLiteral("curves"),
+                     QJsonObject{{QStringLiteral("sketch"), sketch}, {QStringLiteral("curves"), curves}});
+      }
       if (direction == kTwoSides &&
           (state.choice(QStringLiteral("wall2")) != state.choice(QStringLiteral("wall")) ||
            state.expression(QStringLiteral("thickness2")) != state.expression(QStringLiteral("thickness")))) {
@@ -329,7 +364,7 @@ CommandDef extrudeCommand(const CommandContext& context) {
       QJsonObject scope = state.object(QStringLiteral("cut_scope"));
       if (state.checked(QStringLiteral("cut_context_from_profile"))) {
         QJsonObject context = scope.value(QStringLiteral("context")).toObject();
-        context.insert(QStringLiteral("occurrence"), profiles.first().occurrence);
+        context.insert(QStringLiteral("occurrence"), picked.first().occurrence);
         scope.insert(QStringLiteral("context"), context);
       }
       result.def.remove(QStringLiteral("participants"));
@@ -374,6 +409,9 @@ CommandDef extrudeCommand(const CommandContext& context) {
     }
     const QJsonObject thin = feature.value(QStringLiteral("thin")).toObject();
     if (!thin.isEmpty()) {
+      if (const auto curves = pathItems(thin.value(QStringLiteral("curves")), context)) {
+        state.setItems(QStringLiteral("profiles"), *curves);
+      }
       state.setChoice(QStringLiteral("type"), QStringLiteral("thin"));
       state.setChoice(QStringLiteral("wall"), str(thin, "location"));
       loadValue(state, QStringLiteral("thickness"), thin.value(QStringLiteral("thickness")), feature, context);
@@ -413,6 +451,13 @@ CommandDef extrudeCommand(const CommandContext& context) {
     }
     const QJsonObject thin = feature.value(QStringLiteral("thin")).toObject();
     if (thin.contains(QStringLiteral("side2")) && type != kTwoSides) {
+      ok = false;
+    }
+    // Walls on both sides by thicknesses of their own (the imports') and
+    // curves chained in the model are not in the panel.
+    const QJsonObject thinSide2 = thin.value(QStringLiteral("side2")).toObject();
+    if (str(thin, "location") == QStringLiteral("both") || str(thinSide2, "location") == QStringLiteral("both") ||
+        thin.value(QStringLiteral("curves")).toObject().value(QStringLiteral("chain")).toBool()) {
       ok = false;
     }
     const QJsonObject start = feature.value(QStringLiteral("start")).toObject();

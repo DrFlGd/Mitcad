@@ -369,6 +369,67 @@ void test_fillet_mid_radii() {
   CHECK_NEAR_TOL(800 - area_across_x(*along, 0.05), (1 - kPi / 4) * 4, 5e-3);
 }
 
+void test_fillet_spline_radius() {
+  // mitcad#464 (port patch 0920): the radius along the 60 mm top front edge
+  // a cubic Bezier of control radii 2, 6, 3, 4 from x = 0, by the position
+  // u = x / 60: r(u) = 2 (1-u)^3 + 18 u (1-u)^2 + 9 u^2 (1-u) + 4 u^3. Each
+  // cross-section misses (1 - pi / 4) r^2 of the block's, so the volume
+  // misses (1 - pi / 4) 60 times the integral of r^2, 100 / 7.
+  const auto r = [](double u) {
+    const double v = 1 - u;
+    return 2 * v * v * v + 18 * u * v * v + 9 * u * u * v + 4 * u * u * u;
+  };
+  FilletSet spline;
+  spline.edges = {top_front()};
+  spline.size = FilletSize::Spline;
+  spline.knots = {0, 0, 0, 0, 1, 1, 1, 1};
+  spline.radii = {2, 6, 3, 4};
+  spline.start_vertex =
+      "V{" + end_cap("F2", 1) + "|" + side("F2", 1, 0) + "|" + side("F2", 1, 3) + "}";
+  const ShapePtr rounded = fillet("F5", *block(), {spline});
+  CHECK_NEAR_TOL(volume(*rounded), 48000.0 - (1 - kPi / 4) * 60 * 100 / 7.0, 1e-5);
+  for (const double u : {0.1, 0.25, 0.5, 0.8}) {
+    CHECK_NEAR_TOL(800 - area_across_x(*rounded, 60 * u), (1 - kPi / 4) * r(u) * r(u), 2e-3);
+  }
+  CHECK(faces_named(*rounded, "F5:fillet(" + top_front() + ")") == 1);
+  // From the other end: r(u) at x = 60 (1 - u).
+  spline.start_vertex =
+      "V{" + end_cap("F2", 1) + "|" + side("F2", 1, 0) + "|" + side("F2", 1, 1) + "}";
+  const ShapePtr reversed = fillet("F5", *block(), {spline});
+  CHECK_NEAR_TOL(800 - area_across_x(*reversed, 60 * (1 - 0.1)), (1 - kPi / 4) * r(0.1) * r(0.1), 2e-3);
+
+  // Two spans of degree 2 (knots 0, 0, 0, 0.5, 1, 1, 1; control radii 2, 4,
+  // 6, 3): at the inner knot r = (4 + 6) / 2 = 5, at u = 0.25 (t = 1/2 of
+  // the first span) 2 / 4 + 4 * 5 / 8 + 6 / 8 = 3.75.
+  spline.knots = {0, 0, 0, 0.5, 1, 1, 1};
+  spline.radii = {2, 4, 6, 3};
+  spline.start_vertex =
+      "V{" + end_cap("F2", 1) + "|" + side("F2", 1, 0) + "|" + side("F2", 1, 3) + "}";
+  const ShapePtr spans = fillet("F5", *block(), {spline});
+  CHECK_NEAR_TOL(800 - area_across_x(*spans, 30), (1 - kPi / 4) * 25, 2e-3);
+  CHECK_NEAR_TOL(800 - area_across_x(*spans, 15), (1 - kPi / 4) * 3.75 * 3.75, 2e-3);
+
+  // Along a chain of three edges (the top front edge, the arc of a vertical
+  // 10 mm fillet at (60, 0), the top right edge): the radius runs along the
+  // whole chain, here linear (degree 1) from 2 at (0, 0) to 4 at (60, 40),
+  // 3 half along it.
+  FilletSet vertical;
+  vertical.edges = {corner_edge(1)};
+  vertical.radius = 10;
+  const ShapePtr corner_round = fillet("F4", *block(), {vertical});
+  spline.knots = {0, 0, 1, 1};
+  spline.radii = {2, 4};
+  const ShapePtr along = fillet("F5", *corner_round, {spline});
+  const double half = (50 + 10 * kPi / 2 + 30) / 2;
+  CHECK_NEAR_TOL(800 - area_across_x(*along, half), (1 - kPi / 4) * 9, 1e-3);
+
+  // Malformed splines are refused.
+  spline.knots = {0, 0, 0.5, 1};
+  CHECK(throws_with([&] { fillet("F5", *block(), {spline}); }, "knots of a spline radius"));
+  spline.knots = {0, 0, 1, 1, 1};
+  CHECK(throws_with([&] { fillet("F5", *block(), {spline}); }, "degree 1 to 3"));
+}
+
 void test_chamfer_miter_corners() {
   // The three edges at the corner (60, 0, 20), 2 mm. With miter corners
   // the bevels run on until they meet: the removed prisms 2 * 2 / 2 * 120
@@ -1294,6 +1355,7 @@ void dressup_tests() {
   guarded("test_fillet_tangent_chains", test_fillet_tangent_chains);
   guarded("test_fillet_chord_length_and_variable_radius", test_fillet_chord_length_and_variable_radius);
   guarded("test_fillet_mid_radii", test_fillet_mid_radii);
+  guarded("test_fillet_spline_radius", test_fillet_spline_radius);
   guarded("test_chamfer_miter_corners", test_chamfer_miter_corners);
   guarded("test_asymmetric_fillets", test_asymmetric_fillets);
   guarded("test_g2_fillets", test_g2_fillets);

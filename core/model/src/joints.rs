@@ -580,6 +580,25 @@ pub(crate) fn check_components(
                 check_origin(&format!("{}: {key}", row_label(i, row.kind)), origin)
             })
         }),
+        // Motion links (mitcad#466): joints of their own component, and
+        // origins as joints' are.
+        FeatureDef::MotionLink(link) => [("a", link.a.joint), ("b", link.b.joint)]
+            .into_iter()
+            .try_for_each(|(key, uid)| match features.iter().find(|f| f.uid == uid) {
+                Some(joint) if joint.component != entry.component => Err(format!(
+                    "{key}: {} is in {}, not in {}",
+                    joint.name,
+                    assembly.name(joint.component),
+                    assembly.name(entry.component)
+                )),
+                _ => Ok(()),
+            })
+            .and_then(|()| {
+                link.coupling
+                    .origins()
+                    .into_iter()
+                    .try_for_each(|origin| check_origin("coupling", origin))
+            }),
         _ => return None,
     })
 }
@@ -629,6 +648,13 @@ pub(crate) fn occurrences_used(def: &FeatureDef) -> Vec<OccurrenceUid> {
             .collect(),
         // BUILD's bound lengths (mitcad#375).
         FeatureDef::BoundLength(b) => [&b.from.occurrence.0[..], &b.to.occurrence.0[..]].concat(),
+        // Motion links' picked geometry (mitcad#466).
+        FeatureDef::MotionLink(link) => link
+            .coupling
+            .origins()
+            .into_iter()
+            .flat_map(|o| o.occurrence.0.iter().copied())
+            .collect(),
         _ => Vec::new(),
     }
 }
@@ -729,6 +755,11 @@ pub(crate) fn remap_occurrences(
                 {
                     path(&mut origin.occurrence.0);
                 }
+            }
+        }
+        FeatureDef::MotionLink(link) => {
+            for origin in link.coupling.origins_mut() {
+                path(&mut origin.occurrence.0);
             }
         }
         _ => return false,
@@ -840,7 +871,7 @@ impl ActiveJoint {
 
     /// The free motions' values with these placements (turns unwrapped
     /// near their targets or limits), None when the joint does not hold.
-    fn values(
+    pub(crate) fn values(
         &self,
         placements: &BTreeMap<OccurrenceUid, Transform>,
     ) -> Option<BTreeMap<Motion, f64>> {
@@ -879,6 +910,10 @@ pub(crate) struct JointsState {
     pub active: Vec<ActiveJoint>,
     /// Constraint sets (mitcad#148).
     pub constraints: BTreeMap<FeatureUid, ConstraintSetResult>,
+    /// Motion links in effect, in timeline order, and what each did
+    /// (mitcad#466).
+    pub links: Vec<crate::motion_links::ActiveLink>,
+    pub link_results: BTreeMap<FeatureUid, crate::motion_links::LinkResult>,
 }
 
 /// Whether recompute applies the feature with [`apply`].
@@ -889,6 +924,7 @@ pub(crate) fn applies(def: &FeatureDef) -> bool {
             | FeatureDef::AsBuiltJoint(_)
             | FeatureDef::RigidGroup(_)
             | FeatureDef::ConstraintSet(_)
+            | FeatureDef::MotionLink(_)
     )
 }
 
@@ -1034,6 +1070,9 @@ pub(crate) fn apply<K: Kernel>(
             ));
         }
     }
+    if let FeatureDef::MotionLink(link) = &entry.def {
+        return crate::motion_links::apply(kernel, state, entry, link, components, done);
+    }
     if let FeatureDef::RigidGroup(group) = &entry.def {
         for o in &group.occurrences {
             path_component(assembly, component, &[*o])?;
@@ -1115,7 +1154,7 @@ pub(crate) fn apply<K: Kernel>(
                 parts: Some(spec.parts),
             });
         }
-        let (state_now, changes) = solve_new(state, entry, &rows, done)?;
+        let (state_now, changes) = solve_new(state, entry, &rows, &[], done)?;
         let results = set
             .rows
             .iter()
@@ -1222,7 +1261,7 @@ pub(crate) fn apply<K: Kernel>(
         row: None,
         parts: None,
     };
-    let (state_now, changes) = solve_new(state, entry, std::slice::from_ref(&joint), done)?;
+    let (state_now, changes) = solve_new(state, entry, std::slice::from_ref(&joint), &[], done)?;
     let (frame_a, frame_b) = joint.frames(&done.placements);
     let values = joint.values(&done.placements);
     done.joints.active.push(joint);
@@ -1283,6 +1322,7 @@ pub(crate) fn finish(joints: &mut JointsState, placements: &BTreeMap<OccurrenceU
                 .collect(),
         };
     }
+    crate::motion_links::finish(joints);
 }
 
 /// The name of a joint, or of a constraint set's row
@@ -1304,10 +1344,13 @@ pub(crate) fn relation_name(state: &DocState, uid: FeatureUid, row: Option<usize
 /// constraints in effect that share moving occurrences with them (through
 /// each other) and places the occurrences that move, as placement changes
 /// of the feature applied like other features' (`recompute::place`).
-fn solve_new<S>(
+/// New motion links (mitcad#466) bring the joints they couple, and links
+/// bring the joints they couple to those taken.
+pub(crate) fn solve_new<S>(
     state: &DocState,
     entry: &FeatureEntry,
     new: &[ActiveJoint],
+    new_links: &[crate::motion_links::ActiveLink],
     done: &mut Recomputed<S>,
 ) -> Result<(JointState, Vec<PlacementChange>), String> {
     let assembly = &state.assembly;
@@ -1348,12 +1391,12 @@ fn solve_new<S>(
         }
         solving.push(joint);
     }
-    if solving.is_empty() {
+    if solving.is_empty() && new_links.is_empty() {
         return Ok((JointState::Satisfied, Vec::new()));
     }
 
     // The joints and constraints in effect that share moving units with
-    // these, through each other.
+    // these, through each other and through motion links.
     let mine: Vec<&ActiveJoint> = done
         .joints
         .active
@@ -1361,15 +1404,41 @@ fn solve_new<S>(
         .filter(|j| j.component == component)
         .chain(solving)
         .collect();
+    let links: Vec<&crate::motion_links::ActiveLink> = done
+        .joints
+        .links
+        .iter()
+        .filter(|l| l.component == component)
+        .chain(new_links)
+        .collect();
+    let first_new_link = links.len() - new_links.len();
     let mut taken = vec![false; mine.len()];
+    let mut taken_links = vec![false; links.len()];
+    // Joints a taken link couples.
+    let mut linked: BTreeSet<FeatureUid> = BTreeSet::new();
     loop {
         let mut grown = false;
+        for (k, l) in links.iter().enumerate() {
+            let joint_taken = |uid: FeatureUid| {
+                mine.iter()
+                    .zip(&taken)
+                    .any(|(j, t)| *t && j.row.is_none() && j.uid == uid)
+            };
+            if taken_links[k] || !(k >= first_new_link || joint_taken(l.a.0) || joint_taken(l.b.0))
+            {
+                continue;
+            }
+            taken_links[k] = true;
+            linked.extend([l.a.0, l.b.0]);
+            grown = true;
+        }
         for (i, j) in mine.iter().enumerate() {
             if taken[i] {
                 continue;
             }
             let sides = [unit(&j.a), unit(&j.b)];
-            if !sides.iter().flatten().any(|u| moving.contains(u)) {
+            let coupled = j.row.is_none() && linked.contains(&j.uid);
+            if !coupled && !sides.iter().flatten().any(|u| moving.contains(u)) {
                 continue;
             }
             taken[i] = true;
@@ -1393,14 +1462,32 @@ fn solve_new<S>(
         .filter(|(_, t)| **t)
         .map(|(j, _)| *j)
         .collect();
+    let cluster_links: Vec<&crate::motion_links::ActiveLink> = links
+        .iter()
+        .zip(&taken_links)
+        .filter(|(_, t)| **t)
+        .map(|(l, _)| *l)
+        .collect();
     let mut mechanism = Mechanism::new(
         assembly,
         groups,
         component,
         &cluster,
+        &cluster_links,
         &done.placements,
         false,
     )?;
+    // A new link's joints must both move in the solve.
+    for l in new_links {
+        for uid in [l.a.0, l.b.0] {
+            if mechanism.joint_of(uid).is_none() {
+                return Err(format!(
+                    "{} cannot move: both its sides move together",
+                    relation_name(state, uid, None)
+                ));
+            }
+        }
+    }
     let result = mechanism.system.solve(&RigidOptions::default());
     if !result.is_ok() {
         return Err(solve_error(state, &mechanism, &result));
@@ -1580,6 +1667,7 @@ impl Mechanism {
         groups: &[(FeatureUid, ComponentUid, Vec<OccurrenceUid>)],
         component: ComponentUid,
         joints: &[&ActiveJoint],
+        links: &[&crate::motion_links::ActiveLink],
         placements: &BTreeMap<OccurrenceUid, Transform>,
         all_units: bool,
     ) -> Result<Self, String> {
@@ -1641,7 +1729,33 @@ impl Mechanism {
                 .map_err(|e| e.to_string())?;
             mechanism.joints.push((joint.uid, None, id));
         }
+        // Motion links (mitcad#466) between joints of the mechanism; a link
+        // whose joint is left out (its sides move together) couples
+        // nothing here.
+        for link in links {
+            let (Some(a), Some(b)) = (mechanism.joint_of(link.a.0), mechanism.joint_of(link.b.0))
+            else {
+                continue;
+            };
+            let id = mechanism
+                .system
+                .add_coupling(mitcad_solver::RigidCoupling {
+                    driver: (a, freedom(link.a.1)),
+                    follower: (b, freedom(link.b.1)),
+                    relation: link.relation.clone(),
+                })
+                .map_err(|e| e.to_string())?;
+            mechanism.joints.push((link.uid, None, id));
+        }
         Ok(mechanism)
+    }
+
+    /// The solver's joint of a joint feature, when it is in the mechanism.
+    pub(crate) fn joint_of(&self, joint: FeatureUid) -> Option<JointId> {
+        self.joints
+            .iter()
+            .find(|(uid, row, _)| *uid == joint && row.is_none())
+            .map(|(_, _, id)| *id)
     }
 
     /// The body of an occurrence's unit, added when new.
@@ -1727,6 +1841,18 @@ impl Mechanism {
     }
 }
 
+/// The motion links in effect in a component (mitcad#466).
+pub(crate) fn links_of(
+    joints: &JointsState,
+    component: ComponentUid,
+) -> Vec<&crate::motion_links::ActiveLink> {
+    joints
+        .links
+        .iter()
+        .filter(|l| l.component == component)
+        .collect()
+}
+
 /// The occurrence and those rigid groups of `component` join it to.
 pub(crate) fn group_of(
     groups: &[(FeatureUid, ComponentUid, Vec<OccurrenceUid>)],
@@ -1799,6 +1925,9 @@ pub struct Dragged {
     /// The occurrences that moved and their placements.
     pub placements: Vec<(OccurrenceUid, Transform)>,
     pub values: BTreeMap<FeatureUid, BTreeMap<Motion, f64>>,
+    /// The contact of a contact set that stopped the drag short of the
+    /// target (mitcad#454).
+    pub contact: Option<crate::contact::ContactHit>,
 }
 
 /// Pulls `grab` (a point in the parent component's coordinates, moving
@@ -1827,6 +1956,7 @@ pub(crate) fn drag(
         &joints.groups,
         component,
         &active,
+        &links_of(joints, component),
         placements,
         true,
     )?;
@@ -1855,6 +1985,7 @@ pub(crate) fn drag(
     Ok(Dragged {
         placements,
         values: mechanism.values(&active),
+        contact: None,
     })
 }
 
@@ -1916,6 +2047,7 @@ pub(crate) fn dof_report(
         &joints.groups,
         component,
         &active,
+        &links_of(joints, component),
         placements,
         true,
     ) {

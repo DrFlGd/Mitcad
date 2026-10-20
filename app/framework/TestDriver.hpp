@@ -105,6 +105,18 @@
 //                           control's registered hover owner
 //   native-type <id> <text> replace an AppKit field editor's text
 //   native-choice <id> <title> choose a native popup's menu item
+//   expect-native-duplicate-choices
+//                           verify distinct values with duplicate native labels
+//                           in command forms and secondary-dialog bindings
+//   expect-native-form-controls
+//                           verify native icon artwork, values and disclosure;
+//                           mount a synthetic disclosure command for layout checks
+//   expect-native-disclosure-layout
+//                           verify the mounted fixture's card height cap and
+//                           scrolling to its last expanded input
+//   native-toolbar-item <id> insert|remove|palette change the actual saved
+//                           AppKit configuration or request a palette sample
+//   expect-native-toolbar-item <id> true|false check actual toolbar membership
 //   native-activate <id>    edit a native history icon or activate a model row
 //   native-select <id> [shift|ctrl] select a native history icon/model row;
 //                           modifiers exercise actual feature mouse input
@@ -114,6 +126,9 @@
 //                           matching actual jobStarted while modelBusy is
 //                           true, before progress-sheet/animation timing;
 //                           fails if the armed job never starts
+//   fail-next-recovery-command restore_command|discard_command
+//                           fail one recovery job before it mutates the model;
+//                           requires an idle native command session
 //   expect-picking-on-job <job> probe a visible body during the next actual
 //                           job: MoveTo must reject it without model reads;
 //                           fails if the armed job never starts

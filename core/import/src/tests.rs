@@ -975,6 +975,8 @@ struct TestGeometry {
     without_result: Vec<i64>,
     /// Items whose operation changed no body (failed in the file).
     unchanged: Vec<i64>,
+    /// Items naming an earlier item's operation (failed in the file).
+    shared: Vec<i64>,
     /// The state before the operations no item names right before an
     /// item's own, by item index.
     starts: HashMap<i64, usize>,
@@ -1001,6 +1003,10 @@ impl StoredGeometry<MockShape> for TestGeometry {
 
     fn item_start(&mut self, index: i64) -> Option<usize> {
         self.starts.get(&index).copied()
+    }
+
+    fn item_shares_operation(&mut self, index: i64) -> bool {
+        self.shared.contains(&index)
     }
 
     fn state(&mut self, index: usize) -> Result<Vec<StoredBody<MockShape>>, String> {
@@ -3018,6 +3024,94 @@ fn a_circular_pattern_uses_its_decoded_sketch_axis_without_history() {
         value["def"]["objects"],
         json!({"type": "bodies", "bodies": ["F2.b0"]})
     );
+}
+
+/// A path pattern of a body along a sketch line (mitcad#468), as the stream
+/// decoder gives it (`settings` false: without the start point, flip,
+/// orientation and symmetry) or as a dump does.
+fn path_pattern_item(path: Value, settings: bool) -> Value {
+    let mut detail = json!({
+        "inputEntities": [{"kind": "body", "objectType": "BRepBody",
+                           "_f3d": {"producer": 1, "body_index": 0}}],
+        "patternEntityType": "BodiesPatternType",
+        "path": path,
+        "quantity": {"kind": "parameter", "value": 3.0, "unit": ""},
+        "distance": {"kind": "parameter", "value": 1.5, "unit": "mm"},
+        "patternDistanceType": "SpacingPatternDistanceType",
+        "patternComputeOption": "AdjustPatternCompute",
+        "suppressedElementsIds": []
+    });
+    if settings {
+        for (k, v) in [
+            ("startPoint", json!(0.0)),
+            ("isFlipDirection", json!(true)),
+            ("isOrientationAlongPath", json!(false)),
+            ("isSymmetric", json!(false)),
+        ] {
+            detail[k] = v;
+        }
+    }
+    json!({"index": 2, "name": "PathPattern", "objectType": "PathPatternFeature",
+           "detail": detail})
+}
+
+#[test]
+fn a_path_pattern_follows_its_sketch_line() {
+    let line = json!([{"_type": "PathEntity", "entity": {"kind": "sketch_entity",
+        "objectType": "SketchLine", "sketch_timeline_index": 0, "id": "c0"}}]);
+    for settings in [false, true] {
+        let dump = timeline_dump(vec![
+            rectangle_sketch(0),
+            extrude(1, 0, "NewBodyFeatureOperation", "d2"),
+            path_pattern_item(line.clone(), settings),
+        ]);
+        let mut doc = Document::new(MockKernel::default());
+        let report = import(&mut doc, &dump);
+        let item = &report.items[2];
+        assert_eq!(item.outcome, Outcome::Parametric, "{}", report.text());
+        assert_eq!(doc.bodies().len(), 3);
+        let value: Value = serde_json::from_str(
+            &doc.query(&format!(
+                r#"{{"query": "feature", "uid": "{}"}}"#,
+                item.features[0]
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        let def = &value["def"];
+        assert_eq!(def["type"], "path_pattern");
+        // One curve of the sketch (its id renumbered, points first).
+        assert_eq!(def["path"]["sketch"], "F1");
+        assert!(def["path"]["curve"].is_string(), "{def}");
+        assert_eq!(
+            def["objects"],
+            json!({"type": "bodies", "bodies": ["F2.b0"]})
+        );
+        assert_eq!(def["distance_type"], "spacing");
+        // Given, the settings are read; else the defaults, inferred.
+        assert_eq!(def["flip"].as_bool().unwrap_or(false), settings);
+        let provenance = if settings {
+            InputProvenance::Read
+        } else {
+            InputProvenance::Inferred
+        };
+        assert_eq!(item.input_provenance, Some(provenance), "{}", report.text());
+    }
+}
+
+#[test]
+fn a_path_pattern_along_edges_is_not_translated() {
+    let edge = json!([{"_type": "PathEntity", "entity": {"kind": "edge",
+        "objectType": "BRepEdge"}}]);
+    let dump = timeline_dump(vec![
+        rectangle_sketch(0),
+        extrude(1, 0, "NewBodyFeatureOperation", "d2"),
+        path_pattern_item(edge, true),
+    ]);
+    let mut doc = Document::new(MockKernel::default());
+    let report = import(&mut doc, &dump);
+    let item = &report.items[2];
+    assert_ne!(item.outcome, Outcome::Parametric, "{}", report.text());
 }
 
 #[test]
@@ -7752,6 +7846,52 @@ fn an_item_whose_operation_changed_no_body_is_skipped_as_failed() {
 }
 
 #[test]
+fn an_item_naming_an_earlier_item_s_operation_is_skipped_as_failed() {
+    // mitcad#343: a chamfer after a rounding names the rounding's operation
+    // (both items have its result number), so the history holds none of its
+    // own and its state is the state before it; no definition does that, so
+    // it is skipped as failed in the file, not a fallback.
+    let (mut items, mut geometry) = block_history(Vec::new());
+    let mut failed = extrude(3, 0, "JoinFeatureOperation", "d2");
+    failed["name"] = json!("Extrude3");
+    items.push(failed);
+    geometry.items.insert(3, 2);
+    geometry.shared = vec![3];
+    let mut doc = Document::new(TestKernel::default());
+    let report = import_design(
+        &mut doc,
+        &timeline_dump(items),
+        &mut geometry,
+        &Options::default(),
+    );
+    let failed = &report.items[3];
+    assert_eq!(failed.outcome, Outcome::Skipped, "{}", report.text());
+    assert!(
+        failed
+            .note
+            .as_deref()
+            .is_some_and(|n| n.contains("failed in the file") && n.contains("none of its own")),
+        "{}",
+        report.text()
+    );
+    assert!(failed.features.is_empty(), "{}", report.text());
+    assert_eq!(report.items[2].outcome, Outcome::Parametric);
+    // Without the history's word it is not called failed.
+    let (mut items, mut geometry) = block_history(Vec::new());
+    items.push(extrude(3, 0, "JoinFeatureOperation", "d2"));
+    geometry.items.insert(3, 2);
+    let mut doc = Document::new(TestKernel::default());
+    let report = import_design(
+        &mut doc,
+        &timeline_dump(items),
+        &mut geometry,
+        &Options::default(),
+    );
+    let note = report.items[3].note.as_deref().unwrap_or_default();
+    assert!(!note.contains("failed in the file"), "{}", report.text());
+}
+
+#[test]
 fn operations_before_an_item_s_own_may_be_its_own() {
     // mitcad#156: a pattern makes an operation per copy, and the item names
     // the last; the states of the others come between the item before and
@@ -9248,6 +9388,63 @@ fn linked_arcs_that_do_not_meet_exactly_are_not_locked() {
     assert_eq!(arcs, 2, "{s}");
 }
 
+/// Two linked arcs that share an end, one of them with its ends 30 µm
+/// apart in radius about its centre, so that they are imported free, and
+/// an own circle through their common end (round 11 of mitcad#343): that
+/// end stays where the file has it, the arc's inconsistency taken up by its
+/// other points, so that the circle keeps the file's radius and centre.
+#[test]
+fn an_own_circle_through_a_free_linked_arc_s_end_keeps_the_file_s_radius() {
+    let end: [f64; 2] = [1.00003 * 0.6, 1.00003 * 0.8];
+    let center = [3.0, 0.5];
+    let radius = (end[0] - center[0]).hypot(end[1] - center[1]);
+    // The second arc about (0.6, 2.8), from the common end to its top.
+    let second = [0.6, 2.8];
+    let second_r = (end[0] - second[0]).hypot(end[1] - second[1]);
+    let points = vec![
+        gpoint("p0", 0.0, 0.0),
+        gpoint("p1", 1.0, 0.0),
+        gpoint("p2", end[0], end[1]),
+        gpoint("p3", center[0], center[1]),
+        gpoint("p4", second[0], second[1]),
+        gpoint("p5", second[0] + second_r, second[1]),
+    ];
+    let curves = vec![
+        json!({"id": "c0", "type": "SketchArc", "isReference": true, "isLinked": true,
+               "centerSketchPoint": "p0", "startSketchPoint": "p1", "endSketchPoint": "p2"}),
+        gcircle("c1", "p3", radius),
+        json!({"id": "c2", "type": "SketchArc", "isReference": true, "isLinked": true,
+               "centerSketchPoint": "p4", "startSketchPoint": "p5", "endSketchPoint": "p2"}),
+    ];
+    let constraints = json!([
+        {"id": "k0", "type": "CoincidentConstraint", "refs": {"entities": ["p2", "c1"]}},
+    ]);
+    let dump = group_sketch_dump(vec![], points, curves, constraints, json!([]));
+    let mut doc = Document::new(MockKernel::default());
+    let report = import(&mut doc, &dump);
+    assert_parametric(&report);
+    let note = report.items[0].note.as_deref().unwrap_or_default();
+    assert!(note.contains("not locked"), "{note}");
+    let s = sketch_query(&doc);
+    let entities = s["entities"].as_array().unwrap();
+    let circle = entities
+        .iter()
+        .find(|e| e["type"] == "circle")
+        .expect("the circle");
+    // (The file's lengths are centimetres.)
+    let r = circle["geometry"]["radius"].as_f64().unwrap() / 10.0;
+    assert!(
+        (r - radius).abs() < 1e-9,
+        "radius {r} against the file's {radius}: {s}"
+    );
+    let c = circle["geometry"]["center"].as_array().unwrap();
+    let (cx, cy) = (c[0].as_f64().unwrap() / 10.0, c[1].as_f64().unwrap() / 10.0);
+    assert!(
+        (cx - center[0]).abs() < 1e-9 && (cy - center[1]).abs() < 1e-9,
+        "centre {cx}, {cy}: {s}"
+    );
+}
+
 /// The midpoint constraints of a fitted spline's fit points with the
 /// tangent handles (lines the sketch does not list) bind nothing in a
 /// sketch that keeps the spline's curve: the sketch is imported whole.
@@ -10040,4 +10237,96 @@ fn a_linked_plane_goes_into_the_items_component() {
     let mut unlinked = plane.clone();
     unlinked.as_object_mut().unwrap().remove("links");
     assert_eq!(def_component(&doc, &unlinked, b), a);
+}
+
+/// An emboss (mitcad#458) comes in as Mitcad's: the decoded profiles of
+/// its sketch on the face the file names, sunk where the file's depth is
+/// negative; profiles moved across the face are not translated.
+#[test]
+fn an_emboss_comes_in_on_its_face() {
+    let kernel = || TestKernel {
+        face_listing: true,
+        ..TestKernel::default()
+    };
+    let base = vec![
+        rectangle_sketch(0),
+        extrude(1, 0, "NewBodyFeatureOperation", "d2"),
+    ];
+    let mut reference = Document::new(kernel());
+    import_design(
+        &mut reference,
+        &timeline_dump(base.clone()),
+        &mut NoGeometry,
+        &Options::default(),
+    );
+    let top = reference.bodies()[0]
+        .shape
+        .faces
+        .iter()
+        .find(|f| f.role == "end")
+        .cloned()
+        .expect("a top face");
+    let point = face_point(&top).map(|x| x / 10.0);
+    // Sketch3: the rectangle again, without its dimension.
+    let mut sketch = rectangle_sketch(2);
+    sketch["detail"]
+        .as_object_mut()
+        .unwrap()
+        .remove("dimensions");
+    let emboss = |across: f64| {
+        json!({"index": 3, "name": "Emboss1", "objectType": "EmbossFeature", "detail": {
+            "profile": [{"kind": "profile", "sketch": "Sketch3", "sketch_timeline_index": 2}],
+            "inputFaces": [{"kind": "face", "objectType": "BRepFace",
+                "geometry": {"type": "Plane"}, "point_on_face": point,
+                "_f3d": {"recipe": "bounded_face"}}],
+            "depth": param("d6", "-1 mm", -0.1, "mm"),
+            "horizontalDistance": param("d7", "0 mm", across, "mm"),
+            "verticalDistance": param("d8", "0 mm", 0.0, "mm"),
+            "rotationAngle": param("d9", "0.0 deg", 0.0, "deg")}})
+    };
+    let run = |across: f64| {
+        let mut items = base.clone();
+        items.extend([sketch.clone(), emboss(across)]);
+        let mut doc = Document::new(kernel());
+        let report = import_design(
+            &mut doc,
+            &timeline_dump(items),
+            &mut NoGeometry,
+            &Options::default(),
+        );
+        let query = json!({"query": "feature", "uid": "F4"}).to_string();
+        let def = doc
+            .query(&query)
+            .ok()
+            .and_then(|a| serde_json::from_str::<Value>(&a).ok())
+            .map(|a| a["def"].clone())
+            .filter(|d| d["type"] == "emboss");
+        (report, def)
+    };
+    let (report, def) = run(0.0);
+    let item = report.items.iter().find(|i| i.name == "Emboss1").unwrap();
+    assert!(
+        matches!(item.outcome, Outcome::Parametric | Outcome::Partial),
+        "{}",
+        report.text()
+    );
+    let def = def.expect("an emboss");
+    assert_eq!(def["mode"], "sink", "{def}");
+    assert_eq!(
+        def["face"],
+        json!({"body": "F2.b0", "face": top.to_string()})
+    );
+    assert_eq!(def["profiles"][0]["sketch"], "F3", "{def}");
+
+    // Moved across the face: no counterpart.
+    let (report, def) = run(0.5);
+    let item = report.items.iter().find(|i| i.name == "Emboss1").unwrap();
+    assert!(
+        item.note
+            .as_deref()
+            .is_some_and(|n| n.contains("moved across the face")),
+        "{}",
+        report.text()
+    );
+    assert!(def.is_none());
 }

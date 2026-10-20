@@ -1,0 +1,22 @@
+[
+  {"comment":"SPDX-License-Identifier: MIT. Perforate (mitcad#461) on an L made by a contour flange: t=2, r=3, K=0.3, the chain (0,0)-(60,0)-(60,40) 50 wide, the corner turning away from the material (setback 3): panels 57 and 37, BA = 1.8 pi, folded 9400 + 200 pi. Developed with the first panel fixed, holes 5 across with the margin their diameter keep 7.5 from the outline and from the strip (x 57 .. 57 + 1.8 pi): staggered rows 5 sqrt 3 apart give 33 holes (9400 - 212.5 pi), a square grid 28 (9400 - 150 pi)."},
+  {"cmd":"add_feature","def":{"type":"sheet_rules","thickness":2,"bend_radius":3,"allowance":{"type":"k_factor","k":0.3},"reference_side":"front","bend_relief":{"type":"rectangular","width":2,"depth":3},"corner_relief":{"type":"round","width":2,"depth":3}}},
+  {"cmd":"sketch.create"},
+  {"cmd":"sketch.add_line","sketch":"F2","start":[0,0],"end":[60,0]},
+  {"cmd":"sketch.add_line","sketch":"F2","start":"p3","end":[60,40]},
+  {"cmd":"add_feature","def":{"type":"sheet_contour","rules":"F1","sketch":"F2","curves":["c1","c4"],"width":50}},
+  {"expect":{"feature":"F3","status":"ok","body":"F3.b0","volume":10028.318530717958}},
+  {"cmd":"add_feature","def":{"type":"sheet_perforate","body":"F3.b0","diameter":5,"pitch":10}},
+  {"expect":{"feature":"F4","status":"ok","bodies":1,"body":"F3.b0","volume":8732.4114304784326,"min":[0,-2,0],"max":[62,40,50]}},
+  {"cmd":"edit_feature","uid":"F4","def":{"type":"sheet_perforate","body":"F3.b0","diameter":5,"pitch":10,"margin":5,"pattern":"square"}},
+  {"expect":{"feature":"F4","status":"ok","body":"F3.b0","volume":8928.7608315519}},
+  {"comment":"The body stays a sheet: the Flat Pattern has the holes (4700 - 85 pi), and Unfold lays them out flat (9400 - 170 pi)."},
+  {"cmd":"set_flat_pattern","body":"F3.b0"},
+  {"expect":{"query":{"query":"flat_pattern","body":"F3.b0"},"result":{"status":"valid","area":4432.9644737231}}},
+  {"cmd":"add_feature","def":{"type":"sheet_unfold","body":"F3.b0","stationary":{"feature":"F3","slot":0},"bends":[{"feature":"F3","slot":0}]}},
+  {"expect":{"feature":"F5","status":"ok","body":"F3.b0","volume":8865.9289474462,"min":[0,-2,0],"max":[99.654866776461628,0,50]}},
+  {"cmd":"delete_feature","uid":"F5"},
+  {"comment":"Thickness 1: the same 28 holes, 4700 + 87.5 pi - 175 pi."},
+  {"cmd":"edit_feature","uid":"F1","def":{"type":"sheet_rules","thickness":1,"bend_radius":3,"allowance":{"type":"k_factor","k":0.3},"reference_side":"front","bend_relief":{"type":"rectangular","width":2,"depth":3},"corner_relief":{"type":"round","width":2,"depth":3}}},
+  {"expect":{"feature":"F4","status":"ok","body":"F3.b0","volume":4425.1107613493}}
+]

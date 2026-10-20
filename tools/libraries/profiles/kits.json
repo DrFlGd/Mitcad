@@ -1,4 +1,5 @@
-[
+{
+  "parts": [
   {
     "id": "bearing-shell-p70x90-b8",
     "name": "Bearing shell for hexagonal bearings on profile 70x90 B-type (3D printed)",
@@ -31,4 +32,15 @@
       {"name":"bore","origin":[35,45,0],"z":[0,0,-1],"x":[1,0,0],"kind":"bore","diameter":"37 mm"}
     ]
   }
-]
+  ],
+  "left_out": [
+    {"source": "diy-kits-accesories-sim-racing/DIY-Linear-Motion-Test-Bench/DIY Linear Motion Test Bench.stp",
+     "reason": "an assembly of a whole kit (profiles, connectors and linear parts that are parts of the library themselves), not one part"},
+    {"source": "diy-kits-accesories-sim-racing/DIY-Linear-Motion-Test-Bench-Belt-Actuation/DIY Linear Motion Test Bench Belt Actuation.stp",
+     "reason": "an assembly of a whole kit (profiles, connectors and linear parts that are parts of the library themselves), not one part"},
+    {"source": "diy-kits-accesories-sim-racing/DIY-Linear-Motion-Test-Bench-Trapezoidal-Actuation/DIY-Linear-Motion-Test-Bench-Trapezoidal-Actuation-1/DIY Linear Motion Test Bench Trapezoidal Actuation.stp",
+     "reason": "an assembly of a whole kit (profiles, connectors and linear parts that are parts of the library themselves), not one part"},
+    {"source": "diy-kits-accesories-sim-racing/Drive-axle-in-the-profile-core/MotedisT-PLA 3DP P70x90 S8 47HB 10.stp",
+     "reason": "the same file as bearing-shell-p70x90-b8's (identical content): the product page offers the bearing shell's file, not one of the drive axle"}
+  ]
+}

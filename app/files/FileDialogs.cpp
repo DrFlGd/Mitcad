@@ -549,11 +549,43 @@ QString ifcCounts(const QJsonObject& report) {
   return parts.join(QStringLiteral(", "));
 }
 
+// A drawing's import result (import_dwg, mitcad#453).
+bool isDwgImport(const QJsonObject& result) {
+  return result.value(QStringLiteral("report")).toObject().value(QStringLiteral("format")).toString() ==
+         QLatin1String("dwg");
+}
+
+// A drawing's entities taken, by type.
+QString dwgCounts(const QJsonObject& report) {
+  const QJsonObject taken = report.value(QStringLiteral("taken")).toObject();
+  QStringList parts;
+  for (auto it = taken.begin(); it != taken.end(); ++it) {
+    parts << QStringLiteral("%1 %2").arg(it.value().toInt()).arg(it.key());
+  }
+  return parts.join(QStringLiteral(", "));
+}
+
 // An import_rvt result: an .rvt project's elements or an .rfa family's
 // metadata (mitcad#274).
 bool isRvtImport(const QJsonObject& result) {
   const QString format = result.value(QStringLiteral("report")).toObject().value(QStringLiteral("format")).toString();
   return format == QLatin1String("rvt") || format == QLatin1String("rfa");
+}
+
+// An import_solidcraft result: a SolidCraft design with its history
+// (mitcad#450).
+bool isSolidcraftImport(const QJsonObject& result) {
+  return result.value(QStringLiteral("format")).toString() == QLatin1String("solidcraft");
+}
+
+// A SolidCraft design's features by how they came in.
+QString solidcraftCounts(const QJsonObject& result) {
+  const QJsonObject counts = result.value(QStringLiteral("counts")).toObject();
+  QStringList parts;
+  for (const char* outcome : {"parametric", "partial", "unmapped", "failed", "skipped"}) {
+    parts << QStringLiteral("%1 %2").arg(counts.value(QLatin1String(outcome)).toInt()).arg(QLatin1String(outcome));
+  }
+  return parts.join(QStringLiteral(", "));
 }
 
 // The bodies an import_rvt result made: saved meshes and boxes, on how many
@@ -628,11 +660,17 @@ QString iptFeatureCounts(const QJsonObject& report) {
 } // namespace
 
 QString importCounts(const QJsonObject& result) {
+  if (isSolidcraftImport(result)) {
+    return solidcraftCounts(result);
+  }
   if (isIfcImport(result)) {
     return ifcCounts(result.value(QStringLiteral("report")).toObject());
   }
   if (isRvtImport(result)) {
     return rvtCounts(result.value(QStringLiteral("report")).toObject());
+  }
+  if (isDwgImport(result)) {
+    return dwgCounts(result.value(QStringLiteral("report")).toObject());
   }
   if (isIamImport(result)) {
     return iamCounts(result.value(QStringLiteral("report")).toObject());
@@ -658,7 +696,7 @@ namespace {
 QJsonObject importedDesign(const QJsonObject& result) {
   const QJsonObject report = result.value(QStringLiteral("report")).toObject();
   if (isFreeCadImport(result) || isIptImport(result) || isIamImport(result) || isIfcImport(result) ||
-      isRvtImport(result)) {
+      isRvtImport(result) || isSolidcraftImport(result) || isDwgImport(result)) {
     return report;
   }
   const QJsonArray designs = report.value(QStringLiteral("designs")).toArray();
@@ -832,8 +870,45 @@ void showImportReport(QWidget* parent, const QString& file, const QJsonObject& r
     leftOut << QStringLiteral("%1 %2").arg(it.value().toInt()).arg(it.key());
   }
   const QJsonObject rvtElements = design.value(QStringLiteral("elements")).toObject();
+  // A SolidCraft design's kinds without a Mitcad counterpart (mitcad#450).
+  QStringList unmapped;
+  for (const QJsonValue& value : design.value(QStringLiteral("unmapped")).toArray()) {
+    const QJsonArray kind = value.toArray();
+    unmapped << QStringLiteral("%1 (%2)").arg(kind.at(0).toString()).arg(kind.at(1).toInt());
+  }
+  // A drawing's entity types left out (mitcad#453).
+  QStringList dwgLeftOut;
+  for (const QJsonValue& value : design.value(QStringLiteral("left_out")).toArray()) {
+    const QJsonObject l = value.toObject();
+    dwgLeftOut << QStringLiteral("%1 %2 (%3)")
+                      .arg(l.value(QStringLiteral("count")).toInt())
+                      .arg(l.value(QStringLiteral("type")).toString(), l.value(QStringLiteral("why")).toString());
+  }
   QString summary =
-      isIfcImport(result)
+      isSolidcraftImport(result)
+          ? QObject::tr("<b>%1</b> (SolidCraft design %2, file format %3)<br>%4 timeline features: %5.<br>%6 bodies, "
+                        "%7 sketches, %8 parameters, %9 joints.<br>Without a Mitcad counterpart: %10.")
+                .arg(file.toHtmlEscaped(), field("design", QString()))
+                .arg(design.value(QStringLiteral("format")).toInt())
+                .arg(design.value(QStringLiteral("features")).toArray().size())
+                .arg(importCounts(result).toHtmlEscaped())
+                .arg(bodies)
+                .arg(design.value(QStringLiteral("sketches")).toArray().size())
+                .arg(design.value(QStringLiteral("parameters")).toArray().size())
+                .arg(design.value(QStringLiteral("joints")).toArray().size())
+                .arg(unmapped.isEmpty() ? QObject::tr("none") : unmapped.join(QStringLiteral(", ")).toHtmlEscaped())
+      : isDwgImport(result)
+          ? QObject::tr("<b>%1</b> (drawing %2)<br>%3 bodies (%4 solids, %5 meshes), %6 components.<br>Entities "
+                        "taken: %7.<br>Left out: %8.<br>Units: %9.")
+                .arg(file.toHtmlEscaped(), field("version", QString()))
+                .arg(design.value(QStringLiteral("bodies")).toInt())
+                .arg(design.value(QStringLiteral("solids")).toInt())
+                .arg(design.value(QStringLiteral("meshes")).toInt())
+                .arg(design.value(QStringLiteral("components")).toArray().size())
+                .arg(importCounts(result).toHtmlEscaped(),
+                     dwgLeftOut.isEmpty() ? QObject::tr("nothing") : dwgLeftOut.join(QStringLiteral(", ")).toHtmlEscaped(),
+                     field("drawing_units", QStringLiteral("-")))
+      : isIfcImport(result)
           ? QObject::tr("<b>%1</b> (%2, view %3, from %4)<br>%5 products: %6.<br>%7 bodies, %8 features, %9 type "
                         "shapes as components; %10 storey planes, %11 grid axes.<br>Checked against the file: %12 of "
                         "%13 element volumes agree with its quantities.")
@@ -978,6 +1053,23 @@ void showImportReport(QWidget* parent, const QString& file, const QJsonObject& r
                 note});
     row->setToolTip(4, note);
   }
+  // A drawing's blocks as components: their bodies and occurrences.
+  if (isDwgImport(result)) {
+    int componentIndex = 0;
+    for (const QJsonValue& value : design.value(QStringLiteral("components")).toArray()) {
+      const QJsonObject c = value.toObject();
+      const QString note = QObject::tr("%1 occurrences, %2 placements in all")
+                               .arg(c.value(QStringLiteral("occurrences")).toInt())
+                               .arg(c.value(QStringLiteral("placed")).toInt());
+      auto* row = new QTreeWidgetItem(
+          items, {QString::number(++componentIndex), c.value(QStringLiteral("name")).toString(), QObject::tr("block"),
+                  QObject::tr("%1 bodies in component %2")
+                      .arg(c.value(QStringLiteral("bodies")).toInt())
+                      .arg(c.value(QStringLiteral("component")).toString()),
+                  note});
+      row->setToolTip(4, note);
+    }
+  }
   // An assembly's files: how each was found and what came in.
   int fileIndex = 0;
   for (const QJsonValue& value : design.value(QStringLiteral("files")).toArray()) {
@@ -999,6 +1091,25 @@ void showImportReport(QWidget* parent, const QString& file, const QJsonObject& r
                 item.value(QStringLiteral("type")).toString(), item.value(QStringLiteral("outcome")).toString(),
                 item.value(QStringLiteral("note")).toString()});
     row->setToolTip(4, item.value(QStringLiteral("note")).toString());
+  }
+  // A SolidCraft design's features and joints: how each came in, or why
+  // it did not (mitcad#450).
+  if (isSolidcraftImport(result)) {
+    int index = 0;
+    for (const char* list : {"features", "joints"}) {
+      for (const QJsonValue& value : design.value(QLatin1String(list)).toArray()) {
+        const QJsonObject f = value.toObject();
+        QStringList notes;
+        for (const QJsonValue& note : f.value(QStringLiteral("notes")).toArray()) {
+          notes << note.toString();
+        }
+        const QString note = notes.join(QStringLiteral("; "));
+        auto* row = new QTreeWidgetItem(items, {QString::number(++index), f.value(QStringLiteral("name")).toString(),
+                                                f.value(QStringLiteral("kind")).toString(),
+                                                f.value(QStringLiteral("outcome")).toString(), note});
+        row->setToolTip(4, note);
+      }
+    }
   }
   // An IFC file's products: how each came in, or why it did not.
   if (isIfcImport(result)) {
@@ -1150,7 +1261,7 @@ void showImportReport(QWidget* parent, const QString& file, const QJsonObject& r
                               .arg(design.value(QStringLiteral("products")).toArray().size())
                               .arg(importCounts(result))
                               .arg(design.value(QStringLiteral("bodies")).toInt());
-  } else if (isIamImport(result) || isRvtImport(result)) {
+  } else if (isIamImport(result) || isRvtImport(result) || isSolidcraftImport(result) || isDwgImport(result)) {
     qDebug().noquote() << QStringLiteral("Import report: %1: %2").arg(file, importCounts(result));
   } else if (isIptImport(result)) {
     qDebug().noquote()

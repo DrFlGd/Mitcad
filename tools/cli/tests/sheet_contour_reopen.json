@@ -1,0 +1,5 @@
+[
+  {"comment":"SPDX-License-Identifier: MIT. sheet_contour.json saved and opened again (mitcad#461): the contour flange recomputes with its last definition, t=1: 4300 + 175 pi."},
+  {"expect":{"feature":"F3","status":"ok","bodies":1,"body":"F3.b0","volume":4849.7787143782138,"min":[0,-1,0],"max":[70,30,50]}},
+  {"expect":{"query":{"query":"flat_pattern","body":"F3.b0"},"result":{"status":"valid","area":4818.362787842316}}}
+]

@@ -10,6 +10,7 @@ pub mod ffi {
         ChordLength,
         Variable,
         Asymmetric,
+        Spline,
     }
 
     /// One edge set: `value` is the radius, the chord length, the start
@@ -17,7 +18,9 @@ pub mod ffi {
     /// distance; `start_vertex` empty for none; `mid` the mid radii of a
     /// variable set as (position, radius) pairs one after the other;
     /// `reference_face` (empty for none) and `flip` place an asymmetric
-    /// set's distances; `curvature` asks for G2 with the tangency `weight`.
+    /// set's distances; `curvature` asks for G2 with the tangency `weight`;
+    /// `knots` and `radii` a spline radius's knot vector and control radii
+    /// (mitcad#464).
     struct FilletSet {
         edges: Vec<String>,
         faces: Vec<String>,
@@ -31,6 +34,8 @@ pub mod ffi {
         curvature: bool,
         weight: f64,
         tangent_chain: bool,
+        knots: Vec<f64>,
+        radii: Vec<f64>,
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -6,8 +6,10 @@
 //! and Unified), the 55-degree Whitworth profile (BSW, BSF and the parallel
 //! pipe threads G of ISO 228-1) and the 60-degree taper pipe profile (NPT,
 //! its size at the pipe's outside diameter: the 1:16 taper is not kept),
-//! and the tyre valve threads of ISO 4570 (`5V1`, `8V1`; the 60-degree
-//! profile).
+//! the tyre valve threads of ISO 4570 (`5V1`, `8V1`; the 60-degree
+//! profile) and the metric trapezoidal threads of ISO 2904 (`Tr8x1.5`, a
+//! multi-start one by its lead and pitch `Tr10x4(P2)`; the 30-degree
+//! profile of ISO 2901).
 
 use std::sync::OnceLock;
 
@@ -32,6 +34,10 @@ pub enum ThreadStandard {
     /// 60-degree profile; a modelled one takes its diameters from the
     /// design that stores them.
     FormingScrew,
+    /// Metric trapezoidal threads (ISO 2904): `Tr8x1.5`, multi-start
+    /// `Tr10x4(P2)` (lead 4, pitch 2), the lead screws of linear drives
+    /// (mitcad#449). The 30-degree profile; cosmetic only.
+    Trapezoidal,
 }
 
 /// Basic dimensions of a thread size.
@@ -74,6 +80,8 @@ impl ThreadData {
                 let h = 0.8 * pitch;
                 (2.0 * h, h, h)
             }
+            // ISO 2901's basic profile: H1 = P/2, D1 = d - P, D2 = d - P/2.
+            ThreadStandard::Trapezoidal => (pitch, 0.5 * pitch, 0.5 * pitch),
         };
         Self {
             standard,
@@ -95,6 +103,7 @@ struct Table {
     npt: NptTable,
     tyre_valve: TyreValveTable,
     forming_screw: IsoTable,
+    trapezoidal: IsoTable,
 }
 
 #[derive(Deserialize)]
@@ -199,6 +208,29 @@ const INCH: f64 = 25.4;
 
 fn same(a: f64, b: f64) -> bool {
     (a - b).abs() <= 1e-9 * a.abs().max(1.0)
+}
+
+/// A trapezoidal designation: `Tr8x1.5`, `Tr 8 x 1.5`, `Tr8` (the
+/// preferred pitch), multi-start `Tr10x4(P2)` or `Tr10x4P2` (lead 4,
+/// pitch 2): the diameter, the lead and the pitch.
+fn trapezoidal_parts(text: &str) -> Option<(f64, Option<f64>, Option<f64>)> {
+    let text = text.trim();
+    let rest = match text.get(..2) {
+        Some(prefix) if prefix.eq_ignore_ascii_case("Tr") => text[2..].trim(),
+        _ => return None,
+    };
+    let Some((size, pitch)) = rest.split_once(['x', 'X', '×']) else {
+        return Some((rest.parse().ok()?, None, None));
+    };
+    let d: f64 = size.trim().parse().ok()?;
+    match pitch.split_once(['P', 'p']) {
+        Some((lead, pitch)) => {
+            let lead = lead.trim().trim_end_matches('(').trim();
+            let pitch = pitch.trim().trim_end_matches(')').trim();
+            Some((d, Some(lead.parse().ok()?), Some(pitch.parse().ok()?)))
+        }
+        None => Some((d, Some(pitch.trim().parse().ok()?), None)),
+    }
 }
 
 /// The size of a designation, or why there is none.
@@ -353,6 +385,34 @@ pub fn lookup(standard: ThreadStandard, designation: &str) -> Result<ThreadData,
                 INCH / entry.tpi,
             ))
         }
+        ThreadStandard::Trapezoidal => {
+            let (d, lead, pitch) = trapezoidal_parts(designation).ok_or_else(unknown)?;
+            let entry = table()
+                .trapezoidal
+                .sizes
+                .iter()
+                .find(|s| same(s.d, d))
+                .ok_or_else(unknown)?;
+            // A single-start thread's lead is its pitch; a multi-start
+            // one's a whole number (2 or more) of its pitches.
+            let p = pitch.or(lead).unwrap_or(entry.pitches[0]);
+            let p = *entry
+                .pitches
+                .iter()
+                .find(|q| same(**q, p))
+                .ok_or_else(unknown)?;
+            let lead = lead.unwrap_or(p);
+            let starts = lead / p;
+            if !(starts >= 1.0 - 1e-9 && same(starts, starts.round())) {
+                return Err(unknown());
+            }
+            let designation = if same(lead, p) {
+                format!("Tr{d}x{p}")
+            } else {
+                format!("Tr{d}x{lead}(P{p})")
+            };
+            Ok(ThreadData::new(standard, designation, d, p))
+        }
         ThreadStandard::TyreValve => {
             let text = designation.trim();
             let entry = table()
@@ -401,6 +461,7 @@ fn standard_name(standard: ThreadStandard) -> &'static str {
         ThreadStandard::Npt => "NPT",
         ThreadStandard::TyreValve => "tyre valve",
         ThreadStandard::FormingScrew => "forming screw",
+        ThreadStandard::Trapezoidal => "trapezoidal",
     }
 }
 
@@ -408,13 +469,14 @@ impl ThreadStandard {
     /// The standards in the order a size table lists them: ISO metric
     /// first, the default (metric defaults, `docs/architecture.md`; inch
     /// sizes only by choice).
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::IsoMetric,
         Self::Unified,
         Self::Whitworth,
         Self::Npt,
         Self::TyreValve,
         Self::FormingScrew,
+        Self::Trapezoidal,
     ];
 
     /// The name of the thread type (as .f3d designs store it for ISO metric
@@ -427,6 +489,7 @@ impl ThreadStandard {
             Self::Npt => "ANSI Taper Pipe Threads (NPT)",
             Self::TyreValve => "ISO Tyre Valve Threads",
             Self::FormingScrew => "Metric Forming Screw Threads",
+            Self::Trapezoidal => "ISO Metric Trapezoidal Threads",
         }
     }
 
@@ -439,12 +502,14 @@ impl ThreadStandard {
             (Self::Unified, false) => "2A",
             (Self::Whitworth, _) => "Medium",
             (Self::Npt | Self::TyreValve, _) => "Standard",
+            (Self::Trapezoidal, true) => "7H",
+            (Self::Trapezoidal, false) => "7e",
         }
     }
 
     /// Whether a modelled thread can be cut: the geometry cuts the straight
-    /// 60-degree basic profile, which the Whitworth (55 degrees) and taper
-    /// pipe threads are not.
+    /// 60-degree basic profile, which the Whitworth (55 degrees), taper
+    /// pipe and trapezoidal (30 degrees) threads are not.
     pub fn check_modeled(self) -> Result<(), String> {
         match self {
             Self::IsoMetric | Self::Unified | Self::TyreValve | Self::FormingScrew => Ok(()),
@@ -456,6 +521,11 @@ impl ThreadStandard {
             Self::Npt => Err(
                 "an NPT thread cannot be modelled: Mitcad cuts straight threads, not tapered \
                  ones; make it cosmetic"
+                    .to_owned(),
+            ),
+            Self::Trapezoidal => Err(
+                "a trapezoidal thread cannot be modelled: Mitcad cuts the 60-degree profile; make \
+                 it cosmetic"
                     .to_owned(),
             ),
         }
@@ -559,6 +629,16 @@ pub fn sizes(standard: ThreadStandard) -> Vec<SizeEntry> {
                 designations: s.pitches.iter().map(|p| format!("ST{}x{p}", s.d)).collect(),
             })
             .collect(),
+        ThreadStandard::Trapezoidal => table()
+            .trapezoidal
+            .sizes
+            .iter()
+            .map(|s| SizeEntry {
+                size: format!("Tr{}", s.d),
+                major: s.d,
+                designations: s.pitches.iter().map(|p| format!("Tr{}x{p}", s.d)).collect(),
+            })
+            .collect(),
     }
 }
 
@@ -580,6 +660,10 @@ pub fn classes(standard: ThreadStandard) -> (&'static [String], &'static [String
         ThreadStandard::FormingScrew => (
             &t.forming_screw.classes_external,
             &t.forming_screw.classes_internal,
+        ),
+        ThreadStandard::Trapezoidal => (
+            &t.trapezoidal.classes_external,
+            &t.trapezoidal.classes_internal,
         ),
     }
 }
@@ -667,6 +751,53 @@ mod tests {
         );
         assert!(check_class(ThreadStandard::FormingScrew, "6g", Some(false)).is_ok());
         assert!(ThreadStandard::FormingScrew.check_modeled().is_ok());
+    }
+
+    #[test]
+    fn trapezoidal_threads_take_the_iso_2904_sizes() {
+        // ISO 2901's basic profile: D1 = d - P, D2 = d - P/2.
+        let tr8 = lookup(ThreadStandard::Trapezoidal, "Tr8x1.5").unwrap();
+        assert_eq!(tr8.designation, "Tr8x1.5");
+        assert!(close(tr8.major, 8.0) && close(tr8.pitch, 1.5));
+        assert!(close(tr8.minor, 6.5) && close(tr8.pitch_diameter, 7.25));
+        assert!(close(tr8.depth, 0.75));
+        for same in ["TR8x1.5", "Tr 8 x 1.5", "tr8X1.5", "Tr8"] {
+            assert_eq!(
+                lookup(ThreadStandard::Trapezoidal, same)
+                    .unwrap()
+                    .designation,
+                "Tr8x1.5",
+                "{same}"
+            );
+        }
+        // A multi-start thread: its lead, then its pitch.
+        for same in ["Tr10x4(P2)", "TR10x4P2", "Tr10 x 4 (P 2)"] {
+            let tr10 = lookup(ThreadStandard::Trapezoidal, same).unwrap();
+            assert_eq!(tr10.designation, "Tr10x4(P2)", "{same}");
+            assert!(close(tr10.pitch, 2.0) && close(tr10.minor, 8.0), "{same}");
+        }
+        assert_eq!(
+            lookup(ThreadStandard::Trapezoidal, "Tr12x6(P3)")
+                .unwrap()
+                .designation,
+            "Tr12x6(P3)"
+        );
+        for ok in ["Tr10x2", "Tr12x3", "Tr16x4", "Tr40x7", "Tr80x16"] {
+            assert!(lookup(ThreadStandard::Trapezoidal, ok).is_ok(), "{ok}");
+        }
+        for bad in ["Tr10x3", "Tr10x3(P2)", "Tr13x3", "M8x1.5", "Tr", ""] {
+            let error = lookup(ThreadStandard::Trapezoidal, bad).unwrap_err();
+            assert!(error.contains("no trapezoidal thread"), "{bad}: {error}");
+        }
+        assert_eq!(
+            ThreadStandard::Trapezoidal.title(),
+            "ISO Metric Trapezoidal Threads"
+        );
+        assert!(check_class(ThreadStandard::Trapezoidal, "7e", Some(false)).is_ok());
+        assert!(check_class(ThreadStandard::Trapezoidal, "7H", Some(true)).is_ok());
+        assert!(check_class(ThreadStandard::Trapezoidal, "6g", None).is_err());
+        let error = ThreadStandard::Trapezoidal.check_modeled().unwrap_err();
+        assert!(error.contains("make it cosmetic"), "{error}");
     }
 
     #[test]

@@ -249,6 +249,9 @@ and for a part that moves on another, `mate`: `{"frame": "rail", "on":
   (`8`, `"8 mm"`), or else the same text without case.
 - Drive data: `lead` and `pitch` (screws; lengths), `module` (a length)
   and `teeth` (a count) for gears, racks and pulleys.
+- A part whose `mate.on` is `slot` (a slider, a motor plate) goes on a
+  profile's side as a profile does: on the slot of the side clicked, at
+  the click's snaps (mitcad#448).
 - A lead screw nut mates with a `cylindrical` joint for now (it slides
   and turns on its spindle). A rack is a solid of its length, not a
   cut-to-length part: its teeth cannot be made from an end section.
@@ -364,7 +367,12 @@ Mitcad offers, kept in a repository of its own
   CC0-1.0 as its own licence;
 - the BUILD tab's slot profiles, connectors, nuts, caps, panels and
   linear parts (mitcad#375), made parametric from the supplier's CAD
-  files; every part names its `supplier` and `part_number`.
+  files; every part names its `supplier` and, when it has one, its
+  `part_number`. Parts the supplier sells without a CAD file are modelled
+  from their dimensions: sheets and plates, the round precision shafts h6
+  (6 to 25 mm), the trapezoidal lead screws (Tr8x1.5 to Tr16x4) and the
+  threaded rods DIN 976 (M5 to M12), the screws and rods with their
+  threads as cosmetic thread features (mitcad#449).
 
 Its categories are those of both (screws, nuts, washers, profiles,
 connectors, caps, panels, linear, …). `LICENSE` says which licence
@@ -383,7 +391,7 @@ Three generators make it with `mitcad-cli`:
 
 ```
 tools/libraries/make-parts-library.py --cli <mitcad-cli> --source <folder of the supplier's files>
-    --out <clone of the parts repository> [--groups <folder>] [--version 2.0.0] [--work <folder>]
+    --out <clone of the parts repository> [--groups <folder>] [--version 2.3.0] [--work <folder>]
     [--no-render] [--commit]
 tools/libraries/make-fastener-library.py --cli <mitcad-cli> --out <folder> [--sizes M3,M5]
     [--standards iso4762,iso4032] [--version 1.0.0] [--merge] [--commit]
@@ -397,7 +405,7 @@ tools/libraries/profiles/*.json       the BUILD parts, one file per group
   BUILD parts into the same manifest (`--merge`), then one `LICENSE`,
   `README.md` and `SOURCES.md`, and checks the folder. `--out` is a clone
   of the parts repository, so that its versions stay: `--commit` records
-  the result on top of them and tags it (`v2.0.0` by default).
+  the result on top of them and tags it (`v2.3.0` by default, the next version to publish).
 - `make-fastener-library.py` builds the fasteners from the standards'
   dimension tables, with preview images drawn from the dimensions;
   `make-profile-library.py` the BUILD parts (below). Each makes a library
@@ -413,9 +421,13 @@ tools/libraries/profiles/*.json       the BUILD parts, one file per group
 The supplier's files are not part of Mitcad; `--source` points at a copy
 of them, and only the designs made from them go into the library. A
 group file is a JSON array of parts (the generator also reads
-`{"categories": [{"id", "name"}], "parts": [...]}`, which names the
-categories for the manifest); the files are read in the order of their
-names. Each entry is one library component:
+`{"categories": [{"id", "name"}], "parts": [...], "left_out": [...]}`,
+which names the categories for the manifest and the supplier's files the
+group makes no part of, each `{"source", "reason"}`: an assembly, a copy
+of another part's file, a file that holds another product); the files are
+read in the order of their names. Every supplier file is the `source` of
+a part or of a row, or left out with its reason. Each entry is one
+library component:
 
 ```json
 {"id": "p30x30-b8", "name": "Profile 30x30 B-type slot 8", "category": "profiles",
@@ -431,7 +443,8 @@ names. Each entry is one library component:
 
 - `id`, `name`, `make` (required); `category` (the folder and category,
   default the role), `source` (a path in `--source`; required but for
-  `model`), `supplier`, `part_number`, `supplier_url`, `designation`,
+  `model`, where it names the file the dimensions come from and is not
+  imported), `supplier`, `part_number`, `supplier_url`, `designation`,
   `description`, `keywords`, `standard`, `license` go to the manifest as
   they are, `build` with what the generator fills in (below).
 - `make`:
@@ -469,8 +482,8 @@ names. Each entry is one library component:
     [...]]}` (rows of a rotation and a translation), or `{"rotate":
     {"axis": "z" or [x, y, z], "angle": degrees}}`; then `"translate": [x,
     y, z]`.
-  - `model` (no source: sheets and plates sold without a CAD file):
-    `dimensions`: `shape` (`plate`, `angle` or `none`), its sizes (each a
+  - `model` (no source: sheets, plates, shafts and screws sold without a
+    CAD file): `dimensions`: `shape` (`plate`, `angle`, `rod` or `none`), its sizes (each a
     parameter named in `parameters`, or a value, which becomes a user
     parameter `W`, `T`, `L`, `A` or `B`) and `parameters` (`{name:
     default}`: user parameters, such as a sheet's `W` its rows set). A
@@ -479,13 +492,26 @@ names. Each entry is one library component:
     length. An `angle` (`legs` [a, b], `width`, `thickness`) is centred
     on x = 0 across its width, its first leg in the XZ plane up to z = a
     (its thickness along +Y), its second in the XY plane up to y = b (its
-    thickness along +Z). `commands` (optional, Mitcad commands as
+    thickness along +Z). A `rod` (`diameter`, `length`) is a cylinder on
+    the Z axis from z = 0 to its length, the layout of a section part, so
+    that its `end_a`, `end_b` and `shaft` frames are those of a shaft;
+    with `thread` (a thread size as the [thread
+    feature](../core/model/src/api/commands.md#thread) takes it:
+    `standard`, `designation`, `class`, `right_handed`) a cosmetic thread
+    over its whole side, which follows the length and which the `threads`
+    query lists (`{"standard": "trapezoidal", "designation": "Tr8x1.5",
+    "class": "7e"}` for a lead screw, `{"designation": "M8"}` for a
+    threaded rod). `commands` (optional, Mitcad commands as
     `mitcad-cli run` takes them) add anything more.
 - `rows`: configuration rows (`name`, `select`, `values`, `part_number`,
-  `supplier_url`, `designation`) for parts sold in sizes; `values` may be
-  empty (one solid for every thread size, a rail's stock lengths that
-  only carry their part numbers). The row's `part_number`,
-  `supplier_url` and `designation` go into the design's table. `default`
+  `supplier_url`, `designation`, `source`) for parts sold in sizes;
+  `values` may be empty (one solid for every thread size, a rail's stock
+  lengths that only carry their part numbers). The row's `part_number`,
+  `supplier_url` and `designation` go into the design's table. A row's
+  `source` is the supplier's file of that row's product (another thread,
+  colour or stock length of the same part): the design is made from the
+  part's `source` and stands for every row; SOURCES.md lists the row's
+  file. `default`
   names the default row (the first when left out).
 - `frames`: `{"auto": "profile"}` (the default for `section`) finds the
   ends, bores and slots of a profile from its section and names them by
@@ -518,7 +544,8 @@ names. Each entry is one library component:
   section part has `Section` (the sketch) and
   `Profile` (the extrusion), and with a pitch `Hole plane <n>`, `Hole
   <n>` and `Holes at the pitch`; a solid its base feature and `Placed` (the
-  move, with `place`); a model its boxes and `Centred`. Then the joint
+  move, with `place`); a model its boxes and `Centred`, a rod its `Rod` and,
+  with a thread, `Thread`. Then the joint
   origins: `mount:end_a`, `End B plane` and `mount:end_b`, then the
   others in their order, one that follows a parameter after its plane
   (`Plane of <name>`). The configuration table comes last.
@@ -546,8 +573,15 @@ names. Each entry is one library component:
   runs the generator on two slot profiles (one turned to run along Y and
   placed back, with a frame at half its length) and a bracket the test
   makes and writes as STEP, a rail with two counterbored holes at a
-  pitch (its holes counted at three lengths by the volume), and a panel
-  and an angle modelled from their dimensions.
+  pitch (its holes counted at three lengths by the volume), a panel
+  and an angle modelled from their dimensions, and a shaft and a Tr8x1.5
+  lead screw modelled as rods (their length, end B and thread at two
+  lengths), with a row's own file and a file left out in SOURCES.md.
+  ctest `build.profiles` (`tools/cli/build-profiles-test.cmake`, on the
+  generated library named by `MITCAD_PROFILES_LIBRARY`) places a profile
+  of each system, linear parts on a frame, slot nuts in their M5 rows and
+  a cover cap, and a precision shaft with its bearing and support and a
+  lead screw with its nut.
 
 ## Where libraries are kept
 

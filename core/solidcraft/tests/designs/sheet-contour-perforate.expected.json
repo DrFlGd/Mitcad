@@ -1,0 +1,7 @@
+{
+  "comment": "Worked out by hand: the chain (0,0)-(60,0)-(60,40) with the material right of it (y -2..0 under the first line), 50 wide along z, thickness 2, radius 3, K 0.3. The corner turns away from the material, so both lines are set back by the inside radius 3: panels 57 and 37 (2 * 50 * 94 = 9400) and a quarter of the ring 3..5 (pi / 4 * 16 * 50 = 200 pi). Developed along x, the bend zone is x 57 .. 57 + 1.8 pi; holes 5 across every 10 with a margin of 5 keep 7.5 from every edge and from the zone: x 7.5 .. 47.5 and 77.5, 87.5, y 7.5 .. 42.5, 28 holes (28 * pi * 6.25 * 2 = 350 pi). 9400 - 150 pi.",
+  "body_count": 1,
+  "total": {"volume_mm3": 8928.7608},
+  "bbox": {"min": [0, -2, 0], "max": [62, 40, 50]},
+  "parametric": 2
+}

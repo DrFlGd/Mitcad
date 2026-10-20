@@ -229,5 +229,25 @@
       {"name":"rail","origin":[-50,7.5,0],"z":[0,-1,0],"x":[1,0,0],"kind":"rail"},
       {"name":"top","origin":[-50,13,0],"z":[0,1,0],"x":[1,0,0],"kind":"face"}
     ]
+  },
+  {
+    "id": "carriage-mgn12ha",
+    "name": "Guide carriage miniature MGN12HA",
+    "category": "linear",
+    "source": "uncategorized/item/MGN-12HA.stp",
+    "make": "solid",
+    "supplier": "Motedis",
+    "designation": "Guide carriage miniature MGN12HA",
+    "description": "The long carriage of the MGN12 rail (45.8 mm against the MGN12CA's 35.1 mm).",
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "frames": [{"name":"rail","kind":"rail"},{"name":"top","kind":"face"}],
+      "linear": {"kind":"carriage","mate":{"frame":"rail","on":"rail","joint":"slider","axis":"x"}}
+    },
+    "frames": [
+      {"name":"rail","origin":[0,22.7,8],"z":[0,0,-1],"x":[0,1,0],"kind":"rail"},
+      {"name":"top","origin":[0,22.7,13],"z":[0,0,1],"x":[0,1,0],"kind":"face"}
+    ]
   }
 ]

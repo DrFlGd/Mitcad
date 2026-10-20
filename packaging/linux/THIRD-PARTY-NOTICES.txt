@@ -37,6 +37,11 @@ that Export > Web page and the project's web viewer write
   MIT licence, Copyright 2010-2024 three.js authors; see
   mitcad/licenses/three/LICENSE. The pages carry the licence text with it.
 
+SolidCraft (https://github.com/tangency-labs/solidcraft), the design file
+format's upgrade steps, adapted for the .solidcraft import, inside mitcad
+  MIT or Apache-2.0, used under MIT, Copyright (c) 2026 SolidCraft
+  contributors; see mitcad/licenses/solidcraft/LICENSE-MIT.
+
 QtKeychain (https://github.com/frankosterfeld/qtkeychain), linked
 statically into mitcad
   The live updates' credentials in the system's keychain. BSD-3-Clause,

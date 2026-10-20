@@ -1045,6 +1045,13 @@ fn kernel_failure(error: &str) -> bool {
 const FAILED_IN_FILE: &str = "failed in the file: its operation in the file's history \
                               left every body as it was, which none of its definitions does";
 
+/// The note of a modelling item that names the operation of an item before
+/// it, so that the file's history holds none of its own (mitcad#343).
+const FAILED_IN_FILE_SHARED: &str = "failed in the file: it names the operation of an item \
+                                     before it, so the file's history holds none of its own \
+                                     (its state is the state before it), which none of its \
+                                     definitions reproduces";
+
 /// The note of the file's own base feature, which comes in as a base
 /// feature of the bodies the file stores for it.
 const FILE_BASE_FEATURE: &str = "the file's base feature: its bodies as the file stores them \
@@ -1151,6 +1158,8 @@ mod dressups;
 // (mitcad#379).
 mod deviations;
 pub use deviations::{AcceptDeviations, DeviatingFace, DeviationReport};
+// .solidcraft designs with their history (mitcad#450).
+pub mod solidcraft;
 
 fn item_name(item: &TimelineItem) -> String {
     item.name().unwrap_or("?").to_owned()
@@ -3988,11 +3997,21 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
         // (Only an item whose definitions were tried: one not translated,
         // such as a base feature that brings no body, is skipped as before
         // where its state is the bodies'.)
-        if self.oracle.item_unchanged(index) && self.defined.contains(&index) {
-            trace!("{name}: {last_error}; {FAILED_IN_FILE}");
+        // An item that names an earlier item's operation has none of its
+        // own: its state is that item's, whether or not a translation gave
+        // definitions (mitcad#343: a chamfer whose edges the file kept only
+        // in an older state).
+        let shares = self.oracle.item_shares_operation(index);
+        if shares || (self.oracle.item_unchanged(index) && self.defined.contains(&index)) {
+            let failed = if shares {
+                FAILED_IN_FILE_SHARED
+            } else {
+                FAILED_IN_FILE
+            };
+            trace!("{name}: {last_error}; {failed}");
             self.oracle.cursor = Some(state);
             self.commit(Before::Keep, Some(state), None);
-            self.note(at, Outcome::Skipped, FAILED_IN_FILE);
+            self.note(at, Outcome::Skipped, failed);
             self.placeholder(at);
             let depth = self.doc.undo_depth();
             match self.fallback_to(state, None) {
@@ -4126,6 +4145,7 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                             Some(
                                 "CircularPatternFeature"
                                     | "RectangularPatternFeature"
+                                    | "PathPatternFeature"
                                     | "MirrorFeature"
                             )
                         )
@@ -4617,6 +4637,7 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                             && valid()
                         {
                             trace!("{name}: {} -> its state {state} ({d:.1e})", summary(c));
+                            self.dump_dressup_taken(index, item, c, Some(states));
                             self.oracle.cursor = Some(state);
                             self.report.history.matched += 1;
                             self.accepted(at, index, &uids, c, Some(true));

@@ -111,12 +111,18 @@ const StepSpec kSpecs[] = {
     {"native-hover", 2, 2, kInputOfTarget},
     {"native-type", 2, 2, kInputOfTarget},
     {"native-choice", 2, 2, kInputOfTarget},
+    {"expect-native-duplicate-choices", 0, 0, kIdle},
+    {"native-toolbar-item", 2, 2, kInputOfMain},
+    {"expect-native-toolbar-item", 2, 2, kIdle},
+    {"expect-native-form-controls", 0, 0, kIdle},
+    {"expect-native-disclosure-layout", 0, 0, kIdle},
     {"native-action", 1, 1, kInputOfMain},
     {"native-activate", 1, 1, kInputOfTarget},
     {"native-select", 1, 2, kInputOfTarget},
     {"native-expand", 1, 1, kInputOfTarget},
     {"native-click-now", 1, 1, kPlain},
     {"native-click-on-job", 2, 2, kIdle},
+    {"fail-next-recovery-command", 1, 1, kIdle},
     {"expect-picking-on-job", 1, 1, kIdle},
     {"native-type-now", 2, 2, kPlain},
     {"native-key-now", 1, -1, kPlain},
@@ -744,6 +750,13 @@ void TestDriver::finish() {
     fail(m_nativeJobClickLine, QStringLiteral("the armed native click's job '%1' never started").arg(m_nativeJobClickLabel));
     return;
   }
+  if (auto* window = qobject_cast<MainWindow*>(m_main.data())) {
+    if (!window->documentSession().m_testFailCommand.isEmpty()) {
+      fail(m_line, QStringLiteral("the armed recovery command '%1' never started")
+                       .arg(window->documentSession().m_testFailCommand));
+      return;
+    }
+  }
   if (m_stay) {
     qDebug().noquote() << QStringLiteral("TestDriver: done (%1 steps), staying").arg(m_steps.size());
     m_finished = true;
@@ -1247,6 +1260,16 @@ void TestDriver::run(const Step& step) {
           if (!mac::test::clickImmediately(identifier, error)) { fail(line, error); return; }
           qInfo().noquote() << QStringLiteral("Native test: clicked %1 during %2 (busy)").arg(identifier, label);
         });
+  } else if (name == QLatin1String("fail-next-recovery-command")) {
+    auto* window = qobject_cast<MainWindow*>(mainWindow);
+    auto* session = window ? window->findChild<DocumentSession*>() : nullptr;
+    if (!mac::test::active() || !session || window->modelBusy() || !session->state().activeCommand ||
+        !session->m_testFailCommand.isEmpty() ||
+        (a.at(0) != QLatin1String("restore_command") && a.at(0) != QLatin1String("discard_command"))) {
+      fail(line, QStringLiteral("fail-next-recovery-command requires an idle native command and restore_command|discard_command"));
+      return;
+    }
+    session->m_testFailCommand = a.at(0);
   } else if (name == QLatin1String("capture-undo-depth")) {
     auto* window = qobject_cast<MainWindow*>(mainWindow);
     if (!window || window->modelBusy()) { fail(line, QStringLiteral("capture-undo-depth requires an idle document")); return; }
@@ -1645,6 +1668,39 @@ void TestDriver::run(const Step& step) {
                       name == QLatin1String("native-file-directory") ? mac::test::setFileDirectory(a.at(0), error) : mac::test::cancelFilePanel(error);
       if (!ok) fail(line, error);
     });
+  } else if (name == QLatin1String("expect-native-disclosure-layout")) {
+    if (!mac::test::active()) { fail(line, QStringLiteral("disclosure layout requires the native UI")); return; }
+    whenReady([this] {
+      QString error;
+      const bool ready = mac::test::disclosureLayout(error);
+      m_waitDetail = error;
+      return ready;
+    }, 6, QStringLiteral("native disclosure layout did not settle"));
+  } else if (name == QLatin1String("expect-native-form-controls")) {
+    auto* window = qobject_cast<MainWindow*>(m_main.data());
+    QString error;
+    if (!window || !mac::test::active() || !mac::test::formControls(*window, error)) {
+      fail(line, error.isEmpty() ? QStringLiteral("form controls require an idle native window") : error);
+    }
+  } else if (name == QLatin1String("expect-native-duplicate-choices")) {
+    auto* window = qobject_cast<MainWindow*>(m_main.data());
+    QString error;
+    if (!window || !mac::test::active() || !mac::test::duplicateChoices(*window, error)) {
+      fail(line, error.isEmpty() ? QStringLiteral("duplicate choices require an idle native window") : error);
+    }
+  } else if (name == QLatin1String("native-toolbar-item") || name == QLatin1String("expect-native-toolbar-item")) {
+    if (!mac::test::active()) { fail(line, QStringLiteral("native toolbar steps require the native macOS UI")); return; }
+    if (name == QLatin1String("native-toolbar-item")) {
+      QString error;
+      if (!mac::test::configureToolbarItem(a.at(0), a.at(1), error)) fail(line, error);
+    } else {
+      if (a.at(1) != QLatin1String("true") && a.at(1) != QLatin1String("false")) {
+        fail(line, QStringLiteral("expect-native-toolbar-item expects true or false")); return;
+      }
+      const bool expected = a.at(1) == QLatin1String("true");
+      whenReady([a, expected] { return mac::test::toolbarItemPresent(a.at(0), expected); }, 6,
+                QStringLiteral("native toolbar item '%1' has unexpected membership").arg(a.at(0)));
+    }
   } else if (name == QLatin1String("expect-native-text") || name == QLatin1String("expect-native-enabled") ||
              name == QLatin1String("expect-native-visible") || name == QLatin1String("expect-native-present")) {
     if (!mac::test::active()) {

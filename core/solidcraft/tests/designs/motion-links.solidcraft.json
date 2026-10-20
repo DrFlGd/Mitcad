@@ -1,0 +1,164 @@
+{
+  "format": "solidcraft/27",
+  "name": "Motion links",
+  "units": "mm",
+  "params": [],
+  "components": [
+    {"id": 101, "name": "Base"},
+    {"id": 102, "name": "Pinion"},
+    {"id": 103, "name": "Rack"},
+    {"id": 104, "name": "Gear"},
+    {"id": 105, "name": "Cam"},
+    {"id": 106, "name": "Follower"}
+  ],
+  "occurrences": [
+    {"id": 201, "component": 101, "name": "Base:1", "grounded": true},
+    {"id": 202, "component": 102, "name": "Pinion:1"},
+    {"id": 203, "component": 103, "name": "Rack:1",
+     "transform": [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [-20, -15, 0, 1]]},
+    {"id": 204, "component": 104, "name": "Gear:1",
+     "transform": [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [30, 0, 0, 1]]},
+    {"id": 205, "component": 105, "name": "Cam:1",
+     "transform": [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 60, 0, 1]]},
+    {"id": 206, "component": 106, "name": "Follower:1",
+     "transform": [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [40, 58, 0, 1]]}
+  ],
+  "features": [
+    {
+      "id": 1, "name": "PinionSketch", "type": "sketch", "component": 102,
+      "plane": {"type": "origin", "name": "XY"},
+      "sketch": {
+        "points": [
+          {"id": "origin", "pos": [0.0, 0.0], "fixed": true},
+          {"id": "c1.center", "pos": [0.0, 0.0], "fixed": true}
+        ],
+        "curves": [{"id": "c1", "type": "circle", "c": 1, "r": 10.0}],
+        "constraints": []
+      }
+    },
+    {
+      "id": 2, "name": "PinionBody", "type": "extrude", "component": 102, "body_names": ["Pinion"],
+      "sketch": 1, "profiles": {"type": "all"},
+      "extent": {"distance": "5 mm", "direction": "positive"},
+      "operation": "new_body"
+    },
+    {
+      "id": 3, "name": "RackSketch", "type": "sketch", "component": 103,
+      "plane": {"type": "origin", "name": "XY"},
+      "sketch": {
+        "points": [
+          {"id": "origin", "pos": [0.0, 0.0], "fixed": true},
+          {"id": "p1", "pos": [0.0, 0.0]},
+          {"id": "p2", "pos": [40.0, 0.0]},
+          {"id": "p3", "pos": [40.0, 5.0]},
+          {"id": "p4", "pos": [0.0, 5.0]}
+        ],
+        "curves": [
+          {"id": "l5", "type": "line", "a": 1, "b": 2},
+          {"id": "l6", "type": "line", "a": 2, "b": 3},
+          {"id": "l7", "type": "line", "a": 3, "b": 4},
+          {"id": "l8", "type": "line", "a": 4, "b": 1}
+        ],
+        "constraints": []
+      }
+    },
+    {
+      "id": 4, "name": "RackBody", "type": "extrude", "component": 103, "body_names": ["Rack"],
+      "sketch": 3, "profiles": {"type": "all"},
+      "extent": {"distance": "5 mm", "direction": "positive"},
+      "operation": "new_body"
+    },
+    {
+      "id": 5, "name": "GearSketch", "type": "sketch", "component": 104,
+      "plane": {"type": "origin", "name": "XY"},
+      "sketch": {
+        "points": [
+          {"id": "origin", "pos": [0.0, 0.0], "fixed": true},
+          {"id": "c1.center", "pos": [0.0, 0.0], "fixed": true}
+        ],
+        "curves": [{"id": "c1", "type": "circle", "c": 1, "r": 20.0}],
+        "constraints": []
+      }
+    },
+    {
+      "id": 6, "name": "GearBody", "type": "extrude", "component": 104, "body_names": ["Gear"],
+      "sketch": 5, "profiles": {"type": "all"},
+      "extent": {"distance": "5 mm", "direction": "positive"},
+      "operation": "new_body"
+    },
+    {
+      "id": 7, "name": "CamSketch", "type": "sketch", "component": 105,
+      "plane": {"type": "origin", "name": "XY"},
+      "sketch": {
+        "points": [
+          {"id": "origin", "pos": [0.0, 0.0], "fixed": true},
+          {"id": "c1.center", "pos": [5.0, 0.0], "fixed": true}
+        ],
+        "curves": [{"id": "c1", "type": "circle", "c": 1, "r": 15.0}],
+        "constraints": []
+      }
+    },
+    {
+      "id": 8, "name": "CamBody", "type": "extrude", "component": 105, "body_names": ["Cam"],
+      "sketch": 7, "profiles": {"type": "all"},
+      "extent": {"distance": "5 mm", "direction": "positive"},
+      "operation": "new_body"
+    },
+    {
+      "id": 9, "name": "FollowerSketch", "type": "sketch", "component": 106,
+      "plane": {"type": "origin", "name": "XY"},
+      "sketch": {
+        "points": [
+          {"id": "origin", "pos": [0.0, 0.0], "fixed": true},
+          {"id": "p1", "pos": [0.0, 0.0]},
+          {"id": "p2", "pos": [4.0, 0.0]},
+          {"id": "p3", "pos": [4.0, 4.0]},
+          {"id": "p4", "pos": [0.0, 4.0]}
+        ],
+        "curves": [
+          {"id": "l5", "type": "line", "a": 1, "b": 2},
+          {"id": "l6", "type": "line", "a": 2, "b": 3},
+          {"id": "l7", "type": "line", "a": 3, "b": 4},
+          {"id": "l8", "type": "line", "a": 4, "b": 1}
+        ],
+        "constraints": []
+      }
+    },
+    {
+      "id": 10, "name": "FollowerBody", "type": "extrude", "component": 106, "body_names": ["Follower"],
+      "sketch": 9, "profiles": {"type": "all"},
+      "extent": {"distance": "5 mm", "direction": "positive"},
+      "operation": "new_body"
+    }
+  ],
+  "next_id": 11,
+  "assembly": {
+    "joints": [
+      {"id": 301, "name": "Turn", "kind": "revolute", "flip": true, "values": [0.0],
+       "a": {"occurrence": 202, "snap": {"type": "frame", "origin": [0, 0, 0], "z": [0, 0, 1], "x": [1, 0, 0]}},
+       "b": {"occurrence": 201, "snap": {"type": "frame", "origin": [0, 0, 0], "z": [0, 0, 1], "x": [1, 0, 0]}}},
+      {"id": 302, "name": "Slide", "kind": "slider", "flip": true, "values": [0.0],
+       "a": {"occurrence": 203, "snap": {"type": "frame", "origin": [20, 2.5, 2.5], "z": [1, 0, 0], "x": [0, 1, 0]}},
+       "b": {"occurrence": 201, "snap": {"type": "frame", "origin": [0, -12.5, 2.5], "z": [1, 0, 0], "x": [0, 1, 0]}}},
+      {"id": 303, "name": "Wheel", "kind": "revolute", "flip": true,
+       "a": {"occurrence": 204, "snap": {"type": "frame", "origin": [0, 0, 0], "z": [0, 0, 1], "x": [1, 0, 0]}},
+       "b": {"occurrence": 201, "snap": {"type": "frame", "origin": [30, 0, 0], "z": [0, 0, 1], "x": [1, 0, 0]}}},
+      {"id": 304, "name": "CamTurn", "kind": "revolute", "flip": true, "values": [0.0],
+       "a": {"occurrence": 205, "snap": {"type": "frame", "origin": [0, 0, 0], "z": [0, 0, 1], "x": [1, 0, 0]}},
+       "b": {"occurrence": 201, "snap": {"type": "frame", "origin": [0, 60, 0], "z": [0, 0, 1], "x": [1, 0, 0]}}},
+      {"id": 305, "name": "Push", "kind": "slider", "flip": true,
+       "a": {"occurrence": 206, "snap": {"type": "frame", "origin": [0, 2, 2.5], "z": [1, 0, 0], "x": [0, 1, 0]}},
+       "b": {"occurrence": 201, "snap": {"type": "frame", "origin": [40, 60, 2.5], "z": [1, 0, 0], "x": [0, 1, 0]}}}
+    ],
+    "links": [
+      {"a": 301, "b": 302, "ratio": 10.0,
+       "coupling": {"type": "rack_pinion",
+                    "radius": {"occurrence": 202, "snap": {"type": "circle_center", "pick": [10, 0, 2.5]}}}},
+      {"a": 301, "b": 303, "ratio": -0.5,
+       "coupling": {"type": "gear", "ra": 10, "rb": 20}},
+      {"a": 304, "b": 305, "ratio": 1.0,
+       "coupling": {"type": "cam", "profile": {"type": "sketch", "sketch": 7, "curves": ["c1"]},
+                    "follower": {"type": "knife"}}}
+    ]
+  }
+}

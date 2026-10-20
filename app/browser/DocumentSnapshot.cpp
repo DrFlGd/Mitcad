@@ -79,6 +79,9 @@ DocumentSnapshot DocumentSnapshot::read(const CommandContext& model) {
     snapshot.sheets = model.queryArray(QStringLiteral("sheet_bodies"));
   } catch (const std::exception&) {
   }
+  // Motion studies and contact sets (mitcad#454).
+  snapshot.motionStudies = model.queryArray(QStringLiteral("motion_studies"));
+  snapshot.contactSets = model.queryArray(QStringLiteral("contact_sets"));
   const QJsonObject display = document.value(QStringLiteral("display")).toObject();
   snapshot.originShown = display.value(QStringLiteral("origin")).toBool();
   for (const QJsonValue& value : display.value(QStringLiteral("isolated")).toArray()) {
@@ -95,7 +98,7 @@ DocumentSnapshot DocumentSnapshot::read(const CommandContext& model) {
   }
   snapshot.key = QJsonDocument(QJsonArray{timeline, components, bodies, profiles, snapshot.lengthUnit,
                                           snapshot.namedViews, display, snapshot.analyses, snapshot.joints,
-                                          snapshot.sheets})
+                                          snapshot.sheets, snapshot.motionStudies, snapshot.contactSets})
                      .toJson(QJsonDocument::Compact);
 
   snapshot.marker = timeline.value(QStringLiteral("marker")).toInt();
@@ -230,6 +233,24 @@ QJsonObject DocumentSnapshot::shownAnalysis() const {
   return QJsonObject();
 }
 
+QJsonObject DocumentSnapshot::motionStudy(const QString& name) const {
+  for (const QJsonValue& value : motionStudies) {
+    if (value.toObject().value(QStringLiteral("name")).toString() == name) {
+      return value.toObject();
+    }
+  }
+  return QJsonObject();
+}
+
+QJsonObject DocumentSnapshot::contactSet(const QString& name) const {
+  for (const QJsonValue& value : contactSets) {
+    if (value.toObject().value(QStringLiteral("name")).toString() == name) {
+      return value.toObject();
+    }
+  }
+  return QJsonObject();
+}
+
 QJsonObject DocumentSnapshot::analysis(const QString& name) const {
   for (const QJsonValue& value : analyses) {
     if (value.toObject().value(QStringLiteral("name")).toString() == name) {
@@ -354,6 +375,10 @@ QString featureIcon(const QString& type) {
       {QStringLiteral("sheet_refold"), QStringLiteral("sheet-refold")},
       {QStringLiteral("sheet_cut"), QStringLiteral("sheet-cut")},
       {QStringLiteral("sheet_corner_relief"), QStringLiteral("sheet-corner-relief")},
+      // Motion links (mitcad#466).
+      {QStringLiteral("motion_link"), QStringLiteral("motion-link")},
+      // Emboss (mitcad#458).
+      {QStringLiteral("emboss"), QStringLiteral("emboss")},
   };
   return icons.value(type, QStringLiteral("feature"));
 }

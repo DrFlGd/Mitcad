@@ -1,0 +1,12 @@
+{
+  "comment": "Worked out by hand: a 40 x 30 x 20 block, less the rounding of one vertical edge (r 3 over 20: (9 - 9 pi / 4) * 20 = 38.6283) and a hole of 10 through 20 (pi * 25 * 20 = 1570.7963).",
+  "body_count": 1,
+  "total": {"volume_mm3": 22390.5753426166},
+  "bbox": {"min": [0, 0, 0], "max": [40, 30, 20]},
+  "bodies": [{"name": "Block", "volume_mm3": 22390.5753426166}],
+  "timeline": [{"name": "Sketch1"}, {"name": "Extrude1"}, {"name": "Fillet1"}, {"name": "Sketch2"}, {"name": "Hole cut"}],
+  "params": [{"name": "width"}, {"name": "height"}, {"name": "d1"}, {"name": "d2"}, {"name": "d3"}, {"name": "d4"}, {"name": "d5"}, {"name": "d6"}],
+  "sketches": [{"name": "Sketch1", "curves": 4, "constraints": 5, "dimensions": 2},
+               {"name": "Sketch2", "curves": 1, "constraints": 0, "dimensions": 1}],
+  "parametric": 5
+}

@@ -58,6 +58,7 @@
 #include "../framework/CommandRegistry.hpp"
 #include "../framework/Dialogs.hpp"
 #include "../framework/Json.hpp"
+#include "../library/PartFavourites.hpp"
 #include "../library/PartPicker.hpp"
 #include "../library/UsedParts.hpp"
 #include "CommandSupport.hpp"
@@ -93,8 +94,12 @@ struct Shared {
   // The design's BUILD parts and which component each occurrence path places.
   QVector<BuildPart> parts;
   QHash<QString, QString> components;
-  // The part chosen or placed last, per role: the picker starts with it.
+  // The part chosen or placed last in this design, per role: the picker
+  // starts with it while the design has parts of the role (mitcad#452);
+  // `design` is the design they were chosen in (DocumentHost::designId),
+  // and another design starts without them.
   QHash<QString, QString> lastPart;
+  QString design;
   // The system of the part chosen last, per role (mitcad#427): the part
   // picker opens filtered to it.
   QHash<QString, QString> lastSystem;
@@ -253,7 +258,7 @@ struct Shared {
       const QJsonObject entry = value.toObject();
       labels.append({str(entry, "id"), build::junctionText(entry, context)});
     }
-    const QVector<BuildPart> design = build::buildParts(context);
+    const QVector<BuildPart> designParts = build::buildParts(context);
     QHash<QString, QString> placed;
     try {
       std::function<void(const QJsonArray&, const QString&)> walk = [&](const QJsonArray& level, const QString& parent) {
@@ -274,7 +279,7 @@ struct Shared {
     const std::lock_guard<std::mutex> lock(mutex);
     junctions = found;
     junctionChoices = labels;
-    parts = design;
+    parts = designParts;
     components = placed;
   }
 };
@@ -504,11 +509,62 @@ std::function<void(bool)> pickerEnded(const SharedPtr& shared, const QString& co
   };
 }
 
-// The picker's parts read again; the part chosen in the panel stays, else
-// the one chosen or placed last, else the first.
+// The part the picker shows first within a system (mitcad#452): its first
+// favourite, as the picker lists the starred parts first (pickerOrder, in
+// the catalog's order), else its first part; a system none of the parts
+// fits leaves them all. A part made for no system fits any, as in the
+// picker's filter.
+QString pickerFirst(const QVector<Part>& parts, const QString& system) {
+  QVector<const Part*> shown;
+  QList<OrderedPart> order;
+  for (const Part& part : parts) {
+    const QStringList systems = part.systemText().split(QStringLiteral(", "), Qt::SkipEmptyParts);
+    if (system.isEmpty() || systems.isEmpty() || systems.contains(system)) {
+      shown.append(&part);
+      order.append({part.library, part.component, QString()});
+    }
+  }
+  if (shown.isEmpty()) {
+    return system.isEmpty() ? QString() : pickerFirst(parts, QString());
+  }
+  const QList<int> ordered = pickerOrder(order, false);
+  return shown.at(ordered.isEmpty() ? 0 : ordered.first())->key;
+}
+
+// The part of the role the design placed last (build_parts lists them in
+// the order they were made), as the catalog's key of its source; empty
+// when the design has none of the role. `any`: whether it has one at all.
+QString placedLast(const Shared& shared, const QString& role, bool& any) {
+  const QVector<BuildPart> placed = shared.designParts();
+  const QVector<Part> parts = shared.catalog.parts(role);
+  any = false;
+  for (auto it = placed.crbegin(); it != placed.crend(); ++it) {
+    if (it->role != role) {
+      continue;
+    }
+    any = true;
+    for (const Part& part : parts) {
+      if (!part.source.isEmpty() && part.source == it->source && part.config == it->config) {
+        return part.key;
+      }
+    }
+  }
+  return {};
+}
+
+// The picker's parts read again; the part chosen in the panel stays. Else
+// (mitcad#452) a design with parts of the role starts with the one chosen
+// or placed last in it, and a design without them (a new one) with the
+// picker's first part: its first favourite within the system it opens
+// with, else its first part. A part of another design does not carry over.
 void startPicker(Shared& shared, const QString& role, CommandState& state, const CommandContext& context) {
   shared.catalog.refresh(role, context);
   shared.refreshDesign(context);
+  const QString design = shared.host != nullptr ? shared.host->designId() : QString();
+  if (design != shared.design) {
+    shared.design = design;
+    shared.lastPart.clear();
+  }
   const QVector<Part> parts = shared.catalog.parts(role);
   // The part picker opens filtered to the system chosen last (mitcad#427).
   if (state.choice(kSystem).isEmpty()) {
@@ -519,11 +575,24 @@ void startPicker(Shared& shared, const QString& role, CommandState& state, const
     followPart(shared, state, context);
     return;
   }
+  bool inDesign = false;
+  QString chosen = placedLast(shared, role, inDesign);
+  QString why = QStringLiteral("placed last in this design");
   const QString last = shared.lastPart.value(role);
-  if (!last.isEmpty() && shared.catalog.find(last, known)) {
-    state.setChoice(kPart, last);
-  } else if (!parts.isEmpty()) {
-    state.setChoice(kPart, parts.first().key);
+  if (inDesign && !last.isEmpty() && shared.catalog.find(last, known)) {
+    chosen = last;
+    why = QStringLiteral("chosen last in this design");
+  } else if (chosen.isEmpty()) {
+    chosen = pickerFirst(parts, state.choice(kSystem));
+    const bool starred = shared.catalog.find(chosen, known) &&
+                         PartFavourites::instance().starred(known.library, known.component);
+    why = starred ? QStringLiteral("the first favourite") : QStringLiteral("the picker's first part");
+  }
+  if (!chosen.isEmpty()) {
+    state.setChoice(kPart, chosen);
+    if (shared.catalog.find(chosen, known)) {
+      qInfo().noquote() << QStringLiteral("BUILD %1 starts with %2/%3: %4").arg(role, known.library, known.component, why);
+    }
   }
   followPart(shared, state, context);
 }
@@ -1210,10 +1279,11 @@ Inspection inspectPlacement(const SharedPtr& shared, const QString& role, const 
   const QString addsTo = QObject::tr("Adds to: %1").arg(host.name);
   const Placement placed = placement(*shared, role, state, context, part, profile);
   if (placed.how == Against::Ground && state.items(kAt).isEmpty()) {
-    // The first part: a click or Enter (mitcad#394).
-    result.viewHint = QObject::tr("Click a plane or a face, or press Enter");
+    // The first part: a click or Enter (mitcad#394); Shift + click places
+    // it at once (mitcad#451).
+    result.viewHint = QObject::tr("Click a plane or a face, or press Enter; Shift+click places at once");
   } else if (placed.how == Against::Pick) {
-    result.viewHint = QObject::tr("Click a profile's side or end");
+    result.viewHint = QObject::tr("Click a profile's side or end; Shift+click places at once");
   }
   if (!placed.problem.isEmpty()) {
     result.text = QStringLiteral("<b>%1</b><br>%2").arg(part.name.toHtmlEscaped(), addsTo.toHtmlEscaped());
@@ -1535,8 +1605,11 @@ QVector<InputDef> placementInputs(const SharedPtr& shared, const QString& role, 
                           return pickTakes(*shared, role, item, state);
                         })
           .withHiddenConstruction()
+          // Shift + click: the pick and Place in one (mitcad#451).
+          .withShiftClickApplies()
           .withTooltip(QObject::tr("The first part: a plane, a point or a face, or none (Enter: at the origin). "
-                                   "Then a profile: near an end on its side, or its end face")),
+                                   "Then a profile: near an end on its side, or its end face. Shift+click places "
+                                   "at once")),
       // Icon buttons (mitcad#427), each one's tooltip naming it; Tab steps
       // face, centre, through.
       choiceInput(QStringLiteral("length_mode"), QObject::tr("Length"), kLengthButtons, QStringLiteral("face"))
@@ -1695,7 +1768,7 @@ CommandDef placeCommand(const SharedPtr& shared, DocumentHost& host, const QStri
   def.icon = profile ? QStringLiteral("build-profile") : QStringLiteral("build-linear");
   def.tooltip = profile ? QObject::tr("Places slot profiles: pick one, click where it goes (the first one: a plane, "
                                       "or Enter at the origin), its length runs to the part in the way; Enter "
-                                      "places it and the next one follows")
+                                      "places it and the next one follows; Shift+click places at once")
                         : QObject::tr("Places rails, carriages, bearings and motor plates: a carriage on its rail "
                                       "slides along it");
   def.tab = kTab;
@@ -1806,8 +1879,10 @@ CommandDef panelCommand(const SharedPtr& shared, DocumentHost& host) {
                           build::recordPick(QStringLiteral("at"), item, state, context);
                         },
                                     false)
+                        // Shift + click: the pick and Place in one (mitcad#451).
+                        .withShiftClickApplies()
                         .withTooltip(QObject::tr("A face of one of the frame's profiles: inside the frame for the "
-                                                 "slots, outside for the surface")));
+                                                 "slots, outside for the surface. Shift+click places at once")));
   def.inputs.append(valueInput(QStringLiteral("thickness"), QObject::tr("Thickness"), ValueKind::Length,
                                QStringLiteral("3 mm"))
                         .withVisible([shared](const CommandState& state) {
@@ -2028,7 +2103,10 @@ CommandDef connectorCommand(const SharedPtr& shared, DocumentHost& host, const C
             syncConnectorPicker(*shared, state, state.choice(kJunction) != before);
           },
                       false)
-          .withTooltip(QObject::tr("A click on a profile near a junction chooses that junction")),
+          // Shift + click: the junction chosen and Connect in one (mitcad#451).
+          .withShiftClickApplies()
+          .withTooltip(QObject::tr("A click on a profile near a junction chooses that junction; Shift+click "
+                                   "connects it at once")),
       choiceInput(kJunction, QObject::tr("Junction"), {}, QString())
           .withChoices([shared](const CommandState&) { return shared->junctionOptions(); })
           .withOnChange([shared](CommandState& state, const CommandContext&) {
@@ -2085,6 +2163,9 @@ CommandDef connectorCommand(const SharedPtr& shared, DocumentHost& host, const C
   def.ended = pickerEnded(shared, def.id);
   def.inspect = [shared](const CommandState& state, const CommandContext& model) {
     Inspection result;
+    if (state.items(QStringLiteral("at")).isEmpty()) {
+      result.viewHint = QObject::tr("Click a profile near a junction; Shift+click connects at once"); // mitcad#451
+    }
     const QJsonObject junction = shared->junction(state.choice(kJunction));
     // The junctions with their parts, for the markers of the hover
     // (connectorMarkers); the chosen one's label first.

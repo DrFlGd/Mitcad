@@ -3,8 +3,10 @@
 # mitcad-cli: the generator
 # (tools/libraries/make-profile-library.py) on supplier files made in this
 # test (two slot profiles and an angle bracket written as STEP, nothing of
-# a real supplier's) and on a panel modelled from its dimensions, with one
-# part whose file is missing; the library checked and recorded as v1.0.0,
+# a real supplier's) and on a panel, a shaft and a lead screw modelled from
+# their dimensions (the screw with its thread, mitcad#449), with one part
+# whose file is missing, a row with its own supplier file and a file left
+# out with its reason; the library checked and recorded as v1.0.0,
 # its manifest's BUILD fields and frames, a profile's design cut to another
 # length with end B following it, the library fetched, searched by role,
 # system and part number, and the connectors that fit a junction. Nothing
@@ -100,6 +102,10 @@ make_step(p20x40 "[${body}, ${right1}, ${right2}, ${left1}, ${left2}, ${top}, ${
 box("0, 0" 30 20 3 new_body leg_a)
 box("0, 0" 3 20 30 join leg_b)
 make_step(bracket "[${leg_a}, ${leg_b}, {\"expect\": {\"bodies\": 1}}]")
+# The bracket's black row has a file of its own; a copy of p20x20 is left
+# out with its reason.
+file(COPY_FILE "${source}/bracket.step" "${source}/bracket-black.step")
+file(COPY_FILE "${source}/p20x20.step" "${source}/p20x20-copy.step")
 
 box("-7.5, -6" 15 12 100 new_body rail)
 make_step(rail "[${rail}, {\"cmd\": \"add_feature\", \"def\": {\"type\": \"hole\",
@@ -133,10 +139,18 @@ file(WRITE "${groups}/a-profiles.json" "{
     {\"id\": \"p-missing\", \"name\": \"A profile without its file\", \"category\": \"profiles\",
      \"source\": \"missing.step\", \"make\": \"section\",
      \"build\": {\"role\": \"profile\", \"system\": ${i5}, \"length\": ${length}}}
-  ]}")
+  ],
+  \"left_out\": [{\"source\": \"p20x20-copy.step\", \"reason\": \"a copy of p20x20.step\"}]}")
+# A rod's frames: its ends, end B at its length, and its axis.
+set(rod_frames "[{\"name\": \"end_a\", \"kind\": \"end\", \"origin\": [0, 0, 0], \"z\": [0, 0, -1], \"x\": [1, 0, 0]},
+    {\"name\": \"end_b\", \"kind\": \"end\", \"origin\": [0, 0, \"L\"], \"z\": [0, 0, 1], \"x\": [1, 0, 0]},
+    {\"name\": \"shaft\", \"kind\": \"shaft\", \"origin\": [0, 0, 0], \"z\": [0, 0, 1], \"x\": [1, 0, 0]}]")
 file(WRITE "${groups}/b-parts.json" "[
   {\"id\": \"bracket-20-i5\", \"name\": \"Bracket 20 I-type slot 5\", \"category\": \"connectors\",
    \"source\": \"bracket.step\", \"make\": \"solid\", \"supplier\": \"Test Supplier\", \"part_number\": \"TEST-B20\",
+   \"rows\": [{\"name\": \"Grey\", \"select\": {\"Colour\": \"Grey\"}, \"values\": {}},
+            {\"name\": \"Black\", \"select\": {\"Colour\": \"Black\"}, \"values\": {}, \"part_number\": \"TEST-B20-B\",
+             \"source\": \"bracket-black.step\"}],
    \"build\": {\"role\": \"connector\", \"systems\": [${i5}],
              \"connector\": {\"junctions\": [\"L\", \"T\"], \"space\": \"inner_corner\",
                            \"mates\": [{\"frame\": \"mount_a\", \"to\": \"slot\"}, {\"frame\": \"mount_b\", \"to\": \"slot\"}]}},
@@ -164,7 +178,18 @@ file(WRITE "${groups}/b-parts.json" "[
              \"length\": {\"parameter\": \"L\", \"min\": \"40 mm\", \"max\": \"1000 mm\",
                         \"pitch\": {\"distance\": \"60 mm\", \"first\": \"20 mm\"}}},
    \"frames\": [{\"name\": \"end_a\", \"kind\": \"end\"}, {\"name\": \"end_b\", \"kind\": \"end\"},
-              {\"name\": \"rail\", \"kind\": \"rail\", \"origin\": [0, 6, 0], \"z\": [0, 1, 0], \"x\": [0, 0, 1]}]}
+              {\"name\": \"rail\", \"kind\": \"rail\", \"origin\": [0, 6, 0], \"z\": [0, 1, 0], \"x\": [0, 0, 1]}]},
+  {\"id\": \"shaft-8\", \"name\": \"Shaft 8\", \"category\": \"linear\", \"make\": \"model\", \"supplier\": \"Test Supplier\",
+   \"dimensions\": {\"shape\": \"rod\", \"diameter\": \"8 mm\", \"length\": \"500 mm\"},
+   \"build\": {\"role\": \"linear\", \"linear\": {\"kind\": \"shaft\", \"size\": \"8 mm\"}, \"length\": ${length}},
+   \"frames\": ${rod_frames}},
+  {\"id\": \"screw-tr8\", \"name\": \"Lead screw Tr8x1.5\", \"category\": \"linear\", \"make\": \"model\",
+   \"dimensions\": {\"shape\": \"rod\", \"diameter\": \"D\", \"length\": \"L\",
+                  \"parameters\": {\"D\": \"8 mm\", \"L\": \"200 mm\"},
+                  \"thread\": {\"standard\": \"trapezoidal\", \"designation\": \"Tr8x1.5\", \"class\": \"7e\"}},
+   \"build\": {\"role\": \"linear\", \"linear\": {\"kind\": \"screw\", \"size\": \"Tr8x1.5\", \"lead\": \"1.5 mm\"},
+             \"length\": ${length}},
+   \"frames\": ${rod_frames}}
 ]")
 
 # 3. The library, v1.0.0.
@@ -175,7 +200,7 @@ set(out "${out}${err}")
 if(NOT status EQUAL 0)
   message(FATAL_ERROR "the generator failed (${status}):\n${out}")
 endif()
-expect("mitcad-parts 1.0.0: 6 components" "the generator's summary")
+expect("mitcad-parts 1.0.0: 8 components" "the generator's summary")
 expect("left out p-missing: the source missing.step is not in --source" "the part without its file")
 expect("left out: 1 \\(p-missing\\)" "the parts left out")
 # The rail's design has its source's holes: no warning of a difference.
@@ -183,7 +208,7 @@ if(out MATCHES "warning rail-15")
   message(FATAL_ERROR "the rail's design and its source differ:\n${out}")
 endif()
 cli(ok library check "${library}")
-expect("mitcad-parts: 6 components, no errors" "the library's check")
+expect("mitcad-parts: 8 components, no errors" "the library's check")
 foreach(file mitcad-library.json LICENSE SOURCES.md README.md .mitcad/project.json profiles/p20x20-i5.mitcad
              connectors/bracket-20-i5.mitcad panels/panel-generic.mitcad previews/p20x20-i5.png
              previews/bracket-20-i5.png)
@@ -196,6 +221,16 @@ same("${signature}" "89504e47" "the preview's signature")
 file(READ "${library}/SOURCES.md" sources)
 if(NOT sources MATCHES "p20x20-i5 \\(Profile 20x20 I-type slot 5\\): p20x20.step; Test Supplier TEST-P20")
   message(FATAL_ERROR "SOURCES.md:\n${sources}")
+endif()
+# A row's own file, the file left out with its reason, and a modelled part.
+foreach(line "  - Black: bracket-black.step; TEST-B20-B" "- p20x20-copy.step: a copy of p20x20.step"
+             "shaft-8 \\(Shaft 8\\): the supplier's dimensions; Test Supplier")
+  if(NOT sources MATCHES "${line}")
+    message(FATAL_ERROR "SOURCES.md has no '${line}':\n${sources}")
+  endif()
+endforeach()
+if(out MATCHES "warning [^\n]*(bracket-black|p20x20-copy)")
+  message(FATAL_ERROR "the row's file or the left-out file is not found:\n${out}")
 endif()
 
 # The manifest: licence, supplier fields, the BUILD block with its frames
@@ -305,6 +340,38 @@ file(WRITE "${WORK}/rail.json" "[
   {\"expect\": {\"total_volume\": 12259.2942767, \"tolerance\": 1e-5}}
 ]")
 cli(ok run "${WORK}/rail.json" --open "${library}/linear/rail-15.mitcad")
+
+#    The shaft: a rod of 8 mm on the Z axis, 500 mm long by default; cut
+#    to 250 mm its body and end B (after the rod and end A's frame, its
+#    plane F3 and frame F4) follow, and it has no thread. The lead screw's
+#    cosmetic thread (Tr8x1.5) runs along all of it at any length, as the
+#    threads query lists it.
+file(WRITE "${WORK}/shaft.json" "[
+  {\"expect\": {\"bodies\": 1}},
+  {\"expect\": {\"total_volume\": 25132.7412287, \"tolerance\": 1e-6}},
+  {\"cmd\": \"set_parameter\", \"name\": \"L\", \"expression\": \"250 mm\"},
+  {\"expect\": {\"total_volume\": 12566.3706144, \"tolerance\": 1e-6}},
+  {\"expect\": {\"query\": {\"query\": \"bodies\", \"properties\": true},
+               \"result\": [{\"bbox\": {\"min\": [-4, -4, 0], \"max\": [4, 4, 250]}}]}},
+  {\"expect\": {\"query\": {\"query\": \"datum\", \"uid\": \"F4\"}, \"result\": {\"origin\": [0, 0, 250], \"normal\": [0, 0, 1]}}},
+  {\"expect\": {\"query\": {\"query\": \"threads\"}, \"result\": []}}
+]")
+cli(ok run "${WORK}/shaft.json" --open "${library}/linear/shaft-8.mitcad")
+file(WRITE "${WORK}/screw.json" "[
+  {\"expect\": {\"total_volume\": 10053.0964915, \"tolerance\": 1e-6}},
+  {\"expect\": {\"query\": {\"query\": \"threads\"},
+               \"result\": [{\"standard\": \"trapezoidal\", \"designation\": \"Tr8x1.5\", \"class\": \"7e\",
+                           \"modeled\": false, \"major_diameter\": 8, \"pitch\": 1.5, \"internal\": false,
+                           \"start\": [0, 0, 0], \"end\": [0, 0, 200]}]}},
+  {\"cmd\": \"set_parameter\", \"name\": \"L\", \"expression\": \"300 mm\"},
+  {\"expect\": {\"query\": {\"query\": \"threads\"}, \"result\": [{\"designation\": \"Tr8x1.5\", \"end\": [0, 0, 300]}]}}
+]")
+cli(ok run "${WORK}/screw.json" --open "${library}/linear/screw-tr8.mitcad")
+string(JSON size GET "${manifest}" components 7 build linear size)
+same("${size}" "Tr8x1.5" "the lead screw's size")
+string(JSON parameter GET "${manifest}" components 7 build length parameter)
+same("${parameter}" "L" "the lead screw's length parameter")
+frames(7 "end_a;end_b;shaft")
 
 # 5. Fetched, searched by role, system and part number (a size's own).
 cli(ok library fetch "${library}")

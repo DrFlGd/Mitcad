@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 # AppKit workflow test, driven in process without Accessibility permission.
-# Usage: tools/ui-macos-native-test.sh <app> [out directory] [workflow|cancel|secondary|sketch|panels|gestures|history|context-menus|replacement|autoselect|point-pattern]
+# Usage: tools/ui-macos-native-test.sh <app> [out directory] [workflow|cancel|secondary|sketch|panels|toolbar|gestures|history|context-menus|replacement|autoselect|point-pattern]
 # Requires MITCAD_MACOS_NATIVE_UI=ON and a logged-in macOS window server.
 set -u
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -9,7 +9,7 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 . "$here/ui-macos-lib.sh"
 
 if [ $# -lt 1 ] || [ $# -gt 3 ]; then
-  echo "usage: $0 <app> [out directory] [workflow|cancel|secondary|sketch|panels|gestures|history|context-menus|replacement|autoselect|point-pattern]" >&2
+  echo "usage: $0 <app> [out directory] [workflow|cancel|secondary|sketch|panels|toolbar|gestures|history|context-menus|replacement|autoselect|point-pattern]" >&2
   exit 2
 fi
 ui_init "$1" "${2:-ui-macos-native}"
@@ -36,6 +36,7 @@ case "$scenario" in
   autoselect) script=native-macos-autoselect.mitcad-ui ;;
   point-pattern) script=native-macos-point-pattern.mitcad-ui ;;
   panels) script=native-macos-panels.mitcad-ui ;;
+  toolbar) script=native-macos-toolbar.mitcad-ui ;;
   gestures) script=native-macos-gestures.mitcad-ui ;;
   context-menus)
     script=native-macos-context-menus.mitcad-ui
@@ -62,7 +63,53 @@ if command -v launchctl > /dev/null; then
   fi
 fi
 
-if [ "$scenario" = panels ]; then
+if [ "$scenario" = toolbar ]; then
+  # Cocoa toolbar defaults are separate from the isolated QSettings store.
+  # Preserve only this test's two preferences, including their absence.
+  UI_TOOLBAR_DOMAIN=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$(dirname "$(dirname "$UI_APP")")/Info.plist") || exit 1
+  UI_TOOLBAR_CONFIG_KEY='NSToolbar Configuration com.mitcad.toolbar.floating.v2'
+  UI_TOOLBAR_MIGRATION_KEY='com.mitcad.toolbar.floating.v2.projectStatusInstalled'
+  UI_TOOLBAR_CONFIG_PRESENT=0
+  UI_TOOLBAR_MIGRATION_PRESENT=0
+  UI_TOOLBAR_CONFIG=""
+  UI_TOOLBAR_MIGRATION=""
+  if UI_TOOLBAR_CONFIG=$(defaults read "$UI_TOOLBAR_DOMAIN" "$UI_TOOLBAR_CONFIG_KEY" 2> /dev/null); then
+    UI_TOOLBAR_CONFIG_PRESENT=1
+  fi
+  if UI_TOOLBAR_MIGRATION=$(defaults read "$UI_TOOLBAR_DOMAIN" "$UI_TOOLBAR_MIGRATION_KEY" 2> /dev/null); then
+    UI_TOOLBAR_MIGRATION_PRESENT=1
+  fi
+  ui_toolbar_cleanup() {
+    ui_cleanup
+    if [ "$UI_TOOLBAR_CONFIG_PRESENT" = 1 ]; then
+      defaults write "$UI_TOOLBAR_DOMAIN" "$UI_TOOLBAR_CONFIG_KEY" "$UI_TOOLBAR_CONFIG"
+    else
+      defaults delete "$UI_TOOLBAR_DOMAIN" "$UI_TOOLBAR_CONFIG_KEY" > /dev/null 2>&1 || true
+    fi
+    if [ "$UI_TOOLBAR_MIGRATION_PRESENT" = 1 ]; then
+      # `defaults read` commonly prints booleans as 0/1; `write -bool`
+      # expects a boolean word on some macOS versions.
+      case "${UI_TOOLBAR_MIGRATION//[[:space:]]/}" in
+        1|true|TRUE|yes|YES) defaults write "$UI_TOOLBAR_DOMAIN" "$UI_TOOLBAR_MIGRATION_KEY" -bool true ;;
+        0|false|FALSE|no|NO) defaults write "$UI_TOOLBAR_DOMAIN" "$UI_TOOLBAR_MIGRATION_KEY" -bool false ;;
+        *) defaults write "$UI_TOOLBAR_DOMAIN" "$UI_TOOLBAR_MIGRATION_KEY" "$UI_TOOLBAR_MIGRATION" ;;
+      esac
+    else
+      defaults delete "$UI_TOOLBAR_DOMAIN" "$UI_TOOLBAR_MIGRATION_KEY" > /dev/null 2>&1 || true
+    fi
+  }
+  trap ui_toolbar_cleanup EXIT
+  defaults write "$UI_TOOLBAR_DOMAIN" "$UI_TOOLBAR_CONFIG_KEY" \
+    '{"TB Item Identifiers" = ("mitcad.sidebar", "NSToolbarFlexibleSpaceItem", "mitcad.search"); "TB Is Shown" = 1; "TB Display Mode" = 2; "TB Size Mode" = 1;}' || exit 1
+  defaults delete "$UI_TOOLBAR_DOMAIN" "$UI_TOOLBAR_MIGRATION_KEY" > /dev/null 2>&1 || true
+  rm -rf "$MITCAD_TEST_WORK/ToolbarProject" "$MITCAD_TEST_WORK/ToolbarOtherProject"
+  MITCAD_TEST_INPUT=$here/ui-scripts/$script \
+    ui_run_app toolbar --ui=native --no-recovery
+  ui_expect_log 'TestDriver: done' 'legacy toolbar upgraded and customized status stayed removed'
+  MITCAD_TEST_INPUT=$here/ui-scripts/native-macos-toolbar-restored.mitcad-ui \
+    ui_run_app toolbar-restored --ui=native --no-recovery
+  ui_expect_log 'TestDriver: done' 'customized toolbar survived application relaunch'
+elif [ "$scenario" = panels ]; then
   # NSWindow's frame uses Cocoa defaults, independently of the isolated
   # QSettings directory. Restore this one preference when the test exits.
   UI_PANEL_DOMAIN=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$(dirname "$(dirname "$UI_APP")")/Info.plist") || exit 1
@@ -139,6 +186,8 @@ elif [ "$scenario" = secondary ]; then
     ui_fail 'per-computer creation settings were added to version history'
   fi
   ui_expect_log 'Added parameter nativeWidth = 30 mm' 'native parameter sheet changed the document'
+  ui_expect_log 'Appearances dialog opened' 'native constrained appearances list was opened'
+  ui_expect_no_log 'Unable to simultaneously satisfy constraints' 'native secondary windows have no contradictory layout constraints'
   if grep -Eq '^Report sent:|^Report on the clipboard:' "$UI_LOG_FILE"; then
     ui_fail 'report preview did not stay local'
   fi

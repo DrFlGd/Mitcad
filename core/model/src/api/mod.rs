@@ -33,6 +33,8 @@ pub mod classes;
 mod tangent_chains;
 // The BUILD tab: profile assemblies (mitcad#375).
 mod build;
+// Motion studies and contact sets (mitcad#454).
+mod motion;
 
 use std::fmt;
 
@@ -552,6 +554,13 @@ enum Query {
     // The library parts the design uses, with their counts, for the part
     // picker (mitcad#418, `libraries.rs`).
     LibraryUsage,
+    // Motion studies and contact sets (mitcad#454, `motion.rs`).
+    MotionStudies,
+    StudyValues(motion::StudyValuesQuery),
+    ContactSets,
+    ContactCheck,
+    // Motion links between joints (mitcad#466, `joints.rs`).
+    MotionLinkOffset(Box<joints::MotionLinkOffsetQuery>),
 }
 
 fn names(names: &[String]) -> Value {
@@ -623,6 +632,11 @@ impl<K: Kernel> Document<K> {
             .get("cmd")
             .and_then(Value::as_str)
             .is_some_and(|cmd| build::COMMANDS.contains(&cmd));
+        // Motion studies and contact sets (mitcad#454).
+        let is_motion = value
+            .get("cmd")
+            .and_then(Value::as_str)
+            .is_some_and(|cmd| motion::COMMANDS.contains(&cmd));
         let mut result = if let Some(rules) = inline_face_rules(&value) {
             self.add_face_with_rules_command(rules, &value)?
         } else if is_sketch {
@@ -640,6 +654,8 @@ impl<K: Kernel> Document<K> {
             self.run_policy_command(parse(value, "command")?)?
         } else if is_build {
             self.run_build_command(parse(value, "command")?)?
+        } else if is_motion {
+            self.run_motion_command(parse(value, "command")?)?
         } else {
             self.run_document_command(parse(value, "command")?)?
         };
@@ -1044,6 +1060,14 @@ impl<K: Kernel> Document<K> {
 
     fn checked_preview(&mut self, json: &str) -> Result<String, ApiError> {
         let value = read_json(json)?;
+        // Motions: a study's playback, a driven joint (mitcad#454).
+        if let Some((report, outcome)) = self.motion_preview(&value)? {
+            let mut value = preview_json(&report);
+            if let (Value::Object(out), Value::Object(more)) = (&mut value, outcome) {
+                out.extend(more);
+            }
+            return Ok(value.to_string());
+        }
         // Extrude's automatic operation (mitcad#289).
         let mut auto = None;
         let report = if let Some(rules) = inline_face_rules(&value) {
@@ -1351,6 +1375,12 @@ impl<K: Kernel> Document<K> {
             Query::BuildHost => self.host_json(),
             // The library parts the design uses (mitcad#418).
             Query::LibraryUsage => self.library_usage_json(),
+            // Motion studies and contact sets (mitcad#454).
+            Query::MotionStudies => self.motion_studies_json(),
+            Query::StudyValues(query) => self.study_values_json(&query)?,
+            Query::ContactSets => self.contact_sets_json(),
+            Query::ContactCheck => self.contact_check_json()?,
+            Query::MotionLinkOffset(query) => self.motion_link_offset_json(*query)?,
         };
         Ok(result.to_string())
     }
@@ -1730,7 +1760,10 @@ fn inline_face_rules(value: &Value) -> Option<Value> {
         return None;
     }
     let def = value.get("def")?;
-    if def.get("type").and_then(Value::as_str) != Some("sheet_face") {
+    if !matches!(
+        def.get("type").and_then(Value::as_str),
+        Some("sheet_face" | "sheet_contour" | "sheet_convert")
+    ) {
         return None;
     }
     let mut rules = def.get("rules")?.as_object()?.clone();

@@ -316,6 +316,63 @@ double Spine::nearest(const gp_Pnt& near) const {
   return (a + b) / 2.0;
 }
 
+std::vector<double> Spine::crossings(const gp_Pln& plane, double tolerance) const {
+  const gp_Vec normal(plane.Axis().Direction());
+  const auto side = [&](double s) { return gp_Vec(plane.Location(), point(s)).Dot(normal); };
+  const int count = std::max(64, 32 * static_cast<int>(m_pieces.size()));
+  const double step = m_length / count;
+  const double precision = 1e-14 * std::max(1.0, m_length);
+  std::vector<double> found;
+  double previous = side(0.0);
+  if (previous == 0.0) {
+    found.push_back(0.0);
+  }
+  for (int i = 1; i <= count; ++i) {
+    const double s = i == count ? m_length : i * step;
+    const double value = side(s);
+    if (value == 0.0) {
+      // (A closed wire's end is its start.)
+      if (!(m_closed && i == count && !found.empty() && found.front() == 0.0)) {
+        found.push_back(s);
+      }
+    } else if (previous != 0.0 && (previous < 0.0) != (value < 0.0)) {
+      // Bisection: the sign changes once in this bracket of the samples.
+      double a = s - step;
+      double b = s;
+      double fa = previous;
+      for (int k = 0; k < 200 && b - a > precision; ++k) {
+        const double m = (a + b) / 2.0;
+        const double fm = side(m);
+        if (fm == 0.0) {
+          a = b = m;
+          break;
+        }
+        if ((fa < 0.0) == (fm < 0.0)) {
+          a = m;
+          fa = fm;
+        } else {
+          b = m;
+        }
+      }
+      found.push_back((a + b) / 2.0);
+    }
+    previous = value;
+  }
+  if (!m_closed) {
+    const gp_Pnt first = point(0.0);
+    const gp_Pnt last = point(m_length);
+    if (std::abs(side(0.0)) <= tolerance &&
+        (found.empty() || point(found.front()).Distance(first) > tolerance)) {
+      found.insert(found.begin(), 0.0);
+    }
+    if (std::abs(side(m_length)) <= tolerance &&
+        (found.empty() || point(found.back()).Distance(last) > tolerance)) {
+      found.push_back(m_length);
+    }
+  }
+  return found;
+}
+
 double Spine::locate(const gp_Pln& plane, const gp_Pnt& near) const {
   const gp_Dir normal = plane.Axis().Direction();
   const auto side = [&](double s) { return gp_Vec(plane.Location(), point(s)).Dot(gp_Vec(normal)); };

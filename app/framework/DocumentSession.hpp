@@ -141,6 +141,9 @@ signals:
   void jobFinished(const QString& label, bool cancelled, const QString& error);
 
 private:
+  friend class TestDriver;
+  // Armed only by the in-process UI driver, consumed on the worker once.
+  QString m_testFailCommand;
   struct IdleCall {
     QPointer<QObject> context;
     std::function<void()> call;

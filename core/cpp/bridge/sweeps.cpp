@@ -101,6 +101,9 @@ geometry::ShapePtr body_at(const ShapeList& bodies, std::size_t index) {
 
 } // namespace
 
+// A path curve of the geometry library (thin extrusions along curves, mitcad#463).
+geometry::PathCurve path_curve_of(const SweepCurve& input) { return path_curve(input); }
+
 std::shared_ptr<geometry::Shape> sweep_solid(rust::Str feature, const Frame& frame,
                                              rust::Slice<const Region> regions, const SweepInput& input,
                                              const ShapeList& bodies) {
@@ -116,6 +119,11 @@ std::shared_ptr<geometry::Shape> sweep_solid(rust::Str feature, const Frame& fra
   spec.twist = input.twist;
   spec.taper = input.taper;
   spec.rail = path(input.rail);
+  // A second rail and an end scale (mitcad#464).
+  spec.rail2 = path(input.rail2);
+  spec.scale = input.end_scale;
+  // The rails' points (mitcad#469).
+  spec.rail_point = input.rail_plane ? geometry::RailPoint::Plane : geometry::RailPoint::Fraction;
   spec.scaling = input.scaling == 1   ? geometry::ProfileScaling::Stretch
                  : input.scaling == 2 ? geometry::ProfileScaling::None
                                       : geometry::ProfileScaling::Scale;

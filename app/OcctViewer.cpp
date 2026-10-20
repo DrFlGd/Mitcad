@@ -1223,6 +1223,14 @@ void OcctViewer::setBodies(const std::vector<BodyDisplay>& bodies) {
   // Bodies kept as they are drawn whose other parameters changed (what the
   // rendered view shows, mitcad#46).
   int restyled = 0;
+  // Bodies coming into an empty view are fitted into it (a design opened),
+  // but not the new bodies a command previews: the view would move under
+  // the items still to be picked (mitcad#467). The body the command then
+  // makes replaces its preview, so the view stays as the user had it.
+  const auto designBodies = [](const std::map<std::string, BodyEntry>& entries) {
+    return std::any_of(entries.begin(), entries.end(),
+                       [](const auto& entry) { return entry.second.style != BodyDisplay::Style::New; });
+  };
   const bool wasEmpty = m_bodies.empty();
   std::map<std::string, BodyEntry> kept;
   for (const BodyDisplay& body : bodies) {
@@ -1288,7 +1296,7 @@ void OcctViewer::setBodies(const std::vector<BodyDisplay>& bodies) {
   }
   const bool changed = shown > 0 || restyled > 0 || !m_bodies.empty();
   m_bodies = std::move(kept);
-  if (wasEmpty && !m_bodies.empty()) {
+  if (wasEmpty && designBodies(m_bodies)) {
     m_fitPending = true;
   }
   logInactiveGhosts();

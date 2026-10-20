@@ -57,6 +57,12 @@ std::shared_ptr<geometry::Shape> fillet(rust::Str feature, const geometry::Shape
       out.reference_face = std::string(set.reference_face);
       out.flip = set.flip;
       break;
+    case FilletKind::Spline:
+      out.size = geometry::FilletSize::Spline;
+      out.start_vertex = std::string(set.start_vertex);
+      out.knots.assign(set.knots.begin(), set.knots.end());
+      out.radii.assign(set.radii.begin(), set.radii.end());
+      break;
     default:
       throw std::invalid_argument("unknown fillet size");
     }

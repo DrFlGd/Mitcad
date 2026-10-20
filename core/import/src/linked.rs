@@ -650,7 +650,8 @@ pub(crate) fn chains(
 
 /// The regions the sketch's curves (not construction ones) bound, where
 /// the entities place them with the points the file holds on a curve
-/// (`coincident` with a curve) on it, as the solver puts them: a change
+/// (`coincident` with a curve) on it and those it holds on a point at that
+/// point, as the solver puts them: a change
 /// that keeps them keeps the profiles the features after the sketch name.
 /// Each region's key with its curves' directions left out (a line turned
 /// to run as its edge bounds the same region).
@@ -664,6 +665,23 @@ fn region_keys(entities: &[Value], constraints: &[Value]) -> Vec<String> {
         ) else {
             continue;
         };
+        // A point coincident with a point is where that one is, as the
+        // solver puts it (a corner on a projected curve's end that the
+        // replay's edge gives micrometres off the file's).
+        if let Some(target) = held
+            .iter()
+            .find(|e| e["id"] == on && e["type"] == "point")
+            .map(|e| e["at"].clone())
+            .filter(|at| at.is_array())
+        {
+            if let Some(p) = held
+                .iter_mut()
+                .find(|e| e["id"] == point && e["type"] == "point")
+            {
+                p["at"] = target;
+            }
+            continue;
+        }
         let Some(curve) = held
             .iter()
             .find(|e| e["id"] == on && e["type"] != "point")
@@ -1603,5 +1621,33 @@ mod tests {
             unoriented("r{c12[c13+c15,c14],c13[c14,c12]}")
         );
         assert_eq!(unoriented("r{c3}"), "r{c3}");
+    }
+
+    /// A corner the file holds on a linked curve's end, which the replay's
+    /// edge gives 0.3 µm off (round 11 of mitcad#343): the solve moving the
+    /// corner there keeps the regions the file's numbers bound with the
+    /// corner held on that end.
+    #[test]
+    fn a_corner_held_on_a_point_counts_as_there_in_the_file_s_regions() {
+        let end = [1.0, 3.0e-4];
+        let entities = vec![
+            json!({"id": "p1", "type": "point", "at": [0.0, 0.0]}),
+            json!({"id": "p2", "type": "point", "at": [1.0, 0.0]}),
+            json!({"id": "p3", "type": "point", "at": [1.0, 1.0]}),
+            json!({"id": "p4", "type": "point", "at": [0.0, 1.0]}),
+            json!({"id": "p5", "type": "point", "at": end}),
+            json!({"id": "c7", "type": "line", "start": "p1", "end": "p2"}),
+            json!({"id": "c8", "type": "line", "start": "p2", "end": "p3"}),
+            json!({"id": "c9", "type": "line", "start": "p3", "end": "p4"}),
+            json!({"id": "c10", "type": "line", "start": "p4", "end": "p1"}),
+            json!({"id": "c11", "type": "line", "start": "p5", "end": "p4", "reference": true}),
+        ];
+        let constraints =
+            vec![json!({"id": "k0", "type": "coincident", "point": "p2", "entity": "p5"})];
+        let solved = std::collections::BTreeMap::from([(EntityUid(2), end)]);
+        assert!(regions_kept(&entities, &constraints, &solved));
+        // Without the constraint the solved corner meets the linked line,
+        // the file's does not: the regions differ.
+        assert!(!regions_kept(&entities, &[], &solved));
     }
 }

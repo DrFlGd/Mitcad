@@ -1,0 +1,6 @@
+{
+  "comment": "box-fillet-hole with width = 60 mm (mitcad-cli --set width=60mm): the block is 60 long, the rounded edge goes with its corner to x = 60, the hole stays: 36000 - 38.6283 - 1570.7963.",
+  "body_count": 1,
+  "total": {"volume_mm3": 34390.5753426166},
+  "bbox": {"min": [0, 0, 0], "max": [60, 30, 20]}
+}

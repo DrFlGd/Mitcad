@@ -184,6 +184,23 @@ impl CadBackend {
         success(value)
     }
 
+    /// A SolidCraft design (mitcad#450) imported with its history into a
+    /// new document, which has no path until it is saved.
+    fn open_solidcraft(&mut self, path: &Path) -> Result<ToolResult, String> {
+        // Within the limit before the import reads it.
+        read_bounded(path, MAX_DOCUMENT_BYTES).map_err(|e| e.to_string())?;
+        let mut document = crate::new_document();
+        document
+            .import_solidcraft_command(json!({"path": path.to_string_lossy()}))
+            .map_err(|e| e.to_string())?;
+        let recomputed = parse_result(
+            &document
+                .command(r#"{"cmd":"recompute"}"#)
+                .map_err(|e| e.to_string())?,
+        )?;
+        self.insert(document, None, recomputed["failed_features"].clone())
+    }
+
     fn open(&mut self, path: &str) -> Result<ToolResult, String> {
         if self.documents.len() >= MAX_DOCUMENTS {
             return Err(format!(
@@ -191,6 +208,13 @@ impl CadBackend {
             ));
         }
         let path = self.workspace.read_path(path)?;
+        if path
+            .extension()
+            .and_then(|s| s.to_str())
+            .is_some_and(|s| s.eq_ignore_ascii_case("solidcraft"))
+        {
+            return self.open_solidcraft(&path);
+        }
         require_extension(&path, "mitcad")?;
         let bytes = read_bounded(&path, MAX_DOCUMENT_BYTES).map_err(|e| e.to_string())?;
         let text =

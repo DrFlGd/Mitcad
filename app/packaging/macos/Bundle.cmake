@@ -123,6 +123,9 @@ install(FILES "${PROJECT_SOURCE_DIR}/third_party/fonts/droid-sans/LICENSE.txt"
 # three.js, embedded for the web viewer (app/web/viewer).
 install(FILES "${PROJECT_SOURCE_DIR}/third_party/three/LICENSE"
   DESTINATION "${MITCAD_LICENSES_DIR}" RENAME three.js-MIT.txt)
+# SolidCraft's format upgrade steps, adapted for the .solidcraft import (third_party/solidcraft).
+install(FILES "${PROJECT_SOURCE_DIR}/third_party/solidcraft/LICENSE-MIT"
+  DESTINATION "${MITCAD_LICENSES_DIR}" RENAME SolidCraft-MIT.txt)
 # QtKeychain, linked statically (cmake/Keychain.cmake).
 install(FILES "${MITCAD_QTKEYCHAIN_LICENSE}"
   DESTINATION "${MITCAD_LICENSES_DIR}" RENAME QtKeychain-BSD-3-Clause.txt)
@@ -221,6 +224,9 @@ QtKeychain ${MITCAD_QTKEYCHAIN_VERSION} (https://github.com/frankosterfeld/qtkey
   credentials in the macOS Keychain: BSD-3-Clause, Copyright (C) 2011-2015 Frank
   Osterfeld and its contributors, linked statically into the mitcad executable
   (QtKeychain-BSD-3-Clause.txt).
+SolidCraft (https://github.com/tangency-labs/solidcraft), the design file format's upgrade
+  steps adapted for the .solidcraft import: MIT or Apache-2.0, used under MIT, Copyright
+  (c) 2026 SolidCraft contributors (SolidCraft-MIT.txt).
 ${MITCAD_RENDER_THIRD_PARTY_NOTES}The vcpkg ports that make the libraries above (licence text per port):
 ${MITCAD_THIRD_PARTY_NOTES}
 The Rust crates in Mitcad's core are under MIT, Apache-2.0 and similar licences

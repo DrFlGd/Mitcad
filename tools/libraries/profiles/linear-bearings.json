@@ -403,7 +403,7 @@
     "build": {
       "role": "linear",
       "frames": [{"name":"bore","kind":"bore"}],
-      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
+      "linear": {"size":"8 mm","kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
     },
     "frames": [{"name":"bore","origin":[0,0,12],"z":[0,0,1],"x":[1,0,0],"kind":"bore"}]
   },
@@ -421,7 +421,7 @@
     "build": {
       "role": "linear",
       "frames": [{"name":"bore","kind":"bore"}],
-      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
+      "linear": {"size":"10 mm","kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
     },
     "frames": [{"name":"bore","origin":[0,0,14.5],"z":[0,0,1],"x":[1,0,0],"kind":"bore"}]
   },
@@ -439,7 +439,7 @@
     "build": {
       "role": "linear",
       "frames": [{"name":"bore","kind":"bore"}],
-      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
+      "linear": {"size":"10 mm","kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
     },
     "frames": [{"name":"bore","origin":[0,0,14.5],"z":[0,0,1],"x":[1,0,0],"kind":"bore"}]
   },
@@ -457,7 +457,7 @@
     "build": {
       "role": "linear",
       "frames": [{"name":"bore","kind":"bore"}],
-      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
+      "linear": {"size":"12 mm","kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
     },
     "frames": [{"name":"bore","origin":[0,0,15],"z":[0,0,1],"x":[1,0,0],"kind":"bore"}]
   },
@@ -475,7 +475,7 @@
     "build": {
       "role": "linear",
       "frames": [{"name":"bore","kind":"bore"}],
-      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
+      "linear": {"size":"16 mm","kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
     },
     "frames": [{"name":"bore","origin":[0,0,18.5],"z":[0,0,1],"x":[1,0,0],"kind":"bore"}]
   },
@@ -493,7 +493,7 @@
     "build": {
       "role": "linear",
       "frames": [{"name":"bore","kind":"bore"}],
-      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
+      "linear": {"size":"20 mm","kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
     },
     "frames": [{"name":"bore","origin":[0,0,21],"z":[0,0,1],"x":[1,0,0],"kind":"bore"}]
   },
@@ -511,7 +511,7 @@
     "build": {
       "role": "linear",
       "frames": [{"name":"bore","kind":"bore"}],
-      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
+      "linear": {"size":"8 mm","kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
     },
     "frames": [{"name":"bore","origin":[0,0,12.5],"z":[0,0,1],"x":[1,0,0],"kind":"bore"}]
   },
@@ -529,7 +529,7 @@
     "build": {
       "role": "linear",
       "frames": [{"name":"bore","kind":"bore"}],
-      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
+      "linear": {"size":"10 mm","kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
     },
     "frames": [{"name":"bore","origin":[0,0,14.5],"z":[0,0,1],"x":[1,0,0],"kind":"bore"}]
   },
@@ -547,7 +547,7 @@
     "build": {
       "role": "linear",
       "frames": [{"name":"bore","kind":"bore"}],
-      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
+      "linear": {"size":"12 mm","kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
     },
     "frames": [{"name":"bore","origin":[0,0,16],"z":[0,0,1],"x":[1,0,0],"kind":"bore"}]
   },
@@ -565,7 +565,7 @@
     "build": {
       "role": "linear",
       "frames": [{"name":"bore","kind":"bore"}],
-      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
+      "linear": {"size":"16 mm","kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
     },
     "frames": [{"name":"bore","origin":[0,0,18],"z":[0,0,1],"x":[1,0,0],"kind":"bore"}]
   },
@@ -583,7 +583,7 @@
     "build": {
       "role": "linear",
       "frames": [{"name":"bore","kind":"bore"}],
-      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
+      "linear": {"size":"20 mm","kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
     },
     "frames": [{"name":"bore","origin":[0,0,22.5],"z":[0,0,1],"x":[1,0,0],"kind":"bore"}]
   },
@@ -601,7 +601,7 @@
     "build": {
       "role": "linear",
       "frames": [{"name":"bore","kind":"bore"}],
-      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
+      "linear": {"size":"25 mm","kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
     },
     "frames": [{"name":"bore","origin":[0,0,29],"z":[0,0,1],"x":[1,0,0],"kind":"bore"}]
   },
@@ -856,7 +856,7 @@
     "build": {
       "role": "linear",
       "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
-      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
+      "linear": {"size":"8 mm","kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
     },
     "frames": [
       {"name":"bore","origin":[0,0,15],"z":[0,0,1],"x":[1,0,0],"kind":"bore"},
@@ -877,7 +877,7 @@
     "build": {
       "role": "linear",
       "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
-      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
+      "linear": {"size":"10 mm","kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
     },
     "frames": [
       {"name":"bore","origin":[0,0,17.5],"z":[0,0,1],"x":[1,0,0],"kind":"bore"},
@@ -898,7 +898,7 @@
     "build": {
       "role": "linear",
       "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
-      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
+      "linear": {"size":"12 mm","kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
     },
     "frames": [
       {"name":"bore","origin":[0,0,18],"z":[0,0,1],"x":[1,0,0],"kind":"bore"},
@@ -919,7 +919,7 @@
     "build": {
       "role": "linear",
       "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
-      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
+      "linear": {"size":"16 mm","kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
     },
     "frames": [
       {"name":"bore","origin":[0,0,22],"z":[0,0,1],"x":[1,0,0],"kind":"bore"},
@@ -940,7 +940,7 @@
     "build": {
       "role": "linear",
       "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
-      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
+      "linear": {"size":"20 mm","kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"slider","axis":"z"}}
     },
     "frames": [
       {"name":"bore","origin":[0,0,25],"z":[0,0,1],"x":[1,0,0],"kind":"bore"},
@@ -961,7 +961,7 @@
     "build": {
       "role": "linear",
       "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
-      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"rigid"}}
+      "linear": {"size":"8 mm","kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"rigid"}}
     },
     "frames": [
       {"name":"bore","origin":[0,5,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"},
@@ -982,7 +982,7 @@
     "build": {
       "role": "linear",
       "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
-      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"rigid"}}
+      "linear": {"size":"10 mm","kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"rigid"}}
     },
     "frames": [
       {"name":"bore","origin":[0,5,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"},
@@ -1003,7 +1003,7 @@
     "build": {
       "role": "linear",
       "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
-      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"rigid"}}
+      "linear": {"size":"12 mm","kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"rigid"}}
     },
     "frames": [
       {"name":"bore","origin":[0,6.4,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"},
@@ -1024,7 +1024,7 @@
     "build": {
       "role": "linear",
       "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
-      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"rigid"}}
+      "linear": {"size":"16 mm","kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"rigid"}}
     },
     "frames": [
       {"name":"bore","origin":[0,8,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"},
@@ -1045,7 +1045,7 @@
     "build": {
       "role": "linear",
       "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
-      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"rigid"}}
+      "linear": {"size":"25 mm","kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"rigid"}}
     },
     "frames": [
       {"name":"bore","origin":[0,12.35,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"},
@@ -1066,7 +1066,7 @@
     "build": {
       "role": "linear",
       "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
-      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"rigid"}}
+      "linear": {"size":"30 mm","kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"rigid"}}
     },
     "frames": [
       {"name":"bore","origin":[0,15,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"},
@@ -1087,7 +1087,7 @@
     "build": {
       "role": "linear",
       "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
-      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"rigid"}}
+      "linear": {"size":"40 mm","kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"rigid"}}
     },
     "frames": [
       {"name":"bore","origin":[0,20,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"},
@@ -1108,7 +1108,7 @@
     "build": {
       "role": "linear",
       "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
-      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"rigid"}}
+      "linear": {"size":"8 mm","kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"rigid"}}
     },
     "frames": [
       {"name":"bore","origin":[0,20,7],"z":[0,0,1],"x":[1,0,0],"kind":"bore"},
@@ -1129,7 +1129,7 @@
     "build": {
       "role": "linear",
       "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
-      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"rigid"}}
+      "linear": {"size":"10 mm","kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"rigid"}}
     },
     "frames": [
       {"name":"bore","origin":[0,20,7],"z":[0,0,1],"x":[1,0,0],"kind":"bore"},
@@ -1150,7 +1150,7 @@
     "build": {
       "role": "linear",
       "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
-      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"rigid"}}
+      "linear": {"size":"12 mm","kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"rigid"}}
     },
     "frames": [
       {"name":"bore","origin":[0,23,7],"z":[0,0,1],"x":[1,0,0],"kind":"bore"},
@@ -1171,7 +1171,7 @@
     "build": {
       "role": "linear",
       "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
-      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"rigid"}}
+      "linear": {"size":"16 mm","kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"rigid"}}
     },
     "frames": [
       {"name":"bore","origin":[0,27,8],"z":[0,0,1],"x":[1,0,0],"kind":"bore"},
@@ -1192,7 +1192,7 @@
     "build": {
       "role": "linear",
       "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
-      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"rigid"}}
+      "linear": {"size":"25 mm","kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"rigid"}}
     },
     "frames": [
       {"name":"bore","origin":[0,35,12],"z":[0,0,1],"x":[1,0,0],"kind":"bore"},
@@ -1213,7 +1213,7 @@
     "build": {
       "role": "linear",
       "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
-      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"rigid"}}
+      "linear": {"size":"30 mm","kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"rigid"}}
     },
     "frames": [
       {"name":"bore","origin":[0,42,14],"z":[0,0,1],"x":[1,0,0],"kind":"bore"},
@@ -1234,7 +1234,7 @@
     "build": {
       "role": "linear",
       "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
-      "linear": {"kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"rigid"}}
+      "linear": {"size":"40 mm","kind":"bearing","mate":{"frame":"bore","on":"shaft","joint":"rigid"}}
     },
     "frames": [
       {"name":"bore","origin":[0,50,18],"z":[0,0,1],"x":[1,0,0],"kind":"bore"},

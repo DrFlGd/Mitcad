@@ -4,7 +4,7 @@
 # check-all sources: core/model/src/build core/model/src/api core/vcs/src/library tools/cli
 # The BUILD tab (mitcad#375) through the real UI, with a small library of
 # synthetic BUILD parts made here (mitcad-cli: a 20 x 20 profile of I-type
-# slot 5, a corner block, a panel, a rail and a carriage; no supplier's
+# slot 5, a corner block, a panel, a rail, a carriage and a slider; no supplier's
 # files), fetched from a local git repository:
 #   1. The BUILD tab beside SOLID, its groups.
 #   2. A new design, Part1 active (mitcad#394): Profile adds to the root
@@ -23,7 +23,8 @@
 #      mitcad#444; the Tilt row only on a side); Close shows the planes
 #      again.
 #      The same panel in the Floating chrome (Placement's icon buttons once
-#      a part is there, mitcad#427).
+#      a part is there, mitcad#427; a Shift + click on a side places the
+#      next one at once, mitcad#451).
 #   3. Profile on a design with only its root: the first profile on the
 #      XY plane (typed length); the mouse on its side previews a part
 #      there before the click (mitcad#431); two on its side flush with its ends by
@@ -36,8 +37,10 @@
 #   4. Connector at a junction (shown on the hover, the chosen one
 #      always), from the fitting connectors, previewed in place.
 #   5. Panel in the frame from an inner face.
-#   6. Linear Part: a rail on the first profile, a carriage on the rail
-#      (each chosen in the part picker from the Part tile);
+#   6. Linear Part: a rail on the first profile, a carriage on the rail,
+#      a slider on two sides of a profile, each on the side
+#      picked (its hover previewed there; mitcad#448) (each chosen in the
+#      part picker from the Part tile);
 #      Ends: an end of the third profile mitred and bored (end machining).
 #   7. Save, reopen: the parts are there (their sources in the design);
 #      Cut List: its rows (one with a 45 degree end), Copy as CSV, Save as
@@ -50,6 +53,15 @@
 #      with the 30 profile and opens the picker filtered to its system,
 #      Favourites has the starred profile, In this design lists it after
 #      its placement.
+#   9. The part a command starts with (mitcad#452), with a second 30
+#      profile of the same system in the library's next version, starred
+#      too: a new design starts with the first favourite (the picker's
+#      first tile), the design that placed the other one with that one, a
+#      new design again with the first favourite, which the picker shows.
+#  10. Shift + click places at once (mitcad#451): on the XY plane the first
+#      profile without Place, on its side the next one; a plain click only
+#      previews; a Shift + click whose placement fails makes nothing and
+#      shows the reason.
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
 # Usage: tools/ui-build-test.sh
@@ -132,6 +144,11 @@ design() { # design FILE: the script on stdin saved as a design
 { block 30 20 20
   frame rail "[15, 10, 0]" "[0, 0, -1]" "[1, 0, 0]"
   printf '  {"expect": {"bodies": 1}}\n]\n'; } | design "$LIB/linear/carriage-test.mitcad"
+# A slider that slides in a slot (mitcad#448): its frame on its underside.
+{ block 20 10 5
+  frame slot "[10, 5, 0]" "[0, 0, -1]" "[1, 0, 0]"
+  frame top "[10, 5, 5]" "[0, 0, 1]" "[1, 0, 0]"
+  printf '  {"expect": {"bodies": 1}}\n]\n'; } | design "$LIB/linear/slider-test.mitcad"
 
 SYSTEM='{"type": "I", "slot": 5, "grid": 20}'
 cat > "$LIB/mitcad-library.json" <<EOF
@@ -172,7 +189,12 @@ cat > "$LIB/mitcad-library.json" <<EOF
     {"id": "carriage-test", "path": "linear/carriage-test.mitcad", "name": "Carriage 15 test", "category": "linear",
      "supplier": "Test supplier", "part_number": "C15-T",
      "build": {"role": "linear", "frames": [{"name": "rail", "kind": "rail"}],
-       "linear": {"kind": "carriage", "mate": {"frame": "rail", "on": "rail", "joint": "slider", "axis": "x"}}}}
+       "linear": {"kind": "carriage", "mate": {"frame": "rail", "on": "rail", "joint": "slider", "axis": "x"}}}},
+    {"id": "slider-test", "path": "linear/slider-test.mitcad", "name": "Slider 5 test", "category": "linear",
+     "supplier": "Test supplier", "part_number": "S5-T",
+     "build": {"role": "linear", "systems": [$SYSTEM],
+       "frames": [{"name": "slot", "kind": "slot"}, {"name": "top", "kind": "face"}],
+       "linear": {"kind": "carriage", "mate": {"frame": "slot", "on": "slot", "joint": "slider", "axis": "x"}}}}
   ]
 }
 EOF
@@ -200,6 +222,18 @@ faces_of() {
     sed -n 's/^Pick face [^/]*\/\(.*\) at [0-9]*,[0-9]*$/\1/p' | grep -F -- "$2"
 }
 pick_face() { ui_click_pick "$1/$2 at"; }
+# shift_click X Y: a Shift + left click there (mitcad#451: the pick and
+# Place in one); shift_pick_face BODY FACE likewise on a face.
+shift_click() { xdotool mousemove "$1" "$2" keydown shift click 1 keyup shift; }
+shift_pick_face() { shift_click $(ui_pick_at "$1/$2 at"); }
+# no_placement DESCRIPTION: nothing placed since the mark, a moment later.
+no_placement() {
+  sleep 1
+  ui_sync
+  ! tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -q "^Placed " ||
+    ui_fail "$1: $(tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep "^Placed " | head -1)"
+  echo "ok   $1"
+}
 # refresh_picks COMMAND: the view fitted to the parts, and the places a
 # click picks logged again (the panel's pick input activated again).
 refresh_picks() {
@@ -515,6 +549,16 @@ ui_step "Place without a pick (Enter)"     ui_key Return
 ui_expect_new "Placed Profile 20 test as " "placed at the origin by Enter" 30
 no_policy_message
 expect_row place=side shown "Placement's icon buttons in a floating card (no More, mitcad#427)"
+B2B=$(placed_body)
+[ -n "$B2B" ] || ui_fail "no body of the profile placed in the floating card"
+refresh_picks "Profile"
+SIDE2B=$(faces_of "$B2B" "$SIDE" | head -1)
+[ -n "$SIDE2B" ] || ui_fail "no side of the profile ($B2B) to pick in the floating card"
+ui_mark
+ui_step "Shift+click on its side"          shift_pick_face "$B2B" "$SIDE2B"
+ui_expect_new "Profile Place On: Shift+click places at once" "a Shift+click in the floating chrome (mitcad#451)"
+ui_expect_new "Placed Profile 20 test as " "placed on the side without Place" 30
+ui_expect_new "Applied Profile (2)" "the floating card stays for the next one"
 ui_step "Close (Escape)"                   ui_key Escape
 ui_stop_app
 
@@ -653,6 +697,7 @@ ui_expect_new "Cursor box Profile length: " "the auto length in the box at the c
 ui_expect_new "(bound, auto: to the face to " "bound to the third profile's face"
 ui_step "Place (Enter)"                    ui_key Return
 ui_expect_new "Placed Profile 20 test as " "the fourth profile placed, bound" 30
+B4=$(placed_body)
 ui_expect_new "length bound, auto: to the face" "its length is bound"
 ui_mark
 ui_step "Close (Escape)"                   ui_key Escape
@@ -696,10 +741,10 @@ ui_step "Place (Enter)"                    ui_key Return
 ui_expect_new "Placed panel Panel test as " "the panel placed" 30
 ui_step "Close (Escape)"                   ui_key Escape
 
-echo "--- 6. Linear Part: a rail and a carriage"
+echo "--- 6. Linear Part: a rail, a carriage and a slider"
 ui_mark
 ui_step "Linear Part (command search)"     ui_command "Linear Part"
-ui_expect_new "BUILD parts linear: 2" "the rail and the carriage"
+ui_expect_new "BUILD parts linear: 3" "the rail, the carriage and the slider"
 choose_in_picker "Linear Part" "test-profiles/rail-test"
 ui_step "a typed length of 200"            ui_type_in "Panel Linear Part input length" "200"
 # Another side of the first profile than the frame's, else that one.
@@ -721,6 +766,40 @@ ui_step "the rail's $RAILTOP"              pick_face "$BRAIL" "$RAILTOP"
 ui_expect_new "Inspect Linear Part: " "the carriage's preview"
 ui_step "Place (Enter)"                    ui_key Return
 ui_expect_new "Placed Carriage 15 test as " "the carriage placed on the rail" 30
+# A slider on two sides of a profile (mitcad#448): each on the side
+# picked, as a profile on a side, not on the profile's first frame.
+choose_in_picker "Linear Part" "test-profiles/slider-test"
+refresh_picks "Linear Part"
+# Two sides of a profile that a click can reach: the first profile's sides
+# are mostly covered (the panel, the rail and the carriage), so of the
+# profiles with two side pick places, the rail's last.
+BSLIDER=""
+for body in "$B2" "$B3" "$B4" "$B1"; do
+  [ -n "$body" ] || continue
+  SLIDERFACES=$(faces_of "$body" "$SIDE")
+  if [ "$(printf '%s\n' "$SLIDERFACES" | grep -c .)" -ge 2 ]; then
+    BSLIDER=$body
+    break
+  fi
+done
+[ -n "$BSLIDER" ] || ui_fail "no profile ($B1, $B2, $B3, $B4) with two sides to pick"
+SLIDE1=$(printf '%s\n' "$SLIDERFACES" | sed -n 1p)
+SLIDE2=$(printf '%s\n' "$SLIDERFACES" | sed -n 2p)
+ui_mark
+ui_step "the mouse on $BSLIDER's $SLIDE1"  xdotool mousemove $(ui_pick_at "$BSLIDER/$SLIDE1 at")
+ui_expect_new "BUILD hover on " "the hover on the side"
+ui_expect_new "Inspect Linear Part: place side" "the hover previews the slider on the side"
+ui_mark
+ui_step "$BSLIDER's $SLIDE1"               pick_face "$BSLIDER" "$SLIDE1"
+ui_expect_new "Inspect Linear Part: place side" "the slider on the side picked (On the side)"
+ui_step "Place (Enter)"                    ui_key Return
+ui_expect_new "Placed Slider 5 test as " "the first slider placed" 30
+refresh_picks "Linear Part"
+ui_mark
+ui_step "$BSLIDER's $SLIDE2"               pick_face "$BSLIDER" "$SLIDE2"
+ui_expect_new "Inspect Linear Part: place side" "the slider on the other side picked (On the side)"
+ui_step "Place (Enter)"                    ui_key Return
+ui_expect_new "Placed Slider 5 test as " "the second slider placed" 30
 ui_step "Close (Escape)"                   ui_key Escape
 
 echo "--- 6b. Ends: an end of the third profile mitred and bored"
@@ -915,6 +994,135 @@ ui_focus_main
 ui_mark
 ui_step "Close (Escape)"                   ui_key Escape
 ui_expect_new "Part picker closed with build.profile" "the picker closes with Profile"
+
+ui_stop_app
+
+echo "--- 9. A new design starts with the first favourite (mitcad#452)"
+# A second profile of the 30 system in the library's next version, starred
+# beside the 30 profile starred in 8: two favourites of one system.
+cp "$LIB/profiles/p30-test.mitcad" "$LIB/profiles/p30h-test.mitcad"
+sed 's/p30-test/p30h-test/g; s/Profile 30 test/Profile 30 heavy test/g; s/P30-T/P30H-T/' \
+  "$WORK/p30-entry.json" > "$WORK/p30h-entry.json"
+awk 'NR == FNR { entry = entry $0 "\n"; next }
+     /"id": "bracket-20-test"/ && !done { printf "%s", entry; done = 1 }
+     { print }' "$WORK/p30h-entry.json" "$LIB/mitcad-library.json" |
+  sed 's/"library_version": "1.1.0"/"library_version": "1.2.0"/' > "$WORK/manifest-1.2.json"
+mv "$WORK/manifest-1.2.json" "$LIB/mitcad-library.json"
+g "$LIB" add -A
+g "$LIB" commit -q -m "A heavy 30 profile"
+g "$LIB" tag v1.2.0
+"$CLI" library fetch "$LIB" > /dev/null || ui_fail "library fetch of v1.2.0"
+# part_name ID: the test library's name of a 30 profile.
+part_name() {
+  case $1 in
+    p30-test) echo "Profile 30 test" ;;
+    p30h-test) echo "Profile 30 heavy test" ;;
+    *) ui_fail "no 30 profile '$1'" ;;
+  esac
+}
+# A new design (no file); the stars of 8 are kept in the settings.
+ui_start_app --no-native-dialogs
+ui_mark
+ui_step "Profile (command search)"         ui_command "Profile"
+ui_expect_new "BUILD parts profile: 3 (0 in the design)" "the three profiles of the library"
+ui_expect_new "BUILD profile starts with test-profiles/p30-test: the first favourite" \
+  "a new design starts with the starred profile, the only favourite"
+ui_expect_new "Panel Profile tile part: Profile 30 test" "its tile"
+ui_mark
+ui_step "the part picker (the Part tile)"  ui_click_logged "Panel Profile input part"
+ui_expect_new "Part picker opened: 3 parts for build.profile" "the picker with the three profiles"
+ui_expect_new "Part picker shows the part chosen: test-profiles/p30-test" "the picker shows the part chosen"
+ui_expect_new "Part picker tile test-profiles/p30h-test at " "the heavy profile's tile"
+ui_focus_dialog '^Part Picker - Profile$'
+ui_mark
+ui_step "the heavy profile"                ui_click_logged "Part picker tile test-profiles/p30h-test"
+ui_expect_new "Part picker chose test-profiles/p30h-test" "chosen in the picker"
+ui_mark
+ui_step "star it (Star)"                   ui_click_logged "Part picker place star"
+ui_expect_new "Part picker star p30h-test on" "a second favourite"
+ui_expect_new "Part picker group All parts: 3 parts, first test-profiles/p30" "the favourites first"
+# The first favourite in the picker's order (the catalog's among the
+# starred), and the other one.
+FIRST=$(tail -n +$((UI_MARK + 1)) "$UI_LOG" |
+  sed -n 's/^Part picker group All parts: 3 parts, first test-profiles\/\(p30[a-z]*-test\)$/\1/p' | tail -1)
+case $FIRST in
+  p30-test) SECOND=p30h-test ;;
+  p30h-test) SECOND=p30-test ;;
+  *) ui_fail "the picker's first tile is no 30 profile ('$FIRST')" ;;
+esac
+echo "ok   the first favourite is $FIRST, the second $SECOND"
+ui_step "close the picker (Escape)"        ui_key Escape
+ui_focus_main
+ui_step "Close (Escape)"                   ui_key Escape
+ui_mark
+ui_step "Profile again"                    ui_command "Profile"
+ui_expect_new "BUILD profile starts with test-profiles/$FIRST: the first favourite" \
+  "the design has no profile yet: the first favourite of the system"
+choose_in_picker "Profile" "test-profiles/$SECOND"
+ui_mark
+ui_step "Place without a pick (Enter)"     ui_key Return
+ui_expect_new "Placed $(part_name "$SECOND") as " "the second favourite placed" 30
+ui_step "Close (Escape)"                   ui_key Escape
+ui_mark
+ui_step "Profile in the same design"       ui_command "Profile"
+ui_expect_new "BUILD profile starts with test-profiles/$SECOND: " "the part placed last in this design"
+ui_expect_new "Panel Profile tile part: $(part_name "$SECOND")" "its tile"
+ui_step "Close (Escape)"                   ui_key Escape
+ui_mark
+ui_step "new design (Ctrl+N)"              ui_key ctrl+n
+ui_focus_dialog '^Mitcad$'
+ui_step "don't save (D)"                   ui_key d
+ui_focus_main
+ui_expect_new "New document" "a new design"
+ui_mark
+ui_step "Profile in the new design"        ui_command "Profile"
+ui_expect_new "BUILD profile starts with test-profiles/$FIRST: the first favourite" \
+  "the first favourite again, not the part of the earlier design"
+ui_expect_new "Panel Profile tile part: $(part_name "$FIRST")" "its tile"
+ui_expect_new "View hint Profile: Click a plane or a face, or press Enter; Shift+click places at once" \
+  "the view's hint names Shift+click (mitcad#451)"
+ui_mark
+ui_step "the part picker (the Part tile)"  ui_click_logged "Panel Profile input part"
+ui_expect_new "Part picker shows the part chosen: test-profiles/$FIRST" "the picker shows and highlights it"
+ui_focus_dialog '^Part Picker - Profile$'
+ui_step "close the picker (Escape)"        ui_key Escape
+ui_focus_main
+
+echo "--- 10. Shift + click places at once (mitcad#451)"
+ui_mark
+ui_step "Shift+click on the XY plane"      shift_click $(ui_logged_at "Datum xy")
+ui_expect_new "Profile Place On: Shift+click places at once" "a Shift+click on the plane"
+ui_expect_new "Placed $(part_name "$FIRST") as " "the first profile placed without Place" 30
+ui_expect_new "Applied Profile (1)" "the panel stays for the next one"
+B10=$(placed_body)
+[ -n "$B10" ] || ui_fail "no body of the profile placed by Shift+click"
+refresh_picks "Profile"
+SIDE10=$(faces_of "$B10" "$SIDE" | head -1)
+[ -n "$SIDE10" ] || ui_fail "no side of the profile ($B10) to pick"
+ui_mark
+ui_step "a plain click on its side"        pick_face "$B10" "$SIDE10"
+ui_expect_new "Inspect Profile: place side" "a plain click previews on the side"
+no_placement "a plain click only previews"
+ui_mark
+ui_step "Shift+click on its side"          shift_pick_face "$B10" "$SIDE10"
+ui_expect_new "Profile Place On: Shift+click places at once" "a second Shift+click"
+ui_expect_new "Placed $(part_name "$FIRST") as " "the next profile placed on the side without Place" 30
+ui_expect_new "Applied Profile (2)" "the panel stays for the next one"
+# A placement the model refuses: a length over the part's 3000 mm.
+ui_step "a typed length of 5000"           ui_type_in "Panel Profile input length" "5000"
+refresh_picks "Profile"
+SIDE10=$(faces_of "$B10" "$SIDE" | head -1)
+[ -n "$SIDE10" ] || ui_fail "no side of the profile ($B10) to pick again"
+ui_mark
+ui_step "Shift+click on its side again"    shift_pick_face "$B10" "$SIDE10"
+ui_expect_new "Profile Place On: Shift+click places at once" "a Shift+click that cannot place"
+ui_expect_new "Profile: OK refused" "the placement refused"
+ui_expect_new "Inspect Profile: failed: " "the panel shows why"
+ui_expect_new "longer than the part's longest, 3000 mm" "the reason: the length is over the part's longest"
+no_placement "a failed Shift+click makes nothing"
+ui_mark
+ui_step "Close (Escape)"                   ui_key Escape
+ui_expect_new "Closed Profile after 2" "Close keeps the two"
 
 ui_stop_app
 ui_finish "the BUILD tab"

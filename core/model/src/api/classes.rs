@@ -183,6 +183,18 @@ const COMMANDS: &[(&str, ApiClass)] = &[
     ("build_panel", Remote),
     ("build_edit", Model),
     ("build_remove", Model),
+    // Motion studies and contact sets (mitcad#454).
+    ("add_motion_study", Model),
+    ("edit_motion_study", Model),
+    ("delete_motion_study", Model),
+    ("set_study_key", Model),
+    ("remove_study_key", Model),
+    ("play_study", Model),
+    ("add_contact_set", Model),
+    ("edit_contact_set", Model),
+    ("delete_contact_set", Model),
+    // Motion links between joints (mitcad#466).
+    ("add_motion_link", Model),
 ];
 
 /// Every query (its `query`) with its class. A `cache` query with `disk`
@@ -260,6 +272,13 @@ const QUERIES: &[(&str, ApiClass)] = &[
     ("build_host", Model),
     // The library parts the design uses (mitcad#418).
     ("library_usage", Model),
+    // Motion studies and contact sets (mitcad#454).
+    ("motion_studies", Model),
+    ("study_values", Model),
+    ("contact_sets", Model),
+    ("contact_check", Model),
+    // Motion links between joints (mitcad#466).
+    ("motion_link_offset", Model),
 ];
 
 fn class_in(table: &[(&str, ApiClass)], name: &str) -> Option<ApiClass> {
@@ -413,6 +432,7 @@ mod tests {
             &crate::api::move_features::COMMANDS[..],
             &crate::api::policy::COMMANDS[..],
             &crate::api::build::COMMANDS[..],
+            &crate::api::motion::COMMANDS[..],
         ] {
             names.extend(list.iter().map(|name| (*name).to_owned()));
         }

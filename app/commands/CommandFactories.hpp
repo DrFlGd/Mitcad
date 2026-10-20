@@ -71,5 +71,11 @@ CommandDef rigidGroupCommand(const CommandContext& context);
 CommandDef driveJointCommand(const CommandContext& context);
 // Assembly constraints (mitcad#148).
 CommandDef constraintCommand(const CommandContext& context);
+// Contact sets (mitcad#454).
+CommandDef contactSetCommand(const CommandContext& context);
+// Motion links (mitcad#466).
+CommandDef motionLinkCommand(const CommandContext& context);
+// EmbossCommands.cpp (mitcad#458)
+CommandDef embossCommand(const CommandContext& context);
 
 } // namespace mitcad::cmd

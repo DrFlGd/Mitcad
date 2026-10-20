@@ -1,0 +1,17 @@
+{
+  "comment": "Worked out by hand. Five squares of 20 patched on the planes x = 0, x = 20, y = 0, y = 20 and z = 0 and stitched into an open box (the bottom's name kept); its opening at z = 20, picked at its edges' middles, patched by the plane and stitched on: a closed cube, solid, 20^3 = 8000. A 20 x 10 sheet at z = 0 (x 30..50, y 0..10, no volume) thickened 2 up (400) as a new body, 3 about itself (z -1.5..1.5, 600) as another, and 1 down (z -1..0) joined to the first: 600, z -1..2. The sheet stays.",
+  "body_count": 4,
+  "total": {"volume_mm3": 9200},
+  "bbox": {"min": [0, 0, -1.5], "max": [50, 20, 20]},
+  "bodies": [
+    {"name": "Floor", "volume_mm3": 8000, "bbox": {"min": [0, 0, 0], "max": [20, 20, 20]}},
+    {"name": "Sheet", "bbox": {"min": [30, 0, 0], "max": [50, 10, 0]}},
+    {"name": "Plate", "volume_mm3": 600, "bbox": {"min": [30, 0, -1], "max": [50, 10, 2]}},
+    {"name": "Slab", "volume_mm3": 600, "bbox": {"min": [30, 0, -1.5], "max": [50, 10, 1.5]}}
+  ],
+  "timeline": [{"name": "Bottom"}, {"name": "Floor"}, {"name": "Left"}, {"name": "WallL"}, {"name": "Right"},
+               {"name": "WallR"}, {"name": "Front"}, {"name": "WallF"}, {"name": "Back"}, {"name": "WallB"},
+               {"name": "Tray"}, {"name": "Lid"}, {"name": "Box"}, {"name": "Plate sketch"}, {"name": "Sheet"},
+               {"name": "Plate"}, {"name": "Slab"}, {"name": "Rib"}],
+  "parametric": 18
+}

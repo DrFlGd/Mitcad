@@ -232,11 +232,7 @@ impl CopyNames<'_> {
                     same.edges = kept;
                     same.faces = self.faces(&set.faces);
                     same.reference_face = set.reference_face.as_ref().map(|f| self.face(f));
-                    if let FilletSizeDef::Variable {
-                        start_vertex: Some(vertex),
-                        ..
-                    } = &mut same.size
-                    {
+                    if let Some(vertex) = same.size.start_vertex_mut() {
                         *vertex = self.vertex(vertex);
                     }
                     if !swapped.is_empty() {

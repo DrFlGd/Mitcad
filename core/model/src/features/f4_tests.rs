@@ -1535,6 +1535,44 @@ fn path_patterns_follow_sketch_curves() {
 }
 
 #[test]
+fn path_patterns_follow_chains_of_sketch_curves() {
+    // mitcad#464: along c1 from (0, 0) to (60, 0) and on up c2 to (60, 40),
+    // 100 long; elements 35 apart from the start: at (35, 0) and (60, 10).
+    let mut b = block();
+    let chain = |along: bool| {
+        json!({"type": "path_pattern", "objects": {"type": "bodies", "bodies": ["F2.b0"]},
+               "path": {"sketch": "F1", "curves": ["c1", "c2"]}, "quantity": 3, "distance": 35,
+               "distance_type": "spacing", "along_path": along})
+    };
+    let moved = add(&mut b.doc, chain(false));
+    assert_eq!(status(&b.doc, moved), FeatureStatus::Ok);
+    assert_bounds(&b.doc, "F3.b0", [35.0, 0.0, 0.0], [95.0, 40.0, 20.0]);
+    assert_bounds(&b.doc, "F3.b1", [60.0, 10.0, 0.0], [120.0, 50.0, 20.0]);
+    // Turned with the path: the copy on c2 a quarter turn about the start,
+    // then moved there.
+    let turned = add(&mut b.doc, chain(true));
+    assert_eq!(status(&b.doc, turned), FeatureStatus::Ok);
+    assert_bounds(&b.doc, "F4.b0", [35.0, 0.0, 0.0], [95.0, 40.0, 20.0]);
+    assert_bounds(&b.doc, "F4.b1", [20.0, 10.0, 0.0], [60.0, 70.0, 20.0]);
+    // From the far end: flipped, the elements go back from the start.
+    let mut back = chain(false);
+    back["start"] = json!(1.0);
+    back["flip"] = json!(true);
+    let from_end = add(&mut b.doc, back);
+    assert_eq!(status(&b.doc, from_end), FeatureStatus::Ok);
+    // At (60, 5) and (30, 0), moved from (60, 40).
+    assert_bounds(&b.doc, "F5.b0", [0.0, -35.0, 0.0], [60.0, 5.0, 20.0]);
+    assert_bounds(&b.doc, "F5.b1", [-30.0, -40.0, 0.0], [30.0, 0.0, 20.0]);
+    // The curves must join.
+    let mut apart = chain(false);
+    apart["path"] = json!({"sketch": "F1", "curves": ["c1", "c3"]});
+    let failed = add(&mut b.doc, apart);
+    assert!(
+        matches!(status(&b.doc, failed), FeatureStatus::Failed(m) if m.contains("not connected"))
+    );
+}
+
+#[test]
 fn files_keep_the_definitions() {
     let mut b = block();
     let (cut, _) = hole(&mut b.doc);

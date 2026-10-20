@@ -1,0 +1,81 @@
+{
+  "format": "solidcraft/27",
+  "name": "Thin extrudes",
+  "units": "mm",
+  "params": [{"name": "wall", "expr": "2 mm", "unit": "mm"}],
+  "features": [
+    {
+      "id": 1, "name": "Corner", "type": "sketch",
+      "plane": {"type": "origin", "name": "XY"},
+      "sketch": {
+        "points": [
+          {"id": "origin", "pos": [0.0, 0.0], "fixed": true},
+          {"id": "p1", "pos": [0.0, 0.0], "fixed": true},
+          {"id": "p2", "pos": [40.0, 0.0], "fixed": true},
+          {"id": "p3", "pos": [40.0, 30.0], "fixed": true}
+        ],
+        "curves": [
+          {"id": "l1", "type": "line", "a": 1, "b": 2},
+          {"id": "l2", "type": "line", "a": 2, "b": 3}
+        ],
+        "constraints": []
+      }
+    },
+    {
+      "id": 2, "name": "Thin1", "type": "extrude", "body_names": ["Bracket"],
+      "sketch": 1,
+      "extent": {"distance": "10", "direction": "positive"},
+      "thin": {"curves": ["l2", "l1"], "thickness": "wall", "side": "outside"},
+      "operation": "new_body"
+    },
+    {
+      "id": 3, "name": "Bend", "type": "sketch",
+      "plane": {"type": "origin", "name": "XY"},
+      "sketch": {
+        "points": [
+          {"id": "origin", "pos": [0.0, 0.0], "fixed": true},
+          {"id": "c", "pos": [100.0, 0.0], "fixed": true},
+          {"id": "a", "pos": [110.0, 0.0], "fixed": true},
+          {"id": "b", "pos": [90.0, 0.0], "fixed": true}
+        ],
+        "curves": [{"id": "a1", "type": "arc", "c": 1, "a": 2, "b": 3}],
+        "constraints": []
+      }
+    },
+    {
+      "id": 4, "name": "Thin2", "type": "extrude", "body_names": ["Half ring"],
+      "sketch": 3,
+      "extent": {"distance": "10", "direction": "positive"},
+      "thin": {"curves": ["a1"], "thickness": "wall"},
+      "operation": "new_body"
+    },
+    {
+      "id": 5, "name": "Outline", "type": "sketch",
+      "plane": {"type": "origin", "name": "XY"},
+      "sketch": {
+        "points": [
+          {"id": "origin", "pos": [0.0, 0.0], "fixed": true},
+          {"id": "p1", "pos": [200.0, 0.0], "fixed": true},
+          {"id": "p2", "pos": [240.0, 0.0], "fixed": true},
+          {"id": "p3", "pos": [240.0, 20.0], "fixed": true},
+          {"id": "p4", "pos": [200.0, 20.0], "fixed": true}
+        ],
+        "curves": [
+          {"id": "l1", "type": "line", "a": 1, "b": 2},
+          {"id": "l2", "type": "line", "a": 2, "b": 3},
+          {"id": "l3", "type": "line", "a": 3, "b": 4},
+          {"id": "l4", "type": "line", "a": 4, "b": 1}
+        ],
+        "constraints": []
+      }
+    },
+    {
+      "id": 6, "name": "Thin3", "type": "extrude", "body_names": ["Frame"],
+      "sketch": 5,
+      "extent": {"distance": "10", "direction": "positive"},
+      "thin": {"curves": ["l1", "l2", "l3", "l4"], "thickness": "1 mm", "side": "two_sides", "thickness2": "wall"},
+      "operation": "new_body"
+    }
+  ],
+  "next_id": 7
+}

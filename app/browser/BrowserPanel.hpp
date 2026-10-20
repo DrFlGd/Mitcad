@@ -51,6 +51,14 @@ struct BrowserNode {
     // light bulb shows it flat in place of the folded body).
     SheetRules,
     FlatPattern,
+    // Motion studies and contact sets (mitcad#454): the root's folders and
+    // their rows (uid: the name).
+    MotionStudies,
+    MotionStudy,
+    ContactSets,
+    ContactSet,
+    // A component's motion links (mitcad#466); a link's row is a Joint row.
+    MotionLinks,
   };
 
   Type type = Type::None;
@@ -69,7 +77,8 @@ struct BrowserNode {
   bool isValid() const { return type != Type::None; }
   bool isFolder() const {
     return type == Type::Bodies || type == Type::Sketches || type == Type::Construction ||
-           type == Type::Origin || type == Type::Analyses || type == Type::Joints;
+           type == Type::Origin || type == Type::Analyses || type == Type::Joints ||
+           type == Type::MotionLinks;
   }
   // The selection item the row stands for; invalid for folders and settings.
   SelectionItem item() const;

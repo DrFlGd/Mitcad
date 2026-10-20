@@ -1,0 +1,38 @@
+{
+  "format": "solidcraft/27",
+  "name": "Contour flange with a perforation",
+  "units": "mm",
+  "params": [{"name": "w", "expr": "50 mm", "unit": "mm"}],
+  "sheet": {
+    "rules": [{"name": "Plate", "thickness": "2 mm", "k_factor": "0.3", "bend_radius": "3 mm"}],
+    "active": "Plate"
+  },
+  "features": [
+    {
+      "id": 1, "name": "Chain", "type": "sketch",
+      "plane": {"type": "origin", "name": "XY"},
+      "sketch": {
+        "points": [
+          {"id": "origin", "pos": [0.0, 0.0], "fixed": true},
+          {"id": "p1", "pos": [0.0, 0.0], "fixed": true},
+          {"id": "p2", "pos": [60.0, 0.0], "fixed": true},
+          {"id": "p3", "pos": [60.0, 40.0], "fixed": true}
+        ],
+        "curves": [
+          {"id": "l1", "type": "line", "a": 1, "b": 2},
+          {"id": "l2", "type": "line", "a": 2, "b": 3}
+        ],
+        "constraints": []
+      }
+    },
+    {
+      "id": 2, "name": "Contour", "type": "sheet_contour", "param_names": ["d1"],
+      "sketch": 1, "curves": ["l1", "l2"], "distance": "w"
+    },
+    {
+      "id": 3, "name": "Holes", "type": "sheet_perforate",
+      "diameter": "5", "pitch": "10", "margin": "5", "pattern": "square"
+    }
+  ],
+  "next_id": 4
+}

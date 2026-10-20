@@ -1,0 +1,5 @@
+[
+  {"comment":"SPDX-License-Identifier: MIT. sheet_perforate.json saved and opened again (mitcad#461): t=1, 28 holes, 4700 - 87.5 pi folded and 4700 - 92.5 pi flat."},
+  {"expect":{"feature":"F4","status":"ok","bodies":1,"body":"F3.b0","volume":4425.1107613493}},
+  {"expect":{"query":{"query":"flat_pattern","body":"F3.b0"},"result":{"status":"valid","area":4409.4029007452}}}
+]

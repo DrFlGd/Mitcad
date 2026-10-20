@@ -1,0 +1,45 @@
+{
+  "format": "solidcraft/1",
+  "name": "Format 1",
+  "units": "mm",
+  "params": [],
+  "features": [
+    {
+      "id": 1, "name": "Sketch1", "suppressed": false, "type": "sketch",
+      "plane": {"type": "origin", "name": "XZ"},
+      "sketch": {
+        "points": [
+          {"id": "origin", "pos": [0.0, 0.0], "fixed": true},
+          {"id": "p1", "pos": [0.0, 0.0], "fixed": false},
+          {"id": "p2", "pos": [20.0, 0.0], "fixed": false},
+          {"id": "p3", "pos": [20.0, 10.0], "fixed": false},
+          {"id": "p4", "pos": [0.0, 10.0], "fixed": false}
+        ],
+        "curves": [
+          {"id": "l5", "type": "line", "a": 1, "b": 2, "construction": false},
+          {"id": "l6", "type": "line", "a": 2, "b": 3, "construction": false},
+          {"id": "l7", "type": "line", "a": 3, "b": 4, "construction": false},
+          {"id": "l8", "type": "line", "a": 4, "b": 1, "construction": false}
+        ],
+        "constraints": [],
+        "next_id": 9
+      }
+    },
+    {
+      "id": 2, "name": "Extrude1", "suppressed": false, "type": "extrude",
+      "sketch": 1, "profiles": {"type": "all"},
+      "extent": {"distance": "5", "direction": "positive"},
+      "operation": "new_body"
+    },
+    {
+      "id": 3, "name": "Fillet1", "suppressed": false, "type": "fillet",
+      "edges": [[10.0, 5.0, 10.0]],
+      "edge_names": ["F2:top|F2:side:l5"],
+      "radius": "1"
+    }
+  ],
+  "next_id": 4,
+  "components": [{"id": 9, "name": "Part", "parent": 0}],
+  "appearances": {"Body1": [1.0, 0.0, 0.0]},
+  "assembly": {"joints": [{"id": 20, "name": "Joint1", "flip": false}]}
+}

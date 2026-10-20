@@ -5,15 +5,31 @@
 //! joints' state and degrees of freedom at the marker, driving their
 //! motions and dragging occurrences while they hold.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::{Added, Document, ModelError, invalid};
 use crate::assembly::inverse;
+use crate::contact::{ContactHit, ContactPairs, sweep};
 use crate::datum::Vec3;
 use crate::features::{AsBuiltJointDef, FeatureDef, ValueInput};
 use crate::ids::{ComponentUid, FeatureUid, OccurrenceUid};
 use crate::joints::{DofReport, Dragged, JointResult, Motion, dof_report, drag, path_component};
 use crate::kernel::Kernel;
+
+/// The largest step (mm) of the grabbed point between two samples of a
+/// drag checked against the contact sets, and the most samples.
+const DRAG_STEP: f64 = 2.0;
+const DRAG_SAMPLES: usize = 16;
+
+/// What [`Document::drive_joint`] did.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Driven {
+    /// The parameters it created.
+    pub parameters: Vec<String>,
+    /// The contact that stopped the joint short of the values (mitcad#454)
+    /// and how far it went toward them, 0 to 1.
+    pub contact: Option<(ContactHit, f64)>,
+}
 
 impl<K: Kernel> Document<K> {
     /// What a joint or as-built joint did in the last recompute; None when
@@ -75,33 +91,66 @@ impl<K: Kernel> Document<K> {
 
     /// A joint feature's definition with its parameters by name, to edit.
     fn joint_input(&self, uid: FeatureUid) -> Result<FeatureDef<ValueInput>, ModelError> {
-        let entry = self
-            .state
-            .entry(uid)
-            .ok_or_else(|| invalid(format!("feature {uid} does not exist")))?;
-        if !matches!(
-            entry.def,
-            FeatureDef::Joint(_) | FeatureDef::AsBuiltJoint(_)
-        ) {
-            return Err(invalid(format!("{} is not a joint", entry.name)));
-        }
-        let params = &self.state.parameters;
-        Ok(entry
-            .def
-            .map_params(&mut |_, id| Ok::<_, ()>(ValueInput::Name(params.name(*id))))
-            .expect("names never fail"))
+        super::motion::joint_def(&self.state, uid)
     }
 
     /// Drives a joint's free motions: each value (mm, angles; parameters and
     /// expressions allowed) is stored as the joint's position and the
     /// motion is held there; None takes the position away (the rest value,
-    /// else free). One undo step; returns the parameters created.
+    /// else free). With contact sets (mitcad#454) the joint moves from
+    /// where it is toward the values and stops at the first contact: the
+    /// positions are then where it stopped (numbers). One undo step.
     pub fn drive_joint(
         &mut self,
         uid: FeatureUid,
         values: &BTreeMap<Motion, Option<ValueInput>>,
-    ) -> Result<Vec<String>, ModelError> {
+    ) -> Result<Driven, ModelError> {
         let mut def = self.joint_input(uid)?;
+        // A cam's follower follows the cam (mitcad#466).
+        for (motion, value) in values {
+            if value.is_none() {
+                continue;
+            }
+            for f in self.state.features.iter().filter(|f| !f.suppressed) {
+                if let FeatureDef::MotionLink(l) = &f.def
+                    && matches!(l.coupling, crate::features::Coupling::Cam { .. })
+                    && l.b.joint == uid
+                    && l.b.motion == *motion
+                {
+                    let cam = self
+                        .state
+                        .entry(l.a.joint)
+                        .map_or_else(|| l.a.joint.to_string(), |e| e.name.clone());
+                    return Err(invalid(format!(
+                        "{motion} follows the cam of {}: drive {cam} instead",
+                        f.name
+                    )));
+                }
+            }
+        }
+        // Where the given values take it.
+        let mut to = BTreeMap::new();
+        for (motion, value) in values {
+            if let Some(v) = value {
+                to.insert(*motion, self.motion_value(v, *motion)?);
+            }
+        }
+        let mut contact = None;
+        if !to.is_empty() && self.has_contact_pairs() {
+            let outcome = self.drive_to(&BTreeMap::from([(uid, to)]))?;
+            if outcome.contact.is_some() {
+                contact = outcome.contact.map(|hit| (hit, outcome.fraction));
+                let reached = outcome.values.get(&uid).cloned().unwrap_or_default();
+                let position = match &mut def {
+                    FeatureDef::Joint(j) => &mut j.position,
+                    FeatureDef::AsBuiltJoint(j) => &mut j.position,
+                    _ => unreachable!("a joint"),
+                };
+                for (motion, v) in reached {
+                    position.insert(motion, ValueInput::Number(v));
+                }
+            }
+        }
         let position = match &mut def {
             FeatureDef::Joint(j) => &mut j.position,
             FeatureDef::AsBuiltJoint(j) => &mut j.position,
@@ -109,16 +158,32 @@ impl<K: Kernel> Document<K> {
         };
         for (motion, value) in values {
             match value {
-                Some(v) => position.insert(*motion, v.clone()),
-                None => position.remove(motion),
+                Some(v) if contact.is_none() => {
+                    position.insert(*motion, v.clone());
+                }
+                Some(_) => {}
+                None => {
+                    position.remove(motion);
+                }
             };
         }
         let entry = self.state.entry(uid).expect("found");
         self.state.editable(entry.component)?;
         let name = entry.name.clone();
-        self.apply(|state| {
+        // The motions linked to the driven ones follow them (mitcad#466).
+        let driven: Vec<(FeatureUid, Motion)> = values
+            .iter()
+            .filter(|(_, v)| v.is_some())
+            .map(|(m, _)| (uid, *m))
+            .collect();
+        let parameters = self.apply(|state| {
             let created = state.edit_feature(uid, &def)?;
+            state.release_linked(&driven)?;
             Ok((format!("Drive {name}"), created))
+        })?;
+        Ok(Driven {
+            parameters,
+            contact,
         })
     }
 
@@ -141,15 +206,52 @@ impl<K: Kernel> Document<K> {
         if !grab.iter().chain(&target).all(|v| v.is_finite()) {
             return Err(invalid("the points must be finite"));
         }
-        drag(
-            &self.state.assembly,
-            &self.result.joints,
-            &self.result.placements,
-            occurrence,
-            grab,
-            target,
-        )
-        .map_err(invalid)
+        let drag_to = |t: f64| {
+            let at: Vec3 = std::array::from_fn(|i| grab[i] + (target[i] - grab[i]) * t);
+            drag(
+                &self.state.assembly,
+                &self.result.joints,
+                &self.result.placements,
+                occurrence,
+                grab,
+                at,
+            )
+            .map_err(invalid)
+        };
+        // Contact sets (mitcad#454): the drag stops where bodies touch.
+        let pairs = ContactPairs::new(&self.kernel, &self.state, &self.result);
+        if pairs.is_empty() {
+            return drag_to(1.0);
+        }
+        let failed = |e: crate::kernel::KernelError| invalid(format!("contact check: {e}"));
+        let skip: BTreeSet<usize> = pairs
+            .overlapping(&self.kernel, &self.result.placements, &BTreeSet::new())
+            .map_err(failed)?
+            .into_iter()
+            .map(|(p, _)| p)
+            .collect();
+        let distance = (0..3)
+            .map(|i| (target[i] - grab[i]).powi(2))
+            .sum::<f64>()
+            .sqrt();
+        let samples = ((distance / DRAG_STEP).ceil() as usize).clamp(1, DRAG_SAMPLES);
+        let stop = sweep(
+            samples,
+            |t| -> Result<(Dragged, Option<ContactHit>), ModelError> {
+                let dragged = drag_to(t)?;
+                let mut placements = self.result.placements.clone();
+                placements.extend(dragged.placements.iter().copied());
+                let deepest = pairs
+                    .overlapping(&self.kernel, &placements, &skip)
+                    .map_err(failed)?
+                    .into_iter()
+                    .max_by(|a, b| a.1.total_cmp(&b.1));
+                Ok((dragged, deepest.map(|(p, v)| pairs.hit(p, v))))
+            },
+        )?;
+        let mut dragged = stop.pose;
+        dragged.contact = stop.hit;
+        Ok(dragged)
     }
 
     /// Drags `occurrence` (see [`Document::joint_drag`]) and keeps the

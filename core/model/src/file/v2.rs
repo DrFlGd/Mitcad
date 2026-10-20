@@ -22,6 +22,7 @@ use crate::document::{
 use crate::expr::{EvalContext, ParamSpec, TableError, Unit, value_to_expression};
 use crate::features::{CheckContext, FeatureDef, FeatureEntry, HelixConstruction, is_false};
 use crate::ids::{BodyUid, ComponentUid, FeatureUid, OccurrenceUid};
+use crate::motion::{ContactSet, MotionStudy};
 use crate::parameters::{Parameters, default_context, slot_unit};
 use crate::policy::Policy;
 use crate::render_settings::RenderSettings;
@@ -90,6 +91,11 @@ struct FileOut<'a> {
     // The library parts BUILD placed (mitcad#375), when there are any.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     library_sources: Vec<crate::build::sources::SourceOut<'a>>,
+    // Motion studies and contact sets (mitcad#454), when there are any.
+    #[serde(skip_serializing_if = "<[MotionStudy]>::is_empty")]
+    motion_studies: &'a [MotionStudy],
+    #[serde(skip_serializing_if = "<[ContactSet]>::is_empty")]
+    contact_sets: &'a [ContactSet],
 }
 
 /// A Flat Pattern: its body and settings.
@@ -333,6 +339,8 @@ pub(super) fn save(state: &DocState) -> String {
             .iter()
             .map(crate::build::sources::SourceOut::of)
             .collect(),
+        motion_studies: &state.motion_studies,
+        contact_sets: &state.contact_sets,
     };
     let mut json =
         serde_json::to_string_pretty(&file).expect("the design file schema always serializes");
@@ -561,7 +569,7 @@ struct FeatureIn {
     shapes: Option<Value>,
 }
 
-const TOP_FIELDS: [&str; 24] = [
+const TOP_FIELDS: [&str; 26] = [
     "format",
     "version",
     "units",
@@ -593,6 +601,9 @@ const TOP_FIELDS: [&str; 24] = [
     "images",
     // The library parts BUILD placed (mitcad#375).
     "library_sources",
+    // Motion studies and contact sets (mitcad#454).
+    "motion_studies",
+    "contact_sets",
 ];
 
 fn schema(message: impl Into<String>) -> FileError {
@@ -900,6 +911,30 @@ pub(super) fn load(value: Value) -> Result<(DocState, Vec<String>), FileError> {
         }
         library_sources.0.push(source);
     }
+    // Motion studies and contact sets (mitcad#454).
+    let motion_studies = array(&mut top, "motion_studies", false)?
+        .into_iter()
+        .enumerate()
+        .map(|(i, s)| {
+            let study = serde_json::from_value::<MotionStudy>(s)
+                .map_err(|e| schema(format!("motion_studies[{i}]: {e}")))?;
+            study
+                .check()
+                .map_err(|e| invalid(format!("motion_studies[{i}]: {e}")))?;
+            Ok(study)
+        })
+        .collect::<Result<Vec<_>, FileError>>()?;
+    let contact_sets = array(&mut top, "contact_sets", false)?
+        .into_iter()
+        .enumerate()
+        .map(|(i, s)| {
+            let set = serde_json::from_value::<ContactSet>(s)
+                .map_err(|e| schema(format!("contact_sets[{i}]: {e}")))?;
+            set.check()
+                .map_err(|e| invalid(format!("contact_sets[{i}]: {e}")))?;
+            Ok(set)
+        })
+        .collect::<Result<Vec<_>, FileError>>()?;
     let marker = match top.remove("marker") {
         None => None,
         Some(value) => Some(
@@ -1128,6 +1163,41 @@ pub(super) fn load(value: Value) -> Result<(DocState, Vec<String>), FileError> {
         }
     }
     state.analyses = analyses;
+    // Motion studies and contact sets (mitcad#454): names once each, keys
+    // of joints' free motions, occurrences where their paths say.
+    for (i, study) in motion_studies.iter().enumerate() {
+        if motion_studies[..i].iter().any(|s| s.name == study.name) {
+            return Err(invalid(format!(
+                "motion_studies[{i}]: motion study '{}' is listed more than once",
+                study.name
+            )));
+        }
+        for key in &study.keys {
+            let motions = state
+                .entry(key.joint)
+                .and_then(|e| crate::document::joint_motions(&e.def));
+            if !motions.is_some_and(|m| m.contains(&key.motion)) {
+                return Err(invalid(format!(
+                    "motion_studies[{i}] ({}): {} has no free motion {}",
+                    study.name, key.joint, key.motion
+                )));
+            }
+        }
+    }
+    for (i, set) in contact_sets.iter().enumerate() {
+        if contact_sets[..i].iter().any(|s| s.name == set.name) {
+            return Err(invalid(format!(
+                "contact_sets[{i}]: contact set '{}' is listed more than once",
+                set.name
+            )));
+        }
+        for path in &set.occurrences {
+            crate::joints::path_component(&state.assembly, ComponentUid::ROOT, &path.0)
+                .map_err(|e| invalid(format!("contact_sets[{i}] ({}): {e}", set.name)))?;
+        }
+    }
+    state.motion_studies = motion_studies;
+    state.contact_sets = contact_sets;
     // Appearances (mitcad#46): ids of their own, not the library's.
     for (i, appearance) in appearances.iter().enumerate() {
         let id = &appearance.id;

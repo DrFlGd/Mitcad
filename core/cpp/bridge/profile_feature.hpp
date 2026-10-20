@@ -6,6 +6,7 @@
 #include <memory>
 
 #include "bridge/shape.hpp"
+#include "mitcad/geometry/extrude.hpp"
 #include "mitcad/geometry/shape.hpp"
 #include "mitcad_bridge/kernel/profile.h"
 #include "rust/cxx.h"
@@ -34,5 +35,11 @@ std::shared_ptr<geometry::Shape> modeled_thread(rust::Str feature, const geometr
                                                 const ThreadInput& input);
 PlaneOutput face_plane(const geometry::Shape& shape, rust::Str face);
 CylinderOutput face_cylinder(const geometry::Shape& shape, rust::Str face);
+
+// The geometry library's spec of an extrusion (thin extrusions along
+// curves add their chains, mitcad#463).
+geometry::ExtrudeFeatureSpec extrude_spec(rust::Str feature, const Frame& frame,
+                                          rust::Slice<const Region> regions,
+                                          const ExtrudeFeatureInput& input, const ShapeList& bodies);
 
 } // namespace mitcad::bridge

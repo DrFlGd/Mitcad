@@ -1,0 +1,55 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: a ball turning about the end of the edge it rolls on is released
+where a step lands on the point of its tangency with the edge (mitcad#343).
+
+The case: 0905's notch wall, on a body a few micrometres off the one
+there. The ball turns about the vertex between the wall's far edges
+(0170's pivot) until it is tangent to the next edge, where the blend ends
+and the next one, rolling on that edge, starts. The walk's step landed on
+that point: the ball's side of the edge there came out -5e-14, so the
+release (side > 0) was not taken; at the next step, past the point, the
+release was solved back at the point before, whose parameter equals the
+last point's but for rounding, and the exact comparison took it for a
+point behind the walk. The steps shrank to nothing, the piece ended with
+its contact on no edge, the next piece did not roll on the next edge, and
+the stripe failed.
+
+- BRepBlend_SurfRstLineBuilder::InternalPerform: the release is looked for
+  where the side is within Precision::Confusion() of the release, and the
+  release point is taken within Precision::PConfusion() of the walk's last
+  point and of the step.
+
+Upstream: new.
+
+diff --git a/src/ModelingAlgorithms/TKFillet/BRepBlend/BRepBlend_SurfRstLineBuilder.cxx b/src/ModelingAlgorithms/TKFillet/BRepBlend/BRepBlend_SurfRstLineBuilder.cxx
+index 47f5cdb2..9019424f 100644
+--- a/src/ModelingAlgorithms/TKFillet/BRepBlend/BRepBlend_SurfRstLineBuilder.cxx
++++ b/src/ModelingAlgorithms/TKFillet/BRepBlend/BRepBlend_SurfRstLineBuilder.cxx
+@@ -1165,8 +1165,12 @@ void BRepBlend_SurfRstLineBuilder::InternalPerform(Blend_SurfRstFunction&  Func,
+       }
+     }
+ 
++    // (A step that lands on the point where the ball is tangent to the
++    // restriction, its side a rounding error short of it, has reached it:
++    // the step past it would find the tangency at the point before and,
++    // comparing the parameters exactly, take it for one behind the walk.)
+     if (pivot && (State == Blend_OK || State == Blend_StepTooSmall)
+-        && PivotSide(Func, sol) > pivotRelease)
++        && PivotSide(Func, sol) > pivotRelease - Precision::Confusion())
+     {
+       // The ball has turned about the restriction's end far enough to roll on the
+       // restriction: the blend ends where it is tangent to it there (the ball of
+@@ -1185,8 +1189,9 @@ void BRepBlend_SurfRstLineBuilder::InternalPerform(Blend_SurfRstFunction&  Func,
+       if (rsinv.IsDone())
+       {
+         rsinv.Root(solinv);
+-        released = FinvP.IsSolution(solinv, tolpoint3d) && sens * (solinv(1) - parprec) >= 0.
+-                   && sens * (param - solinv(1)) >= 0.;
++        released = FinvP.IsSolution(solinv, tolpoint3d)
++                   && sens * (solinv(1) - parprec) >= -Precision::PConfusion()
++                   && sens * (param - solinv(1)) >= -Precision::PConfusion();
+       }
+       if (released)
+       {

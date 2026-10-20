@@ -159,10 +159,13 @@ Modifiers:
   geometry hidden for the command` and `... shown again`).
 - `withChoiceIcons({value: icon})`: a choice shown as a row of icon
   buttons, the chosen one pressed (BUILD's X / Y / Z), logged `Panel
-  <command> input <key>=<value> at x,y` for each; the AppKit frontend
-  shows the drop-down. `withDisclosure()`: a check shown as a small
+  <command> input <key>=<value> at x,y` for each. AppKit uses native toggle
+  buttons with the same artwork, option tooltips and selected value.
+  `withDisclosure()`: a check shown as a small
   `▸ More` button that opens the inputs whose `withVisible` follows it
-  (a check box in the AppKit frontend).
+  (a native disclosure triangle and label in the AppKit frontend). Hidden
+  rows leave the native stack layout; the inspector keeps its height cap
+  and scrolls when the expanded form exceeds the available space.
 - `withButton(text, tooltip, call)` (mitcad#418): a choice with a button
   beside its drop-down; a click calls `call(state, context)` once the
   model is idle (the presenter's `buttonClicked`, logged `<command>:
@@ -1256,9 +1259,63 @@ build with a message.
   joint selected in the timeline, else the newest with free motions, its
   first motion through its limits (from where it is to one end, the other
   and back) or once round without limits (a slide ±25 mm): 36 frames, each
-  the `preview` of an `edit_feature` with the joint's `position` there,
-  shown through the preview's `placements`; the preview is cleared at the
-  end and nothing changes. Starting a command stops it.
+  the `preview` of `drive_joint` to the frame's value from the frame
+  before (mitcad#454), shown through the preview's `placements`; the
+  preview is cleared at the end and nothing changes. Starting a command
+  stops it. A contact of a contact set ends it there: the status bar says
+  where, logged `Animation of Joint1 stopped by contact at tx 10.01 mm:
+  Body2 (Pin:1) and Body3 (Wall:1) in Contact1`.
+- **Contact Set** (`assemble.contact_set`, `JointCommands.cpp`, mitcad#454;
+  the model's side in commands.md, "Motion studies and contact sets"): a
+  model command (`modelCommand`): Components (two or more; a body picks
+  the occurrence that places it, as paths from the root) and Suppressed;
+  OK runs `add_contact_set`, or `edit_contact_set` of the set the browser
+  opened (its entry goes through `startFeatureCommand`'s analysis argument
+  to `load`, which keeps its name in the hidden input `set`). Logs `Added
+  contact set Contact1: Pin:1, Wall:1` and `Edited contact set Contact1`.
+- **Motion Link** (`assemble.motion_link`, `JointCommands.cpp`, mitcad#466;
+  the model's side in commands.md, "Motion links"): a `motion_link`
+  feature. Type (Gears, Rack and Pinion, Screw, Ratio, Cam), Driver and
+  Follower (joints with free motions, `SelectKind::Feature`, from the
+  browser or the timeline) with Driver Motion and Follower Motion (the
+  joint's motions), the type's sizes (Driver Gear and Follower Gear with
+  Internal Gear, Pinion Radius, Lead, Ratio; each size's "From" input
+  takes a round face, circular edge or circle whose radius it becomes
+  instead of the value), a cam's Cam Profile (a flat face or a sketch
+  curve), Follower (Knife Edge, Roller with Roller Radius, Flat Face) and
+  Follower Tip, Reverse, and Keep Where They Are (on, but for a cam: the
+  build asks the `motion_link_offset` query for the offset that keeps the
+  joints where they are) else Offset (an angle or a length, as the
+  follower's motion). An edit loads the link with its offset. Logs `Added
+  motion link MotionLink1: rack_pinion, Joint1 rz to Joint2 tx,
+  satisfied`. Test: `tools/ui-motion-link-test.sh`.
+- **Motion Study** (`assemble.motion_study`, `MainWindowMotion.cpp`,
+  `motion/MotionStudyDialog`, mitcad#454): a panel beside the window, not a
+  command (the window stays usable; a command or a sketch pauses it): the
+  study (the first, or a new `Study1` when there is none; the browser's
+  Play opens another), Steps, the step slider, Play/Pause (Alt+P), Loop,
+  Speed (0.25x to 4x of one step per 40 ms frame), the keys per joint
+  motion with their points and the value at the step, Add Key (Alt+K: the
+  joint motion chosen at the current step, with the typed Value (Alt+V)
+  or where the joint is), Remove Key (the selected row's point at the
+  step) and Keep Position (Alt+T: `play_study` to the shown step, one undo
+  step, then it closes). Each frame and each slider move is the `preview`
+  of `play_study` from the step shown before, shown through its
+  `placements` on the bodies as shown when the panel opened; a contact
+  pauses it at the step where the bodies touch, and the panel says where.
+  Closing it (Close, Esc) clears the preview. Logs: `Motion study Open
+  opened: 20 steps, 2 keys`, `Playing Open from step 0`, `Played Open to
+  step 20: Joint1 tx 15 mm, Joint2 rz 90 deg`, `Paused Open at step 7
+  (paused): …`, `Playback of Push stopped at step 5.005: stopped at
+  contact: …`, `Key added to Open: Joint1 tx at step 0: 5 mm`, `Kept Open
+  at step 20: …`, `Motion study Open closed`. Tests:
+  `tools/ui-motion-study-test.sh`, `tools/ui-contact-test.sh`.
+- **Contacts in Drive Joint and drags** (mitcad#454): Drive Joint's
+  `drive_joint` answer's warning shows in its panel (`Preview Drive
+  Joint: ok, warning: stopped at contact: …`); a drag stops where the
+  `joint_drag` query's `contact` says (`Drag of Pin:1 stopped at contact:
+  …` once per contact, the status bar too) and its release logs `Dragged
+  Pin:1 to where it touches: …`.
 - **Ghost of side A** (mitcad#147): once Joint's origin A or As-Built
   Joint's component A is picked, and while B is not, the occurrence placed
   directly in the joint's component that A lies in is drawn as a ghost
@@ -1317,6 +1374,18 @@ build with a message.
   Animate, Suppress, Rename, Delete, Find in Timeline; the folder's: New
   Joint, New As-Built Joint, New Rigid Group. A joint row stands for its
   feature (`SelectKind::Feature`), which Drive Joint takes.
+  The root's **Motion Studies** and **Contact Sets** folders (mitcad#454,
+  after the Analysis folder) list the studies (tooltip: steps and keyed
+  joint motions; menu Play, Rename, Delete; a double-click plays) and the
+  contact sets (tooltip: their components; menu Edit, Suppress or
+  Unsuppress, Rename, Delete; grey while suppressed); the folders' menus
+  have New Motion Study and New Contact Set.
+  A component's **Motion Links** folder (mitcad#466, after its Joints)
+  lists its motion links before the marker as joint rows (tooltip:
+  `MotionLink1: gear, Joint1 rz to Joint3 rz, placed`; menu Edit,
+  Suppress, Rename, Delete, Find in Timeline); the folder's menu has New
+  Motion Link. The browser's joints log line lists them too
+  (`MotionLink1 rack_pinion satisfied`).
 
 ## Sheet metal
 
@@ -1425,10 +1494,10 @@ places one and closes it.
 
 | Command | Panel | Model |
 |---|---|---|
-| `build.profile` Profile | grows as the placement needs it (mitcad#394). At first: Part, a tile with the chosen part's picture, name, supplier and part number (`withChoiceTile`, mitcad#427); a click on it, or Enter or Space, opens the part picker with the role's parts, filtered to the system chosen last (mitcad#418); Search and System are hidden inputs (for live MCP); Place On (none needed for the first part); Length (the part's stock length, else 500 mm; also a box at the cursor, `withCursorBox`, and a handle at the free end while the length is a number); for a ground placement Direction, three icon buttons X, Y, Z (`withChoiceIcons`, default Z: standing; `at.direction`). Once a part is placed, Length's mode as four icon buttons (mitcad#427, `withChoiceIcons`: Auto: to the face it meets, Auto: to its centre, Auto: through it, Typed length; their labels the tooltips) and, by the pick: an **end pick** adds Direction (mitcad#417: Auto, the click's zone of the end face, `Auto: by the click (+X)`; Straight; the four turns square to the part it meets, `end.turns`, named by the host axis they run along, `+X`, else `Side 1`..`Side 4`), on a corner Offset (the new part's end from the outer side, positive towards the turn, default 0) and Mitre (Auto, `Auto (none)`: the panel's turns are square, and a square corner lies on the end face, mitcad#427; `Auto (<cut>)` when the click's preview says another; None; Shared, not offered at a corner offset other than 0; Cut the new part; Cut the existing part) with Mitre Angle; a **side pick** adds Offset and From (End A, End B, Middle), which the click fills; either adds Rotate (0, 90, 180, 270 deg) and Flip, and a side pick of a profile Tilt below Rotate (mitcad#444: 0 deg, the lean along the part it stands on, positive towards its end B, up to 80 deg; an arc handle at the foot, a ring about the slot's cross axis, drags it, the angle in the box at the cursor while it is dragged; the foot is cut to lie on the side, an auto length ends flush on the face it meets; Offset and From then refer to the foot's long point; sent as `tilt` when not 0). Placement, last, once the design has a part to go on: four icon buttons (mitcad#427, no More; Automatic: where the click is, the default; On a profile's side; On a profile's end; On a plane (as the first part): a ground placement again; their labels the tooltips). The result names where the part goes (`Adds to: Root`, the `build_host` query). **Place** (Enter) places it, also without a pick in a ground placement (at the origin), and the panel stays for the next one; **Close** (Esc) keeps what was placed | `build_host`, `build_preview` while the inputs change, `build_place` on Place |
-| `build.panel` Panel | Part, the tile that opens the part picker (panels; mitcad#427); Frame Face (an inner face of a frame puts it in the slots, an outer face on the surface with clamps); Thickness when the panel's thickness is a parameter. Place repeats | `build_preview`, `build_panel`; `fits` false is shown with its reason, not refused |
+| `build.profile` Profile | grows as the placement needs it (mitcad#394). At first: Part, a tile with the chosen part's picture, name, supplier and part number (`withChoiceTile`, mitcad#427); a click on it, or Enter or Space, opens the part picker with the role's parts, filtered to the system chosen last (mitcad#418); Search and System are hidden inputs (for live MCP); Place On (none needed for the first part); Length (the part's stock length, else 500 mm; also a box at the cursor, `withCursorBox`, and a handle at the free end while the length is a number); for a ground placement Direction, three icon buttons X, Y, Z (`withChoiceIcons`, default Z: standing; `at.direction`). Once a part is placed, Length's mode as four icon buttons (mitcad#427, `withChoiceIcons`: Auto: to the face it meets, Auto: to its centre, Auto: through it, Typed length; their labels the tooltips) and, by the pick: an **end pick** adds Direction (mitcad#417: Auto, the click's zone of the end face, `Auto: by the click (+X)`; Straight; the four turns square to the part it meets, `end.turns`, named by the host axis they run along, `+X`, else `Side 1`..`Side 4`), on a corner Offset (the new part's end from the outer side, positive towards the turn, default 0) and Mitre (Auto, `Auto (none)`: the panel's turns are square, and a square corner lies on the end face, mitcad#427; `Auto (<cut>)` when the click's preview says another; None; Shared, not offered at a corner offset other than 0; Cut the new part; Cut the existing part) with Mitre Angle; a **side pick** adds Offset and From (End A, End B, Middle), which the click fills; either adds Rotate (0, 90, 180, 270 deg) and Flip, and a side pick of a profile Tilt below Rotate (mitcad#444: 0 deg, the lean along the part it stands on, positive towards its end B, up to 80 deg; an arc handle at the foot, a ring about the slot's cross axis, drags it, the angle in the box at the cursor while it is dragged; the foot is cut to lie on the side, an auto length ends flush on the face it meets; Offset and From then refer to the foot's long point; sent as `tilt` when not 0). Placement, last, once the design has a part to go on: four icon buttons (mitcad#427, no More; Automatic: where the click is, the default; On a profile's side; On a profile's end; On a plane (as the first part): a ground placement again; their labels the tooltips). The result names where the part goes (`Adds to: Root`, the `build_host` query). **Place** (Enter) places it, also without a pick in a ground placement (at the origin), and the panel stays for the next one; **Shift + click** (mitcad#451, [Selection inputs](#selection-inputs)) on a place Place On takes picks it and places the part at once with the panel's values, then the next one follows as after Place (a plain click still only previews; one that cannot be placed makes nothing and the panel says why); the view's hint says `Shift+click places at once`; **Close** (Esc) keeps what was placed | `build_host`, `build_preview` while the inputs change, `build_place` on Place |
+| `build.panel` Panel | Part, the tile that opens the part picker (panels; mitcad#427); Frame Face (an inner face of a frame puts it in the slots, an outer face on the surface with clamps); Thickness when the panel's thickness is a parameter. Place repeats; Shift + click on a face places at once (mitcad#451) | `build_preview`, `build_panel`; `fits` false is shown with its reason, not refused |
 | `build.linear` Linear Part | as Profile (its part picker too) without the mitre (rails are cut to length; a carriage on its rail gets the joint its `mate` says) | `build_preview`, `build_place` |
-| `build.connector` Connector | Near (a click on a profile chooses the nearest junction), Junction (every junction, `L junction of Part1 and Part2`, `, connected`), Connector (the parts that fit, best first, each with the library's picture of it (`library_preview`, `withChoiceImages`), its supplier and part number; shown as a tile, `withChoiceTile`, mitcad#427, that opens the part picker with the fitting connectors first and, greyed with the reason, those that nearly fit; a new junction gives it new ones), With Nuts and Screws, With End Machining, Show All Junctions. The junctions of the profile under the mouse are marked in the view at their `at_frame` (`L`, `T (connected)`; `CommandDef::hover`, `previewMarkersIn`), the chosen one always (`> L`), every one with Show All Junctions; the panel lists the fitting connectors and, greyed, those that nearly fit with the reason; the two profiles are highlighted. The chosen connector is previewed where it goes (`build_preview` with `build_connect`'s fields; its shape `analysis_shape` `{"shape": "build_preview", "junction", "part", ...}`), its fasteners as markers, the machining it needs in the panel; choosing another in the list previews that one. **Connect** repeats and moves on to the nearest junction not connected | `build_junctions`, `library_build_candidates` with the junction, `build_preview`, `build_connect` |
+| `build.connector` Connector | Near (a click on a profile chooses the nearest junction), Junction (every junction, `L junction of Part1 and Part2`, `, connected`), Connector (the parts that fit, best first, each with the library's picture of it (`library_preview`, `withChoiceImages`), its supplier and part number; shown as a tile, `withChoiceTile`, mitcad#427, that opens the part picker with the fitting connectors first and, greyed with the reason, those that nearly fit; a new junction gives it new ones), With Nuts and Screws, With End Machining, Show All Junctions. The junctions of the profile under the mouse are marked in the view at their `at_frame` (`L`, `T (connected)`; `CommandDef::hover`, `previewMarkersIn`), the chosen one always (`> L`), every one with Show All Junctions; the panel lists the fitting connectors and, greyed, those that nearly fit with the reason; the two profiles are highlighted. The chosen connector is previewed where it goes (`build_preview` with `build_connect`'s fields; its shape `analysis_shape` `{"shape": "build_preview", "junction", "part", ...}`), its fasteners as markers, the machining it needs in the panel; choosing another in the list previews that one. **Connect** repeats and moves on to the nearest junction not connected; Shift + click near a junction connects it at once (mitcad#451; the view's hint says so while Near is empty) | `build_junctions`, `library_build_candidates` with the junction, `build_preview`, `build_connect` |
 | `build.fasteners` Fasteners | Connector (a connector, or one of its nuts or screws), With Nuts and Screws, Fastener (the kinds it has), Size (the rows of its library component, `library_show`) | `build_edit` with `config`; off: `build_remove` of each; on for a connector without them: `build_remove` and `build_connect` again with them; one undo step `Fasteners of <name>` |
 | `build.length` Length | Part, Length (Detached: this length, Bound: to the face, to the centre, through), Value, Bound To (none: the face it is bound to now); the bound target highlighted | `build_edit` with `length` (a value detaches, a `bind` binds) |
 | `build.ends` Ends | Part (the end nearer the click; an end face by its name), End, Angle, About (x, -x, y, -y), Also the Part It Meets (a shared mitre: the end that meets this one in an `L` or `inline` junction); End Machining (As it is, A bore: Diameter, Depth, Thread; None takes the part's end machining away) | `build_edit` with `ends` and `machining`, the part's whole list (`[{end, hole: {diameter, depth, thread}}]`): `build_parts`' list with this end's entries replaced by the bore, or left out for None; one undo step for both parts |
@@ -1446,8 +1515,25 @@ places one and closes it.
   for live MCP: Search words must all be in the name, designation, ids,
   supplier, part number, system (`B8 30`), size (`30x30`) or slots (`4
   slots`), and a part chosen that they do not match gives way to the
-  first they match; System likewise to the first part of that system. The part chosen or placed last is the next
-  start's, and the system of the part chosen last the next start's System.
+  first they match; System likewise to the first part of that system.
+  The system of the part chosen last is the next start's System (kept
+  across designs). **The part a command starts with** (mitcad#452,
+  `startPicker`): a part the panel has already (live MCP) stays; else, in
+  a design with parts of the role, the part chosen or placed last in this
+  design, or, when none was chosen in it since it was opened, the part of
+  the role the design placed last (`build_parts` lists them in the order
+  they were made; its source in the catalog); in a design without parts
+  of the role (a new one) the picker's first part within the System it
+  opens with: the first favourite (`pickerOrder`: the starred parts first,
+  in the catalog's order), else its first part (`pickerFirst`; a System
+  none of the parts fits leaves them all). A part of another design does
+  not carry over: the parts chosen last belong to the design they were
+  chosen in (`DocumentHost::designId`, new with every design opened or
+  started). The part picker shows the part chosen, scrolled into sight
+  and highlighted (`PartGrid::reveal`: All parts, without the search,
+  when the group or the search leaves it out). Log: `BUILD profile starts
+  with <library>/<component>: the first favourite|the picker's first
+  part|chosen last in this design|placed last in this design`.
 - **The part picker** (mitcad#418, [Part picker](#part-picker)): the Part
   tile (Connector's Connector; `withChoiceTile`, mitcad#427) opens the main
   window's `PartPicker` for the command: Profile, Panel and Linear Part
@@ -1483,11 +1569,12 @@ places one and closes it.
   placement** (no profile in the design yet, or Placement On a plane)
   takes planes, points and faces that are no BUILD part's, the origin's
   planes shown; with nothing picked the view shows `Click a plane or a
-  face, or press Enter` (`Inspection::viewHint`) and Enter places the
+  face, or press Enter; Shift+click places at once`
+  (`Inspection::viewHint`) and Enter places the
   part at the host's origin along the chosen axis (no `at.geometry`).
   Otherwise only faces of the parts it can go on highlight (a profile's
   sides and ends; for Linear Part also a rail's), the view says `Click a
-  profile's side or end`, and the origin's and construction planes are
+  profile's side or end; Shift+click places at once`, and the origin's and construction planes are
   hidden (`withHiddenConstruction`, the host's `setConstructionHidden`)
   until the placement is a ground one again or the command ends; their
   visibility in the design is not changed.
@@ -2013,7 +2100,7 @@ UI thread.
 | `commands/MoveCommands.cpp` | Scale, Combine, Move/Copy, Align, Physical Material, Appearance |
 | `commands/ConstructCommands.cpp` | `registerConstructCommands`: every construction plane, axis and point, from a table |
 | `commands/InspectCommands.cpp` | `registerInspectCommands`: Measure, Interference, Section Analysis, Physical Properties |
-| `commands/JointCommands.cpp` | `registerAssembleCommands`: the ASSEMBLE group: Joint, As-Built Joint, Joint Origin, Rigid Group, Drive Joint (mitcad#55); New Component (`PrimitiveCommands.cpp`) leads the group, Animate Joint, Insert Component and Insert from Library (the main window) end it |
+| `commands/JointCommands.cpp` | `registerAssembleCommands`: the ASSEMBLE group: Joint, As-Built Joint, Joint Origin, Rigid Group, Drive Joint (mitcad#55), Constraint (mitcad#148), Contact Set (mitcad#454), Motion Link (mitcad#466); New Component (`PrimitiveCommands.cpp`) leads the group, Animate Joint, Insert Component and Insert from Library (the main window) end it |
 | `MainWindowJoints.cpp` | dragging components the joints move, Animate Joint |
 | `commands/SheetCommands.cpp` | `registerSheetMetalCommands`: the SHEET METAL group (mitcad#210): Face, Flange, Bend, Fold, Corner Round, Corner Chamfer, Sheet Cut, Corner Relief, Unfold, Refold, Flat Pattern, Sheet Rules |
 | `MainWindowSheet.cpp` | Edit Sheet Rules, Show Flat Pattern, Export Flat Pattern and its dialog |
@@ -2071,6 +2158,7 @@ same ways without questions (mm, the XY plane, linked).
 | `.ipt` | a new document with the part's stored bodies, one base feature each (`import_ipt`, same worker, `hang_limit` 90 s; commands.md, ".ipt import"); no Stop; the report lists the bodies, part number, material and units |
 | `.iam` | a new document with the assembly's components and occurrences, each part imported once with its features (`import_ipt`, which imports an assembly with `import_iam`; same worker; commands.md, ".iam import"); no Stop; the report lists the occurrences, how each file was found, missing files and the checks against the file |
 | `.rvt`, `.rte`, `.rfa`, `.rft` | a new document with a project's building elements, one component per level (`import_rvt`, same worker, mitcad#274; commands.md, ".rvt import"); a family file: its metadata only; no Stop; the report lists the bodies per level, what was left out and why, and the components are logged (`Imported <file>: components <name> (<n> bodies), …`) |
+| `.solidcraft` | a new document with the design's history (`import_solidcraft`, same worker, mitcad#450; commands.md, ".solidcraft import"); no Stop; the report lists every feature and joint with how it came in (parametric, partial, unmapped, failed) and the kinds without a Mitcad counterpart, and is logged (`Import report: <file>: <counts>`) |
 | STEP, IGES, BRep | a base feature (`import_file`, one undo step `Import part.step`) |
 | STL, OBJ | mesh bodies, after asking the unit (Insert Mesh) |
 | DXF | a new sketch on a plane (`sketch.create` + `sketch.import_dxf`, one undo step `Insert drawing.dxf`), or into the edited sketch; the dialog uses the `dxf_info` query (origin placement, layers) |
@@ -2864,8 +2952,11 @@ group, a search, the system, a star), `Part picker search '<text>'`
 in this design: <n> parts: <library>/<component> x<count>, ...`, `Part
 picker star <component> on|off`, `Part picker group star <group>
 on|off`, `Part picker chose <library>/<component>[ (<row>)]`, `Part
-picker refused <library>/<component>: <reason>`, `Part picker pinned
-on|off`, `Part picker closed with <command>`, `Part picker stays pinned
+picker refused <library>/<component>: <reason>`, `Part picker shows the
+part chosen: <library>/<component>` (`ask` scrolled to it and highlighted
+it, mitcad#452; before it, when needed, `Part picker group <group> has
+not the part chosen: All parts`, `Part picker search cleared: it left out
+the part chosen`), `Part picker pinned on|off`, `Part picker closed with <command>`, `Part picker stays pinned
 after <command>`. The window's places, once laid out after it shows,
 moves, resizes or its tiles change (for UI tests): `Part picker place
 search|star|pin at x,y; in the picker x,y`, `Part picker group row
@@ -2876,7 +2967,8 @@ the picker's own (the Windows tests post their clicks to its window).
 Tests: the data in `tests/part_picker_data.cpp` (test_app), Insert from
 Library in `tools/ui-library-test.sh` (part 7) and
 `tools/ui-windows-library-test.ps1` (part 4), BUILD in
-`tools/ui-build-test.sh` (part 8) and `tools/ui-windows-build-test.ps1`
+`tools/ui-build-test.sh` (part 8; part 9, the part a command starts with,
+mitcad#452) and `tools/ui-windows-build-test.ps1`
 (part 8).
 
 ### Design policy
@@ -3059,6 +3151,20 @@ model's `profile` query names the region a key means now
   (`uniqueProfiles`).
 - An empty selection is the usual missing-selection hint ("Select
   profiles.") with OK refused.
+- **Shift + click places at once** (mitcad#451,
+  `InputDef::withShiftClickApplies`): on an input of one item (max 1)
+  that has it, a Shift + click the input takes is the pick and then the
+  command's OK, as Enter would press it (`CommandSession::picked` calls
+  `commit`; the asynchronous frontend's `commitAsync` waits for the
+  inspection as for Enter). An item picked already stays picked (no
+  toggle). When OK is refused (an input missing, the inspection's error,
+  `apply` false) nothing is made, the panel shows the reason as after a
+  refused OK, and the pick stays as a plain click leaves it. Inputs
+  without it, and inputs of several items, keep Shift's meaning (adding
+  to the selection); Ctrl + Shift and a window selection are unchanged.
+  BUILD's Place On (Profile, Linear Part), Frame Face (Panel) and Near
+  (Connector) have it. Log: `<command> <input>: Shift+click places at
+  once`. Tests: `tools/ui-build-test.sh` (parts 2b, Floating, and 10).
 
 Tests: `app.unit` (`selectionEntryTests`), `tools/ui-profile-toggle-test.sh`,
 `tools/ui-placed-edit-test.sh` (faces and datums of a placed component),
@@ -3159,7 +3265,19 @@ SVG at several sizes (`themeIcon`).
   Surface (mitcad#157): faces picked in Guide Surface go into
   `guide_surfaces`, the path must lie on them, and Orientation, Taper
   and Twist are hidden. A definition with guide surfaces and a twist or
-  taper (which the model ignores) is not editable.
+  taper (which the model ignores) is not editable. Single Path has End
+  Scale (`end_scale`, left out at 1) and Path + Guide Rail an optional
+  Second Rail (`guide_rail2`), mitcad#464. Path + Guide Rail's Rail Point
+  (mitcad#469) is Square to Path (`rail_point` `plane`, the default of a
+  new sweep) or Fraction of Length (left out); a definition without
+  `rail_point` loads as Fraction of Length.
+- **Fillet**'s Spline radius type (mitcad#464): Radius is the first
+  control radius, End Radius the last, Knots the knot vector (empty:
+  evenly spaced, degree 3 at most) and the Control Radii list the ones
+  between, each with the spline set it is of; `load` splits the
+  definition's `radii` the same way. **Pattern on Path** takes several
+  sketch curves of one sketch as a chain (`"path": {"sketch": …,
+  "curves": […]}`). Test: `tools/ui-feature-options-test.sh`.
 - **Hole**: Counterdrill is `kind` `counterdrill` with `cd_diameter`,
   `cd_depth`, `cd_angle` (the cone's full angle); Taper Angle is `taper`
   (the wall's angle to the axis), left out when 0 and hidden for tapped
@@ -3192,6 +3310,14 @@ SVG at several sizes (`themeIcon`).
   panel, a pick, live MCP) turns it off for the rest of the command;
   editing an Extrude never changes its stored operation. Tests:
   `tools/ui-auto-operation-test.sh`, `app.ui-windows-auto-operation`.
+- **Emboss** (`solid.emboss`, `EmbossCommands.cpp`, mitcad#458): Profiles
+  (the newest unused one at start; a text's letters are profiles), Face
+  (one planar or cylindrical face, `withAccepts`; none: the sketch
+  plane), Depth, Raise or Sink (`mode`, left out for Raise) and Objects
+  (`participants`; none: the face's body). The model wraps the profiles
+  onto a cylindrical face (commands.md, *emboss*). Logged `Added emboss
+  (Raise) of 1 profile(s) on a cylindrical face, wrapped, depth 1`. Test:
+  `tools/ui-create-test.sh` (Emboss).
 
 ## Known limitations
 
@@ -3285,7 +3411,7 @@ next screenshot.
 | `Sketch plane geometry: 4 edge(s), 4 vertex(es)` (`Sketch plane geometry not read: <reason>`), `Sketch Dimension picked the body edge E{…} of F2.b0 (body:3)`, `Projected the body vertex V{…} of F2.b0: p8`, `Reused the projection of the body edge E{…} of F2.b0: c9`, `Point p9 coincident with p8, the projected corner V{…}`, `Point p9 at the midpoint of c7, the projected edge E{…}`, `Sketch Sketch2: 1 linked projection(s)` | body edges and vertices in the sketch plane (mitcad#256, mitcad#258): what the tools can pick and snap to, read for a tool session or after a change; a body pick; what a dimension or a point projected or reused; the sketch's linked projections, when their number changes |
 | `Added dimension k5 length d1 = 40 mm`, `Added driven dimension k7 length`, `Editing dimension k5 (40 mm)`, `Dimension k5 = 50 mm (d1)`, `Moved dimension k5 to (x, y)`, `Dimension k5 text at x,y` (with each `Sketch view`), `Dimension tooltip k5: d1 = 40.00 mm (Sketch1 width)`, `Dimension text name`, `Dimension texts: k5 d1, k6 d2`, `Palette paletteDimensionText at x,y`, `Panel Extrude label: Distance (d3)` | dimensions; their tooltip, the palette's Dimension text option and what each shows, a feature panel's field with its parameter's name (mitcad#231) |
 | `Signed distances on` (`off`), `Added dimension k5 horizontal_distance signed d3 = r * cos(a)`, `Dimension k5 shows fx: +25.98`, `Dimension k6 unsigned: fx: 25.98 (-(r * sin(a)))` (`signed: …`), `Dimension texts: k5 fx: +25.98, k6 fx: +15.00` (as a sketch with dimensions opens), `Palette paletteSignedDistances at x,y` | signed horizontal and vertical distances (mitcad#409): the palette option, a signed one added and the text it shows, a switch from the context menu with the text and expression after it |
-| `Panel Extrude tooltip distance: d5 = 2*d1 → 80 mm (Extrude2 distance)`, `Parameter labels for Extrude: Sketch1 k5 d1, Sketch1 k7 d3, Extrude1 distance d4` (or `none`), `Parameter label Sketch1 k5 d1 at x,y`, `Parameter label Extrude1 distance d4 at x,y`, `Parameter label Fillet1 sets.0.radius d5 at x,y` (a list row's value), `Parameter label picked: d1 (Sketch1 k5)`, `Panel Extrude input distance: inserted d1, now 2*d1`, `Parameter labels for Extrude hidden`, `Native inline editor sketchValueEditor name: d3 =` (macOS) | a feature panel's value field whose parameter the feature owns: its tooltip; while a value field has the keyboard, the labels of the shown sketches' dimensions and of the earlier features' values (`framework/ParameterPicker.hpp`), where each is, the one clicked and the name it put into the field, the labels gone a moment after the field lost the keyboard; the dimension's name beside the native inline editor (mitcad#250) |
+| `Panel Extrude tooltip distance: d5 = 2*d1 → 80 mm (Extrude2 distance)`, `Parameter labels for Extrude: Sketch1 k5 d1, Sketch1 k7 d3, Extrude1 distance d4` (or `none`), `Parameter label Sketch1 k5 d1 at x,y`, `Parameter label Extrude1 distance d4 at x,y`, `Parameter label Fillet1 sets.0.radius d5 at x,y` (a list row's value), `Parameter label picked: d1 (Sketch1 k5)`, `Panel Extrude input distance: inserted d1, now 2*d1`, `Parameter labels for Extrude hidden`, `Native inline editor sketchValueEditor name: d3 =` (macOS) | a feature panel's value field whose parameter the feature owns: its tooltip; while a value field has the keyboard (when the keyboard went there by itself after a pick and the selection takes more items, only once something is typed in it, mitcad#467), the labels of the shown sketches' dimensions and of the earlier features' values (`framework/ParameterPicker.hpp`), where each is, the one clicked and the name it put into the field, the labels gone a moment after the field lost the keyboard; the dimension's name beside the native inline editor (mitcad#250) |
 | `Added constraint perpendicular k6 on c1, c2`, `Constraint perpendicular refused: <reason>`, `Fixed …`, `Construction on: [...]`, `Merged points p5 into p3 (coincident on p3, p5)` (two curve ends made one, mitcad#260), `Converted to sketch geometry: c9, p7; kept projected: p8` (mitcad#257), `Deleted c4, k2` | constraints and modify commands |
 | `MCP live instance: <id> 127.0.0.1: <port>`, `Agent connected`, `Agent disconnected`, `Agent disconnected by the user`, `Project indicator: …, agent connected`, `MCP: an agent ran sketch.add_line in sketch F4`, `MCP: an agent ran the UI command sketch.finish`, `MCP: an agent selected 2 sketch curves`, `MCP: an agent saved <path>`, `MCP: screenshot of the view, 640 x 480, 12345 bytes`, `Agent change: Add Line (agent)`, `MCP refused: <reason>`, `MCP: closed the dialog <title> (an agent cannot answer it)` | live MCP (mitcad#265): the listener, connected agents, what an agent ran, refusals |
 | `Palette warning 0 at x,y` (each warning shown as a link), `Palette: warning 0 selects 8 entities: p1, p2, c3, …`, `Sketch view to the selection: pan` (or `zoom`; nothing when they were in sight) | the Sketch Palette's warnings (mitcad#264): where to click them, what a click selects (the `Selected: …` line follows), how the view moved |

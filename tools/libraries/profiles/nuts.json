@@ -10,8 +10,8 @@
     "supplier_url": "https://www.motedis.com/en/T-nut-B-type-slot-6-M5",
     "designation": "T-nut B-type slot 6 {Thread}",
     "rows": [
-      {"name":"M3","select":{"Thread":"M3"},"values":{},"part_number":"S6BHASNM3"},
-      {"name":"M4","select":{"Thread":"M4"},"values":{},"part_number":"S6BHASNM4"},
+      {"name":"M3","select":{"Thread":"M3"},"values":{},"part_number":"S6BHASNM3","source":"slot-profile-accessories/T-nut-B-type-slot-6-M3/Motedis-S6BHASNM3/Motedis_S6BHASNM3.stp"},
+      {"name":"M4","select":{"Thread":"M4"},"values":{},"part_number":"S6BHASNM4","source":"slot-profile-accessories/T-nut-B-type-slot-6-M4/Motedis-S6BHASNM4/Motedis_S6BHASNM4.stp"},
       {"name":"M5","select":{"Thread":"M5"},"values":{},"part_number":"S6BHASNM5"}
     ],
     "build": {"role":"fastener","systems":[{"type":"B","slot":6}],"frames":[{"name":"slot","kind":"slot"}]},
@@ -28,9 +28,9 @@
     "supplier_url": "https://www.motedis.com/en/T-nut-heavy-duty-steel-B-Type-slot-6-M5",
     "designation": "T-nut heavy duty steel B-type slot 6 {Thread}",
     "rows": [
-      {"name":"M4","select":{"Thread":"M4"},"values":{},"part_number":"S6BHESNM4"},
+      {"name":"M4","select":{"Thread":"M4"},"values":{},"part_number":"S6BHESNM4","source":"slot-profile-accessories/T-nut-heavy-duty-steel-B-Type-slot-6-M4/Motedis-S6BHESNM4/Motedis_S6BHESNM4.stp"},
       {"name":"M5","select":{"Thread":"M5"},"values":{},"part_number":"S6BHESNM5"},
-      {"name":"M6","select":{"Thread":"M6"},"values":{},"part_number":"S6BHESNM6"}
+      {"name":"M6","select":{"Thread":"M6"},"values":{},"part_number":"S6BHESNM6","source":"slot-profile-accessories/T-nut-heavy-duty-steel-B-Type-slot-6-M6/Motedis-S6BHESNM6/Motedis_S6BHESNM6.stp"}
     ],
     "build": {"role":"fastener","systems":[{"type":"B","slot":6}],"frames":[{"name":"slot","kind":"slot"}]},
     "frames": [{"name":"slot","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"slot"}]
@@ -46,8 +46,8 @@
     "supplier_url": "https://www.motedis.com/en/T-nut-B-type-slot-8-M6",
     "designation": "T-nut B-type slot 8 {Thread}",
     "rows": [
-      {"name":"M4","select":{"Thread":"M4"},"values":{},"part_number":"S8BHASNM4"},
-      {"name":"M5","select":{"Thread":"M5"},"values":{},"part_number":"S8BHASNM5"},
+      {"name":"M4","select":{"Thread":"M4"},"values":{},"part_number":"S8BHASNM4","source":"slot-profile-accessories/T-nut-B-type-slot-8-M4/Motedis-S8BHASNM4/Motedis_S8BHASNM4.stp"},
+      {"name":"M5","select":{"Thread":"M5"},"values":{},"part_number":"S8BHASNM5","source":"slot-profile-accessories/T-nut-B-type-slot-8-M5/Motedis-S8BHASNM5-1/Motedis_S8BHASNM5.stp"},
       {"name":"M6","select":{"Thread":"M6"},"values":{},"part_number":"S8BHASNM6"}
     ],
     "build": {"role":"fastener","systems":[{"type":"B","slot":8}],"frames":[{"name":"slot","kind":"slot"}]},
@@ -64,8 +64,8 @@
     "supplier_url": "https://www.motedis.com/en/T-nut-I-type-slot-8-M6",
     "designation": "T-nut I-type slot 8 {Thread}",
     "rows": [
-      {"name":"M4","select":{"Thread":"M4"},"values":{},"part_number":"S8IHASNM4"},
-      {"name":"M5","select":{"Thread":"M5"},"values":{},"part_number":"S8IHASNM5"},
+      {"name":"M4","select":{"Thread":"M4"},"values":{},"part_number":"S8IHASNM4","source":"slot-profile-accessories/T-nut-I-type-slot-8-M4/Motedis-S8IHASNM4/Motedis_S8IHASNM4.stp"},
+      {"name":"M5","select":{"Thread":"M5"},"values":{},"part_number":"S8IHASNM5","source":"slot-profile-accessories/T-nut-I-type-slot-8-M5/Motedis-S8IHASNM5/Motedis_S8IHASNM5.stp"},
       {"name":"M6","select":{"Thread":"M6"},"values":{},"part_number":"S8IHASNM6"}
     ],
     "build": {"role":"fastener","systems":[{"type":"I","slot":8}],"frames":[{"name":"slot","kind":"slot"}]},
@@ -82,10 +82,10 @@
     "supplier_url": "https://www.motedis.com/en/T-nut-guided-I-type-slot-8-M6",
     "designation": "T-nut guided I-type slot 8 {Thread}",
     "rows": [
-      {"name":"M4","select":{"Thread":"M4"},"values":{},"part_number":"S8ISMONM4"},
-      {"name":"M5","select":{"Thread":"M5"},"values":{},"part_number":"S8ISMONM5"},
+      {"name":"M4","select":{"Thread":"M4"},"values":{},"part_number":"S8ISMONM4","source":"slot-profile-accessories/T-nut-guided-I-type-slot-8-M4/Motedis-S8ISMONM4/Motedis_S8ISMONM4.stp"},
+      {"name":"M5","select":{"Thread":"M5"},"values":{},"part_number":"S8ISMONM5","source":"slot-profile-accessories/T-nut-guided-I-type-slot-8-M5/Motedis-S8ISMONM5/Motedis_S8ISMONM5.stp"},
       {"name":"M6","select":{"Thread":"M6"},"values":{},"part_number":"S8ISMONM6"},
-      {"name":"M8","select":{"Thread":"M8"},"values":{},"part_number":"S8ISMONM8"}
+      {"name":"M8","select":{"Thread":"M8"},"values":{},"part_number":"S8ISMONM8","source":"slot-profile-accessories/T-nut-guided-I-type-slot-8-M8/Motedis-S8ISMONM8/Motedis_S8ISMONM8.stp"}
     ],
     "build": {"role":"fastener","systems":[{"type":"I","slot":8}],"frames":[{"name":"slot","kind":"slot"}]},
     "frames": [{"name":"slot","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"slot"}]
@@ -101,9 +101,9 @@
     "supplier_url": "https://www.motedis.com/en/T-Nut-with-spring-ball-without-guidance-I-Type-slot-5-M4",
     "designation": "T-nut with spring ball I-type slot 5 {Thread}",
     "rows": [
-      {"name":"M3","select":{"Thread":"M3"},"values":{},"part_number":"S5ISMONM3"},
+      {"name":"M3","select":{"Thread":"M3"},"values":{},"part_number":"S5ISMONM3","source":"slot-profile-accessories/T-Nut-with-spring-ball-without-guidance-I-Type-slot-5-M3/Motedis-S5ISMONM3-1/Motedis_S5ISMONM3.stp"},
       {"name":"M4","select":{"Thread":"M4"},"values":{},"part_number":"S5ISMONM4"},
-      {"name":"M5","select":{"Thread":"M5"},"values":{},"part_number":"S5ISMONM5"}
+      {"name":"M5","select":{"Thread":"M5"},"values":{},"part_number":"S5ISMONM5","source":"slot-profile-accessories/T-Nut-with-spring-ball-without-guidance-I-Type-slot-5-M5/Motedis-S5ISMONM5-1/Motedis_S5ISMONM5.stp"}
     ],
     "build": {"role":"fastener","systems":[{"type":"I","slot":5}],"frames":[{"name":"slot","kind":"slot"}]},
     "frames": [{"name":"slot","origin":[0,1.8,6],"z":[0,-1,0],"x":[0,0,1],"kind":"slot"}]
@@ -119,9 +119,9 @@
     "supplier_url": "https://www.motedis.com/en/T-nut-with-spring-ball-with-guidance-I-Type-slot-5-M4",
     "designation": "T-nut with spring ball, guided, I-type slot 5 {Thread}",
     "rows": [
-      {"name":"M3","select":{"Thread":"M3"},"values":{},"part_number":"S5ISMONM3G"},
+      {"name":"M3","select":{"Thread":"M3"},"values":{},"part_number":"S5ISMONM3G","source":"slot-profile-accessories/T-nut-with-spring-ball-with-guidance-I-Type-slot-5-M3/Motedis-S5ISMONM3G-1/Motedis_S5ISMONM3G.stp"},
       {"name":"M4","select":{"Thread":"M4"},"values":{},"part_number":"S5ISMONM4G"},
-      {"name":"M5","select":{"Thread":"M5"},"values":{},"part_number":"S5ISMONM5G"}
+      {"name":"M5","select":{"Thread":"M5"},"values":{},"part_number":"S5ISMONM5G","source":"slot-profile-accessories/T-nut-with-spring-ball-with-guidance-I-Type-slot-5-M5/Motedis-S5ISMONM5G-1/Motedis_S5ISMONM5G.stp"}
     ],
     "build": {"role":"fastener","systems":[{"type":"I","slot":5}],"frames":[{"name":"slot","kind":"slot"}]},
     "frames": [{"name":"slot","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"slot"}]
@@ -137,10 +137,10 @@
     "supplier_url": "https://www.motedis.com/en/T-nut-with-spring-ball-with-guidance-I-Type-slot-6-M5",
     "designation": "T-nut with spring ball, guided, I-type slot 6 {Thread}",
     "rows": [
-      {"name":"M3","select":{"Thread":"M3"},"values":{},"part_number":"S6ISMONM3G"},
-      {"name":"M4","select":{"Thread":"M4"},"values":{},"part_number":"S6ISMONM4G"},
+      {"name":"M3","select":{"Thread":"M3"},"values":{},"part_number":"S6ISMONM3G","source":"slot-profile-accessories/T-nut-with-spring-ball-with-guidance-I-Type-slot-6-M3/Motedis-S6ISMONM3G/Motedis_S6ISMONM3G.stp"},
+      {"name":"M4","select":{"Thread":"M4"},"values":{},"part_number":"S6ISMONM4G","source":"slot-profile-accessories/T-nut-with-spring-ball-with-guidance-I-Type-slot-6-M4/Motedis-S6ISMONM4G/Motedis_S6ISMONM4G.stp"},
       {"name":"M5","select":{"Thread":"M5"},"values":{},"part_number":"S6ISMONM5G"},
-      {"name":"M6","select":{"Thread":"M6"},"values":{},"part_number":"S6ISMONM6G"}
+      {"name":"M6","select":{"Thread":"M6"},"values":{},"part_number":"S6ISMONM6G","source":"slot-profile-accessories/T-nut-with-spring-ball-with-guidance-I-Type-slot-6-M6/Motedis-S6ISMONM6G/Motedis_S6ISMONM6G.stp"}
     ],
     "build": {"role":"fastener","systems":[{"type":"I","slot":6}],"frames":[{"name":"slot","kind":"slot"}]},
     "frames": [{"name":"slot","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"slot"}]
@@ -156,10 +156,10 @@
     "supplier_url": "https://www.motedis.com/en/T-nut-B-Type-slot-10-M6",
     "designation": "T-nut B-type slot 10 {Thread}",
     "rows": [
-      {"name":"M4","select":{"Thread":"M4"},"values":{},"part_number":"S10BHASNM4"},
-      {"name":"M5","select":{"Thread":"M5"},"values":{},"part_number":"S10BHASNM5"},
+      {"name":"M4","select":{"Thread":"M4"},"values":{},"part_number":"S10BHASNM4","source":"slot-profile-accessories/T-nut-B-Type-slot-10-M4/Motedis-S10BHASNM4/Motedis_S10BHASNM4.stp"},
+      {"name":"M5","select":{"Thread":"M5"},"values":{},"part_number":"S10BHASNM5","source":"slot-profile-accessories/T-nut-B-Type-slot-10-M5/Motedis-S10BHASNM5/Motedis_S10BHASNM5.stp"},
       {"name":"M6","select":{"Thread":"M6"},"values":{},"part_number":"S10BHASNM6"},
-      {"name":"M8","select":{"Thread":"M8"},"values":{},"part_number":"S10BHASNM8"}
+      {"name":"M8","select":{"Thread":"M8"},"values":{},"part_number":"S10BHASNM8","source":"slot-profile-accessories/T-nut-B-Type-slot-10-M8/Motedis-S10BHASNM8/Motedis_S10BHASNM8.stp"}
     ],
     "build": {"role":"fastener","systems":[{"type":"B","slot":10}],"frames":[{"name":"slot","kind":"slot"}]},
     "frames": [{"name":"slot","origin":[0,8.8,0],"z":[0,-1,0],"x":[1,0,0],"kind":"slot"}]
@@ -175,9 +175,10 @@
     "supplier_url": "https://www.motedis.com/en/Heavy-Slot-Nut-B-Type-Slot-10-M6",
     "designation": "Heavy slot nut B-type slot 10 {Thread}",
     "rows": [
-      {"name":"M4","select":{"Thread":"M4"},"values":{},"part_number":"S10BHESNM4"},
-      {"name":"M5","select":{"Thread":"M5"},"values":{},"part_number":"S10BHESNM5"},
-      {"name":"M6","select":{"Thread":"M6"},"values":{},"part_number":"S10BHESNM6"}
+      {"name":"M4","select":{"Thread":"M4"},"values":{},"part_number":"S10BHESNM4","source":"slot-profile-accessories/Heavy-Slot-Nut-Type-B-Type-Slot-10-M4/Motedis-S10BHESNM4/Motedis_S10BHESNM4.stp"},
+      {"name":"M5","select":{"Thread":"M5"},"values":{},"part_number":"S10BHESNM5","source":"slot-profile-accessories/Heavy-Slot-Nut-B-Type-Slot-10-M5/Motedis-S10BHESNM5/Motedis_S10BHESNM5.stp"},
+      {"name":"M6","select":{"Thread":"M6"},"values":{},"part_number":"S10BHESNM6"},
+      {"name":"M8","select":{"Thread":"M8"},"values":{},"part_number":"S10BHESNM8","supplier_url":"https://www.motedis.com/en/Sliding-block-heavy-B-type-slot-10-M8","source":"slot-profile-accessories/Sliding-block-heavy-B-type-slot-10-M8/Motedis-S10BHESNM8/Motedis_S10BHESNM8.stp"}
     ],
     "build": {"role":"fastener","systems":[{"type":"B","slot":10}],"frames":[{"name":"slot","kind":"slot"}]},
     "frames": [{"name":"slot","origin":[0,10.6,10],"z":[0,-1,0],"x":[0,0,1],"kind":"slot"}]

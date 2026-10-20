@@ -100,6 +100,8 @@ pub use sweeps::{
 };
 // FreeCAD helices (mitcad#4).
 pub use sweeps::HelixSpec;
+// Sweeps' rail points (mitcad#469).
+pub use sweeps::RailPoint;
 // Components and occurrences (F6).
 pub use document::{InsertOptions, InstanceView};
 pub use ids::{ComponentUid, OccurrenceUid};
@@ -207,3 +209,34 @@ mod section_curve_tests;
 // Body ids of a split's pieces after upstream edits (mitcad#408).
 #[cfg(test)]
 mod piece_ids_tests;
+// Motion studies and contact sets of assemblies (mitcad#454).
+pub mod contact;
+pub mod motion;
+pub use contact::{ContactBody, ContactHit};
+pub use document::{Driven, JointValues, MotionOutcome};
+pub use kernel::PlacedPair;
+pub use motion::{ContactSet, MotionStudy, StudyKey};
+#[cfg(test)]
+mod motion_tests;
+// Contour Flange, Convert to Sheet Metal and Perforate (mitcad#461).
+#[cfg(test)]
+mod sheet_more_tests;
+// Motion links between joints: gears, racks, screws and cams (mitcad#466).
+pub mod motion_links;
+pub use motion_links::LinkResult;
+#[cfg(test)]
+mod motion_link_tests;
+// Emboss: profiles raised or sunk on faces, wrapped on cylinders (mitcad#458).
+#[cfg(test)]
+mod emboss_tests;
+pub use kernel::EmbossWrapSpec;
+// Boundary Fill: solids of the cells tool bodies enclose (mitcad#457).
+pub use kernel::BoundaryCell;
+#[cfg(test)]
+mod boundary_fill_tests;
+// Patch, Stitch and Thicken: surface bodies filled, sewn and made solid
+// (mitcad#456).
+pub mod surfaces;
+pub use surfaces::{OpenBoundary, PatchBoundary, PatchContinuity, PatchLoopSpec};
+#[cfg(test)]
+mod surface_tests;

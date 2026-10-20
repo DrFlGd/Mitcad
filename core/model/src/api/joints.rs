@@ -12,9 +12,9 @@ use crate::constraints::{Geo, constraint_fits, fitting_types, measures, resolve_
 use crate::datum::Vec3;
 use crate::document::{Document, status_message, status_text};
 use crate::features::{
-    AsBuiltJointDef, ConstraintRow, ConstraintSetDef, ConstraintType, FeatureDef, FrameOverride,
-    GeomRef, JointDef, JointOrigin, JointPosition, Limits, OccurrencePath, RigidGroupDef,
-    ValueInput,
+    AsBuiltJointDef, ConstraintRow, ConstraintSetDef, ConstraintType, Coupling, FeatureDef,
+    FrameOverride, GeomRef, JointDef, JointOrigin, JointPosition, Limits, LinkedMotion,
+    MotionLinkDef, OccurrencePath, RigidGroupDef, ValueInput,
 };
 use crate::ids::{ComponentUid, FeatureUid, OccurrenceUid};
 use crate::joints::{
@@ -116,16 +116,64 @@ pub(crate) enum JointCommand {
         #[serde(default)]
         component: Option<String>,
     },
+    /// A motion link (mitcad#466): joints by uid or name, occurrences of
+    /// picked geometry also by names.
+    AddMotionLink(Box<AddMotionLink>),
+}
+
+/// A joint's motion in `add_motion_link`: the joint by uid or name.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct MotionInput {
+    joint: String,
+    motion: Motion,
+}
+
+/// The fields of `add_motion_link`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct AddMotionLink {
+    a: MotionInput,
+    b: MotionInput,
+    coupling: Value,
+    #[serde(default)]
+    reverse: bool,
+    #[serde(default)]
+    offset: Option<ValueInput>,
+    /// Without an offset: keep the joints where they are (the default for
+    /// every coupling but a cam).
+    #[serde(default)]
+    as_built: Option<bool>,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    component: Option<String>,
+}
+
+/// The `motion_link_offset` query (mitcad#466): the offset that keeps a
+/// link's joints where they are at the marker, for a panel to add the link
+/// as the `add_motion_link` command would.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct MotionLinkOffsetQuery {
+    a: MotionInput,
+    b: MotionInput,
+    coupling: Value,
+    #[serde(default)]
+    reverse: bool,
+    #[serde(default)]
+    component: Option<String>,
 }
 
 /// The commands' names, to send them here.
-pub(crate) const COMMANDS: [&str; 6] = [
+pub(crate) const COMMANDS: [&str; 7] = [
     "add_joint",
     "add_as_built_joint",
     "add_rigid_group",
     "drive_joint",
     "drag_occurrence",
     "add_constraint_set",
+    "add_motion_link",
 ];
 
 /// The `joint_dof` query.
@@ -320,11 +368,17 @@ impl<K: Kernel> Document<K> {
             }
             JointCommand::DriveJoint { joint, values } => {
                 let uid = self.joint_ref(&joint)?;
-                let created = self.drive_joint(uid, &values)?;
-                let mut result = json!({"uid": uid, "parameters": created});
+                let driven = self.drive_joint(uid, &values)?;
+                let mut result = json!({"uid": uid, "parameters": driven.parameters});
                 if let Some(joint) = self.joint_result(uid) {
                     result["state"] = json!(joint.state.as_str());
                     result["values"] = values_json(joint.values.as_ref());
+                }
+                // Stopped at a contact of a contact set (mitcad#454).
+                if let Some((hit, fraction)) = &driven.contact {
+                    result["contact"] = self.contact_json(hit, *fraction);
+                    // What a panel says before it keeps it.
+                    result["warnings"] = json!([result["contact"]["message"]]);
                 }
                 return Ok(result);
             }
@@ -375,6 +429,28 @@ impl<K: Kernel> Document<K> {
                 }
                 return Ok(result);
             }
+            JointCommand::AddMotionLink(input) => {
+                let AddMotionLink {
+                    a,
+                    b,
+                    mut coupling,
+                    reverse,
+                    offset,
+                    as_built,
+                    name,
+                    component: c,
+                } = *input;
+                let c = component(self, &c)?;
+                let def = self.link_def(c, &a, &b, &mut coupling, reverse, offset)?;
+                let added = self.add_motion_link(&def, as_built, name.as_deref(), Some(c))?;
+                let mut result = json!({"uid": added.uid, "name": added.name,
+                                        "parameters": added.parameters});
+                if let Some(link) = self.link_result(added.uid) {
+                    result["state"] = json!(link.state.as_str());
+                    result["solved"] = json!(link.holds);
+                }
+                return Ok(result);
+            }
         };
         let mut result = json!({"uid": added.uid, "name": added.name,
                                 "parameters": added.parameters});
@@ -383,6 +459,137 @@ impl<K: Kernel> Document<K> {
             result["solved"] = json!(joint.values.is_some());
         }
         Ok(result)
+    }
+
+    /// Joint origins in a command's JSON (objects with `geometry` and an
+    /// `occurrence` path by uids or names from `component`): their paths
+    /// as uids.
+    fn paths_to_uids(&self, component: ComponentUid, value: &mut Value) -> Result<(), ApiError> {
+        match value {
+            Value::Object(map) => {
+                if map.contains_key("geometry")
+                    && let Some(Value::String(text)) = map.get("occurrence")
+                {
+                    let path = self.path_from(component, text)?;
+                    map.insert(
+                        "occurrence".to_owned(),
+                        json!(OccurrencePath(path).to_string()),
+                    );
+                }
+                for v in map.values_mut() {
+                    self.paths_to_uids(component, v)?;
+                }
+            }
+            Value::Array(items) => {
+                for v in items {
+                    self.paths_to_uids(component, v)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// A motion link's definition from a command's fields: joints by uid or
+    /// name, occurrences of picked geometry by names too.
+    fn link_def(
+        &self,
+        component: ComponentUid,
+        a: &MotionInput,
+        b: &MotionInput,
+        coupling: &mut Value,
+        reverse: bool,
+        offset: Option<ValueInput>,
+    ) -> Result<MotionLinkDef<ValueInput>, ApiError> {
+        self.paths_to_uids(component, coupling)?;
+        let coupling = serde_json::from_value::<Coupling<ValueInput>>(coupling.clone())
+            .map_err(|e| ApiError(format!("coupling: {e}")))?;
+        Ok(MotionLinkDef {
+            a: LinkedMotion {
+                joint: self.joint_ref(&a.joint)?,
+                motion: a.motion,
+            },
+            b: LinkedMotion {
+                joint: self.joint_ref(&b.joint)?,
+                motion: b.motion,
+            },
+            coupling,
+            reverse,
+            offset,
+        })
+    }
+
+    /// The `motion_link_offset` query.
+    pub(crate) fn motion_link_offset_json(
+        &self,
+        query: MotionLinkOffsetQuery,
+    ) -> Result<Value, ApiError> {
+        let MotionLinkOffsetQuery {
+            a,
+            b,
+            mut coupling,
+            reverse,
+            component,
+        } = query;
+        let c = match &component {
+            Some(c) => self.component_ref(c)?,
+            None => self.active_component(),
+        };
+        let def = self.link_def(c, &a, &b, &mut coupling, reverse, None)?;
+        let offset = self.link_offset_as_built(&def, c)?;
+        Ok(json!({"offset": offset}))
+    }
+
+    /// A motion link's state for the `joints` query (mitcad#466).
+    fn link_json(&self, uid: FeatureUid) -> Value {
+        let entry = self.feature(uid).expect("a feature of the document");
+        let FeatureDef::MotionLink(link) = &entry.def else {
+            unreachable!("motion links only")
+        };
+        let status = self.status(uid);
+        let warnings = self.warnings(uid);
+        let name = |f: FeatureUid| {
+            self.feature(f)
+                .map_or_else(|| f.to_string(), |e| e.name.clone())
+        };
+        let side = |m: &LinkedMotion| json!({"joint": m.joint, "name": name(m.joint), "motion": m.motion.as_str()});
+        let mut value = json!({
+            "uid": uid,
+            "name": entry.name,
+            "type": entry.def.type_name(),
+            "component": entry.component,
+            "coupling": link.coupling.type_name(),
+            "a": side(&link.a),
+            "b": side(&link.b),
+            "reverse": link.reverse,
+            "status": status_text(status, warnings),
+            "error": status_message(status, warnings),
+        });
+        match self.link_result(uid) {
+            Some(r) => {
+                value["state"] = json!(r.state.as_str());
+                value["solved"] = json!(r.holds);
+                if let Some(ratio) = r.ratio {
+                    value["ratio"] = json!(ratio);
+                }
+                value["offset"] = json!(r.offset);
+                if let Some((va, vb)) = r.values {
+                    value["values"] = json!({"a": va, "b": vb});
+                }
+                if let crate::joints::JointState::Placed(moved) = &r.state {
+                    value["moved"] = json!(moved);
+                }
+            }
+            None => {
+                let state = match status_text(status, warnings) {
+                    "error" => "failed",
+                    other => other,
+                };
+                value["state"] = json!(state);
+                value["solved"] = json!(false);
+            }
+        }
+        value
     }
 
     /// A joint by uid or name.
@@ -412,7 +619,15 @@ impl<K: Kernel> Document<K> {
             .iter()
             .map(|(uid, v)| (uid.to_string(), values_json(Some(v))))
             .collect();
-        json!({"placements": placements, "values": values})
+        let mut value = json!({"placements": placements, "values": values});
+        // Stopped at a contact of a contact set (mitcad#454).
+        if let Some(hit) = &dragged.contact {
+            value["contact"] = self.contact_json(hit, 1.0);
+            if let Some(contact) = value["contact"].as_object_mut() {
+                contact.remove("fraction");
+            }
+        }
+        value
     }
 
     /// The `joint_drag` query.
@@ -691,6 +906,7 @@ impl<K: Kernel> Document<K> {
         let a = self.assembly();
         let mut joints = Vec::new();
         let mut constraints = Vec::new();
+        let mut links = Vec::new();
         let mut components: Vec<ComponentUid> = Vec::new();
         for entry in self.features() {
             if !matches!(
@@ -699,13 +915,16 @@ impl<K: Kernel> Document<K> {
                     | FeatureDef::AsBuiltJoint(_)
                     | FeatureDef::RigidGroup(_)
                     | FeatureDef::ConstraintSet(_)
+                    | FeatureDef::MotionLink(_)
             ) {
                 continue;
             }
             if !components.contains(&entry.component) {
                 components.push(entry.component);
             }
-            if matches!(entry.def, FeatureDef::ConstraintSet(_)) {
+            if matches!(entry.def, FeatureDef::MotionLink(_)) {
+                links.push(self.link_json(entry.uid));
+            } else if matches!(entry.def, FeatureDef::ConstraintSet(_)) {
                 constraints.push(self.constraint_json(entry.uid));
             } else if !matches!(entry.def, FeatureDef::RigidGroup(_)) {
                 joints.push(self.joint_json(entry.uid, self.joint_result(entry.uid)));
@@ -746,7 +965,8 @@ impl<K: Kernel> Document<K> {
                 })
             })
             .collect();
-        json!({"joints": joints, "rigid_groups": groups, "constraints": constraints, "dof": dof})
+        json!({"joints": joints, "rigid_groups": groups, "constraints": constraints,
+               "links": links, "dof": dof})
     }
 
     /// The `joint_dof` query: an occurrence's free motions in its parent

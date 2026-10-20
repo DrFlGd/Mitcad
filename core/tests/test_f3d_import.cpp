@@ -803,6 +803,11 @@ const ModelCheck kLoftModels[] = {
     // M10x1.5 6g over a 10 mm rod: the stored flanks are fitted splines
     // (Mitcad's exact profile has 3e-5 more volume).
     {"thread_modeled", 1e-4, true, "ThreadFeature"},
+    // A wall 2 mm thick centred on an open L of two lines, 10 high: thin
+    // walls along the sketch's curves (mitcad#463).
+    {"ext_thin_open", 1e-6, true, "ExtrudeFeature"},
+    // A body patterned along a sketch line (mitcad#468).
+    {"pat_path_bodies", 1e-6, true, "PathPatternFeature"},
 };
 
 fs::path default_models() {
@@ -857,16 +862,24 @@ bool check_model(const fs::path& dir, const ModelCheck& model) {
     std::printf("%-24s missing\n", model.id);
     return false;
   }
-  // The stored volume: the dump's final bodies (cm3).
+  // The stored volume: the dump's final bodies (cm3), all of them (a
+  // pattern of bodies makes several), up to the steps that follow them.
   const std::string text = read_text(dump);
   const std::size_t final_at = text.find("\"final\"");
+  const std::size_t steps_at = final_at == std::string::npos ? std::string::npos : text.find("\"steps\"", final_at);
   const std::vector<double> stored =
-      final_at == std::string::npos ? std::vector<double>{} : numbers_of(text.substr(final_at), "volume");
+      final_at == std::string::npos
+          ? std::vector<double>{}
+          : numbers_of(text.substr(final_at, steps_at == std::string::npos ? std::string::npos : steps_at - final_at),
+                       "volume");
   if (stored.empty()) {
     std::printf("%-24s no final volume in its dump\n", model.id);
     return false;
   }
-  const double expected = stored.front() * 1000.0;
+  double expected = 0.0;
+  for (const double v : stored) {
+    expected += v * 1000.0;
+  }
   try {
     // Mitcad's own replay, then the import that checks it.
     auto replay = mitcad::new_document();

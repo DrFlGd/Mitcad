@@ -62,14 +62,20 @@ bool same_wall(const std::optional<ThinWall>& a, const std::optional<ThinWall>& 
   if (a.has_value() != b.has_value()) {
     return false;
   }
-  return !a || (a->location == b->location && a->thickness == b->thickness);
+  return !a || (a->location == b->location && a->thickness == b->thickness &&
+                 a->thickness2 == b->thickness2);
 }
 
 
 std::vector<detail::SweepFace> profile_faces(const ExtrudeFeatureSpec& spec, const ExtrudeSide& side,
                                              bool merge) {
   if (side.thin) {
-    return detail::wall_faces(spec.feature, spec.frame, spec.regions, *side.thin);
+    std::vector<detail::SweepFace> faces = detail::wall_faces(spec.feature, spec.frame, spec.regions, *side.thin);
+    for (detail::SweepFace& face :
+         detail::chain_wall_faces(spec.feature, spec.frame, spec.chains, spec.chain_keys, *side.thin)) {
+      faces.push_back(std::move(face));
+    }
+    return faces;
   }
   std::vector<detail::SweepFace> faces = detail::region_faces(spec.feature, spec.frame, spec.regions);
   return merge ? detail::merged(faces) : faces;
@@ -185,8 +191,14 @@ ShapePtr joined(const std::vector<ShapePtr>& parts) {
 } // namespace
 
 ShapePtr extrude_feature(const ExtrudeFeatureSpec& spec) {
-  if (spec.regions.empty()) {
+  if (spec.regions.empty() && spec.chains.empty()) {
     throw std::invalid_argument("no profiles to extrude");
+  }
+  if (!spec.chains.empty() && !spec.side1.thin) {
+    throw std::invalid_argument("only a thin extrusion follows curves");
+  }
+  if (spec.chain_keys.size() != spec.chains.size()) {
+    throw std::invalid_argument("each chain of curves needs its key");
   }
   check_side(spec.side1);
   const bool two = spec.side2.has_value();

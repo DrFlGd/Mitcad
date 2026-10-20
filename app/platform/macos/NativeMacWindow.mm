@@ -342,6 +342,7 @@ NSString* const sidebarID = @"mitcad.sidebar";
 NSString* const inspectorID = @"mitcad.inspector";
 NSString* const historyID = @"mitcad.history";
 NSString* const projectID = @"mitcad.project";
+NSString* const projectToolbarMigrationKey = @"com.mitcad.toolbar.floating.v2.projectStatusInstalled";
 NSString* const createID = @"mitcad.create";
 NSString* const modifyID = @"mitcad.modify";
 NSString* const searchID = @"mitcad.search";
@@ -408,7 +409,6 @@ struct NativeMacWindowState {
   NSArray<NSButton*>* __strong historySteps = nil;
   NSButton* __strong historyFilterButton = nil;
   NSMutableArray<NSImageView*>* __strong historyRunMarks = nil;
-  NSButton* __strong projectButton = nil;
   NSBox* __strong historyDropLine = nil;
   NSView* __strong inspectorHost = nil;
   NSScrollView* __strong inspectorScroll = nil;
@@ -492,6 +492,14 @@ struct NativeMacWindowState {
     return found == treeIndex.cend() ? nullptr : &treeItems[*found];
   }
 
+  bool activateBrowserSelection() {
+    if (closing || nativeModalBlocked() || tree.editedRow >= 0 || tree.selectedRow < 0 || !callbacks.activate) return false;
+    MITCADTreeNode* node = [tree itemAtRow:tree.selectedRow];
+    if (!node) return false;
+    callbacks.activate(qt(node.key));
+    return true;
+  }
+
   void invoke(const QString& id) {
     const NativeMacAction* item = action(id);
     if (item && item->enabled && callbacks.action) callbacks.action(id);
@@ -522,7 +530,7 @@ struct NativeMacWindowState {
   }
 
   bool dispatchShortcut(NSEvent* event) {
-    if (event.type != NSEventTypeKeyDown || event.window != window || NSApp.keyWindow != window ||
+    if (event.type != NSEventTypeKeyDown || event.window != window ||
         closing || nativeModalBlocked() || QApplication::activeModalWidget() || textEditing()) return false;
     const QKeySequence pressed = keySequence(event);
     if (pressed.isEmpty()) return false;
@@ -530,11 +538,17 @@ struct NativeMacWindowState {
     const bool browserFocus = focus == tree;
     const bool historyFocus = focus == history || [focus isKindOfClass:MITCADHistoryFeatureButton.class];
     const bool inHistory = [focus isKindOfClass:NSView.class] && [(NSView*)focus isDescendantOf:history];
+    const auto combination = pressed[0];
+    // AppKit offers the default button its key equivalent before keyDown:
+    // reaches the outline. Browser activation must win at that stage too.
+    if (browserFocus && combination.keyboardModifiers() == Qt::NoModifier &&
+        (combination.key() == Qt::Key_Return || combination.key() == Qt::Key_Enter) && activateBrowserSelection()) return true;
+    // Other document shortcuts still require the active key window.
+    if (NSApp.keyWindow != window) return false;
     if ((browserFocus || historyFocus || inHistory) && pressed == QKeySequence(QKeySequence::Find)) {
       openSearch(true);
       return true;
     }
-    const auto combination = pressed[0];
     if ((browserFocus || historyFocus) && combination.keyboardModifiers() == Qt::NoModifier) {
       const auto key = combination.key();
       if (key == Qt::Key_Delete || key == Qt::Key_Backspace || key == Qt::Key_F2) {
@@ -1373,6 +1387,18 @@ struct NativeMacWindowState {
     toolbar.autosavesConfiguration = YES;
     toolbar.displayMode = NSToolbarDisplayModeIconOnly;
     window.toolbar = toolbar;
+    // Upgrade saved layouts that predate Project once. Later absence is
+    // the user's customization, including after the application restarts.
+    NSUserDefaults* defaults = NSUserDefaults.standardUserDefaults;
+    if (![defaults boolForKey:projectToolbarMigrationKey]) {
+      bool hasProject = false;
+      for (NSToolbarItem* item in toolbar.items) {
+        if ([item.itemIdentifier isEqualToString:projectID]) hasProject = true;
+      }
+      if (!hasProject) [toolbar insertItemWithItemIdentifier:projectID
+                                                   atIndex:std::min(NSUInteger(3), toolbar.items.count)];
+      [defaults setBool:YES forKey:projectToolbarMigrationKey];
+    }
     buildRibbon();
   }
 
@@ -1838,15 +1864,15 @@ void NativeMacWindow::setHistoryFilter(const QString& label, bool active) {
 void NativeMacWindow::setProjectStatus(const QString& text, const QString& tooltip) {
   m_state->projectText = text;
   m_state->projectTooltip = tooltip;
-  if (!m_state->projectButton) {
-    // A previously saved toolbar layout also receives the newly available
-    // project status. The item's native text control may shrink as needed.
-    [m_state->window.toolbar insertItemWithItemIdentifier:projectID
-                                                 atIndex:std::min(NSInteger(3), NSInteger(m_state->window.toolbar.items.count))];
+  // The toolbar owns its current controls. Palette samples and removed
+  // items must neither receive live status nor determine item membership.
+  for (NSToolbarItem* item in m_state->window.toolbar.items) {
+    if (![item.itemIdentifier isEqualToString:projectID] || ![item.view isKindOfClass:NSButton.class]) continue;
+    NSButton* button = (NSButton*)item.view;
+    button.title = ns(text);
+    button.toolTip = ns(tooltip);
+    button.accessibilityLabel = ns(QStringLiteral("Project: %1").arg(text));
   }
-  m_state->projectButton.title = ns(text);
-  m_state->projectButton.toolTip = ns(tooltip);
-  m_state->projectButton.accessibilityLabel = ns(QStringLiteral("Project: %1").arg(text));
 }
 void NativeMacWindow::setSketchMode(bool sketching) {
   if (m_state->sketching == sketching) return;
@@ -1985,6 +2011,14 @@ using namespace mitcad::mac;
 
 @implementation MITCADModelOutlineView
 - (void)keyDown:(NSEvent*)event {
+  const NSEventModifierFlags modifiers = event.modifierFlags &
+      (NSEventModifierFlagCommand | NSEventModifierFlagControl | NSEventModifierFlagOption | NSEventModifierFlagShift);
+  const unichar key = event.charactersIgnoringModifiers.length ? [event.charactersIgnoringModifiers characterAtIndex:0] : 0;
+  if (modifiers == 0 && (key == NSCarriageReturnCharacter || key == NSEnterCharacter) && state) {
+    // Keyboard activation follows the selection, independent of an earlier
+    // mouse click or context menu, and precedes document confirmation.
+    if (state->activateBrowserSelection()) return;
+  }
   if (self.editedRow < 0 && [(MITCADDocumentWindow*)self.window dispatchKeyboardEvent:event]) return;
   [super keyDown:event];
 }
@@ -2334,6 +2368,15 @@ using namespace mitcad::mac;
 - (void)closeDocument:(id)sender {
   if (!state) return;
   NSWindow* window = NSApp.keyWindow != nil ? NSApp.keyWindow : state->window;
+  // A menu equivalent can make the document key before dispatching while
+  // its search popover is still shown. Both windows dismiss that search.
+  if (state->searchPopover.shown && (window == state->searchField.window || window == state->window)) {
+    [state->searchPopover close];
+    // Return keyboard routing to the document's existing responder. A
+    // hidden popover's field editor must not disable plain CAD shortcuts.
+    [state->window makeKeyWindow];
+    return;
+  }
   if ([window.identifier hasPrefix:@"native.inline."]) window = state->window;
   // Settings and other native secondary windows own Command-W while key.
   // Ending the native field editor commits values and honors validation.
@@ -2418,7 +2461,6 @@ using namespace mitcad::mac;
     [button setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
     [button.widthAnchor constraintLessThanOrEqualToConstant:340].active = YES;
     [button.heightAnchor constraintEqualToConstant:26].active = YES;
-    state->projectButton = button;
     item.view = button;
     return item;
   }

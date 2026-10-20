@@ -57,7 +57,7 @@
 
 namespace mitcad::geometry {
 
-enum class FilletSize { Constant, ChordLength, Variable, Asymmetric };
+enum class FilletSize { Constant, ChordLength, Variable, Asymmetric, Spline };
 
 // Edges with one size: the named edges and every edge of the named faces.
 struct FilletSet {
@@ -83,6 +83,12 @@ struct FilletSet {
   bool curvature = false;
   double weight = 1.0;
   bool tangent_chain = true;
+  // Spline (mitcad#464): the radius a clamped B-spline of the position
+  // along the chain (0 at the start vertex, 1 at the other end, by arc
+  // length): its full knot vector and control radii, of degree
+  // knots.size() - radii.size() - 1 (1 to 3). Not around a closed chain.
+  std::vector<double> knots;
+  std::vector<double> radii;
 };
 
 // Rounds the edge sets of the body. The new faces are named after `feature`:

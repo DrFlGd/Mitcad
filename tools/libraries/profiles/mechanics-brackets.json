@@ -24,7 +24,8 @@
         "values": {},
         "part_number": "BR20STS",
         "supplier_url": "https://www.motedis.com/en/Steel-Connection-Angle-galvanised-20",
-        "designation": "Steel connection angle 20, galvanised"
+        "designation": "Steel connection angle 20, galvanised",
+        "source": "mechanical-basics/Steel-Connection-Angle-galvanised-20/Motedis-BR20STS/Motedis_BR20STS.stp"
       }
     ],
     "build": {
@@ -79,7 +80,8 @@
         "values": {},
         "part_number": "BR30STB",
         "supplier_url": "https://www.motedis.com/en/Connection-Angle-30-Black-B-Type",
-        "designation": "Steel connection angle 30 B-type slot 8, black"
+        "designation": "Steel connection angle 30 B-type slot 8, black",
+        "source": "mechanical-basics/Connection-Angle-30-Black-B-Type/Motedis-BR30STB/Motedis_BR30STB.stp"
       }
     ],
     "build": {
@@ -134,7 +136,8 @@
         "values": {},
         "part_number": "BR40STS",
         "supplier_url": "https://www.motedis.com/en/Steel-Connection-Angle-40-galvanised",
-        "designation": "Steel connection angle 40 I-type slot 8, galvanised"
+        "designation": "Steel connection angle 40 I-type slot 8, galvanised",
+        "source": "mechanical-basics/Steel-Connection-Angle-40-galvanised/Motedis-BR40STS/Motedis_BR40STS.stp"
       }
     ],
     "build": {
@@ -189,7 +192,8 @@
         "values": {},
         "part_number": "BR45STS",
         "supplier_url": "https://www.motedis.com/en/Steel-angle-45-galvanized",
-        "designation": "Steel connection angle 45 B-type slot 10, galvanised"
+        "designation": "Steel connection angle 45 B-type slot 10, galvanised",
+        "source": "mechanical-basics/Steel-angle-45-galvanized/Motedis-BR45STS/Motedis_BR45STS.stp"
       }
     ],
     "build": {
@@ -244,7 +248,8 @@
         "values": {},
         "part_number": "PLAT4080STS",
         "supplier_url": "https://www.motedis.com/en/Connection-Plate-40x80-steel-galvanized",
-        "designation": "Connection plate 40x80, galvanised"
+        "designation": "Connection plate 40x80, galvanised",
+        "source": "mechanical-basics/Connection-Plate-40x80-steel-galvanized/Motedis-PLAT4080STS/Motedis_PLAT4080STS.stp"
       }
     ],
     "build": {

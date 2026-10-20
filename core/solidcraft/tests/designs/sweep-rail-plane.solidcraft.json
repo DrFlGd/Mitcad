@@ -1,0 +1,52 @@
+{
+  "format": "solidcraft/27",
+  "name": "Sweep along a bulging guide rail",
+  "units": "mm",
+  "params": [],
+  "features": [
+    {
+      "id": 1, "name": "Section", "type": "sketch",
+      "plane": {"type": "origin", "name": "XY"},
+      "sketch": {
+        "points": [
+          {"id": "origin", "pos": [0.0, 0.0], "fixed": true}
+        ],
+        "curves": [{"id": "c1", "type": "circle", "c": 0, "r": 5.0}],
+        "constraints": []
+      }
+    },
+    {
+      "id": 2, "name": "Path", "type": "sketch",
+      "plane": {"type": "origin", "name": "XZ"},
+      "sketch": {
+        "points": [
+          {"id": "origin", "pos": [0.0, 0.0], "fixed": true},
+          {"id": "p1", "pos": [0.0, -40.0], "fixed": true}
+        ],
+        "curves": [{"id": "l1", "type": "line", "a": 0, "b": 1}],
+        "constraints": []
+      }
+    },
+    {
+      "id": 3, "name": "Rail", "type": "sketch",
+      "plane": {"type": "origin", "name": "XZ"},
+      "sketch": {
+        "points": [
+          {"id": "origin", "pos": [0.0, 0.0], "fixed": true},
+          {"id": "c", "pos": [-32.5, -20.0], "fixed": true},
+          {"id": "a", "pos": [5.0, -40.0], "fixed": true},
+          {"id": "b", "pos": [5.0, 0.0], "fixed": true}
+        ],
+        "curves": [{"id": "a1", "type": "arc", "c": 1, "a": 2, "b": 3}],
+        "constraints": []
+      }
+    },
+    {
+      "id": 4, "name": "Sweep1", "type": "sweep", "body_names": ["Bulge"],
+      "sketch": 1, "profiles": {"type": "all"}, "path_sketch": 2, "path": ["l1"],
+      "rails": [{"sketch": 3, "curves": ["a1"]}],
+      "operation": "new_body"
+    }
+  ],
+  "next_id": 5
+}

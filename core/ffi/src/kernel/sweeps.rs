@@ -46,6 +46,14 @@ pub mod ffi {
         /// A fixed binormal (mitcad#397) when `fixed_binormal`.
         fixed_binormal: bool,
         binormal: [f64; 3],
+        /// A second guide rail (empty for none) and the end scale (1 for
+        /// none; mitcad#464).
+        rail2: Vec<SweepCurve>,
+        end_scale: f64,
+        /// The rails' points where they cross the plane square to the
+        /// path, else at the path's fractions of their lengths
+        /// (mitcad#469).
+        rail_plane: bool,
     }
 
     /// A loft section: `kind` 0 a region (`index` into the frames and
@@ -183,11 +191,13 @@ use mitcad_model::{
 };
 // Sweeps along guide surfaces (mitcad#157).
 use mitcad_model::GuideSurface;
+// Sweeps' rail points (mitcad#469).
+use mitcad_model::RailPoint;
 
 use super::shape::ffi::new_shape_list;
 use super::{Shape, failed, occt, profile};
 
-fn curve(piece: &PathCurve) -> ffi::SweepCurve {
+pub(crate) fn curve(piece: &PathCurve) -> ffi::SweepCurve {
     let mut input = ffi::SweepCurve {
         name: piece.name.clone(),
         kind: 0,
@@ -310,6 +320,13 @@ pub fn surface_sweep(
         },
         fixed_binormal: spec.binormal.is_some(),
         binormal: spec.binormal.unwrap_or([0.0, 0.0, 1.0]),
+        rail2: spec
+            .guide
+            .and_then(|g| g.rail2)
+            .map(curves)
+            .unwrap_or_default(),
+        end_scale: spec.end_scale,
+        rail_plane: spec.guide.is_some_and(|g| g.point == RailPoint::Plane),
     };
     ffi::sweep_solid(
         &spec.feature.to_string(),

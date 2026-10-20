@@ -1,0 +1,12 @@
+{
+  "comment": "Worked out by hand: a plate 20 x 20 x 10 with a hole of radius 5 at (10, 10), as a mesh whose hole has 16 corners (each chord of 22.5 degrees 5 (1 - cos 11.25) = 0.0961 from the arc). Within the tolerance 0.1 the hole is a cylinder: (400 - 25 pi) 10 = 3214.6018; the mesh itself holds (400 - 200 sin 22.5) 10 = 3234.6331.",
+  "body_count": 1,
+  "total": {"volume_mm3": 3214.6018366},
+  "bbox": {"min": [0, 0, 0], "max": [20, 20, 10]},
+  "bodies": [
+    {"name": "Plate", "volume_mm3": 3214.6018366, "bbox": {"min": [0, 0, 0], "max": [20, 20, 10]}}
+  ],
+  "timeline": [{"name": "Mesh1"}, {"name": "ConvertMesh1"}],
+  "params": [{"name": "tol"}],
+  "parametric": 2
+}

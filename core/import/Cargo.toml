@@ -20,6 +20,8 @@ mitcad-freecad = { path = "../freecad" }
 mitcad-ifc = { path = "../ifc" }
 # The .rvt/.rfa reader (mitcad#274).
 mitcad-rvt = { path = "../rvt" }
+# .solidcraft designs (mitcad#450).
+mitcad-solidcraft = { path = "../solidcraft" }
 serde.workspace = true
 serde_json.workspace = true
 

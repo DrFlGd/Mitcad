@@ -10,10 +10,10 @@
     "supplier_url": "https://www.motedis.com/en/Slotted-block-B-type-slot-8-M6",
     "designation": "Slotted block heavy B-type slot 8 {Thread}",
     "rows": [
-      {"name":"M4","select":{"Thread":"M4"},"values":{},"part_number":"S8BHESNM4","supplier_url":"https://www.motedis.com/en/Slotted-block-B-type-slot-8-M4"},
-      {"name":"M5","select":{"Thread":"M5"},"values":{},"part_number":"S8BHESNM5","supplier_url":"https://www.motedis.com/en/Slotted-block-B-type-slot-8-M5"},
+      {"name":"M4","select":{"Thread":"M4"},"values":{},"part_number":"S8BHESNM4","supplier_url":"https://www.motedis.com/en/Slotted-block-B-type-slot-8-M4","source":"slot-profile-accessories/Slotted-block-B-type-slot-8-M4/Motedis-S8BHESNM4/Motedis_S8BHESNM4.stp"},
+      {"name":"M5","select":{"Thread":"M5"},"values":{},"part_number":"S8BHESNM5","supplier_url":"https://www.motedis.com/en/Slotted-block-B-type-slot-8-M5","source":"slot-profile-accessories/Slotted-block-B-type-slot-8-M5/Motedis-S8BHESNM5/Motedis_S8BHESNM5.stp"},
       {"name":"M6","select":{"Thread":"M6"},"values":{},"part_number":"S8BHESNM6"},
-      {"name":"M8","select":{"Thread":"M8"},"values":{},"part_number":"S8BHESNM8","supplier_url":"https://www.motedis.com/en/Slotted-block-B-type-slot-8-M8"}
+      {"name":"M8","select":{"Thread":"M8"},"values":{},"part_number":"S8BHESNM8","supplier_url":"https://www.motedis.com/en/Slotted-block-B-type-slot-8-M8","source":"slot-profile-accessories/Slotted-block-B-type-slot-8-M8/Motedis-S8BHESNM8/Motedis_S8BHESNM8.stp"}
     ],
     "build": {
       "role": "fastener",
@@ -35,10 +35,10 @@
     "supplier_url": "https://www.motedis.com/en/Slotted-block-with-spring-B-type-slot-10-M6",
     "designation": "Slotted block with spring B-type slot 10 {Thread}",
     "rows": [
-      {"name":"M4","select":{"Thread":"M4"},"values":{},"part_number":"S10BSSNM4","supplier_url":"https://www.motedis.com/en/Slotted-block-with-spring-B-type-slot-10-M4"},
-      {"name":"M5","select":{"Thread":"M5"},"values":{},"part_number":"S10BSSNM5","supplier_url":"https://www.motedis.com/en/Slotted-block-with-spring-B-type-slot-10-M5"},
+      {"name":"M4","select":{"Thread":"M4"},"values":{},"part_number":"S10BSSNM4","supplier_url":"https://www.motedis.com/en/Slotted-block-with-spring-B-type-slot-10-M4","source":"slot-profile-accessories/Slotted-block-with-spring-B-type-slot-10-M4/Motedis-S10BSSNM4/Motedis_S10BSSNM4.stp"},
+      {"name":"M5","select":{"Thread":"M5"},"values":{},"part_number":"S10BSSNM5","supplier_url":"https://www.motedis.com/en/Slotted-block-with-spring-B-type-slot-10-M5","source":"slot-profile-accessories/Slotted-block-with-spring-B-type-slot-10-M5/Motedis-S10BSSNM5/Motedis_S10BSSNM5.stp"},
       {"name":"M6","select":{"Thread":"M6"},"values":{},"part_number":"S10BSSNM6"},
-      {"name":"M8","select":{"Thread":"M8"},"values":{},"part_number":"S10BSSNM8","supplier_url":"https://www.motedis.com/en/Slotted-block-with-spring-B-type-slot-10-M8"}
+      {"name":"M8","select":{"Thread":"M8"},"values":{},"part_number":"S10BSSNM8","supplier_url":"https://www.motedis.com/en/Slotted-block-with-spring-B-type-slot-10-M8","source":"slot-profile-accessories/Slotted-block-with-spring-B-type-slot-10-M8/Motedis-S10BSSNM8/Motedis_S10BSSNM8.stp"}
     ],
     "build": {
       "role": "fastener",
@@ -60,11 +60,11 @@
     "supplier_url": "https://www.motedis.com/en/Slotted-block-with-spring-B-type-slot-8-M6",
     "designation": "Slotted block with spring B-type slot 8 {Thread}",
     "rows": [
-      {"name":"M3","select":{"Thread":"M3"},"values":{},"part_number":"S8BSSNM3","supplier_url":"https://www.motedis.com/en/Slotted-block-with-spring-B-type-slot-8-M3"},
-      {"name":"M4","select":{"Thread":"M4"},"values":{},"part_number":"S8BSSNM4","supplier_url":"https://www.motedis.com/en/Slotted-block-with-spring-B-type-slot-8-M4"},
-      {"name":"M5","select":{"Thread":"M5"},"values":{},"part_number":"S8BSSNM5","supplier_url":"https://www.motedis.com/en/Slotted-block-with-spring-B-type-slot-8-M5"},
+      {"name":"M3","select":{"Thread":"M3"},"values":{},"part_number":"S8BSSNM3","supplier_url":"https://www.motedis.com/en/Slotted-block-with-spring-B-type-slot-8-M3","source":"slot-profile-accessories/Slotted-block-with-spring-B-type-slot-8-M3/Motedis-S8BSSNM3/Motedis_S8BSSNM3.stp"},
+      {"name":"M4","select":{"Thread":"M4"},"values":{},"part_number":"S8BSSNM4","supplier_url":"https://www.motedis.com/en/Slotted-block-with-spring-B-type-slot-8-M4","source":"slot-profile-accessories/Slotted-block-with-spring-B-type-slot-8-M4/Motedis-S8BSSNM4/Motedis_S8BSSNM4.stp"},
+      {"name":"M5","select":{"Thread":"M5"},"values":{},"part_number":"S8BSSNM5","supplier_url":"https://www.motedis.com/en/Slotted-block-with-spring-B-type-slot-8-M5","source":"slot-profile-accessories/Slotted-block-with-spring-B-type-slot-8-M5/Motedis-S8BSSNM5/Motedis_S8BSSNM5.stp"},
       {"name":"M6","select":{"Thread":"M6"},"values":{},"part_number":"S8BSSNM6"},
-      {"name":"M8","select":{"Thread":"M8"},"values":{},"part_number":"S8BSSNM8","supplier_url":"https://www.motedis.com/en/Slotted-block-with-spring-B-type-slot-8-M8"}
+      {"name":"M8","select":{"Thread":"M8"},"values":{},"part_number":"S8BSSNM8","supplier_url":"https://www.motedis.com/en/Slotted-block-with-spring-B-type-slot-8-M8","source":"slot-profile-accessories/Slotted-block-with-spring-B-type-slot-8-M8/Motedis-S8BSSNM8/Motedis_S8BSSNM8.stp"}
     ],
     "build": {
       "role": "fastener",
@@ -148,9 +148,9 @@
     "supplier_url": "https://www.motedis.com/en/Square-nut-type-O-M6",
     "designation": "Square nut type O {Thread}",
     "rows": [
-      {"name":"M5","select":{"Thread":"M5"},"values":{},"part_number":"SLOTONM5","supplier_url":"https://www.motedis.com/en/Square-nut-type-O-M5"},
+      {"name":"M5","select":{"Thread":"M5"},"values":{},"part_number":"SLOTONM5","supplier_url":"https://www.motedis.com/en/Square-nut-type-O-M5","source":"slot-profile-accessories/Square-nut-type-O-M5/Motedis-SLOTONM5/Motedis_SLOTONM5.stp"},
       {"name":"M6","select":{"Thread":"M6"},"values":{},"part_number":"SLOTONM6"},
-      {"name":"M8","select":{"Thread":"M8"},"values":{},"part_number":"SLOTONM8","supplier_url":"https://www.motedis.com/en/Square-nut-type-O-M8"}
+      {"name":"M8","select":{"Thread":"M8"},"values":{},"part_number":"SLOTONM8","supplier_url":"https://www.motedis.com/en/Square-nut-type-O-M8","source":"slot-profile-accessories/Square-nut-type-O-M8/Motedis-SLOTONM8/Motedis_SLOTONM8.stp"}
     ]
   },
   {
@@ -165,7 +165,7 @@
     "designation": "Square nut with spring type O {Thread}",
     "rows": [
       {"name":"M6","select":{"Thread":"M6"},"values":{},"part_number":"SLOTSWBM6"},
-      {"name":"M8","select":{"Thread":"M8"},"values":{},"part_number":"SLOTSWBM8","supplier_url":"https://www.motedis.com/en/Slot-O-Square-nut-with-spring-M8"}
+      {"name":"M8","select":{"Thread":"M8"},"values":{},"part_number":"SLOTSWBM8","supplier_url":"https://www.motedis.com/en/Slot-O-Square-nut-with-spring-M8","source":"slot-profile-accessories/Slot-O-Square-nut-with-spring-M8/Motedis-SLOTSWBM8/Motedis_SLOTSWBM8.stp"}
     ]
   },
   {
@@ -180,7 +180,7 @@
     "designation": "Flange nut DIN 6923 {Thread}",
     "standard": "DIN 6923",
     "rows": [
-      {"name":"M6","select":{"Thread":"M6"},"values":{},"part_number":"DIN6923-vz-M6","supplier_url":"https://www.motedis.com/en/Flange-nut-M6"},
+      {"name":"M6","select":{"Thread":"M6"},"values":{},"part_number":"DIN6923-vz-M6","supplier_url":"https://www.motedis.com/en/Flange-nut-M6","source":"slot-profile-accessories/Flange-nut-M6/340me154.STEP"},
       {"name":"M8","select":{"Thread":"M8"},"values":{},"part_number":"FNM8"}
     ]
   },
@@ -216,7 +216,7 @@
     "designation": "Hammer head screw B-type slot 10 M8x25, {Version}",
     "rows": [
       {"name":"Plain","select":{"Version":"Plain"},"values":{},"part_number":"THBM8X25"},
-      {"name":"Caulked","select":{"Version":"Caulked"},"values":{},"part_number":"THBM8X25verstemmt","supplier_url":"https://www.motedis.com/en/Hammer-Head-Screw-B-Type-slot-10-M8x25-caulked"}
+      {"name":"Caulked","select":{"Version":"Caulked"},"values":{},"part_number":"THBM8X25verstemmt","supplier_url":"https://www.motedis.com/en/Hammer-Head-Screw-B-Type-slot-10-M8x25-caulked","source":"slot-profile-accessories/Hammer-Head-Screw-B-Type-slot-10-M8x25-caulked/Motedis-THBM8X25verstemmt/Motedis_THBM8X25verstemmt.stp"}
     ],
     "build": {
       "role": "fastener",

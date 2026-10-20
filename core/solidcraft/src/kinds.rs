@@ -1,0 +1,1143 @@
+// SPDX-License-Identifier: MIT
+//! Typed definitions of the feature kinds the import maps (SolidCraft's
+//! `FeatureKind` variants and the types they use, `crates/doc/src/document.rs`,
+//! `construct.rs`). Expressions stay text ([`crate::expr`] translates them);
+//! a plain number in an expression field is read as its text.
+
+use serde::{Deserialize, Deserializer};
+use serde_json::Value;
+
+use crate::document::Mat;
+use crate::sketch::Sketch;
+
+pub type Vec3 = [f64; 3];
+
+/// An expression: a string, or a number written as one.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Expr(pub String);
+
+impl<'de> Deserialize<'de> for Expr {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        match Value::deserialize(d)? {
+            Value::String(s) => Ok(Expr(s)),
+            Value::Number(n) => Ok(Expr(n.to_string())),
+            other => Err(D::Error::custom(format!("an expression, not {other}"))),
+        }
+    }
+}
+
+impl Expr {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// An explicit plane: origin and axes (normal x × y).
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+pub struct Plane {
+    pub origin: Vec3,
+    pub x_dir: Vec3,
+    pub y_dir: Vec3,
+}
+
+/// Where a sketch lies, or any plane a feature uses.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum PlaneRef {
+    /// `XY`, `XZ` or `YZ`.
+    Origin {
+        name: String,
+    },
+    Custom {
+        plane: Plane,
+    },
+    /// An explicit plane whose origin is length expressions.
+    Placed {
+        origin: [Expr; 3],
+        x_dir: Vec3,
+        y_dir: Vec3,
+    },
+    Offset {
+        base: Box<PlaneRef>,
+        distance: Expr,
+    },
+    /// Turned about a line (world coordinates) by an angle.
+    AtAngle {
+        base: Box<PlaneRef>,
+        axis_origin: Vec3,
+        axis_dir: Vec3,
+        angle: Expr,
+    },
+    /// A construction plane feature, by name.
+    Construction {
+        name: String,
+    },
+    /// Seen from its other side: a half turn about its x axis, or its y
+    /// axis with `about_y`.
+    Flipped {
+        base: Box<PlaneRef>,
+        #[serde(default)]
+        about_y: bool,
+    },
+    Midplane {
+        a: Box<GeoRef>,
+        b: Box<GeoRef>,
+    },
+    TwoEdges {
+        a: Box<GeoRef>,
+        b: Box<GeoRef>,
+    },
+    ThreePoints {
+        a: Box<GeoRef>,
+        b: Box<GeoRef>,
+        c: Box<GeoRef>,
+    },
+    Tangent {
+        face: Box<GeoRef>,
+        at: Vec3,
+    },
+    AlongPath {
+        path: Box<GeoRef>,
+        t: Expr,
+    },
+    Perpendicular {
+        plane: Box<GeoRef>,
+        line: Box<GeoRef>,
+    },
+    /// A planar body face picked at `at`; `plane` is the plane it had.
+    Face {
+        plane: Plane,
+        at: Vec3,
+        #[serde(default)]
+        name: Option<String>,
+        #[serde(default)]
+        anchor: Option<Value>,
+    },
+}
+
+/// A construction reference.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum GeoRef {
+    Point {
+        p: Vec3,
+    },
+    Origin,
+    Vertex {
+        at: Vec3,
+        #[serde(default)]
+        edges: Option<Vec<String>>,
+    },
+    Edge {
+        at: Vec3,
+        #[serde(default)]
+        name: Option<String>,
+    },
+    Face {
+        at: Vec3,
+        #[serde(default)]
+        name: Option<String>,
+    },
+    Plane {
+        plane: PlaneRef,
+    },
+    World {
+        axis: String,
+    },
+    Axis {
+        name: String,
+    },
+    ConstructPoint {
+        name: String,
+    },
+    SketchPoint {
+        sketch: u64,
+        point: String,
+    },
+    SketchCurve {
+        sketch: u64,
+        curve: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AxisDef {
+    ThroughFace { face: GeoRef },
+    NormalToFace { face: GeoRef, point: GeoRef },
+    TwoPlanes { a: GeoRef, b: GeoRef },
+    TwoPoints { a: GeoRef, b: GeoRef },
+    Edge { edge: GeoRef },
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum PointDef {
+    At { point: GeoRef },
+    TwoEdges { a: GeoRef, b: GeoRef },
+    ThreePlanes { a: GeoRef, b: GeoRef, c: GeoRef },
+    Center { of: GeoRef },
+    EdgeAndPlane { edge: GeoRef, plane: GeoRef },
+    AlongPath { path: GeoRef, t: Expr },
+}
+
+/// Which closed profiles of a sketch a feature uses.
+#[derive(Debug, Clone, PartialEq, Default, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ProfileSel {
+    #[default]
+    All,
+    /// By index in SolidCraft's solved profile list.
+    Indices {
+        indices: Vec<usize>,
+    },
+    /// Profiles whose outer loop is made of these curves (or their pieces).
+    Curves {
+        loops: Vec<Vec<String>>,
+    },
+    OffsetBoundaries {
+        associations: Vec<String>,
+    },
+    /// Outer boundaries and holes made of exactly these curves.
+    WholeBoundaries {
+        profiles: Vec<WholeBoundary>,
+    },
+    /// The profile holding each sketch point.
+    Points {
+        points: Vec<[f64; 2]>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct WholeBoundary {
+    pub outer: Vec<String>,
+    #[serde(default)]
+    pub holes: Vec<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Operation {
+    #[default]
+    NewBody,
+    Join,
+    Cut,
+    Intersect,
+}
+
+impl Operation {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Operation::NewBody => "new_body",
+            Operation::Join => "join",
+            Operation::Cut => "cut",
+            Operation::Intersect => "intersect",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Direction {
+    #[default]
+    Positive,
+    Negative,
+    Symmetric,
+}
+
+/// How a symmetric distance is read: per side (older designs) or in
+/// total.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExtrudeConvention {
+    #[default]
+    LegacyPerSide,
+    TotalDistance,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Extent {
+    pub distance: Expr,
+    #[serde(default)]
+    pub convention: ExtrudeConvention,
+    #[serde(default)]
+    pub direction: Direction,
+    #[serde(default)]
+    pub distance2: Option<Expr>,
+    #[serde(default)]
+    pub start_offset: Option<Expr>,
+    #[serde(default)]
+    pub through_all: bool,
+    #[serde(default)]
+    pub taper: Option<Expr>,
+    /// To Object: the face (or point) picked here.
+    #[serde(default)]
+    pub to: Option<Vec3>,
+    #[serde(default)]
+    pub to_offset: Option<Expr>,
+    /// From Object.
+    #[serde(default)]
+    pub from: Option<Vec3>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct ThinWall {
+    pub curves: Vec<String>,
+    pub thickness: Expr,
+    #[serde(default)]
+    pub side: ThinSide,
+    #[serde(default)]
+    pub thickness2: Option<Expr>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThinSide {
+    #[default]
+    Center,
+    Inside,
+    Outside,
+    TwoSides,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct SketchFeature {
+    pub plane: PlaneRef,
+    pub sketch: Sketch,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Extrude {
+    pub sketch: u64,
+    #[serde(default)]
+    pub profiles: ProfileSel,
+    pub extent: Extent,
+    #[serde(default)]
+    pub operation: Operation,
+    #[serde(default)]
+    pub targets: Vec<String>,
+    #[serde(default)]
+    pub thin: Option<ThinWall>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AxisRef {
+    SketchLine {
+        curve: String,
+    },
+    /// `x` or `y` of the sketch.
+    SketchAxis {
+        axis: String,
+    },
+    /// World `X`, `Y` or `Z`.
+    World {
+        axis: String,
+    },
+    Line {
+        origin: Vec3,
+        dir: Vec3,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RevolveConvention {
+    #[default]
+    LegacyAxisStart,
+    SketchNormal,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Revolve {
+    pub sketch: u64,
+    #[serde(default)]
+    pub profiles: ProfileSel,
+    pub axis: AxisRef,
+    pub angle: Expr,
+    #[serde(default)]
+    pub operation: Operation,
+    #[serde(default)]
+    pub targets: Vec<String>,
+    #[serde(default)]
+    pub angle2: Option<Expr>,
+    #[serde(default)]
+    pub symmetric: bool,
+    #[serde(default)]
+    pub convention: RevolveConvention,
+    #[serde(default)]
+    pub to: Option<Vec3>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum FilletStyle {
+    #[default]
+    Constant,
+    Chord,
+    Curvature,
+    Variable {
+        radius2: Expr,
+        start: Vec3,
+        #[serde(default)]
+        mid: Vec<(f64, Expr)>,
+        #[serde(default)]
+        smooth: bool,
+    },
+    Spline {
+        start: Vec3,
+        knots: Vec<f64>,
+        radii: Vec<Expr>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Fillet {
+    pub edges: Vec<Vec3>,
+    pub radius: Expr,
+    #[serde(default)]
+    pub body: Option<String>,
+    #[serde(default)]
+    pub style: FilletStyle,
+    /// `exact`, `reduce` or `taper`.
+    #[serde(default)]
+    pub fit: Option<String>,
+    /// `rolling` or `g2`.
+    #[serde(default)]
+    pub corner: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Chamfer {
+    pub edges: Vec<Vec3>,
+    pub distance: Expr,
+    #[serde(default)]
+    pub distance2: Option<Expr>,
+    #[serde(default)]
+    pub angle: Option<Expr>,
+    #[serde(default)]
+    pub flip: bool,
+    #[serde(default)]
+    pub body: Option<String>,
+}
+
+fn z_axis() -> Vec3 {
+    [0.0, 0.0, 1.0]
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct BoxPrimitive {
+    pub corner: [Expr; 3],
+    pub length: Expr,
+    pub width: Expr,
+    pub height: Expr,
+    #[serde(default)]
+    pub operation: Operation,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Cylinder {
+    pub base: [Expr; 3],
+    #[serde(default = "z_axis")]
+    pub axis: Vec3,
+    pub radius: Expr,
+    pub height: Expr,
+    #[serde(default)]
+    pub operation: Operation,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Sphere {
+    pub center: [Expr; 3],
+    pub radius: Expr,
+    #[serde(default)]
+    pub operation: Operation,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Torus {
+    pub center: [Expr; 3],
+    pub major: Expr,
+    pub minor: Expr,
+    #[serde(default)]
+    pub operation: Operation,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Combine {
+    pub target: String,
+    pub tools: Vec<String>,
+    pub operation: Operation,
+    #[serde(default)]
+    pub keep_tools: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum PatternKind {
+    Rectangular {
+        dir1: Vec3,
+        count1: Expr,
+        spacing1: Expr,
+        #[serde(default)]
+        dir2: Option<Vec3>,
+        #[serde(default)]
+        count2: Option<Expr>,
+        #[serde(default)]
+        spacing2: Option<Expr>,
+        /// `right` (the default), `left` or `center`.
+        #[serde(default)]
+        alignment: Option<String>,
+        #[serde(default)]
+        alignment2: Option<String>,
+        #[serde(default)]
+        reversed: bool,
+        #[serde(default)]
+        reversed2: bool,
+    },
+    Circular {
+        origin: Vec3,
+        axis: Vec3,
+        count: Expr,
+        angle: Expr,
+        #[serde(default)]
+        alignment: Option<String>,
+        #[serde(default)]
+        reversed: bool,
+    },
+    Path {
+        path_sketch: u64,
+        path: Vec<String>,
+        count: Expr,
+        spacing: Expr,
+        #[serde(default)]
+        extent: bool,
+        #[serde(default)]
+        flip: bool,
+        #[serde(default)]
+        orient: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Pattern {
+    pub features: Vec<String>,
+    pub pattern: PatternKind,
+    #[serde(default)]
+    pub bodies: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Mirror {
+    pub features: Vec<String>,
+    pub plane: PlaneRef,
+    #[serde(default)]
+    pub bodies: Vec<String>,
+    #[serde(default)]
+    pub combine: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum HoleKind {
+    #[default]
+    Simple,
+    Drilled {
+        tip_angle: Expr,
+    },
+    Counterbore {
+        cb_diameter: Expr,
+        cb_depth: Expr,
+    },
+    Countersink {
+        cs_diameter: Expr,
+        cs_angle: Expr,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct SketchPoints {
+    pub sketch: u64,
+    pub ids: Vec<String>,
+    #[serde(default)]
+    pub flip: bool,
+    #[serde(default)]
+    pub single: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Hole {
+    pub position: Vec3,
+    #[serde(default)]
+    pub at: Option<[Expr; 3]>,
+    pub direction: Vec3,
+    pub diameter: Expr,
+    #[serde(default)]
+    pub depth: Option<Expr>,
+    #[serde(default)]
+    pub hole: HoleKind,
+    #[serde(default)]
+    pub points: Option<SketchPoints>,
+    #[serde(default)]
+    pub thread: Option<String>,
+    #[serde(default)]
+    pub to: Option<Vec3>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Thread {
+    pub face: Vec3,
+    #[serde(default)]
+    pub designation: Option<String>,
+    #[serde(default)]
+    pub length: Option<Expr>,
+    #[serde(default)]
+    pub modeled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct LoftSection {
+    pub sketch: u64,
+    #[serde(default)]
+    pub profiles: ProfileSel,
+    #[serde(default)]
+    pub point: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Loft {
+    pub sections: Vec<LoftSection>,
+    #[serde(default)]
+    pub operation: Operation,
+    #[serde(default)]
+    pub targets: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct SweepRail {
+    pub sketch: u64,
+    pub curves: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Sweep {
+    pub sketch: u64,
+    #[serde(default)]
+    pub profiles: ProfileSel,
+    pub path_sketch: u64,
+    pub path: Vec<String>,
+    /// `perpendicular` (absent), `parallel` or `{"direction": [x, y, z]}`.
+    #[serde(default)]
+    pub orientation: Option<Value>,
+    #[serde(default)]
+    pub twist: Option<Expr>,
+    #[serde(default)]
+    pub scale: Option<Expr>,
+    #[serde(default)]
+    pub rails: Vec<SweepRail>,
+    #[serde(default)]
+    pub rail_fit: Option<String>,
+    #[serde(default)]
+    pub operation: Operation,
+    #[serde(default)]
+    pub targets: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Shell {
+    pub faces: Vec<Vec3>,
+    pub thickness: Expr,
+    #[serde(default)]
+    pub body: Option<String>,
+    /// `inside` (empty), `outside` or `both`.
+    #[serde(default)]
+    pub direction: String,
+    #[serde(default)]
+    pub tangent_chain: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Draft {
+    pub faces: Vec<Vec3>,
+    pub angle: Expr,
+    pub neutral: PlaneRef,
+    pub pull: Vec3,
+    #[serde(default)]
+    pub body: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct ConstructionPlane {
+    pub plane: PlaneRef,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct FaceAt {
+    pub body: String,
+    pub point: Vec3,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Split {
+    pub body: String,
+    pub plane: PlaneRef,
+    #[serde(default)]
+    pub tool: Option<FaceAt>,
+    #[serde(default)]
+    pub sketch: Option<u64>,
+    #[serde(default)]
+    pub line: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct ConstructionAxis {
+    pub def: AxisDef,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct ConstructionPoint {
+    pub def: PointDef,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct SplitFace {
+    pub faces: Vec<Vec3>,
+    #[serde(default)]
+    pub body: Option<String>,
+    pub plane: PlaneRef,
+    #[serde(default)]
+    pub tool: Option<FaceAt>,
+    #[serde(default)]
+    pub sketch: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Scale {
+    pub bodies: Vec<String>,
+    #[serde(default)]
+    pub origin: Vec3,
+    pub factor: Expr,
+    #[serde(default)]
+    pub factors: Option<[Expr; 3]>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct OffsetFace {
+    pub faces: Vec<Vec3>,
+    pub distance: Expr,
+    #[serde(default)]
+    pub body: Option<String>,
+}
+
+fn yes() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct DeleteFace {
+    pub faces: Vec<Vec3>,
+    #[serde(default)]
+    pub body: Option<String>,
+    #[serde(default = "yes")]
+    pub heal: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct ReplaceFace {
+    pub faces: Vec<Vec3>,
+    pub target: PlaneRef,
+    #[serde(default)]
+    pub body: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Pipe {
+    pub path_sketch: u64,
+    pub path: Vec<String>,
+    pub diameter: Expr,
+    #[serde(default)]
+    pub wall: Option<Expr>,
+    #[serde(default)]
+    pub operation: Operation,
+    #[serde(default)]
+    pub targets: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Coil {
+    pub base: [Expr; 3],
+    #[serde(default = "z_axis")]
+    pub axis: Vec3,
+    pub diameter: Expr,
+    pub pitch: Expr,
+    pub turns: Expr,
+    pub section_size: Expr,
+    /// `circular` (default) or `square`.
+    #[serde(default)]
+    pub section: Option<String>,
+    #[serde(default)]
+    pub position: i8,
+    #[serde(default)]
+    pub start_angle: Option<Expr>,
+    #[serde(default)]
+    pub clockwise: bool,
+    #[serde(default)]
+    pub operation: Operation,
+    #[serde(default)]
+    pub targets: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Rib {
+    pub sketch: u64,
+    pub curves: Vec<String>,
+    pub thickness: Expr,
+    #[serde(default)]
+    pub depth: Option<Expr>,
+    #[serde(default)]
+    pub flip: bool,
+    #[serde(default)]
+    pub web: bool,
+    #[serde(default)]
+    pub normal: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Move {
+    pub bodies: Vec<String>,
+    pub translate: [Expr; 3],
+    #[serde(default)]
+    pub rotate_axis: Option<Vec3>,
+    #[serde(default)]
+    pub angle: Option<Expr>,
+    #[serde(default)]
+    pub copy: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Remove {
+    pub bodies: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Import {
+    pub file: String,
+    #[serde(default)]
+    pub step: String,
+    #[serde(default)]
+    pub skip: Vec<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct MeshData {
+    pub name: String,
+    pub positions: Vec<f64>,
+    pub triangles: Vec<u32>,
+    #[serde(default)]
+    pub color: Option<[f32; 3]>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct MeshImport {
+    pub file: String,
+    pub meshes: Vec<MeshData>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct BodyTransfer {
+    pub bodies: Vec<String>,
+    pub from: u64,
+    pub to: u64,
+    pub transform: Mat,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct SheetBase {
+    pub sketch: u64,
+    #[serde(default)]
+    pub profiles: ProfileSel,
+    #[serde(default)]
+    pub rule: Option<String>,
+    #[serde(default)]
+    pub flip: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct SheetContour {
+    pub sketch: u64,
+    pub curves: Vec<String>,
+    pub distance: Expr,
+    #[serde(default)]
+    pub rule: Option<String>,
+    #[serde(default)]
+    pub flip: bool,
+    #[serde(default)]
+    pub reverse: bool,
+}
+
+/// An edge flange's edge: a point, or a point with its own angle and
+/// height.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FlangeEdge {
+    pub point: Vec3,
+    pub angle: Option<Expr>,
+    pub height: Option<Expr>,
+}
+
+impl<'de> Deserialize<'de> for FlangeEdge {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Form {
+            Point(Vec3),
+            Own {
+                point: Vec3,
+                #[serde(default)]
+                angle: Option<Expr>,
+                #[serde(default)]
+                height: Option<Expr>,
+            },
+        }
+        Ok(match Form::deserialize(d)? {
+            Form::Point(point) => FlangeEdge {
+                point,
+                angle: None,
+                height: None,
+            },
+            Form::Own {
+                point,
+                angle,
+                height,
+            } => FlangeEdge {
+                point,
+                angle,
+                height,
+            },
+        })
+    }
+}
+
+fn inside() -> String {
+    "inside".to_owned()
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct SheetFlange {
+    pub edges: Vec<FlangeEdge>,
+    pub height: Expr,
+    pub angle: Expr,
+    #[serde(default)]
+    pub radius: Option<Expr>,
+    /// `inside`, `outside` or `middle`.
+    #[serde(default = "inside")]
+    pub position: String,
+    #[serde(default)]
+    pub flip: bool,
+    #[serde(default)]
+    pub body: Option<String>,
+    #[serde(default)]
+    pub corner_relief_shape: Option<String>,
+    #[serde(default)]
+    pub corner_relief: Option<Expr>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct SheetHem {
+    pub edges: Vec<Vec3>,
+    pub length: Expr,
+    #[serde(default)]
+    pub gap: Option<Expr>,
+    #[serde(default)]
+    pub flip: bool,
+    #[serde(default)]
+    pub body: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct SheetFold {
+    #[serde(default)]
+    pub sketch: Option<u64>,
+    #[serde(default)]
+    pub curve: Option<String>,
+    pub a: Vec3,
+    pub b: Vec3,
+    pub angle: Expr,
+    #[serde(default)]
+    pub radius: Option<Expr>,
+    pub position: String,
+    #[serde(default)]
+    pub flip: bool,
+    #[serde(default)]
+    pub fixed: Option<Vec3>,
+    #[serde(default)]
+    pub body: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct SheetUnfold {
+    #[serde(default)]
+    pub body: Option<String>,
+    #[serde(default)]
+    pub refold: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct SheetConvert {
+    pub body: String,
+    pub face: Vec3,
+    #[serde(default)]
+    pub rule: Option<String>,
+    #[serde(default)]
+    pub bends: Vec<Vec3>,
+}
+
+/// A perforation field (mitcad#461).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct SheetPerforate {
+    pub diameter: Expr,
+    pub pitch: Expr,
+    #[serde(default)]
+    pub margin: Option<Expr>,
+    #[serde(default)]
+    pub pattern: Option<String>,
+    #[serde(default)]
+    pub body: Option<String>,
+}
+
+/// Profiles raised (or sunk with `deboss`) by `depth` on a planar face,
+/// or wrapped onto the cylindrical wall `face` picks (mitcad#458).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Emboss {
+    pub sketch: u64,
+    #[serde(default)]
+    pub profiles: ProfileSel,
+    pub depth: Expr,
+    #[serde(default)]
+    pub deboss: bool,
+    #[serde(default)]
+    pub face: Option<EmbossFace>,
+    #[serde(default)]
+    pub targets: Vec<String>,
+}
+
+/// The cylindrical wall an emboss wraps onto: a point on it, in the
+/// feature's component, and the occurrence paths that place the body and
+/// the feature's component (empty: the component itself).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct EmbossFace {
+    pub body: String,
+    pub at: Vec3,
+    #[serde(default)]
+    pub path: Vec<u64>,
+    #[serde(default)]
+    pub author_path: Vec<u64>,
+}
+
+/// A box around bodies grown by a margin, as a new body (mitcad#460); no
+/// bodies: every body.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct BoundingSolid {
+    #[serde(default)]
+    pub bodies: Vec<String>,
+    /// "0" when the file has none.
+    #[serde(default)]
+    pub margin: Option<Expr>,
+}
+
+/// Boundary Fill (mitcad#457): the cells the tools enclose, each picked by
+/// a point inside it, new bodies or joined, cut or intersected with the
+/// feature's participants; `remove_tools` removes the tools first.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct BoundaryFill {
+    pub tools: Vec<String>,
+    pub cells: Vec<Vec3>,
+    #[serde(default)]
+    pub operation: Operation,
+    #[serde(default)]
+    pub remove_tools: bool,
+}
+
+/// A mesh body rebuilt as planes and cylinders within a tolerance
+/// (mitcad#462).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct MeshConvert {
+    pub body: String,
+    pub tolerance: Expr,
+}
+
+// Patch, Stitch and Thicken (mitcad#456).
+
+/// How a patch meets the faces beside its loop: the whole loop's
+/// continuity and single edges' (`g0` to `g3`), by points on them.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct PatchContinuity {
+    #[serde(default = "g0")]
+    pub all: String,
+    #[serde(default)]
+    pub edges: Vec<EdgeContinuity>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct EdgeContinuity {
+    pub edge: Vec3,
+    pub g: String,
+}
+
+fn g0() -> String {
+    "g0".to_owned()
+}
+
+impl Default for PatchContinuity {
+    fn default() -> Self {
+        Self {
+            all: g0(),
+            edges: Vec::new(),
+        }
+    }
+}
+
+/// A patch: regions of a sketch, a closed loop of a body's edges picked
+/// by points on them, or both.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Patch {
+    #[serde(default)]
+    pub sketch: Option<u64>,
+    #[serde(default)]
+    pub profiles: ProfileSel,
+    #[serde(default)]
+    pub body: Option<String>,
+    #[serde(default)]
+    pub edges: Vec<Vec3>,
+    /// How full a fitted patch's middle is (-0.9 to 3).
+    #[serde(default)]
+    pub crown: f64,
+    #[serde(default)]
+    pub continuity: PatchContinuity,
+    /// Points a patch on edges passes through.
+    #[serde(default)]
+    pub points: Vec<Vec3>,
+}
+
+/// Bodies sewn into the first, edges within `tolerance` (0: SolidCraft's
+/// own, from the bodies' size).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Stitch {
+    pub bodies: Vec<String>,
+    #[serde(default)]
+    pub tolerance: Option<Expr>,
+}
+
+/// Surface bodies made solid by a thickness along their normals, half to
+/// each side when symmetric.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Thicken {
+    pub bodies: Vec<String>,
+    pub thickness: Expr,
+    #[serde(default)]
+    pub symmetric: bool,
+    #[serde(default)]
+    pub operation: Operation,
+    #[serde(default)]
+    pub targets: Vec<String>,
+}

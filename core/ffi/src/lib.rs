@@ -52,6 +52,11 @@ use ifc_import::ifc_test_building;
 // The .rvt and .rfa import, phase 1 (mitcad#274).
 mod rvt_import;
 use rvt_import::{rvt_write_building_test, rvt_write_test_file};
+// The .solidcraft import (mitcad#450).
+mod solidcraft_import;
+// The .dwg import (mitcad#453).
+mod dwg_import;
+use dwg_import::{dwg_report_passes, dwg_report_text, dwg_write_test_file};
 
 use cxx::SharedPtr;
 use mitcad_model::api::ApiError;
@@ -219,6 +224,22 @@ mod ffi {
         /// grid, a link) to `dir` as building.rvt with its linked.rvt
         /// (mitcad#275).
         fn rvt_write_building_test(dir: &str) -> Result<()>;
+        /// Imports a .solidcraft design with its history (mitcad#450; options in
+        /// commands.md, `import_solidcraft`); returns the import report as
+        /// JSON, or text with `{"text": true}`.
+        fn import_solidcraft(self: &mut Document, path: &str, json: &str) -> Result<String>;
+        /// Imports a .dwg drawing's 3D content: its solids and meshes as
+        /// bodies, its blocks as components with their occurrences
+        /// (options in commands.md, `import_dwg`); returns the import
+        /// report as JSON, or text with `{"text": true}`.
+        fn import_dwg(self: &mut Document, path: &str, json: &str) -> Result<String>;
+        /// Writes the .dwg reader's test drawing in a version (`R2000`,
+        /// `R2018`, ...) (tests).
+        fn dwg_write_test_file(path: &str, version: &str) -> Result<()>;
+        /// The text form of an `import_dwg` report given as JSON.
+        fn dwg_report_text(json: &str) -> String;
+        /// Whether an `import_dwg` report given as JSON passes its checks.
+        fn dwg_report_passes(json: &str) -> bool;
     }
 
     // Background computation (P7, jobs.rs): the application computes a
@@ -623,6 +644,8 @@ impl Document {
                         | "import_iam"
                         | "import_ifc"
                         | "import_rvt"
+                        | "import_solidcraft"
+                        | "import_dwg"
                 )
             )
         };
@@ -662,6 +685,8 @@ impl Document {
             Some("import_iam") => self.import_iam_command(command),
             Some("import_ifc") => self.import_ifc_command(command),
             Some("import_rvt") => self.import_rvt_command(command),
+            Some("import_solidcraft") => self.import_solidcraft_command(command),
+            Some("import_dwg") => self.import_dwg_command(command),
             _ => self.import_f3d_command(command),
         }
     }

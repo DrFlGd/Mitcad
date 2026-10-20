@@ -31,6 +31,7 @@
 #include <GeomAPI_IntSS.hxx>
 #include <GeomAPI_ProjectPointOnCurve.hxx>
 #include <Geom_Curve.hxx>
+#include <Law_BSpFunc.hxx>
 #include <Law_BSpline.hxx>
 #include <Law_Interpolate.hxx>
 #include <NCollection_Array1.hxx>
@@ -622,6 +623,30 @@ double chord_radius(const Shape& body, int edge, double chord) {
   return chord / (2.0 * std::sin(angle / 2.0));
 }
 
+// A spline radius (mitcad#464): degree 1 to 3, 2 to 100 positive control
+// radii, its knots rising from 0 to 1, each end repeated degree + 1 times.
+void check_spline(const FilletSet& set) {
+  const std::size_t n = set.radii.size();
+  if (n < 2 || n > 100 || set.knots.size() < n + 2 || set.knots.size() > n + 4 ||
+      set.knots.size() - n - 1 >= n) {
+    throw std::invalid_argument("a spline radius has degree 1 to 3 and 2 to 100 control radii, and as "
+                                "many knots as both and one more");
+  }
+  const std::size_t degree = set.knots.size() - n - 1;
+  for (std::size_t i = 0; i < set.knots.size(); ++i) {
+    const double k = set.knots[i];
+    const bool end = i <= degree || i + degree + 1 >= set.knots.size();
+    if (!std::isfinite(k) || (i > 0 && k < set.knots[i - 1]) ||
+        (end && k != (i <= degree ? 0.0 : 1.0))) {
+      throw std::invalid_argument("the knots of a spline radius rise from 0 to 1, each end repeated "
+                                  "degree + 1 times");
+    }
+  }
+  for (const double radius : set.radii) {
+    detail::require_positive("fillet control radius", radius);
+  }
+}
+
 void check_fillet_set(const FilletSet& set) {
   switch (set.size) {
   case FilletSize::Constant:
@@ -646,6 +671,9 @@ void check_fillet_set(const FilletSet& set) {
   case FilletSize::Asymmetric:
     detail::require_positive("fillet distance", set.radius);
     detail::require_positive("second fillet distance", set.radius2);
+    break;
+  case FilletSize::Spline:
+    check_spline(set);
     break;
   }
   if (set.curvature && !(set.weight >= 0.1 && set.weight <= 2.0)) {
@@ -762,6 +790,67 @@ void add_variable(BRepFilletAPI_MakeFillet& maker, const Shape& body, const Fill
   }
 }
 
+// Adds a spline radius set's contour from edge `e` (mitcad#464): the radius
+// the set's B-spline of the position along the whole chain, by arc length
+// from the start (the set's start vertex, else the spine's first vertex),
+// given to OCCT as a law of the spine's abscissa (port patch 0920).
+void add_spline(BRepFilletAPI_MakeFillet& maker, const Shape& body, const FilletSet& set,
+                const TopoDS_Edge& e, double scale) {
+  maker.Add(set.radii.front() * scale, e);
+  const int ic = maker.Contour(e);
+  if (maker.FirstVertex(ic).IsSame(maker.LastVertex(ic))) {
+    throw std::invalid_argument("unsupported: a spline radius around a closed chain");
+  }
+  bool reversed = false;
+  if (!set.start_vertex.empty()) {
+    const std::vector<int> start = body.find_vertices(set.start_vertex);
+    if (start.size() != 1) {
+      throw std::invalid_argument("the body has no vertex " + set.start_vertex);
+    }
+    const TopoDS_Shape& vertex = body.vertex(start.front());
+    reversed = maker.LastVertex(ic).IsSame(vertex);
+    if (!reversed && !maker.FirstVertex(ic).IsSame(vertex)) {
+      throw std::invalid_argument("vertex " + set.start_vertex + " is not an end of the edges' chain");
+    }
+  }
+  std::vector<double> knots = set.knots;
+  std::vector<double> radii = set.radii;
+  if (reversed) {
+    for (double& knot : knots) {
+      knot = 1.0 - knot;
+    }
+    std::reverse(knots.begin(), knots.end());
+    std::reverse(radii.begin(), radii.end());
+  }
+  // OCCT's knots are distinct, with multiplicities; along the spine's
+  // abscissa from its first vertex.
+  const double from = maker.Abscissa(ic, maker.FirstVertex(ic));
+  const double length = maker.Length(ic);
+  std::vector<double> distinct;
+  std::vector<int> multiplicities;
+  for (const double knot : knots) {
+    if (!distinct.empty() && knot <= distinct.back()) {
+      ++multiplicities.back();
+    } else {
+      distinct.push_back(knot);
+      multiplicities.push_back(1);
+    }
+  }
+  NCollection_Array1<double> poles(1, static_cast<int>(radii.size()));
+  for (std::size_t i = 0; i < radii.size(); ++i) {
+    poles(static_cast<int>(i) + 1) = radii[i] * scale;
+  }
+  NCollection_Array1<double> knot_values(1, static_cast<int>(distinct.size()));
+  NCollection_Array1<int> knot_multiplicities(1, static_cast<int>(distinct.size()));
+  for (std::size_t i = 0; i < distinct.size(); ++i) {
+    knot_values(static_cast<int>(i) + 1) = from + distinct[i] * length;
+    knot_multiplicities(static_cast<int>(i) + 1) = multiplicities[i];
+  }
+  const int degree = static_cast<int>(set.knots.size() - set.radii.size() - 1);
+  occ::handle<Law_BSpline> curve = new Law_BSpline(poles, knot_values, knot_multiplicities, degree);
+  maker.SetRadius(occ::handle<Law_Function>(new Law_BSpFunc(curve, from, from + length)), ic, 1);
+}
+
 // Setback and blend corners stop the roundings or bevels this many times
 // their largest size from the vertex (Mitcad's convention until K89, K90):
 // past the rolling ball's or OCCT's own corner face.
@@ -783,6 +872,9 @@ double largest_radius(const Shape& body, const FilletSet& set, int edge) {
   }
   case FilletSize::Asymmetric:
     return std::max(set.radius, set.radius2);
+  case FilletSize::Spline:
+    // The B-spline keeps within its control radii.
+    return set.radii.empty() ? 0.0 : *std::max_element(set.radii.begin(), set.radii.end());
   }
   return set.radius;
 }
@@ -1025,6 +1117,9 @@ ShapePtr round_edges(const std::string& feature, const Shape& body, const std::v
       break;
     case FilletSize::Variable:
       add_variable(maker, body, set, e, scale);
+      break;
+    case FilletSize::Spline:
+      add_spline(maker, body, set, e, scale);
       break;
     case FilletSize::Asymmetric:
       throw std::logic_error("an asymmetric set among the rolling ball fillets");
@@ -1412,6 +1507,7 @@ ShapePtr round_and_blend(const std::string& feature, const Shape& body, const st
       maker.Add(contact_distance(start, e, set) * scale, start.edge(e));
       break;
     case FilletSize::Variable:
+    case FilletSize::Spline:
       throw std::invalid_argument("unsupported: curvature continuous fillets with a variable radius");
     }
   }
@@ -1477,6 +1573,7 @@ ShapePtr ring_fillet(const std::string& feature, const Shape& body, const std::v
       break;
     case FilletSize::Variable:
     case FilletSize::Asymmetric:
+    case FilletSize::Spline:
       return nullptr;
     }
     rings.push_back(ring);

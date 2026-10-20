@@ -254,6 +254,17 @@ bool isRvtFile(const QString& path) {
          suffix == QLatin1String("rft");
 }
 
+// A SolidCraft design (mitcad#450), by import_solidcraft.
+bool isSolidcraftFile(const QString& path) {
+  const QString suffix = QFileInfo(path).suffix().toLower();
+  return suffix == QLatin1String("solidcraft") || suffix == QLatin1String("solvecraft");
+}
+
+// A drawing's 3D content (mitcad#453), by import_dwg.
+bool isDwgFile(const QString& path) {
+  return QFileInfo(path).suffix().compare(QStringLiteral("dwg"), Qt::CaseInsensitive) == 0;
+}
+
 // The worker's exit status. While import threads that the hang watchdog
 // gave up still run (their geometry kernel call has not returned), the
 // worker ends here, without the static destructors that would tear down
@@ -273,7 +284,8 @@ int runImportWorker(int argc, char* argv[]) {
   QCoreApplication app(argc, argv);
   QCommandLineParser parser;
   const QCommandLineOption worker(QStringLiteral("import-worker"),
-                                  QStringLiteral(".f3d, .f3z, .FCStd, .ipt, .iam, .ifc, .ifczip, .rvt or .rfa file"),
+                                  QStringLiteral(".f3d, .f3z, .FCStd, .ipt, .iam, .ifc, .ifczip, .rvt, .rfa, "
+                                                 ".solidcraft or .dwg file"),
                                   QStringLiteral("file"));
   const QCommandLineOption output(QStringLiteral("output"), QStringLiteral("Design file to write"),
                                   QStringLiteral("file"));
@@ -316,9 +328,13 @@ int runImportWorker(int argc, char* argv[]) {
   const bool ifc = isIfcFile(QString::fromUtf8(path));
   // A building project's elements likewise (mitcad#274).
   const bool rvt = isRvtFile(QString::fromUtf8(path));
+  // A SolidCraft design: its history in one command (mitcad#450).
+  const bool solidcraft = isSolidcraftFile(QString::fromUtf8(path));
+  // A drawing's 3D content likewise (mitcad#453).
+  const bool dwg = isDwgFile(QString::fromUtf8(path));
   // The timeline's length, for the progress dialog.
   try {
-    if (!freecad && !ipt && !ifc && !rvt) {
+    if (!freecad && !ipt && !ifc && !rvt && !solidcraft && !dwg) {
       const QJsonObject designs = parseObject(document->import_f3d_timeline(rustStr(path), "{\"list\": true}"));
       int items = 0;
       for (const QJsonValue& design : designs.value(QStringLiteral("designs")).toArray()) {
@@ -345,6 +361,11 @@ int runImportWorker(int argc, char* argv[]) {
                             {QStringLiteral("path"), QString::fromUtf8(path)}}
       : rvt   ? QJsonObject{{QStringLiteral("cmd"), QStringLiteral("import_rvt")},
                             {QStringLiteral("path"), QString::fromUtf8(path)}}
+      : solidcraft
+          ? QJsonObject{{QStringLiteral("cmd"), QStringLiteral("import_solidcraft")},
+                        {QStringLiteral("path"), QString::fromUtf8(path)}}
+      : dwg   ? QJsonObject{{QStringLiteral("cmd"), QStringLiteral("import_dwg")},
+                            {QStringLiteral("path"), QString::fromUtf8(path)}}
       : ipt   ? QJsonObject{{QStringLiteral("cmd"), QStringLiteral("import_ipt")},
                             {QStringLiteral("path"), QString::fromUtf8(path)},
                             {QStringLiteral("hang_limit"), kHangLimit}}
@@ -355,7 +376,7 @@ int runImportWorker(int argc, char* argv[]) {
                             // (mitcad#95): the logical cores, at most 8.
                             {QStringLiteral("threads"), importThreads()}};
   // (A building project's: the linked models' files chosen, mitcad#275.)
-  if (!freecad && !ipt && !ifc) {
+  if (!freecad && !ipt && !ifc && !solidcraft && !dwg) {
     for (auto it = moreOptions.begin(); it != moreOptions.end(); ++it) {
       command.insert(it.key(), it.value());
     }
@@ -364,7 +385,7 @@ int runImportWorker(int argc, char* argv[]) {
   // instead of its own streams, as a synthetic design has none
   // (tools/ui-import-deviations-test.sh, mitcad#379).
   if (const QString dump = qEnvironmentVariable("MITCAD_TEST_IMPORT_DUMP");
-      !dump.isEmpty() && !freecad && !ipt && !ifc && !rvt) {
+      !dump.isEmpty() && !freecad && !ipt && !ifc && !rvt && !solidcraft && !dwg) {
     command.insert(QStringLiteral("dump"), dump);
   }
   QJsonObject answer;
@@ -448,7 +469,8 @@ void F3dImport::start() {
   const QString name = QFileInfo(m_path).fileName();
   if (m_preset) {
     // (Run again with the options of the import before, mitcad#379.)
-  } else if (!isFreeCadFile(m_path) && !isIptFile(m_path) && !isIfcFile(m_path) && !isRvtFile(m_path)) {
+  } else if (!isFreeCadFile(m_path) && !isIptFile(m_path) && !isIfcFile(m_path) && !isRvtFile(m_path) &&
+             !isSolidcraftFile(m_path) && !isDwgFile(m_path)) {
     m_options = askReferences();
     // The geometric tolerance of the Preferences (mitcad#224).
     m_options.insert(QStringLiteral("geometric_tolerance"), GeneralSettings::load().importTolerance);
@@ -461,7 +483,7 @@ void F3dImport::start() {
   m_dialog = new ImportProgress(
       m_window, [this] { stop(); }, [this] { cancel(); });
   m_dialog->setStoppable(!isFreeCadFile(m_path) && !isIptFile(m_path) && !isIfcFile(m_path) &&
-                         !isRvtFile(m_path));
+                         !isRvtFile(m_path) && !isSolidcraftFile(m_path) && !isDwgFile(m_path));
   m_ticker = new QTimer(this);
   m_ticker->setInterval(500);
   connect(m_ticker, &QTimer::timeout, this, &F3dImport::tick);

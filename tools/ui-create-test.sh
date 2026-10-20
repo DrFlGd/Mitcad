@@ -4,7 +4,8 @@
 # The CREATE group (U4) through the real UI, with the volumes the model
 # reports (analytic, or tools/cli/tests/f1_*.json):
 #   - Extrude: a thin extrusion (walls centred on the profile), edited to
-#     two sides; a start offset up to the XY plane.
+#     two sides; a start offset up to the XY plane; a thin extrusion along
+#     an open chain of sketch curves picked in the panel (mitcad#463).
 #   - Revolve: two sides about the Y axis.
 #   - Hole: two holes clicked on a face, placed exactly in the position
 #     table, edited to counterbores through all, then to tapered
@@ -15,6 +16,8 @@
 #     then given extra radial and flank clearance, then end chamfers.
 #   - Box, Cylinder, Sphere and Torus placed with a click on XY; New
 #     Component.
+#   - Emboss (mitcad#458): a rectangle wrapped onto a rod's side and
+#     raised, edited to sunk (tools/cli/tests/emboss.json's volumes).
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
 # Usage: tools/ui-create-test.sh [screenshot.png]
@@ -54,6 +57,15 @@ cat > "$WORK/rod.json" << 'EOF'
     "extent": {"type": "distance", "distance": 20}, "operation": "new_body"}}
 ]
 EOF
+# An open L of lines (0,0)-(40,0)-(40,30) (Sketch1 F1) for thin walls
+# along curves (mitcad#463).
+cat > "$WORK/curves.json" << 'EOF'
+[
+  {"cmd": "sketch.create"},
+  {"cmd": "sketch.add_line", "sketch": "F1", "start": [0, 0], "end": [40, 0]},
+  {"cmd": "sketch.add_line", "sketch": "F1", "start": [40, 0], "end": [40, 30]}
+]
+EOF
 # The demo's 60 x 40 x 20 block (F1, F2) with a hole as the FreeCAD import
 # writes one: at the centre of a 6.6 mm circle (Sketch2 F4 on Plane1 F3, the
 # top face's plane), counterdrilled 11 mm 3 deep at 90 degrees, tapered 2
@@ -86,7 +98,19 @@ hole_volume() {
     printf "%.6f", pi * (R * R * d + (zc - d) / 3 * (R * R + R * rc + rc * rc) + (20 - zc) / 3 * (rc * rc + rc * rh + rh * rh))
   }'
 }
-for model in profiles rod drilled; do
+# A rod of diameter 20, 30 long (F1, F2), and on XZ (through its axis) a
+# 6 x 6 rectangle from z = 2 to 8 (F3) to emboss on its side.
+cat > "$WORK/emboss.json" << EOF
+[
+  {"cmd": "sketch.create"},
+  {"cmd": "sketch.add_circle", "sketch": "F1", "center": [0, 0], "diameter": 20},
+  {"cmd": "add_feature", "def": {"type": "extrude", "profiles": [{"sketch": "F1", "region": "r{c1}"}],
+    "extent": {"type": "distance", "distance": 30}, "operation": "new_body"}},
+  {"cmd": "sketch.create", "plane": "xz"},
+  {"cmd": "sketch.add_rectangle", "sketch": "F3", "corner": [-3, -8], "width": 6, "height": 6}
+]
+EOF
+for model in profiles rod drilled emboss curves; do
   "$CLI" run "$WORK/$model.json" --save "$WORK/$model.mitcad" > "$WORK/cli.log" 2>&1 ||
     { cat "$WORK/cli.log"; ui_fail "mitcad-cli $model"; }
 done
@@ -172,6 +196,32 @@ ui_expect_volume "New body Body4 (F8.b0): volume \([0-9.]*\) mm3" 7853.981634 "2
 grep -q "Recompute failed" "$UI_LOG" && ui_fail "a recompute failed"
 ui_stop_app
 
+echo "=== Thin walls along an open chain of sketch curves (mitcad#463)"
+ui_start_app --open "$WORK/curves.mitcad"
+ui_step "fit (F6)"                         ui_key F6
+ui_step "extrude (E)"                      ui_key e
+ui_expect_log "Extrude Profiles: nothing" "no profile to take"
+ui_step "Thin Extrude"                     ui_choose "Panel Extrude input type" 1
+ui_expect_log "Extrude: Type = Thin Extrude" "thin chosen"
+ui_step "pick the first line"              ui_click_logged "Sketch entity F1/c1"
+ui_expect_log "Extrude Profiles: 1 sketch curve" "one line picked"
+ui_expect_log "Preview Extrude: ok" "the first line previewed"
+# The preview of the first line, the design's first body, leaves the view
+# as it was (mitcad#467): the second line is picked right away where it
+# was logged.
+ui_step "pick the second line"             ui_click_logged "Sketch entity F1/c4"
+ui_expect_log "Extrude Profiles: 2 sketch curves" "the open chain picked"
+ui_step "thickness 2"                      ui_type_in "Panel Extrude input thickness" "2"
+ui_step "distance 10"                      ui_type_in "Panel Extrude input distance" "10"
+ui_expect_log "Preview Extrude: ok" "previewed"
+ui_step "OK (Enter)"                       ui_key Return
+ui_expect_log "Added thin extrude (New Body), distance 10" "thin extrusion along the curves added"
+# Side 1, to the right of the L as it bends left: round the outside of the
+# corner, mitred: (2 x 40 + 2 x 30 + 2 x 2) x 10.
+ui_expect_volume "New body Body1 (F2.b0): volume \([0-9.]*\) mm3" 1440 "walls along the L"
+grep -q "Recompute failed" "$UI_LOG" && ui_fail "a recompute failed"
+ui_stop_app
+
 echo "=== Hole"
 ui_start_app --demo
 ui_step "fit (F6)"                         ui_key F6
@@ -247,6 +297,37 @@ ui_step "OK (Enter)"                       ui_key Return
 ui_expect_log "Edited F5" "Hole1 edited"
 ui_expect_volume "Body Body1 (F2.b0): volume [0-9.]* -> \([0-9.]*\) mm3" \
   "$(awk -v one="$(hole_volume 1 60)" 'BEGIN { printf "%.6f", 48000 - one }')" "still counterdrilled, tapered 1 degree"
+grep -q "Recompute failed" "$UI_LOG" && ui_fail "a recompute failed"
+ui_stop_app
+
+echo "=== Emboss: a rectangle wrapped onto a rod"
+ui_start_app --open "$WORK/emboss.mitcad"
+ui_step "fit (F6)"                         ui_key F6
+ui_step "emboss (search)"                  ui_command "Emboss"
+ui_expect_log "Command Emboss started" "emboss started"
+ui_expect_log "Emboss Profiles: 1 profile [profile $RECT of F3]" "the newest profile taken"
+ui_step "the face input"                   ui_click_logged "Panel Emboss input face"
+ui_step "pick the rod's side"              ui_click_pick "face F2.b0/F2:side(c1)"
+ui_expect_log "Emboss Face: 1 face" "the cylindrical face picked"
+ui_step "depth 1"                          ui_type_in "Panel Emboss input depth" "1"
+ui_expect_log "Preview Emboss: ok" "previewed"
+ui_step "OK (Enter)"                       ui_key Return
+ui_expect_log "Added emboss (Raise) of 1 profile(s) on a cylindrical face, wrapped, depth 1" "emboss added"
+# 36 mm2 wrapped onto radius 10 and raised to 11: 36 * 21 / 20 more.
+ui_expect_volume "Body Body1 (F2.b0): volume 9424.778 -> \([0-9.]*\) mm3" 9462.577961 "raised on the rod"
+
+echo "--- Edited to sink"
+ui_mark
+ui_step "double-click Emboss1"             ui_double_click_logged "Timeline Emboss1"
+ui_expect_new "Editing F4 with Emboss" "editing Emboss1"
+ui_expect_new "Emboss Face: 1 face" "the face loaded"
+ui_step "Sink"                             ui_choose "Panel Emboss input mode" 1
+ui_expect_new "Emboss: Raise or Sink = Sink" "sink chosen"
+ui_expect_new "Preview Emboss: ok" "previewed"
+ui_step "OK (Enter)"                       ui_key Return
+ui_expect_new "Edited F4" "Emboss1 edited"
+# Sunk to radius 9: 36 * 19 / 20 less than the rod.
+ui_expect_volume "Body Body1 (F2.b0): volume [0-9.]* -> \([0-9.]*\) mm3" 9390.577961 "sunk into the rod"
 grep -q "Recompute failed" "$UI_LOG" && ui_fail "a recompute failed"
 ui_stop_app
 

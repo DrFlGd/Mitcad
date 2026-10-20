@@ -53,7 +53,7 @@ use serde::{Deserialize, Serialize};
 use super::bodies::{BodySet, apply_tool, apply_tool_strays};
 use super::dressup_copies::{copied_features, is_dressup, repeat_dressup};
 use super::face_refs::UNSUPPORTED;
-use super::geom_ref::{GeomRef, PathCurve, PathRef, Want, path_curve};
+use super::geom_ref::{GeomRef, PathChain, PathCurve, PathRef, Want, path_curve};
 use super::{
     BodyChange, CheckContext, EvalContext, Evaluate, FeatureDef, FeatureInfo, FeatureOutput,
     Operation, References, is_false,
@@ -62,7 +62,7 @@ use crate::ids::{BodyUid, FeatureUid};
 use crate::kernel::{BooleanOp, BooleanOutput, BoundingBox, Kernel, KernelError};
 use crate::parameters::ParamId;
 use crate::topo::FaceName;
-use crate::transform::{Instance, Transform, add, cross, scaled, sub};
+use crate::transform::{Instance, Transform, add, cross, dot, scaled, sub};
 
 /// What a pattern or a mirror repeats (`patternEntityType` in .f3d designs).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -505,7 +505,8 @@ pub(crate) fn changes_sheet(def: &FeatureDef) -> bool {
         | FeatureDef::SheetCut(_)
         | FeatureDef::SheetCornerRound(_)
         | FeatureDef::SheetCornerChamfer(_)
-        | FeatureDef::SheetCornerRelief(_) => true,
+        | FeatureDef::SheetCornerRelief(_)
+        | FeatureDef::SheetPerforate(_) => true,
         _ => false,
     }
 }
@@ -898,6 +899,21 @@ fn path_transform(curve: &PathCurve, from: f64, to: f64, along_path: bool) -> Tr
     }
 }
 
+/// The transform taking the element at arc length `from` of a chain of
+/// curves to the one at `to` (mitcad#464): moved along, and with
+/// `along_path` turned about the sketch's normal as the path's tangent
+/// turns.
+fn chain_transform(chain: &PathChain, from: f64, to: f64, along_path: bool) -> Transform {
+    let (p0, t0) = chain.at(from);
+    let (p1, t1) = chain.at(to);
+    let shift = Transform::translation(sub(p1, p0));
+    if !along_path {
+        return shift;
+    }
+    let angle = dot(cross(t0, t1), chain.normal).atan2(dot(t0, t1));
+    shift.after(&Transform::rotation(p0, chain.normal, angle).expect("a unit normal"))
+}
+
 impl PathPatternDef {
     fn elements<K: Kernel>(&self, ctx: &mut EvalContext<'_, K>) -> Result<Vec<Element>, String> {
         let q = quantity(&ctx.param_name(self.quantity), ctx.param(self.quantity)?)?;
@@ -911,14 +927,24 @@ impl PathPatternDef {
         if matches!(self.path, PathRef::Edges { .. }) {
             return Err(format!("{UNSUPPORTED}path patterns along edges"));
         }
-        let curve = path_curve(ctx, &self.path)?;
-        let s0 = self.start * curve.length();
         let sign = if self.flip { -1.0 } else { 1.0 };
         let step = sign * step(self.distance_type, distance, q);
-        let all: Vec<Transform> = positions(q, self.symmetric)
-            .into_iter()
-            .map(|i| path_transform(&curve, s0, s0 + i * step, self.along_path))
-            .collect();
+        let all: Vec<Transform> = if let PathRef::SketchCurves { sketch, curves } = &self.path {
+            // Along a chain of lines and arcs (mitcad#464).
+            let chain = PathChain::of_sketch(ctx, *sketch, curves)?;
+            let s0 = self.start * chain.length();
+            positions(q, self.symmetric)
+                .into_iter()
+                .map(|i| chain_transform(&chain, s0, s0 + i * step, self.along_path))
+                .collect()
+        } else {
+            let curve = path_curve(ctx, &self.path)?;
+            let s0 = self.start * curve.length();
+            positions(q, self.symmetric)
+                .into_iter()
+                .map(|i| path_transform(&curve, s0, s0 + i * step, self.along_path))
+                .collect()
+        };
         let all = scale_elements(ctx, &self.objects, self.scale, all)?;
         ctx.elements.clone_from(&all);
         active(all, &self.suppressed_elements)

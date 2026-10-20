@@ -50,10 +50,14 @@ set(designs
     # inferred, as the file lost one of its four edge references, which is
     # left out. The rounding of the thread's chamfer cone down to the root
     # (item 143) is parametric since the port's patches 0860 and 0861
-    # (mitcad#441). Falling back: a sweep that passes over itself, a
-    # rounding the geometry kernel does not build (item 88), an
-    # extrusion whose profile's curve the sketch no longer has.
-    "db73863f|Thread1,Revolve4|Sweep1,Fillet6,Extrude3|Axis1,C-Pattern1,Extrude3,Extrude6,Fillet4,Fillet5,GeometricRelationship1,Plane1,Plane2,Plane3,Thread1,Thread2")
+    # (mitcad#441). The rounding along the tetracore's closed chain of 36
+    # edges (item 88) is parametric since the port's patch 0870 (mitcad#343).
+    # Falling back: a sweep that passes over itself, an extrusion whose
+    # profile's curve the sketch no longer has, and the rounding of the
+    # thread's crest on the tetracore (item 133), whose ends OCCT does not
+    # build on the replay's thread, its flank split per turn (the file's
+    # body after item 88 held it before).
+    "db73863f|Thread1,Revolve4,Fillet6|Sweep1,Extrude3,Fillet7|Axis1,C-Pattern1,Extrude3,Extrude6,Fillet4,Fillet5,GeometricRelationship1,Plane1,Plane2,Plane3,Thread1,Thread2")
 
 # Seconds as the trace gives them (two decimals) in hundredths.
 function(hundredths seconds out)

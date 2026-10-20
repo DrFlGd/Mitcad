@@ -1145,9 +1145,15 @@ impl<K: Kernel> Document<K> {
             }
             (_, pick) => pick,
         };
-        // A part that moves on another's frame (a carriage on its rail).
+        // A part that moves on another's frame (a carriage on its rail). One
+        // that slides in a slot goes on a profile's side as a profile does
+        // (mitcad#448): on the slot of the side picked, not on the first
+        // slot frame the profile lists.
         let mate = source.meta.linear.as_ref().and_then(|l| l.mate.clone());
-        if let Some(mate) = &mate {
+        let in_slot = mate.as_ref().is_some_and(|m| m.on == "slot")
+            && target.info.meta.role == BuildRole::Profile
+            && matches!(pick, Pick::Slot(_) | Pick::Face(_));
+        if let Some(mate) = mate.as_ref().filter(|_| !in_slot) {
             let on = match &pick {
                 Pick::Frame(name) | Pick::Slot(name) | Pick::End(name)
                     if target.info.frame_kind(name) == mate.on =>
@@ -1464,8 +1470,16 @@ impl<K: Kernel> Document<K> {
             .mount(slot)
             .ok_or_else(|| refuse(format!("{} has no frame {slot}", target.info.name)))?;
         // A profile stands on the slot with its end; another part with its
-        // frame that mounts on a slot.
-        let mounting = own_frame(&source.meta, mounts, &["slot", "face", "hole"]);
+        // frame that mounts on a slot: the one its slot mate names (a
+        // slider, mitcad#448), else its first slot, face or hole frame.
+        let mounting = source
+            .meta
+            .linear
+            .as_ref()
+            .and_then(|l| l.mate.as_ref())
+            .filter(|m| m.on == "slot" && mounts.contains_key(&m.frame))
+            .map(|m| m.frame.clone())
+            .or_else(|| own_frame(&source.meta, mounts, &["slot", "face", "hole"]));
         let own = match mounting {
             Some(own) if source.meta.role != BuildRole::Profile => own,
             _ if source.meta.length.is_some() && mounts.contains_key(touch) => touch.to_owned(),
@@ -1790,12 +1804,20 @@ impl<K: Kernel> Document<K> {
             own.to_owned()
         };
         let (kind, slide) = match mate {
-            Some(mate) => (
-                serde_json::from_value::<JointKind>(serde_json::json!(mate.joint))
-                    .unwrap_or(JointKind::Slider),
-                serde_json::from_value::<SlideAxis>(serde_json::json!(mate.axis))
-                    .unwrap_or(SlideAxis::X),
-            ),
+            Some(mate) => {
+                let kind = serde_json::from_value::<JointKind>(serde_json::json!(mate.joint))
+                    .unwrap_or(JointKind::Slider);
+                // A slide axis only on sliders (a rigid shaft support's
+                // mate names none).
+                let slide = match kind {
+                    JointKind::Slider => {
+                        serde_json::from_value::<SlideAxis>(serde_json::json!(mate.axis))
+                            .unwrap_or(SlideAxis::X)
+                    }
+                    _ => SlideAxis::Z,
+                };
+                (kind, slide)
+            }
             None => (JointKind::Rigid, SlideAxis::Z),
         };
         let on_local = *target

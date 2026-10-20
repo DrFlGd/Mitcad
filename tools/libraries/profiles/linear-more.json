@@ -856,29 +856,6 @@
     ]
   },
   {
-    "id": "threaded-rod-m5",
-    "name": "Threaded rod M5 DIN 976, steel 4.8",
-    "category": "linear",
-    "source": "mechanical-basics/M5-Thread-rod-DIN-976-steel-48-1000mm/Motedis_10135.stp",
-    "make": "section",
-    "supplier": "Motedis",
-    "part_number": "10135",
-    "supplier_url": "https://www.motedis.com/en/M5-Thread-rod-DIN-976-steel-48-1000mm",
-    "designation": "Threaded rod M5 DIN 976 L={L}",
-    "rows": [],
-    "build": {
-      "role": "linear",
-      "length": {"parameter":"L","min":"10 mm","max":"1000 mm","stock":["1000 mm"]},
-      "frames": [{"name":"end_a","kind":"end"},{"name":"end_b","kind":"end"},{"name":"shaft","kind":"shaft"}],
-      "linear": {"kind":"screw","size":"M5","lead":"0.8 mm","pitch":"0.8 mm"}
-    },
-    "frames": [
-      {"name":"end_a","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"end"},
-      {"name":"end_b","origin":[0,0,"L"],"z":[0,0,1],"x":[1,0,0],"kind":"end"},
-      {"name":"shaft","origin":[0,0,0],"z":[0,0,1],"x":[1,0,0],"kind":"shaft"}
-    ]
-  },
-  {
     "id": "spacer-bearing-8-10",
     "name": "Spacer for bearing, 8 to 10 mm",
     "category": "linear",

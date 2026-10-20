@@ -1,0 +1,247 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: where the first walk from a start found as an edge overflow fails
+at its first section, the next such start along the spine is taken
+(mitcad#343).
+
+The case: 0904's notch wall at the far end of a bar, a plane strip about
+0.06 high between the floor (a cone) and the faces of an earlier rounding,
+its edge with the floor rounded with 0.86. The wall's far edge is three
+edges: a spline from the spine's first vertex (the wall narrowing to a
+point there), a line, and a spline to the spine's last vertex.
+StartSolOverflow samples the spine from its start and takes the first
+section it finds: there, 1.2 along a spine 12 long, the ball touching the
+floor's side and the face beyond the wall's first spline edge, the earlier
+rounding, with its contact inside that face, so the wall's side rolls on
+that edge. But the ball that rolls on the edge and touches that face (the
+walk's surface-edge section) touches its surface outside the face (u 1.07
+against the face's 0 to 1): no blend rolls on that edge, the walk failed
+at its first section, and the whole stripe with it. The stored body's
+rounding does not roll on that edge either: it rolls on the line and ends
+in the corner where the line edge starts, which OCCT builds the same way
+when the walk comes from the other end. The same wall on the other side of
+the notch built, its spine running the other way, its first start on the
+spline edge at the far end, where the rolling ball touches the face.
+
+- StartSolOverflow takes only starts past a guide parameter given
+  (theAfter, none by default).
+- ComputeData (a surface and an edge) records that its walk found no
+  section at its start (myStartSectionFailed, reset at each step of
+  PerformSetOfSurfOnElSpine).
+- PerformSetOfSurfOnElSpine: where the first walk, from inside, from such
+  a start fails so, the next start past it is taken and walked instead,
+  until none is left; then the walk fails as before. A walk that failed
+  further on keeps its failure (a key's lens rounded on both edges, 0821,
+  is built after such a failure by its own route).
+
+Upstream: new.
+
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.hxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.hxx
+index 6aa3ca39..a0004ca1 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.hxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.hxx
+@@ -848,6 +848,9 @@ protected:
+   NCollection_List<occ::handle<ChFiDS_Stripe>>                                      myStripeFailed;
+   NCollection_List<int>                                                             myStripeFailure;
+   bool                                                                              myWalkOnEdge;
++  //! The last walk of a blend rolling on an edge found no section at its
++  //! start (ComputeData; reset at each step of PerformSetOfSurfOnElSpine).
++  bool                                                                              myStartSectionFailed;
+   //! The corner being built at a vertex (PerformFilletOnVertex), and the
+   //! faulty vertices' corners (FailedCorner...; parallel to badvertices).
+   CornerKind                                                                        myCorner;
+@@ -978,6 +981,8 @@ private:
+   //! P1/P2 updated), 1 or 2 (HC, HSref, HCref and W of that side as
+   //! StartSol gives them for an obstacle; the result is a mask of the
+   //! sides, 3 never given).
++  //! Only starts past the guide parameter theAfter are taken (the next
++  //! start, where the first walk from one failed at once).
+   Standard_EXPORT int StartSolOverflow(const occ::handle<ChFiDS_Stripe>&      S,
+                                        const occ::handle<ChFiDS_ElSpine>&     HGuide,
+                                        occ::handle<BRepAdaptor_Surface>&      HS1,
+@@ -994,7 +999,8 @@ private:
+                                        occ::handle<BRepAdaptor_Curve2d>&      HC2,
+                                        occ::handle<BRepAdaptor_Surface>&      HSref2,
+                                        occ::handle<BRepAdaptor_Curve2d>&      HCref2,
+-                                       double&                                W2) const;
++                                       double&                                W2,
++                                       const double                           theAfter = -1.e100) const;
+ 
+   //! Finds the stripes whose blends overlap on a face between their edges
+   //! (each one's contact on that face lies beyond the other's) all along
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_1.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_1.cxx
+index 74eb839b..c57479de 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_1.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_1.cxx
+@@ -406,6 +406,7 @@ ChFi3d_Builder::ChFi3d_Builder(const TopoDS_Shape& S, const double Ta)
+   SetContinuity(GeomAbs_C1, Ta);
+   myFailure    = Failure_None;
+   myWalkOnEdge = false;
++  myStartSectionFailed = false;
+   myCorner       = Corner_None;
+   myCornerBlends = 0;
+   myCornerEdges  = 0;
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+index 6fce034c..77d17c31 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+@@ -1816,7 +1816,8 @@ int ChFi3d_Builder::StartSolOverflow(const occ::handle<ChFiDS_Stripe>&      Stri
+                                      occ::handle<BRepAdaptor_Curve2d>&      HC2,
+                                      occ::handle<BRepAdaptor_Surface>&      HSref2,
+                                      occ::handle<BRepAdaptor_Curve2d>&      HCref2,
+-                                     double&                                W2) const
++                                     double&                                W2,
++                                     const double                           theAfter) const
+ {
+   const occ::handle<ChFiDS_Spine>& Spine      = Stripe->Spine();
+   ChFiDS_ElSpine&                  els        = *HGuide;
+@@ -1841,6 +1842,11 @@ int ChFi3d_Builder::StartSolOverflow(const occ::handle<ChFiDS_Stripe>&      Stri
+   {
+     const double t     = double(nbessai) / nbessaimax;
+     double       w     = wf * (1. - t) + wl * t;
++    // (Only past a start whose walk failed at once.)
++    if (w <= theAfter)
++    {
++      continue;
++    }
+     const int    iedge = Spine->Index(w);
+     TopoDS_Edge  cured = Spine->Edges(iedge);
+     ConexFaces(Spine, iedge, HS1, HS2);
+@@ -1859,6 +1865,11 @@ int ChFi3d_Builder::StartSolOverflow(const occ::handle<ChFiDS_Stripe>&      Stri
+     {
+       continue;
+     }
++    // (Also on the guide: a periodic one's projection may come back before.)
++    if (w <= theAfter)
++    {
++      continue;
++    }
+     TopoDS_Face f1forward = f1, f2forward = f2;
+     f1forward.Orientation(TopAbs_FORWARD);
+     f2forward.Orientation(TopAbs_FORWARD);
+@@ -4541,6 +4552,11 @@ void ChFi3d_Builder::PerformSetOfSurfOnElSpine(const occ::handle<ChFiDS_ElSpine>
+   double First   = wf;
+   double Last    = wl;
+   bool   Ok1 = true, Ok2 = true;
++  // (The start found as an edge overflow, StartSolOverflow, at guide
++  // parameter aStartParam: where the first walk from it fails at once,
++  // the next start past it is tried.)
++  bool   aOverflowStart = false;
++  double aStartParam    = 0.;
+   // Restore the next KPart if it exists
+   TopoDS_Vertex Vref;
+   if (ref.IsNull() && raf.IsNull())
+@@ -4589,6 +4605,8 @@ void ChFi3d_Builder::PerformSetOfSurfOnElSpine(const occ::handle<ChFiDS_ElSpine>
+       Spine->SetErrorStatus(ChFiDS_Ok);
+       obstacleon1 = (sides & 1) != 0;
+       obstacleon2 = (sides & 2) != 0;
++      aOverflowStart = true;
++      aStartParam    = First;
+     }
+ 
+     Last = wf;
+@@ -5052,6 +5070,7 @@ void ChFi3d_Builder::PerformSetOfSurfOnElSpine(const occ::handle<ChFiDS_ElSpine>
+     SD = new ChFiDS_SurfData();
+     NCollection_Sequence<occ::handle<ChFiDS_SurfData>> SeqSD;
+     SeqSD.Append(SD);
++    myStartSectionFailed = false;
+ 
+     // (A step of a blend rolling on an edge that fails past that edge's
+     // vertex on the face at the end: the walk stops at the vertex,
+@@ -5077,6 +5096,50 @@ void ChFi3d_Builder::PerformSetOfSurfOnElSpine(const occ::handle<ChFiDS_ElSpine>
+       aRolledToEnd = true;
+       return true;
+     };
++    // (The first walk, from a start found as an edge overflow, found no
++    // section at that start: the next such start past it, its walk the
++    // next step. A walk that failed further on keeps its failure.)
++    const auto NextOverflowStart = [&]() {
++      if (!aOverflowStart || !ref.IsNull() || !Inside || Simul || !myStartSectionFailed)
++      {
++        return false;
++      }
++      double    aW    = aStartParam;
++      const int sides = StartSolOverflow(Stripe,
++                                         HGuide,
++                                         HS1,
++                                         HS2,
++                                         It1,
++                                         It2,
++                                         pp1,
++                                         pp2,
++                                         aW,
++                                         HC1,
++                                         HSref1,
++                                         HCref1,
++                                         w1,
++                                         HC2,
++                                         HSref2,
++                                         HCref2,
++                                         w2,
++                                         aStartParam);
++      // (Only a start further on: the retries end.)
++      if (sides < 0 || aW <= aStartParam)
++      {
++        return false;
++      }
++      Spine->SetErrorStatus(aStatusBefore);
++      myWalkOnEdge = aWalkOnEdgeBefore;
++      done         = false;
++      obstacleon1  = (sides & 1) != 0;
++      obstacleon2  = (sides & 2) != 0;
++      decroch1     = false;
++      decroch2     = false;
++      aStartParam  = aW;
++      First        = aW;
++      Last         = wf;
++      return true;
++    };
+ 
+     if (!aBridge.IsEmpty())
+     {
+@@ -5264,7 +5327,14 @@ void ChFi3d_Builder::PerformSetOfSurfOnElSpine(const occ::handle<ChFiDS_ElSpine>
+         }
+         catch (Standard_Failure const&)
+         {
+-          if (!RolledToFaceAtEnd())
++          if (RolledToFaceAtEnd())
++          {
++          }
++          else if (NextOverflowStart())
++          {
++            continue;
++          }
++          else
+           {
+             throw;
+           }
+@@ -5345,7 +5415,14 @@ void ChFi3d_Builder::PerformSetOfSurfOnElSpine(const occ::handle<ChFiDS_ElSpine>
+         }
+         catch (Standard_Failure const&)
+         {
+-          if (!RolledToFaceAtEnd())
++          if (RolledToFaceAtEnd())
++          {
++          }
++          else if (NextOverflowStart())
++          {
++            continue;
++          }
++          else
+           {
+             throw;
+           }
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_6.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_6.cxx
+index 059b0f47..7d73a18d 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_6.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_6.cxx
+@@ -1685,6 +1685,8 @@ bool ChFi3d_Builder::ComputeData(occ::handle<ChFiDS_SurfData>&           Data,
+ #ifdef OCCT_DEBUG
+       std::cout << "Path not created" << std::endl;
+ #endif
++      // (No section at the start: the walk did not begin.)
++      myStartSectionFailed = true;
+       return false;
+     }
+ 

@@ -52,6 +52,8 @@ struct DocumentSnapshot {
              type == QStringLiteral("joint_origin") || type == QStringLiteral("rigid_group") ||
              type == QStringLiteral("constraint_set");
     }
+    // Motion links (mitcad#466): the browser's Motion Links folder.
+    bool isMotionLink() const { return type == QStringLiteral("motion_link"); }
     // Evaluated without an error (perhaps with warnings).
     bool succeeded() const { return status == QStringLiteral("ok") || status == QStringLiteral("warning"); }
     // Before the marker and not suppressed: its result exists.
@@ -111,6 +113,10 @@ struct DocumentSnapshot {
   // Sheet-metal bodies (mitcad#210): the `sheet_bodies` query's entries
   // (body, rules and their name and values, Flat Pattern state).
   QJsonArray sheets;
+  // Motion studies and contact sets (mitcad#454): the `motion_studies` and
+  // `contact_sets` queries' entries.
+  QJsonArray motionStudies;
+  QJsonArray contactSets;
   // Saved in the document (P9): the root's Origin folder shown, and what
   // the view is isolated to (bodies and occurrences; none: everything).
   bool originShown = false;
@@ -149,6 +155,10 @@ struct DocumentSnapshot {
   int occurrenceDof(const QString& uid) const;
   // A sheet-metal body's entry of `sheets`, or an empty object.
   QJsonObject sheet(const QString& body) const;
+  // A motion study or a contact set by name (mitcad#454), or an empty
+  // object.
+  QJsonObject motionStudy(const QString& name) const;
+  QJsonObject contactSet(const QString& name) const;
 };
 
 // The icon (app/icons) of a feature type in the timeline and the browser.

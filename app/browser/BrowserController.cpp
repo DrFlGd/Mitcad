@@ -288,6 +288,13 @@ void BrowserController::updateFailures() {
     joints << QStringLiteral("%1 %2").arg(joint.value(QStringLiteral("name")).toString(),
                                           joint.value(QStringLiteral("state")).toString());
   }
+  // Motion links (mitcad#466): "MotionLink1 gear placed".
+  for (const QJsonValue& value : m_snapshot.joints.value(QStringLiteral("links")).toArray()) {
+    const QJsonObject link = value.toObject();
+    joints << QStringLiteral("%1 %2 %3").arg(link.value(QStringLiteral("name")).toString(),
+                                             link.value(QStringLiteral("coupling")).toString(),
+                                             link.value(QStringLiteral("state")).toString());
+  }
   for (const QJsonValue& value : m_snapshot.joints.value(QStringLiteral("dof")).toArray()) {
     const QJsonObject component = value.toObject();
     joints << QStringLiteral("DOF %1 %2")
@@ -486,6 +493,12 @@ void BrowserController::rename(const BrowserNode& node, const QString& name) {
   case BrowserNode::Type::Analysis:
     command = cmd("rename_analysis", {{QStringLiteral("name"), node.uid}, {QStringLiteral("new_name"), name}});
     break;
+  case BrowserNode::Type::MotionStudy:
+    command = cmd("edit_motion_study", {{QStringLiteral("name"), node.uid}, {QStringLiteral("new_name"), name}});
+    break;
+  case BrowserNode::Type::ContactSet:
+    command = cmd("edit_contact_set", {{QStringLiteral("name"), node.uid}, {QStringLiteral("new_name"), name}});
+    break;
   default:
     return;
   }
@@ -543,6 +556,12 @@ void BrowserController::browserDoubleClicked(const BrowserNode& node) {
   case BrowserNode::Type::Analysis:
     m_host.editAnalysis(node.uid);
     break;
+  case BrowserNode::Type::MotionStudy:
+    m_host.openMotionStudy(node.uid);
+    break;
+  case BrowserNode::Type::ContactSet:
+    m_host.editContactSet(node.uid);
+    break;
   default:
     break;
   }
@@ -590,6 +609,16 @@ void BrowserController::deleteNode(const BrowserNode& node) {
   case BrowserNode::Type::Analysis:
     if (canChange() && m_host.runModelCommand(cmd("delete_analysis", {{QStringLiteral("name"), node.uid}}))) {
       qDebug().noquote() << QStringLiteral("Deleted analysis %1").arg(node.name);
+    }
+    break;
+  case BrowserNode::Type::MotionStudy:
+    if (canChange() && m_host.runModelCommand(cmd("delete_motion_study", {{QStringLiteral("name"), node.uid}}))) {
+      qDebug().noquote() << QStringLiteral("Deleted motion study %1").arg(node.name);
+    }
+    break;
+  case BrowserNode::Type::ContactSet:
+    if (canChange() && m_host.runModelCommand(cmd("delete_contact_set", {{QStringLiteral("name"), node.uid}}))) {
+      qDebug().noquote() << QStringLiteral("Deleted contact set %1").arg(node.name);
     }
     break;
   default:
@@ -1064,6 +1093,53 @@ void BrowserController::browserMenu(const BrowserNode& node, const QPoint& at) {
     renameEntry();
     menu.add(QStringLiteral("delete"), tr("Delete"), [this, node] { deleteNode(node); });
     break;
+  // Motion links (mitcad#466): in the component the folder is in.
+  case BrowserNode::Type::MotionLinks:
+    menu.add(QStringLiteral("motion-link"), tr("New Motion Link"), [this] {
+      if (canChange()) {
+        m_host.startCommand(QStringLiteral("assemble.motion_link"), {}, nullptr);
+      }
+    });
+    break;
+  // Motion studies and contact sets (mitcad#454).
+  case BrowserNode::Type::MotionStudies:
+    menu.add(QStringLiteral("motion-study"), tr("New Motion Study"), [this] {
+      if (canChange()) {
+        m_host.openMotionStudy(QString());
+      }
+    });
+    break;
+  case BrowserNode::Type::MotionStudy:
+    menu.add(QStringLiteral("motion-study"), tr("Play %1").arg(node.name),
+             [this, node] { m_host.openMotionStudy(node.uid); });
+    menu.separator();
+    renameEntry();
+    menu.add(QStringLiteral("delete"), tr("Delete"), [this, node] { deleteNode(node); });
+    break;
+  case BrowserNode::Type::ContactSets:
+    menu.add(QStringLiteral("contact-set"), tr("New Contact Set"), [this] {
+      if (canChange()) {
+        m_host.startCommand(QStringLiteral("assemble.contact_set"), {}, nullptr);
+      }
+    });
+    break;
+  case BrowserNode::Type::ContactSet: {
+    menu.add(QStringLiteral("edit"), tr("Edit %1").arg(node.name), [this, node] { m_host.editContactSet(node.uid); });
+    const bool suppressed = m_snapshot.contactSet(node.uid).value(QStringLiteral("suppressed")).toBool();
+    menu.add(QStringLiteral("suppress"), suppressed ? tr("Unsuppress") : tr("Suppress"), [this, node, suppressed] {
+      if (canChange() &&
+          m_host.runModelCommand(cmd("edit_contact_set", {{QStringLiteral("name"), node.uid},
+                                                          {QStringLiteral("suppressed"), !suppressed}}))) {
+        qDebug().noquote() << QStringLiteral("%1 %2").arg(suppressed ? QStringLiteral("Unsuppressed")
+                                                                     : QStringLiteral("Suppressed"),
+                                                          node.name);
+      }
+    });
+    menu.separator();
+    renameEntry();
+    menu.add(QStringLiteral("delete"), tr("Delete"), [this, node] { deleteNode(node); });
+    break;
+  }
   case BrowserNode::Type::Feature:
     // The timeline's menu of the feature (mitcad#177).
     // (its own menu ends with Collapse All).

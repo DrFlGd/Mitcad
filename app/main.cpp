@@ -184,7 +184,8 @@ int main(int argc, char* argv[]) {
       QStringLiteral("open"),
       QStringLiteral("Open <file> at start-up: a Mitcad design (.mitcad), an .f3d or .f3z design, "
                      "a FreeCAD document (.FCStd), an .ipt part, an .iam assembly, an IFC file (.ifc, .ifczip), an "
-                     ".rvt project or .rfa family, STEP, IGES, BRep, STL, OBJ or DXF as a new document."),
+                     ".rvt project or .rfa family, a SolidCraft design (.solidcraft), a .dwg drawing's 3D content, "
+                     "STEP, IGES, BRep, STL, OBJ or DXF as a new document."),
       QStringLiteral("file"));
   const QCommandLineOption qtDialogsOption(
       QStringLiteral("no-native-dialogs"),

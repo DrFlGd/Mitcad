@@ -63,6 +63,10 @@ public:
   // Why the design cannot be changed at all (a read-only window whose edit
   // lock someone else holds, mitcad#89); empty when it can.
   virtual QString readOnlyReason() const { return {}; }
+  // Which design is open: an id that changes whenever another design is
+  // opened or a new one started (mitcad#452: BUILD's part placed last does
+  // not carry over to the next design); empty when the host has none.
+  virtual QString designId() const { return {}; }
   // Shows a message in the status bar (red for an error).
   virtual void showStatus(const QString& message, bool error) = 0;
 
@@ -99,6 +103,11 @@ public:
   // Shows a joint's first free motion through its range in the view, then
   // the design as it is (mitcad#55: previews, nothing changes).
   virtual void animateJoint(const QString& uid) = 0;
+  // Motion studies and contact sets (mitcad#454): a study in the Motion
+  // Study panel (a new one when `name` is empty), a contact set in its
+  // command's panel.
+  virtual void openMotionStudy(const QString& name) = 0;
+  virtual void editContactSet(const QString& name) = 0;
 
   // Isolate: only these bodies and components are shown (none: all).
   virtual void setIsolation(const Selection& items) = 0;

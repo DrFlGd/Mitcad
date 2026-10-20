@@ -1,0 +1,16 @@
+{
+  "comment": "Worked out by hand (mitcad#464): a 60 x 40 x 20 block whose top front edge is rounded with a radius that is the cubic Bezier of control radii 2, 6, 3, 4 along it (each section misses (1 - pi/4) r^2; the integral of r^2 over the edge's position is 100/7, so 48000 - (1 - pi/4) 60 * 100/7 = 47816.0556); a circle of r 2 swept 50 along -y with the end scale 0.5, a cone frustum (pi 50 / 3 (4 + 2 + 1) = 366.5191); a 10 x 4 rectangle swept 40 up between two rails that open from 10 to 14 apart, scaled with them (sections 40 (1 + z/100)^2: 40 (1.4^3 - 1) / 0.03 = 2325.3333; x from 113 to 127 at the top); a 4 mm cube patterned 3 times 25 apart along a chain of two lines (30 along x, then 30 along y), the third turned a quarter turn with the path (3 * 64 = 192, the last at x 30 to 34, y 80 to 84).",
+  "body_count": 6,
+  "total": {"volume_mm3": 50699.9080448785},
+  "bbox": {"min": [0, -50, -2], "max": [127, 84, 40]},
+  "bodies": [
+    {"name": "Block", "volume_mm3": 47816.0555686264, "bbox": {"min": [0, 0, 0], "max": [60, 40, 20]}},
+    {"name": "Cone", "volume_mm3": 366.5191429188, "bbox": {"min": [78, -50, -2], "max": [82, 0, 2]}},
+    {"name": "Wedge", "volume_mm3": 2325.3333333333, "bbox": {"min": [113, -2.8, 0], "max": [127, 2.8, 40]}},
+    {"name": "Peg", "volume_mm3": 64, "bbox": {"min": [0, 60, 0], "max": [4, 64, 4]}}
+  ],
+  "timeline": [{"name": "Box1"}, {"name": "Fillet1"}, {"name": "Section"}, {"name": "Path"}, {"name": "Sweep1"},
+               {"name": "Square"}, {"name": "Rails"}, {"name": "Sweep2"}, {"name": "Box2"}, {"name": "Chain"},
+               {"name": "Pattern1"}],
+  "parametric": 11
+}

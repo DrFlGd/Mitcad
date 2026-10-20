@@ -154,13 +154,15 @@ void MainWindow::registerFileCommands() {
   CommandDef importDef = def("file.import", tr("Import..."), "import",
                              tr("STEP, IGES, BRep, STL, OBJ, DXF or another design into this one; an .f3d "
                                 "design as a new document with its history, a FreeCAD document, an .ipt "
-                                "part, an .iam assembly, an IFC building model or an .rvt project's elements"),
+                                "part, an .iam assembly, an IFC building model, an .rvt project's elements, a "
+                                "SolidCraft design with its history or a .dwg drawing's 3D content"),
                              [this] { importFile(); });
   importDef.keywords = {QStringLiteral("step"),    QStringLiteral("iges"),  QStringLiteral("brep"),
                         QStringLiteral("f3d"),     QStringLiteral("f3z"),   QStringLiteral("freecad"),
                         QStringLiteral("fcstd"),   QStringLiteral("ipt"),   QStringLiteral("iam"),
                         QStringLiteral("ifc"),     QStringLiteral("ifczip"), QStringLiteral("rvt"),
-                        QStringLiteral("rfa"),     QStringLiteral("open")};
+                        QStringLiteral("rfa"),     QStringLiteral("solidcraft"), QStringLiteral("dwg"),
+                        QStringLiteral("open")};
   m_registry->add(importDef);
   CommandDef exportDef = def("file.export", tr("Export..."), "export",
                              tr("Bodies to STEP, IGES, STL, OBJ or BRep; a sketch to DXF"),
@@ -315,6 +317,8 @@ bool MainWindow::openFile(const QString& path, QString& error) {
   case FileKind::Ipt:
   case FileKind::Ifc:
   case FileKind::Rvt:
+  case FileKind::Solidcraft:
+  case FileKind::Dwg:
     // After the window shows: the import has a progress dialog.
     QTimer::singleShot(0, this, [this, path] { startF3dImport(path); });
     return true;
@@ -509,6 +513,8 @@ bool MainWindow::importPath(const QString& path, bool interactive, QString* erro
   case FileKind::Ipt:
   case FileKind::Ifc:
   case FileKind::Rvt:
+  case FileKind::Solidcraft:
+  case FileKind::Dwg:
     // A design with its history is a document of its own (a FreeCAD
     // document too, and a part file, whose history comes later).
     if (interactive && !maybeSave()) {

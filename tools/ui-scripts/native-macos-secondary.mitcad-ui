@@ -1,9 +1,47 @@
 # SPDX-License-Identifier: MIT
 # Native secondary UI regression: editable parameter sheets, modeless
-# Project Settings and nested report preview. Starts with an empty document and never
-# confirms Send or opens an external issue tracker.
+# Project Settings, constrained item views and nested report preview. Starts
+# with an empty document and never confirms Send or opens an external issue tracker.
 expect-ever 'Native UI: AppKit shell with embedded OCCT viewport'
 sleep 800
+
+# Native icon choices use the shared BUILD direction artwork. More was
+# removed from BUILD; its generic disclosure contract is tested separately.
+expect-native-form-controls
+expect-log 'Command Native form controls regression started'
+expect-native-disclosure-layout
+native-click input_more
+expect-native-disclosure-layout
+expect-native-layout
+native-resize 900 640
+expect-native-disclosure-layout
+expect-native-layout
+screenshot '${MITCAD_TEST_WORK}/native-macos-disclosure.png'
+native-click input_more
+expect-native-disclosure-layout
+native-resize 1280 820
+mark
+native-click commandCancel
+expect-log 'Command Native form controls regression cancelled'
+mark
+command build.profile
+expect-log 'Command Profile started'
+expect-native-visible input_axis_x true
+expect-native-visible input_axis_y true
+expect-native-visible input_axis_z true
+native-click input_axis_x
+expect-log 'Profile: Direction = Along X'
+native-click input_axis_y
+expect-log 'Profile: Direction = Along Y'
+native-click input_axis_z
+expect-log 'Profile: Direction = Along Z'
+expect-native-layout
+screenshot '${MITCAD_TEST_WORK}/native-macos-build-icons.png'
+native-resize 900 640
+expect-native-layout
+native-resize 1280 820
+native-click commandCancel
+expect-log 'Command Profile cancelled'
 
 # The upstream Local project flow must work through the native form. All
 # folders and identities belong to the test; no remote is contacted.
@@ -122,6 +160,28 @@ button '^OK$'
 expect-log 'Added parameter nativeWidth = 30 mm' 30
 focus-dialog '^Parameters$'
 button '^OK$'
+focus-main
+
+# These real presenters cap an item view at 110 points, below the native
+# default minimum: the faces list in Appearances and the known-brokers tree
+# on the Cloud (RemotePreferences) page must lay out without warnings.
+mark
+native-action solid.appearances
+expect-log 'Appearances dialog opened'
+focus-dialog '^Appearances$'
+screenshot '${MITCAD_TEST_WORK}/native-appearances.png'
+expect-file '${MITCAD_TEST_WORK}/native-appearances.png'
+button '^Close$'
+expect-native-dialog-gone '^Appearances$'
+focus-main
+native-action tools.search
+native-type native.commandSearch 'Preferences: Cloud'
+key Return
+focus-dialog '^Settings$'
+screenshot '${MITCAD_TEST_WORK}/native-cloud-settings.png'
+expect-file '${MITCAD_TEST_WORK}/native-cloud-settings.png'
+key Ctrl+w
+expect-native-dialog-gone '^Settings$'
 focus-main
 
 # Settings is a real native modeless window. Search-only settings pages

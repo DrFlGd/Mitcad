@@ -212,7 +212,8 @@ A path runs from the free end of the first listed curve or edge when it
 ends the chain, else along the first listed curve's own direction (a
 closed chain from that curve's start). A path may not branch or have
 gaps; a closed curve is a path by itself. A path pattern's path is a
-sketch line, arc or circle, or a fixed line (not edges).
+sketch line, arc or circle, a chain of sketch lines and arcs (`{"sketch":
+"F1", "curves": ["c1", "c2"]}`, mitcad#464), or a fixed line (not edges).
 
 ## Feature definitions
 
@@ -510,17 +511,37 @@ parameters.
   occurrences' placements at its point of the timeline. Without a link
   another component's body fails the extrusion; a link for a body that is
   no object's is refused.
-- `thin` (optional): `{"location": "side1" | "center" | "side2",
-  "thickness": t, "side2": {"location": …, "thickness": …}}`: walls along
-  the profile curves instead of the regions. Side 1 lies away from the
-  region's material (outside the outer boundary, into a hole), side 2
-  towards it. `side2` is the wall of side two of a two-sided or symmetric
-  extent when it differs.
+- `thin` (optional): `{"location": "side1" | "center" | "side2" | "both",
+  "thickness": t, "thickness2": t2, "side2": {"location": …, "thickness": …,
+  "thickness2": …}, "curves": <curves>}`: walls along the profile curves
+  instead of the regions. Side 1 lies away from the region's material
+  (outside the outer boundary, into a hole), side 2 towards it; `both`
+  puts `thickness` on side 1 and `thickness2` (only there, and needed
+  there) on side 2 (mitcad#463). `side2` is the wall of side two of a
+  two-sided or symmetric extent when it differs.
+  - `curves` (mitcad#463): walls along these sketch curves instead,
+    `{"sketch": "F1", "curves": ["c1", "c4"], "chain": false}` (a
+    [path](#paths)'s curves, any order; `chain` adds the curves joined to
+    them end to end); the extrusion then has no `profiles` (refused with
+    them). The curves make chains: runs joined end to end through points
+    where exactly two of them meet, open or closed; walls that meet or
+    cross (a T, a cross) make one solid. A closed chain walls like a
+    region's boundary: side 1 outside the area it encloses, side 2 inside.
+    An open chain runs so that it bends to its left (with its chord it
+    encloses an area counter-clockwise about the sketch normal), a
+    straight one the way its first listed curve was drawn; side 1 lies to
+    its right, side 2 to its left (towards where it bends), and its ends
+    are square to it; corners are mitred. A wall thicker than a curve's
+    radius on its inside, or one that folds over itself, fails.
 - `flip`: reverses the direction (the sketch normal by default).
 - `operation`, `participants`: see the shared rules.
 
 Faces: `side(<segment>)`; `outer(<segment>)` and `inner(<segment>)` for
 thin walls (side 1 and side 2); `start(<region>)` and `end(<region>)`.
+Walls along curves: `outer(<curve>)` and `inner(<curve>)` along each
+curve, `tip0(<curve>)` and `tip1(<curve>)` at an open chain's start (on
+its first curve) and end (its last), and the caps keyed by the chain's
+curves (`start(r{c1,c4})`).
 With one side the start is the cap at the start and the end the far cap;
 with two sides (and symmetric) the start is the far cap of side one and
 the end the far cap of side two (`startFaces` and `endFaces` in .f3d
@@ -787,12 +808,15 @@ numbers the positions from 0.
 
 - `faces`: cylindrical faces, all internal (hole walls) or all external.
 - `thread`: `standard` (`iso_metric` default, `unified`, `whitworth`,
-  `npt`, `tyre_valve`, `forming_screw`), `designation` (`M10x1.5`, `M10` for the coarse
+  `npt`, `tyre_valve`, `forming_screw`, `trapezoidal`), `designation` (`M10x1.5`, `M10` for the coarse
   pitch, `1/4-20 UNC`; Whitworth `1/4-20 BSW`, `1/4-26 BSF`, the parallel
   pipe threads `G 1/4`; NPT `1/4-18 NPT`; the tyre valve threads of ISO
   4570 `5V1`, `8V1`, … on the 60-degree profile, mitcad#59; the forming
-  screw threads of ISO 1478 `ST3.5x1.3`, the `ST` may be left out), `class` (`6g`
-  external, `6H` internal; Whitworth `Close`, `Medium`, `Free`, `A`, `B`
+  screw threads of ISO 1478 `ST3.5x1.3`, the `ST` may be left out; the
+  trapezoidal threads of ISO 2904 `Tr8x1.5`, a multi-start one by its lead
+  and pitch `Tr10x4(P2)`, mitcad#449), `class` (`6g`
+  external, `6H` internal; trapezoidal `7e`, `8e`, `8c`, `9c` external, `7H`,
+  `8H`, `9H` internal; Whitworth `Close`, `Medium`, `Free`, `A`, `B`
   external, `Medium`, `Normal`, `A` internal (a pipe thread's `A` is on
   the internal threads of the stored designs); NPT and tyre valve `Standard`;
   checked against the face),
@@ -800,7 +824,8 @@ numbers the positions from 0.
   `thread_sizes` query). An NPT size is listed at its pipe's outside
   diameter; its 1:16 taper is not kept.
 - `modeled`: build the 60° profile on the faces (ISO metric, Unified and
-  tyre valve and forming screw only, the others are cosmetic only); otherwise cosmetic: no geometry,
+  tyre valve and forming screw only, the others, Whitworth, NPT and
+  trapezoidal, are cosmetic only); otherwise cosmetic: no geometry,
   listed by the `threads` query (a cosmetic thread's end chamfers, below,
   are cut into the geometry). The profile is ISO 68-1's: flanks at
   30° to the radius, half a pitch wide at the pitch diameter, flat crests
@@ -905,7 +930,7 @@ form lists edge sets:
   in one set only. Any number of fillets per body.
 - `size`: `constant` (`radius`), `chord_length` (`length`, the width
   across the rounding; the faces must meet at a constant angle along the
-  chain), `variable` or `asymmetric`.
+  chain), `variable`, `asymmetric` or `spline`.
 - `variable`: `start` at `start_vertex` (an end of the chain, or the
   kernel's start when left out) to `end` at the chain's other end,
   through the `mid` radii at their positions along the chain (0 to 1 from
@@ -913,6 +938,20 @@ form lists edge sets:
   of all the radii, level at both ends, along the whole tangent chain
   (not confirmed to be the law of `.f3d` variable fillets). Mid radii
   around a closed chain are unsupported.
+- `spline` (mitcad#464): `{"type": "spline", "knots": [0, 0, 0, 0, 1, 1,
+  1, 1], "radii": [2, 6, 3, 4], "start_vertex": "V{…}"}`, the radius a
+  clamped B-spline of the position along the chain (0 at `start_vertex`,
+  an end of the chain or the kernel's start when left out, 1 at the other
+  end; by arc length): `radii` its control radii (2 to 100, each greater
+  than zero) and `knots` its full knot vector, as many as the radii and
+  the degree and one more (degree 1 to 3), from 0 to 1, each end repeated
+  degree + 1 times and an inner knot at most degree times. The radius
+  keeps within its control radii, passes through the first and the last,
+  and runs exactly as the spline does (the law goes to OCCT's fillet as
+  it is, port patch 0920; `geometry/tests/test_dressup.cpp`,
+  `test_fillet_spline_radius`). Slots `radii[k]`. Not around a closed
+  chain and not with curvature continuity (unsupported); the kernel's
+  chain, as for `variable`.
 - `asymmetric`: `distance1` from the edge along the set's
   `reference_face` (or along the first face of each edge's name), and
   `distance2` along the other face; `flip` swaps the faces. The
@@ -974,8 +1013,8 @@ form lists edge sets:
   named `corner(<vertex>)` (Mitcad's own convention). An edge shorter
   than the setback is unsupported.
 - Slots: `radius`, `chord_length`, `start_radius`, `end_radius`,
-  `mid[k].radius`, `distance1`, `distance2`, `tangency_weight` (unitless)
-  for the first set, `sets[i].radius`, … for the others.
+  `mid[k].radius`, `distance1`, `distance2`, `tangency_weight` (unitless),
+  `radii[k]` for the first set, `sets[i].radius`, … for the others.
 - New faces: `<fillet>:fillet(<edge>)` along every rounded edge (also the
   ones a tangent chain adds) and `<fillet>:corner(<vertex>)` where rounded
   edges meet.
@@ -1211,6 +1250,14 @@ longer makes after an upstream edit is passed by with a warning
  "guide_rail": {"sketch": "F1", "curves": ["c9"]}, "profile_scaling": "scale",
  "extent": {"type": "partial", "fraction": 0.5, "fraction2": 1}, "flip": false,
  "operation": "new_body"}
+{"type": "sweep", "profiles": [{"sketch": "F2", "region": "r{c1}"}],
+ "path": {"sketch": "F1", "curves": ["c1"]}, "end_scale": 0.5, "operation": "new_body"}
+{"type": "sweep", "profiles": [{"sketch": "F2", "region": "r{c1}"}],
+ "path": {"sketch": "F1", "curves": ["c1"]}, "guide_rail": {"sketch": "F1", "curves": ["c2"]},
+ "guide_rail2": {"sketch": "F1", "curves": ["c3"]}, "operation": "new_body"}
+{"type": "sweep", "profiles": [{"sketch": "F2", "region": "r{c1}"}],
+ "path": {"sketch": "F1", "curves": ["c1"]}, "guide_rail": {"sketch": "F1", "curves": ["c2"]},
+ "rail_point": "plane", "operation": "new_body"}
 ```
 
 Sweeps, lofts, pipes, coils, ribs and webs: kernel inputs in
@@ -1250,8 +1297,45 @@ revolutions and loft weights are unitless values. Examples:
 - `guide_rail`: turns the profile towards the rail and with
   `profile_scaling` `scale` (default) sizes it by the rail's distance
   from the path, `stretch` only towards the rail, `none` not at all. The
-  rail point is the one at the same fraction of the rail's length. Twist
-  and taper are ignored with a rail.
+  rail point is chosen by `rail_point`. Twist and taper are ignored with a
+  rail.
+- `rail_point` (mitcad#469, with `guide_rail`): where the rail's point is
+  for each place along the path. `plane`: where the rail crosses the plane
+  square to the path there. At the profile that is the crossing nearest to
+  the path; from there the sweep follows the rail place by place, each
+  time to the next crossing onwards along the rail in the way it runs
+  with the path (back along it before the profile), so a rail that
+  crosses a plane more than once is taken in order, and the rail's
+  direction does not matter. An end of the rail within 1e-3 mm (or a
+  millionth of the path's length) of a plane counts as crossing it; a
+  rail that does not reach the plane of every place of the swept part
+  fails the sweep (`the guide rail does not reach the plane square to the
+  path …% of the way along the swept part`). `fraction` (left out, as
+  designs saved before the option have it): the point at the same
+  fraction of the rail's length as the place is of the path's, taken
+  into the plane square to the path. The two agree for a rail that runs
+  evenly beside the path (a straight rail beside a straight path) and
+  differ where the rail's speed along the path varies: an arc that
+  bulges away from a straight path (`geometry/tests/test_sweeps.cpp`,
+  `test_rail_plane`; the `.solidcraft` test design `sweep-rail-plane`).
+  The `.f3d` and `.solidcraft` imports and the Sweep command take
+  `plane`.
+- `guide_rail2` (mitcad#464, with `guide_rail`): a second rail. The profile
+  moves with its point where the first rail starts (the first rail's point
+  in the plane square to the path), turns with the line across to the
+  second rail and is sized by that line's length against its length at
+  the profile: `scale` evenly about the first rail's point, `stretch` only
+  along the line, `none` not at all. Each rail's point is chosen by
+  `rail_point` (each rail followed on its own), in the plane square to
+  the path (`geometry/tests/test_sweeps.cpp`,
+  `test_two_rails_and_end_scale`, `test_rail_plane`).
+  Rails that meet are an error.
+- `end_scale` (mitcad#464, unitless, 0.01 to 100): the profile's size at
+  the ends of the swept part, from 1 at the profile in proportion to the
+  length run along the path, about the path (a circle on a straight path
+  becomes a cone frustum; with `extent` the scale is reached at each end
+  of the swept part). With twist and taper; refused with a guide rail,
+  guide surfaces or a fixed binormal (they decide the profile's size).
 - `guide_surfaces` (mitcad#157): faces the path lies on, `[{"body":
   "F2.b0", "face": "F2:side(c1)"}, …]` (every piece of a split face),
   instead of a rail. The profile keeps its place in the frame of the
@@ -1285,8 +1369,8 @@ revolutions and loft weights are unitless values. Examples:
 - `flip`: runs the path the other way (`isDirectionFlipped` in .f3d
   designs).
 
-Twists, tapers and rails sweep copies of the profile placed along the
-path through a smooth loft: the path must be smooth, the orientation
+Twists, tapers, end scales and rails sweep copies of the profile placed
+along the path through a smooth loft: the path must be smooth, the orientation
 perpendicular and the sweep not round a whole closed path (otherwise
 `unsupported: …`). Sharp corners of a plain sweep are mitred; a corner
 whose mitre does not build (a slight kink between path curves) is
@@ -1646,6 +1730,46 @@ chain's start and end, `end` at the depth. Of a web, per curve:
 `wall1(<curve>)`, `wall2(<curve>)`, `tip0(<curve>)`, `tip1(<curve>)`,
 `start(<curve>)` in the sketch plane and `end(<curve>)` at the depth.
 
+### emboss
+
+```json
+{"type": "emboss", "profiles": [{"sketch": "F3", "region": "r{t1.g0.c0}"}],
+ "face": {"body": "F2.b0", "face": "F2:side(c1)"}, "depth": 1, "mode": "raise",
+ "participants": []}
+```
+
+Profiles of one sketch (a set, as an extrusion's; the glyphs of its texts
+bound regions too) raised from a face by `depth` (> 0) and joined, or
+with `"mode": "sink"` sunk into it and cut (mitcad#458,
+`core/model/src/features/emboss.rs`).
+
+- `face` a planar face: the profiles are extruded along the sketch normal
+  from the face's plane (projected onto it when the planes are not
+  parallel), out of the material or into it.
+- `face` a cylindrical face: the profiles are wrapped onto the cylinder
+  (`Kernel::wrapped_emboss`, `geometry/src/emboss.cpp`). The sketch plane
+  must be parallel to the axis. A sketch point at distance `s` across the
+  axis (from the line where the axis lies under the sketch) and `z` along
+  it goes to the angle `s / r` about the axis, at `z`, from the radial
+  direction towards the sketch plane (the sketch normal for a plane
+  through the axis): lengths around the face are the sketch's, not
+  projected ones. The profiles grow radially by `depth`: outwards on an
+  outer face when raised, inwards when sunk; on a bore's wall the other
+  way. A sink that reaches the axis, profiles wider than the
+  circumference and a sketch across the axis fail.
+- No `face`: from the sketch plane along its normal (raise) or against
+  it (sink).
+- `participants`: the bodies joined or cut; empty for the face's body,
+  or all bodies without a face. A raise that touches none, or a sink that
+  cuts into none, fails.
+
+Faces are named as an extrusion's: `side(<segment>)` the walls,
+`end(<region>)` the top of a raised profile or the floor of a sunk one,
+`start(<region>)` its foot on the face (inside the body after a raise).
+The `.solidcraft` import maps SolidCraft's emboss onto it (a deboss
+sinks), and the `.f3d` import the file's embosses (a negative depth
+sinks; `core/import/README.md`).
+
 ### Patterns
 
 ```json
@@ -1687,6 +1811,17 @@ Patterns, mirrors, combine, moves and primitives: modules `pattern.rs`,
   full turn is not affected). Path distances are arc lengths along the path; `start` (0…1)
   is where the original sits on the path; `along_path` turns the copies
   with the path.
+- A path pattern along a chain of sketch lines and arcs (mitcad#464,
+  `"path": {"sketch": "F9", "curves": ["c1", "c2"]}`): the curves joined
+  end to end as for a sweep's path ([Paths](#paths): from the free end of
+  the first listed curve), the distances arc lengths along the whole
+  chain. Each copy moves from the original's place on the chain to its
+  own; with `along_path` it also turns about the sketch's normal through
+  the original's place by the angle the chain's tangent turns between the
+  two (at a vertex between two curves the first curve's tangent). Before
+  the start and past the end the first and the last curve go on
+  (straight, or around their circle). Ellipses and splines in the chain
+  are refused.
 - Signed distances (mitcad#447): a rectangular pattern's direction keeps
   one signed `distance` (spacing or extent); a negative one puts the
   copies against its axis, and a symmetric direction then has the copies
@@ -2003,6 +2138,33 @@ it). `operation` and `participants` as for extrude. Faces:
 corner's y, side1 at x + length, counter-clockwise) and `side0` for
 curved faces.
 
+### bounding_solid
+
+```json
+{"type": "bounding_solid", "bodies": ["F2.b0", "F4.b0"], "margin": 5}
+{"type": "bounding_solid", "margin": 0}
+```
+
+A new body (`BoundingSolid<n>`, mitcad#460): the box around the bodies,
+grown by `margin` on every side (a negative margin shrinks it; one that
+leaves no box fails the feature). `bodies` empty or left out: every body
+of the feature's component at its point of the timeline (an earlier
+bounding solid too). The box is aligned with the component's axes and
+holds the bodies' exact geometry (`Kernel::bounding_box`, the tight box
+of their faces, not of a display mesh); it is built with the box
+primitive (`Kernel::primitive`), so its faces are named as a box's:
+`<feature>:bottom` at the lowest z, `top` at the highest, `side0` at the
+lowest y, `side1` at the highest x, `side2` at the highest y and `side3`
+at the lowest x. The bodies are only read: the box is built again from
+them on every recompute and follows their edits and the margin's. A body
+is listed once and must be of the feature's component; no bodies at all
+fails the feature. Patterns and mirrors cannot repeat it as a feature (it
+has no tool); its body is patterned, mirrored or moved like any other.
+
+Tests: `core.model` (`features::bounding_solid`, mock kernel),
+`cli.bounding_solid` (OCCT) and the `.solidcraft` import's
+`bounding-solid` test design.
+
 ### construction_plane, construction_axis, construction_point
 
 ```json
@@ -2122,7 +2284,7 @@ naming the body:
 
 - Refused where a feature names it: `combine`'s target and tools; the
   `participants` of `extrude`, `revolve`, `sweep`, `loft`, `pipe`, `coil`,
-  `helix`, `rib`, `web`, `hole`, `base` and the patterns' features; an
+  `helix`, `rib`, `web`, `hole`, `emboss` (its face's body too), `base` and the patterns' features; an
   extent up to its face or the body; the body of `fillet`, `chamfer`, the
   face features (`shell`, `draft`, `offset_face`, `delete_face`,
   `replace_face`, `split_face`), `split_body` and `thread`; a face of it as
@@ -2742,7 +2904,7 @@ timeline marker.
 | `can_reorder` | `uid`, `index` | `ok`, and `error` (the reason `reorder_feature` would give) when not |
 | `sketch` | `uid` | see [Sketch commands](#sketch-commands) |
 | `threads` | | threads on the bodies (thread features and tapped holes): `feature`, `name`, `body`, `face`, `standard`, `designation`, `class`, `right_handed`, `modeled`, `major_diameter`, `minor_diameter`, `pitch`, and from the face `internal`, `radius`, `start`, `end` (points on the axis where the thread begins and ends; a cosmetic thread's end chamfers move them to where their cones meet the cylinder). A modelled thread feature that leaves no piece of its face (its crest inside the face: a class's diameters, a radial clearance) is still listed, with the face measured on the body before the feature, as long as the faces it made from it are on the body; its end chamfers then move `start` and `end` to where their cones meet the crest (mitcad#433). A tapped hole's modelled thread that leaves no piece of its wall (a radial clearance puts the crest off it) is listed on the wall as the hole measured it before cutting the thread, as long as the thread's faces made from it are on the body (mitcad#436) |
-| `thread_sizes` | `standard` (`iso_metric`, `unified`, `whitworth`, `npt`, `tyre_valve` or `forming_screw`; all when left out) | `standards`, ISO metric first, then Unified, Whitworth (bolt sizes, then the pipe sizes `G 1/4`), NPT and tyre valve threads: `standard`, `title` (the thread type's name), `default` (true for ISO metric), `sizes` (smallest first: `size` as the table names it, `10`, `1/4`, `#10`; `major_diameter` mm; `designations`, the coarse pitch or UNC first, each one `thread` and `hole` accept), `classes_external`, `classes_internal`, `default_class_external` (6g, 2A, Medium, Standard), `default_class_internal` (6H, 2B, Medium, Standard) |
+| `thread_sizes` | `standard` (`iso_metric`, `unified`, `whitworth`, `npt`, `tyre_valve`, `forming_screw` or `trapezoidal`; all when left out) | `standards`, ISO metric first, then Unified, Whitworth (bolt sizes, then the pipe sizes `G 1/4`), NPT, tyre valve, forming screw and trapezoidal threads (`Tr8x1.5`, the preferred pitch first): `standard`, `title` (the thread type's name), `default` (true for ISO metric), `sizes` (smallest first: `size` as the table names it, `10`, `1/4`, `#10`; `major_diameter` mm; `designations`, the coarse pitch or UNC first, each one `thread` and `hole` accept), `classes_external`, `classes_internal`, `default_class_external` (6g, 2A, Medium, Standard, 7e), `default_class_internal` (6H, 2B, Medium, Standard, 7H) |
 | `thread_chamfer` | `designation`, `standard` (`iso_metric` when left out), `internal` (false when left out) | the size's default end chamfer ([thread](#thread), mitcad#304): `diameter` (mm, from the size table), `angle` (45, degrees to the axis) |
 | `named_views` | | in the order added: `name`, `eye`, `target`, `up`, `perspective` (when true), `height` |
 | `recompute_times` | | the features the last recompute evaluated (cache hits left out), in timeline order: `uid`, `name`, `type`, `ms` (wall time of its evaluation); and `ms`, their sum |
@@ -3517,7 +3679,10 @@ feature and moves nothing.
 ```
 
 - `drive_joint` edits the joint's `position`: a parameter (`crank_angle`)
-  makes the mechanism follow the parameter.
+  makes the mechanism follow the parameter. With contact sets,
+  `drive_joint`, `drag_occurrence` and `joint_drag` stop where bodies of
+  a set touch ([Motion studies and contact
+  sets](#motion-studies-and-contact-sets)).
 - `drag_occurrence` keeps where `joint_drag` puts the occurrences: their
   own placements become the dragged ones (refused for an occurrence a
   `move_occurrence` or `capture_position` before the marker places:
@@ -4155,13 +4320,13 @@ first, then those the file's history suggests without them.
 | `MirrorFeature` | `mirror` | `patternEntityType` + `inputEntities` → `objects` (Faces → faces of one body, Features, Bodies; not Occurrences), `mirrorPlane` (origin `XY`/`XZ`/`YZ` → origin plane; other construction planes → a fixed plane from `geometry`; face fingerprint → face), `isCombine` → `combine` (the stream decoder's, then the other way as a guess; not given: separate copies, then joined), `patternComputeOption` → `compute` |
 | `RectangularPatternFeature` | `rectangular_pattern` | `directionOne/TwoEntity` → axes (origin X/Y/Z, edge, fixed from `directionOne/Two` when the entity is null or a sketch line), `quantityOne/Two`, `distanceOne/Two`, `isSymmetricInDirectionOne/Two`, `patternDistanceType` (Extent/Spacing), `patternComputeOption`, `suppressedElementsIds` → `suppressed_elements` matched by `outputs.patternElements[].transform`; without directions (the oldest item version, mitcad#74) the history checks guesses: direction one along an origin axis, two across it at 90°, 60° or 120°, both symmetric or not (`core/import/README.md`) |
 | `CircularPatternFeature` | `circular_pattern` | `axis` (a sketch circle or arc: the axis through its centre, the line the stream decoder's `_f3d_axis` gives where the sketch faces the other way; an axis entity not found: that line), `quantity`, `totalAngle` → `angle`, `isSymmetric`, `patternComputeOption`, `suppressedElementsIds` |
-| `PathPatternFeature` | `path_pattern` | `path` (a sketch line, arc or circle → `{"sketch", "curve"}`; else a fixed line), `quantity`, `distance`, `patternDistanceType`, `startPoint` → `start`, `isFlipDirection` → `flip`, `isOrientationAlongPath` → `along_path`, `isSymmetric` |
+| `PathPatternFeature` | `path_pattern` | `inputEntities` → `objects`, `path` (one sketch curve → `{"sketch", "curve"}`, lines and arcs of one sketch → `{"sketch", "curves"}`; edges are not translated), `quantity`, `distance`, `patternDistanceType`, `startPoint` → `start`, `isFlipDirection` → `flip`, `isOrientationAlongPath` → `along_path`, `isSymmetric`, `patternComputeOption`, `suppressedElementsIds` (mitcad#468). The stream decoder gives no start point, flip, orientation or symmetry: the defaults, then each of the three flags the other way as a guess the history checks ([core/import/README.md](../../../import/README.md#path-patterns-mitcad468)) |
 | `MoveFeature` | `move` | bodies of `inputEntities`; `transform` (rigid, cm) → `free` matrix, or `moveFeatureDefinition` (`TranslateXYZ`, `TranslateAlongEntity`, `Rotate`, `PointToPoint`, `PointToPosition`) to keep it editable; moves of faces are unsupported |
 | `CopyPasteBody` | `move` with `copy: true` | `sourceBody` (decoded from the file's item inputs), an identity `free` move; a cut and paste into another component is not translated, and one whose body the file lost keeps the cached result |
 | Align (not in the API) | `move` (`free`) or `align` | |
 | `ScaleFeature` | `scale` | `inputEntities` (bodies), `point` (origin point → origin, vertex, else fixed), `isUniform`, `scaleFactor`, `xScale`, `yScale`, `zScale` |
 | `Box/Cylinder/Sphere/TorusFeature` | `box`, `cylinder`, `sphere`, `torus` | sizes from `parameters.model` by `createdBy` (`DistanceX` the width and `DistanceY` the length of a box); the placement (not in the API) from the stream decoder: `plane` (the plane or face), `frame` and `placement` (4x4 matrices in cm: the point `p` of the primitive's own frame is at `frame * placement * p`; the box's width along its x, its length along y, its height along z; the cylinder's, sphere's and torus' base or centre at the origin, the axis z), `operation`, `participantBodies`, a torus' `torusPosition`; the matrices are expressed in the frame Mitcad gives the plane (a box whose edges run along it and whose base lies in it, an axis along its normal), a face the replay has not (the history state lacks it) by the replay's planar face in the same plane |
-| `SweepFeature` | `sweep` | `profile` → `profiles` (as for extrude), `path` → `path`, `guideRail` → `guide_rail`, `orientation` (Perpendicular/ParallelOrientationType), `twistAngle` → `twist_angle`, `taperAngle` → `taper_angle`, `profileScaling` (SweepProfileScale/Stretch/NoScalingOption) → `profile_scaling`, `distanceOne`/`distanceTwo` → `extent` `partial` unless both 1, `isDirectionFlipped` → `flip` (with a guide rail the other way first; then the other direction where a partial extent or a rail makes it differ), `operation`, `participantBodies`; `guideSurfaces` → `guide_surfaces` (mitcad#157: each face found by its fingerprint, as other face inputs, with every piece of it the replay splits; a `guideRail` given with them is not used; perpendicular only; faces without geometry → fallback); a path or guide surface on another component's body → `body_links` (mitcad#161), the sweep in its profile's component; a path edge the replay splits → its pieces in order; `extent` FullExtents and `isSolid` false → fallback. From the stream decoder, which gives a profile's sketch only and neither `orientation`, `profileScaling` nor `isDirectionFlipped`, the history picks among the sketch's regions, `distanceTwo` 0 as none or as given, both directions, perpendicular then parallel (scale, then stretch and none with a rail) |
+| `SweepFeature` | `sweep` | `profile` → `profiles` (as for extrude), `path` → `path`, `guideRail` → `guide_rail` with `rail_point` `plane` (mitcad#469), `orientation` (Perpendicular/ParallelOrientationType), `twistAngle` → `twist_angle`, `taperAngle` → `taper_angle`, `profileScaling` (SweepProfileScale/Stretch/NoScalingOption) → `profile_scaling`, `distanceOne`/`distanceTwo` → `extent` `partial` unless both 1, `isDirectionFlipped` → `flip` (with a guide rail the other way first; then the other direction where a partial extent or a rail makes it differ), `operation`, `participantBodies`; `guideSurfaces` → `guide_surfaces` (mitcad#157: each face found by its fingerprint, as other face inputs, with every piece of it the replay splits; a `guideRail` given with them is not used; perpendicular only; faces without geometry → fallback); a path or guide surface on another component's body → `body_links` (mitcad#161), the sweep in its profile's component; a path edge the replay splits → its pieces in order; `extent` FullExtents and `isSolid` false → fallback. From the stream decoder, which gives a profile's sketch only and neither `orientation`, `profileScaling` nor `isDirectionFlipped`, the history picks among the sketch's regions, `distanceTwo` 0 as none or as given, both directions, perpendicular then parallel (scale, then stretch and none with a rail) |
 | `LoftFeature` | `loft` | `loftSections[]` by `index`: `entity` a profile → `profile`, a face → `face`, a path of a body's edges (`PathEntity` items of `BRepEdge`s, or one edge; the section of tangent and smooth conditions) → `face`, the face of that body the edges go round (each of them borders it and it has no others), a sketch point, a construction point or a vertex → `point`; first and last `endCondition`: `LoftFreeEndCondition` → none, `LoftPointSharpEndCondition` → `point_sharp`, `LoftDirectionEndCondition` → `direction` (`angle`, `weight`), `LoftTangentEndCondition` → `tangent`, `LoftSmoothEndCondition` → `smooth`, `LoftPointTangentEndCondition` → `point_tangent` (`weight`); `centerLineOrRails` with `isCenterLine` → `centerline`, else `rails`; `isClosed` → `closed`, `isSolid` false → `surface`; `operation`, `participantBodies` (the IR has no ruled loft). A loft with end conditions or rails is kept when it matches the history within 0.5 % (see [loft](#loft)). A profile without its area (the stream decoder gives its sketch only) is each of the sketch's regions in turn, the history picking, at most twelve choices of all sections |
 | `PipeFeature` | `pipe` | `path`, `sectionType` (Circular/Square/TriangularPipeSectionType) → `section`, `sectionSize` → `size`, `isHollow` with `sectionThickness` → `thickness`, `distanceOne`/`distanceTwo` → `extent`, `operation`, `participantBodies`. Without `sectionType` and `isHollow` (the stream decoder): a solid circle first, then hollow with `sectionThickness`, square and triangular, the history picking |
 | `CoilFeature` | `coil` | the sizes (`parameters.model` by `role`), `coilType` (`PitchAndRevolution`, `RevolutionAndHeight`, `PitchAndHeight`, `SpiralCoilType`) → `helix`, `sectionType` → `section`, `sectionPosition` → `section_position`, `isClockwise` (the default is true: a right-handed helix) → `clockwise` (inverted), `angle` → `angle`, `plane`, `frame` and `placement` as for the primitives (the coil must rise along the plane's normal and start on its x axis), `operation`, `participantBodies` |
@@ -4872,6 +5037,131 @@ report),
 `MITCAD_IFC_CORPUS` the IFC export of the MIT-licensed project: every
 wall, slab and column agreed with; and a link) and
 `tools/ui-rvt-import-test.sh`.
+
+### .solidcraft import
+
+`{"cmd": "import_solidcraft", "path": "design.solidcraft"}` (a document
+command of the bridge, like `import_fcstd`; `mitcad-cli import-solidcraft`,
+File › Open and Import, the headless MCP server's `document_open`) brings a
+SolidCraft design in with its history (mitcad#450; `core/solidcraft` reads
+it, `mitcad_import::solidcraft` maps it, `core/ffi/src/solidcraft_import.rs`).
+Options:
+
+| Option | Meaning |
+|---|---|
+| `text` | the report as text (the bridge's `import_solidcraft`) |
+| `report_path` | also write the JSON report there |
+| `expected` | a JSON file of values to check against: `body_count`, `total.volume_mm3`, `bbox`, `bodies[]` (by name: `volume_mm3`, `bbox`), `timeline[].name`, `params[].name`, `sketches[]` (`curves`, `constraints`, `dimensions`), `parametric` (at least so many), `links` (the motion links that came in, exactly); SolidCraft's own `solidcraft-cli eval` output is such a file. Volumes within `volume_tolerance` (relative, 1e-3), boxes within `bbox_tolerance` (0.01 mm); every placed body counts unless `"scope": "root"` |
+| `set_parameters` | `{"name": "expression"}`: parameters (the design's names) changed after the import, before the report measures the bodies |
+
+The result has `file`, `design`, `format` (`solidcraft`), `items`,
+`bodies`, `counts` (features `parametric`, `partial`, `unmapped`,
+`failed`, `skipped`) and `report`: per feature its id, name, kind,
+outcome, the Mitcad features it became and notes; the parameters (the
+design's expression and Mitcad's, a renamed one's Mitcad name); the
+sketches with their points, curves and constraint and dimension counts
+(the file's and those that came in) and what was left out; the joints;
+the motion links (`links`: per link its number, name, coupling, outcome,
+feature and notes); the bodies measured (volume, area, world box per placed body); the kinds
+without a Mitcad counterpart with their counts; notes; and `check` with
+`expected`.
+
+- Formats: any `solidcraft/N` (or the legacy `solvecraft/N`) up to 27 and
+  the changes pending after it (28 with `format_pending`), upgraded first
+  by SolidCraft's own steps (`third_party/solidcraft/format.rs`); a newer
+  one is refused. The container (`solidcraft-container/1`: a zip of
+  `container.json`, `document.json` and `blobs/`) is read with its STEP and
+  mesh blobs.
+- Parameters: user parameters, the model parameters of sketch dimensions
+  and each feature input's parameter keep their names (a name Mitcad
+  reserves gets `_` appended) and their expressions in Mitcad's language
+  (`mitcad_solidcraft::expr`: SolidCraft's juxtaposed products, units as
+  values, mixed numbers and decimal commas, `pi`, `log10`, `hypot`, `mod`,
+  `trunc` and its signum `sign` translated). A dimension's or input's
+  parameter is its slot's (`d3 = height`), owned by the Mitcad feature;
+  where Mitcad's slot is a function of the file's value (a cylinder's
+  diameter of its radius, a symmetric revolve's half angle) the file's
+  parameter is a user parameter and the slot that function of it. Slots
+  the file does not name get names of the import's own (`d<n>` past the
+  file's), so that Mitcad's names never collide with the file's.
+- References: a face or edge is found by SolidCraft's persistent name
+  where the import translates it (extrusion caps by their height over the
+  sketch, sides by their sketch curve, box and cylinder faces, roundings
+  and bevels, shell insides, pattern copies, a removed face's rim), the
+  pick choosing among the faces the name means; else at the pick point
+  (within 0.05 mm). Bodies by the file's names: a feature's new bodies are
+  named as SolidCraft names them, the pieces a cut or split leaves
+  `<name> (k)`, ordered so that the picks later features make on them by
+  name lie on them.
+- What maps to what: [core/import/README.md](../../../import/README.md#solidcraft-import).
+  Unmapped kinds and failed features become suppressed `placeholder`
+  features with the reason as their import note ([The import's outcomes
+  on the timeline](#the-imports-outcomes-on-the-timeline)).
+
+Tests: `core.solidcraft` (the reader, formats and upgrades, the container),
+`core.import` (`solidcraft::tests`, mock kernel), `cli.import_solidcraft`
+(`tools/cli/solidcraft-test.cmake`: the hand-written test designs of
+`core/solidcraft/tests/designs` against their worked-out values, a
+parameter change, the container, the MCP open), `solidcraft.corpus`
+(`MITCAD_SOLIDCRAFT_CORPUS`) and `tools/ui-import-test.sh`.
+
+### .dwg import
+
+`{"cmd": "import_dwg", "path": "drawing.dwg", …}` (C++ `Document::command`,
+or `Document::import_dwg(path, json)` for the report alone) imports a
+`.dwg` drawing's 3D content (mitcad#453; `core/ffi/src/dwg_import.rs`, the
+reader is [core/dwg](../../../dwg/README.md)), R13 to R2018. Bodies only:
+a drawing keeps no history.
+
+- **Bodies:** 3D solids, bodies, regions and surfaces with B-rep data,
+  each converted by the `.f3d` reader's ASM code and built by the B-rep
+  builder of the imports (one body per body of the record); 3D faces as
+  one mesh body per block, layer and colour; polyface, polygon and
+  subdivision meshes (the control mesh) as a mesh body each. Coordinates
+  are drawing units scaled to millimetres (`$INSUNITS`; none: millimetres
+  assumed, with a warning).
+- **Components:** each named block with 3D content (in itself or its
+  inserts) is a component named as the block, placed by an occurrence
+  per insert (`MINSERT`: per cell), nested blocks in their blocks.
+  Anonymous blocks, and inserts whose transform is not rigid (a scale or
+  a mirror), are copied into the inserting component, the bodies moved by
+  the transform (`Kernel::transform_shape`). A block that inserts itself
+  is left out there with a warning.
+- **Features:** the bodies of a component on one layer are one base
+  feature named `Layer <name>` (in a component `<component> layer
+  <name>`; feature names are unique), source `<file>, layer <name>`; bodies are
+  named `Solid n`, `Mesh n` (the block's name when a component has one
+  body) and coloured by the entity, its layer or the inserting entity
+  (`BYBLOCK`; a block placed more than once takes its first insert's).
+  The drawing's units become the document's when it was empty. One undo
+  step.
+- **Options:** `text` (the report as text), `report_path`, `expect` (data
+  sheet values checked: `length_mm` the side of the bodies' box nearest
+  to it, `chord_distance_mm` with `tube_diameter_mm` the nearest of the
+  other sides, `tube_diameter_mm` and `tube_wall_mm` cylindrical faces of
+  the outer and inner diameter, `mass_kg` the solids' volume times
+  `density_kg_m3` (2700), `volume_mm3` the solids' volume, `solids`,
+  `components`). Besides these, the checks are that every body built and
+  is valid, every 3D entity was taken, a drawing with 3D entities gave
+  bodies, and the bodies lie within the drawing's extents (when it has
+  them: extents never computed are stored empty).
+- **Report** (`report`): `version`, `units`, `drawing_units`, `unit_mm`,
+  `units_assumed`, `extents` (`$EXTMIN`/`$EXTMAX`, mm), `bounds` (every
+  placed body's box), `entities` and `taken` (by type), `left_out` (`type`,
+  `count`, `why`: 2D entities, wires, entities without B-rep data, ...),
+  `paper_space`, `objects`, `objects_failed`, `components` (`name`,
+  `bodies`, `occurrences`, `placed` in all), `copied_inserts`, `bodies`,
+  `solids`, `meshes`, `valid`, `solid_volume` (mm³, every placement),
+  `cylinder_diameters`, `not_built`, `records` (each B-rep record's form:
+  text, binary or binary from the data storage, and ASM version),
+  `checks` (every body built and valid, the bounds within the extents,
+  the `expect` values) and `pass`, `warnings`. The command's result:
+  `file`, `bodies`, `components`, `report`.
+
+Tests: `core.dwg` (the reader on drawings its tests write in every
+version: header variables, classes, objects, data storage, both forms of
+the B-rep record, the plan of components), `cli.import_dwg_<version>`
+(the test drawing through OCCT) and `dwg.corpus` (`MITCAD_DWG_CORPUS`).
 
 ### The import's outcomes on the timeline
 
@@ -8208,7 +8498,12 @@ points*).
   rail) gets the `mate`'s joint (`joint`, `axis`; slider by default)
   between its `mate.frame` and the target's first frame of kind
   `mate.on`, flipped, its slide at `at.offset` along x from `at.from`
-  (end A, end B or the middle, as on a side but to the part's frame). A cap gets a `rigid` joint between its first `end` (or `face`)
+  (end A, end B or the middle, as on a side but to the part's frame).
+  One whose `mate.on` is `slot` (a slider) placed on a profile's side (a
+  side face or a slot frame as `at.geometry`) goes on that side as a
+  profile does (mitcad#448): `place` is `side`, the slot is the one of
+  the face picked nearest `at.point`, its `mate.frame` slides on it at the
+  click's snaps or `at.offset` from `at.from`. A cap gets a `rigid` joint between its first `end` (or `face`)
   frame and the picked end, flipped.
 - **A connector** gets a `slider` joint between its first mate's frame and
   profile a's frame of the mate's kind (`to`) that faces the inner corner
@@ -8681,3 +8976,459 @@ Tests: `core/model/src/library_tests.rs`
 (`the_library_usage_counts_each_library_component_once`),
 `core/model/src/build/source_tests.rs`
 (`the_library_usage_counts_build_parts_by_their_source`).
+
+## Motion studies and contact sets
+
+Assemblies' motion studies and contact sets (mitcad#454; `core/model/src/motion.rs`
+the data, `contact.rs` the contact checks, `document/motion.rs` and
+`api/motion.rs` the commands). Both are definition state, not timeline
+features: saved in the design file (`motion_studies`, `contact_sets`, left
+out when there are none), changed by undoable commands that recompute
+nothing, deleted with what they name (a study's keys of a joint that is
+deleted or no longer has the motion; a set's occurrences that are gone),
+and moved with an occurrence that moves to another parent. Tests:
+`core/model/src/motion_tests.rs`, `tools/cli/tests/motion_contact.json`,
+`tools/ui-motion-study-test.sh`, `tools/ui-contact-test.sh`.
+
+```json
+{"motion_studies": [{"name": "Open", "steps": 40, "keys": [
+   {"joint": "F7", "motion": "tz", "points": [[0, 0], [40, 12.5]]},
+   {"joint": "F8", "motion": "rz", "points": [[10, 0], [40, 1.5708]]}]}],
+ "contact_sets": [{"name": "Contact1", "occurrences": ["O2", "O3/O5"]},
+                  {"name": "Stops", "occurrences": ["O1", "O2"], "suppressed": true}]}
+```
+
+- **Motion study:** a name, `steps` (1 to 100 000) and keys: per joint
+  (or as-built joint) and one of its free motions (a cylindrical joint's
+  `tz` and `rz` each), `points` `[step, value]` sorted by step, values in
+  millimetres or radians. A motion's value at a step is linear between
+  the points around it, the first point's before the first, the last's
+  after the last. Steps outside `0..steps` are allowed.
+- **Contact set:** a name, two or more occurrence paths from the root,
+  `suppressed`. Its bodies are the visible bodies placed in the design
+  whose instance paths start with one of the paths (a body belongs to the
+  innermost one); the pairs checked are bodies of different occurrences
+  of one set, once each however many sets hold them.
+- **Contact:** two bodies pass through each other when the kernel finds
+  more than 0.001 mm³ in common (`Kernel::overlap_volumes`, OCCT's boolean
+  common with a fuzzy value of 0.01 mm, so that faces within 0.01 mm of
+  each other only touch); pairs whose boxes, moved by their placements,
+  are more than 0.01 mm apart cost no boolean. Pairs that already pass
+  through each other where a motion starts are left out (parts can move
+  apart). Shapes are those at the marker: a feature whose body depends on
+  placements is not built again while the joints move.
+- **Motions that stop at contact:** `drive_joint`, `drag_occurrence` and
+  the `joint_drag` query, `play_study`, and the previews below. A motion
+  is sampled from where it starts (Drive Joint and a study's straight
+  path: every 5° of a turn and 1 mm of a slide, at most 64 samples; a
+  drag: every 2 mm of the grabbed point, at most 16; a study's playback:
+  every step), each sample the document's state with the joints driven
+  there and recomputed (the joints solved as Drive Joint solves them, so
+  constraints and other joints follow), and at the first sample with a
+  contact the step before it is bisected 14 times: the motion stops at the
+  last state without one. Values are held within the joints' limits.
+  Without contact sets nothing is sampled.
+- A stopped motion's answer has `contact`: `set`, `bodies` (each `body`,
+  `name`, `occurrence` (path name), `path`), `fraction` (how far it went,
+  0 to 1; not for drags) and `message` (`stopped at contact: Body2
+  (Pin:1) and Body3 (Wall:1) in Contact1`). `drive_joint` also gives the
+  message in `warnings` (a panel shows it) and keeps the value where it
+  stopped as the joint's position (a number, not the expression given).
+
+| Command | Fields | Result |
+|---|---|---|
+| `add_motion_study` | `name` (`Study<n>` when left out), `steps` (default 100), `keys` (each `joint` (uid or name), `motion`, `points` `[[step, value], …]`, a value a number in mm or radians or an expression in the motion's unit, `"90 deg"`) | `name`; undo step `Add Study1` |
+| `edit_motion_study` | `name`, `new_name`, `steps`, `keys` (all of them) | `name` |
+| `delete_motion_study` | `name` | |
+| `set_study_key` | `study`, `joint`, `motion`, `step`, `value` (where the joint is at the marker when left out: Add Key) | `joint`, `motion`, `step`, `value`; a point at the same step is replaced; undo step `Key Joint1 in Study1` |
+| `remove_study_key` | `study`, `joint`, `motion`, `step` (without it the whole key) | |
+| `play_study` | `study`, `step` | `values` (per joint uid, per motion), `fraction`, `contact`; the keyed joints driven from where they are straight to their values at the step, stopping at the first contact, and kept: one undo step `Play Study1` |
+| `add_contact_set` | `name` (`Contact<n>`), `occurrences` (paths from the root by uids or names, or one occurrence placed once), `suppressed` | `name` |
+| `edit_contact_set` | `name`, `new_name`, `occurrences`, `suppressed` | `name`; undo steps `Suppress Contact1`, `Unsuppress Contact1`, `Edit Contact1` |
+| `delete_contact_set` | `name` | |
+
+| Query | Fields | Result |
+|---|---|---|
+| `motion_studies` | | each study's `name`, `steps`, `keys` (`joint`, `joint_name`, `motion`, `points`) |
+| `study_values` | `study`, `step` | `values` per joint uid and motion at the step |
+| `contact_sets` | | each set's `name`, `occurrences` (`path`, `name`), `suppressed` |
+| `contact_check` | | `overlaps`: the pairs of the active sets that pass through each other at the marker (`set`, `volume`, `bodies`) |
+
+Previews (`preview`, changing nothing but the preview; the report has the
+preview's `placements` and `values`, `fraction`, `contact`):
+
+- `{"cmd": "play_study", "study", "step", "from"}`: the study at `step`,
+  along the study from step `from` (the application's playback, frame by
+  frame), else from where the joints are.
+- `{"cmd": "drive_joint", "joint", "values": {"tx": 12}, "from": {"tx":
+  8}}`: the joint driven to the values from `from` (Animate Joint's
+  frames), else from where it is.
+
+The `.solidcraft` import maps the file's contact sets and motion studies
+onto these ([.solidcraft import](#solidcraft-import), `core/import/README.md`).
+
+## Contour Flange, Convert to Sheet Metal and Perforate
+
+Three sheet features of mitcad#461, with `add_feature` and `edit_feature`,
+ordinary parameters, preview, Undo and persistence. Contour Flange and
+Convert to Sheet Metal take their rules as a Face does: a `sheet_rules`
+uid, or the rules' definition inline (a `sheet_rules` feature is added just
+before them in the same undo step). The geometry and its conventions are in
+[docs/sheet-metal.md](../../../../docs/sheet-metal.md#implementation-notes-mitcad461).
+
+### Contour Flange
+
+```json
+{"type":"sheet_contour","rules":"F1","sketch":"F2","curves":["c1","c4","c6"],
+ "width":50,"side":"right","reverse":false,"radius":3}
+```
+
+`curves` are sketch lines joined end to end, in the order the chain runs
+(the first line runs away from the second; one line runs from its start).
+The chain is the sheet's surface on the rules' reference side, the material
+on `side` of it (`right`, the default, or `left` of travel, seen from the
+sketch's front), `width` along the sketch's normal (against it with
+`reverse`). Every corner is the virtual sharp of a bend of `radius`
+(default: the rules'). The new body is `<feature>.b0`; panel `i` is the
+straight part of line `i` (slot `i`, its curves `g<50+100i>` to
+`g<53+100i>`, `51` at its far end), bend `i` (slot `i`) joins panels `i`
+and `i+1`. Refused: curves that are not lines or do not join, lines in one
+line, and a line not longer than the setbacks of its bends.
+
+### Convert to Sheet Metal
+
+```json
+{"type":"sheet_convert","rules":"F1","body":"F5.b0","face":"F5:side(c1[c12,c4])",
+ "bends":["E{F5:side(c1[c12,c4])|F5:side(c12[c10,c1])}"],"radius":3}
+```
+
+The body becomes a sheet of the rules, keeping its uid. `face` (planar) is
+the first panel's front, the material behind it. Without `bends` the body
+must be a plate of the rules' thickness behind the face: the sheet built
+from the face must have the body's volume and centre of mass. With `bends`
+(edges between two planar faces), the faces reached from `face` across them
+are panels with the rules' thickness behind them, each bend edge the
+virtual sharp of a bend of `radius` (default: the rules'). Panel `k` is the
+k-th face reached (slot 0 the picked face), bend `k` the bend that reached
+panel `k+1`. Refused: a face that is not planar, a bend edge that is not
+straight, does not join the picked face through the others or closes a loop,
+two panels meeting at an edge that is no bend, a face that does not run the
+whole bend edge after its setback.
+
+### Perforate
+
+```json
+{"type":"sheet_perforate","body":"F3.b0","diameter":5,"pitch":10,"margin":5,
+ "pattern":"square","stationary":{"feature":"F3","slot":0}}
+```
+
+Round holes of `diameter`, `pitch` apart on a `staggered` (default) or
+`square` grid, cut through the sheet as a developed cut with every bend
+open. The grid lies in the chart of `stationary` (default: the sheet's
+lowest panel) developed with all bends, from the developed material's lower
+left corner; a hole is kept where it lies on a panel, on no bend, and
+`margin` (default: the diameter) or more from every edge, cut-out and bend.
+The holes are generated curves `g<k>` of the feature. Refused: a pitch not
+larger than the diameter, a negative margin, a sheet with overlays (no
+developed form), more than 100000 holes.
+
+Tests: `core/model/src/sheet_more_tests.rs`,
+`core/model/src/sheet/folded/perforate.rs` (the grid), the CLI fixtures
+`sheet_contour`, `sheet_convert`, `sheet_perforate` with their reopen passes,
+and the `.solidcraft` test designs `sheet-contour-perforate` and
+`sheet-convert` (`cli.import_solidcraft`).
+
+## Motion links
+
+A `motion_link` feature (mitcad#466; `features/motion_link.rs` the
+definition, `core/model/src/motion_links.rs` what recompute does with it,
+`document/motion_links.rs` and `api/joints.rs` the commands; the cam's
+geometry adapted from SolidCraft in `third_party/solidcraft/cam.rs`)
+makes one joint's free motion (`b`, the follower) follow another's (`a`,
+the driver) in the link's component. Tests:
+`core/model/src/motion_link_tests.rs`, `core/solver/tests/rigid_couplings.rs`,
+`tools/cli/tests/motion_links.json`, `tools/ui-motion-link-test.sh`.
+
+```json
+{"type": "motion_link", "a": {"joint": "F7", "motion": "rz"}, "b": {"joint": "F8", "motion": "tx"},
+ "coupling": {"type": "rack_pinion",
+              "radius": {"occurrence": "O2", "geometry": {"body": "F4.b0", "face": "F4:side(c1)"}}},
+ "offset": "d12"}
+```
+
+| `coupling` | Fields | `b` follows `a` |
+|---|---|---|
+| `ratio` | `ratio` (unitless, not zero) | `b = ratio · a + offset` (mm or radians each) |
+| `gear` | `ra`, `rb` (sizes), `internal` | two turns: `b = −(ra / rb) · a + offset` (`+` for an internal, ring gear) |
+| `rack_pinion` | `radius` (a size) | a turn and a slide, either way round: the slide travels `radius` per radian |
+| `screw` | `lead` (a size) | a turn and a slide (a cylindrical joint's own two, or a revolute joint and a slider): `lead` per turn |
+| `cam` | `profile`, `follower`, `tip` | the follower rides the cam's profile (below) |
+
+- **Sizes** (`ra`, `rb`, `radius`, `lead`, a roller's `radius`) are a value
+  (a parameter, an expression or a number, mm; tooth counts work as sizes
+  in proportion) or round geometry picked on an occurrence, a joint origin
+  (`occurrence`, `geometry`): the radius of a cylindrical, conical or
+  spherical face, a circular edge or a sketch circle or arc, found again
+  on every recompute.
+- `reverse` turns the follower the other way (a cam's follower rides it
+  from the other side). `offset` (mm or an angle, as `b`'s motion) is added
+  to the follower's value.
+- **Joints:** `a` and `b` name joints (or as-built joints) of the link's
+  component and one of their free motions each; the two must differ (a
+  screw may name one cylindrical joint's `rz` and `tz`). Gears couple two
+  turns; a rack and pinion and a screw a turn and a slide.
+- **Solving:** at its point of the timeline the link works out its
+  relation and solves its two joints together with every joint, constraint
+  and link sharing moving occurrences with them (`mitcad_solver::RigidCoupling`:
+  one row `b − relation(a)`). A follower whose driver is driven (a
+  position or a rest value, or followed from a driven motion) lets go of
+  its own position; a driven follower whose driver is free drives the
+  driver. `drive_joint` (and a study's keys) take away the positions of the
+  motions linked to the ones they drive (through links), so the last
+  driven motion drives; a cam's follower is not driven (refused: drive the
+  cam). Drags move linked joints together; the degrees of freedom count
+  the link (two gears on revolute joints: one). A contact of a contact
+  set stops the whole linked motion (the linked joints move in each
+  sample of Drive Joint, a drag, Animate Joint or a study). A free driving
+  turn is known from the placements only within a turn: the solve takes
+  the turn its follower says (a gear past half a turn keeps its mate).
+- **Cam:** `a` is a revolute joint (the cam), `b` a slider (a translating
+  follower) or a revolute joint (an oscillating one). `profile` is a joint
+  origin on the side of `a` that turns: a planar face (its outer boundary)
+  or curves of a sketch (`{"sketch": "F3", "curves": [...]}`: the profile
+  they bound, the one sharing most of them, the largest with none). In the
+  cam's fixed frame (the other side's frame) the profile lies square to
+  the axis and turns by a's value. The follower's guide is the side of
+  `b` on the part the cam turns against (else `b`'s own side `b`); a
+  translating follower comes along its slide axis through its tip, from
+  the side of the cam's axis its tip is on now; an oscillating one swings
+  about its axis (along the cam's) from its arm pointing away from the
+  cam's axis, toward the cam the way its arm is turned now. `follower`:
+  `{"type": "knife"}` (default), `{"type": "roller", "radius": <size>}`
+  or `{"type": "flat"}` (a sliding follower only). `tip`: the knife's
+  point or the roller's centre on the follower (a joint origin; a roller
+  picked by its round face is its own tip); without it a sliding follower's
+  tip is its joint frame's origin; a swinging one needs it. Over one turn
+  of the cam the follower stands where it first touches the profile (360
+  samples, followed sample by sample for a swinging one; a jump off the
+  profile is refused), its value there with its tip where it is now along
+  its line (or arm): it touches the cam, `offset` added. Between samples a
+  monotone cubic.
+- Failures name the link and the cause: a joint not in effect, a coupling
+  that does not fit its motions, a size that is not positive, a profile
+  not on the turning part, not flat or square to the axis, a follower that
+  misses the cam.
+
+| Command | Fields | Result |
+|---|---|---|
+| `add_motion_link` | `a`, `b` (`joint` by uid or name, `motion`), `coupling` (occurrences of picked geometry by uids or names), `reverse`, `offset`, `as_built` (default: true but for a cam), `name`, `component` | `uid`, `name`, `parameters`, `state`, `solved`; without `offset` and with `as_built`, the offset that keeps the joints where they are at the marker (b's value less what the relation gives for a's); undo step `Add MotionLink1` |
+
+`add_feature` and `edit_feature` take the definition as it is (its
+offset as given, zero without one).
+
+| Query | Fields | Result |
+|---|---|---|
+| `joints` | | also `links`: per link `uid`, `name`, `component`, `coupling`, `a` and `b` (`joint`, `name`, `motion`), `reverse`, `status`, `error`, `state` (`placed`, `satisfied`, `failed`, `suppressed`), `solved` (b follows a at the marker), `ratio` (a linear coupling's b per a), `offset`, `values` (`a`, `b` at the marker), `moved` |
+| `motion_link_offset` | `a`, `b`, `coupling`, `reverse`, `component` (as `add_motion_link`) | `offset`: what `as_built` would give (Motion Link's panel) |
+
+The `.solidcraft` import maps the file's motion links onto these
+([.solidcraft import](#solidcraft-import), `core/import/README.md`).
+
+## Boundary Fill
+
+A `boundary_fill` feature (mitcad#457; `features/boundary_fill.rs`,
+`Kernel::boundary_cells`, `geometry/src/boundary_fill.cpp`) makes solids
+of the cells that tool bodies enclose, with `add_feature` and
+`edit_feature`, preview, Undo and persistence:
+
+```json
+{"type": "boundary_fill", "tools": ["F2.b0", "F4.b0"], "cells": [[15, 15, 15], [5, 5, 5]],
+ "operation": "new_body", "remove_tools": false}
+```
+
+- The tools' faces divide space into cells; a cell is all of the space
+  inside every tool that holds its point and outside every other tool
+  (several solids where that space falls apart). `cells` gives a point
+  inside each cell to fill, in the coordinates of the feature's
+  component. Two points in one cell fill it once, with a warning.
+- `operation`: `new_body` (a body per cell, in the order of the points,
+  `<feature>.b<i>`), `new_component` (the same in a new component), or
+  `join`, `cut` and `intersect`: the cells together are one tool that
+  works on `participants` as an extrusion's tool does (none: all bodies
+  of the component, the tools that stay among them; a cut that splits a
+  body makes bodies of the pieces, [Body ids of a split's
+  pieces](#body-ids-of-a-splits-pieces)).
+- `remove_tools` takes the tools out of the design before the operation;
+  a removed tool cannot be a participant. Without it the tools stay as
+  they are.
+- Names: a cell's faces are pieces of the tools' faces and keep their
+  names (`F2:top`, pieces of one face side by side merged again, others
+  numbered `#k`), as a boolean keeps them; the fill gives no names of
+  its own.
+- Refused: no tools, a tool listed twice, no points, participants of a
+  new body. Failures: a point inside no tool (`the point (50, 50, 50) is
+  inside no tool body: no enclosed cell there`) or on a tool's boundary,
+  a mesh body as a tool, a join, cut or intersection that reaches no
+  participant.
+
+Tests: `core/model/src/boundary_fill_tests.rs` (mock kernel),
+`geometry.boundary_fill` (`geometry/tests/test_boundary_fill.cpp`, OCCT),
+`cli.boundary_fill` (`tools/cli/tests/boundary_fill.json`, saved and
+opened again by `cli.boundary_fill_info`), and the `.solidcraft` test
+design `boundary-fill` (`cli.import_solidcraft`).
+
+## Convert Mesh
+
+A `mesh_convert` feature (mitcad#462; `features/mesh_convert.rs`, the
+conversion adapted from SolidCraft in
+`third_party/solidcraft/mesh_convert.rs`) rebuilds a mesh body of one
+profile extruded straight (a constant-section part from an STL or OBJ
+file) as a solid of planar and cylindrical faces, with `add_feature` and
+`edit_feature`, ordinary parameters, preview, Undo and persistence.
+
+```json
+{"type": "mesh_convert", "body": "F3.b0", "tolerance": 0.05}
+```
+
+`body` is a mesh body ([Mesh bodies in surface
+operations](#mesh-bodies-in-surface-operations)); `tolerance` (mm,
+0.000001 to 1; slot `tolerance`) is how far the rebuilt faces may lie
+from the triangles. The body keeps its uid, name and appearance; the mesh
+it was stays as the features before this one left it (suppressed or
+deleted, the mesh body is back). Default name `ConvertMesh<n>`.
+
+- The mesh: its vertices within a ten-millionth of its size (at most a
+  hundredth of the tolerance) are one; it must be closed and consistently
+  oriented (two triangles at every edge), enclose a volume, and have at
+  most 50000 triangles.
+- The direction: the triangles' normals, those covering most area first
+  (at most 16 are tried). Along a direction the triangles at the lowest and
+  the highest level are the caps; every other triangle must stand upright,
+  the two caps' boundaries projected across the direction must be the same
+  loops (at most 50, 8192 corners), and every vertex between the caps must
+  lie on them. So a twisted, tapered or stepped mesh is no prism.
+- The section: a loop of 12 or more corners on one circle, each chord at
+  most 30 degrees and within the tolerance of its arc, is that circle (a
+  cylindrical face); other loops are polygons without their corners in a
+  line (planar faces). A fitted circle may not reach across another loop,
+  and the section's volume must agree with the mesh's within the tolerance
+  times the boundary's length and the height.
+- The solid is the kernel's extrusion of the section, so its faces are
+  named as an extrusion's after the feature: `<feature>:side(<segment>)`,
+  `start(<region>)` at the low cap and `end(<region>)` at the high one. The
+  section's edges are curves `c1`, `c2`, … loop by loop: an outer loop
+  counter-clockwise from its lowest corner (smallest x, then y, in a frame
+  whose x axis is the model axis least along the direction), its holes
+  clockwise, a circle one curve (`F4:side(c1[c4,c2])`, `F4:side(c5)`).
+- Refused, with nothing converted: a body that is no mesh body (`body
+  F2.b0 (from Extrude1) is not a mesh body; …`), a tolerance out of range
+  (also when adding or editing the feature), an open or inside-out mesh, a
+  mesh over the budgets, and a mesh that is no prism (`the mesh is not a
+  supported constant-section prism (one profile extruded straight); no
+  geometry was converted`).
+
+The `.solidcraft` import maps the file's mesh conversions onto it
+([.solidcraft import](#solidcraft-import)). Tests:
+`core/model/src/features/mesh_convert/tests.rs` (`core.model`: the
+conversion on meshes built there, the feature on the mock kernel),
+`cli.mesh_convert` and `cli.mesh_convert_reopen`
+(`tools/cli/tests/mesh_convert.json`: an STL file's plate through the OCCT
+kernel), the `.solidcraft` test design `mesh-convert`
+(`cli.import_solidcraft`) and `solidcraft::tests` (`core.import`).
+
+## Patch, Stitch and Thicken
+
+Three features of surface (sheet) bodies (mitcad#456), with `add_feature`
+and `edit_feature`, ordinary parameters, preview, Undo and persistence:
+a patch fills sketch regions or a closed loop of a body's edges with new
+surface bodies, a stitch sews bodies' faces into one body, a thicken makes
+surface bodies solid. Their inputs are any surface bodies: patches, a
+loft's `surface`, a `delete_face` that leaves the gap open, imported
+surfaces; mesh bodies are refused ([Mesh bodies in surface
+operations](#mesh-bodies-in-surface-operations)). None changes the bodies
+it reads but those a stitch sews or a thicken joins, cuts or intersects.
+The definitions are `features/patch.rs`, `stitch.rs` and `thicken.rs`,
+the kernel's inputs `crate::surfaces`, the OCCT side
+`geometry/src/surfaces.cpp`.
+
+### patch
+
+```json
+{"type": "patch", "profiles": [{"sketch": "F1", "region": "r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]}"}]}
+{"type": "patch", "boundary": {"body": "F5.b0", "edges": ["E{F5:end(r{c1})|F5:side(c1)}", "..."],
+ "continuity": "g1", "edge_continuity": [{"edge": "E{…}", "continuity": "g0"}],
+ "points": [[10, 10, 24]]}}
+{"type": "patch", "boundary": {"body": "F5.b0", "opening": {"faces": ["F3:patch(r{c1})", "F4:side(c2)"], "index": 0}}}
+```
+
+- `profiles`: regions of one sketch, as an extrusion's (a set); each is a
+  new surface body of one planar face `<feature>:patch(<region>)`, its
+  normal the sketch's.
+- `boundary`: a closed loop of a body's edges, one new surface body of one
+  face `<feature>:patch`. The loop is `edges` (named edges; every edge a
+  name without `#k` resolves to) or `opening`: a loop of the body's free
+  edges (edges of one face only, the open boundary of a surface body,
+  which have no names of their own), the `index`-th (default 0) in the
+  kernel's geometric order of those whose edges bound exactly the faces
+  named in `faces`. The `open_boundaries` of a body are the kernel's
+  (`Kernel::open_boundaries`: each loop's faces and points along it).
+- How the patch meets the face beside each edge: `continuity` `g0` (the
+  default: through the edge), `g1` (tangent to the face) or `g2` (tangent
+  and of the same curvature); `edge_continuity` sets single named edges
+  of the loop otherwise. `g1` and `g2` need the one face beside the edge:
+  an edge between two faces is refused with them (`unsupported: …`).
+  `points` (mm, the component's coordinates) are points the patch passes
+  through.
+- A loop in a plane that the patch only passes through (`g0` everywhere,
+  no points) is filled by the plane; otherwise by a surface fitted to the
+  edges (OCCT's `BRepFill_Filling`).
+- Both may be given: the regions' bodies first (`<feature>.b0`, …), then
+  the loop's. The body of the loop is not changed.
+- Refused: neither regions nor a loop; both `edges` and `opening`; a
+  continuity of an edge not in `edges`; an opening that is not there
+  (`body F5.b0 (from Stitch1) has no opening along the faces …`, or fewer
+  of them than `index`); edges that do not close up into one loop.
+
+### stitch
+
+```json
+{"type": "stitch", "bodies": ["F2.b0", "F4.b0", "F6.b0"], "tolerance": 0.01}
+```
+
+The bodies' faces sewn together where their edges meet within
+`tolerance` (mm; 0 for the kernel's own precision, 1e-6 mm). The first
+body keeps its uid and becomes the sewn body: a solid where the faces
+close up (a closed shell), else a surface body; the others are consumed.
+The faces keep their names. Faces that meet nothing stay as they are, in
+the same body. Refused: no bodies, a body twice, a negative tolerance.
+
+### thicken
+
+```json
+{"type": "thicken", "bodies": ["F3.b0"], "thickness": 2, "symmetric": false,
+ "operation": "new_body", "participants": []}
+```
+
+Each surface body (a solid is refused: `body F2.b0 (from Extrude1) is a
+solid; Thicken makes surface bodies solid`) becomes solids by a wall
+`thickness` thick along its faces' normals (their orientations applied),
+against them when negative, or half of it to each side with `symmetric`.
+The surface bodies stay. `operation` and `participants` are an
+extrusion's; a join, cut or intersection without `participants` works on
+every body but the thickened ones (and mesh bodies). New faces:
+`<feature>:front(<face>)` on the side the face's normal points to,
+`<feature>:back(<face>)` on the other, `<feature>:wall(<face>)` along
+the face's free edges (`#k` several). Refused: a thickness of 0, a body
+twice, a thickened body among the participants; the kernel fails where the
+wall does not close up into a solid (a face curved more tightly than the
+thickness, faces meeting at an inside corner the wall crosses).
+
+Tests: `core/model/src/surface_tests.rs` (mock kernel: bodies, names,
+refusals), `geometry/tests/test_surfaces.cpp` (`geometry.surfaces`: an
+open box of five patches stitched, its opening patched and closed into a
+solid, a fill through a point, the stitch tolerance, thickening to either
+side and both, the input check on), the `.solidcraft` test design
+`patch-stitch-thicken` (`cli.import_solidcraft`) and
+`core/import/src/solidcraft/tests.rs`. The `.solidcraft` import maps
+SolidCraft's patches, stitches and thickens onto these
+([.solidcraft import](#solidcraft-import), `core/import/README.md`).

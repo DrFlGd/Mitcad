@@ -461,6 +461,14 @@ pub(crate) fn footprint<K: crate::kernel::Kernel>(
             bodies.push(d.body);
             None
         }
+        F::SheetPerforate(d) => {
+            bodies.push(d.body);
+            None
+        }
+        F::SheetConvert(d) => {
+            bodies.push(d.body);
+            None
+        }
         F::Fillet(d) => {
             bodies.push(d.body);
             None
@@ -579,6 +587,18 @@ pub(crate) fn footprint<K: crate::kernel::Kernel>(
                             .filter(|b| !scope.excluded_bodies().iter().any(|e| e.body == *b)),
                     );
                 }
+            }
+            None
+        }
+        // Boundary Fill (mitcad#457): its participants, and the tools it
+        // removes.
+        F::BoundaryFill(d) => {
+            if !d.operation.makes_bodies() {
+                all = d.participants.is_empty();
+                bodies.extend(&d.participants);
+            }
+            if d.remove_tools {
+                bodies.extend(&d.tools);
             }
             None
         }

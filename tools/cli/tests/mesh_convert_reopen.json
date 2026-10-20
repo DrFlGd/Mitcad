@@ -1,0 +1,8 @@
+[
+  {"comment": "SPDX-License-Identifier: MIT. mesh_convert.json saved and opened again (mitcad#462): the plate's mesh is rebuilt as before, the solid and the torus's mesh are refused again."},
+  {"expect": {"feature": "ConvertMesh1", "status": "ok", "body": "part", "volume": 10500, "faces": 10,
+    "has_face": "F4:side(c5[c8,c6])"}},
+  {"expect": {"feature": "ConvertMesh2", "status": "error", "error_contains": "is not a mesh body"}},
+  {"expect": {"feature": "ConvertMesh3", "status": "error",
+    "error_contains": "is not a supported constant-section prism"}}
+]

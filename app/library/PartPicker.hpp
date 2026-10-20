@@ -163,6 +163,10 @@ public:
   void setUsedParts(const QList<UsedPart>& used);
   // The tile of `key` current (empty: none); `notify`: currentChanged.
   void setCurrent(const QString& key, bool notify = false);
+  // The tile of `key` current and scrolled into sight (mitcad#452): when
+  // the group or the search leaves it out, All parts without the search.
+  // Signals nothing; false when no tile shows it.
+  bool reveal(const QString& key);
   // The first tile shown current (none when nothing is shown).
   void selectFirst(bool notify = false);
   QString currentKey() const { return m_current; }

@@ -1309,6 +1309,7 @@ fn selections_match_the_reference_dumps() {
             "CircularPatternFeature",
             "RectangularPatternFeature",
             "HoleFeature",
+            "PathPatternFeature",
         ] {
             let twins = of_kind(&decoded, kind);
             for (k, item) in of_kind(&reference, kind).into_iter().enumerate() {
@@ -1389,6 +1390,33 @@ fn selections_match_the_reference_dumps() {
                         ] {
                             if !theirs[field].is_null() || !mine[field].is_null() {
                                 same(field, key(&mine[field]) == key(&theirs[field]));
+                            }
+                        }
+                        // A path pattern's path (mitcad#468): its sketch
+                        // curves, or the kinds of its edges.
+                        if !theirs["path"].is_null() || !mine["path"].is_null() {
+                            let path = |v: &serde_json::Value| {
+                                v["path"].as_array().map(|a| {
+                                    a.iter()
+                                        .map(|p| {
+                                            let e = &p["entity"];
+                                            match e["kind"].as_str() {
+                                                Some("sketch_entity") => format!(
+                                                    "{}:{}",
+                                                    e["sketch_timeline_index"], e["id"]
+                                                ),
+                                                k => k.unwrap_or("?").to_owned(),
+                                            }
+                                        })
+                                        .collect::<Vec<_>>()
+                                })
+                            };
+                            same("path", path(&mine) == path(&theirs));
+                        }
+                        for field in ["quantity", "distance"] {
+                            if kind == "PathPatternFeature" {
+                                let value = |v: &serde_json::Value| v[field]["value"].as_f64();
+                                same(field, value(&mine) == value(&theirs));
                             }
                         }
                     }
@@ -1804,6 +1832,7 @@ fn pattern_settings_match_the_reference_dumps() {
         "CircularPatternFeature",
         "RectangularPatternFeature",
         "MirrorFeature",
+        "PathPatternFeature",
     ];
     let keys = [
         "isSymmetric",

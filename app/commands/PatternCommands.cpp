@@ -398,14 +398,16 @@ CommandDef pathPatternCommand(const CommandContext& context) {
   def.id = QStringLiteral("solid.path_pattern");
   def.name = QObject::tr("Pattern on Path");
   def.icon = QStringLiteral("path-pattern");
-  def.tooltip = QObject::tr("Copies along a sketch line, arc or circle");
+  def.tooltip = QObject::tr("Copies along a sketch line, arc or circle, or a chain of lines and arcs");
   def.group = QStringLiteral("CREATE");
   def.keywords = {QStringLiteral("array"), QStringLiteral("path pattern"), QStringLiteral("curve")};
   def.featureType = QStringLiteral("path_pattern");
   def.inputs = patternObjects();
   def.inputs += {
-      selectionInput(QStringLiteral("path"), QObject::tr("Path"), SelectKind::SketchCurve, 1, 1)
-          .withTooltip(QObject::tr("A sketch line, arc or circle"))
+      // Several curves are a chain, joined end to end (mitcad#464).
+      selectionInput(QStringLiteral("path"), QObject::tr("Path"), SelectKind::SketchCurve, 1, 0)
+          .withTooltip(QObject::tr("A sketch line, arc or circle, or lines and arcs of one sketch "
+                                   "joined end to end (from the free end of the first)"))
           .withAccepts([](const SelectionItem& item) { return isLine(item) || isCircular(item); }),
       valueInput(QStringLiteral("quantity"), QObject::tr("Quantity"), ValueKind::Unitless, QStringLiteral("3")),
       valueInput(QStringLiteral("distance"), QObject::tr("Distance"), ValueKind::Length, QStringLiteral("20 mm")),
@@ -428,9 +430,15 @@ CommandDef pathPatternCommand(const CommandContext& context) {
     if (!result.error.isEmpty()) {
       return result;
     }
+    const Selection& curves = state.items(QStringLiteral("path"));
+    const QJsonValue path =
+        curves.size() > 1 ? pathOf(curves, false, result, QStringLiteral("path")) : curves.first().reference();
+    if (!result.error.isEmpty()) {
+      return result;
+    }
     result.def = {{QStringLiteral("type"), QStringLiteral("path_pattern")},
                   {QStringLiteral("objects"), objects},
-                  {QStringLiteral("path"), state.items(QStringLiteral("path")).first().reference()},
+                  {QStringLiteral("path"), path},
                   {QStringLiteral("quantity"), countValue(state, QStringLiteral("quantity"))},
                   {QStringLiteral("distance"), state.expression(QStringLiteral("distance"))},
                   {QStringLiteral("distance_type"), state.choice(QStringLiteral("distance_type"))}};
@@ -454,7 +462,12 @@ CommandDef pathPatternCommand(const CommandContext& context) {
   def.load = [](const QJsonObject& feature, CommandState& state, const CommandContext& context) {
     loadObjects(feature, state, context);
     loadSuppressed(feature, state);
-    state.setItems(QStringLiteral("path"), {itemOf(feature.value(QStringLiteral("path")), context)});
+    const QJsonValue path = feature.value(QStringLiteral("path"));
+    if (path.toObject().contains(QStringLiteral("curves"))) {
+      state.setItems(QStringLiteral("path"), pathItems(path, context).value_or(Selection{}));
+    } else {
+      state.setItems(QStringLiteral("path"), {itemOf(path, context)});
+    }
     loadCount(state, QStringLiteral("quantity"), feature.value(QStringLiteral("quantity")), feature, context);
     loadValue(state, QStringLiteral("distance"), feature.value(QStringLiteral("distance")), feature, context);
     state.setChoice(QStringLiteral("distance_type"), str(feature, "distance_type"));

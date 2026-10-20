@@ -1503,6 +1503,451 @@ CommandDef constraintCommand(const CommandContext& context) {
   return def;
 }
 
+// ---------------------------------------------------------------------------
+// Contact Set (mitcad#454): components whose bodies may touch but not pass
+// through each other while joints move. Not a feature: OK runs
+// `add_contact_set` (or `edit_contact_set` for the one edited, the hidden
+// input "set"), one undo step that recomputes nothing.
+
+CommandDef contactSetCommand(const CommandContext& context) {
+  CommandDef def;
+  def.id = QStringLiteral("assemble.contact_set");
+  def.name = QObject::tr("Contact Set");
+  def.icon = QStringLiteral("contact-set");
+  def.tooltip = QObject::tr("Components that stop each other where they touch while joints move");
+  def.group = QStringLiteral("ASSEMBLE");
+  def.keywords = {QStringLiteral("contact"), QStringLiteral("collision"), QStringLiteral("stop"),
+                  QStringLiteral("interference")};
+  def.modelCommand = true;
+  def.inputs = {
+      selectionInput(QStringLiteral("occurrences"), QObject::tr("Components"),
+                     SelectKind::Component | SelectKind::Body, 2, 0)
+          .withTooltip(QObject::tr("Components in the browser, or bodies they place"))
+          .withAccepts(isPlaced)
+          .withConvert(occurrenceItem),
+      checkInput(QStringLiteral("suppressed"), QObject::tr("Suppressed"), false)
+          .withTooltip(QObject::tr("A suppressed set stops nothing")),
+      hidden(QStringLiteral("set")),
+  };
+  def.enabled = [&context] { return occurrenceCount(context) > 1; };
+  def.build = [](const CommandState& state, const CommandContext&) {
+    QJsonArray occurrences;
+    for (const SelectionItem& item : state.items(QStringLiteral("occurrences"))) {
+      if (!item.occurrence.isEmpty() && !occurrences.contains(item.occurrence)) {
+        occurrences.append(item.occurrence);
+      }
+    }
+    if (occurrences.size() < 2) {
+      return Built::failure(QObject::tr("Select two or more components."), QStringLiteral("occurrences"));
+    }
+    const QString set = state.text(QStringLiteral("set"));
+    const bool suppressed = state.checked(QStringLiteral("suppressed"));
+    QJsonObject command = set.isEmpty()
+                              ? QJsonObject{{QStringLiteral("cmd"), QStringLiteral("add_contact_set")}}
+                              : QJsonObject{{QStringLiteral("cmd"), QStringLiteral("edit_contact_set")},
+                                            {QStringLiteral("name"), set}};
+    command.insert(QStringLiteral("occurrences"), occurrences);
+    command.insert(QStringLiteral("suppressed"), suppressed);
+    Built built;
+    built.def = {{QStringLiteral("commands"), QJsonArray{command}},
+                 {QStringLiteral("label"), set.isEmpty() ? QStringLiteral("Add Contact Set")
+                                                         : QStringLiteral("Edit %1").arg(set)}};
+    return built;
+  };
+  // An entry of the `contact_sets` query, to edit.
+  def.load = [](const QJsonObject& set, CommandState& state, const CommandContext&) {
+    state.setText(QStringLiteral("set"), str(set, "name"));
+    state.setChecked(QStringLiteral("suppressed"), set.value(QStringLiteral("suppressed")).toBool());
+    Selection items;
+    for (const QJsonValue& value : set.value(QStringLiteral("occurrences")).toArray()) {
+      SelectionItem item{SelectKind::Component, QString(), QString(), QString()};
+      item.occurrence = str(value.toObject(), "path");
+      items.append(item);
+    }
+    state.setItems(QStringLiteral("occurrences"), items);
+  };
+  def.describe = [](const CommandState& state, const CommandContext& context) {
+    QJsonArray sets;
+    try {
+      sets = context.queryArray(QStringLiteral("contact_sets"));
+    } catch (const std::exception&) {
+    }
+    const QString edited = state.text(QStringLiteral("set"));
+    if (!edited.isEmpty()) {
+      return QStringLiteral("Edited contact set %1").arg(edited);
+    }
+    const QJsonObject set = sets.isEmpty() ? QJsonObject() : sets.last().toObject();
+    QStringList names;
+    for (const QJsonValue& value : set.value(QStringLiteral("occurrences")).toArray()) {
+      names << str(value.toObject(), "name");
+    }
+    return QStringLiteral("Added contact set %1: %2").arg(str(set, "name"), names.join(QStringLiteral(", ")));
+  };
+  return def;
+}
+
+// ---------------------------------------------------------------------------
+// Motion Link (mitcad#466): one joint's free motion follows another's (the
+// driver, A): gears, a rack and pinion, a screw, a plain ratio, or a cam
+// with its follower; one `motion_link` feature. A size is a value, or the
+// radius of round geometry picked beside it. "Keep where they are" adds the
+// offset that leaves the joints where they are (the `motion_link_offset`
+// query); a cam's follower otherwise moves to touch the cam.
+
+namespace {
+
+const Choices kCouplings = {{QStringLiteral("gear"), QStringLiteral("Gears")},
+                            {QStringLiteral("rack_pinion"), QStringLiteral("Rack and Pinion")},
+                            {QStringLiteral("screw"), QStringLiteral("Screw")},
+                            {QStringLiteral("ratio"), QStringLiteral("Ratio")},
+                            {QStringLiteral("cam"), QStringLiteral("Cam")}};
+const Choices kFollowers = {{QStringLiteral("knife"), QStringLiteral("Knife Edge")},
+                            {QStringLiteral("roller"), QStringLiteral("Roller")},
+                            {QStringLiteral("flat"), QStringLiteral("Flat Face")}};
+
+std::function<bool(const CommandState&)> couplingIs(const QStringList& types) {
+  return [types](const CommandState& state) { return types.contains(state.choice(QStringLiteral("coupling"))); };
+}
+
+QString linkedJoint(const CommandState& state, const QString& side) {
+  const Selection& items = state.items(side);
+  return items.isEmpty() ? QString() : items.first().owner;
+}
+
+// The chosen motion of a side's joint (its first when the choice is not one
+// of its motions).
+QString linkedMotion(const CommandState& state, const QString& side, const CommandContext& context) {
+  const QStringList motions = jointMotions(jointEntry(linkedJoint(state, side), context));
+  const QString chosen = state.choice(side + QStringLiteral("_motion"));
+  return motions.contains(chosen) ? chosen : motions.value(0);
+}
+
+InputDef motionChoice(const QString& side, const QString& label, const CommandContext& context) {
+  return choiceInput(side + QStringLiteral("_motion"), label, {}, QString())
+      .withChoices([&context, side](const CommandState& state) {
+        Choices choices;
+        for (const QString& motion : jointMotions(jointEntry(linkedJoint(state, side), context))) {
+          choices.append({motion, motionLabel(motion)});
+        }
+        return choices;
+      });
+}
+
+// Round geometry for a size: a cylindrical, conical or spherical face, a
+// circular edge, a sketch circle or arc.
+bool isRound(const SelectionItem& item) {
+  switch (item.kind) {
+  case SelectKind::Face:
+    return item.geometry == QStringLiteral("cylinder") || item.geometry == QStringLiteral("cone") ||
+           item.geometry == QStringLiteral("sphere");
+  case SelectKind::Edge:
+  case SelectKind::SketchCurve:
+    return item.geometry == QStringLiteral("circle") || item.geometry == QStringLiteral("arc");
+  default:
+    return false;
+  }
+}
+
+// A size's inputs: its value, and round geometry that gives it instead.
+QVector<InputDef> sizeInputs(const QString& id, const QString& label, const QString& defaultText,
+                             const QString& tip, std::function<bool(const CommandState&)> shown) {
+  InputDef round = selectionInput(id + QStringLiteral("_round"), QObject::tr("%1 From").arg(label),
+                                  SelectKind::Face | SelectKind::Edge | SelectKind::SketchCurve, 0, 1)
+                       .withTooltip(QObject::tr("A round face, circular edge or circle whose radius it is"))
+                       .withAccepts(isRound)
+                       .withVisible(shown);
+  round.showsOrigin = false;
+  return {valueInput(id, label, ValueKind::Length, defaultText)
+              .withTooltip(tip)
+              .withVisible([shown, id](const CommandState& state) {
+                return shown(state) && state.items(id + QStringLiteral("_round")).isEmpty();
+              }),
+          round};
+}
+
+// A size of the definition: its round geometry's origin, else its value.
+std::optional<QJsonValue> sizeOf(const CommandState& state, const QString& id, const QStringList& paths) {
+  const Selection& round = state.items(id + QStringLiteral("_round"));
+  if (round.isEmpty()) {
+    return QJsonValue(state.expression(id));
+  }
+  const auto path = pathFrom(round.first(), paths);
+  if (!path) {
+    return std::nullopt;
+  }
+  return QJsonValue(originOf(round.first(), *path));
+}
+
+void loadSize(CommandState& state, const QString& id, const QJsonValue& size, const QJsonObject& feature,
+              const QString& prefix, const CommandContext& context) {
+  if (size.isObject()) {
+    state.setItems(id + QStringLiteral("_round"), {originItem(size, prefix, context)});
+  } else {
+    loadValue(state, id, size, feature, context);
+  }
+}
+
+QJsonObject linkOf(const QJsonObject& joints, const std::function<bool(const QJsonObject&)>& fits) {
+  return newest(joints.value(QStringLiteral("links")).toArray(), fits);
+}
+
+// "MotionLink1: gear, Joint1 rz to Joint2 rz, placed".
+QString linkLine(const QJsonObject& link) {
+  const auto side = [&link](const char* key) {
+    const QJsonObject s = link.value(QLatin1String(key)).toObject();
+    return QStringLiteral("%1 %2").arg(str(s, "name"), str(s, "motion"));
+  };
+  QString line = QStringLiteral("%1: %2, %3 to %4, %5")
+                     .arg(str(link, "name"), str(link, "coupling"), side("a"), side("b"), str(link, "state"));
+  const QString error = str(link, "error");
+  if (!error.isEmpty()) {
+    line += QStringLiteral(": ") + error;
+  }
+  return line;
+}
+
+} // namespace
+
+CommandDef motionLinkCommand(const CommandContext& context) {
+  CommandDef def;
+  def.id = QStringLiteral("assemble.motion_link");
+  def.name = QObject::tr("Motion Link");
+  def.icon = QStringLiteral("motion-link");
+  def.tooltip = QObject::tr("Makes one joint's motion follow another's: gears, a rack and pinion, a screw or a cam");
+  def.group = QStringLiteral("ASSEMBLE");
+  def.keywords = {QStringLiteral("gear"),  QStringLiteral("rack"),     QStringLiteral("pinion"),
+                  QStringLiteral("screw"), QStringLiteral("cam"),      QStringLiteral("coupling"),
+                  QStringLiteral("ratio"), QStringLiteral("follower"), QStringLiteral("motion")};
+  def.featureType = QStringLiteral("motion_link");
+  const auto jointPick = [&context](const QString& id, const QString& label, const QString& tip) {
+    return selectionInput(id, label, SelectKind::Feature, 1, 1)
+        .withTooltip(tip)
+        .withAccepts([&context](const SelectionItem& item) { return drivable(item, context); });
+  };
+  const auto cam = couplingIs({QStringLiteral("cam")});
+  const auto roller = [cam](const CommandState& state) {
+    return cam(state) && state.choice(QStringLiteral("follower")) == QStringLiteral("roller");
+  };
+  const auto followerTurns = [&context](const CommandState& state) {
+    return isTurn(linkedMotion(state, QStringLiteral("b"), context));
+  };
+  // A cam's follower touches the cam: its offset is only what is given.
+  const auto keep = [cam](const CommandState& state) { return !cam(state) && state.checked(QStringLiteral("keep")); };
+  InputDef profile = selectionInput(QStringLiteral("profile"), QObject::tr("Cam Profile"),
+                                    SelectKind::Face | SelectKind::SketchCurve, 0, 1)
+                         .withTooltip(QObject::tr("A flat face of the cam, or a curve of the sketch profile it is cut from"))
+                         .withVisible(cam);
+  profile.showsOrigin = false;
+  InputDef tip = selectionInput(QStringLiteral("tip"), QObject::tr("Follower Tip"), kOriginKinds, 0, 1)
+                     .withTooltip(QObject::tr("The knife's point or the roller's centre on the follower"))
+                     .withVisible(cam);
+  tip.showsOrigin = false;
+  def.inputs = {
+      choiceInput(QStringLiteral("coupling"), QObject::tr("Type"), kCouplings, QStringLiteral("gear"))
+          .withTooltip(QObject::tr("How the follower follows the driver")),
+      jointPick(QStringLiteral("a"), QObject::tr("Driver"), QObject::tr("The joint that drives (a cam turns on a revolute joint)")),
+      motionChoice(QStringLiteral("a"), QObject::tr("Driver Motion"), context),
+      jointPick(QStringLiteral("b"), QObject::tr("Follower"), QObject::tr("The joint that follows")),
+      motionChoice(QStringLiteral("b"), QObject::tr("Follower Motion"), context),
+  };
+  def.inputs += sizeInputs(QStringLiteral("ra"), QObject::tr("Driver Gear"), QStringLiteral("10 mm"),
+                           QObject::tr("Its pitch radius, or any size in proportion (its tooth count)"),
+                           couplingIs({QStringLiteral("gear")}));
+  def.inputs += sizeInputs(QStringLiteral("rb"), QObject::tr("Follower Gear"), QStringLiteral("20 mm"),
+                           QObject::tr("Its pitch radius, or any size in proportion (its tooth count)"),
+                           couplingIs({QStringLiteral("gear")}));
+  def.inputs += {checkInput(QStringLiteral("internal"), QObject::tr("Internal Gear"), false)
+                     .withTooltip(QObject::tr("A ring gear: both turn the same way"))
+                     .withVisible(couplingIs({QStringLiteral("gear")}))};
+  def.inputs += sizeInputs(QStringLiteral("radius"), QObject::tr("Pinion Radius"), QStringLiteral("10 mm"),
+                           QObject::tr("The rack travels this far per radian of the pinion"),
+                           couplingIs({QStringLiteral("rack_pinion")}));
+  def.inputs += {
+      valueInput(QStringLiteral("lead"), QObject::tr("Lead"), ValueKind::Length, QStringLiteral("1 mm"))
+          .withTooltip(QObject::tr("The travel per turn"))
+          .withVisible(couplingIs({QStringLiteral("screw")})),
+      valueInput(QStringLiteral("ratio"), QObject::tr("Ratio"), ValueKind::Unitless, QStringLiteral("1"))
+          .withTooltip(QObject::tr("The follower's value per the driver's (mm or radians each)"))
+          .withVisible(couplingIs({QStringLiteral("ratio")})),
+      profile,
+      choiceInput(QStringLiteral("follower"), QObject::tr("Follower"), kFollowers, QStringLiteral("knife"))
+          .withVisible(cam),
+  };
+  def.inputs += sizeInputs(QStringLiteral("roller"), QObject::tr("Roller Radius"), QStringLiteral("2 mm"),
+                           QObject::tr("The roller's radius"), roller);
+  def.inputs += {
+      tip,
+      checkInput(QStringLiteral("reverse"), QObject::tr("Reverse"), false)
+          .withTooltip(QObject::tr("The follower the other way (a cam's: from its other side)")),
+      checkInput(QStringLiteral("keep"), QObject::tr("Keep Where They Are"), true)
+          .withTooltip(QObject::tr("The offset that leaves the joints where they are now"))
+          .withVisible([cam](const CommandState& state) { return !cam(state); }),
+      valueInput(QStringLiteral("offset_angle"), QObject::tr("Offset"), ValueKind::Angle, QStringLiteral("0 deg"))
+          .withTooltip(QObject::tr("The follower's value when the driver is at zero"))
+          .withVisible([keep, followerTurns](const CommandState& state) { return !keep(state) && followerTurns(state); }),
+      valueInput(QStringLiteral("offset"), QObject::tr("Offset"), ValueKind::Length, QStringLiteral("0 mm"))
+          .withTooltip(QObject::tr("The follower's value when the driver is at zero"))
+          .withVisible([keep, followerTurns](const CommandState& state) { return !keep(state) && !followerTurns(state); }),
+      hidden(QStringLiteral("component")),
+  };
+  def.enabled = [&context] {
+    const QJsonArray joints = jointsOf(context).value(QStringLiteral("joints")).toArray();
+    return std::count_if(joints.begin(), joints.end(), [](const QJsonValue& joint) {
+             return !jointMotions(joint.toObject()).isEmpty();
+           }) > 0;
+  };
+
+  def.build = [](const CommandState& state, const CommandContext& context) {
+    const QString component = jointComponent(state, context);
+    const QStringList paths = placingPaths(component, context);
+    QJsonObject link{{QStringLiteral("type"), QStringLiteral("motion_link")}};
+    for (const QString& side : {QStringLiteral("a"), QStringLiteral("b")}) {
+      const QString joint = linkedJoint(state, side);
+      const QString motion = linkedMotion(state, side, context);
+      if (joint.isEmpty() || motion.isEmpty()) {
+        return Built::failure(side == QStringLiteral("a") ? QObject::tr("Select the driving joint.")
+                                                          : QObject::tr("Select the following joint."),
+                              side);
+      }
+      link.insert(side, QJsonObject{{QStringLiteral("joint"), joint}, {QStringLiteral("motion"), motion}});
+    }
+    const QString type = state.choice(QStringLiteral("coupling"));
+    QJsonObject coupling{{QStringLiteral("type"), type}};
+    const auto size = [&](const QString& id, const QString& key) -> bool {
+      const auto value = sizeOf(state, id, paths);
+      if (value) {
+        coupling.insert(key, *value);
+      }
+      return value.has_value();
+    };
+    const Built outside = Built::failure(
+        QObject::tr("Select geometry inside %1, the component the link goes into.").arg(componentName(component, context)),
+        QString());
+    if (type == QStringLiteral("gear")) {
+      if (!size(QStringLiteral("ra"), QStringLiteral("ra")) || !size(QStringLiteral("rb"), QStringLiteral("rb"))) {
+        return outside;
+      }
+      if (state.checked(QStringLiteral("internal"))) {
+        coupling.insert(QStringLiteral("internal"), true);
+      }
+    } else if (type == QStringLiteral("rack_pinion")) {
+      if (!size(QStringLiteral("radius"), QStringLiteral("radius"))) {
+        return outside;
+      }
+    } else if (type == QStringLiteral("screw")) {
+      coupling.insert(QStringLiteral("lead"), state.expression(QStringLiteral("lead")));
+    } else if (type == QStringLiteral("ratio")) {
+      coupling.insert(QStringLiteral("ratio"), countValue(state, QStringLiteral("ratio")));
+    } else {
+      const Selection& profile = state.items(QStringLiteral("profile"));
+      if (profile.isEmpty()) {
+        return Built::failure(QObject::tr("Select the cam's profile."), QStringLiteral("profile"));
+      }
+      const auto profilePath = pathFrom(profile.first(), paths);
+      if (!profilePath) {
+        return outside;
+      }
+      coupling.insert(QStringLiteral("profile"), originOf(profile.first(), *profilePath));
+      const QString follower = state.choice(QStringLiteral("follower"));
+      QJsonObject followerDef{{QStringLiteral("type"), follower}};
+      if (follower == QStringLiteral("roller")) {
+        const auto radius = sizeOf(state, QStringLiteral("roller"), paths);
+        if (!radius) {
+          return outside;
+        }
+        followerDef.insert(QStringLiteral("radius"), *radius);
+      }
+      coupling.insert(QStringLiteral("follower"), followerDef);
+      const Selection& tip = state.items(QStringLiteral("tip"));
+      if (!tip.isEmpty()) {
+        const auto tipPath = pathFrom(tip.first(), paths);
+        if (!tipPath) {
+          return outside;
+        }
+        coupling.insert(QStringLiteral("tip"), originOf(tip.first(), *tipPath));
+      }
+    }
+    link.insert(QStringLiteral("coupling"), coupling);
+    const bool reverse = state.checked(QStringLiteral("reverse"));
+    if (reverse) {
+      link.insert(QStringLiteral("reverse"), true);
+    }
+    const QString bMotion = link.value(QStringLiteral("b")).toObject().value(QStringLiteral("motion")).toString();
+    if (type != QStringLiteral("cam") && state.checked(QStringLiteral("keep"))) {
+      // The offset that keeps the joints where they are.
+      try {
+        const QJsonObject found = context.queryObject(
+            {{QStringLiteral("query"), QStringLiteral("motion_link_offset")},
+             {QStringLiteral("a"), link.value(QStringLiteral("a"))},
+             {QStringLiteral("b"), link.value(QStringLiteral("b"))},
+             {QStringLiteral("coupling"), coupling},
+             {QStringLiteral("reverse"), reverse},
+             {QStringLiteral("component"), component}});
+        const double offset = found.value(QStringLiteral("offset")).toDouble();
+        if (std::abs(offset) > 1e-12) {
+          link.insert(QStringLiteral("offset"), valueText(bMotion, offset, context));
+        }
+      } catch (const std::exception& e) {
+        return Built::failure(QString::fromUtf8(e.what()), QStringLiteral("b"));
+      }
+    } else {
+      const QString input = isTurn(bMotion) ? QStringLiteral("offset_angle") : QStringLiteral("offset");
+      if (nonZero(state, input)) {
+        link.insert(QStringLiteral("offset"), state.expression(input));
+      }
+    }
+    return Built::of(link);
+  };
+
+  def.load = [](const QJsonObject& feature, CommandState& state, const CommandContext& context) {
+    const QString component = featureComponent(str(feature, "uid"), context);
+    state.setText(QStringLiteral("component"), component);
+    const QString prefix = placingPaths(component, context).value(0);
+    for (const QString& side : {QStringLiteral("a"), QStringLiteral("b")}) {
+      const QJsonObject s = feature.value(side).toObject();
+      state.setItems(side, {{SelectKind::Feature, str(s, "joint"), QString(), QString()}});
+      state.setChoice(side + QStringLiteral("_motion"), str(s, "motion"));
+    }
+    const QJsonObject coupling = feature.value(QStringLiteral("coupling")).toObject();
+    const QString type = str(coupling, "type");
+    state.setChoice(QStringLiteral("coupling"), type);
+    if (type == QStringLiteral("gear")) {
+      loadSize(state, QStringLiteral("ra"), coupling.value(QStringLiteral("ra")), feature, prefix, context);
+      loadSize(state, QStringLiteral("rb"), coupling.value(QStringLiteral("rb")), feature, prefix, context);
+      state.setChecked(QStringLiteral("internal"), coupling.value(QStringLiteral("internal")).toBool());
+    } else if (type == QStringLiteral("rack_pinion")) {
+      loadSize(state, QStringLiteral("radius"), coupling.value(QStringLiteral("radius")), feature, prefix, context);
+    } else if (type == QStringLiteral("screw")) {
+      loadValue(state, QStringLiteral("lead"), coupling.value(QStringLiteral("lead")), feature, context);
+    } else if (type == QStringLiteral("ratio")) {
+      loadValue(state, QStringLiteral("ratio"), coupling.value(QStringLiteral("ratio")), feature, context);
+    } else if (type == QStringLiteral("cam")) {
+      state.setItems(QStringLiteral("profile"), {originItem(coupling.value(QStringLiteral("profile")), prefix, context)});
+      const QJsonObject follower = coupling.value(QStringLiteral("follower")).toObject();
+      state.setChoice(QStringLiteral("follower"), str(follower, "type").isEmpty() ? QStringLiteral("knife")
+                                                                                  : str(follower, "type"));
+      if (follower.contains(QStringLiteral("radius"))) {
+        loadSize(state, QStringLiteral("roller"), follower.value(QStringLiteral("radius")), feature, prefix, context);
+      }
+      if (coupling.contains(QStringLiteral("tip"))) {
+        state.setItems(QStringLiteral("tip"), {originItem(coupling.value(QStringLiteral("tip")), prefix, context)});
+      }
+    }
+    state.setChecked(QStringLiteral("reverse"), feature.value(QStringLiteral("reverse")).toBool());
+    // An edit keeps its offset as it is.
+    state.setChecked(QStringLiteral("keep"), false);
+    const bool turns = isTurn(str(feature.value(QStringLiteral("b")).toObject(), "motion"));
+    loadValue(state, turns ? QStringLiteral("offset_angle") : QStringLiteral("offset"),
+              feature.value(QStringLiteral("offset")), feature, context);
+  };
+
+  def.describe = [](const CommandState&, const CommandContext& context) {
+    const QJsonObject link = linkOf(jointsOf(context), [](const QJsonObject&) { return true; });
+    return link.isEmpty() ? QStringLiteral("Added motion link") : QStringLiteral("Added motion link %1").arg(linkLine(link));
+  };
+  return def;
+}
+
 } // namespace cmd
 
 // The ASSEMBLE group (mitcad#55), in menu order.
@@ -1515,6 +1960,10 @@ void registerAssembleCommands(CommandRegistry& registry, const CommandContext& c
   registry.add(driveJointCommand(context));
   // Assembly constraints (mitcad#148).
   registry.add(constraintCommand(context));
+  // Contact sets (mitcad#454).
+  registry.add(contactSetCommand(context));
+  // Motion links (mitcad#466).
+  registry.add(motionLinkCommand(context));
 }
 
 } // namespace mitcad

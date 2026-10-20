@@ -31,6 +31,7 @@
 #include <QRegularExpression>
 #include <QScreen>
 #include <QSettings>
+#include <QSignalBlocker>
 #include <QSlider>
 #include <QStyle>
 #include <QStyledItemDelegate>
@@ -790,6 +791,30 @@ void PartGrid::setCurrent(const QString& key, bool notify) {
   }
 }
 
+bool PartGrid::reveal(const QString& key) {
+  setCurrent(key);
+  if (key.isEmpty() || m_current == key) {
+    return !key.isEmpty();
+  }
+  if (m_group != kAll) {
+    qInfo().noquote() << QStringLiteral("Part picker group %1 has not the part chosen: All parts").arg(groupName(m_group));
+    m_group = kAll;
+    fillGroups();
+    refill(false);
+    setCurrent(key);
+  }
+  if (m_current != key && !m_externalSearch && !m_search->text().isEmpty()) {
+    qInfo().noquote() << QStringLiteral("Part picker search cleared: it left out the part chosen");
+    {
+      const QSignalBlocker quiet(m_search);
+      m_search->clear();
+    }
+    refill(false);
+    setCurrent(key);
+  }
+  return m_current == key;
+}
+
 void PartGrid::selectFirst(bool notify) {
   const PickerPart* first = m_model->part(0);
   setCurrent(first != nullptr ? first->key : QString(), notify);
@@ -1359,7 +1384,12 @@ void PartPicker::ask(const PickerRequest& request) {
     m_grid->setParts(request.parts);
   }
   m_grid->setSystem(request.system);
-  m_grid->setCurrent(request.current);
+  // The part chosen in sight, highlighted (mitcad#452).
+  if (m_grid->reveal(request.current)) {
+    if (const PickerPart* current = m_grid->currentPart()) {
+      qInfo().noquote() << QStringLiteral("Part picker shows the part chosen: %1").arg(partLabel(*current));
+    }
+  }
   qInfo().noquote() << (following ? QStringLiteral("Part picker follows %2: %1 parts")
                                   : QStringLiteral("Part picker opened: %1 parts for %2"))
                            .arg(request.parts.size())

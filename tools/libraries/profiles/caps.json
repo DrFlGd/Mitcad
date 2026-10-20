@@ -1,4 +1,5 @@
-[
+{
+  "parts": [
   {
     "id": "cap20x20-i5",
     "name": "Cover cap 20x20 I-type slot 5",
@@ -379,4 +380,9 @@
     },
     "frames": [{"name":"end","origin":[0,0,4],"z":[0,0,1],"x":[1,0,0],"kind":"end"}]
   }
-]
+  ],
+  "left_out": [
+    {"source": "slot-profile-accessories/Profile-cover-Caps-20x80-I-Type-slot-5/Motedis-ABDK2-8-5/Motedis_ABDK2-8-5.stp",
+     "reason": "the file holds a cap of 40x20 mm (the bounds and faces of cap20x40-i5's file), not one of 80x20 mm"}
+  ]
+}

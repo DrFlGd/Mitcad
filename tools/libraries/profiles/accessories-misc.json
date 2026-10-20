@@ -11,7 +11,7 @@
     "designation": "Hexagon SW19 bore 10.3 L={L}",
     "rows": [
       {"name":"42 mm","select":{"Length":"42 mm"},"values":{"L":"42 mm"},"part_number":"AHSW19-42-10,3"},
-      {"name":"77 mm","select":{"Length":"77 mm"},"values":{"L":"77 mm"},"part_number":"AHSW19-77-10,3","supplier_url":"https://www.motedis.com/en/Aluminium-hexagon-SW19-length-77mm-103-all-the-way-through"}
+      {"name":"77 mm","select":{"Length":"77 mm"},"values":{"L":"77 mm"},"part_number":"AHSW19-77-10,3","supplier_url":"https://www.motedis.com/en/Aluminium-hexagon-SW19-length-77mm-103-all-the-way-through","source":"slot-profile-accessories/Aluminium-hexagon-SW19-length-77mm-103-all-the-way-through/Motedis-AHSW19-77-10-3/Motedis_AHSW19-77-10,3.stp"}
     ],
     "build": {
       "role": "linear",
@@ -60,7 +60,7 @@
     "designation": "Hexagon SW19 M8 L={L}",
     "rows": [
       {"name":"77 mm","select":{"Length":"77 mm"},"values":{"L":"77 mm"},"part_number":"AHSW19-77"},
-      {"name":"80 mm","select":{"Length":"80 mm"},"values":{"L":"80 mm"},"part_number":"AHSW19-80","supplier_url":"https://www.motedis.com/en/Aluminium-hexagon-SW19-length-80mm-M8-all-the-way-through"}
+      {"name":"80 mm","select":{"Length":"80 mm"},"values":{"L":"80 mm"},"part_number":"AHSW19-80","supplier_url":"https://www.motedis.com/en/Aluminium-hexagon-SW19-length-80mm-M8-all-the-way-through","source":"slot-profile-accessories/Aluminium-hexagon-SW19-length-80mm-M8-all-the-way-through/MOTEDIS-AHSW19-80/MOTEDIS AHSW19-80.stp"}
     ],
     "build": {
       "role": "linear",

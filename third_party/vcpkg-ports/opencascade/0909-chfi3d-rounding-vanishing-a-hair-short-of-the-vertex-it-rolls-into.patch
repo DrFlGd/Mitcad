@@ -1,0 +1,144 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: a blend rolling on an edge that runs into the spine's end vertex
+ends there where its walk stopped with a section of no width a hair short
+of the vertex (mitcad#343).
+
+The case: 0904's notch wall narrowing to the spine's first vertex, its far
+edge running into it: the blend rolls on that edge and vanishes at the
+vertex. On the stored body the walk reached the vertex. On a body a few
+micrometres off, its contacts met 0.005 before the vertex (a hundredth of
+the radius is 0.0086) and the walk stopped there: the stripe was not
+finished (its end not at the spine's end), the next step had no edge to
+roll on and failed, and the stripe with it.
+
+- ChFi3d_RollsIntoVertex: whether a side of a piece rolls on an edge that
+  has the spine's end vertex.
+- PerformSetOfSurfOnElSpine: a walk rolling on such an edge ends the stripe
+  where its contacts are within ten times the tolerance of each other and
+  within a hundredth of the radius of that vertex (ContactsAtTangentEnd,
+  as for a vanishing end where the faces come tangent).
+- ChFi3d_RolledIntoEndVertex takes the contact on that edge within a
+  hundredth of the radius of the vertex where the section has no width, so
+  that PerformFilletOnVertex puts the end at the vertex (0904).
+
+Upstream: new.
+
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.cxx
+index a69bc793..f517a95c 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.cxx
+@@ -3099,7 +3099,8 @@ static occ::handle<TheBSpline> ChFi3d_BSplineEndingAt(const occ::handle<TheCurve
+ // purpose  : Whether the blend of Fd rolls, at its end (its start with
+ //           isfirst), on an edge that has the corner's vertex Vtx, with
+ //           that contact at Vtx (within ten times Tol and Vtx's
+-//           tolerance): the edge runs into the vertex beside the spine's
++//           tolerance, or within theReach where the section has no width
++//           any more): the edge runs into the vertex beside the spine's
+ //           edge, so that the blend vanishes there.
+ //=======================================================================
+ 
+@@ -3107,13 +3108,19 @@ static bool ChFi3d_RolledIntoEndVertex(const TopOpeBRepDS_DataStructure&   DStr,
+                                        const occ::handle<ChFiDS_SurfData>& Fd,
+                                        const bool                          isfirst,
+                                        const TopoDS_Vertex&                Vtx,
+-                                       const double                        Tol)
++                                       const double                        Tol,
++                                       const double                        theReach)
+ {
+   const gp_Pnt PV = BRep_Tool::Pnt(Vtx);
++  // (Or, where the walk stopped as the section lost its width, its
++  // contacts within ten times Tol of each other, within theReach of Vtx.)
++  const bool aNoWidth =
++    Fd->Vertex(isfirst, 1).Point().Distance(Fd->Vertex(isfirst, 2).Point()) <= 10. * Tol;
+   for (int s = 1; s <= 2; s++)
+   {
++    const double d = Fd->Vertex(isfirst, s).Point().Distance(PV);
+     if (!Fd->IsOnCurve(s) || Fd->IndexOfC(s) <= 0
+-        || Fd->Vertex(isfirst, s).Point().Distance(PV) > 10. * Tol + BRep_Tool::Tolerance(Vtx))
++        || (d > 10. * Tol + BRep_Tool::Tolerance(Vtx) && !(aNoWidth && d <= theReach)))
+     {
+       continue;
+     }
+@@ -3359,7 +3366,7 @@ void ChFi3d_Builder::PerformFilletOnVertex(const int Index)
+                                                    myEFMap,
+                                                    0.02 * fsp->Radius(),
+                                                    0.01 * fsp->Radius()))
+-            || ChFi3d_RolledIntoEndVertex(myDS->DS(), Fd, isfirst, Vtx, tolesp));
++            || ChFi3d_RolledIntoEndVertex(myDS->DS(), Fd, isfirst, Vtx, tolesp, 0.01 * fsp->Radius()));
+       ChFi3d_ShrinkVanishingEnd(myDS->ChangeDS(),
+                                 Fd,
+                                 isfirst,
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+index df098754..9c171bc7 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+@@ -4429,6 +4429,38 @@ static bool ContactsAtTangentEnd(const occ::handle<ChFiDS_SurfData>& SD,
+   return P1.Distance(P2) <= Tol && P1.Distance(P) <= Reach && P2.Distance(P) <= Reach;
+ }
+ 
++//=======================================================================
++// function : ChFi3d_RollsIntoVertex
++// purpose  : Whether a side of SD rolls on an edge that has the vertex V
++//            (the spine's end vertex): the face between that edge and the
++//            spine's narrows to V, and the blend vanishes there.
++//=======================================================================
++
++static bool ChFi3d_RollsIntoVertex(const occ::handle<ChFiDS_SurfData>& SD,
++                                   const TopoDS_Vertex&                V,
++                                   const TopOpeBRepDS_DataStructure&   DStr)
++{
++  if (SD.IsNull() || V.IsNull())
++  {
++    return false;
++  }
++  for (int s = 1; s <= 2; s++)
++  {
++    if (!SD->IsOnCurve(s) || SD->IndexOfC(s) <= 0)
++    {
++      continue;
++    }
++    for (TopExp_Explorer ex(DStr.Shape(SD->IndexOfC(s)), TopAbs_VERTEX); ex.More(); ex.Next())
++    {
++      if (ex.Current().IsSame(V))
++      {
++        return true;
++      }
++    }
++  }
++  return false;
++}
++
+ //=================================================================================================
+ 
+ //=======================================================================
+@@ -5722,6 +5754,15 @@ void ChFi3d_Builder::PerformSetOfSurfOnElSpine(const occ::handle<ChFiDS_ElSpine>
+       {
+         fini = true;
+       }
++      // (And where it rolls on an edge that runs into that vertex, the face
++      // between that edge and the spine's narrowing to it: the walk stopped
++      // where its section has no width, a hair short of the vertex.)
++      if (!fini && !Spine->IsPeriodic() && (obstacleon1 || obstacleon2)
++          && ChFi3d_RollsIntoVertex(ref, Spine->LastVertex(), DStr)
++          && ContactsAtTangentEnd(ref, false, Spine->LastVertex(), 10. * tolesp, aVanishReach))
++      {
++        fini = true;
++      }
+ 
+       if (!fini && Guide.IsPeriodic() && ((wl - Last) < Guide.Period() * 1.e-3))
+       {
+@@ -5819,6 +5860,12 @@ void ChFi3d_Builder::PerformSetOfSurfOnElSpine(const occ::handle<ChFiDS_ElSpine>
+       {
+         fini = true;
+       }
++      if (!fini && !Spine->IsPeriodic() && (obstacleon1 || obstacleon2)
++          && ChFi3d_RollsIntoVertex(ref, Spine->FirstVertex(), DStr)
++          && ContactsAtTangentEnd(ref, true, Spine->FirstVertex(), 10. * tolesp, aVanishReach))
++      {
++        fini = true;
++      }
+       complete = false;
+       Last     = wf;
+     }

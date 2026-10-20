@@ -123,6 +123,11 @@
 //! Analyses (mitcad#41), when there are any: `analyses` (`name`,
 //! `"visible": false`, `type`: `section` with `plane`, `offset`, `flip`).
 //!
+//! Motion studies and contact sets (mitcad#454), when there are any:
+//! `motion_studies` (`name`, `steps`, `keys`: `joint`, `motion`, `points`
+//! `[[step, value], …]`) and `contact_sets` (`name`, `occurrences` as paths
+//! from the root, `"suppressed": true`), see [`crate::motion`].
+//!
 //! Appearances of the document (mitcad#46), when there are any:
 //! `appearances` (`id`, `name`, `base_color`, `metalness`, `roughness`,
 //! `specular`, `transmission`, `ior`, `coat`, `coat_roughness`, `emission`,

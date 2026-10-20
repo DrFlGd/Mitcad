@@ -13,7 +13,7 @@
     "build": {
       "role": "linear",
       "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
-      "linear": {"kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
+      "linear": {"size":"Tr8x1.5","kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
     },
     "frames": [
       {"name":"bore","origin":[0,15,10.15],"z":[0,0,1],"x":[1,0,0],"kind":"bore"},
@@ -34,7 +34,7 @@
     "build": {
       "role": "linear",
       "frames": [{"name":"bore","kind":"bore"}],
-      "linear": {"kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
+      "linear": {"size":"Tr10x2","kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
     },
     "frames": [{"name":"bore","origin":[0,0,10],"z":[0,0,1],"x":[1,0,0],"kind":"bore"}]
   },
@@ -52,7 +52,7 @@
     "build": {
       "role": "linear",
       "frames": [{"name":"bore","kind":"bore"}],
-      "linear": {"kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
+      "linear": {"size":"Tr10x4P2","kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
     },
     "frames": [{"name":"bore","origin":[0,0,10],"z":[0,0,1],"x":[1,0,0],"kind":"bore"}]
   },
@@ -70,7 +70,7 @@
     "build": {
       "role": "linear",
       "frames": [{"name":"bore","kind":"bore"}],
-      "linear": {"kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
+      "linear": {"size":"Tr12x3","kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
     },
     "frames": [{"name":"bore","origin":[0,0,12],"z":[0,0,1],"x":[1,0,0],"kind":"bore"}]
   },
@@ -88,7 +88,7 @@
     "build": {
       "role": "linear",
       "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
-      "linear": {"kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
+      "linear": {"size":"Tr12x3","kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
     },
     "frames": [
       {"name":"bore","origin":[0,0,12],"z":[0,0,1],"x":[1,0,0],"kind":"bore"},
@@ -109,7 +109,7 @@
     "build": {
       "role": "linear",
       "frames": [{"name":"bore","kind":"bore"}],
-      "linear": {"kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
+      "linear": {"size":"Tr12x6P3","kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
     },
     "frames": [{"name":"bore","origin":[0,0,12],"z":[0,0,1],"x":[1,0,0],"kind":"bore"}]
   },
@@ -127,7 +127,7 @@
     "build": {
       "role": "linear",
       "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
-      "linear": {"kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
+      "linear": {"size":"Tr12x6P3","kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
     },
     "frames": [
       {"name":"bore","origin":[0,0,12],"z":[0,0,1],"x":[1,0,0],"kind":"bore"},
@@ -148,7 +148,7 @@
     "build": {
       "role": "linear",
       "frames": [{"name":"bore","kind":"bore"}],
-      "linear": {"kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
+      "linear": {"size":"Tr16x4","kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
     },
     "frames": [{"name":"bore","origin":[0,0,16],"z":[0,0,1],"x":[1,0,0],"kind":"bore"}]
   },
@@ -166,7 +166,7 @@
     "build": {
       "role": "linear",
       "frames": [{"name":"bore","kind":"bore"}],
-      "linear": {"kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
+      "linear": {"size":"Tr16x4","kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
     },
     "frames": [{"name":"bore","origin":[0,0,12],"z":[0,0,1],"x":[1,0,0],"kind":"bore"}]
   },
@@ -247,7 +247,7 @@
     "build": {
       "role": "linear",
       "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
-      "linear": {"kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
+      "linear": {"size":"Tr8x1.5","kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
     },
     "frames": [
       {"name":"bore","origin":[9.25,3.5,6.5],"z":[0,1,0],"x":[1,0,0],"kind":"bore"},
@@ -268,7 +268,7 @@
     "build": {
       "role": "linear",
       "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
-      "linear": {"kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
+      "linear": {"size":"Tr10x2","kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
     },
     "frames": [
       {"name":"bore","origin":[9.25,3.5,6.5],"z":[0,1,0],"x":[1,0,0],"kind":"bore"},
@@ -289,7 +289,7 @@
     "build": {
       "role": "linear",
       "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
-      "linear": {"kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
+      "linear": {"size":"Tr10x2","kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
     },
     "frames": [
       {"name":"bore","origin":[9.25,3.5,6.5],"z":[0,1,0],"x":[1,0,0],"kind":"bore"},
@@ -310,7 +310,7 @@
     "build": {
       "role": "linear",
       "frames": [{"name":"bore","kind":"bore"}],
-      "linear": {"kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
+      "linear": {"size":"Tr10x2","kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
     },
     "frames": [{"name":"bore","origin":[0,0,7.5],"z":[0,0,1],"x":[1,0,0],"kind":"bore"}]
   },
@@ -328,7 +328,7 @@
     "build": {
       "role": "linear",
       "frames": [{"name":"bore","kind":"bore"}],
-      "linear": {"kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
+      "linear": {"size":"Tr10x4P2","kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
     },
     "frames": [{"name":"bore","origin":[0,0,7.5],"z":[0,0,1],"x":[1,0,0],"kind":"bore"}]
   },
@@ -346,7 +346,7 @@
     "build": {
       "role": "linear",
       "frames": [{"name":"bore","kind":"bore"}],
-      "linear": {"kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
+      "linear": {"size":"Tr12x3","kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
     },
     "frames": [{"name":"bore","origin":[0,0,9],"z":[0,1,0],"x":[1,0,0],"kind":"bore"}]
   },
@@ -364,7 +364,7 @@
     "build": {
       "role": "linear",
       "frames": [{"name":"bore","kind":"bore"}],
-      "linear": {"kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
+      "linear": {"size":"Tr12x6P3","kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
     },
     "frames": [{"name":"bore","origin":[0,0,9],"z":[0,1,0],"x":[1,0,0],"kind":"bore"}]
   },
@@ -382,7 +382,7 @@
     "build": {
       "role": "linear",
       "frames": [{"name":"bore","kind":"bore"}],
-      "linear": {"kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
+      "linear": {"size":"Tr16x4","kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
     },
     "frames": [{"name":"bore","origin":[0,0,12],"z":[0,0,1],"x":[1,0,0],"kind":"bore"}]
   },
@@ -400,7 +400,7 @@
     "build": {
       "role": "linear",
       "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
-      "linear": {"kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
+      "linear": {"size":"Tr12x3","kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
     },
     "frames": [
       {"name":"bore","origin":[0,0,23.5],"z":[0,0,1],"x":[1,0,0],"kind":"bore"},
@@ -421,7 +421,7 @@
     "build": {
       "role": "linear",
       "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
-      "linear": {"kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
+      "linear": {"size":"Tr12x6P3","kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
     },
     "frames": [
       {"name":"bore","origin":[0,0,23.5],"z":[0,0,1],"x":[1,0,0],"kind":"bore"},
@@ -442,7 +442,7 @@
     "build": {
       "role": "linear",
       "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
-      "linear": {"kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
+      "linear": {"size":"Tr16x4","kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
     },
     "frames": [
       {"name":"bore","origin":[0,0,17.5],"z":[0,0,1],"x":[1,0,0],"kind":"bore"},
@@ -463,7 +463,7 @@
     "build": {
       "role": "linear",
       "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
-      "linear": {"kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
+      "linear": {"size":"Tr10x2","kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
     },
     "frames": [
       {"name":"bore","origin":[0,0,10],"z":[0,0,1],"x":[1,0,0],"kind":"bore"},
@@ -484,7 +484,7 @@
     "build": {
       "role": "linear",
       "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
-      "linear": {"kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
+      "linear": {"size":"Tr12x3","kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
     },
     "frames": [
       {"name":"bore","origin":[0,0,12],"z":[0,0,1],"x":[1,0,0],"kind":"bore"},
@@ -505,7 +505,7 @@
     "build": {
       "role": "linear",
       "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
-      "linear": {"kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
+      "linear": {"size":"Tr8x1.5","kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
     },
     "frames": [
       {"name":"bore","origin":[0,0,10],"z":[0,0,1],"x":[1,0,0],"kind":"bore"},
@@ -526,7 +526,7 @@
     "build": {
       "role": "linear",
       "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
-      "linear": {"kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
+      "linear": {"size":"Tr16x4","kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
     },
     "frames": [
       {"name":"bore","origin":[0,0,17.5],"z":[0,0,1],"x":[1,0,0],"kind":"bore"},
@@ -547,7 +547,7 @@
     "build": {
       "role": "linear",
       "frames": [{"name":"bore","kind":"bore"}],
-      "linear": {"kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
+      "linear": {"size":"Tr8x1.5","kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
     },
     "frames": [{"name":"bore","origin":[0,0,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"}]
   },
@@ -565,7 +565,7 @@
     "build": {
       "role": "linear",
       "frames": [{"name":"bore","kind":"bore"}],
-      "linear": {"kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
+      "linear": {"size":"Tr10x3","kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
     },
     "frames": [{"name":"bore","origin":[0,0,0],"z":[0,1,0],"x":[1,0,0],"kind":"bore"}]
   },
@@ -583,7 +583,7 @@
     "build": {
       "role": "linear",
       "frames": [{"name":"bore","kind":"bore"},{"name":"mount","kind":"face"}],
-      "linear": {"kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
+      "linear": {"size":"Tr12x3","kind":"nut","mate":{"frame":"bore","on":"shaft","joint":"cylindrical","axis":"z"}}
     },
     "frames": [
       {"name":"bore","origin":[0,0,12],"z":[0,0,1],"x":[1,0,0],"kind":"bore"},
@@ -595,17 +595,24 @@
     "name": "Trapezoidal threaded spindle TR8x1.5 right-hand",
     "category": "linear",
     "source": "dynamic-m/Trapezoidal-threaded-spindle-RPTS-right-TR-8x15/RPTS-TR8x1.5r-1980mm.stp",
-    "make": "section",
+    "make": "model",
     "supplier": "Motedis",
     "part_number": "9708",
     "supplier_url": "https://www.motedis.com/en/Trapezoidal-threaded-spindle-RPTS-right-TR-8x15",
     "designation": "Spindle TR8x1.5 L={L}",
+    "description": "A rod of 8 mm with a cosmetic Tr8x1.5 thread over its length (listed by the threads query); the supplier's file gives the stock length.",
+    "dimensions": {
+      "shape": "rod",
+      "diameter": "8 mm",
+      "length": "1980 mm",
+      "thread": {"standard":"trapezoidal","designation":"Tr8x1.5","class":"7e"}
+    },
     "rows": [],
     "build": {
       "role": "linear",
       "length": {"parameter":"L","min":"20 mm","max":"1980 mm","stock":["1980 mm"]},
       "frames": [{"name":"end_a","kind":"end"},{"name":"end_b","kind":"end"},{"name":"shaft","kind":"shaft"}],
-      "linear": {"kind":"screw"}
+      "linear": {"kind":"screw","size":"Tr8x1.5","lead":"1.5 mm","pitch":"1.5 mm"}
     },
     "frames": [
       {"name":"end_a","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"end"},
@@ -618,17 +625,24 @@
     "name": "Trapezoidal threaded spindle TR10x2 right-hand",
     "category": "linear",
     "source": "dynamic-m/Trapezoidal-threaded-spindle-RPTS-right-TR-10x2/RPTS-TR10x2r-1980mm.stp",
-    "make": "section",
+    "make": "model",
     "supplier": "Motedis",
     "part_number": "9707",
     "supplier_url": "https://www.motedis.com/en/Trapezoidal-threaded-spindle-RPTS-right-TR-10x2",
     "designation": "Spindle TR10x2 L={L}",
+    "description": "A rod of 10 mm with a cosmetic Tr10x2 thread over its length (listed by the threads query); the supplier's file gives the stock length.",
+    "dimensions": {
+      "shape": "rod",
+      "diameter": "10 mm",
+      "length": "1000 mm",
+      "thread": {"standard":"trapezoidal","designation":"Tr10x2","class":"7e"}
+    },
     "rows": [],
     "build": {
       "role": "linear",
       "length": {"parameter":"L","min":"20 mm","max":"1000 mm","stock":["1000 mm"]},
       "frames": [{"name":"end_a","kind":"end"},{"name":"end_b","kind":"end"},{"name":"shaft","kind":"shaft"}],
-      "linear": {"kind":"screw"}
+      "linear": {"kind":"screw","size":"Tr10x2","lead":"2 mm","pitch":"2 mm"}
     },
     "frames": [
       {"name":"end_a","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"end"},
@@ -641,17 +655,24 @@
     "name": "Trapezoidal threaded spindle TR10x4P2 right-hand",
     "category": "linear",
     "source": "dynamic-m/TR-10x4P2-Trapezoidal-threaded-spindle-RPTS-right/Motedis_RPTS-TR10x4P2-1980mm.stp",
-    "make": "section",
+    "make": "model",
     "supplier": "Motedis",
     "part_number": "9709",
     "supplier_url": "https://www.motedis.com/en/TR-10x4P2-Trapezoidal-threaded-spindle-RPTS-right",
     "designation": "Spindle TR10x4P2 L={L}",
+    "description": "A rod of 10 mm with a cosmetic Tr10x4(P2) thread over its length (listed by the threads query); the supplier's file gives the stock length.",
+    "dimensions": {
+      "shape": "rod",
+      "diameter": "10 mm",
+      "length": "1980 mm",
+      "thread": {"standard":"trapezoidal","designation":"Tr10x4(P2)","class":"7e"}
+    },
     "rows": [],
     "build": {
       "role": "linear",
       "length": {"parameter":"L","min":"20 mm","max":"1980 mm","stock":["1980 mm"]},
       "frames": [{"name":"end_a","kind":"end"},{"name":"end_b","kind":"end"},{"name":"shaft","kind":"shaft"}],
-      "linear": {"kind":"screw"}
+      "linear": {"kind":"screw","size":"Tr10x4P2","lead":"4 mm","pitch":"2 mm"}
     },
     "frames": [
       {"name":"end_a","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"end"},
@@ -664,17 +685,24 @@
     "name": "Trapezoidal threaded spindle TR12x3 right-hand",
     "category": "linear",
     "source": "dynamic-m/Trapezoidal-threaded-spindle-RPTS-right-TR-12x3/RPTS-TR12x3r-1980mm.stp",
-    "make": "section",
+    "make": "model",
     "supplier": "Motedis",
     "part_number": "9710",
     "supplier_url": "https://www.motedis.com/en/Trapezoidal-threaded-spindle-RPTS-right-TR-12x3",
     "designation": "Spindle TR12x3 L={L}",
+    "description": "A rod of 12 mm with a cosmetic Tr12x3 thread over its length (listed by the threads query); the supplier's file gives the stock length.",
+    "dimensions": {
+      "shape": "rod",
+      "diameter": "12 mm",
+      "length": "1000 mm",
+      "thread": {"standard":"trapezoidal","designation":"Tr12x3","class":"7e"}
+    },
     "rows": [],
     "build": {
       "role": "linear",
       "length": {"parameter":"L","min":"20 mm","max":"1000 mm","stock":["1000 mm"]},
       "frames": [{"name":"end_a","kind":"end"},{"name":"end_b","kind":"end"},{"name":"shaft","kind":"shaft"}],
-      "linear": {"kind":"screw"}
+      "linear": {"kind":"screw","size":"Tr12x3","lead":"3 mm","pitch":"3 mm"}
     },
     "frames": [
       {"name":"end_a","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"end"},
@@ -687,17 +715,24 @@
     "name": "Trapezoidal threaded spindle TR12x6P3 right-hand",
     "category": "linear",
     "source": "dynamic-m/TR-12x6-P3-Trapezoidal-threaded-spindle-RPTS-right/Motedis_RPTS-TR12x6-1980mm.stp",
-    "make": "section",
+    "make": "model",
     "supplier": "Motedis",
     "part_number": "9711",
     "supplier_url": "https://www.motedis.com/en/TR-12x6-P3-Trapezoidal-threaded-spindle-RPTS-right",
     "designation": "Spindle TR12x6P3 L={L}",
+    "description": "A rod of 12 mm with a cosmetic Tr12x6(P3) thread over its length (listed by the threads query); the supplier's file gives the stock length.",
+    "dimensions": {
+      "shape": "rod",
+      "diameter": "12 mm",
+      "length": "1980 mm",
+      "thread": {"standard":"trapezoidal","designation":"Tr12x6(P3)","class":"7e"}
+    },
     "rows": [],
     "build": {
       "role": "linear",
       "length": {"parameter":"L","min":"20 mm","max":"1980 mm","stock":["1980 mm"]},
       "frames": [{"name":"end_a","kind":"end"},{"name":"end_b","kind":"end"},{"name":"shaft","kind":"shaft"}],
-      "linear": {"kind":"screw"}
+      "linear": {"kind":"screw","size":"Tr12x6P3","lead":"6 mm","pitch":"3 mm"}
     },
     "frames": [
       {"name":"end_a","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"end"},
@@ -710,17 +745,162 @@
     "name": "Trapezoidal threaded spindle TR16x4 right-hand",
     "category": "linear",
     "source": "dynamic-m/Trapezoidal-threaded-spindle-RPTS-right-TR-16x4/RPTS-TR16x4-1980mm.stp",
-    "make": "section",
+    "make": "model",
     "supplier": "Motedis",
     "part_number": "9712",
     "supplier_url": "https://www.motedis.com/en/Trapezoidal-threaded-spindle-RPTS-right-TR-16x4",
     "designation": "Spindle TR16x4 L={L}",
+    "description": "A rod of 16 mm with a cosmetic Tr16x4 thread over its length (listed by the threads query); the supplier's file gives the stock length.",
+    "dimensions": {
+      "shape": "rod",
+      "diameter": "16 mm",
+      "length": "500 mm",
+      "thread": {"standard":"trapezoidal","designation":"Tr16x4","class":"7e"}
+    },
     "rows": [],
     "build": {
       "role": "linear",
       "length": {"parameter":"L","min":"20 mm","max":"500 mm","stock":["500 mm"]},
       "frames": [{"name":"end_a","kind":"end"},{"name":"end_b","kind":"end"},{"name":"shaft","kind":"shaft"}],
-      "linear": {"kind":"screw"}
+      "linear": {"kind":"screw","size":"Tr16x4","lead":"4 mm","pitch":"4 mm"}
+    },
+    "frames": [
+      {"name":"end_a","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"end"},
+      {"name":"end_b","origin":[0,0,"L"],"z":[0,0,1],"x":[1,0,0],"kind":"end"},
+      {"name":"shaft","origin":[0,0,0],"z":[0,0,1],"x":[1,0,0],"kind":"shaft"}
+    ]
+  },
+  {
+    "id": "threaded-rod-m5",
+    "name": "Threaded rod M5 DIN 976, steel 4.8",
+    "category": "linear",
+    "source": "mechanical-basics/M5-Thread-rod-DIN-976-steel-48-1000mm/Motedis_10135.stp",
+    "make": "model",
+    "supplier": "Motedis",
+    "part_number": "10135",
+    "supplier_url": "https://www.motedis.com/en/M5-Thread-rod-DIN-976-steel-48-1000mm",
+    "designation": "Threaded rod M5 DIN 976 L={L}",
+    "description": "A rod of 5 mm with a cosmetic M5 thread over its length (listed by the threads query); the supplier's file gives the stock length.",
+    "dimensions": {
+      "shape": "rod",
+      "diameter": "5 mm",
+      "length": "1000 mm",
+      "thread": {"designation":"M5","class":"6g"}
+    },
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "length": {"parameter":"L","min":"10 mm","max":"1000 mm","stock":["1000 mm"]},
+      "frames": [{"name":"end_a","kind":"end"},{"name":"end_b","kind":"end"},{"name":"shaft","kind":"shaft"}],
+      "linear": {"kind":"screw","size":"M5","lead":"0.8 mm","pitch":"0.8 mm"}
+    },
+    "frames": [
+      {"name":"end_a","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"end"},
+      {"name":"end_b","origin":[0,0,"L"],"z":[0,0,1],"x":[1,0,0],"kind":"end"},
+      {"name":"shaft","origin":[0,0,0],"z":[0,0,1],"x":[1,0,0],"kind":"shaft"}
+    ]
+  },
+  {
+    "id": "threaded-rod-m6",
+    "name": "Threaded rod M6 DIN 976",
+    "category": "linear",
+    "make": "model",
+    "supplier": "Motedis",
+    "designation": "Threaded rod M6 DIN 976 L={L}",
+    "description": "A rod of 6 mm with a cosmetic M6 thread over its length (listed by the threads query); the supplier has no CAD file for it.",
+    "dimensions": {
+      "shape": "rod",
+      "diameter": "6 mm",
+      "length": "1000 mm",
+      "thread": {"designation":"M6","class":"6g"}
+    },
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "length": {"parameter":"L","min":"10 mm","max":"1000 mm"},
+      "frames": [{"name":"end_a","kind":"end"},{"name":"end_b","kind":"end"},{"name":"shaft","kind":"shaft"}],
+      "linear": {"kind":"screw","size":"M6","lead":"1 mm","pitch":"1 mm"}
+    },
+    "frames": [
+      {"name":"end_a","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"end"},
+      {"name":"end_b","origin":[0,0,"L"],"z":[0,0,1],"x":[1,0,0],"kind":"end"},
+      {"name":"shaft","origin":[0,0,0],"z":[0,0,1],"x":[1,0,0],"kind":"shaft"}
+    ]
+  },
+  {
+    "id": "threaded-rod-m8",
+    "name": "Threaded rod M8 DIN 976",
+    "category": "linear",
+    "make": "model",
+    "supplier": "Motedis",
+    "designation": "Threaded rod M8 DIN 976 L={L}",
+    "description": "A rod of 8 mm with a cosmetic M8 thread over its length (listed by the threads query); the supplier has no CAD file for it.",
+    "dimensions": {
+      "shape": "rod",
+      "diameter": "8 mm",
+      "length": "1000 mm",
+      "thread": {"designation":"M8","class":"6g"}
+    },
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "length": {"parameter":"L","min":"10 mm","max":"1000 mm"},
+      "frames": [{"name":"end_a","kind":"end"},{"name":"end_b","kind":"end"},{"name":"shaft","kind":"shaft"}],
+      "linear": {"kind":"screw","size":"M8","lead":"1.25 mm","pitch":"1.25 mm"}
+    },
+    "frames": [
+      {"name":"end_a","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"end"},
+      {"name":"end_b","origin":[0,0,"L"],"z":[0,0,1],"x":[1,0,0],"kind":"end"},
+      {"name":"shaft","origin":[0,0,0],"z":[0,0,1],"x":[1,0,0],"kind":"shaft"}
+    ]
+  },
+  {
+    "id": "threaded-rod-m10",
+    "name": "Threaded rod M10 DIN 976",
+    "category": "linear",
+    "make": "model",
+    "supplier": "Motedis",
+    "designation": "Threaded rod M10 DIN 976 L={L}",
+    "description": "A rod of 10 mm with a cosmetic M10 thread over its length (listed by the threads query); the supplier has no CAD file for it.",
+    "dimensions": {
+      "shape": "rod",
+      "diameter": "10 mm",
+      "length": "1000 mm",
+      "thread": {"designation":"M10","class":"6g"}
+    },
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "length": {"parameter":"L","min":"10 mm","max":"1000 mm"},
+      "frames": [{"name":"end_a","kind":"end"},{"name":"end_b","kind":"end"},{"name":"shaft","kind":"shaft"}],
+      "linear": {"kind":"screw","size":"M10","lead":"1.5 mm","pitch":"1.5 mm"}
+    },
+    "frames": [
+      {"name":"end_a","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"end"},
+      {"name":"end_b","origin":[0,0,"L"],"z":[0,0,1],"x":[1,0,0],"kind":"end"},
+      {"name":"shaft","origin":[0,0,0],"z":[0,0,1],"x":[1,0,0],"kind":"shaft"}
+    ]
+  },
+  {
+    "id": "threaded-rod-m12",
+    "name": "Threaded rod M12 DIN 976",
+    "category": "linear",
+    "make": "model",
+    "supplier": "Motedis",
+    "designation": "Threaded rod M12 DIN 976 L={L}",
+    "description": "A rod of 12 mm with a cosmetic M12 thread over its length (listed by the threads query); the supplier has no CAD file for it.",
+    "dimensions": {
+      "shape": "rod",
+      "diameter": "12 mm",
+      "length": "1000 mm",
+      "thread": {"designation":"M12","class":"6g"}
+    },
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "length": {"parameter":"L","min":"10 mm","max":"1000 mm"},
+      "frames": [{"name":"end_a","kind":"end"},{"name":"end_b","kind":"end"},{"name":"shaft","kind":"shaft"}],
+      "linear": {"kind":"screw","size":"M12","lead":"1.75 mm","pitch":"1.75 mm"}
     },
     "frames": [
       {"name":"end_a","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"end"},

@@ -98,12 +98,14 @@ result as a `.mitcad` design. More in [.f3d import](#f3d-import).
   as a base feature, STL and OBJ as mesh bodies (Insert Mesh asks for the
   unit), DXF into a new sketch on a chosen plane (Insert DXF; in sketch
   mode into the sketch being edited), another Mitcad design as a
-  component, linked or as a copy (Insert Component). FreeCAD documents
-  and `.f3d` designs open as new documents with their history
-  ([FreeCAD import](#freecad-import), [.f3d import](#f3d-import)), `.ipt`
-  parts as new documents with their bodies ([.ipt import](#ipt-import)), IFC
-  building models as new documents of their storeys and elements ([IFC
-  import](#ifc-import)). The
+  component, linked or as a copy (Insert Component). FreeCAD documents,
+  `.f3d` designs, `.ipt` parts and SolidCraft designs open as new documents
+  with their history ([FreeCAD import](#freecad-import), [.f3d
+  import](#f3d-import), [.ipt import](#ipt-import), [SolidCraft
+  import](#solidcraft-import)), IFC building models and `.rvt` projects as
+  new documents of their storeys and elements ([IFC import](#ifc-import),
+  [.rvt import](#rvt-import)), `.dwg` drawings as new documents of their
+  3D solids, meshes and blocks ([DWG import](#dwg-import)). The
   file dialogs list the CAD formats under one *CAD files* filter. Which
   formats Mitcad reads and writes, and which keep their design history:
   [Support for multiple CAD formats](../README.md#support-for-multiple-cad-formats).
@@ -180,7 +182,7 @@ for one run.
 | Offset, Project, Move/Copy | O, P, M | In a sketch: offset curve, projection (also in the context menu of a face, edge or vertex), move |
 | Construction | X | Selected curves to construction geometry and back |
 | Delete | Delete | Delete the selected sketch geometry, constraints and dimensions |
-| Extrude | E | Profiles (also straight from sketch mode), direction, extent, taper, thin wall, Operation |
+| Extrude | E | Profiles (also straight from sketch mode), direction, extent, taper, thin wall (Thin Extrude: walls along the profiles' curves, or along sketch curves picked instead, open chains as well as closed ones), Operation |
 | Hole | H | Click a face for the hole positions; simple, counterbore, countersink, counterdrill, taper, thread |
 | Fillet | F | Edges or faces, several radius sets |
 | Press Pull | Q | A face is offset, an edge filleted, a profile extruded |
@@ -193,14 +195,29 @@ The BUILD tab's commands (frames of slot profiles) are in [BUILD
 tab](#build-tab). Other commands of the SOLID tab, in menu order:
 
 - **CREATE:** Create Sketch, Extrude, Revolve, Sweep, Loft,
-  Rib, Web, Hole, Thread, Box, Cylinder, Sphere, Torus, Coil, Helix, Pipe,
-  Rectangular/Circular Pattern, Pattern on Path, Pattern at Points, Mirror. Helix turns
+  Rib, Web, Emboss, Hole, Thread, Box, Cylinder, Sphere, Torus, Coil, Helix, Pipe,
+  Rectangular/Circular Pattern, Pattern on Path, Pattern at Points, Mirror. Emboss
+  raises sketch profiles (a text's letters too) from a face by a depth, or
+  sinks them into it: on a planar face (or, with no face picked, from the
+  sketch plane) they go straight out of the material or into it; on a
+  cylindrical face they are wrapped round the cylinder, laid out by their
+  length along it rather than projected, so letters keep their widths and
+  their walls stand square to the face. A sketch on a plane parallel to
+  the cylinder's axis wraps onto the side facing the sketch (for a plane
+  through the axis, the side its normal points to); a bore's wall takes them too
+  (raised into the hole). The profiles must stay within one turn. Helix turns
   sketch profiles about an axis while they rise along it, as a screw
   moves (a thread's profile, a twisted ridge): give the revolutions and
   the pitch, the revolutions and the height, or the height and the pitch,
   right- or left-handed; a Growth moves the profiles that far out from
   the axis each turn (negative: in), widening the helix into a cone or a
-  spiral. A hole can be counterdrilled (a counterbore
+  spiral. A Thin Extrude also takes sketch curves instead of profiles
+  (pick them in Profiles once the type is Thin Extrude): an open line,
+  arc or chain of them gets a wall along it, square at its ends, Side 1
+  on the outside of its bend and Side 2 on the inside (a straight chain:
+  Side 1 to the right of the first picked curve as it was drawn), Center
+  half each way; a closed chain gets walls as a profile's outline does. A
+  hole can be counterdrilled (a counterbore
   whose floor is a cone down to the hole) and tapered (Taper Angle: the
   wall leans in as the hole goes deeper). A thread, cosmetic or modelled,
   can have *Chamfer Ends*: a cone cut at the free ends it runs out
@@ -267,8 +284,11 @@ tab](#build-tab). Other commands of the SOLID tab, in menu order:
   whole chain before the click, and with the option off only the edge
   or face under the pointer.
 - **ASSEMBLE:** New Component, Joint, As-Built Joint, Joint Origin,
-  Rigid Group, Drive Joint, Constraint, Animate Joint, Insert Component,
-  Insert from Library: everything that builds an assembly. Once Joint's origin A (or
+  Rigid Group, Drive Joint, Constraint, Contact Set, Motion Link, Animate
+  Joint, Motion Study, Insert Component, Insert from Library: everything
+  that builds an assembly ([Motion studies and contact
+  sets](#motion-studies-and-contact-sets), [Motion links](#motion-links)).
+  Once Joint's origin A (or
   As-Built Joint's component A) is picked, A's component turns
   see-through and lets clicks through, so that origin B can be picked
   behind it; once B is picked the preview shows A where the joint puts
@@ -647,7 +667,10 @@ stays on for the next sketch.
   gives the keyboard to its first value field, text selected, as soon as
   the required picks are made, so the number is typed without a click;
   picks in the view still work, and a field you clicked into keeps the
-  keyboard.
+  keyboard. While the selection takes more items (Fillet's edges, the
+  profiles), the next click in the view adds the next one: the labels of
+  dimensions and values show only once you type in the field, and the
+  view does not move when the preview shows a design's first body.
 - A constraint button applies to the selected geometry, or picks it
   when nothing fitting is selected. Equal, Parallel, Perpendicular,
   Collinear, Concentric, Tangent and Coincident on more than two selected
@@ -951,6 +974,73 @@ command is open, or the design is read-only. In a design with
 components, a window selection starts from empty space or with Shift
 held.
 
+### Motion studies and contact sets
+
+A **contact set** (ASSEMBLE › Contact Set; pick two or more components
+in the browser or bodies they place) names components whose bodies may
+touch but not pass through each other while joints move. Dragging a
+component, Drive Joint, Animate Joint and a motion study's playback stop
+where two bodies of different components of a set touch (within 0.01 mm),
+and say so: Drive Joint's panel "stopped at contact: Body2 (Pin:1) and
+Body3 (Wall:1) in Contact1", the status bar for the others. Driven so,
+the joint keeps the value where it stopped. Bodies that already pass
+through each other where a motion starts do not stop it, so that parts
+can be moved apart. A set can be suppressed (it stops nothing), edited,
+renamed and deleted from the browser's **Contact Sets** folder; a design
+can have several.
+
+A **motion study** (ASSEMBLE › Motion Study, or Play on a study in the
+browser's **Motion Studies** folder) keys joints along a number of steps:
+per joint and free motion (a cylindrical joint's slide and turn each),
+values at steps, in the joint's units; between two keys the value goes
+evenly, before the first and after the last it stays. Its panel has the
+step slider, the keys of each joint motion with the value at the current
+step, Add Key (the chosen joint motion at the current step: the typed
+value, else where the joint is in the design) and Remove Key, Play and
+Pause, Loop and the speed. Playing moves the components through the
+joints as Drive Joint does (constraints and other joints follow) and
+stops at a contact of a contact set; it changes nothing in the design
+until **Keep Position**, which drives the keyed joints to the shown step
+as one undo step. Studies and contact sets are saved in the design.
+
+### Motion links
+
+A **motion link** (ASSEMBLE › Motion Link) makes one joint's free motion
+(the follower) follow another's (the driver), so that the two move
+together whenever either moves: in Drive Joint, dragging, Animate Joint
+and a motion study, and a contact of a contact set stops both. Pick the
+driving joint and the following one (in the browser or the timeline) and,
+for a joint with more than one free motion, which motion of each, then
+the type:
+
+- **Gears**: two turning joints; the follower turns the driver gear's
+  size divided by its own as far, the other way (the same way for an
+  **Internal Gear**, a ring gear). A size is a radius, or any two numbers
+  in proportion such as tooth counts, or the radius of a round face, edge
+  or circle picked beside it (it then follows the model).
+- **Rack and Pinion**: a turn and a slide, either one driving: the rack
+  travels the pinion's radius per radian.
+- **Screw**: a turn and a slide (a cylindrical joint's own two, or a
+  revolute joint and a slider): the slide advances the lead per turn.
+- **Ratio**: the follower's value is the ratio times the driver's (mm or
+  radians each).
+- **Cam**: the cam turns on a revolute joint (the driver); its follower
+  slides on a slider or swings on a revolute joint. Pick the cam's
+  profile (a flat face of the cam, or a curve of the sketch profile it is
+  made from), the follower's shape (a knife edge, a roller with its
+  radius, or a flat face for a sliding follower) and its tip (the knife's
+  point or the roller's centre; a swinging follower needs it). The
+  follower stays on the profile, coming from the side it is on now.
+
+**Reverse** turns the follower the other way. **Keep Where They Are**
+(on by default, except for a cam) adds the offset that leaves both joints
+where they are; else the offset is the follower's value when the driver
+is at zero. A cam's follower moves to touch the cam. Once linked, either
+joint can be driven (a cam only by the cam): the motions linked to the
+one driven let go of their own positions. The links are in the
+component's **Motion Links** folder in the browser and on the timeline;
+edit, suppress or delete them there.
+
 A sketch of the active component can lie on a face or a construction
 plane of another component: Create Sketch on it where an occurrence
 shows it. The sketch stays linked to that face and follows it when the
@@ -1099,6 +1189,111 @@ active and holds components. The panel says where (*Adds to: Part1*).
 The BUILD commands work through live MCP as the other panels do
 ([docs/mcp.md](mcp.md)); the model's commands behind them are in
 commands.md, *BUILD: profile assemblies*.
+
+### Sheet metal: contour flanges, conversions and perforations
+
+Besides the SHEET METAL group's commands (Face, Flange, Bend, Fold,
+corners, cuts, reliefs, Unfold, Refold and the Flat Pattern;
+[app/COMMANDS.md](../app/COMMANDS.md#sheet-metal)), three sheet features
+are made through the model's commands (scripts, `mitcad-cli run`, MCP)
+and by the `.solidcraft` import; they have no panel yet:
+
+- **Contour Flange** bends a sheet along an open chain of sketch lines:
+  the lines are one surface of the sheet, every corner becomes a bend of
+  the rules' radius, and the sheet is as wide as you say along the
+  sketch's normal. Choose the side the material lies on and the
+  direction of the width.
+- **Convert to Sheet Metal** makes a body a sheet. A plate of the rules'
+  thickness becomes a sheet of one panel from the face you pick; with
+  bend edges picked, the flat faces reached across them become panels
+  bent at those edges (a thin-walled channel or bracket keeps its walls,
+  a solid block becomes the sheet of its outer faces). Faces that meet at
+  an edge that is not a bend are refused.
+- **Perforate** cuts a field of round holes over a whole sheet, on a
+  staggered or square grid, kept clear of its edges, cut-outs and bends
+  by a margin. The holes are real: the Flat Pattern, its DXF and every
+  measure have them.
+
+All three keep the body a sheet: it unfolds, refolds and has a Flat
+Pattern like any other. The details are in
+[docs/sheet-metal.md](sheet-metal.md#implementation-notes-mitcad461).
+
+### Bounding Solid
+
+A **Bounding Solid** is a new body: the box around bodies, standing off
+them by a margin on every side, for stock sizes, packaging, clearance
+envelopes or a cut that should clear a whole part. Name the bodies, or
+none for every body of the component at that point of the timeline, and
+the margin (zero for the bodies' own box; a negative margin shrinks it).
+The box is square to the component's axes and holds the bodies' exact
+shapes, round faces included. It is a feature like any other: change a
+dimension of a body it holds, or its margin, and the box follows; the
+bodies themselves are left as they are. Its faces are named as a box's
+(bottom, top and four sides), so later features keep their references
+when the box grows or shrinks.
+
+It is made through the model's commands (scripts, `mitcad-cli run`, MCP;
+[`bounding_solid`](../core/model/src/api/commands.md#bounding_solid)) and
+by the `.solidcraft` import; it has no panel yet.
+
+### Boundary Fill
+
+**Boundary Fill** makes solids of the spaces that bodies enclose
+together. The tool bodies divide space into cells: each cell lies inside
+some of the tools and outside the others, such as the space two
+overlapping bodies share, or the part of one body that another does not
+reach. You pick a cell by a point inside it, and pick as many cells as
+you like; a cell may be several separate pieces when the tools cut that
+space apart, and it is filled whole.
+
+- **New Body** makes a body of each cell (or puts them in a new
+  component). **Join**, **Cut** and **Intersect** use the cells together
+  as one tool on the bodies you choose (all bodies when you choose none),
+  as an extrusion does: cut the space two bodies share out of a third, or
+  add it to one.
+- **Remove tools** takes the tool bodies out of the design; otherwise
+  they stay as they were.
+- The faces of the cells keep the names of the tool faces they lie on,
+  so fillets, sketches and other features placed on them follow when the
+  tools change.
+- A point outside every tool, or on a tool's surface, fails the feature
+  with a message that says so; two points in one cell fill it once.
+
+Boundary Fill has no panel yet: it is made through the model's commands
+(scripts, `mitcad-cli run`, MCP; [commands.md](../core/model/src/api/commands.md#boundary-fill))
+and by the `.solidcraft` import, and it is edited, suppressed and undone
+in the timeline like any feature.
+
+### Surfaces: patches, stitches and thickened surfaces
+
+Surface bodies (bodies of faces without a volume: a surface loft,
+imported surfaces, a face deleted without healing the gap) are filled,
+sewn together and made solid by three features, made through the
+model's commands (scripts, `mitcad-cli run`, MCP) and by the `.solidcraft`
+import; they have no panel yet:
+
+- **Patch** fills closed regions of a sketch with flat surface bodies,
+  one per region, or fills a closed loop of a body's edges with a new
+  surface body: a flat face when the loop lies in a plane, else a
+  surface fitted to the edges. The loop may be edges you pick or an
+  opening of a surface body (its free edges, found by the faces around
+  it). The patch can meet the faces beside the loop just at the edges,
+  tangent to them (G1) or also with their curvature (G2), and pass
+  through points you give. The body the loop is on stays as it is.
+- **Stitch** sews bodies' faces together where their edges meet within a
+  tolerance. The result keeps the first body's name and the others are
+  used up; faces that close up all round make a solid, otherwise it
+  stays a surface. An open box stitched with a patch of its opening
+  becomes a solid box.
+- **Thicken** makes surface bodies solid by a wall along their faces'
+  normals (the other way with a negative thickness), or half of it to
+  each side. Like an extrusion, the result is a new body or is joined
+  to, cut from or intersected with other bodies. The surfaces stay.
+
+The faces they make have names that later features follow: a patch's
+face, and a thickened wall's front, back and side faces after the
+surface they come from. The details are in
+[commands.md](../core/model/src/api/commands.md#patch-stitch-and-thicken).
 
 ### Long computations
 
@@ -1751,6 +1946,31 @@ cuts or joins all bodies leaves mesh bodies as they are. Mesh bodies can
 still be moved, copied, patterned, mirrored, measured, sectioned and
 exported.
 
+### Convert Mesh
+
+**Convert Mesh** turns a mesh body that is one profile extruded straight
+(a plate, a bracket, a bar or a profile with holes, from an STL or OBJ
+file) into a solid with flat and round faces, which every feature can then
+use: fillet it, cut it, shell it. It is made through the model's commands
+(scripts, `mitcad-cli run`, MCP; `{"type": "mesh_convert", "body":
+"F3.b0", "tolerance": 0.05}`) and by the `.solidcraft` import; it has no
+panel yet.
+
+- The body keeps its name and colour and stays where it was; suppress or
+  delete the feature and the mesh body is back.
+- The **tolerance** (0.000001 to 1 mm) is how far the new faces may lie
+  from the triangles. A hole or rod of 12 or more corners on one circle
+  becomes one round face when each of its facets lies within the
+  tolerance of the circle; otherwise it stays flat facets. Straight runs
+  of corners become one flat face.
+- The mesh must be closed, with every triangle facing out, and have at
+  most 50000 triangles. A mesh that is not one profile extruded straight
+  (a tapered, twisted or stepped part, a sphere, a freeform scan) is
+  refused with a message, and nothing is converted.
+
+The new faces are named like an extrusion's faces, by the section's edges
+in turn ([commands.md](../core/model/src/api/commands.md#convert-mesh)).
+
 ### 3D printing
 
 **3D Print** sends bodies to a slicer (Bambu Studio, OrcaSlicer,
@@ -2115,6 +2335,96 @@ release that saved the file. An `.rfa` family file opens with its metadata
 only (its forms come later). The timeline's yellow badge notes how many
 bodies are meshes and boxes.
 
+### SolidCraft import
+
+A SolidCraft design (`.solidcraft`, plain JSON or SolidCraft's
+container; designs of every file format version, older ones upgraded as
+SolidCraft upgrades them) opens as a new document with its history (File
+› Open or Import, `mitcad-cli import-solidcraft`, or the MCP server's
+`document_open`). The file keeps the design's definitions, not its
+bodies, so Mitcad builds every feature itself:
+
+- Parameters keep their names and expressions; a sketch dimension and a
+  feature's input keep the parameter name the design gave them (`d3`), so
+  Change Parameters lists the same names and a change rebuilds the model.
+- Sketches are editable, with their constraints and dimensions, on the
+  plane or face they were placed on. Curves projected from bodies come in
+  fixed where they are; a few constraints Mitcad has no counterpart for
+  (a line's angle to the sketch's axis, an arc's sweep, a slot's overall
+  length) are left out and the sketch is marked partial.
+- Extrusions, revolutions, fillets, chamfers, holes, threads, patterns,
+  mirrors, shells, drafts, lofts, sweeps, pipes, coils, ribs, embosses, primitives,
+  combines, boundary fills ([Boundary Fill](#boundary-fill)), moves, scales,
+  splits, face features, patches, stitches, thickened surfaces,
+  construction planes, axes and points, imported STEP bodies and meshes
+  come in as Mitcad features, and conversions of meshes as
+  [Convert Mesh](#convert-mesh).
+  Faces and edges are found by the names the design gave them and the
+  points they were picked at, and are then followed by Mitcad's
+  own names. Bodies keep the design's names.
+- Components and their occurrences come in at their placements, joints
+  as Mitcad joints (where they hold where the design places the parts,
+  else as as-built joints), sheet metal rules, base flanges, contour flanges,
+  edge flanges, hems, folds, unfolds, refolds, conversions to sheet metal
+  and perforations as Mitcad's sheet metal features (a conversion's
+  thickness the one the design takes from the body).
+- Features Mitcad has no counterpart for (surface modelling, the plastic
+  part features) keep their place on the timeline as suppressed
+  placeholders with a note, and the timeline goes on after them.
+- Bounding solids come in as Mitcad's ([Bounding Solid](#bounding-solid)),
+  around the same bodies by the same margin, with the names the design
+  gives their boxes.
+- Contact sets and motion studies come in as Mitcad's ([Motion studies
+  and contact sets](#motion-studies-and-contact-sets)): with contact off
+  in the design its sets come in suppressed, and "all contact" is a set
+  of every component; a study's keys of a joint that came in as an
+  as-built joint, or not at all, are left out with a note. Exploded views
+  are not imported.
+- Motion links (gears, racks and pinions, screws, cams) come in as
+  Mitcad's ([Motion links](#motion-links)), sizes picked on round faces
+  still picked, and keep the parts where the design places them; a link
+  whose joints did not come in is left out with a note.
+
+The import report lists every feature, joint and motion link with how it came in
+(parametric, partial with what was left out, without a Mitcad
+counterpart, or failed with the reason), the kinds without a counterpart,
+the sketches' constraint counts and the bodies' volumes and boxes
+([Reading an imported timeline](#reading-an-imported-timeline)).
+
+### DWG import
+
+A `.dwg` drawing (R13 to R2018) opens as a new document with its 3D
+content (File › Open or Import, or `mitcad-cli import-dwg`); a drawing
+keeps no history, so everything comes in as bodies:
+
+- 3D solids (and bodies, regions and surfaces that keep a B-rep) as
+  bodies, built from the B-rep the drawing stores;
+- 3D faces as mesh bodies (those of one block on one layer in one colour
+  together), and polyface, polygon and subdivision meshes as a mesh body
+  each (a subdivision mesh as its control mesh, unsmoothed);
+- each named block with 3D content as a component, named as the block,
+  placed by an occurrence for every insert of it (an array insert, one
+  per cell); blocks inside blocks keep their nesting, so a truss segment
+  inserted many times is one component with many occurrences. An insert
+  that scales or mirrors its block, and anonymous blocks, are copied into
+  the component that inserts them instead, as occurrences only move and
+  turn;
+- the bodies of a component on one layer are one base feature named
+  after the layer (`Layer Tubes`, in a component `Segment layer Tubes`),
+  and the bodies take the entities'
+  colours (their own, their layer's, or the inserting block's);
+- the drawing's units (`$INSUNITS`) become the document's; a drawing
+  without units is read as millimetres.
+
+Lines, arcs, text, dimensions, hatches and the other 2D entities are not
+imported (DXF files go into sketches, [DXF into
+sketches](#import-and-export)), nor paper space. The import report counts
+the entities taken by type and names every type left out with the count
+and why, lists the components with their occurrences, and checks that
+every body built and is valid and that the bodies lie within the
+drawing's extents (`$EXTMIN`, `$EXTMAX`). Drawings saved with a password
+cannot be read. The import runs in a process of its own.
+
 ## Command line
 
 The application (`mitcad`, on Windows `mitcad.exe`):
@@ -2183,6 +2493,12 @@ and options.
   elements, one component per level (an `.rfa` family: its metadata);
   `--report-only` reads and reports without importing, `--elements`
   imports only the elements listed by id.
+- `import-solidcraft design.solidcraft --save design.mitcad [--report
+  report.json] [--set name=expression]... [--expected values.json]`: a
+  SolidCraft design with its history; `--set` changes a parameter (by the
+  design's name) before the report measures the bodies, `--expected`
+  checks the bodies, timeline, parameters and sketches against given
+  values (exit code 1 when they differ).
 - `export part.mitcad result.step [--bodies …] [--schema ap214|ap242]
   [--unit mm|in|…] [--refinement low|medium|high] [--ascii]`; a `.3mf`
   file holds the solid and mesh bodies as the parts of one object, a

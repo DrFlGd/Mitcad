@@ -43,11 +43,32 @@ pub enum ProfileScaling {
     None,
 }
 
+/// Where a guide rail's point is for a place along a sweep's path
+/// (mitcad#469).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RailPoint {
+    /// At the same fraction of the rail's length as the place is of the
+    /// path's, taken into the plane square to the path there (designs
+    /// saved without the option).
+    #[default]
+    Fraction,
+    /// Where the rail crosses the plane square to the path there.
+    Plane,
+}
+
 /// A guide rail of a sweep.
 #[derive(Debug, Clone, Copy)]
 pub struct SweepGuide<'a> {
     pub rail: &'a [PathCurve],
     pub scaling: ProfileScaling,
+    /// A second rail (mitcad#464): the profile moves with the first rail,
+    /// turns with the line across to the second and is sized by its
+    /// length (`scaling`), the rails' points by `point`, in the plane
+    /// square to the path.
+    pub rail2: Option<&'a [PathCurve]>,
+    /// How the rails' points are found (mitcad#469).
+    pub point: RailPoint,
 }
 
 /// Input of [`crate::Kernel::sweep`]: the regions swept along the path. The
@@ -90,6 +111,10 @@ pub struct SweepSpec<'a> {
     /// guide surfaces, along a path without corners; `None` keeps the
     /// profile's angle to the path without twisting about it.
     pub binormal: Option<[f64; 3]>,
+    /// The profile's size at the ends of the swept part (mitcad#464), from
+    /// 1 at the profile in proportion to the length run, about the path; 1
+    /// for none, never with a guide rail.
+    pub end_scale: f64,
 }
 
 /// A face of a sweep's guide surfaces (mitcad#157), for

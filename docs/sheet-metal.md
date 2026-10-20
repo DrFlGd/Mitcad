@@ -992,6 +992,66 @@ Decisions made while closing the import gaps of mitcad#211:
   it a double bend. The angle of a double bend has no Flip (the jog turns
   towards the other face). UI test `tools/ui-sheet-double-bend-test.sh`.
 
+### Implementation notes (mitcad#461)
+
+Contour Flange, Convert to Sheet Metal and Perforate
+([their API](../core/model/src/api/commands.md#contour-flange-convert-to-sheet-metal-and-perforate)),
+built from the same charts, bends and trims as the features above, so their
+sheets unfold, refold and have a Flat Pattern:
+
+- **Contour Flange** (`sheet/folded/contour.rs`). The chain of sketch lines
+  is the sheet's surface on the rules' reference side (the front for
+  `front`, the back for `back`); the material lies on the chosen side. A
+  corner turning towards the material has that surface outside the bend:
+  the lines on both sides are set back from the corner by the outer
+  setback `(r+t) tan(a/2)`; one turning away has it inside, set back by
+  `r tan(a/2)` (`a` the turn). Each panel is the rectangle of its line's
+  straight length by the width; each bend is built as a flange's bend
+  with its tangent line on the panel's end. A line not longer than its
+  setbacks, lines in one line and a turn of 180 degrees are refused. CLI
+  `sheet_contour`: the chain (0,0)-(40,0)-(40,30)-(70,30), t=2, r=3,
+  K=0.3, 50 wide: setbacks 3 and 5, straights 37, 22 and 25, `8400 + 400
+  pi` folded, `8400 + 360 pi` developed, the material on the left, the
+  width reversed, back rules, a thickness edit (`4300 + 175 pi`), one line,
+  the refusals, a flange on its last panel, reopened.
+- **Convert to Sheet Metal** (`sheet/folded/convert.rs`). The picked face
+  is the first panel's front; outlines are read exactly from the body's
+  edges (the sheet-domain adapter's curve reading). Without bends the
+  body must be a plate of the rules' thickness: the sheet of the face must
+  have the body's volume and centre of mass (within `1e-6` relative). With
+  bends, the faces reached across the bend edges are panels with the
+  rules' thickness behind them: a shell of that wall thickness keeps its
+  walls, a solid becomes the sheet of its faces. A bend edge is the
+  virtual sharp on the front, so both faces are cut back by the setback of
+  the side the front is on (outer where the bend turns towards the
+  material, inner otherwise); the face across is built where the bend puts
+  it and must lie in that plane, its edge along the bend running the whole
+  bend. The rules' thickness always governs: Mitcad's sheet state has one
+  thickness, its rules'; an import makes rules of the thickness its file
+  measured. Not supported, each refused with the edge or face: faces that
+  meet at an edge that is no bend (corners that would have to be cut open
+  with a gap), loops of bends, curved faces, chamfers or rolled bends
+  picked as bends, faces ending at an angle to their bend. CLI
+  `sheet_convert`: a 40 x 20 x 2 plate (1600, a 3 thick one refused), an
+  L of 2 thick walls bent at its outer edge (`6000 + 200 pi`, radius 1:
+  `6400 + 100 pi`), a solid block becoming a U channel (`3600 + 240 pi`,
+  flat `30 (60 + 3.6 pi)`), the corner and the unconnected bend refused,
+  reopened.
+- **Perforate** (`sheet/folded/perforate.rs`). The holes are real: cut
+  through the material as a developed cut with every bend open, so the
+  body, the Flat Pattern, the DXF (`CUT_INNER` circles) and every measure
+  have them, and later features work on the sheet with its holes. The
+  grid lies in the chart of the stationary panel (default the lowest,
+  as the Flat Pattern's) with the whole sheet developed, from the lower
+  left corner of the developed material's box, `margin + d/2` in; a hole
+  is kept on a panel, off every bend's strip, and `margin + d/2` or more
+  from every boundary of the material and of the strips (seams between
+  panels of one plane are inside the material). One trim and one solid
+  take all holes; fields of thousands of holes are possible but each hole
+  is part of the B-rep. CLI `sheet_perforate`: an L contour flange,
+  staggered 33 holes (`9400 - 212.5 pi`), square 28 (`9400 - 150 pi`), the
+  Flat Pattern (`4700 - 85 pi`), Unfold, a thickness edit, reopened.
+
 ## Kernel seam
 
 Add one sheet-metal family to `core/model/src/kernel.rs`, using default

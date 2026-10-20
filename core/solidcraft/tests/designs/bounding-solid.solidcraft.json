@@ -1,0 +1,33 @@
+{
+  "format": "solidcraft/27",
+  "name": "Bounding solids",
+  "units": "mm",
+  "params": [
+    {"name": "gap", "expr": "5 mm", "unit": "mm"}
+  ],
+  "features": [
+    {
+      "id": 1, "name": "Box1", "type": "box", "body_names": ["Block"],
+      "corner": [0, 0, 0], "length": "40", "width": "30", "height": "20",
+      "operation": "new_body"
+    },
+    {
+      "id": 2, "name": "Box2", "type": "box", "body_names": ["Lug"],
+      "corner": [50, 5, 0], "length": "10", "width": "20", "height": "8",
+      "operation": "new_body"
+    },
+    {
+      "id": 3, "name": "Stock box", "type": "bounding_solid", "body_names": ["Stock"],
+      "bodies": ["Block", "Lug"], "margin": "gap"
+    },
+    {
+      "id": 4, "name": "Lug box", "type": "bounding_solid",
+      "bodies": ["Lug"]
+    },
+    {
+      "id": 5, "name": "Envelope", "type": "bounding_solid",
+      "bodies": [], "margin": "1"
+    }
+  ],
+  "next_id": 6
+}

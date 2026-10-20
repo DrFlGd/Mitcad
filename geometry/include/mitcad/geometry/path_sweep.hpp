@@ -30,6 +30,11 @@ using Path = std::vector<PathCurve>;
 
 enum class SweepOrientation { Perpendicular, Parallel };
 enum class ProfileScaling { Scale, Stretch, None };
+// Where a guide rail's point is for a place along the path (mitcad#469):
+// at the same fraction of the rail's length as the place is of the path's
+// (`Fraction`), or where the rail crosses the plane square to the path
+// there (`Plane`).
+enum class RailPoint { Fraction, Plane };
 
 // The regions swept along the path from where its plane meets the path:
 // `extent1` of the path's length after that point and `extent2` of the
@@ -38,7 +43,16 @@ enum class ProfileScaling { Scale, Stretch, None };
 // path) and taper (the profile's farthest point from the path moves out
 // by s tan(taper) at distance s) are ignored with a guide rail, which turns
 // the profile towards it and sizes it by its distance from the path, the
-// rail point at the same fraction of its length.
+// rail point chosen by `rail_point`.
+//
+// The plane rule (mitcad#469): at each place the rail's point is where it
+// crosses the plane square to the path. At the profile it is the crossing
+// nearest to the path; from there, place by place, the next crossing
+// onwards along the rail in the way the rail runs with the path (back
+// along it before the profile), so a rail that crosses a plane more than
+// once is followed in order. An end of the rail within 1e-3 mm (or a
+// millionth of the path's length) of a plane counts as crossing it; a rail
+// that does not reach a plane of the swept part is an error.
 //
 // Faces: side(<segment>) from the profile segments (#k pieces), and with
 // caps start(<region>) and end(<region>): start at the profile when it is
@@ -69,6 +83,19 @@ struct SweepSpec {
   double twist = 0.0;
   double taper = 0.0;
   Path rail; // empty: no guide rail
+  // A second guide rail (mitcad#464; empty: none): the profile moves with
+  // the first rail's point, turns with the line across to the second and
+  // sizes (`scaling`) by its length, the rails' points chosen by
+  // `rail_point` (with the fraction rule taken into the plane square to the
+  // path).
+  Path rail2;
+  // The rails' points (mitcad#469); the fraction rule by default, as
+  // designs saved before the plane rule have it.
+  RailPoint rail_point = RailPoint::Fraction;
+  // The profile's size at the ends of the swept part (mitcad#464), from 1
+  // at the profile in proportion to the length run, about the path; 0.01
+  // to 100, not with guide rails or guide surfaces.
+  double scale = 1.0;
   ProfileScaling scaling = ProfileScaling::Scale;
   std::vector<GuideFace> guide; // empty: no guide surface
   // A fixed binormal direction (mitcad#397): the profile keeps its angles

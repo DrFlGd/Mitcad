@@ -185,6 +185,35 @@ mod renamed_tests;
 // Body ids of a split's pieces kept by matching remembered pieces (mitcad#408).
 pub mod pieces;
 pub use pieces::{PieceGroup, PieceMark, SplitPieces};
+// Sheet-metal Contour Flange, Convert to Sheet Metal and Perforate (mitcad#461).
+pub mod sheet_contour;
+pub use sheet_contour::SheetContourDef;
+pub mod sheet_perforate;
+pub use sheet_perforate::SheetPerforateDef;
+pub mod sheet_convert;
+pub use sheet_convert::SheetConvertDef;
+// Motion links between joints (mitcad#466).
+pub mod motion_link;
+pub use motion_link::{Coupling, Follower, LinkSize, LinkedMotion, MotionLinkDef};
+// Emboss: profiles raised or sunk on faces, wrapped on cylinders (mitcad#458).
+pub mod emboss;
+pub use emboss::{EmbossDef, EmbossMode};
+// Bounding solids: a box around bodies grown by a margin (mitcad#460).
+pub mod bounding_solid;
+pub use bounding_solid::BoundingSolidDef;
+// Boundary Fill: solids of the cells tool bodies enclose (mitcad#457).
+pub mod boundary_fill;
+pub use boundary_fill::BoundaryFillDef;
+// Convert Mesh: mesh bodies rebuilt as planes and cylinders (mitcad#462).
+pub mod mesh_convert;
+pub use mesh_convert::MeshConvertDef;
+// Patch, Stitch and Thicken: surface bodies filled, sewn and made solid (mitcad#456).
+pub mod patch;
+pub mod stitch;
+pub mod thicken;
+pub use patch::{EdgeContinuity, Opening, PatchDef, PatchLoop};
+pub use stitch::StitchDef;
+pub use thicken::ThickenDef;
 
 use crate::assembly::Assembly;
 use crate::datum::Datum;
@@ -318,6 +347,20 @@ feature_types! {
     Derive(DeriveDef),
     // BUILD: derived parts and bound lengths (mitcad#375).
     DerivedPart(DerivedPartDef), BoundLength(BoundLengthDef),
+    // Sheet-metal Contour Flange, Convert to Sheet Metal and Perforate (mitcad#461).
+    SheetContour(SheetContourDef), SheetPerforate(SheetPerforateDef), SheetConvert(SheetConvertDef),
+    // Motion links between joints (mitcad#466).
+    MotionLink(MotionLinkDef),
+    // Emboss: profiles raised or sunk on faces, wrapped on cylinders (mitcad#458).
+    Emboss(EmbossDef),
+    // Bounding solids (mitcad#460).
+    BoundingSolid(BoundingSolidDef),
+    // Boundary Fill: solids of the cells tool bodies enclose (mitcad#457).
+    BoundaryFill(BoundaryFillDef),
+    // Convert Mesh (mitcad#462).
+    MeshConvert(MeshConvertDef),
+    // Patch, Stitch and Thicken: surface bodies filled, sewn and made solid (mitcad#456).
+    Patch(PatchDef), Stitch(StitchDef), Thicken(ThickenDef),
 }
 
 /// Brings a feature definition in an earlier form up to date before it is

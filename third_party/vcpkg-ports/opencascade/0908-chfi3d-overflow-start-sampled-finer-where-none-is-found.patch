@@ -1,0 +1,48 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: where none of the samples along the spine finds a start as an edge
+overflow, the spine is sampled four times as finely between them
+(mitcad#343).
+
+The case: 0904's notch wall on the other side of the bar's end, rounded
+with 0.86 along a spine of two edges 17.7 long, whose ball touches an
+earlier rounding and rolls on the wall's far edge. StartSolOverflow
+samples the spine at eleven points (1.6 to 1.8 apart). A start is found
+only where the wall's side, crossing its far edge, reaches the face it
+rolls before and the other side's contact lies inside its face: a stretch
+of about a millimetre. On the stored body one sample fell in it; on a body
+a few micrometres off, parametrised a little differently, none did, and
+the stripe failed ("no ball of the radius touches both faces there").
+
+- StartSolOverflow: the samples first as before, then those between them
+  at a quarter of their spacing, until one finds a start.
+
+Upstream: new.
+
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+index 77d17c31..df098754 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+@@ -1838,9 +1838,19 @@ int ChFi3d_Builder::StartSolOverflow(const occ::handle<ChFiDS_Stripe>&      Stri
+                   Spine->FirstParameter(1),
+                   Spine->LastParameter(nbed),
+                   Precision::Confusion());
+-  for (int nbessai = 0; nbessai <= nbessaimax; nbessai++)
++  // The samples along the spine; where none of them finds a start, the
++  // spine four times as finely between them (a start may be found only
++  // along a stretch shorter than their spacing).
++  const int nbfine = 4;
++  for (int nbessai = 0; nbessai <= nbfine * nbessaimax; nbessai++)
+   {
+-    const double t     = double(nbessai) / nbessaimax;
++    int ifine = nbfine * nbessai;
++    if (nbessai > nbessaimax)
++    {
++      const int j = nbessai - nbessaimax - 1;
++      ifine       = (j / (nbfine - 1)) * nbfine + j % (nbfine - 1) + 1;
++    }
++    const double t     = double(ifine) / (nbfine * nbessaimax);
+     double       w     = wf * (1. - t) + wl * t;
+     // (Only past a start whose walk failed at once.)
+     if (w <= theAfter)

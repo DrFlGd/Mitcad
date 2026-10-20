@@ -115,4 +115,55 @@ expect-native-text input_height '^13(?:\.0*)?(?: mm)?$'
 native-click commandCancel
 expect-log 'Command Box cancelled' 30
 expect-no-log 'Edited F1|Body .*volume .* -> 99000\.000 mm3'
+
+# A failed checkpoint restore cancels the close request as well. A later
+# OK commits this edit without carrying the earlier Close into the idle window.
+mark
+native-activate native.history.F1
+expect-log 'Editing F1 with Box'
+native-type input_height '15 mm'
+expect-native-enabled commandOk true
+fail-next-recovery-command restore_command
+menu 'File/Close'
+expect-native-text commandMessage 'Injected recovery command failure\.'
+expect-native-present commandPanel true
+expect-native-text native.window.size '^[0-9]+x[0-9]+$'
+mark
+native-type input_height '16 mm'
+expect-native-enabled commandOk true
+native-click commandOk
+expect-log 'Edited F1' 30
+expect-native-present commandPanel false
+expect-model-bodies 1 16000
+native-action solid.sphere
+expect-log 'Command Sphere started'
+native-click commandCancel
+expect-log 'Command Sphere cancelled' 30
+
+# Releasing the restored checkpoint can fail too. A second Close must
+# actually retry cancellation. Cancel only the ensuing save question, so
+# the regression can assert that the edit was rolled back before closing.
+mark
+native-activate native.history.F1
+expect-log 'Editing F1 with Box'
+native-type input_height '17 mm'
+expect-native-enabled commandOk true
+fail-next-recovery-command discard_command
+menu 'File/Close'
+expect-native-text commandMessage 'Injected recovery command failure\.'
+expect-native-present commandPanel true
+expect-native-text native.window.size '^[0-9]+x[0-9]+$'
+mark
+menu 'File/Close'
+focus-dialog '^Save changes to .*\?$'
+button '^Cancel$'
+expect-log 'Command Box cancelled' 30
+focus-main
+expect-native-present commandPanel false
+expect-model-bodies 1 16000
+native-activate native.history.F1
+expect-log 'Editing F1 with Box'
+expect-native-text input_height '^16(?:\.0*)?(?: mm)?$'
+native-click commandCancel
+expect-log 'Command Box cancelled' 30
 expect-never 'The document was read while a job computes it|TestDriver: FAIL|OCCT view event failed'

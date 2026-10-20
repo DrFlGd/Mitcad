@@ -76,5 +76,7 @@ int import_ipt(const std::vector<std::string>& args);
 int import_iam(const std::vector<std::string>& args);
 int import_ifc(const std::vector<std::string>& args);
 int import_rvt(const std::vector<std::string>& args);
+int import_solidcraft(const std::vector<std::string>& args);
+int import_dwg(const std::vector<std::string>& args);
 
 } // namespace mitcad::cli

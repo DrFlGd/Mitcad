@@ -165,7 +165,7 @@ fn thread_tables_list_iso_metric_first() {
     let doc = Document::new(MockKernel::default());
     let table = query(&doc, json!({"query": "thread_sizes"}));
     let standards = table["standards"].as_array().unwrap();
-    assert_eq!(standards.len(), 6);
+    assert_eq!(standards.len(), 7);
     assert_eq!(standards[0]["standard"], "iso_metric");
     assert_eq!(standards[0]["title"], "ISO Metric profile");
     assert_eq!(standards[0]["default"], true);
@@ -178,6 +178,9 @@ fn thread_tables_list_iso_metric_first() {
     assert_eq!(standards[4]["standard"], "tyre_valve");
     // The forming screw threads of designs last.
     assert_eq!(standards[5]["standard"], "forming_screw");
+    // The trapezoidal threads of lead screws (mitcad#449) after them.
+    assert_eq!(standards[6]["standard"], "trapezoidal");
+    assert_eq!(standards[6]["default_class_external"], "7e");
     assert_eq!(standards[0]["default_class_internal"], "6H");
     assert_eq!(standards[0]["default_class_external"], "6g");
     let m10 = standards[0]["sizes"]

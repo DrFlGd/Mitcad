@@ -15,7 +15,7 @@ pub(crate) fn tools() -> Vec<Value> {
         ),
         tool(
             "document_open",
-            "Open a Mitcad project within the configured workspace and return its document handle. The source file is not changed.",
+            "Open a Mitcad project within the configured workspace and return its document handle. The source file is not changed. A SolidCraft design (.solidcraft) is imported with its history into a new, unsaved document (save it with document_save and a path).",
             json!({"path": path}),
             &["path"],
             false,

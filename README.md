@@ -9,10 +9,11 @@ Linux and macOS (Apple Silicon, macOS 14.4 or newer), licensed under the
   Change a dimension or edit a feature and the model is rebuilt.
 - **Visual workflow:** a tabbed toolbar, command panels with live preview
   and drag handles, a model browser, a timeline and command search.
-- **Support for multiple CAD formats:** FreeCAD and `.f3d` designs open
-  with their history, `.ipt` parts with their bodies, IFC building models
-  with their storeys and elements; STEP, IGES, BRep, STL, OBJ, DXF and 3MF
-  import and export; USDZ export
+- **Support for multiple CAD formats:** FreeCAD, `.f3d` and SolidCraft
+  designs and `.ipt` parts open with their history, IFC and `.rvt` building models with their
+  storeys and elements, DWG drawings with their 3D solids and blocks;
+  STEP, IGES, BRep, STL, OBJ, DXF and 3MF import and
+  export; USDZ and web page export
   ([the table below](#support-for-multiple-cad-formats)).
 - **3D printing:** bodies straight to a slicer (Bambu Studio, OrcaSlicer,
   PrusaSlicer, UltiMaker Cura).
@@ -32,8 +33,11 @@ well. It is free to use, change and share under the MIT licence.
 | Mitcad design (`.mitcad`) | Open, Insert Component | Save | Yes |
 | FreeCAD (`.FCStd`) | Open, Import | – | Features, sketches and parameters |
 | `.f3d`, `.f3z` | Open, Import | – | Features, sketches and parameters |
-| `.ipt` (parts) | Open, Import | – | Bodies only, for now |
+| `.ipt` (parts) | Open, Import | – | Features, sketches and parameters; a feature that cannot be replayed comes in as the bodies the file stored after it |
 | IFC (`.ifc`, `.ifczip`) | Open, Import: storeys as components, elements as features, bodies and meshes | – | Swept solids and their cuts as features |
+| `.rvt` (projects) | Open: levels as components, elements as bodies and meshes | – | Walls, floors, roofs, ceilings, columns, beams and stair runs as features |
+| SolidCraft (`.solidcraft`) | Open, Import (every file format version) | – | Features, sketches, parameters, components and joints; sheet metal |
+| DWG (`.dwg`, R13 to R2018) | Open, Import: 3D solids as bodies, 3D faces and meshes as mesh bodies, blocks as components with their occurrences | – | – (a drawing keeps none) |
 | STEP (`.step`, `.stp`) | Bodies | Bodies (AP214 or AP242) | – |
 | IGES (`.iges`, `.igs`) | Bodies | Bodies | – |
 | BRep (`.brep`, `.brp`) | Bodies | Bodies | – |
@@ -42,6 +46,7 @@ well. It is free to use, change and share under the MIT licence.
 | DXF | Into a sketch | From a sketch | – |
 | 3MF | – | For slicers | – |
 | USDZ | – | For AR and 3D viewers: meshes with appearances, components kept | – |
+| Web page (`.html`) | – | The design in one HTML file with its viewer, for any browser | – |
 
 If a file does not import as it should, please
 [open an issue](https://github.com/mitcad/Mitcad/issues).
@@ -185,6 +190,7 @@ corpus setup: [docs/development.md](docs/development.md#the-check-script).
 | `core/solver` | 2D sketch constraint solver |
 | `core/f3d`, `core/freecad`, `core/import`, `core/zip` | `.f3d` and FreeCAD readers and the history import |
 | `core/ipt` | `.ipt` reader: compound file, property sets, segments, the bodies |
+| `core/solidcraft` | `.solidcraft` reader: the JSON design or its container, upgraded to one format |
 | `core/dxf`, `core/3mf`, `core/usdz` | DXF, 3MF and USDZ |
 | `core/vcs`, `core/update` | Version history in git; automatic updates |
 | `core/ffi`, `core/cpp` | CXX bridges between Rust and C++ |

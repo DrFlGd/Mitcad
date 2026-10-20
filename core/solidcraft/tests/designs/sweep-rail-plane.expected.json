@@ -1,0 +1,11 @@
+{
+  "comment": "Worked out by hand (mitcad#469): a circle of radius 5 about the z axis swept 40 up along it, guided by an arc of radius 42.5 about (-32.5, 0, 20) from (5, 0, 0) to (5, 0, 40) that bulges out to x = 10 at z = 20. The rail's point at height z is where it crosses the plane z (the plane square to the path), at the distance y(z) = sqrt(42.5^2 - (z - 20)^2) - 32.5 from the path, and the circle scales with it to the radius y(z): V = pi * integral of y^2 over z = pi (2862.5 * 40 - 16000 / 3 - 65 (750 + 1806.25 asin(8/17))) = 9087.4159. (The rail's point at the same fraction of its length would give 20 pi (3918.75 - 1850 / asin(8/17)) = 8979.3605.)",
+  "body_count": 1,
+  "total": {"volume_mm3": 9087.4159325347},
+  "bbox": {"min": [-10, -10, 0], "max": [10, 10, 40]},
+  "bodies": [
+    {"name": "Bulge", "volume_mm3": 9087.4159325347, "bbox": {"min": [-10, -10, 0], "max": [10, 10, 40]}}
+  ],
+  "timeline": [{"name": "Section"}, {"name": "Path"}, {"name": "Rail"}, {"name": "Sweep1"}],
+  "parametric": 4
+}

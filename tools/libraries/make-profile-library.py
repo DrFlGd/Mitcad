@@ -21,8 +21,9 @@ made one of three ways:
   z = 0, end B at z = L);
 - solid: the source's solids as a base feature, moved to Mitcad's
   coordinates with `place`;
-- model: no source; the design is built from `dimensions` (a plate, a bar,
-  an angle) for sheets and plates sold without a CAD file.
+- model: no source; the design is built from `dimensions` (a plate, an
+  angle, a rod with a cosmetic thread) for sheets, plates, shafts and
+  screws sold without a CAD file.
 
 Mount frames are joint origins named mount:<name>: found from a profile's
 section ({"auto": "profile"}) or listed. The supplier's files are read
@@ -934,28 +935,34 @@ def make_solid(ctx, mcp, entry, build):
 
 
 def make_model(ctx, mcp, entry, build):
-    """A sheet, plate or angle from its `dimensions`: `shape` (`plate`,
-    `angle` or `none`), its sizes (a parameter of `parameters`, or a
-    value, which becomes a user parameter) and `parameters` (user
-    parameters and their defaults); then any `commands`. Both shapes are
-    centred on x = 0 across their `width`: a plate runs `thickness` along
-    +Y and `length` along +Z; an angle has its first leg along +Z (in the
-    XZ plane, `thickness` along +Y) and its second along +Y (in the XY
-    plane, `thickness` along +Z)."""
+    """A sheet, plate, angle or rod from its `dimensions`: `shape`
+    (`plate`, `angle`, `rod` or `none`), its sizes (a parameter of
+    `parameters`, or a value, which becomes a user parameter) and
+    `parameters` (user parameters and their defaults); then any
+    `commands`. A plate and an angle are centred on x = 0 across their
+    `width`: a plate runs `thickness` along +Y and `length` along +Z; an
+    angle has its first leg along +Z (in the XZ plane, `thickness` along
+    +Y) and its second along +Y (in the XY plane, `thickness` along +Z). A
+    rod is a cylinder of `diameter` on the Z axis from z = 0 to `length`;
+    with `thread` (a thread size: `standard`, `designation`, `class`) a
+    cosmetic thread over its whole side (mitcad#449)."""
     dimensions = entry.get("dimensions") or {}
     if not isinstance(dimensions, dict):
         fail(f"{entry['id']}: dimensions is no object")
     shape = dimensions.get("shape", "none")
     needed = {"plate": ("width", "thickness", "length"), "angle": ("legs", "width", "thickness"),
-              "none": ()}.get(shape)
+              "rod": ("diameter", "length"), "none": ()}.get(shape)
     if needed is None:
-        fail(f"{entry['id']}: dimensions.shape '{shape}' is none of plate, angle, none")
+        fail(f"{entry['id']}: dimensions.shape '{shape}' is none of plate, angle, rod, none")
     missing = [n for n in needed if n not in dimensions]
     if missing:
         fail(f"{entry['id']}: the {shape} needs dimensions.{', dimensions.'.join(missing)}")
     parameters = dimensions.get("parameters") or {}
     if not isinstance(parameters, dict):
         fail(f"{entry['id']}: dimensions.parameters is no object")
+    thread = dimensions.get("thread")
+    if thread is not None and (shape != "rod" or not isinstance(thread, dict) or not thread.get("designation")):
+        fail(f"{entry['id']}: dimensions.thread is a rod's thread size with a designation")
     document = mcp.create()
     try:
         names = set()
@@ -996,7 +1003,26 @@ def make_model(ctx, mcp, entry, build):
             t = size(dimensions["thickness"], "T")
             box("Leg A", w, t, a, "new_body")
             box("Leg B", w, b, t, "join")
-        if shape != "none":
+        elif shape == "rod":
+            d = size(dimensions["diameter"], "D")
+            length = size(dimensions["length"], "L")
+            rod = mcp.add(document, {"cmd": "add_feature", "name": "Rod", "def": {
+                "type": "cylinder", "plane": "xy", "center": [0, 0], "diameter": d, "height": length,
+                "operation": "new_body"}})
+            if thread is not None:
+                # Cosmetic, over the whole side: the thread follows the
+                # length, and the threads query lists it.
+                body = mcp.query(document, {"query": "bodies"})[0]["uid"]
+                size_of = {key: thread[key] for key in ("standard", "designation", "class", "right_handed")
+                           if key in thread}
+                mcp.add(document, {"cmd": "add_feature", "name": "Thread", "def": {
+                    "type": "thread", "faces": [{"body": body, "face": f"{rod}:side0"}], "thread": size_of,
+                    "modeled": False}})
+                threads = mcp.query(document, {"query": "threads"}) or []
+                if len(threads) != 1:
+                    raise PartError(f"the rod's thread {thread['designation']} is not listed "
+                                    f"({len(threads)} threads)")
+        if shape in ("plate", "angle"):
             bodies = mcp.query(document, {"query": "bodies"})
             mcp.add(document, {"cmd": "add_feature", "name": "Centred", "def": {
                 "type": "move", "bodies": [body["uid"] for body in bodies],
@@ -1225,7 +1251,7 @@ def read_groups(folder, only):
     files = sorted(glob.glob(os.path.join(folder, "*.json")))
     if not files:
         fail(f"no group files (*.json) in {folder}")
-    entries, categories, seen = [], {}, set()
+    entries, categories, seen, left_out = [], {}, set(), []
     for path in files:
         name = os.path.basename(path)
         try:
@@ -1239,6 +1265,14 @@ def read_groups(folder, only):
                     fail(f"{name}: a category without an id")
                 categories[category["id"]] = category.get("name") or category["id"]
             parts = data.get("parts", data.get("components"))
+            # The supplier's files of the group that are no part, and why
+            # (a duplicate, an assembly, a wrong file in a product's folder).
+            notes = data.get("left_out") or []
+            if not isinstance(notes, list) or not all(
+                    isinstance(n, dict) and isinstance(n.get("source"), str) and isinstance(n.get("reason"), str)
+                    for n in notes):
+                fail(f"{name}: left_out is a list of {{\"source\", \"reason\"}}")
+            left_out += [dict(n, _group=name) for n in notes]
         else:
             parts = data
         if not isinstance(parts, list):
@@ -1257,11 +1291,14 @@ def read_groups(folder, only):
                 fail(f"{name}: {entry['id']}: a {entry['make']} part names its source")
             if "build" in entry and not isinstance(entry["build"], dict):
                 fail(f"{name}: {entry['id']}: build is no object")
+            for row in entry.get("rows") or []:
+                if isinstance(row, dict) and "source" in row and not isinstance(row["source"], str):
+                    fail(f"{name}: {entry['id']}: the source of row {row.get('name')} is no path")
             seen.add(entry["id"])
             entry["_group"] = name
             if not only or entry["id"] in only:
                 entries.append(entry)
-    return entries, categories
+    return entries, categories, left_out
 
 
 def category_name(category, categories):
@@ -1301,7 +1338,7 @@ def ascii_text(text):
     return "".join(c if c.isascii() else ASCII_LETTERS.get(c, "?") for c in text)
 
 
-def sources_text(components, entries):
+def sources_text(components, entries, left_out=()):
     by_id = {e["id"]: e for e in entries}
     lines = ["# Sources of the parts", "",
              "The parts are Mitcad's own parametric designs. A profile's design is the",
@@ -1313,6 +1350,8 @@ def sources_text(components, entries):
     for component in components:
         entry = by_id[component["id"]]
         where = entry.get("source") or "the supplier's dimensions"
+        if entry["make"] == "model" and entry.get("source"):
+            where = f"modelled from the dimensions of {entry['source']}"
         url = entry.get("supplier_url") or ""
         supplier = " ".join(filter(None, [entry.get("supplier", ""), entry.get("part_number", "")]))
         line = f"- {component['id']} ({component['name']}): {where}"
@@ -1321,6 +1360,19 @@ def sources_text(components, entries):
         if url:
             line += f"; {url}"
         lines.append(line)
+        # The supplier's files of the rows (another thread, colour or stock
+        # length of the same part): the design is made from the part's.
+        for row in entry.get("rows") or []:
+            if isinstance(row, dict) and row.get("source"):
+                row_line = f"  - {row['name']}: {row['source']}"
+                if row.get("part_number"):
+                    row_line += f"; {row['part_number']}"
+                if row.get("supplier_url"):
+                    row_line += f"; {row['supplier_url']}"
+                lines.append(row_line)
+    if left_out:
+        lines += ["", "The supplier's files not made into parts, and why:", ""]
+        lines += [f"- {n['source']}: {n['reason']}" for n in left_out]
     lines += ["", "The generator: tools/libraries/make-profile-library.py in Mitcad's repository.", ""]
     return ascii_text("\n".join(lines))
 
@@ -1417,7 +1469,7 @@ def main():
     args = parser.parse_args()
 
     only = {s.strip() for s in args.only.split(",") if s.strip()}
-    entries, categories = read_groups(args.groups, only)
+    entries, categories, left_out_files = read_groups(args.groups, only)
     if not entries:
         fail("no parts to make")
     ctx = Context()
@@ -1425,6 +1477,16 @@ def main():
     ctx.source = os.path.abspath(args.source)
     ctx.out = os.path.abspath(args.out)
     ctx.render = not args.no_render
+    # The files the group files name and do not make: a note on one that
+    # is not in --source (moved or renamed by the supplier).
+    for entry in entries:
+        for row in entry.get("rows") or []:
+            source = row.get("source") if isinstance(row, dict) else None
+            if source and not os.path.isfile(os.path.join(ctx.source, source)):
+                print(f"warning {entry['id']}: the source of row {row.get('name')}, {source}, is not in --source")
+    for note in left_out_files:
+        if not os.path.isfile(os.path.join(ctx.source, note["source"])):
+            print(f"warning {note['_group']}: the left-out file {note['source']} is not in --source")
     os.makedirs(ctx.out, exist_ok=True)
     if not os.path.isfile(os.path.join(ctx.out, ".mitcad", "project.json")):
         run([ctx.cli, "project", "init", ctx.out, "--no-history"])
@@ -1476,7 +1538,7 @@ def main():
     }
     write(os.path.join(ctx.out, "mitcad-library.json"), json.dumps(manifest, indent=2) + "\n")
     write(os.path.join(ctx.out, "LICENSE"), MIT_TEXT)
-    write(os.path.join(ctx.out, "SOURCES.md"), sources_text(made, entries))
+    write(os.path.join(ctx.out, "SOURCES.md"), sources_text(made, entries, [] if only else left_out_files))
     write(os.path.join(ctx.out, "README.md"),
           f"# {LIBRARY_NAME}\n\n"
           "Slot profiles, connectors, nuts, caps, panels and linear parts for Mitcad's BUILD tab.\n"

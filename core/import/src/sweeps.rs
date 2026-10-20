@@ -116,7 +116,7 @@ fn given(v: Option<&Value>) -> bool {
 impl<K: crate::ImportKernel> Importer<'_, K> {
     /// A `Path` of the dump (its `PathEntity` items, or entity references) as a
     /// Mitcad path: curves of one sketch or edges of one body.
-    fn path_of(&self, path: Option<&Value>, what: &str) -> Result<Value, String> {
+    pub(crate) fn path_of(&self, path: Option<&Value>, what: &str) -> Result<Value, String> {
         let items: Vec<&Value> = match path {
             Some(Value::Array(items)) => items.iter().collect(),
             Some(v @ Value::Object(_)) => vec![v],
@@ -614,6 +614,9 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             base["guide_surfaces"] = faces;
         } else if rail {
             base["guide_rail"] = self.path_of(d.guide_rail.as_ref(), "guide rail")?;
+            // The rail's point where it crosses the plane square to the
+            // path (mitcad#469).
+            base["rail_point"] = json!("plane");
             match d.profile_scaling.as_deref() {
                 Some(s) if s.contains("Stretch") => base["profile_scaling"] = json!("stretch"),
                 Some(s) if s.contains("NoScaling") => base["profile_scaling"] = json!("none"),

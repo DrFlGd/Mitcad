@@ -1,0 +1,95 @@
+{
+  "format": "solidcraft/24",
+  "name": "Shell, loft and sweep",
+  "units": "mm",
+  "params": [{"name": "rise", "expr": "30 mm", "unit": "mm"}],
+  "features": [
+    {
+      "id": 1, "name": "Box1", "type": "box", "body_names": ["Cup"],
+      "corner": [0, 0, 0], "length": "40", "width": "40", "height": "20",
+      "operation": "new_body"
+    },
+    {
+      "id": 2, "name": "Shell1", "type": "shell", "faces": [[20.0, 20.0, 20.0]], "thickness": "2 mm"
+    },
+    {
+      "id": 3, "name": "Move1", "type": "move", "bodies": ["Cup"], "translate": ["100", "0", "0"]
+    },
+    {
+      "id": 4, "name": "Bottom", "type": "sketch",
+      "plane": {"type": "origin", "name": "XY"},
+      "sketch": {
+        "points": [
+          {"id": "origin", "pos": [0.0, 0.0], "fixed": true},
+          {"id": "p1", "pos": [-10.0, 90.0], "fixed": true},
+          {"id": "p2", "pos": [10.0, 90.0], "fixed": true},
+          {"id": "p3", "pos": [10.0, 110.0], "fixed": true},
+          {"id": "p4", "pos": [-10.0, 110.0], "fixed": true}
+        ],
+        "curves": [
+          {"id": "l1", "type": "line", "a": 1, "b": 2},
+          {"id": "l2", "type": "line", "a": 2, "b": 3},
+          {"id": "l3", "type": "line", "a": 3, "b": 4},
+          {"id": "l4", "type": "line", "a": 4, "b": 1}
+        ],
+        "constraints": []
+      }
+    },
+    {
+      "id": 5, "name": "Top", "type": "sketch",
+      "plane": {"type": "offset", "base": {"type": "origin", "name": "XY"}, "distance": "rise"},
+      "sketch": {
+        "points": [
+          {"id": "origin", "pos": [0.0, 0.0], "fixed": true},
+          {"id": "p1", "pos": [-5.0, 95.0], "fixed": true},
+          {"id": "p2", "pos": [5.0, 95.0], "fixed": true},
+          {"id": "p3", "pos": [5.0, 105.0], "fixed": true},
+          {"id": "p4", "pos": [-5.0, 105.0], "fixed": true}
+        ],
+        "curves": [
+          {"id": "l1", "type": "line", "a": 1, "b": 2},
+          {"id": "l2", "type": "line", "a": 2, "b": 3},
+          {"id": "l3", "type": "line", "a": 3, "b": 4},
+          {"id": "l4", "type": "line", "a": 4, "b": 1}
+        ],
+        "constraints": []
+      }
+    },
+    {
+      "id": 6, "name": "Loft1", "type": "loft", "body_names": ["Frustum"],
+      "sections": [{"sketch": 4, "profiles": {"type": "all"}}, {"sketch": 5, "profiles": {"type": "all"}}],
+      "operation": "new_body"
+    },
+    {
+      "id": 7, "name": "Section", "type": "sketch",
+      "plane": {"type": "origin", "name": "XZ"},
+      "sketch": {
+        "points": [
+          {"id": "origin", "pos": [0.0, 0.0], "fixed": true},
+          {"id": "c1.center", "pos": [60.0, 0.0], "fixed": true}
+        ],
+        "curves": [{"id": "c1", "type": "circle", "c": 1, "r": 2.0}],
+        "constraints": []
+      }
+    },
+    {
+      "id": 8, "name": "Path", "type": "sketch",
+      "plane": {"type": "origin", "name": "XY"},
+      "sketch": {
+        "points": [
+          {"id": "origin", "pos": [0.0, 0.0], "fixed": true},
+          {"id": "p1", "pos": [60.0, 0.0], "fixed": true},
+          {"id": "p2", "pos": [60.0, -50.0], "fixed": true}
+        ],
+        "curves": [{"id": "l1", "type": "line", "a": 1, "b": 2}],
+        "constraints": []
+      }
+    },
+    {
+      "id": 9, "name": "Sweep1", "type": "sweep", "body_names": ["Rod"],
+      "sketch": 7, "profiles": {"type": "all"}, "path_sketch": 8, "path": ["l1"],
+      "operation": "new_body"
+    }
+  ],
+  "next_id": 10
+}

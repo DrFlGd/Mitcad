@@ -1,0 +1,7 @@
+[
+  {"comment":"SPDX-License-Identifier: MIT. sheet_convert.json saved and opened again (mitcad#461): the plate, the L with radius 1 and the U channel recompute."},
+  {"expect":{"feature":"F3","status":"ok","body":"F2.b0","volume":1600}},
+  {"expect":{"feature":"F6","status":"ok","body":"F5.b0","volume":6714.1592653589793}},
+  {"expect":{"feature":"F8","status":"ok","body":"F7.b0","volume":4353.9816339744831}},
+  {"expect":{"query":{"query":"flat_pattern","body":"F7.b0"},"result":{"status":"valid","area":2139.2918860576}}}
+]

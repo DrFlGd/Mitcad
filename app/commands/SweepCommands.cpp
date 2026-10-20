@@ -104,6 +104,12 @@ CommandDef sweepCommand(const CommandContext& context) {
   };
   def.inputs += pathInputs(QStringLiteral("path"), QObject::tr("Path"));
   def.inputs += pathInputs(QStringLiteral("rail"), QObject::tr("Guide Rail"), rail);
+  // A second rail (mitcad#464): the profile moves with the first rail and
+  // turns and sizes with the line across to the second.
+  def.inputs += selectionInput(QStringLiteral("rail2"), QObject::tr("Second Rail"), kPathKinds, 0, 0)
+                    .withTooltip(QObject::tr("Optional: sketch curves or edges of a second rail; the "
+                                             "profile turns and sizes with the line between the rails"))
+                    .withVisible(rail);
   // Guide surfaces (mitcad#157): faces the path lies on.
   def.inputs += selectionInput(QStringLiteral("surfaces"), QObject::tr("Guide Surface"), SelectKind::Face, 1, 0)
                     .withoutMeshes()
@@ -128,11 +134,25 @@ CommandDef sweepCommand(const CommandContext& context) {
           .withVisible(single),
       valueInput(QStringLiteral("twist"), QObject::tr("Twist Angle"), ValueKind::Angle, QStringLiteral("0 deg"))
           .withVisible(single),
+      // mitcad#464.
+      valueInput(QStringLiteral("end_scale"), QObject::tr("End Scale"), ValueKind::Unitless, QStringLiteral("1"))
+          .withTooltip(QObject::tr("The profile's size at the end of the sweep, reached evenly along "
+                                   "the path (0.01 to 100)"))
+          .withVisible(single),
       choiceInput(QStringLiteral("scaling"), QObject::tr("Profile Scaling"),
                   {{QStringLiteral("scale"), QStringLiteral("Scale")},
                    {QStringLiteral("stretch"), QStringLiteral("Stretch")},
                    {QStringLiteral("none"), QStringLiteral("None")}},
                   QStringLiteral("scale"))
+          .withVisible(rail),
+      // mitcad#469: new sweeps take the plane rule; a loaded definition
+      // without `rail_point` keeps the fraction rule.
+      choiceInput(QStringLiteral("rail_point"), QObject::tr("Rail Point"),
+                  {{QStringLiteral("plane"), QStringLiteral("Square to Path")},
+                   {QStringLiteral("fraction"), QStringLiteral("Fraction of Length")}},
+                  QStringLiteral("plane"))
+          .withTooltip(QObject::tr("Where the rail meets the plane square to the path, or at the same "
+                                   "fraction of the rail's length as of the path's"))
           .withVisible(rail),
       flipInput(QStringLiteral("flip"), QObject::tr("Flip")).withTooltip(QObject::tr("Run the path the other way")),
   };
@@ -162,6 +182,17 @@ CommandDef sweepCommand(const CommandContext& context) {
       }
       result.def.insert(QStringLiteral("guide_rail"), rail);
       result.def.insert(QStringLiteral("profile_scaling"), state.choice(QStringLiteral("scaling")));
+      if (state.choice(QStringLiteral("rail_point")) == QStringLiteral("plane")) {
+        result.def.insert(QStringLiteral("rail_point"), QStringLiteral("plane"));
+      }
+      if (!state.items(QStringLiteral("rail2")).isEmpty()) {
+        const QJsonValue rail2 =
+            pathOf(state.items(QStringLiteral("rail2")), chain, result, QStringLiteral("rail2"));
+        if (!result.error.isEmpty()) {
+          return result;
+        }
+        result.def.insert(QStringLiteral("guide_rail2"), rail2);
+      }
     } else if (state.choice(QStringLiteral("type")) == QStringLiteral("surface")) {
       QJsonArray faces;
       for (const SelectionItem& item : state.items(QStringLiteral("surfaces"))) {
@@ -175,6 +206,10 @@ CommandDef sweepCommand(const CommandContext& context) {
       }
       if (nonZero(state, QStringLiteral("twist"))) {
         result.def.insert(QStringLiteral("twist_angle"), state.expression(QStringLiteral("twist")));
+      }
+      const double scale = state.value(QStringLiteral("end_scale"));
+      if (std::isfinite(scale) && scale != 1.0) {
+        result.def.insert(QStringLiteral("end_scale"), countValue(state, QStringLiteral("end_scale")));
       }
     }
     if (state.checked(QStringLiteral("flip"))) {
@@ -194,6 +229,16 @@ CommandDef sweepCommand(const CommandContext& context) {
       state.setChecked(QStringLiteral("chain"), chain || state.checked(QStringLiteral("chain")));
       state.setChoice(QStringLiteral("scaling"),
                       feature.value(QStringLiteral("profile_scaling")).toString(QStringLiteral("scale")));
+      state.setChoice(QStringLiteral("rail_point"),
+                      feature.value(QStringLiteral("rail_point")).toString(QStringLiteral("fraction")));
+      if (feature.contains(QStringLiteral("guide_rail2"))) {
+        const bool chained = state.checked(QStringLiteral("chain"));
+        loadPath(feature.value(QStringLiteral("guide_rail2")), state, QStringLiteral("rail2"), context);
+        state.setChecked(QStringLiteral("chain"), chained || state.checked(QStringLiteral("chain")));
+      }
+    }
+    if (feature.contains(QStringLiteral("end_scale"))) {
+      loadCount(state, QStringLiteral("end_scale"), feature.value(QStringLiteral("end_scale")), feature, context);
     }
     if (feature.contains(QStringLiteral("guide_surfaces"))) {
       state.setChoice(QStringLiteral("type"), QStringLiteral("surface"));
@@ -221,6 +266,11 @@ CommandDef sweepCommand(const CommandContext& context) {
     if (feature.contains(QStringLiteral("guide_rail"))) {
       const bool a = feature.value(QStringLiteral("path")).toObject().value(QStringLiteral("chain")).toBool();
       const bool b = feature.value(QStringLiteral("guide_rail")).toObject().value(QStringLiteral("chain")).toBool();
+      const QJsonValue second = feature.value(QStringLiteral("guide_rail2"));
+      if (second.isObject() &&
+          (!pathEditable(second) || second.toObject().value(QStringLiteral("chain")).toBool() != a)) {
+        return false;
+      }
       return pathEditable(feature.value(QStringLiteral("guide_rail"))) && a == b &&
              !feature.contains(QStringLiteral("twist_angle")) && !feature.contains(QStringLiteral("taper_angle"));
     }

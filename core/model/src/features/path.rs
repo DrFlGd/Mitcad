@@ -123,6 +123,17 @@ impl SketchCurves {
         &self,
         ctx: &mut EvalContext<'_, K>,
     ) -> Result<(SketchFrame, Vec<PathCurve>), String> {
+        let frame = ctx.sketch(self.sketch)?.frame;
+        Ok((frame, self.curves_on(ctx, &frame)?))
+    }
+
+    /// [`Self::curves`] with the sketch placed by `frame` (its own frame
+    /// moved, as a pattern's copy moves it).
+    pub(crate) fn curves_on<K: Kernel>(
+        &self,
+        ctx: &mut EvalContext<'_, K>,
+        frame: &SketchFrame,
+    ) -> Result<Vec<PathCurve>, String> {
         let output = ctx.sketch(self.sketch)?;
         let name = ctx.feature_name(self.sketch);
         let solved = &output.solved;
@@ -146,10 +157,10 @@ impl SketchCurves {
             .iter()
             .map(|id| PathCurve {
                 name: id.curve_name(),
-                curve: curve3(&output.frame, &solved.curves[id]),
+                curve: curve3(frame, &solved.curves[id]),
             })
             .collect();
-        Ok((output.frame, pieces))
+        Ok(pieces)
     }
 }
 
@@ -434,7 +445,7 @@ fn distance(a: [f64; 3], b: [f64; 3]) -> f64 {
 }
 
 /// A point of a conic at parameter `t`.
-fn conic_point(
+pub(crate) fn conic_point(
     center: [f64; 3],
     normal: [f64; 3],
     x_axis: [f64; 3],
@@ -467,7 +478,7 @@ pub(crate) fn helix_point(
 
 /// A point of a B-spline with its full knot vector (de Boor, rational in
 /// homogeneous coordinates).
-fn bspline_point(
+pub(crate) fn bspline_point(
     degree: usize,
     poles: &[[f64; 3]],
     weights: &[f64],
@@ -769,6 +780,183 @@ pub(crate) fn chain(pieces: Vec<PathCurve>) -> Result<Vec<PathCurve>, String> {
             }
         })
         .collect())
+}
+
+/// The curves of thin walls (mitcad#463) as chains: runs of curves joined
+/// end to end through points where exactly two of them meet, each in order
+/// and running along it ([`chain`]), in the order of their first listed
+/// curves (`pieces` in the order listed). A closed chain runs
+/// counter-clockwise about the sketch normal; an open one so that it bends
+/// to the left (with its chord it encloses an area counter-clockwise), a
+/// straight one the way the first listed of its curves was drawn.
+pub(crate) fn wall_chains(
+    pieces: Vec<PathCurve>,
+    frame: &SketchFrame,
+) -> Result<Vec<Vec<PathCurve>>, String> {
+    if pieces.is_empty() {
+        return Err("no curves selected".to_owned());
+    }
+    let tolerance = tolerance(&pieces);
+    let mut nodes: Vec<[f64; 3]> = Vec::new();
+    let mut node_of = |p: [f64; 3]| -> usize {
+        if let Some(i) = nodes.iter().position(|q| distance(*q, p) <= tolerance) {
+            return i;
+        }
+        nodes.push(p);
+        nodes.len() - 1
+    };
+    // The end nodes of each open curve; None for a closed one.
+    let links: Vec<Option<(usize, usize)>> = pieces
+        .iter()
+        .map(|p| curve_ends(&p.curve).map(|(a, b)| (node_of(a), node_of(b))))
+        .map(|l| l.filter(|(a, b)| a != b))
+        .collect();
+    let mut degree = vec![0usize; nodes.len()];
+    for (a, b) in links.iter().flatten() {
+        degree[*a] += 1;
+        degree[*b] += 1;
+    }
+    let mut used: Vec<bool> = links.iter().map(Option::is_none).collect();
+    let mut runs: Vec<Vec<usize>> = (0..pieces.len())
+        .filter(|i| links[*i].is_none())
+        .map(|i| vec![i])
+        .collect();
+    // From piece `i` away from `node`, on through points where two meet.
+    let walk = |mut i: usize, mut node: usize, used: &mut Vec<bool>| -> Vec<usize> {
+        let mut run = Vec::new();
+        loop {
+            used[i] = true;
+            run.push(i);
+            let (a, b) = links[i].expect("open");
+            node = if a == node { b } else { a };
+            if degree[node] != 2 {
+                return run;
+            }
+            let next = (0..links.len())
+                .find(|j| !used[*j] && links[*j].is_some_and(|(a, b)| a == node || b == node));
+            match next {
+                Some(j) => i = j,
+                None => return run,
+            }
+        }
+    };
+    for (node, d) in degree.iter().enumerate() {
+        if *d == 2 {
+            continue;
+        }
+        while let Some(i) = (0..links.len())
+            .find(|i| !used[*i] && links[*i].is_some_and(|(a, b)| a == node || b == node))
+        {
+            runs.push(walk(i, node, &mut used));
+        }
+    }
+    // What is left are closed loops of several curves.
+    while let Some(i) = used.iter().position(|u| !u) {
+        let start = links[i].expect("open").0;
+        runs.push(walk(i, start, &mut used));
+    }
+    for run in &mut runs {
+        run.sort_unstable();
+    }
+    runs.sort_unstable_by_key(|run| run[0]);
+    runs.into_iter()
+        .map(|run| {
+            let first = pieces[run[0]].clone();
+            let path = chain(run.iter().map(|i| pieces[*i].clone()).collect())?;
+            Ok(counter_clockwise(path, &first, frame))
+        })
+        .collect()
+}
+
+/// The chain run counter-clockwise or bending to the left (see
+/// [`wall_chains`]); `first` is its first listed curve as drawn.
+fn counter_clockwise(
+    path: Vec<PathCurve>,
+    first: &PathCurve,
+    frame: &SketchFrame,
+) -> Vec<PathCurve> {
+    let normal = frame.normal();
+    let mut points: Vec<[f64; 3]> = Vec::new();
+    for piece in &path {
+        points.extend(samples(&piece.curve));
+    }
+    let length: f64 = points.windows(2).map(|w| distance(w[0], w[1])).sum();
+    // Twice the area the points and the chord back to the first enclose,
+    // positive counter-clockwise about the normal.
+    let mut area = 0.0;
+    for (k, p) in points.iter().enumerate() {
+        let q = points[(k + 1) % points.len()];
+        area += crate::profile::dot(crate::profile::cross(*p, q), normal);
+    }
+    let backwards = if area.abs() > 1e-9 * length * length {
+        area < 0.0
+    } else {
+        // Straight: as the first listed curve was drawn.
+        let drawn = curve_ends(&first.curve);
+        let run = path
+            .iter()
+            .find(|p| p.name == first.name)
+            .and_then(|p| curve_ends(&p.curve));
+        matches!((drawn, run), (Some((a, _)), Some((b, _))) if distance(a, b) > 1e-9 * length.max(1.0))
+    };
+    if backwards { reversed_path(path) } else { path }
+}
+
+/// Points along the curve from its start to its end.
+fn samples(curve: &Curve3) -> Vec<[f64; 3]> {
+    const N: usize = 32;
+    let along = |f: &dyn Fn(f64) -> [f64; 3], t0: f64, t1: f64| -> Vec<[f64; 3]> {
+        (0..=N)
+            .map(|k| f(t0 + (t1 - t0) * k as f64 / N as f64))
+            .collect()
+    };
+    match curve {
+        Curve3::Point(p) => vec![*p],
+        Curve3::Line { start, end } => vec![*start, *end],
+        Curve3::Conic {
+            center,
+            normal,
+            x_axis,
+            major,
+            minor,
+            start,
+            end,
+            ..
+        } => along(
+            &|t| conic_point(*center, *normal, *x_axis, (*major, *minor), t),
+            *start,
+            *end,
+        ),
+        Curve3::BSpline {
+            degree,
+            poles,
+            weights,
+            knots,
+        } => {
+            let p = *degree as usize;
+            if p == 0 || poles.len() <= p || knots.len() != poles.len() + p + 1 {
+                return poles.clone();
+            }
+            along(
+                &|t| bspline_point(p, poles, weights, knots, t),
+                knots[p],
+                knots[poles.len()],
+            )
+        }
+        Curve3::Helix {
+            center,
+            axis,
+            x_axis,
+            radius,
+            pitch,
+            start,
+            end,
+        } => along(
+            &|t| helix_point(*center, *axis, *x_axis, (*radius, *pitch), t),
+            *start,
+            *end,
+        ),
+    }
 }
 
 #[cfg(test)]

@@ -173,7 +173,9 @@ const char* const kUsage = R"(usage:
       (default 1e-6), and every imported solid valid; --deviation also
       measures the surface deviation. Exits with 1 when they differ.
       An .iam file is imported as with import-iam.
-  mitcad-cli import-iam <file.iam> [--save <out.mitcad>] [--report <report.json>] [--json]
+)"
+                          // MSVC takes at most 16 KiB in one literal (C2026).
+                          R"(  mitcad-cli import-iam <file.iam> [--save <out.mitcad>] [--report <report.json>] [--json]
                         [--search <folder>]... [--history [--no-verify] [--no-fallback]
                         [--no-compare] [--time-limit S]]
       Imports an .iam assembly: its occurrences as components and
@@ -226,6 +228,41 @@ const char* const kUsage = R"(usage:
       JSON, --report-only reads and reports without importing, --mesh-only
       builds no features, --elements imports only the elements listed (by
       id) and leaves the others out.
+  mitcad-cli import-solidcraft <file.solidcraft> [--save <out.mitcad>] [--report <report.json>]
+                               [--expected <values.json>] [--set <name>=<expression>]... [--json]
+      Imports a SolidCraft design (any file format version, plain JSON or
+      its container) with its history: parameters, sketches with their
+      constraints and dimensions, features, components, occurrences and
+      joints, editable; features without a Mitcad counterpart are named in
+      the report and hold their place as suppressed placeholders. Prints
+      the import report (per feature: parametric, partial, unmapped or
+      failed, with the reason; the sketches' constraint counts; the
+      bodies' volumes and boxes) and the document report; --report writes
+      the import report as JSON. --expected checks the bodies (count,
+      volume, box), the timeline, the parameters and the sketches against
+      the values given (SolidCraft's own evaluation of the design, or a
+      subset of it) and exits with 1 when they differ. --set changes a
+      parameter after the import, before the report measures the bodies.
+  mitcad-cli import-dwg <file.dwg> [--save <out.mitcad>] [--report <report.json>] [--json]
+                        [--expect name=value,...] [--check]
+  mitcad-cli import-dwg --write-test <out.dwg> [--version R13|R14|R2000|R2004|R2007|R2010|R2013|R2018]
+      Imports a .dwg drawing's 3D content (R13 to R2018): its 3D solids,
+      bodies, regions and surfaces with B-rep data as bodies, its 3D faces,
+      polyface, polygon and subdivision meshes as mesh bodies; each named
+      block with 3D content a component placed by an occurrence per insert
+      (array inserts per cell), nested blocks nested; inserts that scale
+      or mirror, and anonymous blocks, copied in place. The bodies of a
+      component on one layer are one base feature named after the layer;
+      entity colours are body colours. Prints the import report: the
+      entities taken and those left out by type with why, the components
+      with their occurrences, the bodies' box against the drawing's
+      extents, the solids' volume, and its checks: every body built and
+      valid, every 3D entity taken, within the extents, and the data
+      sheet values given with --expect (length_mm, chord_distance_mm,
+      tube_diameter_mm, tube_wall_mm, mass_kg, density_kg_m3, volume_mm3,
+      solids, components); --check
+      exits with 1 when a check fails. --write-test writes the reader's
+      test drawing in a version.
   mitcad-cli export <file.mitcad> <out> [--bodies <b>,...] [--schema ap214|ap242]
                     [--unit mm|cm|m|in|ft] [--refinement low|medium|high]
                     [--deviation MM --angle DEG] [--ascii]
@@ -419,6 +456,8 @@ using mitcad::cli::import_ipt;
 using mitcad::cli::import_iam;
 using mitcad::cli::import_ifc;
 using mitcad::cli::import_rvt;
+using mitcad::cli::import_solidcraft;
+using mitcad::cli::import_dwg;
 using mitcad::cli::is_number;
 using mitcad::cli::json_count;
 using mitcad::cli::json_string;
@@ -1307,6 +1346,12 @@ int run(int argc, char* argv[]) {
     }
     if (mode == "import-rvt") {
       return import_rvt(args);
+    }
+    if (mode == "import-solidcraft") {
+      return import_solidcraft(args);
+    }
+    if (mode == "import-dwg") {
+      return import_dwg(args);
     }
     if (mode == "export") {
       return export_bodies(args);

@@ -81,6 +81,12 @@ fn fillet_sets_and_unsupported_options() {
                    "mid": [{"position": 0.5, "radius": 3.0}]}}),
             "mid: [(0.5, 3.0)]",
         ),
+        // A spline radius (mitcad#464).
+        (
+            json!({"size": {"type": "spline", "knots": [0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+                   "radii": [1.0, 3.0, 2.0]}}),
+            "Spline { start_vertex: None, knots: [0.0, 0.0, 0.0, 1.0, 1.0, 1.0], radii: [1.0, 3.0, 2.0] }",
+        ),
     ] {
         let mut set = set;
         set["edges"] = json!([corner(b.extrude, 1, 1)]);
@@ -134,6 +140,24 @@ fn fillet_and_chamfer_checks() {
                 {"edges": [edge], "size": {"type": "variable", "start": 1.0, "end": 2.0,
                  "mid": [{"position": 1.5, "radius": 3.0}]}}]}),
             "between 0 and 1",
+        ),
+        (
+            json!({"type": "fillet", "body": b.body, "sets": [
+                {"edges": [edge], "size": {"type": "spline", "knots": [0.0, 0.0, 1.0],
+                 "radii": [1.0, 2.0]}}]}),
+            "degree 1 to 3",
+        ),
+        (
+            json!({"type": "fillet", "body": b.body, "sets": [
+                {"edges": [edge], "size": {"type": "spline", "knots": [0.0, 0.0, 1.0, 1.0],
+                 "radii": [1.0, 0.0]}}]}),
+            "fillet control radius must be greater than zero",
+        ),
+        (
+            json!({"type": "fillet", "body": b.body, "sets": [
+                {"edges": [edge], "size": {"type": "spline", "knots": [0.0, 0.0, 1.0, 1.0],
+                 "radii": [1.0, 2.0]}, "continuity": "curvature"}]}),
+            "not taken with curvature continuity",
         ),
         (
             json!({"type": "fillet", "body": b.body, "sets": [

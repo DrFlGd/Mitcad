@@ -621,4 +621,118 @@ int import_rvt(const std::vector<std::string>& args) {
   return 0;
 }
 
+// A SolidCraft design with its history (mitcad#450).
+int import_solidcraft(const std::vector<std::string>& args) {
+  Arguments a;
+  std::string problem;
+  if (!parse_arguments(args, {"--save", "--report", "--expected", "--set"}, {"--json"}, a, problem)) {
+    return usage(problem);
+  }
+  if (a.positional.size() != 1) {
+    return usage(a.positional.empty() ? "no .solidcraft file" : "more than one .solidcraft file");
+  }
+  const bool json = a.flag("--json");
+  std::string options = std::string(R"({"text": )") + (json ? "false" : "true");
+  if (const std::string* path = a.option("--report")) {
+    options += R"(, "report_path": )" + json_string(*path);
+  }
+  if (const std::string* path = a.option("--expected")) {
+    options += R"(, "expected": )" + json_string(*path);
+  }
+  std::string changes;
+  for (const auto& [key, value] : a.options) {
+    if (key != "--set") {
+      continue;
+    }
+    const std::size_t equals = value.find('=');
+    if (equals == std::string::npos || equals == 0) {
+      return usage("--set needs name=expression");
+    }
+    changes += (changes.empty() ? "" : ", ") + json_string(value.substr(0, equals)) + ": " +
+               json_string(value.substr(equals + 1));
+  }
+  if (!changes.empty()) {
+    options += R"(, "set_parameters": {)" + changes + "}";
+  }
+  options += "}";
+  rust::Box<mitcad::Document> document = mitcad::new_document();
+  const std::string report(document->import_solidcraft(a.positional[0], options));
+  if (const std::string* save = a.option("--save")) {
+    save_document(*document, *save);
+  }
+  if (json) {
+    std::cout << R"({"import": )" << report << R"(, "document": )"
+              << std::string(document->query(R"({"query": "report"})")) << "}\n";
+  } else {
+    std::cout << report << std::string(document->report(false));
+  }
+  const bool failed = report.find("check: FAILED") != std::string::npos ||
+                      report.find("\"passed\": false") != std::string::npos;
+  return failed ? 1 : 0;
+}
+
+// A .dwg drawing's 3D content: its solids and meshes as bodies, its blocks
+// as components (mitcad#453).
+int import_dwg(const std::vector<std::string>& args) {
+  Arguments a;
+  std::string problem;
+  if (!parse_arguments(args, {"--save", "--report", "--write-test", "--version", "--expect"}, {"--json", "--check"}, a,
+                       problem)) {
+    return usage(problem);
+  }
+  // The reader's test drawing, for the tests.
+  if (const std::string* path = a.option("--write-test")) {
+    const std::string* version = a.option("--version");
+    mitcad::dwg_write_test_file(*path, version != nullptr ? *version : std::string("R2018"));
+    return 0;
+  }
+  if (a.positional.size() != 1) {
+    return usage(a.positional.empty() ? "no .dwg file" : "more than one .dwg file");
+  }
+  // The report as JSON either way: --check reads whether its checks pass.
+  const bool json = a.flag("--json");
+  std::string options = R"({"text": false)";
+  if (const std::string* path = a.option("--report")) {
+    options += R"(, "report_path": )" + json_string(*path);
+  }
+  // Data sheet values: name=value pairs separated by commas.
+  if (const std::string* expect = a.option("--expect")) {
+    std::string fields;
+    std::string pair;
+    for (const char c : *expect + ",") {
+      if (c != ',') {
+        pair += c;
+        continue;
+      }
+      if (pair.empty()) {
+        continue;
+      }
+      const std::size_t eq = pair.find('=');
+      if (eq == std::string::npos || !is_number(pair.substr(eq + 1))) {
+        return usage("--expect takes name=number pairs separated by commas");
+      }
+      fields += (fields.empty() ? "" : ", ") + json_string(pair.substr(0, eq)) + ": " + pair.substr(eq + 1);
+      pair.clear();
+    }
+    options += R"(, "expect": {)" + fields + "}";
+  }
+  options += "}";
+  rust::Box<mitcad::Document> document = mitcad::new_document();
+  const std::string json_report(document->import_dwg(a.positional[0], options));
+  const bool pass = mitcad::dwg_report_passes(json_report);
+  // The text form of the same report, without importing again.
+  const std::string report = json ? json_report : std::string(mitcad::dwg_report_text(json_report));
+  if (const std::string* save = a.option("--save")) {
+    save_document(*document, *save);
+  }
+  if (json) {
+    std::cout << R"({"import": )" << report << R"(, "document": )"
+              << std::string(document->query(R"({"query": "report"})")) << "}\n";
+  } else {
+    std::cout << report << std::string(document->report(false));
+  }
+  // --check: the exit status says whether the report's checks pass.
+  return a.flag("--check") && !pass ? 1 : 0;
+}
+
 } // namespace mitcad::cli

@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# check-all sources: app/commands
+# check-all sources: app/commands app/framework/CommandSessionPicks.cpp
 # The MODIFY group (U4) through the real UI, with the volumes the model
 # reports (analytic, or tools/cli/tests/f2_*.json, f4_*.json):
+#   - Fillet's Edges picked twice in a row, the radius typed without a
+#     click into its field (mitcad#467).
 #   - Fillet with two sets of edges, each its own radius; Chamfer with two
 #     sets, one of two distances, edited.
 #   - Fillet options (P6): the radius handle dragged, an asymmetric set
@@ -70,6 +72,33 @@ EOF
   { cat "$WORK/cli.log"; ui_fail "mitcad-cli"; }
 
 ui_start_display
+
+echo "=== Fillet: two edges picked in a row (mitcad#467)"
+# The keyboard goes to the radius after the first edge (mitcad#338), the
+# Edges input takes the next click in the view, and the radius is typed
+# without a click into its field.
+ui_start_app --demo
+ui_step "fit (F6)"                         ui_key F6
+ui_step "fillet (F)"                       ui_key f
+ui_mark
+ui_step "pick the top front edge"          ui_click_pick "edge F2.b0/$TOP_FRONT"
+ui_expect_new "Fillet Edges: 1 edge" "the first edge"
+ui_step "pick the right bottom edge"       ui_click_pick "edge F2.b0/$RIGHT_BOTTOM"
+ui_expect_new "Fillet Edges: 2 edges" "the second edge picked right after the first"
+grep -q "Parameter labels for Fillet:" <(tail -n +$((UI_MARK + 1)) "$UI_LOG") &&
+  ui_fail "the view showed parameter labels before anything was typed"
+ui_step "type 3 (no click into the field)" xdotool type --delay 40 "3"
+ui_sync
+typed=$(ui_typed_since "$UI_MARK" "Panel field sets.0.radius: ")
+[ "$typed" = "3" ] || ui_fail "the radius field has '$typed', expected '3'"
+echo "ok   the radius typed without a click"
+ui_expect_new "Parameter labels for Fillet:" "typing showed the names to pick"
+ui_expect_new "Preview Fillet: ok" "previewed"
+ui_step "OK (Enter)"                       ui_key Return
+ui_expect_new "Added fillet on 2 edge(s)" "fillet on both edges added"
+ui_expect_volume "Body Body1 (F2.b0): volume 48000.000 -> \([0-9.]*\) mm3" \
+  "$(awk -v k="$CORNER" 'BEGIN { printf "%.6f", 48000 - k * 9 * (60 + 40) }')" "both edges at radius 3"
+ui_stop_app
 
 echo "=== Fillet and Chamfer sets on the demo block"
 ui_start_app --demo

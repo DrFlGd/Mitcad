@@ -18,6 +18,7 @@ void registerCreateCommands(CommandRegistry& registry, const CommandContext& con
   registry.add(loftCommand(context));
   registry.add(ribCommand(context));
   registry.add(webCommand(context));
+  registry.add(embossCommand(context));
   registry.add(holeCommand(context));
   registry.add(threadCommand(context));
   registry.add(boxCommand(context));

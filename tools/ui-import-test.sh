@@ -33,6 +33,12 @@
 #     product accounted for in the report. With MITCAD_IFC_CORPUS (never
 #     committed) the MIT-licensed project's IFC4 export too, none of its
 #     products failed.
+#   - A SolidCraft design through File > Open (mitcad#450): one of the
+#     import's hand-written test designs, its features in with their
+#     parameters, its report shown.
+#   - A DWG drawing through File > Open (mitcad#453): the reader's test
+#     drawing (mitcad-cli import-dwg --write-test), its entities accounted
+#     for, its blocks as components.
 #   - With MITCAD_F3D_CORPUS (real .f3d files, never committed): a small
 #     .f3d (MITCAD_F3D_UI_PART, else the corpus' smallest part) opened
 #     through File > Open, imported with its history to its end behind a
@@ -58,6 +64,8 @@
 # check-all sources: core/ffi/src/brep_import.rs core/ffi/src/f3d_import.rs core/ffi/src/fcstd_import.rs
 # check-all sources: core/ffi/src/ipt_import.rs core/ffi/src/ipt_history.rs core/ffi/src/iam_import.rs
 # check-all sources: core/ifc core/ffi/src/ifc_import.rs
+# check-all sources: core/solidcraft core/ffi/src/solidcraft_import.rs
+# check-all sources: core/dwg core/ffi/src/dwg_import.rs
 
 source "$(dirname "$0")/ui-test-lib.sh"
 
@@ -437,6 +445,22 @@ ui_focus_main
 ui_expect_new "Imported top.iam: 5 bodies" "a new document with the parts' bodies in their components"
 expect_title "top* - Mitcad"
 
+echo "--- SolidCraft design (mitcad#450)"
+cp "$(dirname "$0")/../core/solidcraft/tests/designs/box-fillet-hole.solidcraft.json" "$WORK/box-fillet-hole.solidcraft" ||
+  ui_fail "cannot copy the test design"
+ui_mark
+ui_step "open the design (Ctrl+O)"         open_fcstd "$WORK/box-fillet-hole.solidcraft"
+ui_expect_new "Import of box-fillet-hole.solidcraft started" "the import runs in its own process"
+ui_expect_new "Import report: box-fillet-hole.solidcraft: 5 parametric, 0 partial, 0 unmapped, 0 failed, 0 skipped" \
+  "every feature came in with its parameters" 120
+ui_expect_new "Import report summary: box-fillet-hole.solidcraft (SolidCraft design Box fillet hole, file format 27) 5 timeline features: 5 parametric, 0 partial, 0 unmapped, 0 failed, 0 skipped. 1 bodies, 2 sketches," \
+  "the report: the features' outcomes, the bodies and sketches"
+ui_focus_dialog '^Import Report$'
+ui_step "close the report (Enter)"         ui_key Return
+ui_focus_main
+ui_expect_new "Imported box-fillet-hole.solidcraft: 1 bodies" "a new document with the block"
+expect_title "box-fillet-hole* - Mitcad"
+
 echo "--- IFC building model (mitcad#273)"
 "$CLI" import-ifc --write-test "$WORK/building.ifc" || ui_fail "cannot write the test building"
 ui_mark
@@ -474,6 +498,22 @@ if [ -n "$REAL_IFC" ]; then
 else
   echo "skip the IFC project: MITCAD_IFC_CORPUS is not set"
 fi
+
+echo "--- DWG drawing (mitcad#453)"
+"$CLI" import-dwg --write-test "$WORK/truss.dwg" --version R2018 || ui_fail "cannot write the test drawing"
+ui_mark
+ui_step "open the drawing (Ctrl+O)"        open_fcstd "$WORK/truss.dwg"
+ui_expect_new "Import of truss.dwg started" "the import runs in its own process"
+ui_expect_new "Import report: truss.dwg: 2 3DFACE, 2 3DSOLID, 5 INSERT, 1 MESH, 1 MINSERT, 1 POLYLINE (polyface mesh)" \
+  "every entity accounted for" 120
+ui_expect_new "Import report summary: truss.dwg (drawing R2018 (AC1032)) 6 bodies (3 solids, 3 meshes), 2 components." \
+  "the report: bodies, components, entities taken and left out"
+ui_focus_dialog '^Import Report$'
+ui_step "close the report (Enter)"         ui_key Return
+ui_focus_main
+ui_expect_new "Imported truss.dwg: 6 bodies" "a new document with the drawing's bodies"
+ui_expect_new "Imported truss.dwg: components " "the blocks as components"
+expect_title "truss* - Mitcad"
 
 if [ -n "${MITCAD_F3D_CORPUS:-}" ] && [ -d "${MITCAD_F3D_CORPUS:-}" ]; then
   echo "--- .f3d import ($MITCAD_F3D_CORPUS)"

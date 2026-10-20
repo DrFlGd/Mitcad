@@ -1,0 +1,65 @@
+{
+  "format": "solidcraft/26",
+  "name": "Revolve and primitives",
+  "units": "mm",
+  "params": [
+    {"name": "inner", "expr": "10 mm", "unit": "mm"},
+    {"name": "wall", "expr": "inner", "unit": "mm"}
+  ],
+  "features": [
+    {
+      "id": 1, "name": "Profile", "type": "sketch",
+      "plane": {"type": "origin", "name": "XY"},
+      "sketch": {
+        "points": [
+          {"id": "origin", "pos": [0.0, 0.0], "fixed": true},
+          {"id": "p1", "pos": [10.0, 0.0], "fixed": true},
+          {"id": "p2", "pos": [20.0, 0.0], "fixed": true},
+          {"id": "p3", "pos": [20.0, 30.0], "fixed": true},
+          {"id": "p4", "pos": [10.0, 30.0], "fixed": true}
+        ],
+        "curves": [
+          {"id": "l1", "type": "line", "a": 1, "b": 2},
+          {"id": "l2", "type": "line", "a": 2, "b": 3},
+          {"id": "l3", "type": "line", "a": 3, "b": 4},
+          {"id": "l4", "type": "line", "a": 4, "b": 1}
+        ],
+        "constraints": []
+      }
+    },
+    {
+      "id": 2, "name": "Revolve1", "type": "revolve", "body_names": ["Tube"],
+      "sketch": 1, "profiles": {"type": "all"},
+      "axis": {"type": "sketch_axis", "axis": "y"},
+      "angle": "360 deg",
+      "operation": "new_body"
+    },
+    {
+      "id": 3, "name": "Box1", "type": "box", "body_names": ["Block"],
+      "corner": [40, -10, 0], "length": "20", "width": "20", "height": "wall",
+      "operation": "new_body"
+    },
+    {
+      "id": 4, "name": "Cylinder1", "type": "cylinder", "body_names": ["Post"],
+      "base": [50, 0, 10], "axis": [0, 0, 1], "radius": "5", "height": "10",
+      "operation": "new_body"
+    },
+    {
+      "id": 5, "name": "Combine1", "type": "combine",
+      "target": "Block", "tools": ["Post"], "operation": "join"
+    },
+    {
+      "id": 6, "name": "Chamfer1", "type": "chamfer",
+      "edges": [[50.0, -10.0, 10.0]], "distance": "2"
+    },
+    {
+      "id": 7, "name": "Sphere1", "type": "sphere", "body_names": ["Ball"],
+      "center": [0, 0, 60], "radius": "10", "operation": "new_body"
+    },
+    {
+      "id": 8, "name": "Torus1", "type": "torus", "body_names": ["Ring"],
+      "center": [0, 0, -40], "major": "20", "minor": "3", "operation": "new_body"
+    }
+  ],
+  "next_id": 9
+}

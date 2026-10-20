@@ -1,0 +1,477 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: a rounding's end at a vertex where a sliver lies between the
+blend's faces and the face beyond the edge its contact left its face by:
+that face's OnSame end across the sliver, which is consumed (mitcad#343).
+
+The case: a wall's foot on a floor is rounded with 0.5, the radius of an
+earlier rounding round the foot of the wall's end (a B-spline between the
+floor and a torus that is tangent to the wall along a circle). At both
+ends of the foot the contact on the wall leaves the wall across the wall's
+edge with that earlier rounding, where its ball is the new one's, before
+the end of the foot edge. At one end the foot edge runs into that
+rounding's floor contact at the vertex: port patch 0540 builds that OnSame
+end, the earlier rounding growing up to the section they share. At the
+other end a step's end face is left between the floor, the wall and the
+earlier rounding: a triangle 0.16 by 0.02 (the wall narrowing to an edge
+0.02 long). The vertex there has the floor, the wall and that sliver, all
+three edges concave (AllSame); the corner found no face holding both
+contacts' ends, walked round the vertex (PerformIntersectionAtEnd), and
+the result had the blend running on to the floor's rim and was invalid
+(a change of volume of 9.1 mm3 against the stored 0.70).
+
+- ChFi3d_SliverFaceAtEnd: at a single stripe's end vertex of three faces,
+  the blend's two and a face Fs whose vertices lie within the rounding's
+  radius of each other, where one contact left its face across an edge
+  Arcpiv not at the vertex (any edge of that face at the contact's end
+  where that end is a vertex) whose face beyond, Fv, closes Fs: Fs's edges
+  are its edge with each blend face at the vertex and edges with Fv, the
+  edge with the contact's face running to a vertex of Arcpiv and the edge
+  with the opposite face to a vertex Vprol of an edge Arcprol of Fv and
+  the opposite face.
+- ChFi3d_Builder::PerformOneCorner: such an end is taken as Fv's OnSame
+  end: the face at the end is Fv, the prolonged edge Arcprol from Vprol
+  (where the OnSame end prolongs the edge at the vertex), the contact's
+  point at a vertex put on Arcpiv, and Fs consumed (its edges cut at their
+  vertices so that the builder drops it with them, as for a face consumed
+  at an end along an edge). The rest is the OnSame end as before (0540's
+  section in the tube of Fv).
+
+On the stored body before the item the result is valid, with the stored
+body's 193 faces and a change of volume of 0.70767 mm3 against the stored
+0.70662; the earlier rounding grows at both ends as there. Other ends are
+unchanged.
+
+Upstream: new.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
+@@ -3350,6 +3350,229 @@
+   }
+ }
+ 
++//=======================================================================
++// function : ChFi3d_SliverFaceAtEnd
++// purpose  : A rounding's end at a vertex Vtx of three faces: the blend's
++//            two faces and a sliver Fs smaller than Size (a step's end
++//            face, a triangle 0.16 by 0.02 under a rounding of 0.5). The
++//            contact on one face (side IFadArc) left it across an edge
++//            Arcpiv not at Vtx, whose face beyond, Fv, closes the sliver:
++//            Fs's edges are its edge with each blend face at Vtx and edges
++//            with Fv, its edge with the blend face of side IFadArc running
++//            to a vertex of Arcpiv and its edge with the opposite face to a
++//            vertex Vprol of an edge Arcprol of Fv and the opposite face.
++//            Fs lies in the corner the blend fills or removes: the end is
++//            Fv's OnSame end across it, Arcprol prolonged from Vprol and
++//            Fs consumed (an earlier rounding round the wall's end whose
++//            contacts with the wall and the floor the sliver joins).
++//=======================================================================
++
++static bool ChFi3d_SliverFaceAtEnd(const TopOpeBRepDS_DataStructure&   DStr,
++                                   const occ::handle<ChFiDS_SurfData>& Fd,
++                                   const bool                          isfirst,
++                                   const TopoDS_Vertex&                Vtx,
++                                   const ChFiDS_Map&                   VFMap,
++                                   const ChFiDS_Map&                   EFMap,
++                                   const double                        Size,
++                                   int&                                IFadArc,
++                                   TopoDS_Edge&                        Arcpiv,
++                                   TopoDS_Face&                        Fv,
++                                   TopoDS_Face&                        Fs,
++                                   TopoDS_Edge&                        Arcprol,
++                                   TopoDS_Vertex&                      Vprol)
++{
++  const auto holds = [](const TopoDS_Shape& S, const TopoDS_Shape& V) {
++    for (TopExp_Explorer exV(S, TopAbs_VERTEX); exV.More(); exV.Next())
++    {
++      if (exV.Current().IsSame(V))
++      {
++        return true;
++      }
++    }
++    return false;
++  };
++  const auto hasEdge = [](const TopoDS_Shape& F, const TopoDS_Shape& E) {
++    for (TopExp_Explorer exE(F, TopAbs_EDGE); exE.More(); exE.Next())
++    {
++      if (exE.Current().IsSame(E))
++      {
++        return true;
++      }
++    }
++    return false;
++  };
++  const auto otherFace = [&](const TopoDS_Edge& E, const TopoDS_Shape& F) {
++    TopoDS_Face aF;
++    if (!EFMap.Contains(E))
++    {
++      return aF;
++    }
++    for (const TopoDS_Shape& aS : EFMap.FindFromKey(E))
++    {
++      if (!aS.IsSame(F))
++      {
++        aF = TopoDS::Face(aS);
++        break;
++      }
++    }
++    return aF;
++  };
++  if (!VFMap.Contains(Vtx) || Fd->IndexOfS1() == 0 || Fd->IndexOfS2() == 0)
++  {
++    return false;
++  }
++  for (int j = 1; j <= 2; j++)
++  {
++    const ChFiDS_CommonPoint& CVj = Fd->Vertex(isfirst, j);
++    if (!CVj.IsOnArc())
++    {
++      continue;
++    }
++    const TopoDS_Face aFad = TopoDS::Face(DStr.Shape(Fd->Index(j)));
++    const TopoDS_Face aFop = TopoDS::Face(DStr.Shape(Fd->Index(3 - j)));
++    // (At a vertex, any edge of Fad there may be the one left across.)
++    NCollection_List<TopoDS_Shape> aArcs;
++    if (CVj.IsVertex())
++    {
++      for (TopExp_Explorer exE(aFad, TopAbs_EDGE); exE.More(); exE.Next())
++      {
++        if (!BRep_Tool::Degenerated(TopoDS::Edge(exE.Current())) && holds(exE.Current(), CVj.Vertex()))
++        {
++          aArcs.Append(exE.Current());
++        }
++      }
++    }
++    else
++    {
++      aArcs.Append(CVj.Arc());
++    }
++    for (const TopoDS_Shape& anArc : aArcs)
++    {
++      const TopoDS_Edge aPiv = TopoDS::Edge(anArc);
++      if (holds(aPiv, Vtx))
++      {
++        continue;
++      }
++      const TopoDS_Face aFv = otherFace(aPiv, aFad);
++      if (aFv.IsNull() || aFv.IsSame(aFop))
++      {
++        continue;
++      }
++      // The faces at the vertex: the blend's two and one other.
++      TopoDS_Face aFs;
++      int         nbOther = 0;
++      for (const TopoDS_Shape& aS : VFMap.FindFromKey(Vtx))
++      {
++        if (aS.IsSame(aFad) || aS.IsSame(aFop) || aS.IsSame(aFs))
++        {
++          continue;
++        }
++        aFs = TopoDS::Face(aS);
++        nbOther++;
++      }
++      if (nbOther != 1 || aFs.IsSame(aFv))
++      {
++        continue;
++      }
++      // Smaller than Size: its vertices within Size of each other.
++      NCollection_Sequence<gp_Pnt> aPts;
++      for (TopExp_Explorer exV(aFs, TopAbs_VERTEX); exV.More(); exV.Next())
++      {
++        aPts.Append(BRep_Tool::Pnt(TopoDS::Vertex(exV.Current())));
++      }
++      bool isSmall = aPts.Length() >= 3;
++      for (int a = 1; a <= aPts.Length() && isSmall; a++)
++      {
++        for (int b = a + 1; b <= aPts.Length() && isSmall; b++)
++        {
++          isSmall = aPts(a).Distance(aPts(b)) < Size;
++        }
++      }
++      if (!isSmall)
++      {
++        continue;
++      }
++      // Its edges: one with each blend face at Vtx, the others with Fv.
++      TopoDS_Edge aEad, aEop;
++      bool        isClosedByFv = true;
++      for (TopExp_Explorer exE(aFs, TopAbs_EDGE); exE.More() && isClosedByFv; exE.Next())
++      {
++        const TopoDS_Edge& E = TopoDS::Edge(exE.Current());
++        if (BRep_Tool::Degenerated(E))
++        {
++          continue;
++        }
++        const TopoDS_Face aF = otherFace(E, aFs);
++        if (holds(E, Vtx))
++        {
++          if (aF.IsSame(aFad) && aEad.IsNull())
++          {
++            aEad = E;
++          }
++          else if (aF.IsSame(aFop) && aEop.IsNull())
++          {
++            aEop = E;
++          }
++          else
++          {
++            isClosedByFv = false;
++          }
++        }
++        else
++        {
++          isClosedByFv = aF.IsSame(aFv);
++        }
++      }
++      if (!isClosedByFv || aEad.IsNull() || aEop.IsNull())
++      {
++        continue;
++      }
++      // Its edge with Fad runs to a vertex of Arcpiv, its edge with Fop to a
++      // vertex of an edge of Fv and Fop.
++      TopoDS_Vertex aVad, aVop;
++      for (TopExp_Explorer exV(aEad, TopAbs_VERTEX); exV.More(); exV.Next())
++      {
++        if (!exV.Current().IsSame(Vtx))
++        {
++          aVad = TopoDS::Vertex(exV.Current());
++        }
++      }
++      for (TopExp_Explorer exV(aEop, TopAbs_VERTEX); exV.More(); exV.Next())
++      {
++        if (!exV.Current().IsSame(Vtx))
++        {
++          aVop = TopoDS::Vertex(exV.Current());
++        }
++      }
++      if (aVad.IsNull() || aVop.IsNull() || !holds(aPiv, aVad))
++      {
++        continue;
++      }
++      TopoDS_Edge aProl;
++      for (TopExp_Explorer exE(aFop, TopAbs_EDGE); exE.More() && aProl.IsNull(); exE.Next())
++      {
++        const TopoDS_Edge& E = TopoDS::Edge(exE.Current());
++        if (!E.IsSame(aEop) && holds(E, aVop) && hasEdge(aFv, E))
++        {
++          aProl = E;
++        }
++      }
++      if (aProl.IsNull())
++      {
++        continue;
++      }
++      IFadArc = j;
++      Arcpiv  = aPiv;
++      Fv      = aFv;
++      Fs      = aFs;
++      Arcprol = aProl;
++      Vprol   = aVop;
++      return true;
++    }
++  }
++  return false;
++}
++
+ //=================================================================================================
+ 
+ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSame)
+@@ -3515,9 +3738,71 @@
+   {
+     onsame = true;
+   }
++  // (A sliver at the vertex closed by the face beyond the edge a contact
++  // left its face by: that face's OnSame end across the sliver, its edge
++  // with the opposite face prolonged from the sliver's vertex VtxProl.)
++  int           ISliver = 0;
++  TopoDS_Edge   EpivSliver, EprolSliver;
++  TopoDS_Face   FvSliver, FsSliver;
++  TopoDS_Vertex VtxProl = Vtx;
++  bool          isSliverEnd = false;
++  if (!onsame && !isRolledEnd)
++  {
++    const occ::handle<ChFiDS_FilSpine> aFsp = occ::down_cast<ChFiDS_FilSpine>(spine);
++    isSliverEnd = !aFsp.IsNull() && aFsp->IsConstant()
++                  && ChFi3d_SliverFaceAtEnd(DStr,
++                                            Fd,
++                                            isfirst,
++                                            Vtx,
++                                            myVFMap,
++                                            myEFMap,
++                                            aFsp->Radius(),
++                                            ISliver,
++                                            EpivSliver,
++                                            FvSliver,
++                                            FsSliver,
++                                            EprolSliver,
++                                            VtxProl);
++    if (isSliverEnd)
++    {
++      onsame = true;
++      // (A point at a vertex goes on the edge left across.)
++      ChFiDS_CommonPoint& aCV = Fd->ChangeVertex(isfirst, ISliver);
++      if (!aCV.Arc().IsSame(EpivSliver))
++      {
++        const TopoDS_Face  aFad = TopoDS::Face(DStr.Shape(Fd->Index(ISliver)));
++        TopAbs_Orientation aTr  = aCV.TransitionOnArc();
++        if (ChFi3d_OrientationInFace(aCV.Arc(), aFad) != ChFi3d_OrientationInFace(EpivSliver, aFad))
++        {
++          aTr = TopAbs::Reverse(aTr);
++        }
++        aCV.SetArc(aCV.Tolerance(), EpivSliver, BRep_Tool::Parameter(aCV.Vertex(), EpivSliver), aTr);
++      }
++    }
++  }
+   if (onsame)
+   {
+-    if (isRolledEnd)
++    if (isSliverEnd)
++    {
++      IFadArc   = ISliver;
++      IFopArc   = 3 - ISliver;
++      Arcpiv    = EpivSliver;
++      Fad       = TopoDS::Face(DStr.Shape(Fd->Index(IFadArc)));
++      Fop       = TopoDS::Face(DStr.Shape(Fd->Index(IFopArc)));
++      Fv        = FvSliver;
++      Fv.Orientation(TopAbs_FORWARD);
++      Fconsumed = FsSliver;
++      Arcprol   = EprolSliver;
++      for (ex.Init(Fv, TopAbs_EDGE); ex.More(); ex.Next())
++      {
++        if (Arcprol.IsSame(ex.Current()))
++        {
++          OArcprolv = ex.Current().Orientation();
++          break;
++        }
++      }
++    }
++    else if (isRolledEnd)
+     {
+       IFadArc = IRolled;
+       IFopArc = 3 - IRolled;
+@@ -3580,7 +3865,7 @@
+       IFadArc = 2;
+     }
+     NCollection_List<TopoDS_Shape>::Iterator It;
+-    if (!isRolledEnd && !isRolledPast)
++    if (!isRolledEnd && !isRolledPast && !isSliverEnd)
+     {
+       IFopArc = 3 - IFadArc;
+       // (A blend rolling on an obstacle edge up to a vertex of it: the face at
+@@ -3689,7 +3974,7 @@
+       PerformIntersectionAtEnd(Index);
+       return;
+     }
+-    if (!isRolledEnd && !isRolledPast)
++    if (!isRolledEnd && !isRolledPast && !isSliverEnd)
+     {
+       TopoDS_Face   aFend;
+       TopoDS_Vertex aV2;
+@@ -3809,7 +4094,7 @@
+                                 Fop,
+                                 Fv,
+                                 Arcprol,
+-                                Vtx,
++                                VtxProl,
+                                 isfirst,
+                                 10 * tolapp3d, // in
+                                 FiopArc,
+@@ -3839,7 +4124,7 @@
+                                     Fop,
+                                     Fv,
+                                     Arcprol,
+-                                    Vtx,
++                                    VtxProl,
+                                     isfirst,
+                                     10 * tolapp3d,
+                                     FiopArc,
+@@ -4407,7 +4692,7 @@
+       break;
+     }
+   }
+-  if (isEndAlongEdge)
++  if (isEndAlongEdge || isSliverEnd)
+   {
+     // The consumed face goes: its edges off the spine (the cap's edge among
+     // them, which the cap replaces on the face at the end) are cut at their
+@@ -5000,6 +5285,7 @@
+     // First of all the points are cut with the edge of the spine.
+     int                IArcspine = DStr.AddShape(Arcspine);
+     int                IVtx      = DStr.AddShape(Vtx);
++    const int          IVtxProl  = DStr.AddShape(VtxProl);
+     TopAbs_Orientation OVtx      = TopAbs_FORWARD;
+     for (ex.Init(Arcspine.Oriented(TopAbs_FORWARD), TopAbs_VERTEX); ex.More(); ex.Next())
+     {
+@@ -5060,7 +5346,7 @@
+     TopoDS_Vertex V2;
+     for (ex.Init(Arcprol.Oriented(TopAbs_FORWARD), TopAbs_VERTEX); ex.More(); ex.Next())
+     {
+-      if (Vtx.IsSame(ex.Current()))
++      if (VtxProl.IsSame(ex.Current()))
+       {
+         OVtx = ex.Current().Orientation();
+       }
+@@ -5072,7 +5358,7 @@
+ 
+     occ::handle<Geom2d_Curve> Hc;
+ #ifdef VARIANT1
+-    parVtx = BRep_Tool::Parameter(Vtx, Arcprol);
++    parVtx = BRep_Tool::Parameter(VtxProl, Arcprol);
+ #else
+     parVtx = BRep_Tool::Parameter(V2, Arcprol);
+ #endif
+@@ -5214,7 +5500,7 @@
+                                                                  Fv,
+                                                                  HBop,
+                                                                  HBs,
+-                                                                 Vtx,
++                                                                 VtxProl,
+                                                                  Fd->Vertex(isfirst, IFopArc).Point(),
+                                                                  10 * tolapp3d,
+                                                                  zob3d,
+@@ -5230,7 +5516,7 @@
+                                                                      BRep_Tool::Surface(Bs.Face()),
+                                                                      HBop,
+                                                                      HBs,
+-                                                                     Vtx,
++                                                                     VtxProl,
+                                                                      Fd->Vertex(isfirst, IFopArc).Point(),
+                                                                      10 * tolapp3d,
+                                                                      zob3d,
+@@ -5245,7 +5531,7 @@
+                                                                Fv,
+                                                                HBop,
+                                                                HBs,
+-                                                               Vtx,
++                                                               VtxProl,
+                                                                Fd->Vertex(isfirst, IFopArc).Point(),
+                                                                10 * tolapp3d,
+                                                                zob3d,
+@@ -5399,7 +5685,7 @@
+       Interfop = ChFi3d_FilCurveInDS(Icurv2, Iop, c2d2, Et);
+       DStr.ChangeShapeInterferences(Iop).Append(Interfop);
+       occ::handle<TopOpeBRepDS_CurvePointInterference> interfprol =
+-        ChFi3d_FilVertexInDS(TopAbs_FORWARD, Icurv1, IVtx, Udeb);
++        ChFi3d_FilVertexInDS(TopAbs_FORWARD, Icurv1, IVtxProl, Udeb);
+       DStr.ChangeCurveInterferences(Icurv1).Append(interfprol);
+       interfprol = ChFi3d_FilPointInDS(TopAbs_REVERSED, Icurv1, indpt, par2);
+       DStr.ChangeCurveInterferences(Icurv1).Append(interfprol);
+@@ -5447,7 +5733,7 @@
+       }
+       occ::handle<TopOpeBRepDS_CurvePointInterference> interfprol;
+ #ifdef VARIANT1
+-      interfprol = ChFi3d_FilVertexInDS(TopAbs_FORWARD, IZob, IVtx, Udeb);
++      interfprol = ChFi3d_FilVertexInDS(TopAbs_FORWARD, IZob, IVtxProl, Udeb);
+ #else
+       {
+         int IV2    = DStr.AddShape(V2); // VARIANT 2
+@@ -5463,7 +5749,7 @@
+       // takes the seam's place on the side of Fop the prolonged edge
+       // bounds, the blend covers the other side, so the seam is cut where
+       // the curve ends and its part along the curve dropped.
+-      ChFi3d_CutSeamAlongCurve(DStr, Fop, Vtx, zob3d, Udeb, Ufin, icc, tolapp3d);
++      ChFi3d_CutSeamAlongCurve(DStr, Fop, VtxProl, zob3d, Udeb, Ufin, icc, tolapp3d);
+ #ifdef VARIANT1
+       {
+         if (IFopArc == 1)

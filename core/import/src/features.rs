@@ -12,8 +12,9 @@
 use std::collections::{BTreeSet, HashMap};
 
 use mitcad_f3d::design::ir::{
-    ChamferDetail, CoilDetail, Definition, Detail, EdgeSet, ExtrudeDetail, ExtrudeF3d,
-    FilletDetail, Fingerprint, Geometry, Reference, RevolveDetail, SketchDetail, TimelineItem,
+    ChamferDetail, CoilDetail, Definition, Detail, EdgeSet, EmbossDetail, ExtrudeDetail,
+    ExtrudeF3d, FilletDetail, Fingerprint, Geometry, Reference, RevolveDetail, SketchDetail,
+    TimelineItem,
 };
 use mitcad_model::assembly::inverse;
 use mitcad_model::datum::Datum;
@@ -117,7 +118,6 @@ fn is_direct(r: &Reference) -> bool {
 fn not_translated(object_type: &str) -> Option<&'static str> {
     Some(match object_type {
         "FlangeFeature" => "a sheet metal flange: not translated (Mitcad has no sheet metal)",
-        "EmbossFeature" => "an emboss: not translated (Mitcad has no emboss feature)",
         "PCBFeature" => "an electronics board: not translated",
         "MoveFaceFeature" => "moved faces: not translated (its faces and motion are not decoded)",
         "DraftFeature" => "a draft: not translated (its faces and plane are not decoded)",
@@ -337,6 +337,22 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                 e
             })
             .collect();
+        // Free, but with the points that hold the sketch's own curves (a
+        // linked arc's end an own circle passes through) where the file has
+        // them, tried first: the reference curves' inconsistency then stays
+        // in their other points instead of moving the own curves.
+        let pinned =
+            sketch::pinned_reference_points(&parts.entities, &parts.constraints, &parts.dimensions);
+        let pinned_entities: Vec<Value> = unlocked_entities
+            .iter()
+            .cloned()
+            .map(|mut e| {
+                if e["type"] == "point" && e["id"].as_str().is_some_and(|id| pinned.contains(id)) {
+                    e["fixed"] = json!(true);
+                }
+                e
+            })
+            .collect();
         let has_reference = parts
             .entities
             .iter()
@@ -347,23 +363,29 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         let mut last = String::new();
         for (level, (constraints, dimensions, what)) in levels.iter().enumerate() {
             // Reference curves locked (with the linked ones that follow an
-            // edge as projections, then without), then free; offsets Mitcad
+            // edge as projections, then without), then free with the points
+            // that hold the own curves pinned, then free; offsets Mitcad
             // derives from their chains (round corners), then without those.
-            for (unlocked, keep_derived, project) in [
-                (false, true, true),
-                (false, true, false),
-                (true, true, false),
-                (false, false, true),
-                (false, false, false),
-                (true, false, false),
+            for (unlocked, pin, keep_derived, project) in [
+                (false, false, true, true),
+                (false, false, true, false),
+                (true, true, true, false),
+                (true, false, true, false),
+                (false, false, false, true),
+                (false, false, false, false),
+                (true, true, false, false),
+                (true, false, false, false),
             ] {
                 if unlocked && !has_reference
+                    || pin && pinned.is_empty()
                     || !keep_derived && !has_derived
                     || project && resolved.projections.is_empty()
                 {
                     continue;
                 }
-                let entities = if unlocked {
+                let entities = if pin {
+                    &pinned_entities
+                } else if unlocked {
                     &unlocked_entities
                 } else {
                     &parts.entities
@@ -520,7 +542,10 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                                     })
                                     .unwrap_or_default();
                                 self.undo_to(depth);
-                                if round == 0 && !violated.is_empty() {
+                                // (Pinned, nothing is left out: where the
+                                // pinned points do not solve, the free curves
+                                // are tried as before.)
+                                if round == 0 && !violated.is_empty() && !pin {
                                     if crate::tracing() {
                                         eprintln!(
                                             "import:   not kept by the file's positions: {}",
@@ -1738,6 +1763,8 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             // Primitives and coils placed on a plane (mitcad#25).
             (Some(Detail::Primitive(d)), t) => self.primitive(index, t, d),
             (Some(Detail::Coil(d)), _) => self.coil_primitive(index, d),
+            // Emboss (mitcad#458).
+            (Some(Detail::Emboss(d)), _) => self.emboss(index, d),
             (_, "BaseFeature") => Err("a base feature: the file's bodies as they are".to_owned()),
             // Bodies of other documents (mitcad#324).
             (_, "DerivedContext") => self.derive(index, item),
@@ -1747,6 +1774,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                 | "MirrorFeature"
                 | "CircularPatternFeature"
                 | "RectangularPatternFeature"
+                | "PathPatternFeature"
                 | "ShellFeature"
                 | "OffsetFacesFeature"
                 | "MoveFeature"
@@ -1764,6 +1792,48 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         }
     }
 
+    /// The curves a thin extrusion follows (mitcad#463) and whether they
+    /// are exact: the sketch curves of its profile when it names them (an
+    /// open path in a dump), else, when its sketch has no regions, the
+    /// sketch's curves that are not construction geometry; None otherwise.
+    pub(crate) fn wall_curves(
+        &self,
+        profiles: &[Reference],
+        sketch: i64,
+    ) -> Option<(Vec<String>, bool)> {
+        let info = self.sketches.get(&sketch)?;
+        let named: Option<Vec<String>> = profiles
+            .iter()
+            .map(|p| match path_curve(p) {
+                Some((s, id)) if s == sketch => info.ids.get(&id).cloned(),
+                _ => None,
+            })
+            .collect();
+        if let Some(named) = named.filter(|n| !n.is_empty()) {
+            return Some((named, true));
+        }
+        self.sketch_wall_curves(sketch).map(|c| (c, false))
+    }
+
+    /// A sketch's curves that are not construction geometry, when it has
+    /// no regions.
+    fn sketch_wall_curves(&self, sketch: i64) -> Option<Vec<String>> {
+        let uid = self.sketches.get(&sketch)?.uid;
+        if !self.doc.sketch_output(uid)?.region_info.is_empty() {
+            return None;
+        }
+        let mitcad_model::FeatureDef::Sketch(def) = &self.doc.feature(uid)?.def else {
+            return None;
+        };
+        let curves: Vec<String> = def
+            .entities
+            .iter()
+            .filter(|e| !e.construction && !e.is_point())
+            .map(|e| e.id.curve_name())
+            .collect();
+        (!curves.is_empty()).then_some(curves)
+    }
+
     /// The sketch of profile references, or of the last sketch before the
     /// item when the dump does not name it.
     pub(crate) fn profile_sketch(
@@ -1773,7 +1843,8 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
     ) -> Result<(i64, bool), String> {
         let named = profiles.iter().find_map(|p| match p {
             Reference::Profile(p) => p.sketch_timeline_index.flatten(),
-            _ => None,
+            // Sketch curves of an open path (a thin extrusion's, mitcad#463).
+            _ => path_curve(p).map(|(sketch, _)| sketch),
         });
         if let Some(i) = named {
             return if self.sketches.contains_key(&i) {
@@ -2670,8 +2741,16 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             .then(|| self.mapped_set(&d.other, sketch))
             .flatten();
         let decoded_only = decoded_set.is_some();
+        // A thin extrusion along sketch curves (mitcad#463): those its
+        // profile names (an open path), else, when its sketch has no regions,
+        // the sketch's curves that are not construction geometry, as a guess
+        // the history checks.
+        let wall_curves = (d.is_thin_extrude == Some(true) && decoded_set.is_none())
+            .then(|| self.wall_curves(&profiles, sketch))
+            .flatten();
         let (sets, mapped) = match decoded_set {
             Some(set) => (vec![set], true),
+            None if wall_curves.is_some() => (vec![RegionSet::default()], false),
             None => {
                 let mut sets = self.region_sets(&profiles, sketch, probe, target_area)?;
                 // The regions the decoded profile loops select first
@@ -3123,6 +3202,10 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                 if let Some(t) = &thin {
                     def["thin"] = t.clone();
                 }
+                if let Some((curves, _)) = &wall_curves {
+                    def.as_object_mut().map(|o| o.remove("profiles"));
+                    def["thin"]["curves"] = json!({"sketch": sketch_uid, "curves": curves});
+                }
                 // Objects on other components' bodies (mitcad#104): the
                 // extrusion goes where its sketch is and links them.
                 if let Some(own) = sketch_component {
@@ -3155,6 +3238,14 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                     c.input_provenance = InputProvenance::Read;
                 }
                 c.first = (decoded && !*extent_guess) || set.measured;
+                if let Some((_, exact)) = &wall_curves {
+                    c.predicted = None;
+                    if !exact {
+                        c.guess = true;
+                        c.input_provenance = InputProvenance::Inferred;
+                        notes.push("the walls follow the sketch's curves".to_owned());
+                    }
+                }
                 if decoded && crate::tracing() && c.input_provenance == InputProvenance::Unknown {
                     eprintln!(
                         "import: extrusion not read: faces {} keys {} last sketch {last_sketch} \
@@ -3178,6 +3269,31 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                     c.note = Some(notes.join("; "));
                 }
                 candidates.extend(with_participants(&c, &participant_options));
+                // Which side of an open chain the file's side one is: the
+                // other one is tried next (the history settles it).
+                if wall_curves.is_some() {
+                    let other = |l: &Value| match l.as_str() {
+                        Some("side1") => Some(json!("side2")),
+                        Some("side2") => Some(json!("side1")),
+                        _ => None,
+                    };
+                    let mut o = c.clone();
+                    let mut changed = false;
+                    if let Some(l) = other(&o.defs[0]["thin"]["location"]) {
+                        o.defs[0]["thin"]["location"] = l;
+                        changed = true;
+                    }
+                    if let Some(l) = other(&o.defs[0]["thin"]["side2"]["location"]) {
+                        o.defs[0]["thin"]["side2"]["location"] = l;
+                        changed = true;
+                    }
+                    if changed {
+                        o.first = false;
+                        o.guess = true;
+                        o.input_provenance = InputProvenance::Inferred;
+                        candidates.extend(with_participants(&o, &participant_options));
+                    }
+                }
                 if join_as_new {
                     let mut n = c.clone();
                     n.defs[0]["operation"] = json!("new_body");
@@ -4209,6 +4325,78 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                     candidates.extend(with_participants(&c, &participant_options));
                 }
             }
+        }
+        Ok(candidates)
+    }
+
+    /// An emboss (mitcad#458): Mitcad's emboss of the decoded profiles on
+    /// the face the file names, sunk where the file's depth is negative.
+    /// Profiles moved or turned on the face (the item's horizontal and
+    /// vertical distances and rotation) have no counterpart.
+    fn emboss(&mut self, index: i64, d: &EmbossDetail) -> Result<Vec<Candidate>, String> {
+        for (what, r) in [
+            ("moved across the face", &d.horizontal_distance),
+            ("moved along the face", &d.vertical_distance),
+            ("turned on the face", &d.rotation_angle),
+        ] {
+            if param(r)
+                .and_then(|p| p.value)
+                .is_some_and(|v| v.abs() > 1e-12)
+            {
+                return Err(format!(
+                    "its profiles are {what}, which Mitcad's emboss has no option for"
+                ));
+            }
+        }
+        let value = param(&d.depth)
+            .and_then(|p| p.value)
+            .ok_or("its depth was not decoded")?;
+        if value == 0.0 {
+            return Err("its depth is zero".to_owned());
+        }
+        let sink = value < 0.0;
+        let depth = match self.value_or(&d.depth, "depth")? {
+            Value::String(s) if sink => json!(format!("-({s})")),
+            Value::Number(n) if sink => json!(-n.as_f64().unwrap_or_default()),
+            v => v,
+        };
+        let Some([Reference::Face(fp)]) = d.input_faces.as_deref() else {
+            return Err("its face was not decoded".to_owned());
+        };
+        let (body, face) = self.face_input(fp).ok_or("its face was not found")?;
+        let profiles = d.profile.clone().unwrap_or_default();
+        let (sketch, last_sketch) = self.profile_sketch(&profiles, index)?;
+        let mut sets = self.region_sets(&profiles, sketch, None, None)?;
+        // The regions the decoded profile loops select first.
+        let mapped = self.mapped_first(&mut sets, &d.other, sketch);
+        let info = self.sketches[&sketch].clone();
+        let mut candidates = Vec::new();
+        for (k, set) in sets.iter().enumerate() {
+            let profiles: Vec<Value> = set
+                .keys
+                .iter()
+                .map(|r| json!({"sketch": info.uid.to_string(), "region": r}))
+                .collect();
+            let mut def = json!({"type": "emboss", "profiles": profiles,
+                "face": {"body": body.to_string(), "face": face.to_string()}, "depth": depth});
+            if sink {
+                def["mode"] = json!("sink");
+            }
+            let mut c = Candidate::new(def);
+            c.guess = set.guess;
+            c.first = mapped && k == 0;
+            if last_sketch || c.guess {
+                c.input_provenance = InputProvenance::Inferred;
+            } else if mapped && k == 0 && set.exact {
+                // Profiles, face and depth are all read.
+                c.input_provenance = InputProvenance::Read;
+            }
+            if last_sketch {
+                c.note = Some("the sketch is the last one before it".to_owned());
+            } else if mapped && k == 0 {
+                c.note = Some("the profiles as decoded".to_owned());
+            }
+            candidates.push(c);
         }
         Ok(candidates)
     }
@@ -6172,6 +6360,25 @@ pub(crate) fn profiles_of(
         Some(Value::Object(map)) => vec![Reference::from_map(map.clone())],
         _ => Vec::new(),
     }
+}
+
+/// The sketch (timeline index) and the file's id of the sketch curve a
+/// path entity of a profile names (an open path, mitcad#463).
+fn path_curve(reference: &Reference) -> Option<(i64, String)> {
+    let Reference::Other(map) = reference else {
+        return None;
+    };
+    if map.get("_type").and_then(Value::as_str) != Some("PathEntity") {
+        return None;
+    }
+    let entity = map.get("entity")?;
+    if entity.get("kind").and_then(Value::as_str) != Some("sketch_entity") {
+        return None;
+    }
+    Some((
+        entity.get("sketch_timeline_index")?.as_i64()?,
+        entity.get("id")?.as_str()?.to_owned(),
+    ))
 }
 
 /// Whether two lists of region keys name the same regions.

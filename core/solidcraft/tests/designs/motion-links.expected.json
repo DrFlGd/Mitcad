@@ -1,0 +1,14 @@
+{
+  "comment": "Worked out by hand: a pinion r 10 at the origin (pi * 100 * 5 = 1570.7963), a rack 40 x 5 x 5 below it at (-20, -15) (1000), a gear r 20 at (30, 0) (6283.1853), an eccentric cam r 15 about (5, 0) at (0, 60) (3534.2917) and a follower block 4 x 4 x 5 at (40, 58) (80); three motion links (a rack and pinion sized by the pinion's round face, a gear pair, a cam on its sketch's circle) that keep the parts where the file places them.",
+  "body_count": 5,
+  "total": {"volume_mm3": 12468.2733},
+  "bbox": {"min": [-20, -20, 0], "max": [50, 75, 5]},
+  "bodies": [
+    {"name": "Pinion", "volume_mm3": 1570.7963267949, "bbox": {"min": [-10, -10, 0], "max": [10, 10, 5]}},
+    {"name": "Rack", "volume_mm3": 1000, "bbox": {"min": [-20, -15, 0], "max": [20, -10, 5]}},
+    {"name": "Gear", "volume_mm3": 6283.1853071796, "bbox": {"min": [10, -20, 0], "max": [50, 20, 5]}},
+    {"name": "Cam", "volume_mm3": 3534.2917352885, "bbox": {"min": [-10, 45, 0], "max": [20, 75, 5]}},
+    {"name": "Follower", "volume_mm3": 80, "bbox": {"min": [40, 58, 0], "max": [44, 62, 5]}}
+  ],
+  "links": 3
+}

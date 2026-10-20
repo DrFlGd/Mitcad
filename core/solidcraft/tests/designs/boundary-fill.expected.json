@@ -1,0 +1,17 @@
+{
+  "comment": "Worked out by hand. A is the 20 mm cube at the origin, B the one at (10, 10, 10): Core is the cell in both, the cube from 10 to 20 (1000); Left the cell in A alone and Right the one in B alone, 8000 - 1000 = 7000 each, the tools removed. The plate 40 x 20 x 10 at x 40 loses the cell in the bar (x 50..60, y -10..30, z 5..15) outside the wall (y 8..12): two slots 10 x 8 x 5 in it, 8000 - 800 = 7200; the bar and the wall removed.",
+  "body_count": 4,
+  "total": {"volume_mm3": 22200},
+  "bbox": {"min": [0, 0, 0], "max": [80, 30, 30]},
+  "bodies": [
+    {"name": "Core", "volume_mm3": 1000, "bbox": {"min": [10, 10, 10], "max": [20, 20, 20]}},
+    {"name": "Left", "volume_mm3": 7000, "bbox": {"min": [0, 0, 0], "max": [20, 20, 20]}},
+    {"name": "Right", "volume_mm3": 7000, "bbox": {"min": [10, 10, 10], "max": [30, 30, 30]}},
+    {"name": "Plate", "volume_mm3": 7200, "bbox": {"min": [40, 0, 0], "max": [80, 20, 10]}}
+  ],
+  "timeline": [
+    {"name": "BoxA"}, {"name": "BoxB"}, {"name": "CoreFill"}, {"name": "SidesFill"},
+    {"name": "PlateBox"}, {"name": "BarBox"}, {"name": "StopBox"}, {"name": "SlotsFill"}
+  ],
+  "parametric": 8
+}

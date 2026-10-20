@@ -27,7 +27,8 @@ pub mod ffi {
         offset: f64,
     }
 
-    /// `geometry::ExtrudeSide`; `wall_location` 0 side 1, 1 centre, 2 side 2.
+    /// `geometry::ExtrudeSide`; `wall_location` 0 side 1, 1 centre, 2 side 2,
+    /// 3 both sides (`wall_thickness2` on side 2, mitcad#463).
     #[derive(Clone, Debug)]
     struct ExtrudeSideInput {
         target: TargetInput,
@@ -36,6 +37,7 @@ pub mod ffi {
         thin: bool,
         wall_location: u8,
         wall_thickness: f64,
+        wall_thickness2: f64,
     }
 
     #[derive(Clone, Debug)]
@@ -258,6 +260,7 @@ fn side(
                 WallLocation::Side1 => 0,
                 WallLocation::Center => 1,
                 WallLocation::Side2 => 2,
+                WallLocation::Both => 3,
             },
             wall.thickness,
         ),
@@ -269,6 +272,7 @@ fn side(
         thin,
         wall_location,
         wall_thickness,
+        wall_thickness2: side.thin.map_or(0.0, |w| w.thickness2),
     })
 }
 

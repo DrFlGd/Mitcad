@@ -79,6 +79,82 @@ pub enum FilletSizeDef<P = ParamId> {
         #[serde(default, skip_serializing_if = "super::is_false")]
         flip: bool,
     },
+    /// The radius a clamped B-spline of the position along the chain
+    /// (mitcad#464): 0 at `start_vertex` (the kernel's start of the chain
+    /// when left out), 1 at the other end; `radii` its control radii and
+    /// `knots` its full knot vector (as many as the radii and the degree
+    /// and one more; degree 1 to 3, each end repeated degree + 1 times).
+    Spline {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        start_vertex: Option<VertexName>,
+        knots: Vec<f64>,
+        radii: Vec<P>,
+    },
+}
+
+impl<P> FilletSizeDef<P> {
+    /// The vertex a variable or spline radius starts at.
+    pub fn start_vertex_mut(&mut self) -> Option<&mut VertexName> {
+        match self {
+            Self::Variable { start_vertex, .. } | Self::Spline { start_vertex, .. } => {
+                start_vertex.as_mut()
+            }
+            _ => None,
+        }
+    }
+
+    /// The vertex a variable or spline radius starts at.
+    pub fn start_vertex(&self) -> Option<&VertexName> {
+        match self {
+            Self::Variable { start_vertex, .. } | Self::Spline { start_vertex, .. } => {
+                start_vertex.as_ref()
+            }
+            _ => None,
+        }
+    }
+}
+
+/// The degree of a spline radius of `radii` control radii and these
+/// knots, checked (mitcad#464): 1 to 3, 2 to 100 control radii, finite
+/// knots rising from 0 to 1, each end repeated degree + 1 times and no
+/// inner knot more than the degree times.
+pub fn spline_degree(knots: &[f64], radii: usize) -> Result<usize, String> {
+    if !(2..=100).contains(&radii) {
+        return Err(format!(
+            "a spline radius has 2 to 100 control radii, got {radii}"
+        ));
+    }
+    let degree = knots.len().saturating_sub(radii + 1);
+    if !(1..=3).contains(&degree) || radii <= degree {
+        return Err(format!(
+            "a spline radius of {radii} control radii has {} to {} knots (degree 1 to 3), got {}",
+            radii + 2,
+            radii + 4,
+            knots.len()
+        ));
+    }
+    if knots.iter().any(|k| !k.is_finite()) || knots.windows(2).any(|w| w[1] < w[0]) {
+        return Err("the knots of a spline radius must rise".to_owned());
+    }
+    let clamped = knots[..=degree].iter().all(|k| *k == 0.0)
+        && knots[knots.len() - degree - 1..].iter().all(|k| *k == 1.0);
+    if !clamped {
+        return Err(format!(
+            "the knots of a spline radius run from 0 to 1, each repeated {} times",
+            degree + 1
+        ));
+    }
+    let inner = &knots[degree + 1..knots.len() - degree - 1];
+    if inner
+        .windows(degree + 1)
+        .any(|w| w.iter().all(|k| *k == w[0]))
+        || inner.iter().any(|k| *k <= 0.0 || *k >= 1.0)
+    {
+        return Err(format!(
+            "an inner knot of a spline radius lies between 0 and 1 and is repeated at most {degree} times"
+        ));
+    }
+    Ok(degree)
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -285,6 +361,19 @@ impl<P> FilletDef<P> {
                     distance2: slot("distance2", distance2)?,
                     flip: *flip,
                 },
+                FilletSizeDef::Spline {
+                    start_vertex,
+                    knots,
+                    radii,
+                } => FilletSizeDef::Spline {
+                    start_vertex: start_vertex.clone(),
+                    knots: knots.clone(),
+                    radii: radii
+                        .iter()
+                        .enumerate()
+                        .map(|(k, r)| slot(&format!("radii[{k}]"), r))
+                        .collect::<Result<_, E>>()?,
+                },
             };
             let tangency_weight = match &set.tangency_weight {
                 Some(weight) => Some(slot("tangency_weight", weight)?),
@@ -316,11 +405,7 @@ impl FeatureInfo for FilletDef {
             references.edges(&set.edges);
             add_faces(&mut references, &set.faces);
             add_faces(&mut references, &set.reference_face);
-            if let FilletSizeDef::Variable {
-                start_vertex: Some(vertex),
-                ..
-            } = &set.size
-            {
+            if let Some(vertex) = set.size.start_vertex() {
                 for face in vertex.faces() {
                     references.features.extend(face.features());
                 }
@@ -370,6 +455,14 @@ impl FeatureInfo for FilletDef {
                     )));
                 }
             }
+            if let FilletSizeDef::Spline { knots, radii, .. } = &set.size {
+                spline_degree(knots, radii.len()).map_err(at)?;
+                if set.continuity == Continuity::Curvature {
+                    return Err(at(
+                        "a spline radius is not taken with curvature continuity".to_owned()
+                    ));
+                }
+            }
             if let Some(face) = &set.reference_face {
                 if !matches!(set.size, FilletSizeDef::Asymmetric { .. }) {
                     return Err(at(
@@ -412,6 +505,11 @@ impl FeatureInfo for FilletDef {
                     positive(distance1, "distance")?;
                     positive(distance2, "distance")?;
                 }
+                FilletSizeDef::Spline { radii, .. } => {
+                    for r in radii {
+                        positive(r, "control radius")?;
+                    }
+                }
             }
             if let Some(weight) = set.tangency_weight {
                 check_weight(value(weight))?;
@@ -438,6 +536,8 @@ enum Size {
     /// Start, end and the mid radii (position, radius).
     Variable(f64, f64, Vec<(f64, f64)>),
     Asymmetric(f64, f64),
+    /// The control radii of a spline radius.
+    Spline(Vec<f64>),
 }
 
 impl<K: Kernel> Evaluate<K> for FilletDef {
@@ -453,11 +553,7 @@ impl<K: Kernel> Evaluate<K> for FilletDef {
             if let Some(face) = &set.reference_face {
                 set.reference_face = Some(ctx.face_on(self.body, &shape, face)?);
             }
-            if let FilletSizeDef::Variable {
-                start_vertex: Some(vertex),
-                ..
-            } = &mut set.size
-            {
+            if let Some(vertex) = set.size.start_vertex_mut() {
                 *vertex = ctx.vertex_on(&shape, vertex)?;
             }
         }
@@ -509,6 +605,12 @@ impl FilletDef {
                     distance2,
                     ..
                 } => Size::Asymmetric(ctx.positive(*distance1)?, ctx.positive(*distance2)?),
+                FilletSizeDef::Spline { radii, .. } => Size::Spline(
+                    radii
+                        .iter()
+                        .map(|r| ctx.positive(*r))
+                        .collect::<Result<_, _>>()?,
+                ),
             });
             weights.push(match set.tangency_weight {
                 Some(id) => {
@@ -554,6 +656,14 @@ impl FilletDef {
                         distance2: *distance2,
                         reference: set.reference_face.as_ref(),
                         flip: matches!(def, FilletSizeDef::Asymmetric { flip: true, .. }),
+                    },
+                    (Size::Spline(radii), def) => FilletSize::Spline {
+                        start_vertex: def.start_vertex(),
+                        knots: match def {
+                            FilletSizeDef::Spline { knots, .. } => knots,
+                            _ => &[],
+                        },
+                        radii,
                     },
                 },
                 tangent_chain: set.tangent_chain,
@@ -647,6 +757,61 @@ mod tests {
                 .unwrap()
                 .contains("\"sets\"")
         );
+    }
+
+    #[test]
+    fn spline_radii_round_trip_name_their_slots_and_check_their_knots() {
+        let json = r#"{"type":"fillet","body":"F2.b0","sets":[
+            {"edges":["E{F2:a|F2:b}"],"size":{"type":"spline","start_vertex":"V{F2:a|F2:b|F2:d}",
+             "knots":[0.0,0.0,0.0,0.5,1.0,1.0,1.0],"radii":[2.0,4.0,"d7",3.0]},"tangent_chain":false}]}"#;
+        let def = parse(json).unwrap();
+        let again = parse(&serde_json::to_string(&def).unwrap()).unwrap();
+        assert_eq!(again, def);
+        let mut slots = Vec::new();
+        def.map_params(&mut |slot, _| {
+            slots.push(slot.to_owned());
+            Ok::<_, ()>(())
+        })
+        .unwrap();
+        assert_eq!(slots, ["radii[0]", "radii[1]", "radii[2]", "radii[3]"]);
+        assert!(!crate::parameters::slot_unit("sets[1].radii[0]").is_unitless());
+        let FeatureDef::Fillet(fillet) = &def else {
+            panic!("a fillet");
+        };
+        assert_eq!(
+            fillet.sets[0].size.start_vertex().map(ToString::to_string),
+            Some("V{F2:a|F2:b|F2:d}".to_owned())
+        );
+
+        use super::spline_degree;
+        assert_eq!(
+            spline_degree(&[0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0], 4),
+            Ok(2)
+        );
+        assert_eq!(spline_degree(&[0.0, 0.0, 1.0, 1.0], 2), Ok(1));
+        assert_eq!(
+            spline_degree(&[0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0], 4),
+            Ok(3)
+        );
+        for (knots, radii, expected) in [
+            (&[0.0, 0.0, 1.0][..], 2, "degree 1 to 3"),
+            (
+                &[0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0][..],
+                5,
+                "degree 1 to 3",
+            ),
+            (&[0.0, 0.0, 1.0, 1.0][..], 1, "2 to 100 control radii"),
+            (&[0.0, 0.0, 0.6, 0.5, 1.0, 1.0][..], 4, "must rise"),
+            (&[0.0, 0.1, 0.5, 1.0, 1.0][..], 3, "from 0 to 1"),
+            (
+                &[0.0, 0.0, 0.5, 0.5, 1.0, 1.0][..],
+                4,
+                "repeated at most 1 times",
+            ),
+        ] {
+            let error = spline_degree(knots, radii).unwrap_err();
+            assert!(error.contains(expected), "{knots:?}: {error}");
+        }
     }
 
     #[test]

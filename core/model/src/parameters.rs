@@ -404,9 +404,12 @@ pub fn slot_unit(slot: &str) -> Unit {
     if field.contains("angle") || field.ends_with("taper") {
         Unit::DEG
     } else if field == "revolutions"
+        || field == "end_scale"
         || field.starts_with("fraction")
         || field.ends_with("weight")
         || slot == "allowance.k"
+        // A motion link's ratio (mitcad#466).
+        || slot == "coupling.ratio"
     {
         Unit::NONE
     } else {

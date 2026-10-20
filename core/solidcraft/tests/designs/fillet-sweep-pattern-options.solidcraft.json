@@ -1,0 +1,125 @@
+{
+  "format": "solidcraft/27",
+  "name": "Fillet, sweep and pattern options",
+  "units": "mm",
+  "params": [{"name": "taper", "expr": "0.5", "unit": ""}],
+  "features": [
+    {
+      "id": 1, "name": "Box1", "type": "box", "body_names": ["Block"],
+      "corner": [0, 0, 0], "length": "60", "width": "40", "height": "20",
+      "operation": "new_body"
+    },
+    {
+      "id": 2, "name": "Fillet1", "type": "fillet",
+      "edges": [[30.0, 0.0, 20.0]],
+      "radius": "2 mm",
+      "style": {"type": "spline", "start": [0.0, 0.0, 20.0], "knots": [0, 0, 0, 0, 1, 1, 1, 1],
+                "radii": ["6 mm", "3 mm", "4 mm"]}
+    },
+    {
+      "id": 3, "name": "Section", "type": "sketch",
+      "plane": {"type": "origin", "name": "XZ"},
+      "sketch": {
+        "points": [
+          {"id": "origin", "pos": [0.0, 0.0], "fixed": true},
+          {"id": "c1.center", "pos": [80.0, 0.0], "fixed": true}
+        ],
+        "curves": [{"id": "c1", "type": "circle", "c": 1, "r": 2.0}],
+        "constraints": []
+      }
+    },
+    {
+      "id": 4, "name": "Path", "type": "sketch",
+      "plane": {"type": "origin", "name": "XY"},
+      "sketch": {
+        "points": [
+          {"id": "origin", "pos": [0.0, 0.0], "fixed": true},
+          {"id": "p1", "pos": [80.0, 0.0], "fixed": true},
+          {"id": "p2", "pos": [80.0, -50.0], "fixed": true}
+        ],
+        "curves": [{"id": "l1", "type": "line", "a": 1, "b": 2}],
+        "constraints": []
+      }
+    },
+    {
+      "id": 5, "name": "Sweep1", "type": "sweep", "body_names": ["Cone"],
+      "sketch": 3, "profiles": {"type": "all"}, "path_sketch": 4, "path": ["l1"],
+      "scale": "taper", "operation": "new_body"
+    },
+    {
+      "id": 6, "name": "Square", "type": "sketch",
+      "plane": {"type": "origin", "name": "XY"},
+      "sketch": {
+        "points": [
+          {"id": "origin", "pos": [0.0, 0.0], "fixed": true},
+          {"id": "p1", "pos": [115.0, -2.0], "fixed": true},
+          {"id": "p2", "pos": [125.0, -2.0], "fixed": true},
+          {"id": "p3", "pos": [125.0, 2.0], "fixed": true},
+          {"id": "p4", "pos": [115.0, 2.0], "fixed": true}
+        ],
+        "curves": [
+          {"id": "l1", "type": "line", "a": 1, "b": 2},
+          {"id": "l2", "type": "line", "a": 2, "b": 3},
+          {"id": "l3", "type": "line", "a": 3, "b": 4},
+          {"id": "l4", "type": "line", "a": 4, "b": 1}
+        ],
+        "constraints": []
+      }
+    },
+    {
+      "id": 7, "name": "Rails", "type": "sketch",
+      "plane": {"type": "origin", "name": "XZ"},
+      "sketch": {
+        "points": [
+          {"id": "origin", "pos": [0.0, 0.0], "fixed": true},
+          {"id": "p1", "pos": [120.0, 0.0], "fixed": true},
+          {"id": "p2", "pos": [120.0, -40.0], "fixed": true},
+          {"id": "p3", "pos": [115.0, 0.0], "fixed": true},
+          {"id": "p4", "pos": [113.0, -40.0], "fixed": true},
+          {"id": "p5", "pos": [125.0, 0.0], "fixed": true},
+          {"id": "p6", "pos": [127.0, -40.0], "fixed": true}
+        ],
+        "curves": [
+          {"id": "l1", "type": "line", "a": 1, "b": 2},
+          {"id": "l2", "type": "line", "a": 3, "b": 4},
+          {"id": "l3", "type": "line", "a": 5, "b": 6}
+        ],
+        "constraints": []
+      }
+    },
+    {
+      "id": 8, "name": "Sweep2", "type": "sweep", "body_names": ["Wedge"],
+      "sketch": 6, "profiles": {"type": "all"}, "path_sketch": 7, "path": ["l1"],
+      "rails": [{"sketch": 7, "curves": ["l2"]}, {"sketch": 7, "curves": ["l3"]}],
+      "operation": "new_body"
+    },
+    {
+      "id": 9, "name": "Box2", "type": "box", "body_names": ["Peg"],
+      "corner": [0, 60, 0], "length": "4", "width": "4", "height": "4",
+      "operation": "new_body"
+    },
+    {
+      "id": 10, "name": "Chain", "type": "sketch",
+      "plane": {"type": "origin", "name": "XY"},
+      "sketch": {
+        "points": [
+          {"id": "origin", "pos": [0.0, 0.0], "fixed": true},
+          {"id": "p1", "pos": [2.0, 62.0], "fixed": true},
+          {"id": "p2", "pos": [32.0, 62.0], "fixed": true},
+          {"id": "p3", "pos": [32.0, 92.0], "fixed": true}
+        ],
+        "curves": [
+          {"id": "l1", "type": "line", "a": 1, "b": 2},
+          {"id": "l2", "type": "line", "a": 2, "b": 3}
+        ],
+        "constraints": []
+      }
+    },
+    {
+      "id": 11, "name": "Pattern1", "type": "pattern", "features": [], "bodies": ["Peg"],
+      "pattern": {"type": "path", "path_sketch": 10, "path": ["l1", "l2"], "count": "3",
+                  "spacing": "25", "orient": true}
+    }
+  ],
+  "next_id": 12
+}

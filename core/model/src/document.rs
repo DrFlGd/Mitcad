@@ -74,6 +74,13 @@ pub use auto_operation::AutoOperation;
 // (mitcad#401); a feature added at a timeline position (mitcad#403).
 mod command_outcome;
 mod insert;
+// Motion studies and contact sets (mitcad#454).
+mod motion;
+pub use joints::Driven;
+pub(crate) use motion::joint_motions;
+pub use motion::{JointValues, MotionOutcome};
+// Motion links between joints (mitcad#466).
+mod motion_links;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
@@ -228,6 +235,10 @@ pub struct DocState {
     /// feature (mitcad#408, `features/pieces.rs`): taken from each
     /// recompute, saved with the features.
     pub(crate) split_pieces: crate::features::SplitPieces,
+    /// Motion studies (mitcad#454), in the order they were added.
+    pub(crate) motion_studies: Vec<crate::motion::MotionStudy>,
+    /// Contact sets (mitcad#454), in the order they were added.
+    pub(crate) contact_sets: Vec<crate::motion::ContactSet>,
 }
 
 impl Default for DocState {
@@ -255,6 +266,8 @@ impl Default for DocState {
             join_tolerance: None,
             library_sources: Default::default(),
             split_pieces: BTreeMap::new(),
+            motion_studies: Vec::new(),
+            contact_sets: Vec::new(),
         }
     }
 }
@@ -1895,6 +1908,9 @@ impl<K: Kernel> Document<K> {
         }
         // Timeline groups stay runs whatever the edit did (P9).
         next.normalize_groups();
+        // Studies and contact sets lose what deleted joints and
+        // occurrences leave behind (mitcad#454).
+        next.prune_motion();
         // A sketch that got its first consumer hides, one that lost its
         // last shows (mitcad#7).
         next.follow_sketch_use(&self.state);

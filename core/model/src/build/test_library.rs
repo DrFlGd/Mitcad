@@ -3,8 +3,8 @@
 //! slot profiles of three systems (made as the profile layout says: a
 //! section on XY extruded by `L`, `mount:` frames at its ends and slots),
 //! a profile with closed sides, a cap, a bracket with its nut and screw,
-//! panels sized by parameters or fixed, and a rail with its carriage. A
-//! resolver in memory serves them at two versions.
+//! panels sized by parameters or fixed, a rail with its carriage and a
+//! slider for a slot. A resolver in memory serves them at two versions.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -473,6 +473,32 @@ impl TestLibrary {
                 part_number: "R15".to_owned(),
                 name: "Rail 15".to_owned(),
                 designation: "Rail 15 L={L}".to_owned(),
+            },
+        );
+        // A slider that slides in a B8 slot (mitcad#448): a block 20 long
+        // along its slot frame's x axis, the frame on its underside.
+        add(
+            "slider8",
+            V1,
+            Part {
+                text: block_design(
+                    [20.0, 12.0, 5.0],
+                    [-10.0, -6.0],
+                    &[
+                        ("slot", [0.0; 3], [0.0, 0.0, -1.0], [1.0, 0.0, 0.0]),
+                        ("top", [0.0, 0.0, 5.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]),
+                    ],
+                ),
+                build: Some(json!({
+                    "role": "linear",
+                    "systems": [{"type": "B", "slot": 8}],
+                    "frames": [{"name": "slot", "kind": "slot"}, {"name": "top", "kind": "face"}],
+                    "linear": {"kind": "carriage",
+                               "mate": {"frame": "slot", "on": "slot", "joint": "slider", "axis": "x"}}
+                })),
+                part_number: "SL8".to_owned(),
+                name: "Slider B8".to_owned(),
+                designation: String::new(),
             },
         );
         Arc::new(library)

@@ -286,6 +286,33 @@ joint's motion; its target is a target row, named in dependencies.
   measure its value holds, for frames where they are (the model checks
   constraints whose sides cannot move with them).
 
+### Couplings
+
+`add_coupling(RigidCoupling)` (mitcad#466) ties one joint's motion (the
+follower) to another's (the driver), numbered with the joints and in
+the same solves, drags and analyses (`tests/rigid_couplings.rs`): one
+row `follower − relation(driver)` (scaled by the system's size for a
+turning follower). `Relation::Linear { ratio, offset }` is a gear pair,
+a rack and pinion or a screw; `Relation::Table { values, offset }` is a
+periodic table over one turn of the driver (a cam's follower), between
+its samples a cubic Hermite piece with slopes limited as Fritsch and
+Carlson limit them, so it never passes the samples either side.
+
+- **Who drives.** A follower whose driver is determined (driven to a
+  target, or followed from a driven motion through couplings) lets go
+  of its own target, as does every table's follower; a linear follower
+  driven while its driver is free drives the driver (the row is the
+  same either way).
+- **Placing first.** A follower's start value is the relation at its
+  driver's start value, so the free side of its joint is placed there.
+  A free turn without limits is known from the bodies only up to whole
+  turns; a driver's turn is taken where its follower is (the turn whose
+  relation is nearest to it), so a gear turned past half a turn keeps
+  its mate where it is.
+- **Analysis.** The row counts in the rank: two gears on revolute
+  joints have one degree of freedom together; a coupling that
+  contradicts driven motions is named in the conflict.
+
 ## Performance
 
 Benchmark (release build):

@@ -16,6 +16,13 @@ pub(crate) use relief::corner_relief;
 // A face joined coplanar to a sheet's panel (mitcad#242).
 mod join;
 pub(crate) use join::join_face;
+// Contour Flange, Convert to Sheet Metal and Perforate (mitcad#461).
+mod contour;
+pub(crate) use contour::contour;
+mod perforate;
+pub(crate) use perforate::perforate;
+mod convert;
+pub(crate) use convert::convert;
 
 use super::*;
 use crate::features::sheet::SheetRulesDef;

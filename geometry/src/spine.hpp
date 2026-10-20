@@ -58,6 +58,12 @@ public:
   // The arc length of the wire's point nearest to `near`.
   double nearest(const gp_Pnt& near) const;
 
+  // The arc lengths where the wire crosses the plane, in order along it
+  // (mitcad#469). An end of an open wire within `tolerance` of the plane
+  // counts as a crossing there (a rail drawn to end where a path ends),
+  // unless a crossing is found within `tolerance` of it.
+  std::vector<double> crossings(const gp_Pln& plane, double tolerance) const;
+
   // The part between arc lengths `from` < `to`; on a closed wire `from`
   // may be negative and the part runs on through the wire's start.
   TopoDS_Wire part(double from, double to) const;

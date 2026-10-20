@@ -25,8 +25,10 @@
 #      length in each mode, mitcad#431).
 #   4. Connector at a junction (shown on the hover), previewed in place.
 #   5. Panel from an inner face.
-#   6. Linear Part: a rail, a carriage on it (each chosen in the part
-#      picker from the Part tile); Ends: a mitred, bored end.
+#   6. Linear Part: a rail, a carriage on it, a slider on two sides of
+#      a profile, each on the side picked (its hover previewed
+#      there; mitcad#448) (each chosen in the part picker from the Part
+#      tile); Ends: a mitred, bored end.
 #   7. Save, reopen; Cut List: rows, Copy as CSV, Save as PDF.
 #   8. The part picker (mitcad#418), with a 30 profile of another system in
 #      the library's next version: opened from Profile's Part tile
@@ -36,6 +38,14 @@
 #      the 30 profile and opens it filtered to its system, Favourites, In
 #      this design after the placement. Its clicks are posted to the
 #      picker's own window.
+#   9. The part a command starts with (mitcad#452), with a second 30
+#      profile of the same system in the library's next version, starred
+#      too: a new design starts with the first favourite (the picker's
+#      first tile), the design that placed the other one with that one, a
+#      new design again with the first favourite, which the picker shows.
+#  10. Shift + click places at once (mitcad#451): on the XY plane and on a
+#      profile's side without Place; a plain click only previews; over the
+#      part's longest length it is refused and places nothing.
 #
 # Usage: powershell -ExecutionPolicy Bypass -File tools\ui-windows-build-test.ps1 [-App build\dev\mitcad.exe] [-Out dir] [-QtBin dir] [-Shots dir]
 # -Shots (default: UI_BUILD_SHOTS, as in the Linux test) saves a screenshot
@@ -136,6 +146,10 @@ $rail15 = @((Bar 15), (Frame 'rail' '[0, 7.5, 0]' '[0, 1, 0]' '[0, 0, 1]'), (Fra
 Design 'linear\rail-test.mitcad' ($rail15 + $end)
 $carriage = @((Block '30' '20' '20'), (Frame 'rail' '[15, 10, 0]' '[0, 0, -1]' '[1, 0, 0]')) -join "`n"
 Design 'linear\carriage-test.mitcad' ($carriage + $end)
+# A slider that slides in a slot (mitcad#448): its frame on its underside.
+$slider = @((Block '20' '10' '5'), (Frame 'slot' '[10, 5, 0]' '[0, 0, -1]' '[1, 0, 0]'),
+  (Frame 'top' '[10, 5, 5]' '[0, 0, 1]' '[1, 0, 0]')) -join "`n"
+Design 'linear\slider-test.mitcad' ($slider + $end)
 
 Set-Content -Encoding ascii (Join-Path $library 'mitcad-library.json') @'
 {
@@ -175,7 +189,12 @@ Set-Content -Encoding ascii (Join-Path $library 'mitcad-library.json') @'
     {"id": "carriage-test", "path": "linear/carriage-test.mitcad", "name": "Carriage 15 test", "category": "linear",
      "supplier": "Test supplier", "part_number": "C15-T",
      "build": {"role": "linear", "frames": [{"name": "rail", "kind": "rail"}],
-       "linear": {"kind": "carriage", "mate": {"frame": "rail", "on": "rail", "joint": "slider", "axis": "x"}}}}
+       "linear": {"kind": "carriage", "mate": {"frame": "rail", "on": "rail", "joint": "slider", "axis": "x"}}}},
+    {"id": "slider-test", "path": "linear/slider-test.mitcad", "name": "Slider 5 test", "category": "linear",
+     "supplier": "Test supplier", "part_number": "S5-T",
+     "build": {"role": "linear", "systems": [{"type": "I", "slot": 5, "grid": 20}],
+       "frames": [{"name": "slot", "kind": "slot"}, {"name": "top", "kind": "face"}],
+       "linear": {"kind": "carriage", "mate": {"frame": "slot", "on": "slot", "joint": "slider", "axis": "x"}}}}
   ]
 }
 '@
@@ -671,6 +690,7 @@ Ui-ExpectNew 'Profile: Length = Auto: to the face it meets' 'Tab: to the face ag
 Ui-ExpectNew 'Cursor box Profile length: ' 'the auto length in the box at the cursor'
 Ui-ExpectNew '(bound, auto: to the face to ' "bound to the third profile's face"
 Place 'Profile 20 test'
+$b4 = Placed-Body
 Ui-ExpectNew 'length bound, auto: to the face' 'its length is bound'
 Ui-Mark
 Ui-Step 'Close (Escape)'                 { Ui-Key 'Escape' }
@@ -717,10 +737,10 @@ Ui-Step 'Place (Enter)'                  { Ui-Key 'Return' }
 Ui-ExpectNew 'Placed panel Panel test as ' 'the panel placed' 30
 Ui-Step 'Close (Escape)'                 { Ui-Key 'Escape' }
 
-Write-Host '--- 6. Linear Part: a rail and a carriage'
+Write-Host '--- 6. Linear Part: a rail, a carriage and a slider'
 Ui-Mark
 Ui-Step 'Linear Part (F7)'               { Ui-Key 'F7' }
-Ui-ExpectNew 'BUILD parts linear: 2' 'the rail and the carriage'
+Ui-ExpectNew 'BUILD parts linear: 3' 'the rail, the carriage and the slider'
 Choose-InPicker 'Linear Part' 'test-profiles/rail-test'
 Ui-Step 'a typed length of 200'          { Ui-TypeIn 'Panel Linear Part input length' '200' }
 # Another side of the first profile than the frame's, else that one.
@@ -740,6 +760,37 @@ Ui-Mark
 Ui-Step "the rail's $railTop"            { Pick-Face $bRail $railTop }
 Ui-ExpectNew 'Inspect Linear Part: ' "the carriage's preview"
 Place 'Carriage 15 test'
+# A slider on two sides of a profile (mitcad#448): each on the side picked,
+# as a profile on a side, not on the profile's first frame.
+Choose-InPicker 'Linear Part' 'test-profiles/slider-test'
+Refresh-Picks 'Linear Part'
+# Two sides of a profile that a click can reach: the first profile's sides
+# are mostly covered (the panel, the rail and the carriage), so of the
+# profiles with two side pick places, the rail's last.
+$bSlider = $null
+$sliderFaces = @()
+foreach ($body in @($b2, $b3, $b4, $b1)) {
+  if (-not $body) { continue }
+  $faces = @(Faces-Of $body $side)
+  if ($faces.Count -ge 2) { $bSlider = $body; $sliderFaces = $faces; break }
+}
+if (-not $bSlider) { Ui-Fail "no profile ($b1, $b2, $b3, $b4) with two sides to pick" }
+$slide1 = $sliderFaces[0]
+$slide2 = $sliderFaces[1]
+$hover = Ui-PickAt "$bSlider/$slide1 at"
+Ui-Mark
+Ui-Step "the mouse on $bSlider's $slide1" { [UiInput]::Move($script:UiWindow, $hover[0], $hover[1], 0x04) }
+Ui-ExpectNew 'BUILD hover on ' 'the hover on the side'
+Ui-ExpectNew 'Inspect Linear Part: place side' 'the hover previews the slider on the side'
+Ui-Mark
+Ui-Step "$bSlider's $slide1"             { Pick-Face $bSlider $slide1 }
+Ui-ExpectNew 'Inspect Linear Part: place side' 'the slider on the side picked (On the side)'
+Place 'Slider 5 test'
+Refresh-Picks 'Linear Part'
+Ui-Mark
+Ui-Step "$bSlider's $slide2"             { Pick-Face $bSlider $slide2 }
+Ui-ExpectNew 'Inspect Linear Part: place side' 'the slider on the other side picked (On the side)'
+Place 'Slider 5 test'
 Ui-Step 'Close (Escape)'                 { Ui-Key 'Escape' }
 
 Write-Host '--- 6b. Ends: an end of the third profile mitred and bored'
@@ -901,5 +952,162 @@ Ui-ExpectNew 'Part picker group In this design: 1 parts, first test-profiles/p30
 Ui-Mark
 Ui-Step 'Close (Escape)'                 { Ui-Key 'Escape' }
 Ui-ExpectNew 'Part picker closed with build.profile' 'the picker closes with Profile'
+
+# --- mitcad#452: the part a command starts with (part 9 of the Linux test).
+Write-Host '--- 9. A new design starts with the first favourite (mitcad#452)'
+# A second profile of the 30 system in the library's next version, starred
+# beside the 30 profile starred in 8: two favourites of one system. The app
+# stops first: the fetch replaces the library's files.
+Ui-StopApp
+Copy-Item (Join-Path $library 'profiles\p30-test.mitcad') (Join-Path $library 'profiles\p30h-test.mitcad')
+$p30hEntry = $p30Entry.Replace('p30-test', 'p30h-test').Replace('Profile 30 test', 'Profile 30 heavy test').Replace(
+  'P30-T', 'P30H-T')
+$manifest = [System.IO.File]::ReadAllText($manifestPath)
+if (-not $manifest.Contains($bracketEntry)) { Ui-Fail "the manifest has no '$bracketEntry'" }
+$manifest = $manifest.Replace('"library_version": "1.1.0"', '"library_version": "1.2.0"').Replace(
+  $bracketEntry, $p30hEntry + "`n" + $bracketEntry)
+Set-Content -Encoding ascii $manifestPath $manifest
+foreach ($arguments in @(@('add', '-A'), @('commit', '-q', '-m', 'A heavy 30 profile'), @('tag', 'v1.2.0'))) {
+  $output = & $git.Source -C $library -c user.name=T -c user.email=t@example.invalid @arguments 2>&1
+  if ($LASTEXITCODE -ne 0) { Ui-Fail "git $($arguments -join ' '): $($output -join ' / ')" }
+}
+Run-Cli 'library fetch of v1.2.0' @('library', 'fetch', $library)
+# The test library's names of the 30 profiles.
+$p30Names = @{ 'p30-test' = 'Profile 30 test'; 'p30h-test' = 'Profile 30 heavy test' }
+
+# A new design (no file); the stars of 8 are kept in the test's settings.
+Ui-StartApp 'build-favourites'
+Ui-Step 'the BUILD tab'                  { Ui-ClickLogged 'Ribbon tab BUILD' }
+Ui-Mark
+Ui-Step 'Profile (F3)'                   { Ui-Key 'F3' }
+Ui-ExpectNew 'BUILD parts profile: 3 (0 in the design)' 'the three profiles of the library'
+Ui-ExpectNew 'BUILD profile starts with test-profiles/p30-test: the first favourite' 'a new design starts with the starred profile, the only favourite'
+Ui-ExpectNew 'Panel Profile tile part: Profile 30 test' 'its tile'
+Ui-Mark
+Ui-Step 'the part picker (the Part tile)' { Ui-ClickLogged 'Panel Profile input part' }
+Ui-ExpectNew 'Part picker opened: 3 parts for build.profile' 'the picker with the three profiles'
+Ui-ExpectNew 'Part picker shows the part chosen: test-profiles/p30-test' 'the picker shows the part chosen'
+Ui-ExpectNew 'Part picker tile test-profiles/p30h-test at ' "the heavy profile's tile"
+Ui-Mark
+Ui-Step 'the heavy profile'              { Picker-Click 'Part picker tile test-profiles/p30h-test' }
+Ui-ExpectNew 'Part picker chose test-profiles/p30h-test' 'chosen in the picker'
+Ui-Mark
+Ui-Step 'star it (Star)'                 { Picker-Click 'Part picker place star' }
+Ui-ExpectNew 'Part picker star p30h-test on' 'a second favourite'
+Ui-ExpectNew 'Part picker group All parts: 3 parts, first test-profiles/p30' 'the favourites first'
+# The first favourite in the picker's order (the catalog's among the
+# starred), from the group's line since the star, and the other one.
+$first = $null
+for ($i = 0; $i -lt 30 -and -not $first; $i++) {
+  $first = Ui-LogLines | Select-Object -Skip $script:UiMark |
+    ForEach-Object { if ($_ -match '^Part picker group All parts: 3 parts, first test-profiles/(p30[a-z]*-test)$') { $Matches[1] } } |
+    Select-Object -Last 1
+  if (-not $first) { Start-Sleep -Milliseconds 200 }
+}
+switch ("$first") {
+  'p30-test' { $second = 'p30h-test' }
+  'p30h-test' { $second = 'p30-test' }
+  default { Ui-Fail "the picker's first tile is no 30 profile ('$first')" }
+}
+Write-Host "ok   the first favourite is $first, the second $second"
+Ui-Mark
+Ui-Step 'Close (Escape)'                 { Ui-Key 'Escape' }
+Ui-ExpectNew 'Part picker closed with build.profile' 'the picker closes with Profile'
+Ui-Mark
+Ui-Step 'Profile again (F3)'             { Ui-Key 'F3' }
+Ui-ExpectNew "BUILD profile starts with test-profiles/${first}: the first favourite" 'the design has no profile yet: the first favourite of the system'
+Choose-InPicker 'Profile' "test-profiles/$second"
+Place $p30Names[$second]
+Ui-Step 'Close (Escape)'                 { Ui-Key 'Escape' }
+Ui-Mark
+Ui-Step 'Profile in the same design (F3)' { Ui-Key 'F3' }
+Ui-ExpectNew "BUILD profile starts with test-profiles/${second}: " 'the part placed last in this design'
+Ui-ExpectNew "Panel Profile tile part: $($p30Names[$second])" 'its tile'
+Ui-Step 'Close (Escape)'                 { Ui-Key 'Escape' }
+# The message boxes titled "Mitcad" are new windows (Ui-FocusDialog).
+$before = Ui-Windows '^Mitcad$'
+Ui-Mark
+Ui-Step 'new design (Ctrl+N)'            { Ui-Key 'ctrl+n' }
+Ui-FocusDialog '^Mitcad$' -Except $before
+Ui-Step "don't save (D)"                 { Ui-Key 'd' }
+Ui-FocusMain
+Ui-ExpectNew 'New document' 'a new design'
+Ui-Mark
+Ui-Step 'Profile in the new design (F3)' { Ui-Key 'F3' }
+Ui-ExpectNew "BUILD profile starts with test-profiles/${first}: the first favourite" 'the first favourite again, not the part of the earlier design'
+Ui-ExpectNew "Panel Profile tile part: $($p30Names[$first])" 'its tile'
+Ui-Mark
+Ui-Step 'the part picker (the Part tile)' { Ui-ClickLogged 'Panel Profile input part' }
+Ui-ExpectNew "Part picker shows the part chosen: test-profiles/$first" 'the picker shows and highlights it'
+Ui-Mark
+Ui-Step 'Close (Escape)'                 { Ui-Key 'Escape' }
+Ui-ExpectNew 'Part picker closed with build.profile' 'the picker closes with Profile'
+
+# mitcad#451: Shift + click on a placement's pick input is the pick and
+# Place at once (InputDef::withShiftClickApplies), as part 10 of the Linux
+# test: in a new design a Shift + click on the XY plane places the first
+# profile without Place, a plain click on its side only previews, a Shift +
+# click there places the next; with a typed length over the part's longest
+# a Shift + click is refused, places nothing and the panel says why. The
+# clicks carry Shift in the keyboard state and the button messages
+# (Ui-ClickWith).
+Write-Host '--- 10. Shift + click places at once (mitcad#451)'
+function Shift-PickFace([string]$Body, [string]$Face) {
+  $at = Ui-PickAt "$Body/$Face at"
+  Ui-ClickWith 'shift' $at[0] $at[1]
+}
+# No-Placement description: no "Placed ..." line since the mark, once the
+# app has handled the input.
+function No-Placement([string]$Description) {
+  Start-Sleep -Seconds 1
+  Ui-Sync
+  $placed = Ui-LogLines | Select-Object -Skip $script:UiMark | Where-Object { $_.StartsWith('Placed ') } |
+    Select-Object -First 1
+  if ($placed) { Ui-Fail "${Description}: $placed" }
+  Write-Host "ok   $Description"
+}
+Ui-StartApp 'build-shift-click'
+Ui-Step 'the BUILD tab'                  { Ui-ClickLogged 'Ribbon tab BUILD' }
+Ui-Mark
+Ui-Step 'Profile (F3)'                   { Ui-Key 'F3' }
+Ui-ExpectNew 'Command Profile started' 'Profile started'
+Ui-ExpectNew 'View hint Profile: Click a plane or a face, or press Enter; Shift+click places at once' "the view's hint names Shift+click"
+# Shorter than the stock length, as in part 3: its sides stay in reach of
+# a click in session 0's smaller window.
+Ui-Step 'a typed length of 400'          { Ui-TypeIn 'Panel Profile input length' '400' }
+Ui-Mark
+Ui-Step 'Shift+click on the XY plane'    { $at = Ui-LoggedAt 'Datum xy'; Ui-ClickWith 'shift' $at[0] $at[1] }
+Ui-ExpectNew 'Profile Place On: Shift+click places at once' 'a Shift+click on the plane'
+Ui-ExpectNew 'Placed Profile ' 'the first profile placed without Place' 30
+Ui-ExpectNew 'Applied Profile (1)' 'the panel stays for the next one'
+$b10 = Placed-Body
+if (-not $b10) { Ui-Fail 'no body of the profile placed by Shift+click' }
+Refresh-Picks 'Profile'
+$sides10 = @(Faces-Of $b10 $side)
+if ($sides10.Count -eq 0) { Ui-Fail "no side of the profile ($b10) to pick" }
+Ui-Mark
+Ui-Step 'a plain click on its side'      { Pick-Face $b10 $sides10[0] }
+Ui-ExpectNew 'Inspect Profile: place side' 'a plain click previews on the side'
+No-Placement 'a plain click only previews'
+Ui-Mark
+Ui-Step 'Shift+click on its side'        { Shift-PickFace $b10 $sides10[0] }
+Ui-ExpectNew 'Profile Place On: Shift+click places at once' 'a second Shift+click'
+Ui-ExpectNew 'Placed Profile ' 'the next profile placed on the side without Place' 30
+Ui-ExpectNew 'Applied Profile (2)' 'the panel stays for the next one'
+# A placement the model refuses: a length over the part's 3000 mm.
+Ui-Step 'a typed length of 5000'         { Ui-TypeIn 'Panel Profile input length' '5000' }
+Refresh-Picks 'Profile'
+$sides10 = @(Faces-Of $b10 $side)
+if ($sides10.Count -eq 0) { Ui-Fail "no side of the profile ($b10) to pick again" }
+Ui-Mark
+Ui-Step 'Shift+click on its side again'  { Shift-PickFace $b10 $sides10[0] }
+Ui-ExpectNew 'Profile Place On: Shift+click places at once' 'a Shift+click that cannot place'
+Ui-ExpectNew 'Profile: OK refused' 'the placement refused'
+Ui-ExpectNew 'Inspect Profile: failed: ' 'the panel shows why'
+Ui-ExpectNew "longer than the part's longest, 3000 mm" "the reason: the length is over the part's longest"
+No-Placement 'a failed Shift+click makes nothing'
+Ui-Mark
+Ui-Step 'Close (Escape)'                 { Ui-Key 'Escape' }
+Ui-ExpectNew 'Closed Profile after 2' 'Close keeps the two'
 
 Ui-Finish 'UI Windows BUILD test'

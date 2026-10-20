@@ -1,0 +1,153 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: a blend rolling on an edge whose other contact crosses onto the
+face of the spine's next edge goes on along it; that face is no face at
+the end (mitcad#343).
+
+The case: a notch wall, a strip narrower than the radius, rounded along
+its edges with an earlier rounding R and, past their common vertex, with
+a cone; R is tangent to the cone along an edge that runs to the spine's
+vertex between the two edges. The ball touches R and rolls on the wall's
+far edge; where its contact on R reaches R's edge with the cone, that edge's
+face beyond (the cone) holds the spine's end vertex, as the face of the
+spine's second edge does. The walk then took the cone for the face at the
+end and stopped (ObstacleAtSpineEnd), with most of the spine unwalked, and
+ChFi3d_ExtendAtSpineEnds extended that piece past the crossing, over the
+next one, for the face at the end to cut it.
+
+- ChFi3d_ArcOntoSpineFaces: whether a contact left its face across an arc
+  that does not run to the spine's end vertex, onto faces that all border
+  edges of the spine. PerformSetOfSurfOnElSpine does not end a walk rolling
+  on an obstacle at such a contact.
+- ChFi3d_ExtendAtSpineEnds extends a piece only at an arc whose face beyond
+  borders no edge of the spine.
+
+Upstream: new.
+
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+index 65a9de67..85d13d89 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+@@ -1653,6 +1653,52 @@ static bool faceAlongSpine(const occ::handle<ChFiDS_Spine>& Spine,
+   return false;
+ }
+ 
++// Whether the contact of SD's end (its start with isFirst) on side ons left
++// its face across an arc that does not run to the spine's end vertex Bout,
++// onto faces that all border edges of the spine: the faces the blend goes
++// on along (a contact crossing onto the face of the spine's next edge), not
++// a face at the end, though they hold Bout.
++static bool ChFi3d_ArcOntoSpineFaces(const occ::handle<ChFiDS_SurfData>& SD,
++                                     const bool                          isFirst,
++                                     const int                           ons,
++                                     const TopoDS_Vertex&                Bout,
++                                     const occ::handle<ChFiDS_Spine>&    Spine,
++                                     const TopOpeBRepDS_DataStructure&   DStr,
++                                     const ChFiDS_Map&                   EFMap)
++{
++  if (SD.IsNull() || Bout.IsNull() || SD->Index(ons) <= 0)
++  {
++    return false;
++  }
++  const ChFiDS_CommonPoint& CP = SD->Vertex(isFirst, ons);
++  if (!CP.IsOnArc() || CP.IsVertex() || !EFMap.Contains(CP.Arc()))
++  {
++    return false;
++  }
++  for (TopExp_Explorer ex(CP.Arc(), TopAbs_VERTEX); ex.More(); ex.Next())
++  {
++    if (ex.Current().IsSame(Bout))
++    {
++      return false;
++    }
++  }
++  const TopoDS_Shape& F      = DStr.Shape(SD->Index(ons));
++  bool                anyFace = false;
++  for (NCollection_List<TopoDS_Shape>::Iterator it(EFMap(CP.Arc())); it.More(); it.Next())
++  {
++    if (it.Value().IsSame(F))
++    {
++      continue;
++    }
++    if (!faceAlongSpine(Spine, TopoDS::Face(it.Value()), EFMap))
++    {
++      return false;
++    }
++    anyFace = true;
++  }
++  return anyFace;
++}
++
+ //=================================================================================================
+ 
+ bool ChFi3d_Builder::ObstacleAtSpineEnd(const occ::handle<ChFiDS_SurfData>& SD,
+@@ -5412,7 +5458,14 @@ void ChFi3d_Builder::PerformSetOfSurfOnElSpine(const occ::handle<ChFiDS_ElSpine>
+       if (!fini && intl && (obstacleon1 || obstacleon2) && !Spine->IsPeriodic()
+           && (Last >= lastedlastp - 10. * tolesp
+               || (ObstacleAtSpineEnd(ref, false, obstacleon1 ? 2 : 1, Spine->LastVertex())
+-                  && !RollsOnPastVertex(ref, false, Spine->LastVertex()))))
++                  && !RollsOnPastVertex(ref, false, Spine->LastVertex())
++                  && !ChFi3d_ArcOntoSpineFaces(ref,
++                                               false,
++                                               obstacleon1 ? 2 : 1,
++                                               Spine->LastVertex(),
++                                               Spine,
++                                               DStr,
++                                               myEFMap))))
+       {
+         fini = true;
+       }
+@@ -5502,7 +5555,14 @@ void ChFi3d_Builder::PerformSetOfSurfOnElSpine(const occ::handle<ChFiDS_ElSpine>
+       if (!fini && intf && (obstacleon1 || obstacleon2) && !Spine->IsPeriodic()
+           && (First <= Spine->FirstParameter(1) + 10. * tolesp
+               || (ObstacleAtSpineEnd(ref, true, obstacleon1 ? 2 : 1, Spine->FirstVertex())
+-                  && !RollsOnPastVertex(ref, true, Spine->FirstVertex()))))
++                  && !RollsOnPastVertex(ref, true, Spine->FirstVertex())
++                  && !ChFi3d_ArcOntoSpineFaces(ref,
++                                               true,
++                                               obstacleon1 ? 2 : 1,
++                                               Spine->FirstVertex(),
++                                               Spine,
++                                               DStr,
++                                               myEFMap))))
+       {
+         fini = true;
+       }
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_FilBuilder.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_FilBuilder.cxx
+index c1b8e4f2..bf22f3c9 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_FilBuilder.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_FilBuilder.cxx
+@@ -2065,12 +2065,30 @@ static void ChFi3d_ExtendAtSpineEnds(const occ::handle<ChFiDS_SurfData>& Data,
+                anExt.PointOnRst(1).ParameterOnArc(),
+                TopAbs_FORWARD);
+     const TopoDS_Vertex aBout = f == 0 ? Spine->FirstVertex() : Spine->LastVertex();
+-    // Only an arc between FS and a face at the end of the spine.
++    // Only an arc between FS and a face at the end of the spine (not a
++    // face that borders an edge of the spine: the blend goes on along it).
++    const auto alongSpine = [&](const TopoDS_Shape& F) {
++      for (int i = 1; i <= Spine->NbEdges(); i++)
++      {
++        if (!EFMap.Contains(Spine->Edges(i)))
++        {
++          continue;
++        }
++        for (NCollection_List<TopoDS_Shape>::Iterator it(EFMap(Spine->Edges(i))); it.More(); it.Next())
++        {
++          if (it.Value().IsSame(F))
++          {
++            return true;
++          }
++        }
++      }
++      return false;
++    };
+     bool atEnd = false;
+     for (NCollection_List<TopoDS_Shape>::Iterator itF(EFMap(aCP.Arc())); itF.More() && !atEnd;
+          itF.Next())
+     {
+-      atEnd = !itF.Value().IsSame(FS) && VFMap.Contains(aBout);
++      atEnd = !itF.Value().IsSame(FS) && VFMap.Contains(aBout) && !alongSpine(itF.Value());
+     }
+     if (atEnd && ChFi3d_ArcEndsSpine(aCP, FS, aBout, EFMap, VFMap))
+     {

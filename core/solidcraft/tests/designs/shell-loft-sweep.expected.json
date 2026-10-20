@@ -1,0 +1,12 @@
+{
+  "comment": "Worked out by hand: a 40 x 40 x 20 box shelled 2 inside, its top open (32000 - 36 * 36 * 18 = 8672), moved 100 along x; a loft of a 20 square up 30 to a 10 square (30 / 3 * (400 + 100 + 200) = 7000); a circle of r 2 swept 50 along -y (pi * 4 * 50 = 628.3185).",
+  "body_count": 3,
+  "total": {"volume_mm3": 16300.3185307180},
+  "bbox": {"min": [-10, -50, -2], "max": [140, 110, 30]},
+  "bodies": [
+    {"name": "Cup", "volume_mm3": 8672, "bbox": {"min": [100, 0, 0], "max": [140, 40, 20]}},
+    {"name": "Frustum", "volume_mm3": 7000},
+    {"name": "Rod", "volume_mm3": 628.3185307180}
+  ],
+  "parametric": 9
+}

@@ -10,6 +10,7 @@
 #include <vector>
 
 #include <QByteArrayView>
+#include <QDialog>
 #include <QHash>
 #include <QJsonArray>
 #include <QJsonObject>
@@ -208,6 +209,8 @@ public:
   QString lastError() const override { return m_lastError; }
   bool canChangeModel(bool visibilityOnly = false) const override;
   QString readOnlyReason() const override;
+  // The live MCP document id, new with every design (mitcad#452).
+  QString designId() const override { return m_mcpDocumentId; }
   void showStatus(const QString& message, bool error) override;
   void editFeature(const QString& uid) override;
   void startCommand(const QString& id, const Selection& preselection,
@@ -221,6 +224,9 @@ public:
   void exportSketch(const QString& sketch) override;
   void editAnalysis(const QString& name) override;
   void animateJoint(const QString& uid) override;
+  // Motion studies and contact sets (mitcad#454; MainWindowMotion.cpp).
+  void openMotionStudy(const QString& name) override;
+  void editContactSet(const QString& name) override;
   void setIsolation(const Selection& items) override;
   const Selection& isolation() const override { return m_isolation; }
   void setOriginShown(bool shown) override;
@@ -497,6 +503,8 @@ private:
 
   void newDocument();
   bool deferForNativeCommand(std::function<void()> action);
+  void clearNativeCommandContinuation();
+  QMetaObject::Connection m_nativeCommandContinuation;
   void openDocument();
   bool save();
   bool saveAs();
@@ -963,6 +971,7 @@ private:
     gp_Pnt grabbed;  // the point dragged, in the parent's coordinates
     gp_Pnt target;   // where it was dragged to, in the parent's coordinates
     std::vector<BodyDisplay> bodies; // as shown when the drag began
+    QString contact; // the contact that stops it now (mitcad#454), if any
   };
   std::optional<OccurrenceDragState> m_drag;
   QString m_dragHint; // the hover's drag hint shown (mitcad#150)
@@ -974,10 +983,21 @@ private:
     QString motion;
     QJsonObject def;
     QVector<double> frames;
+    double start = 0.0; // where the motion was before the first frame
     int next = 0;
     std::vector<BodyDisplay> bodies; // as shown when it began
   };
   std::optional<JointAnimation> m_animation;
+  // A motion preview's placements (Animate Joint, a study's playback;
+  // mitcad#454) shown on `bodies`, the bodies as shown before it.
+  void showPreviewPlacements(const QJsonObject& report, const std::vector<BodyDisplay>& bodies);
+  // The Motion Study panel (mitcad#454), while it is open, and the bodies
+  // as shown when it opened.
+  QPointer<QDialog> m_motionStudy;
+  std::vector<BodyDisplay> m_motionBodies;
+  // The text of a contact that stopped a motion (the model's `contact`):
+  // "Body2 (Pin:1) and Body3 (Wall:1) in Contact1".
+  static QString contactText(const QJsonObject& contact);
 
   // Sheet metal (mitcad#210, MainWindowSheet.cpp): Edit Sheet Rules, Show
   // Flat Pattern and Export Flat Pattern; the sheet-metal body the

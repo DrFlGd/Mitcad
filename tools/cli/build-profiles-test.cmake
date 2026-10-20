@@ -18,6 +18,15 @@
 #    driven value: the carriage, the bearing and the nut along their axes,
 #    the pulley and the gear a quarter turn (the occurrences' placements of
 #    the two reports compared).
+# 4. Slot accessories and the modelled linear parts (mitcad#449): a T-nut
+#    B8 and a slotted block with spring B10 listed as fasteners of their
+#    slots (they come with connectors), a cover cap 45x90 B10 on a 45x90
+#    B10's end; a precision shaft h6 8 mm
+#    with a linear bearing LM8UU and a shaft support SK8 on it, and the
+#    Tr8x1.5 lead screw with its nut, driven. The bearing picker for 8 mm
+#    offers the LM8UU and not the LM10UU; a T-nut's row is found by its own
+#    part number; the screw's design lists its thread, which follows its
+#    length.
 #
 # cmake -DCLI=<mitcad-cli> -DWORK=<folder> -P build-profiles-test.cmake
 
@@ -363,3 +372,90 @@ moved(O8 "the nut" 30 any)
 # The pulley's and the gear's bore axes run through their origins.
 moved(O9 "the pulley" 0 quarter)
 moved(O10 "the gear" 0 quarter)
+
+# 4. Slot accessories and the modelled linear parts: one design of each.
+foreach(id p30x30-b8 tnut-b8 p45x90l-b10 snut-b10-spring cap45x90-b10 shaft-h6-8 lm8uu sk8 screw-tr8x1-5
+           nut-tr8x1-5-hexagonal-aluminium-beta)
+  string(REPLACE "-" "_" var "${id}")
+  part("${id}" ${var})
+endforeach()
+# The nuts come with their connectors (build_place refuses a fastener):
+# their build blocks are what is checked here.
+foreach(entry IN ITEMS "tnut-b8|B|8" "snut-b10-spring|B|10")
+  string(REPLACE "|" ";" fields "${entry}")
+  list(GET fields 0 id)
+  list(GET fields 1 kind)
+  list(GET fields 2 width)
+  component_index("${id}" index)
+  string(JSON role GET "${manifest}" components ${index} build role)
+  string(JSON system_kind GET "${manifest}" components ${index} build systems 0 type)
+  string(JSON system_slot GET "${manifest}" components ${index} build systems 0 slot)
+  same("${role}" "fastener" "the role of ${id}")
+  same("${system_kind}" "${kind}" "the system of ${id}")
+  if(NOT system_slot MATCHES "^${width}(\\.0*)?$")
+    message(FATAL_ERROR "the slot width of ${id}: ${system_slot}, not ${width}")
+  endif()
+endforeach()
+on(O1 F1 end_b at_cap)
+file(WRITE "${WORK}/accessories.json" "[
+  {\"cmd\": \"build_place\", \"part\": ${p45x90l_b10}, \"at\": {\"point\": [200, 0, 0]}, \"length\": 300},
+  {\"cmd\": \"build_place\", \"part\": ${cap45x90_b10}, \"at\": ${at_cap}},
+  {\"expect\": {\"feature\": \"F3\", \"status\": \"ok\"}},
+  {\"expect\": {\"query\": {\"query\": \"build_parts\"}, \"result\": {\"parts\": [
+    {\"component\": \"C1\", \"part\": \"F1\", \"role\": \"profile\"},
+    {\"component\": \"C2\", \"part\": \"F2\", \"joint\": \"F3\", \"role\": \"cap\"}]}}}
+]
+")
+cli(run "${WORK}/accessories.json")
+message("the T-nut B8 and the slotted block with spring B10 listed as fasteners, the cover cap 45x90 placed")
+
+on(O1 F1 shaft at_shaft)
+on(O4 F6 shaft at_lead)
+file(WRITE "${WORK}/shafts.json" "[
+  {\"cmd\": \"build_place\", \"part\": ${shaft_h6_8}, \"at\": {\"point\": [0, 0, 0]}, \"length\": 400},
+  {\"cmd\": \"build_place\", \"part\": ${lm8uu}, \"at\": ${at_shaft}},
+  {\"cmd\": \"build_place\", \"part\": ${sk8}, \"at\": ${at_shaft}},
+  {\"cmd\": \"build_place\", \"part\": ${screw_tr8x1_5}, \"at\": {\"point\": [100, 0, 0]}, \"length\": 300},
+  {\"cmd\": \"build_place\", \"part\": ${nut_tr8x1_5_hexagonal_aluminium_beta}, \"at\": ${at_lead}},
+  {\"cmd\": \"drive_joint\", \"joint\": \"F3\", \"values\": {\"tz\": 50}},
+  {\"cmd\": \"drive_joint\", \"joint\": \"F8\", \"values\": {\"tz\": 40}},
+  {\"expect\": {\"feature\": \"F3\", \"status\": \"ok\"}},
+  {\"expect\": {\"feature\": \"F5\", \"status\": \"ok\"}},
+  {\"expect\": {\"feature\": \"F8\", \"status\": \"ok\"}},
+  {\"expect\": {\"occurrence\": \"O1\", \"body\": \"F1.b0\", \"bbox\": {\"min\": [-4, -4, 0], \"max\": [4, 4, 400]}, \"tolerance\": 0.5}},
+  {\"expect\": {\"query\": {\"query\": \"build_parts\"}, \"result\": {\"parts\": [
+    {\"component\": \"C1\", \"part\": \"F1\", \"role\": \"linear\", \"length\": 400},
+    {\"component\": \"C2\", \"part\": \"F2\", \"joint\": \"F3\", \"role\": \"linear\"},
+    {\"component\": \"C3\", \"part\": \"F4\", \"joint\": \"F5\", \"role\": \"linear\"},
+    {\"component\": \"C4\", \"part\": \"F6\", \"role\": \"linear\", \"length\": 300},
+    {\"component\": \"C5\", \"part\": \"F7\", \"joint\": \"F8\", \"role\": \"linear\"}]}}}
+]
+")
+cli(run "${WORK}/shafts.json")
+message("the shaft h6 8 mm with LM8UU and SK8, the Tr8x1.5 lead screw with its nut: placed and driven")
+
+# The pickers: the bearings of the 8 mm shaft, and the T-nut by its M5
+# row's part number.
+cli(library candidates --role linear --kind bearing --size "8 mm")
+if(NOT all MATCHES "(^|\n)mitcad-parts/lm8uu " OR all MATCHES "(^|\n)mitcad-parts/lm10uu ")
+  message(FATAL_ERROR "the bearings for an 8 mm shaft:\n${all}")
+endif()
+cli(library search --part-number S8BHASNM5)
+if(NOT all MATCHES "mitcad-parts/tnut-b8 ")
+  message(FATAL_ERROR "the T-nut B8 by its M5 row's part number:\n${all}")
+endif()
+
+# The lead screw's design: a rod of 8 mm with its cosmetic Tr8x1.5 thread
+# along all of it, at its stock length and cut to 500 mm.
+file(WRITE "${WORK}/screw.json" "[
+  {\"expect\": {\"query\": {\"query\": \"bodies\", \"properties\": true},
+              \"result\": [{\"bbox\": {\"min\": [-4, -4, 0], \"max\": [4, 4, 1980]}}]}},
+  {\"expect\": {\"query\": {\"query\": \"threads\"},
+              \"result\": [{\"standard\": \"trapezoidal\", \"designation\": \"Tr8x1.5\", \"major_diameter\": 8, \"pitch\": 1.5,
+                          \"modeled\": false, \"start\": [0, 0, 0], \"end\": [0, 0, 1980]}]}},
+  {\"cmd\": \"set_parameter\", \"name\": \"L\", \"expression\": \"500 mm\"},
+  {\"expect\": {\"query\": {\"query\": \"threads\"}, \"result\": [{\"designation\": \"Tr8x1.5\", \"end\": [0, 0, 500]}]}}
+]
+")
+cli(run "${WORK}/screw.json" --open "${library}/linear/screw-tr8x1-5.mitcad")
+message("the lead screw's design lists its Tr8x1.5 thread")

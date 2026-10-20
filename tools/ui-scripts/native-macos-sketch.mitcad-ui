@@ -86,6 +86,43 @@ expect-log 'Added extrude \(New Body\), distance 20' 30
 capture extruded 'New body \S+ \(F2\.b0\): volume ([0-9.]+) mm3' 30
 expect-near ${extruded} 20250
 screenshot '${MITCAD_TEST_WORK}/native-macos-sketch-extrude.png'
+
+# Browser Return activates the selected sketch or feature through the same
+# shared controller as a double-click. A row's field editor still owns
+# Return while renaming, without reopening the sketch.
+native-expand native.modelTree
+native-select native.model.sketch:F1@O1
+mark
+native-type sketch:F1@O1 'KeyboardSketch'
+key Return
+expect-log 'Renamed Sketch1 to KeyboardSketch' 30
+expect-no-log 'Editing sketch F1'
+native-expand native.modelTree
+native-select native.model.sketch:F1@O1
+key Return
+expect-log 'Editing sketch F1 \(KeyboardSketch\)' 30
+native-click native.ribbon.sketch.finish
+expect-log 'Sketch finished' 30
+native-expand native.modelTree
+native-select 'native.model.feature:F2<F1@O1'
+mark
+key Return
+expect-log 'Editing F2 with Extrude'
+expect-native-text input_distance '^20(?:\.0*)?(?: mm)?$'
+# Browser activation also takes precedence while a command can confirm.
+# The shared editor refuses a second edit; Return must not commit this one.
+native-type input_distance '30 mm'
+native-expand native.modelTree
+native-select native.model.sketch:F1@O1
+mark
+key Enter
+# The long Extrude form can scroll its buttons below the viewport.
+expect-native-present commandOk true
+expect-native-text input_distance '^30 mm$'
+expect-no-log 'Edited F2|Editing sketch F1'
+native-click commandCancel
+expect-log 'Command Extrude cancelled' 30
+expect-model-bodies 1 20250
 expect-file '${MITCAD_TEST_WORK}/native-macos-sketch-fields.png'
 expect-file '${MITCAD_TEST_WORK}/native-macos-sketch-palette.png'
 expect-file '${MITCAD_TEST_WORK}/native-macos-sketch-extrude.png'

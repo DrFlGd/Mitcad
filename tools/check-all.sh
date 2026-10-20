@@ -67,7 +67,7 @@
 #   --ctest-jobs N  ctest's parallel tests (default: the cores / 4).
 #   --corpus MODE   the corpus group: f3d.corpus*, f3d.models_loft (the
 #                   reference models replayed), freecad.corpus,
-#                   ipt.corpus, iam.corpus and ifc.corpus, after
+#                   ipt.corpus, iam.corpus, ifc.corpus and solidcraft.corpus, after
 #                   ctest's other tests, several at once, each importing
 #                   several files at once in child processes (mitcad#70).
 #                   "always", "never",
@@ -138,7 +138,7 @@ UI_TIMEOUT=${UI_TIMEOUT:-1800}
 # main.cpp), how they are built, and the import's crates' resolved
 # dependencies (cargo tree; not Cargo.toml and Cargo.lock, which change for
 # crates of other parts too).
-CORPUS_TESTS='^(f3d\.corpus|f3d\.models_loft$|freecad\.corpus$|ipt\.corpus$|iam\.corpus$|ifc\.corpus$)'
+CORPUS_TESTS='^(f3d\.corpus|f3d\.models_loft$|freecad\.corpus$|ipt\.corpus$|iam\.corpus$|ifc\.corpus$|solidcraft\.corpus$)'
 CORPUS_SOURCES=(core/f3d core/import core/freecad core/zip core/ipt core/tests
   core/ffi/src/kernel core/ffi/src/*_import.rs core/ffi/src/ipt_history.rs core/ffi/src/exchange.rs
   core/ffi/src/memory.rs core/cpp core/CMakeLists.txt geometry tools/cli/import.cpp tools/cli/import.hpp
@@ -148,7 +148,9 @@ CORPUS_SOURCES=(core/f3d core/import core/freecad core/zip core/ipt core/tests
 CORPUS_SOURCES+=(core/ifc tools/cli/ifc-corpus.cmake)
 # Single .f3d designs checked item by item (mitcad#311).
 CORPUS_SOURCES+=(tools/cli/f3d-designs.cmake)
-CORPUS_CRATES=(mitcad-import mitcad-f3d mitcad-freecad mitcad-ipt mitcad-zip mitcad-ifc)
+# The .solidcraft import (mitcad#450).
+CORPUS_SOURCES+=(core/solidcraft third_party/solidcraft tools/cli/solidcraft-corpus.cmake)
+CORPUS_CRATES=(mitcad-import mitcad-f3d mitcad-freecad mitcad-ipt mitcad-zip mitcad-ifc mitcad-solidcraft)
 CORPUS_PASSED=${XDG_CACHE_HOME:-$HOME/.cache}/mitcad/corpus-passed
 # The build files every UI test depends on, what the application is built
 # from (which the smoke set depends on), the smoke set, and the test

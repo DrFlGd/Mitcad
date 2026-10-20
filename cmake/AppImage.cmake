@@ -47,6 +47,9 @@ install(FILES "${PROJECT_SOURCE_DIR}/third_party/fonts/droid-sans/LICENSE.txt"
   DESTINATION ${mitcad_doc_dir}/licenses/droid-sans)
 # three.js, embedded for the web viewer (app/web/viewer).
 install(FILES "${PROJECT_SOURCE_DIR}/third_party/three/LICENSE" DESTINATION ${mitcad_doc_dir}/licenses/three)
+# SolidCraft's format upgrade steps, adapted for the .solidcraft import (third_party/solidcraft).
+install(FILES "${PROJECT_SOURCE_DIR}/third_party/solidcraft/LICENSE-MIT"
+  DESTINATION ${mitcad_doc_dir}/licenses/solidcraft)
 # QtKeychain, linked statically (cmake/Keychain.cmake).
 install(FILES "${MITCAD_QTKEYCHAIN_LICENSE}" DESTINATION ${mitcad_doc_dir}/licenses/qtkeychain)
 set(mitcad_vcpkg_share "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/share")

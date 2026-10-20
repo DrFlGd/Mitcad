@@ -1,4 +1,5 @@
-[
+{
+  "parts": [
   {
     "id": "plate-nema17-t3",
     "name": "Engine mount plate NEMA 17, t=3 mm",
@@ -426,4 +427,35 @@
       {"name":"carriage","origin":[0,0,0],"z":[0,-1,0],"x":[0,0,1],"kind":"face"}
     ]
   }
-]
+  ],
+  "left_out": [
+    {"source": "dynamic-m/Roller-mounting-block-slot-3DP/Motedis-RMBS/Motedis_RMBSHS5/Motedis_RMBSHS5/Motedis_RMBSHS5.stp",
+     "reason": "the same file as roller-block-hs-5's (identical content), in a folder of the same name inside its folder"},
+    {"source": "dynamic-m/Roller-mounting-block-slot-3DP/Motedis-RMBS/Motedis_RMBSHS5-6/Motedis_RMBSHS5-6/Motedis_RMBSHS5-6.stp",
+     "reason": "the same file as roller-block-hs-5-6's (identical content), in a folder of the same name inside its folder"},
+    {"source": "dynamic-m/Roller-mounting-block-slot-3DP/Motedis-RMBS/Motedis_RMBSHS6/Motedis_RMBSHS6/Motedis_RMBSHS6.stp",
+     "reason": "the same file as roller-block-hs-6's (identical content), in a folder of the same name inside its folder"},
+    {"source": "dynamic-m/Roller-mounting-block-slot-3DP/Motedis-RMBS/Motedis_RMBSHS6-8/Motedis_RMBSHS6-8/Motedis_RMBSHS6-8.stp",
+     "reason": "the same file as roller-block-hs-6-8's (identical content), in a folder of the same name inside its folder"},
+    {"source": "dynamic-m/Roller-mounting-block-slot-3DP/Motedis-RMBS/Motedis_RMBSHS8/Motedis_RMBSHS8/Motedis_RMBSHS8.stp",
+     "reason": "the same file as roller-block-hs-8's (identical content), in a folder of the same name inside its folder"},
+    {"source": "dynamic-m/Roller-mounting-block-slot-3DP/Motedis-RMBS/Motedis_RMBSHS8-10/Motedis_RMBSHS8-10/Motedis_RMBSHS8-10.stp",
+     "reason": "the same file as roller-block-hs-8-10's (identical content), in a folder of the same name inside its folder"},
+    {"source": "dynamic-m/Roller-mounting-block-slot-3DP/Motedis-RMBS/Motedis_RMBSHS10/Motedis_RMBSHS10/Motedis_RMBSHS10.stp",
+     "reason": "the same file as roller-block-hs-10's (identical content), in a folder of the same name inside its folder"},
+    {"source": "dynamic-m/Roller-mounting-block-slot-3DP/Motedis-RMBS/Motedis_RMBSVS5/Motedis_RMBSVS5/Motedis_RMBSVS5.stp",
+     "reason": "the same file as roller-block-vs-5's (identical content), in a folder of the same name inside its folder"},
+    {"source": "dynamic-m/Roller-mounting-block-slot-3DP/Motedis-RMBS/Motedis_RMBSVS5-6/Motedis_RMBSVS5-6/Motedis_RMBSVS5-6.stp",
+     "reason": "the same file as roller-block-vs-5-6's (identical content), in a folder of the same name inside its folder"},
+    {"source": "dynamic-m/Roller-mounting-block-slot-3DP/Motedis-RMBS/Motedis_RMBSVS6/Motedis_RMBSVS6/Motedis_RMBSVS6.stp",
+     "reason": "the same file as roller-block-vs-6's (identical content), in a folder of the same name inside its folder"},
+    {"source": "dynamic-m/Roller-mounting-block-slot-3DP/Motedis-RMBS/Motedis_RMBSVS6-8/Motedis_RMBSVS6-8/Motedis_RMBSVS6-8.stp",
+     "reason": "the same file as roller-block-vs-6-8's (identical content), in a folder of the same name inside its folder"},
+    {"source": "dynamic-m/Roller-mounting-block-slot-3DP/Motedis-RMBS/Motedis_RMBSVS8/Motedis_RMBSVS8/Motedis_RMBSVS8.stp",
+     "reason": "the same file as roller-block-vs-8's (identical content), in a folder of the same name inside its folder"},
+    {"source": "dynamic-m/Roller-mounting-block-slot-3DP/Motedis-RMBS/Motedis_RMBSVS8-10/Motedis_RMBSVS8-10/Motedis_RMBSVS8-10.stp",
+     "reason": "the same file as roller-block-vs-8-10's (identical content), in a folder of the same name inside its folder"},
+    {"source": "dynamic-m/Roller-mounting-block-slot-3DP/Motedis-RMBS/Motedis_RMBSVS10/Motedis_RMBSVS10/Motedis_RMBSVS10.stp",
+     "reason": "the same file as roller-block-vs-10's (identical content), in a folder of the same name inside its folder"}
+  ]
+}

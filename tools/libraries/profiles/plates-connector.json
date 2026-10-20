@@ -99,7 +99,7 @@
     "designation": "Connector plate 28x58x3, 30 series, {Material}",
     "rows": [
       {"name":"Aluminium","select":{"Material":"Aluminium"},"values":{},"part_number":"LP30101"},
-      {"name":"Steel","select":{"Material":"Steel"},"values":{},"part_number":"LP30101SB"}
+      {"name":"Steel","select":{"Material":"Steel"},"values":{},"part_number":"LP30101SB","source":"slot-profile-accessories/Connector-plate-28x58x3-Laser-cut/Motedis-LP30101SB/Motedis-LP30101SB.stp"}
     ],
     "build": {
       "role": "connector",
@@ -498,7 +498,7 @@
     "designation": "L connector plate 78x78x3, 20 series, {Material}",
     "rows": [
       {"name":"Steel","select":{"Material":"Steel"},"values":{},"part_number":"LP20110SB"},
-      {"name":"Aluminium","select":{"Material":"Aluminium"},"values":{},"part_number":"LP20110","supplier_url":"https://www.motedis.com/en/L-connector-plate-78x78x3-Laser-cut"}
+      {"name":"Aluminium","select":{"Material":"Aluminium"},"values":{},"part_number":"LP20110","supplier_url":"https://www.motedis.com/en/L-connector-plate-78x78x3-Laser-cut","source":"slot-profile-accessories/L-connector-plate-78x78x3-Laser-cut/Motedis-LP20110/Motedis_LP20110.stp"}
     ],
     "build": {
       "role": "connector",
@@ -831,7 +831,7 @@
     "designation": "T connector plate 88x88x3, 30 series, {Finish}",
     "rows": [
       {"name":"Raw","select":{"Finish":"Raw"},"values":{},"part_number":"LP30110"},
-      {"name":"Black","select":{"Finish":"Black"},"values":{},"part_number":"LP30110B"}
+      {"name":"Black","select":{"Finish":"Black"},"values":{},"part_number":"LP30110B","source":"slot-profile-accessories/T-connector-plate-88x88x3-Laser-cut-30-series/Motedis-LP30110B/Motedis_LP30110B.stp"}
     ],
     "build": {
       "role": "connector",
@@ -966,7 +966,7 @@
     "designation": "T connector plate 200x160x5, 40 series, {Finish}",
     "rows": [
       {"name":"Raw","select":{"Finish":"Raw"},"values":{},"part_number":"LP40114"},
-      {"name":"Black","select":{"Finish":"Black"},"values":{},"part_number":"LP40114B"}
+      {"name":"Black","select":{"Finish":"Black"},"values":{},"part_number":"LP40114B","source":"laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/T-connector-plate-200x160x5-Laser-cut/Motedis-LP40114B/Motedis-LP40114B.stp"}
     ],
     "build": {
       "role": "connector",
@@ -1245,7 +1245,7 @@
     "designation": "Pivot plate 84x3, 20/30 series, {Material}",
     "rows": [
       {"name":"Steel","select":{"Material":"Steel"},"values":{},"part_number":"LP20301SB"},
-      {"name":"Aluminium","select":{"Material":"Aluminium"},"values":{},"part_number":"LP20301","supplier_url":"https://www.motedis.com/en/NEW-Pivot-plate-84x3-2030-series-t3-Laser-cut"}
+      {"name":"Aluminium","select":{"Material":"Aluminium"},"values":{},"part_number":"LP20301","supplier_url":"https://www.motedis.com/en/NEW-Pivot-plate-84x3-2030-series-t3-Laser-cut","source":"laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/NEW-Pivot-plate-84x3-2030-series-t3-Laser-cut/Motedis_LP20301.stp"}
     ],
     "build": {
       "role": "connector",
@@ -1451,7 +1451,7 @@
     "designation": "Swivel bracket 84x2 steel, {Finish}",
     "rows": [
       {"name":"Galvanised","select":{"Finish":"Galvanised"},"values":{},"part_number":"LP20101SB"},
-      {"name":"Black","select":{"Finish":"Black"},"values":{},"part_number":"LP20101","supplier_url":"https://www.motedis.com/en/Pivot-Angle-84x2-Steel-Galvanized-Black"}
+      {"name":"Black","select":{"Finish":"Black"},"values":{},"part_number":"LP20101","supplier_url":"https://www.motedis.com/en/Pivot-Angle-84x2-Steel-Galvanized-Black","source":"slot-profile-accessories/Pivot-Angle-84x2-Steel-Galvanized-Black/Motedis-LP20101/Motedis-LP20101.stp"}
     ],
     "build": {
       "role": "connector",

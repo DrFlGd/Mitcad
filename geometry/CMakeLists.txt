@@ -182,6 +182,22 @@ target_sources(mitcad_geometry PRIVATE
 target_sources(mitcad_geometry PRIVATE
   src/helix_brep.cpp
   src/helix_brep.hpp)
+# Contact sets: bodies that stop each other while joints move (mitcad#454).
+target_sources(mitcad_geometry PRIVATE
+  src/motion_contact.cpp
+  include/mitcad/geometry/motion_contact.hpp)
+# Emboss: profiles wrapped onto cylinders (mitcad#458).
+target_sources(mitcad_geometry PRIVATE
+  src/emboss.cpp
+  include/mitcad/geometry/emboss.hpp)
+# Boundary Fill: the cells tool bodies enclose (mitcad#457).
+target_sources(mitcad_geometry PRIVATE
+  src/boundary_fill.cpp
+  include/mitcad/geometry/boundary_fill.hpp)
+# Patch, Stitch and Thicken: surface bodies filled, sewn and made solid (mitcad#456).
+target_sources(mitcad_geometry PRIVATE
+  src/surfaces.cpp
+  include/mitcad/geometry/surfaces.hpp)
 target_include_directories(mitcad_geometry PUBLIC include)
 # Volumes and areas come from the analysis library's integrals, so that
 # every reported volume agrees (query.cpp, brep_import.cpp).
@@ -329,6 +345,31 @@ if(BUILD_TESTING)
   add_executable(test_fillet_near_tangent_contour tests/test_fillet_near_tangent_contour.cpp)
   target_link_libraries(test_fillet_near_tangent_contour PRIVATE mitcad_geometry mitcad_warnings)
   add_test(NAME geometry.fillet_near_tangent_contour COMMAND test_fillet_near_tangent_contour)
+  # A rounding along an edge of a strip the ball cannot touch, with the
+  # port's patch 0880 (mitcad#343).
+  add_executable(test_fillet_strip_start tests/test_fillet_strip_start.cpp)
+  target_link_libraries(test_fillet_strip_start PRIVATE mitcad_geometry mitcad_warnings)
+  add_test(NAME geometry.fillet_strip_start COMMAND test_fillet_strip_start)
+  # Roundings whose contacts run off a narrow face: up to a sliver at the
+  # edge's end, and over a hole's rounded mouth, with the port's patches 0890
+  # and 0891 (mitcad#343).
+  add_executable(test_fillet_end_overflow tests/test_fillet_end_overflow.cpp)
+  target_link_libraries(test_fillet_end_overflow PRIVATE mitcad_geometry mitcad_warnings)
+  add_test(NAME geometry.fillet_end_overflow COMMAND test_fillet_end_overflow)
+  # A rounding whose contact runs off a narrow face across its tangent edge
+  # with a rounded rim keeps to that face's surface, cut by the rim, with
+  # the port's patch 0870 (mitcad#343).
+  add_executable(test_fillet_tangent_overflow tests/test_fillet_tangent_overflow.cpp)
+  target_link_libraries(test_fillet_tangent_overflow PRIVATE mitcad_geometry mitcad_warnings)
+  add_test(NAME geometry.fillet_tangent_overflow COMMAND test_fillet_tangent_overflow)
+  # Boundary Fill: the cells tool bodies enclose (mitcad#457).
+  add_executable(test_boundary_fill tests/test_boundary_fill.cpp)
+  target_link_libraries(test_boundary_fill PRIVATE mitcad_geometry mitcad_warnings)
+  add_test(NAME geometry.boundary_fill COMMAND test_boundary_fill)
+  # Patch, Stitch and Thicken: surface bodies filled, sewn and made solid (mitcad#456).
+  add_executable(test_surfaces tests/test_surfaces.cpp)
+  target_link_libraries(test_surfaces PRIVATE mitcad_geometry mitcad_warnings)
+  add_test(NAME geometry.surfaces COMMAND test_surfaces)
   # OCCT's crash handlers next to the application's crash report (mitcad#62).
   if(NOT WIN32)
     add_executable(test_guard tests/test_guard.cpp)
@@ -342,6 +383,10 @@ if(BUILD_TESTING)
     set_tests_properties(geometry.guard_operation PROPERTIES ENVIRONMENT "MITCAD_TEST_OCCT_CRASH=clip"
       PASS_REGULAR_EXPRESSION "error: clip: SIGSEGV")
   endif()
+  # Emboss: profiles wrapped onto cylinders (mitcad#458).
+  add_executable(test_emboss tests/test_emboss.cpp)
+  target_link_libraries(test_emboss PRIVATE mitcad_geometry mitcad_warnings)
+  add_test(NAME geometry.emboss COMMAND test_emboss)
 endif()
 
 # Data exchange and analysis services, separate libraries on top of OCCT.

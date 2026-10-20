@@ -55,7 +55,7 @@
     "designation": "Motor bracket NEMA 17, t=3 mm, {Material}",
     "rows": [
       {"name":"Aluminium","select":{"Material":"Aluminium"},"values":{},"part_number":"LP50115"},
-      {"name":"Steel","select":{"Material":"Steel"},"values":{},"part_number":"LP50115SB","supplier_url":"https://www.motedis.com/en/Bracket-motor-bracket-slotted-hole-laser-cut-STEEL-Nema-17-t3mm-"}
+      {"name":"Steel","select":{"Material":"Steel"},"values":{},"part_number":"LP50115SB","supplier_url":"https://www.motedis.com/en/Bracket-motor-bracket-slotted-hole-laser-cut-STEEL-Nema-17-t3mm-","source":"laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/Bracket-motor-bracket-slotted-hole-laser-cut-STEEL-Nema-17-t3mm/Motedis-LP50115SB/Motedis_LP50115SB.stp"}
     ],
     "build": {
       "role": "connector",
@@ -209,7 +209,7 @@
     "designation": "Lead screw mounting plate 60x60x5, {Material}",
     "rows": [
       {"name":"Aluminium","select":{"Material":"Aluminium"},"values":{},"part_number":"LP50125"},
-      {"name":"Steel","select":{"Material":"Steel"},"values":{},"part_number":"LP50125SB","supplier_url":"https://www.motedis.com/en/Laser-cut-mounting-plate-60x60x5-for-Igus-RFRM-2525TR10x2-STEEL"}
+      {"name":"Steel","select":{"Material":"Steel"},"values":{},"part_number":"LP50125SB","supplier_url":"https://www.motedis.com/en/Laser-cut-mounting-plate-60x60x5-for-Igus-RFRM-2525TR10x2-STEEL","source":"laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/Laser-cut-mounting-plate-60x60x5-for-Igus-RFRM-2525TR10x2-STEEL/Motedis-LP50125SB/Motedis_LP50125SB.stp"}
     ],
     "build": {
       "role": "connector",
@@ -327,7 +327,7 @@
     "designation": "Monitor mount VESA 75/100, {Material}",
     "rows": [
       {"name":"Aluminium","select":{"Material":"Aluminium"},"values":{},"part_number":"LP50136"},
-      {"name":"Steel","select":{"Material":"Steel"},"values":{},"part_number":"LP50136SB","supplier_url":"https://www.motedis.com/en/Monitor-Mount-lasered-VESA-75-100-STEEL"}
+      {"name":"Steel","select":{"Material":"Steel"},"values":{},"part_number":"LP50136SB","supplier_url":"https://www.motedis.com/en/Monitor-Mount-lasered-VESA-75-100-STEEL","source":"laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/Monitor-Mount-lasered-VESA-75-100-STEEL/Motedis-LP50136SB/Motedis_LP50136SB.stp"}
     ],
     "build": {
       "role": "connector",
@@ -351,7 +351,7 @@
     "designation": "Universal monitor mount VESA 75-400, {Finish}",
     "rows": [
       {"name":"Raw","select":{"Finish":"Raw"},"values":{},"part_number":"LP50135"},
-      {"name":"Black","select":{"Finish":"Black"},"values":{},"part_number":"LP50135B"}
+      {"name":"Black","select":{"Finish":"Black"},"values":{},"part_number":"LP50135B","source":"laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/Universal-Monitor-Mount-Alu-lasered-VESA-75-400-t5mm/Motedis-LP50135B/Motedis-LP50135B.stp"}
     ],
     "build": {
       "role": "connector",
@@ -605,7 +605,7 @@
     "designation": "Lab plate raster 20/30, t=5 mm, {Finish}",
     "rows": [
       {"name":"Raw","select":{"Finish":"Raw"},"values":{},"part_number":"LP50120"},
-      {"name":"Black","select":{"Finish":"Black"},"values":{},"part_number":"LP50120B"}
+      {"name":"Black","select":{"Finish":"Black"},"values":{},"part_number":"LP50120B","source":"laser-cut-plates-semi-finished-products-tube-systems-cable-conduit/Lab-plate-raster-20-30-t5mm-Laser-cut/Motedis_LP50120B.stp"}
     ]
   },
   {

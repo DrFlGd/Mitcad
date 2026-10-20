@@ -119,7 +119,7 @@
     "designation": "Cover cap 45x45 O-type slot 8, {Colour}",
     "rows": [
       {"name":"Black","select":{"Colour":"Black"},"values":{},"part_number":"PTS8O45x45"},
-      {"name":"Grey","select":{"Colour":"Grey"},"values":{},"part_number":"PTS8O45x45","supplier_url":"https://www.motedis.com/en/Cover-caps-45x45-O-Type-slot-8-Grey"}
+      {"name":"Grey","select":{"Colour":"Grey"},"values":{},"part_number":"PTS8O45x45","supplier_url":"https://www.motedis.com/en/Cover-caps-45x45-O-Type-slot-8-Grey","source":"slot-profile-accessories/Cover-caps-45x45-O-Type-slot-8-Grey/Motedis-PTS8O45x45/Motedis_PTS8O45x45.stp"}
     ]
   },
   {
@@ -134,7 +134,7 @@
     "designation": "Cover cap 45x90 O-type slot 8, {Colour}",
     "rows": [
       {"name":"Black","select":{"Colour":"Black"},"values":{},"part_number":"PTS8O45x90"},
-      {"name":"Grey","select":{"Colour":"Grey"},"values":{},"part_number":"PTS8O45x90","supplier_url":"https://www.motedis.com/en/Cover-caps-45x90-O-Type-slot-8-Grey"}
+      {"name":"Grey","select":{"Colour":"Grey"},"values":{},"part_number":"PTS8O45x90","supplier_url":"https://www.motedis.com/en/Cover-caps-45x90-O-Type-slot-8-Grey","source":"slot-profile-accessories/Cover-caps-45x90-O-Type-slot-8-Grey/Motedis-PTS8O45x90/Motedis_PTS8O45x90.stp"}
     ]
   }
 ]

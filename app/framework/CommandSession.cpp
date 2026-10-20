@@ -512,6 +512,11 @@ void CommandSession::setPresenter(CommandPresenter& presenter) {
           m_presenter->refresh(m_state);
         }
       }
+      // Typing in a field the keyboard moved to by itself: the names to
+      // pick into it are wanted now (valueFocused).
+      if (key == m_pickTarget && m_pickFocused && !m_picker) {
+        showParameterLabels();
+      }
     } else if (slot) {
       qDebug().noquote() << QStringLiteral("%1 %2: %3").arg(m_def.name, slot->def->label, text);
       if (slot->def->onChange) {
@@ -954,7 +959,6 @@ void CommandSession::picked(const Selection& items, Qt::KeyboardModifiers modifi
     return;
   }
   ++m_generation;
-  Q_UNUSED(modifiers);
   const InputDef* input = activeInput();
   if (input == nullptr || m_done) {
     return;
@@ -975,6 +979,10 @@ void CommandSession::picked(const Selection& items, Qt::KeyboardModifiers modifi
                           .arg(m_def.name, item.describe()));
     }
   }
+  // Shift + click on an input of one item that places (mitcad#451): the
+  // pick taken, then OK. Not a window, not with Ctrl (Ctrl + Shift adds).
+  const bool shiftApplies = !window && input->shiftClickApplies && input->max == 1 &&
+                            modifiers.testFlag(Qt::ShiftModifier) && !modifiers.testFlag(Qt::ControlModifier);
   Selection& selection = m_state.items(key);
   // One entry per model item: a profile clicked where the view shows it is
   // the entry the newest profile or the edited definition put there, under
@@ -995,10 +1003,11 @@ void CommandSession::picked(const Selection& items, Qt::KeyboardModifiers modifi
       }
     }
   } else if (!accepted.isEmpty()) {
-    // A click toggles; an input of one item takes the new one instead.
+    // A click toggles; an input of one item takes the new one instead. A
+    // Shift + click that places (mitcad#451) keeps the item picked already.
     const SelectionItem& item = accepted.first();
     if (containsEntry(selection, item, resolve)) {
-      if (!input->keepOnRepick) {
+      if (!input->keepOnRepick && !shiftApplies) {
         removeEntry(selection, item, resolve);
       }
     } else if (input->max == 1) {
@@ -1021,9 +1030,14 @@ void CommandSession::picked(const Selection& items, Qt::KeyboardModifiers modifi
   } else {
     return; // a click on nothing changes nothing in a command
   }
+  const bool applyNow = shiftApplies && containsEntry(m_state.items(key), accepted.first(), resolve);
   selectionChanged(key);
   advanceIfFull();
   moveKeyboardToValues();
+  if (applyNow && !m_done) {
+    qDebug().noquote() << QStringLiteral("%1 %2: Shift+click places at once").arg(m_def.name, input->label);
+    commit();
+  }
 }
 
 bool CommandSession::selectionsSatisfied() const {
@@ -2202,11 +2216,13 @@ void CommandSession::showSketchPreviewAsync(const Built& built) {
   const auto apply = [this, generation, built, key, oldDepth](const CommandHost::AsyncResult& undone) {
     if (!asyncPresenterAvailable()) { return; }
     if (!undone.succeeded()) {
+      const bool cancelling = m_cancelRequested;
       m_asyncPending = false;
       m_appliedDepth = oldDepth;
       m_cancelRequested = false;
       m_previewOk = false;
       m_presenter->setMessage(undone.error, true);
+      if (cancelling) { emit cancelFinished(false); }
       return;
     }
     if (m_cancelRequested) {
@@ -2229,10 +2245,12 @@ void CommandSession::showSketchPreviewAsync(const Built& built) {
         if (!asyncPresenterAvailable()) { return; }
         m_asyncPending = false;
         if (!undone.succeeded()) {
+          const bool cancelling = m_cancelRequested;
           m_appliedDepth = depth;
           m_cancelRequested = false;
           m_previewOk = false;
           m_presenter->setMessage(undone.error, true);
+          if (cancelling) { emit cancelFinished(false); }
           return;
         }
         if (m_cancelRequested) {
@@ -2579,6 +2597,7 @@ void CommandSession::finishAsyncCancel() {
       m_cancelRequested = false;
       m_previewOk = false;
       if (m_presenter) { m_presenter->setMessage(undone.error, true); }
+      emit cancelFinished(false);
       return;
     }
     rollForwardAsync([this](const CommandHost::AsyncResult& result) {
@@ -3034,6 +3053,7 @@ void CommandSession::cancel() {
   if (m_done) {
     return;
   }
+  m_cancelRequested = true;
   settleVisibility(); // they stay as the user set them (mitcad#295)
   if (!rollForward()) {
     // Its computation was cancelled (or failed): the panel closes all the
@@ -3118,24 +3138,28 @@ void CommandSession::finish(bool committed) {
     m_committing = true;
     const auto release = [this, committed](const CommandHost::AsyncResult& restored) {
       if (!restored.succeeded()) {
+        const bool cancelling = m_cancelRequested;
         m_finalizing = false;
         m_asyncPending = false;
         m_committing = false;
         m_cancelRequested = false;
         if (m_presenter) { m_presenter->setMessage(restored.error, true); }
         else { m_host.showHint(restored.error); }
+        if (cancelling) { emit cancelFinished(false); }
         return;
       }
       commandSequenceAsync(QJsonArray{QJsonObject{{QStringLiteral("cmd"), QStringLiteral("discard_command")},
                                                   {QStringLiteral("token"), m_checkpoint}}},
           [this, committed](const CommandHost::AsyncResult& result) {
             if (!result.succeeded()) {
+              const bool cancelling = m_cancelRequested;
               m_finalizing = false;
               m_asyncPending = false;
               m_committing = false;
               m_cancelRequested = false;
               if (m_presenter) { m_presenter->setMessage(result.error, true); }
               else { m_host.showHint(result.error); }
+              if (cancelling) { emit cancelFinished(false); }
               return;
             }
             m_checkpoint = QJsonValue();
@@ -3174,6 +3198,7 @@ void CommandSession::finish(bool committed) {
   if (m_def.ended) {
     m_def.ended(committed); // what the command opened beside its panel (mitcad#418)
   }
+  if (m_cancelRequested) { emit cancelFinished(true); }
   emit finished(committed);
 }
 

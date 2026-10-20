@@ -410,6 +410,7 @@ fn named_entities(detail: &mut Detail) -> Vec<&mut Fingerprint> {
             | Detail::Revolve(_)
             | Detail::Primitive(_)
             | Detail::Coil(_)
+            | Detail::Emboss(_)
     );
     let refs: Vec<&mut Reference> = match detail {
         Detail::Fillet(f) => f
@@ -441,6 +442,8 @@ fn named_entities(detail: &mut Detail) -> Vec<&mut Fingerprint> {
         // The face a primitive or a coil stands on (mitcad#25).
         Detail::Primitive(p) => p.plane.iter_mut().collect(),
         Detail::Coil(c) => c.plane.iter_mut().collect(),
+        // The face an emboss lies on (mitcad#458).
+        Detail::Emboss(e) => e.input_faces.iter_mut().flatten().collect(),
         // A hole's position: its face and the two edges it is measured
         // from.
         Detail::Hole(h) => h
@@ -1885,6 +1888,7 @@ fn resolve_path_edges(item: &mut TimelineItem, at: &At, out: &mut Resolved) {
                 | "LoftFeature"
                 | "CircularPatternFeature"
                 | "RectangularPatternFeature"
+                | "PathPatternFeature"
                 | "MirrorFeature"
                 | "SplitBodyFeature"
                 | "DeleteFaceFeature"

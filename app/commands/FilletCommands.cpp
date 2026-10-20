@@ -9,6 +9,7 @@
 
 #include <QJsonArray>
 #include <QKeySequence>
+#include <QRegularExpression>
 
 #include <BRepAdaptor_Curve.hxx>
 #include <BRepAdaptor_Surface.hxx>
@@ -25,9 +26,46 @@ namespace {
 
 const QString kSets = QStringLiteral("sets");
 const QString kMid = QStringLiteral("mid");
+const QString kControl = QStringLiteral("control");
 
 QString rowKey(int row, const char* id) { return CommandState::rowKey(kSets, row, QString::fromLatin1(id)); }
 QString midKey(int row, const char* id) { return CommandState::rowKey(kMid, row, QString::fromLatin1(id)); }
+QString controlKey(int row, const char* id) {
+  return CommandState::rowKey(kControl, row, QString::fromLatin1(id));
+}
+
+// The knots of a spline radius of `count` control radii (mitcad#464): the
+// numbers typed (commas or spaces between them), or with none typed a
+// clamped knot vector of degree 3 at most with its inner knots evenly
+// spaced. Empty when what is typed is not a list of numbers.
+std::optional<QJsonArray> splineKnots(const QString& typed, int count) {
+  QJsonArray knots;
+  const QString text = typed.trimmed();
+  if (text.isEmpty()) {
+    const int degree = std::min(3, count - 1);
+    const int inner = count - degree - 1;
+    for (int k = 0; k <= degree; ++k) {
+      knots.append(0.0);
+    }
+    for (int k = 1; k <= inner; ++k) {
+      knots.append(static_cast<double>(k) / (inner + 1));
+    }
+    for (int k = 0; k <= degree; ++k) {
+      knots.append(1.0);
+    }
+    return knots;
+  }
+  static const QRegularExpression separators(QStringLiteral("[,;\\s]+"));
+  for (const QString& part : text.split(separators, Qt::SkipEmptyParts)) {
+    bool ok = false;
+    const double knot = part.toDouble(&ok);
+    if (!ok) {
+      return std::nullopt;
+    }
+    knots.append(knot);
+  }
+  return knots;
+}
 
 // Where a fillet rounds an edge: the edge's middle, the way from it to the
 // middle of the rounding (into the material at a convex edge, out of it at
@@ -155,17 +193,23 @@ bool sameChain(const QJsonArray& sets) {
 const Choices kFilletSizes = {{QStringLiteral("constant"), QStringLiteral("Constant")},
                               {QStringLiteral("chord_length"), QStringLiteral("Chord Length")},
                               {QStringLiteral("variable"), QStringLiteral("Variable")},
-                              {QStringLiteral("asymmetric"), QStringLiteral("Asymmetric")}};
+                              {QStringLiteral("asymmetric"), QStringLiteral("Asymmetric")},
+                              {QStringLiteral("spline"), QStringLiteral("Spline")}};
 
-// Whether any set of the panel has a variable radius (mid radii are theirs).
-bool anyVariable(const CommandState& state) {
+// Whether any set of the panel has a radius of this type (mid radii are
+// the variable ones', control radii the spline ones').
+bool anySize(const CommandState& state, const QString& size) {
   for (int i = 0; i < state.rows(kSets); ++i) {
-    if (state.row(kSets, i).choice(QStringLiteral("size")) == QStringLiteral("variable")) {
+    if (state.row(kSets, i).choice(QStringLiteral("size")) == size) {
       return true;
     }
   }
   return false;
 }
+
+bool anyVariable(const CommandState& state) { return anySize(state, QStringLiteral("variable")); }
+
+bool anySpline(const CommandState& state) { return anySize(state, QStringLiteral("spline")); }
 
 const Choices kChamferTypes = {{QStringLiteral("equal_distance"), QStringLiteral("Equal Distance")},
                                {QStringLiteral("two_distances"), QStringLiteral("Two Distances")},
@@ -203,8 +247,8 @@ CommandDef filletCommand(const CommandContext& context) {
                  valueInput(QStringLiteral("radius"), QObject::tr("Radius"), ValueKind::Length,
                             QStringLiteral("2 mm"))
                      .withTooltip(QObject::tr("The radius; the chord length; the start radius of a "
-                                              "variable one; or the first distance of an asymmetric "
-                                              "one"))
+                                              "variable one; the first distance of an asymmetric "
+                                              "one; or the first control radius of a spline"))
                      .withManipulator([](const CommandState& row,
                                          const CommandContext& model) -> std::optional<Manipulator> {
                        // A handle at the middle of the rounding of the set's
@@ -223,7 +267,17 @@ CommandDef filletCommand(const CommandContext& context) {
                      }),
                  valueInput(QStringLiteral("end"), QObject::tr("End Radius"), ValueKind::Length,
                             QStringLiteral("4 mm"))
-                     .withVisible(sizeIs(QStringLiteral("variable"))),
+                     .withTooltip(QObject::tr("The radius at the end; a spline's last control radius"))
+                     .withVisible([](const CommandState& row) {
+                       const QString size = row.choice(QStringLiteral("size"));
+                       return size == QStringLiteral("variable") || size == QStringLiteral("spline");
+                     }),
+                 textInput(QStringLiteral("knots"), QObject::tr("Knots"))
+                     .withTooltip(QObject::tr("The spline's knots from 0 to 1, each end repeated "
+                                              "degree + 1 times (as many as the control radii and "
+                                              "the degree and one more); empty: evenly spaced, "
+                                              "degree 3 at most"))
+                     .withVisible(sizeIs(QStringLiteral("spline"))),
                  valueInput(QStringLiteral("distance2"), QObject::tr("Distance 2"), ValueKind::Length,
                             QStringLiteral("4 mm"))
                      .withTooltip(QObject::tr("The distance from the edge on the other face"))
@@ -232,7 +286,10 @@ CommandDef filletCommand(const CommandContext& context) {
                                 SelectKind::Vertex, 0, 1)
                      .withTooltip(QObject::tr("The end of the chain where the radius starts; "
                                               "none: the geometry kernel's start"))
-                     .withVisible(sizeIs(QStringLiteral("variable"))),
+                     .withVisible([](const CommandState& row) {
+                       const QString size = row.choice(QStringLiteral("size"));
+                       return size == QStringLiteral("variable") || size == QStringLiteral("spline");
+                     }),
                  selectionInput(QStringLiteral("reference"), QObject::tr("Reference Face"),
                                 SelectKind::Face, 0, 1)
                      .withTooltip(QObject::tr("The face the first distance is measured on; none: "
@@ -263,6 +320,15 @@ CommandDef filletCommand(const CommandContext& context) {
                             QStringLiteral("3 mm"))},
                 QObject::tr("Add Mid Radius"), QObject::tr("Mid %1"), 0)
           .withVisible(anyVariable),
+      // The control radii of spline sets between the first and the last
+      // (mitcad#464), in order along the chain.
+      listInput(kControl, QObject::tr("Control Radii"),
+                {valueInput(QStringLiteral("set"), QObject::tr("Set"), ValueKind::Unitless, QStringLiteral("1"))
+                     .withTooltip(QObject::tr("The spline set (1, 2, ...) the control radius is of")),
+                 valueInput(QStringLiteral("radius"), QObject::tr("Radius"), ValueKind::Length,
+                            QStringLiteral("3 mm"))},
+                QObject::tr("Add Control Radius"), QObject::tr("Control %1"), 0)
+          .withVisible(anySpline),
       checkInput(QStringLiteral("tangent_chain"), QObject::tr("Tangent Chain"), true)
           .withTooltip(QObject::tr("Also round the edges that continue the selected ones smoothly")),
       choiceInput(QStringLiteral("corner"), QObject::tr("Corner Type"),
@@ -307,6 +373,18 @@ CommandDef filletCommand(const CommandContext& context) {
       }
       mids[static_cast<std::size_t>(index)].emplace_back(position, state.expression(midKey(k, "radius")));
     }
+    // The control radii of each spline set between its first and its last.
+    std::vector<QJsonArray> controls(static_cast<std::size_t>(count));
+    for (int k = 0; k < state.rows(kControl) && anySpline(state); ++k) {
+      const double set = state.value(controlKey(k, "set"));
+      const int index = static_cast<int>(std::lround(set)) - 1;
+      if (!(std::abs(set - std::round(set)) < 1e-9) || index < 0 || index >= count ||
+          state.row(kSets, index).choice(QStringLiteral("size")) != QStringLiteral("spline")) {
+        return Built::failure(QObject::tr("Control radius %1 is not on a spline set.").arg(k + 1),
+                              controlKey(k, "set"));
+      }
+      controls[static_cast<std::size_t>(index)].append(state.expression(controlKey(k, "radius")));
+    }
     QJsonArray sets;
     for (int i = 0; i < count; ++i) {
       const CommandState row = state.row(kSets, i);
@@ -334,6 +412,27 @@ CommandDef filletCommand(const CommandContext& context) {
         }
         if (!radii.isEmpty()) {
           sizeDef.insert(QStringLiteral("mid"), radii);
+        }
+      } else if (size == QStringLiteral("spline")) {
+        QJsonArray radii{row.expression(QStringLiteral("radius"))};
+        for (const QJsonValue& radius : controls[static_cast<std::size_t>(i)]) {
+          radii.append(radius);
+        }
+        radii.append(row.expression(QStringLiteral("end")));
+        const std::optional<QJsonArray> knots =
+            splineKnots(row.text(QStringLiteral("knots")), static_cast<int>(radii.size()));
+        if (!knots) {
+          return Built::failure(QObject::tr("The knots must be numbers."), rowKey(i, "knots"));
+        }
+        sizeDef.insert(QStringLiteral("knots"), *knots);
+        sizeDef.insert(QStringLiteral("radii"), radii);
+        const Selection& vertex = row.items(QStringLiteral("start_vertex"));
+        if (!vertex.isEmpty()) {
+          if (vertex.first().owner != body) {
+            return Built::failure(QObject::tr("The start vertex must be on the filleted body."),
+                                  rowKey(i, "start_vertex"));
+          }
+          sizeDef.insert(QStringLiteral("start_vertex"), vertex.first().name);
         }
       } else if (size == QStringLiteral("asymmetric")) {
         sizeDef.insert(QStringLiteral("distance1"), row.expression(QStringLiteral("radius")));
@@ -375,6 +474,7 @@ CommandDef filletCommand(const CommandContext& context) {
     const QJsonArray sets = setsOf(feature);
     state.setRows(kSets, static_cast<int>(sets.size()));
     int mids = 0;
+    int controls = 0;
     for (int i = 0; i < sets.size(); ++i) {
       const QJsonObject set = sets[i].toObject();
       state.setItems(rowKey(i, "edges"), setItems(set, body));
@@ -394,6 +494,26 @@ CommandDef filletCommand(const CommandContext& context) {
                 feature, context);
       loadValue(state, rowKey(i, "end"), size.value(QStringLiteral("end")), feature, context);
       loadValue(state, rowKey(i, "distance2"), size.value(QStringLiteral("distance2")), feature, context);
+      if (type == QStringLiteral("spline")) {
+        // The first control radius is the set's radius, the last its end
+        // radius, the others control radii of the panel's list.
+        const QJsonArray radii = size.value(QStringLiteral("radii")).toArray();
+        QStringList knots;
+        for (const QJsonValue& knot : size.value(QStringLiteral("knots")).toArray()) {
+          knots.append(number(knot.toDouble()));
+        }
+        state.setText(rowKey(i, "knots"), knots.join(QStringLiteral(", ")));
+        if (!radii.isEmpty()) {
+          loadValue(state, rowKey(i, "radius"), radii.first(), feature, context);
+          loadValue(state, rowKey(i, "end"), radii.last(), feature, context);
+        }
+        for (int k = 1; k + 1 < radii.size(); ++k) {
+          state.setRows(kControl, controls + 1);
+          state.setText(controlKey(controls, "set"), QString::number(i + 1));
+          loadValue(state, controlKey(controls, "radius"), radii[k], feature, context);
+          ++controls;
+        }
+      }
       state.setChecked(rowKey(i, "flip"), size.value(QStringLiteral("flip")).toBool());
       if (set.contains(QStringLiteral("reference_face"))) {
         state.setItems(rowKey(i, "reference"),

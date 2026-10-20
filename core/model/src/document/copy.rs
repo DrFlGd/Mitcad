@@ -177,6 +177,8 @@ impl DocState {
             .filter(|f| inside.contains(&f.component) || Some(f.uid) == maker)
             .filter_map(|f| match &f.def {
                 FeatureDef::SheetFace(d) => Some(d.rules),
+                FeatureDef::SheetContour(d) => Some(d.rules),
+                FeatureDef::SheetConvert(d) => Some(d.rules),
                 _ => None,
             })
             .collect();

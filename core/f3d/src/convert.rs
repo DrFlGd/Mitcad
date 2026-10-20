@@ -151,6 +151,99 @@ pub fn owner_body(file: &AsmFile, record: usize) -> Option<usize> {
     None
 }
 
+/// The curve parameter nearest to `p`, and the curve's period (0 when not
+/// closed).
+pub fn project_on_curve(curve: &Curve, p: P3) -> (f64, f64) {
+    use std::f64::consts::TAU;
+    match curve {
+        Curve::Line { origin, dir } => {
+            let n = brep::dot(*dir, *dir);
+            let t = if n > 0.0 {
+                brep::dot(brep::sub(p, *origin), *dir) / n
+            } else {
+                0.0
+            };
+            (t, 0.0)
+        }
+        Curve::Ellipse {
+            center,
+            normal,
+            major_dir,
+            major,
+            minor,
+        } => {
+            let d = brep::sub(p, *center);
+            let y = brep::cross(*normal, *major_dir);
+            let x = brep::dot(d, *major_dir) / major.max(f64::MIN_POSITIVE);
+            let yv = brep::dot(d, y) / minor.max(f64::MIN_POSITIVE);
+            (yv.atan2(x).rem_euclid(TAU), TAU)
+        }
+        _ => {
+            let Some((a, b)) = curve.range() else {
+                return (0.0, 0.0);
+            };
+            let closed =
+                brep::dist(curve.eval(a), curve.eval(b)) < 1e-9 * (1.0 + brep::norm(curve.eval(a)));
+            let period = if closed || matches!(curve, Curve::BSpline(s) if s.periodic) {
+                b - a
+            } else {
+                0.0
+            };
+            // Samples, then a narrowing search around the nearest.
+            let n = 256;
+            let at = |i: usize| a + (b - a) * i as f64 / n as f64;
+            let d2 = |t: f64| {
+                let q = brep::sub(curve.eval(t), p);
+                brep::dot(q, q)
+            };
+            let best = (0..=n)
+                .min_by(|&i, &j| d2(at(i)).total_cmp(&d2(at(j))))
+                .unwrap_or(0);
+            let (mut lo, mut hi) = (at(best.saturating_sub(1)), at((best + 1).min(n)));
+            for _ in 0..80 {
+                let m1 = lo + (hi - lo) / 3.0;
+                let m2 = hi - (hi - lo) / 3.0;
+                if d2(m1) < d2(m2) {
+                    hi = m2;
+                } else {
+                    lo = m1;
+                }
+            }
+            ((lo + hi) / 2.0, period)
+        }
+    }
+}
+
+/// The curve parameters of an edge from `a` to `b` along a curve, the edge
+/// running with the curve (increasing parameter) or against it: the
+/// second is past the first along the edge, a closed edge goes once
+/// around.
+fn parameters_at(curve: &Curve, a: P3, b: P3, against: bool) -> (f64, f64) {
+    let (ta, period) = project_on_curve(curve, a);
+    let (mut tb, _) = project_on_curve(curve, b);
+    if period > 0.0 {
+        let closed = brep::dist(a, b) <= 1e-9 * (1.0 + brep::norm(a));
+        let tol = 1e-12 * period;
+        if against {
+            // ta > tb
+            while ta <= tb + tol {
+                tb -= period;
+            }
+            if closed && (ta - tb) < tol {
+                tb -= period;
+            }
+        } else {
+            while tb <= ta + tol {
+                tb += period;
+            }
+        }
+        if closed {
+            tb = if against { ta - period } else { ta + period };
+        }
+    }
+    (ta, tb)
+}
+
 /// What [`tidy_loop`] changed in a body's loops.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LoopTidy {
@@ -351,7 +444,10 @@ impl<'a> Ctx<'a> {
         self.expect_type(record, "vertex")?;
         let mut c = self.cursor(record)?;
         c.ptr()?; // edge
-        c.int()?;
+        // Which end of the edge; files of ASM 208 and before have none.
+        if !matches!(c.peek(), Some(crate::asm::Token::Ptr(_))) {
+            c.int()?;
+        }
         let point_rec = ptr_index(self.file, c.ptr()?)
             .ok_or_else(|| GeomError("vertex without point".into()))?;
         let mut tolerance = 0.0;
@@ -577,8 +673,15 @@ impl<'a> Ctx<'a> {
         // Edge parameters are along the edge; a reversed edge runs against
         // its curve, whose parameter is then the negated edge parameter.
         let sigma = if sense_reversed { -1.0 } else { 1.0 };
-        let g0 = k * sigma * p0;
-        let g1 = k * sigma * p1;
+        let (g0, g1) = if p0.is_nan() || p1.is_nan() {
+            // Older text files store no edge parameters: where the
+            // vertices lie on the curve (along the edge's direction).
+            let a = self.body.vertices[va].point;
+            let b = self.body.vertices[vb].point;
+            parameters_at(&curve, a, b, sense_reversed)
+        } else {
+            (k * sigma * p0, k * sigma * p1)
+        };
         let (mut t, vertices, along) = if g0 <= g1 {
             ([g0, g1], [va, vb], true)
         } else {

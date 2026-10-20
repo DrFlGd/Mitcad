@@ -690,6 +690,53 @@ fn thread_def(face: &str, extra: Value) -> FeatureDef<crate::ValueInput> {
     def(value)
 }
 
+#[test]
+fn trapezoidal_threads_are_cosmetic_and_listed() {
+    // A lead screw's thread (mitcad#449): Tr10x2 on the rod, listed by the
+    // threads query; it cannot be modelled.
+    let mut doc = rod();
+    let tr = json!({"standard": "trapezoidal", "designation": "TR10x2", "class": "7e"});
+    let uid = doc
+        .add_feature(&thread_def("F2:side(c1)", json!({"thread": tr})), None)
+        .unwrap()
+        .uid;
+    assert_eq!(status(&doc, uid), FeatureStatus::Ok);
+    let threads = query(&doc, json!({"query": "threads"}));
+    assert_eq!(threads.as_array().unwrap().len(), 1, "{threads}");
+    let thread = &threads[0];
+    for (key, wanted) in [
+        ("feature", json!("F3")),
+        ("face", json!("F2:side(c1)")),
+        ("standard", json!("trapezoidal")),
+        ("designation", json!("Tr10x2")),
+        ("class", json!("7e")),
+        ("modeled", json!(false)),
+        ("major_diameter", json!(10.0)),
+        ("minor_diameter", json!(8.0)),
+        ("pitch", json!(2.0)),
+        ("internal", json!(false)),
+        ("radius", json!(5.0)),
+    ] {
+        assert_eq!(thread[key], wanted, "{key}: {thread}");
+    }
+    // A multi-start one by its lead and pitch.
+    let multi = json!({"standard": "trapezoidal", "designation": "Tr10x4P2"});
+    doc.edit_feature(uid, &thread_def("F2:side(c1)", json!({"thread": multi})))
+        .unwrap();
+    assert_eq!(status(&doc, uid), FeatureStatus::Ok);
+    let threads = query(&doc, json!({"query": "threads"}));
+    assert_eq!(threads[0]["designation"], "Tr10x4(P2)");
+    assert_eq!(threads[0]["pitch"], 2.0);
+    // Modelled, it fails: Mitcad cuts the 60-degree profile only.
+    let modeled = thread_def("F2:side(c1)", json!({"thread": tr, "modeled": true}));
+    assert!(
+        doc.edit_feature(uid, &modeled).is_err_and(|e| e
+            .to_string()
+            .contains("trapezoidal thread cannot be modelled"))
+            || status(&doc, uid) != FeatureStatus::Ok
+    );
+}
+
 /// Sketch1 with a 10 mm circle extruded 20 mm into a rod (F2.b0).
 fn rod() -> Document<MockKernel> {
     let mut doc = Document::new(MockKernel::default());
@@ -1416,4 +1463,221 @@ fn modelled_tapped_holes_that_take_their_whole_wall_are_listed() {
     assert!(has(&b.doc, "F3:hole0.wall"));
     let threads = query(&b.doc, json!({"query": "threads"}));
     assert_eq!(threads.as_array().map(Vec::len), Some(1), "{threads}");
+}
+
+// Thin walls along sketch curves (mitcad#463).
+
+/// A line of a sketch; its curve id.
+fn sketch_line(
+    doc: &mut Document<MockKernel>,
+    sketch: FeatureUid,
+    a: [f64; 2],
+    b: [f64; 2],
+) -> String {
+    let value = json!({"cmd": "sketch.add_line", "sketch": sketch, "start": a, "end": b});
+    let result: Value = serde_json::from_str(&doc.command(&value.to_string()).unwrap()).unwrap();
+    result["made"][0].as_str().unwrap().to_owned()
+}
+
+/// A thin extrusion along the curves of F3, its kernel spec and status.
+fn along_curves(
+    b: &mut Block,
+    curves: &[&str],
+    extra: Value,
+) -> (FeatureUid, String, FeatureStatus) {
+    let mut value = json!({"type": "extrude", "extent": {"type": "distance", "distance": 10},
+        "thin": {"location": "side1", "thickness": 2,
+                 "curves": {"sketch": "F3", "curves": curves}},
+        "operation": "new_body"});
+    for (key, field) in extra.as_object().unwrap() {
+        value[key] = field.clone();
+    }
+    let uid = b.doc.add_feature(&def(value), None).unwrap().uid;
+    (uid, last_spec(&b.doc), status(&b.doc, uid))
+}
+
+#[test]
+fn thin_walls_follow_open_and_closed_chains_of_curves() {
+    let mut b = block();
+    let sketch = b
+        .doc
+        .add_sketch(crate::features::SketchPlane::Xy)
+        .unwrap()
+        .uid;
+    // A zigzag bending left from (0, 0), its middle line drawn downwards.
+    let zig = [
+        sketch_line(&mut b.doc, sketch, [0.0, 0.0], [40.0, 0.0]),
+        sketch_line(&mut b.doc, sketch, [40.0, 30.0], [40.0, 0.0]),
+        sketch_line(&mut b.doc, sketch, [40.0, 30.0], [70.0, 30.0]),
+    ];
+    assert_eq!(zig, ["c1", "c4", "c7"]);
+    // Listed from the far end, the chain still runs so that it bends left.
+    let (uid, spec, status) = along_curves(&mut b, &["c7", "c4", "c1"], json!({}));
+    assert_eq!(status, FeatureStatus::Ok);
+    assert!(
+        spec.ends_with("distance 10 taper 0 thin Side1 2; chains c1>c4>c7 open from [0, 0, 0]"),
+        "{spec}"
+    );
+    let faces: Vec<String> = b
+        .doc
+        .body_shape(BodyUid::new(uid, 0))
+        .unwrap()
+        .faces
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    for face in [
+        "F4:outer(c1)",
+        "F4:inner(c7)",
+        "F4:tip0(c1)",
+        "F4:tip1(c7)",
+        "F4:start(r{c1,c4,c7})",
+        "F4:end(r{c1,c4,c7})",
+    ] {
+        assert!(faces.iter().any(|f| f == face), "{face}: {faces:?}");
+    }
+    b.doc.undo();
+
+    // Straight lines run as the first listed was drawn; a circle is closed;
+    // three lines that meet at a point are three chains.
+    let right = sketch_line(&mut b.doc, sketch, [0.0, 50.0], [30.0, 50.0]);
+    let left = sketch_line(&mut b.doc, sketch, [30.0, 60.0], [0.0, 60.0]);
+    let circle: Value = serde_json::from_str(
+        &b.doc
+            .command(
+                &json!({"cmd": "sketch.add_circle", "sketch": sketch, "center": [100, 0],
+                        "diameter": 10})
+                .to_string(),
+            )
+            .unwrap(),
+    )
+    .unwrap();
+    let circle = circle["curves"][0].as_str().unwrap().to_owned();
+    let tee = [
+        sketch_line(&mut b.doc, sketch, [0.0, 100.0], [40.0, 100.0]),
+        sketch_line(&mut b.doc, sketch, [40.0, 100.0], [80.0, 100.0]),
+        sketch_line(&mut b.doc, sketch, [40.0, 130.0], [40.0, 100.0]),
+    ];
+    let (_, spec, status) = along_curves(&mut b, &[&right, &left, &circle], json!({}));
+    assert_eq!(status, FeatureStatus::Ok);
+    assert!(
+        spec.ends_with(&format!(
+            "chains {right} open from [0, 50, 0] | {left} open from [30, 60, 0] | {circle} closed"
+        )),
+        "{spec}"
+    );
+    b.doc.undo();
+    let curves: Vec<&str> = tee.iter().map(String::as_str).collect();
+    let (_, spec, status) = along_curves(&mut b, &curves, json!({}));
+    assert_eq!(status, FeatureStatus::Ok);
+    assert_eq!(spec.matches(" open from ").count(), 3, "{spec}");
+    b.doc.undo();
+
+    // Two sides with their own walls reach the kernel as with profiles.
+    let (_, spec, status) = along_curves(
+        &mut b,
+        &["c1"],
+        json!({"extent": {"type": "symmetric", "distance": 4},
+               "thin": {"location": "side2", "thickness": 1, "side2": {"location": "center", "thickness": 3},
+                        "curves": {"sketch": "F3", "curves": ["c1"]}}}),
+    );
+    assert_eq!(status, FeatureStatus::Ok);
+    assert!(
+        spec.contains("distance 4 taper 0 thin Side2 1; distance 4 taper 0 thin Center 3"),
+        "{spec}"
+    );
+    b.doc.undo();
+
+    // Curves of a sketch that is not there, and profiles beside the curves.
+    let rejected = [
+        (
+            json!({"thin": {"location": "center", "thickness": 1,
+                            "curves": {"sketch": "F3", "curves": ["c99"]}}}),
+            "Sketch2 has no curve c99",
+        ),
+        (
+            json!({"profiles": [{"sketch": "F1", "region": RECT}]}),
+            "thin walls along curves take no profiles",
+        ),
+    ];
+    for (extra, expected) in rejected {
+        let mut value = json!({"type": "extrude", "extent": {"type": "distance", "distance": 10},
+            "thin": {"location": "side1", "thickness": 2,
+                     "curves": {"sketch": "F3", "curves": ["c1"]}},
+            "operation": "new_body"});
+        for (key, field) in extra.as_object().unwrap() {
+            value[key] = field.clone();
+        }
+        let error = b
+            .doc
+            .add_feature(&def(value), None)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(expected), "{error}");
+    }
+}
+
+#[test]
+fn walls_on_both_sides_take_a_thickness_each() {
+    let mut b = block();
+    let (spec, status) = extrude_with(
+        &mut b,
+        json!({"type": "distance", "distance": 10}),
+        json!({"thin": {"location": "both", "thickness": 2, "thickness2": 0.5}}),
+    );
+    assert_eq!(status, FeatureStatus::Ok);
+    assert!(
+        spec.ends_with("distance 10 taper 0 thin Both 2 0.5"),
+        "{spec}"
+    );
+    let rejected = [
+        (
+            json!({"thin": {"location": "both", "thickness": 2}}),
+            "a wall on both sides needs thickness2",
+        ),
+        (
+            json!({"thin": {"location": "center", "thickness": 2, "thickness2": 1}}),
+            "only a wall on both sides has thickness2",
+        ),
+        (
+            json!({"thin": {"location": "both", "thickness": 2, "thickness2": 0}}),
+            "wall thickness must be greater than zero",
+        ),
+    ];
+    for (extra, expected) in rejected {
+        let def = extrude_def(json!({"type": "distance", "distance": 10}), extra);
+        let error = b.doc.add_feature(&def, None).unwrap_err().to_string();
+        assert!(error.contains(expected), "{error}");
+    }
+}
+
+#[test]
+fn thin_walls_along_curves_save_without_profiles() {
+    let mut b = block();
+    let sketch = b
+        .doc
+        .add_sketch(crate::features::SketchPlane::Xy)
+        .unwrap()
+        .uid;
+    sketch_line(&mut b.doc, sketch, [0.0, 0.0], [40.0, 0.0]);
+    let (uid, _, status) = along_curves(&mut b, &["c1"], json!({}));
+    assert_eq!(status, FeatureStatus::Ok);
+    let listed = query(&b.doc, json!({"query": "feature", "uid": uid}));
+    let definition = &listed["def"];
+    assert!(definition.get("profiles").is_none(), "{listed}");
+    assert_eq!(
+        definition["thin"]["curves"],
+        json!({"sketch": "F3", "curves": ["c1"]}),
+        "{listed}"
+    );
+    // The browser lists it under the sketch of its curves.
+    let timeline = query(&b.doc, json!({"query": "timeline"}));
+    let entry = timeline["features"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["uid"] == json!(uid))
+        .cloned()
+        .unwrap();
+    assert_eq!(entry["sketches"], json!(["F3"]), "{entry}");
 }

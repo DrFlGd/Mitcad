@@ -1,0 +1,88 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Mitcad patch (mitcad#343): the start of a rounding along an edge of a
+face the ball touches at no point goes on across that face.
+
+A notch cut into a ring's outer cylinder left at one corner a strip 5 um
+wide of an earlier rounding of radius 0.4 between the notch and the
+cylinder; its edge with the notch is rounded with 1. The strip is convex
+and bends more sharply than the ball, so no ball inside the solid touches
+it: the section on the edge's faces has no solution even on their
+surfaces. StartSolOverflow went on across a face only after a side had
+moved (a face the ball touches at no point found beyond the spine's
+faces) and gave up when the spine's own face was such a face, so the
+rounding had no start ("no ball of the radius touches both faces").
+Now, at the spine, the side whose face is convex and bends towards the
+solid more sharply than the ball (ballTouchesNoPointOf) goes on across the
+face's edge the section crosses, within the rounding's size, as such a side
+does further on: the ball touches the notch and the cylinder, the strip
+consumed, as at the corner without the strip.
+
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+index 54ea22c1..10c86ee2 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+@@ -1602,6 +1602,30 @@ static bool ballCannotTouch(const TopoDS_Face& F,
+   return towards > (1. + 1.e-3) / R;
+ }
+ 
++// Whether no ball of radius R inside the solid touches face F at uv: the
++// face is convex there and bends towards the solid more sharply than the
++// ball (a strip left of an earlier rounding of a smaller radius), so that
++// near uv the face lies inside any such ball.
++static bool ballTouchesNoPointOf(const TopoDS_Face& F, const gp_Pnt2d& uv, const double R)
++{
++  if (R <= Precision::Confusion())
++  {
++    return false;
++  }
++  BRepAdaptor_Surface AF(F, false);
++  BRepLProp_SLProps   aProp(AF, uv.X(), uv.Y(), 2, Precision::Confusion());
++  if (!aProp.IsNormalDefined() || !aProp.IsCurvatureDefined())
++  {
++    return false;
++  }
++  // (Normal curvatures are positive where the surface bends towards its
++  // normal; the face's outward normal is the surface's unless the face is
++  // reversed.)
++  const double s       = F.Orientation() == TopAbs_REVERSED ? 1. : -1.;
++  const double towards = std::max(s * aProp.MaxCurvature(), s * aProp.MinCurvature());
++  return towards > (1. + 1.e-3) / R;
++}
++
+ // Whether face Fv borders an edge of the spine: the blend runs along Fv
+ // there, its sections touching Fv, and the spine turns with the face (a
+ // contour going on round a corner rounded more sharply than the ball).
+@@ -1935,8 +1959,29 @@ int ChFi3d_Builder::StartSolOverflow(const occ::handle<ChFiDS_Stripe>&      Stri
+         // size of the rounding; else the ball rolls on that edge.
+         if (lastMoved < 0)
+         {
+-          failed = true;
+-          break;
++          // At the edge itself: a face of the edge the ball touches at no
++          // point (convex, bending more sharply than the ball: a strip left
++          // of an earlier rounding of a smaller radius). That side goes on
++          // across the face's edge the section crosses, within the size of
++          // the rounding, as a side that went onto such a face does.
++          int k = -1;
++          for (int j = 0; j < 2 && k < 0; j++)
++          {
++            if (ballTouchesNoPointOf(face[j], uv[j], radius))
++            {
++              k = j;
++            }
++          }
++          double            wn = 0., dn = RealLast();
++          const TopoDS_Edge en =
++            k < 0 ? TopoDS_Edge() : crossedEdge(face[k], plane, P, P, cured, cured, tolapp3d, wn, dn);
++          if (en.IsNull() || dn > 2. * radius + tolapp3d || !moveOn(k, en, wn))
++          {
++            failed = true;
++            break;
++          }
++          blind = k;
++          continue;
+         }
+         if (blind >= 0)
+         {

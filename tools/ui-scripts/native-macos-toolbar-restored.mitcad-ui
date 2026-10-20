@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: MIT
+# check-all sources: app/platform app/files app/MainWindowNative.cpp
+# A second application process restores the explicitly customized layout.
+expect-ever 'Native UI: AppKit shell with embedded OCCT viewport'
+sleep 800
+expect-native-toolbar-item mitcad.sidebar true
+expect-native-toolbar-item mitcad.search true
+expect-native-toolbar-item mitcad.project false
+native-toolbar-item mitcad.project insert
+expect-native-toolbar-item mitcad.project true
+expect-native-text mitcad.project 'Not in a project'
+native-toolbar-item mitcad.project remove
+expect-native-toolbar-item mitcad.project false

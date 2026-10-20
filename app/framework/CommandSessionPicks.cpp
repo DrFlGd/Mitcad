@@ -50,8 +50,11 @@ void CommandSession::valueFocused(const QString& key, bool focused) {
     m_pickTarget = key;
     m_pickFocused = true;
     // The field takes the keyboard back after a name went in: the labels
-    // stay as they are.
-    if (!(same && m_inserting)) {
+    // stay as they are. Nor while the keyboard moved here by itself after a
+    // pick (moveKeyboardToValues) and the selection takes more items: the
+    // next click in the view is its next pick, not a label's name
+    // (mitcad#467); typing in the field shows them.
+    if (!(same && m_inserting) && !(m_autoFocusing && activeTakesMore())) {
       showParameterLabels();
     }
     return;
@@ -66,6 +69,14 @@ void CommandSession::valueFocused(const QString& key, bool focused) {
       hideParameterLabels();
     }
   });
+}
+
+bool CommandSession::activeTakesMore() const {
+  const InputDef* input = activeInput();
+  if (input == nullptr || input->type != InputDef::Type::Selection || input->max == 1) {
+    return false;
+  }
+  return input->max == 0 || m_state.items(m_active).size() < input->max;
 }
 
 void CommandSession::showParameterLabels() {

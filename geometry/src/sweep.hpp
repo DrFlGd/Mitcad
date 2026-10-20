@@ -53,6 +53,13 @@ std::vector<SweepFace> merged(const std::vector<SweepFace>& faces);
 std::vector<SweepFace> wall_faces(const std::string& feature, const Frame& frame,
                                   const std::vector<Region>& regions, const ThinWall& wall);
 
+// The walls of a thin extrusion along chains of sketch curves (mitcad#463;
+// see ExtrudeFeatureSpec::chains): one face per open chain, one per wall
+// of a closed one, keyed by `keys`.
+std::vector<SweepFace> chain_wall_faces(const std::string& feature, const Frame& frame,
+                                        const std::vector<Path>& chains, const NameList& keys,
+                                        const ThinWall& wall);
+
 // The face moved or turned; the edge names follow.
 SweepFace transformed(const SweepFace& face, const gp_Trsf& trsf);
 

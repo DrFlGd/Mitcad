@@ -13,6 +13,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use super::base::apply_tool;
+use super::path::{self, SketchCurves};
 use super::reference::ExtentObject;
 use super::{
     BodyChange, CheckContext, EvalContext, Evaluate, FeatureInfo, FeatureOutput, References,
@@ -138,12 +139,24 @@ pub enum Side<P = ParamId> {
 #[serde(deny_unknown_fields)]
 pub struct Thin<P = ParamId> {
     /// Side 1 lies away from the region's material (outside the outer
-    /// boundary, into holes), side 2 towards it.
+    /// boundary, into holes), side 2 towards it. Along `curves`, side 1
+    /// lies outside a closed chain and to the right of an open one (see
+    /// [`path::wall_chains`] for which way it runs), side 2 inside or to
+    /// its left.
     pub location: WallLocation,
+    /// The thickness (on side 1 for a wall on both sides).
     pub thickness: P,
+    /// The thickness on side 2 of a wall on both sides (`both`).
+    #[serde(default = "Default::default", skip_serializing_if = "Option::is_none")]
+    pub thickness2: Option<P>,
     /// The wall of side two of a two-sided extent when it differs.
     #[serde(default = "Default::default", skip_serializing_if = "Option::is_none")]
     pub side2: Option<ThinSide<P>>,
+    /// Walls along these sketch curves, open chains or closed loops,
+    /// instead of along the profiles' boundaries (mitcad#463); the
+    /// extrusion then has no profiles.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub curves: Option<SketchCurves>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -151,6 +164,8 @@ pub struct Thin<P = ParamId> {
 pub struct ThinSide<P = ParamId> {
     pub location: WallLocation,
     pub thickness: P,
+    #[serde(default = "Default::default", skip_serializing_if = "Option::is_none")]
+    pub thickness2: Option<P>,
 }
 
 /// The Operation setting. A new component makes new bodies in a new
@@ -174,8 +189,13 @@ impl Operation {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtrudeDef<P = ParamId> {
-    /// Regions of one sketch, a set (see `selected_regions`).
-    #[serde(deserialize_with = "profile_set")]
+    /// Regions of one sketch, a set (see `selected_regions`); none for
+    /// thin walls along curves.
+    #[serde(
+        default,
+        deserialize_with = "profile_set",
+        skip_serializing_if = "Vec::is_empty"
+    )]
     pub profiles: Vec<ProfileRef>,
     #[serde(
         default = "Default::default",
@@ -292,13 +312,16 @@ impl<P> ExtrudeDef<P> {
             Some(thin) => Some(Thin {
                 location: thin.location,
                 thickness: f("thin.thickness", &thin.thickness)?,
+                thickness2: map_option("thin.thickness2", &thin.thickness2, f)?,
                 side2: match &thin.side2 {
                     None => None,
                     Some(side) => Some(ThinSide {
                         location: side.location,
                         thickness: f("thin.side2.thickness", &side.thickness)?,
+                        thickness2: map_option("thin.side2.thickness2", &side.thickness2, f)?,
                     }),
                 },
+                curves: thin.curves.clone(),
             }),
         };
         Ok(ExtrudeDef {
@@ -314,9 +337,17 @@ impl<P> ExtrudeDef<P> {
         })
     }
 
-    /// The sketch of the profiles.
+    /// The sketch of the profiles (or of the curves thin walls follow).
     pub fn sketch(&self) -> Option<FeatureUid> {
-        self.profiles.first().map(|p| p.sketch)
+        self.profiles
+            .first()
+            .map(|p| p.sketch)
+            .or_else(|| self.wall_curves().map(|c| c.sketch))
+    }
+
+    /// The curves thin walls follow instead of the profiles' boundaries.
+    pub fn wall_curves(&self) -> Option<&SketchCurves> {
+        self.thin.as_ref().and_then(|t| t.curves.as_ref())
     }
 
     /// The objects the extrusion starts from or runs to.
@@ -529,6 +560,9 @@ impl FeatureInfo for ExtrudeDef {
     fn references(&self) -> References {
         let mut references = References::default();
         profile_references(&self.profiles, &mut references);
+        if let Some(curves) = self.wall_curves() {
+            curves.add_references(&mut references);
+        }
         for body in &self.participants {
             references.body(*body);
         }
@@ -542,7 +576,13 @@ impl FeatureInfo for ExtrudeDef {
     }
 
     fn check(&self, ctx: &CheckContext<'_>) -> Result<(), String> {
-        check_profiles(ctx, &self.profiles)?;
+        match self.wall_curves() {
+            Some(_) if !self.profiles.is_empty() => {
+                return Err("thin walls along curves take no profiles".to_owned());
+            }
+            Some(curves) => curves.check(ctx)?,
+            None => check_profiles(ctx, &self.profiles)?,
+        }
         if let Some(scope) = &self.cut_scope {
             if self.operation != Operation::Cut || !self.participants.is_empty() {
                 return Err("cut_scope requires Cut with no legacy participant list".to_owned());
@@ -563,6 +603,25 @@ impl FeatureInfo for ExtrudeDef {
             )
         {
             return Err("only an extrusion to two sides has a second wall".to_owned());
+        }
+        if let Some(thin) = &self.thin {
+            let walls = [
+                Some((thin.location, thin.thickness2.is_some())),
+                thin.side2
+                    .as_ref()
+                    .map(|s| (s.location, s.thickness2.is_some())),
+            ];
+            for (location, second) in walls.into_iter().flatten() {
+                match (location == WallLocation::Both, second) {
+                    (true, false) => {
+                        return Err("a wall on both sides needs thickness2".to_owned());
+                    }
+                    (false, true) => {
+                        return Err("only a wall on both sides has thickness2".to_owned());
+                    }
+                    _ => {}
+                }
+            }
         }
         for object in self.objects() {
             object.check(ctx)?;
@@ -604,7 +663,9 @@ impl FeatureInfo for ExtrudeDef {
         if let Some(thin) = &self.thin {
             let walls = [
                 Some(thin.thickness),
+                thin.thickness2,
                 thin.side2.as_ref().map(|s| s.thickness),
+                thin.side2.as_ref().and_then(|s| s.thickness2),
             ];
             for thickness in walls.into_iter().flatten() {
                 if !is_positive(value(thickness)) {
@@ -669,7 +730,7 @@ impl<'a> SideView<'a> {
 
 impl<K: Kernel> Evaluate<K> for ExtrudeDef {
     fn evaluate(&self, ctx: &mut EvalContext<'_, K>) -> Result<FeatureOutput<K::Shape>, String> {
-        let (sketch, regions) = profile_regions(ctx, &self.profiles)?;
+        let (sketch, regions) = self.sketch_regions(ctx)?;
         let discovery = self
             .cut_scope
             .as_ref()
@@ -721,7 +782,7 @@ impl<K: Kernel> Evaluate<K> for ExtrudeDef {
         if self.cut_scope.is_some() || !self.depends_on_bodies() {
             return None;
         }
-        let (sketch, regions) = match profile_regions(ctx, &self.profiles) {
+        let (sketch, regions) = match self.sketch_regions(ctx) {
             Ok(p) => p,
             Err(e) => return Some(Err(e)),
         };
@@ -758,6 +819,18 @@ impl<K: Kernel> Evaluate<K> for ExtrudeDef {
 }
 
 impl ExtrudeDef {
+    /// The evaluated sketch and the regions the profiles select (none for
+    /// walls along curves).
+    fn sketch_regions<K: Kernel>(
+        &self,
+        ctx: &mut EvalContext<'_, K>,
+    ) -> Result<(Arc<SketchOutput>, Vec<ProfileRegion>), String> {
+        match self.wall_curves() {
+            Some(curves) => Ok((ctx.sketch(curves.sketch)?, Vec::new())),
+            None => profile_regions(ctx, &self.profiles),
+        }
+    }
+
     /// Whether the extrusion's start or an end is found from bodies.
     fn depends_on_bodies(&self) -> bool {
         let to_object = |side: &Side| !matches!(side, Side::Distance { .. });
@@ -834,12 +907,22 @@ impl ExtrudeDef {
                 let first = ThinWall {
                     location: thin.location,
                     thickness: ctx.positive(thin.thickness)?,
+                    thickness2: thin
+                        .thickness2
+                        .map(|t| ctx.positive(t))
+                        .transpose()?
+                        .unwrap_or(0.0),
                 };
                 let second = match &thin.side2 {
                     None => first,
                     Some(side) => ThinWall {
                         location: side.location,
                         thickness: ctx.positive(side.thickness)?,
+                        thickness2: side
+                            .thickness2
+                            .map(|t| ctx.positive(t))
+                            .transpose()?
+                            .unwrap_or(0.0),
                     },
                 };
                 (Some(first), Some(second))
@@ -922,6 +1005,10 @@ impl ExtrudeDef {
             return Err("the two extrude distances must add up to more than zero".to_owned());
         }
 
+        let chains = match self.wall_curves() {
+            Some(curves) => Some(path::wall_chains(curves.curves_on(ctx, &frame)?, &frame)?),
+            None => None,
+        };
         let spec = ExtrudeFeatureSpec {
             feature,
             frame,
@@ -931,7 +1018,11 @@ impl ExtrudeDef {
             side1,
             side2,
         };
-        ctx.kernel.extrude_feature(&spec).map_err(|e| e.to_string())
+        match &chains {
+            Some(chains) => ctx.kernel.extrude_curves(&spec, chains),
+            None => ctx.kernel.extrude_feature(&spec),
+        }
+        .map_err(|e| e.to_string())
     }
 }
 

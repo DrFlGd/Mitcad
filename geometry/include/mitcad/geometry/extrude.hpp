@@ -9,6 +9,7 @@
 
 #include <gp_Dir.hxx>
 
+#include "mitcad/geometry/path_sweep.hpp"
 #include "mitcad/geometry/profile.hpp"
 #include "mitcad/geometry/shape.hpp"
 #include "mitcad/geometry/target.hpp"
@@ -37,13 +38,15 @@ struct ExtrudeSpec {
 ShapePtr extrude(const ExtrudeSpec& spec);
 
 // Where a thin extrusion's wall lies relative to the profile curves: on
-// side 1 (outside a region, away from its material), centred on them, or on
-// side 2 (inside).
-enum class WallLocation { Side1, Center, Side2 };
+// side 1 (outside a region, away from its material), centred on them, on
+// side 2 (inside), or on both sides (`thickness` on side 1, `thickness2` on
+// side 2; mitcad#463).
+enum class WallLocation { Side1, Center, Side2, Both };
 
 struct ThinWall {
   WallLocation location = WallLocation::Center;
   double thickness = 0.0;
+  double thickness2 = 0.0; // side 2 of a wall on both sides
 };
 
 // One side of an extrusion: a distance from the start, or up to a target.
@@ -86,6 +89,18 @@ struct ExtrudeFeatureSpec {
   std::optional<Target> start;
   ExtrudeSide side1;
   std::optional<ExtrudeSide> side2;
+  // Thin walls along chains of sketch curves (mitcad#463), beside the walls
+  // of the regions' boundaries; only for a thin extrusion. Each chain holds
+  // its curves in order, each running along it, open or closed;
+  // `chain_keys` holds each chain's key for its caps (`r{c1,c2}`). A closed
+  // chain's side 1 lies outside the area it encloses, as a region's; an
+  // open chain's side 1 lies to its right as it runs (the sketch normal
+  // up), side 2 to its left, and its ends are square to it. Faces along the
+  // curves: outer(<curve>) on side 1, inner(<curve>) on side 2;
+  // tip0(<curve>) and tip1(<curve>) at an open chain's start (on its first
+  // curve) and its end (its last).
+  std::vector<Path> chains;
+  std::vector<std::string> chain_keys;
 };
 
 ShapePtr extrude_feature(const ExtrudeFeatureSpec& spec);

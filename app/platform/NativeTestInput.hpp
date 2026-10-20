@@ -12,6 +12,8 @@ class QOpenGLWidget;
 class QPointF;
 class QJsonObject;
 
+namespace mitcad { class CommandHost; }
+
 namespace mitcad::mac::test {
 
 // In-process AppKit input for MITCAD_TEST_INPUT. There is no Accessibility
@@ -25,6 +27,9 @@ bool hover(const QString& identifier, bool enter, QString& error);
 bool clickImmediately(const QString& identifier, QString& error);
 bool replaceText(const QString& identifier, const QString& text, QString& error);
 bool choose(const QString& identifier, const QString& title, QString& error);
+bool duplicateChoices(CommandHost& host, QString& error);
+bool formControls(CommandHost& host, QString& error);
+bool disclosureLayout(QString& error);
 bool triggerAction(const QString& identifier, QString& error);
 bool triggerMenu(const QString& path, QString& error);
 bool activate(const QString& identifier, QString& error);
@@ -35,6 +40,8 @@ bool textMatches(const QString& identifier, const QRegularExpression& expression
 bool enabled(const QString& identifier, bool expected);
 bool visible(const QString& identifier, bool expected);
 bool present(const QString& identifier, bool expected);
+bool toolbarItemPresent(const QString& identifier, bool expected);
+bool configureToolbarItem(const QString& identifier, const QString& operation, QString& error);
 bool resizeDocument(int width, int height, QString& error);
 bool moveDocument(int x, int y, QString& error);
 bool setAppearance(const QString& name, QString& error);
@@ -65,6 +72,9 @@ inline bool hover(const QString&, bool, QString&) { return false; }
 inline bool clickImmediately(const QString&, QString&) { return false; }
 inline bool replaceText(const QString&, const QString&, QString&) { return false; }
 inline bool choose(const QString&, const QString&, QString&) { return false; }
+inline bool duplicateChoices(CommandHost&, QString&) { return false; }
+inline bool formControls(CommandHost&, QString&) { return false; }
+inline bool disclosureLayout(QString&) { return false; }
 inline bool triggerAction(const QString&, QString&) { return false; }
 inline bool triggerMenu(const QString&, QString&) { return false; }
 inline bool activate(const QString&, QString&) { return false; }
@@ -75,6 +85,8 @@ inline bool textMatches(const QString&, const QRegularExpression&) { return fals
 inline bool enabled(const QString&, bool) { return false; }
 inline bool visible(const QString&, bool) { return false; }
 inline bool present(const QString&, bool) { return false; }
+inline bool toolbarItemPresent(const QString&, bool) { return false; }
+inline bool configureToolbarItem(const QString&, const QString&, QString&) { return false; }
 inline bool resizeDocument(int, int, QString&) { return false; }
 inline bool moveDocument(int, int, QString&) { return false; }
 inline bool setAppearance(const QString&, QString&) { return false; }

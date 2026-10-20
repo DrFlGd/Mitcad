@@ -14,7 +14,7 @@ use crate::exchange::{BodyKind, ExportBody, ExportFormat, ExportOptions, ImportB
 use crate::ids::FeatureUid;
 use crate::kernel::{
     Axis, Cylinder, ExtrudeFeatureSpec, ExtrudeSide, ExtrudeStart, HoleEnd, HoleSpec, Plane,
-    RevolveSpec, SideEnd, Target, ThreadSpec, simple_extrude,
+    RevolveSpec, SideEnd, Target, ThreadSpec, WallLocation, simple_extrude,
 };
 use crate::kernel::{
     BooleanOp, BooleanOutput, BooleanPiece, BoundingBox, Chamfer, ChamferCorner, ExtrudeSpec,
@@ -173,6 +173,9 @@ pub struct MockKernel {
     /// part's end cuts, mitcad#443); the box planes are kept by history.
     pub half_space_cuts: Cell<bool>,
     pub box_planes: RefCell<BTreeMap<String, BoxPlane>>,
+    /// A stitch's faces close up into a solid (mitcad#456); a surface body
+    /// otherwise.
+    pub stitch_closes: Cell<bool>,
 }
 
 /// The bounds of what of `b` lies on or below the plane through `point`
@@ -1465,6 +1468,23 @@ impl Kernel for MockKernel {
                 number(b[2])
             ));
         }
+        // A second rail and an end scale (mitcad#464), when given.
+        if let Some(last) = self.specs.borrow_mut().last_mut() {
+            if let Some(rail2) = spec.guide.and_then(|g| g.rail2) {
+                let names: Vec<&str> = rail2.iter().map(|p| p.name.as_str()).collect();
+                last.push_str(&format!(" rail2 {}", names.join(",")));
+            }
+            if spec.end_scale != 1.0 {
+                last.push_str(&format!(" end scale {}", number(spec.end_scale)));
+            }
+            // The plane rule of the rails' points (mitcad#469).
+            if spec
+                .guide
+                .is_some_and(|g| g.point == crate::sweeps::RailPoint::Plane)
+            {
+                last.push_str(" rail point plane");
+            }
+        }
         let around = crate::features::path::is_closed(spec.path)
             && spec.extent1 + spec.extent2 >= 1.0 - 1e-9;
         let mut faces = Vec::new();
@@ -2340,6 +2360,427 @@ impl Kernel for MockKernel {
         self.call("unite_within")?;
         self.unite(shapes)
     }
+
+    // Contact sets (mitcad#454).
+
+    /// The common volume of the placed bounding boxes (the boxes around
+    /// their moved corners), counted as "overlap_volumes" per pair: boxes
+    /// that overlap by `tolerance` or less along an axis only touch.
+    fn overlap_volumes(
+        &self,
+        pairs: &[crate::kernel::PlacedPair<'_, MockShape>],
+        tolerance: f64,
+    ) -> Result<Vec<f64>, KernelError> {
+        let placed = |s: &MockShape, t: &Transform| -> Option<BoundingBox> {
+            let b = s.bounds?;
+            let mut min = [f64::INFINITY; 3];
+            let mut max = [f64::NEG_INFINITY; 3];
+            for corner in b.corners() {
+                let p = t.apply_point(corner);
+                for i in 0..3 {
+                    min[i] = min[i].min(p[i]);
+                    max[i] = max[i].max(p[i]);
+                }
+            }
+            Some(BoundingBox { min, max })
+        };
+        let mut volumes = Vec::with_capacity(pairs.len());
+        for pair in pairs {
+            self.call("overlap_volumes")?;
+            let (Some(a), Some(b)) = (
+                placed(pair.a, &pair.a_placement),
+                placed(pair.b, &pair.b_placement),
+            ) else {
+                volumes.push(0.0);
+                continue;
+            };
+            let overlap: [f64; 3] =
+                std::array::from_fn(|i| a.max[i].min(b.max[i]) - a.min[i].max(b.min[i]));
+            volumes.push(if overlap.iter().all(|o| *o > tolerance) {
+                overlap.iter().product()
+            } else {
+                0.0
+            });
+        }
+        Ok(volumes)
+    }
+
+    // Emboss (mitcad#458).
+
+    /// The profiles' prism one unit along the sketch normal, faces named
+    /// as the wrapped tool's, with the history `wrap(<feature>:<radius>..
+    /// <to_radius>)`; the spec described in `specs`.
+    fn wrapped_emboss(
+        &self,
+        spec: &crate::kernel::EmbossWrapSpec<'_>,
+    ) -> Result<MockShape, KernelError> {
+        self.call("wrapped_emboss")?;
+        let axis = |v: [f64; 3]| v.map(number).join(" ");
+        self.specs.borrow_mut().push(format!(
+            "wrap {} about {} along {} radius {} to {}",
+            spec.feature,
+            axis(spec.axis.origin),
+            axis(spec.axis.direction),
+            number(spec.radius),
+            number(spec.to_radius)
+        ));
+        let mut shape = self.extrude(&ExtrudeSpec {
+            feature: spec.feature,
+            frame: spec.frame,
+            regions: spec.regions,
+            direction: spec.frame.normal(),
+            start: 0.0,
+            end: 1.0,
+        })?;
+        shape.history = format!(
+            "wrap({}:{}..{})",
+            spec.feature,
+            number(spec.radius),
+            number(spec.to_radius)
+        );
+        for part in &mut shape.parts {
+            part.history = shape.history.clone();
+        }
+        Ok(shape)
+    }
+
+    // Thin extrusions along sketch curves (mitcad#463).
+
+    /// The extrusion's line in `specs` with the chains (`; chains c1>c2
+    /// open from [0, 0, 0] | c3 closed`), counted as "extrude_curves"; the
+    /// faces the OCCT kernel names, the bounds of the chains' ends and the
+    /// first side's distance along the direction.
+    fn extrude_curves(
+        &self,
+        spec: &ExtrudeFeatureSpec<'_, MockShape>,
+        chains: &[Vec<PathCurve>],
+    ) -> Result<MockShape, KernelError> {
+        self.call("extrude_curves")?;
+        let closed = |chain: &[PathCurve]| crate::features::path::is_closed(chain);
+        let described: Vec<String> = chains
+            .iter()
+            .map(|chain| {
+                let names: Vec<&str> = chain.iter().map(|p| p.name.as_str()).collect();
+                match crate::features::path::curve_ends(&chain[0].curve) {
+                    Some((start, _)) if !closed(chain) => format!(
+                        "{} open from [{}]",
+                        names.join(">"),
+                        start.map(|v| number(round(v))).join(", ")
+                    ),
+                    _ => format!("{} closed", names.join(">")),
+                }
+            })
+            .collect();
+        self.specs.borrow_mut().push(format!(
+            "{}; chains {}",
+            describe_extrude(spec),
+            described.join(" | ")
+        ));
+        let key = |name: &str| {
+            SegmentKey::closed(
+                crate::ids::EntityUid::parse_curve(name).unwrap_or(crate::ids::EntityUid(0)),
+            )
+        };
+        let mut faces = Vec::new();
+        let mut min = [f64::INFINITY; 3];
+        let mut max = [f64::NEG_INFINITY; 3];
+        for chain in chains {
+            for piece in chain {
+                for role in ["outer", "inner"] {
+                    faces.push(FaceName::new(
+                        spec.feature,
+                        role,
+                        Some(RoleKey::Segment(key(&piece.name))),
+                    ));
+                }
+                if let Some((a, b)) = crate::features::path::curve_ends(&piece.curve) {
+                    for p in [a, b] {
+                        for i in 0..3 {
+                            min[i] = min[i].min(p[i]);
+                            max[i] = max[i].max(p[i]);
+                        }
+                    }
+                }
+            }
+            if !closed(chain) {
+                let first = &chain[0].name;
+                let last = &chain[chain.len() - 1].name;
+                faces.push(FaceName::new(
+                    spec.feature,
+                    "tip0",
+                    Some(RoleKey::Segment(key(first))),
+                ));
+                faces.push(FaceName::new(
+                    spec.feature,
+                    "tip1",
+                    Some(RoleKey::Segment(key(last))),
+                ));
+            }
+            let region =
+                crate::topo::RegionKey::new(chain.iter().map(|p| key(&p.name))).expect("curves");
+            faces.push(FaceName::start(spec.feature, region.clone()));
+            faces.push(FaceName::end(spec.feature, region));
+        }
+        let length = match spec.side1.end {
+            SideEnd::Distance(d) => d,
+            SideEnd::Target(_) => 10.0,
+        };
+        let far: [f64; 3] = std::array::from_fn(|i| spec.direction[i] * length);
+        let bounds = (min[0] <= max[0]).then(|| BoundingBox {
+            min: std::array::from_fn(|i| min[i] + far[i].min(0.0)),
+            max: std::array::from_fn(|i| max[i] + far[i].max(0.0)),
+        });
+        Ok(MockShape {
+            history: format!("thin_curves({})", spec.feature),
+            faces,
+            edges: Vec::new(),
+            bounds,
+            parts: Vec::new(),
+        })
+    }
+
+    // Boundary Fill (mitcad#457).
+
+    /// Cells by the tools' bounding boxes, counted as "boundary_cells" per
+    /// call: a tool holds a point inside its box (a point on a box's side
+    /// fails, as one on a tool's boundary does); the cell's box is the box
+    /// common to the tools that hold its point, its faces theirs and those
+    /// of the other tools whose boxes reach into it, its history
+    /// `cell(<the holders' histories>|<the others' that reach it>)`.
+    fn boundary_cells(
+        &self,
+        tools: &[&MockShape],
+        points: &[crate::datum::Vec3],
+    ) -> Result<Vec<crate::kernel::BoundaryCell<MockShape>>, KernelError> {
+        self.call("boundary_cells")?;
+        let mut cells = Vec::with_capacity(points.len());
+        for p in points {
+            let at = format!("({}, {}, {})", number(p[0]), number(p[1]), number(p[2]));
+            let mut holders = Vec::new();
+            for (i, tool) in tools.iter().enumerate() {
+                let Some(b) = tool.bounds else {
+                    continue;
+                };
+                if (0..3).all(|k| p[k] > b.min[k] && p[k] < b.max[k]) {
+                    holders.push(i);
+                } else if (0..3).all(|k| p[k] >= b.min[k] && p[k] <= b.max[k]) {
+                    return Err(KernelError::failed(format!(
+                        "the point {at} lies on the boundary of tool {}",
+                        i + 1
+                    )));
+                }
+            }
+            let Some(bounds) = holders
+                .iter()
+                .filter_map(|i| tools[*i].bounds)
+                .reduce(|a, b| BoundingBox {
+                    min: std::array::from_fn(|k| a.min[k].max(b.min[k])),
+                    max: std::array::from_fn(|k| a.max[k].min(b.max[k])),
+                })
+            else {
+                return Err(KernelError::failed(format!(
+                    "the point {at} is inside no tool body: no enclosed cell there"
+                )));
+            };
+            let reaching: Vec<usize> = (0..tools.len())
+                .filter(|i| {
+                    !holders.contains(i)
+                        && tools[*i].bounds.is_some_and(|b| {
+                            (0..3).all(|k| b.min[k] < bounds.max[k] && b.max[k] > bounds.min[k])
+                        })
+                })
+                .collect();
+            let histories = |indices: &[usize]| {
+                indices
+                    .iter()
+                    .map(|i| tools[*i].history.as_str())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            };
+            let history = format!(
+                "cell({}|{})",
+                histories(holders.as_slice()),
+                histories(reaching.as_slice())
+            );
+            let inputs: Vec<&MockShape> =
+                holders.iter().chain(&reaching).map(|i| tools[*i]).collect();
+            let mut shape = MockShape::merged(history, &inputs, &[]);
+            shape.bounds = Some(bounds);
+            cells.push(crate::kernel::BoundaryCell { shape, holders });
+        }
+        Ok(cells)
+    }
+
+    // Patch, Stitch and Thicken (mitcad#456). Surface bodies are shapes
+    // whose history holds ",sheet" (`body_kind`); a stitch closes into a
+    // solid only when `stitch_closes` is set. Each call is described in
+    // `specs`.
+
+    /// A sheet of one face `<feature>:patch(<region>)` per region, as flat
+    /// as its region.
+    fn patch_regions(
+        &self,
+        feature: FeatureUid,
+        frame: &crate::profile::SketchFrame,
+        regions: &[crate::profile::ProfileRegion],
+    ) -> Result<Vec<MockShape>, KernelError> {
+        self.call("patch_regions")?;
+        let mut patches = Vec::new();
+        for region in regions {
+            let (min, max) = region.bounds();
+            let corners: Vec<[f64; 3]> = [
+                [min[0], min[1]],
+                [max[0], min[1]],
+                [min[0], max[1]],
+                [max[0], max[1]],
+            ]
+            .iter()
+            .map(|p| frame.point(*p))
+            .collect();
+            self.specs
+                .borrow_mut()
+                .push(format!("patch_regions({feature}:{})", region.key));
+            patches.push(MockShape {
+                history: format!("patch({feature}:{},sheet)", region.key),
+                faces: vec![FaceName::new(
+                    feature,
+                    "patch",
+                    Some(RoleKey::Region(region.key.clone())),
+                )],
+                edges: Vec::new(),
+                bounds: points_box(&corners),
+                parts: Vec::new(),
+            });
+        }
+        Ok(patches)
+    }
+
+    /// One closed opening per face of a surface body, in face order; none
+    /// of a solid.
+    fn open_boundaries(
+        &self,
+        shape: &MockShape,
+    ) -> Result<Vec<crate::surfaces::OpenBoundary>, KernelError> {
+        self.call("open_boundaries")?;
+        if self.body_kind(shape)? != BodyKind::Sheet {
+            return Ok(Vec::new());
+        }
+        Ok(shape
+            .faces
+            .iter()
+            .map(|face| crate::surfaces::OpenBoundary {
+                faces: vec![face.clone()],
+                points: Vec::new(),
+                closed: true,
+            })
+            .collect())
+    }
+
+    /// A sheet of one face `<feature>:patch` over the body's bounds; the
+    /// edges must be the body's and the opening one of its openings.
+    fn patch_loop(
+        &self,
+        spec: &crate::surfaces::PatchLoopSpec<'_, MockShape>,
+    ) -> Result<MockShape, KernelError> {
+        self.call("patch_loop")?;
+        let boundary = match spec.boundary {
+            crate::surfaces::PatchBoundary::Edges(edges) => {
+                for edge in edges {
+                    if spec.body.matching_edges(edge).is_empty() {
+                        return Err(KernelError::failed(format!("the body has no edge {edge}")));
+                    }
+                }
+                format!(
+                    "edges {}",
+                    edges
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                )
+            }
+            crate::surfaces::PatchBoundary::Opening(index) => {
+                if index >= self.open_boundaries(spec.body)?.len() {
+                    return Err(KernelError::failed(format!(
+                        "the body has no opening {index}"
+                    )));
+                }
+                format!("opening {index}")
+            }
+        };
+        let own: Vec<String> = spec
+            .edge_continuity
+            .iter()
+            .map(|(edge, g)| format!(" {edge}={}", g.as_str()))
+            .collect();
+        self.specs.borrow_mut().push(format!(
+            "patch_loop({}: {boundary}, {}{}, {} points)",
+            spec.feature,
+            spec.continuity.as_str(),
+            own.concat(),
+            spec.points.len()
+        ));
+        Ok(MockShape {
+            history: format!("patch_loop({},sheet)", spec.feature),
+            faces: vec![FaceName::new(spec.feature, "patch", None)],
+            edges: Vec::new(),
+            bounds: spec.body.bounds,
+            parts: Vec::new(),
+        })
+    }
+
+    /// The shapes' faces and edges together; a surface body unless
+    /// `stitch_closes`.
+    fn stitch(&self, shapes: &[&MockShape], tolerance: f64) -> Result<MockShape, KernelError> {
+        self.call("stitch")?;
+        self.specs.borrow_mut().push(format!(
+            "stitch({} bodies, {})",
+            shapes.len(),
+            number(tolerance)
+        ));
+        let history = if self.stitch_closes.get() {
+            format!("stitch({} bodies)", shapes.len())
+        } else {
+            format!("stitch({} bodies,sheet)", shapes.len())
+        };
+        Ok(MockShape::merged(history, shapes, &[]))
+    }
+
+    /// A solid with `front(<face>)`, `back(<face>)` and `wall(<face>)` for
+    /// each face, over the sheet's bounds.
+    fn thicken(
+        &self,
+        feature: FeatureUid,
+        shape: &MockShape,
+        thickness: f64,
+        symmetric: bool,
+    ) -> Result<MockShape, KernelError> {
+        self.call("thicken")?;
+        let side = if symmetric { "symmetric" } else { "one side" };
+        self.specs.borrow_mut().push(format!(
+            "thicken({feature}: {} faces, {}, {side})",
+            shape.faces.len(),
+            number(thickness)
+        ));
+        let mut faces = Vec::new();
+        let mut edges = Vec::new();
+        for face in &shape.faces {
+            let of = |role: &str| {
+                FaceName::new(feature, role, Some(RoleKey::Face(Box::new(face.clone()))))
+            };
+            let (front, back, wall) = (of("front"), of("back"), of("wall"));
+            edges.push((front.clone(), wall.clone()));
+            edges.push((back.clone(), wall.clone()));
+            faces.extend([front, back, wall]);
+        }
+        Ok(MockShape {
+            history: format!("thicken({feature},{},{side})", number(thickness)),
+            faces,
+            edges,
+            bounds: shape.bounds,
+            parts: Vec::new(),
+        })
+    }
 }
 
 /// A mock shape with its faces renamed ([`MockKernel::rename_faces`]).
@@ -2545,7 +2986,14 @@ fn describe_extrude(spec: &ExtrudeFeatureSpec<'_, MockShape>) -> String {
         };
         let thin = side
             .thin
-            .map(|w| format!(" thin {:?} {}", w.location, number(w.thickness)))
+            .map(|w| match w.location {
+                WallLocation::Both => format!(
+                    " thin Both {} {}",
+                    number(w.thickness),
+                    number(w.thickness2)
+                ),
+                _ => format!(" thin {:?} {}", w.location, number(w.thickness)),
+            })
             .unwrap_or_default();
         format!("{end} taper {}{thin}", number(side.taper))
     };

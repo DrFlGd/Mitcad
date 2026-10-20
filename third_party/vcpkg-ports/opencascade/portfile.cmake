@@ -182,6 +182,21 @@ vcpkg_from_github(
         0840-chfi3d-contour-never-takes-its-own-edge-again.patch
         0860-chfi3d-contour-runs-on-into-a-near-tangent-edge-asked-for.patch
         0861-chfi3d-contact-at-the-vertex-where-the-blend-vanishes-cuts-the-own-edge.patch
+        0880-chfi3d-start-across-a-strip-the-ball-cannot-touch.patch
+        0890-chfi3d-onsame-end-across-a-sliver-at-the-vertex.patch
+        0891-chfi3d-bridge-over-a-gap-round-a-closed-spine-and-across-its-start.patch
+        0870-chfi3d-contact-off-a-narrow-face-across-its-tangent-edge-keeps-its-surface.patch
+        0900-chfi3d-walked-onsame-piece-generated-by-the-spine-edges.patch
+        0901-chfi3d-cap-intersection-ends-where-the-walk-first-passes-the-end.patch
+        0902-chfi3d-rounding-vanishing-where-its-contact-crosses-onto-a-tangent-face.patch
+        0903-chfi3d-rolling-contact-crossing-onto-the-next-spine-face-goes-on.patch
+        0904-chfi3d-rounding-rolled-on-past-one-end-along-a-line-or-circle.patch
+        0905-chfi3d-ball-turning-about-a-vertex-of-the-edges-it-rolls-on.patch
+        0906-chfi3d-next-overflow-start-where-the-first-walk-fails.patch
+        0907-brepblend-pivot-released-where-a-step-lands-on-the-tangency.patch
+        0908-chfi3d-overflow-start-sampled-finer-where-none-is-found.patch
+        0909-chfi3d-rounding-vanishing-a-hair-short-of-the-vertex-it-rolls-into.patch
+        0920-chfi3d-radius-law-of-the-callers-along-a-contour.patch
 )
 
 if (VCPKG_LIBRARY_LINKAGE STREQUAL "dynamic")

@@ -35,6 +35,8 @@ if(BUILD_TESTING)
   foreach(script f1_extrude f1_revolve f1_hole f1_thread f1_thread_chamfer f1_failures f1_tapped_hole_threads)
     add_test(NAME cli.${script} COMMAND mitcad-cli run "${scripts}/${script}.json")
   endforeach()
+  # Thin walls along open chains and closed loops of sketch curves (mitcad#463).
+  add_test(NAME cli.f1_thin_curves COMMAND mitcad-cli run "${scripts}/f1_thin_curves.json")
   # Assembly cut scope preserves component-local geometry and split ownership.
   set(cut_scope "${CMAKE_CURRENT_BINARY_DIR}/extrude-cut-scope.mitcad")
   add_test(NAME cli.extrude_cut_scope COMMAND mitcad-cli run "${scripts}/extrude_cut_scope.json" --save "${cut_scope}")
@@ -521,6 +523,27 @@ if(BUILD_TESTING)
     COMMAND "${CMAKE_COMMAND}" "-DCLI=$<TARGET_FILE:mitcad-cli>" "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/rvt-corpus"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/rvt-corpus.cmake")
   set_tests_properties(rvt.corpus PROPERTIES SKIP_REGULAR_EXPRESSION "rvt corpus: skipped")
+  # The .dwg import (mitcad#453): the reader's test drawing (a block of a
+  # cube inserted in another block with a cylinder, both inserted twice and
+  # as an array, an insert scaled by 2, 3D faces, a polyface and a
+  # subdivision mesh, a line) in each container layout: two components
+  # with their occurrences, six bodies, the line left out. The trial
+  # models under MITCAD_DWG_CORPUS (dwg-corpus.cmake): skipped without it.
+  set(dwg "${CMAKE_CURRENT_BINARY_DIR}/dwg")
+  file(MAKE_DIRECTORY "${dwg}")
+  foreach(version R14 R2000 R2004 R2007 R2010 R2013 R2018)
+    add_test(NAME cli.dwg_file_${version} COMMAND mitcad-cli import-dwg --write-test "${dwg}/test-${version}.dwg" --version ${version})
+    set_tests_properties(cli.dwg_file_${version} PROPERTIES FIXTURES_SETUP cli_dwg_${version})
+    add_test(NAME cli.import_dwg_${version}
+      COMMAND mitcad-cli import-dwg "${dwg}/test-${version}.dwg" --save "${dwg}/test-${version}.mitcad" --check
+              --expect "length_mm=82.732,chord_distance_mm=44,tube_diameter_mm=2,mass_kg=0.0306,density_kg_m3=1000000,solids=3,components=2")
+    set_tests_properties(cli.import_dwg_${version} PROPERTIES FIXTURES_REQUIRED cli_dwg_${version} PASS_REGULAR_EXPRESSION
+      "Imported test-${version}\\.dwg \\(dwg ${version} \\(AC[0-9]+\\)\\): 6 bodies \\(3 solids, 3 meshes; 6 valid\\), 2 components.*Component Segment: 1 bodies, 2 occurrences \\(2 placements\\).*Component Brace: 1 bodies, 8 occurrences \\(10 placements\\).*Left out: 1 LINE.*Checks: 11 of 11 pass")
+  endforeach()
+  add_test(NAME dwg.corpus
+    COMMAND "${CMAKE_COMMAND}" "-DCLI=$<TARGET_FILE:mitcad-cli>" "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/dwg-corpus"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/dwg-corpus.cmake")
+  set_tests_properties(dwg.corpus PROPERTIES SKIP_REGULAR_EXPRESSION "dwg corpus: skipped")
 
   # FreeCAD .FCStd import: a small document made by the test (B-rep shapes
   # from mitcad-geomtool), imported against a reference, saved and opened.
@@ -542,6 +565,19 @@ if(BUILD_TESTING)
   add_test(NAME designs.corpus
     COMMAND "${CMAKE_COMMAND}" "-DCLI=$<TARGET_FILE:mitcad-cli>" -P "${CMAKE_CURRENT_SOURCE_DIR}/designs-corpus.cmake")
   set_tests_properties(designs.corpus PROPERTIES SKIP_REGULAR_EXPRESSION "design corpus: skipped")
+
+  # .solidcraft designs with their history (mitcad#450): the test designs
+  # written by hand for the import, checked against the values worked out
+  # for them; and the designs under MITCAD_SOLIDCRAFT_CORPUS, checked against
+  # their expected values where they have them (skipped without the corpus).
+  add_test(NAME cli.import_solidcraft
+    COMMAND "${CMAKE_COMMAND}" "-DCLI=$<TARGET_FILE:mitcad-cli>"
+            "-DDESIGNS=${CMAKE_SOURCE_DIR}/core/solidcraft/tests/designs"
+            "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/solidcraft" -P "${CMAKE_CURRENT_SOURCE_DIR}/solidcraft-test.cmake")
+  add_test(NAME solidcraft.corpus
+    COMMAND "${CMAKE_COMMAND}" "-DCLI=$<TARGET_FILE:mitcad-cli>" "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/solidcraft-corpus"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/solidcraft-corpus.cmake")
+  set_tests_properties(solidcraft.corpus PROPERTIES SKIP_REGULAR_EXPRESSION "SolidCraft corpus: skipped")
 
   # Single .f3d designs checked item by item (mitcad#311), found by their
   # content ids under MITCAD_F3D_CORPUS and MITCAD_F3D_BACKUP: the items
@@ -671,6 +707,45 @@ if(BUILD_TESTING)
   add_test(NAME cli.joints_info COMMAND mitcad-cli info "${joints}/joints.mitcad")
   set_tests_properties(cli.joints_info PROPERTIES FIXTURES_REQUIRED cli_joints PASS_REGULAR_EXPRESSION
     "F6 Joint1 \\(joint\\): ok.*F7 Joint2 \\(joint\\): ok")
+
+  # Motion studies and contact sets (mitcad#454): a study played and a
+  # slider stopped at a wall by a contact set on the kernel's bodies, saved
+  # and opened again.
+  set(motion_contact "${CMAKE_CURRENT_BINARY_DIR}/motion-contact")
+  file(MAKE_DIRECTORY "${motion_contact}")
+  add_test(NAME cli.motion_contact COMMAND mitcad-cli run "${scripts}/motion_contact.json"
+           --save "${motion_contact}/motion_contact.mitcad")
+  set_tests_properties(cli.motion_contact PROPERTIES FIXTURES_SETUP cli_motion_contact)
+  add_test(NAME cli.motion_contact_info COMMAND mitcad-cli info "${motion_contact}/motion_contact.mitcad")
+  set_tests_properties(cli.motion_contact_info PROPERTIES FIXTURES_REQUIRED cli_motion_contact
+    PASS_REGULAR_EXPRESSION "F7 Joint1 \\(joint\\): ok")
+
+  # Motion links (mitcad#466): a rack and pinion sized by the pinion's round
+  # face, driven from either side, saved and opened again.
+  set(motion_links "${CMAKE_CURRENT_BINARY_DIR}/motion-links")
+  file(MAKE_DIRECTORY "${motion_links}")
+  add_test(NAME cli.motion_links COMMAND mitcad-cli run "${scripts}/motion_links.json"
+           --save "${motion_links}/motion_links.mitcad")
+  set_tests_properties(cli.motion_links PROPERTIES FIXTURES_SETUP cli_motion_links)
+  add_test(NAME cli.motion_links_info COMMAND mitcad-cli info "${motion_links}/motion_links.mitcad")
+  set_tests_properties(cli.motion_links_info PROPERTIES FIXTURES_REQUIRED cli_motion_links
+    PASS_REGULAR_EXPRESSION "F9 MotionLink1 \\(motion_link\\): ok")
+
+  # Emboss (mitcad#458): a rectangle and a text wrapped onto a rod, raised
+  # and sunk, a square on its end face, with analytic volumes.
+  add_test(NAME cli.emboss COMMAND mitcad-cli run "${scripts}/emboss.json")
+
+  # Boundary Fill (mitcad#457): the cells of overlapping boxes as new
+  # bodies, a cell of two solids cut from and joined to a plate, saved and
+  # opened again.
+  set(boundary_fill "${CMAKE_CURRENT_BINARY_DIR}/boundary-fill")
+  file(MAKE_DIRECTORY "${boundary_fill}")
+  add_test(NAME cli.boundary_fill COMMAND mitcad-cli run "${scripts}/boundary_fill.json"
+           --save "${boundary_fill}/boundary_fill.mitcad")
+  set_tests_properties(cli.boundary_fill PROPERTIES FIXTURES_SETUP cli_boundary_fill)
+  add_test(NAME cli.boundary_fill_info COMMAND mitcad-cli info "${boundary_fill}/boundary_fill.mitcad")
+  set_tests_properties(cli.boundary_fill_info PROPERTIES FIXTURES_REQUIRED cli_boundary_fill
+    PASS_REGULAR_EXPRESSION "F3 BoundaryFill1 \\(boundary_fill\\): ok.*F7 BoundaryFill2 \\(boundary_fill\\): ok")
 
   # Assembly constraints (mitcad#148): a pin inserted into a hole, on its
   # axis with the depth free and dragged along it, conflicting rows named,
@@ -827,6 +902,16 @@ if(BUILD_TESTING)
   add_test(NAME cli.sheet_fold_window COMMAND mitcad-cli run "${scripts}/sheet_fold_window.json")
   # A pattern of a straight sheet cut with many copies, cut at once (mitcad#288).
   add_test(NAME cli.sheet_pattern_holes COMMAND mitcad-cli run "${scripts}/sheet_pattern_holes.json")
+  # Contour Flange, Convert to Sheet Metal and Perforate (mitcad#461).
+  foreach(sheet_case sheet_contour sheet_perforate sheet_convert)
+    set(sheet_file "${CMAKE_CURRENT_BINARY_DIR}/${sheet_case}.mitcad")
+    add_test(NAME cli.${sheet_case}
+      COMMAND mitcad-cli run "${scripts}/${sheet_case}.json" --save "${sheet_file}")
+    set_tests_properties(cli.${sheet_case} PROPERTIES FIXTURES_SETUP cli_${sheet_case})
+    add_test(NAME cli.${sheet_case}_reopen
+      COMMAND mitcad-cli run "${scripts}/${sheet_case}_reopen.json" --open "${sheet_file}")
+    set_tests_properties(cli.${sheet_case}_reopen PROPERTIES FIXTURES_REQUIRED cli_${sheet_case})
+  endforeach()
 endif()
 
 # Sheet Unfold, Refold and Flat Pattern (mitcad#208): actual L, U and Z
@@ -904,6 +989,27 @@ endif()
 # (mitcad#272), through the OCCT kernel.
 if(BUILD_TESTING)
   add_test(NAME cli.renamed_face_refs COMMAND mitcad-cli run "${scripts}/renamed_face_refs.json")
+endif()
+
+# Bounding solids (mitcad#460): the box of exact geometry, following its
+# bodies' and its margin's edits, through the OCCT kernel.
+if(BUILD_TESTING)
+  add_test(NAME cli.bounding_solid COMMAND mitcad-cli run "${scripts}/bounding_solid.json")
+endif()
+
+# Convert Mesh (mitcad#462): a plate written to STL, read back as a mesh body
+# and rebuilt as planes; a solid and a torus's mesh refused; the design saved
+# and opened again.
+if(BUILD_TESTING)
+  set(mesh_convert "${CMAKE_CURRENT_BINARY_DIR}/mesh-convert")
+  file(MAKE_DIRECTORY "${mesh_convert}")
+  add_test(NAME cli.mesh_convert
+    COMMAND mitcad-cli run "${scripts}/mesh_convert.json" --save "${mesh_convert}/mesh_convert.mitcad")
+  set_tests_properties(cli.mesh_convert PROPERTIES WORKING_DIRECTORY "${mesh_convert}"
+    FIXTURES_SETUP cli_mesh_convert)
+  add_test(NAME cli.mesh_convert_reopen
+    COMMAND mitcad-cli run "${scripts}/mesh_convert_reopen.json" --open "${mesh_convert}/mesh_convert.mitcad")
+  set_tests_properties(cli.mesh_convert_reopen PROPERTIES FIXTURES_REQUIRED cli_mesh_convert)
 endif()
 
 # mitcad-cli loads Qt's DLLs (mitcad-cli render): on Windows its tests find

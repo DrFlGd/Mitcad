@@ -1,0 +1,40 @@
+{
+  "format": "solidcraft/27",
+  "name": "Holes and patterns",
+  "units": "mm",
+  "params": [
+    {"name": "pitch", "expr": "20 mm", "unit": "mm"},
+    {"name": "count", "expr": "3", "unit": ""}
+  ],
+  "features": [
+    {
+      "id": 1, "name": "Plate", "type": "box", "body_names": ["Plate"],
+      "corner": [0, 0, 0], "length": "100", "width": "60", "height": "10",
+      "operation": "new_body"
+    },
+    {
+      "id": 2, "name": "Hole1", "type": "hole",
+      "position": [10.0, 10.0, 10.0], "direction": [0.0, 0.0, -1.0],
+      "diameter": "6 mm", "hole": {"type": "simple"}
+    },
+    {
+      "id": 3, "name": "Pattern1", "type": "pattern", "features": ["Hole1"],
+      "pattern": {"type": "rectangular", "dir1": [1, 0, 0], "count1": "count", "spacing1": "pitch",
+                  "dir2": [0, 1, 0], "count2": "2", "spacing2": "pitch"}
+    },
+    {
+      "id": 4, "name": "Mirror1", "type": "mirror", "features": ["Hole1"],
+      "plane": {"type": "custom", "plane": {"origin": [50, 0, 0], "x_dir": [0, 1, 0], "y_dir": [0, 0, 1]}}
+    },
+    {
+      "id": 5, "name": "Hole2", "type": "hole",
+      "position": [80.0, 45.0, 10.0], "direction": [0.0, 0.0, -1.0],
+      "diameter": "4", "hole": {"type": "simple"}
+    },
+    {
+      "id": 6, "name": "Pattern2", "type": "pattern", "features": ["Hole2"],
+      "pattern": {"type": "circular", "origin": [80, 30, 0], "axis": [0, 0, 1], "count": "4", "angle": "360 deg"}
+    }
+  ],
+  "next_id": 7
+}

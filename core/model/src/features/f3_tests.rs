@@ -142,6 +142,120 @@ fn sweeps_follow_their_paths_to_the_kernel() {
 }
 
 #[test]
+fn an_end_scale_and_a_second_rail_reach_the_kernel() {
+    // mitcad#464: the end scale is a unitless slot; two rails both reach
+    // the kernel; an end scale with a rail, a second rail without a first
+    // and a scale out of range are refused.
+    let (mut b, _) = with_path();
+    let uid = add(
+        &mut b.doc,
+        sweep(&["c1"], json!({"end_scale": 0.5, "twist_angle": 0.25})),
+    )
+    .unwrap();
+    assert_eq!(status(&b.doc, uid), FeatureStatus::Ok);
+    assert_eq!(
+        last_spec(&b.doc),
+        "sweep F5 path c1 extents 1 1 Perpendicular twist 0.25 taper 0 rail none end scale 0.5"
+    );
+    assert!(crate::parameters::slot_unit("end_scale").is_unitless());
+    let answer: Value = serde_json::from_str(
+        &b.doc
+            .query(&json!({"query": "feature", "uid": uid}).to_string())
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(!answer["def"]["end_scale"].is_null(), "{answer}");
+    b.doc
+        .edit_feature(
+            uid,
+            &def(sweep(
+                &["c1"],
+                json!({"guide_rail": {"sketch": "F3", "curves": ["c4"]},
+                       "guide_rail2": {"sketch": "F3", "curves": ["c7"]},
+                       "profile_scaling": "stretch"}),
+            )),
+        )
+        .unwrap();
+    assert_eq!(status(&b.doc, uid), FeatureStatus::Ok);
+    assert_eq!(
+        last_spec(&b.doc),
+        "sweep F5 path c1 extents 1 1 Perpendicular twist 0 taper 0 rail c4 Stretch rail2 c7"
+    );
+    for (extra, expected) in [
+        (
+            json!({"end_scale": 2, "guide_rail": {"sketch": "F3", "curves": ["c7"]}}),
+            "an end scale is not taken with a guide rail",
+        ),
+        (
+            json!({"guide_rail2": {"sketch": "F3", "curves": ["c7"]}}),
+            "a second guide rail needs a first one",
+        ),
+        (json!({"end_scale": 0}), "between 0.01 and 100, got 0"),
+        (
+            json!({"end_scale": 2, "binormal": [0, 0, 1]}),
+            "not taken with an end scale",
+        ),
+    ] {
+        match b.doc.edit_feature(uid, &def(sweep(&["c1"], extra))) {
+            Err(e) => assert!(e.to_string().contains(expected), "{e}"),
+            Ok(_) => panic!("accepted; expected {expected}"),
+        }
+    }
+}
+
+#[test]
+fn the_rail_point_rule_reaches_the_kernel() {
+    // mitcad#469: `rail_point` "plane" reaches the kernel; a definition
+    // without it (a design saved before the option) keeps the fraction
+    // rule and is saved without it; the rule needs a guide rail.
+    let (mut b, _) = with_path();
+    let rail = json!({"guide_rail": {"sketch": "F3", "curves": ["c4"]}});
+    let uid = add(&mut b.doc, sweep(&["c1"], rail.clone())).unwrap();
+    assert_eq!(status(&b.doc, uid), FeatureStatus::Ok);
+    assert_eq!(
+        last_spec(&b.doc),
+        "sweep F5 path c1 extents 1 1 Perpendicular twist 0 taper 0 rail c4 Scale"
+    );
+    let saved = |b: &Block| -> Value {
+        let answer: Value = serde_json::from_str(
+            &b.doc
+                .query(&json!({"query": "feature", "uid": uid}).to_string())
+                .unwrap(),
+        )
+        .unwrap();
+        answer["def"].clone()
+    };
+    assert!(saved(&b).get("rail_point").is_none(), "{}", saved(&b));
+    let mut plane = rail.clone();
+    plane["rail_point"] = json!("plane");
+    b.doc
+        .edit_feature(uid, &def(sweep(&["c1"], plane)))
+        .unwrap();
+    assert_eq!(status(&b.doc, uid), FeatureStatus::Ok);
+    assert_eq!(
+        last_spec(&b.doc),
+        "sweep F5 path c1 extents 1 1 Perpendicular twist 0 taper 0 rail c4 Scale rail point plane"
+    );
+    assert_eq!(saved(&b)["rail_point"], "plane");
+    let mut fraction = rail;
+    fraction["rail_point"] = json!("fraction");
+    b.doc
+        .edit_feature(uid, &def(sweep(&["c1"], fraction)))
+        .unwrap();
+    assert!(saved(&b).get("rail_point").is_none(), "{}", saved(&b));
+    match b
+        .doc
+        .edit_feature(uid, &def(sweep(&["c1"], json!({"rail_point": "plane"}))))
+    {
+        Err(e) => assert!(
+            e.to_string().contains("only taken with a guide rail"),
+            "{e}"
+        ),
+        Ok(_) => panic!("a rail point without a rail was accepted"),
+    }
+}
+
+#[test]
 fn a_profile_sweeps_along_a_helix_path() {
     // (mitcad#385) A fixed helix of three turns about the x axis through
     // the profile's centre's circle: the kernel gets one helix.

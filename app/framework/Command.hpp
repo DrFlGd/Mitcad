@@ -183,6 +183,13 @@ struct InputDef {
   // takes none now (BUILD's side and end placements); shown again when it
   // takes them, another input is active or the command ends.
   bool hidesConstruction = false;
+  // A Shift + click that this input takes is also the command's OK
+  // (mitcad#451: BUILD's placements, "Shift+click places at once"): the
+  // pick, then OK as Enter would press it. Only for an input of one item
+  // (max 1), where Shift adds nothing to a selection; Ctrl + Shift and a
+  // window selection stay what they are. A pick OK refuses stays as a
+  // plain click leaves it.
+  bool shiftClickApplies = false;
 
   // Value: an expression with units, as text.
   ValueKind valueKind = ValueKind::Length;
@@ -352,6 +359,10 @@ struct InputDef {
   }
   InputDef& withHiddenConstruction() {
     hidesConstruction = true;
+    return *this;
+  }
+  InputDef& withShiftClickApplies() {
+    shiftClickApplies = true;
     return *this;
   }
   InputDef& withChoiceIcons(const QHash<QString, QString>& icons) {

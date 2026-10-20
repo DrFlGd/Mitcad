@@ -1,0 +1,85 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: the walked intersection of a blend with the face at its end ends
+where the walk first passes the end point, not where it last comes back
+near it (mitcad#343).
+
+ChFi3d_ComputeCurves intersects the blend with the face at the end by a
+walk from the middle of the cap (IntWalk_PWalking) where the analytic and
+GeomInt intersections fail, and cuts the walked line between its points
+nearest to the cap's ends. At an OnDiff end whose contact meets the face
+at the end on an edge across which its own face goes on tangentially to
+that face (a rounding along an earlier rounding that is tangent to the
+face at the end), the blend touches the face at the end at that point: the
+two branches of the intersection cross there. The walk passed through the
+point onto the other branch, wandered past the end and came back to it;
+the cut then kept the wandering part (the cap 4.3e-3 off the surfaces, the
+face's wire self-intersecting) where the walk, in the stripe's other
+direction, had stopped at the point. The same blend walked the other way
+round gave a valid result: a rounding of a band's edge along a cone and an
+earlier rounding, whose import named its edges in the other order, was
+invalid.
+
+Now the line is cut where it first passes each end: walking from the
+start's nearest point, the first point whose distance to the end is a
+local minimum no larger than the line's step there ends it (and likewise
+for the start, from the end's side). Where the line comes nearest to an
+end once, that is the point taken before.
+
+Upstream: new.
+
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
+index 71c22312..d0b223c8 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
+@@ -5854,6 +5854,49 @@ bool ChFi3d_ComputeCurves(const occ::handle<Adaptor3d_Surface>& S1,
+         indd = nbp - indd + 1;
+         indf = nbp - indf + 1;
+       }
++      // Where an end is a point at which the surfaces touch (a blend
++      // tangent to the face at the end where its contact meets that face's
++      // tangent edge), the walk passes through it onto the intersection's
++      // other branch, wanders and may come back near it: the line ends where
++      // it first passes the end, the first point nearest to it within a
++      // step of the line, not where it last comes back to it.
++      {
++        const auto aDist = [&](const int k, const gp_Pnt& P) {
++          return L2S->Value(k).Value().Distance(P);
++        };
++        const auto aStep = [&](const int k) {
++          double s = 0.;
++          if (k > 1)
++          {
++            s = std::max(s, L2S->Value(k).Value().Distance(L2S->Value(k - 1).Value()));
++          }
++          if (k < nbp)
++          {
++            s = std::max(s, L2S->Value(k).Value().Distance(L2S->Value(k + 1).Value()));
++          }
++          return s;
++        };
++        for (i = indd + 1; i < indf; i++)
++        {
++          const double d = aDist(i, pntf);
++          if (d <= aDist(i - 1, pntf) && d <= aDist(i + 1, pntf) && d <= aStep(i))
++          {
++            dfin = d;
++            indf = i;
++            break;
++          }
++        }
++        for (i = indf - 1; i > indd; i--)
++        {
++          const double d = aDist(i, pntd);
++          if (d <= aDist(i - 1, pntd) && d <= aDist(i + 1, pntd) && d <= aStep(i))
++          {
++            ddeb = d;
++            indd = i;
++            break;
++          }
++        }
++      }
+       for (i = 1; i < indd; i++)
+       {
+         L2S->RemovePoint(1);

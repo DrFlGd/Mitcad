@@ -1425,6 +1425,51 @@ pub fn reference_points(
     out
 }
 
+/// The ids of the points of reference (linked) curves that hold the
+/// sketch's own curves: a point a constraint or dimension ties to an own
+/// curve (not reference, not a point) or to one of its points, such as
+/// a linked arc's end that an own circle passes through. Solved with the
+/// reference curves free, these stay where the file has them where the
+/// reference curves' inconsistency can be taken up by their other points
+/// (`Importer`'s sketch levels): otherwise the solve shares it with the
+/// own curves, and a circle through such an end comes out micrometres off
+/// the file's (round 11 of mitcad#343).
+pub fn pinned_reference_points(
+    entities: &[Value],
+    constraints: &[Value],
+    dimensions: &[Value],
+) -> HashSet<String> {
+    let mut reference_points: HashSet<String> = HashSet::new();
+    let mut own: HashSet<String> = HashSet::new();
+    for e in entities {
+        if e["type"] == "point" {
+            continue;
+        }
+        let mut ids = Vec::new();
+        named_entities(e, &mut ids);
+        if e["reference"] == true {
+            reference_points.extend(ids);
+        } else if let Some(id) = e["id"].as_str() {
+            own.insert(id.to_owned());
+            own.extend(ids);
+        }
+    }
+    // Ends an own curve shares with a reference curve, and the reference
+    // points the constraints tie to the own curves.
+    let mut out: HashSet<String> = reference_points.intersection(&own).cloned().collect();
+    for v in constraints.iter().chain(dimensions) {
+        let mut ids = Vec::new();
+        named_entities(v, &mut ids);
+        if ids.iter().any(|i| own.contains(i)) {
+            out.extend(
+                ids.into_iter()
+                    .filter(|i| i.starts_with('p') && reference_points.contains(i)),
+            );
+        }
+    }
+    out
+}
+
 /// How far the solved points are from where the file had them, mm,
 /// where the points of the reference entities may be off by `slack`
 /// (the file's linked curves can be a few hundredths of a millimetre
@@ -1502,5 +1547,32 @@ mod reference_slack_tests {
         let far = BTreeMap::from([(mitcad_model::EntityUid(3), [0.5, 0.2])]);
         let error = position_error_slack(&positions[..1], &far, &near, 0.05);
         assert!((error - 0.2).abs() < 1e-12, "{error}");
+    }
+
+    #[test]
+    fn reference_points_holding_own_curves_are_pinned() {
+        let entities = vec![
+            json!({"id": "p1", "type": "point", "at": [0.0, 0.0]}),
+            json!({"id": "p2", "type": "point", "at": [1.0, 0.0]}),
+            json!({"id": "p3", "type": "point", "at": [2.0, 0.0]}),
+            json!({"id": "p4", "type": "point", "at": [0.0, 1.0]}),
+            json!({"id": "p5", "type": "point", "at": [3.0, 0.0]}),
+            json!({"id": "p6", "type": "point", "at": [9.0, 9.0]}),
+            json!({"id": "c7", "type": "arc", "center": "p1", "start": "p2", "end": "p3",
+                   "reference": true, "fixed": true}),
+            json!({"id": "c8", "type": "line", "start": "p3", "end": "p5",
+                   "reference": true, "fixed": true}),
+            json!({"id": "c9", "type": "circle", "center": "p4", "radius": 2.0}),
+            json!({"id": "c10", "type": "line", "start": "p5", "end": "p6"}),
+        ];
+        // p2 lies on the own circle c9; p1 is held at a distance from its
+        // centre; p5 is an end the own line c10 shares; p3 holds nothing.
+        let constraints =
+            vec![json!({"id": "k0", "type": "coincident", "point": "p2", "entity": "c9"})];
+        let dimensions = vec![json!({"id": "k1", "type": "distance", "a": "p1", "b": "p4"})];
+        let pinned = pinned_reference_points(&entities, &constraints, &dimensions);
+        let mut got: Vec<&str> = pinned.iter().map(String::as_str).collect();
+        got.sort_unstable();
+        assert_eq!(got, ["p1", "p2", "p5"]);
     }
 }

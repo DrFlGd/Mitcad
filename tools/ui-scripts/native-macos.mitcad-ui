@@ -6,6 +6,10 @@ expect-ever 'Native UI: AppKit shell with embedded OCCT viewport'
 expect-ever 'View area'
 sleep 800
 
+# Same-labelled command and secondary-dialog options retain their distinct
+# feature UIDs and native menu items across unchanged refreshes.
+expect-native-duplicate-choices
+
 # The canvas keeps the entire window width behind floating native cards.
 # Check geometry and AppKit pointer routing with each card shown/hidden,
 # then resize to a compact window and return to the normal working size.
@@ -132,13 +136,35 @@ native-click commandCancel
 expect-log 'Command Box cancelled' 30
 
 # Native command search uses a real NSSearchField and native result table.
+# Command-W dismisses the borderless search popover and retains the design.
 focus-main
+native-action tools.search
+native-type native.commandSearch 'Sphere'
+key Ctrl+w
+expect-native-visible native.commandSearch false
+expect-native-visible native.modelTree true
+expect-model-bodies 1 10000
 native-action tools.search
 native-type native.commandSearch 'Sphere'
 key Return
 expect-log 'Command Sphere started'
 native-click commandCancel
 expect-log 'Command Sphere cancelled' 30
+
+# Open timeline search through its native menu action so this regression
+# covers Command-W independently of the system's foreground Find shortcut.
+native-select native.history.F1
+native-action view.search_timeline
+expect-native-visible native.timelineSearch true
+native-type native.timelineSearch 'box'
+key Return
+expect-native-history F1
+key Ctrl+w
+expect-native-visible native.timelineSearch false
+expect-native-visible native.modelTree true
+expect-native-history F1
+expect-model-bodies 1 10000
+native-select native.model.component@
 
 # Repeated native inputs keep their values when rows are renumbered, and
 # their controls unlock after the structural action is acknowledged.
@@ -176,11 +202,11 @@ expect-log 'Measure Body 1: 1 body' 30
 expect-log 'Computing inspection started' 30
 expect-log 'Inspect Measure: volume 10000' 30
 expect-native-text commandResult 'Volume: 10000 mm'
+focus-main
 key Return
 expect-log 'Closed Measure' 30
 
-# Return and Escape keep their document meanings while a read-only model
-# row has native keyboard focus.
+# Escape keeps its document meaning while a model row has native focus.
 mark
 native-action inspect.measure
 expect-log 'Command Measure started'

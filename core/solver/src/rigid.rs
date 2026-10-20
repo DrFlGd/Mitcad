@@ -52,6 +52,7 @@
 //! holds (directions first, about a's origin), joining nothing; a solve
 //! that ends with z or x axes the wrong way turns the side over.
 
+use std::f64::consts::{PI, TAU};
 use std::sync::OnceLock;
 
 use crate::analysis::{self, CONFLICT_TOL, DepRow};
@@ -443,6 +444,97 @@ pub struct RigidConstraint {
     pub value: Option<JointMotion>,
 }
 
+/// How a coupling's follower follows its driver (mitcad#466).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Relation {
+    /// `follower = ratio · driver + offset` (gears, a rack and pinion, a
+    /// screw).
+    Linear { ratio: f64, offset: f64 },
+    /// `follower = table(driver) + offset`: the table's values at the
+    /// driver's values `2π k / n` (a cam's follower over one turn of the
+    /// cam), between them a periodic monotone cubic (it never passes the
+    /// two samples it lies between, so a dwell stays flat).
+    Table { values: Vec<f64>, offset: f64 },
+}
+
+impl Relation {
+    /// The follower's value for the driver's `x`.
+    pub fn follow(&self, x: f64) -> f64 {
+        self.eval(x)
+    }
+
+    fn eval<T: Scalar>(&self, x: T) -> T {
+        match self {
+            Relation::Linear { ratio, offset } => x.mulf(*ratio) + T::cst(*offset),
+            Relation::Table { values, offset } => periodic_cubic(values, x) + T::cst(*offset),
+        }
+    }
+
+    fn is_finite(&self) -> bool {
+        match self {
+            Relation::Linear { ratio, offset } => ratio.is_finite() && offset.is_finite(),
+            Relation::Table { values, offset } => {
+                !values.is_empty() && offset.is_finite() && values.iter().all(|v| v.is_finite())
+            }
+        }
+    }
+}
+
+/// A periodic table over one turn (`values[k]` at `2π k / n`) at `x`:
+/// cubic Hermite pieces whose slopes at the samples are limited
+/// (Fritsch and Carlson) so that each piece stays between its two samples.
+fn periodic_cubic<T: Scalar>(values: &[f64], x: T) -> T {
+    let n = values.len();
+    let per = n as f64 / std::f64::consts::TAU;
+    let u = (x.val() * per).rem_euclid(n as f64);
+    if !u.is_finite() {
+        return T::cst(f64::NAN);
+    }
+    let i = (u.floor() as usize).min(n - 1);
+    // The fraction of the piece, with the driver's derivative.
+    let f = x.mulf(per) - T::cst(x.val() * per - (u - i as f64));
+    let at = |k: usize| values[k % n];
+    let (p0, p1, p2, p3) = (at(i + n - 1), at(i), at(i + 1), at(i + 2));
+    let slope = |before: f64, after: f64| {
+        if before * after <= 0.0 {
+            0.0
+        } else {
+            let mean = 0.5 * (before + after);
+            mean.signum() * mean.abs().min(3.0 * before.abs().min(after.abs()))
+        }
+    };
+    let (m1, m2) = (slope(p1 - p0, p2 - p1), slope(p2 - p1, p3 - p2));
+    let f2 = f * f;
+    let f3 = f2 * f;
+    let (h00, h10) = (
+        f3.mulf(2.0) - f2.mulf(3.0) + T::cst(1.0),
+        f3 - f2.mulf(2.0) + f,
+    );
+    let (h01, h11) = (f2.mulf(3.0) - f3.mulf(2.0), f3 - f2);
+    h00.mulf(p1) + h10.mulf(m1) + h01.mulf(p2) + h11.mulf(m2)
+}
+
+/// A coupling of two joints' free motions (mitcad#466): the follower's
+/// value follows the driver's by the relation. Numbered with the joints
+/// ([`JointId`]); its row is in the solves, drags and analyses. A
+/// follower whose driver is driven (or determined by other couplings),
+/// and a table's follower always, lets go of its own target; a linear
+/// follower driven while its driver is free drives the driver.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RigidCoupling {
+    pub driver: (JointId, Freedom),
+    pub follower: (JointId, Freedom),
+    pub relation: Relation,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct CouplingRec {
+    /// Joint and index of the motion.
+    driver: (usize, usize),
+    follower: (usize, usize),
+    relation: Relation,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RigidError {
     NoBody(BodyId),
@@ -458,6 +550,9 @@ pub enum RigidError {
     /// A constraint's part holds its value but the constraint has none, or
     /// one of its numbers is not finite.
     BadPart,
+    /// A coupling names a constraint or a coupling instead of a joint, the
+    /// same motion twice, or a relation that is not finite.
+    BadCoupling,
 }
 
 impl std::fmt::Display for RigidError {
@@ -470,6 +565,7 @@ impl std::fmt::Display for RigidError {
             RigidError::RepeatedMotion(m) => write!(f, "the motion {m:?} is listed twice"),
             RigidError::BadValue(m) => write!(f, "the limits or target of {m:?} are invalid"),
             RigidError::BadPart => f.write_str("a part of the constraint is invalid"),
+            RigidError::BadCoupling => f.write_str("the coupling is invalid"),
         }
     }
 }
@@ -561,6 +657,9 @@ struct JointRec {
     values: Vec<f64>,
     /// A constraint's equations; None for a joint.
     parts: Option<Vec<ConstraintPart>>,
+    /// A coupling's motions and relation (mitcad#466; no sides, frames or
+    /// values of its own).
+    coupling: Option<CouplingRec>,
 }
 
 /// Rigid bodies and the joints between them.
@@ -622,7 +721,16 @@ struct PartRows {
 enum BlockKind {
     Frames(Box<FrameRows>),
     Parts(Box<PartRows>),
-    Target { value: f64, rotation: bool },
+    Target {
+        value: f64,
+        rotation: bool,
+    },
+    /// `follower - relation(driver)`: `vars` are the driver's and the
+    /// follower's values; a turning follower's row is scaled as a turn.
+    Coupling {
+        relation: Relation,
+        rotation: bool,
+    },
 }
 
 /// Rows of one joint (its frames, or one target), evaluated together.
@@ -830,6 +938,18 @@ impl Equations for RigidEquations {
                     |x| part_rows(rows, x, scale),
                     |x| part_rows(rows, x, scale),
                 ),
+                BlockKind::Coupling { relation, rotation } => {
+                    let k = if *rotation { scale } else { 1.0 };
+                    let row = |x: &[Dual]| [(x[1] - relation.eval(x[0])).mulf(k)];
+                    evaluate_block(
+                        block,
+                        params,
+                        f,
+                        jac.as_deref_mut(),
+                        |x: &[f64]| [(x[1] - relation.eval(x[0])) * k],
+                        row,
+                    );
+                }
             }
         }
     }
@@ -1210,10 +1330,90 @@ impl RigidSystem {
 
     fn push(&mut self, def: RigidJoint, parts: Option<Vec<ConstraintPart>>) -> JointId {
         let values = vec![0.0; def.motions.len()];
-        self.joints.push(JointRec { def, values, parts });
+        self.joints.push(JointRec {
+            def,
+            values,
+            parts,
+            coupling: None,
+        });
         let id = JointId(self.joints.len() as u32 - 1);
         self.joints[id.0 as usize].values = self.start_values(id.0 as usize);
         id
+    }
+
+    /// Adds a coupling of two joints' motions (mitcad#466): numbered with
+    /// the joints, solved and analysed with them.
+    pub fn add_coupling(&mut self, c: RigidCoupling) -> Result<JointId, RigidError> {
+        let motion = |(joint, freedom): (JointId, Freedom)| -> Result<(usize, usize), RigidError> {
+            let rec = self
+                .joints
+                .get(joint.0 as usize)
+                .ok_or(RigidError::NoJoint(joint))?;
+            if rec.parts.is_some() || rec.coupling.is_some() {
+                return Err(RigidError::BadCoupling);
+            }
+            let k = rec
+                .def
+                .motions
+                .iter()
+                .position(|m| m.freedom == freedom)
+                .ok_or(RigidError::NoMotion(joint, freedom))?;
+            Ok((joint.0 as usize, k))
+        };
+        let driver = motion(c.driver)?;
+        let follower = motion(c.follower)?;
+        if driver == follower || !c.relation.is_finite() {
+            return Err(RigidError::BadCoupling);
+        }
+        self.joints.push(JointRec {
+            def: RigidJoint {
+                a: None,
+                frame_a: Pose::IDENTITY,
+                b: None,
+                frame_b: Pose::IDENTITY,
+                motions: Vec::new(),
+                alignment: Pose::IDENTITY,
+            },
+            values: Vec::new(),
+            parts: None,
+            coupling: Some(CouplingRec {
+                driver,
+                follower,
+                relation: c.relation,
+            }),
+        });
+        Ok(JointId(self.joints.len() as u32 - 1))
+    }
+
+    /// The couplings' followers whose targets are let go: a follower whose
+    /// driver is determined (driven, or by couplings from driven motions)
+    /// and every table's follower. Per joint, per motion.
+    fn released(&self) -> Vec<Vec<bool>> {
+        let targets: Vec<Vec<bool>> = self
+            .joints
+            .iter()
+            .map(|j| j.def.motions.iter().map(|m| m.target.is_some()).collect())
+            .collect();
+        let mut determined = targets.clone();
+        let mut released: Vec<Vec<bool>> = targets.iter().map(|t| vec![false; t.len()]).collect();
+        loop {
+            let mut changed = false;
+            for c in self.joints.iter().filter_map(|j| j.coupling.as_ref()) {
+                let ((d, dk), (f, fk)) = (c.driver, c.follower);
+                let table = matches!(c.relation, Relation::Table { .. });
+                if targets[f][fk] && !released[f][fk] && (table || determined[d][dk]) {
+                    released[f][fk] = true;
+                    changed = true;
+                }
+                if determined[d][dk] && !determined[f][fk] {
+                    determined[f][fk] = true;
+                    changed = true;
+                }
+            }
+            if !changed {
+                return released;
+            }
+        }
     }
 
     /// Adds an assembly constraint (mitcad#148): numbered with the joints,
@@ -1333,6 +1533,18 @@ impl RigidSystem {
     /// directions (radians) at its value.
     pub fn joint_error(&self, joint: JointId) -> (f64, f64) {
         let rec = &self.joints[joint.0 as usize];
+        if let Some(c) = &rec.coupling {
+            // A coupling's: how far the follower is from its relation's
+            // value, as a length or a turn.
+            let value = |(j, k): (usize, usize)| self.joints[j].values[k];
+            let off = (value(c.follower) - c.relation.follow(value(c.driver))).abs();
+            let (f, fk) = c.follower;
+            return if self.joints[f].def.motions[fk].freedom.is_rotation() {
+                (0.0, off)
+            } else {
+                (off, 0.0)
+            };
+        }
         if let Some(parts) = &rec.parts {
             let (fa, fb) = self.side_frames(joint.0 as usize);
             return parts_error(parts, &fa, &fb, rec.values.first().copied());
@@ -1349,6 +1561,9 @@ impl RigidSystem {
     /// limits (or their previous value) and kept within the limits.
     fn start_values(&self, j: usize) -> Vec<f64> {
         let joint = &self.joints[j];
+        if joint.coupling.is_some() {
+            return Vec::new();
+        }
         let (fa, fb) = self.side_frames(j);
         if let Some(parts) = &joint.parts {
             // A constraint's value: its target, else its measure.
@@ -1409,6 +1624,9 @@ impl RigidSystem {
         let mut hi = [f64::NEG_INFINITY; 3];
         let mut points = extra.to_vec();
         for j in 0..self.joints.len() {
+            if self.joints[j].coupling.is_some() {
+                continue;
+            }
             let (fa, fb) = self.side_frames(j);
             points.extend([fa.translation, fb.translation]);
         }
@@ -1482,7 +1700,25 @@ impl RigidSystem {
         let mut blocks = Vec::new();
         let mut bounds = vec![None; layout.n];
         let mut rows = 0;
+        let released = self.released();
         for (j, joint) in self.joints.iter().enumerate() {
+            if let Some(c) = &joint.coupling {
+                let col = |(i, k): (usize, usize)| layout.value_col[i] + k;
+                let (f, fk) = c.follower;
+                blocks.push(Block {
+                    joint: j,
+                    target: None,
+                    row: rows,
+                    rows: 1,
+                    vars: vec![col(c.driver), col(c.follower)],
+                    kind: BlockKind::Coupling {
+                        relation: c.relation.clone(),
+                        rotation: self.joints[f].def.motions[fk].freedom.is_rotation(),
+                    },
+                });
+                rows += 1;
+                continue;
+            }
             let def = &joint.def;
             let (ga, gb) = self.side_frames(j);
             let mut vars = Vec::new();
@@ -1538,6 +1774,7 @@ impl RigidSystem {
                     ));
                 }
                 if mode == Mode::Solve
+                    && !released[j][k]
                     && let Some(value) = m.target
                 {
                     blocks.push(Block {
@@ -1700,8 +1937,11 @@ impl RigidSystem {
             None => true,
             Some(r) => (0..n).any(|b| fixed[b] && find(cluster, b) == r),
         };
+        let released = self.released();
+        self.unwrap_drivers();
         for j in 0..self.joints.len() {
             self.joints[j].values = self.start_values(j);
+            self.follow_couplings(j, &released);
             if !place {
                 continue;
             }
@@ -1757,6 +1997,90 @@ impl RigidSystem {
             if let (Some(x), Some(y)) = (ra, rb) {
                 cluster[x] = y;
             }
+        }
+    }
+
+    /// A free turn without limits is only known where the bodies are up to
+    /// whole turns; a coupling's follower tells which turn its driver is
+    /// at (a gear's turns move its mate by a part of a turn, a pinion's
+    /// move the rack). Each such driver's value becomes the turn whose
+    /// relation is nearest to where its follower is, so that its start
+    /// value is unwrapped near it.
+    fn unwrap_drivers(&mut self) {
+        let couplings: Vec<CouplingRec> = self
+            .joints
+            .iter()
+            .filter_map(|j| j.coupling.clone())
+            .collect();
+        for c in couplings {
+            let ((d, dk), (f, fk)) = (c.driver, c.follower);
+            let m = self.joints[d].def.motions[dk];
+            if !m.freedom.is_rotation() || m.target.is_some() || m.min.is_some() || m.max.is_some()
+            {
+                continue;
+            }
+            let (Some(x), Some(y)) = (
+                self.start_values(d).get(dk).copied(),
+                self.start_values(f).get(fk).copied(),
+            ) else {
+                continue;
+            };
+            let turning = self.joints[f].def.motions[fk].freedom.is_rotation();
+            let off = |k: f64| {
+                let e = y - c.relation.follow(x + k * TAU);
+                if turning {
+                    (e + PI).rem_euclid(TAU) - PI
+                } else {
+                    e
+                }
+                .abs()
+            };
+            // The nearest turn; of turns that place the follower alike
+            // (within rounding), the least.
+            let mut best = 0.0;
+            for k in (1..=16).flat_map(|k| [k, -k]).map(f64::from) {
+                if off(k) < off(best) - 1e-9 {
+                    best = k;
+                }
+            }
+            self.joints[d].values[dk] = x + best * TAU;
+        }
+    }
+
+    /// Joint `j`'s start values where couplings make its motions follow
+    /// (a follower without a target or whose target is let go): the
+    /// relation at the driver's value (its start value when it comes
+    /// later), within the follower's limits.
+    fn follow_couplings(&mut self, j: usize, released: &[Vec<bool>]) {
+        let followed: Vec<((usize, usize), usize, Relation)> = self
+            .joints
+            .iter()
+            .filter_map(|rec| rec.coupling.as_ref())
+            .filter(|c| c.follower.0 == j)
+            .map(|c| (c.driver, c.follower.1, c.relation.clone()))
+            .collect();
+        for ((d, dk), k, relation) in followed {
+            let m = self.joints[j].def.motions[k];
+            if m.target.is_some() && !released[j][k] {
+                continue;
+            }
+            let x = if d <= j {
+                self.joints[d].values.get(dk).copied()
+            } else {
+                self.start_values(d).get(dk).copied()
+            };
+            let Some(x) = x else { continue };
+            let mut v = relation.follow(x);
+            if !v.is_finite() {
+                continue;
+            }
+            if let Some(lo) = m.min {
+                v = v.max(lo);
+            }
+            if let Some(hi) = m.max {
+                v = v.min(hi);
+            }
+            self.joints[j].values[k] = v;
         }
     }
 

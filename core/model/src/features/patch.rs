@@ -1,0 +1,273 @@
+// SPDX-License-Identifier: MIT
+//! Patch (mitcad#456): new surface bodies that fill regions of a sketch or
+//! a closed loop of a body's edges. Each region becomes a body of one
+//! planar face, `<feature>:patch(<region>)`, facing along the sketch's
+//! normal; the loop becomes a body of one face, `<feature>:patch`: a plane
+//! when the loop lies in one and the patch only passes through its edges,
+//! else a surface fitted to the edges that meets the face beside each edge
+//! with the continuity asked for (G0 through the edge, G1 tangent, G2 of
+//! the same curvature) and passes through the points given. The loop is
+//! named edges of the body, or one of its openings: a loop of free edges
+//! (an open boundary of a surface body, whose edges have no names), found
+//! by the faces it runs along. The body itself is not changed. The new
+//! bodies are the regions' in their order, then the loop's.
+
+use std::marker::PhantomData;
+
+use serde::{Deserialize, Serialize};
+
+use super::extrude::{
+    ProfileRef, check_profiles, profile_references, profile_regions, profile_set,
+};
+use super::face_refs::{add_faces, check_faces, kernel_error};
+use super::{
+    BodyChange, CheckContext, EvalContext, Evaluate, FeatureInfo, FeatureOutput, References,
+};
+use crate::ids::BodyUid;
+use crate::kernel::Kernel;
+use crate::parameters::ParamId;
+use crate::surfaces::{PatchBoundary, PatchContinuity, PatchLoopSpec};
+use crate::topo::{EdgeName, FaceName};
+
+/// Has no values (its points are fixed); `P` only matches the other
+/// feature types.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PatchDef<P = ParamId> {
+    /// Regions of one sketch: a planar surface body each.
+    #[serde(
+        default,
+        deserialize_with = "profile_set",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub profiles: Vec<ProfileRef>,
+    /// A closed loop of a body's edges: one surface body filling it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub boundary: Option<PatchLoop>,
+    #[serde(skip)]
+    pub values: PhantomData<P>,
+}
+
+/// The loop a patch fills and how the patch meets its faces.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PatchLoop {
+    pub body: BodyUid,
+    /// Named edges of the loop: every edge each name resolves to.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub edges: Vec<EdgeName>,
+    /// Or an opening of the body (its free edges).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opening: Option<Opening>,
+    #[serde(default, skip_serializing_if = "PatchContinuity::is_g0")]
+    pub continuity: PatchContinuity,
+    /// Named edges of the loop that meet their face otherwise.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub edge_continuity: Vec<EdgeContinuity>,
+    /// Points the patch passes through (mm, in the component's coordinates).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub points: Vec<[f64; 3]>,
+}
+
+/// A loop of a body's free edges: the `index`-th, in the kernel's
+/// geometric order, of those whose edges bound exactly the named `faces`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Opening {
+    pub faces: Vec<FaceName>,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub index: u32,
+}
+
+fn is_zero(value: &u32) -> bool {
+    *value == 0
+}
+
+/// The continuity of one edge of the loop.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EdgeContinuity {
+    pub edge: EdgeName,
+    pub continuity: PatchContinuity,
+}
+
+impl<P> PatchDef<P> {
+    pub const TYPE: &'static str = "patch";
+    pub const BASE_NAME: &'static str = "Patch";
+
+    pub fn map_params<Q, E>(
+        &self,
+        _f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
+    ) -> Result<PatchDef<Q>, E> {
+        Ok(PatchDef {
+            profiles: self.profiles.clone(),
+            boundary: self.boundary.clone(),
+            values: PhantomData,
+        })
+    }
+}
+
+impl PatchLoop {
+    fn check(&self, ctx: &CheckContext<'_>) -> Result<(), String> {
+        ctx.body(self.body)?;
+        match (&self.opening, self.edges.is_empty()) {
+            (Some(_), false) => {
+                return Err("a patch fills its edges or an opening, not both".to_owned());
+            }
+            (None, true) => return Err("no edges or opening to fill selected".to_owned()),
+            (None, false) => ctx.edges(&self.edges)?,
+            (Some(opening), true) => check_faces(ctx, &opening.faces, "faces of the opening")?,
+        }
+        for (i, set) in self.edge_continuity.iter().enumerate() {
+            if !self.edges.contains(&set.edge) {
+                return Err(format!(
+                    "edge {} has a continuity of its own but is not an edge of the loop",
+                    set.edge
+                ));
+            }
+            if self.edge_continuity[..i].iter().any(|s| s.edge == set.edge) {
+                return Err(format!(
+                    "edge {} has more than one continuity of its own",
+                    set.edge
+                ));
+            }
+        }
+        if self.points.iter().flatten().any(|v| !v.is_finite()) {
+            return Err("a point of the patch is not finite".to_owned());
+        }
+        Ok(())
+    }
+}
+
+impl FeatureInfo for PatchDef {
+    fn references(&self) -> References {
+        let mut references = References::default();
+        profile_references(&self.profiles, &mut references);
+        if let Some(boundary) = &self.boundary {
+            references.body(boundary.body);
+            references.edges(&boundary.edges);
+            if let Some(opening) = &boundary.opening {
+                add_faces(&mut references, &opening.faces);
+            }
+        }
+        references
+    }
+
+    fn check(&self, ctx: &CheckContext<'_>) -> Result<(), String> {
+        if self.profiles.is_empty() && self.boundary.is_none() {
+            return Err("a patch needs sketch regions or a loop of edges".to_owned());
+        }
+        if !self.profiles.is_empty() {
+            check_profiles(ctx, &self.profiles)?;
+        }
+        if let Some(boundary) = &self.boundary {
+            boundary.check(ctx)?;
+        }
+        Ok(())
+    }
+
+    fn creates_bodies(&self) -> bool {
+        true
+    }
+
+    fn profiles(&self) -> &[ProfileRef] {
+        &self.profiles
+    }
+}
+
+impl<K: Kernel> Evaluate<K> for PatchDef {
+    fn evaluate(&self, ctx: &mut EvalContext<'_, K>) -> Result<FeatureOutput<K::Shape>, String> {
+        let mut output = FeatureOutput::default();
+        if !self.profiles.is_empty() {
+            let (sketch, regions) = profile_regions(ctx, &self.profiles)?;
+            let patches = ctx
+                .kernel
+                .patch_regions(ctx.uid, &sketch.frame, &regions)
+                .map_err(kernel_error)?;
+            for patch in patches {
+                output.changes.push(BodyChange::Set(ctx.new_body(), patch));
+            }
+        }
+        if let Some(boundary) = &self.boundary {
+            let patch = fill_loop(ctx, boundary)?;
+            output.changes.push(BodyChange::Set(ctx.new_body(), patch));
+        }
+        Ok(output)
+    }
+}
+
+/// The surface body that fills the loop.
+fn fill_loop<K: Kernel>(
+    ctx: &mut EvalContext<'_, K>,
+    boundary: &PatchLoop,
+) -> Result<K::Shape, String> {
+    let shape = ctx.surface_body(boundary.body)?;
+    // The names the kernel gets: each edge's own, or that of the edge
+    // between the faces a sketch change renamed (mitcad#272).
+    let edges = if boundary.edges.is_empty() {
+        Vec::new()
+    } else {
+        ctx.require_edges(boundary.body, &shape, &boundary.edges)?
+    };
+    let mut edge_continuity = Vec::new();
+    for set in &boundary.edge_continuity {
+        let found = ctx.require_edges(boundary.body, &shape, std::slice::from_ref(&set.edge))?;
+        edge_continuity.extend(found.into_iter().map(|e| (e, set.continuity)));
+    }
+    let opening = match &boundary.opening {
+        Some(opening) => Some(find_opening(ctx, boundary.body, &shape, opening)?),
+        None => None,
+    };
+    let spec = PatchLoopSpec {
+        feature: ctx.uid,
+        body: &shape,
+        boundary: match opening {
+            Some(index) => PatchBoundary::Opening(index),
+            None => PatchBoundary::Edges(&edges),
+        },
+        continuity: boundary.continuity,
+        edge_continuity: &edge_continuity,
+        points: &boundary.points,
+    };
+    ctx.kernel.patch_loop(&spec).map_err(kernel_error)
+}
+
+/// The index, among the body's open boundaries, of the opening.
+fn find_opening<K: Kernel>(
+    ctx: &EvalContext<'_, K>,
+    body: BodyUid,
+    shape: &K::Shape,
+    opening: &Opening,
+) -> Result<usize, String> {
+    let boundaries = ctx.kernel.open_boundaries(shape).map_err(kernel_error)?;
+    let mut wanted: Vec<String> = opening.faces.iter().map(ToString::to_string).collect();
+    wanted.sort();
+    wanted.dedup();
+    let along: Vec<usize> = boundaries
+        .iter()
+        .enumerate()
+        .filter(|(_, b)| {
+            let mut faces: Vec<String> = b.faces.iter().map(ToString::to_string).collect();
+            faces.sort();
+            faces.dedup();
+            faces == wanted
+        })
+        .map(|(i, _)| i)
+        .collect();
+    let index = opening.index as usize;
+    match along.get(index) {
+        Some(found) => Ok(*found),
+        None if along.is_empty() => Err(format!(
+            "body {body} (from {}) has no opening along the faces {}",
+            ctx.feature_name(body.feature),
+            wanted.join(", ")
+        )),
+        None => Err(format!(
+            "body {body} (from {}) has {} openings along the faces {}, not {}",
+            ctx.feature_name(body.feature),
+            along.len(),
+            wanted.join(", "),
+            index + 1
+        )),
+    }
+}

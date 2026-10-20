@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 //! Body and face operations of external dumps (their inputs are
 //! fingerprints and feature references the stream decoder does not give):
-//! combine, mirror, circular and rectangular patterns, shell, offset
+//! combine, mirror, circular, rectangular and path patterns, shell, offset
 //! faces, move, split body, hole, thread and replace face (`commands.md`,
 //! F1, F2 and F4 import tables). Without those inputs a
 //! combine is found with the history: the bodies the next state changed
@@ -1609,6 +1609,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                     })
                     .collect())
             }
+            "PathPatternFeature" => self.path_pattern(&other),
             "ShellFeature" => {
                 let inputs = references(get("inputEntities"));
                 let mut faces = Vec::new();
@@ -1887,6 +1888,109 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             "ReplaceFaceFeature" => self.replace_face(&other),
             other => Err(format!("{other} is not supported yet")),
         }
+    }
+
+    /// A path pattern (mitcad#468): its objects, the path's sketch curves
+    /// (one curve, or a chain of lines and arcs), the quantity and distance
+    /// and the settings. Where the start point, flip, orientation and
+    /// symmetry are not given (the stream decoder does not read them), the
+    /// defaults are tried first, then, where the history checks the item,
+    /// each of flip, orientation along the path and symmetry as a guess.
+    fn path_pattern(&self, d: &Map<String, Value>) -> Result<Vec<Candidate>, String> {
+        let get = |k: &str| d.get(k);
+        let variants = self.object_variants(&references(get("inputEntities")))?;
+        let path = self.path_of(get("path"), "path")?;
+        if path.get("body").is_some() {
+            return Err(
+                "its path is a chain of edges: Mitcad's path pattern follows sketch curves only"
+                    .to_owned(),
+            );
+        }
+        let path = match path["curves"].as_array().map(Vec::as_slice) {
+            Some([curve]) => json!({"sketch": path["sketch"], "curve": curve}),
+            _ => path,
+        };
+        let quantity = self
+            .value_of(get("quantity"))
+            .ok_or("the quantity was not decoded")?;
+        let distance = self
+            .value_of(get("distance"))
+            .ok_or("the distance was not decoded")?;
+        let flag = |k: &str| get(k).and_then(Value::as_bool);
+        let mut def = json!({"type": "path_pattern", "path": path, "quantity": quantity,
+            "distance": distance,
+            "distance_type": match get("patternDistanceType").and_then(Value::as_str) {
+                Some(t) if t.starts_with("Extent") => "extent",
+                _ => "spacing",
+            },
+            "start": get("startPoint").and_then(Value::as_f64).unwrap_or(0.0),
+            "flip": flag("isFlipDirection").unwrap_or(false),
+            "along_path": flag("isOrientationAlongPath").unwrap_or(false),
+            "symmetric": flag("isSymmetric").unwrap_or(false),
+            "compute": compute(get("patternComputeOption"))});
+        suppressed(&mut def, get("suppressedElementsIds"));
+        let read = [
+            "patternDistanceType",
+            "patternComputeOption",
+            "suppressedElementsIds",
+        ]
+        .iter()
+        .all(|k| get(k).is_some());
+        let unread: Vec<&str> = [
+            ("startPoint", "start point"),
+            ("isFlipDirection", "flip"),
+            ("isOrientationAlongPath", "orientation"),
+            ("isSymmetric", "symmetry"),
+        ]
+        .into_iter()
+        .filter(|(k, _)| get(k).is_none())
+        .map(|(_, what)| what)
+        .collect();
+        let candidate = |def: &Value, objects: &Value, dressed: bool, p: InputProvenance| {
+            let mut def = def.clone();
+            def["objects"] = objects.clone();
+            let mut c = read_pattern(dressed_note(def, dressed, p), read && unread.is_empty());
+            if !unread.is_empty() {
+                c.input_provenance = InputProvenance::Inferred;
+                if c.note.is_none() {
+                    c.note = Some(format!(
+                        "its {} not decoded: the defaults",
+                        unread.join(", ")
+                    ));
+                }
+            }
+            c
+        };
+        let mut out: Vec<Candidate> = variants
+            .iter()
+            .map(|(objects, dressed, p)| candidate(&def, objects, *dressed, *p))
+            .collect();
+        // The settings not given, each the other way, as guesses the
+        // history checks.
+        for (key, given, what) in [
+            ("flip", "isFlipDirection", "flipped"),
+            (
+                "along_path",
+                "isOrientationAlongPath",
+                "turned along the path",
+            ),
+            ("symmetric", "isSymmetric", "symmetric"),
+        ] {
+            if get(given).is_some() {
+                continue;
+            }
+            let mut other = def.clone();
+            other[key] = json!(!def[key].as_bool().unwrap_or(false));
+            for (objects, dressed, p) in &variants {
+                let mut c = candidate(&other, objects, *dressed, *p);
+                c.guess = true;
+                if !*dressed {
+                    c.note = Some(format!("{what} (a guess: not decoded)"));
+                }
+                out.push(c);
+            }
+        }
+        Ok(out)
     }
 
     /// A split's tool as Mitcad's: an origin or construction plane (by its

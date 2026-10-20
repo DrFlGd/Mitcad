@@ -17,7 +17,9 @@ JSON commands.
 | `core/zip` (`mitcad-zip`) | Rust | Zip container for `.f3d` and `.FCStd` (stored, deflate, zstd; a writer for tests). |
 | `core/ipt` (`mitcad-ipt`) | Rust | `.ipt` part files: compound file container (MS-CFB), property sets (MS-OLEPS), the segment database, the B-rep record converted by `core/f3d`'s ASM code, the meshes of mesh features, the definitions segment (parameters, sketches, features) as the import's dump IR, and `.iam` assemblies (referenced files, occurrences, placements; [README](../core/ipt/README.md)). No geometry. |
 | `core/ifc` (`mitcad-ifc`) | Rust | IFC files (IFC2X3, IFC4, IFC4X3; `.ifczip`): an own ISO 10303-21 reader, units, the spatial structure, products and their placements, relationships, styles, and the shapes' representation items decoded (profiles, swept solids, booleans, breps, face sets, mapped items; [README](../core/ifc/README.md)). No geometry. |
+| `core/solidcraft` (`mitcad-solidcraft`) | Rust | `.solidcraft` designs: the JSON document or its container, upgraded from any file format to one by SolidCraft's own steps (`third_party/solidcraft`), typed sketches and feature kinds, expressions in Mitcad's language. No geometry. |
 | `core/dxf` | Rust | DXF read and write. |
+| `core/dwg` (`mitcad-dwg`) | Rust | `.dwg` drawings, R13 to R2018: the containers and their compression, header variables, classes, the object map, objects, the data storage; the 3D content (B-rep records parsed by `core/f3d`'s ASM code, meshes, blocks and inserts) and the plan of components ([README](../core/dwg/README.md)). No geometry. |
 | `core/3mf` (`mitcad-3mf`) | Rust | 3MF writer (one object of parts) and a checking reader for tests. |
 | `core/usdz` (`mitcad-usdz`) | Rust | USDZ writer: the binary USD layer (crate format 0.8.0, LZ4 and USD's integer coding written here, no USD library) of a scene of meshes, `Xform`s and `UsdPreviewSurface` materials, packed with its textures 64-byte aligned; a checking reader for tests (mitcad#123). |
 | `core/vcs` (`mitcad-vcs`) | Rust | Version history of projects in git (gitoxide, only here); remotes through the system's git; component libraries and community indexes in git repositories ([libraries.md](libraries.md)). |
@@ -30,7 +32,7 @@ JSON commands.
 | `tools/freecad-export` | Python, Bash | FreeCAD macros that make the FreeCAD import's reference models and dumps. |
 
 Dependencies point one way: `app` → `core/ffi` → `core/model` (with
-`solver`, `f3d`, `import`, `freecad`, `zip`, `3mf`, `usdz`, `vcs`, `ipt`, `ifc`; `update`
+`solver`, `f3d`, `import`, `freecad`, `zip`, `3mf`, `usdz`, `vcs`, `ipt`, `ifc`, `solidcraft`, `dwg`; `update`
 stands alone) and `core/ffi` → `geometry` → OCCT. The model reaches geometry only
 through the `Kernel` trait, so model tests run on a mock kernel.
 
@@ -302,6 +304,41 @@ design in a project.
   edits the rows in one panel, the type inferred from the picks by the
   `constraint_row` query ([commands.md](../core/model/src/api/commands.md),
   "Assembly constraints").
+- **Motion studies and contact sets** (mitcad#454, `core/model/src/motion.rs`,
+  `contact.rs`, `document/motion.rs`): definition state beside the
+  timeline, saved in the design file. A study keys joints' free motions
+  along steps; a contact set names occurrences whose bodies stop each
+  other. Motions that should stop at contact (Drive Joint, drags,
+  `play_study` and the previews of a study's playback and of Animate
+  Joint's frames) are sampled from where they start, each sample the
+  state with the joints driven there and recomputed (`sweep_joints`; a
+  drag runs the joint solver's drag instead), checked pair by pair
+  (boxes first, then `Kernel::overlap_volumes`, OCCT's fuzzy boolean
+  common of the placed bodies, `geometry/src/motion_contact.cpp`), and
+  the step before the first contact bisected; recompute itself never
+  checks contact. The application plays a study in a panel of previews
+  (`app/motion/MotionStudyDialog`), the document unchanged until Keep
+  ([commands.md](../core/model/src/api/commands.md), "Motion studies and
+  contact sets"). The `.solidcraft` import maps the file's onto them.
+- **Motion links** (mitcad#466, `features/motion_link.rs`,
+  `core/model/src/motion_links.rs`): `motion_link` timeline features that
+  make one joint's free motion follow another's: a ratio, gears, a rack
+  and pinion, a screw (sizes as values or radii of picked round geometry,
+  found again on every recompute) or a cam (a table of the follower's
+  values over a turn, worked out from the profile, the follower and its
+  tip; the contact geometry adapted from SolidCraft,
+  `third_party/solidcraft/cam.rs`). Recompute applies a link like a joint
+  (`joints::apply`): its joints and every joint, constraint and link
+  sharing moving occurrences with them are solved together, the joint
+  solver holding one coupling row per link (`mitcad_solver::RigidCoupling`,
+  linear or a periodic table); the rank, drags and the contact-stopped
+  motions of motion studies take the links in, so linked joints move
+  together. A follower whose driver is driven lets go of its own
+  position; Drive Joint and studies take the positions of linked motions
+  away, so the last driven one drives ([commands.md](../core/model/src/api/commands.md),
+  "Motion links"). The application adds them with ASSEMBLE › Motion Link
+  and lists them in each component's Motion Links folder; the
+  `.solidcraft` import maps the file's.
 - **Design policy** (mitcad#220, `core/model/src/policy.rs`,
   `document/policy.rs`): the root and each component have nine local
   settings (sketches, features, components; sketch attachment to and from
@@ -362,6 +399,15 @@ design in a project.
   them as ordinary components, features, joints and parameters
   ([commands.md](../core/model/src/api/commands.md), "BUILD: profile
   assemblies").
+- **Boundary Fill** (mitcad#457, `features/boundary_fill.rs`): a
+  `boundary_fill` feature fills the cells its tool bodies enclose, each
+  picked by a point inside it (a cell: inside every tool that holds the
+  point, outside the others). `Kernel::boundary_cells` divides space by
+  the tools' faces once (OCCT's `BOPAlgo_CellsBuilder`,
+  `geometry/src/boundary_fill.cpp`) and gives each point's cell with the
+  tools that hold it; the cells become new bodies or one tool that joins,
+  cuts or intersects participants as an extrusion's does
+  ([commands.md](../core/model/src/api/commands.md), "Boundary Fill").
 
 ### Units
 
@@ -624,7 +670,12 @@ the `Shape` type.
   surfaces before OCCT's booleans, dressups and face operations get them
   (`detail::require_surfaces`, `geometry/src/util.cpp`); and the app's
   inputs of those features do not offer them (`InputDef::withoutMeshes`,
-  the pick item's geometry `mesh`).
+  the pick item's geometry `mesh`). Convert Mesh (mitcad#462,
+  `features/mesh_convert.rs`) rebuilds a mesh body of one profile
+  extruded straight as a solid: the section is found in Rust from
+  `Kernel::triangle_mesh` (adapted from SolidCraft,
+  `third_party/solidcraft/mesh_convert.rs`) and built by `Kernel::extrude`,
+  so the faces are named as an extrusion's; no kernel function of its own.
 
 ## Topological naming
 
@@ -640,15 +691,16 @@ them through operations and derives edge names.
 | Feature | Roles |
 |---|---|
 | Extrude, revolve, sweep, loft | `side(<segment>)`, `start(<region>)`, `end(<region>)`; a parallel sweep turning back `turn(<region>)` |
-| Thin extrude | `outer(<segment>)`, `inner(<segment>)`, `mid(<region>)` |
+| Thin extrude | `outer(<segment>)`, `inner(<segment>)`, `mid(<region>)`; along curves (mitcad#463) `outer(<curve>)`, `inner(<curve>)`, `tip0(<curve>)`, `tip1(<curve>)`, caps `start(r{<curves>})`, `end(r{<curves>})` |
 | Fillet, chamfer | `fillet(<edge>)`, `chamfer(<edge>)`, `corner(<vertex>)` |
 | Hole | `hole<i>.wall`, `.tip`, `.cbore_wall`, `.cbore_floor`, `.csink`, `.top`; thread `thread(<face>)` |
 | Shell | `offset(<face>)`, `offset_cap(<removed face>)` |
 | Replace face, split | `replace(<face>)`, `split`, `split(<tool face>)` |
 | Pattern, mirror, copy | `inst<i>(<original face name>)`; a pattern of a pattern nests: `F6:inst1(F5:inst2(F4:side(c1)))`; a fillet or chamfer among the objects, repeated on the copies' edges (mitcad#105): `fillet(<copy's edge>)`, `chamfer(…)`, `corner(…)` |
 | Pipe, coil | `side<i>`, `inner<i>`, `start`, `end` |
-| Primitives | `top`, `bottom`, `side<i>` |
+| Primitives, bounding solid | `top`, `bottom`, `side<i>` |
 | Imported body | `import(<i>)` |
+| Boundary fill | none of its own: a cell's faces keep the names of the tool faces they are pieces of |
 
 - **Segment:** the part of a sketch curve in a profile,
   `<curve>[<start>,<end>]`, bounded by the curves it ends on in the
@@ -852,6 +904,10 @@ not recompute.
   `CommandSession::runVisibility`, mitcad#295). Create Sketch shows the
   origin planes for its pick only while the design has no component but
   the active one and a root without bodies (mitcad#294).
+  In the native macOS Browser, Return/Enter activates the selected row
+  before document confirmation; a row's text editor keeps Return while
+  renaming. Command-W dismisses command and timeline search popovers,
+  preserving the document and restoring timeline search's saved selection.
 - **Background computation** (`app/framework/ModelWorker`): the model runs
   on one long-lived worker thread (256 MB stack, OCCT crash handlers) as
   jobs, one at a time; opening, every model command, undo/redo and every
@@ -1128,6 +1184,8 @@ coloured icons and an in-row marker. Timeline filtering uses the shared
 component filter while preserving model indices; playback skips boundaries
 inside hidden feature runs. The native toolbar presents the shared project,
 live-update and edit-lock status and opens the shared project menu.
+Saved toolbars receive the Project item once when upgrading an older layout;
+later status changes and application restarts preserve its explicit removal.
 The menu bar, application delegate, Finder open requests, document edited
 indicator, Services, text editing and window actions are AppKit's. The saved
 document frame restores both its origin and size; only a window without a
@@ -1928,6 +1986,16 @@ thousands of commands, not tens of thousands), types' shapes as
 components with occurrences, openings cut from their elements. The
 report accounts for every product of the file.
 
+`.dwg` drawings (mitcad#453) hold no history: `core/dwg` reads the
+drawing and plans its components (each named block with 3D content a
+component, each rigid insert an occurrence; anonymous blocks and scaling
+or mirroring inserts copied in place), the B-rep records of its solids
+are converted by `core/f3d`'s ASM code (the text form of older drawings
+through `asm::text`) and built by the imports' B-rep builder, its 3D
+faces and meshes become mesh bodies, one base feature per component and
+layer (`core/ffi/src/dwg_import.rs`; the `import_dwg` command), in the
+import process like the others.
+
 `.rvt` projects and `.rfa` families (mitcad#274, mitcad#275, mitcad#333): `core/rvt`
 reads the container (the compound file module shared with `core/ipt` as
 the `mitcad-cfb` crate), the paged gzip streams, the metadata and the
@@ -1949,3 +2017,19 @@ mesh or its box (hidden unless structural); linked models (projects, IFC
 files) in components of their own (`core/ffi/src/rvt_import.rs`; the
 `import_rvt` command), in the import process like the others, under the
 memory guard.
+
+SolidCraft designs (`.solidcraft`, mitcad#450) come in with their history
+through `core/solidcraft` (the reader: the JSON document or its container,
+every file format upgraded to one by SolidCraft's own steps, adapted in
+`third_party/solidcraft`; no geometry) and `mitcad-import`'s `solidcraft`
+module on the `Kernel` trait (`core/ffi/src/solidcraft_import.rs`; the
+`import_solidcraft` command, also the headless MCP server's
+`document_open`), in the import process like the others. The file keeps
+definitions, not bodies, so every feature is Mitcad's own evaluation:
+parameters keep their names and expressions, sketches their constraints
+and dimensions, and faces and edges are found by SolidCraft's persistent
+names and pick points on the rebuilt bodies, then followed by Mitcad's
+topological names. Components, occurrences, joints, motion links, contact sets, motion studies and sheet
+metal map to Mitcad's; a feature without a counterpart, or one that fails, is a
+suppressed placeholder with the reason, and the report lists it
+([core/import/README.md](../core/import/README.md#solidcraft-import)).

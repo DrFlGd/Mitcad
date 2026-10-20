@@ -104,6 +104,9 @@ pub struct StoredFile {
     /// The items whose operation changed no body of the blobs that hold it
     /// (mitcad#156).
     unchanged_items: HashSet<i64>,
+    /// The items that name the operation of an item before them, so that
+    /// they have none of their own (mitcad#343).
+    shared_items: HashSet<i64>,
     /// The global state before the operations no item names that came
     /// right before each item's own in its blob (mitcad#156), by item index.
     item_starts: HashMap<i64, usize>,
@@ -293,6 +296,7 @@ impl StoredFile {
             item_states: HashMap::new(),
             item_components: HashMap::new(),
             unchanged_items: HashSet::new(),
+            shared_items: HashSet::new(),
             item_starts: HashMap::new(),
             component_names,
             builds: Arc::new(Mutex::new(HashMap::new())),
@@ -570,8 +574,11 @@ impl StoredFile {
         items.sort_unstable();
         let mut unchanged: Vec<i64> = self.unchanged_items.iter().copied().collect();
         unchanged.sort_unstable();
+        let mut shared: Vec<i64> = self.shared_items.iter().copied().collect();
+        shared.sort_unstable();
         eprintln!(
-            "import: {} history states; item states {items:?}; items that changed no body {unchanged:?}",
+            "import: {} history states; item states {items:?}; items that changed no body {unchanged:?}; \
+             items naming an earlier item's operation {shared:?}",
             self.states.len()
         );
     }
@@ -779,6 +786,8 @@ impl StoredFile {
             .collect();
         let mut current = vec![0usize; self.history.len()];
         self.states.push(current.clone());
+        // The operations an earlier item took (blob, number).
+        let mut named: HashSet<(usize, i64)> = HashSet::new();
         for item in items {
             let (index, result) = (item.index, item.result);
             let Some(all) = at.get(&result) else {
@@ -822,6 +831,13 @@ impl StoredFile {
             {
                 self.unchanged_items.insert(index);
             }
+            // An item that names the operation an earlier item took has none
+            // of its own (mitcad#343: a chamfer after a rounding, both naming
+            // the rounding's operation; the chamfer's edges the file lost).
+            if targets.iter().all(|&(h, _)| named.contains(&(h, result))) {
+                self.shared_items.insert(index);
+            }
+            named.extend(targets.iter().map(|&(h, _)| (h, result)));
             let mut moved = false;
             let mut back = false;
             let begun = self.states.len() - 1;
@@ -1743,6 +1759,10 @@ impl StoredGeometry<SharedPtr<Shape>> for F3dGeometry {
 
     fn item_start(&mut self, index: i64) -> Option<usize> {
         self.file.item_starts.get(&index).copied()
+    }
+
+    fn item_shares_operation(&mut self, index: i64) -> bool {
+        self.file.shared_items.contains(&index)
     }
 
     fn history_components(&mut self) -> Option<HashSet<u64>> {

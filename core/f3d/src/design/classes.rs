@@ -180,7 +180,13 @@ pub const KNOWN: &[(&str, &str)] = &[
     ),
     ("8EE00B00-76BB-49AB-8C25-E837FEC5BDA5", "SnapshotFeature"),
     ("62E501B2-B398-4176-87AD-28F56269D7C9", "Feature(62E501B2)"),
+    (PATH_PATTERN, "PathPatternFeature"),
 ];
+
+/// A path pattern (mitcad#468): its data object
+/// (`build/patterns.rs`'s `PATH_PATTERN_DATA`) holds the path, the
+/// quantity's and the distance's holders and the settings.
+pub const PATH_PATTERN: &str = "B0B3D9E5-1C25-47BC-ABCD-E723F193DF1B";
 
 /// The reference decoder's name of a known class.
 pub fn known_name(guid: &str) -> Option<&'static str> {
@@ -215,6 +221,7 @@ pub const OBJECT_TYPES: &[(&str, &str)] = &[
     ("JointOriginFeature", "JointOrigin"),
     ("JointFeature", "Joint"),
     ("AsBuiltJointFeature", "AsBuiltJoint"),
+    ("PathPatternFeature", "PathPatternFeature"),
 ];
 
 /// The IR `objectType` of a timeline entity of class `guid`.

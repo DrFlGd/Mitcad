@@ -71,3 +71,5 @@ pub use types::{
 };
 // Equal spacing (mitcad#221).
 pub use types::{Anchor, SpacingMode};
+// Couplings of joints' motions (mitcad#466).
+pub use rigid::{Relation, RigidCoupling};

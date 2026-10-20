@@ -1,0 +1,264 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: a rounding that vanishes at the end of its spine, where its faces
+come tangent, ends where its contact crosses onto a face tangent to the
+other face along an edge into that vertex (mitcad#343).
+
+The case: a chain of edges round a band's rim with a large torus F14, its
+last edge between F14 and an earlier rounding D, ending at a vertex V where
+D runs on tangentially across an edge into a rounding C of F14 (C tangent
+to F14 along an edge into V): D, C and F14 are all tangent at V, the
+rounding vanishes there. The walk's contact on D crossed onto C a hundredth
+of the radius before V; between C and F14, tangent along their edge, no
+ball fits, and the next piece's walk failed, which failed the whole
+stripe. On another body, a few micrometres off, the stripe ended there but
+the end, 0.011 from V, was not put at V (ChFi3d_ShrinkVanishingEnd takes
+ends within a hundredth of the radius whose faces' normals are within
+0.002 rad; here 0.006 at the contacts), and the OnSame corner that took
+it crashed: the cap's p-curve on the face at the end was not found and
+ChFi3d_ComputeArete used it.
+
+- ChFi3d_ContactOntoTangentFaceAtEnd: whether a piece's end has one
+  contact on an edge E of its face F that runs to the spine's end vertex V,
+  the face beyond E tangent to F along E and to the blend's other face
+  along an edge from V, both contacts within two hundredths of the radius
+  of V and within a hundredth of each other.
+- PerformSetOfSurfOnElSpine: at a tangency extremity such a piece ends the
+  stripe, as one whose contacts reached V (0400).
+- PerformFilletOnVertex: such an end is put at V (the blend ends in a
+  point there, PerformSingularCorner) within two hundredths of the radius,
+  its faces' normals not compared: they are tangent at V, the walk only
+  could not get nearer.
+- ChFi3d_ComputeArete returns without a p-curve where its projection
+  fails (the callers find none and fail), instead of using it.
+
+Upstream: new.
+
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.cxx
+index a8b031df..05fee9d3 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.cxx
+@@ -3111,6 +3111,12 @@ static occ::handle<TheBSpline> ChFi3d_BSplineEndingAt(const occ::handle<TheCurve
+ //           (PerformSingularCorner). The faces' normals are taken at the
+ //           contacts' ends (a face's surface may degenerate at the vertex
+ //           itself). Without theApply, only whether the end can be so put.
++//           With theTangentFaceEnd (the walk stopped where a contact left
++//           its face onto a face tangent to the other one along an edge to
++//           the vertex, ChFi3d_ContactOntoTangentFaceAtEnd, the section
++//           there narrower than a hundredth of the radius) the normals are
++//           not compared: the faces are tangent at the vertex, the walk
++//           only could not get nearer.
+ //=======================================================================
+ 
+ static bool ChFi3d_ShrinkVanishingEnd(TopOpeBRepDS_DataStructure&         DStr,
+@@ -3118,7 +3124,8 @@ static bool ChFi3d_ShrinkVanishingEnd(TopOpeBRepDS_DataStructure&         DStr,
+                                       const bool                          isfirst,
+                                       const TopoDS_Vertex&                Vtx,
+                                       const double                        theMaxDist,
+-                                      const bool                          theApply = true)
++                                      const bool                          theApply          = true,
++                                      const bool                          theTangentFaceEnd = false)
+ {
+   ChFiDS_CommonPoint& CV1 = Fd->ChangeVertex(isfirst, 1);
+   ChFiDS_CommonPoint& CV2 = Fd->ChangeVertex(isfirst, 2);
+@@ -3165,7 +3172,7 @@ static bool ChFi3d_ShrinkVanishingEnd(TopOpeBRepDS_DataStructure&         DStr,
+     }
+   }
+   const double anAng = aNorm[0].Angle(aNorm[1]);
+-  if (anAng > 0.002 && M_PI - anAng > 0.002)
++  if (!theTangentFaceEnd && anAng > 0.002 && M_PI - anAng > 0.002)
+   {
+     return false;
+   }
+@@ -3302,7 +3309,25 @@ void ChFi3d_Builder::PerformFilletOnVertex(const int Index)
+     const occ::handle<ChFiDS_FilSpine> fsp = occ::down_cast<ChFiDS_FilSpine>(sp);
+     if (!fsp.IsNull() && fsp->IsConstant() && (myVDataMap(Index).Extent() == 1 || aAllVanish))
+     {
+-      ChFi3d_ShrinkVanishingEnd(myDS->ChangeDS(), Fd, isfirst, Vtx, 0.01 * fsp->Radius());
++      // (Or within two hundredths where the walk stopped as its contact
++      // crossed onto a face tangent to the other face along an edge to the
++      // vertex.)
++      const bool aTangentFaceEnd =
++        myVDataMap(Index).Extent() == 1 && sp->IsTangencyExtremity(isfirst)
++        && ChFi3d_ContactOntoTangentFaceAtEnd(Fd,
++                                              isfirst,
++                                              Vtx,
++                                              myDS->DS(),
++                                              myEFMap,
++                                              0.02 * fsp->Radius(),
++                                              0.01 * fsp->Radius());
++      ChFi3d_ShrinkVanishingEnd(myDS->ChangeDS(),
++                                Fd,
++                                isfirst,
++                                Vtx,
++                                (aTangentFaceEnd ? 0.02 : 0.01) * fsp->Radius(),
++                                true,
++                                aTangentFaceEnd);
+     }
+     const ChFiDS_CommonPoint& CV1 = Fd->Vertex(isfirst, 1);
+     const ChFiDS_CommonPoint& CV2 = Fd->Vertex(isfirst, 2);
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
+index d0b223c8..40572c24 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
+@@ -2230,6 +2230,11 @@ void ChFi3d_ComputeArete(const ChFiDS_CommonPoint&        P1,
+     hs->Load(Surf);
+     hc->Load(C3d, Pardeb, Parfin);
+     ChFi3d_ProjectPCurv(hc, hs, Pcurv, tol3d, tolreached);
++    // (No p-curve where the projection fails: the caller finds none.)
++    if (Pcurv.IsNull())
++    {
++      return;
++    }
+     gp_Pnt2d p2d = Pcurv->Value(Pardeb);
+     if (!UV1.IsEqual(p2d, Precision::PConfusion()))
+     {
+@@ -8762,3 +8767,78 @@ void ChFi3d_OwnEdgesAtVertices(const occ::handle<ChFiDS_Stripe>& CorDat,
+     }
+   }
+ }
++
++//=================================================================================================
++
++bool ChFi3d_ContactOntoTangentFaceAtEnd(const occ::handle<ChFiDS_SurfData>& SD,
++                                        const bool                          isFirst,
++                                        const TopoDS_Vertex&                V,
++                                        const TopOpeBRepDS_DataStructure&   DStr,
++                                        const ChFiDS_Map&                   EFMap,
++                                        const double                        Reach,
++                                        const double                        Width)
++{
++  if (SD.IsNull() || V.IsNull() || SD->Index(1) <= 0 || SD->Index(2) <= 0)
++  {
++    return false;
++  }
++  const gp_Pnt P  = BRep_Tool::Pnt(V);
++  const gp_Pnt P1 = SD->Vertex(isFirst, 1).Point();
++  const gp_Pnt P2 = SD->Vertex(isFirst, 2).Point();
++  if (P1.Distance(P) > Reach || P2.Distance(P) > Reach || P1.Distance(P2) > Width)
++  {
++    return false;
++  }
++  const auto hasV = [&V](const TopoDS_Shape& S) {
++    for (TopExp_Explorer ex(S, TopAbs_VERTEX); ex.More(); ex.Next())
++    {
++      if (ex.Current().IsSame(V))
++      {
++        return true;
++      }
++    }
++    return false;
++  };
++  for (int k = 1; k <= 2; k++)
++  {
++    const ChFiDS_CommonPoint& CP = SD->Vertex(isFirst, k);
++    if (!CP.IsOnArc() || !EFMap.Contains(CP.Arc()) || !hasV(CP.Arc()))
++    {
++      continue;
++    }
++    const TopoDS_Shape& aSF  = DStr.Shape(SD->Index(k));
++    const TopoDS_Shape& aSFo = DStr.Shape(SD->Index(3 - k));
++    if (aSF.ShapeType() != TopAbs_FACE || aSFo.ShapeType() != TopAbs_FACE)
++    {
++      continue;
++    }
++    const TopoDS_Face& F  = TopoDS::Face(aSF);
++    const TopoDS_Face& Fo = TopoDS::Face(aSFo);
++    const TopoDS_Edge& E  = CP.Arc();
++    for (NCollection_List<TopoDS_Shape>::Iterator itn(EFMap(E)); itn.More(); itn.Next())
++    {
++      const TopoDS_Face& Fn = TopoDS::Face(itn.Value());
++      if (Fn.IsSame(F) || Fn.IsSame(Fo) || !ChFi3d::IsTangentFaces(E, F, Fn))
++      {
++        continue;
++      }
++      // Fn tangent to Fo along an edge from V.
++      for (TopExp_Explorer ex(Fn, TopAbs_EDGE); ex.More(); ex.Next())
++      {
++        const TopoDS_Edge& Et = TopoDS::Edge(ex.Current());
++        if (Et.IsSame(E) || BRep_Tool::Degenerated(Et) || !EFMap.Contains(Et) || !hasV(Et))
++        {
++          continue;
++        }
++        for (NCollection_List<TopoDS_Shape>::Iterator ito(EFMap(Et)); ito.More(); ito.Next())
++        {
++          if (ito.Value().IsSame(Fo) && ChFi3d::IsTangentFaces(Et, Fn, Fo))
++          {
++            return true;
++          }
++        }
++      }
++    }
++  }
++  return false;
++}
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.hxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.hxx
+index 00275422..951ccbc8 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.hxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.hxx
+@@ -645,4 +645,19 @@ void ChFi3d_OwnEdgesAtVertices(const occ::handle<ChFiDS_Stripe>& CorDat,
+                                const ChFiDS_Map&                 VEMap,
+                                const ChFiDS_Map&                 EFMap);
+ 
++//! A rounding that vanishes at its spine's end vertex V, where its faces come
++//! tangent, whose walk stopped short of V where the contact on one face F
++//! left F across an edge E ending at V into a face Fn that goes on
++//! tangentially from F and is tangent to the blend's other face Fo along an
++//! edge from V: between Fn and Fo the ball has no width, so the rounding
++//! ends there. Whether the end of SD (its start with isFirst) is such, its
++//! contacts within Reach of V and within Width of each other.
++bool ChFi3d_ContactOntoTangentFaceAtEnd(const occ::handle<ChFiDS_SurfData>& SD,
++                                        const bool                          isFirst,
++                                        const TopoDS_Vertex&                V,
++                                        const TopOpeBRepDS_DataStructure&   DStr,
++                                        const ChFiDS_Map&                   EFMap,
++                                        const double                        Reach,
++                                        const double                        Width);
++
+ #endif
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+index 93e3652e..65a9de67 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+@@ -5425,6 +5425,21 @@ void ChFi3d_Builder::PerformSetOfSurfOnElSpine(const occ::handle<ChFiDS_ElSpine>
+       {
+         fini = true;
+       }
++      // (So it does where its contact left its face onto a face tangent to
++      // the other face along an edge to that vertex: no ball fits between
++      // those two.)
++      if (!fini && !Spine->IsPeriodic() && !aVanishSpine.IsNull() && aVanishSpine->IsConstant()
++          && Spine->IsTangencyExtremity(false)
++          && ChFi3d_ContactOntoTangentFaceAtEnd(ref,
++                                                false,
++                                                Spine->LastVertex(),
++                                                DStr,
++                                                myEFMap,
++                                                2. * aVanishReach,
++                                                aVanishReach))
++      {
++        fini = true;
++      }
+ 
+       if (!fini && Guide.IsPeriodic() && ((wl - Last) < Guide.Period() * 1.e-3))
+       {
+@@ -5497,6 +5512,18 @@ void ChFi3d_Builder::PerformSetOfSurfOnElSpine(const occ::handle<ChFiDS_ElSpine>
+       {
+         fini = true;
+       }
++      if (!fini && !Spine->IsPeriodic() && !aVanishSpine.IsNull() && aVanishSpine->IsConstant()
++          && Spine->IsTangencyExtremity(true)
++          && ChFi3d_ContactOntoTangentFaceAtEnd(ref,
++                                                true,
++                                                Spine->FirstVertex(),
++                                                DStr,
++                                                myEFMap,
++                                                2. * aVanishReach,
++                                                aVanishReach))
++      {
++        fini = true;
++      }
+       complete = false;
+       Last     = wf;
+     }

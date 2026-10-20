@@ -1,0 +1,14 @@
+{
+  "comment": "Worked out by hand: a rod of r 10 and 30 long (100 pi 30 = 9424.7780); a 4 x 5 rectangle wrapped onto its side and raised 1 (20 (11^2 - 10^2) / 20 = 21), a 4 x 3 one sunk 1 (12 (10^2 - 9^2) / 20 = 11.4), and a 4 x 4 square raised 2 from the top (32). The raised rectangle reaches y = 11, the square z = 32.",
+  "body_count": 1,
+  "total": {"volume_mm3": 9466.37796076938},
+  "bbox": {"min": [-10, -10, 0], "max": [10, 11, 32]},
+  "bodies": [{"name": "Rod", "volume_mm3": 9466.37796076938}],
+  "timeline": [{"name": "Sketch1"}, {"name": "Extrude1"}, {"name": "Label"}, {"name": "Emboss1"},
+               {"name": "Groove"}, {"name": "Emboss2"}, {"name": "Top"}, {"name": "Emboss3"}],
+  "sketches": [{"name": "Sketch1", "curves": 1, "constraints": 0, "dimensions": 1},
+               {"name": "Label", "curves": 4, "constraints": 0, "dimensions": 0},
+               {"name": "Groove", "curves": 4, "constraints": 0, "dimensions": 0},
+               {"name": "Top", "curves": 4, "constraints": 0, "dimensions": 0}],
+  "parametric": 8
+}

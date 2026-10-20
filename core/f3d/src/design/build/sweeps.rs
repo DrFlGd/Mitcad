@@ -216,7 +216,7 @@ impl Builder<'_> {
 
     /// A path that must be there: its items, else a value the import
     /// refuses (an input of a kind not decoded).
-    fn path_or_error(&self, holder: u64) -> Value {
+    pub(super) fn path_or_error(&self, holder: u64) -> Value {
         self.path(holder)
             .unwrap_or_else(|| json!({"_error": "not decoded"}))
     }

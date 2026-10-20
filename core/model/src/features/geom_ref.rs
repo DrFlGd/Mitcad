@@ -1037,6 +1037,48 @@ fn chain_point(chain: &[PathCurve], at: PathParameter) -> PathPoint {
     unreachable!("a chain has curves")
 }
 
+/// Lines and arcs of a sketch joined end to end, by arc length along the
+/// path (a path pattern along a chain, mitcad#464), with the sketch's
+/// normal that copies turned along the path turn about.
+pub(crate) struct PathChain {
+    pieces: Vec<PathCurve>,
+    pub normal: Vec3,
+}
+
+impl PathChain {
+    /// The chain of the curves (see [`sketch_chain`]).
+    pub(crate) fn of_sketch(
+        r: &mut impl Resolver,
+        sketch: FeatureUid,
+        curves: &[EntityUid],
+    ) -> Result<Self, String> {
+        let pieces = sketch_chain(r, sketch, curves)?;
+        let normal = r.sketch(sketch)?.frame.normal();
+        Ok(Self { pieces, normal })
+    }
+
+    pub(crate) fn length(&self) -> f64 {
+        self.pieces.iter().map(PathCurve::length).sum()
+    }
+
+    /// The point and the unit tangent at arc length `s`; before the start
+    /// and past the end the first and the last curve go on (straight, or
+    /// around their circle), and a vertex between two curves takes the
+    /// tangent of the first.
+    pub(crate) fn at(&self, s: f64) -> (Vec3, Vec3) {
+        let mut before = 0.0;
+        for (i, piece) in self.pieces.iter().enumerate() {
+            let length = piece.length();
+            if s <= before + length || i + 1 == self.pieces.len() {
+                let local = s - before;
+                return (piece.point(local), piece.tangent(local));
+            }
+            before += length;
+        }
+        unreachable!("a chain has curves")
+    }
+}
+
 /// The curve of a sketch-curve or line path.
 pub(crate) fn path_curve(r: &mut impl Resolver, path: &PathRef) -> Result<PathCurve, String> {
     let (sketch, curve) = match path {

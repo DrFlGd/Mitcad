@@ -1,0 +1,177 @@
+{
+  "format": "solidcraft/27",
+  "name": "Patches, stitches and thickened surfaces",
+  "units": "mm",
+  "params": [{"name": "side", "expr": "20 mm", "unit": "mm"}],
+  "features": [
+    {
+      "id": 1, "name": "Bottom", "type": "sketch",
+      "plane": {"type": "origin", "name": "XY"},
+      "sketch": {
+        "points": [
+          {"id": "origin", "pos": [0.0, 0.0], "fixed": true},
+          {"id": "p1", "pos": [0.0, 0.0], "fixed": true},
+          {"id": "p2", "pos": [20.0, 0.0], "fixed": true},
+          {"id": "p3", "pos": [20.0, 20.0], "fixed": true},
+          {"id": "p4", "pos": [0.0, 20.0], "fixed": true}
+        ],
+        "curves": [
+          {"id": "l1", "type": "line", "a": 1, "b": 2},
+          {"id": "l2", "type": "line", "a": 2, "b": 3},
+          {"id": "l3", "type": "line", "a": 3, "b": 4},
+          {"id": "l4", "type": "line", "a": 4, "b": 1}
+        ],
+        "constraints": []
+      }
+    },
+    {
+      "id": 2, "name": "Floor", "type": "patch", "body_names": ["Floor"],
+      "sketch": 1, "profiles": {"type": "all"}
+    },
+    {
+      "id": 3, "name": "Left", "type": "sketch",
+      "plane": {"type": "origin", "name": "YZ"},
+      "sketch": {
+        "points": [
+          {"id": "origin", "pos": [0.0, 0.0], "fixed": true},
+          {"id": "p1", "pos": [0.0, 0.0], "fixed": true},
+          {"id": "p2", "pos": [20.0, 0.0], "fixed": true},
+          {"id": "p3", "pos": [20.0, 20.0], "fixed": true},
+          {"id": "p4", "pos": [0.0, 20.0], "fixed": true}
+        ],
+        "curves": [
+          {"id": "l1", "type": "line", "a": 1, "b": 2},
+          {"id": "l2", "type": "line", "a": 2, "b": 3},
+          {"id": "l3", "type": "line", "a": 3, "b": 4},
+          {"id": "l4", "type": "line", "a": 4, "b": 1}
+        ],
+        "constraints": []
+      }
+    },
+    {
+      "id": 4, "name": "WallL", "type": "patch", "body_names": ["WallL"],
+      "sketch": 3, "profiles": {"type": "all"}
+    },
+    {
+      "id": 5, "name": "Right", "type": "sketch",
+      "plane": {"type": "offset", "base": {"type": "origin", "name": "YZ"}, "distance": "side"},
+      "sketch": {
+        "points": [
+          {"id": "origin", "pos": [0.0, 0.0], "fixed": true},
+          {"id": "p1", "pos": [0.0, 0.0], "fixed": true},
+          {"id": "p2", "pos": [20.0, 0.0], "fixed": true},
+          {"id": "p3", "pos": [20.0, 20.0], "fixed": true},
+          {"id": "p4", "pos": [0.0, 20.0], "fixed": true}
+        ],
+        "curves": [
+          {"id": "l1", "type": "line", "a": 1, "b": 2},
+          {"id": "l2", "type": "line", "a": 2, "b": 3},
+          {"id": "l3", "type": "line", "a": 3, "b": 4},
+          {"id": "l4", "type": "line", "a": 4, "b": 1}
+        ],
+        "constraints": []
+      }
+    },
+    {
+      "id": 6, "name": "WallR", "type": "patch", "body_names": ["WallR"],
+      "sketch": 5, "profiles": {"type": "all"}
+    },
+    {
+      "id": 7, "name": "Front", "type": "sketch",
+      "plane": {"type": "origin", "name": "XZ"},
+      "sketch": {
+        "points": [
+          {"id": "origin", "pos": [0.0, 0.0], "fixed": true},
+          {"id": "p1", "pos": [0.0, -20.0], "fixed": true},
+          {"id": "p2", "pos": [20.0, -20.0], "fixed": true},
+          {"id": "p3", "pos": [20.0, 0.0], "fixed": true},
+          {"id": "p4", "pos": [0.0, 0.0], "fixed": true}
+        ],
+        "curves": [
+          {"id": "l1", "type": "line", "a": 1, "b": 2},
+          {"id": "l2", "type": "line", "a": 2, "b": 3},
+          {"id": "l3", "type": "line", "a": 3, "b": 4},
+          {"id": "l4", "type": "line", "a": 4, "b": 1}
+        ],
+        "constraints": []
+      }
+    },
+    {
+      "id": 8, "name": "WallF", "type": "patch", "body_names": ["WallF"],
+      "sketch": 7, "profiles": {"type": "all"}
+    },
+    {
+      "id": 9, "name": "Back", "type": "sketch",
+      "plane": {"type": "offset", "base": {"type": "origin", "name": "XZ"}, "distance": "side"},
+      "sketch": {
+        "points": [
+          {"id": "origin", "pos": [0.0, 0.0], "fixed": true},
+          {"id": "p1", "pos": [0.0, -20.0], "fixed": true},
+          {"id": "p2", "pos": [20.0, -20.0], "fixed": true},
+          {"id": "p3", "pos": [20.0, 0.0], "fixed": true},
+          {"id": "p4", "pos": [0.0, 0.0], "fixed": true}
+        ],
+        "curves": [
+          {"id": "l1", "type": "line", "a": 1, "b": 2},
+          {"id": "l2", "type": "line", "a": 2, "b": 3},
+          {"id": "l3", "type": "line", "a": 3, "b": 4},
+          {"id": "l4", "type": "line", "a": 4, "b": 1}
+        ],
+        "constraints": []
+      }
+    },
+    {
+      "id": 10, "name": "WallB", "type": "patch", "body_names": ["WallB"],
+      "sketch": 9, "profiles": {"type": "all"}
+    },
+    {
+      "id": 11, "name": "Tray", "type": "stitch",
+      "bodies": ["Floor", "WallL", "WallR", "WallF", "WallB"], "tolerance": "0.01 mm"
+    },
+    {
+      "id": 12, "name": "Lid", "type": "patch", "body_names": ["Lid"],
+      "body": "Floor",
+      "edges": [[10.0, 0.0, 20.0], [20.0, 10.0, 20.0], [10.0, 20.0, 20.0], [0.0, 10.0, 20.0]]
+    },
+    {
+      "id": 13, "name": "Box", "type": "stitch", "bodies": ["Floor", "Lid"]
+    },
+    {
+      "id": 14, "name": "Plate sketch", "type": "sketch",
+      "plane": {"type": "origin", "name": "XY"},
+      "sketch": {
+        "points": [
+          {"id": "origin", "pos": [0.0, 0.0], "fixed": true},
+          {"id": "p1", "pos": [30.0, 0.0], "fixed": true},
+          {"id": "p2", "pos": [50.0, 0.0], "fixed": true},
+          {"id": "p3", "pos": [50.0, 10.0], "fixed": true},
+          {"id": "p4", "pos": [30.0, 10.0], "fixed": true}
+        ],
+        "curves": [
+          {"id": "l1", "type": "line", "a": 1, "b": 2},
+          {"id": "l2", "type": "line", "a": 2, "b": 3},
+          {"id": "l3", "type": "line", "a": 3, "b": 4},
+          {"id": "l4", "type": "line", "a": 4, "b": 1}
+        ],
+        "constraints": []
+      }
+    },
+    {
+      "id": 15, "name": "Sheet", "type": "patch", "body_names": ["Sheet"],
+      "sketch": 14, "profiles": {"type": "all"}
+    },
+    {
+      "id": 16, "name": "Plate", "type": "thicken", "body_names": ["Plate"],
+      "bodies": ["Sheet"], "thickness": "2 mm", "operation": "new_body"
+    },
+    {
+      "id": 17, "name": "Slab", "type": "thicken", "body_names": ["Slab"],
+      "bodies": ["Sheet"], "thickness": "3 mm", "symmetric": true, "operation": "new_body"
+    },
+    {
+      "id": 18, "name": "Rib", "type": "thicken",
+      "bodies": ["Sheet"], "thickness": "-1 mm", "operation": "join", "targets": ["Plate"]
+    }
+  ],
+  "next_id": 19
+}

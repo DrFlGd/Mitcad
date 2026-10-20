@@ -1,0 +1,16 @@
+{
+  "comment": "Worked out by hand: a block 40 x 30 x 20 at the origin (24000) and a lug 10 x 20 x 8 at (50, 5, 0) (1600). Stock: the box of both, (0, 0, 0)..(60, 30, 20), grown by gap = 5 on every side, 70 x 40 x 30 (84000). Lug box: the lug's own box, no margin (1600), named Bounding as the file names a bounding solid without a body name. Envelope: every body so far (the stock holds the others), grown by 1, 72 x 42 x 32 (96768), named Bounding (2).",
+  "body_count": 5,
+  "total": {"volume_mm3": 207968},
+  "bbox": {"min": [-6, -6, -6], "max": [66, 36, 26]},
+  "bodies": [
+    {"name": "Block", "volume_mm3": 24000, "bbox": {"min": [0, 0, 0], "max": [40, 30, 20]}},
+    {"name": "Lug", "volume_mm3": 1600, "bbox": {"min": [50, 5, 0], "max": [60, 25, 8]}},
+    {"name": "Stock", "volume_mm3": 84000, "bbox": {"min": [-5, -5, -5], "max": [65, 35, 25]}},
+    {"name": "Bounding", "volume_mm3": 1600, "bbox": {"min": [50, 5, 0], "max": [60, 25, 8]}},
+    {"name": "Bounding (2)", "volume_mm3": 96768, "bbox": {"min": [-6, -6, -6], "max": [66, 36, 26]}}
+  ],
+  "timeline": [{"name": "Box1"}, {"name": "Box2"}, {"name": "Stock box"}, {"name": "Lug box"}, {"name": "Envelope"}],
+  "params": [{"name": "gap"}],
+  "parametric": 5
+}

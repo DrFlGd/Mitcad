@@ -618,6 +618,20 @@ of `ui-import-test.sh` (the smallest file). Files run as the other corpus
 tests do (the options above). See
 [core/import/README.md](../core/import/README.md#ipt-import).
 
+### .dwg corpus
+
+Real `.dwg` drawings are never committed. `MITCAD_DWG_CORPUS` points at a
+folder; every `index.tsv` under it lists drawings (a header row naming the
+columns: `file`, relative to the index, and data sheet values to check:
+`length_mm`, `chord_distance_mm`, `tube_diameter_mm`, `tube_wall_mm`,
+`mass_kg`, `density_kg_m3`, `volume_mm3`, `solids`, `components`; other
+columns are notes). The ctest `dwg.corpus` (`tools/cli/dwg-corpus.cmake`)
+imports each with `mitcad-cli import-dwg --check`: every body built and
+valid, every 3D entity taken, the bodies within the drawing's extents,
+and the row's values (see
+[core/dwg/README.md](../core/dwg/README.md)); it skips without the
+variable.
+
 ### FreeCAD reference models and corpus
 
 FreeCAD documents are never committed (they contain B-rep files, and
@@ -648,6 +662,20 @@ in the distro only:
   `core/freecad/tests/sketch_corpus.rs` compares every
   sketch with FreeCAD's reading. Example:
   `MITCAD_FCSTD_CORPUS=~/fcstd-models:~/fcstd-examples ctest -R freecad`.
+
+### SolidCraft designs
+
+SolidCraft designs are never committed except the import's own test
+designs, written by hand (`core/solidcraft/tests/designs`, with their
+expected values worked out from SolidCraft's definitions; SolidCraft is
+not built or run for them). `MITCAD_SOLIDCRAFT_CORPUS` (a `PATH`-like
+list of folders) points at real ones: ctest `solidcraft.corpus`
+(`tools/cli/solidcraft-corpus.cmake`) imports every `.solidcraft` with
+`mitcad-cli import-solidcraft` and checks one with `<name>.expected.json`
+next to it (SolidCraft's `solidcraft-cli eval` of it) against it; a folder's
+`known.txt` (file name, a tab, the reason) lists files allowed to fail
+their check. `core/solidcraft/tests/corpus.rs` reads every file. Skipped
+without the variable.
 
 ### Designs of earlier versions
 

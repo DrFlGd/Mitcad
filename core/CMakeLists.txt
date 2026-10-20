@@ -59,7 +59,17 @@ corrosion_add_cxxbridge(mitcad_bridge CRATE mitcad_ffi FILES
   # Contacts of a new Extrude's tool (mitcad#289).
   kernel/contact.rs
   # BUILD: the face names of derived parts (mitcad#375).
-  kernel/build.rs)
+  kernel/build.rs
+  # Contact sets: bodies that stop each other while joints move (mitcad#454).
+  kernel/motion_contact.rs
+  # Emboss: profiles wrapped onto cylinders (mitcad#458).
+  kernel/emboss.rs
+  # Thin extrusions along chains of sketch curves (mitcad#463).
+  kernel/extrude_curves.rs
+  # Boundary Fill: the cells tool bodies enclose (mitcad#457).
+  kernel/boundary_fill.rs
+  # Patch, Stitch and Thicken: surface bodies filled, sewn and made solid (mitcad#456).
+  kernel/surfaces.rs)
 target_sources(mitcad_bridge PRIVATE
   cpp/bridge/boolean.cpp
   cpp/bridge/boolean.hpp
@@ -141,6 +151,26 @@ target_sources(mitcad_bridge PRIVATE
 target_sources(mitcad_bridge PRIVATE
   cpp/bridge/build.cpp
   cpp/bridge/build.hpp)
+# Contact sets: bodies that stop each other while joints move (mitcad#454).
+target_sources(mitcad_bridge PRIVATE
+  cpp/bridge/motion_contact.cpp
+  cpp/bridge/motion_contact.hpp)
+# Emboss: profiles wrapped onto cylinders (mitcad#458).
+target_sources(mitcad_bridge PRIVATE
+  cpp/bridge/emboss.cpp
+  cpp/bridge/emboss.hpp)
+# Thin extrusions along chains of sketch curves (mitcad#463).
+target_sources(mitcad_bridge PRIVATE
+  cpp/bridge/extrude_curves.cpp
+  cpp/bridge/extrude_curves.hpp)
+# Boundary Fill: the cells tool bodies enclose (mitcad#457).
+target_sources(mitcad_bridge PRIVATE
+  cpp/bridge/boundary_fill.cpp
+  cpp/bridge/boundary_fill.hpp)
+# Patch, Stitch and Thicken: surface bodies filled, sewn and made solid (mitcad#456).
+target_sources(mitcad_bridge PRIVATE
+  cpp/bridge/surfaces.cpp
+  cpp/bridge/surfaces.hpp)
 target_include_directories(mitcad_bridge PUBLIC cpp)
 target_link_libraries(mitcad_bridge PUBLIC mitcad_geometry)
 # The bridge and the Rust library call each other, and a single-pass
@@ -339,6 +369,13 @@ if(BUILD_TESTING)
   # corpus test reads MITCAD_RVT_CORPUS and skips without it.
   mitcad_cargo_test(core.cfb mitcad-cfb)
   mitcad_cargo_test(core.rvt mitcad-rvt RELEASE)
+  # The .solidcraft reader (mitcad#450): formats, upgrades, the container
+  # (no OCCT); its corpus test reads MITCAD_SOLIDCRAFT_CORPUS and skips
+  # without it.
+  mitcad_cargo_test(core.solidcraft mitcad-solidcraft)
+  # The .dwg reader (mitcad#453) on drawings written by its tests in every
+  # version (no OCCT).
+  mitcad_cargo_test(core.dwg mitcad-dwg)
 
   # The fixtures that build the test binaries, and the documentation tests
   # (cargo with the fixture's packages, so that it builds nothing again).

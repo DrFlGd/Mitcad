@@ -1,0 +1,56 @@
+{
+  "format": "solidcraft/27",
+  "name": "Bodies converted to sheet metal",
+  "units": "mm",
+  "params": [],
+  "sheet": {
+    "rules": [{"name": "Thin", "thickness": "1 mm", "k_factor": "0.3", "bend_radius": "3 mm"}],
+    "active": "Thin"
+  },
+  "features": [
+    {
+      "id": 1, "name": "Box1", "type": "box", "body_names": ["Plate"],
+      "corner": [0, 0, 0], "length": "40", "width": "20", "height": "2",
+      "operation": "new_body"
+    },
+    {
+      "id": 2, "name": "PlateToSheet", "type": "sheet_convert",
+      "body": "Plate", "face": [20.0, 10.0, 2.0]
+    },
+    {
+      "id": 3, "name": "Profile", "type": "sketch",
+      "plane": {"type": "origin", "name": "XY"},
+      "sketch": {
+        "points": [
+          {"id": "origin", "pos": [0.0, 100.0], "fixed": true},
+          {"id": "p1", "pos": [0.0, 100.0], "fixed": true},
+          {"id": "p2", "pos": [40.0, 100.0], "fixed": true},
+          {"id": "p3", "pos": [40.0, 102.0], "fixed": true},
+          {"id": "p4", "pos": [2.0, 102.0], "fixed": true},
+          {"id": "p5", "pos": [2.0, 130.0], "fixed": true},
+          {"id": "p6", "pos": [0.0, 130.0], "fixed": true}
+        ],
+        "curves": [
+          {"id": "l1", "type": "line", "a": 1, "b": 2},
+          {"id": "l2", "type": "line", "a": 2, "b": 3},
+          {"id": "l3", "type": "line", "a": 3, "b": 4},
+          {"id": "l4", "type": "line", "a": 4, "b": 5},
+          {"id": "l5", "type": "line", "a": 5, "b": 6},
+          {"id": "l6", "type": "line", "a": 6, "b": 1}
+        ],
+        "constraints": []
+      }
+    },
+    {
+      "id": 4, "name": "Extrude1", "type": "extrude", "body_names": ["Bracket"],
+      "sketch": 3, "profiles": {"type": "all"},
+      "extent": {"distance": "50", "direction": "positive"},
+      "operation": "new_body"
+    },
+    {
+      "id": 5, "name": "BracketToSheet", "type": "sheet_convert",
+      "body": "Bracket", "face": [20.0, 100.0, 25.0], "bends": [[0.0, 100.0, 25.0]]
+    }
+  ],
+  "next_id": 6
+}

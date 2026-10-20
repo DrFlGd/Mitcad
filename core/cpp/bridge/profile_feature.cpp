@@ -66,9 +66,11 @@ geometry::ExtrudeSide side(const ExtrudeSideInput& input, const ShapeList& bodie
   if (input.thin) {
     geometry::ThinWall wall;
     wall.location = input.wall_location == 0   ? geometry::WallLocation::Side1
+                    : input.wall_location == 3 ? geometry::WallLocation::Both
                     : input.wall_location == 2 ? geometry::WallLocation::Side2
                                                : geometry::WallLocation::Center;
     wall.thickness = input.wall_thickness;
+    wall.thickness2 = input.wall_thickness2;
     result.thin = wall;
   }
   return result;
@@ -84,6 +86,12 @@ std::shared_ptr<geometry::Shape> extrude_feature(rust::Str feature, const Frame&
                                                  rust::Slice<const Region> regions,
                                                  const ExtrudeFeatureInput& input,
                                                  const ShapeList& bodies) {
+  return geometry::extrude_feature(extrude_spec(feature, frame, regions, input, bodies));
+}
+
+geometry::ExtrudeFeatureSpec extrude_spec(rust::Str feature, const Frame& frame,
+                                          rust::Slice<const Region> regions,
+                                          const ExtrudeFeatureInput& input, const ShapeList& bodies) {
   geometry::ExtrudeFeatureSpec spec;
   spec.feature = std::string(feature);
   spec.frame = to_geometry(frame);
@@ -95,7 +103,7 @@ std::shared_ptr<geometry::Shape> extrude_feature(rust::Str feature, const Frame&
   if (input.two_sides) {
     spec.side2 = side(input.side2, bodies);
   }
-  return geometry::extrude_feature(spec);
+  return spec;
 }
 
 std::shared_ptr<geometry::Shape> revolve(rust::Str feature, const Frame& frame,

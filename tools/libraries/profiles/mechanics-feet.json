@@ -436,5 +436,9 @@
         }
       ]
     }
+  ],
+  "left_out": [
+    {"source": "mechanical-basics/Adjustable-feet-D40-M12-L80/BD40-12x80/BD40-12x80.stp",
+     "reason": "the file holds the foot with the 77.5 mm base (the geometry of foot-bd80-m12-l80's file), not a D40 one"}
   ]
 }

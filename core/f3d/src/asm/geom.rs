@@ -65,9 +65,15 @@ impl<'a> Cursor<'a> {
         }
     }
 
+    /// An enumeration value; the text form (`asm::text`) writes them as
+    /// words.
     pub fn enumeration(&mut self) -> Result<i64> {
         match self.next_token()? {
             Token::Enum(v) => Ok(*v),
+            Token::Ident(word) => match super::text::enumeration(word) {
+                Some(v) => Ok(v),
+                None => self.unexpected("an enum", &Token::Ident(word.clone())),
+            },
             t => self.unexpected("an enum", t),
         }
     }
@@ -95,9 +101,19 @@ impl<'a> Cursor<'a> {
         }
     }
 
+    /// A position or vector; the text form (`asm::text`) writes them as
+    /// three numbers.
     pub fn point(&mut self) -> Result<P3> {
         match self.next_token()? {
             Token::Pos(p) | Token::Vector(p) => Ok(*p),
+            first @ (Token::Double(_) | Token::Int(_)) => {
+                let x = match first {
+                    Token::Double(v) => *v,
+                    Token::Int(v) => *v as f64,
+                    _ => unreachable!(),
+                };
+                Ok([x, self.double()?, self.double()?])
+            }
             t => self.unexpected("a position or vector", t),
         }
     }

@@ -677,6 +677,7 @@ parentheses.
 | ScaleFeature | inputEntities, point, scaleFactor, isUniform, xScale, yScale, zScale |
 | ReplaceFaceFeature | targetFaces, isTangentChain; sourceFaces and inputFaces when a writer records them (otherwise the import finds the replaced faces from the file's history) |
 | DeleteFaceFeature | deletedFaces |
+| EmbossFeature | profile (one reference to the sketch per selected profile, the loops in `_f3d_profile_loops` as an extrusion's), inputFaces (named faces, §2), depth (negative: sunk), horizontalDistance, verticalDistance, rotationAngle (the profiles' placement on the face); the stream decoder's, mitcad#458 |
 | RemoveFeature | itemToRemove |
 | OffsetFeature, PatchFeature, StitchFeature, ExtendFeature, TrimFeature, RuledSurfaceFeature, SilhouetteSplitFeature, BoundaryFillFeature | their input entities and parameters (unverified) |
 | BaseFeature | sourceBodies |

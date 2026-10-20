@@ -4,6 +4,8 @@
 #import <AppKit/AppKit.h>
 
 #include <QApplication>
+#include <QComboBox>
+#include <QDialog>
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QAction>
@@ -17,6 +19,7 @@
 #include <QPalette>
 #include <QRegion>
 #include <QToolButton>
+#include <QVBoxLayout>
 #include <QtLogging>
 #include <QtMath>
 #include <algorithm>
@@ -27,8 +30,12 @@
 
 #include "platform/MacChrome.hpp"
 #include "platform/NativeDialogs.hpp"
+#include "platform/NativeForms.hpp"
 #include "browser/DocumentSnapshot.hpp"
+#include "framework/CommandSession.hpp"
+#include "framework/CommandRegistry.hpp"
 #include "framework/Icons.hpp"
+#include "MainWindow.hpp"
 
 // Public selectors on the same feature controls used by pointer input.
 @protocol MITCADNativeHistoryFeatureTest <NSObject>
@@ -389,16 +396,26 @@ NSView* findControl(const QString& identifier, NSTableView** rowTable = nullptr,
   const auto match = [&](NSView* view) {
     return qt(view.accessibilityIdentifier) == identifier || qt(view.identifier) == identifier;
   };
-  if (NSView* found = findControlView(target.contentView.superview != nil ? target.contentView.superview : target.contentView,
-                                     match, rowTable, rowIndex)) return found;
+  const auto inWindow = [&](NSWindow* window) -> NSView* {
+    if (NSView* found = findControlView(window.contentView.superview != nil ? window.contentView.superview : window.contentView,
+                                       match, rowTable, rowIndex)) return found;
+    // AppKit can host toolbar custom views outside the content/titlebar
+    // hierarchy, or detach them into overflow. Read the actual inserted
+    // items through the public API; palette samples are not in this list.
+    for (NSToolbarItem* item in window.toolbar.items) {
+      if (qt(item.itemIdentifier) == identifier && item.view) return item.view;
+      if (NSView* found = identifiedView(item.view, identifier)) return found;
+    }
+    return nil;
+  };
+  if (NSView* found = inWindow(target)) return found;
   // A transient command-search popover has its own AppKit window. It may
   // not become key until its search field starts editing.
   // NSApp.windows also includes NSPopover's panels on macOS versions
   // where those panels do not participate in orderedWindows.
   for (NSWindow* window in nativeWindows()) {
     if (window == target || !presented(window)) continue;
-    if (NSView* found = findControlView(window.contentView.superview != nil ? window.contentView.superview : window.contentView,
-                                       match, rowTable, rowIndex)) return found;
+    if (NSView* found = inWindow(window)) return found;
   }
   return nil;
 }
@@ -540,7 +557,16 @@ bool visible(const QString& identifier, bool expected) {
   NSWindow* window = documentWindow();
   NSView* root = window.contentView.superview != nil ? window.contentView.superview : window.contentView;
   NSView* view = identifiedView(root, identifier);
-  return view && viewVisible(view) == expected;
+  if (view) return viewVisible(view) == expected;
+  // Search popovers and secondary controls live in separate AppKit windows.
+  // Keep this a visibility query: do not materialize or scroll table rows.
+  for (NSWindow* secondary in nativeWindows()) {
+    if (secondary == window) continue;
+    NSView* content = secondary.contentView;
+    NSView* secondaryRoot = content.superview != nil ? content.superview : content;
+    if (NSView* found = identifiedView(secondaryRoot, identifier); viewVisible(found)) return expected;
+  }
+  return !expected;
 }
 
 bool present(const QString& identifier, bool expected) {
@@ -558,6 +584,53 @@ bool resizeDocument(int width, int height, QString& error) {
   }
   [window setContentSize:NSMakeSize(width, height)];
   [window.contentView layoutSubtreeIfNeeded];
+  return true;
+}
+
+bool toolbarItemPresent(const QString& identifier, bool expected) {
+  NSToolbar* toolbar = documentWindow().toolbar;
+  if (!toolbar) return false;
+  bool found = false;
+  for (NSToolbarItem* item in toolbar.items) {
+    if (qt(item.itemIdentifier) == identifier) found = true;
+  }
+  return found == expected;
+}
+
+bool configureToolbarItem(const QString& identifier, const QString& operation, QString& error) {
+  NSToolbar* toolbar = documentWindow().toolbar;
+  if (!toolbar) {
+    error = QStringLiteral("native toolbar is not installed");
+    return false;
+  }
+  NSString* itemID = identifier.toNSString();
+  if (operation == QStringLiteral("palette")) {
+    // Customization asks for samples that are never inserted. Keep one
+    // alive until the next event-loop turn to expose accidental tracking.
+    NSToolbarItem* sample = [toolbar.delegate toolbar:toolbar itemForItemIdentifier:itemID willBeInsertedIntoToolbar:NO];
+    if (!sample) { error = QStringLiteral("native toolbar palette item is unavailable"); return false; }
+    dispatch_async(dispatch_get_main_queue(), ^{ (void)sample.view; });
+    return true;
+  }
+  if (operation != QStringLiteral("insert") && operation != QStringLiteral("remove")) {
+    error = QStringLiteral("native-toolbar-item expects insert, remove or palette");
+    return false;
+  }
+  NSMutableDictionary* configuration = [toolbar.configurationDictionary mutableCopy];
+  NSMutableArray* identifiers = [configuration[@"TB Item Identifiers"] mutableCopy];
+  if (!identifiers) {
+    error = QStringLiteral("native toolbar configuration has no item identifiers");
+    return false;
+  }
+  [identifiers removeObject:itemID];
+  if (operation == QStringLiteral("insert")) [identifiers insertObject:itemID atIndex:std::min(NSUInteger(3), identifiers.count)];
+  configuration[@"TB Item Identifiers"] = identifiers;
+  [toolbar setConfigurationFromDictionary:configuration];
+  [NSUserDefaults.standardUserDefaults synchronize];
+  if (!toolbarItemPresent(identifier, operation == QStringLiteral("insert"))) {
+    error = QStringLiteral("native toolbar configuration did not %1 '%2'").arg(operation, identifier);
+    return false;
+  }
   return true;
 }
 
@@ -1006,6 +1079,278 @@ bool choose(const QString& identifier, const QString& title, QString& error) {
   if (index < 0) { error = QStringLiteral("native choice '%1' has no '%2' item").arg(identifier, title); return false; }
   [popup selectItemAtIndex:index];
   [popup sendAction:popup.action to:popup.target];
+  return true;
+}
+
+bool disclosureArtwork(NSButton* button, QString& error) {
+  // Compare rendered cells with a fresh native disclosure. Checking only
+  // bezelStyle misses a cell that still draws inherited switch artwork.
+  NSButton* reference = [[NSButton alloc] initWithFrame:NSMakeRect(0, 0, 24, 24)];
+  [reference setButtonType:NSButtonTypePushOnPushOff];
+  reference.bezelStyle = NSBezelStyleDisclosure;
+  reference.title = @"";
+  reference.font = button.font;
+  reference.controlSize = button.controlSize;
+  reference.appearance = button.effectiveAppearance;
+  reference.state = button.state;
+  const auto pixels = [](NSButton* control) {
+    NSBitmapImageRep* bitmap = [[NSBitmapImageRep alloc] initWithBitmapDataPlanes:nil
+        pixelsWide:24 pixelsHigh:24 bitsPerSample:8 samplesPerPixel:4 hasAlpha:YES isPlanar:NO
+        colorSpaceName:NSDeviceRGBColorSpace bytesPerRow:96 bitsPerPixel:32];
+    [NSGraphicsContext saveGraphicsState];
+    NSGraphicsContext.currentContext = [NSGraphicsContext graphicsContextWithBitmapImageRep:bitmap];
+    [NSColor.clearColor setFill];
+    NSRectFillUsingOperation(NSMakeRect(0, 0, 24, 24), NSCompositingOperationCopy);
+    [control.cell drawWithFrame:NSMakeRect(0, 0, 24, 24) inView:control];
+    [NSGraphicsContext restoreGraphicsState];
+    NSData* png = [bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
+    return QImage::fromData(static_cast<const uchar*>(png.bytes), int(png.length), "PNG");
+  };
+  const QImage actual = pixels(button);
+  const QImage expected = pixels(reference);
+  if (actual.isNull() || expected.isNull() || actual != expected) {
+    error = QStringLiteral("native disclosure does not render the system disclosure triangle");
+    return false;
+  }
+  return true;
+}
+
+bool formControls(CommandHost& host, QString& error) {
+  // BUILD no longer has a More section. Exercise the reusable disclosure
+  // contract here, independently of any command's current arrangement.
+  CommandDef def;
+  def.id = QStringLiteral("test.native_form_controls");
+  def.name = QStringLiteral("Native form controls regression");
+  def.inspect = [](const CommandState&, const CommandContext&) { return Inspection{}; };
+  def.inputs = {
+      choiceInput(QStringLiteral("axis"), QStringLiteral("Direction"),
+                  {{QStringLiteral("x"), QStringLiteral("Along X")},
+                   {QStringLiteral("y"), QStringLiteral("Along Y")},
+                   {QStringLiteral("z"), QStringLiteral("Along Z")}}, QStringLiteral("z"))
+          .withChoiceIcons({{QStringLiteral("x"), QStringLiteral("build-axis-x")},
+                            {QStringLiteral("y"), QStringLiteral("build-axis-y")},
+                            {QStringLiteral("z"), QStringLiteral("build-axis-z")}})
+          .withTooltip(QStringLiteral("The axis")),
+      checkInput(QStringLiteral("more"), QStringLiteral("More")).withDisclosure()};
+  for (int index = 0; index < 8; ++index) {
+    def.inputs.append(textInput(QStringLiteral("detail%1").arg(index), QStringLiteral("Detail"))
+                          .withVisible([](const CommandState& state) {
+                            return state.checked(QStringLiteral("more"));
+                          }));
+  }
+  const auto check = [&error](bool passed, const QString& message) {
+    if (!passed) error = message;
+    return passed;
+  };
+  {
+    CommandSession session(def, host);
+    auto form = createNativeCommandForm(session);
+    NSView* root = (__bridge NSView*)form->nativeView();
+    [root.widthAnchor constraintEqualToConstant:280].active = YES;
+    CommandState state;
+    state.setChoice(QStringLiteral("axis"), QStringLiteral("z"));
+    form->refresh(state);
+    const auto button = [root](const QString& identifier) -> NSButton* {
+      NSView* view = identifiedView(root, identifier);
+      return [view isKindOfClass:NSButton.class] ? (NSButton*)view : nil;
+    };
+    NSButton* x = button(QStringLiteral("input_axis_x"));
+    NSButton* y = button(QStringLiteral("input_axis_y"));
+    NSButton* z = button(QStringLiteral("input_axis_z"));
+    NSButton* more = button(QStringLiteral("input_more"));
+    if (!check(x && y && z && more && x.enabled && y.enabled && z.enabled &&
+               x.state == NSControlStateValueOff && z.state == NSControlStateValueOn &&
+               qt(x.toolTip) == QStringLiteral("Along X: The axis") &&
+               qt(x.accessibilityLabel) == QStringLiteral("Along X") &&
+               more.bezelStyle == NSBezelStyleDisclosure && qt(more.accessibilityLabel) == QStringLiteral("More"),
+               QStringLiteral("native icon choices or disclosure have the wrong controls, tooltips or initial state"))) return false;
+    for (const auto& axis : {QStringLiteral("x"), QStringLiteral("y"), QStringLiteral("z")}) {
+      if (!coloredIconMatches(button(QStringLiteral("input_axis_") + axis),
+                              themeIcon(QStringLiteral("build-axis-") + axis), error)) return false;
+    }
+    QString submitted;
+    CommandPresenter::Actions actions = form->actions();
+    actions.choiceChanged = [&](const QString& key, const QString& value) {
+      submitted = value;
+      state.setChoice(key, value);
+      form->refresh(state);
+    };
+    actions.checkChanged = [&](const QString& key, bool checked) {
+      state.setChecked(key, checked);
+      form->refresh(state);
+    };
+    form->setActions(std::move(actions));
+    for (NSButton* selected in @[x, y, y, z]) {
+      // Offscreen contract checks dispatch synchronously. performClick's
+      // animation spins an event loop and can advance the UI script before
+      // this fixture has been installed in the document.
+      selected.state = selected.state == NSControlStateValueOn ? NSControlStateValueOff : NSControlStateValueOn;
+      [selected sendAction:selected.action to:selected.target];
+      if (!check(submitted == qt(selected.identifier).section(QLatin1Char('|'), 2) &&
+                 selected.state == NSControlStateValueOn &&
+                 (x.state == NSControlStateValueOn) + (y.state == NSControlStateValueOn) +
+                     (z.state == NSControlStateValueOn) == 1,
+                 QStringLiteral("native icon choice lost its submitted value or exclusive selection"))) return false;
+    }
+    NSView* detail = identifiedView(root, QStringLiteral("row_detail0"));
+    [root layoutSubtreeIfNeeded];
+    const CGFloat collapsedHeight = root.fittingSize.height;
+    if (!check(detail.hidden && more.state == NSControlStateValueOff,
+               QStringLiteral("native disclosure did not initially hide its dependent rows"))) return false;
+    if (!disclosureArtwork(more, error)) return false;
+    more.state = NSControlStateValueOn;
+    [more sendAction:more.action to:more.target];
+    [root layoutSubtreeIfNeeded];
+    if (!check(state.checked(QStringLiteral("more")) && !detail.hidden &&
+               more.state == NSControlStateValueOn && root.fittingSize.height > collapsedHeight + 100,
+               QStringLiteral("native disclosure did not expand its dependent rows and form height"))) return false;
+    if (!disclosureArtwork(more, error)) return false;
+    more.state = NSControlStateValueOff;
+    [more sendAction:more.action to:more.target];
+    [root layoutSubtreeIfNeeded];
+    if (!check(!state.checked(QStringLiteral("more")) && detail.hidden &&
+               std::abs(root.fittingSize.height - collapsedHeight) < 1,
+               QStringLiteral("native disclosure left empty layout space after collapse"))) return false;
+    state.setChoice(QStringLiteral("axis"), QStringLiteral("x"));
+    form->refresh(state);
+    if (!check(x.state == NSControlStateValueOn && z.state == NSControlStateValueOff,
+               QStringLiteral("native icon choice did not follow a programmatic state refresh"))) return false;
+    qDebug() << "Native form controls: shared artwork, exclusive choice values and disclosure layout verified";
+  }
+  // Mount the same fixture through the ordinary command controller so the
+  // script also exercises the real inspector's cap and scrolling.
+  auto* window = dynamic_cast<MainWindow*>(&host);
+  auto* registry = window ? window->findChild<CommandRegistry*>() : nullptr;
+  if (!check(registry != nullptr, QStringLiteral("native form fixture has no command registry"))) return false;
+  if (!registry->find(def.id)) { registry->add(def); }
+  window->startCommand(def.id, {}, {});
+  return true;
+}
+
+bool disclosureLayout(QString& error) {
+  NSView* content = documentWindow().contentView;
+  [content layoutSubtreeIfNeeded];
+  NSView* card = identifiedView(content, QStringLiteral("native.inspectorCard"));
+  NSView* root = identifiedView(card, QStringLiteral("commandPanel"));
+  NSView* last = identifiedView(root, QStringLiteral("input_detail7"));
+  NSView* more = identifiedView(root, QStringLiteral("input_more"));
+  if (!root || !last || ![more isKindOfClass:NSButton.class] || !root.enclosingScrollView) {
+    error = QStringLiteral("mounted disclosure fixture is missing");
+    return false;
+  }
+  const bool expanded = ((NSButton*)more).state == NSControlStateValueOn;
+  NSView* history = identifiedView(content, QStringLiteral("native.historyCard"));
+  const CGFloat floor = !history || history.hidden ? content.bounds.size.height - 12
+                                                   : history.frame.origin.y - 8;
+  const CGFloat available = std::max(CGFloat(1), floor - card.frame.origin.y);
+  const CGFloat expected = std::min(available, std::max(CGFloat(160), root.fittingSize.height + 4));
+  if (std::abs(card.frame.size.height - expected) > 1 ||
+      static_cast<bool>(last.hiddenOrHasHiddenAncestor) == expanded) {
+    error = QStringLiteral("mounted disclosure height %1, expected %2 (form %3, available %4, expanded %5, last hidden %6)")
+                .arg(card.frame.size.height).arg(expected).arg(root.fittingSize.height).arg(available)
+                .arg(expanded).arg(static_cast<bool>(last.hiddenOrHasHiddenAncestor));
+    return false;
+  }
+  if (expanded) {
+    [last scrollRectToVisible:last.bounds];
+    [content layoutSubtreeIfNeeded];
+    if (NSIsEmptyRect(NSIntersectionRect(last.visibleRect, last.bounds))) {
+      error = QStringLiteral("expanded disclosure's final input cannot be reached by scrolling");
+      return false;
+    }
+    [more scrollRectToVisible:more.bounds];
+  }
+  return true;
+}
+
+bool duplicateChoices(CommandHost& host, QString& error) {
+  // Exercise the real presenters with synthetic feature UIDs, independently
+  // of the geometry needed to produce two identically named features.
+  const auto popupIn = [](NSView* root, const auto& self) -> NSPopUpButton* {
+    if ([root isKindOfClass:NSPopUpButton.class]) return (NSPopUpButton*)root;
+    for (NSView* child in root.subviews) {
+      if (NSPopUpButton* popup = self(child, self)) return popup;
+    }
+    return nil;
+  };
+  const auto check = [&error](bool passed, const QString& message) {
+    if (!passed) error = message;
+    return passed;
+  };
+  const QString first = QStringLiteral("F101");
+  const QString second = QStringLiteral("F202");
+  CommandDef def;
+  def.name = QStringLiteral("Duplicate choices regression");
+  def.inputs = {choiceInput(QStringLiteral("feature"), QStringLiteral("Feature"),
+                           {{first, QStringLiteral("Same name")}, {second, QStringLiteral("Same name")}}, first)};
+  CommandSession session(def, host);
+  auto form = createNativeCommandForm(session);
+  NSPopUpButton* formPopup = popupIn((__bridge NSView*)form->nativeView(), popupIn);
+  if (!check(formPopup != nil && formPopup.numberOfItems == 2 &&
+             [[formPopup itemAtIndex:0].title isEqualToString:[formPopup itemAtIndex:1].title],
+             QStringLiteral("command form collapsed same-titled choices"))) return false;
+  NSMenuItem* firstItem = [formPopup itemAtIndex:0];
+  NSMenuItem* secondItem = [formPopup itemAtIndex:1];
+  for (NSInteger index : {1, 0}) {
+    [formPopup selectItemAtIndex:index];
+    [formPopup sendAction:formPopup.action to:formPopup.target];
+    const QString expected = index == 0 ? first : second;
+    if (!check(session.state().choice(QStringLiteral("feature")) == expected,
+               QStringLiteral("command form submitted the wrong feature UID"))) return false;
+    for (int refresh = 0; refresh < 3; ++refresh) form->refresh(session.state());
+    if (!check([formPopup itemAtIndex:0] == firstItem && [formPopup itemAtIndex:1] == secondItem &&
+               qt((NSString*)formPopup.selectedItem.representedObject) == expected,
+               QStringLiteral("command form rebuilt unchanged choices or lost the selected UID"))) return false;
+  }
+
+  QDialog dialog;
+  auto* layout = new QVBoxLayout(&dialog);
+  auto* combo = new QComboBox(&dialog);
+  layout->addWidget(combo);
+  combo->addItem(QStringLiteral("Same name"), first);
+  combo->addItem(QStringLiteral("Same name"), second);
+  combo->setCurrentIndex(1);
+  auto dialogView = createNativeWidgetView(&dialog);
+  dialogView->refresh();
+  NSPopUpButton* dialogPopup = popupIn((__bridge NSView*)dialogView->nativeView(), popupIn);
+  if (!check(dialogPopup != nil && dialogPopup.numberOfItems == 2 && dialogPopup.indexOfSelectedItem == 1 &&
+             [[dialogPopup itemAtIndex:0].title isEqualToString:[dialogPopup itemAtIndex:1].title],
+             QStringLiteral("dialog binding collapsed same-titled choices or lost its initial selection"))) return false;
+  NSMenuItem* dialogFirst = [dialogPopup itemAtIndex:0];
+  NSMenuItem* dialogSecond = [dialogPopup itemAtIndex:1];
+  int activated = -1;
+  QObject::connect(combo, &QComboBox::activated, &dialog, [&activated](int index) { activated = index; });
+  for (NSInteger index : {0, 1}) {
+    [dialogPopup selectItemAtIndex:index];
+    [dialogPopup sendAction:dialogPopup.action to:dialogPopup.target];
+    const QString expected = index == 0 ? first : second;
+    if (!check(combo->currentData().toString() == expected && activated == index,
+               QStringLiteral("dialog popup submitted the wrong feature UID or activated row"))) return false;
+    for (int refresh = 0; refresh < 3; ++refresh) dialogView->refresh();
+    if (!check([dialogPopup itemAtIndex:0] == dialogFirst && [dialogPopup itemAtIndex:1] == dialogSecond &&
+               dialogPopup.indexOfSelectedItem == index,
+               QStringLiteral("dialog binding rebuilt unchanged choices or lost its selection"))) return false;
+  }
+  // A model insertion shifts the persistent identities. Subsequent input
+  // must still activate the row carrying the selected feature's data.
+  combo->insertItem(0, QStringLiteral("Same name"), QStringLiteral("F303"));
+  [dialogPopup selectItemAtIndex:0];
+  [dialogPopup sendAction:dialogPopup.action to:dialogPopup.target];
+  if (!check(combo->currentData().toString() == first && activated == 1,
+             QStringLiteral("dialog popup used a stale menu row after a model insertion"))) return false;
+  combo->setCurrentIndex(2);
+  dialogView->refresh();
+  if (!check(dialogPopup.numberOfItems == 3 && dialogPopup.indexOfSelectedItem == 2,
+             QStringLiteral("dialog popup did not follow an inserted same-titled row"))) return false;
+  [dialogPopup selectItemAtIndex:1];
+  [dialogPopup sendAction:dialogPopup.action to:dialogPopup.target];
+  if (!check(combo->currentData().toString() == first && activated == 1,
+             QStringLiteral("dialog popup submitted the wrong UID after a model insertion"))) return false;
+  combo->setCurrentIndex(-1);
+  dialogView->refresh();
+  if (!check(dialogPopup.selectedItem == nil,
+             QStringLiteral("dialog popup retained a selection for an unset model index"))) return false;
+  qDebug() << "Native duplicate choices: both presenters preserved UIDs, duplicate labels and unchanged menu items";
   return true;
 }
 

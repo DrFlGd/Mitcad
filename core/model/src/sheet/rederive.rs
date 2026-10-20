@@ -485,7 +485,7 @@ fn front_outline<K: Kernel>(
 }
 
 /// A model-space edge on a chart's plane in the chart's coordinates.
-fn planar_curve(
+pub(crate) fn planar_curve(
     curve: &Curve3,
     frame: &crate::profile::SketchFrame,
 ) -> Result<SegmentGeometry, String> {
@@ -644,7 +644,7 @@ fn exact_form(spline: SegmentGeometry) -> Result<SegmentGeometry, String> {
 /// The material regions bounded by a plane's face edges: the edges chained
 /// into closed loops, each loop an exterior or a hole by how many others
 /// contain it. Every edge gets a generated identity of the feature.
-fn regions(
+pub(crate) fn regions(
     feature: FeatureUid,
     slot: &mut u32,
     curves: Vec<SegmentGeometry>,

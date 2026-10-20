@@ -107,12 +107,18 @@ qt_add_executable(mitcad
   commands/ModifyCommands.cpp
   # Dragging components the joints move, animating joints (mitcad#55).
   MainWindowJoints.cpp
+  # Motion studies and contact sets (mitcad#454).
+  MainWindowMotion.cpp
+  motion/MotionStudyDialog.cpp
+  motion/MotionStudyDialog.hpp
   commands/MoveCommands.cpp
   commands/PatternCommands.cpp
   commands/PointPatternCommands.cpp
   commands/PrimitiveCommands.cpp
   commands/SketchCommands.cpp
   commands/SweepCommands.cpp
+  # Emboss (mitcad#458).
+  commands/EmbossCommands.cpp
   # Equal spacing in sketches (mitcad#221).
   commands/EqualSpacingCommands.cpp
   # Sketch mode (U2).

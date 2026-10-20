@@ -95,6 +95,14 @@ pub trait StoredGeometry<S> {
         let _ = index;
         None
     }
+    /// Whether the timeline item names the operation an item before it
+    /// already names (its `_f3d.result_no` is that item's), so that the
+    /// history holds no operation of its own: the item failed in the file
+    /// and kept the number of the result before it (mitcad#343).
+    fn item_shares_operation(&mut self, index: i64) -> bool {
+        let _ = index;
+        false
+    }
 }
 
 /// The solids of a stored body of several lumps (disjoint pieces of one
@@ -753,6 +761,11 @@ impl<'g, S: Clone> Oracle<'g, S> {
     /// See [`StoredGeometry::item_unchanged`].
     pub fn item_unchanged(&mut self, index: i64) -> bool {
         self.geometry.item_unchanged(index)
+    }
+
+    /// See [`StoredGeometry::item_shares_operation`].
+    pub fn item_shares_operation(&mut self, index: i64) -> bool {
+        self.geometry.item_shares_operation(index)
     }
 
     /// See [`StoredGeometry::item_start`].

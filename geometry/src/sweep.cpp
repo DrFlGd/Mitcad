@@ -8,6 +8,7 @@
 #include <map>
 #include <optional>
 #include <stdexcept>
+#include <utility>
 
 #include <BRepAdaptor_Curve.hxx>
 #include <BRepAdaptor_Surface.hxx>
@@ -15,12 +16,15 @@
 #include <BRepAlgoAPI_Section.hxx>
 #include <BRepAlgoAPI_Splitter.hxx>
 #include <BRepBndLib.hxx>
+#include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakePolygon.hxx>
 #include <BRepBuilderAPI_MakeSolid.hxx>
 #include <BRepBuilderAPI_MakeVertex.hxx>
+#include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepBuilderAPI_Sewing.hxx>
 #include <BRepBuilderAPI_Transform.hxx>
+#include <BRepCheck_Analyzer.hxx>
 #include <BRepClass3d_SolidClassifier.hxx>
 #include <BRepClass_FaceClassifier.hxx>
 #include <BRepExtrema_DistShapeShape.hxx>
@@ -31,6 +35,7 @@
 #include <BRepPrimAPI_MakeCone.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
 #include <BRepTools.hxx>
+#include <BRepTools_WireExplorer.hxx>
 #include <BRepTopAdaptor_FClass2d.hxx>
 #include <BRep_Builder.hxx>
 #include <BRep_Tool.hxx>
@@ -341,94 +346,334 @@ std::vector<SweepFace> merged(const std::vector<SweepFace>& faces) {
   return result;
 }
 
-std::vector<SweepFace> wall_faces(const std::string& feature, const Frame& frame,
-                                  const std::vector<Region>& regions, const ThinWall& wall) {
+namespace {
+
+using NamedEdges = std::vector<std::pair<TopoDS_Edge, std::string>>;
+
+// How far the wall reaches to side 1 and to side 2 of its curves.
+std::pair<double, double> wall_sides(const ThinWall& wall) {
   require_positive("thin wall thickness", wall.thickness);
+  if (wall.location == WallLocation::Both) {
+    require_positive("thin wall thickness on side 2", wall.thickness2);
+    return {wall.thickness, wall.thickness2};
+  }
   const double side1 = wall.location == WallLocation::Side1    ? wall.thickness
                        : wall.location == WallLocation::Center ? wall.thickness / 2.0
                                                                : 0.0;
-  const double side2 = wall.thickness - side1;
+  return {side1, wall.thickness - side1};
+}
+
+// The walls along the loops of a planar face whose edges follow the named
+// segments: side 1 away from its material.
+void loop_walls(const std::string& feature, const gp_Pln& plane, const TopoDS_Face& profile,
+                const NamedEdges& named, const std::string& region, double side1, double side2,
+                std::vector<SweepFace>& faces) {
+  ShapeMap profile_edges;
+  std::vector<std::string> segments;
+  for (const auto& [edge, segment] : named) {
+    profile_edges.Add(edge);
+    segments.push_back(segment);
+  }
+  std::vector<TopoDS_Wire> loops{BRepTools::OuterWire(profile)};
+  for (TopExp_Explorer w(profile, TopAbs_WIRE); w.More(); w.Next()) {
+    if (!w.Current().IsSame(loops.front())) {
+      loops.push_back(TopoDS::Wire(w.Current()));
+    }
+  }
+  // The outlines on each side of the curves, and the curve each of their
+  // edges follows.
+  ShapeMap edges1;
+  ShapeMap edges2;
+  std::vector<TopoDS_Shape> origin1;
+  std::vector<TopoDS_Shape> origin2;
+  std::map<int, TopoDS_Wire> outline1;
+  std::map<int, TopoDS_Wire> outline2;
+  if (side1 > 0.0) {
+    outline1 = offset_loops(profile, loops, side1, edges1, origin1);
+  }
+  if (side2 > 0.0) {
+    outline2 = offset_loops(profile, loops, -side2, edges2, origin2);
+  }
+  for (std::size_t i = 0; i < loops.size(); ++i) {
+    const int loop = static_cast<int>(i);
+    if (side1 <= 0.0) {
+      outline1[loop] = loops[i];
+    }
+    if (side2 <= 0.0) {
+      outline2[loop] = loops[i];
+    }
+  }
+  const auto segment_of = [&](const TopoDS_Shape& edge, const ShapeMap& offset_edges,
+                              const std::vector<TopoDS_Shape>& origin) -> std::string {
+    const int offset = offset_edges.FindIndex(edge);
+    const TopoDS_Shape& source = offset > 0 ? origin[static_cast<std::size_t>(offset - 1)] : edge;
+    const int index = profile_edges.FindIndex(source);
+    return index > 0 ? segments[static_cast<std::size_t>(index - 1)] : std::string();
+  };
+  for (std::size_t i = 0; i < loops.size(); ++i) {
+    const auto one = outline1.find(static_cast<int>(i));
+    const auto two = outline2.find(static_cast<int>(i));
+    const bool has1 = one != outline1.end();
+    const bool has2 = two != outline2.end();
+    // Side 1 lies away from the material: outside the outer loop, inside
+    // a hole.
+    const bool outer = i == 0;
+    std::optional<TopoDS_Wire> outline;
+    std::optional<TopoDS_Wire> hole;
+    if (outer) {
+      if (has1) outline = one->second;
+      if (has2) hole = two->second;
+    } else {
+      if (has2) outline = two->second;
+      if (has1) hole = one->second;
+    }
+    if (!outline) {
+      continue;
+    }
+    SweepFace face{band(plane, *outline, hole), {}, {region}};
+    ShapeMap on1;
+    if (has1) {
+      TopExp::MapShapes(one->second, TopAbs_EDGE, on1);
+    }
+    for (TopExp_Explorer e(face.face, TopAbs_EDGE); e.More(); e.Next()) {
+      const bool first = on1.FindIndex(e.Current()) > 0;
+      const std::string segment = first ? segment_of(e.Current(), edges1, origin1)
+                                        : segment_of(e.Current(), edges2, origin2);
+      if (!segment.empty()) {
+        face.edges.emplace_back(TopoDS::Edge(e.Current()),
+                                face_name(feature, first ? "outer" : "inner", segment));
+      }
+    }
+    faces.push_back(std::move(face));
+  }
+}
+
+// The edges of a wire in order along it, and its first and last point.
+struct WireRun {
+  std::vector<TopoDS_Edge> edges;
+  gp_Pnt first;
+  gp_Pnt last;
+};
+
+WireRun run_of(const TopoDS_Wire& wire) {
+  WireRun run;
+  for (BRepTools_WireExplorer it(wire); it.More(); it.Next()) {
+    run.edges.push_back(it.Current());
+  }
+  if (run.edges.empty()) {
+    throw std::runtime_error("a thin wall outline has no edges");
+  }
+  TopoDS_Vertex a;
+  TopoDS_Vertex b;
+  TopExp::Vertices(run.edges.front(), a, b, true);
+  run.first = BRep_Tool::Pnt(a);
+  TopExp::Vertices(run.edges.back(), a, b, true);
+  run.last = BRep_Tool::Pnt(b);
+  return run;
+}
+
+// The open wire moved `distance` (> 0) to its left (`left`) or right in
+// the plane, its edges named by the curves they follow (`names` holds the
+// wire's edges and their curves) with `role`.
+std::pair<TopoDS_Wire, NamedEdges> offset_open(const gp_Pln& plane, const TopoDS_Wire& wire,
+                                               const NamedEdges& names, double distance, bool left,
+                                               const std::string& feature, const char* role) {
+  // An open result lies to the left of the wire whatever the sign of the
+  // distance, so the right side is the left of the wire reversed. Which
+  // side it is, is checked by the point the wire's middle moves to.
+  const TopoDS_Edge& probe = names.front().first;
+  const BRepAdaptor_Curve curve(probe);
+  const double middle = (curve.FirstParameter() + curve.LastParameter()) / 2.0;
+  gp_Pnt at;
+  gp_Vec tangent;
+  curve.D1(middle, at, tangent);
+  if (probe.Orientation() == TopAbs_REVERSED) {
+    tangent.Reverse();
+  }
+  if (tangent.Magnitude() <= Precision::Confusion()) {
+    throw std::invalid_argument("a thin wall curve has no direction");
+  }
+  const gp_Vec to_left = gp_Vec(plane.Axis().Direction()).Crossed(tangent).Normalized();
+  for (const bool reversed : {!left, left}) {
+    BRepOffsetAPI_MakeOffset offset;
+    offset.Init(BRepBuilderAPI_MakeFace(plane).Face(), GeomAbs_Intersection, true);
+    offset.AddWire(reversed ? TopoDS::Wire(wire.Reversed()) : wire);
+    offset.Perform(distance);
+    if (!offset.IsDone()) {
+      throw std::runtime_error("the thin wall could not be offset from its curves; it may be too thick");
+    }
+    std::vector<TopoDS_Wire> wires;
+    for (TopExp_Explorer w(offset.Shape(), TopAbs_WIRE); w.More(); w.Next()) {
+      wires.push_back(TopoDS::Wire(w.Current()));
+    }
+    if (wires.size() != 1) {
+      throw std::invalid_argument("the thin wall is too thick for the curves it follows");
+    }
+    BRepExtrema_DistShapeShape nearest(BRepBuilderAPI_MakeVertex(at).Vertex(), wires.front());
+    if (!nearest.IsDone() || nearest.NbSolution() == 0) {
+      throw std::runtime_error("the thin wall could not be offset from its curves");
+    }
+    const double side = gp_Vec(at, nearest.PointOnShape2(1)).Dot(to_left);
+    if ((side > 0.0) != left) {
+      continue;
+    }
+    NamedEdges named;
+    ShapeMap edges;
+    TopExp::MapShapes(wires.front(), TopAbs_EDGE, edges);
+    for (const auto& [edge, curve_name] : names) {
+      for (const TopoDS_Shape& image : offset.Generated(edge)) {
+        const int index = edges.FindIndex(image);
+        if (image.ShapeType() == TopAbs_EDGE && index > 0) {
+          named.emplace_back(TopoDS::Edge(edges(index)), face_name(feature, role, curve_name));
+        }
+      }
+    }
+    return {wires.front(), named};
+  }
+  throw std::runtime_error("the thin wall could not be offset to the side asked for");
+}
+
+// The wall along an open chain: the band between its two sides, square to
+// it at its ends.
+SweepFace open_wall(const std::string& feature, const gp_Pln& plane, const TopoDS_Wire& wire,
+                    const NamedEdges& names, const Path& chain, const std::string& key, double side1,
+                    double side2) {
+  // Side 1 to the right, side 2 to the left.
+  const auto outline = [&](double distance, bool left, const char* role) {
+    if (distance > 0.0) {
+      return offset_open(plane, wire, names, distance, left, feature, role);
+    }
+    NamedEdges named;
+    for (const auto& [edge, curve_name] : names) {
+      named.emplace_back(edge, face_name(feature, role, curve_name));
+    }
+    return std::make_pair(wire, named);
+  };
+  const auto [right, right_names] = outline(side1, false, "outer");
+  const auto [left, left_names] = outline(side2, true, "inner");
+  const WireRun chain_run = run_of(wire);
+  WireRun one = run_of(right);
+  WireRun two = run_of(left);
+  // Both runs from the chain's start.
+  const auto from_start = [&chain_run](WireRun& run) {
+    if (run.last.Distance(chain_run.first) < run.first.Distance(chain_run.first)) {
+      std::reverse(run.edges.begin(), run.edges.end());
+      std::swap(run.first, run.last);
+    }
+  };
+  from_start(one);
+  from_start(two);
+  std::map<int, std::string> roles;
+  ShapeMap named_edges;
+  for (const NamedEdges* list : {&right_names, &left_names}) {
+    for (const auto& [edge, name] : *list) {
+      const int index = named_edges.Add(edge);
+      roles[index] = name;
+    }
+  }
+  BRepBuilderAPI_MakeWire maker;
+  SweepFace face{TopoDS_Face(), {}, {key}};
+  std::vector<std::pair<TopoDS_Edge, std::string>> added;
+  const auto add = [&](const TopoDS_Edge& edge, const std::string& name) {
+    maker.Add(edge);
+    if (!maker.IsDone()) {
+      throw std::invalid_argument("the thin wall's outline does not close; it may be too thick");
+    }
+    if (!name.empty()) {
+      added.emplace_back(maker.Edge(), name);
+    }
+  };
+  const auto name_of = [&](const TopoDS_Edge& edge) {
+    const int index = named_edges.FindIndex(edge);
+    return index > 0 ? roles[index] : std::string();
+  };
+  // Side 1 from the start to the end, across the end, side 2 back, and
+  // across the start.
+  for (const TopoDS_Edge& edge : one.edges) {
+    add(edge, name_of(edge));
+  }
+  add(BRepBuilderAPI_MakeEdge(one.last, two.last).Edge(), face_name(feature, "tip1", chain.back().name));
+  for (auto it = two.edges.rbegin(); it != two.edges.rend(); ++it) {
+    add(*it, name_of(*it));
+  }
+  add(BRepBuilderAPI_MakeEdge(two.first, one.first).Edge(), face_name(feature, "tip0", chain.front().name));
+  face.face = band(plane, maker.Wire(), std::nullopt);
+  if (!BRepCheck_Analyzer(face.face).IsValid()) {
+    throw std::invalid_argument("the thin wall folds over itself; it may be too thick for its curves");
+  }
+  ShapeMap on_face;
+  TopExp::MapShapes(face.face, TopAbs_EDGE, on_face);
+  for (const auto& [edge, name] : added) {
+    const int index = on_face.FindIndex(edge);
+    if (index > 0) {
+      face.edges.emplace_back(TopoDS::Edge(on_face(index)), name);
+    }
+  }
+  return face;
+}
+
+} // namespace
+
+std::vector<SweepFace> wall_faces(const std::string& feature, const Frame& frame,
+                                  const std::vector<Region>& regions, const ThinWall& wall) {
+  const auto [side1, side2] = wall_sides(wall);
   const gp_Pln plane = plane_of(frame);
   std::vector<SweepFace> faces;
   for (const Region& region : regions) {
     const ProfileFace profile = make_profile(frame, region);
-    ShapeMap profile_edges;
-    std::vector<std::string> segments;
-    for (const auto& [edge, segment] : profile.edges) {
-      profile_edges.Add(edge);
-      segments.push_back(segment);
+    loop_walls(feature, plane, profile.face, profile.edges, region.name, side1, side2, faces);
+  }
+  return faces;
+}
+
+std::vector<SweepFace> chain_wall_faces(const std::string& feature, const Frame& frame,
+                                        const std::vector<Path>& chains, const NameList& keys,
+                                        const ThinWall& wall) {
+  if (chains.empty()) {
+    return {};
+  }
+  if (keys.size() != chains.size()) {
+    throw std::invalid_argument("each chain of curves needs its key");
+  }
+  const auto [side1, side2] = wall_sides(wall);
+  const gp_Pln plane = plane_of(frame);
+  std::vector<SweepFace> faces;
+  for (std::size_t i = 0; i < chains.size(); ++i) {
+    const Path& chain = chains[i];
+    if (chain.empty()) {
+      throw std::invalid_argument("a chain of thin wall curves is empty");
     }
-    std::vector<TopoDS_Wire> loops{BRepTools::OuterWire(profile.face)};
-    for (TopExp_Explorer w(profile.face, TopAbs_WIRE); w.More(); w.Next()) {
-      if (!w.Current().IsSame(loops.front())) {
-        loops.push_back(TopoDS::Wire(w.Current()));
+    BRepBuilderAPI_MakeWire maker;
+    NamedEdges names;
+    for (const PathCurve& piece : chain) {
+      maker.Add(model_edge(piece.curve));
+      if (!maker.IsDone()) {
+        throw std::invalid_argument("thin wall curve " + piece.name + " does not join the curve before it");
       }
+      names.emplace_back(maker.Edge(), piece.name);
     }
-    // The outlines on each side of the curves, and the curve each of their
-    // edges follows.
-    ShapeMap edges1;
-    ShapeMap edges2;
-    std::vector<TopoDS_Shape> origin1;
-    std::vector<TopoDS_Shape> origin2;
-    std::map<int, TopoDS_Wire> outline1;
-    std::map<int, TopoDS_Wire> outline2;
-    if (side1 > 0.0) {
-      outline1 = offset_loops(profile.face, loops, side1, edges1, origin1);
-    }
-    if (side2 > 0.0) {
-      outline2 = offset_loops(profile.face, loops, -side2, edges2, origin2);
-    }
-    for (std::size_t i = 0; i < loops.size(); ++i) {
-      const int loop = static_cast<int>(i);
-      if (side1 <= 0.0) {
-        outline1[loop] = loops[i];
+    const TopoDS_Wire wire = maker.Wire();
+    const WireRun run = run_of(wire);
+    const double length = std::max(1.0, diagonal(bounds_of(wire)));
+    if (run.first.Distance(run.last) <= 1.0e-6 * length) {
+      // A closed chain bounds an area: its walls as a region's.
+      BRepBuilderAPI_MakeFace area(plane, wire, true);
+      if (!area.IsDone() || !BRepCheck_Analyzer(area.Face()).IsValid()) {
+        throw std::invalid_argument("the closed chain of " + chain.front().name +
+                                    " does not bound an area; it may cross itself");
       }
-      if (side2 <= 0.0) {
-        outline2[loop] = loops[i];
-      }
-    }
-    const auto segment_of = [&](const TopoDS_Shape& edge, const ShapeMap& offset_edges,
-                                const std::vector<TopoDS_Shape>& origin) -> std::string {
-      const int offset = offset_edges.FindIndex(edge);
-      const TopoDS_Shape& source = offset > 0 ? origin[static_cast<std::size_t>(offset - 1)] : edge;
-      const int index = profile_edges.FindIndex(source);
-      return index > 0 ? segments[static_cast<std::size_t>(index - 1)] : std::string();
-    };
-    for (std::size_t i = 0; i < loops.size(); ++i) {
-      const auto one = outline1.find(static_cast<int>(i));
-      const auto two = outline2.find(static_cast<int>(i));
-      const bool has1 = one != outline1.end();
-      const bool has2 = two != outline2.end();
-      // Side 1 lies away from the material: outside the outer loop, inside
-      // a hole.
-      const bool outer = i == 0;
-      std::optional<TopoDS_Wire> outline;
-      std::optional<TopoDS_Wire> hole;
-      if (outer) {
-        if (has1) outline = one->second;
-        if (has2) hole = two->second;
-      } else {
-        if (has2) outline = two->second;
-        if (has1) hole = one->second;
-      }
-      if (!outline) {
-        continue;
-      }
-      SweepFace face{band(plane, *outline, hole), {}, {region.name}};
-      ShapeMap on1;
-      if (has1) {
-        TopExp::MapShapes(one->second, TopAbs_EDGE, on1);
-      }
-      for (TopExp_Explorer e(face.face, TopAbs_EDGE); e.More(); e.Next()) {
-        const bool first = on1.FindIndex(e.Current()) > 0;
-        const std::string segment = first ? segment_of(e.Current(), edges1, origin1)
-                                          : segment_of(e.Current(), edges2, origin2);
-        if (!segment.empty()) {
-          face.edges.emplace_back(TopoDS::Edge(e.Current()),
-                                  face_name(feature, first ? "outer" : "inner", segment));
+      ShapeMap on_face;
+      TopExp::MapShapes(area.Face(), TopAbs_EDGE, on_face);
+      NamedEdges named;
+      for (const auto& [edge, name] : names) {
+        const int index = on_face.FindIndex(edge);
+        if (index > 0) {
+          named.emplace_back(TopoDS::Edge(on_face(index)), name);
         }
       }
-      faces.push_back(std::move(face));
+      loop_walls(feature, plane, area.Face(), named, keys[i], side1, side2, faces);
+    } else {
+      faces.push_back(open_wall(feature, plane, wire, names, chain, keys[i], side1, side2));
     }
   }
   return faces;

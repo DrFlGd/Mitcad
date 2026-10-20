@@ -46,6 +46,17 @@ pub mod boundary;
 pub mod contact;
 // BUILD: the face names of derived parts (mitcad#375).
 pub mod build;
+// Contact sets: bodies that stop each other while joints move (mitcad#454).
+pub mod motion_contact;
+// Emboss: profiles wrapped onto cylinders (mitcad#458).
+pub mod emboss;
+// Thin extrusions along chains of sketch curves (mitcad#463).
+pub mod extrude_curves;
+// Boundary Fill: the cells tool bodies enclose (mitcad#457).
+pub mod boundary_fill;
+// Patch, Stitch and Thicken: surface bodies filled, sewn and made solid
+// (mitcad#456).
+pub mod surfaces;
 
 use std::sync::Arc;
 
@@ -273,6 +284,8 @@ impl Kernel for OcctKernel {
                     curvature: set.curvature,
                     weight: set.weight,
                     tangent_chain: set.tangent_chain,
+                    knots: Vec::new(),
+                    radii: Vec::new(),
                 };
                 match set.size {
                     FilletSize::Constant { radius } => out.value = radius,
@@ -304,6 +317,17 @@ impl Kernel for OcctKernel {
                         out.value2 = distance2;
                         out.reference_face = reference.map(ToString::to_string).unwrap_or_default();
                         out.flip = flip;
+                    }
+                    FilletSize::Spline {
+                        start_vertex,
+                        knots,
+                        radii,
+                    } => {
+                        out.kind = dressup::ffi::FilletKind::Spline;
+                        out.start_vertex =
+                            start_vertex.map(ToString::to_string).unwrap_or_default();
+                        out.knots = knots.to_vec();
+                        out.radii = radii.to_vec();
                     }
                 }
                 out
@@ -1697,6 +1721,143 @@ impl Kernel for OcctKernel {
             list.pin_mut().push((*shape).clone());
         }
         transform::ffi::unite_within(&list, tolerance).map_err(failed)
+    }
+
+    // Contact sets (mitcad#454; motion_contact.rs).
+
+    fn overlap_volumes(
+        &self,
+        pairs: &[mitcad_model::PlacedPair<'_, Self::Shape>],
+        tolerance: f64,
+    ) -> Result<Vec<f64>, KernelError> {
+        let mut list = shape::ffi::new_shape_list();
+        let index = |shape: &Self::Shape,
+                     list: &mut cxx::UniquePtr<shape::ffi::ShapeList>|
+         -> Result<usize, KernelError> {
+            occt(shape)?;
+            let at = list.size();
+            list.pin_mut().push(shape.clone());
+            Ok(at)
+        };
+        let mut inputs = Vec::with_capacity(pairs.len());
+        for pair in pairs {
+            inputs.push(motion_contact::ffi::OverlapPair {
+                a: index(pair.a, &mut list)?,
+                a_placement: motion_contact::rows(&pair.a_placement),
+                b: index(pair.b, &mut list)?,
+                b_placement: motion_contact::rows(&pair.b_placement),
+            });
+        }
+        motion_contact::ffi::overlap_volumes(&list, &inputs, tolerance).map_err(failed)
+    }
+
+    // Emboss: profiles wrapped onto cylinders (mitcad#458; emboss.rs).
+
+    fn wrapped_emboss(
+        &self,
+        spec: &mitcad_model::EmbossWrapSpec<'_>,
+    ) -> Result<Self::Shape, KernelError> {
+        let regions: Vec<profile::ffi::Region> = spec.regions.iter().map(profile::region).collect();
+        let wrap = emboss::ffi::EmbossWrap {
+            axis_origin: spec.axis.origin,
+            axis_direction: spec.axis.direction,
+            radius: spec.radius,
+            to_radius: spec.to_radius,
+        };
+        emboss::ffi::wrapped_emboss(
+            &spec.feature.to_string(),
+            &profile::frame(&spec.frame),
+            &regions,
+            &wrap,
+        )
+        .map_err(failed)
+    }
+
+    // Thin extrusions along chains of sketch curves (mitcad#463; extrude_curves.rs).
+
+    fn extrude_curves(
+        &self,
+        spec: &ExtrudeFeatureSpec<'_, Self::Shape>,
+        chains: &[Vec<mitcad_model::PathCurve>],
+    ) -> Result<Self::Shape, KernelError> {
+        extrude_curves::extrude_curves(spec, chains)
+    }
+
+    // Boundary Fill (mitcad#457; boundary_fill.rs).
+
+    fn boundary_cells(
+        &self,
+        tools: &[&Self::Shape],
+        points: &[Vec3],
+    ) -> Result<Vec<mitcad_model::BoundaryCell<Self::Shape>>, KernelError> {
+        let list = shape_list(tools)?;
+        let flat: Vec<f64> = points.iter().flatten().copied().collect();
+        let cells = boundary_fill::ffi::boundary_cells(&list, &flat).map_err(failed)?;
+        Ok((0..cells.cell_count())
+            .map(|i| mitcad_model::BoundaryCell {
+                shape: cells.cell(i),
+                holders: cells.cell_holders(i),
+            })
+            .collect())
+    }
+
+    // Patch, Stitch and Thicken: surface bodies filled, sewn and made solid
+    // (mitcad#456; surfaces.rs).
+
+    fn patch_regions(
+        &self,
+        feature: FeatureUid,
+        frame: &SketchFrame,
+        regions: &[ProfileRegion],
+    ) -> Result<Vec<Self::Shape>, KernelError> {
+        let regions: Vec<profile::ffi::Region> = regions.iter().map(profile::region).collect();
+        let list =
+            surfaces::ffi::patch_regions(&feature.to_string(), &profile::frame(frame), &regions)
+                .map_err(failed)?;
+        Ok(shapes(&list))
+    }
+
+    fn open_boundaries(
+        &self,
+        shape: &Self::Shape,
+    ) -> Result<Vec<mitcad_model::OpenBoundary>, KernelError> {
+        surfaces::ffi::open_boundaries(occt(shape)?)
+            .map_err(failed)?
+            .into_iter()
+            .map(surfaces::open_boundary)
+            .collect()
+    }
+
+    fn patch_loop(
+        &self,
+        spec: &mitcad_model::PatchLoopSpec<'_, Self::Shape>,
+    ) -> Result<Self::Shape, KernelError> {
+        surfaces::ffi::patch_loop(
+            &spec.feature.to_string(),
+            occt(spec.body)?,
+            &surfaces::patch_loop(spec),
+        )
+        .map_err(failed)
+    }
+
+    fn stitch(&self, shapes: &[&Self::Shape], tolerance: f64) -> Result<Self::Shape, KernelError> {
+        let mut list = shape::ffi::new_shape_list();
+        for shape in shapes {
+            occt(shape)?;
+            list.pin_mut().push((*shape).clone());
+        }
+        surfaces::ffi::stitch(&list, tolerance).map_err(failed)
+    }
+
+    fn thicken(
+        &self,
+        feature: FeatureUid,
+        shape: &Self::Shape,
+        thickness: f64,
+        symmetric: bool,
+    ) -> Result<Self::Shape, KernelError> {
+        surfaces::ffi::thicken(&feature.to_string(), occt(shape)?, thickness, symmetric)
+            .map_err(failed)
     }
 }
 

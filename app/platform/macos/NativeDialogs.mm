@@ -98,6 +98,14 @@ class NativeMenuPopup;
 @implementation MitcadNativeModelNode
 @end
 
+@interface MitcadNativeComboItem : NSObject {
+@public
+  QPersistentModelIndex index;
+}
+@end
+@implementation MitcadNativeComboItem
+@end
+
 @interface MitcadNativeWidgetTarget : NSObject <NSTextFieldDelegate, NSComboBoxDelegate, NSTextViewDelegate, NSTabViewDelegate,
                                                NSTableViewDataSource, NSTableViewDelegate,
                                                NSOutlineViewDataSource, NSOutlineViewDelegate> {
@@ -429,12 +437,26 @@ public:
           if (native.currentEditor == nil) { native.stringValue = ns(combo->currentText()); }
         } else {
           NSPopUpButton* native = (NSPopUpButton*)binding.control;
-          if (items != binding.items) {
-            [native removeAllItems];
-            for (const QString& item : items) { [native addItemWithTitle:ns(item)]; }
-            binding.items = items;
+          bool same = native.numberOfItems == combo->count();
+          for (int j = 0; same && j < combo->count(); ++j) {
+            NSMenuItem* item = [native itemAtIndex:j];
+            MitcadNativeComboItem* value = item.representedObject;
+            same = qt(item.title) == items[j] && value != nil &&
+                   value->index == combo->model()->index(j, combo->modelColumn(), combo->rootModelIndex());
           }
-          [native selectItemAtIndex:combo->currentIndex()];
+          if (!same) {
+            [native removeAllItems];
+            for (int j = 0; j < combo->count(); ++j) {
+              NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:ns(items[j]) action:nil keyEquivalent:@""];
+              MitcadNativeComboItem* value = [MitcadNativeComboItem new];
+              value->index = combo->model()->index(j, combo->modelColumn(), combo->rootModelIndex());
+              item.representedObject = value;
+              [native.menu addItem:item];
+            }
+          }
+          if (combo->currentIndex() >= 0 && combo->currentIndex() < native.numberOfItems) {
+            [native selectItemAtIndex:combo->currentIndex()];
+          } else { [native selectItem:nil]; }
         }
       } else if (auto* text = qobject_cast<QLabel*>(widget)) {
         const QPixmap pixmap = text->pixmap();
@@ -543,8 +565,13 @@ public:
         execNativeMenu(menu, widget->mapToGlobal(QPoint(0, widget->height())));
       } else { button->click(); }
     } else if (auto* combo = qobject_cast<QComboBox*>(widget)) {
-      const int index = static_cast<int>(combo->isEditable() ? [(NSComboBox*)sender indexOfSelectedItem]
-                                                            : [(NSPopUpButton*)sender indexOfSelectedItem]);
+      int index = -1;
+      if (combo->isEditable()) { index = static_cast<int>([(NSComboBox*)sender indexOfSelectedItem]); }
+      else {
+        MitcadNativeComboItem* value = ((NSPopUpButton*)sender).selectedItem.representedObject;
+        if (value != nil && value->index.isValid() && value->index.model() == combo->model() &&
+            value->index.parent() == combo->rootModelIndex()) { index = value->index.row(); }
+      }
       combo->setCurrentIndex(index);
       if (alive == nullptr || pointer == nullptr) { return; }
       if (combo->isEditable()) { combo->setEditText(qt([(NSComboBox*)sender stringValue])); }
@@ -1211,7 +1238,9 @@ private:
     }
     auto* tree = qobject_cast<QTreeView*>(view);
     if (qobject_cast<QListView*>(view) != nullptr || (tree != nullptr && tree->isHeaderHidden())) { table.headerView = nil; }
-    NSScrollView* box = scroll(table, std::max(120, std::min(280, view->minimumHeight())));
+    // The native default must fit within the presenter's required upper bound.
+    const int minimumHeight = std::min(view->maximumHeight(), std::max(120, std::min(280, view->minimumHeight())));
+    NSScrollView* box = scroll(table, minimumHeight);
     if (view->maximumHeight() < QWIDGETSIZE_MAX) {
       [box.heightAnchor constraintLessThanOrEqualToConstant:view->maximumHeight()].active = YES;
     }

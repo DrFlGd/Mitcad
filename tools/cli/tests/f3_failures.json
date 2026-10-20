@@ -22,7 +22,7 @@
   {"cmd": "edit_feature", "uid": "F3", "def": {"type": "sweep", "profiles": [{"sketch": "F2", "region": "r{c3}"}],
     "path": {"sketch": "F1", "curves": ["c1"]}, "orientation": "parallel", "twist_angle": "45 deg",
     "operation": "new_body"}},
-  {"expect": {"feature": "Sweep1", "status": "error", "error_contains": "unsupported: twists, tapers and guide rails with parallel orientation"}},
+  {"expect": {"feature": "Sweep1", "status": "error", "error_contains": "unsupported: twists, tapers, end scales and guide rails with parallel orientation"}},
   {"cmd": "edit_feature", "uid": "F3", "def": {"type": "sweep", "profiles": [{"sketch": "F2", "region": "r{c3}"}],
     "path": {"sketch": "F1", "curves": ["c1"]}, "operation": "new_body"}},
   {"expect": {"feature": "Sweep1", "status": "ok", "bodies": 1}},

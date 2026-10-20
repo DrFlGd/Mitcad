@@ -48,7 +48,10 @@ the frontend is selected by default. `--ui=native` selects it explicitly;
 - The inspector stays hidden until a command, sketch or selection needs it.
   It hosts one native command form, selection details or the sketch palette.
   Expressions, decimal commas, choices, repeated inputs, selection lists,
-  errors and previews use the existing command definitions.
+  errors and previews use the existing command definitions. Icon choices use
+  native buttons with the shared CAD icons and option labels as tooltips.
+  Disclosure rows reveal their dependent inputs while keeping the inspector's
+  height cap and scrolling rules.
 - View controls show or hide the model, inspector and feature-history
   cards. Feature history is a compact horizontal timeline of the shared
   coloured CAD icons in native buttons, with its marker between features
@@ -83,9 +86,14 @@ Meta. The recorder's Clear button removes a binding, so Backspace and
 forward Delete can themselves be assigned.
 
 With Browser or history focus, F2 renames and Backspace or forward Delete
-deletes through the shared controllers. Return retains activation/editing.
+deletes through the shared controllers. Return activates the selected Browser
+row, opening its sketch or feature editor; Return in a row's text editor
+finishes renaming.
 Command+F opens native timeline search, sharing the query, component/status
 filters, result navigation and selection restoration with the Qt timeline.
+Command+W in command or timeline search dismisses that search and keeps the
+document open. Removing Project through toolbar customisation remains in
+effect after saves and other project-status changes.
 Text editors keep their normal editing keys; document shortcuts do not
 intercept input in an attached modal sheet. In Save with Description,
 Command+Return saves and plain Return inserts a newline.
@@ -104,8 +112,16 @@ rejects an invalid expression, edits its height to 10 mm through native
 history, verifies undo/redo, cancels a preview and exercises command search.
 Repeated native inputs retain their values after adding and removing rows,
 and their controls unlock after each structural action is applied.
-Native outline selection drives worker measurements, Return/Escape close
-the inspector, and Physical Properties presents a native report dialog.
+Native outline selection drives worker measurements, canvas Return and
+Browser Escape close the inspector, and Physical Properties presents a
+native report dialog. Command search checks Command+W dismissal without
+closing the document. The native sketch workflow checks Browser Return
+activation for sketches and features, row renaming and command isolation.
+The toolbar regression upgrades an older saved layout, checks live status
+after a customization-palette request, removes Project, changes projects,
+and verifies that removal persists in a second application process.
+The secondary workflow checks BUILD direction buttons and the reusable
+form contract for exclusive icon choices and expanding/collapsing rows.
 Model-volume assertions check the persisted result. The native test bridge
 uses AppKit target/action and the field editor without external
 Accessibility permission. The retained Qt workflow tests still run with

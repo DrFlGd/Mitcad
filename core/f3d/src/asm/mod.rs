@@ -5,6 +5,8 @@
 pub mod file;
 pub mod geom;
 pub mod history;
+// The text form, as drawings keep the B-rep record (mitcad#453).
+pub mod text;
 pub mod token;
 pub mod writer;
 

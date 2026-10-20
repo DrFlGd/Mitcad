@@ -1,0 +1,13 @@
+{
+  "comment": "Worked out by hand: a tube revolved from x 10..20, y 0..30 about the sketch's y axis (pi * (400 - 100) * 30 = 28274.3339); a 20 x 20 x 10 block joined with a post of r 5, h 10 on it (4000 + 785.3982) less a chamfer of 2 along a 20 long edge (40); a ball of r 10 (4188.7902); a ring of 20 / 3 (2 pi^2 * 20 * 9 = 3553.0576).",
+  "body_count": 4,
+  "total": {"volume_mm3": 40761.5798348842},
+  "bbox": {"min": [-23, -23, -43], "max": [60, 30, 70]},
+  "bodies": [
+    {"name": "Tube", "volume_mm3": 28274.3338823081, "bbox": {"min": [-20, 0, -20], "max": [20, 30, 20]}},
+    {"name": "Block", "volume_mm3": 4745.3981633974, "bbox": {"min": [40, -10, 0], "max": [60, 10, 20]}},
+    {"name": "Ball", "volume_mm3": 4188.7902047864},
+    {"name": "Ring", "volume_mm3": 3553.0575843922}
+  ],
+  "parametric": 8
+}

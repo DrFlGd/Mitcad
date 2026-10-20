@@ -296,6 +296,16 @@ void MainWindow::occurrenceDragged(const gp_Pnt& target) {
   } catch (const std::exception&) {
     return; // the bodies stay where the last move put them
   }
+  // A contact set stops it where the bodies touch (mitcad#454).
+  const QJsonObject contact = answer.value(QStringLiteral("contact")).toObject();
+  const QString touching = contact.isEmpty() ? QString() : contactText(contact);
+  if (touching != m_drag->contact) {
+    m_drag->contact = touching;
+    if (!touching.isEmpty()) {
+      showHint(tr("Stopped at contact: %1").arg(touching));
+      qDebug().noquote() << QStringLiteral("Drag of %1 stopped at contact: %2").arg(m_drag->name, touching);
+    }
+  }
   // Each occurrence that moves: from where it is shown to where the drag
   // puts it, in the design; what is inside it moves along.
   const QString parent = m_drag->path.section(QLatin1Char('/'), 0, -2);
@@ -359,6 +369,11 @@ void MainWindow::occurrenceDragFinished(const gp_Pnt& target, bool cancelled) {
                               .arg(state.name, rounded(state.target.X()), rounded(state.target.Y()),
                                    rounded(state.target.Z()),
                                    values.isEmpty() ? QString() : QStringLiteral(": ") + values.join(QStringLiteral(", ")));
+    const QJsonObject contact = result.value(QStringLiteral("contact")).toObject();
+    if (!contact.isEmpty()) {
+      showStatus(tr("Stopped at contact: %1").arg(contactText(contact)), false);
+      qDebug().noquote() << QStringLiteral("Dragged %1 to where it touches: %2").arg(state.name, contactText(contact));
+    }
   });
 }
 
@@ -393,6 +408,10 @@ void MainWindow::animateSelectedJoint() {
 void MainWindow::animateJoint(const QString& uid) {
   if (m_animation || !canChangeModel() || modelBusy()) {
     return;
+  }
+  // The animation's frames are previews, as a study's playback's.
+  if (m_motionStudy) {
+    m_motionStudy->close();
   }
   const QJsonObject joint = m_snapshot.joint(uid);
   const QJsonArray motions = joint.value(QStringLiteral("motions")).toArray();
@@ -440,6 +459,7 @@ void MainWindow::animateJoint(const QString& uid) {
     }
   }
   animation.bodies = m_viewer->shownBodies();
+  animation.start = start;
   qDebug().noquote() << QStringLiteral("Animating %1 %2: %3 frames from %4 to %5")
                             .arg(animation.name, motion)
                             .arg(animation.frames.size())
@@ -456,17 +476,18 @@ void MainWindow::animationFrame() {
     stopAnimation(tr("the design is busy"));
     return;
   }
-  // The joint driven to the frame's value, previewed.
-  QJsonObject def = m_animation->def;
-  QJsonObject position = def.value(QStringLiteral("position")).toObject();
-  position.insert(m_animation->motion, m_animation->frames.at(m_animation->next));
-  def.insert(QStringLiteral("position"), position);
+  // The joint driven to the frame's value from the frame before, previewed:
+  // a contact set stops it where the bodies touch (mitcad#454).
+  const double from = m_animation->next == 0 ? m_animation->start : m_animation->frames.at(m_animation->next - 1);
   QJsonObject report;
   try {
-    report = modelPreview(compactJson({{QStringLiteral("cmd"), QStringLiteral("edit_feature")},
-                                       {QStringLiteral("uid"), m_animation->uid},
-                                       {QStringLiteral("def"), def}}),
-                          tr("Animate %1").arg(m_animation->name));
+    report = modelPreview(
+        compactJson({{QStringLiteral("cmd"), QStringLiteral("drive_joint")},
+                     {QStringLiteral("joint"), m_animation->uid},
+                     {QStringLiteral("values"),
+                      QJsonObject{{m_animation->motion, m_animation->frames.at(m_animation->next)}}},
+                     {QStringLiteral("from"), QJsonObject{{m_animation->motion, from}}}}),
+        tr("Animate %1").arg(m_animation->name));
   } catch (const std::exception& e) {
     stopAnimation(errorText(e));
     return;
@@ -478,19 +499,34 @@ void MainWindow::animationFrame() {
     stopAnimation(report.value(QStringLiteral("error")).toString());
     return;
   }
-  QHash<QString, QJsonArray> placed;
-  for (const QJsonValue& value : report.value(QStringLiteral("placements")).toArray()) {
-    placed.insert(value.toObject().value(QStringLiteral("path")).toString(),
-                  value.toObject().value(QStringLiteral("transform")).toArray());
+  showPreviewPlacements(report, m_animation->bodies);
+  const QJsonObject contact = report.value(QStringLiteral("contact")).toObject();
+  if (!contact.isEmpty()) {
+    // Shown where it touches; the animation ends there.
+    const double at = report.value(QStringLiteral("values"))
+                          .toObject()
+                          .value(m_animation->uid)
+                          .toObject()
+                          .value(m_animation->motion)
+                          .toDouble();
+    const QString text = contactText(contact);
+    showStatus(tr("%1 stopped at contact: %2").arg(m_animation->name, text), false);
+    const QString name = m_animation->name;
+    const QString motion = m_animation->motion;
+    m_animation.reset();
+    qDebug().noquote() << QStringLiteral("Animation of %1 stopped by contact at %2 %3: %4")
+                              .arg(name, motion, motionValue(motion, at), text);
+    // The contact shown for a moment, then the design as it is.
+    TestSync::singleShot(600, this, [this] {
+      if (!m_animation && !modelBusy()) {
+        clearModelPreview();
+        if (m_mode == Mode::Idle) {
+          m_viewer->setBodies(modelBodies());
+        }
+      }
+    });
+    return;
   }
-  std::vector<BodyDisplay> bodies = m_animation->bodies;
-  for (BodyDisplay& body : bodies) {
-    const auto moved = placed.constFind(QString::fromStdString(body.occurrence));
-    if (moved != placed.cend()) {
-      body.placement = isIdentity(moved.value()) ? TopLoc_Location() : TopLoc_Location(trsfOf(moved.value()));
-    }
-  }
-  m_viewer->setBodies(bodies);
   if (++m_animation->next < m_animation->frames.size()) {
     TestSync::singleShot(kFrameMs, this, [this] { animationFrame(); });
   } else {

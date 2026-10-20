@@ -1116,6 +1116,149 @@ pub trait Kernel {
             .map(|(shape, plane)| self.clip(shape, plane))
             .collect()
     }
+
+    // Contact sets: bodies that stop each other while joints move
+    // (mitcad#454; `crate::contact`).
+
+    /// For each pair of bodies, each placed by its rigid transform, the
+    /// volume (mm³) where they pass through each other: 0 when they are
+    /// apart or only touch (faces within `tolerance`, mm, of each other
+    /// count as touching). The caller leaves out pairs whose boxes are
+    /// apart; the kernel may work the pairs out at once.
+    fn overlap_volumes(
+        &self,
+        _pairs: &[PlacedPair<'_, Self::Shape>],
+        _tolerance: f64,
+    ) -> Result<Vec<f64>, KernelError> {
+        Err(KernelError::Unsupported("contact between moving bodies"))
+    }
+
+    // Emboss: profiles wrapped onto cylinders (mitcad#458; the planar
+    // emboss is an extrusion).
+
+    /// The tool of an emboss on a cylindrical face (see [`EmbossWrapSpec`]).
+    fn wrapped_emboss(&self, _spec: &EmbossWrapSpec<'_>) -> Result<Self::Shape, KernelError> {
+        Err(KernelError::Unsupported("profiles wrapped onto cylinders"))
+    }
+
+    // Thin extrusions along sketch curves (mitcad#463).
+
+    /// [`Kernel::extrude_feature`] of a thin extrusion whose walls follow
+    /// chains of sketch curves instead of the boundaries of regions
+    /// (`spec.regions` is empty; both sides have a wall). Each chain holds
+    /// its curves in order, each running along it, and is open or closed.
+    /// A closed chain's side 1 lies outside the area it encloses and side 2
+    /// inside, as a region's; an open chain's side 1 lies to its right as
+    /// it runs (the sketch normal up) and side 2 to its left, and its ends
+    /// are square to it. Faces: `outer(<curve>)` (side 1) and
+    /// `inner(<curve>)` (side 2) along each curve, `tip0(<curve>)` and
+    /// `tip1(<curve>)` at an open chain's start (on its first curve) and
+    /// end (its last), and the caps as an extrusion's, keyed by the
+    /// chain's curves (`start(r{c1,c2})`). Walls that meet or cross make
+    /// one solid.
+    fn extrude_curves(
+        &self,
+        _spec: &ExtrudeFeatureSpec<'_, Self::Shape>,
+        _chains: &[Vec<crate::sweeps::PathCurve>],
+    ) -> Result<Self::Shape, KernelError> {
+        Err(KernelError::Unsupported(
+            "thin extrusions along sketch curves",
+        ))
+    }
+
+    // Boundary Fill: solids of the cells tool bodies enclose (mitcad#457;
+    // `features/boundary_fill.rs`).
+
+    /// The cell each point picks among the tools: all of the space inside
+    /// every tool that holds the point and outside every other tool (one
+    /// shape, of several solids where that space falls apart), in the
+    /// order of the points. The cells come from one division of space by
+    /// all the tools' faces, so cells that meet share their faces; each
+    /// face keeps the names of the tool faces it is a piece of. A point
+    /// that no tool holds, or that lies on a tool's boundary, is an error.
+    /// The tools are not changed.
+    fn boundary_cells(
+        &self,
+        _tools: &[&Self::Shape],
+        _points: &[Vec3],
+    ) -> Result<Vec<BoundaryCell<Self::Shape>>, KernelError> {
+        Err(KernelError::Unsupported("boundary fill"))
+    }
+
+    // Patch, Stitch and Thicken: surface bodies filled, sewn and made solid
+    // (mitcad#456; `crate::surfaces`).
+
+    /// One surface body per region, in the regions' order: the region's
+    /// planar face `<feature>:patch(<region>)` on the sketch's plane, its
+    /// normal the sketch's.
+    fn patch_regions(
+        &self,
+        _feature: FeatureUid,
+        _frame: &SketchFrame,
+        _regions: &[ProfileRegion],
+    ) -> Result<Vec<Self::Shape>, KernelError> {
+        Err(KernelError::Unsupported("patches of sketch regions"))
+    }
+
+    /// The loops of the body's free edges (edges of one face only: the open
+    /// boundaries of a surface body), in a deterministic geometric order.
+    fn open_boundaries(
+        &self,
+        _shape: &Self::Shape,
+    ) -> Result<Vec<crate::surfaces::OpenBoundary>, KernelError> {
+        Err(KernelError::Unsupported("open boundaries"))
+    }
+
+    /// A surface body of one face, `<feature>:patch`, filling a closed loop
+    /// of the body's edges ([`crate::surfaces::PatchLoopSpec`]): a plane
+    /// when the loop lies in one and the patch only passes through its
+    /// edges, else a surface fitted to the edges that meets the face beside
+    /// each edge as its continuity asks and passes through the points. The
+    /// body is not changed.
+    fn patch_loop(
+        &self,
+        _spec: &crate::surfaces::PatchLoopSpec<'_, Self::Shape>,
+    ) -> Result<Self::Shape, KernelError> {
+        Err(KernelError::Unsupported("patches of edge loops"))
+    }
+
+    /// The shapes' faces sewn together where their edges lie within
+    /// `tolerance` (mm; 0 for the kernel's own precision): one shape, a
+    /// solid where the faces close up, else a surface body. The faces keep
+    /// their names.
+    fn stitch(
+        &self,
+        _shapes: &[&Self::Shape],
+        _tolerance: f64,
+    ) -> Result<Self::Shape, KernelError> {
+        Err(KernelError::Unsupported("stitch"))
+    }
+
+    /// A surface body made solid by a wall `thickness` thick (mm, not 0)
+    /// along its faces' normals, against them when negative, or half of
+    /// it to each side when `symmetric`. The faces of the wall are
+    /// `<feature>:front(<face>)` on the side the face's normal points to,
+    /// `<feature>:back(<face>)` on the other and `<feature>:wall(<face>)`
+    /// along the face's free edges.
+    fn thicken(
+        &self,
+        _feature: FeatureUid,
+        _shape: &Self::Shape,
+        _thickness: f64,
+        _symmetric: bool,
+    ) -> Result<Self::Shape, KernelError> {
+        Err(KernelError::Unsupported("thicken"))
+    }
+}
+
+/// Two bodies, each placed by a rigid transform from its own coordinates
+/// into common ones ([`Kernel::overlap_volumes`]).
+#[derive(Debug, Clone, Copy)]
+pub struct PlacedPair<'a, S> {
+    pub a: &'a S,
+    pub a_placement: Transform,
+    pub b: &'a S,
+    pub b_placement: Transform,
 }
 
 /// A curve where a plane cuts faces ([`Kernel::section_curves`]).
@@ -1385,6 +1528,16 @@ pub enum FilletSize<'a> {
         reference: Option<&'a FaceName>,
         flip: bool,
     },
+    /// The radius a clamped B-spline of the position along the chain
+    /// (mitcad#464): 0 at `start_vertex` (or at the kernel's start of the
+    /// chain), 1 at its other end, by arc length; `knots` its full knot
+    /// vector and `radii` its control radii (degree `knots.len() -
+    /// radii.len() - 1`, 1 to 3).
+    Spline {
+        start_vertex: Option<&'a VertexName>,
+        knots: &'a [f64],
+        radii: &'a [f64],
+    },
 }
 
 /// Removed faces (none: a closed void) and the wall thickness inside and
@@ -1600,19 +1753,24 @@ pub struct Bound<S> {
 
 /// Where a thin extrusion's wall lies relative to the profile curves: on
 /// side 1 (away from the region's material: outside the outer loop, into a
-/// hole), centred on them, or on side 2.
+/// hole), centred on them, on side 2, or on both sides by thicknesses of
+/// their own (`both`, mitcad#463: [`ThinWall::thickness`] on side 1 and
+/// [`ThinWall::thickness2`] on side 2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WallLocation {
     Side1,
     Center,
     Side2,
+    Both,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ThinWall {
     pub location: WallLocation,
     pub thickness: f64,
+    /// The thickness on side 2 of a wall on both sides; 0 otherwise.
+    pub thickness2: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -1819,4 +1977,42 @@ pub(crate) fn simple_extrude<K: Kernel + ?Sized>(
         extrusion.end = -(base - two);
     }
     kernel.extrude(&extrusion)
+}
+
+// Emboss: profiles wrapped onto cylinders (mitcad#458).
+
+/// Input of [`Kernel::wrapped_emboss`]: the regions laid onto the cylinder
+/// of `axis` and `radius` by arc length and grown radially from `radius`
+/// to `to_radius` (larger: out from the axis; smaller: in towards it).
+///
+/// The sketch plane is parallel to the axis. A sketch point at distance `s`
+/// across the axis (along `axis.direction` × the sketch side's radial
+/// direction, from the line where the axis lies under the sketch) and `z`
+/// along it goes to the angle `s / radius` about the axis from the radial
+/// direction towards the sketch plane, at `z`: lengths along the
+/// circumference are the sketch's on the cylinder of `radius`. A profile
+/// must stay within one turn.
+///
+/// Faces are named as an extrusion's: `side(<segment>)` grown from a
+/// profile segment, `start(<region>)` on the cylinder of `radius` and
+/// `end(<region>)` on that of `to_radius`.
+#[derive(Debug, Clone, Copy)]
+pub struct EmbossWrapSpec<'a> {
+    pub feature: FeatureUid,
+    pub frame: SketchFrame,
+    pub regions: &'a [ProfileRegion],
+    pub axis: Axis,
+    pub radius: f64,
+    pub to_radius: f64,
+}
+
+// Boundary Fill (mitcad#457).
+
+/// The cell a point picks ([`Kernel::boundary_cells`]): its solids and the
+/// tools that hold it (indices into the tools, in increasing order), which
+/// tell two points in one cell apart from points in two.
+#[derive(Debug, Clone)]
+pub struct BoundaryCell<S> {
+    pub shape: S,
+    pub holders: Vec<usize>,
 }

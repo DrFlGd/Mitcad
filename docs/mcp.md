@@ -264,7 +264,7 @@ objects; fields below without a default are required.
 | Tool | Arguments | Result |
 |---|---|---|
 | `document_create` | `{}` | `document`, null `path`, `state`, `timeline`, `bodies`, `applied`, empty `failed_features` |
-| `document_open` | `path` | New `document`, canonical `path`, recomputed `state`, `timeline`, `bodies`, `applied`, `failed_features` |
+| `document_open` | `path` | New `document`, canonical `path`, recomputed `state`, `timeline`, `bodies`, `applied`, `failed_features`. A `.solidcraft` design (mitcad#450) is imported with its history into a new document without a `path` (save it with `document_save` and a path) |
 | `document_list` | `{}` | `documents`: objects with `document`, `path`, `state` |
 | `document_close` | `document`, `discard` (default false) | `document`, `closed`; refuses unsaved changes unless `discard` is true |
 | `model_command` | `document`, `command` (native JSON object) | `document`, `applied`, native `result`, `failed_features`, `state`, `timeline`, `bodies` ([failed features](#transport-errors-and-limits)) |

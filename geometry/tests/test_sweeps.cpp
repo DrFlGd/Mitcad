@@ -3,6 +3,8 @@
 // models (sweep_*, loft_*, pipe_*, ui_coil, ui_rib) and analytic ones,
 // names, and failures.
 
+#include <algorithm>
+#include <cmath>
 #include <limits>
 #include <optional>
 #include <set>
@@ -12,7 +14,9 @@
 #include <BRepAdaptor_Curve.hxx>
 #include <BRepAdaptor_Surface.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
+#include <BRepBuilderAPI_MakeVertex.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
+#include <BRepExtrema_DistShapeShape.hxx>
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepGProp.hxx>
 #include <BRepLib.hxx>
@@ -410,6 +414,134 @@ void test_rail_regions() {
   rail.frame.origin = gp_Pnt(50, 0, 0);
   rail.extent1 = 0;
   CHECK_NEAR_TOL(precise_volume(*sweep(rail)), kPi * 4 * grown / (1.5 * 1.5), 1e-5);
+}
+
+// An end scale and a second guide rail (mitcad#464).
+void test_two_rails_and_end_scale() {
+  // A circle of radius 4 scaled to half over 50: a frustum of radii 4 and 2.
+  SweepSpec cone = circle_sweep(line_path(0, 50), 4);
+  cone.scale = 0.5;
+  CHECK_NEAR_TOL(precise_volume(*sweep(cone)), kPi * 50 / 3 * (16 + 8 + 4), 1e-5);
+  // The profile inside the path: the scale is reached at both ends, 30 and
+  // 20 from it; a circle of 5 grows to 10 both ways.
+  SweepSpec middle = circle_sweep(line_path(-20, 30), 5);
+  middle.scale = 2;
+  CHECK_NEAR_TOL(precise_volume(*sweep(middle)), kPi * 50 / 3 * (25 + 50 + 100), 1e-5);
+  // With a twist: a 10 mm square turned a quarter turn and halved over 50,
+  // each section 100 (1 - s / 100)^2.
+  SweepSpec turned;
+  turned.feature = "F5";
+  turned.frame = yz();
+  turned.regions = {rectangle(1, -5, -5, 10, 10)};
+  turned.path = line_path(0, 50);
+  turned.twist = kPi / 2;
+  turned.scale = 0.5;
+  CHECK_NEAR_TOL(precise_volume(*sweep(turned)), 100 * 100 / 3.0 * (1 - 0.125), 1e-5);
+
+  // Two rails beside a 4 x 10 rectangle (sketch x = -Z, y = +Y): from
+  // Y = -5 and 5 out to -7 and 7 over 50. The profile moves with the first
+  // rail and grows with the rails' distance, k = 1 + 0.008 x: sections
+  // 40 k^2 (scale), 40 k (stretch, only across) or 40 (none).
+  SweepSpec rails;
+  rails.feature = "F5";
+  rails.frame = yz();
+  rails.regions = {rectangle(1, -2, -5, 4, 10)};
+  rails.path = line_path(0, 50);
+  rails.rail = {{"c2", line3(gp_Pnt(0, -5, 0), gp_Pnt(50, -7, 0))}};
+  rails.rail2 = {{"c3", line3(gp_Pnt(0, 5, 0), gp_Pnt(50, 7, 0))}};
+  const ShapePtr scaled = sweep(rails);
+  CHECK_NEAR_TOL(precise_volume(*scaled), 40 * (1.4 * 1.4 * 1.4 - 1) / (3 * 0.008), 1e-5);
+  const BoundingBox wide = bounding_box(*scaled);
+  CHECK(near(wide.min.Y(), -7, 1e-6) && near(wide.max.Y(), 7, 1e-6) && near(wide.max.Z(), 2.8, 1e-6));
+  CHECK(faces_named(*scaled, start_cap("F5", 1)) == 1 && faces_named(*scaled, end_cap("F5", 1)) == 1);
+  rails.scaling = ProfileScaling::Stretch;
+  CHECK_NEAR_TOL(precise_volume(*sweep(rails)), 40 * 60.0, 1e-5);
+  rails.scaling = ProfileScaling::None;
+  CHECK_NEAR_TOL(precise_volume(*sweep(rails)), 40 * 50.0, 1e-5);
+  // The first rail straight, the second opening from 10 to 20 away: the
+  // profile grows about the first rail's point, k = 1 + x / 50, up to
+  // Y = 15 and Z = 4 at the end.
+  rails.scaling = ProfileScaling::Scale;
+  rails.rail = {{"c2", line3(gp_Pnt(0, -5, 0), gp_Pnt(50, -5, 0))}};
+  rails.rail2 = {{"c3", line3(gp_Pnt(0, 5, 0), gp_Pnt(50, 15, 0))}};
+  const ShapePtr opened = sweep(rails);
+  CHECK_NEAR_TOL(precise_volume(*opened), 40 * 50 / 3.0 * 7, 1e-5);
+  const BoundingBox one_side = bounding_box(*opened);
+  CHECK(near(one_side.min.Y(), -5, 1e-6) && near(one_side.max.Y(), 15, 1e-6) &&
+        near(one_side.max.Z(), 4, 1e-6));
+
+  // Refused: rails that meet, a second rail alone, an end scale with a rail
+  // and one out of range.
+  rails.rail2 = rails.rail;
+  CHECK(throws_with([&] { sweep(rails); }, "the guide rails meet"));
+  SweepSpec alone = circle_sweep(line_path(0, 50), 4);
+  alone.rail2 = {{"c3", line3(gp_Pnt(0, 5, 0), gp_Pnt(50, 15, 0))}};
+  CHECK(throws_with([&] { sweep(alone); }, "needs a first one"));
+  alone.rail = alone.rail2;
+  alone.rail2.clear();
+  alone.scale = 2;
+  CHECK(throws_with([&] { sweep(alone); }, "an end scale is not taken"));
+  cone.scale = 0;
+  CHECK(throws_with([&] { sweep(cone); }, "between 0.01 and 100"));
+}
+
+// The point of a guide rail where it crosses the plane square to the path
+// (mitcad#469).
+void test_rail_plane() {
+  // A circle of radius 5 round the path along x from 0 to 50, guided by an
+  // arc of radius 65 about (25, -55) that bulges from y = 5 at the ends to
+  // 10 in the middle; the arc runs from x = 50 to 0, against the path. The
+  // rail's speed along the path varies, so its points at the fractions of
+  // its length are not where it crosses the planes square to the path.
+  const double radius = 65.0;
+  const auto rail_y = [&](double x) { return -55.0 + std::sqrt(radius * radius - (x - 25) * (x - 25)); };
+  SweepSpec spec = circle_sweep(line_path(0, 50), 5);
+  spec.rail = {{"c2", arc3(gp_Pnt(25, -55, 0), gp_Dir(0, 0, 1), gp_Dir(1, 0, 0), radius, std::atan2(60.0, 25.0),
+                           std::atan2(60.0, -25.0))}};
+  const ShapePtr fraction = sweep(spec);
+  spec.rail_point = RailPoint::Plane;
+  const ShapePtr plane = sweep(spec);
+  CHECK(valid(*plane));
+  // The distance from a point to the sweep's faces.
+  const auto off = [](const Shape& shape, const gp_Pnt& p) {
+    double nearest = std::numeric_limits<double>::infinity();
+    for (TopExp_Explorer f(shape.occt(), TopAbs_FACE); f.More(); f.Next()) {
+      BRepExtrema_DistShapeShape measure(BRepBuilderAPI_MakeVertex(p).Vertex(), f.Current());
+      if (measure.IsDone()) {
+        nearest = std::min(nearest, measure.Value());
+      }
+    }
+    return nearest;
+  };
+  // The sections at the stations (eight along a line guided by one curve)
+  // pass through the rail's crossings; the fraction rule's do not.
+  for (const double x : {0.0, 6.25, 12.5, 25.0, 37.5, 50.0}) {
+    const gp_Pnt q(x, rail_y(x), 0);
+    CHECK(off(*plane, q) < 1e-6);
+    if (x > 0.0 && x < 50.0 && x != 25.0) {
+      CHECK(off(*fraction, q) > 1e-2);
+    }
+  }
+  // V = pi * integral of y^2: the section is the circle scaled to y(x).
+  const double s = 25 * 60 + radius * radius * std::asin(5.0 / 13.0);
+  const double exact = kPi * ((radius * radius + 55 * 55) * 50 - 2 * 25 * 25 * 25 / 3.0 - 110 * s);
+  CHECK_NEAR_TOL(precise_volume(*plane), exact, 1e-4);
+  const BoundingBox box = bounding_box(*plane);
+  CHECK(near(box.max.Y(), 10, 1e-4) && near(box.min.X(), 0, 1e-6) && near(box.max.X(), 50, 1e-6));
+  // Two rails: the second the first mirrored across the path; the profile
+  // moves with the first rail's crossing and sizes with the line across.
+  spec.rail2 = {{"c3", arc3(gp_Pnt(25, 55, 0), gp_Dir(0, 0, 1), gp_Dir(1, 0, 0), radius, std::atan2(-60.0, -25.0),
+                            std::atan2(-60.0, 25.0))}};
+  const ShapePtr between = sweep(spec);
+  for (const double x : {12.5, 25.0, 43.75}) {
+    CHECK(off(*between, gp_Pnt(x, rail_y(x), 0)) < 1e-6);
+    CHECK(off(*between, gp_Pnt(x, -rail_y(x), 0)) < 1e-6);
+  }
+  CHECK_NEAR_TOL(precise_volume(*between), exact, 1e-4);
+  // A rail that stops short of the path's end.
+  spec.rail2.clear();
+  spec.rail = {{"c2", line3(gp_Pnt(0, 5, 0), gp_Pnt(40, 8, 0))}};
+  CHECK(throws_with([&] { sweep(spec); }, "does not reach the plane square to the path"));
 }
 
 void test_pipes() {
@@ -1641,12 +1773,10 @@ void test_helix_turns_meet_in_one_edge() {
   CHECK(!crests.empty());
   // The section the ball cuts off at the crest, x from the crest outwards
   // (the material between the flanks 2 x tan(half) wide, `half` the half
-  // angle of its wedge from the radial direction): its area and its moment
-  // about the axis.
+  // angle of its wedge from the radial direction): its moment about the axis.
   const double half = std::atan2(pitch / 2, depth);
   const double centre = ball / std::sin(half);
   const double tangent = ball / std::tan(half) * std::cos(half);
-  double area = 0;
   double moment = 0;
   constexpr int kSteps = 200000;
   for (int k = 0; k < kSteps; ++k) {
@@ -1655,7 +1785,6 @@ void test_helix_turns_meet_in_one_edge() {
     if (std::abs(centre - x) < ball) {
       width -= 2 * std::sqrt(ball * ball - (centre - x) * (centre - x));
     }
-    area += width * tangent / kSteps;
     moment += (bore + x) * width * tangent / kSteps;
   }
   try {
@@ -1731,11 +1860,10 @@ void test_thread_roots_rounded_up_to_the_nuts_faces() {
   CHECK(!roots.empty());
   // The section the ball fills at the root: between the flanks, whose
   // wedge has the half angle `half` from the radial direction, and the
-  // ball; its area and its moment about the axis (x inwards from the root).
+  // ball; its moment about the axis (x inwards from the root).
   const double half = std::atan2(pitch / 2, depth);
   const double centre = ball / std::sin(half);
   const double tangent = ball / std::tan(half) * std::cos(half);
-  double area = 0;
   double moment = 0;
   constexpr int kSteps = 200000;
   for (int k = 0; k < kSteps; ++k) {
@@ -1744,7 +1872,6 @@ void test_thread_roots_rounded_up_to_the_nuts_faces() {
     if (std::abs(centre - x) < ball) {
       width -= 2 * std::sqrt(ball * ball - (centre - x) * (centre - x));
     }
-    area += width * tangent / kSteps;
     moment += (bore + depth - x) * width * tangent / kSteps;
   }
   const auto plane_area = [](const Shape& shape, double z) {
@@ -1987,6 +2114,8 @@ void sweeps_tests() {
   guarded("backward sweeps", test_backward_sweeps);
   guarded("parallel turns", test_parallel_turns);
   guarded("rail regions", test_rail_regions);
+  guarded("two rails and end scale", test_two_rails_and_end_scale);
+  guarded("rail plane", test_rail_plane);
   guarded("pipes", test_pipes);
   guarded("coils", test_coils);
   guarded("helices", test_helices);

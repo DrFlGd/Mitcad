@@ -1,0 +1,49 @@
+{
+  "format": "solidcraft/27",
+  "name": "Boundary fills",
+  "units": "mm",
+  "params": [],
+  "features": [
+    {
+      "id": 1, "name": "BoxA", "type": "box", "body_names": ["A"],
+      "corner": [0, 0, 0], "length": "20", "width": "20", "height": "20",
+      "operation": "new_body"
+    },
+    {
+      "id": 2, "name": "BoxB", "type": "box", "body_names": ["B"],
+      "corner": [10, 10, 10], "length": "20", "width": "20", "height": "20",
+      "operation": "new_body"
+    },
+    {
+      "id": 3, "name": "CoreFill", "type": "boundary_fill", "body_names": ["Core"],
+      "tools": ["A", "B"], "cells": [[15.0, 15.0, 15.0]],
+      "operation": "new_body"
+    },
+    {
+      "id": 4, "name": "SidesFill", "type": "boundary_fill", "body_names": ["Left", "Right"],
+      "tools": ["A", "B"], "cells": [[5.0, 5.0, 5.0], [25.0, 25.0, 25.0]],
+      "operation": "new_body", "remove_tools": true
+    },
+    {
+      "id": 5, "name": "PlateBox", "type": "box", "body_names": ["Plate"],
+      "corner": [40, 0, 0], "length": "40", "width": "20", "height": "10",
+      "operation": "new_body"
+    },
+    {
+      "id": 6, "name": "BarBox", "type": "box", "body_names": ["Bar"],
+      "corner": [50, -10, 5], "length": "10", "width": "40", "height": "10",
+      "operation": "new_body"
+    },
+    {
+      "id": 7, "name": "StopBox", "type": "box", "body_names": ["Stop"],
+      "corner": [45, 8, 0], "length": "30", "width": "4", "height": "20",
+      "operation": "new_body"
+    },
+    {
+      "id": 8, "name": "SlotsFill", "type": "boundary_fill", "participants": ["Plate"],
+      "tools": ["Bar", "Stop"], "cells": [[55.0, 0.0, 10.0]],
+      "operation": "cut", "remove_tools": true
+    }
+  ],
+  "next_id": 9
+}

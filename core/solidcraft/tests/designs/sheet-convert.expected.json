@@ -1,0 +1,10 @@
+{
+  "comment": "Worked out by hand. The rule is 1 thick, but a conversion takes its thickness from the body: the plate 40 x 20 x 2 (its volume over its top's area) stays 1600. The L of walls 2 thick (y 100..102 under x 0..40, x 0..2 up to y 130), 50 long, is a shell 2 thick behind its outer bottom: bent at its outer sharp edge with radius 3, set back (3 + 2) tan 45 = 5 on both faces, panels 35 and 25 (2 * 50 * 60 = 6000) and a quarter of the ring 3..5 (pi / 4 * 16 * 50 = 200 pi).",
+  "body_count": 2,
+  "total": {"volume_mm3": 8228.3185},
+  "bodies": [
+    {"name": "Plate", "volume_mm3": 1600, "bbox": {"min": [0, 0, 0], "max": [40, 20, 2]}},
+    {"name": "Bracket", "volume_mm3": 6628.3185307180, "bbox": {"min": [0, 100, 0], "max": [40, 130, 50]}}
+  ],
+  "parametric": 3
+}

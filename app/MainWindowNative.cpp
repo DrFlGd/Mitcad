@@ -636,11 +636,7 @@ bool MainWindow::requestNativeClose() {
   if (m_session) {
     if (!m_nativeClosingCommand) {
       m_nativeClosingCommand = true;
-      connect(m_session, &CommandSession::finished, this, [this] {
-        m_nativeClosingCommand = false;
-        QTimer::singleShot(0, this, [this] { m_nativeWindow->close(); });
-      });
-      m_session->cancel();
+      deferForNativeCommand([this] { m_nativeWindow->close(); });
     }
     return false;
   }

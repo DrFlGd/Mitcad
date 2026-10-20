@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstdint>
 #include <exception>
+#include <stdexcept>
 #include <utility>
 
 #include <QEventLoop>
@@ -277,7 +278,10 @@ bool DocumentSession::commandAsync(const QJsonObject& request, QObject* context,
   Document* document = &*m_state.document;
   const bool display = !name.startsWith(QStringLiteral("sketch."));
   auto meshing = std::make_shared<DisplayMeshing>();
-  return startAsync(name, commandStage(name), [document, json, result, display, meshing](ModelJob& job) {
+  const bool failForTest = !busy() && name == m_testFailCommand;
+  if (failForTest) { m_testFailCommand.clear(); }
+  return startAsync(name, commandStage(name), [document, json, result, display, meshing, failForTest](ModelJob& job) {
+    if (failForTest) { throw std::runtime_error("Injected recovery command failure."); }
     {
       const AttachedJob attached(*document, job);
       result->answer = parseObject(document->command(rustStr(json)));

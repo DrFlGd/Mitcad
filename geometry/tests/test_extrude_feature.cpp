@@ -262,7 +262,7 @@ void test_taper_closing_profile() {
 void test_thin() {
   // T0 ext_thin_closed: a 2 mm wall centred on a 40 x 20 outline, 10 high.
   ExtrudeFeatureSpec spec = spec_of({rectangle(1, 0, 0, 40, 20)}, 10);
-  spec.side1.thin = ThinWall{WallLocation::Center, 2};
+  spec.side1.thin = ThinWall{WallLocation::Center, 2, 0};
   const ShapePtr frame = extrude_feature(spec);
   CHECK(near(volume(*frame), (42 * 22 - 38 * 18) * 10));
   CHECK(frame->face_count() == 10);
@@ -277,19 +277,22 @@ void test_thin() {
   CHECK(near(volume(*extrude_feature(spec)), (44 * 24 - 40 * 20) * 10));
   spec.side1.thin->location = WallLocation::Side2;
   CHECK(near(volume(*extrude_feature(spec)), (40 * 20 - 36 * 16) * 10));
+  // Both sides: 2 outside, 1 inside (mitcad#463).
+  spec.side1.thin = ThinWall{WallLocation::Both, 2, 1};
+  CHECK(near(volume(*extrude_feature(spec)), (44 * 24 - 38 * 18) * 10));
 
   // A disc with a hole: a ring on each loop; side 1 goes into the hole.
   Region ring = circle(1, 0, 0, 20);
   ring.loops.push_back(circle(2, 0, 0, 10).loops[0]);
   spec = spec_of({ring}, 10);
-  spec.side1.thin = ThinWall{WallLocation::Side1, 2};
+  spec.side1.thin = ThinWall{WallLocation::Side1, 2, 0};
   CHECK(near(volume(*extrude_feature(spec)), kPi * ((22 * 22 - 20 * 20) + (10 * 10 - 8 * 8)) * 10));
 
   // Different walls on the two sides meet in a step at the sketch plane.
   spec = spec_of({rectangle(1, 0, 0, 40, 20)}, 10);
-  spec.side1.thin = ThinWall{WallLocation::Center, 2};
+  spec.side1.thin = ThinWall{WallLocation::Center, 2, 0};
   spec.side2 = distance(5);
-  spec.side2->thin = ThinWall{WallLocation::Side2, 4};
+  spec.side2->thin = ThinWall{WallLocation::Side2, 4, 0};
   const ShapePtr stepped = extrude_feature(spec);
   CHECK(near(volume(*stepped), (42 * 22 - 38 * 18) * 10 + (40 * 20 - 32 * 12) * 5));
   CHECK(!stepped->find_faces("F2:mid(" + rectangle_region_name(1) + ")").empty());
@@ -522,6 +525,118 @@ void test_several_regions() {
   CHECK(throws_with([&] { extrude_feature(spec); }, "no profiles"));
 }
 
+// Thin walls along chains of sketch curves (mitcad#463).
+
+PathCurve chain_line(const std::string& name, double x0, double y0, double x1, double y1) {
+  PathCurve piece;
+  piece.name = name;
+  piece.curve.kind = ModelCurveKind::Line;
+  piece.curve.start = gp_Pnt(x0, y0, 0);
+  piece.curve.end = gp_Pnt(x1, y1, 0);
+  return piece;
+}
+
+// An arc of `radius` about the origin from angle `first` to `last`,
+// counter-clockwise about +z.
+PathCurve chain_arc(const std::string& name, double radius, double first, double last) {
+  PathCurve piece;
+  piece.name = name;
+  piece.curve.kind = ModelCurveKind::Conic;
+  piece.curve.center = gp_Pnt(0, 0, 0);
+  piece.curve.normal = gp_Dir(0, 0, 1);
+  piece.curve.x_axis = gp_Dir(1, 0, 0);
+  piece.curve.major = piece.curve.minor = radius;
+  piece.curve.first = first;
+  piece.curve.last = last;
+  return piece;
+}
+
+ExtrudeFeatureSpec along(std::vector<Path> chains, WallLocation location, double thickness) {
+  ExtrudeFeatureSpec spec = spec_of({}, 10);
+  for (std::size_t i = 0; i < chains.size(); ++i) {
+    std::string key = "r{";
+    for (const PathCurve& piece : chains[i]) {
+      key += (key.size() > 2 ? "," : "") + piece.name;
+    }
+    spec.chain_keys.push_back(key + "}");
+  }
+  spec.chains = std::move(chains);
+  spec.side1.thin = ThinWall{location, thickness, 0};
+  return spec;
+}
+
+void test_thin_open_chains() {
+  // An L bending left: (0,0) to (40,0) to (40,30). Side 1 is to its right,
+  // round the outside of the corner, which the walls meet in a mitre.
+  const Path ell{chain_line("c1", 0, 0, 40, 0), chain_line("c2", 40, 0, 40, 30)};
+  ExtrudeFeatureSpec spec = along({ell}, WallLocation::Side1, 2);
+  const ShapePtr outside = extrude_feature(spec);
+  CHECK(near(volume(*outside), (2 * 40 + 2 * 30 + 2 * 2) * 10));
+  for (const char* face : {"F2:outer(c1)", "F2:outer(c2)", "F2:inner(c1)", "F2:inner(c2)",
+                           "F2:tip0(c1)", "F2:tip1(c2)", "F2:start(r{c1,c2})", "F2:end(r{c1,c2})"}) {
+    CHECK(faces_named(*outside, face) == 1);
+  }
+  CHECK(outside->face_count() == 8 && edge_names_unique(*outside));
+  CHECK(BRepCheck_Analyzer(outside->occt()).IsValid());
+  // Side 2, inside the corner; centred, half each way.
+  spec.side1.thin->location = WallLocation::Side2;
+  CHECK(near(volume(*extrude_feature(spec)), (2 * 40 + 2 * 30 - 2 * 2) * 10));
+  spec.side1.thin->location = WallLocation::Center;
+  const ShapePtr centred = extrude_feature(spec);
+  CHECK(near(volume(*centred), (2 * 40 + 2 * 30) * 10));
+  const BoundingBox box = bounding_box(*centred);
+  CHECK(near(box.min.X(), 0) && near(box.max.X(), 41) && near(box.min.Y(), -1) && near(box.max.Y(), 30));
+  // Both sides by their own thicknesses: 2 to the right, 1 to the left.
+  spec.side1.thin = ThinWall{WallLocation::Both, 2, 1};
+  CHECK(near(volume(*extrude_feature(spec)), (2 * 40 + 2 * 30 + 2 * 2 + 1 * 40 + 1 * 30 - 1 * 1) * 10));
+  spec.side1.thin->thickness2 = 0.0;
+  CHECK(throws_with([&] { extrude_feature(spec); }, "thickness on side 2"));
+  spec.side1.thin = ThinWall{WallLocation::Center, 2, 0};
+  // A taper widens the wall away from the start.
+  spec.side1.taper = 0.05;
+  const ShapePtr tapered = extrude_feature(spec);
+  CHECK(volume(*tapered) > (2 * 40 + 2 * 30) * 10 && BRepCheck_Analyzer(tapered->occt()).IsValid());
+  spec.side1.taper = 0.0;
+
+  // A straight line: side 2 to its left.
+  spec = along({{chain_line("c1", 0, 0, 10, 0)}}, WallLocation::Side2, 1);
+  const BoundingBox left = bounding_box(*extrude_feature(spec));
+  CHECK(near(volume(*extrude_feature(spec)), 10 * 1 * 10));
+  CHECK(near(left.min.Y(), 0) && near(left.max.Y(), 1));
+
+  // A half circle of radius 10, centred: a half ring 9 to 11.
+  spec = along({{chain_arc("c1", 10, 0, kPi)}}, WallLocation::Center, 2);
+  CHECK(near(volume(*extrude_feature(spec)), kPi / 2 * (11 * 11 - 9 * 9) * 10));
+  // Thicker inside than its radius: no wall.
+  spec.side1.thin = ThinWall{WallLocation::Side2, 12, 0};
+  CHECK(throws_with([&] { extrude_feature(spec); }, "thin wall"));
+
+  // A closed chain: side 1 outside the area it encloses.
+  const Path square{chain_line("c1", 0, 0, 40, 0), chain_line("c2", 40, 0, 40, 20),
+                    chain_line("c3", 40, 20, 0, 20), chain_line("c4", 0, 20, 0, 0)};
+  spec = along({square}, WallLocation::Side1, 2);
+  const ShapePtr frame = extrude_feature(spec);
+  CHECK(near(volume(*frame), (44 * 24 - 40 * 20) * 10));
+  CHECK(faces_named(*frame, "F2:outer(c3)") == 1 && faces_named(*frame, "F2:start(r{c1,c2,c3,c4})") == 1);
+
+  // Chains that meet in a T make one solid; two sides with their own walls.
+  spec = along({{chain_line("c1", 0, 0, 40, 0)}, {chain_line("c2", 20, 0, 20, 20)}}, WallLocation::Center, 2);
+  const ShapePtr tee = extrude_feature(spec);
+  CHECK(solids(*tee).size() == 1);
+  CHECK(near(volume(*tee), (40 * 2 + 2 * 19) * 10));
+  spec.side2 = distance(5);
+  spec.side2->thin = ThinWall{WallLocation::Center, 4, 0};
+  CHECK(near(volume(*extrude_feature(spec)), (40 * 2 + 2 * 19) * 10 + (40 * 4 + 4 * 18) * 5));
+
+  // Curves only with walls, each chain with its key.
+  spec = along({ell}, WallLocation::Center, 2);
+  spec.side1.thin.reset();
+  CHECK(throws_with([&] { extrude_feature(spec); }, "only a thin extrusion"));
+  spec = along({ell}, WallLocation::Center, 2);
+  spec.chain_keys.clear();
+  CHECK(throws_with([&] { extrude_feature(spec); }, "its key"));
+}
+
 } // namespace
 
 void extrude_feature_tests() {
@@ -537,6 +652,7 @@ void extrude_feature_tests() {
   guarded("test_clockwise_loops", test_clockwise_loops);
   guarded("test_circles_touching_at_a_point", test_circles_touching_at_a_point);
   guarded("test_several_regions", test_several_regions);
+  guarded("test_thin_open_chains", test_thin_open_chains);
 }
 
 } // namespace test

@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: MIT
+[package]
+name = "mitcad-dwg"
+description = "Reader for .dwg drawings: the file header, sections and their decompression, the object map, classes, header variables, and the 3D content (B-rep solids, meshes, blocks and their inserts, layers)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+name = "mitcad_dwg"
+
+[[bin]]
+name = "mitcad-dwg-inspect"
+path = "src/bin/mitcad-dwg-inspect.rs"
+
+[dependencies]
+# The B-rep record of solids is an ASM file (binary, or its text form),
+# parsed and converted by the .f3d reader's ASM code.
+mitcad-f3d = { path = "../f3d" }
+# Drawing units ($INSUNITS) shared with the DXF reader.
+mitcad-dxf = { path = "../dxf" }
+# The drawing's summary and the import report as JSON.
+serde = { workspace = true }
+serde_json = { workspace = true }

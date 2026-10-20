@@ -241,6 +241,9 @@ public:
 
 signals:
   void finished(bool committed);
+  // A failed cancellation leaves the session open for another attempt.
+  // Successful cancellation can retain earlier applications of a repeating command.
+  void cancelFinished(bool succeeded);
 
 protected:
   // Tab steps a choice with a cycle (InputDef::tabCycle, mitcad#375).
@@ -437,6 +440,8 @@ private:
   void showParameterLabels();
   void hideParameterLabels();
   void insertParameter(const QString& name);
+  // The active input is a selection of several items that takes more.
+  bool activeTakesMore() const;
   // A value field's tooltip when the feature owns its parameter, as a
   // sketch dimension's: "d3 = d1 / 2 → 20 mm (Sketch1 width)" (mitcad#250).
   void describeParameter(const QString& key, const QString& rename, const QString& text, const QString& shown);

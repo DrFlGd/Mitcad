@@ -1,0 +1,13 @@
+{
+  "comment": "Worked out by hand (mitcad#463): an L of lines (0,0)-(40,0)-(40,30) bending left, its wall 2 thick outside (to its right, round the outside of the corner, mitred) and 10 high: (2 * 40 + 2 * 30 + 2 * 2) * 10 = 1440; a half circle of radius 10 about (100,0) counter-clockwise from (110,0), its wall 2 thick centred: pi / 2 * (11^2 - 9^2) * 10 = 628.3185; a 40 x 20 outline at (200,0), 1 inside and 2 outside: (44 * 24 - 38 * 18) * 10 = 3720.",
+  "body_count": 3,
+  "total": {"volume_mm3": 5788.3185307180},
+  "bbox": {"min": [0, -2, 0], "max": [242, 30, 10]},
+  "bodies": [
+    {"name": "Bracket", "volume_mm3": 1440, "bbox": {"min": [0, -2, 0], "max": [42, 30, 10]}},
+    {"name": "Half ring", "volume_mm3": 628.3185307180, "bbox": {"min": [89, 0, 0], "max": [111, 11, 10]}},
+    {"name": "Frame", "volume_mm3": 3720, "bbox": {"min": [198, -2, 0], "max": [242, 22, 10]}}
+  ],
+  "timeline": [{"name": "Corner"}, {"name": "Thin1"}, {"name": "Bend"}, {"name": "Thin2"}, {"name": "Outline"}, {"name": "Thin3"}],
+  "parametric": 6
+}

@@ -243,11 +243,85 @@ std::vector<NamedWire> offset_loops(const TopoDS_Face& face, const std::vector<N
 struct Variation {
   double twist = 0.0;
   double taper = 0.0;
+  double scale = 1.0; // at the ends of the swept part (mitcad#464)
   std::optional<Spine> rail;
+  std::optional<Spine> rail2; // a second rail (mitcad#464)
   ProfileScaling scaling = ProfileScaling::Scale;
+  RailPoint point = RailPoint::Fraction; // mitcad#469
   const Spine* path = nullptr; // the whole path, for the rail's fractions
   double from = 0.0;           // where the part starts on it
+  double swept = 0.0;          // the whole swept length the twist runs over (0: the part's)
 };
+
+// The rail's points at the stations by the plane rule (mitcad#469; see
+// SweepSpec): where it crosses each station's plane square to the path.
+// `frames` are the stations' frames (z along the path), `k0` the
+// profile's station, `length` the part's length (for the message).
+std::vector<gp_Pnt> plane_points(const Spine& rail, const std::vector<gp_Ax3>& frames,
+                                 const std::vector<double>& stations, std::size_t k0, double length,
+                                 double path_length) {
+  const double tolerance = std::max(1e-3, 1e-6 * path_length);
+  const double rail_length = rail.length();
+  const double slack = 1e-9 * std::max(1.0, rail_length);
+  const auto crossings = [&](std::size_t i) {
+    return rail.crossings(gp_Pln(frames[i].Location(), frames[i].Direction()), tolerance);
+  };
+  const auto missing = [&](std::size_t i) {
+    const long percent = length > 0.0 ? std::lround(100.0 * stations[i] / length) : 0;
+    return std::invalid_argument("the guide rail does not reach the plane square to the path " +
+                                 std::to_string(percent) +
+                                 "% of the way along the swept part; it must run beside all of it");
+  };
+  std::vector<gp_Pnt> points(frames.size());
+  // At the profile: the crossing nearest to the path.
+  const std::vector<double> first = crossings(k0);
+  if (first.empty()) {
+    throw missing(k0);
+  }
+  const gp_Pnt p0 = frames[k0].Location();
+  double start = first.front();
+  for (const double s : first) {
+    if (rail.point(s).Distance(p0) < rail.point(start).Distance(p0)) {
+      start = s;
+    }
+  }
+  points[k0] = rail.point(start);
+  // The way the rail runs with the path there (onwards from its nearer
+  // end where it crosses square to the path).
+  const double along = gp_Vec(rail.tangent(start)).Dot(gp_Vec(frames[k0].Direction()));
+  const int way = std::abs(along) > 1e-9 ? (along > 0.0 ? 1 : -1) : (start <= rail_length / 2.0 ? 1 : -1);
+  // Station by station from the profile, each way: the first crossing on
+  // from the last one.
+  const auto walk = [&](int step, int sense) {
+    double cursor = start;
+    for (long i = static_cast<long>(k0) + step; i >= 0 && i < static_cast<long>(frames.size()); i += step) {
+      const std::size_t at = static_cast<std::size_t>(i);
+      double best = std::numeric_limits<double>::infinity();
+      double next = cursor;
+      for (const double s : crossings(at)) {
+        double ahead = sense * (s - cursor);
+        if (rail.closed()) {
+          ahead = std::fmod(std::fmod(ahead, rail_length) + rail_length, rail_length);
+          if (ahead > rail_length - slack) {
+            ahead -= rail_length;
+          }
+        }
+        if (ahead >= -slack && ahead < best) {
+          best = ahead;
+          next = s;
+        }
+      }
+      if (!std::isfinite(best)) {
+        throw missing(at);
+      }
+      cursor = next;
+      points[at] = rail.point(cursor);
+    }
+  };
+  walk(1, way);
+  walk(-1, -way);
+  return points;
+}
 
 ShapePtr varied_sweep(const SweepSpec& spec, const std::vector<detail::SweepFace>& faces,
                       const TopoDS_Wire& part, double at, const Variation& variation,
@@ -259,6 +333,9 @@ ShapePtr varied_sweep(const SweepSpec& spec, const std::vector<detail::SweepFace
   segments = std::max(segments, static_cast<int>(std::ceil(std::abs(variation.twist) / (kPi / 36.0))));
   if (variation.rail) {
     segments = std::max(segments, 8 * variation.rail->edge_count());
+  }
+  if (variation.rail2) {
+    segments = std::max(segments, 8 * variation.rail2->edge_count());
   }
   segments = std::clamp(segments, 8, 120);
   std::vector<double> stations;
@@ -283,26 +360,59 @@ ShapePtr varied_sweep(const SweepSpec& spec, const std::vector<detail::SweepFace
   const std::vector<gp_Ax3> frames = detail::follow_frames(spine, s0, n0, stations);
 
   // The rail's direction (at right angles to the path) and distance at each
-  // station.
+  // station; with two rails (mitcad#464) the first rail's point (in the
+  // station's plane) and the way across to the second, square to the path.
   std::vector<gp_Vec> towards(stations.size());
+  std::vector<gp_Pnt> anchors(stations.size());
   if (variation.rail) {
     const double path_length = variation.path->length();
-    for (std::size_t i = 0; i < stations.size(); ++i) {
-      double s = variation.from + stations[i];
-      if (variation.path->closed()) {
-        s = std::fmod(std::fmod(s, path_length) + path_length, path_length);
+    // The rails' points: by the plane rule (mitcad#469) where they cross
+    // the stations' planes, else at the stations' fractions of the path.
+    std::vector<gp_Pnt> on_rail;
+    std::vector<gp_Pnt> on_rail2;
+    if (variation.point == RailPoint::Plane) {
+      on_rail = plane_points(*variation.rail, frames, stations, k0, length, path_length);
+      if (variation.rail2) {
+        on_rail2 = plane_points(*variation.rail2, frames, stations, k0, length, path_length);
       }
-      const double fraction = std::clamp(s / path_length, 0.0, 1.0);
-      const gp_Pnt q = variation.rail->point(fraction * variation.rail->length());
+    } else {
+      for (std::size_t i = 0; i < stations.size(); ++i) {
+        double s = variation.from + stations[i];
+        if (variation.path->closed()) {
+          s = std::fmod(std::fmod(s, path_length) + path_length, path_length);
+        }
+        const double fraction = std::clamp(s / path_length, 0.0, 1.0);
+        on_rail.push_back(variation.rail->point(fraction * variation.rail->length()));
+        if (variation.rail2) {
+          on_rail2.push_back(variation.rail2->point(fraction * variation.rail2->length()));
+        }
+      }
+    }
+    for (std::size_t i = 0; i < stations.size(); ++i) {
+      const gp_Pnt q = on_rail[i];
       const gp_Dir t = frames[i].Direction();
       gp_Vec v(frames[i].Location(), q);
       v -= gp_Vec(t) * v.Dot(gp_Vec(t));
-      if (v.Magnitude() <= Precision::Confusion()) {
+      if (variation.rail2) {
+        anchors[i] = frames[i].Location().Translated(v);
+        v = gp_Vec(q, on_rail2[i]);
+        v -= gp_Vec(t) * v.Dot(gp_Vec(t));
+        if (v.Magnitude() <= Precision::Confusion()) {
+          throw std::invalid_argument("the guide rails meet; they must run apart");
+        }
+      } else if (v.Magnitude() <= Precision::Confusion()) {
         throw std::invalid_argument("the guide rail meets the path; it must run beside it");
       }
       towards[i] = v;
     }
   }
+  // The end scale (mitcad#464): from 1 at the profile to `scale` at each end
+  // of the swept part, in proportion to the length run.
+  const auto end_scale = [&](std::size_t i) {
+    const double run = stations[i] - s0;
+    const double side = run >= 0.0 ? length - s0 : s0;
+    return side > 0.0 ? 1.0 + (variation.scale - 1.0) * std::abs(run) / side : 1.0;
+  };
   const auto angle_of = [&](std::size_t i) {
     const gp_Vec n(frames[i].XDirection());
     const gp_Vec t(frames[i].Direction());
@@ -315,8 +425,8 @@ ShapePtr varied_sweep(const SweepSpec& spec, const std::vector<detail::SweepFace
     const gp_Dir t = frames[i].Direction();
     gp_Trsf move;
     move.SetDisplacement(frames[k0], frames[i]);
-    double angle = variation.twist * (stations[i] - s0) / length;
-    double scale = 1.0;
+    double angle = variation.twist * (stations[i] - s0) / (variation.swept > 0.0 ? variation.swept : length);
+    double scale = variation.rail ? 1.0 : end_scale(i);
     if (variation.rail) {
       double turn = angle_of(i) - angle_of(k0);
       turn = std::remainder(turn, kTwoPi);
@@ -327,17 +437,27 @@ ShapePtr varied_sweep(const SweepSpec& spec, const std::vector<detail::SweepFace
     }
     gp_Trsf turn;
     turn.SetRotation(gp_Ax1(p, t), angle);
-    gp_GTrsf placement(turn.Multiplied(move));
+    gp_Trsf rigid = turn.Multiplied(move);
+    // Sizes about the path, or with two rails the profile moves with the
+    // first rail and sizes about it.
+    gp_Pnt center = p;
+    if (variation.rail2) {
+      gp_Trsf shift;
+      shift.SetTranslation(anchors[k0].Transformed(rigid), anchors[i]);
+      rigid = shift.Multiplied(rigid);
+      center = anchors[i];
+    }
+    gp_GTrsf placement(rigid);
     if (std::abs(scale - 1.0) > 1e-12) {
       if (variation.rail && variation.scaling == ProfileScaling::Stretch) {
         gp_GTrsf stretch;
-        stretch.SetAffinity(gp_Ax2(p, gp_Dir(towards[i])), scale);
+        stretch.SetAffinity(gp_Ax2(center, gp_Dir(towards[i])), scale);
         placement = stretch.Multiplied(placement);
         affine = true;
       } else {
         gp_Trsf grow;
-        grow.SetScale(p, scale);
-        placement = gp_GTrsf(grow.Multiplied(turn.Multiplied(move)));
+        grow.SetScale(center, scale);
+        placement = gp_GTrsf(grow.Multiplied(rigid));
       }
     }
     placements.push_back(placement);
@@ -709,6 +829,9 @@ ShapePtr sweep(const SweepSpec& spec) {
   if (std::abs(spec.taper) >= kPi / 2.0) {
     throw std::invalid_argument("the taper angle must be less than 90 degrees");
   }
+  if (!(spec.scale >= 0.01 && spec.scale <= 100.0)) {
+    throw std::invalid_argument("the sweep's end scale must be between 0.01 and 100");
+  }
   return detail::run("sweep", [&] {
     const std::vector<detail::SweepFace> faces =
         detail::merged(detail::region_faces(spec.feature, spec.frame, spec.regions));
@@ -734,12 +857,21 @@ ShapePtr sweep(const SweepSpec& spec) {
     if (on_surface && spec.orientation == SweepOrientation::Parallel) {
       throw std::invalid_argument("unsupported: guide surfaces with parallel orientation");
     }
-    const bool varied = !on_surface && (guided || spec.twist != 0.0 || spec.taper != 0.0);
+    if (!spec.rail2.empty() && !guided) {
+      throw std::invalid_argument("a second guide rail needs a first one");
+    }
+    if (spec.scale != 1.0 && (guided || on_surface)) {
+      throw std::invalid_argument("an end scale is not taken with guide rails or guide surfaces");
+    }
+    const bool varied =
+        !on_surface && (guided || spec.twist != 0.0 || spec.taper != 0.0 || spec.scale != 1.0);
     if (varied && spec.orientation == SweepOrientation::Parallel) {
-      throw std::invalid_argument("unsupported: twists, tapers and guide rails with parallel orientation");
+      throw std::invalid_argument(
+          "unsupported: twists, tapers, end scales and guide rails with parallel orientation");
     }
     if (varied && range.around) {
-      throw std::invalid_argument("unsupported: twists, tapers and guide rails round a whole closed path");
+      throw std::invalid_argument(
+          "unsupported: twists, tapers, end scales and guide rails round a whole closed path");
     }
     // A fixed binormal (mitcad#397) only for a plain perpendicular sweep.
     if (spec.binormal && (varied || on_surface || spec.orientation == SweepOrientation::Parallel)) {
@@ -762,14 +894,39 @@ ShapePtr sweep(const SweepSpec& spec) {
       Variation variation;
       if (guided) {
         variation.rail.emplace(detail::path_wire(spec.rail));
+        if (!spec.rail2.empty()) {
+          variation.rail2.emplace(detail::path_wire(spec.rail2));
+        }
         variation.scaling = spec.scaling;
+        variation.point = spec.rail_point;
       } else {
         variation.twist = spec.twist;
         variation.taper = spec.taper;
+        variation.scale = spec.scale;
       }
       variation.path = &path;
       variation.from = range.from;
-      result = varied_sweep(spec, faces, part, at, variation, range);
+      const double inside = 1e-9 * std::max(1.0, path.length());
+      if (variation.scale != 1.0 && at - range.from > inside && range.to - at > inside) {
+        // An end scale both ways from the profile (mitcad#464) grows the
+        // profile away from it on either side: a crease there, which one
+        // smooth loft through all the copies would round over. Each side
+        // is lofted from the profile and the two are fused; the far ends
+        // keep their caps (start beyond the profile, end before it).
+        variation.swept = range.to - range.from;
+        std::vector<ShapePtr> sides;
+        for (const auto& [from, to] : {std::pair{at, range.to}, std::pair{range.from, at}}) {
+          Range side;
+          side.from = from;
+          side.to = to;
+          side.at_start = false;
+          variation.from = from;
+          sides.push_back(varied_sweep(spec, faces, path.part(from, to), at, variation, side));
+        }
+        result = detail::fused(sides, "the sweep");
+      } else {
+        result = varied_sweep(spec, faces, part, at, variation, range);
+      }
     } else if (spec.orientation == SweepOrientation::Parallel) {
       PipeMode mode;
       mode.kind = PipeMode::Kind::Fixed;

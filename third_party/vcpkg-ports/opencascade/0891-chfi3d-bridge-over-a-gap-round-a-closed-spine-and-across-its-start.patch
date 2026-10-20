@@ -1,0 +1,132 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: a closed rounding walked over a gap in its face (the rounded
+mouth of a hole the ball cannot touch, 0160) where the piece over the gap
+runs on round most of the spine, or the gap lies across the spine's start
+(mitcad#343).
+
+The case: a disc's bottom rim rounded with 1 over a narrow rounding of the
+rim (the edge overflow), the contact on the bottom face running over the
+mouth of a blind hole near the rim, rounded with 0.5. The blend is walked
+on over the gap and cut by the mouth's rounding, the cut crossing that
+rounding's seam, so the piece is cut in two at the seam
+(WalkedBridgeOverGap). Three faults:
+
+- ChFi3d_KPartLineParam: the piece over the gap was walked from the gap on
+  round the rest of the closed spine (its other contact's line from the
+  gap's start to the spine's end), and the parameter on that line of the
+  section through the gap's start, the line's own start, came from the
+  projection's nearest foot on the far side of the disc: the line's ends
+  were not taken as feet. The cut then found no crossing of the seam, the
+  plain cut failed and so did the stripe. A bounded line's end nearer to
+  the point than any foot is taken now.
+- ChFi3d_KPartCutCurve: with the gap across the spine's start, the piece
+  ends at the section where the contact comes back into its face, and the
+  intersection of the walked blend with the mouth's rounding lost the last
+  stretch of the cut at the surface's boundary there (the cut went round
+  the long way). A walked blend (a B-spline) is intersected as extended by
+  a quarter of its length past both ends along the spine.
+- ChFi3d_KPartCutPiece: with the gap across the spine's start, the stretch
+  past the start took the vertex where the cut crossed the seam, just
+  before that stretch, for a vertex of the face beyond under the blend
+  (its nearest point on the contact's line was the line's end), and the
+  piece was given up. A vertex whose nearest point on that line is no foot
+  (it lies beyond the stretch along the spine) is passed over.
+
+On the stored body before the item the rounding is now valid: a change of
+volume of -7.38905 mm3 against the stored -7.38889, the mouth's rounding
+5.6721 mm2 against 5.6708; on the replay's body (whose spine starts in the
+gap) -7.38891. The disc in geometry/tests/test_fillet_end_overflow.cpp
+fails without the third change (the gap across the spine's start on either
+side of it); the first two are verified on the stored body and the replay's
+body only, as no synthetic body made the projection miss the line's end or
+the intersection lose its last stretch.
+
+Upstream: new.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+@@ -5503,8 +5503,36 @@
+   {
+     return false;
+   }
++  // (A walked blend is intersected as extended past its ends along the
++  // spine: a cut ending at its end section, as a piece over a gap across
++  // the start of a closed spine, loses its last stretch at the surface's
++  // boundary otherwise.)
++  occ::handle<Geom_Surface> SI = S;
++  if (const occ::handle<Geom_BSplineSurface> aBS = occ::down_cast<Geom_BSplineSurface>(S))
++  {
++    double u1 = 0., u2 = 0., v1 = 0., v2 = 0.;
++    aBS->Bounds(u1, u2, v1, v2);
++    const double um = 0.5 * (u1 + u2), vm = 0.5 * (v1 + v2);
++    const double aLen = Coord == 1 ? aBS->Value(u1, vm).Distance(aBS->Value(u2, vm))
++                                   : aBS->Value(um, v1).Distance(aBS->Value(um, v2));
++    occ::handle<Geom_BoundedSurface> aExt = occ::down_cast<Geom_BoundedSurface>(aBS->Copy());
++    if (aLen > Precision::Confusion())
++    {
++      try
++      {
++        OCC_CATCH_SIGNALS
++        GeomLib::ExtendSurfByLength(aExt, 0.25 * aLen, 1, Coord == 1, true);
++        GeomLib::ExtendSurfByLength(aExt, 0.25 * aLen, 1, Coord == 1, false);
++        SI = aExt;
++      }
++      catch (Standard_Failure const&)
++      {
++        SI = S;
++      }
++    }
++  }
+   GeomInt_IntSS anInter;
+-  anInter.Perform(S, SB, 2.e-7, true, true, true);
++  anInter.Perform(SI, SB, 2.e-7, true, true, true);
+   if (!anInter.IsDone())
+   {
+     return false;
+@@ -6188,6 +6216,22 @@
+     const double aMid = 0.5 * (FI.FirstParameter() + FI.LastParameter());
+     t                 = ElCLib::InPeriod(t, aMid - 0.5 * C->Period(), aMid + 0.5 * C->Period());
+   }
++  else if (!Precision::IsInfinite(C->FirstParameter()) && !Precision::IsInfinite(C->LastParameter()))
++  {
++    // (A bounded line whose end is nearer to P than any foot of P on it:
++    // the section through P is its end, where the projection may find no
++    // extremum; on a line round most of a closed spine it found one on the
++    // far side.)
++    double d = aProj.LowerDistance();
++    for (const double te : {C->FirstParameter(), C->LastParameter()})
++    {
++      if (C->Value(te).Distance(P) < d)
++      {
++        d = C->Value(te).Distance(P);
++        t = te;
++      }
++    }
++  }
+   return true;
+ }
+ 
+@@ -6689,8 +6733,19 @@
+       {
+         continue;
+       }
+-      const gp_Pnt Pn = CN->Value(t);
+-      double       to = 0.;
++      gp_Pnt Pn;
++      gp_Vec aTanN;
++      CN->D1(t, Pn, aTanN);
++      // (A vertex beyond the stretch along the spine, whose nearest point on
++      // the contact's line is the line's end, is not under it: a gap across
++      // the start of a closed spine has the vertex where the cut crossed
++      // B's seam just before the stretch past the start.)
++      if (aTanN.Magnitude() > gp::Resolution()
++          && std::abs(gp_Vec(Pn, V).Dot(aTanN.Normalized())) > 10. * tol3d)
++      {
++        continue;
++      }
++      double to = 0.;
+       if (!ChFi3d_KPartLineParam(DStr, Full, opp, Pn, to))
+       {
+         continue;

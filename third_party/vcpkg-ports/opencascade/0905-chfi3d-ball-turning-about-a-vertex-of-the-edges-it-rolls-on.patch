@@ -1,0 +1,150 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: the piece where a ball rolling on an edge turns about the edge's
+vertex onto the next edge is walked back only over its turn and oriented
+as its neighbours (mitcad#343).
+
+The case: 0904's notch walls, whose far edges are in pieces (the wall's
+edges with the tongue's faces): the ball rests on their common vertex
+while its other contact moves on (a contact that stands still, 0200), and
+then rolls on the next edge. Three faults there:
+
+- ChFi3d_Builder::ComputeData (a surface and an edge): a walk back from the
+  start of the piece walked before it, starting on such a vertex, was
+  completed forward from its start (as a walk from inside the spine is),
+  over the piece before it, up to where its contact reached an edge 0.2
+  further: overlapping pieces, an invalid result. Such a walk is not
+  completed forward.
+- ChFi3d_ExtendAtSpineEnds extended a piece at the end its walk started
+  from, where its section is the one the piece before it ended with; only
+  the end the walk reached is extended now.
+- ChFi3d_FilDS: the side of a piece reduced to a point (the vertex the ball
+  turns about) took its transition from the walk, from a contact that does
+  not move: the turn's face came out reversed on its wire
+  (BRepCheck_BadOrientationOfSubshape). It takes the transition of a
+  neighbouring piece on the same faces rolling on the same edge (a
+  neighbour that rolls on no edge there, as at 0390's concave turn, is
+  passed over).
+
+Upstream: new.
+
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
+index 40572c24..aa0c4bd0 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
+@@ -4082,6 +4082,26 @@ void ChFi3d_FilDS(const int                         SolidIndex,
+             ChFiDS_FaceInterference&       Fc = Fd->ChangeInterference(onS);
+             Fc.SetFirstParameter(Fo.FirstParameter());
+             Fc.SetLastParameter(Fo.LastParameter());
++            // Its transition, which the walk took from a contact that does
++            // not move, is that of a neighbour on the same face and edge
++            // (the piece rolling up to the point), so that the blend's face
++            // is oriented as its neighbours'.
++            for (const int jn : {j - 1, j + 1})
++            {
++              if (jn < 1 || jn > SeqFil.Length())
++              {
++                continue;
++              }
++              const occ::handle<ChFiDS_SurfData>& Fn = SeqFil(jn);
++              if (Fn->Index(onS) == Fd->Index(onS) && Fn->Index(3 - onS) == Fd->Index(3 - onS)
++                  && Fn->IsOnCurve(onS) && Fd->IsOnCurve(onS)
++                  && Fn->IndexOfC(onS) == Fd->IndexOfC(onS) && Fn->Orientation() == Fd->Orientation()
++                  && Fn->Interference(3 - onS).Transition() == Fo.Transition())
++              {
++                Fc.SetTransition(Fn->Interference(onS).Transition());
++                break;
++              }
++            }
+           }
+           continue;
+         }
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_6.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_6.cxx
+index b8bbd25a..059b0f47 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_6.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_6.cxx
+@@ -1699,7 +1699,11 @@ bool ChFi3d_Builder::ComputeData(occ::handle<ChFiDS_SurfData>&           Data,
+       HGuide->SetOrigin(SpFirst);
+     }
+ 
+-    if (reverse)
++    // (A walk back from the start of the piece walked before it, which
++    // holds the blend past that start already, is not completed forward
++    // where it starts on a vertex the ball turns about: it would walk on
++    // over that piece.)
++    if (reverse && (Inside || !RecP))
+     {
+       if (!TheWalk.Complete(Func, FInv, FInvP, FInvC, SpLast))
+       {
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_FilBuilder.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_FilBuilder.cxx
+index bf22f3c9..6c57c96f 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_FilBuilder.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_FilBuilder.cxx
+@@ -2031,6 +2031,9 @@ void ChFi3d_FilBuilder::SimulSurf(occ::handle<ChFiDS_SurfData>&           Data,
+ //            contact on FS reaches the face at an end of the spine is
+ //            extended past it, so that the face at the end cuts it there
+ //            (as blends between two faces are at the ends of the spine).
++//            Not at the line's end where the walk started (StartEnd: 0 its
++//            start, 1 its end, -1 none): the section there is the one the
++//            piece before it ended with.
+ //=======================================================================
+ 
+ static void ChFi3d_ExtendAtSpineEnds(const occ::handle<ChFiDS_SurfData>& Data,
+@@ -2039,7 +2042,8 @@ static void ChFi3d_ExtendAtSpineEnds(const occ::handle<ChFiDS_SurfData>& Data,
+                                      const occ::handle<ChFiDS_ElSpine>&  HGuide,
+                                      const TopoDS_Face&                  FS,
+                                      const ChFiDS_Map&                   EFMap,
+-                                     const ChFiDS_Map&                   VFMap)
++                                     const ChFiDS_Map&                   VFMap,
++                                     const int                           StartEnd)
+ {
+   if (Spine->IsPeriodic() || lin->NbPoints() < 2)
+   {
+@@ -2048,6 +2052,10 @@ static void ChFi3d_ExtendAtSpineEnds(const occ::handle<ChFiDS_SurfData>& Data,
+   const double aRab = 0.03 * (HGuide->LastParameter() - HGuide->FirstParameter());
+   for (int f = 0; f < 2; f++)
+   {
++    if (f == StartEnd)
++    {
++      continue;
++    }
+     const BRepBlend_Extremity& anExt = f == 0 ? lin->StartPointOnFirst() : lin->EndPointOnFirst();
+     if (anExt.NbPointOnRst() == 0)
+     {
+@@ -2635,7 +2643,7 @@ void ChFi3d_FilBuilder::PerformSurf(NCollection_Sequence<occ::handle<ChFiDS_Surf
+       myWalkOnEdge = true;
+       throw Standard_Failure("PerformSurf : Failed processing!");
+     }
+-    ChFi3d_ExtendAtSpineEnds(Data, lin, Spine, HGuide, HS2->Face(), myEFMap, myVFMap);
++    ChFi3d_ExtendAtSpineEnds(Data, lin, Spine, HGuide, HS2->Face(), myEFMap, myVFMap, Inside ? -1 : (Forward ? 0 : 1));
+     TopAbs_Orientation Or = HS2->Face().Orientation();
+     done                  = CompleteData(Data, func, lin, HS1, HS2, Or, true);
+     if (!done)
+@@ -2702,7 +2710,7 @@ void ChFi3d_FilBuilder::PerformSurf(NCollection_Sequence<occ::handle<ChFiDS_Surf
+       myWalkOnEdge = true;
+       throw Standard_Failure("PerformSurf : Failed processing!");
+     }
+-    ChFi3d_ExtendAtSpineEnds(Data, lin, Spine, HGuide, HS2->Face(), myEFMap, myVFMap);
++    ChFi3d_ExtendAtSpineEnds(Data, lin, Spine, HGuide, HS2->Face(), myEFMap, myVFMap, Inside ? -1 : (Forward ? 0 : 1));
+     TopAbs_Orientation Or = HS2->Face().Orientation();
+     done                  = CompleteData(Data, func, lin, HS1, HS2, Or, true);
+     if (!done)
+@@ -2824,7 +2832,7 @@ void ChFi3d_FilBuilder::PerformSurf(NCollection_Sequence<occ::handle<ChFiDS_Surf
+       myWalkOnEdge = true;
+       throw Standard_Failure("PerformSurf : Failed processing!");
+     }
+-    ChFi3d_ExtendAtSpineEnds(Data, lin, Spine, HGuide, HS1->Face(), myEFMap, myVFMap);
++    ChFi3d_ExtendAtSpineEnds(Data, lin, Spine, HGuide, HS1->Face(), myEFMap, myVFMap, Inside ? -1 : (Forward ? 0 : 1));
+     TopAbs_Orientation Or = HS1->Face().Orientation();
+     done                  = CompleteData(Data, func, lin, HS1, HS2, Or, false);
+     if (!done)
+@@ -2892,7 +2900,7 @@ void ChFi3d_FilBuilder::PerformSurf(NCollection_Sequence<occ::handle<ChFiDS_Surf
+       myWalkOnEdge = true;
+       throw Standard_Failure("PerformSurf : Failed processing!");
+     }
+-    ChFi3d_ExtendAtSpineEnds(Data, lin, Spine, HGuide, HS1->Face(), myEFMap, myVFMap);
++    ChFi3d_ExtendAtSpineEnds(Data, lin, Spine, HGuide, HS1->Face(), myEFMap, myVFMap, Inside ? -1 : (Forward ? 0 : 1));
+     TopAbs_Orientation Or = HS1->Face().Orientation();
+     done                  = CompleteData(Data, func, lin, HS1, HS2, Or, false);
+     if (!done)

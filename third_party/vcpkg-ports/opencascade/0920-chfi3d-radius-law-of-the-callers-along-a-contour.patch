@@ -1,0 +1,172 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: a radius law of the caller's along a contour (mitcad#464).
+
+BRepFilletAPI_MakeFillet::SetRadius(Law_Function, IC, IinC) is meant to
+give a contour's rounding the radius the law gives at each parameter of
+its spine, but ChFiDS_FilSpine::SetRadius put the law in a composite it
+then dropped and cleared the radii set at points, so the contour was left
+with no radius at all. The other variable radii are interpolated through
+(parameter, radius) points with level ends (Law_Interpol), so a radius
+given as a B-spline of the position along the edges (Mitcad's spline
+fillet radius) could only be approximated through them.
+
+ChFiDS_FilSpine keeps the law now (`userlaw`, by the spine's parameter,
+the abscissa from its first vertex). ComputeLaw gives each guideline the
+law over its range, constant at the law's end values where the guideline
+runs past the law's bounds (an extension at an end); a closed contour with
+a law is refused. The spine with a law is not constant on any edge
+(IsConstant, Radius), its largest radius is sampled from the law
+(MaxRadFromSeqAndLaws), Reset keeps it (and does not complete the radii
+at points, which it has none of), and a radius set at a point, or a reset
+of all data, drops it.
+
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFiDS/ChFiDS_FilSpine.hxx b/src/ModelingAlgorithms/TKFillet/ChFiDS/ChFiDS_FilSpine.hxx
+--- a/src/ModelingAlgorithms/TKFillet/ChFiDS/ChFiDS_FilSpine.hxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFiDS/ChFiDS_FilSpine.hxx
+@@ -60,7 +60,10 @@
+   //! initializes the constant vector on all spine.
+   Standard_EXPORT void SetRadius(const double Radius);
+ 
+-  //! initializes the rule of evolution on all spine.
++  //! initializes the rule of evolution on all spine: the radius by the
++  //! spine's parameter (the abscissa from its first vertex), constant at
++  //! its end values where a guideline runs past its bounds. It replaces
++  //! the radii set at points, and a radius set at a point replaces it.
+   Standard_EXPORT void SetRadius(const occ::handle<Law_Function>& C, const int IinC);
+ 
+   //! returns true if the radius is constant
+@@ -102,6 +105,7 @@
+ 
+   NCollection_Sequence<gp_XY>                 parandrad;
+   NCollection_List<occ::handle<Law_Function>> laws;
++  occ::handle<Law_Function>                   userlaw;
+ };
+ 
+ #endif // _ChFiDS_FilSpine_HeaderFile
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFiDS/ChFiDS_FilSpine.cxx b/src/ModelingAlgorithms/TKFillet/ChFiDS/ChFiDS_FilSpine.cxx
+--- a/src/ModelingAlgorithms/TKFillet/ChFiDS/ChFiDS_FilSpine.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFiDS/ChFiDS_FilSpine.cxx
+@@ -54,8 +54,9 @@
+   if (AllData)
+   {
+     parandrad.Clear();
++    userlaw.Nullify();
+   }
+-  else // Complete parandrad
++  else if (!parandrad.IsEmpty()) // Complete parandrad (none with a law of its own)
+   {
+     double spinedeb = FirstParameter();
+     double spinefin = LastParameter();
+@@ -142,6 +143,7 @@
+ 
+ void ChFiDS_FilSpine::SetRadius(const gp_XY& UandR, const int IinC)
+ {
++  userlaw.Nullify();
+   double W;
+   if (IinC == 0)
+   {
+@@ -234,18 +236,18 @@
+ 
+ void ChFiDS_FilSpine::SetRadius(const occ::handle<Law_Function>& C, const int /*IinC*/)
+ {
+-  splitdone                                          = false;
+-  occ::handle<Law_Composite>                   prout = new Law_Composite();
+-  NCollection_List<occ::handle<Law_Function>>& lst   = prout->ChangeLaws();
+-  lst.Append(C);
++  // The law was put in a composite that was dropped, so the spine kept no
++  // radius at all: it is kept now and ComputeLaw gives it to the guidelines.
++  splitdone = false;
+   parandrad.Clear();
++  userlaw = C;
+ }
+ 
+ //=================================================================================================
+ 
+ bool ChFiDS_FilSpine::IsConstant() const
+ {
+-  if (parandrad.IsEmpty())
++  if (!userlaw.IsNull() || parandrad.IsEmpty())
+   {
+     return false;
+   }
+@@ -267,6 +269,10 @@
+ 
+ bool ChFiDS_FilSpine::IsConstant(const int IE) const
+ {
++  if (!userlaw.IsNull())
++  {
++    return false;
++  }
+   double Uf = FirstParameter(IE);
+   double Ul = LastParameter(IE);
+ 
+@@ -316,6 +322,10 @@
+ 
+ double ChFiDS_FilSpine::Radius(const int IE) const
+ {
++  if (!userlaw.IsNull())
++  {
++    throw Standard_DomainError("Edge is not constant");
++  }
+   double Uf = FirstParameter(IE);
+   double Ul = LastParameter(IE);
+ 
+@@ -533,6 +543,39 @@
+   double deb, fin, curdeb, curfin;
+   curdeb = deb = Els->FirstParameter();
+   curfin = fin = Els->LastParameter();
++  if (!userlaw.IsNull())
++  {
++    // The law of SetRadius(Law_Function) over the guideline, constant at its
++    // end values where the guideline runs past its bounds.
++    if (Els->IsPeriodic())
++    {
++      throw Standard_DomainError("ChFiDS_FilSpine : a radius law on a closed contour");
++    }
++    double a = 0., b = 0.;
++    userlaw->Bounds(a, b);
++    const double from = std::max(deb, a);
++    const double to   = std::min(fin, b);
++    if (to - from <= tol3d)
++    {
++      throw Standard_DomainError("ChFiDS_FilSpine : the radius law misses the guideline");
++    }
++    occ::handle<Law_Composite>                   own   = new Law_Composite();
++    NCollection_List<occ::handle<Law_Function>>& parts = own->ChangeLaws();
++    if (from - deb > tol3d)
++    {
++      occ::handle<Law_Constant> before = new Law_Constant();
++      before->Set(userlaw->Value(a), deb, from);
++      parts.Append(before);
++    }
++    parts.Append(userlaw->Trim(from, to, tol3d));
++    if (fin - to > tol3d)
++    {
++      occ::handle<Law_Constant> after = new Law_Constant();
++      after->Set(userlaw->Value(b), to, fin);
++      parts.Append(after);
++    }
++    return own;
++  }
+   int ideb     = Index(deb, true);
+   int ifin     = Index(fin, false);
+   int len      = NbEdges();
+@@ -894,6 +937,16 @@
+ {
+   double MaxRad = 0.;
+ 
++  if (!userlaw.IsNull())
++  {
++    double a = 0., b = 0.;
++    userlaw->Bounds(a, b);
++    for (int i = 0; i <= 100; i++)
++    {
++      MaxRad = std::max(MaxRad, userlaw->Value(a + (b - a) * i / 100.));
++    }
++  }
++
+   for (int i = 1; i <= parandrad.Length(); i++)
+   {
+     if (parandrad(i).Y() > MaxRad)

@@ -51,6 +51,8 @@ pub const RECTANGULAR_PATTERN_DATA: &str = "EA0E146E-3126-42F0-9280-0DE74AB17D78
 pub const MIRROR_DATA: &str = "C444E6AD-33DC-4877-B037-A3A5518856B1";
 /// One element of a pattern.
 pub const PATTERN_ELEMENT: &str = "AD719C1A-11AF-4537-BB41-030A9091D36B";
+/// The data object of a path pattern (mitcad#468).
+pub const PATH_PATTERN_DATA: &str = "BE1FB171-D98A-4A4D-99C2-3738627CF79C";
 
 /// The settings that were read; a setting the layout does not give is
 /// `None`.
@@ -298,6 +300,69 @@ pub(super) fn rectangular_direction_two(seg: &Segment, item: &[u8]) -> Option<[f
         .then(|| [v[0] / len, v[1] / len, v[2] / len])
 }
 
+/// What a path pattern's data object gives: its path's list input (a
+/// [`BODY_INPUT`] of entity and edge inputs, as a sweep's path) and the
+/// settings read.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct PathPatternData {
+    pub path: u64,
+    pub settings: PatternSettings,
+}
+
+/// A path pattern's path and settings (mitcad#468); `item` is the item's
+/// object. The data object (class version 4) holds, after its root part,
+/// `u8 | u32 | ref quantity holder | u32 | ref distance holder | 5 bytes |
+/// f64[3] | u32 1 | ref path input | f64 distance (cm) | ref distance
+/// holder | ref key point | u32 n | n body records | 16 bytes`, then the
+/// tail and what follows it as a rectangular pattern's: the compute option,
+/// the object kind, a byte (0 spacing, 1 extent) and the suppressed element
+/// numbers. *(From the one reference model with a path pattern: one
+/// straight sketch line, spacing, none of the start point, flip,
+/// orientation and symmetry set; those four are stored among the bytes
+/// left unread, all zero there, so they are not read.)* Only an empty
+/// suppressed list is read, as for a rectangular pattern.
+pub(super) fn path(seg: &Segment, item: &[u8]) -> Option<PathPatternData> {
+    let d = data_object(seg, item, PATH_PATTERN_DATA)?;
+    let refs = located(seg, d);
+    let i = refs.iter().position(|r| r.class == BODY_INPUT)?;
+    if i < 2
+        || refs[i - 2].class != INT_HOLDER
+        || refs[i - 1].class != PARAMETER_HOLDER
+        || u32_at(d, refs[i].at.checked_sub(4)?) != Some(1)
+    {
+        return None;
+    }
+    let path = seg.ref_at(d, refs[i].at)?.id;
+    let (holder, key) = (refs.get(i + 1)?, refs.get(i + 2)?);
+    if holder.class != PARAMETER_HOLDER
+        || holder.at != refs[i].end + 8
+        || key.class != KEY_POINT
+        || key.at != holder.end
+    {
+        return None;
+    }
+    let (j, p) = body_records(d, &refs, i + 3, key.end)?;
+    // The tail's -1 after a gap of 16 bytes (8 more than a rectangular
+    // pattern's).
+    let m = p + 24;
+    if d.get(m..m + 4) != Some(&[0xff; 4][..]) {
+        return None;
+    }
+    let compute = u32_at(d, m - 8).and_then(compute_name)?;
+    u32_at(d, m - 4).filter(|&k| k <= 2)?;
+    let (distance_type, numbers) = after_tail(d, &refs, j, m)?;
+    if distance_type > 1 {
+        return None;
+    }
+    let settings = PatternSettings {
+        compute: Some(compute),
+        extent: Some(distance_type == 1),
+        suppressed: numbers.is_empty().then(Vec::new),
+        ..PatternSettings::default()
+    };
+    Some(PathPatternData { path, settings })
+}
+
 /// A mirror's compute option; `item` is the item's object.
 pub(super) fn mirror(seg: &Segment, item: &[u8]) -> PatternSettings {
     let mut out = PatternSettings::default();
@@ -359,6 +424,7 @@ mod tests {
             (PATTERN_ELEMENT, ROOT, 1),
             (INT_HOLDER, ROOT, 1),
             (BODY_INPUT, ROOT, 1),
+            (KEY_POINT, ROOT, 1),
         ] {
             d.class(g, p, v);
         }
@@ -374,6 +440,7 @@ mod tests {
             (9, PATTERN_ELEMENT),
             (10, INT_HOLDER),
             (11, BODY_INPUT),
+            (12, KEY_POINT),
         ] {
             d.obj(id, class, vec![0, 0]);
         }
@@ -557,6 +624,75 @@ mod tests {
             let s = settings(&doc(CIRCULAR_PATTERN_DATA, &body), mirror);
             assert_eq!(s, PatternSettings::default());
         }
+    }
+
+    /// A path pattern's data object: the reference model's layout, with
+    /// `bodies` body records, the tail's compute code and byte, and the
+    /// suppressed numbers.
+    fn path_body(
+        path_count: u32,
+        bodies: u32,
+        compute: u32,
+        byte: u8,
+        suppressed: &[u32],
+    ) -> Vec<u8> {
+        let mut v = vec![0, 0, 1];
+        v.extend([u(2), r(10), u(0), r(3), vec![0; 5]].concat());
+        for x in [0.25f64, 0.25, 0.25] {
+            v.extend(x.to_le_bytes());
+        }
+        v.extend(
+            [
+                u(path_count),
+                r(11),
+                1.5f64.to_le_bytes().to_vec(),
+                r(3),
+                r(12),
+            ]
+            .concat(),
+        );
+        v.extend(u(bodies));
+        for _ in 0..bodies {
+            v.extend(r(7));
+        }
+        v.extend(rest(16, compute, 2, byte, suppressed));
+        v
+    }
+
+    #[test]
+    fn path_pattern_data() {
+        let read = |body: &[u8]| {
+            let d = doc(PATH_PATTERN_DATA, body);
+            let seg = d.segment();
+            path(&seg, seg.data_of(1))
+        };
+        let p = read(&path_body(1, 0, 2, 0, &[])).expect("the layout");
+        assert_eq!(p.path, 11);
+        assert_eq!(p.settings.compute, Some("AdjustPatternCompute"));
+        assert_eq!(p.settings.extent, Some(false));
+        assert_eq!(p.settings.suppressed, Some(vec![]));
+        // The start point, flip, orientation and symmetry are not read.
+        assert_eq!(p.settings.symmetric, None);
+
+        // Body records, the identical option, an extent.
+        let p = read(&path_body(1, 2, 1, 1, &[])).expect("the layout");
+        assert_eq!(p.settings.compute, Some("IdenticalPatternCompute"));
+        assert_eq!(p.settings.extent, Some(true));
+
+        // Suppressed numbers are not read (their numbering is not known).
+        let p = read(&path_body(1, 0, 2, 0, &[3])).expect("the layout");
+        assert_eq!(p.settings.suppressed, None);
+
+        // Another count before the path input, an unknown distance type
+        // byte, a gap of another size or another data object: nothing.
+        assert_eq!(read(&path_body(2, 0, 2, 0, &[])), None);
+        assert_eq!(read(&path_body(1, 0, 2, 2, &[])), None);
+        let mut body = path_body(1, 0, 2, 0, &[]);
+        body.remove(120);
+        assert_eq!(read(&body), None);
+        let d = doc(CIRCULAR_PATTERN_DATA, &path_body(1, 0, 2, 0, &[]));
+        let seg = d.segment();
+        assert_eq!(path(&seg, seg.data_of(1)), None);
     }
 
     #[test]

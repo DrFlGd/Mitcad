@@ -499,6 +499,8 @@ pub enum Detail {
     JointOrigin(Box<JointOriginDetail>),
     ConstructionPoint(Box<ConstructionPointDetail>),
     ConstructionAxis(Box<ConstructionAxisDetail>),
+    // Emboss (mitcad#458).
+    Emboss(Box<EmbossDetail>),
     /// Any other type (or an unknown one): the JSON object as is.
     Other(Map<String, Value>),
 }
@@ -540,6 +542,7 @@ impl Detail {
             Some("ConstructionAxis") => {
                 Detail::ConstructionAxis(Box::new(ConstructionAxisDetail::from_map(map)))
             }
+            Some("EmbossFeature") => Detail::Emboss(Box::new(EmbossDetail::from_map(map))),
             _ => Detail::Other(map),
         }
     }
@@ -1714,5 +1717,20 @@ record! {
         "object_id" => object_id: u64,
         "component" => component: u64,
         "appearance" => appearance: AssetRef,
+    }
+}
+
+record! {
+    /// `EmbossFeature` detail (mitcad#458): the profiles (one reference
+    /// per selected profile, their loops in `_f3d_profile_loops` as an
+    /// extrusion's), the face they lie on, the depth (negative: sunk into
+    /// the face) and the profiles' placement on the face.
+    pub struct EmbossDetail {
+        "profile" => profile: Vec<Reference>,
+        "inputFaces" => input_faces: Vec<Reference>,
+        "depth" => depth: Reference,
+        "horizontalDistance" => horizontal_distance: Reference,
+        "verticalDistance" => vertical_distance: Reference,
+        "rotationAngle" => rotation_angle: Reference,
     }
 }

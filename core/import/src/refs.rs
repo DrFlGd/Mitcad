@@ -2732,6 +2732,16 @@ fn dressup_edge_match_within(
 /// Most steps of the search in [`chains_by_ends`].
 const ENDS_CHAIN_STEPS: usize = 5_000;
 
+/// Which edges [`chains_by_ends`] takes on from a piece: those on a face
+/// that every piece so far lies on, those sharing a face with the last
+/// piece, or any.
+#[derive(Clone, Copy)]
+enum Along {
+    OneFace,
+    Faces,
+    Any,
+}
+
 /// How far the file's middle may be from the chain of pieces (of the edge's
 /// length): the chain's middles and ends only approximate the curve.
 const CHAIN_MID_OFF: f64 = 0.02;
@@ -2819,10 +2829,32 @@ fn chains_by_ends(
         tol: f64,
         end_off: f64,
         steps: usize,
+        along: Along,
         chain: Vec<Link>,
         out: Vec<Vec<Link>>,
     }
     impl Walk<'_> {
+        /// Whether the chain may go on with edge `k`. The pieces of a curve
+        /// the replay splits run along the faces on either side of it:
+        /// first only edges on a face every piece so far lies on, then
+        /// edges sharing a face with the last piece, then any (a helix of
+        /// 520 mm split per turn: every chain of the body's shorter edges
+        /// from its start, searched at once, spent the steps before it was
+        /// found).
+        fn takes(&self, k: usize) -> bool {
+            let faces_of = |i: usize| self.edges.0[i].1.faces();
+            match (self.along, self.chain.last()) {
+                (Along::Any, _) | (_, None) => true,
+                (Along::OneFace, Some(_)) => faces_of(k)
+                    .iter()
+                    .any(|f| self.chain.iter().all(|c| faces_of(c.0).contains(f))),
+                (Along::Faces, Some(last)) => {
+                    let before = faces_of(last.0);
+                    faces_of(k).iter().any(|f| before.contains(f))
+                }
+            }
+        }
+
         fn follow(&mut self, from: Vec3, sum: f64) {
             if self.steps == 0 || self.out.len() > 1 {
                 return;
@@ -2849,8 +2881,16 @@ fn chains_by_ends(
                 } else {
                     continue;
                 };
+                if !self.takes(k) {
+                    continue;
+                }
                 let total = sum + self.edges.0[k].4;
-                if total > self.length + self.tol || near(start, end) {
+                // (The rest of the curve from there to b is no shorter than
+                // the straight line.)
+                if total > self.length + self.tol
+                    || near(start, end)
+                    || geom::distance(end, self.b) > self.length - total + self.tol
+                {
                     continue;
                 }
                 self.chain.push((k, start, end));
@@ -2873,10 +2913,18 @@ fn chains_by_ends(
         tol,
         end_off,
         steps: ENDS_CHAIN_STEPS,
+        along: Along::OneFace,
         chain: Vec::new(),
         out: Vec::new(),
     };
-    walk.follow(a, 0.0);
+    for along in [Along::OneFace, Along::Faces, Along::Any] {
+        walk.steps = ENDS_CHAIN_STEPS;
+        walk.along = along;
+        walk.follow(a, 0.0);
+        if !walk.out.is_empty() {
+            break;
+        }
+    }
     let mut chains: Vec<Vec<usize>> = Vec::new();
     for chain in walk.out {
         // The file's middle lies on the curve, which the chain's ends and
@@ -3752,6 +3800,76 @@ mod dressup_tests {
         );
         let file = fp(m, length, on_ellipse(t0), on_ellipse(t1), None);
         assert_eq!(dressup_edge_match(&replay, &file).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_long_helix_split_per_turn_is_found_along_its_faces() {
+        // A helix of radius 28 rising 2 a turn, from 0.4 rad on over three
+        // turns: one edge in the file, four in the replay, which splits its
+        // thread's flank per turn (each piece between the crest and the
+        // flank's turn). Beside its start a grid of 1 mm edges of other
+        // faces, listed first: searched by their ends alone, the chains of
+        // grid edges from the start ran out of steps before the helix's.
+        let (r, c) = (28.0, 2.0 / std::f64::consts::TAU);
+        let at = |t: f64| [r * t.cos(), r * t.sin(), c * t];
+        let per = r.hypot(c);
+        let (t0, t1) = (0.4, 3.0 * std::f64::consts::TAU + 0.4);
+        // (Body, name, middle, tangent, length, ends.)
+        type Entry = (BodyUid, EdgeName, Vec3, Vec3, f64, Option<[Vec3; 2]>);
+        let mut list: Vec<Entry> = Vec::new();
+        let body: BodyUid = "F1.b0".parse().unwrap();
+        let a = at(t0);
+        for i in 0..16 {
+            for j in 0..16 {
+                let p = geom::add(a, [0.0, i as f64, j as f64]);
+                for (k, q) in [geom::add(p, [0.0, 1.0, 0.0]), geom::add(p, [0.0, 0.0, 1.0])]
+                    .into_iter()
+                    .enumerate()
+                {
+                    let name = format!("E{{F1:g{i}x{j}x{k}|F1:h{i}x{j}x{k}}}");
+                    list.push((
+                        body,
+                        name.parse().unwrap(),
+                        geom::scale(geom::add(p, q), 0.5),
+                        [0.0, 0.0, 1.0],
+                        1.0,
+                        Some([p, q]),
+                    ));
+                }
+            }
+        }
+        let turn = std::f64::consts::TAU;
+        let cuts = [t0, turn, 2.0 * turn, 3.0 * turn, t1];
+        for (k, w) in cuts.windows(2).enumerate() {
+            let name = format!("E{{F1:crest|F1:flank{k}}}");
+            list.push((
+                body,
+                name.parse().unwrap(),
+                at(0.5 * (w[0] + w[1])),
+                [0.0, 0.0, 1.0],
+                per * (w[1] - w[0]),
+                Some([at(w[0]), at(w[1])]),
+            ));
+        }
+        let replay = ReplayEdges(
+            list.iter()
+                .map(|(b, n, m, t, l, _)| (*b, n.clone(), *m, *t, *l))
+                .collect(),
+            list.iter().map(|e| e.5).collect(),
+        );
+        let file = fp(at(0.5 * (t0 + t1)), per * (t1 - t0), a, at(t1), None);
+        let found = dressup_edge_match(&replay, &file).unwrap();
+        let mut names: Vec<String> = found.iter().map(|e| e.name.to_string()).collect();
+        names.sort();
+        assert_eq!(
+            names,
+            [
+                "E{F1:crest|F1:flank0}",
+                "E{F1:crest|F1:flank1}",
+                "E{F1:crest|F1:flank2}",
+                "E{F1:crest|F1:flank3}"
+            ]
+        );
     }
 
     #[test]

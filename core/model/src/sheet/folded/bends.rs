@@ -22,24 +22,28 @@ fn distance(a: [f64; 3], b: [f64; 3]) -> f64 {
     dot(d, d).sqrt()
 }
 
-struct BendMetrics {
-    angle: f64,
-    radius: f64,
-    thickness: f64,
-    k: f64,
-    allowance: f64,
-    inner: f64,
-    outer: f64,
+pub(super) struct BendMetrics {
+    pub(super) angle: f64,
+    pub(super) radius: f64,
+    pub(super) thickness: f64,
+    pub(super) k: f64,
+    pub(super) allowance: f64,
+    pub(super) inner: f64,
+    pub(super) outer: f64,
     /// How far the bend's outer surface reaches beyond its stationary
     /// tangent line, along the panel and against the wall's direction:
     /// `(r+t) sin(min(|angle|, 90 degrees))` (mitcad#242).
-    extent: f64,
+    pub(super) extent: f64,
 }
 impl BendMetrics {
     /// A bend of up to 180 degrees (a hem, mitcad#242). The virtual sharps
     /// (and so the inner and outer setbacks) are not defined at 180
     /// degrees; [`BendMetrics::setback`] refuses them there.
-    fn new(angle: f64, radius: Option<f64>, rules: &SheetRulesDef<f64>) -> Result<Self, String> {
+    pub(super) fn new(
+        angle: f64,
+        radius: Option<f64>,
+        rules: &SheetRulesDef<f64>,
+    ) -> Result<Self, String> {
         let radius = radius.unwrap_or(rules.bend_radius);
         if !angle.is_finite() || angle.abs() <= 1e-9 || angle.abs() > std::f64::consts::PI + 1e-12 {
             return Err("sheet bend angle must be nonzero and at most 180 degrees".into());
@@ -64,7 +68,7 @@ impl BendMetrics {
     }
     /// The inner or outer setback, refused where the virtual sharp does
     /// not exist (a bend of 180 degrees).
-    fn setback(&self, value: f64, what: &str) -> Result<f64, String> {
+    pub(super) fn setback(&self, value: f64, what: &str) -> Result<f64, String> {
         if self.angle.abs() >= std::f64::consts::PI - 1e-9 || !value.is_finite() {
             return Err(format!(
                 "a 180-degree bend has no {what} virtual sharp; measure it from the tangent or \
@@ -85,16 +89,16 @@ impl BendMetrics {
 }
 
 /// Axis follows the canonical boundary orientation e x m = material normal.
-struct PortFrame {
-    origin: [f64; 3],
-    m: [f64; 3],
-    e: [f64; 3],
-    n: [f64; 3],
-    to_operation: Isometry2,
-    width: f64,
+pub(super) struct PortFrame {
+    pub(super) origin: [f64; 3],
+    pub(super) m: [f64; 3],
+    pub(super) e: [f64; 3],
+    pub(super) n: [f64; 3],
+    pub(super) to_operation: Isometry2,
+    pub(super) width: f64,
 }
 
-fn port_frame(state: &SheetState, reference: &BoundaryRef) -> Result<PortFrame, String> {
+pub(super) fn port_frame(state: &SheetState, reference: &BoundaryRef) -> Result<PortFrame, String> {
     let edge = boundary(state, reference)?;
     let (a, b) = line(edge)?;
     let patch = chart(state, reference.panel)?;
@@ -218,7 +222,7 @@ fn crossed_bends(
     out
 }
 
-fn side(
+pub(super) fn side(
     patch: &SheetPatch,
     piece: &CurvePieceRef,
     to_axial: Isometry2,
@@ -423,11 +427,11 @@ fn pair_all(
     Ok(())
 }
 
-struct Construction {
-    cylinder: CylinderEmbedding,
-    moving: SheetEmbedding,
+pub(super) struct Construction {
+    pub(super) cylinder: CylinderEmbedding,
+    pub(super) moving: SheetEmbedding,
 }
-fn construction(
+pub(super) fn construction(
     frame: &PortFrame,
     tangent: f64,
     axial_start: f64,
@@ -574,7 +578,7 @@ fn add_strip<K: Kernel>(
 /// 100 slot`) and its two seams (each one seam per stretch where holes or
 /// cut windows interrupt the bend's lines, mitcad#288).
 #[allow(clippy::too_many_arguments)]
-fn add_bend_strip<K: Kernel>(
+pub(super) fn add_bend_strip<K: Kernel>(
     ctx: &EvalContext<'_, K>,
     state: &mut SheetState,
     metrics: &BendMetrics,

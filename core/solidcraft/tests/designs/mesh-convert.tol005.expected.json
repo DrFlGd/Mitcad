@@ -1,0 +1,9 @@
+{
+  "comment": "mesh-convert with tol = 0.05 mm: the hole's chords lie 0.0961 from the arc, so they stay 16 planes and the body holds the mesh's own volume (400 - 200 sin 22.5) 10 = 3234.6331.",
+  "body_count": 1,
+  "total": {"volume_mm3": 3234.6331353},
+  "bodies": [
+    {"name": "Plate", "volume_mm3": 3234.6331353, "bbox": {"min": [0, 0, 0], "max": [20, 20, 10]}}
+  ],
+  "parametric": 2
+}

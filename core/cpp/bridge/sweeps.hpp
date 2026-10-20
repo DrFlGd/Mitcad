@@ -7,6 +7,7 @@
 #include <memory>
 
 #include "bridge/shape.hpp"
+#include "mitcad/geometry/path_sweep.hpp"
 #include "mitcad/geometry/shape.hpp"
 #include "mitcad_bridge/kernel/profile.h"
 #include "rust/cxx.h"
@@ -36,5 +37,8 @@ std::shared_ptr<geometry::Shape> rib_solid(rust::Str feature, const Frame& frame
 std::shared_ptr<geometry::Shape> helix_solid(rust::Str feature, const Frame& frame,
                                              rust::Slice<const Region> regions, const HelixInput& input,
                                              const ShapeList& bodies);
+
+// A path curve of the geometry library (thin extrusions along curves, mitcad#463).
+geometry::PathCurve path_curve_of(const SweepCurve& input);
 
 } // namespace mitcad::bridge

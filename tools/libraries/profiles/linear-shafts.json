@@ -9,10 +9,14 @@
     "part_number": "AHSW19-1980",
     "supplier_url": "https://www.motedis.com/en/Aluminium-hexagon-SW19-length-1980-mm",
     "designation": "Hexagon bar SW19 L={L}",
-    "rows": [],
+    "rows": [
+      {"name":"1980","select":{"Stock":"1980"},"values":{},"part_number":"AHSW19-1980"},
+      {"name":"1000","select":{"Stock":"1000"},"values":{},"part_number":"AHSW19-1000","supplier_url":"https://www.motedis.com/en/Aluminium-hexagon-SW19-length-1000-mm","source":"slot-profile-accessories/Aluminium-hexagon-SW19-length-1000-mm/Motedis-AHSW19-1000/Motedis_AHSW19-1000.stp"},
+      {"name":"250","select":{"Stock":"250"},"values":{},"part_number":"AHSW19-250","supplier_url":"https://www.motedis.com/en/Aluminium-hexagon-SW19-length-250mm","source":"slot-profile-accessories/Aluminium-hexagon-SW19-length-250mm/Motedis-AHSW19-250/Motedis_AHSW19-250.stp"}
+    ],
     "build": {
       "role": "linear",
-      "length": {"parameter":"L","min":"10 mm","max":"1980 mm","stock":["1980 mm"]},
+      "length": {"parameter":"L","min":"10 mm","max":"1980 mm","stock":["1980 mm","1000 mm","250 mm"]},
       "frames": [{"name":"end_a","kind":"end"},{"name":"end_b","kind":"end"},{"name":"shaft","kind":"shaft"}],
       "linear": {"kind":"shaft"}
     },
@@ -38,6 +42,195 @@
       "length": {"parameter":"L","min":"10 mm","max":"160 mm","stock":["160 mm"]},
       "frames": [{"name":"end_a","kind":"end"},{"name":"end_b","kind":"end"},{"name":"shaft","kind":"shaft"}],
       "linear": {"kind":"shaft"}
+    },
+    "frames": [
+      {"name":"end_a","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"end"},
+      {"name":"end_b","origin":[0,0,"L"],"z":[0,0,1],"x":[1,0,0],"kind":"end"},
+      {"name":"shaft","origin":[0,0,0],"z":[0,0,1],"x":[1,0,0],"kind":"shaft"}
+    ]
+  },
+  {
+    "id": "shaft-h6-6",
+    "name": "Precision shaft h6, 6 mm",
+    "category": "linear",
+    "make": "model",
+    "supplier": "Motedis",
+    "designation": "Precision shaft h6 D6 L={L}",
+    "description": "A round shaft of 6 mm, tolerance h6, cut to length; modelled from its diameter, as the supplier has no CAD file for it.",
+    "keywords": ["shaft","linear shaft","h6","6 mm"],
+    "dimensions": {
+      "shape": "rod",
+      "diameter": "6 mm",
+      "length": "1000 mm"
+    },
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "length": {"parameter":"L","min":"10 mm","max":"3000 mm"},
+      "frames": [{"name":"end_a","kind":"end"},{"name":"end_b","kind":"end"},{"name":"shaft","kind":"shaft"}],
+      "linear": {"kind":"shaft","size":"6 mm"}
+    },
+    "frames": [
+      {"name":"end_a","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"end"},
+      {"name":"end_b","origin":[0,0,"L"],"z":[0,0,1],"x":[1,0,0],"kind":"end"},
+      {"name":"shaft","origin":[0,0,0],"z":[0,0,1],"x":[1,0,0],"kind":"shaft"}
+    ]
+  },
+  {
+    "id": "shaft-h6-8",
+    "name": "Precision shaft h6, 8 mm",
+    "category": "linear",
+    "make": "model",
+    "supplier": "Motedis",
+    "designation": "Precision shaft h6 D8 L={L}",
+    "description": "A round shaft of 8 mm, tolerance h6, cut to length; modelled from its diameter, as the supplier has no CAD file for it.",
+    "keywords": ["shaft","linear shaft","h6","8 mm"],
+    "dimensions": {
+      "shape": "rod",
+      "diameter": "8 mm",
+      "length": "1000 mm"
+    },
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "length": {"parameter":"L","min":"10 mm","max":"3000 mm"},
+      "frames": [{"name":"end_a","kind":"end"},{"name":"end_b","kind":"end"},{"name":"shaft","kind":"shaft"}],
+      "linear": {"kind":"shaft","size":"8 mm"}
+    },
+    "frames": [
+      {"name":"end_a","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"end"},
+      {"name":"end_b","origin":[0,0,"L"],"z":[0,0,1],"x":[1,0,0],"kind":"end"},
+      {"name":"shaft","origin":[0,0,0],"z":[0,0,1],"x":[1,0,0],"kind":"shaft"}
+    ]
+  },
+  {
+    "id": "shaft-h6-10",
+    "name": "Precision shaft h6, 10 mm",
+    "category": "linear",
+    "make": "model",
+    "supplier": "Motedis",
+    "designation": "Precision shaft h6 D10 L={L}",
+    "description": "A round shaft of 10 mm, tolerance h6, cut to length; modelled from its diameter, as the supplier has no CAD file for it.",
+    "keywords": ["shaft","linear shaft","h6","10 mm"],
+    "dimensions": {
+      "shape": "rod",
+      "diameter": "10 mm",
+      "length": "1000 mm"
+    },
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "length": {"parameter":"L","min":"10 mm","max":"3000 mm"},
+      "frames": [{"name":"end_a","kind":"end"},{"name":"end_b","kind":"end"},{"name":"shaft","kind":"shaft"}],
+      "linear": {"kind":"shaft","size":"10 mm"}
+    },
+    "frames": [
+      {"name":"end_a","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"end"},
+      {"name":"end_b","origin":[0,0,"L"],"z":[0,0,1],"x":[1,0,0],"kind":"end"},
+      {"name":"shaft","origin":[0,0,0],"z":[0,0,1],"x":[1,0,0],"kind":"shaft"}
+    ]
+  },
+  {
+    "id": "shaft-h6-12",
+    "name": "Precision shaft h6, 12 mm",
+    "category": "linear",
+    "make": "model",
+    "supplier": "Motedis",
+    "designation": "Precision shaft h6 D12 L={L}",
+    "description": "A round shaft of 12 mm, tolerance h6, cut to length; modelled from its diameter, as the supplier has no CAD file for it.",
+    "keywords": ["shaft","linear shaft","h6","12 mm"],
+    "dimensions": {
+      "shape": "rod",
+      "diameter": "12 mm",
+      "length": "1000 mm"
+    },
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "length": {"parameter":"L","min":"10 mm","max":"3000 mm"},
+      "frames": [{"name":"end_a","kind":"end"},{"name":"end_b","kind":"end"},{"name":"shaft","kind":"shaft"}],
+      "linear": {"kind":"shaft","size":"12 mm"}
+    },
+    "frames": [
+      {"name":"end_a","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"end"},
+      {"name":"end_b","origin":[0,0,"L"],"z":[0,0,1],"x":[1,0,0],"kind":"end"},
+      {"name":"shaft","origin":[0,0,0],"z":[0,0,1],"x":[1,0,0],"kind":"shaft"}
+    ]
+  },
+  {
+    "id": "shaft-h6-16",
+    "name": "Precision shaft h6, 16 mm",
+    "category": "linear",
+    "make": "model",
+    "supplier": "Motedis",
+    "designation": "Precision shaft h6 D16 L={L}",
+    "description": "A round shaft of 16 mm, tolerance h6, cut to length; modelled from its diameter, as the supplier has no CAD file for it.",
+    "keywords": ["shaft","linear shaft","h6","16 mm"],
+    "dimensions": {
+      "shape": "rod",
+      "diameter": "16 mm",
+      "length": "1000 mm"
+    },
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "length": {"parameter":"L","min":"10 mm","max":"3000 mm"},
+      "frames": [{"name":"end_a","kind":"end"},{"name":"end_b","kind":"end"},{"name":"shaft","kind":"shaft"}],
+      "linear": {"kind":"shaft","size":"16 mm"}
+    },
+    "frames": [
+      {"name":"end_a","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"end"},
+      {"name":"end_b","origin":[0,0,"L"],"z":[0,0,1],"x":[1,0,0],"kind":"end"},
+      {"name":"shaft","origin":[0,0,0],"z":[0,0,1],"x":[1,0,0],"kind":"shaft"}
+    ]
+  },
+  {
+    "id": "shaft-h6-20",
+    "name": "Precision shaft h6, 20 mm",
+    "category": "linear",
+    "make": "model",
+    "supplier": "Motedis",
+    "designation": "Precision shaft h6 D20 L={L}",
+    "description": "A round shaft of 20 mm, tolerance h6, cut to length; modelled from its diameter, as the supplier has no CAD file for it.",
+    "keywords": ["shaft","linear shaft","h6","20 mm"],
+    "dimensions": {
+      "shape": "rod",
+      "diameter": "20 mm",
+      "length": "1000 mm"
+    },
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "length": {"parameter":"L","min":"10 mm","max":"3000 mm"},
+      "frames": [{"name":"end_a","kind":"end"},{"name":"end_b","kind":"end"},{"name":"shaft","kind":"shaft"}],
+      "linear": {"kind":"shaft","size":"20 mm"}
+    },
+    "frames": [
+      {"name":"end_a","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"end"},
+      {"name":"end_b","origin":[0,0,"L"],"z":[0,0,1],"x":[1,0,0],"kind":"end"},
+      {"name":"shaft","origin":[0,0,0],"z":[0,0,1],"x":[1,0,0],"kind":"shaft"}
+    ]
+  },
+  {
+    "id": "shaft-h6-25",
+    "name": "Precision shaft h6, 25 mm",
+    "category": "linear",
+    "make": "model",
+    "supplier": "Motedis",
+    "designation": "Precision shaft h6 D25 L={L}",
+    "description": "A round shaft of 25 mm, tolerance h6, cut to length; modelled from its diameter, as the supplier has no CAD file for it.",
+    "keywords": ["shaft","linear shaft","h6","25 mm"],
+    "dimensions": {
+      "shape": "rod",
+      "diameter": "25 mm",
+      "length": "1000 mm"
+    },
+    "rows": [],
+    "build": {
+      "role": "linear",
+      "length": {"parameter":"L","min":"10 mm","max":"3000 mm"},
+      "frames": [{"name":"end_a","kind":"end"},{"name":"end_b","kind":"end"},{"name":"shaft","kind":"shaft"}],
+      "linear": {"kind":"shaft","size":"25 mm"}
     },
     "frames": [
       {"name":"end_a","origin":[0,0,0],"z":[0,0,-1],"x":[1,0,0],"kind":"end"},

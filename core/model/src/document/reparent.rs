@@ -128,6 +128,8 @@ struct Rewritten {
     features: Vec<(usize, FeatureDef)>,
     analyses: Vec<(usize, OccurrencePath)>,
     isolated: Vec<(usize, String)>,
+    /// Contact sets' occurrences (mitcad#454).
+    contact_sets: Vec<(usize, Vec<OccurrencePath>)>,
     /// Placing features that go into the new parent whole.
     components: Vec<(usize, ComponentUid)>,
     /// New features of the new parent, each right after the feature at
@@ -413,6 +415,18 @@ fn rewrite_references(
     }
     if !out.isolated.is_empty() {
         updates.push("Isolate".to_owned());
+    }
+    // Contact sets' occurrences follow it (mitcad#454).
+    for (i, set) in state.contact_sets.iter().enumerate() {
+        let mut moved = false;
+        let mut paths = set.occurrences.clone();
+        for path in &mut paths {
+            moved |= rewrite.absolute(&mut path.0);
+        }
+        if moved {
+            updates.push(set.name.clone());
+            out.contact_sets.push((i, paths));
+        }
     }
     // Occurrences made by Pattern at Points keep the paths they were made
     // from.
@@ -928,6 +942,9 @@ fn take(state: &mut DocState, plan: &ReparentPlan) {
     }
     for (i, text) in &plan.changes.isolated {
         state.display.isolated[*i].occurrence.clone_from(text);
+    }
+    for (i, paths) in &plan.changes.contact_sets {
+        state.contact_sets[*i].occurrences.clone_from(paths);
     }
 }
 

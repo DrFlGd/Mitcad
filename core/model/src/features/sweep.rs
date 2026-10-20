@@ -3,7 +3,9 @@
 //! becomes new bodies or joins, cuts or intersects bodies: perpendicular
 //! or parallel orientation, twist and taper, a guide rail that turns and
 //! scales the profile, guide surfaces whose normal turns it (mitcad#157),
-//! partial extents and a fixed binormal (mitcad#397).
+//! partial extents and a fixed binormal (mitcad#397), an end scale and a
+//! second guide rail (mitcad#464), rail points where the rails cross the
+//! plane square to the path (mitcad#469).
 
 use serde::{Deserialize, Serialize};
 
@@ -18,7 +20,9 @@ use super::{
 use crate::ids::BodyUid;
 use crate::kernel::Kernel;
 use crate::parameters::ParamId;
-use crate::sweeps::{PathCurve, ProfileScaling, SweepGuide, SweepOrientation, SweepSpec};
+use crate::sweeps::{
+    PathCurve, ProfileScaling, RailPoint, SweepGuide, SweepOrientation, SweepSpec,
+};
 // Sweeps along guide surfaces (mitcad#157).
 use super::face_refs::kernel_error;
 use super::reference::FaceRef;
@@ -187,6 +191,26 @@ pub struct SweepDef<P = ParamId> {
     /// without a guide rail, guide surfaces, twist or taper.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub binormal: Option<[f64; 3]>,
+    /// The profile's size at the ends of the swept part (mitcad#464): from
+    /// 1 at the profile in proportion to the length run, about the path;
+    /// unitless, 0.01 to 100. Not with a guide rail or guide surfaces.
+    #[serde(default = "Default::default", skip_serializing_if = "Option::is_none")]
+    pub end_scale: Option<P>,
+    /// A second guide rail beside `guide_rail` (mitcad#464): the profile
+    /// moves with the first rail, turns with the line across to the second
+    /// and is sized by its length (`profile_scaling`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guide_rail2: Option<CurvePath>,
+    /// Where the rails' points are (mitcad#469): `plane`, where a rail
+    /// crosses the plane square to the path, or `fraction` (left out: the
+    /// designs saved before the option keep it), at the same fraction of
+    /// the rail's length. Only with a guide rail.
+    #[serde(default, skip_serializing_if = "is_fraction")]
+    pub rail_point: RailPoint,
+}
+
+fn is_fraction(point: &RailPoint) -> bool {
+    *point == RailPoint::Fraction
 }
 
 fn is_perpendicular(orientation: &SweepOrientation) -> bool {
@@ -228,6 +252,13 @@ impl<P> SweepDef<P> {
             participants: self.participants.clone(),
             body_links: self.body_links.clone(),
             binormal: self.binormal,
+            end_scale: self
+                .end_scale
+                .as_ref()
+                .map(|v| f("end_scale", v))
+                .transpose()?,
+            guide_rail2: self.guide_rail2.clone(),
+            rail_point: self.rail_point,
         })
     }
 }
@@ -267,6 +298,9 @@ impl FeatureInfo for SweepDef {
         if let Some(rail) = &self.guide_rail {
             rail.add_references(&mut references);
         }
+        if let Some(rail) = &self.guide_rail2 {
+            rail.add_references(&mut references);
+        }
         for face in &self.guide_surfaces {
             face.add_references(&mut references);
         }
@@ -282,6 +316,26 @@ impl FeatureInfo for SweepDef {
         self.path.check(ctx).map_err(|e| format!("path: {e}"))?;
         if let Some(rail) = &self.guide_rail {
             rail.check(ctx).map_err(|e| format!("guide rail: {e}"))?;
+        }
+        // A second rail and an end scale (mitcad#464).
+        if let Some(rail) = &self.guide_rail2 {
+            if self.guide_rail.is_none() {
+                return Err("a second guide rail needs a first one".to_owned());
+            }
+            rail.check(ctx)
+                .map_err(|e| format!("second guide rail: {e}"))?;
+        }
+        // The rail point rule (mitcad#469).
+        if self.rail_point != RailPoint::Fraction && self.guide_rail.is_none() {
+            return Err("a rail point is only taken with a guide rail".to_owned());
+        }
+        if self.end_scale.is_some()
+            && (self.guide_rail.is_some() || !self.guide_surfaces.is_empty())
+        {
+            return Err(
+                "an end scale is not taken with a guide rail or guide surfaces: they size the profile"
+                    .to_owned(),
+            );
         }
         if !self.guide_surfaces.is_empty() {
             if self.guide_rail.is_some() {
@@ -335,6 +389,12 @@ impl FeatureInfo for SweepDef {
         {
             return Err("a fixed binormal is not taken with a twist or a taper".to_owned());
         }
+        if let Some(scale) = self.end_scale {
+            check_end_scale(value(scale))?;
+            if self.binormal.is_some() && value(scale) != 1.0 {
+                return Err("a fixed binormal is not taken with an end scale".to_owned());
+            }
+        }
         Ok(())
     }
 
@@ -369,6 +429,17 @@ fn check_binormal(binormal: [f64; 3]) -> Result<[f64; 3], String> {
     Ok(binormal.map(|v| v / length))
 }
 
+/// A sweep's end scale (mitcad#464): 0.01 to 100.
+fn check_end_scale(scale: f64) -> Result<(), String> {
+    if (0.01..=100.0).contains(&scale) {
+        Ok(())
+    } else {
+        Err(format!(
+            "the sweep's end scale must be between 0.01 and 100, got {scale}"
+        ))
+    }
+}
+
 fn check_taper(taper: f64) -> Result<(), String> {
     if taper.is_finite() && taper.abs() < std::f64::consts::FRAC_PI_2 {
         Ok(())
@@ -401,6 +472,13 @@ impl<K: Kernel> Evaluate<K> for SweepDef {
             Some(rail) => Some(rail.resolve(ctx).map_err(|e| format!("guide rail: {e}"))?),
             None => None,
         };
+        let rail2: Option<Vec<PathCurve>> = match &self.guide_rail2 {
+            Some(rail) => Some(
+                rail.resolve(ctx)
+                    .map_err(|e| format!("second guide rail: {e}"))?,
+            ),
+            None => None,
+        };
         // The guide surfaces' bodies, each face checked.
         let mut surfaces: Vec<(K::Shape, FaceName)> = Vec::new();
         for face in &self.guide_surfaces {
@@ -409,7 +487,7 @@ impl<K: Kernel> Evaluate<K> for SweepDef {
             surfaces.push((shape, found));
         }
         // A guide rail or guide surfaces override twist and taper.
-        let (mut twist, mut taper) = (0.0, 0.0);
+        let (mut twist, mut taper, mut end_scale) = (0.0, 0.0, 1.0);
         if rail.is_none() && surfaces.is_empty() {
             if let Some(id) = self.twist_angle {
                 twist = ctx.param(id)?;
@@ -417,6 +495,10 @@ impl<K: Kernel> Evaluate<K> for SweepDef {
             if let Some(id) = self.taper_angle {
                 taper = ctx.param(id)?;
                 check_taper(taper)?;
+            }
+            if let Some(id) = self.end_scale {
+                end_scale = ctx.param(id)?;
+                check_end_scale(end_scale)?;
             }
         }
         let spec = SweepSpec {
@@ -432,8 +514,11 @@ impl<K: Kernel> Evaluate<K> for SweepDef {
             guide: rail.as_deref().map(|rail| SweepGuide {
                 rail,
                 scaling: self.profile_scaling,
+                rail2: rail2.as_deref(),
+                point: self.rail_point,
             }),
             binormal: self.binormal.map(check_binormal).transpose()?,
+            end_scale,
         };
         let tool = if surfaces.is_empty() {
             ctx.kernel.sweep(&spec).map_err(|e| e.to_string())?

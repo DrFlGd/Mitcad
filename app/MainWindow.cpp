@@ -652,6 +652,24 @@ void MainWindow::registerCommands() {
     });
   };
   m_registry->add(animate);
+  // Motion studies (mitcad#454): the panel of the first study, else of a
+  // new one (the browser's Play opens another).
+  CommandDef study = action("assemble.motion_study", tr("Motion Study"), "motion-study", CommandDef::Mode::Model,
+                            [this] { openMotionStudy(QString()); });
+  study.tooltip = tr("Joints' values keyed along steps, played back: the components follow, and contact sets "
+                     "stop them where they touch");
+  study.tab = QStringLiteral("SOLID");
+  study.group = QStringLiteral("ASSEMBLE");
+  study.keywords = {QStringLiteral("motion"), QStringLiteral("play"), QStringLiteral("simulate"),
+                    QStringLiteral("animation"), QStringLiteral("keys")};
+  study.enabled = [this] {
+    const QJsonArray joints = m_snapshot.joints.value(QStringLiteral("joints")).toArray();
+    return !m_snapshot.motionStudies.isEmpty() ||
+           std::any_of(joints.begin(), joints.end(), [](const QJsonValue& joint) {
+             return !joint.toObject().value(QStringLiteral("motions")).toArray().isEmpty();
+           });
+  };
+  m_registry->add(study);
 
   CommandDef finish = action("sketch.finish", tr("Finish Sketch"), "finish-sketch",
                              CommandDef::Mode::Sketch, [this] { finishSketch(); });
@@ -1606,6 +1624,7 @@ bool MainWindow::chooseInCommand(const QString& command, const QString& input, c
 }
 
 void MainWindow::onCommandFinished(bool committed) {
+  clearNativeCommandContinuation();
 #ifdef MITCAD_MACOS_NATIVE_UI
   if (m_nativeWindow) {
     m_nativeWindow->setInspectorView(nullptr);
@@ -4048,11 +4067,24 @@ bool MainWindow::deferForNativeCommand(std::function<void()> action) {
   if (!m_nativeUi || !m_session) {
     return false;
   }
-  connect(m_session, &CommandSession::finished, this, [this, action = std::move(action)] {
-    QTimer::singleShot(0, this, action);
-  });
+  if (m_nativeCommandContinuation) {
+    return true;
+  }
+  m_nativeCommandContinuation = connect(m_session, &CommandSession::cancelFinished, this,
+      [this, action = std::move(action)](bool succeeded) {
+        clearNativeCommandContinuation();
+        if (succeeded) { QTimer::singleShot(0, this, action); }
+      });
   m_session->cancel();
   return true;
+}
+
+void MainWindow::clearNativeCommandContinuation() {
+  QObject::disconnect(m_nativeCommandContinuation);
+  m_nativeCommandContinuation = {};
+#ifdef MITCAD_MACOS_NATIVE_UI
+  m_nativeClosingCommand = false;
+#endif
 }
 
 void MainWindow::newDocument() {

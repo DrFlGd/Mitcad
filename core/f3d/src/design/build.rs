@@ -2752,6 +2752,50 @@ impl Builder<'_> {
                 }
                 Detail::RectangularPattern(Box::new(x))
             }
+            // A path pattern (mitcad#468): its objects as a rectangular
+            // pattern's, the quantity, the distance, and from its data
+            // object the path (as a sweep's), the distance type, the compute
+            // option and an empty suppressed list. The start point, flip,
+            // orientation and symmetry are not decoded.
+            Some("PathPatternFeature") => {
+                let mut map = serde_json::Map::new();
+                match self.pattern_objects(it) {
+                    Some((objects, kind)) => {
+                        map.insert("inputEntities".to_owned(), json_value(&objects));
+                        map.insert("patternEntityType".to_owned(), kind.into());
+                    }
+                    None => {
+                        if let Some(b) = self.body_inputs(it) {
+                            map.insert("inputEntities".to_owned(), json_value(&b));
+                        }
+                    }
+                }
+                if let Some((_, value)) = int_inputs(seg, fid).into_iter().find(|(s, _)| *s == 0) {
+                    map.insert("quantity".to_owned(), json_value(&count_ref(value)));
+                }
+                if let Some(p) = pr("PathPatternDelta") {
+                    map.insert("distance".to_owned(), json_value(&p));
+                }
+                if let Some(data) = patterns::path(seg, seg.data_of(it.id)) {
+                    map.insert("path".to_owned(), self.path_or_error(data.path));
+                    let s = data.settings;
+                    if let Some(c) = s.compute {
+                        map.insert("patternComputeOption".to_owned(), c.into());
+                    }
+                    if let Some(e) = s.extent {
+                        let t = if e {
+                            "ExtentPatternDistanceType"
+                        } else {
+                            "SpacingPatternDistanceType"
+                        };
+                        map.insert("patternDistanceType".to_owned(), t.into());
+                    }
+                    if let Some(ids) = s.suppressed {
+                        map.insert("suppressedElementsIds".to_owned(), json_value(&ids));
+                    }
+                }
+                Detail::Other(map)
+            }
             Some("MirrorFeature") => {
                 // Objects and plane from its selections (mitcad#67).
                 let mut map = selections::mirror_map(self, it);
@@ -2895,6 +2939,40 @@ impl Builder<'_> {
                     map.insert("itemToRemove".to_owned(), json_value(&b.remove(0)));
                 }
                 Detail::Other(map)
+            }
+            // An emboss (mitcad#458): its profiles (and their loops, as an
+            // extrusion's), the face it lies on, and its parameters by
+            // their roles: the depth (negative: sunk) and the profiles'
+            // placement on the face (horizontal and vertical distances,
+            // rotation).
+            _ if classes::object_type(&it.class) == Some("EmbossFeature") => {
+                let mut x = EmbossDetail {
+                    input_faces: self.face_inputs(it),
+                    depth: pr("Depth"),
+                    horizontal_distance: pr("Horizontal Distance"),
+                    vertical_distance: pr("Vertical Distance"),
+                    rotation_angle: pr("Rotation Angle"),
+                    ..EmbossDetail::default()
+                };
+                // A reference to the profiles' sketch per selected profile
+                // (its profile source; the slot holds no profile inputs an
+                // extrusion's has).
+                if let Some(loops) = self.profile_loops(fid) {
+                    let count = loops.as_array().map_or(0, Vec::len);
+                    if let Some(sid) = self.profile_sketch(fid)
+                        && count > 0
+                    {
+                        let f = self.feat_of_sk.get(&sid).copied();
+                        let r = Reference::Profile(ProfileRef {
+                            sketch: Some(self.name(f)),
+                            sketch_timeline_index: Some(self.pos(f)),
+                            ..ProfileRef::default()
+                        });
+                        x.profile = Some(vec![r; count]);
+                    }
+                    x.other.insert("_f3d_profile_loops".to_owned(), loops);
+                }
+                Detail::Emboss(Box::new(x))
             }
             Some("DeleteFaceFeature") => {
                 let mut map = serde_json::Map::new();

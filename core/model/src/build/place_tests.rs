@@ -648,3 +648,79 @@ fn a_shared_mitre_at_another_angle_meets_at_the_outer_corner() {
     // The target does not reach past its length.
     assert!((world_box(&doc, &t).max[2] - 500.0).abs() < 1e-6);
 }
+
+#[test]
+fn a_slider_goes_on_the_slot_of_the_side_picked() {
+    // mitcad#448: a part that slides in a slot, placed with a side face of
+    // a four-slot profile, goes on that side's slot (as a profile on a side
+    // does), not on the first slot frame the profile lists.
+    let mut doc = design();
+    let t = first(&mut doc, "p30", [0.0; 3], 1000.0);
+    let tp = derived(&doc, component(&t));
+    let sides = [
+        ("x+", "c1", [1.0, 0.0, 0.0]),
+        ("y+", "c2", [0.0, 1.0, 0.0]),
+        ("x-", "c3", [-1.0, 0.0, 0.0]),
+        ("y-", "c4", [0.0, -1.0, 0.0]),
+    ];
+    let mut frames = Vec::new();
+    for (side, curve, normal) in sides {
+        let face = format!("{tp}:part(F2:side({curve}))");
+        let on_face = normal.map(|n| n * 15.0);
+        doc.kernel().surfaces.borrow_mut().insert(
+            face.clone(),
+            crate::datum::SurfaceGeometry::Plane {
+                origin: on_face,
+                normal,
+            },
+        );
+        let at = json!({"occurrence": t["occurrence"],
+                        "geometry": {"body": format!("{tp}.b0"), "face": face},
+                        "point": [on_face[0], on_face[1], 422.0]});
+        // The hover's preview shows it there before the click.
+        let shown = query(
+            &doc,
+            json!({"query": "build_preview", "part": part("slider8"), "at": at.clone()}),
+        );
+        assert_eq!(shown["place"], "side", "{side}: {shown}");
+        let s = place(&mut doc, json!({"part": part("slider8"), "at": at}));
+        all_ok(&doc);
+        assert_eq!(s["place"], "side", "{side}: {s}");
+        // On the side's slot, centred on the click along the profile, its
+        // top out of the side.
+        let at = placed(&doc, occurrence(&s));
+        assert!(
+            close(at.translation, [on_face[0], on_face[1], 422.0]),
+            "{side}: {at:?}"
+        );
+        assert!(close(axis(&at), normal), "{side}: {at:?}");
+        // A slider along the slot, by the frame its mate names.
+        let sp = derived(&doc, component(&s));
+        let joint = s["joint"].as_str().unwrap().parse().unwrap();
+        let FeatureDef::Joint(j) = &doc.feature(joint).unwrap().def else {
+            panic!("a joint");
+        };
+        assert_eq!(j.kind, crate::joints::JointKind::Slider, "{side}");
+        assert_eq!(
+            j.a.geometry,
+            crate::features::GeomRef::Mount {
+                feature: sp,
+                name: "slot".to_owned()
+            },
+            "{side}"
+        );
+        assert_eq!(
+            j.b.geometry,
+            crate::features::GeomRef::Mount {
+                feature: tp,
+                name: format!("slot_{side}_1")
+            },
+            "{side}"
+        );
+        frames.push(format!("{:?}", j.b.geometry));
+    }
+    // Four different frames.
+    frames.sort();
+    frames.dedup();
+    assert_eq!(frames.len(), 4, "{frames:?}");
+}

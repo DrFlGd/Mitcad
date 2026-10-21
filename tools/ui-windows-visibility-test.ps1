@@ -134,7 +134,7 @@ Ui-Mark
 Ui-Step 'hide Body2'                     { Ui-ClickLogged 'Browser eye Root/Bodies/Body2' }
 Ui-ExpectNew 'Visibility Root/Bodies/Body2: hidden (during Create Sketch)' 'Body2 hidden during the plane pick'
 Ui-ExpectNew 'Pick face F2.b0/F2:end(' 'Body1''s top face can be picked now'
-Ui-ExpectNone 'Finish the command or the sketch first.' 'the light bulb was not refused'
+Ui-ExpectNone 'Create Sketch is waiting for a plane' 'the light bulb was not refused'
 Ui-Step 'pick Body1''s top face'         { Ui-ClickPick 'face F2.b0/F2:end(' }
 Ui-ExpectNew 'Sketch started on {"body":"F2.b0","face":"F2:end(' 'the sketch started on Body1''s top face'
 Ui-Mark
@@ -206,7 +206,7 @@ Ui-ExpectNew 'Pick face F4.b0/F4:end(' 'Body2''s top face can be picked'
 Ui-ExpectNone 'Datum xy at' 'the XY plane is not in the view'
 Ui-Mark
 Ui-Step 'activate Part (radio)'          { Ui-ClickLogged 'Browser radio Root/Part:1' }
-Ui-ExpectNew 'Finish the command or the sketch first.' 'other browser actions wait for the plane pick'
+Ui-ExpectNew 'Create Sketch is waiting for a plane: pick one or press Esc.' 'other browser actions wait for the plane pick'
 Ui-ExpectNone 'Activated Part' 'Part not activated'
 Ui-Step 'pick Body2''s top face'         { Ui-ClickPick 'face F4.b0/F4:end(' }
 Ui-ExpectNew 'Sketch started on {"body":"F4.b0","face":"F4:end(' 'the sketch started on Body2''s top face'

@@ -674,6 +674,7 @@ pub(crate) fn referenced_occurrences(def: &FeatureDef) -> Vec<OccurrenceUid> {
         FeatureDef::Extrude(x) => x.object_links.values().collect(),
         FeatureDef::ConstructionPlane(p) => p.links.values().collect(),
         FeatureDef::Derive(d) => d.links.values().collect(),
+        FeatureDef::BodyTransfer(t) => vec![&t.link],
         FeatureDef::MoveOccurrence(m) => {
             out.extend(&m.occurrences);
             Vec::new()

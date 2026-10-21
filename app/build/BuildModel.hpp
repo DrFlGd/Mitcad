@@ -100,7 +100,16 @@ struct BuildPart {
   // As build_parts gives them, when it does (else false and 0).
   bool flip = false;
   int rotate = 0;
+  // Timber (mitcad#478): `timber` for a member, its grade, the lead of the
+  // spacing set it is in (empty: none) and, of a lead, the set's
+  // {definition, count}.
+  QString kind;
+  QString grade;
+  QString set;
+  QJsonObject spacing;
   QJsonObject raw;
+
+  bool isTimber() const { return kind == QStringLiteral("timber"); }
 
   QString shownName() const { return name.isEmpty() ? designation : name; }
 };

@@ -39,7 +39,11 @@ pub(crate) enum BuildCommand {
     BuildEdit(Box<EditInput>),
     BuildConnect(Box<ConnectInput>),
     BuildPanel(Box<PanelInput>),
-    BuildRemove { component: String },
+    BuildRemove {
+        component: String,
+        #[serde(default)]
+        set: bool,
+    },
 }
 
 /// The commands' names, to send them here.
@@ -97,6 +101,10 @@ fn placed_json(placed: &Placed) -> Value {
         "warnings": placed.warnings,
         "place": placed.place,
     });
+    if !placed.set.is_empty() {
+        value["set"] = json!(placed.set);
+        value["count"] = json!(placed.set.len());
+    }
     if let Some((fits, reason)) = &placed.fits {
         value["fits"] = json!(fits);
         value["reason"] = if reason.is_empty() {
@@ -119,11 +127,31 @@ impl<K: Kernel> Document<K> {
     pub(crate) fn run_build_command(&mut self, command: BuildCommand) -> Result<Value, ApiError> {
         Ok(match command {
             BuildCommand::BuildPlace(input) => placed_json(&self.build_place(&input)?),
-            BuildCommand::BuildEdit(input) => json!({"changed": self.build_edit(&input)?}),
-            BuildCommand::BuildConnect(input) => placed_json(&self.build_connect(&input)?),
+            BuildCommand::BuildEdit(input) => {
+                let changed = self.build_edit(&input)?;
+                let mut answer = json!({"changed": changed});
+                // A spacing set's members after it was laid out again.
+                if input.spacing.is_some()
+                    && let Ok(c) = self.component_by_ref(&input.component)
+                {
+                    let lead = self.part_info(c).and_then(|i| i.record.set).unwrap_or(c);
+                    let members = self.set_members(lead);
+                    answer["set"] = json!(members);
+                    answer["count"] = json!(members.len());
+                }
+                answer
+            }
+            BuildCommand::BuildConnect(input) => {
+                let placed = self.build_connect(&input)?;
+                let mut value = placed_json(&placed);
+                if input.joint.is_some() {
+                    value["cuts"] = json!(self.joinery_json(&placed.features, &input.junction));
+                }
+                value
+            }
             BuildCommand::BuildPanel(input) => placed_json(&self.build_panel(&input)?),
-            BuildCommand::BuildRemove { component } => {
-                let removed = self.build_remove(&component)?;
+            BuildCommand::BuildRemove { component, set } => {
+                let removed = self.build_remove_with(&component, set)?;
                 json!({"removed": {
                     "components": removed.components,
                     "features": removed.features,
@@ -133,13 +161,43 @@ impl<K: Kernel> Document<K> {
         })
     }
 
+    /// The joinery cuts of a junction in derived parts (mitcad#478):
+    /// `{component, kind, size}`.
+    fn joinery_json(&self, parts: &[crate::ids::FeatureUid], junction: &str) -> Vec<Value> {
+        let params = self.parameters();
+        let mut out = Vec::new();
+        for part in parts {
+            let Some(entry) = self.feature(*part) else {
+                continue;
+            };
+            let FeatureDef::DerivedPart(d) = &entry.def else {
+                continue;
+            };
+            for c in d
+                .cuts
+                .iter()
+                .filter(|c| c.junction.as_deref() == Some(junction))
+            {
+                out.push(json!({
+                    "component": entry.component,
+                    "kind": c.kind,
+                    "size": c.size.map(|id| params.value(id)),
+                }));
+            }
+        }
+        out
+    }
+
     /// Reads a preview request (`build_preview`, `analysis_shape`):
     /// build_place's, build_panel's or build_connect's fields.
     fn preview_input(&self, mut fields: Map<String, Value>) -> Result<PreviewInput, ApiError> {
         fields.remove("query");
         fields.remove("shape");
         let value = Value::Object(fields);
-        if value.get("junction").is_some() {
+        if value.get("junction").is_some()
+            || value.get("end").is_some()
+            || value.get("joint").is_some()
+        {
             return super::parse(value, "build_preview")
                 .map(|input| PreviewInput::Connect(Box::new(input)));
         }
@@ -159,7 +217,40 @@ impl<K: Kernel> Document<K> {
         let problems = |e: crate::document::ModelError| json!({"problems": [e.to_string()]});
         Ok(match self.preview_input(fields)? {
             PreviewInput::Place(input) => match self.preview_place(&input) {
-                Ok(plan) => self.place_preview_json(&input, &plan),
+                Ok(plan) => {
+                    let mut value = self.place_preview_json(&input, &plan);
+                    // A spacing set (mitcad#478): its members' frames.
+                    if let Some(spacing) = &input.spacing {
+                        match self.plan_set(&input, spacing) {
+                            Ok(set) => {
+                                let active = self.host_placement();
+                                let frames: Vec<Value> = set
+                                    .plans
+                                    .iter()
+                                    .map(|p| {
+                                        let world = active.after(&p.placement);
+                                        let end_a = p
+                                            .mounts
+                                            .get("end_a")
+                                            .map_or([0.0; 3], |t| t.translation);
+                                        frame_json(&crate::build::frame(
+                                            world.apply_point(end_a),
+                                            world.apply_vector(crate::build::X),
+                                            world.apply_vector(crate::build::Z),
+                                        ))
+                                    })
+                                    .collect();
+                                value["spacing"] = json!({
+                                    "count": frames.len(),
+                                    "frames": frames,
+                                    "rip": set.rip.is_some(),
+                                });
+                            }
+                            Err(e) => value = problems(e),
+                        }
+                    }
+                    value
+                }
                 Err(e) => problems(e),
             },
             PreviewInput::Panel(input) => match self.plan_panel(&input) {
@@ -181,6 +272,51 @@ impl<K: Kernel> Document<K> {
                 }
                 Err(e) => problems(e),
             },
+            // Joinery and timber connections (mitcad#478).
+            PreviewInput::Connect(input) if input.joint.is_some() => {
+                let joint = input.joint.clone().unwrap_or_default();
+                match self.plan_joinery(&input.junction, &joint) {
+                    Ok((cuts, warnings)) => json!({
+                        "place": "junction",
+                        "junction": input.junction,
+                        "cuts": cuts.iter().map(|c| json!({
+                            "component": c.component,
+                            "kind": c.cut.kind,
+                            "size": c.cut.size.iter()
+                                .map(|v| value_in(self, v, Unit::MM).ok())
+                                .collect::<Vec<_>>(),
+                        })).collect::<Vec<_>>(),
+                        "warnings": warnings,
+                        "problems": [],
+                    }),
+                    Err(e) => problems(e),
+                }
+            }
+            PreviewInput::Connect(input) if self.is_wood_connect(&input) => {
+                match self.plan_wood(&input) {
+                    Ok(plan) => {
+                        let active = self.host_placement();
+                        let mut parts: Vec<String> =
+                            plan.pieces.iter().map(|p| p.name.clone()).collect();
+                        parts.extend(plan.on_lead.iter().map(|p| p.name.clone()));
+                        json!({
+                            "frame": plan.placement.map(|t| frame_json(&active.after(&t))),
+                            "place": "junction",
+                            "junction": plan.junction,
+                            "fasteners": plan.frames.iter().map(|(name, t)| {
+                                json!({"frame": name, "at": frame_json(&active.after(t))})
+                            }).collect::<Vec<_>>(),
+                            "fastener_parts": parts,
+                            "size": plan.size.as_ref().map(|s| json!({
+                                "config": s.config, "diameter": s.diameter, "length": s.length})),
+                            "warnings": plan.warnings,
+                            "body": "see analysis_shape",
+                            "problems": [],
+                        })
+                    }
+                    Err(e) => problems(e),
+                }
+            }
             PreviewInput::Connect(input) => match self.plan_connect(&input) {
                 Ok(plan) => {
                     let active = self.host_placement();
@@ -245,7 +381,11 @@ impl<K: Kernel> Document<K> {
             plan.target.as_ref().map(|t| t.info.component),
             mode,
         );
-        let given = matches!(input.length, Some(crate::build::LengthInput::Value(_)));
+        // A member by two points without a length is as long as their
+        // distance, whatever the ray meets (mitcad#478); the ray still
+        // names the target an auto length would bind to.
+        let given = matches!(input.length, Some(crate::build::LengthInput::Value(_)))
+            || (input.to.is_some() && input.length.is_none());
         let length_value = match (&plan.length, &hit) {
             (LengthPlan::None, _) => None,
             (LengthPlan::Value(_, v), _) if given => Some(*v),
@@ -418,7 +558,7 @@ impl<K: Kernel> Document<K> {
             let world_box = moved_box(&bounds, &world);
             for (name, local) in &info.mounts {
                 let kind = info.frame_kind(name);
-                if kind != "slot" && kind != "end" {
+                if kind != "slot" && kind != "end" && !info.is_side(name) {
                     continue;
                 }
                 let frame = world.after(local);
@@ -492,8 +632,21 @@ impl<K: Kernel> Document<K> {
                 (plan.panel.source, plan.panel.values, plan.placement, None)
             }
             PreviewInput::Connect(input) => {
-                let plan = self.plan_connect(&input)?;
-                (plan.connector.source, BTreeMap::new(), plan.placement, None)
+                if input.joint.is_some() {
+                    return Ok(None);
+                }
+                if self.is_wood_connect(&input) {
+                    let plan = self.plan_wood(&input)?;
+                    match (plan.lead, plan.placement) {
+                        (Some(lead), Some(placement)) => {
+                            (lead.source, BTreeMap::new(), placement, None)
+                        }
+                        _ => return Ok(None),
+                    }
+                } else {
+                    let plan = self.plan_connect(&input)?;
+                    (plan.connector.source, BTreeMap::new(), plan.placement, None)
+                }
             }
         };
         let mut numbers = Vec::new();
@@ -667,6 +820,18 @@ impl<K: Kernel> Document<K> {
                     "junction": info.record.junction,
                     "from": info.record.from.map(|f| f.as_str()),
                     "machining": machining,
+                    // Timber construction (mitcad#478).
+                    "kind": info.is_timber().then_some("timber"),
+                    "grade": info.record.grade.clone().or_else(|| {
+                        info.meta.material.as_ref().map(|m| m.grade.clone()).filter(|g| !g.is_empty())
+                    }),
+                    "set": info.record.set,
+                    "spacing": info.record.spacing.as_ref().map(|s| json!({
+                        "definition": s["spacing"], "count": s["count"]})),
+                    "cuts": info.def.as_ref().map(|d| d.cuts.iter().map(|c| json!({
+                        "kind": c.kind, "with": c.with, "junction": c.junction,
+                        "size": c.size.map(|id| params.value(id)),
+                    })).collect::<Vec<_>>()).unwrap_or_default(),
                 })
             })
             .collect();
@@ -708,7 +873,7 @@ impl<K: Kernel> Document<K> {
             .build_junctions(only.as_deref())
             .iter()
             .map(|j| {
-                json!({
+                let mut value = json!({
                     "id": j.id,
                     "kind": j.kind,
                     "a": side(&j.a),
@@ -717,7 +882,16 @@ impl<K: Kernel> Document<K> {
                     "systems": j.systems.iter().map(|s| s.as_ref().map(|s| s.label())).collect::<Vec<_>>(),
                     "space": {"x": j.space[0], "y": j.space[1], "z": j.space[2]},
                     "connectors": j.connectors,
-                })
+                });
+                // Two timber members (mitcad#478): how fasteners go.
+                let timber = |c| self.part_info(c).is_some_and(|i| i.is_timber());
+                if timber(j.a.component)
+                    && timber(j.b.component)
+                    && let Some(f) = self.fastening(j)
+                {
+                    value["wood"] = crate::build::wood::wood_json(&f, j);
+                }
+                value
             })
             .collect();
         Ok(json!({"junctions": junctions}))
@@ -736,11 +910,12 @@ impl<K: Kernel> Document<K> {
             Some((angle, tilt)) => json!({"angle": angle, "tilt": tilt.as_str()}),
             None => Value::Null,
         };
+        let has_timber = list.timber.is_some();
         let rows: Vec<Value> = list
             .rows
             .iter()
             .map(|r| {
-                json!({
+                let mut row = json!({
                     "source": r.source,
                     "designation": r.designation,
                     "supplier": r.supplier,
@@ -748,22 +923,48 @@ impl<K: Kernel> Document<K> {
                     "config": r.config,
                     "length": r.length,
                     "ends": {"a": end(&r.ends[0]), "b": end(&r.ends[1])},
-                    "machining": r.machining.iter().map(|m| json!({
-                        "at": m.at, "diameter": m.diameter, "depth": m.depth,
-                        "thread": m.thread, "connector": m.connector,
-                    })).collect::<Vec<_>>(),
+                    "machining": r.machining.iter().map(|m| match &m.kind {
+                        // Joinery (mitcad#478).
+                        Some(kind) => json!({
+                            "at": null, "kind": kind, "size": m.size, "with": m.with,
+                            "depth": m.depth, "diameter": null, "thread": null,
+                            "connector": null,
+                        }),
+                        None => json!({
+                            "at": m.at, "diameter": m.diameter, "depth": m.depth,
+                            "thread": m.thread, "connector": m.connector,
+                        }),
+                    }).collect::<Vec<_>>(),
                     "features": r.features,
                     "quantity": r.quantity,
                     "mass": r.mass,
                     "components": r.components,
-                })
+                });
+                // The timber columns, only in a design with timber.
+                if has_timber {
+                    let t = r.timber.as_ref();
+                    row["kind"] = json!(t.map(|_| "timber"));
+                    row["material"] = json!(t.map(|t| json!({
+                        "species": t.material.species, "finish": t.material.finish,
+                        "grade": t.grade, "density": t.material.density.as_ref()
+                            .and_then(|d| d.millimetres()),
+                    })));
+                    row["nominal"] = json!(t.and_then(|t| t.nominal).map(|n| json!({
+                        "width": n[0], "height": n[1]})));
+                    row["section"] = json!(t.map(|t| json!({
+                        "width": t.section[0], "height": t.section[1]})));
+                    row["availability"] = json!(t.and_then(|t| t.availability.clone()));
+                    row["running_metres"] = json!(t.map(|t| t.running_metres));
+                    row["volume"] = json!(t.map(|t| t.volume));
+                }
+                row
             })
             .collect();
         let stock: Vec<Value> = list
             .stock
             .iter()
             .map(|s| {
-                json!({
+                let mut entry = json!({
                     "source": s.source,
                     "designation": s.designation,
                     "stock_length": s.stock_length,
@@ -772,7 +973,14 @@ impl<K: Kernel> Document<K> {
                     "needed": s.needed,
                     "offcut": s.offcut,
                     "too_long": s.too_long,
-                })
+                });
+                if s.config.is_some() {
+                    entry["config"] = json!(s.config);
+                }
+                if !s.stock_lengths.is_empty() {
+                    entry["stock_lengths"] = json!(s.stock_lengths);
+                }
+                entry
             })
             .collect();
         let other: Vec<Value> = self.parts_list_json()["rows"]
@@ -787,7 +995,13 @@ impl<K: Kernel> Document<K> {
                     .is_none_or(|c| !list.cut.contains(&c))
             })
             .collect();
-        Ok(json!({"rows": rows, "stock": stock, "kerf": kerf, "other": other}))
+        let mut answer = json!({"rows": rows, "stock": stock, "kerf": kerf, "other": other});
+        if let Some(t) = &list.timber {
+            answer["timber"] = json!(true);
+            answer["totals"] = json!({
+                "running_metres": t.running_metres, "volume": t.volume, "mass": t.mass});
+        }
+        Ok(answer)
     }
 }
 

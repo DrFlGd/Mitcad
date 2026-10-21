@@ -1,0 +1,92 @@
+{
+  "notes": [
+    "Wood fasteners (mitcad#478): Mitcad's own parts, no supplier, in common sizes (diameter x length in mm), simplified for assemblies: a shank and a cylindrical head, no thread or point.",
+    "The head: a countersunk head lies below the surface (its top at z = 0), the others bear on the surface (z = 0). The axis frame is at the bearing surface, z along the shank to the tip at z = L.",
+    "Steel, zinc plated: 7850 kg/m3."
+  ],
+  "categories": [{"id": "wood-fasteners", "name": "Wood fasteners"}],
+  "parts": [
+    {
+      "id": "wood-screw",
+      "name": "Wood screw, countersunk",
+      "category": "wood-fasteners",
+      "make": "model",
+      "data_source": "common sizes of countersunk wood screws",
+      "designation": "Wood screw {Diameter}x{Length}",
+      "keywords": ["screw", "wood screw", "chipboard screw", "countersunk", "timber"],
+      "license": "MIT",
+      "dimensions": {"shape": "fastener", "diameter": "D", "length": "L", "head_diameter": "DK", "head_height": "K",
+                     "head": "countersunk", "parameters": {"D": 5, "L": 50, "DK": 10, "K": 3}},
+      "default": "5.0x50",
+      "sizes": {"rows": [
+        {"diameter": 4.0, "head": [8, 2.4], "lengths": [30, 35, 40, 45, 50, 60]},
+        {"diameter": 4.5, "head": [9, 2.7], "lengths": [40, 45, 50, 60, 70]},
+        {"diameter": 5.0, "head": [10, 3], "lengths": [40, 50, 60, 70, 80, 90, 100]},
+        {"diameter": 6.0, "head": [12, 3.6], "lengths": [60, 70, 80, 90, 100, 120, 140, 160]}
+      ]},
+      "appearance": "steel_satin",
+      "build": {"role": "fastener", "wood": {"kind": "screw", "head": "countersunk"},
+                "material": {"product": "steel, zinc plated", "density": 7850}}
+    },
+    {
+      "id": "connector-screw",
+      "name": "Connector screw",
+      "category": "wood-fasteners",
+      "make": "model",
+      "data_source": "common sizes of connector screws for brackets and hangers",
+      "designation": "Connector screw {Diameter}x{Length}",
+      "keywords": ["screw", "connector screw", "bracket", "hanger", "timber"],
+      "license": "MIT",
+      "dimensions": {"shape": "fastener", "diameter": "D", "length": "L", "head_diameter": "DK", "head_height": "K",
+                     "head": "pan", "parameters": {"D": 5, "L": 40, "DK": 8, "K": 3}},
+      "default": "5.0x40",
+      "sizes": {"rows": [
+        {"diameter": 5.0, "head": [8, 3], "lengths": [25, 35, 40, 50, 60]}
+      ]},
+      "appearance": "steel_satin",
+      "build": {"role": "fastener", "wood": {"kind": "screw", "head": "pan"},
+                "material": {"product": "steel, zinc plated", "density": 7850}}
+    },
+    {
+      "id": "ring-nail",
+      "name": "Ring shank nail",
+      "category": "wood-fasteners",
+      "make": "model",
+      "data_source": "common sizes of ring shank nails and anchor nails",
+      "designation": "Ring shank nail {Diameter}x{Length}",
+      "keywords": ["nail", "ring nail", "anchor nail", "timber"],
+      "license": "MIT",
+      "dimensions": {"shape": "fastener", "diameter": "D", "length": "L", "head_diameter": "DK", "head_height": "K",
+                     "head": "flat", "parameters": {"D": 3.1, "L": 75, "DK": 7, "K": 1.3}},
+      "default": "3.1x75",
+      "sizes": {"rows": [
+        {"diameter": 2.8, "head": [6.5, 1.2], "lengths": [50, 63]},
+        {"diameter": 3.1, "head": [7, 1.3], "lengths": [75, 90]},
+        {"diameter": 4.0, "head": [8, 1.5], "lengths": [40, 50, 60]}
+      ]},
+      "appearance": "steel_satin",
+      "build": {"role": "fastener", "wood": {"kind": "nail", "head": "flat"},
+                "material": {"product": "steel, zinc plated", "density": 7850}}
+    },
+    {
+      "id": "structural-screw",
+      "name": "Structural screw, washer head",
+      "category": "wood-fasteners",
+      "make": "model",
+      "data_source": "common sizes of structural timber screws",
+      "designation": "Structural screw {Diameter}x{Length}",
+      "keywords": ["screw", "structural screw", "construction screw", "washer head", "timber"],
+      "license": "MIT",
+      "dimensions": {"shape": "fastener", "diameter": "D", "length": "L", "head_diameter": "DK", "head_height": "K",
+                     "head": "washer", "parameters": {"D": 6, "L": 120, "DK": 15, "K": 4}},
+      "default": "6.0x120",
+      "sizes": {"rows": [
+        {"diameter": 6.0, "head": [15, 4], "lengths": [80, 100, 120, 140, 160, 180, 200, 220, 240, 260, 280, 300]},
+        {"diameter": 8.0, "head": [20, 5], "lengths": [100, 120, 140, 160, 180, 200, 220, 240, 260, 280, 300, 350, 400]}
+      ]},
+      "appearance": "steel_satin",
+      "build": {"role": "fastener", "wood": {"kind": "screw", "head": "washer"},
+                "material": {"product": "steel, zinc plated", "density": 7850}}
+    }
+  ]
+}

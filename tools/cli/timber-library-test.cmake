@@ -1,0 +1,247 @@
+# SPDX-License-Identifier: MIT
+# The timber parts of Mitcad's parts library (mitcad#478) through
+# mitcad-cli: the generator (tools/libraries/make-profile-library.py) on
+# the test's group files (tools/cli/tests/timber-groups: a board family
+# with a re-sawn and a less common size, a sheet, a wood screw and a nail,
+# an angle bracket, a joist hanger and a post base, all modelled from
+# their dimensions, no supplier's files); the library checked, its
+# manifest's timber fields and the rows' own blocks, the designs (the
+# board's section, volume and face frames following a row, its wood
+# appearance; the fastener's head; the connectors' plates, holes and
+# frames; the sheet), and the pickers: timber only where it is asked
+# for, a junction of members offered the wood fasteners and the
+# connectors that fit its section. Nothing goes over the network.
+#
+# cmake -DCLI=<mitcad-cli> -DGIT=<git> -DPYTHON=<python3> -DGENERATOR=<make-profile-library.py>
+#       -DGROUPS=<tools/cli/tests/timber-groups> -DWORK=<folder> -P timber-library-test.cmake
+
+foreach(var CLI GIT PYTHON GENERATOR GROUPS WORK)
+  if(NOT DEFINED ${var})
+    message(FATAL_ERROR "timber-library-test.cmake needs -D${var}=...")
+  endif()
+endforeach()
+
+set(library "${WORK}/mitcad-parts")
+set(ENV{MITCAD_LIBRARIES_DIR} "${WORK}/cache")
+set(ENV{GIT_CONFIG_NOSYSTEM} 1)
+set(ENV{GIT_CONFIG_GLOBAL} "${WORK}/gitconfig")
+
+function(cli expect)
+  execute_process(COMMAND "${CLI}" ${ARGN} RESULT_VARIABLE status OUTPUT_VARIABLE out ERROR_VARIABLE err)
+  if(expect STREQUAL "ok" AND NOT status EQUAL 0)
+    message(FATAL_ERROR "mitcad-cli ${ARGN} failed (${status}):\n${out}${err}")
+  endif()
+  set(out "${out}${err}" PARENT_SCOPE)
+endfunction()
+
+function(expect pattern what)
+  if(NOT out MATCHES "${pattern}")
+    message(FATAL_ERROR "${what}:\n${out}")
+  endif()
+endfunction()
+
+function(same actual wanted what)
+  if(NOT "${actual}" STREQUAL "${wanted}")
+    message(FATAL_ERROR "${what}: '${actual}', not '${wanted}'")
+  endif()
+endfunction()
+
+file(REMOVE_RECURSE "${WORK}")
+file(MAKE_DIRECTORY "${WORK}" "${WORK}/supplier")
+file(WRITE "${WORK}/gitconfig" "")
+
+# 1. The library, v1.0.0, from the test's group files.
+execute_process(COMMAND "${PYTHON}" "${GENERATOR}" --cli "${CLI}" --source "${WORK}/supplier" --out "${library}"
+                        --groups "${GROUPS}" --work "${WORK}" --version 1.0.0 --no-render --commit
+                RESULT_VARIABLE status OUTPUT_VARIABLE out ERROR_VARIABLE err)
+set(out "${out}${err}")
+if(NOT status EQUAL 0)
+  message(FATAL_ERROR "the generator failed (${status}):\n${out}")
+endif()
+expect("mitcad-parts 1.0.0: 7 components" "the generator's summary")
+if(out MATCHES "left out|warning")
+  message(FATAL_ERROR "a part left out or warned of:\n${out}")
+endif()
+cli(ok library check "${library}")
+expect("mitcad-parts: 7 components, no errors" "the library's check")
+file(READ "${library}/SOURCES.md" sources)
+if(NOT sources MATCHES "test-board \\(Test timber\\): sizes made up for the test")
+  message(FATAL_ERROR "SOURCES.md:\n${sources}")
+endif()
+
+# 2. The manifest: the parts' blocks, their rows' own and what the
+#    generator filled in. Components in the group files' order.
+file(READ "${library}/mitcad-library.json" manifest)
+function(field wanted what)
+  string(JSON value ERROR_VARIABLE missing GET "${manifest}" components ${ARGN})
+  if(missing)
+    set(value "(none)")
+  endif()
+  same("${value}" "${wanted}" "${what}")
+endfunction()
+function(frames index wanted)
+  string(JSON count LENGTH "${manifest}" components ${index} build frames)
+  set(names "")
+  math(EXPR last "${count} - 1")
+  foreach(i RANGE ${last})
+    string(JSON name GET "${manifest}" components ${index} build frames ${i} name)
+    list(APPEND names "${name}")
+  endforeach()
+  same("${names}" "${wanted}" "the frames of component ${index}")
+endfunction()
+
+field("test-board" "the first component" 0 id)
+field("(none)" "the board's supplier" 0 supplier)
+field("timber" "the board's kind" 0 build kind)
+field("(none)" "the board's system" 0 build system)
+field("(none)" "the board's mass per metre" 0 build mass_per_metre)
+# The part's fields are its default row's (22x100).
+field("100 mm" "the board's width" 0 build section width)
+field("22 mm" "the board's thickness" 0 build section height)
+field("standard" "the board's availability" 0 build availability)
+field("spruce" "the board's species" 0 build material species)
+field("450" "the board's density" 0 build material density)
+field("sawn" "the board's finish" 0 build material finish)
+# The rows: re-sawn 2 mm under its nominal width; a less common size of
+# pine with the tolerance of its size.
+field("48 mm" "22x50's actual width" 0 build rows 22x50 section width)
+field("50 mm" "22x50's nominal width" 0 build rows 22x50 nominal width)
+field("less common" "48x148's availability" 0 build rows 48x148 availability)
+field("pine" "48x148's species" 0 build rows 48x148 material species)
+field("520" "48x148's density" 0 build rows 48x148 material density)
+field("-2" "48x148's width tolerance" 0 build rows 48x148 tolerance width 0)
+field("3" "48x148's thickness tolerance" 0 build rows 48x148 tolerance thickness 1)
+frames(0 "end_a;end_b;face_xp;face_xn;face_yp;face_yn")
+field("face" "the sheet's mount" 1 build panel mount)
+field("2500" "the sheet's second size" 1 build panel stock 1 1)
+field("less common" "the 18 mm sheet" 1 build rows 18 availability)
+frames(1 "face")
+field("40 mm" "the screw 5.0x40's length" 2 build rows 5.0x40 wood length)
+field("50 mm" "the screw's default length" 2 build wood length)
+field("5 mm" "the screw's diameter" 2 build wood diameter)
+field("7850" "the screw's density (its group file's)" 2 build material density)
+frames(2 "axis")
+field("nail" "the nail's kind" 3 build wood kind)
+frames(4 "mount;hole_b_1;hole_b_2;hole_a_1")
+field("hole_a_1" "the bracket's screws into a" 4 build connector fasteners 0 frames 0)
+field("1" "the bracket's screw count" 4 build connector fasteners 0 count)
+field("2" "the bracket's nail count" 4 build connector fasteners 1 count)
+frames(5 "mount;hole_b_1;hole_b_2;hole_b_3;hole_b_4;hole_b_5;hole_b_6;hole_a_1;hole_a_2;hole_a_3;hole_a_4")
+field("4" "the hanger's screws into the joist" 5 build connector fasteners 0 count)
+field("6" "the hanger's screws into the carrier" 5 build connector fasteners 1 count)
+field("5 mm" "the hanger's hole" 5 build frames 1 diameter)
+frames(6 "mount;base;hole_a_1;hole_a_2;hole_a_3;hole_a_4")
+
+# 3. The designs. The board: its section on XY extruded by L, 100 x 22 x
+#    3000 by default; in the row 22x50 (48 wide) its body and the face
+#    frames follow (mount:face_xp is F7 after its plane, mount:face_yn
+#    F13); its bodies take the wood appearance, whose texture is embedded.
+file(WRITE "${WORK}/board.json" "[
+  {\"expect\": {\"total_volume\": 6600000, \"tolerance\": 1e-6}},
+  {\"expect\": {\"query\": {\"query\": \"datum\", \"uid\": \"F7\"}, \"result\": {\"origin\": [50, 0, 0], \"normal\": [1, 0, 0], \"x_axis\": [0, 0, 1]}}},
+  {\"expect\": {\"query\": {\"query\": \"datum\", \"uid\": \"F13\"}, \"result\": {\"origin\": [0, -11, 0], \"normal\": [0, -1, 0]}}},
+  {\"expect\": {\"query\": {\"query\": \"bodies\", \"properties\": true},
+               \"result\": [{\"appearance\": \"test-wood\", \"bbox\": {\"min\": [-50, -11, 0], \"max\": [50, 11, 3000]}}]}},
+  {\"cmd\": \"apply_configuration\", \"name\": \"22x50\"},
+  {\"expect\": {\"total_volume\": 3168000, \"tolerance\": 1e-6}},
+  {\"expect\": {\"query\": {\"query\": \"datum\", \"uid\": \"F7\"}, \"result\": {\"origin\": [24, 0, 0], \"normal\": [1, 0, 0]}}},
+  {\"cmd\": \"apply_configuration\", \"name\": \"48x148\"},
+  {\"expect\": {\"total_volume\": 21312000, \"tolerance\": 1e-6}},
+  {\"expect\": {\"query\": {\"query\": \"datum\", \"uid\": \"F13\"}, \"result\": {\"origin\": [0, -24, 0], \"normal\": [0, -1, 0]}}},
+  {\"cmd\": \"set_parameter\", \"name\": \"L\", \"expression\": \"2000 mm\"},
+  {\"expect\": {\"query\": {\"query\": \"datum\", \"uid\": \"F5\"}, \"result\": {\"origin\": [0, 0, 2000], \"normal\": [0, 0, 1]}}}
+]")
+cli(ok run "${WORK}/board.json" --open "${library}/timber/test-board.mitcad")
+file(READ "${library}/timber/test-board.mitcad" design)
+string(JSON appearance GET "${design}" appearances 0 id)
+same("${appearance}" "test-wood" "the board's appearance")
+string(JSON projection GET "${design}" appearances 0 texture projection)
+same("${projection}" "box" "the texture's projection")
+
+#    The sheet: a box from the origin, 1200 x 2400 x 12; 18 thick in its
+#    row 18.
+file(WRITE "${WORK}/sheet.json" "[
+  {\"expect\": {\"query\": {\"query\": \"bodies\", \"properties\": true},
+               \"result\": [{\"bbox\": {\"min\": [0, 0, 0], \"max\": [1200, 2400, 12]}}]}},
+  {\"cmd\": \"apply_configuration\", \"name\": \"18\"},
+  {\"expect\": {\"query\": {\"query\": \"bodies\", \"properties\": true},
+               \"result\": [{\"bbox\": {\"min\": [0, 0, 0], \"max\": [1200, 2400, 18]}}]}}
+]")
+cli(ok run "${WORK}/sheet.json" --open "${library}/timber/test-sheet.mitcad")
+
+#    The screw: its countersunk head in z > 0, the tip at its length; the
+#    nail's flat head on z < 0.
+file(WRITE "${WORK}/screw.json" "[
+  {\"expect\": {\"query\": {\"query\": \"bodies\", \"properties\": true},
+               \"result\": [{\"appearance\": \"steel_satin\", \"bbox\": {\"min\": [-5, -5, 0], \"max\": [5, 5, 50]}}]}},
+  {\"expect\": {\"query\": {\"query\": \"datum\", \"uid\": \"F3\"}, \"result\": {\"origin\": [0, 0, 0], \"normal\": [0, 0, 1]}}},
+  {\"cmd\": \"apply_configuration\", \"name\": \"5.0x40\"},
+  {\"expect\": {\"query\": {\"query\": \"bodies\", \"properties\": true},
+               \"result\": [{\"bbox\": {\"min\": [-5, -5, 0], \"max\": [5, 5, 40]}}]}}
+]")
+cli(ok run "${WORK}/screw.json" --open "${library}/wood/test-screw.mitcad")
+file(WRITE "${WORK}/nail.json" "[
+  {\"expect\": {\"query\": {\"query\": \"bodies\", \"properties\": true},
+               \"result\": [{\"bbox\": {\"min\": [-4, -4, -1.5], \"max\": [4, 4, 40]}}]}}
+]")
+cli(ok run "${WORK}/nail.json" --open "${library}/wood/test-nail.mitcad")
+
+#    The connectors in their mount frame's coordinates: the bracket's arms
+#    on z = 0 (to +x) and x = 0 (to -z); the hanger round a 48 x 148 joist
+#    whose end is at the origin, x up; the post base under the post's end.
+#    Each is one solid: its plates joined, less its holes (a hole through a
+#    plate of thickness t is pi r^2 t).
+function(connector id bbox_min bbox_max volume)
+  file(WRITE "${WORK}/${id}.json" "[
+  {\"expect\": {\"bodies\": 1}},
+  {\"expect\": {\"total_volume\": ${volume}, \"tolerance\": 1e-6}},
+  {\"expect\": {\"query\": {\"query\": \"bodies\", \"properties\": true},
+               \"result\": [{\"bbox\": {\"min\": [${bbox_min}], \"max\": [${bbox_max}]}}]}}
+]")
+  cli(ok run "${WORK}/${id}.json" --open "${library}/wood/${id}.mitcad")
+endfunction()
+# The bracket: arms 60 x 40 x 2 and 2 x 40 x 50 overlapping by 2 x 40 x 2
+# (8640), three 5 mm holes through 2 mm.
+connector(test-bracket "0, -20, -50" "60, 20, 0" 8522.19027549)
+# The hanger: a seat 2 x 52 x 70, sides 132 x 2 x 70, flanges 132 x 32 x 2
+# (59520 joined), ten 5 mm holes through 2 mm.
+connector(test-hanger "-76, -56, -70" "56, 56, 0" 59127.30091830)
+# The post base: a plate 160 x 160 x 5 and sides 4 x 60 x 155 (200000
+# joined), four 5.5 mm holes through 4 mm.
+connector(test-post-base "-80, -80, -5" "80, 80, 150" 199619.86727)
+
+# 4. The pickers: fetched, timber only where asked for.
+cli(ok library fetch "${library}")
+cli(ok library candidates --role profile --kind timber)
+expect("mitcad-parts/test-board" "the Timber picker")
+cli(ok library candidates --role profile)
+if(out MATCHES "test-board")
+  message(FATAL_ERROR "the Profile picker lists timber:\n${out}")
+endif()
+cli(ok library candidates --role panel --mount face)
+expect("mitcad-parts/test-sheet" "the sheets on a face")
+cli(ok library candidates --role panel)
+if(out MATCHES "test-sheet")
+  message(FATAL_ERROR "the slot panels' picker lists sheets:\n${out}")
+endif()
+cli(ok library candidates --role fastener)
+if(out MATCHES "test-screw|test-nail")
+  message(FATAL_ERROR "the slot nuts' picker lists wood fasteners:\n${out}")
+endif()
+cli(ok library candidates --role fastener --kind wood)
+expect("mitcad-parts/test-nail" "the wood fasteners (the nail)")
+expect("mitcad-parts/test-screw" "the wood fasteners (the screw)")
+# A 48 x 148 joist on a beam: the fasteners, the hanger and the bracket;
+# the post base goes on no junction. A 48 x 123 joist: the hanger greyed.
+file(WRITE "${WORK}/joist.json"
+     "{\"id\": \"J1\", \"kind\": \"T\", \"wood\": {\"sections\": {\"a\": [148, 48], \"b\": [148, 48]}}}")
+cli(ok library candidates --junction "${WORK}/joist.json")
+foreach(id test-hanger test-bracket test-screw test-nail)
+  expect("(^|\n)mitcad-parts/${id} " "${id} for the joist")
+endforeach()
+expect("not mitcad-parts/test-post-base" "the post base greyed at a junction")
+file(WRITE "${WORK}/joist-123.json"
+     "{\"id\": \"J1\", \"kind\": \"T\", \"wood\": {\"sections\": {\"a\": [123, 48], \"b\": [148, 48]}}}")
+cli(ok library candidates --junction "${WORK}/joist-123.json")
+expect("not mitcad-parts/test-hanger  Test joist hanger 48x148: it fits 48 x 148, the member is 123 x 48"
+       "the hanger greyed for a 48 x 123 joist")

@@ -2070,9 +2070,10 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
 
     /// The Move to Component commands of a cut and paste: the bodies cut
     /// (all of one component) go into the component the item is in, an
-    /// existing one placed once like the source. The bodies a feature ties
-    /// together stay in their component unless `together`: that command is
-    /// the second, a guess the history must confirm.
+    /// existing one placed once like the source. Where the features cannot
+    /// go, a body transfer moves the bodies alone (the second). The bodies
+    /// a feature ties together stay in their component unless `together`:
+    /// that command is the last, a guess the history must confirm.
     fn cut_paste_command(&self, sources: &[Reference]) -> Result<Vec<Candidate>, String> {
         let bodies: Vec<BodyUid> = sources
             .iter()
@@ -2128,11 +2129,19 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         };
         let mut apart = Candidate::new(command(false));
         apart.input_provenance = InputProvenance::Read;
+        // Where the features cannot go (a definition that cannot change
+        // coordinates, a feature of the source that works on the bodies
+        // too), the bodies alone move from this point of the timeline, as
+        // the item moved them (mitcad#465).
+        let mut transfer = Candidate::new(json!({"type": "body_transfer",
+            "bodies": bodies.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            "link": {"source": from, "target": into}}));
+        transfer.input_provenance = InputProvenance::Read;
         let mut together =
             Candidate::new(command(true)).with_note("with the bodies a feature ties to them");
         together.guess = true;
         together.input_provenance = InputProvenance::Inferred;
-        Ok(vec![apart, together])
+        Ok(vec![apart, transfer, together])
     }
 
     /// A hole at a point of a planar face (F1 import table); without a

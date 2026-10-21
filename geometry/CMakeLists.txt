@@ -198,6 +198,38 @@ target_sources(mitcad_geometry PRIVATE
 target_sources(mitcad_geometry PRIVATE
   src/surfaces.cpp
   include/mitcad/geometry/surfaces.hpp)
+# Surface modelling: surface bodies and their features (mitcad#455).
+target_sources(mitcad_geometry PRIVATE
+  src/surface_sweeps.cpp
+  include/mitcad/geometry/surface_sweeps.hpp)
+# Surface modelling: Offset Surface, Ruled Surface and Extend (mitcad#455).
+target_sources(mitcad_geometry PRIVATE
+  src/free_loops.hpp
+  src/surface_offsets.cpp
+  include/mitcad/geometry/surface_offsets.hpp)
+# Surface modelling: Trim, Untrim, Unstitch and Reverse Normal (mitcad#455).
+target_sources(mitcad_geometry PRIVATE
+  src/surface_edits.cpp
+  include/mitcad/geometry/surface_edits.hpp)
+# Plastic part features: the bands of lips and grooves (mitcad#459).
+target_sources(mitcad_geometry PRIVATE
+  src/plastic.cpp
+  include/mitcad/geometry/plastic.hpp)
+# Surface modelling: Blend, Boundary, Match and Fair Surface (mitcad#455).
+target_sources(mitcad_geometry PRIVATE
+  src/sheet_edges.hpp
+  src/surface_fills.cpp
+  include/mitcad/geometry/surface_fills.hpp)
+# Drawings: views with hidden lines removed and round holes (mitcad#471).
+target_sources(mitcad_geometry PRIVATE
+  src/drawing.cpp
+  include/mitcad/geometry/drawing.hpp)
+target_link_libraries(mitcad_geometry PRIVATE TKHLR TKMesh)
+
+# Gears: toothed profiles swept along their axis or ruled to an apex (mitcad#472).
+target_sources(mitcad_geometry PRIVATE
+  src/gear.cpp
+  include/mitcad/geometry/gear.hpp)
 target_include_directories(mitcad_geometry PUBLIC include)
 # Volumes and areas come from the analysis library's integrals, so that
 # every reported volume agrees (query.cpp, brep_import.cpp).
@@ -370,6 +402,10 @@ if(BUILD_TESTING)
   add_executable(test_surfaces tests/test_surfaces.cpp)
   target_link_libraries(test_surfaces PRIVATE mitcad_geometry mitcad_warnings)
   add_test(NAME geometry.surfaces COMMAND test_surfaces)
+  # Surface modelling: surface bodies and their features (mitcad#455).
+  add_executable(test_surface_modelling tests/test_surface_modelling.cpp)
+  target_link_libraries(test_surface_modelling PRIVATE mitcad_geometry mitcad_warnings)
+  add_test(NAME geometry.surface_modelling COMMAND test_surface_modelling)
   # OCCT's crash handlers next to the application's crash report (mitcad#62).
   if(NOT WIN32)
     add_executable(test_guard tests/test_guard.cpp)
@@ -387,6 +423,10 @@ if(BUILD_TESTING)
   add_executable(test_emboss tests/test_emboss.cpp)
   target_link_libraries(test_emboss PRIVATE mitcad_geometry mitcad_warnings)
   add_test(NAME geometry.emboss COMMAND test_emboss)
+  # Drawings: views with hidden lines removed and round holes (mitcad#471).
+  add_executable(test_drawing tests/test_drawing.cpp)
+  target_link_libraries(test_drawing PRIVATE mitcad_geometry mitcad_warnings)
+  add_test(NAME geometry.drawing COMMAND test_drawing)
 endif()
 
 # Data exchange and analysis services, separate libraries on top of OCCT.

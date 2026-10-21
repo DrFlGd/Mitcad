@@ -130,6 +130,36 @@ impl Params {
         })
     }
 
+    /// [`Params::expression`] with names of its own (`Thickness` in a
+    /// plastic rule, mitcad#459) standing for the Mitcad names given,
+    /// unless the file has a value of that name.
+    pub fn expression_with<K: Kernel>(
+        &mut self,
+        doc: &mut Document<K>,
+        expr: &str,
+        local: &[(&str, String)],
+    ) -> Result<String, String> {
+        let local: Vec<(String, String)> = local
+            .iter()
+            .filter(|(n, _)| !self.defs.contains_key(*n))
+            .map(|(n, m)| ((*n).to_owned(), m.clone()))
+            .collect();
+        for r in references(expr) {
+            if !local.iter().any(|(n, _)| *n == r) {
+                self.ensure(doc, &r)?;
+            }
+        }
+        let made = &self.made;
+        translate(expr, &|n| {
+            local
+                .iter()
+                .find(|(l, _)| l == n)
+                .map(|(_, m)| m.clone())
+                .or_else(|| made.get(n).cloned())
+                .unwrap_or_else(|| valid_name(n))
+        })
+    }
+
     /// The value of a slot: `name = expression` for a named value the
     /// feature makes, the name for one made before, else the expression.
     pub fn slot<K: Kernel>(

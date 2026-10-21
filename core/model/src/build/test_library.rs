@@ -501,7 +501,257 @@ impl TestLibrary {
                 designation: String::new(),
             },
         );
+        // Timber (mitcad#478): members, a wood screw in rows, a joist
+        // hanger, a post base and a plywood sheet.
+        add("post98", V1, board("Sawn 100x100", 98.0, 98.0, &[]));
+        add("beam148", V1, board("Dimensioned 48x148", 148.0, 48.0, &[]));
+        add("deck120", V1, board("Planed 28x120", 120.0, 28.0, &[]));
+        add(
+            "rows98",
+            V1,
+            board("Dimensioned 48x98", 98.0, 48.0, &["spruce", "pine"]),
+        );
+        add("wood-screw", V1, wood_screw());
+        add("hanger148", V1, hanger(148.0, 48.0));
+        add("postbase98", V1, post_base());
+        add("plywood", V1, plywood());
         Arc::new(library)
+    }
+}
+
+/// A timber member `w` wide (along X) and `t` thick (along Y), `L` long
+/// (3000 mm), with face frames on its four sides; with configuration rows
+/// that change only its metadata when `rows` names them.
+pub(crate) fn board_design(w: f64, t: f64, rows: &[&str]) -> String {
+    let mut doc = Document::new(MockKernel::default());
+    command(
+        &mut doc,
+        json!({"cmd": "add_parameter", "name": "L", "expression": "3000 mm"}),
+    )
+    .unwrap();
+    let sketch = doc.add_sketch(SketchPlane::Xy).unwrap().uid;
+    let region = doc
+        .add_rectangle(
+            sketch,
+            [-w / 2.0, -t / 2.0],
+            &ValueInput::Number(w),
+            &ValueInput::Number(t),
+        )
+        .unwrap()
+        .region;
+    let extrude = doc
+        .add_feature(
+            &def(
+                json!({"type": "extrude", "profiles": [{"sketch": sketch, "region": region}],
+                        "extent": {"type": "distance", "distance": "L"}, "operation": "new_body"}),
+            ),
+            None,
+        )
+        .unwrap()
+        .uid;
+    fixed_frame(
+        &mut doc,
+        "end_a",
+        [0.0; 3],
+        [0.0, 0.0, -1.0],
+        [1.0, 0.0, 0.0],
+    );
+    doc.add_feature(
+        &def(json!({"type": "joint_origin",
+                    "geometry": {"body": format!("{extrude}.b0"),
+                                 "face": format!("{extrude}:end({region})")}})),
+        Some("mount:end_b"),
+    )
+    .unwrap();
+    for (name, origin, z) in [
+        ("face_xp", [w / 2.0, 0.0, 0.0], [1.0, 0.0, 0.0]),
+        ("face_xn", [-w / 2.0, 0.0, 0.0], [-1.0, 0.0, 0.0]),
+        ("face_yp", [0.0, t / 2.0, 0.0], [0.0, 1.0, 0.0]),
+        ("face_yn", [0.0, -t / 2.0, 0.0], [0.0, -1.0, 0.0]),
+    ] {
+        fixed_frame(&mut doc, name, origin, z, [0.0, 0.0, 1.0]);
+    }
+    // The wood its members show.
+    command(
+        &mut doc,
+        json!({"cmd": "set_body_appearance", "uid": format!("{extrude}.b0"), "appearance": "wood_oak"}),
+    )
+    .unwrap();
+    // Its end grain on the caps (mitcad#484).
+    command(
+        &mut doc,
+        json!({"cmd": "set_face_appearance", "uid": format!("{extrude}.b0"),
+               "faces": [format!("{extrude}:start({region})"), format!("{extrude}:end({region})")],
+               "appearance": "wood_walnut"}),
+    )
+    .unwrap();
+    if !rows.is_empty() {
+        let rows: Vec<Value> = rows.iter().map(|r| json!({"name": r})).collect();
+        command(
+            &mut doc,
+            json!({"cmd": "set_configurations", "configurations": {
+                "parameters": [], "default": "spruce", "rows": rows}}),
+        )
+        .unwrap();
+    }
+    doc.recompute();
+    doc.to_json()
+}
+
+/// A timber member's `build` block (the layout `docs/libraries.md` gives).
+pub(crate) fn board_build(w: f64, t: f64, finish: &str) -> Value {
+    json!({
+        "role": "profile",
+        "kind": "timber",
+        "section": {"width": format!("{w} mm"), "height": format!("{t} mm")},
+        "nominal": {"width": w + 2.0, "height": t + 2.0},
+        "material": {"species": "spruce", "finish": finish, "grade": "", "density": 450,
+                     "moisture": 20},
+        "availability": "standard",
+        "length": {"parameter": "L", "min": "100 mm", "max": "6000 mm",
+                   "stock": [2700, 3000, 3300, 3600, 3900, 4200, 4500, 4800, 5100, 5400]},
+        "frames": [{"name": "end_a", "kind": "end"}, {"name": "end_b", "kind": "end"},
+                   {"name": "face_xp", "kind": "face"}, {"name": "face_xn", "kind": "face"},
+                   {"name": "face_yp", "kind": "face"}, {"name": "face_yn", "kind": "face"}],
+    })
+}
+
+fn board(name: &str, w: f64, t: f64, rows: &[&str]) -> Part {
+    let finish = name
+        .split_whitespace()
+        .next()
+        .unwrap_or("Sawn")
+        .to_lowercase();
+    let mut build = board_build(w, t, &finish);
+    if !rows.is_empty() {
+        // The pine row: another species and density, and less common.
+        build["rows"] = json!({"pine": {"material": {"species": "pine", "density": 520},
+                                        "availability": "less common"}});
+    }
+    Part {
+        text: board_design(w, t, rows),
+        build: Some(build),
+        part_number: String::new(),
+        name: name.to_owned(),
+        designation: format!("{name} L={{L}}"),
+    }
+}
+
+/// A wood screw 5 x 60 (rows 4x40 ... 6x120): its `axis` frame at the
+/// head, z along the shank.
+fn wood_screw() -> Part {
+    let mut doc: Document<MockKernel> = Document::from_json(
+        &block_design(
+            [5.0, 5.0, 60.0],
+            [-2.5, -2.5],
+            &[("axis", [0.0; 3], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0])],
+        ),
+        MockKernel::default(),
+    )
+    .unwrap();
+    let names = ["4x40", "5x60", "5x80", "5x100", "6x120"];
+    let rows: Vec<Value> = names.iter().map(|r| json!({"name": r})).collect();
+    command(
+        &mut doc,
+        json!({"cmd": "set_configurations", "configurations": {
+            "parameters": [], "default": "5x60", "rows": rows}}),
+    )
+    .unwrap();
+    let mut by_row = serde_json::Map::new();
+    for name in names {
+        let (d, l) = name.split_once('x').unwrap();
+        by_row.insert(
+            name.to_owned(),
+            json!({"wood": {"diameter": d.parse::<f64>().unwrap(),
+                            "length": l.parse::<f64>().unwrap()}}),
+        );
+    }
+    Part {
+        text: doc.to_json(),
+        build: Some(json!({
+            "role": "fastener",
+            "wood": {"kind": "screw", "diameter": "5 mm", "length": "60 mm", "head": "10 mm"},
+            "frames": [{"name": "axis", "kind": "shaft"}],
+            "rows": by_row,
+        })),
+        part_number: String::new(),
+        name: "Wood screw".to_owned(),
+        designation: "Wood screw {config}".to_owned(),
+    }
+}
+
+/// A joist hanger for an `h` x `t` joist: its `mount` frame at the joist's
+/// end middle (z into the carrier, x up), two hole frames on its flanges.
+fn hanger(h: f64, t: f64) -> Part {
+    let flange = t / 2.0 + 2.0;
+    Part {
+        text: block_design(
+            [h + 4.0, t + 4.0, 60.0],
+            [-h / 2.0 - 2.0, -t / 2.0 - 2.0],
+            &[
+                ("mount", [0.0; 3], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]),
+                ("h1", [0.0, flange, -30.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]),
+                (
+                    "h2",
+                    [0.0, -flange, -30.0],
+                    [0.0, -1.0, 0.0],
+                    [1.0, 0.0, 0.0],
+                ),
+            ],
+        ),
+        build: Some(json!({
+            "role": "connector",
+            "frames": [{"name": "mount", "kind": "face"}, {"name": "h1", "kind": "hole"},
+                       {"name": "h2", "kind": "hole"}],
+            "connector": {
+                "placement": "outer",
+                "junctions": ["T", "L"],
+                "fit": {"kind": "hanger", "section": [t, h]},
+                "mates": [{"frame": "mount", "to": "face"}],
+                "fasteners": [{"frames": ["h1", "h2"], "count": 2, "on": "a",
+                               "screw": {"library": LIBRARY, "component": "wood-screw",
+                                         "config": "4x40"}}]
+            },
+            "material": {"product": "galvanised steel", "density": 7850}
+        })),
+        part_number: "JH148".to_owned(),
+        name: format!("Joist hanger {t}x{h}"),
+        designation: String::new(),
+    }
+}
+
+/// A post base for a 98 x 98 post: its `mount` frame at the post end's
+/// middle, z into the post.
+fn post_base() -> Part {
+    Part {
+        text: block_design(
+            [110.0, 110.0, 40.0],
+            [-55.0, -55.0],
+            &[("mount", [0.0, 0.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0])],
+        ),
+        build: Some(json!({
+            "role": "connector",
+            "frames": [{"name": "mount", "kind": "face"}],
+            "connector": {"placement": "outer", "fit": {"kind": "post_base", "section": [98, 98]},
+                          "mates": [{"frame": "mount", "to": "end"}]}
+        })),
+        part_number: "PB98".to_owned(),
+        name: "Post base 98".to_owned(),
+        designation: String::new(),
+    }
+}
+
+/// A plywood sheet `W` x `H` x `t` lying on a face.
+fn plywood() -> Part {
+    Part {
+        text: panel_design(None),
+        build: Some(json!({"role": "panel",
+                           "panel": {"mount": "face", "thickness": "t", "width": "W", "height": "H",
+                                     "stock": [[1200, 2400]]},
+                           "material": {"product": "plywood", "density": 600}})),
+        part_number: String::new(),
+        name: "Plywood".to_owned(),
+        designation: "Plywood {W}x{H}".to_owned(),
     }
 }
 

@@ -1,0 +1,14 @@
+{
+  "comment": "Worked out by hand (mitcad#459). Case: an 80 x 50 x 30 box shelled 2 through the top (120000 - 76 * 46 * 28 = 22112); a groove along the rim's outer edge with the assigned rule Stiff's clearance 0.1 * 1.5 added to its width and depth ((4000 - 77.7 * 47.7) * 2.15 = 631.4765); a lip 0.5 wide and 1 high inside ((77 * 47 - 76 * 46) * 1 = 123). Plate: 60 x 60 x 3 (10800); a boss 10 across and 12 high (pi 25 12 = 942.4778) with four ribs 1.5 thick, 6 out of its wall, 10 high (4 * 10 * (16.5 - (0.75 sqrt(24.4375) + 25 asin(0.15))) = 361.1289) and a hole 4 across to the plate (pi 4 12 = 150.7964); a round rest 8 across and 3 high with the active rule's 2 degree draft (pi (16 + 4 r + r^2), r = 4 - 3 tan 2 deg: 146.8815); a snap fit (1.2 * 10 * 5 + 0.8 * 1.5 / 2 * 5 = 63).",
+  "volume_tolerance": 1e-5,
+  "body_count": 2,
+  "total": {"volume_mm3": 33766.21522},
+  "bodies": [
+    {"name": "Case", "volume_mm3": 21603.5235, "bbox": {"min": [0, 0, 0], "max": [80, 50, 31]}},
+    {"name": "Plate", "volume_mm3": 12162.69172, "bbox": {"min": [100, 0, 0], "max": [160, 60, 15]}}
+  ],
+  "timeline": [{"name": "Box1"}, {"name": "Shell1"}, {"name": "Groove1"}, {"name": "Box2"}, {"name": "Boss1"},
+    {"name": "Rest1"}, {"name": "SnapFit1"}, {"name": "Lip1"}],
+  "params": [{"name": "wall"}],
+  "parametric": 8
+}

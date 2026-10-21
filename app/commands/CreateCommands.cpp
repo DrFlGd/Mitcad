@@ -33,6 +33,8 @@ void registerCreateCommands(CommandRegistry& registry, const CommandContext& con
   registry.add(pathPatternCommand(context));
   registry.add(pointPatternCommand(context));
   registry.add(mirrorCommand(context));
+  // Plastic part features (mitcad#459).
+  registry.add(plasticCommand(context));
 }
 
 } // namespace mitcad

@@ -44,7 +44,7 @@ pub(crate) fn refuse(message: impl Into<String>) -> ModelError {
 
 /// The part a command places: a library's component at a version, or a
 /// source the design has.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PartInput {
     #[serde(default)]
@@ -62,7 +62,7 @@ pub struct PartInput {
 }
 
 /// Whether a pick on a profile goes on its side or on its end.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PlaceKind {
     #[default]
@@ -105,7 +105,7 @@ impl SideFrom {
 }
 
 /// Where a part goes.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PlaceAt {
     /// A path from the BUILD host (uids or names); empty for its own
@@ -137,7 +137,7 @@ pub struct PlaceAt {
 }
 
 /// What a length is bound to.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BindInput {
     #[serde(default)]
@@ -146,7 +146,7 @@ pub struct BindInput {
 }
 
 /// A length: a value, or bound to what the part's ray meets.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum LengthInput {
     Value(ValueInput),
@@ -160,7 +160,7 @@ pub enum LengthInput {
 }
 
 /// Which ends a mitre cuts.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MitreCut {
     #[default]
@@ -172,7 +172,7 @@ pub enum MitreCut {
     None,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MitreInput {
     #[serde(default)]
@@ -182,7 +182,7 @@ pub struct MitreInput {
 }
 
 /// The fields of `build_place` (and of `build_preview` for one).
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PlaceInput {
     pub part: PartInput,
@@ -204,6 +204,19 @@ pub struct PlaceInput {
     pub parameters: BTreeMap<String, ValueInput>,
     #[serde(default)]
     pub name: Option<String>,
+    // Timber construction (mitcad#478).
+    /// A member by two points: where it ends (`at.point` its start).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<super::timber::PointTo>,
+    /// How a member by two points lies about its axis.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lie: Option<super::timber::Lie>,
+    /// The member repeated as a spacing set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spacing: Option<super::spacing::SpacingInput>,
+    /// The part's own grade (a timber member's).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grade: Option<String>,
 }
 
 /// An end's cut in `build_edit`.
@@ -238,6 +251,9 @@ pub struct EditAt {
     pub offset: Option<ValueInput>,
     #[serde(default)]
     pub from: Option<SideFrom>,
+    /// A member by two points: its start (mitcad#478).
+    #[serde(default)]
+    pub point: Option<V3>,
 }
 
 /// The fields of `build_edit`.
@@ -266,6 +282,21 @@ pub struct EditInput {
     /// had; an empty list takes it away.
     #[serde(default)]
     pub machining: Option<Vec<OwnMachining>>,
+    // Timber construction (mitcad#478).
+    /// The whole spacing set the part is in: its fields changed.
+    #[serde(default)]
+    pub spacing: Option<super::spacing::SpacingInput>,
+    /// The part's own grade; null clears it.
+    #[serde(default, deserialize_with = "some")]
+    pub grade: Option<Option<String>>,
+    /// `refit`: the part's joinery cut anew from where the members are.
+    #[serde(default)]
+    pub cuts: Option<String>,
+    /// A member by two points: its end and its lie again.
+    #[serde(default)]
+    pub to: Option<super::timber::PointTo>,
+    #[serde(default)]
+    pub lie: Option<super::timber::Lie>,
 }
 
 /// A hole at one of a part's ends.
@@ -291,6 +322,8 @@ pub struct Placed {
     pub place: &'static str,
     /// A panel's fit (`build_panel`): false with the reason.
     pub fits: Option<(bool, String)>,
+    /// A spacing set's members (mitcad#478), the first the answer's part.
+    pub set: Vec<ComponentUid>,
 }
 
 // Planning.
@@ -627,6 +660,10 @@ pub(crate) struct Plan {
     /// Where the new part goes in the BUILD host's coordinates.
     pub placement: Transform,
     pub target: Option<Target>,
+    /// The part's own grade (mitcad#478).
+    pub grade: Option<String>,
+    /// A member by two points: its placement, to place it anew.
+    pub points: Option<serde_json::Value>,
 }
 
 /// The value of a command's value in the document: a number as it is
@@ -728,7 +765,8 @@ impl<K: Kernel> Document<K> {
                 def.label()
             )));
         };
-        let meta = BuildMeta::read(build).map_err(|e| refuse(format!("{}: {e}", def.label())))?;
+        let meta = BuildMeta::read_row(build, part.config.as_deref())
+            .map_err(|e| refuse(format!("{}: {e}", def.label())))?;
         let design = def
             .design
             .state()
@@ -793,7 +831,23 @@ impl<K: Kernel> Document<K> {
             numbers.push((name.clone(), value_in(self, value, Unit::MM)?));
         }
         let config = source.config.as_deref();
-        let length = match (&source.meta.length, &input.length) {
+        // A member by two points: their distance unless a length is given
+        // (mitcad#478).
+        let points_length = match (&input.to, &input.length) {
+            (Some(to), None) => {
+                let start =
+                    input.at.as_ref().and_then(|a| a.point).ok_or_else(|| {
+                        refuse("a member by two points needs its start (at.point)")
+                    })?;
+                let distance = super::geometry::norm(sub(to.point, start));
+                Some(LengthInput::Value(ValueInput::Number(
+                    (distance * 1000.0).round() / 1000.0,
+                )))
+            }
+            _ => None,
+        };
+        let input_length = points_length.as_ref().or(input.length.as_ref());
+        let length = match (&source.meta.length, input_length) {
             (None, None) => LengthPlan::None,
             (None, Some(_)) => {
                 return Err(refuse(format!("{label} is not cut to length")));
@@ -869,8 +923,24 @@ impl<K: Kernel> Document<K> {
             rotate,
             tilt,
         };
-        let (spot, place) = match &at.geometry {
-            None => {
+        let points = match &input.to {
+            Some(to) => Some(self.plan_points(
+                &source,
+                &at,
+                to,
+                input.lie.unwrap_or_default(),
+                input.flip,
+                rotate,
+                &mounts,
+                bounds.as_ref(),
+            )?),
+            None => None,
+        };
+        // A member by two points is turned by its axes, not the joint.
+        let rotate = if points.is_some() { 0.0 } else { rotate };
+        let (spot, place) = match (points, &at.geometry) {
+            (Some(points), _) => (points.spot, "points"),
+            (None, None) => {
                 // At the point (the origin), along `at.direction` (+Z).
                 let point = at.point.unwrap_or([0.0; 3]);
                 let grounded = match at.direction.and_then(unit) {
@@ -885,7 +955,7 @@ impl<K: Kernel> Document<K> {
                 };
                 (Spot::Grounded(grounded), "grounded")
             }
-            Some(geometry) => {
+            (None, Some(geometry)) => {
                 let path = self.path_from_host(&at.occurrence)?;
                 match self.target(&path) {
                     Some(t) => {
@@ -1066,6 +1136,18 @@ impl<K: Kernel> Document<K> {
         for (name, v) in &numbers {
             shown.insert(name.clone(), *v);
         }
+        // A member by two points keeps how it was placed (mitcad#478).
+        let source_id = source.def.id;
+        let points = input.to.as_ref().map(|_| {
+            let mut base = input.clone();
+            base.spacing = None;
+            base.part = PartInput {
+                source: Some(source_id),
+                config: base.part.config.clone(),
+                ..PartInput::default()
+            };
+            serde_json::to_value(&base).unwrap_or_default()
+        });
         let designation = designation(&source.def, config, &shown);
         Ok(Plan {
             source,
@@ -1084,6 +1166,8 @@ impl<K: Kernel> Document<K> {
             bounds,
             placement,
             target,
+            grade: input.grade.clone().filter(|g| !g.trim().is_empty()),
+            points,
         })
     }
 
@@ -1126,6 +1210,7 @@ impl<K: Kernel> Document<K> {
                 match target.info.frame_kind(name).as_str() {
                     "end" => Pick::End(name.clone()),
                     "slot" => Pick::Slot(name.clone()),
+                    "face" if target.info.is_side(name) => Pick::Slot(name.clone()),
                     _ => Pick::Frame(name.clone()),
                 }
             }
@@ -1361,6 +1446,11 @@ impl<K: Kernel> Document<K> {
         frame: &str,
     ) -> Result<(), ModelError> {
         let label = source.def.label();
+        if target.info.is_timber() && !source.meta.systems.is_empty() {
+            return Err(refuse(format!(
+                "a member has no slots: {label} goes in a slot"
+            )));
+        }
         if !source.meta.fits(target.info.meta.system.as_ref()) {
             let fits: Vec<String> = source.meta.systems.iter().map(|s| s.label()).collect();
             return Err(refuse(format!(
@@ -1408,13 +1498,20 @@ impl<K: Kernel> Document<K> {
 
     /// The slot of a picked side face nearest to the point: of the slots
     /// on the face's plane when the face is planar (none: a closed side).
-    fn pick_slot(
+    pub(crate) fn pick_slot(
         &self,
         target: &Target,
         face: Option<&(crate::ids::BodyUid, crate::topo::FaceName)>,
         point: Option<V3>,
     ) -> Result<String, ModelError> {
         let mut slots = target.info.slots();
+        // A member's face frames where it has no slots (mitcad#478).
+        let faces: Vec<(&String, &Transform)> = target
+            .info
+            .sides()
+            .into_iter()
+            .filter(|(n, _)| target.info.frame_kind(n) == "face")
+            .collect();
         if let Some((body, face)) = face
             && let Some(shape) = self.body_shape(*body)
             && let Ok(crate::datum::SurfaceGeometry::Plane { normal, .. }) =
@@ -1423,11 +1520,18 @@ impl<K: Kernel> Document<K> {
         {
             slots.retain(|(_, t)| dot(z_axis(t), n) > 1.0 - 1e-6);
             if slots.is_empty() {
+                slots = faces.clone();
+                slots.retain(|(_, t)| dot(z_axis(t), n) > 1.0 - 1e-6);
+            }
+            if slots.is_empty() {
                 return Err(refuse(format!(
                     "the side has no slot frame: face {face} of {} is a closed side",
                     target.info.name
                 )));
             }
+        }
+        if slots.is_empty() {
+            slots = faces;
         }
         if slots.is_empty() {
             return Err(refuse(format!(
@@ -1970,6 +2074,9 @@ impl<K: Kernel> Document<K> {
 
     /// Places a part (`build_place`).
     pub fn build_place(&mut self, input: &PlaceInput) -> Result<Placed, ModelError> {
+        if input.spacing.is_some() {
+            return self.build_place_set(input);
+        }
         let plan = self.plan_place(input)?;
         // In the BUILD host: the active component, or the nearest one up
         // that takes components (mitcad#394).
@@ -2267,7 +2374,7 @@ pub(crate) fn make_part(
     active: ComponentUid,
 ) -> Result<Placed, ModelError> {
     let source_id = plan.source.def.id;
-    if plan.source.new {
+    if plan.source.new && state.library_sources.get(source_id).is_none() {
         state.library_sources.0.push(plan.source.def.clone());
     }
     let wanted = plan.name.clone().unwrap_or_else(|| {
@@ -2300,9 +2407,66 @@ pub(crate) fn make_part(
         parameters: plan.values.clone(),
         ends: plan.own_ends.clone(),
         operation: Operation::NewBody,
+        cuts: Vec::new(),
     };
     let part = add_feature(state, FeatureDef::DerivedPart(part_def), made)?;
+    super::parts::inherit_appearance(state, part, &plan.source.def);
     features.push(part);
+    let (joint, bound) = attach_part(state, plan, active, occurrence, part, None)?;
+    if let Some(j) = joint {
+        features.push(j);
+    }
+    for b in bound.iter().rev() {
+        features.insert(0, *b);
+    }
+    let record = BuildRecord {
+        role: plan.source.meta.role,
+        source: Some(source_id),
+        part: Some(part),
+        joint,
+        bound: bound.clone(),
+        added_by: None,
+        adds: Vec::new(),
+        junction: None,
+        from: match &plan.spot {
+            Spot::Joint(j) => j.from,
+            Spot::Grounded(_) => None,
+        },
+        tilt: (plan.tilt.abs() > 1e-12).then_some(plan.tilt),
+        grade: plan.grade.clone(),
+        set: None,
+        spacing: None,
+        points: plan.points.clone(),
+    };
+    state.assembly.component_mut(made).expect("made").build = Some(record);
+    Ok(Placed {
+        component: Some(made),
+        occurrence: Some(occurrence),
+        name,
+        features,
+        joint,
+        bound,
+        adds: Vec::new(),
+        warnings: plan.warnings.clone(),
+        place: plan.place,
+        fits: None,
+        set: Vec::new(),
+    })
+}
+
+/// Places a made part as a plan says: its joint, its bound length (before
+/// its derived part) and the target's mitre; returns the joint and the
+/// bound lengths. A spacing set lays its members out again with it
+/// (mitcad#478).
+pub(crate) fn attach_part(
+    state: &mut DocState,
+    plan: &Plan,
+    active: ComponentUid,
+    occurrence: OccurrenceUid,
+    part: FeatureUid,
+    reuse: Option<FeatureUid>,
+) -> Result<(Option<FeatureUid>, Vec<FeatureUid>), ModelError> {
+    let mut features: Vec<FeatureUid> = Vec::new();
     let mut joint = None;
     let mut slide_param = None;
     if let Spot::Joint(plan_joint) = &plan.spot {
@@ -2328,7 +2492,19 @@ pub(crate) fn make_part(
             limits: BTreeMap::new(),
             position,
         };
-        let uid = add_feature(state, FeatureDef::Joint(def), active)?;
+        let uid = match reuse {
+            Some(old) if matches!(state.entry(old).map(|e| &e.def), Some(FeatureDef::Joint(j)) if j.kind == plan_joint.kind) =>
+            {
+                state.edit_feature(old, &FeatureDef::Joint(def))?;
+                old
+            }
+            _ => {
+                if let Some(old) = reuse.filter(|o| state.position(*o).is_some()) {
+                    state.remove_features(&BTreeSet::from([old]));
+                }
+                add_feature(state, FeatureDef::Joint(def), active)?
+            }
+        };
         features.push(uid);
         joint = Some(uid);
         slide_param = plan_joint
@@ -2402,34 +2578,13 @@ pub(crate) fn make_part(
             }
         })?;
     }
-    let record = BuildRecord {
-        role: plan.source.meta.role,
-        source: Some(source_id),
-        part: Some(part),
-        joint,
-        bound: bound.clone(),
-        added_by: None,
-        adds: Vec::new(),
-        junction: None,
-        from: match &plan.spot {
-            Spot::Joint(j) => j.from,
-            Spot::Grounded(_) => None,
-        },
-        tilt: (plan.tilt.abs() > 1e-12).then_some(plan.tilt),
-    };
-    state.assembly.component_mut(made).expect("made").build = Some(record);
-    Ok(Placed {
-        component: Some(made),
-        occurrence: Some(occurrence),
-        name,
-        features,
-        joint,
-        bound,
-        adds: Vec::new(),
-        warnings: plan.warnings.clone(),
-        place: plan.place,
-        fits: None,
-    })
+    if matches!(plan.spot, Spot::Grounded(_))
+        && let Some(old) = reuse.filter(|o| state.position(*o).is_some())
+    {
+        state.remove_features(&BTreeSet::from([old]));
+    }
+    let _ = features;
+    Ok((joint, bound))
 }
 
 // Editing.
@@ -2438,6 +2593,17 @@ impl<K: Kernel> Document<K> {
     /// Edits a BUILD part (`build_edit`); returns what changed.
     pub fn build_edit(&mut self, input: &EditInput) -> Result<Vec<String>, ModelError> {
         let component = self.component_by_ref(&input.component)?;
+        // A spacing set is edited as one (mitcad#478).
+        if let Some(spacing) = &input.spacing {
+            return self.edit_set(component, spacing, input.config.as_ref());
+        }
+        // A member by two points placed anew (mitcad#478).
+        if input.to.is_some()
+            || input.lie.is_some()
+            || input.at.as_ref().is_some_and(|a| a.point.is_some())
+        {
+            return self.edit_points(component, input);
+        }
         let info = self
             .part_info(component)
             .ok_or_else(|| refuse(format!("{} is no BUILD part", input.component)))?;
@@ -2513,6 +2679,14 @@ impl<K: Kernel> Document<K> {
             }
             None => None,
         };
+        // Its joinery cut anew (mitcad#478).
+        let refit = match input.cuts.as_deref() {
+            Some("refit") => Some(self.refit_plan(component)?),
+            Some(other) => {
+                return Err(refuse(format!("cuts is \"refit\", not \"{other}\"")));
+            }
+            None => None,
+        };
         let joint = info.record.joint;
         let label = format!("Edit {}", info.name);
         let rotate = match &input.rotate {
@@ -2529,7 +2703,7 @@ impl<K: Kernel> Document<K> {
         // The offset along a side or a rail, bound to its reference
         // (mitcad#417): a new From alone keeps the part where it is.
         let offset = match &input.at {
-            Some(EditAt { offset, from }) if offset.is_some() || from.is_some() => {
+            Some(EditAt { offset, from, .. }) if offset.is_some() || from.is_some() => {
                 let joint = joint.ok_or_else(|| refuse(format!("{} has no joint", info.name)))?;
                 let Some(FeatureDef::Joint(j)) = self.feature(joint).map(|e| &e.def) else {
                     return Err(refuse(format!("{} has no joint", info.name)));
@@ -2805,6 +2979,23 @@ impl<K: Kernel> Document<K> {
                 }
                 changed.push("machining".to_owned());
             }
+            if let Some(parts) = &refit {
+                for (p, cuts) in parts {
+                    let cuts = cuts.clone();
+                    edit_part(state, *p, |def| def.cuts = cuts)?;
+                }
+                changed.push("cuts".to_owned());
+            }
+            if let Some(grade) = &input.grade {
+                if let Some(record) = state
+                    .assembly
+                    .component_mut(component)
+                    .and_then(|c| c.build.as_mut())
+                {
+                    record.grade = grade.clone().filter(|g| !g.trim().is_empty());
+                }
+                changed.push("grade".to_owned());
+            }
             if changed.is_empty() {
                 return Err(refuse("nothing to change"));
             }
@@ -2871,7 +3062,7 @@ impl<K: Kernel> Document<K> {
             crate::joints::path_component(self.assembly(), entry.component, &j.b.occurrence.0)
                 .ok()
                 .and_then(|c| self.part_info(c))
-                .is_some_and(|t| t.frame_kind(on) == "slot");
+                .is_some_and(|t| t.is_side(on));
         if j.kind != JointKind::Slider || !on_slot {
             return (0.0, 0.0);
         }

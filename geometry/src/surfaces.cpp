@@ -43,6 +43,7 @@
 #include <gp_Vec.hxx>
 
 #include "face_select.hpp"
+#include "free_loops.hpp"
 #include "history.hpp"
 #include "util.hpp"
 
@@ -746,5 +747,8 @@ ShapePtr thicken(const std::string& feature, const Shape& sheet, double thicknes
     return thick_solid(feature, *back, 2 * half);
   });
 }
+
+// The surface modelling features' openings (mitcad#455, free_loops.hpp).
+std::vector<std::vector<int>> detail::free_edge_loops(const Shape& body) { return free_loops(body); }
 
 } // namespace mitcad::geometry

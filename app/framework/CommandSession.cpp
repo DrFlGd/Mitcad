@@ -1727,6 +1727,16 @@ void CommandSession::acceptFeaturePreview(const QByteArray& key, const Built& bu
     runPreview();
     return;
   }
+  QJsonObject report = preview.report;
+  if (m_def.previewReported && m_def.previewReported(report, m_state)) {
+    // The command changed its inputs for what the preview found (mitcad#475:
+    // a new cut's hidden targets unchecked): their preview instead.
+    if (m_presenter) {
+      m_presenter->refresh(m_state);
+    }
+    runPreview();
+    return;
+  }
   m_shownKey = key;
   const QString status = preview.report.value(QStringLiteral("status")).toString();
   m_previewOk = status == QStringLiteral("ok");
@@ -1737,7 +1747,16 @@ void CommandSession::acceptFeaturePreview(const QByteArray& key, const Built& bu
     showPreview(preview, built.def.value(QStringLiteral("operation")).toString());
     // A feature that succeeds with a caveat says so (P9), not in red.
     const QStringList warnings = preview.report.value(QStringLiteral("warnings")).toVariant().toStringList();
-    m_presenter->setMessage(warnings.join(QLatin1Char('\n')), false);
+    QStringList message = warnings;
+    if (m_def.note) {
+      // The command's own note first (mitcad#472: a gear's derived values).
+      const QString note = m_def.note(m_state, m_host);
+      if (!note.isEmpty()) {
+        message.prepend(note);
+        qDebug().noquote() << QStringLiteral("Panel %1 note: %2").arg(m_def.name, note);
+      }
+    }
+    m_presenter->setMessage(message.join(QLatin1Char('\n')), false);
     m_host.showHint(tr("%1: Enter to confirm, Esc to cancel.").arg(m_def.name));
     qDebug().noquote() << QStringLiteral("Preview %1: ok%2")
                               .arg(m_def.name, warnings.isEmpty()
@@ -1759,7 +1778,7 @@ void CommandSession::acceptFeaturePreview(const QByteArray& key, const Built& bu
   }
   // Failed cuts still expose their candidates so a cleared or unavailable
   // target list can be corrected without restarting the command.
-  m_presenter->setPreviewReport(preview.report);
+  m_presenter->setPreviewReport(report);
   m_presenter->setOkEnabled(m_previewOk);
   updateHighlights();
   // Toggles follow the shown preview (a pattern's instances, P9).

@@ -2,12 +2,15 @@
 //! The cut list (`build_cut_list`): one row per group of identical cut
 //! parts (the same source, row, length, end cuts, machining and own
 //! features), the stock lengths they are cut from in their cutting order,
-//! and the parts list's rows for everything else.
+//! and the parts list's rows for everything else. Timber members
+//! (mitcad#478) add their material, grade, sections, running metres and
+//! volume, their joinery in the machining, and their stock fitted per
+//! configuration row with each stock piece shortened to what holds it.
 
 use std::collections::BTreeMap;
 
 use super::parts::{PartInfo, designation, part_number, part_values};
-use super::{BuildItem, SourceId};
+use super::{BuildItem, MaterialMeta, SourceId};
 use crate::document::Document;
 use crate::features::FeatureDef;
 use crate::features::derived_part::Tilt;
@@ -28,16 +31,36 @@ impl Default for CutListOptions {
     }
 }
 
-/// A hole in a cut part: where, its diameter, depth and thread.
+/// A hole in a cut part: where, its diameter, depth and thread; or a
+/// joinery cut (mitcad#478): its kind, size and the other member.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MachiningItem {
-    /// The frame it is on (`end_b`, `slot_x+_1`, ...).
+    /// The frame it is on (`end_b`, `slot_x+_1`, ...); empty for joinery.
     pub at: String,
     pub diameter: f64,
     pub depth: Option<f64>,
     pub thread: Option<String>,
     /// Added by a connector (else the part's own).
     pub connector: Option<ComponentUid>,
+    /// Joinery: `housing`, `notch`, `half_lap` or `rip`.
+    pub kind: Option<String>,
+    pub size: Option<[f64; 3]>,
+    pub with: Option<ComponentUid>,
+}
+
+/// A timber row's own columns (mitcad#478).
+#[derive(Debug, Clone, PartialEq)]
+pub struct TimberColumns {
+    pub material: MaterialMeta,
+    /// The part's own grade, else its row's.
+    pub grade: String,
+    pub nominal: Option<[f64; 2]>,
+    pub section: [f64; 2],
+    pub availability: Option<String>,
+    /// Over the row's quantity.
+    pub running_metres: f64,
+    /// m3, over the row's quantity.
+    pub volume: f64,
 }
 
 /// A group of identical cut parts.
@@ -58,9 +81,11 @@ pub struct CutRow {
     /// Each, kg.
     pub mass: Option<f64>,
     pub components: Vec<ComponentUid>,
+    /// A timber member's columns.
+    pub timber: Option<TimberColumns>,
 }
 
-/// The stock pieces one source is cut from.
+/// The stock pieces one source (in one row) is cut from.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StockEntry {
     pub source: SourceId,
@@ -74,6 +99,19 @@ pub struct StockEntry {
     pub offcut: f64,
     /// Pieces longer than the stock.
     pub too_long: Vec<f64>,
+    /// The configuration row (mitcad#478).
+    pub config: Option<String>,
+    /// A timber entry's stock pieces' lengths, each the shortest that
+    /// holds its cuts; empty for others.
+    pub stock_lengths: Vec<f64>,
+}
+
+/// Totals over the timber rows.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct TimberTotals {
+    pub running_metres: f64,
+    pub volume: f64,
+    pub mass: f64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -82,6 +120,8 @@ pub struct CutList {
     pub stock: Vec<StockEntry>,
     /// The components the rows are of (the parts list lists the others).
     pub cut: Vec<ComponentUid>,
+    /// The totals when the design has timber.
+    pub timber: Option<TimberTotals>,
 }
 
 impl<K: Kernel> Document<K> {
@@ -128,10 +168,37 @@ impl<K: Kernel> Document<K> {
                     depth,
                     thread: hole.thread.as_ref().map(|t| t.designation.clone()),
                     connector: *connector,
+                    kind: None,
+                    size: None,
+                    with: None,
                 },
             ));
         }
         out
+    }
+
+    /// A member's joinery and rips, from its derived part (mitcad#478).
+    fn part_joinery(&self, info: &PartInfo) -> Vec<MachiningItem> {
+        let params = self.parameters();
+        let value = |id: ParamId| params.value(id).unwrap_or(f64::NAN);
+        info.def
+            .as_ref()
+            .map(|d| {
+                d.cuts
+                    .iter()
+                    .map(|c| MachiningItem {
+                        at: String::new(),
+                        diameter: f64::NAN,
+                        depth: c.depth,
+                        thread: None,
+                        connector: None,
+                        kind: Some(c.kind.clone()),
+                        size: Some(c.size.map(value)),
+                        with: c.with,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// The cut list.
@@ -157,11 +224,12 @@ impl<K: Kernel> Document<K> {
                     (angle.abs() > 1e-12).then(|| (angle, cut.tilt.unwrap_or_default()))
                 })
             });
-            let machining: Vec<MachiningItem> = self
+            let mut machining: Vec<MachiningItem> = self
                 .part_machining(&info)
                 .into_iter()
                 .map(|(_, m)| m)
                 .collect();
+            let joinery = self.part_joinery(&info);
             let holes: Vec<FeatureUid> = self
                 .part_machining(&info)
                 .into_iter()
@@ -184,7 +252,14 @@ impl<K: Kernel> Document<K> {
                 .collect();
             let values = part_values(def, params);
             let config = def.config.as_deref();
-            let key = format!(
+            let timber = info.is_timber();
+            let grade = info
+                .record
+                .grade
+                .clone()
+                .or_else(|| info.meta.material.as_ref().map(|m| m.grade.clone()))
+                .unwrap_or_default();
+            let mut key = format!(
                 "{}|{:?}|{:.6}|{:?}|{:?}|{:?}",
                 source.id,
                 config,
@@ -196,7 +271,19 @@ impl<K: Kernel> Document<K> {
                     .collect::<Vec<_>>(),
                 own
             );
+            // A timber member's grade and joinery group it too.
+            if timber {
+                key.push_str(&format!(
+                    "|{grade}|{:?}",
+                    joinery
+                        .iter()
+                        .map(|m| (m.kind.clone(), m.size.map(|s| s.map(|v| format!("{v:.6}")))))
+                        .collect::<Vec<_>>()
+                ));
+            }
+            machining.extend(joinery);
             let quantity = quantities.get(&info.component).copied().unwrap_or(1).max(1);
+            let section = info.meta.section_size();
             let row = groups.entry(key).or_insert_with(|| CutRow {
                 source: source.id,
                 designation: designation(source, config, &values),
@@ -208,37 +295,58 @@ impl<K: Kernel> Document<K> {
                 machining,
                 features: own.len(),
                 quantity: 0,
-                mass: info
-                    .meta
-                    .kilograms_per_metre()
-                    .map(|kg| kg * length / 1000.0),
+                mass: match (timber, info.meta.density(), section) {
+                    (true, Some(density), Some([w, t])) => Some(density * w * t * length / 1e9),
+                    _ => info
+                        .meta
+                        .kilograms_per_metre()
+                        .map(|kg| kg * length / 1000.0),
+                },
                 components: Vec::new(),
+                timber: timber.then(|| TimberColumns {
+                    material: info.meta.material.clone().unwrap_or_default(),
+                    grade: grade.clone(),
+                    nominal: info.meta.nominal_size(),
+                    section: section.unwrap_or([0.0; 2]),
+                    availability: info.meta.availability.clone(),
+                    running_metres: 0.0,
+                    volume: 0.0,
+                }),
             });
             row.quantity += quantity;
             row.components.push(info.component);
+            if let Some(t) = &mut row.timber {
+                t.running_metres = row.length * row.quantity as f64 / 1000.0;
+                t.volume = t.section[0] * t.section[1] * row.length * row.quantity as f64 / 1e9;
+            }
         }
         let rows: Vec<CutRow> = groups.into_values().collect();
-        // The stock: first fit of the longest pieces into the longest stock.
-        let mut by_source: BTreeMap<SourceId, Vec<f64>> = BTreeMap::new();
+        // The stock: first fit of the longest pieces into the longest stock,
+        // per source and configuration row.
+        let mut by_source: BTreeMap<(SourceId, Option<String>), Vec<f64>> = BTreeMap::new();
         for row in &rows {
             for _ in 0..row.quantity {
-                by_source.entry(row.source).or_default().push(row.length);
+                by_source
+                    .entry((row.source, row.config.clone()))
+                    .or_default()
+                    .push(row.length);
             }
         }
         let mut stock = Vec::new();
-        for (id, mut pieces) in by_source {
+        for ((id, config), mut pieces) in by_source {
             let Some(source) = self.state().library_sources.get(id) else {
                 continue;
             };
             let meta = source
                 .build
                 .as_ref()
-                .and_then(|b| super::BuildMeta::read(b).ok())
+                .and_then(|b| super::BuildMeta::read_row(b, config.as_deref()).ok())
                 .unwrap_or_default();
             let Some(length) = meta.length.as_ref() else {
                 continue;
             };
-            let Some(&stock_length) = length.stock_lengths().first() else {
+            let lengths = length.stock_lengths();
+            let Some(&stock_length) = lengths.first() else {
                 continue;
             };
             pieces.sort_by(|a, b| b.total_cmp(a));
@@ -266,17 +374,62 @@ impl<K: Kernel> Document<K> {
                 flat.extend(cuts.iter().copied());
                 ends.push(flat.len());
             }
+            // A timber member's stock pieces: each the shortest stock length
+            // that holds its cuts (the last cut needs no kerf after it).
+            let mut offcut: f64 = bars.iter().map(|(left, _)| *left).sum();
+            let mut stock_lengths = Vec::new();
+            if meta.is_timber() {
+                offcut = 0.0;
+                for (_, cuts) in &bars {
+                    let used: f64 = cuts.iter().sum::<f64>()
+                        + options.kerf * cuts.len().saturating_sub(1) as f64;
+                    let shortest = lengths
+                        .iter()
+                        .copied()
+                        .filter(|l| *l + 1e-9 >= used)
+                        .fold(stock_length, f64::min);
+                    stock_lengths.push(shortest);
+                    offcut += (shortest - used).max(0.0);
+                }
+            }
+            let designation = match &config {
+                Some(row) if meta.is_timber() => format!("{} {row}", source.label()),
+                _ => source.label(),
+            };
             stock.push(StockEntry {
                 source: id,
-                designation: source.label(),
+                designation,
                 stock_length,
                 pieces: flat,
                 bars: ends,
                 needed: bars.len(),
-                offcut: bars.iter().map(|(left, _)| *left).sum(),
+                offcut,
                 too_long,
+                config,
+                stock_lengths,
             });
         }
-        CutList { rows, stock, cut }
+        // Totals over the timber rows.
+        let timber_rows: Vec<&CutRow> = rows.iter().filter(|r| r.timber.is_some()).collect();
+        let timber = (!timber_rows.is_empty()).then(|| TimberTotals {
+            running_metres: timber_rows
+                .iter()
+                .map(|r| r.timber.as_ref().map_or(0.0, |t| t.running_metres))
+                .sum(),
+            volume: timber_rows
+                .iter()
+                .map(|r| r.timber.as_ref().map_or(0.0, |t| t.volume))
+                .sum(),
+            mass: timber_rows
+                .iter()
+                .map(|r| r.mass.unwrap_or(0.0) * r.quantity as f64)
+                .sum(),
+        });
+        CutList {
+            rows,
+            stock,
+            cut,
+            timber,
+        }
     }
 }

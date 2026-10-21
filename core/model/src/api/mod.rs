@@ -35,6 +35,11 @@ mod tangent_chains;
 mod build;
 // Motion studies and contact sets (mitcad#454).
 mod motion;
+// Drawings: views with dimensions and a hole table as PDF, SVG or DXF
+// (mitcad#471).
+mod drawing;
+// Gears (mitcad#472).
+mod gears;
 
 use std::fmt;
 
@@ -319,6 +324,8 @@ enum Command {
     },
     // The Flat Pattern as a DXF drawing (mitcad#210, `exchange.rs`).
     ExportFlatPatternDxf(exchange::ExportFlatPatternCommand),
+    // Drawings: views with dimensions and a hole table (mitcad#471, `drawing.rs`).
+    ExportDrawing(drawing::ExportDrawingCommand),
 }
 
 fn yes() -> bool {
@@ -561,6 +568,11 @@ enum Query {
     ContactCheck,
     // Motion links between joints (mitcad#466, `joints.rs`).
     MotionLinkOffset(Box<joints::MotionLinkOffsetQuery>),
+    // Bodies moved into another component (mitcad#465, `move_features.rs`).
+    TransferBodies(move_features::TransferQuery),
+    // Gears: derived values (mitcad#472, `gears.rs`).
+    GearValues(gears::GearValuesQuery),
+    GearLink(gears::GearLinkQuery),
 }
 
 fn names(names: &[String]) -> Value {
@@ -637,8 +649,16 @@ impl<K: Kernel> Document<K> {
             .get("cmd")
             .and_then(Value::as_str)
             .is_some_and(|cmd| motion::COMMANDS.contains(&cmd));
+        // Gears: the motion link of a mesh (mitcad#472, `gears.rs`).
+        let is_gear_link = value
+            .get("cmd")
+            .and_then(Value::as_str)
+            .is_some_and(|cmd| gears::COMMANDS.contains(&cmd));
         let mut result = if let Some(rules) = inline_face_rules(&value) {
             self.add_face_with_rules_command(rules, &value)?
+        } else if is_gear_link {
+            let link = self.link_gears_json(&value)?;
+            self.run_joint_command(parse(link, "command")?)?
         } else if is_sketch {
             let command = sketch::parse_sketch_command(value)?;
             self.run_sketch_command(command)?
@@ -1049,6 +1069,7 @@ impl<K: Kernel> Document<K> {
                 json!({})
             }
             Command::ExportFlatPatternDxf(command) => self.export_flat_pattern_command(command)?,
+            Command::ExportDrawing(command) => self.export_drawing_command(command)?,
         })
     }
 
@@ -1381,6 +1402,11 @@ impl<K: Kernel> Document<K> {
             Query::ContactSets => self.contact_sets_json(),
             Query::ContactCheck => self.contact_check_json()?,
             Query::MotionLinkOffset(query) => self.motion_link_offset_json(*query)?,
+            // Bodies moved into another component (mitcad#465).
+            Query::TransferBodies(query) => self.transfer_plan_json(&query)?,
+            // Gears (mitcad#472).
+            Query::GearValues(query) => self.gear_values_json(&query)?,
+            Query::GearLink(query) => self.gear_link_json(&query),
         };
         Ok(result.to_string())
     }

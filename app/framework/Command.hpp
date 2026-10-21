@@ -615,6 +615,12 @@ struct CommandDef {
   // markers may follow the hover (BUILD's junctions of the profile under
   // the mouse, mitcad#375).
   std::function<std::vector<PreviewMarker>(const QJsonObject&, const CommandState&)> previewMarkersIn;
+  // A feature preview's report came, before it is shown: the command may
+  // add to the report what the panel shows of it, and returns true when it
+  // changed the inputs, so that the preview is computed again instead
+  // (mitcad#475: a new cut's hidden targets start unchecked). It must not
+  // query the model: the preview may still be applied.
+  std::function<bool(QJsonObject& report, CommandState&)> previewReported;
   // The mouse moved onto another item of the view (an invalid one: off the
   // bodies); true when it changed the state, so that the markers are drawn
   // again (no preview is computed for it).
@@ -634,6 +640,10 @@ struct CommandDef {
   std::function<bool(const QJsonObject&)> canEdit;
   // A log line after OK, such as "Added fillet on 4 edge(s)".
   std::function<QString(const CommandState&, const CommandContext&)> describe;
+  // What the panel shows under the inputs after a successful preview, not
+  // as an error, before the feature's warnings (Gear, mitcad#472: the
+  // derived diameters and the centre distance of a mesh); none when empty.
+  std::function<QString(const CommandState&, const CommandContext&)> note;
   // Whether describe reads the model as it was before OK (edges a fillet
   // rounds are gone after it), not after (the datum a feature added).
   bool describeBefore = false;

@@ -81,6 +81,9 @@ pub(crate) use motion::joint_motions;
 pub use motion::{JointValues, MotionOutcome};
 // Motion links between joints (mitcad#466).
 mod motion_links;
+// Bodies moved into another component on the timeline (mitcad#465).
+mod body_transfer;
+pub use body_transfer::TransferDestination;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;

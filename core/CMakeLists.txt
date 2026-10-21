@@ -69,7 +69,21 @@ corrosion_add_cxxbridge(mitcad_bridge CRATE mitcad_ffi FILES
   # Boundary Fill: the cells tool bodies enclose (mitcad#457).
   kernel/boundary_fill.rs
   # Patch, Stitch and Thicken: surface bodies filled, sewn and made solid (mitcad#456).
-  kernel/surfaces.rs)
+  kernel/surfaces.rs
+  # Surface modelling: surface bodies and their features (mitcad#455).
+  kernel/surface_sweeps.rs
+  # Surface modelling: Offset Surface, Ruled Surface and Extend (mitcad#455).
+  kernel/surface_offsets.rs
+  # Surface modelling: Trim, Untrim, Unstitch and Reverse Normal (mitcad#455).
+  kernel/surface_edits.rs
+  # Plastic part features: the bands of lips and grooves (mitcad#459).
+  kernel/plastic.rs
+  # Drawings: views with hidden lines removed and round holes (mitcad#471).
+  kernel/drawing.rs
+  # Gears: toothed profiles swept along their axis or ruled to an apex (mitcad#472).
+  kernel/gear.rs
+  # Surface modelling: Blend, Boundary, Match and Fair Surface (mitcad#455).
+  kernel/surface_fills.rs)
 target_sources(mitcad_bridge PRIVATE
   cpp/bridge/boolean.cpp
   cpp/bridge/boolean.hpp
@@ -171,6 +185,36 @@ target_sources(mitcad_bridge PRIVATE
 target_sources(mitcad_bridge PRIVATE
   cpp/bridge/surfaces.cpp
   cpp/bridge/surfaces.hpp)
+# Surface modelling: surface bodies and their features (mitcad#455).
+target_sources(mitcad_bridge PRIVATE
+  cpp/bridge/surface_sweeps.cpp
+  cpp/bridge/surface_sweeps.hpp)
+# Surface modelling: Offset Surface, Ruled Surface and Extend (mitcad#455).
+target_sources(mitcad_bridge PRIVATE
+  cpp/bridge/surface_offsets.cpp
+  cpp/bridge/surface_offsets.hpp)
+# Surface modelling: Trim, Untrim, Unstitch and Reverse Normal (mitcad#455).
+target_sources(mitcad_bridge PRIVATE
+  cpp/bridge/surface_edits.cpp
+  cpp/bridge/surface_edits.hpp)
+# Plastic part features: the bands of lips and grooves (mitcad#459).
+target_sources(mitcad_bridge PRIVATE
+  cpp/bridge/plastic.cpp
+  cpp/bridge/plastic.hpp)
+# Drawings: views with hidden lines removed and round holes (mitcad#471).
+target_sources(mitcad_bridge PRIVATE
+  cpp/bridge/drawing.cpp
+  cpp/bridge/drawing.hpp)
+
+# Gears: toothed profiles swept along their axis or ruled to an apex (mitcad#472).
+target_sources(mitcad_bridge PRIVATE
+  cpp/bridge/gear.cpp
+  cpp/bridge/gear.hpp)
+
+# Surface modelling: Blend, Boundary, Match and Fair Surface (mitcad#455).
+target_sources(mitcad_bridge PRIVATE
+  cpp/bridge/surface_fills.cpp
+  cpp/bridge/surface_fills.hpp)
 target_include_directories(mitcad_bridge PUBLIC cpp)
 target_link_libraries(mitcad_bridge PUBLIC mitcad_geometry)
 # The bridge and the Rust library call each other, and a single-pass

@@ -30,6 +30,16 @@ pub struct BuildMeta {
     pub connector: Option<ConnectorMeta>,
     pub panel: Option<PanelMeta>,
     pub linear: Option<LinearMeta>,
+    // Timber construction (mitcad#478).
+    /// `timber` for a timber member; empty for other parts.
+    pub kind: String,
+    /// A member's nominal section (its actual one is `section`).
+    pub nominal: Option<Section>,
+    pub material: Option<MaterialMeta>,
+    /// `standard` or `less common`.
+    pub availability: Option<String>,
+    /// A wood screw's or nail's sizes.
+    pub wood: Option<WoodMeta>,
 }
 
 impl BuildMeta {
@@ -38,6 +48,129 @@ impl BuildMeta {
         serde_json::from_value(build.clone()).map_err(|e| format!("its build block: {e}"))
     }
 
+    /// The metadata of a part made in a configuration row (mitcad#478):
+    /// the block's `rows` entry of that row (the default row's when None)
+    /// deep-merged over the block (objects key by key, other values
+    /// replace).
+    pub fn read_row(build: &Value, row: Option<&str>) -> Result<Self, String> {
+        Self::read(&merged_row(build, row))
+    }
+
+    /// Whether the part is a timber member.
+    pub fn is_timber(&self) -> bool {
+        self.kind.eq_ignore_ascii_case("timber")
+    }
+
+    /// A member's actual section, width (along X) and height (along Y),
+    /// mm.
+    pub fn section_size(&self) -> Option<[f64; 2]> {
+        section_values(self.section.as_ref()?)
+    }
+
+    /// A member's nominal section, mm.
+    pub fn nominal_size(&self) -> Option<[f64; 2]> {
+        section_values(self.nominal.as_ref()?)
+    }
+
+    /// The material's density, kg/m3.
+    pub fn density(&self) -> Option<f64> {
+        self.material
+            .as_ref()?
+            .density
+            .as_ref()?
+            .millimetres()
+            .filter(|d| *d > 0.0)
+    }
+}
+
+/// A section's width and height in millimetres.
+fn section_values(section: &Section) -> Option<[f64; 2]> {
+    Some([
+        section.width.as_ref()?.millimetres()?,
+        section.height.as_ref()?.millimetres()?,
+    ])
+}
+
+/// A build block with its row's entry of `rows` merged over it: the row
+/// named, else the default row (the block itself).
+pub fn merged_row(build: &Value, row: Option<&str>) -> Value {
+    let mut out = build.clone();
+    let overlay = row.and_then(|r| build.get("rows")?.get(r)).cloned();
+    if let Some(map) = out.as_object_mut() {
+        map.remove("rows");
+    }
+    if let Some(overlay) = overlay {
+        deep_merge(&mut out, &overlay);
+    }
+    out
+}
+
+fn deep_merge(into: &mut Value, from: &Value) {
+    match (into, from) {
+        (Value::Object(a), Value::Object(b)) => {
+            for (key, value) in b {
+                match a.get_mut(key) {
+                    Some(existing) => deep_merge(existing, value),
+                    None => {
+                        a.insert(key.clone(), value.clone());
+                    }
+                }
+            }
+        }
+        (into, from) => *into = from.clone(),
+    }
+}
+
+/// A material: a timber member's species, finish, grade, density and
+/// moisture, or a product (a sheet, a metal part) and its density.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct MaterialMeta {
+    pub species: String,
+    /// `sawn`, `planed` or `dimensioned`.
+    pub finish: String,
+    pub grade: String,
+    /// kg/m3.
+    pub density: Option<MetaValue>,
+    /// %.
+    pub moisture: Option<MetaValue>,
+    pub product: String,
+}
+
+/// A wood screw's or nail's sizes (its row's).
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct WoodMeta {
+    /// `screw` or `nail`.
+    pub kind: String,
+    pub diameter: Option<MetaValue>,
+    pub length: Option<MetaValue>,
+    pub head: Option<MetaValue>,
+}
+
+impl WoodMeta {
+    pub fn diameter_mm(&self) -> Option<f64> {
+        self.diameter.as_ref()?.millimetres()
+    }
+
+    pub fn length_mm(&self) -> Option<f64> {
+        self.length.as_ref()?.millimetres()
+    }
+}
+
+/// What an outer connector (a bracket, a hanger, a post base) fits.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct FitMeta {
+    /// `angle`, `hanger` or `post_base`.
+    pub kind: String,
+    /// The carried member's section, either way round.
+    pub section: Option<Vec<MetaValue>>,
+    /// The range of the carried member's smaller section dimension.
+    pub width: Option<Vec<MetaValue>>,
+}
+
+impl BuildMeta {
     /// The frame of this name, if the part lists it.
     pub fn frame(&self, name: &str) -> Option<&FrameMeta> {
         self.frames.iter().find(|f| f.name == name)
@@ -301,6 +434,15 @@ pub struct ConnectorMeta {
     pub machining: Vec<Machining>,
     /// The room an inner-corner connector takes.
     pub envelope: Option<Envelope>,
+    /// `outer` for a bracket, hanger or post base (mitcad#478).
+    pub placement: String,
+    pub fit: Option<FitMeta>,
+}
+
+impl ConnectorMeta {
+    pub fn is_outer(&self) -> bool {
+        self.placement == "outer"
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
@@ -327,6 +469,13 @@ pub struct FastenerMeta {
     pub nut: Option<PartRef>,
     pub screw: Option<PartRef>,
     pub washer: Option<PartRef>,
+    // Wood fasteners of an outer connector (mitcad#478).
+    pub nail: Option<PartRef>,
+    /// The connector's hole frames, one fastener each.
+    pub frames: Vec<String>,
+    pub count: Option<u32>,
+    /// The member they are driven into: `a` or `b`.
+    pub on: String,
 }
 
 /// What a connector needs cut into a profile.
@@ -373,6 +522,11 @@ impl PanelMeta {
 
     pub fn on_surface(&self) -> bool {
         self.mount == "surface"
+    }
+
+    /// A sheet laid on a member's face (mitcad#478).
+    pub fn on_face(&self) -> bool {
+        self.mount == "face"
     }
 }
 

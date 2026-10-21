@@ -127,6 +127,10 @@ result as a `.mitcad` design. More in [.f3d import](#f3d-import).
   every face.
 - **3D Print** (the MAKE group): sends the selected bodies, or every
   visible one, to a slicer ([3D printing](#3d-printing)).
+- **File › Export Drawing:** the selected bodies, or every visible one, as
+  a drawing for the workshop or a supplier: front, top and right views
+  with sizes, hole diameters and a hole table, as PDF, SVG or DXF
+  ([Drawings](#drawings)).
 - A file dropped on the window opens or is imported; Open opens any of
   these types as a new document. On macOS, a double-click in Finder, Open
   With, a drop on the Dock icon and `open -a Mitcad file` do the same as
@@ -196,7 +200,9 @@ tab](#build-tab). Other commands of the SOLID tab, in menu order:
 
 - **CREATE:** Create Sketch, Extrude, Revolve, Sweep, Loft,
   Rib, Web, Emboss, Hole, Thread, Box, Cylinder, Sphere, Torus, Coil, Helix, Pipe,
-  Rectangular/Circular Pattern, Pattern on Path, Pattern at Points, Mirror. Emboss
+  Rectangular/Circular Pattern, Pattern on Path, Pattern at Points, Mirror,
+  Plastic Feature ([Plastic part features](#plastic-part-features)), Gear
+  ([Gears](#gears)). Emboss
   raises sketch profiles (a text's letters too) from a face by a depth, or
   sinks them into it: on a planar face (or, with no face picked, from the
   sketch plane) they go straight out of the material or into it; on a
@@ -283,6 +289,10 @@ tab](#build-tab). Other commands of the SOLID tab, in menu order:
   joined to a picked face through smooth edges; the hover then shows the
   whole chain before the click, and with the option off only the edge
   or face under the pointer.
+- **SURFACE:** Surface Extrude, Surface Revolve, Surface Sweep, Surface
+  Loft, Patch, Stitch, Thicken, Offset Surface, Ruled Surface, Extend and
+  the other surface features
+  ([Surface modelling](#surface-modelling)).
 - **ASSEMBLE:** New Component, Joint, As-Built Joint, Joint Origin,
   Rigid Group, Drive Joint, Constraint, Contact Set, Motion Link, Animate
   Joint, Motion Study, Insert Component, Insert from Library: everything
@@ -457,7 +467,11 @@ of the other command fields.
 
 The preview follows the checked targets. Exclusions survive distance, start,
 direction and profile changes, including targets temporarily outside the cut.
-Newly intersected eligible targets are selected automatically. **Select none**
+Newly intersected eligible targets are selected automatically, except what
+the view hides: a component whose light bulb (or one above it) is off, or
+that Isolate leaves out, starts unchecked, and so does a hidden body of a
+shown component; their rows say **(hidden)**, and you can still check them.
+Editing a cut keeps its choices whatever is hidden later. **Select none**
 means no targets and disables OK; **Select all** explicitly clears exclusions.
 The saved feature retains its choices when edited, reopened or undone/redone.
 
@@ -513,6 +527,13 @@ start below the bar and the floating rows, at any window size.
   window's title bar.
 
 ### Sketch mode
+
+**Create Sketch** with nothing selected waits for a plane: a banner at the
+top of the view says so until you pick a plane or a planar face, or press
+Esc. A click on a face that cannot take a sketch (a cylinder, a thread or
+another curved surface, or a face the design policy leaves out) says why;
+pick a planar face or a plane, or make one with Construct. While it waits,
+other actions say so too.
 
 The SKETCH tab has the drawing tools (CREATE), modification (MODIFY:
 fillet, chamfer, Trim, Extend, Offset, Move/Copy, Edit Pattern, Edit
@@ -937,7 +958,13 @@ component's row moves all its modelled features, **Move to Component**
 on a body, a sketch or a feature in the timeline moves that one with the
 features that go with it, and **Move the Features That Made It into the
 Component** on a Component from Bodies step gives that component its
-history and removes the step. A feature that works on bodies that would
+history and removes the step. To move only a body, from the timeline
+marker on, check **Move Only the Bodies** in Move to Component on its
+row and choose an existing component: a Body Transfer step in that
+component moves the body there and it stays where it is in the design;
+the features that made it stay in their component, the destination's
+later features work on it and a move of the destination takes it along.
+A feature that works on bodies that would
 end up in different components (a combine, a cut through both, a sketch
 on a face of another body) cannot go with only one of them: Mitcad lists
 such features and offers to keep those bodies together. Each move is one
@@ -1268,9 +1295,10 @@ in the timeline like any feature.
 
 Surface bodies (bodies of faces without a volume: a surface loft,
 imported surfaces, a face deleted without healing the gap) are filled,
-sewn together and made solid by three features, made through the
-model's commands (scripts, `mitcad-cli run`, MCP) and by the `.solidcraft`
-import; they have no panel yet:
+sewn together and made solid by three features of the SOLID tab's
+SURFACE group (also made through the model's commands and by the
+`.solidcraft` import; [Surface modelling](#surface-modelling) has the
+group's other features):
 
 - **Patch** fills closed regions of a sketch with flat surface bodies,
   one per region, or fills a closed loop of a body's edges with a new
@@ -1294,6 +1322,165 @@ The faces they make have names that later features follow: a patch's
 face, and a thickened wall's front, back and side faces after the
 surface they come from. The details are in
 [commands.md](../core/model/src/api/commands.md#patch-stitch-and-thicken).
+The panels of Patch, Stitch and Thicken take what the panel shows: a
+patch of profiles or of edges you pick with one continuity for the loop;
+a patch of an opening, with points or with edges of their own continuity
+(made by a script or an import) keeps its definition but is not edited
+in the panel.
+
+### Surface modelling
+
+The SOLID tab's SURFACE group makes surface bodies: faces without a
+volume, which later features fill, sew, trim and thicken.
+
+- **Surface Extrude**, **Surface Revolve**, **Surface Sweep** and
+  **Surface Loft** are Extrude, Revolve, Sweep and Loft that make
+  surfaces: the walls without caps. Pick profiles (their boundaries
+  become walls) and sketch curves, open or closed (Chain Selection adds
+  the curves joined to the one you pick). Each makes new surface bodies:
+  one of the profiles' walls and one of the curves'. Surface Extrude goes
+  a distance one way, both ways or two distances; Surface Revolve a full
+  turn or an angle about a sketch line, an axis or a straight edge;
+  Surface Sweep along a path of sketch curves or edges; Surface Loft
+  through sections in order, each a sketch curve with the curves joined
+  to it, or each a profile. The walls are named after the sketch curves
+  they come from, so features on them follow when the sketch changes.
+- **Offset Surface** copies faces you pick (of a solid or a surface) out
+  along their normals by a distance as a new surface (0: a copy in
+  place; Tangent Chain adds the faces joined to them smoothly).
+- **Ruled Surface** hangs a strip off a chain of edges: along the normal
+  of the face beside them, continuing that face, or at an angle from its
+  normal; the strips meet at corners mitred or rounded.
+- **Extend** lengthens a surface body past its open edges by a distance
+  along the surface: the surface continued (Natural), or leaving the
+  edge tangent to it or also with its curvature. Only a face bounded by
+  its surface's natural sides (four sides, no holes) is extended.
+- The open edges of a surface body (edges of one face only) cannot be
+  picked themselves: Ruled Surface and Extend take them through **Open
+  Edges Of**, the faces whose open edges you mean (all of each face's).
+- **Trim** cuts a surface body with a plane, a face, a body or sketch
+  curves, like Split Body, and keeps only the pieces you click under
+  **Keep** (click the surface on each piece you want). A solid is divided
+  by Split Body instead.
+- **Untrim** gives a face back its surface: its holes closed, and with
+  Outer Boundary its outline put back at the surface's own edges (a plane
+  or a cylinder, which have none, out to the face's size). It makes a new
+  surface; with In Place it changes the face of a surface body itself.
+- **Unstitch** takes the faces you pick out of a body as surfaces of
+  their own (pick a body to take it all apart); a solid becomes surfaces.
+- **Reverse Normal** turns the picked faces of a surface over (a whole
+  body when you pick the body), which decides the side Thicken and Offset
+  Surface go to.
+- **Blend Surface** bridges two chains of edges (of one body or two)
+  with a new surface. Each end leaves its edges straight across (G0),
+  tangent to the face beside them (G1) or also curved as it (G2), and a
+  bulge makes it fuller or flatter. With Stitch the blend is sewn onto
+  both bodies.
+- **Boundary Surface** fills a loop of sketch curves and open edges
+  (tangent to the sketch's plane or to the faces beside the edges, if you
+  ask), or runs through a network: curves one way, lofted through in
+  order, and curves crossing them.
+- **Match Surface** rebuilds a face of a surface so that its side nearest
+  a chain of another body's edges lies on that chain and meets the face
+  beside it smoothly; the opposite side stays where it was. The face must
+  have four sides and no holes.
+- **Fair Surface** smooths B-spline faces (from imports, fills and
+  networks) within a tolerance: their edges stay, and with Keep Tangents
+  at Edges also their tangents there.
+- A surface made by an import or a script with options the surface
+  panels do not show (tapers, up to an object, a guide rail) opens in no
+  panel; it stays as it is, and the timeline still suppresses, rolls back
+  and deletes it.
+
+The details are in
+[commands.md](../core/model/src/api/commands.md#surface-modelling).
+
+### Plastic part features
+
+**Plastic Feature** (SOLID tab, CREATE group) adds the features of molded
+plastic parts; its **Type** chooses which:
+
+- **Boss:** a round post where you click a face, as high as you say, with
+  an optional hole down from its top, ribs round it and a rounded root.
+- **Lip** and **Groove:** a band raised along the rim of an opening (the
+  open end of a shelled body), or cut into it, along the opening or along
+  the outer edge. A groove is widened and deepened by its gap, the
+  clearance for the lip that goes into it.
+- **Snap Fit:** a cantilever arm on a face with a catch at its tip, the
+  catch pointing the way you choose.
+- **Rest:** a pad on a face, round or a rectangle, solid or a wall.
+- **Plastic Rule:** a molded part's design values: the nominal wall, the
+  nominal radius, the clearance, the draft, the smallest draft and the
+  smallest and largest wall (and, under More, the knife edge, the reveal
+  height and the thickness variation).
+
+A boss, a rest and a groove name a plastic rule (the newest one before
+them, or None). Where their own draft or gap is 0, they take the rule's
+draft or clearance, and the timeline shows a warning when a draft is
+below the rule's smallest draft or a wall outside its walls. A boss, a
+snap fit and a rest grow out of the face from the point clicked (its
+coordinates can be typed); sizes are measured at the face, and a draft
+narrows the walls from there. A lip or groove needs a flat face round one
+opening; a face whose inner edges are the feet of features standing on
+it is refused. The model's definitions are in
+[commands.md](../core/model/src/api/commands.md#plastic-part-features).
+
+### Gears
+
+**Gear** (SOLID tab, CREATE group, at its end) makes a gear with involute
+teeth from its values; its **Type** chooses which:
+
+- **Spur:** straight teeth. **Helical:** teeth along a helix of the
+  **Helix Angle** (right-handed unless **Left-Handed**); its module is the
+  normal module. **Herringbone:** two helical halves of opposite hands,
+  with an optional **Gap** between them (cut a quarter module below the
+  roots).
+- **Ring:** an internal gear, its teeth inside a rim of the **Rim
+  Thickness**; straight or helical.
+- **Rack:** the teeth in a row, from its back to its tips **Height**
+  high; its pitch line is teeth times the pitch (a **Length** of 0), or a
+  longer bar; straight or helical.
+- **Bevel:** a straight bevel gear for a mate of **Mate Teeth** at the
+  **Shaft Angle** (90 degrees); **Make the Pair** also makes the mate,
+  placed to mesh.
+
+Every gear takes the **Module**, the **Teeth**, the **Pressure Angle**
+(20 degrees; 14.5 or 25), the **Face Width**, and under **Profile** the
+**Backlash** (each tooth thinner by half of it, so two gears with the same
+value mesh with that backlash) and the **Profile Shift** (in modules,
+away from the axis). Its values are parameters: type expressions, and
+change them later in the parameters. A spur, helical, herringbone or
+bevel gear can have a **Bore** (plain, with an optional **Keyway** of DIN
+6885 for its diameter, or a thread size whose tap drill it is, shown as a
+cosmetic thread) and a **Hub** on its end face (a bevel gear's back).
+
+The gear starts on its **Plane** (XY until you pick another) at
+**Center X** and **Center Y**, turned by its **Angle**; a rack starts
+there and runs along the plane's x axis. **Mesh With** places it
+instead: pick a gear (one of its faces, or the feature in the timeline)
+and the new gear lies in its plane at the centre distance of their mesh
+(profile shifts included), in the direction of the **Mesh Angle**
+around it (along a rack: at its **Position** from the middle of its
+teeth), turned so that the teeth engage. Gears that mesh share the module
+and the pressure angle; external helical gears have opposite hands, a
+ring and its pinion or a rack and its pinion the same.
+
+The panel shows what the values give: the pitch, outside and root
+diameters (a ring's inside diameter, a rack's pitch line, a bevel
+gear's cone distance and pitch angle), the centre distance of a mesh, and
+whether few teeth are undercut. Small tooth counts (below 17 at 20
+degrees) are undercut as cutting them with the rack would: the root
+fillet cuts into the flank.
+
+To let meshed gears turn together, make each a component (**New
+Component** as the operation) and give each a joint to its frame (a
+revolute joint on its bore, a slider for a rack). OK on a gear that
+meshes with another then links their joints with a [motion
+link](#motion-links) (gear, internal or rack and pinion) when both have
+one; to link gears whose joints came later, edit the meshing gear and
+press OK. A gear exports as any body (STL, 3MF, STEP); the design keeps
+its definition. The model's definition is in
+[commands.md](../core/model/src/api/commands.md#gears).
 
 ### Long computations
 
@@ -2037,6 +2224,45 @@ programs open with the design's look.
   installed. `mitcad-cli export design.mitcad design.usdz` writes the
   same file from the command line.
 
+### Drawings
+
+File › Export Drawing writes the bodies as a drawing on a sheet, the
+sheet a workshop, a supplier or a printed order needs: a PDF to print or
+send, an SVG for documents and web pages, or a DXF for other drawing
+programs.
+
+- **Bodies:** the selected ones (a selected face, edge or vertex stands
+  for its body), or every visible body, where the design shows them.
+- **Views:** front, top and right, with the edges behind faces removed;
+  an isometric view and a section view on request. Third-angle projection
+  places the top view above the front view and the right view to its
+  right; first angle places them the other way round. *Hidden edges
+  dashed* draws the edges behind faces as dashed lines, *Tangent edges*
+  the edges where faces meet smoothly as thin lines. A section view cuts
+  where a Section Analysis of the design cuts (choose it under *Section
+  view*): the cut faces are hatched, and the view that sees the cutting
+  plane edge on shows it with its arrows and letters (SECTION A-A).
+- **Dimensions:** the width and height of each view, and the diameter of
+  each size of round hole once, with how many there are (`4x Ø6.6
+  THRU`), the counterbore or countersink, and a tapped hole's thread.
+  *Sketch dimensions* adds the dimensions of the sketches that a view sees
+  square on. Values are in the design's unit.
+- **Hole table:** each hole seen end on gets a tag (A1, A2, … in the first
+  view, B1, … in the next), and the table at the top right lists its
+  position from the view's lower left corner (marked with a small cross),
+  its size, its depth (THRU for a hole through the body) and its thread.
+- **Sheet:** A4 to A0 or ANSI A to E, landscape or portrait, with a frame
+  and a title block: the design's name, the bodies, the scale, the units,
+  the date, the sheet and the projection method. *Fit to sheet* takes the
+  largest standard scale (1:1, 1:2, 1:5, … or 2:1, 5:1, …) at which the
+  views fit; a scale can also be typed, such as 1:3. *One sheet per
+  body* draws each body on a sheet of its own (pages of one PDF, or
+  numbered SVG and DXF files).
+- The dialog remembers its choices for the next drawing. The drawing is
+  a snapshot of the design: export it again after a change.
+  `mitcad-cli export-drawing design.mitcad design.pdf --sheet A3` writes
+  the same file from the command line.
+
 ### Web viewer
 
 Mitcad's web viewer shows a design in any web browser, without Mitcad,
@@ -2368,12 +2594,17 @@ bodies, so Mitcad builds every feature itself:
   edge flanges, hems, folds, unfolds, refolds, conversions to sheet metal
   and perforations as Mitcad's sheet metal features (a conversion's
   thickness the one the design takes from the body).
-- Features Mitcad has no counterpart for (surface modelling, the plastic
-  part features) keep their place on the timeline as suppressed
-  placeholders with a note, and the timeline goes on after them.
 - Bounding solids come in as Mitcad's ([Bounding Solid](#bounding-solid)),
   around the same bodies by the same margin, with the names the design
   gives their boxes.
+- Bosses, lips, grooves, snap fits and rests come in as Mitcad's
+  [plastic part features](#plastic-part-features), and the plastic rule
+  that applies to their body (the one assigned to it, else the design's
+  active rule) as a plastic rule they take their draft and clearance
+  from.
+- Features Mitcad has no counterpart for (surface modelling) keep their
+  place on the timeline as suppressed placeholders with a note, and the
+  timeline goes on after them.
 - Contact sets and motion studies come in as Mitcad's ([Motion studies
   and contact sets](#motion-studies-and-contact-sets)): with contact off
   in the design its sets come in suppressed, and "all contact" is a set

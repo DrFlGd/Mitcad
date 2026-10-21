@@ -16,22 +16,6 @@ use super::planes::Frame;
 use super::{Importer, MapResult, Mapped, NotMapped};
 use crate::geom::{cross, dot, unit};
 
-/// Kinds without a Mitcad counterpart, and what is missing.
-pub(crate) fn unmapped(kind: &str) -> Option<&'static str> {
-    Some(match kind {
-        "surface_extrude" | "surface_revolve" | "surface_sweep" | "surface_loft"
-        | "surface_offset" | "surface_ruled" | "surface_extend" | "surface_blend"
-        | "surface_boundary" | "surface_network" | "surface_match" | "surface_fair"
-        | "surface_trim" | "surface_untrim" | "unstitch" | "reverse_normal" => {
-            "surface modelling (surface bodies made and changed by surface features)"
-        }
-        "boss" | "lip" | "snap_fit" | "rest" => {
-            "plastic part features (boss, lip and groove, snap fit, rest)"
-        }
-        _ => return None,
-    })
-}
-
 impl<K: Kernel> Importer<'_, '_, K> {
     /// The parameter name and expression of the input at `pointer`.
     pub(super) fn input(&self, f: &Feature, pointer: &str) -> (Option<String>, Option<String>) {
@@ -145,9 +129,6 @@ fn map_kind<K: Kernel>(
     f: &Feature,
     component: ComponentUid,
 ) -> MapResult {
-    if let Some(why) = unmapped(&f.kind) {
-        return Err(NotMapped::Unmapped(why.to_owned()));
-    }
     let mut notes = Vec::new();
     if f.participants.iter().any(|p| p == "*")
         && !im.design.components.is_empty()
@@ -202,6 +183,18 @@ fn map_kind<K: Kernel>(
         "bounding_solid" => bounding_solid(im, f, component)?,
         // Patch, Stitch and Thicken (mitcad#456).
         "patch" | "stitch" | "thicken" => im.surface_feature(f, component)?,
+        // Surface modelling (mitcad#455).
+        "surface_extrude" | "surface_revolve" | "surface_sweep" | "surface_loft"
+        | "surface_offset" | "surface_ruled" | "surface_extend" | "surface_trim"
+        | "surface_untrim" | "surface_blend" | "surface_boundary" | "surface_network"
+        | "surface_match" | "surface_fair" | "unstitch" | "reverse_normal" => {
+            im.surface_modelling(f, component)?
+        }
+        // Plastic part features (mitcad#459).
+        "boss" => super::plastic::boss(im, f, component)?,
+        "lip" => super::plastic::lip(im, f, component)?,
+        "snap_fit" => super::plastic::snap_fit(im, f, component)?,
+        "rest" => super::plastic::rest(im, f, component)?,
         other => {
             return Err(NotMapped::Unmapped(format!(
                 "`{other}` is not a feature kind this import knows"
@@ -221,16 +214,30 @@ fn extrude<K: Kernel>(
     component: ComponentUid,
 ) -> MapResult {
     let e: k::Extrude = f.typed()?;
-    let notes = Vec::new();
+    let def = extrude_def(im, f, component, &e, None)?;
+    im.add(&def, Some(&f.name), component)?;
+    Ok(Mapped::partial(Vec::new()))
+}
+
+/// The definition of an extrude; `profiles` instead of the file's
+/// selection (a surface extrude's, mitcad#455).
+pub(super) fn extrude_def<K: Kernel>(
+    im: &mut Importer<'_, '_, K>,
+    f: &Feature,
+    component: ComponentUid,
+    e: &k::Extrude,
+    profiles: Option<Vec<Value>>,
+) -> Result<Value, NotMapped> {
     let sketch = im
         .sketches
         .get(&e.sketch)
         .cloned()
         .ok_or("the sketch did not come in")?;
     // A thin extrude's wall follows its curves; its profiles are not used.
-    let (profiles, thin) = match &e.thin {
-        Some(t) => (Vec::new(), Some(thin_wall(im, f, t, &sketch)?)),
-        None => (im.profiles(e.sketch, &e.profiles)?, None),
+    let (profiles, thin) = match (&e.thin, profiles) {
+        (Some(t), _) => (Vec::new(), Some(thin_wall(im, f, t, &sketch)?)),
+        (None, Some(profiles)) => (profiles, None),
+        (None, None) => (im.profiles(e.sketch, &e.profiles)?, None),
     };
     let normal = sketch.frame.normal();
     let x = &e.extent;
@@ -311,8 +318,7 @@ fn extrude<K: Kernel>(
         };
         def["start"] = json!({"type": "object", "object": object, "offset": offset});
     }
-    im.add(&def, Some(&f.name), component)?;
-    Ok(Mapped::partial(notes))
+    Ok(def)
 }
 
 /// A thin extrude's wall (mitcad#463) as Mitcad's `thin` along the curves.
@@ -412,8 +418,24 @@ fn revolve<K: Kernel>(
     component: ComponentUid,
 ) -> MapResult {
     let r: k::Revolve = f.typed()?;
-    let notes = Vec::new();
-    let profiles = im.profiles(r.sketch, &r.profiles)?;
+    let def = revolve_def(im, f, component, &r, None)?;
+    im.add(&def, Some(&f.name), component)?;
+    Ok(Mapped::partial(Vec::new()))
+}
+
+/// The definition of a revolve; `profiles` instead of the file's selection
+/// (a surface revolve's, mitcad#455).
+pub(super) fn revolve_def<K: Kernel>(
+    im: &mut Importer<'_, '_, K>,
+    f: &Feature,
+    component: ComponentUid,
+    r: &k::Revolve,
+    profiles: Option<Vec<Value>>,
+) -> Result<Value, NotMapped> {
+    let profiles = match profiles {
+        Some(profiles) => profiles,
+        None => im.profiles(r.sketch, &r.profiles)?,
+    };
     let (axis, origin, dir) = revolve_axis(im, r.sketch, &r.axis)?;
     let s = im
         .sketches
@@ -453,10 +475,10 @@ fn revolve<K: Kernel>(
         json!({"type": "angle", "angle": im.slot(f, "/angle")?})
     };
     let (operation, participants) = im.operation(r.operation, &r.targets)?;
-    let def = json!({"type": "revolve", "profiles": profiles, "axis": axis, "extent": extent,
-        "operation": operation, "participants": participants});
-    im.add(&def, Some(&f.name), component)?;
-    Ok(Mapped::partial(notes))
+    Ok(
+        json!({"type": "revolve", "profiles": profiles, "axis": axis, "extent": extent,
+        "operation": operation, "participants": participants}),
+    )
 }
 
 /// The centre of a sketch's non-construction points, in component
@@ -1501,7 +1523,24 @@ fn sweep<K: Kernel>(
 ) -> MapResult {
     let s: k::Sweep = f.typed()?;
     let mut notes = Vec::new();
-    let profiles = im.profiles(s.sketch, &s.profiles)?;
+    let def = sweep_def(im, f, &s, None, &mut notes)?;
+    im.add(&def, Some(&f.name), component)?;
+    Ok(Mapped::partial(notes))
+}
+
+/// The definition of a sweep; `profiles` instead of the file's selection
+/// (a surface sweep's, mitcad#455).
+pub(super) fn sweep_def<K: Kernel>(
+    im: &mut Importer<'_, '_, K>,
+    f: &Feature,
+    s: &k::Sweep,
+    profiles: Option<Vec<Value>>,
+    notes: &mut Vec<String>,
+) -> Result<Value, NotMapped> {
+    let profiles = match profiles {
+        Some(profiles) => profiles,
+        None => im.profiles(s.sketch, &s.profiles)?,
+    };
     let ps = im
         .sketches
         .get(&s.path_sketch)
@@ -1563,8 +1602,7 @@ fn sweep<K: Kernel>(
             ));
         }
     }
-    im.add(&def, Some(&f.name), component)?;
-    Ok(Mapped::partial(notes))
+    Ok(def)
 }
 
 fn pipe<K: Kernel>(

@@ -1448,7 +1448,7 @@ struct NativeMacWindowState {
     const QStringList groups = sketching
         ? QStringList{QStringLiteral("CREATE"), QStringLiteral("MODIFY"), QStringLiteral("CONSTRAINTS"),
                       QStringLiteral("INSPECT"), QStringLiteral("INSERT"), QStringLiteral("SELECT"), QStringLiteral("FINISH SKETCH")}
-        : QStringList{QStringLiteral("CREATE"), QStringLiteral("MODIFY"), QStringLiteral("SHEET METAL"), QStringLiteral("ASSEMBLE"),
+        : QStringList{QStringLiteral("CREATE"), QStringLiteral("MODIFY"), QStringLiteral("SHEET METAL"), QStringLiteral("SURFACE"), QStringLiteral("ASSEMBLE"),
                       QStringLiteral("CONSTRUCT"), QStringLiteral("INSPECT"), QStringLiteral("INSERT"),
                       QStringLiteral("MAKE"), QStringLiteral("SELECT")};
     CGFloat x = ribbonInset;

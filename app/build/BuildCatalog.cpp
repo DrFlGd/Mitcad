@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #include "BuildCatalog.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <exception>
 #include <limits>
@@ -19,6 +20,27 @@ namespace mitcad::build {
 namespace {
 
 QString text(const QJsonObject& object, const char* key) { return object.value(QLatin1String(key)).toString(); }
+
+// `over` merged into `base` (docs/libraries.md, "Configuration rows' own
+// blocks"): objects key by key, other values replaced.
+QJsonObject merged(QJsonObject base, const QJsonObject& over) {
+  for (auto it = over.begin(); it != over.end(); ++it) {
+    const QJsonValue mine = base.value(it.key());
+    if (mine.isObject() && it.value().isObject()) {
+      base.insert(it.key(), merged(mine.toObject(), it.value().toObject()));
+    } else {
+      base.insert(it.key(), it.value());
+    }
+  }
+  return base;
+}
+
+// A part's build block in its row (mitcad#478): the row's own block
+// (`build.rows`) merged over the component's.
+QJsonObject inRow(const QJsonObject& build, const QString& row) {
+  const QJsonObject own = build.value(QStringLiteral("rows")).toObject().value(row).toObject();
+  return own.isEmpty() ? build : merged(build, own);
+}
 
 // A component of `library_search` or `library_build_candidates` in each of
 // its configuration rows (the default first when it has none).
@@ -58,6 +80,8 @@ QVector<Part> partsOf(const QJsonObject& component) {
   const QJsonArray rows =
       component.value(QStringLiteral("configurations")).toObject().value(QStringLiteral("rows")).toArray();
   if (rows.isEmpty()) {
+    // A recorded source is one row of its component.
+    part.build = inRow(part.build, part.config);
     parts.append(part);
     return parts;
   }
@@ -72,6 +96,8 @@ QVector<Part> partsOf(const QJsonObject& component) {
     if (!text(row, "designation").isEmpty()) {
       one.designation = text(row, "designation");
     }
+    one.build = inRow(part.build, one.config);
+    one.ownPreview = row.value(QStringLiteral("preview")).toBool();
     parts.append(one);
   }
   return parts;
@@ -90,6 +116,28 @@ QString junctionKey(const QJsonObject& junction) {
 QString libraryComponent(const Part& part) { return part.library + QLatin1Char('|') + part.component; }
 
 QString lowered(const QStringList& words) { return words.join(QLatin1Char(' ')).toLower(); }
+
+// Whether an outer connector's row fits member a's section [W, T]
+// (mitcad#478; docs/libraries.md, "Timber parts"): `fit.section` either
+// way round within 1 mm, else `fit.width` holding its smaller dimension.
+bool fitsSection(const Part& part, const QJsonArray& section) {
+  const QJsonObject fit = part.build.value(QStringLiteral("connector")).toObject().value(QStringLiteral("fit")).toObject();
+  const double w = section.at(0).toDouble();
+  const double t = section.at(1).toDouble();
+  const QJsonArray size = fit.value(QStringLiteral("section")).toArray();
+  if (size.size() == 2) {
+    const double a = millimetres(size.at(0));
+    const double b = millimetres(size.at(1));
+    const auto same = [](double x, double y) { return std::abs(x - y) <= 1.0; };
+    return (same(a, w) && same(b, t)) || (same(a, t) && same(b, w));
+  }
+  const QJsonArray range = fit.value(QStringLiteral("width")).toArray();
+  if (range.size() == 2) {
+    const double smaller = std::min(w, t);
+    return smaller >= millimetres(range.at(0)) - 1e-6 && smaller <= millimetres(range.at(1)) + 1e-6;
+  }
+  return true;
+}
 
 } // namespace
 
@@ -149,7 +197,25 @@ QString Part::sizeText() const {
   if (!(width > 0.0) || !(height > 0.0)) {
     return QString();
   }
+  // Timber is named thickness first (48x148), as its rows are.
+  if (isTimber()) {
+    return QStringLiteral("%1x%2").arg(height, 0, 'g', 6).arg(width, 0, 'g', 6);
+  }
   return QStringLiteral("%1x%2").arg(width, 0, 'g', 6).arg(height, 0, 'g', 6);
+}
+
+bool Part::isTimber() const { return text(build, "kind") == QStringLiteral("timber"); }
+
+bool Part::lessCommon() const { return text(build, "availability") == QStringLiteral("less common"); }
+
+bool Part::isWoodFastener() const { return build.value(QStringLiteral("wood")).isObject(); }
+
+bool Part::isOuter() const {
+  return text(build.value(QStringLiteral("connector")).toObject(), "placement") == QStringLiteral("outer");
+}
+
+bool Part::isFaceSheet() const {
+  return text(build.value(QStringLiteral("panel")).toObject(), "mount") == QStringLiteral("face");
 }
 
 QString Part::slotsText() const {
@@ -176,6 +242,9 @@ QString Part::label() const {
   }
   if (!config.isEmpty()) {
     about << config;
+  }
+  if (lessCommon()) {
+    about << QObject::tr("less common");
   }
   QString shown = name;
   if (!about.isEmpty()) {
@@ -244,6 +313,23 @@ double Part::sectionHeight() const {
 }
 
 void Catalog::refresh(const QString& role, const CommandContext& context) {
+  // The pickers of timber (mitcad#478): the library's role and the filter
+  // that asks for timber; the slot pickers list none of it.
+  const bool timber = role == QStringLiteral("timber");
+  const bool sheet = role == QStringLiteral("sheet");
+  const QString libraryRole = timber ? QStringLiteral("profile") : sheet ? QStringLiteral("panel") : role;
+  const auto keep = [&](const Part& part) {
+    if (part.role() != libraryRole) {
+      return false;
+    }
+    if (libraryRole == QStringLiteral("profile")) {
+      return part.isTimber() == timber;
+    }
+    if (libraryRole == QStringLiteral("panel")) {
+      return part.isFaceSheet() == sheet;
+    }
+    return true;
+  };
   // The design's sources (commands.md, "Sources"): placed again by their id.
   QHash<QString, QString> sources;
   QVector<Part> recorded;
@@ -258,7 +344,7 @@ void Catalog::refresh(const QString& role, const CommandContext& context) {
       for (Part part : partsOf(entry)) {
         part.source = source;
         sources.insert(libraryComponent(part), source);
-        if (part.role() == role) {
+        if (keep(part)) {
           part.key = QStringLiteral("source:%1|%2").arg(source, part.config);
           recorded.append(part);
         }
@@ -271,24 +357,35 @@ void Catalog::refresh(const QString& role, const CommandContext& context) {
   // The fetched libraries' parts of the role.
   QVector<Part> fetched;
   QString problem;
-  QJsonObject answer = libraryCommand({{QStringLiteral("cmd"), QStringLiteral("library_build_candidates")},
-                                       {QStringLiteral("role"), role}});
+  QJsonObject request{{QStringLiteral("cmd"), QStringLiteral("library_build_candidates")},
+                      {QStringLiteral("role"), libraryRole}};
+  if (timber) {
+    request.insert(QStringLiteral("kind"), QStringLiteral("timber"));
+  } else if (sheet) {
+    request.insert(QStringLiteral("mount"), QStringLiteral("face"));
+  }
+  QJsonObject answer = libraryCommand(request);
   if (answer.contains(QStringLiteral("error"))) {
     // As Insert from Library searches, filtered by the role.
-    answer = libraryCommand({{QStringLiteral("cmd"), QStringLiteral("library_search")}, {QStringLiteral("role"), role}});
+    request.insert(QStringLiteral("cmd"), QStringLiteral("library_search"));
+    answer = libraryCommand(request);
   }
   if (answer.contains(QStringLiteral("error"))) {
     problem = answer.value(QStringLiteral("error")).toObject().value(QStringLiteral("message")).toString();
   }
   for (const QJsonValue& value : answer.value(QStringLiteral("components")).toArray()) {
     for (Part part : partsOf(value.toObject())) {
-      if (!part.build.isEmpty() && part.role() != role) {
+      if (!part.build.isEmpty() && !keep(part)) {
         continue;
       }
       part.source = sources.value(libraryComponent(part));
       part.key = keyOf(part);
       fetched.append(part);
     }
+  }
+  // Timber's standard sizes first, the less common ones after them.
+  if (timber) {
+    std::stable_partition(fetched.begin(), fetched.end(), [](const Part& part) { return !part.lessCommon(); });
   }
   // A source of the design comes once: as the fetched part that names it,
   // else on its own (its library not fetched here).
@@ -297,6 +394,9 @@ void Catalog::refresh(const QString& role, const CommandContext& context) {
   for (const Part& part : fetched) {
     if (!part.source.isEmpty()) {
       named.insert(part.source + QLatin1Char('|') + part.config);
+      // A source recorded without a row is named by its part's rows
+      // (mitcad#484: each row an entry of its own).
+      named.insert(part.source + QLatin1Char('|'));
     }
   }
   for (const Part& part : recorded) {
@@ -368,11 +468,35 @@ QVector<Part> Catalog::forJunction(const QJsonObject& junction, QStringList* ref
                                              {QStringLiteral("junction"), junction}});
   QVector<Part> parts;
   QStringList nearly;
+  QHash<QString, QStringList> rows;
   if (answer.contains(QStringLiteral("error"))) {
     nearly << answer.value(QStringLiteral("error")).toObject().value(QStringLiteral("message")).toString();
   }
+  // A junction of two timber members (mitcad#478): member a's section.
+  const QJsonArray section = junction.value(QStringLiteral("wood"))
+                                 .toObject()
+                                 .value(QStringLiteral("sections"))
+                                 .toObject()
+                                 .value(QStringLiteral("a"))
+                                 .toArray();
+  const bool wood = junction.value(QStringLiteral("wood")).isObject();
   for (const QJsonValue& value : answer.value(QStringLiteral("components")).toArray()) {
+    QSet<QString> sized;
     for (Part part : partsOf(value.toObject())) {
+      if (wood && part.isWoodFastener()) {
+        // Once, without a row: the model sizes it from the members.
+        Part sizedPart = part;
+        sizedPart.config.clear();
+        rows[keyOf(sizedPart)].append(part.config);
+        if (sized.contains(libraryComponent(part))) {
+          continue;
+        }
+        sized.insert(libraryComponent(part));
+        part.config.clear();
+        part.partNumber.clear();
+      } else if (wood && part.isOuter() && section.size() == 2 && !fitsSection(part, section)) {
+        continue; // a row made for another section
+      }
       part.source = sources.value(libraryComponent(part));
       part.key = keyOf(part);
       parts.append(part);
@@ -391,10 +515,18 @@ QVector<Part> Catalog::forJunction(const QJsonObject& junction, QStringList* ref
   const std::lock_guard<std::mutex> lock(m_mutex);
   m_byJunction.insert(key, parts);
   m_refused.insert(key, nearly);
+  for (auto it = rows.cbegin(); it != rows.cend(); ++it) {
+    m_rows.insert(it.key(), it.value());
+  }
   if (refused != nullptr) {
     *refused = nearly;
   }
   return parts;
+}
+
+QStringList Catalog::rowsOf(const QString& key) const {
+  const std::lock_guard<std::mutex> lock(m_mutex);
+  return m_rows.value(key);
 }
 
 Choices partChoices(const QVector<Part>& parts, const QString& words, const QString& system, const QString& current) {

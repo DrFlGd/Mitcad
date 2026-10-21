@@ -486,6 +486,11 @@ fn relocate_links(
                     follow(link, &BTreeSet::from([body.feature]), own);
                 }
             }
+            // A body transfer's source and destination (mitcad#465).
+            FeatureDef::BodyTransfer(transfer) => {
+                let names = transfer.bodies.iter().map(|b| b.feature).collect();
+                follow(&mut transfer.link, &names, own);
+            }
             _ => {}
         }
         if def != entry.def {

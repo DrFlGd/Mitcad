@@ -14,12 +14,13 @@ use super::extrude::{
     Operation, apply_operation, check_participants, participant_bodies, profile_regions,
 };
 use super::geom_ref::{GeomRef, Want};
-use super::path::CurvePath;
+use super::path::{CurvePath, SketchCurves};
+use super::surface_sweeps;
 use super::{
     BodyChange, CheckContext, EvalContext, Evaluate, FeatureInfo, FeatureOutput, References,
     ToolUse, UNSUPPORTED, is_false,
 };
-use crate::ids::{BodyUid, FeatureUid};
+use crate::ids::{BodyUid, EntityUid, FeatureUid};
 use crate::kernel::Kernel;
 use crate::parameters::ParamId;
 use crate::profile::ProfileRegion;
@@ -41,6 +42,16 @@ pub enum LoftSectionDef {
     /// vertex, a sketch point (`{"sketch": "F3", "point": "p5"}`) or a
     /// fixed point.
     Point { point: GeomRef },
+    /// Curves of a sketch making one chain, open or closed (mitcad#455):
+    /// only in a surface loft whose sections are all curves.
+    Curves {
+        sketch: FeatureUid,
+        #[serde(with = "super::path::curves_serde")]
+        curves: Vec<EntityUid>,
+        /// Adds the curves joined to them end to end.
+        #[serde(default, skip_serializing_if = "is_false")]
+        chain: bool,
+    },
 }
 
 impl LoftSectionDef {
@@ -48,11 +59,32 @@ impl LoftSectionDef {
         matches!(self, Self::Point { .. })
     }
 
+    fn is_curves(&self) -> bool {
+        matches!(self, Self::Curves { .. })
+    }
+
     fn kind(&self) -> &'static str {
         match self {
             Self::Profile { .. } => "profile",
             Self::Face { .. } => "face",
             Self::Point { .. } => "point",
+            Self::Curves { .. } => "curves",
+        }
+    }
+
+    /// The curves of a curve section.
+    fn sketch_curves(&self) -> Option<SketchCurves> {
+        match self {
+            Self::Curves {
+                sketch,
+                curves,
+                chain,
+            } => Some(SketchCurves {
+                sketch: *sketch,
+                curves: curves.clone(),
+                chain: *chain,
+            }),
+            _ => None,
         }
     }
 }
@@ -265,6 +297,9 @@ impl FeatureInfo for LoftDef {
                     references.features.extend(face.features());
                 }
                 LoftSectionDef::Point { point } => point.add_to(&mut references),
+                LoftSectionDef::Curves { sketch, .. } => {
+                    references.features.insert(*sketch);
+                }
             }
         }
         for path in self.centerline.iter().chain(&self.rails) {
@@ -284,6 +319,25 @@ impl FeatureInfo for LoftDef {
         }
         if self.surface && !matches!(self.operation, Operation::NewBody | Operation::NewComponent) {
             return Err("a surface loft is a new body or a new component".to_owned());
+        }
+        // Sections of curves (mitcad#455).
+        if self.sections.iter().any(LoftSectionDef::is_curves) {
+            if !self.surface {
+                return Err("only a surface loft has sections of curves".to_owned());
+            }
+            if !self.sections.iter().all(LoftSectionDef::is_curves) {
+                return Err("a loft of curve sections has only curve sections".to_owned());
+            }
+            if self.start_condition.is_some()
+                || self.end_condition.is_some()
+                || self.centerline.is_some()
+                || !self.rails.is_empty()
+            {
+                return Err(
+                    "a loft of curve sections has no end conditions, centre line or rails"
+                        .to_owned(),
+                );
+            }
         }
         for (i, section) in self.sections.iter().enumerate() {
             let at = |e: String| format!("section {}: {e}", i + 1);
@@ -310,6 +364,11 @@ impl FeatureInfo for LoftDef {
                     }
                 }
                 LoftSectionDef::Point { point } => point.check(ctx, Want::Point).map_err(at)?,
+                LoftSectionDef::Curves { .. } => {
+                    if let Some(curves) = section.sketch_curves() {
+                        curves.check(ctx).map_err(at)?;
+                    }
+                }
             }
         }
         if self.sections.iter().all(LoftSectionDef::is_point) {
@@ -381,6 +440,9 @@ enum Found<S> {
 
 impl<K: Kernel> Evaluate<K> for LoftDef {
     fn evaluate(&self, ctx: &mut EvalContext<'_, K>) -> Result<FeatureOutput<K::Shape>, String> {
+        if self.sections.iter().any(LoftSectionDef::is_curves) {
+            return self.curve_loft(ctx);
+        }
         let mut ends = [LoftEnd::default(); 2];
         for (end, (condition, which)) in ends.iter_mut().zip([
             (&self.start_condition, "start"),
@@ -427,6 +489,9 @@ impl<K: Kernel> Evaluate<K> for LoftDef {
                     Found::Face(shape, face)
                 }
                 LoftSectionDef::Point { point } => Found::Point(ctx.point(point).map_err(at)?),
+                LoftSectionDef::Curves { .. } => {
+                    return Err(at("a curve section in a loft of other sections".to_owned()));
+                }
             });
         }
         let centerline: Option<Vec<PathCurve>> = match &self.centerline {
@@ -473,5 +538,38 @@ impl<K: Kernel> Evaluate<K> for LoftDef {
             return Ok(output);
         }
         apply_operation(ctx, self.operation, participants, tool, "loft")
+    }
+}
+
+impl LoftDef {
+    /// A surface loft through sections of curves (mitcad#455): each
+    /// section's curves one chain, lofted by the kernel's `loft_sheet`.
+    fn curve_loft<K: Kernel>(
+        &self,
+        ctx: &mut EvalContext<'_, K>,
+    ) -> Result<FeatureOutput<K::Shape>, String> {
+        let mut sections = Vec::new();
+        for (i, section) in self.sections.iter().enumerate() {
+            let at = |e: String| format!("section {}: {e}", i + 1);
+            let Some(curves) = section.sketch_curves() else {
+                return Err(at(
+                    "a loft of curve sections has only curve sections".to_owned()
+                ));
+            };
+            let frame = ctx.sketch(curves.sketch).map_err(at)?.frame;
+            let mut chains = surface_sweeps::chains(ctx, &curves, &frame).map_err(at)?;
+            if chains.len() != 1 {
+                return Err(at(format!(
+                    "the curves make {} chains; a section is one chain",
+                    chains.len()
+                )));
+            }
+            sections.push(chains.remove(0));
+        }
+        let sheet = ctx
+            .kernel
+            .loft_sheet(ctx.uid, &sections, self.ruled, self.closed)
+            .map_err(|e| e.to_string())?;
+        surface_sweeps::output(ctx, vec![sheet])
     }
 }

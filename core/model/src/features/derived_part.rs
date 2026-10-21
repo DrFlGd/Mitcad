@@ -143,6 +143,31 @@ pub struct DerivedPartDef<P = ParamId> {
     pub ends: Ends<P>,
     #[serde(default = "new_body")]
     pub operation: Operation,
+    /// Joinery and rips (mitcad#478): boxes taken away after the ends.
+    #[serde(default = "Vec::new", skip_serializing_if = "Vec::is_empty")]
+    pub cuts: Vec<PartCut<P>>,
+}
+
+/// A box a member's joinery (or a rip) takes away (mitcad#478): from
+/// `origin` along `x`, `y` and their cross product by `size`, in the part's
+/// coordinates; `with` and `junction` name the other member and the
+/// junction.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PartCut<P = ParamId> {
+    /// `housing`, `notch`, `half_lap` or `rip`.
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub with: Option<ComponentUid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub junction: Option<String>,
+    pub origin: [P; 3],
+    pub x: [f64; 3],
+    pub y: [f64; 3],
+    pub size: [P; 3],
+    /// The joinery's depth as it was asked for (to cut it anew).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub depth: Option<f64>,
 }
 
 impl<P> DerivedPartDef<P> {
@@ -170,12 +195,41 @@ impl<P> DerivedPartDef<P> {
             a: end("a", &self.ends.a)?,
             b: end("b", &self.ends.b)?,
         };
+        let mut cuts = Vec::with_capacity(self.cuts.len());
+        for (i, cut) in self.cuts.iter().enumerate() {
+            let mut origin = Vec::with_capacity(3);
+            let mut size = Vec::with_capacity(3);
+            for k in 0..3 {
+                origin.push(f(&format!("cuts.{i}.origin.{k}"), &cut.origin[k])?);
+            }
+            for k in 0..3 {
+                size.push(f(&format!("cuts.{i}.size.{k}"), &cut.size[k])?);
+            }
+            let three = |v: Vec<Q>| -> [Q; 3] {
+                let mut it = v.into_iter();
+                let a = it.next().expect("three");
+                let b = it.next().expect("three");
+                let c = it.next().expect("three");
+                [a, b, c]
+            };
+            cuts.push(PartCut {
+                kind: cut.kind.clone(),
+                with: cut.with,
+                junction: cut.junction.clone(),
+                origin: three(origin),
+                x: cut.x,
+                y: cut.y,
+                size: three(size),
+                depth: cut.depth,
+            });
+        }
         Ok(DerivedPartDef {
             source: self.source,
             config: self.config.clone(),
             parameters,
             ends,
             operation: self.operation,
+            cuts,
         })
     }
 }
@@ -203,6 +257,18 @@ impl FeatureInfo for DerivedPartDef {
         for (key, cut) in [("a", &self.ends.a), ("b", &self.ends.b)] {
             if let Some(cut) = cut {
                 check_angle(key, value(cut.angle))?;
+            }
+        }
+        for cut in &self.cuts {
+            if cut
+                .size
+                .iter()
+                .any(|s| value(*s).is_nan() || value(*s) <= 0.0)
+            {
+                return Err(format!(
+                    "the {} cut's size must be greater than zero",
+                    cut.kind
+                ));
             }
         }
         Ok(())
@@ -513,6 +579,20 @@ impl<K: Kernel> Evaluate<K> for DerivedPartDef {
                     shape = cut_end(ctx, &shape, b, length, plane)?;
                 }
             }
+            // Joinery and rips (mitcad#478).
+            for (k, cut) in self.cuts.iter().enumerate() {
+                let origin = [
+                    ctx.param(cut.origin[0])?,
+                    ctx.param(cut.origin[1])?,
+                    ctx.param(cut.origin[2])?,
+                ];
+                let size = [
+                    ctx.param(cut.size[0])?,
+                    ctx.param(cut.size[1])?,
+                    ctx.param(cut.size[2])?,
+                ];
+                shape = cut_box(ctx, &shape, k, &cut.kind, origin, cut.x, cut.y, size)?;
+            }
             changes.push(BodyChange::Set(BodyUid::new(uid, i as u32), shape));
         }
         Ok(FeatureOutput {
@@ -583,6 +663,54 @@ fn cut_end<K: Kernel>(
         ));
     }
     Ok(first)
+}
+
+/// Takes a joinery box away from a body (mitcad#478); the tool's faces are
+/// named `<F>:joint_<k>(...)`.
+#[allow(clippy::too_many_arguments)]
+fn cut_box<K: Kernel>(
+    ctx: &mut EvalContext<'_, K>,
+    body: &K::Shape,
+    k: usize,
+    kind: &str,
+    origin: [f64; 3],
+    x: [f64; 3],
+    y: [f64; 3],
+    size: [f64; 3],
+) -> Result<K::Shape, String> {
+    let uid = ctx.uid;
+    let kernel = ctx.kernel;
+    let failed = |e: crate::kernel::KernelError| format!("the {kind} cut: {e}");
+    let spec = PrimitiveSpec {
+        feature: uid,
+        frame: SketchFrame {
+            origin,
+            x_axis: x,
+            y_axis: y,
+        },
+        shape: PrimitiveShape::Box {
+            length: size[0],
+            width: size[1],
+            height: size[2],
+        },
+    };
+    let tool = kernel.primitive(&spec).map_err(failed)?;
+    let tool = kernel
+        .rename_faces(&tool, &format!("{uid}:joint_{k}"), &[])
+        .map_err(failed)?;
+    let output = ctx
+        .boolean(BooleanOp::Cut, &[body], &tool)
+        .map_err(failed)?;
+    if !output.touched.first().copied().unwrap_or(false) {
+        ctx.warn(format!("the {kind} cut does not meet the part"));
+        return Ok(body.clone());
+    }
+    output
+        .pieces
+        .into_iter()
+        .find(|p| p.sources.contains(&0))
+        .map(|p| p.shape)
+        .ok_or_else(|| format!("the {kind} cut leaves nothing of the part"))
 }
 
 /// The tool an end's cut takes away: a box beyond the plane `(point,

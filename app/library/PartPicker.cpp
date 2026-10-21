@@ -64,6 +64,12 @@ QString partId(const PickerPart& part) { return part.library + QLatin1Char('|') 
 
 QString partLabel(const PickerPart& part) { return part.library + QLatin1Char('/') + part.component; }
 
+// The label with its row, as the tiles are logged: each row is a tile of
+// its own (mitcad#484).
+QString tileLabel(const PickerPart& part) {
+  return part.config.isEmpty() ? partLabel(part) : QStringLiteral("%1 (%2)").arg(partLabel(part), part.config);
+}
+
 // A category for people: its id with spaces, the first letter capital.
 QString categoryName(const QString& category) {
   QString shown = category;
@@ -74,9 +80,11 @@ QString categoryName(const QString& category) {
   return shown;
 }
 
-// The pictures read, by part and version, for every grid of the session.
+// The pictures read, by part and version, for every grid of the session; a
+// row with a picture of its own (mitcad#484) by its row too.
 QString imageKey(const PickerPart& part) {
-  return QStringList{part.library, part.component, part.rev, part.url}.join(QLatin1Char('|'));
+  const QString row = part.rowPreview ? part.config : QString();
+  return QStringList{part.library, part.component, part.rev, part.url, row}.join(QLatin1Char('|'));
 }
 
 QHash<QString, QImage>& imageCache() {
@@ -98,6 +106,9 @@ QImage readImage(const PickerPart& part) {
   if (hasImage(part)) {
     QJsonObject request{{QStringLiteral("cmd"), QStringLiteral("library_preview")},
                         {QStringLiteral("component"), part.component}};
+    if (part.rowPreview) {
+      request.insert(QStringLiteral("config"), part.config);
+    }
     if (!part.url.isEmpty()) {
       request.insert(QStringLiteral("url"), part.url);
     }
@@ -111,11 +122,11 @@ QImage readImage(const PickerPart& part) {
     if (png.isString()) {
       image = QImage::fromData(QByteArray::fromBase64(png.toString().toLatin1()), "PNG");
     }
+    // A row's own picture with its row (mitcad#484).
+    const QString size =
+        image.isNull() ? QStringLiteral("none") : QStringLiteral("%1x%2").arg(image.width()).arg(image.height());
     qDebug().noquote() << QStringLiteral("Part picker picture of %1: %2")
-                              .arg(partLabel(part), image.isNull() ? QStringLiteral("none")
-                                                                   : QStringLiteral("%1x%2")
-                                                                         .arg(image.width())
-                                                                         .arg(image.height()));
+                              .arg(part.rowPreview ? tileLabel(part) : partLabel(part), size);
   }
   cache.insert(key, image);
   return image;
@@ -350,6 +361,7 @@ PickerPart pickerPart(const build::Part& source) {
   part.version = source.version;
   part.component = source.component;
   part.config = source.config;
+  part.rowPreview = source.ownPreview;
   part.name = source.name;
   part.designation = source.designation;
   part.supplier = source.supplier;
@@ -361,6 +373,11 @@ PickerPart pickerPart(const build::Part& source) {
   }
   if (!source.config.isEmpty() && !sizes.contains(source.config)) {
     sizes << source.config;
+  }
+  // Timber's less common sizes are marked (mitcad#478); the standard
+  // ones come first in the catalog.
+  if (source.lessCommon()) {
+    sizes << QObject::tr("less common");
   }
   part.sizes = sizes.join(QStringLiteral(", "));
   return part;
@@ -1082,7 +1099,7 @@ void PartGrid::refill(bool notify) {
   qInfo().noquote() << QStringLiteral("Part picker group %1: %2 parts, first %3")
                            .arg(groupName(m_group))
                            .arg(shown.size())
-                           .arg(shown.isEmpty() ? QStringLiteral("-") : partLabel(shown.first()));
+                           .arg(shown.isEmpty() ? QStringLiteral("-") : tileLabel(shown.first()));
   if (m_model->rowOf(before) >= 0) {
     setCurrent(before, false);
   } else if (notify) {
@@ -1116,7 +1133,7 @@ void PartGrid::logPlaces(const std::function<QString(const QWidget*, const QPoin
       continue;
     }
     // The middle of the tile: its star is in a corner.
-    qDebug().noquote() << QStringLiteral("Part picker tile %1 at %2").arg(partLabel(*shown), at(m_view->viewport(), tile.center()));
+    qDebug().noquote() << QStringLiteral("Part picker tile %1 at %2").arg(tileLabel(*shown), at(m_view->viewport(), tile.center()));
   }
 }
 
@@ -1197,7 +1214,7 @@ void PartGrid::showHover(const QModelIndex& index, const QPoint& global) {
   m_hover->move(at);
   m_hover->show();
   m_hoverKey = shown->key;
-  qDebug().noquote() << QStringLiteral("Part picker hover %1").arg(partLabel(*shown));
+  qDebug().noquote() << QStringLiteral("Part picker hover %1").arg(tileLabel(*shown));
 }
 
 void PartGrid::hideHover() {
@@ -1387,7 +1404,7 @@ void PartPicker::ask(const PickerRequest& request) {
   // The part chosen in sight, highlighted (mitcad#452).
   if (m_grid->reveal(request.current)) {
     if (const PickerPart* current = m_grid->currentPart()) {
-      qInfo().noquote() << QStringLiteral("Part picker shows the part chosen: %1").arg(partLabel(*current));
+      qInfo().noquote() << QStringLiteral("Part picker shows the part chosen: %1").arg(tileLabel(*current));
     }
   }
   qInfo().noquote() << (following ? QStringLiteral("Part picker follows %2: %1 parts")

@@ -1,0 +1,110 @@
+# SPDX-License-Identifier: MIT
+# The drawing export (mitcad#471) through mitcad-cli export-drawing, on the
+# design tests/drawing.json makes (a plate with four holes of 6.5 and a
+# tapped M6 hole, and a bar beside it: two bodies): an SVG on A3 with its
+# three views, a dimension of 40 and the hole table's rows; a PDF whose
+# pages are its sheets (one, or one per body) and whose cross-reference
+# table is where it says; a DXF with its layers.
+#
+# cmake -DCLI=<mitcad-cli> -DDESIGN=<drawing.mitcad> -DWORK=<folder> -P drawing-test.cmake
+
+foreach(var CLI DESIGN WORK)
+  if(NOT DEFINED ${var})
+    message(FATAL_ERROR "drawing-test.cmake needs -D${var}=...")
+  endif()
+endforeach()
+file(REMOVE_RECURSE "${WORK}")
+file(MAKE_DIRECTORY "${WORK}")
+
+function(cli)
+  execute_process(COMMAND "${CLI}" ${ARGN} RESULT_VARIABLE status OUTPUT_VARIABLE out ERROR_VARIABLE err)
+  if(NOT status EQUAL 0)
+    message(FATAL_ERROR "mitcad-cli ${ARGN} failed (${status}):\n${out}${err}")
+  endif()
+  set(out "${out}" PARENT_SCOPE)
+endfunction()
+
+function(count result text pattern)
+  string(REGEX MATCHALL "${pattern}" found "${text}")
+  list(LENGTH found n)
+  set(${result} ${n} PARENT_SCOPE)
+endfunction()
+
+function(expect_count text pattern expected what)
+  count(n "${text}" "${pattern}")
+  if(NOT n EQUAL expected)
+    message(FATAL_ERROR "${what}: ${n}, expected ${expected}")
+  endif()
+  message(STATUS "ok   ${what}: ${n}")
+endfunction()
+
+function(expect_text text pattern what)
+  string(FIND "${text}" "${pattern}" at)
+  if(at LESS 0)
+    message(FATAL_ERROR "${what}: no '${pattern}'")
+  endif()
+  message(STATUS "ok   ${what}")
+endfunction()
+
+# The SVG: three views, the plate's width, the holes.
+set(svg "${WORK}/drawing.svg")
+cli(export-drawing "${DESIGN}" "${svg}" --sheet A3 --date 2026-10-20)
+if(NOT out MATCHES "Exported [^\n]*drawing\\.svg: drawing, 3 views, 2 bodies, A3, [0-9.]+:[0-9.]+")
+  message(FATAL_ERROR "unexpected output: ${out}")
+endif()
+file(READ "${svg}" text)
+expect_count("${text}" "<g class=\"view\"" 3 "views in the SVG")
+expect_text("${text}" "id=\"view-front\"" "the front view")
+# A dimension group holding the text 40 (the plate and the bar are 40 wide).
+string(REGEX MATCH "<g class=\"dimension\">\n(<[^g/][^\n]*\n)*<text[^>]*>40</text>" dimension "${text}")
+if(NOT dimension)
+  message(FATAL_ERROR "no dimension of 40 in the SVG")
+endif()
+message(STATUS "ok   a dimension of 40")
+expect_text("${text}" ">4x Ø6.5 THRU</text>" "the four holes' diameter, once")
+expect_count("${text}" "<g class=\"hole-row\"" 5 "rows of the hole table")
+expect_text("${text}" ">M6x1</text>" "the tapped hole's thread in the table")
+expect_text("${text}" ">2026-10-20</text>" "the date in the title block")
+expect_text("${text}" ">drawing</text>" "the design's name in the title block")
+
+# The PDF: one page, objects where the table says.
+function(check_pdf path pages)
+  file(READ "${path}" pdf)
+  string(SUBSTRING "${pdf}" 0 8 head)
+  if(NOT head STREQUAL "%PDF-1.4")
+    message(FATAL_ERROR "${path}: not a PDF file: ${head}")
+  endif()
+  if(NOT pdf MATCHES "startxref\n([0-9]+)\n%%EOF\n$")
+    message(FATAL_ERROR "${path}: no startxref at the end")
+  endif()
+  file(READ "${path}" table OFFSET ${CMAKE_MATCH_1} LIMIT 5)
+  if(NOT table STREQUAL "xref\n")
+    message(FATAL_ERROR "${path}: startxref points at '${table}'")
+  endif()
+  expect_count("${pdf}" "/Type /Page " ${pages} "pages of ${path}")
+  expect_text("${pdf}" "/Count ${pages} " "the page count of ${path}")
+endfunction()
+set(pdf "${WORK}/drawing.pdf")
+cli(export-drawing "${DESIGN}" "${pdf}" --sheet A3 --json)
+if(NOT out MATCHES "\"pages\":1,")
+  message(FATAL_ERROR "unexpected result: ${out}")
+endif()
+check_pdf("${pdf}" 1)
+set(pdf "${WORK}/bodies.pdf")
+cli(export-drawing "${DESIGN}" "${pdf}" --per-body --hidden --views front,top,right,iso)
+if(NOT out MATCHES "drawing, 4 views, 2 bodies, A4, ")
+  message(FATAL_ERROR "unexpected output: ${out}")
+endif()
+check_pdf("${pdf}" 2)
+
+# A section through the holes and the DXF's layers.
+set(dxf "${WORK}/drawing.dxf")
+cli(export-drawing "${DESIGN}" "${dxf}" --section 20,15,0 --normal 0,-1,0 --json)
+if(NOT out MATCHES "\"views\":4,")
+  message(FATAL_ERROR "unexpected result: ${out}")
+endif()
+file(READ "${dxf}" text)
+foreach(layer VISIBLE HIDDEN THIN HATCH SECTION_LINE FRAME TEXT)
+  expect_text("${text}" "\n${layer}\n" "the DXF layer ${layer}")
+endforeach()
+expect_text("${text}" "SECTION A-A" "the section view's label")

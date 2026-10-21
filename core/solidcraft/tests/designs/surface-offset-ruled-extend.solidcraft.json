@@ -1,0 +1,51 @@
+{
+  "format": "solidcraft/27",
+  "name": "Offset surface, ruled surface and extend",
+  "units": "mm",
+  "params": [{"name": "gap", "expr": "2 mm", "unit": "mm"}],
+  "features": [
+    {
+      "id": 1, "name": "BlockBox", "type": "box", "body_names": ["Block"],
+      "corner": [0, 0, 0], "length": "20", "width": "10", "height": "5",
+      "operation": "new_body"
+    },
+    {
+      "id": 2, "name": "Lid", "type": "surface_offset", "body_names": ["Lid"],
+      "body": "Block", "faces": [[10.0, 5.0, 5.0]], "distance": "gap"
+    },
+    {
+      "id": 3, "name": "Frame", "type": "surface_ruled", "body_names": ["Frame"],
+      "body": "Block", "edges": [[10.0, 0.0, 5.0], [20.0, 5.0, 5.0], [10.0, 10.0, 5.0], [0.0, 5.0, 5.0]],
+      "distance": "3", "mode": "tangent", "face": [10.0, 5.0, 5.0]
+    },
+    {
+      "id": 4, "name": "Outline", "type": "sketch",
+      "plane": {"type": "origin", "name": "XY"},
+      "sketch": {
+        "points": [
+          {"id": "origin", "pos": [0.0, 0.0], "fixed": true},
+          {"id": "p1", "pos": [40.0, 0.0], "fixed": true},
+          {"id": "p2", "pos": [60.0, 0.0], "fixed": true},
+          {"id": "p3", "pos": [60.0, 10.0], "fixed": true},
+          {"id": "p4", "pos": [40.0, 10.0], "fixed": true}
+        ],
+        "curves": [
+          {"id": "l1", "type": "line", "a": 1, "b": 2},
+          {"id": "l2", "type": "line", "a": 2, "b": 3},
+          {"id": "l3", "type": "line", "a": 3, "b": 4},
+          {"id": "l4", "type": "line", "a": 4, "b": 1}
+        ],
+        "constraints": []
+      }
+    },
+    {
+      "id": 5, "name": "Walls", "type": "surface_extrude", "body_names": ["Walls"],
+      "sketch": 4, "profiles": {"type": "all"}, "extent": {"distance": "5"}
+    },
+    {
+      "id": 6, "name": "Taller", "type": "surface_extend",
+      "body": "Walls", "edges": [[50.0, 0.0, 5.0], [60.0, 5.0, 5.0], [50.0, 10.0, 5.0], [40.0, 5.0, 5.0]],
+      "distance": "gap"
+    }
+  ]
+}

@@ -214,6 +214,46 @@ pub mod thicken;
 pub use patch::{EdgeContinuity, Opening, PatchDef, PatchLoop};
 pub use stitch::StitchDef;
 pub use thicken::ThickenDef;
+// Surface modelling: surface bodies and their features (mitcad#455).
+pub mod extend_surface;
+pub mod offset_surface;
+pub mod ruled_surface;
+pub mod surface_sweeps;
+pub use extend_surface::ExtendSurfaceDef;
+pub use offset_surface::OffsetSurfaceDef;
+pub use ruled_surface::RuledSurfaceDef;
+pub mod sheet_edges;
+pub use sheet_edges::OpeningEdgesRef;
+pub mod reverse_normal;
+pub mod trim_surface;
+pub mod unstitch;
+pub mod untrim_surface;
+pub use reverse_normal::ReverseNormalDef;
+pub use trim_surface::TrimSurfaceDef;
+pub use unstitch::UnstitchDef;
+pub use untrim_surface::UntrimSurfaceDef;
+pub mod blend_surface;
+pub mod boundary_surface;
+pub mod fair_surface;
+pub mod match_surface;
+pub use blend_surface::BlendSurfaceDef;
+pub use boundary_surface::BoundarySurfaceDef;
+pub use fair_surface::FairSurfaceDef;
+pub use match_surface::MatchSurfaceDef;
+// Plastic part features and plastic rules (mitcad#459).
+pub mod plastic;
+#[cfg(test)]
+mod plastic_tests;
+pub use plastic::{BossDef, GrooveDef, LipDef, PlasticRuleDef, RestDef, SnapFitDef};
+// Bodies moved into another component on the timeline (mitcad#465).
+pub mod body_transfer;
+pub use body_transfer::BodyTransferDef;
+// Gears: spur, helical, herringbone, ring, rack and bevel (mitcad#472).
+pub mod gear;
+pub mod gear_profile;
+pub use gear::{GearDef, GearKind};
+#[cfg(test)]
+mod gear_tests;
 
 use crate::assembly::Assembly;
 use crate::datum::Datum;
@@ -361,6 +401,18 @@ feature_types! {
     MeshConvert(MeshConvertDef),
     // Patch, Stitch and Thicken: surface bodies filled, sewn and made solid (mitcad#456).
     Patch(PatchDef), Stitch(StitchDef), Thicken(ThickenDef),
+    // Surface modelling: surface bodies and their features (mitcad#455).
+    OffsetSurface(OffsetSurfaceDef), RuledSurface(RuledSurfaceDef), ExtendSurface(ExtendSurfaceDef),
+    TrimSurface(TrimSurfaceDef), UntrimSurface(UntrimSurfaceDef), Unstitch(UnstitchDef),
+    ReverseNormal(ReverseNormalDef),
+    BlendSurface(BlendSurfaceDef), BoundarySurface(BoundarySurfaceDef), MatchSurface(MatchSurfaceDef),
+    FairSurface(FairSurfaceDef),
+    // Plastic part features and plastic rules (mitcad#459).
+    PlasticRule(PlasticRuleDef), Boss(BossDef), Lip(LipDef), Groove(GrooveDef), SnapFit(SnapFitDef), Rest(RestDef),
+    // Bodies moved into another component on the timeline (mitcad#465).
+    BodyTransfer(BodyTransferDef),
+    // Gears: spur, helical, herringbone, ring, rack and bevel (mitcad#472).
+    Gear(GearDef),
 }
 
 /// Brings a feature definition in an earlier form up to date before it is

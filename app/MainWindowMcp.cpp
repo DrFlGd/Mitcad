@@ -295,6 +295,9 @@ QJsonObject MainWindow::mcpOpen(const QJsonObject& arguments) {
   if (path.isEmpty()) {
     refuse(reason);
   }
+  if (!m_session && m_mode == Mode::PickPlane) {
+    refuse(tr("Create Sketch waits for a plane to be picked: pick one or cancel it first."));
+  }
   if (m_session || m_mode != Mode::Idle) {
     refuse(tr("Finish the sketch or command first (ui_command with finish ok or cancel)."));
   }

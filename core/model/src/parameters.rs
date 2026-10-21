@@ -410,6 +410,9 @@ pub fn slot_unit(slot: &str) -> Unit {
         || slot == "allowance.k"
         // A motion link's ratio (mitcad#466).
         || slot == "coupling.ratio"
+        // A gear's teeth and profile shift (mitcad#472).
+        || field.ends_with("teeth")
+        || field == "profile_shift"
     {
         Unit::NONE
     } else {

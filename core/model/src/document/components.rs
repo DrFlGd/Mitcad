@@ -491,7 +491,7 @@ impl<K: Kernel> Document<K> {
             .created_by
             .and_then(|f| self.state.entry(f))
             .is_some_and(|f| matches!(f.def, FeatureDef::ComponentFromBodies(_)));
-        if def.link.is_some() || made_from_bodies {
+        if def.link.is_some() || made_from_bodies || self.state.transfers_into(source.component) {
             return Err(invalid(format!(
                 "{} has bodies from outside its own features",
                 def.name
@@ -852,7 +852,9 @@ impl<K: Kernel> Document<K> {
             .and_then(|f| self.state.entry(f))
             .map(|f| (f.uid, matches!(f.def, FeatureDef::ComponentFromBodies(_))));
         // Bodies from outside the component's features: copied as bodies.
-        let as_bodies = def.link.is_some() || made_by.is_some_and(|(_, from_bodies)| from_bodies);
+        let as_bodies = def.link.is_some()
+            || made_by.is_some_and(|(_, from_bodies)| from_bodies)
+            || self.state.transfers_into(component);
         let snapshot = if as_bodies {
             Some(self.component_snapshot(component)?)
         } else {

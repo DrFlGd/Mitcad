@@ -275,6 +275,10 @@ impl Rewrite<'_> {
                     changed |= self.link(link)?;
                 }
             }
+            // A body transfer's source and destination (mitcad#465).
+            FeatureDef::BodyTransfer(t) => {
+                changed |= self.link(&mut t.link)?;
+            }
             FeatureDef::Combine(c) => {
                 for link in c.tool_links.values_mut() {
                     changed |= self.link(link)?;

@@ -38,10 +38,15 @@ bool writeListPdf(const QString& path, const QString& title, const QString& subt
                   const QVector<ListTable>& tables, QString& error);
 
 // The cut list's tables from `build_cut_list`'s answer: the rows, the
-// stock, the other parts.
+// stock, the other parts. A design with timber (the answer's `timber`,
+// mitcad#478) adds the timber columns after the others (material, grade,
+// finish, nominal and actual section, running metres, volume), a totals
+// row, and the stock's size and stock lengths; without timber the tables
+// are as before.
 QVector<ListTable> cutListTables(const QJsonObject& answer);
-// The parts list's table from `parts_list`'s rows.
-QVector<ListTable> partsListTables(const QJsonObject& answer);
+// The parts list's table from `parts_list`'s rows; with timber in the cut
+// list (`cut`), the timber parts' material and grade.
+QVector<ListTable> partsListTables(const QJsonObject& answer, const QJsonObject& cut = QJsonObject());
 
 class BuildListsDialog : public QDialog {
   Q_OBJECT

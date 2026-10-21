@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use mitcad_mcp::{Backend, LiveSession, ToolResult};
 use mitcad_model::api::classes::{self, ApiClass};
 use mitcad_model::{BlobStore, Sha256};
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 use crate::Document;
 use crate::kernel::OcctKernel;
@@ -359,12 +359,49 @@ impl Backend for CadBackend {
                 let format = string(arguments, "format")?;
                 if !matches!(
                     format,
-                    "step" | "iges" | "brep" | "stl" | "obj" | "3mf" | "usdz" | "dxf"
+                    "step"
+                        | "iges"
+                        | "brep"
+                        | "stl"
+                        | "obj"
+                        | "3mf"
+                        | "usdz"
+                        | "dxf"
+                        | "pdf"
+                        | "svg"
                 ) {
                     return Err(format!("unknown export format '{format}'"));
                 }
+                // Drawings (mitcad#471): PDF and SVG, and DXF with drawing.
+                let drawing = match arguments.get("drawing") {
+                    Some(options) => Some(
+                        options
+                            .as_object()
+                            .ok_or_else(|| "drawing must be an object".to_owned())?
+                            .clone(),
+                    ),
+                    None if matches!(format, "pdf" | "svg") => Some(Map::new()),
+                    None => None,
+                };
+                if let Some(options) = &drawing {
+                    if !matches!(format, "pdf" | "svg" | "dxf") {
+                        return Err(
+                            "drawing is only accepted for PDF, SVG or DXF export".to_owned()
+                        );
+                    }
+                    if arguments.get("sketch").is_some() || arguments.get("flat_pattern").is_some()
+                    {
+                        return Err("a drawing uses bodies, not sketch or flat_pattern".to_owned());
+                    }
+                    if let Some(key) = ["cmd", "path", "bodies", "format"]
+                        .into_iter()
+                        .find(|k| options.contains_key(*k))
+                    {
+                        return Err(format!("drawing must not hold '{key}'"));
+                    }
+                }
                 // DXF: a sketch, or a sheet body's Flat Pattern (mitcad#210).
-                let (sketch, flat) = if format == "dxf" {
+                let (sketch, flat) = if format == "dxf" && drawing.is_none() {
                     if arguments.get("bodies").is_some() {
                         return Err("DXF export uses sketch or flat_pattern, not bodies".to_owned());
                     }
@@ -395,7 +432,13 @@ impl Backend for CadBackend {
                 let path = self
                     .workspace
                     .write_path(string(arguments, "path")?, false)?;
-                let mut command = if let Some(sketch) = sketch {
+                let mut command = if let Some(options) = drawing {
+                    require_extension(&path, format)?;
+                    let mut command = Value::Object(options);
+                    command["cmd"] = json!("export_drawing");
+                    command["path"] = json!(path);
+                    command
+                } else if let Some(sketch) = sketch {
                     require_extension(&path, "dxf")?;
                     json!({"cmd": "export_sketch", "path": path, "sketch": sketch})
                 } else if let Some(body) = flat {
@@ -414,6 +457,17 @@ impl Backend for CadBackend {
                     command["bodies"] = bodies.clone();
                 }
                 let opened = self.document_mut(id)?;
+                // A drawing's title block names the design by its file.
+                if command["cmd"] == "export_drawing" && command.get("title").is_none() {
+                    let title = opened
+                        .path
+                        .as_deref()
+                        .and_then(|p| p.file_stem())
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("Untitled")
+                        .to_owned();
+                    command["title"] = json!(title);
+                }
                 // USDZ: texture paths are relative to the design's folder.
                 if format == "usdz"
                     && let Some(folder) = opened.path.as_deref().and_then(|p| p.parent())

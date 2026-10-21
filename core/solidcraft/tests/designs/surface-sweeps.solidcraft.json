@@ -1,0 +1,115 @@
+{
+  "format": "solidcraft/27",
+  "name": "Surface extrude, revolve, sweep and loft",
+  "units": "mm",
+  "params": [{"name": "height", "expr": "15 mm", "unit": "mm"}],
+  "features": [
+    {
+      "id": 1, "name": "Base", "type": "sketch",
+      "plane": {"type": "origin", "name": "XY"},
+      "sketch": {
+        "points": [
+          {"id": "origin", "pos": [0.0, 0.0], "fixed": true},
+          {"id": "p1", "pos": [0.0, 0.0], "fixed": true},
+          {"id": "p2", "pos": [20.0, 0.0], "fixed": true},
+          {"id": "p3", "pos": [20.0, 10.0], "fixed": true},
+          {"id": "p4", "pos": [0.0, 10.0], "fixed": true},
+          {"id": "p5", "pos": [40.0, 0.0], "fixed": true},
+          {"id": "p6", "pos": [50.0, 0.0], "fixed": true},
+          {"id": "p7", "pos": [50.0, 10.0], "fixed": true}
+        ],
+        "curves": [
+          {"id": "l1", "type": "line", "a": 1, "b": 2},
+          {"id": "l2", "type": "line", "a": 2, "b": 3},
+          {"id": "l3", "type": "line", "a": 3, "b": 4},
+          {"id": "l4", "type": "line", "a": 4, "b": 1},
+          {"id": "m1", "type": "line", "a": 5, "b": 6},
+          {"id": "m2", "type": "line", "a": 6, "b": 7}
+        ],
+        "constraints": []
+      }
+    },
+    {
+      "id": 2, "name": "Walls", "type": "surface_extrude", "body_names": ["Tube", "Fence"],
+      "sketch": 1, "profiles": {"type": "all"}, "curves": ["m1", "m2"],
+      "extent": {"distance": "height"}
+    },
+    {
+      "id": 3, "name": "Generator", "type": "sketch",
+      "plane": {"type": "origin", "name": "YZ"},
+      "sketch": {
+        "points": [
+          {"id": "origin", "pos": [0.0, 0.0], "fixed": true},
+          {"id": "p1", "pos": [5.0, 0.0], "fixed": true},
+          {"id": "p2", "pos": [5.0, 10.0], "fixed": true}
+        ],
+        "curves": [{"id": "g1", "type": "line", "a": 1, "b": 2}],
+        "constraints": []
+      }
+    },
+    {
+      "id": 4, "name": "Drum", "type": "surface_revolve", "body_names": ["Drum"],
+      "sketch": 3, "curves": ["g1"], "axis": {"type": "world", "axis": "Z"}, "angle": "360 deg"
+    },
+    {
+      "id": 5, "name": "Blade", "type": "sketch",
+      "plane": {"type": "origin", "name": "XY"},
+      "sketch": {
+        "points": [
+          {"id": "origin", "pos": [0.0, 0.0], "fixed": true},
+          {"id": "p1", "pos": [60.0, 0.0], "fixed": true},
+          {"id": "p2", "pos": [70.0, 0.0], "fixed": true}
+        ],
+        "curves": [{"id": "b1", "type": "line", "a": 1, "b": 2}],
+        "constraints": []
+      }
+    },
+    {
+      "id": 6, "name": "Rail", "type": "sketch",
+      "plane": {"type": "origin", "name": "XZ"},
+      "sketch": {
+        "points": [
+          {"id": "origin", "pos": [0.0, 0.0], "fixed": true},
+          {"id": "p1", "pos": [60.0, 0.0], "fixed": true},
+          {"id": "p2", "pos": [60.0, -20.0], "fixed": true}
+        ],
+        "curves": [{"id": "r1", "type": "line", "a": 1, "b": 2}],
+        "constraints": []
+      }
+    },
+    {
+      "id": 7, "name": "Swept", "type": "surface_sweep", "body_names": ["Swept"],
+      "sketch": 5, "curves": ["b1"], "path_sketch": 6, "path": ["r1"]
+    },
+    {
+      "id": 8, "name": "Low", "type": "sketch",
+      "plane": {"type": "origin", "name": "XY"},
+      "sketch": {
+        "points": [
+          {"id": "origin", "pos": [0.0, 0.0], "fixed": true},
+          {"id": "p1", "pos": [0.0, 30.0], "fixed": true},
+          {"id": "p2", "pos": [10.0, 30.0], "fixed": true}
+        ],
+        "curves": [{"id": "s1", "type": "line", "a": 1, "b": 2}],
+        "constraints": []
+      }
+    },
+    {
+      "id": 9, "name": "High", "type": "sketch",
+      "plane": {"type": "offset", "base": {"type": "origin", "name": "XY"}, "distance": "10 mm"},
+      "sketch": {
+        "points": [
+          {"id": "origin", "pos": [0.0, 0.0], "fixed": true},
+          {"id": "p1", "pos": [0.0, 30.0], "fixed": true},
+          {"id": "p2", "pos": [10.0, 30.0], "fixed": true}
+        ],
+        "curves": [{"id": "s1", "type": "line", "a": 1, "b": 2}],
+        "constraints": []
+      }
+    },
+    {
+      "id": 10, "name": "Skin", "type": "surface_loft", "body_names": ["Skin"],
+      "sections": [{"sketch": 8, "curves": ["s1"]}, {"sketch": 9, "curves": ["s1"]}]
+    }
+  ]
+}

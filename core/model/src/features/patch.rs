@@ -233,7 +233,7 @@ fn fill_loop<K: Kernel>(
 }
 
 /// The index, among the body's open boundaries, of the opening.
-fn find_opening<K: Kernel>(
+pub(crate) fn find_opening<K: Kernel>(
     ctx: &EvalContext<'_, K>,
     body: BodyUid,
     shape: &K::Shape,

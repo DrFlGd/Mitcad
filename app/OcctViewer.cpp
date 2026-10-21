@@ -2172,6 +2172,7 @@ void OcctViewer::setPickFilter(SelectFilter filter, std::function<bool(const Sel
   m_expandedFilter = filter;
   m_scoped = false;
   m_pickTest = nullptr;
+  m_clickPickedNothing = false; // a click before the filter refused nothing of it
   if (test) {
     m_pickTest = [test = std::move(test)](const SelectionItem& item, const PickCase&) { return test(item); };
   }
@@ -2186,6 +2187,7 @@ void OcctViewer::setPickScope(SelectFilter kinds, SelectFilter expanded, PickTes
   m_expandedFilter = kinds | expanded;
   m_scoped = true;
   m_pickTest = std::move(test);
+  m_clickPickedNothing = false; // a click before the scope refused nothing of it
   // A scope set while Shift is down (a key that came before) picks as Shift
   // says now.
   m_shiftHeld = QGuiApplication::keyboardModifiers().testFlag(Qt::ShiftModifier);
@@ -2512,7 +2514,7 @@ bool OcctViewer::accepts(const occ::handle<SelectMgr_EntityOwner>& owner) const 
   if (!item || !activeKinds().testFlag(item->kind)) {
     return false;
   }
-  if (!m_pickTest) {
+  if (!m_pickTest || m_untestedPicks) {
     return true;
   }
   PickCase how;
@@ -2769,6 +2771,7 @@ void OcctViewer::OnSelectionChanged(const occ::handle<AIS_InteractiveContext>& c
   }
   m_context->MainSelector()->AllowOverlapDetection(false);
   m_windowSelecting = false; // what follows is a hover or a click again
+  m_clickPickedNothing = !m_windowPick && items.isEmpty();
   emit picked(items, m_pressModifiers, m_windowPick);
 }
 
@@ -3670,6 +3673,38 @@ std::vector<SelectionItem> OcctViewer::itemsAt(const QPointF& position) {
   return items;
 }
 
+std::optional<SelectionItem> OcctViewer::takeRefusedClick() {
+  if (!m_clickPickedNothing || !m_pickTest) {
+    return std::nullopt;
+  }
+  m_clickPickedNothing = false;
+  // What the click would have taken without the finer test: the first item
+  // under it of the filter's kinds.
+  m_untestedPicks = true;
+  std::optional<SelectionItem> item = isCovered(m_clickPosition) ? std::nullopt : itemAt(m_clickPosition);
+  m_untestedPicks = false;
+  ResetPreviousMoveTo(); // the hover picks again with the test
+  return item;
+}
+
+std::vector<std::pair<SelectionItem, QPoint>> OcctViewer::refusedPickPoints(SelectFilter kinds) {
+  const std::vector<std::pair<SelectionItem, QPoint>> taken = pickPoints(kinds);
+  m_untestedPicks = true;
+  std::vector<std::pair<SelectionItem, QPoint>> all = pickPoints(kinds);
+  m_untestedPicks = false;
+  ResetPreviousMoveTo();
+  std::vector<std::pair<SelectionItem, QPoint>> refused;
+  for (const auto& entry : all) {
+    const bool accepted = std::any_of(taken.begin(), taken.end(), [&entry](const auto& other) {
+      return other.first == entry.first;
+    });
+    if (!accepted) {
+      refused.push_back(entry);
+    }
+  }
+  return refused;
+}
+
 void OcctViewer::sceneChanged() {
   if (m_view.IsNull()) {
     return; // still being constructed
@@ -4177,6 +4212,7 @@ void OcctViewer::mouseReleaseEvent(QMouseEvent* event) {
     m_dragItem.reset();
     m_dragRefused = false;
     m_windowPick = false;
+    m_clickPosition = m_pressPosition;
     const Aspect_VKeyFlags flags = viewFlags(m_pressModifiers);
     UpdateMouseButtons(toDevicePixels(m_pressPosition), Aspect_VKeyMouse_LeftButton, flags, false);
     if (UpdateMouseButtons(toDevicePixels(m_pressPosition), Aspect_VKeyMouse_NONE, flags, false)) {
@@ -4198,6 +4234,7 @@ void OcctViewer::mouseReleaseEvent(QMouseEvent* event) {
       m_windowSelecting = !cube;
     } else {
       setShiftHeld(event->modifiers().testFlag(Qt::ShiftModifier), false);
+      m_clickPosition = event->position();
     }
   }
   const Aspect_VKeyFlags flags = viewFlags(event->modifiers());

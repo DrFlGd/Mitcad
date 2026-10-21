@@ -154,4 +154,22 @@ void placeAt(const SelectionItem& item, CommandState& state, const CommandContex
 std::optional<gp_Pnt> pointOnPlane(const CommandState& state, const CommandContext& context,
                                    const QString& plane, const QString& x, const QString& y);
 
+// --- Splitting and trimming tools (Split Face, Split Body, Trim): the input
+// `tool` (one plane, face or body, or sketch curves of one sketch), its
+// plane's `offset`, `extend`, and the direction curves are swept along
+// (`split_type`, `dx`, `dy`, `dz`).
+
+// The tool's reference; an error (into `error`) for a mixed selection.
+QJsonValue toolOf(const Selection& items, Built& error, const QString& input);
+// The items of a tool reference; none when one is gone.
+std::optional<Selection> toolItems(const QJsonValue& tool, const CommandContext& context);
+// The tool input (labelled "Splitting Tool" without a label).
+InputDef toolInput(const QString& label = QString());
+InputDef toolOffsetInput();
+QVector<InputDef> directionInputs();
+// The tool, its plane's offset, extension and direction into a definition.
+bool addTool(QJsonObject& def, const CommandState& state, Built& error);
+void loadTool(const QJsonObject& feature, CommandState& state, const CommandContext& context);
+bool toolEditable(const QJsonObject& feature, const CommandContext& context);
+
 } // namespace mitcad::cmd

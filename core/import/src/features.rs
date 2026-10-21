@@ -2580,9 +2580,9 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         item: &TimelineItem,
         d: &ExtrudeDetail,
     ) -> Result<Vec<Candidate>, String> {
-        if d.is_solid == Some(false) {
-            return Err("surface extrusions are not supported".to_owned());
-        }
+        // A surface extrusion (mitcad#455): the extrusion's walls without
+        // caps, a new surface body, of the regions or of the curves.
+        let surface = d.is_solid == Some(false);
         // Text profiles whose texts the file no longer has (mitcad#332): the
         // history keeps the extrusion's result, but no sketch has its
         // profile, so no region of the sketch can stand in for it.
@@ -2745,7 +2745,8 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         // profile names (an open path), else, when its sketch has no regions,
         // the sketch's curves that are not construction geometry, as a guess
         // the history checks.
-        let wall_curves = (d.is_thin_extrude == Some(true) && decoded_set.is_none())
+        // A surface extrusion's curves likewise (mitcad#455).
+        let wall_curves = ((d.is_thin_extrude == Some(true) || surface) && decoded_set.is_none())
             .then(|| self.wall_curves(&profiles, sketch))
             .flatten();
         let (sets, mapped) = match decoded_set {
@@ -3204,7 +3205,15 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                 }
                 if let Some((curves, _)) = &wall_curves {
                     def.as_object_mut().map(|o| o.remove("profiles"));
-                    def["thin"]["curves"] = json!({"sketch": sketch_uid, "curves": curves});
+                    let curves = json!({"sketch": sketch_uid, "curves": curves});
+                    if surface {
+                        def["curves"] = curves;
+                    } else {
+                        def["thin"]["curves"] = curves;
+                    }
+                }
+                if surface {
+                    def["surface"] = json!(true);
                 }
                 // Objects on other components' bodies (mitcad#104): the
                 // extrusion goes where its sketch is and links them.
@@ -3238,6 +3247,10 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                     c.input_provenance = InputProvenance::Read;
                 }
                 c.first = (decoded && !*extent_guess) || set.measured;
+                // A surface changes no volume (mitcad#455).
+                if surface {
+                    c.predicted = None;
+                }
                 if let Some((_, exact)) = &wall_curves {
                     c.predicted = None;
                     if !exact {
@@ -4183,9 +4196,8 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
     }
 
     fn revolve(&mut self, index: i64, d: &RevolveDetail) -> Result<Vec<Candidate>, String> {
-        if d.is_solid == Some(false) {
-            return Err("surface revolutions are not supported".to_owned());
-        }
+        // A surface revolution of regions (mitcad#455).
+        let surface = d.is_solid == Some(false);
         let profiles = profiles_of(&d.profile, &d.other);
         let (sketch, last_sketch) = self.profile_sketch(&profiles, index)?;
         let mut sets = self.region_sets(&profiles, sketch, None, None)?;
@@ -4326,7 +4338,11 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                 }
             }
         }
-        Ok(candidates)
+        Ok(if surface {
+            surface_candidates(candidates)
+        } else {
+            candidates
+        })
     }
 
     /// An emboss (mitcad#458): Mitcad's emboss of the decoded profiles on
@@ -6021,6 +6037,31 @@ fn with_face_regions(c: &mut Candidate, sketch: &str, keys: &[String]) {
             }
         }
     }
+}
+
+/// The candidates of a surface item (`isSolid` false, mitcad#455): each
+/// definition a surface (`surface`), a new body without participants that
+/// changes no volume.
+pub(crate) fn surface_candidates(mut candidates: Vec<Candidate>) -> Vec<Candidate> {
+    for c in &mut candidates {
+        for def in &mut c.defs {
+            def["surface"] = json!(true);
+            if def["operation"] != "new_component" {
+                def["operation"] = json!("new_body");
+            }
+            if let Some(map) = def.as_object_mut() {
+                map.remove("participants");
+            }
+        }
+        c.predicted = None;
+    }
+    let mut kept: Vec<Candidate> = Vec::new();
+    for c in candidates {
+        if !kept.iter().any(|k| k.defs == c.defs) {
+            kept.push(c);
+        }
+    }
+    kept
 }
 
 pub(crate) fn with_participants(c: &Candidate, options: &[Vec<String>]) -> Vec<Candidate> {

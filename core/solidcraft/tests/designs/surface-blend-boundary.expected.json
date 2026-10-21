@@ -1,0 +1,18 @@
+{
+  "comment": "Worked out by hand. Low and High: the walls of a 20 x 10 rectangle 5 high, from z 0 and from z 10: 2 (20 + 10) 5 = 300 each. Blend: from Low's top edge along y = 0 to High's bottom edge there, tangent to both walls: the wall continued, 20 x 5 = 100 in y = 0. Lid: a 10 x 10 square of four lines filled, 100. Net: the same square spanned by its lines two each way, 100, faired (a plane stays as it is). Shelf: a strip 20 long from z 10 to 12. Flap: a wall 10 x 10 whose top is matched to the shelf's bottom edge: a trapezoid of sides 10 and 20, 10 high, 150.",
+  "body_count": 7,
+  "bbox": {"min": [0, 0, 0], "max": [80, 10, 15]},
+  "bodies": [
+    {"name": "Low", "area_mm2": 300, "bbox": {"min": [0, 0, 0], "max": [20, 10, 5]}},
+    {"name": "High", "area_mm2": 300, "bbox": {"min": [0, 0, 10], "max": [20, 10, 15]}},
+    {"name": "Blend", "area_mm2": 100, "bbox": {"min": [0, 0, 5], "max": [20, 0, 10]}},
+    {"name": "Lid", "area_mm2": 100, "bbox": {"min": [40, 0, 0], "max": [50, 10, 0]}},
+    {"name": "Net", "area_mm2": 100, "bbox": {"min": [40, 0, 0], "max": [50, 10, 0]}},
+    {"name": "Flap", "area_mm2": 150, "bbox": {"min": [60, 0, 0], "max": [80, 0, 10]}},
+    {"name": "Shelf", "area_mm2": 40, "bbox": {"min": [60, 0, 10], "max": [80, 0, 12]}}
+  ],
+  "timeline": [{"name": "LowSketch"}, {"name": "LowWalls"}, {"name": "HighSketch"}, {"name": "HighWalls"},
+               {"name": "Bridge"}, {"name": "Cover"}, {"name": "Grid"}, {"name": "Smooth"},
+               {"name": "FlapWall"}, {"name": "ShelfWall"}, {"name": "Fit"}],
+  "parametric": 11
+}

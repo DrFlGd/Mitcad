@@ -69,6 +69,18 @@ void writeFile(const QString& path, qint64 size, const QDateTime& modified) {
   }
 }
 
+// On a failure: the folder's log files (size, time, last line) and the
+// file meant.
+void printFiles(const QString& folder, const QString& meant) {
+  std::fprintf(stderr, "debug_log.cpp: meant %s\n", qPrintable(meant));
+  for (const mitcad::DebugLogFile& file : mitcad::debugLogFiles(folder)) {
+    const QStringList lines = linesOf(file.path);
+    std::fprintf(stderr, "  %s %lld %s, last line: %s\n", qPrintable(file.path), static_cast<long long>(file.size),
+                 qPrintable(file.modified.toString(QStringLiteral("HH:mm:ss.zzz"))),
+                 qPrintable(lines.value(lines.size() - 1).left(160)));
+  }
+}
+
 void waitMs(int ms) {
   QEventLoop loop;
   QTimer::singleShot(ms, &loop, &QEventLoop::quit);
@@ -270,26 +282,43 @@ void fileTests() {
   CHECK(continued);
   CHECK(total <= limits.folderBytes + limits.fileBytes);
   lines = linesOf(current);
-  CHECK(hasLine(lines, QStringLiteral("^Started: .*, file \\d+, continued from mitcad-.*\\.log$")));
-  CHECK(hasLine(lines, linePattern(QStringLiteral("debug"), QStringLiteral("rotation line 59 %1").arg(filler))));
+  const QRegularExpression startedPattern(QStringLiteral("^Started: .*, file \\d+, continued from (mitcad-.*\\.log)$"));
+  qsizetype started = 0;
+  while (started < lines.size() && !startedPattern.match(lines.at(started)).hasMatch()) {
+    ++started;
+  }
+  const QRegularExpressionMatch continuedFrom = startedPattern.match(lines.value(started));
+  CHECK(continuedFrom.hasMatch());
+  // The last rotation line is in the file being written; or, when it took
+  // the file before to its size (the header's size follows the machine and
+  // the environment: mitcad#476), that file ends with it and the one being
+  // written has its header only.
+  const QString lastRotation = linePattern(QStringLiteral("debug"), QStringLiteral("rotation line 59 %1").arg(filler));
+  if (!hasLine(lines, lastRotation)) {
+    const QStringList before = linesOf(QDir(folder).filePath(continuedFrom.captured(1)));
+    CHECK(started == lines.size() - 1);
+    CHECK(before.size() >= 2 && hasLine(QStringList{before.value(before.size() - 2)}, lastRotation));
+    CHECK(before.value(before.size() - 1) ==
+          QStringLiteral("--- Continued in %1").arg(QFileInfo(current).fileName()));
+  }
 
-  // Off: the file's last line says so; nothing after it.
+  // Off: the file's last line says so; nothing after it. The line itself
+  // never rolls the file over (mitcad#476).
   log.stop();
   CHECK(!log.running());
   CHECK(log.currentFile().isEmpty());
   qDebug().noquote() << "a line after the stop";
   lines = linesOf(current);
-  CHECK(hasLine(QStringList{lines.value(lines.size() - 1)},
-                linePattern(QStringLiteral("info"),
-                            QStringLiteral("Debug log off: %1").arg(QDir::toNativeSeparators(current)))));
+  const bool offLast = hasLine(QStringList{lines.value(lines.size() - 1)},
+                               linePattern(QStringLiteral("info"), QStringLiteral("Debug log off: %1")
+                                                                       .arg(QDir::toNativeSeparators(current))));
+  CHECK(offLast);
   CHECK(!hasLine(lines, QStringLiteral("a line after the stop")));
-  CHECK(QFileInfo(log.latestFile()) == QFileInfo(current));
-  if (QFileInfo(log.latestFile()) != QFileInfo(current)) {
-    std::fprintf(stderr, "debug_log.cpp: latest %s, current %s\n", qPrintable(log.latestFile()), qPrintable(current));
-    for (const mitcad::DebugLogFile& file : mitcad::debugLogFiles(folder)) {
-      std::fprintf(stderr, "  %s %lld %s\n", qPrintable(file.path), static_cast<long long>(file.size),
-                   qPrintable(file.modified.toString(QStringLiteral("HH:mm:ss.zzz"))));
-    }
+  const bool latest = QFileInfo(log.latestFile()) == QFileInfo(current);
+  CHECK(latest);
+  if (!offLast || !latest) {
+    std::fprintf(stderr, "debug_log.cpp: latest %s\n", qPrintable(log.latestFile()));
+    printFiles(folder, current);
   }
 
   // A header that waits for the graphics (default limits: the ring's lines
@@ -344,6 +373,23 @@ void fileTests() {
                                    QStringLiteral("Debug log off: %1").arg(QDir::toNativeSeparators(stopped)))));
   // The graphics known (as when Preferences switches it on): at once.
   log.setFact(QStringLiteral("Graphics"), QStringLiteral("Test GPU, OpenGL 4.5"));
+  // The off line takes the file over its size (mitcad#476): it stays the
+  // file's last line, and no file continues it.
+  log.setLimits(mitcad::DebugLogLimits());
+  const QString full = directory.filePath(QStringLiteral("full/full.log"));
+  CHECK(log.start(full, QStringLiteral("unit test"), &error));
+  log.flush();
+  mitcad::DebugLogLimits fullLimits;
+  fullLimits.fileBytes = QFileInfo(full).size() + 1;
+  log.setLimits(fullLimits);
+  log.stop();
+  lines = linesOf(full);
+  CHECK(QFileInfo(full).size() > fullLimits.fileBytes);
+  CHECK(hasLine(QStringList{lines.value(lines.size() - 1)},
+                linePattern(QStringLiteral("info"),
+                            QStringLiteral("Debug log off: %1").arg(QDir::toNativeSeparators(full)))));
+  CHECK(!hasLine(lines, QStringLiteral("^--- Continued in ")));
+  CHECK(mitcad::debugLogFiles(directory.filePath(QStringLiteral("full")), full).size() == 1);
   // 4000 bytes a file and three files, but room for the first one: it gets
   // the ring's lines from before (over 20 kB).
   mitcad::DebugLogLimits askedLimits = limits;

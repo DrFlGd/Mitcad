@@ -69,6 +69,36 @@ pub(crate) enum MoveCommand {
         #[serde(default = "yes")]
         allowed: bool,
     },
+    /// Bodies moved into an existing component on the timeline, by a Body
+    /// Transfer (mitcad#465).
+    TransferBodies {
+        bodies: Vec<BodyUid>,
+        #[serde(default)]
+        source_occurrence: Option<OccurrencePath>,
+        destination: TransferTarget,
+        #[serde(default)]
+        name: Option<String>,
+    },
+}
+
+/// Where a body transfer moves bodies: a component, seen at an occurrence
+/// path from the root (its first path when left out).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct TransferTarget {
+    component: String,
+    #[serde(default)]
+    occurrence: Option<OccurrencePath>,
+}
+
+/// The `transfer_bodies` query: the bodies' component and the components
+/// they can move into.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct TransferQuery {
+    bodies: Vec<BodyUid>,
+    #[serde(default)]
+    source_occurrence: Option<OccurrencePath>,
 }
 
 fn yes() -> bool {
@@ -76,10 +106,11 @@ fn yes() -> bool {
 }
 
 /// The commands' names, to send them here.
-pub(crate) const COMMANDS: [&str; 3] = [
+pub(crate) const COMMANDS: [&str; 4] = [
     "move_to_component",
     "move_history_into_component",
     "set_hybrid_assembly",
+    "transfer_bodies",
 ];
 
 /// The `feature_references` query: what a definition (a command panel's,
@@ -198,7 +229,64 @@ impl<K: Kernel> Document<K> {
                 self.set_hybrid_assembly(allowed)?;
                 json!({})
             }
+            MoveCommand::TransferBodies {
+                bodies,
+                source_occurrence,
+                destination,
+                name,
+            } => {
+                let component = self.component_ref(&destination.component)?;
+                let added = self.transfer_bodies(
+                    &bodies,
+                    source_occurrence.as_ref().map(|p| p.0.as_slice()),
+                    component,
+                    destination.occurrence.as_ref().map(|p| p.0.as_slice()),
+                    name.as_deref(),
+                )?;
+                json!({"uid": added.uid, "name": added.name, "component": component,
+                       "component_name": self.assembly().name(component),
+                       "bodies": bodies})
+            }
         })
+    }
+
+    /// The `transfer_bodies` query: the component the bodies are in and
+    /// every placed component (each occurrence path, as the
+    /// `move_to_component` query's `destinations`) with whether they can go
+    /// there.
+    pub(crate) fn transfer_plan_json(&self, query: &TransferQuery) -> Result<Value, ApiError> {
+        let destinations = self.transfer_destinations(&query.bodies)?;
+        let a = self.assembly();
+        let source = self
+            .body_component(query.bodies[0])
+            .unwrap_or(ComponentUid::ROOT);
+        let rows: Vec<Value> = destinations
+            .iter()
+            .map(|d| {
+                let path = &d.occurrence;
+                let label = if path.is_empty() {
+                    a.root_name.clone()
+                } else {
+                    format!("{}/{}", a.root_name, a.path_name(path))
+                };
+                json!({
+                    "component": d.component, "name": a.name(d.component),
+                    "occurrence": OccurrencePath(path.clone()), "path": label,
+                    "parent_occurrence": OccurrencePath(path[..path.len().saturating_sub(1)].to_vec()),
+                    "eligible": d.reason.is_none(),
+                    "reason": d.reason.clone().unwrap_or_default(),
+                })
+            })
+            .collect();
+        Ok(json!({
+            "component": source,
+            "name": a.name(source),
+            "source_occurrence": query.source_occurrence,
+            "bodies": query.bodies.iter()
+                .map(|b| json!({"uid": b, "name": self.body_name(*b)}))
+                .collect::<Vec<_>>(),
+            "destinations": rows,
+        }))
     }
 
     /// The `move_to_component` query: what the command would do.

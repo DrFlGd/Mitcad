@@ -2729,6 +2729,52 @@ impl Kernel for MockKernel {
         })
     }
 
+    /// A band named `band_top`, `band_bottom`, `band_side` and `band_edge`
+    /// (no edge keys) within the body's bounds; the call is in `specs`
+    /// (mitcad#459).
+    fn rim_band(
+        &self,
+        spec: &crate::kernel::RimBandSpec<'_, MockShape>,
+    ) -> Result<MockShape, KernelError> {
+        self.call("rim_band")?;
+        self.specs.borrow_mut().push(format!(
+            "rim_band {} on {} {} width {} free {} from {} to {}",
+            spec.feature,
+            spec.face,
+            if spec.outside { "outside" } else { "inside" },
+            number(spec.width),
+            number(spec.free),
+            number(spec.start),
+            number(spec.end)
+        ));
+        if !spec.body.has_face(spec.face) {
+            return Err(KernelError::failed(format!(
+                "the body has no face {}",
+                spec.face
+            )));
+        }
+        let face = |role: &str| FaceName::new(spec.feature, role, None);
+        let [top, bottom, side, edge] =
+            ["band_top", "band_bottom", "band_side", "band_edge"].map(face);
+        Ok(MockShape {
+            history: format!(
+                "band({}:{}..{})",
+                spec.feature,
+                number(spec.start),
+                number(spec.end)
+            ),
+            faces: vec![top.clone(), bottom.clone(), side.clone(), edge.clone()],
+            edges: vec![
+                (side.clone(), top.clone()),
+                (side.clone(), bottom.clone()),
+                (edge.clone(), top),
+                (edge, bottom),
+            ],
+            bounds: spec.body.bounds,
+            parts: Vec::new(),
+        })
+    }
+
     /// The shapes' faces and edges together; a surface body unless
     /// `stitch_closes`.
     fn stitch(&self, shapes: &[&MockShape], tolerance: f64) -> Result<MockShape, KernelError> {
@@ -2781,6 +2827,759 @@ impl Kernel for MockKernel {
             parts: Vec::new(),
         })
     }
+
+    /// Drawings (mitcad#471): the twelve edges of each shape's box, all
+    /// seen.
+    fn project_view(
+        &self,
+        shapes: &[&MockShape],
+        spec: &crate::drawing::ViewSpec,
+    ) -> Result<crate::drawing::ViewProjection, KernelError> {
+        use crate::drawing::{ViewCurve, ViewEdge, ViewEdgeKind, ViewProjection};
+        self.call("project_view")?;
+        let mut projection = ViewProjection::default();
+        for shape in shapes {
+            let Some(b) = shape.bounds else { continue };
+            let corner = |i: usize| {
+                [
+                    if i & 1 == 0 { b.min[0] } else { b.max[0] },
+                    if i & 2 == 0 { b.min[1] } else { b.max[1] },
+                    if i & 4 == 0 { b.min[2] } else { b.max[2] },
+                ]
+            };
+            for i in 0..8 {
+                for bit in [1, 2, 4] {
+                    if i & bit == 0 {
+                        projection.edges.push(ViewEdge {
+                            visible: true,
+                            kind: ViewEdgeKind::Sharp,
+                            curve: ViewCurve::Line(
+                                spec.project(corner(i)),
+                                spec.project(corner(i | bit)),
+                            ),
+                        });
+                    }
+                }
+            }
+        }
+        Ok(projection)
+    }
+
+    fn round_holes(
+        &self,
+        _shape: &MockShape,
+    ) -> Result<Vec<crate::drawing::RoundHole>, KernelError> {
+        Ok(Vec::new())
+    }
+    /// A face per curve and the caps, over the loops' bounds along the
+    /// steps (mitcad#472).
+    fn gear_sweep(
+        &self,
+        spec: &crate::kernel::GearSweepSpec<'_>,
+    ) -> Result<MockShape, KernelError> {
+        self.call("gear_sweep")?;
+        let length: f64 = spec.steps.iter().map(|s| s.length).sum();
+        let twist: f64 = spec.steps.iter().map(|s| s.twist).sum();
+        self.specs.borrow_mut().push(format!(
+            "gear_sweep {} at {:?} curves {} from {} length {} twist {}",
+            spec.feature,
+            spec.frame.origin,
+            spec.loops.iter().map(Vec::len).sum::<usize>(),
+            number(spec.start),
+            number(length),
+            number(twist)
+        ));
+        let mut points = Vec::new();
+        for segment in spec.loops.iter().flatten() {
+            for p in crate::features::gear_profile::sample(&segment.geometry, 4) {
+                for h in [spec.start, spec.start + length] {
+                    let q = spec.frame.point(p);
+                    let n = spec.frame.normal();
+                    points.push(std::array::from_fn::<f64, 3, _>(|i| q[i] + n[i] * h));
+                }
+            }
+        }
+        mock_gear(
+            spec.feature,
+            spec.loops,
+            &[spec.start_name, spec.end_name],
+            points,
+        )
+    }
+
+    fn gear_cone(&self, spec: &crate::kernel::GearConeSpec<'_>) -> Result<MockShape, KernelError> {
+        self.call("gear_cone")?;
+        self.specs.borrow_mut().push(format!(
+            "gear_cone {} at {:?} apex {} scale {}",
+            spec.feature,
+            spec.frame.origin,
+            number(spec.apex),
+            number(spec.scale)
+        ));
+        let mut points = Vec::new();
+        for segment in spec.loops.iter().flatten() {
+            points.extend(
+                crate::features::gear_profile::sample(&segment.geometry, 4)
+                    .into_iter()
+                    .map(|p| spec.frame.point(p)),
+            );
+        }
+        mock_gear(
+            spec.feature,
+            spec.loops,
+            &["back", "front", "back_cone"],
+            points,
+        )
+    }
+
+    // Surface modelling, surface sweeps (mitcad#455): sheets are shapes
+    // whose history holds ",sheet"; each call is described in `specs`.
+
+    /// The shape without the feature's faces in the roles, parts too.
+    fn open_faces(
+        &self,
+        shape: &MockShape,
+        feature: FeatureUid,
+        roles: &[&str],
+    ) -> Result<MockShape, KernelError> {
+        self.call("open_faces")?;
+        self.specs.borrow_mut().push(format!(
+            "open_faces({feature}: {} of {} faces)",
+            roles.join(","),
+            shape.faces.len()
+        ));
+        Ok(open_mock(shape, feature, roles))
+    }
+
+    fn extrude_sheet(
+        &self,
+        spec: &ExtrudeFeatureSpec<'_, MockShape>,
+        chains: &[Vec<PathCurve>],
+    ) -> Result<MockShape, KernelError> {
+        self.call("extrude_sheet")?;
+        let distance = |side: &ExtrudeSide<MockShape>| match side.end {
+            SideEnd::Distance(d) => Ok(d),
+            SideEnd::Target(_) => Err(KernelError::Unsupported(
+                "a surface extrusion of curves to an object",
+            )),
+        };
+        let one = distance(&spec.side1)?;
+        let two = spec
+            .side2
+            .as_ref()
+            .map(distance)
+            .transpose()?
+            .unwrap_or(0.0);
+        self.specs.borrow_mut().push(format!(
+            "extrude_sheet({}: {} along [{}] {} back {})",
+            spec.feature,
+            describe_chains(chains),
+            spec.direction.map(|v| number(round(v))).join(", "),
+            number(one),
+            number(two)
+        ));
+        Ok(sheet_of_chains(
+            format!("extrude_sheet({},sheet)", spec.feature),
+            spec.feature,
+            chains,
+        ))
+    }
+
+    fn revolve_sheet(
+        &self,
+        spec: &RevolveSpec<'_, MockShape>,
+        chains: &[Vec<PathCurve>],
+    ) -> Result<MockShape, KernelError> {
+        self.call("revolve_sheet")?;
+        self.specs.borrow_mut().push(format!(
+            "revolve_sheet({}: {} angles {} {:?})",
+            spec.feature,
+            describe_chains(chains),
+            number(spec.angle1),
+            spec.angle2.map(number)
+        ));
+        Ok(sheet_of_chains(
+            format!("revolve_sheet({},sheet)", spec.feature),
+            spec.feature,
+            chains,
+        ))
+    }
+
+    fn sweep_sheet(
+        &self,
+        spec: &SweepSpec<'_>,
+        chains: &[Vec<PathCurve>],
+    ) -> Result<MockShape, KernelError> {
+        self.call("sweep_sheet")?;
+        let path: Vec<&str> = spec.path.iter().map(|p| p.name.as_str()).collect();
+        self.specs.borrow_mut().push(format!(
+            "sweep_sheet({}: {} path {} extents {} {} {:?} end scale {})",
+            spec.feature,
+            describe_chains(chains),
+            path.join(","),
+            number(spec.extent1),
+            number(spec.extent2),
+            spec.orientation,
+            number(spec.end_scale)
+        ));
+        Ok(sheet_of_chains(
+            format!("sweep_sheet({},sheet)", spec.feature),
+            spec.feature,
+            chains,
+        ))
+    }
+
+    fn loft_sheet(
+        &self,
+        feature: FeatureUid,
+        sections: &[Vec<PathCurve>],
+        ruled: bool,
+        closed: bool,
+    ) -> Result<MockShape, KernelError> {
+        self.call("loft_sheet")?;
+        if sections.len() < 2 {
+            return Err(KernelError::failed("a loft needs two or more sections"));
+        }
+        self.specs.borrow_mut().push(format!(
+            "loft_sheet({feature}: {} ruled {ruled} closed {closed})",
+            describe_chains(sections)
+        ));
+        Ok(sheet_of_chains(
+            format!("loft_sheet({feature},sheet)"),
+            feature,
+            &sections[..1],
+        ))
+    }
+
+    // Surface modelling: Offset Surface, Ruled Surface and Extend
+    // (mitcad#455).
+
+    /// A sheet of `<feature>:offset(<face>)` for each face (all when none
+    /// is named; a named face must be the body's).
+    fn offset_surface(
+        &self,
+        feature: FeatureUid,
+        body: &MockShape,
+        faces: &[FaceName],
+        distance: f64,
+        chain: bool,
+    ) -> Result<MockShape, KernelError> {
+        self.call("offset_surface")?;
+        for face in faces {
+            if !body.has_face(face) {
+                return Err(KernelError::failed(format!("the body has no face {face}")));
+            }
+        }
+        let offset: Vec<&FaceName> = if faces.is_empty() {
+            body.faces.iter().collect()
+        } else {
+            body.faces
+                .iter()
+                .filter(|f| faces.iter().any(|r| f.matches(r)))
+                .collect()
+        };
+        self.specs.borrow_mut().push(format!(
+            "offset_surface({feature}: {} faces, {}, chain {chain})",
+            offset.len(),
+            number(distance)
+        ));
+        Ok(MockShape {
+            history: format!("offset_surface({feature},sheet)"),
+            faces: offset
+                .into_iter()
+                .map(|f| FaceName::new(feature, "offset", Some(RoleKey::Face(Box::new(f.clone())))))
+                .collect(),
+            edges: Vec::new(),
+            bounds: body.bounds,
+            parts: Vec::new(),
+        })
+    }
+
+    /// A sheet of `<feature>:ruled(<edge>)` for each edge (the body's).
+    fn ruled_surface(
+        &self,
+        spec: &crate::surface_modelling::RuledSpec<'_, MockShape>,
+    ) -> Result<MockShape, KernelError> {
+        self.call("ruled_surface")?;
+        for edge in spec.edges {
+            if spec.body.matching_edges(edge).is_empty() {
+                return Err(KernelError::failed(format!("the body has no edge {edge}")));
+            }
+        }
+        self.specs.borrow_mut().push(format!(
+            "ruled_surface({}: {} edges, {} openings, {}, {:?} angle {} direction {:?} flip {} {:?})",
+            spec.feature,
+            spec.edges.len(),
+            spec.openings.len(),
+            number(spec.distance),
+            spec.mode,
+            number(spec.angle),
+            spec.direction,
+            spec.flip,
+            spec.corners
+        ));
+        Ok(MockShape {
+            history: format!("ruled_surface({},sheet)", spec.feature),
+            faces: spec
+                .edges
+                .iter()
+                .map(|e| {
+                    FaceName::new(
+                        spec.feature,
+                        "ruled",
+                        Some(RoleKey::Edge(Box::new(e.clone()))),
+                    )
+                })
+                // A free edge's strip after its face (an opening is a
+                // face's here, `open_boundaries`).
+                .chain(spec.openings.iter().filter_map(|o| {
+                    spec.body.faces.get(o.index).map(|f| {
+                        FaceName::new(
+                            spec.feature,
+                            "ruled",
+                            Some(RoleKey::Face(Box::new(f.clone()))),
+                        )
+                    })
+                }))
+                .collect(),
+            edges: Vec::new(),
+            bounds: spec.body.bounds,
+            parts: Vec::new(),
+        })
+    }
+
+    /// The body with its faces and edges, its history marked extended.
+    fn extend_surface(
+        &self,
+        body: &MockShape,
+        edges: &[EdgeName],
+        openings: &[crate::surface_modelling::OpeningEdges<'_>],
+        distance: f64,
+        mode: crate::surface_modelling::ExtendMode,
+    ) -> Result<MockShape, KernelError> {
+        self.call("extend_surface")?;
+        for edge in edges {
+            if body.matching_edges(edge).is_empty() {
+                return Err(KernelError::failed(format!("the body has no edge {edge}")));
+            }
+        }
+        self.specs.borrow_mut().push(format!(
+            "extend_surface({} edges, {} openings, {}, {})",
+            edges.len(),
+            openings.len(),
+            number(distance),
+            mode.as_str()
+        ));
+        let mut extended = body.clone();
+        extended.history = format!("extend({},sheet)", body.history);
+        Ok(extended)
+    }
+
+    // Surface modelling: Trim, Untrim, Unstitch and Reverse Normal
+    // (mitcad#455).
+
+    /// The body with its faces, its history marked trimmed; the tool and
+    /// the keep points described.
+    fn trim_surface(
+        &self,
+        spec: &crate::surface_modelling::TrimSpec<'_, MockShape>,
+    ) -> Result<MockShape, KernelError> {
+        self.call("trim_surface")?;
+        let tool = match &spec.tool {
+            crate::surface_modelling::TrimTool::Tool(ToolInput::Plane { .. }) => "plane".to_owned(),
+            crate::surface_modelling::TrimTool::Tool(ToolInput::Face { face, .. }) => {
+                format!("face {face}")
+            }
+            crate::surface_modelling::TrimTool::Tool(ToolInput::Body { .. }) => "body".to_owned(),
+            crate::surface_modelling::TrimTool::Tool(ToolInput::Curves { curves, .. }) => {
+                format!("regions of {} curves", curves.len())
+            }
+            crate::surface_modelling::TrimTool::Curves { chains, .. } => {
+                format!("curves {}", describe_chains(chains))
+            }
+        };
+        self.specs.borrow_mut().push(format!(
+            "trim_surface({tool}, {} keep points, extend {})",
+            spec.keep.len(),
+            spec.extend
+        ));
+        let mut trimmed = spec.body.clone();
+        trimmed.history = format!("trim({},sheet)", spec.body.history);
+        Ok(trimmed)
+    }
+
+    /// The body with the face (in place), or a sheet of
+    /// `<feature>:untrim(<face>)`.
+    fn untrim_surface(
+        &self,
+        feature: FeatureUid,
+        body: &MockShape,
+        face: &FaceName,
+        holes: bool,
+        outer: bool,
+        in_place: bool,
+    ) -> Result<MockShape, KernelError> {
+        self.call("untrim_surface")?;
+        if !body.has_face(face) {
+            return Err(KernelError::failed(format!("the body has no face {face}")));
+        }
+        self.specs.borrow_mut().push(format!(
+            "untrim_surface({face}, holes {holes}, outer {outer}, in place {in_place})"
+        ));
+        if in_place {
+            let mut untrimmed = body.clone();
+            untrimmed.history = format!("untrim({},sheet)", body.history);
+            return Ok(untrimmed);
+        }
+        Ok(MockShape {
+            history: format!("untrim({feature},sheet)"),
+            faces: vec![FaceName::new(
+                feature,
+                "untrim",
+                Some(RoleKey::Face(Box::new(face.clone()))),
+            )],
+            edges: Vec::new(),
+            bounds: body.bounds,
+            parts: Vec::new(),
+        })
+    }
+
+    /// The faces left and a sheet of each named face (every face when none
+    /// is named).
+    fn unstitch(
+        &self,
+        body: &MockShape,
+        faces: &[FaceName],
+    ) -> Result<crate::kernel::Unstitched<MockShape>, KernelError> {
+        self.call("unstitch")?;
+        for face in faces {
+            if !body.has_face(face) {
+                return Err(KernelError::failed(format!("the body has no face {face}")));
+            }
+        }
+        let apart = |face: &FaceName| MockShape {
+            history: format!("unstitch({face},sheet)"),
+            faces: vec![face.clone()],
+            edges: Vec::new(),
+            bounds: body.bounds,
+            parts: Vec::new(),
+        };
+        self.specs
+            .borrow_mut()
+            .push(format!("unstitch({} faces)", faces.len()));
+        if faces.is_empty() {
+            return Ok((None, body.faces.iter().map(apart).collect()));
+        }
+        let left: Vec<FaceName> = body
+            .faces
+            .iter()
+            .filter(|f| !faces.iter().any(|r| f.matches(r)))
+            .cloned()
+            .collect();
+        let rest = (!left.is_empty()).then(|| MockShape {
+            history: format!("unstitch_rest({},sheet)", body.history),
+            edges: body
+                .edges
+                .iter()
+                .filter(|(a, b)| left.contains(a) && left.contains(b))
+                .cloned()
+                .collect(),
+            faces: left,
+            bounds: body.bounds,
+            parts: Vec::new(),
+        });
+        let pieces = body
+            .faces
+            .iter()
+            .filter(|f| faces.iter().any(|r| f.matches(r)))
+            .map(apart)
+            .collect();
+        Ok((rest, pieces))
+    }
+
+    /// The body with its history marked reversed.
+    fn reverse_faces(
+        &self,
+        body: &MockShape,
+        faces: &[FaceName],
+    ) -> Result<MockShape, KernelError> {
+        self.call("reverse_faces")?;
+        for face in faces {
+            if !body.has_face(face) {
+                return Err(KernelError::failed(format!("the body has no face {face}")));
+            }
+        }
+        self.specs
+            .borrow_mut()
+            .push(format!("reverse_faces({} faces)", faces.len()));
+        let mut turned = body.clone();
+        turned.history = format!("reversed({})", body.history);
+        Ok(turned)
+    }
+
+    // Surface modelling: Blend Surface, Boundary Surface, Match Surface and
+    // Fair Surface (mitcad#455).
+
+    /// A sheet of one face `<feature>:blend`; the ends described.
+    fn blend_surface(
+        &self,
+        spec: &crate::surface_modelling::BlendSpec<'_, MockShape>,
+    ) -> Result<MockShape, KernelError> {
+        self.call("blend_surface")?;
+        let mut ends = Vec::new();
+        for end in [&spec.from, &spec.to] {
+            ends.push(describe_body_edges(&end.edges)?);
+            ends.push(format!(
+                "{} bulge {}",
+                end.continuity.as_str(),
+                number(end.bulge)
+            ));
+        }
+        self.specs.borrow_mut().push(format!(
+            "blend_surface({}: {})",
+            spec.feature,
+            ends.join(", ")
+        ));
+        Ok(one_face_sheet(spec.feature, "blend"))
+    }
+
+    /// A sheet of one face `<feature>:boundary`; the curves described.
+    fn boundary_surface(
+        &self,
+        spec: &crate::surface_modelling::BoundarySpec<'_, MockShape>,
+    ) -> Result<MockShape, KernelError> {
+        use crate::surface_modelling::{BoundaryCurve, BoundaryCurves};
+        self.call("boundary_surface")?;
+        let describe = |curves: &[BoundaryCurve<'_, MockShape>]| -> Result<String, KernelError> {
+            let mut parts = Vec::new();
+            for curve in curves {
+                parts.push(match curve {
+                    BoundaryCurve::Curves {
+                        chain, continuity, ..
+                    } => format!(
+                        "curves {} {}",
+                        describe_chains(std::slice::from_ref(&chain.to_vec())),
+                        continuity.as_str()
+                    ),
+                    BoundaryCurve::Edges { edges, continuity } => {
+                        format!("{} {}", describe_body_edges(edges)?, continuity.as_str())
+                    }
+                    BoundaryCurve::Point(p) => format!(
+                        "point ({}, {}, {})",
+                        number(p[0]),
+                        number(p[1]),
+                        number(p[2])
+                    ),
+                });
+            }
+            Ok(parts.join("; "))
+        };
+        let text = match spec.curves {
+            BoundaryCurves::Loop(curves) => format!("loop [{}]", describe(curves)?),
+            BoundaryCurves::Network { u, v } => {
+                format!("u [{}] v [{}]", describe(u)?, describe(v)?)
+            }
+        };
+        self.specs
+            .borrow_mut()
+            .push(format!("boundary_surface({}: {text})", spec.feature));
+        Ok(one_face_sheet(spec.feature, "boundary"))
+    }
+
+    /// The body with its history marked matched; the face must be the
+    /// body's (its only one when none is named).
+    fn match_surface(
+        &self,
+        body: &MockShape,
+        face: Option<&FaceName>,
+        target: &crate::surface_modelling::BodyEdges<'_, MockShape>,
+        continuity: crate::surfaces::PatchContinuity,
+    ) -> Result<MockShape, KernelError> {
+        self.call("match_surface")?;
+        match face {
+            Some(face) if !body.has_face(face) => {
+                return Err(KernelError::failed(format!("the body has no face {face}")));
+            }
+            None if body.faces.len() != 1 => {
+                return Err(KernelError::failed(format!(
+                    "the body has {} faces; name the one to match",
+                    body.faces.len()
+                )));
+            }
+            _ => {}
+        }
+        self.specs.borrow_mut().push(format!(
+            "match_surface({} to {}, {})",
+            face.map_or_else(|| "its face".to_owned(), ToString::to_string),
+            describe_body_edges(target)?,
+            continuity.as_str()
+        ));
+        let mut matched = body.clone();
+        matched.history = format!("matched({},sheet)", body.history);
+        Ok(matched)
+    }
+
+    /// The body with its history marked faired.
+    fn fair_surface(
+        &self,
+        body: &MockShape,
+        faces: &[FaceName],
+        fairing: crate::surface_modelling::Fairing,
+    ) -> Result<MockShape, KernelError> {
+        self.call("fair_surface")?;
+        for face in faces {
+            if !body.has_face(face) {
+                return Err(KernelError::failed(format!("the body has no face {face}")));
+            }
+        }
+        self.specs.borrow_mut().push(format!(
+            "fair_surface({} faces, strength {}, {} iterations, keep edges {}, {})",
+            faces.len(),
+            number(fairing.strength),
+            fairing.iterations,
+            fairing.keep_edges,
+            number(fairing.tolerance)
+        ));
+        let mut faired = body.clone();
+        faired.history = format!("faired({})", body.history);
+        Ok(faired)
+    }
+}
+
+/// A chain of a body's edges as `3 edges, 1 openings` (the named edges
+/// must be the body's).
+fn describe_body_edges(
+    edges: &crate::surface_modelling::BodyEdges<'_, MockShape>,
+) -> Result<String, KernelError> {
+    for edge in edges.edges {
+        if edges.body.matching_edges(edge).is_empty() {
+            return Err(KernelError::failed(format!("the body has no edge {edge}")));
+        }
+    }
+    Ok(format!(
+        "{} edges, {} openings",
+        edges.edges.len(),
+        edges.openings.len()
+    ))
+}
+
+/// A surface body of one face `<feature>:<role>`.
+fn one_face_sheet(feature: FeatureUid, role: &str) -> MockShape {
+    MockShape {
+        history: format!("{role}({feature},sheet)"),
+        faces: vec![FaceName::new(feature, role, None)],
+        edges: Vec::new(),
+        bounds: None,
+        parts: Vec::new(),
+    }
+}
+
+/// [`MockKernel::open_faces`] of a shape and its parts.
+fn open_mock(shape: &MockShape, feature: FeatureUid, roles: &[&str]) -> MockShape {
+    let dropped = |face: &FaceName| face.feature == feature && roles.contains(&face.role.as_str());
+    MockShape {
+        history: format!("open({},sheet)", shape.history),
+        faces: shape
+            .faces
+            .iter()
+            .filter(|f| !dropped(f))
+            .cloned()
+            .collect(),
+        edges: shape
+            .edges
+            .iter()
+            .filter(|(a, b)| !dropped(a) && !dropped(b))
+            .cloned()
+            .collect(),
+        bounds: shape.bounds,
+        parts: shape
+            .parts
+            .iter()
+            .map(|p| open_mock(p, feature, roles))
+            .collect(),
+    }
+}
+
+/// Chains as `c1>c2 | c3` (mitcad#455).
+fn describe_chains(chains: &[Vec<PathCurve>]) -> String {
+    chains
+        .iter()
+        .map(|chain| {
+            chain
+                .iter()
+                .map(|p| p.name.as_str())
+                .collect::<Vec<_>>()
+                .join(">")
+        })
+        .collect::<Vec<_>>()
+        .join(" | ")
+}
+
+/// A sheet of one face `<feature>:side(<curve>)` per curve of the chains,
+/// neighbours in a chain meeting in an edge.
+fn sheet_of_chains(history: String, feature: FeatureUid, chains: &[Vec<PathCurve>]) -> MockShape {
+    let side = |name: &str| {
+        FaceName::side(
+            feature,
+            SegmentKey::closed(
+                crate::ids::EntityUid::parse_curve(name).unwrap_or(crate::ids::EntityUid(0)),
+            ),
+        )
+    };
+    let mut faces = Vec::new();
+    let mut edges = Vec::new();
+    for chain in chains {
+        for (i, piece) in chain.iter().enumerate() {
+            faces.push(side(&piece.name));
+            if i > 0 {
+                edges.push((side(&chain[i - 1].name), side(&piece.name)));
+            }
+        }
+    }
+    MockShape {
+        history,
+        faces,
+        edges,
+        bounds: None,
+        parts: Vec::new(),
+    }
+}
+
+/// A mock gear body: a face per curve and the given ones.
+fn mock_gear(
+    feature: FeatureUid,
+    loops: &[Vec<crate::features::gear_profile::NamedSegment>],
+    caps: &[&str],
+    points: Vec<[f64; 3]>,
+) -> Result<MockShape, KernelError> {
+    let mut faces: Vec<FaceName> = caps
+        .iter()
+        .map(|c| FaceName::new(feature, c, None))
+        .collect();
+    for segment in loops.iter().flatten() {
+        let name: FaceName = format!("{feature}:{}", segment.name)
+            .parse()
+            .map_err(|_| KernelError::failed(format!("bad face name {}", segment.name)))?;
+        if !faces.contains(&name) {
+            faces.push(name);
+        }
+    }
+    let bounds = (!points.is_empty()).then(|| BoundingBox {
+        min: std::array::from_fn(|i| points.iter().map(|p| p[i]).fold(f64::INFINITY, f64::min)),
+        max: std::array::from_fn(|i| {
+            points
+                .iter()
+                .map(|p| p[i])
+                .fold(f64::NEG_INFINITY, f64::max)
+        }),
+    });
+    Ok(MockShape {
+        history: format!("gear({feature})"),
+        faces,
+        edges: Vec::new(),
+        bounds,
+        parts: Vec::new(),
+    })
 }
 
 /// A mock shape with its faces renamed ([`MockKernel::rename_faces`]).

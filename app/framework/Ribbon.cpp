@@ -496,10 +496,11 @@ Ribbon::Ribbon(CommandRegistry& registry, Presentation presentation, QWidget* pa
 }
 
 const QStringList& Ribbon::groups(const QString& tab) {
-  // MAKE: 3D Print (mitcad#13). ASSEMBLE: joints (mitcad#55). SHEET METAL:
+  // MAKE: 3D Print (mitcad#13). ASSEMBLE: joints (mitcad#55). SURFACE:
+  // mitcad#455. SHEET METAL:
   // mitcad#210.
   static const QStringList solid = {QStringLiteral("CREATE"),  QStringLiteral("MODIFY"),
-                                    QStringLiteral("SHEET METAL"), QStringLiteral("ASSEMBLE"), QStringLiteral("CONSTRUCT"),
+                                    QStringLiteral("SHEET METAL"), QStringLiteral("SURFACE"), QStringLiteral("ASSEMBLE"), QStringLiteral("CONSTRUCT"),
                                     QStringLiteral("INSPECT"), QStringLiteral("INSERT"),
                                     QStringLiteral("MAKE"),    QStringLiteral("SELECT")};
   static const QStringList sketch = {QStringLiteral("CREATE"),       QStringLiteral("MODIFY"),
@@ -943,6 +944,20 @@ QStringList Ribbon::layoutLines() const {
     const QPoint arrow = button->mapTo(window(), QPoint(button->width() - kSplitArrowWidth / 2 - 1, y));
     lines << QStringLiteral("Ribbon split %1 at %2,%3").arg(it.key()).arg(direct.x()).arg(direct.y());
     lines << QStringLiteral("Ribbon split %1 arrow at %2,%3").arg(it.key()).arg(arrow.x()).arg(arrow.y());
+  }
+  // The shown page's command buttons (mitcad#478: BUILD's Timber), "Ribbon
+  // button build.timber at x,y".
+  if (const QWidget* page = m_pages->currentWidget()) {
+    for (const QToolButton* button : page->findChildren<QToolButton*>()) {
+      if (!button->isVisible() || !button->objectName().startsWith(QStringLiteral("ribbon_"))) {
+        continue;
+      }
+      const QPoint center = button->mapTo(window(), button->rect().center());
+      lines << QStringLiteral("Ribbon button %1 at %2,%3")
+                   .arg(button->objectName().mid(7))
+                   .arg(center.x())
+                   .arg(center.y());
+    }
   }
   return lines;
 }

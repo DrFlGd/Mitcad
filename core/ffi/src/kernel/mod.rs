@@ -57,6 +57,21 @@ pub mod boundary_fill;
 // Patch, Stitch and Thicken: surface bodies filled, sewn and made solid
 // (mitcad#456).
 pub mod surfaces;
+// Surface modelling, surface sweeps (mitcad#455).
+pub mod surface_sweeps;
+// Surface modelling: Offset Surface, Ruled Surface and Extend (mitcad#455).
+pub mod surface_offsets;
+// Surface modelling: Trim, Untrim, Unstitch and Reverse Normal (mitcad#455).
+pub mod surface_edits;
+// Plastic part features: the bands of lips and grooves (mitcad#459).
+pub mod plastic;
+// Surface modelling: Blend, Boundary, Match and Fair Surface (mitcad#455).
+pub mod surface_fills;
+// Drawings: views with hidden lines removed and round holes (mitcad#471).
+pub mod drawing;
+// Gears: toothed profiles swept along their axis or ruled to an apex
+// (mitcad#472).
+pub mod gear;
 
 use std::sync::Arc;
 
@@ -1858,6 +1873,414 @@ impl Kernel for OcctKernel {
     ) -> Result<Self::Shape, KernelError> {
         surfaces::ffi::thicken(&feature.to_string(), occt(shape)?, thickness, symmetric)
             .map_err(failed)
+    }
+
+    // Surface modelling, surface sweeps (mitcad#455; surface_sweeps.rs).
+
+    fn open_faces(
+        &self,
+        shape: &Self::Shape,
+        feature: FeatureUid,
+        roles: &[&str],
+    ) -> Result<Self::Shape, KernelError> {
+        let roles: Vec<String> = roles.iter().map(|r| (*r).to_owned()).collect();
+        surface_sweeps::ffi::open_faces(occt(shape)?, &feature.to_string(), &roles).map_err(failed)
+    }
+
+    fn extrude_sheet(
+        &self,
+        spec: &ExtrudeFeatureSpec<'_, Self::Shape>,
+        chains: &[Vec<mitcad_model::PathCurve>],
+    ) -> Result<Self::Shape, KernelError> {
+        let distance = |side: &mitcad_model::ExtrudeSide<Self::Shape>| match side.end {
+            mitcad_model::SideEnd::Distance(d) if side.taper == 0.0 => Ok(d),
+            mitcad_model::SideEnd::Distance(_) => Err(KernelError::Unsupported(
+                "a taper on a surface extrusion of curves",
+            )),
+            mitcad_model::SideEnd::Target(_) => Err(KernelError::Unsupported(
+                "a surface extrusion of curves up to an object",
+            )),
+        };
+        let one = distance(&spec.side1)?;
+        let two = spec
+            .side2
+            .as_ref()
+            .map(distance)
+            .transpose()?
+            .unwrap_or(0.0);
+        let shift = match spec.start {
+            mitcad_model::ExtrudeStart::Offset(offset) => spec.frame.normal().map(|v| v * offset),
+            mitcad_model::ExtrudeStart::Object(_) => {
+                return Err(KernelError::Unsupported(
+                    "a surface extrusion of curves from an object",
+                ));
+            }
+        };
+        let (curves, counts) = surface_sweeps::chains(chains);
+        surface_sweeps::ffi::extrude_sheet(
+            &spec.feature.to_string(),
+            &curves,
+            &counts,
+            &shift,
+            &spec.direction,
+            one,
+            two,
+        )
+        .map_err(failed)
+    }
+
+    fn revolve_sheet(
+        &self,
+        spec: &RevolveSpec<'_, Self::Shape>,
+        chains: &[Vec<mitcad_model::PathCurve>],
+    ) -> Result<Self::Shape, KernelError> {
+        if spec.target.is_some() {
+            return Err(KernelError::Unsupported(
+                "a surface revolution of curves up to an object",
+            ));
+        }
+        let (curves, counts) = surface_sweeps::chains(chains);
+        surface_sweeps::ffi::revolve_sheet(
+            &spec.feature.to_string(),
+            &curves,
+            &counts,
+            &spec.axis.origin,
+            &spec.axis.direction,
+            spec.angle1,
+            spec.angle2.unwrap_or(0.0),
+        )
+        .map_err(failed)
+    }
+
+    fn sweep_sheet(
+        &self,
+        spec: &mitcad_model::SweepSpec<'_>,
+        chains: &[Vec<mitcad_model::PathCurve>],
+    ) -> Result<Self::Shape, KernelError> {
+        if spec.guide.is_some() || spec.twist != 0.0 || spec.taper != 0.0 || spec.end_scale != 1.0 {
+            return Err(KernelError::Unsupported(
+                "twists, tapers, end scales and guide rails on a surface sweep of curves",
+            ));
+        }
+        let (curves, counts) = surface_sweeps::chains(chains);
+        let path: Vec<sweeps::ffi::SweepCurve> = spec.path.iter().map(sweeps::curve).collect();
+        let normal = spec.frame.normal();
+        let o = spec.frame.origin;
+        let plane = [o[0], o[1], o[2], normal[0], normal[1], normal[2]];
+        surface_sweeps::ffi::sweep_sheet(
+            &spec.feature.to_string(),
+            &curves,
+            &counts,
+            &path,
+            &plane,
+            &[spec.extent1, spec.extent2],
+            spec.orientation == mitcad_model::SweepOrientation::Parallel,
+        )
+        .map_err(failed)
+    }
+
+    fn loft_sheet(
+        &self,
+        feature: FeatureUid,
+        sections: &[Vec<mitcad_model::PathCurve>],
+        ruled: bool,
+        closed: bool,
+    ) -> Result<Self::Shape, KernelError> {
+        let (curves, counts) = surface_sweeps::chains(sections);
+        surface_sweeps::ffi::loft_sheet(&feature.to_string(), &curves, &counts, ruled, closed)
+            .map_err(failed)
+    }
+
+    // Surface modelling: Offset Surface, Ruled Surface and Extend
+    // (mitcad#455; surface_offsets.rs).
+
+    fn offset_surface(
+        &self,
+        feature: FeatureUid,
+        body: &Self::Shape,
+        faces: &[FaceName],
+        distance: f64,
+        chain: bool,
+    ) -> Result<Self::Shape, KernelError> {
+        surface_offsets::ffi::offset_surface(
+            &feature.to_string(),
+            occt(body)?,
+            &face_names(faces),
+            distance,
+            chain,
+        )
+        .map_err(failed)
+    }
+
+    fn ruled_surface(
+        &self,
+        spec: &mitcad_model::RuledSpec<'_, Self::Shape>,
+    ) -> Result<Self::Shape, KernelError> {
+        surface_offsets::ffi::ruled_surface(
+            &spec.feature.to_string(),
+            occt(spec.body)?,
+            &surface_offsets::ruled(spec),
+        )
+        .map_err(failed)
+    }
+
+    fn extend_surface(
+        &self,
+        body: &Self::Shape,
+        edges: &[EdgeName],
+        openings: &[mitcad_model::OpeningEdges<'_>],
+        distance: f64,
+        mode: mitcad_model::ExtendMode,
+    ) -> Result<Self::Shape, KernelError> {
+        surface_offsets::ffi::extend_surface(
+            occt(body)?,
+            &names(edges),
+            &surface_offsets::openings(openings),
+            distance,
+            surface_offsets::extend_mode(mode),
+        )
+        .map_err(failed)
+    }
+
+    // Surface modelling: Trim, Untrim, Unstitch and Reverse Normal
+    // (mitcad#455; surface_edits.rs).
+
+    fn trim_surface(
+        &self,
+        spec: &mitcad_model::TrimSpec<'_, Self::Shape>,
+    ) -> Result<Self::Shape, KernelError> {
+        let plane = ToolInput::Plane {
+            origin: [0.0; 3],
+            normal: [0.0, 0.0, 1.0],
+        };
+        let (input, chains, direction) = match &spec.tool {
+            mitcad_model::TrimTool::Tool(input) => (input, &[][..], [0.0, 0.0, 1.0]),
+            mitcad_model::TrimTool::Curves { chains, direction } => (&plane, *chains, *direction),
+        };
+        let tool = Tool::new(input)?;
+        let (curves, counts) = surface_sweeps::chains(chains);
+        let data = surface_edits::ffi::TrimData {
+            by_curves: matches!(spec.tool, mitcad_model::TrimTool::Curves { .. }),
+            chains: counts,
+            direction,
+            extend: spec.extend,
+            keep: spec.keep.iter().flatten().copied().collect(),
+        };
+        surface_edits::ffi::trim_surface(
+            occt(spec.body)?,
+            &tool.spec,
+            &tool.shapes,
+            &tool.frame,
+            &tool.regions,
+            &curves,
+            &data,
+        )
+        .map_err(failed)
+    }
+
+    fn untrim_surface(
+        &self,
+        feature: FeatureUid,
+        body: &Self::Shape,
+        face: &FaceName,
+        holes: bool,
+        outer: bool,
+        in_place: bool,
+    ) -> Result<Self::Shape, KernelError> {
+        surface_edits::ffi::untrim_surface(
+            &feature.to_string(),
+            occt(body)?,
+            &face.to_string(),
+            holes,
+            outer,
+            in_place,
+        )
+        .map_err(failed)
+    }
+
+    fn unstitch(
+        &self,
+        body: &Self::Shape,
+        faces: &[FaceName],
+    ) -> Result<mitcad_model::Unstitched<Self::Shape>, KernelError> {
+        let list = surface_edits::ffi::unstitch(occt(body)?, &face_names(faces)).map_err(failed)?;
+        let mut all = shapes(&list).into_iter();
+        let rest = all.next().filter(|s| !s.is_null());
+        Ok((rest, all.collect()))
+    }
+
+    fn reverse_faces(
+        &self,
+        body: &Self::Shape,
+        faces: &[FaceName],
+    ) -> Result<Self::Shape, KernelError> {
+        surface_edits::ffi::reverse_faces(occt(body)?, &face_names(faces)).map_err(failed)
+    }
+
+    // Plastic part features (mitcad#459; plastic.rs).
+
+    fn rim_band(
+        &self,
+        spec: &mitcad_model::RimBandSpec<'_, Self::Shape>,
+    ) -> Result<Self::Shape, KernelError> {
+        let list = shape_list(&[spec.body])?;
+        let band = plastic::ffi::RimBand {
+            feature: spec.feature.to_string(),
+            face: spec.face.to_string(),
+            outside: spec.outside,
+            width: spec.width,
+            free: spec.free,
+            start: spec.start,
+            end: spec.end,
+        };
+        plastic::ffi::rim_band(&list, &band).map_err(failed)
+    }
+
+    // Surface modelling: Blend Surface, Boundary Surface, Match Surface and
+    // Fair Surface (mitcad#455; surface_fills.rs).
+
+    fn blend_surface(
+        &self,
+        spec: &mitcad_model::BlendSpec<'_, Self::Shape>,
+    ) -> Result<Self::Shape, KernelError> {
+        let list = shape_list(&[spec.from.edges.body, spec.to.edges.body])?;
+        let end = |end: &mitcad_model::BlendEnd<'_, Self::Shape>, body| {
+            surface_fills::ffi::BlendEndData {
+                chain: surface_fills::chain(&end.edges, body),
+                continuity: surface_fills::continuity(end.continuity),
+                bulge: end.bulge,
+            }
+        };
+        surface_fills::ffi::blend_surface(
+            &spec.feature.to_string(),
+            &list,
+            &end(&spec.from, 0),
+            &end(&spec.to, 1),
+        )
+        .map_err(failed)
+    }
+
+    fn boundary_surface(
+        &self,
+        spec: &mitcad_model::BoundarySpec<'_, Self::Shape>,
+    ) -> Result<Self::Shape, KernelError> {
+        use mitcad_model::BoundaryCurves;
+        let (u, v, fill) = match spec.curves {
+            BoundaryCurves::Loop(curves) => (curves, &[][..], true),
+            BoundaryCurves::Network { u, v } => (u, v, false),
+        };
+        let mut bodies: Vec<&Self::Shape> = Vec::new();
+        let mut pieces = Vec::new();
+        let u = surface_fills::boundary_data(u, &mut bodies, &mut pieces);
+        let v = surface_fills::boundary_data(v, &mut bodies, &mut pieces);
+        let list = shape_list(&bodies)?;
+        surface_fills::ffi::boundary_surface(
+            &spec.feature.to_string(),
+            &list,
+            &pieces,
+            fill,
+            &u,
+            &v,
+        )
+        .map_err(failed)
+    }
+
+    fn match_surface(
+        &self,
+        body: &Self::Shape,
+        face: Option<&FaceName>,
+        target: &mitcad_model::BodyEdges<'_, Self::Shape>,
+        continuity: mitcad_model::PatchContinuity,
+    ) -> Result<Self::Shape, KernelError> {
+        let list = shape_list(&[target.body])?;
+        surface_fills::ffi::match_surface(
+            occt(body)?,
+            &face.map(ToString::to_string).unwrap_or_default(),
+            &list,
+            &surface_fills::chain(target, 0),
+            surface_fills::continuity(continuity),
+        )
+        .map_err(failed)
+    }
+
+    fn fair_surface(
+        &self,
+        body: &Self::Shape,
+        faces: &[FaceName],
+        fairing: mitcad_model::Fairing,
+    ) -> Result<Self::Shape, KernelError> {
+        surface_fills::ffi::fair_surface(
+            occt(body)?,
+            &face_names(faces),
+            fairing.strength,
+            fairing.iterations,
+            fairing.keep_edges,
+            fairing.tolerance,
+        )
+        .map_err(failed)
+    }
+
+    // Drawings (mitcad#471; drawing.rs).
+
+    fn project_view(
+        &self,
+        shapes: &[&Self::Shape],
+        spec: &mitcad_model::drawing::ViewSpec,
+    ) -> Result<mitcad_model::drawing::ViewProjection, KernelError> {
+        let list = shape_list(shapes)?;
+        drawing::ffi::project_view(&list, &drawing::view(spec))
+            .map(|drawn| drawing::projection(&drawn))
+            .map_err(failed)
+    }
+
+    fn round_holes(
+        &self,
+        shape: &Self::Shape,
+    ) -> Result<Vec<mitcad_model::drawing::RoundHole>, KernelError> {
+        drawing::ffi::round_holes(occt(shape)?)
+            .map(|holes| holes.iter().map(drawing::hole).collect())
+            .map_err(failed)
+    }
+
+    // Gears: toothed profiles swept along their axis or ruled to an apex
+    // (mitcad#472; gear.rs).
+
+    fn gear_sweep(
+        &self,
+        spec: &mitcad_model::GearSweepSpec<'_>,
+    ) -> Result<Self::Shape, KernelError> {
+        let steps: Vec<gear::ffi::GearStep> = spec
+            .steps
+            .iter()
+            .map(|s| gear::ffi::GearStep {
+                length: s.length,
+                twist: s.twist,
+                shift: s.shift,
+            })
+            .collect();
+        gear::ffi::gear_sweep(
+            &spec.feature.to_string(),
+            &profile::frame(&spec.frame),
+            &gear::region_of(spec.loops),
+            spec.turn,
+            spec.start,
+            &steps,
+            spec.start_name,
+            spec.end_name,
+        )
+        .map_err(failed)
+    }
+
+    fn gear_cone(&self, spec: &mitcad_model::GearConeSpec<'_>) -> Result<Self::Shape, KernelError> {
+        gear::ffi::gear_cone(
+            &spec.feature.to_string(),
+            &profile::frame(&spec.frame),
+            &gear::region_of(spec.loops),
+            spec.apex,
+            spec.scale,
+            &gear::loop_of(spec.blank),
+        )
+        .map_err(failed)
     }
 }
 

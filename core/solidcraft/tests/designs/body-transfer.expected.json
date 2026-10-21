@@ -1,0 +1,15 @@
+{
+  "comment": "Worked out by hand: a 10 mm cube Block in the root moves into Arm (placed at x 50), where a second cube 10 mm further along x is joined to it (a 20 x 10 x 10 block from the origin, 2000); a 6 x 4 x 4 Pin made in Holder (turned 90 degrees about z and placed at y 30: x -4..0, y 30..36) moves into the root, where a move lifts it by 10 (96).",
+  "body_count": 2,
+  "total": {"volume_mm3": 2096},
+  "bbox": {"min": [-4, 0, 0], "max": [20, 36, 14]},
+  "bodies": [
+    {"name": "Block", "volume_mm3": 2000, "bbox": {"min": [0, 0, 0], "max": [20, 10, 10]}},
+    {"name": "Pin", "volume_mm3": 96, "bbox": {"min": [-4, 30, 10], "max": [0, 36, 14]}}
+  ],
+  "timeline": [
+    {"name": "Box1"}, {"name": "BlockToArm"}, {"name": "Box2"}, {"name": "Combine1"},
+    {"name": "Box3"}, {"name": "PinToRoot"}, {"name": "Move1"}
+  ],
+  "parametric": 7
+}

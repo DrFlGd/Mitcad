@@ -416,7 +416,7 @@ void RenderImageDialog::updateEnabled() {
 
 void RenderImageDialog::change(const QString& field, const QJsonValue& value) {
   if (!m_host.canChangeModel()) {
-    m_message->setText(tr("Finish the command or the sketch first."));
+    m_message->setText(m_host.changeBlockedReason());
     qDebug().noquote() << "Render settings: finish the command or the sketch first";
     refresh();
     return;
@@ -442,7 +442,7 @@ void RenderImageDialog::choosePreset(int index) {
     return;
   }
   if (!m_host.canChangeModel()) {
-    m_message->setText(tr("Finish the command or the sketch first."));
+    m_message->setText(m_host.changeBlockedReason());
     refresh();
     return;
   }

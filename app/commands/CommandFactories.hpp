@@ -7,6 +7,10 @@
 
 #include "../framework/Command.hpp"
 
+namespace mitcad {
+class DocumentHost;
+}
+
 namespace mitcad::cmd {
 
 // ExtrudeCommands.cpp
@@ -77,5 +81,11 @@ CommandDef contactSetCommand(const CommandContext& context);
 CommandDef motionLinkCommand(const CommandContext& context);
 // EmbossCommands.cpp (mitcad#458)
 CommandDef embossCommand(const CommandContext& context);
+
+// PlasticCommands.cpp (mitcad#459)
+CommandDef plasticCommand(const CommandContext& context);
+
+// GearCommands.cpp (mitcad#472): `host` links the joints of meshed gears.
+CommandDef gearCommand(const CommandContext& context, DocumentHost& host);
 
 } // namespace mitcad::cmd

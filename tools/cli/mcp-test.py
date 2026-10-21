@@ -396,6 +396,15 @@ class McpTest(unittest.TestCase):
             client.tool("document_save", {"document": first, "path": "box.mitcad", "overwrite": True})
             client.tool("model_export", {"document": first, "path": "box.step", "format": "step"})
             self.assertGreater((self.workspace / "box.step").stat().st_size, 0)
+            # A drawing (mitcad#471): PDF with the export_drawing options.
+            drawing = client.tool("model_export", {
+                "document": first, "path": "box.pdf", "format": "pdf",
+                "drawing": {"sheet": "A3", "views": ["front", "top", "right", "iso"]}})["result"]
+            self.assertEqual((drawing["pages"], drawing["views"], drawing["sheet"]), (1, 4, "A3"))
+            self.assertTrue((self.workspace / "box.pdf").read_bytes().startswith(b"%PDF-1.4"))
+            client.tool("model_export", {"document": first, "path": "box.svg", "format": "svg",
+                                         "drawing": {"path": "other.svg"}}, error=True)
+            self.assertFalse((self.workspace / "box.svg").exists())
             (self.workspace / "box.mtl").write_text("existing material\n", encoding="utf-8")
             client.tool("model_export", {"document": first, "path": "box.obj", "format": "obj"}, error=True)
             self.assertFalse((self.workspace / "box.obj").exists())

@@ -136,24 +136,39 @@ pub fn check_folder(dir: &Path, manifest: &Manifest, cache: Option<&LibraryCache
                     .push(format!("{}: {} is not in the folder", c.id, c.path)),
             }
         }
-        if !c.preview.is_empty() && valid_path(&c.preview) {
-            match fs::read(dir.join(&c.preview)) {
-                Ok(data) if !data.starts_with(b"\x89PNG") => out
-                    .errors
-                    .push(format!("{}: {} is not a PNG image", c.id, c.preview)),
-                Ok(data) if data.len() > MAX_PREVIEW => out.errors.push(format!(
-                    "{}: {} is larger than {} KB",
-                    c.id,
-                    c.preview,
-                    MAX_PREVIEW >> 10
-                )),
-                Ok(_) => {}
-                Err(_) => out
-                    .errors
-                    .push(format!("{}: {} is not in the folder", c.id, c.preview)),
+        let image_problem = |path: &str| match fs::read(dir.join(path)) {
+            Ok(data) if !data.starts_with(b"\x89PNG") => {
+                Some(format!("{}: {path} is not a PNG image", c.id))
             }
+            Ok(data) if data.len() > MAX_PREVIEW => Some(format!(
+                "{}: {path} is larger than {} KB",
+                c.id,
+                MAX_PREVIEW >> 10
+            )),
+            Ok(_) => None,
+            Err(_) => Some(format!("{}: {path} is not in the folder", c.id)),
+        };
+        if !c.preview.is_empty() && valid_path(&c.preview) {
+            out.errors.extend(image_problem(&c.preview));
         } else if c.preview.is_empty() {
             out.warnings.push(format!("{}: no preview image", c.id));
+        }
+        // The rows' own previews (mitcad#484): rows of the design.
+        if !c.row_previews.is_empty() {
+            let rows = fs::read_to_string(dir.join(&c.path))
+                .map(|text| row_names(&text))
+                .unwrap_or_default();
+            for (row, path) in &c.row_previews {
+                if !rows.contains(row) {
+                    out.errors.push(format!(
+                        "{}: row_previews names {row}, which is no configuration row of {}",
+                        c.id, c.path
+                    ));
+                }
+                if valid_path(path) {
+                    out.errors.extend(image_problem(path));
+                }
+            }
         }
     }
     let mut resolve =
@@ -385,6 +400,8 @@ pub(super) fn add_command(command: &Value) -> Result<Value, VcsError> {
         supplier: kept("supplier", old.supplier),
         part_number: kept("part_number", old.part_number),
         supplier_url: kept("supplier_url", old.supplier_url),
+        // A new design: the rows' pictures of the old one may not match it.
+        row_previews: Default::default(),
         build: command
             .get("build")
             .filter(|b| !b.is_null())

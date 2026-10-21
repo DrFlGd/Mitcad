@@ -119,8 +119,12 @@ qt_add_executable(mitcad
   commands/SweepCommands.cpp
   # Emboss (mitcad#458).
   commands/EmbossCommands.cpp
+  # Gear (mitcad#472).
+  commands/GearCommands.cpp
   # Equal spacing in sketches (mitcad#221).
   commands/EqualSpacingCommands.cpp
+  # Surface modelling: the SURFACE group (mitcad#455).
+  commands/SurfaceCommands.cpp
   # Sketch mode (U2).
   sketch/AutoConstraint.cpp
   sketch/AutoConstraint.hpp
@@ -292,6 +296,8 @@ qt_add_executable(mitcad
   # Sheet metal: its command group, browser rows and Flat Pattern export
   # (mitcad#210).
   commands/SheetCommands.cpp
+  # Plastic part features (mitcad#459).
+  commands/PlasticCommands.cpp
   MainWindowSheet.cpp
   # Move to... on a component occurrence: another parent (mitcad#219).
   framework/MoveOccurrenceDialog.cpp
@@ -939,3 +945,21 @@ endif()
 target_sources(mitcad PRIVATE
   view/ViewCube.cpp
   view/ViewCube.hpp)
+# The card at the top of the view while Create Sketch waits for a plane
+# (mitcad#474).
+target_sources(mitcad PRIVATE
+  view/ModeBanner.cpp
+  view/ModeBanner.hpp)
+# File > Export Drawing (mitcad#471, app/COMMANDS.md "Drawing"): its dialog
+# and the choices it keeps (settings group drawing); the model writes the
+# file (export_drawing).
+target_sources(mitcad PRIVATE
+  files/DrawingDialog.cpp
+  files/DrawingDialog.hpp
+  files/DrawingSettings.cpp
+  files/DrawingSettings.hpp
+  files/MainWindowDrawing.cpp)
+if(BUILD_TESTING)
+  # The settings and the command they make: plain Qt Core.
+  target_sources(test_app PRIVATE tests/drawing_settings.cpp files/DrawingSettings.cpp files/DrawingSettings.hpp)
+endif()

@@ -1,0 +1,77 @@
+{
+  "notes": [
+    "Sheets for timber construction (mitcad#478): Mitcad's own parts, no supplier, in common thicknesses (rows; the less common marked availability 'less common') and sold sheet sizes (panel.stock, width x height in mm). A sheet is cut to any size: its width W and height H are parameters the BUILD tab sets from the faces it covers.",
+    "Layout: a box from the origin, W along X, H along Y, the thickness T along +Z; its back (z = 0) lies on the member's face.",
+    "Typical densities: spruce plywood 460 kg/m3, birch plywood 680 kg/m3, OSB 620 kg/m3, chipboard 680 kg/m3."
+  ],
+  "categories": [{"id": "sheets", "name": "Sheets"}],
+  "parts": [
+    {
+      "id": "plywood-spruce", "name": "Spruce plywood", "category": "sheets", "make": "model",
+      "data_source": "common thicknesses and sheet sizes of spruce plywood", "designation": "Spruce plywood {Thickness} mm",
+      "keywords": ["plywood", "spruce", "sheet", "board", "sheathing"], "license": "MIT",
+      "dimensions": {"shape": "sheet", "width": "W", "height": "H", "thickness": "T",
+                     "parameters": {"W": 1200, "H": 2400, "T": 12}},
+      "default": "12",
+      "sizes": {"rows": [{"thickness": 9}, {"thickness": 12}, {"thickness": 15}, {"thickness": 18}, {"thickness": 21},
+                         {"thickness": 24}, {"thickness": 27, "availability": "less common"}]},
+      "appearance": {"id": "plywood-spruce", "name": "Spruce plywood", "based_on": "wood_maple",
+                     "base_color": [0.86, 0.74, 0.55], "roughness": 0.7, "texture": "grain", "size": [150, 600]},
+      "build": {"role": "panel", "availability": "standard",
+                "material": {"product": "plywood", "species": "spruce", "finish": "unsanded", "grade": "", "density": 460},
+                "panel": {"mount": "face", "thickness": "T", "width": "W", "height": "H",
+                          "stock": [[1200, 2400], [1220, 2440], [1200, 2500]]}}
+    },
+    {
+      "id": "plywood-birch", "name": "Birch plywood", "category": "sheets", "make": "model",
+      "data_source": "common thicknesses and sheet sizes of birch plywood", "designation": "Birch plywood {Thickness} mm",
+      "keywords": ["plywood", "birch", "sheet", "board"], "license": "MIT",
+      "dimensions": {"shape": "sheet", "width": "W", "height": "H", "thickness": "T",
+                     "parameters": {"W": 1220, "H": 2440, "T": 12}},
+      "default": "12",
+      "sizes": {"rows": [{"thickness": 4, "availability": "less common"}, {"thickness": 6.5}, {"thickness": 9},
+                         {"thickness": 12}, {"thickness": 15}, {"thickness": 18}, {"thickness": 21}, {"thickness": 24},
+                         {"thickness": 30, "availability": "less common"}]},
+      "appearance": {"id": "plywood-birch", "name": "Birch plywood", "based_on": "wood_maple",
+                     "base_color": [0.90, 0.80, 0.64], "roughness": 0.55, "texture": "grain", "size": [150, 600]},
+      "build": {"role": "panel", "availability": "standard",
+                "material": {"product": "plywood", "species": "birch", "finish": "sanded", "grade": "", "density": 680},
+                "panel": {"mount": "face", "thickness": "T", "width": "W", "height": "H",
+                          "stock": [[1220, 2440], [1250, 2500], [1500, 3000]]}}
+    },
+    {
+      "id": "osb-3", "name": "OSB/3 board", "category": "sheets", "make": "model",
+      "data_source": "common thicknesses and sheet sizes of OSB/3", "designation": "OSB/3 {Thickness} mm",
+      "keywords": ["osb", "oriented strand board", "sheet", "board", "sheathing"], "license": "MIT",
+      "dimensions": {"shape": "sheet", "width": "W", "height": "H", "thickness": "T",
+                     "parameters": {"W": 1250, "H": 2500, "T": 12}},
+      "default": "12",
+      "sizes": {"rows": [{"thickness": 9, "availability": "less common"}, {"thickness": 11, "availability": "less common"},
+                         {"thickness": 12}, {"thickness": 15}, {"thickness": 18}, {"thickness": 22},
+                         {"thickness": 25, "availability": "less common"}]},
+      "appearance": {"id": "osb", "name": "OSB", "based_on": "wood_oak",
+                     "base_color": [0.80, 0.66, 0.42], "roughness": 0.8, "texture": "strands", "size": [300, 300]},
+      "build": {"role": "panel", "availability": "standard",
+                "material": {"product": "osb", "species": "", "finish": "unsanded", "grade": "", "density": 620},
+                "panel": {"mount": "face", "thickness": "T", "width": "W", "height": "H",
+                          "stock": [[1200, 2400], [1220, 2440], [1250, 2500]]}}
+    },
+    {
+      "id": "chipboard-p5", "name": "Chipboard P5", "category": "sheets", "make": "model",
+      "data_source": "common thicknesses and sheet sizes of moisture-resistant chipboard (P5)",
+      "designation": "Chipboard P5 {Thickness} mm",
+      "keywords": ["chipboard", "particle board", "sheet", "board", "flooring"], "license": "MIT",
+      "dimensions": {"shape": "sheet", "width": "W", "height": "H", "thickness": "T",
+                     "parameters": {"W": 1200, "H": 2400, "T": 22}},
+      "default": "22",
+      "sizes": {"rows": [{"thickness": 10, "availability": "less common"}, {"thickness": 12}, {"thickness": 16},
+                         {"thickness": 18}, {"thickness": 22}, {"thickness": 25, "availability": "less common"}]},
+      "appearance": {"id": "chipboard", "name": "Chipboard", "based_on": "wood_maple",
+                     "base_color": [0.78, 0.68, 0.52], "roughness": 0.85, "texture": "particles", "size": [100, 100]},
+      "build": {"role": "panel", "availability": "standard",
+                "material": {"product": "chipboard", "species": "", "finish": "sanded", "grade": "", "density": 680},
+                "panel": {"mount": "face", "thickness": "T", "width": "W", "height": "H",
+                          "stock": [[1200, 2400], [600, 2400]]}}
+    }
+  ]
+}

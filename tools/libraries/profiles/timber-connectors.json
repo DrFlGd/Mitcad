@@ -1,0 +1,175 @@
+{
+  "notes": [
+    "Brackets, joist hangers and post bases for timber (mitcad#478): Mitcad's own parts, no supplier, in common sizes; steel plates modelled from their dimensions (no embossing or stiffening ribs), the screw holes cut.",
+    "Each is modelled in its mount frame's coordinates (the design's origin and axes): a hanger at the middle of the joist's end on the carrier's face, z into the carrier, x up the joist's section; a bracket on the carrier's face at the middle of the edge where member a's side meets it, z into the carrier, x out of that side; a post base at the middle of the post's end, z into the post, x along its +X.",
+    "Holes hole_a_<n> take fasteners into member a (the joist, the post, the member whose end meets), hole_b_<n> into b (the carrier); the generator fills each fasteners entry's frames and count from them.",
+    "Steel, hot-dip galvanised: 7850 kg/m3."
+  ],
+  "categories": [{"id": "timber-connectors", "name": "Timber connectors"}],
+  "parts": [
+    {
+      "id": "angle-bracket-40", "name": "Angle bracket 40x40x40", "category": "timber-connectors", "make": "model",
+      "data_source": "common sizes of angle brackets for timber", "designation": "Angle bracket 40x40x40",
+      "keywords": ["angle bracket", "bracket", "angle", "timber"], "license": "MIT",
+      "dimensions": {"shape": "bracket", "legs": [40, 40], "width": 40, "thickness": 2, "hole": 5,
+                     "holes": {"b": [[25, -10], [25, 10]], "a": [[25, -10], [25, 10]]}},
+      "appearance": "steel_satin",
+      "build": {"role": "connector", "material": {"product": "steel, galvanised", "density": 7850},
+                "connector": {"placement": "outer", "space": "outer", "junctions": ["L", "T"],
+                              "fit": {"kind": "angle", "width": [19, 100]},
+                              "mates": [{"frame": "mount", "to": "face"}],
+                              "fasteners": [
+                                {"on": "a", "screw": {"library": "mitcad-parts", "component": "connector-screw", "config": "5.0x35"}},
+                                {"on": "b", "screw": {"library": "mitcad-parts", "component": "connector-screw", "config": "5.0x35"}}]}}
+    },
+    {
+      "id": "angle-bracket-60", "name": "Angle bracket 60x60x45", "category": "timber-connectors", "make": "model",
+      "data_source": "common sizes of angle brackets for timber", "designation": "Angle bracket 60x60x45",
+      "keywords": ["angle bracket", "bracket", "angle", "timber"], "license": "MIT",
+      "dimensions": {"shape": "bracket", "legs": [60, 60], "width": 45, "thickness": 2, "hole": 5,
+                     "holes": {"b": [[20, -12], [20, 12], [45, 0]], "a": [[20, -12], [20, 12], [45, 0]]}},
+      "appearance": "steel_satin",
+      "build": {"role": "connector", "material": {"product": "steel, galvanised", "density": 7850},
+                "connector": {"placement": "outer", "space": "outer", "junctions": ["L", "T"],
+                              "fit": {"kind": "angle", "width": [28, 150]},
+                              "mates": [{"frame": "mount", "to": "face"}],
+                              "fasteners": [
+                                {"on": "a", "screw": {"library": "mitcad-parts", "component": "connector-screw", "config": "5.0x40"}},
+                                {"on": "b", "screw": {"library": "mitcad-parts", "component": "connector-screw", "config": "5.0x40"}}]}}
+    },
+    {
+      "id": "angle-bracket-90", "name": "Angle bracket 90x90x65", "category": "timber-connectors", "make": "model",
+      "data_source": "common sizes of angle brackets for timber", "designation": "Angle bracket 90x90x65",
+      "keywords": ["angle bracket", "bracket", "angle", "timber"], "license": "MIT",
+      "dimensions": {"shape": "bracket", "legs": [90, 90], "width": 65, "thickness": 2.5, "hole": 5,
+                     "holes": {"b": [[25, -18], [25, 18], [65, -18], [65, 18]],
+                               "a": [[25, -18], [25, 18], [65, -18], [65, 18]]}},
+      "appearance": "steel_satin",
+      "build": {"role": "connector", "material": {"product": "steel, galvanised", "density": 7850},
+                "connector": {"placement": "outer", "space": "outer", "junctions": ["L", "T"],
+                              "fit": {"kind": "angle", "width": [42, 250]},
+                              "mates": [{"frame": "mount", "to": "face"}],
+                              "fasteners": [
+                                {"on": "a", "screw": {"library": "mitcad-parts", "component": "connector-screw", "config": "5.0x40"}},
+                                {"on": "b", "screw": {"library": "mitcad-parts", "component": "connector-screw", "config": "5.0x40"}}]}}
+    },
+    {
+      "id": "joist-hanger-48x98", "name": "Joist hanger 48x98", "category": "timber-connectors", "make": "model",
+      "data_source": "common sizes of face-fixed joist hangers", "designation": "Joist hanger 48x98",
+      "keywords": ["joist hanger", "hanger", "joist", "timber"], "license": "MIT",
+      "dimensions": {"shape": "hanger", "width": 48, "height": 98, "hanger_height": 80, "depth": 55, "flange": 30,
+                     "thickness": 2, "hole": 5},
+      "appearance": "steel_satin",
+      "build": {"role": "connector", "material": {"product": "steel, galvanised", "density": 7850},
+                "connector": {"placement": "outer", "space": "outer", "junctions": ["T"],
+                              "fit": {"kind": "hanger", "section": [48, 98]},
+                              "mates": [{"frame": "mount", "to": "face"}],
+                              "fasteners": [
+                                {"on": "a", "screw": {"library": "mitcad-parts", "component": "connector-screw", "config": "5.0x40"}},
+                                {"on": "b", "screw": {"library": "mitcad-parts", "component": "connector-screw", "config": "5.0x40"}}]}}
+    },
+    {
+      "id": "joist-hanger-48x123", "name": "Joist hanger 48x123", "category": "timber-connectors", "make": "model",
+      "data_source": "common sizes of face-fixed joist hangers", "designation": "Joist hanger 48x123",
+      "keywords": ["joist hanger", "hanger", "joist", "timber"], "license": "MIT",
+      "dimensions": {"shape": "hanger", "width": 48, "height": 123, "hanger_height": 105, "depth": 60, "flange": 30,
+                     "thickness": 2, "hole": 5},
+      "appearance": "steel_satin",
+      "build": {"role": "connector", "material": {"product": "steel, galvanised", "density": 7850},
+                "connector": {"placement": "outer", "space": "outer", "junctions": ["T"],
+                              "fit": {"kind": "hanger", "section": [48, 123]},
+                              "mates": [{"frame": "mount", "to": "face"}],
+                              "fasteners": [
+                                {"on": "a", "screw": {"library": "mitcad-parts", "component": "connector-screw", "config": "5.0x40"}},
+                                {"on": "b", "screw": {"library": "mitcad-parts", "component": "connector-screw", "config": "5.0x40"}}]}}
+    },
+    {
+      "id": "joist-hanger-48x148", "name": "Joist hanger 48x148", "category": "timber-connectors", "make": "model",
+      "data_source": "common sizes of face-fixed joist hangers", "designation": "Joist hanger 48x148",
+      "keywords": ["joist hanger", "hanger", "joist", "timber"], "license": "MIT",
+      "dimensions": {"shape": "hanger", "width": 48, "height": 148, "hanger_height": 130, "depth": 70, "flange": 30,
+                     "thickness": 2, "hole": 5},
+      "appearance": "steel_satin",
+      "build": {"role": "connector", "material": {"product": "steel, galvanised", "density": 7850},
+                "connector": {"placement": "outer", "space": "outer", "junctions": ["T"],
+                              "fit": {"kind": "hanger", "section": [48, 148]},
+                              "mates": [{"frame": "mount", "to": "face"}],
+                              "fasteners": [
+                                {"on": "a", "screw": {"library": "mitcad-parts", "component": "connector-screw", "config": "5.0x40"}},
+                                {"on": "b", "screw": {"library": "mitcad-parts", "component": "connector-screw", "config": "5.0x40"}}]}}
+    },
+    {
+      "id": "joist-hanger-48x173", "name": "Joist hanger 48x173", "category": "timber-connectors", "make": "model",
+      "data_source": "common sizes of face-fixed joist hangers", "designation": "Joist hanger 48x173",
+      "keywords": ["joist hanger", "hanger", "joist", "timber"], "license": "MIT",
+      "dimensions": {"shape": "hanger", "width": 48, "height": 173, "hanger_height": 155, "depth": 80, "flange": 30,
+                     "thickness": 2, "hole": 5},
+      "appearance": "steel_satin",
+      "build": {"role": "connector", "material": {"product": "steel, galvanised", "density": 7850},
+                "connector": {"placement": "outer", "space": "outer", "junctions": ["T"],
+                              "fit": {"kind": "hanger", "section": [48, 173]},
+                              "mates": [{"frame": "mount", "to": "face"}],
+                              "fasteners": [
+                                {"on": "a", "screw": {"library": "mitcad-parts", "component": "connector-screw", "config": "5.0x40"}},
+                                {"on": "b", "screw": {"library": "mitcad-parts", "component": "connector-screw", "config": "5.0x40"}}]}}
+    },
+    {
+      "id": "joist-hanger-48x198", "name": "Joist hanger 48x198", "category": "timber-connectors", "make": "model",
+      "data_source": "common sizes of face-fixed joist hangers", "designation": "Joist hanger 48x198",
+      "keywords": ["joist hanger", "hanger", "joist", "timber"], "license": "MIT",
+      "dimensions": {"shape": "hanger", "width": 48, "height": 198, "hanger_height": 180, "depth": 90, "flange": 30,
+                     "thickness": 2, "hole": 5},
+      "appearance": "steel_satin",
+      "build": {"role": "connector", "material": {"product": "steel, galvanised", "density": 7850},
+                "connector": {"placement": "outer", "space": "outer", "junctions": ["T"],
+                              "fit": {"kind": "hanger", "section": [48, 198]},
+                              "mates": [{"frame": "mount", "to": "face"}],
+                              "fasteners": [
+                                {"on": "a", "screw": {"library": "mitcad-parts", "component": "connector-screw", "config": "5.0x40"}},
+                                {"on": "b", "screw": {"library": "mitcad-parts", "component": "connector-screw", "config": "5.0x40"}}]}}
+    },
+    {
+      "id": "joist-hanger-48x223", "name": "Joist hanger 48x223", "category": "timber-connectors", "make": "model",
+      "data_source": "common sizes of face-fixed joist hangers", "designation": "Joist hanger 48x223",
+      "keywords": ["joist hanger", "hanger", "joist", "timber"], "license": "MIT",
+      "dimensions": {"shape": "hanger", "width": 48, "height": 223, "hanger_height": 205, "depth": 90, "flange": 30,
+                     "thickness": 2, "hole": 5},
+      "appearance": "steel_satin",
+      "build": {"role": "connector", "material": {"product": "steel, galvanised", "density": 7850},
+                "connector": {"placement": "outer", "space": "outer", "junctions": ["T"],
+                              "fit": {"kind": "hanger", "section": [48, 223]},
+                              "mates": [{"frame": "mount", "to": "face"}],
+                              "fasteners": [
+                                {"on": "a", "screw": {"library": "mitcad-parts", "component": "connector-screw", "config": "5.0x40"}},
+                                {"on": "b", "screw": {"library": "mitcad-parts", "component": "connector-screw", "config": "5.0x40"}}]}}
+    },
+    {
+      "id": "post-base-98", "name": "Post base 98x98", "category": "timber-connectors", "make": "model",
+      "data_source": "common sizes of U post bases", "designation": "Post base 98x98",
+      "keywords": ["post base", "post anchor", "post", "timber"], "license": "MIT",
+      "dimensions": {"shape": "post_base", "width": 98, "height": 150, "plate": 160, "plate_thickness": 5, "side": 60,
+                     "thickness": 4, "hole": 5.5},
+      "appearance": "steel_satin",
+      "build": {"role": "connector", "material": {"product": "steel, galvanised", "density": 7850},
+                "connector": {"placement": "outer", "space": "outer", "junctions": ["surface"],
+                              "fit": {"kind": "post_base", "section": [98, 98]},
+                              "mates": [{"frame": "mount", "to": "end"}],
+                              "fasteners": [
+                                {"on": "a", "screw": {"library": "mitcad-parts", "component": "connector-screw", "config": "5.0x50"}}]}}
+    },
+    {
+      "id": "post-base-123", "name": "Post base 123x123", "category": "timber-connectors", "make": "model",
+      "data_source": "common sizes of U post bases", "designation": "Post base 123x123",
+      "keywords": ["post base", "post anchor", "post", "timber"], "license": "MIT",
+      "dimensions": {"shape": "post_base", "width": 123, "height": 150, "plate": 190, "plate_thickness": 5, "side": 75,
+                     "thickness": 4, "hole": 5.5},
+      "appearance": "steel_satin",
+      "build": {"role": "connector", "material": {"product": "steel, galvanised", "density": 7850},
+                "connector": {"placement": "outer", "space": "outer", "junctions": ["surface"],
+                              "fit": {"kind": "post_base", "section": [123, 123]},
+                              "mates": [{"frame": "mount", "to": "end"}],
+                              "fasteners": [
+                                {"on": "a", "screw": {"library": "mitcad-parts", "component": "connector-screw", "config": "5.0x50"}}]}}
+    }
+  ]
+}

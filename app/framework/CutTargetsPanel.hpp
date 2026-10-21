@@ -20,6 +20,22 @@ QJsonObject setCutTargetChecked(const QJsonObject& scope, const QJsonObject& tar
                                 const QString& body, bool checked);
 QJsonObject selectCutTargets(const QJsonObject& scope, bool all);
 
+// What the view hides when a new cut's panel opens (mitcad#475), from the
+// model's `components` and `bodies` queries and the `document` query's
+// display: {"hidden_occurrences": [paths whose light bulb is off],
+// "hidden_bodies": [uids whose light bulb is off], "isolated": [the
+// isolated items], "seen": []}.
+QJsonObject cutTargetVisibility(const QJsonObject& components, const QJsonArray& bodies,
+                                const QJsonObject& document);
+// A preview's cut targets against that visibility (mitcad#475): each row
+// seen for the first time in an automatic scope starts unchecked when it is
+// hidden (its occurrence's light bulb or one above it off, or Isolate
+// shows none of its bodies: `excluded`), or only its hidden bodies do
+// (`excluded_bodies`); a row seen before keeps what the user chose. The
+// rows and bodies of the report that are hidden get "hidden": true, for
+// the list. True when the scope changed.
+bool excludeHiddenCutTargets(QJsonObject& scope, QJsonObject& visibility, QJsonObject& report);
+
 class CutTargetsPanel final : public QWidget {
   Q_OBJECT
 public:

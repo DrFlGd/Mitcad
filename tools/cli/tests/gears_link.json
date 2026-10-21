@@ -1,0 +1,41 @@
+[
+  {"comment": "Meshed gears as components on joints, linked (mitcad#472). Plate (Plate:1, grounded): a 120 x 80 x 10 block below XY, Sketch1 F1 and Extrude1 F2."},
+  {"cmd": "create_component", "name": "Plate"},
+  {"cmd": "sketch.create"},
+  {"cmd": "sketch.add_rectangle", "sketch": "F1", "corner": [-40, -40], "width": 120, "height": 80},
+  {"cmd": "add_feature", "def": {"type": "extrude",
+    "profiles": [{"sketch": "F1", "region": "r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]}"}],
+    "extent": {"type": "distance", "distance": -10}, "operation": "new_body"}},
+  {"cmd": "activate_component", "component": "Root"},
+  {"cmd": "ground_occurrence", "occurrence": "Plate:1"},
+
+  {"comment": "Gear1 F3 (Component1:1): 20 teeth, module 2, an 8 mm bore; Gear2 F4 (Component2:1) of 30 teeth meshing it along x, 50 mm away. Both with 0.1 backlash."},
+  {"cmd": "add_feature", "def": {"type": "gear", "kind": "spur", "plane": "xy", "module": 2, "teeth": 20,
+    "face_width": 10, "backlash": 0.1, "bore": {"type": "plain", "diameter": 8}, "operation": "new_component"}},
+  {"cmd": "add_feature", "def": {"type": "gear", "kind": "spur", "module": 2, "teeth": 30, "face_width": 10,
+    "backlash": 0.1, "bore": {"type": "plain", "diameter": 8}, "mesh_with": {"gear": "F3"},
+    "operation": "new_component"}},
+  {"expect": {"feature": "Gear2", "status": "ok"}},
+  {"expect": {"query": {"query": "components"}, "result": {
+    "occurrences": [{"name": "Plate:1"}, {"name": "Component1:1"}, {"name": "Component2:1"}]}}},
+
+  {"comment": "Joint1 F5, Joint2 F6: each gear turns about its bore on the plate."},
+  {"cmd": "add_joint", "kind": "revolute",
+    "a": {"occurrence": "Component1:1", "geometry": {"body": "F3.b0", "face": "F3:bore"}},
+    "b": {"occurrence": "Plate:1", "geometry": {"body": "F2.b0", "face": "F2:start(r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]})"},
+          "frame_override": {"origin": [0, 0, 0]}}},
+  {"cmd": "add_joint", "kind": "revolute",
+    "a": {"occurrence": "Component2:1", "geometry": {"body": "F4.b0", "face": "F4:bore"}},
+    "b": {"occurrence": "Plate:1", "geometry": {"body": "F2.b0", "face": "F2:start(r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]})"},
+          "frame_override": {"origin": [50, 0, 0]}}},
+  {"expect": {"query": {"query": "interference", "bodies": ["F3.b0", "F4.b0"]}, "result": {"pairs": []}}},
+
+  {"comment": "MotionLink1 F7: the link of their mesh, 30 turns of Gear2 for 20 of Gear1 the other way."},
+  {"cmd": "link_gears", "gear": "F4"},
+  {"expect": {"query": {"query": "joints"},
+    "result": {"links": [{"name": "MotionLink1", "coupling": "gear", "ratio": -0.6666666666666666, "solved": true}]}}},
+
+  {"comment": "Gear1 turned by a tooth and a half: Gear2 follows and the teeth still clear each other."},
+  {"cmd": "drive_joint", "joint": "Joint1", "values": {"rz": "27 deg"}},
+  {"expect": {"query": {"query": "joints"}, "result": {"links": [{"solved": true}]}}}
+]

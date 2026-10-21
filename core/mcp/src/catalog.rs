@@ -70,14 +70,15 @@ pub(crate) fn tools() -> Vec<Value> {
         ),
         tool(
             "model_export",
-            "Export geometry to a new file inside the workspace. Existing output files are refused. Optionally select bodies; DXF requires a sketch handle, or a sheet-metal body whose Flat Pattern is written, instead of bodies. Defaults are metric.",
+            "Export geometry to a new file inside the workspace. Existing output files are refused. Optionally select bodies; DXF requires a sketch handle, or a sheet-metal body whose Flat Pattern is written, instead of bodies, unless drawing is given. PDF and SVG (and DXF with drawing) write a drawing of the bodies: views with hidden lines removed, overall dimensions, hole diameters, a hole table and a title block; drawing holds the export_drawing options of mitcad://reference/commands (sheet, orientation, scale, projection, views, section, hidden_lines, ...). Defaults are metric.",
             json!({
                 "document": document,
                 "path": path,
-                "format": {"type": "string", "enum": ["step", "iges", "brep", "stl", "obj", "3mf", "usdz", "dxf"]},
+                "format": {"type": "string", "enum": ["step", "iges", "brep", "stl", "obj", "3mf", "usdz", "dxf", "pdf", "svg"]},
                 "bodies": {"type": "array", "items": {"type": "string", "minLength": 1}, "description": "Optional body identities, for example F7.b0"},
                 "sketch": {"type": "string", "minLength": 1, "description": "Sketch feature identity for DXF, for example F2"},
-                "flat_pattern": {"type": "string", "minLength": 1, "description": "Sheet-metal body identity for a Flat Pattern DXF, for example F3.b0"}
+                "flat_pattern": {"type": "string", "minLength": 1, "description": "Sheet-metal body identity for a Flat Pattern DXF, for example F3.b0"},
+                "drawing": {"type": "object", "description": "Drawing options (export_drawing without cmd, path and bodies), for example {\"sheet\": \"A3\", \"views\": [\"front\", \"top\", \"right\", \"iso\"], \"hidden_lines\": true}"}
             }),
             &["document", "path", "format"],
             false,

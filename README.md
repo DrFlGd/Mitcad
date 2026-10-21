@@ -13,12 +13,29 @@ Linux and macOS (Apple Silicon, macOS 14.4 or newer), licensed under the
   designs and `.ipt` parts open with their history, IFC and `.rvt` building models with their
   storeys and elements, DWG drawings with their 3D solids and blocks;
   STEP, IGES, BRep, STL, OBJ, DXF and 3MF import and
-  export; USDZ and web page export
+  export; USDZ, web page and drawing (PDF, SVG) export
   ([the table below](#support-for-multiple-cad-formats)).
 - **3D printing:** bodies straight to a slicer (Bambu Studio, OrcaSlicer,
   PrusaSlicer, UltiMaker Cura).
 
 How to use it: [docs/user-guide.md](docs/user-guide.md).
+Website: [mitcad.org](https://mitcad.org/); downloads:
+[the releases](https://github.com/mitcad/Mitcad/releases).
+
+[![A pillow block modelled in Mitcad from an empty design, then a dimension changed: watch the demo on mitcad.org](https://mitcad.org/assets/video/mitcad-demo-poster.webp)](https://mitcad.org/#showcase)
+
+<table>
+  <tr>
+    <td><img src="https://mitcad.org/assets/shots/sketch-constraints.webp" alt="Sketch mode: a fully constrained profile with driving dimensions and the sketch palette"></td>
+    <td><img src="https://mitcad.org/assets/shots/feature-edit.webp" alt="Editing an extrude: the command panel, drag handles and parameter labels, the timeline rolled back"></td>
+    <td><img src="https://mitcad.org/assets/shots/rendered-view.webp" alt="The rendered view: the assembly path traced with soft shadows inside the application"></td>
+  </tr>
+  <tr>
+    <td><b>Sketch.</b> Constraints and driving dimensions, solved as you draw.</td>
+    <td><b>Edit.</b> Roll back the timeline, change a feature, watch the model follow.</td>
+    <td><b>Render.</b> A path-traced view of the design, right in the window.</td>
+  </tr>
+</table>
 
 ## Why
 
@@ -43,10 +60,11 @@ well. It is free to use, change and share under the MIT licence.
 | BRep (`.brep`, `.brp`) | Bodies | Bodies | – |
 | STL | Meshes | Meshes | – |
 | OBJ | Meshes | Meshes | – |
-| DXF | Into a sketch | From a sketch | – |
+| DXF | Into a sketch | From a sketch; a drawing | – |
 | 3MF | – | For slicers | – |
 | USDZ | – | For AR and 3D viewers: meshes with appearances, components kept | – |
 | Web page (`.html`) | – | The design in one HTML file with its viewer, for any browser | – |
+| Drawing (PDF, SVG, DXF) | – | Views with hidden lines removed, sizes, hole diameters, a hole table and a title block | – |
 
 If a file does not import as it should, please
 [open an issue](https://github.com/mitcad/Mitcad/issues).

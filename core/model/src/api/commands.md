@@ -452,6 +452,9 @@ parameters.
  "participants": ["F2.b0"]}
 ```
 
+- `surface`, `curves`: a surface extrusion, walls without caps, of the
+  profiles and of sketch curves ([Surface modelling](#surface-modelling),
+  mitcad#455).
 - `profiles`: regions of one sketch, a set (see [Profile
   selections](#profile-selections)); touching regions fuse into one body
   (and taper as one region).
@@ -710,6 +713,8 @@ split. Reverting the edit restores the keys and removes the warning.
  "operation": "new_body"}
 ```
 
+- `surface`, `curves`: a surface revolution, walls without caps ([Surface
+  modelling](#surface-modelling), mitcad#455).
 - `axis`: a line reference: a sketch line `{"sketch": uid, "curve":
   "c4"}` (from its start to its end; any line, also a construction or
   centre line), an origin axis, a construction axis `"F7"`, a straight
@@ -1260,6 +1265,9 @@ longer makes after an upstream edit is passed by with a warning
  "rail_point": "plane", "operation": "new_body"}
 ```
 
+A surface sweep (`"surface": true`, with `curves`): [Surface
+modelling](#surface-modelling) (mitcad#455).
+
 Sweeps, lofts, pipes, coils, ribs and webs: kernel inputs in
 `core/model/src/sweeps.rs`, geometry in
 `geometry/src/{path_sweep,loft,rib,spine}.cpp`. Fractions of a path,
@@ -1445,6 +1453,9 @@ along the binormal, whose normals give the frames
 - `surface`: the loft as a surface, a sheet body of the side faces only (no
   caps; `isSolid` false in .f3d designs). A new body or a new component,
   never joined or cut; a sheet has no volume.
+  Sections of sketch curves (`{"type": "curves", "sketch": "F1", "curves":
+  ["c1", "c2"]}`, one chain each) loft a surface only ([Surface
+  modelling](#surface-modelling), mitcad#455).
 - `centerline`: a [path](#paths); keeps the sections at right angles to
   it on the way (the part of it between the first and the last section).
 - `start_condition`, `end_condition`: how the loft leaves its first
@@ -5051,7 +5062,7 @@ Options:
 |---|---|
 | `text` | the report as text (the bridge's `import_solidcraft`) |
 | `report_path` | also write the JSON report there |
-| `expected` | a JSON file of values to check against: `body_count`, `total.volume_mm3`, `bbox`, `bodies[]` (by name: `volume_mm3`, `bbox`), `timeline[].name`, `params[].name`, `sketches[]` (`curves`, `constraints`, `dimensions`), `parametric` (at least so many), `links` (the motion links that came in, exactly); SolidCraft's own `solidcraft-cli eval` output is such a file. Volumes within `volume_tolerance` (relative, 1e-3), boxes within `bbox_tolerance` (0.01 mm); every placed body counts unless `"scope": "root"` |
+| `expected` | a JSON file of values to check against: `body_count`, `total.volume_mm3`, `bbox`, `bodies[]` (by name: `volume_mm3`, `area_mm2` (a surface body's, mitcad#455), `bbox`), `timeline[].name`, `params[].name`, `sketches[]` (`curves`, `constraints`, `dimensions`), `parametric` (at least so many), `links` (the motion links that came in, exactly); SolidCraft's own `solidcraft-cli eval` output is such a file. Volumes within `volume_tolerance` (relative, 1e-3), boxes within `bbox_tolerance` (0.01 mm); every placed body counts unless `"scope": "root"` |
 | `set_parameters` | `{"name": "expression"}`: parameters (the design's names) changed after the import, before the report measures the bodies |
 
 The result has `file`, `design`, `format` (`solidcraft`), `items`,
@@ -6419,14 +6430,14 @@ with `error` (`class`, `message`, `detail`, as the remote commands') and
 | `library_list` | | `root`, `libraries`: `dir`, `url`, `kind`, `versions`, and a library's `id`, `name`, `description`, `license`, `authors`, `components` (count), `problems`, an index's `name`, `entries` |
 | `library_show` | `url` or `id`, `rev` (default: the newest version) | `dir`, `url`, `rev`, `labels`, `versions`; a library's `manifest`, `problems` and `components` (`id`, `name`, `path`, `category`, `standard`, `description`, `keywords`, `license`, `license_note`, `preview`, `designation`, `supplier`, `part_number`, `supplier_url`, `build` (as the manifest has it, or null), `configurations`: `selectors`, `selector_values`, `default`, `rows` with `name`, `select` and, when the row has them, its own `part_number`, `supplier_url` and `designation`); an index's `name`, `description`, `entries` |
 | `library_search` | `text` (words that must all match name, id, standard, description, category, keywords, supplier, part number, the library), `role` and `system` (BUILD parts only, [BUILD parts](../../../../docs/libraries.md#build-parts): the role, and the slot system as `{"type", "slot", "grid"}` or text `B/8/30`, a series left out matching any; a linear part's `kind` and `size`), `supplier` (the same, without case), `part_number` (the component's or a row's own, without case), `licenses` (SPDX ids an item may have; left out: any), `unlicensed` (default false: items without a licence are hidden), `category`, `libraries` (ids or URLs) | `components` (of fetched libraries at their newest versions: as `library_show`'s with `library`, `library_name`, `url`, `rev`, `version`, `authors`), `libraries` (index entries with `index`, `index_url`, `fetched`, `license_note`), `hidden` (left out for their licence) |
-| `library_preview` | `url` or `id`, `rev`, `component` | `png` (base64) or null |
+| `library_preview` | `url` or `id`, `rev`, `component`, `config` (a row: its own preview when it has one, `row_previews`, mitcad#484) | `png` (base64) or null |
 | `library_diff` | `id`, `url`, `from`, `to`, `parts` ([{`component`, `config`}]) | `from`, `to` (commits), `from_labels`, `to_labels`, `library` (licence and version changes), `parts`: `changed`, `missing` (the component or row is not in `to`), `lines` (the row's value changes), `text`, `design` (the comparison of the design without its table) |
 | `library_check` | `dir` (a library folder) | `id`, `components`, `ok`, `errors`, `warnings`: the manifest, the files it names (there, no symbolic links, designs that open and link no other files, PNG previews of at most 512 KB), a licence file; for BUILD parts the block's rules ([BUILD parts](../../../../docs/libraries.md#build-parts)), the design's parameters and `mount:<name>` joint origins, a profile's layout, and library references that resolve (in the folder, else in the fetched libraries; one not fetched is a warning) |
 | `library_init` | `dir`, `id`, `name`, `description`, `license`, `authors`, `homepage` | `dir`, `id`, `written`: the manifest, a `LICENSE` note naming the licence, a README, and a Mitcad project with a git repository (no version yet) |
 | `library_add` | `dir`, `text` (a single-file design), `id`, `name`, `category`, `category_name`, `standard`, `description`, `keywords`, `license`, `designation`, `preview` (a PNG, base64), `path` (default `<category>/<id>.mitcad`), `supplier`, `part_number`, `supplier_url`, `build` (left out: those of the component it replaces) | `component`, `written`, `errors`, `warnings` (a check of the folder); a component of the same id is replaced |
 | `index_entry` | `dir`, `url` (where the library is published), `rev` (default HEAD) | `path` (`libraries/<id>.json`), `rev`, `labels`, `entry`, `text` |
 | `licenses` | | `licenses`: the SPDX ids a community index accepts with a `note` for users |
-| `library_build_candidates` | `junction` (one of the `build_junctions` query's: `kind`, `systems` of its profiles, `space`), or `role` with `system` (for Profile, Panel and Linear Part pickers; a part made for no system fits any) with a linear part's `kind` and `size` (a carriage for a rail's size; a part without a size fits any), `text`, `libraries`, `licenses`, `unlicensed` | `components` (as `library_search`'s, with `build`, `supplier`, `part_number`, `supplier_url`) that fit, best first: a connector's `junctions`, `systems` and `space` against the junction's ([BUILD](#build-profile-assemblies)); `refused` (those that nearly fit, one thing wrong, for the picker's greyed rows: each `{"id", "name", "library", "reason"}`), `hidden`. A connector fits more closely when it names the profiles' series and goes on one junction kind only; a connector with an `envelope` needs that room in the junction's inner corner |
+| `library_build_candidates` | `junction` (one of the `build_junctions` query's: `kind`, `systems` of its profiles, `space`), or `role` with `system` (for Profile, Panel and Linear Part pickers; a part made for no system fits any) with a linear part's `kind` and `size` (a carriage for a rail's size; a part without a size fits any), `text`, `libraries`, `licenses`, `unlicensed` | `components` (as `library_search`'s, with `build`, `supplier`, `part_number`, `supplier_url`, and its `configurations` as `library_show` gives them, each row with `preview: true` when it has a picture of its own: every row a part of the pickers, mitcad#484) that fit, best first: a connector's `junctions`, `systems` and `space` against the junction's ([BUILD](#build-profile-assemblies)); `refused` (those that nearly fit, one thing wrong, for the picker's greyed rows: each `{"id", "name", "library", "reason"}`), `hidden`. A connector fits more closely when it names the profiles' series and goes on one junction kind only; a connector with an `envelope` needs that room in the junction's inner corner |
 
 `mitcad-cli library fetch|list|show|search|candidates|diff|init|add|check|index-entry`
 and `mitcad-cli parts <file>` (the parts list); inserting and updating
@@ -7934,7 +7945,7 @@ class and refuses the others.
 | Class | What | Commands and queries |
 |---|---|---|
 | model | the document's own data | every feature type (`add_feature`, `edit_feature`), the sketch commands but `sketch.import_dxf`, parameters, bodies' attributes, components, joints, configurations, views, analyses, groups, policy, `undo`, `redo`, `merge_undo`, `recompute`; every query but those below |
-| file IO | reads or writes files | `import_file`, `export`, `export_sketch`, `export_flat_pattern_dxf`, `sketch.import_dxf`, `insert_component`, `update_links`, `mark_saved` (the design file's saved state); the queries `dxf_info` and `compare_step` |
+| file IO | reads or writes files | `import_file`, `export`, `export_sketch`, `export_flat_pattern_dxf`, `export_drawing`, `sketch.import_dxf`, `insert_component`, `update_links`, `mark_saved` (the design file's saved state); the queries `dxf_info` and `compare_step` |
 | remote | the library resolver's repositories | `update_library_parts` |
 | internal | the application's own workflows | `begin_command`, `restore_command`, `discard_command` (a command panel's checkpoints), `clear_cache` |
 
@@ -8797,6 +8808,411 @@ the slot (one in the middle when there is no room for two); they are its
   which looks at the fields).
 - `build_edit`, `build_remove` and the queries are class `model`.
 
+## BUILD: timber construction
+
+Timber members, wood fasteners, brackets and hangers, joinery and sheets
+(mitcad#478) use the commands of *BUILD: profile assemblies* above,
+extended here. Everything said there holds; the slot path (profiles with
+`slot` frames, their connectors, nuts and panels) is unchanged: no field
+below is needed for it and none changes what it does. The app's Timber
+tool (`app/COMMANDS.md`, *Timber*) and its Profile tool drive the same
+commands; the Profile picker lists no timber. Code: `core/model/src/build/`
+(`meta.rs`, `place.rs`, `timber.rs`, `spacing.rs`, `wood.rs`,
+`joinery.rs`, `cut_list.rs`); tests `core/model/src/build/timber_tests.rs`.
+
+### Library metadata the model reads
+
+The library's format is in [docs/libraries.md](../../../../docs/libraries.md#build-parts)
+(*Timber*). The model reads these fields of a source's `build` block,
+leniently (unknown fields are ignored, a value is a number in mm, kg,
+kg/m³ or % or a text with its unit):
+
+- **Rows.** `build.rows` is `{"<configuration row>": {a partial build
+  block}}`. For a part made in a row, the row's block is deep-merged over
+  the component's: objects merge key by key, other values (numbers, texts,
+  arrays) replace. The component's own fields are the default row's. Every
+  read below is of the merged block of the part's row (`config`, or the
+  source's default row when left out).
+- **A timber member**: `role: "profile"`, `kind: "timber"`. `section`
+  `{width, height}` is the actual size: the section lies on XY centred at
+  the origin, `width` (W) along X and `height` (T, the thickness) along Y;
+  `L` runs along +Z. `nominal` `{width, height}` is the nominal size (at
+  20 % moisture). `material` `{species, finish, grade, density, moisture,
+  product}`: `species` `spruce`, `pine`, ...; `finish` `sawn`, `planed` or
+  `dimensioned`; `grade` (`""` or `C24`, ...) the default grade;
+  `density` kg/m³; `moisture` %. `availability` `standard` or
+  `less common`. `tolerance` is carried, not used. `length` as a
+  profile's (`parameter` `L`, `min`, `max`, `stock` the stock lengths,
+  `default`). `frames`: `end_a`, `end_b` (kind `end`) and four `face`
+  frames `face_xp`, `face_xn`, `face_yp`, `face_yn` at z = 0 on the side's
+  centre line, z out of the side, x along +Z (as slot frames). No
+  `system`, no slot frames, no `mass_per_metre`: the mass is the density
+  times the volume (W × T × the length).
+- **A wood fastener**: `role: "fastener"`, `wood` `{kind: "screw" |
+  "nail", diameter, length, head}` (the row's sizes, through `rows`), and
+  an `axis` frame (kind `shaft`): on the axis at the head's bearing
+  surface, z along the shank towards the tip (the tip at z = length).
+- **A bracket, joist hanger or post base**: `role: "connector"`,
+  `connector.placement: "outer"`, `connector.fit` `{kind: "angle" |
+  "hanger" | "post_base", section: [a, b], width: [min, max]}`,
+  `connector.mates` whose first frame (`{"frame": "mount", "to": "face"}`)
+  places it (*Brackets, hangers and post bases* below), and
+  `connector.fasteners`: `[{"frames": [hole frames], "count": n, "on": "a"
+  | "b", "screw" | "nail": {library reference, with its row}}]`. A hole
+  frame (kind `hole`) lies on the connector's surface the head bears on,
+  z out of it towards the head (facing the screw's `axis` frame). `on` is
+  the member the fasteners are driven into (`a` the one whose end meets).
+- **A sheet**: `role: "panel"`, `panel.mount: "face"`, `panel.thickness`
+  (a value or its parameter), `panel.width` and `panel.height` (the
+  parameters that size it), `panel.stock` (`[[w, h], ...]`, the sheet
+  sizes sold, mm), `material` `{product, density}`; thicknesses as rows.
+  The design's width runs along X, its height along Y and its thickness
+  along +Z, as other panels.
+
+A part is **timber** when its merged block's `kind` is `timber`; a design
+**has timber** when one of its BUILD parts is. A placed part whose block
+names a `material` (timber, sheets, their brackets and screws) takes its
+source's body appearance and material, when the source's bodies that set
+one set the same (a document appearance of the source is copied in); slot
+profiles keep their look. A cut-to-length part whose source gives the caps
+of its extrusion (`<F>:start(...)`, `<F>:end(...)`, its faces at z = 0 and
+L) one face appearance (`set_face_appearance`; the timber's end grain,
+mitcad#484) shows it on its end faces, `<F>:end_a` and `<F>:end_b`, square
+or cut at an angle.
+
+### Face sides
+
+A `face` frame of a member (`role: "profile"`) is a side as a slot frame
+is: `build_place` (and `build_preview`, `build_edit`, `build_junctions`,
+bound lengths) treat it as one, with these differences:
+
+- `at.geometry` may be a face frame (`{"mount": "F7:mount(face_yp)"}`) or
+  a side face of the member with `at.point`: the face frame of that side
+  (the one on the face's plane when the kernel tells it, else the nearest
+  to `at.point`). A side with a slot frame takes the slot as before; a
+  face frame is taken only where a side has no slot frame.
+- The new part sits anywhere along the side: no grid snaps (a member has
+  no system); the end and middle snaps, `at.offset` and `at.from` (`a`,
+  `b`, `middle`), keeping within the length, `rotate`, `flip`, `tilt`,
+  `mitre` (`new`), bound lengths (`face`, `centre`, `through`), corners
+  and shared mitres on an end work as for profiles.
+- Across the side the new part stands centred on the side's centre line.
+- No systems are checked between members (a part without `systems` fits
+  any); a slot connector or nut is refused on a member (`a member has no
+  slots`).
+- A bound length's ray meets a member's face frames as it meets a
+  profile's slot frames.
+
+### Members by two points
+
+`build_place` takes `to` and `lie`:
+
+```json
+{"cmd": "build_place", "part": {"source": "S1", "config": "48x148"},
+ "at": {"occurrence": "", "geometry": "xy", "point": [0, 0, 0]},
+ "to": {"point": [3000, 0, 0]}, "lie": "edge"}
+```
+
+- `at.point` is the start and `to.point` the end, both in the BUILD
+  host's coordinates. The member runs from start to end (end A at the
+  start, unless `flip`). Without `length` its length is the distance; a
+  `length` (a value or a `bind`) replaces it.
+- `at.geometry` (optional) is what the member lies on: a plane (`"xy"`),
+  a planar face, or a face frame or side face of a member (with `at.occurrence`).
+  The member lies on that plane: its axis is lifted off it by half the
+  section across it, and it is held to it by a `rigid` joint whose
+  `frame_override` gives the start and the axes (so it follows a member
+  it lies on). Without `at.geometry` it is grounded, its axis through the
+  two points.
+- `lie` turns it about its axis: `flat` (the default), the section's
+  smaller dimension across the plane it lies on (without a plane: along
+  the host's +Z, its "up"); `edge`, the larger one. On a plane the side
+  that faces it lies on it. A member standing square to the plane (a
+  post) stands centred on the start, its X along the host's X. `rotate`
+  (quarter turns) turns it further.
+- **A point and a direction** (the app's Timber tool: a click, then a
+  typed or auto length, mitcad#478): with `length`, `to.point` gives only
+  the direction. A value runs the member that long from the start; a
+  `bind` (`mode` `face`, `centre`, `through`, `add`) binds it to what the
+  ray from its start along the direction meets, as on a side: its
+  `bound_length` starts at the plane it lies on (the host's origin when
+  grounded), shifted to the start, so the length follows the target.
+- The answer's `place` is `points`. `build_preview` answers as for any
+  placing (`frame`, `length`, `box`). Without `length` its `length.value`
+  is the points' distance (as placed), and `length.target` names what the
+  ray from the start towards `to.point` meets first, the target an auto
+  length binds to (null when nothing is in the way).
+- `build_edit` of a member by two points takes `to` (`{"point"}`), `at`
+  (`{"point"}`) and `lie` again: it is placed anew from them (the same
+  component, derived part and junctions).
+
+### Spacing sets
+
+`build_place` with `spacing` places a member and repeats it: studs,
+joists, rafters (a centre distance), deck boards, fence boards and
+cladding (a board row: a gap).
+
+```json
+{"cmd": "build_place", "part": {"source": "S1", "config": "48x198"},
+ "at": {"occurrence": "O3", "geometry": {"mount": "F9:mount(face_yn)"}},
+ "length": {"bind": {"occurrence": "O4", "geometry": {"mount": "F12:mount(face_yp)"}}},
+ "spacing": {"mode": "centre", "distance": 400}}
+```
+
+`spacing` is `{"mode", "distance", "count", "from", "to", "along",
+"length", "fit"}`:
+
+- `mode`: `centre` (the default: `distance` is the centre distance) or
+  `gap` (a board row: `distance` is the gap between boards).
+- **On a side** (`at` on a member's side or slot, the base placement a
+  side placement): the members stand along the host member, the first
+  flush with `from` (an offset of its near face from end A, default 0)
+  and the last flush with `to` (its far face's offset from end A; default
+  end B, and then the last is bound from end B, so it stays flush when the
+  host's length changes). A set between two members is this with
+  `length` bound to the second member (as above): the members stand on
+  the first and reach the second, each with its own bound length.
+- **Otherwise** (members by two points, or one at a point): `along`
+  (a direction in the host's coordinates, required) and `length` (the
+  span along it, required): the first member is the one `at` and `to`
+  give, the others moved along `along`.
+- The span is from the first member's near face to the last one's far
+  face. With `w` the member's width along the set (its box along it):
+  - `centre`: the members at 0, d, 2d, ... and the last at `span - w`;
+    the count is `ceil((span - w) / d) + 1` (the last space is at most
+    `d`);
+  - `gap`: the step is `w + gap`; with `fit` `cut` (the default) the count
+    is `ceil(span / (w + gap))` and the last board is ripped to
+    what is left (a `rip` cut, *Joinery*, when less than `w`); with `fit`
+    `spread` the count is `floor((span + gap) / (w + gap))` and the gaps
+    are widened so that the last board ends at the span.
+  - `count` (optional) fixes the count instead: `centre` spreads the
+    members evenly over the span, `gap` spreads the gaps; `0` (in
+    `build_edit`) goes back to the count from the span.
+- `build_preview` with `spacing` answers the first member as a placing does
+  and adds `spacing`: `{count, frames, rip}` (each member's own axes at its
+  end A, and whether the last is ripped).
+- One member is placed when the span holds only one. A refusal of any
+  member refuses the whole set.
+- The answer's `component` is the first member (the set's **lead**),
+  `set` lists every member's component, `count` their number; undo step
+  `Place <designation> x<count>`.
+- The lead's record keeps the set (`spacing`: the definition and the base
+  placement, the part as `{"source", "config"}`); every member's record
+  has `set`, the lead's component. `build_parts` gives both.
+- **Editing the set**: `build_edit` with `spacing` (any of its fields; `{}`
+  lays the set out again from the members' places now, after the host or
+  the span changed) and optionally `config` acts on the whole set, through
+  any of its members: the members are laid out anew in one undo step. The
+  first `min(old, new)` members keep their components (their joints,
+  bound lengths and lengths are made anew; connectors and junctions on
+  them stay), new ones are added after them, extra ones removed as by
+  `build_remove`. `changed` has `spacing` (and `config`); the answer adds
+  `set` and `count`.
+- `build_remove` with `"set": true` removes every member of the set;
+  without it one member goes and the set keeps the others (laying it out
+  again counts what is left as its members).
+
+### Wood fasteners
+
+`build_connect` at a junction of two members with a wood fastener as
+`part` drives screws or nails through one member into the other:
+
+```json
+{"cmd": "build_connect", "junction": "C5:end_a|C3:face_xp",
+ "part": {"library": "mitcad-parts", "url": "...", "rev": "...", "component": "wood-screw"},
+ "count": 2}
+```
+
+- **Which way.** An end on a side (`T`, and an `L` whose end meets the
+  other's side or end face): through the member whose side it is (`b`)
+  into the end of `a`, along `a`'s axis, from `b`'s far face. Two members
+  crossing or lying on each other (`cross`): through the newer (`a`) into
+  `b`, square to both axes, from `a`'s far side. Ends meeting on one axis
+  (`inline`) are refused (`an inline joint takes a plate`).
+- **Where.** `count` (default 2) fasteners in a row along the longer side
+  of the contact (the end's section on the side face, or the members'
+  overlap), centred across it, at `(i + 0.5) / count` of its length.
+- **The size.** `part.config` names the row. Left out, for a source with
+  rows: the diameter is the largest row's `wood.diameter` not over the
+  thinner member's smaller section dimension / 7 (else the smallest
+  diameter); the length the shortest of that diameter at least the
+  thickness gone through + 8 × the diameter (else the longest).
+  `build_junctions` gives the numbers for a picker (`wood` below).
+- **Warnings, not refusals** (in `warnings`, `d` the diameter):
+  - the embedment (the length less the thickness gone through) under
+    6 × `d`: `screw 1 embeds 22 mm in Beam1: at least 30 mm` (the
+    members by their component names);
+  - a fastener nearer than 3 × `d` to an edge of the contact:
+    `screw 2 is 10 mm from an edge: at least 15 mm`;
+  - nearer than 10 × `d` to an end of the member it goes through, along
+    that member's axis: `screw 1 is 37 mm from the end of C3: at least
+    50 mm`;
+  - longer than both members together: `screw 1 goes through C5`.
+- **What is made.** One component per fastener (role `fastener`, its
+  source the wood fastener's), each with a `rigid` joint, flipped, between
+  its `axis` frame and the member it is driven from, at its entry point
+  (that member's `end_a` frame with a `frame_override`: the entry point,
+  z out of the member towards the head). The first is the answer's
+  `component`; its record's `adds` lists the others, and `build_remove` of
+  it takes them all. Every one's record has `junction`. No holes are cut.
+- `build_preview` with the same fields answers `fasteners` (`{frame, at}`
+  per fastener, `at` the joint's frame in the design), `fastener_parts`,
+  `size` (`{config, diameter, length}`) and `warnings`.
+
+### Brackets, hangers and post bases
+
+`build_connect` with a connector whose `placement` is `outer` fits it by
+the members' sections and places it on their outer faces:
+
+- `fit.kind` `hanger` and `angle` go on a junction with an end on a side
+  (`T`, `L`); `post_base` on a member's free end, named instead of a
+  junction: `"end": {"component": "C3", "end": "a"}`.
+- `fit.section` `[a, b]`: the member that is carried (`a`; the post) has
+  that section, either way round, within 1 mm; `fit.width` `[min, max]`:
+  its smaller section dimension is within it. Otherwise refused (`the
+  hanger fits 48 x 148, C5 is 48 x 123`). A slot connector at a junction
+  of members, or an outer one at a junction of slot profiles, is refused.
+- The connector's first mate's frame (`mount`; its `to`, `face` or `end`,
+  is not read) is placed by a `rigid` joint, flipped, on `b`'s (the
+  post's) `end_a` frame with a `frame_override` whose z points out of `b`
+  towards the connector; so in the connector's design the `mount` frame's
+  z points into the carrier or the post. Where the `mount` frame goes, its
+  axes in the connector's design:
+  - `hanger`: at the middle of `a`'s end on `b`'s face, z into `b`, x the
+    direction of `a`'s section most up (the host's +Z; of a vertical `a`,
+    its +X);
+  - `angle`: on `b`'s face at the middle of the edge where `a`'s chosen
+    side meets it, z into `b`, x that side's outward normal; `side`
+    (`x+`, `x-`, `y+`, `y-` of `a`'s section; default the larger side,
+    `y+` when W ≥ T, else `x+`) chooses it;
+  - `post_base`: at the middle of the end, z into the member along its
+    axis, x its +X.
+- Its fasteners: one per hole frame of each `fasteners` entry, a `rigid`
+  joint, flipped, between the fastener's `axis` frame and the hole frame;
+  the warnings above (embedment into `on`, edges) apply to each.
+- The answer and the record as a slot connector's (`adds`, `junction`).
+
+### Joinery
+
+`build_connect` with `joint` instead of `part` cuts the members:
+
+```json
+{"cmd": "build_connect", "junction": "C7:end_b|C6:side", "joint": {"kind": "half_lap"}}
+```
+
+`joint` is `{"kind", "depth", "on"}`:
+
+- `housing` (an end on a side): a pocket in `b` the size of `a`'s
+  section where it meets, `depth` deep (default a third of `b`'s
+  thickness there, at most 15 mm);
+- `notch` (members crossing or lying on each other): a cut in `on`
+  (default `a`) the size of the other's section across it, `depth` deep
+  (default their overlap, or a third of `on`'s thickness when they only
+  touch);
+- `half_lap` (members crossing in one plane, overlapping): both are cut
+  over their overlap, `a` from below and `b` from above (along `a`'s axis
+  × `b`'s, turned towards the host's +Z), `a` by `depth` (default half
+  the overlap's thickness) and `b` by the rest. Members that do not
+  overlap are refused (`a half-lap needs the members overlapping`).
+
+The cuts are kept in the members' derived parts, in `cuts` (beside
+`ends`):
+
+```json
+{"type": "derived_part", "source": "S1", "config": "48x148", "parameters": {"L": "d12"},
+ "cuts": [{"kind": "half_lap", "with": "C7", "junction": "C7:end_b|C6:side",
+           "origin": [-74, 0, "d12 - 148"], "x": [1, 0, 0], "y": [0, 1, 0],
+           "size": [148, 24, 148], "depth": 24}]}
+```
+
+- Each is a box in the part's coordinates: from `origin` along `x`, `y`
+  and their cross product by `size`; `origin` and `size` are values;
+  `depth` (a number) is the depth the joint was asked for, kept to cut it
+  anew.
+  `kind` is `housing`, `notch`, `half_lap` or `rip` (a board ripped to the
+  width left, *Spacing sets*). `with` and `junction` name the other
+  member and the junction.
+- **Bound to the members.** The coordinate along the member is an
+  expression: of the other member's slide when it slides on this one
+  (`d20 + 24`), else of this member's length when the cut is nearer end B
+  (`d12 - 148`), else a number. So a cut follows a joist moved along its
+  beam and a member's end when its length changes. `build_edit` with
+  `"cuts": "refit"` cuts the member's joinery anew from where the members
+  are now.
+- The cuts are made inside the derived part after the end cuts; the cut
+  list reads them from the definition. `build_remove` of a member takes the
+  cuts `with` it out of the others.
+- The answer: `component` null, `features` (the derived parts cut),
+  `cuts` (`{component, kind, size}`), `warnings`; undo step `Connect
+  half_lap`. `build_preview` with `joint` answers `cuts` likewise.
+
+### Sheets on a face
+
+`build_panel` with a sheet (`panel.mount: "face"`) picks a member's face
+(a face frame, or a side face with `at.point`) and lays the sheet on it:
+
+- `faces` (optional): more picks (`[{"occurrence", "geometry"}]`). The
+  sheet covers the rectangle of the picked faces in the picked face's
+  plane (x along the first member, y across); without `faces`, of every
+  member face on that plane facing the same way.
+- Its width and height, where they are parameters, are that rectangle's
+  (numbers, not bound: placing it again sizes it again); a fixed size
+  keeps its value and `fits` is false with `reason` when it does not cover
+  the rectangle. `thickness` and `part.config` as for other panels.
+- It is held by a `rigid` joint (not flipped) on the first member's face
+  frame with a `frame_override`. The middle of the design's box at its
+  sizes goes to the middle of the rectangle and the box's back (its least
+  z) lies on the face, so the design may be drawn from a corner (a box
+  from (0, 0, 0) to (W, H, T)) or centred; no frame of the sheet is read.
+  The answer as for panels (`fits`, `bound` empty).
+
+### Lists
+
+`build_cut_list` (a design without timber answers exactly as before):
+
+- With timber the answer adds `timber: true` and `totals`
+  (`{running_metres, volume, mass}` over the timber rows), and every row
+  adds `kind` (`timber` or null), `material` (`{species, finish, grade,
+  density}`, the grade the part's own), `nominal` and `section`
+  (`{width, height}`, mm), `availability`, `running_metres` (length ×
+  quantity / 1000) and `volume` (m³, W × T × length × quantity). A timber
+  row's `mass` (each) is the density × W × T × length.
+- Rows are grouped by the grade too, and `machining` lists the joinery
+  cuts after the holes: `{at: null, kind, size, with, diameter: null}`.
+- `stock` is per source and configuration row (`config` in the entry when
+  the source has rows). A timber entry adds `stock_lengths`: each stock
+  piece's length, the shortest of the source's stock lengths that holds
+  its cuts (first fit of the longest pieces into the longest stock, then
+  each piece shortened).
+- `build_parts` adds to each part `kind` (`timber` or null), `grade`,
+  `set` (the lead's component or null), `spacing` (the lead's: the
+  definition and `count`), `cuts` (`{kind, with, junction, size}`).
+- `build_junctions` adds `wood` to a junction whose members are both
+  timber: `{through, into, thickness, max_diameter, sections}` (the member a
+  fastener goes through and the one it goes into, the thickness gone
+  through, the largest diameter by the sizing rule, and `sections`
+  `{"a": [W, T], "b": [W, T]}` for the pickers).
+- `build_place`, `build_edit` take `grade` (text; null clears): the
+  part's own grade, else its row's `material.grade`.
+
+### Pickers
+
+`library_search` and `library_build_candidates` (*Library commands*):
+
+- `role: "profile"` with `kind: "timber"` lists timber only; `role:
+  "profile"` without `kind` lists no timber (the Profile picker).
+- `role: "panel"` with `mount: "face"` lists sheets; without `mount`, no
+  sheets.
+- A junction with `wood` (from `build_junctions`) is offered wood
+  fasteners and outer connectors whose `fit` fits its members, and no
+  slot connectors; a junction without `wood`, as before.
+
+### Classes
+
+`build_connect` with `joint` (no `part`) is class `model`; with a part,
+as before.
+
 ## Section curves in sketches
 
 `sketch.project` with `"section": true` (mitcad#389) adds the curves where
@@ -9432,3 +9848,697 @@ side and both, the input check on), the `.solidcraft` test design
 `core/import/src/solidcraft/tests.rs`. The `.solidcraft` import maps
 SolidCraft's patches, stitches and thickens onto these
 ([.solidcraft import](#solidcraft-import), `core/import/README.md`).
+
+## Surface modelling
+
+Features that make and change surface (sheet) bodies (mitcad#455),
+beside [Patch, Stitch and Thicken](#patch-stitch-and-thicken), with
+`add_feature` and `edit_feature`, ordinary parameters, preview, Undo and
+persistence. Their inputs are any surface bodies (and the faces of
+solids where a family says so); mesh bodies are refused ([Mesh bodies in
+surface operations](#mesh-bodies-in-surface-operations)). The kernel's
+methods are grouped under "Surface modelling" in `Kernel`
+(`core/model/src/kernel.rs`), the OCCT side is
+`geometry/src/surface_*.cpp`. The application has them in the SURFACE tab
+([app/COMMANDS.md](../../../../app/COMMANDS.md), "Surface modelling").
+
+### Surface extrude, revolve, sweep and loft
+
+The solid features with `"surface": true` (`features/surface_sweeps.rs`):
+walls without caps, new surface bodies, never joined or cut (the
+operation is `new_body` or `new_component`, without participants).
+
+```json
+{"type": "extrude", "surface": true, "operation": "new_body",
+ "profiles": [{"sketch": "F1", "region": "r{…}"}],
+ "curves": {"sketch": "F1", "curves": ["c5", "c6"]},
+ "extent": {"type": "distance", "distance": 15}}
+{"type": "revolve", "surface": true, "operation": "new_body",
+ "curves": {"sketch": "F3", "curves": ["c1"]}, "axis": "z", "extent": {"type": "full"}}
+{"type": "sweep", "surface": true, "operation": "new_body",
+ "curves": {"sketch": "F5", "curves": ["c1"]}, "path": {"sketch": "F6", "curves": ["c1"]}}
+{"type": "loft", "surface": true, "operation": "new_body", "ruled": true, "sections": [
+   {"type": "curves", "sketch": "F8", "curves": ["c1"]},
+   {"type": "curves", "sketch": "F9", "curves": ["c1"]}]}
+```
+
+- `profiles`: the walls the regions' boundaries sweep: the solid
+  feature's faces without its caps (`Kernel::open_faces` drops the faces
+  `<feature>:start`, `end` and `mid`), so every option of the solid
+  feature applies (two sides, tapers, up to an object, partial paths,
+  guide rails and surfaces) and the walls keep its names,
+  `<feature>:side(<segment>)`. A full revolution is a closed surface
+  without caps.
+- `curves`: sketch curves (of the profiles' sketch; `chain` adds the
+  curves joined to them) in chains of curves that meet end to end, open
+  or closed; each curve's wall is `<feature>:side(<curve>)` (`#k` pieces,
+  e.g. along the curves of a sweep's path). An extrusion of curves takes
+  distances (one side, two sides, symmetric, through all) and a start
+  offset, not a taper, a start object or an end at an object; a
+  revolution of curves angles, not an object; a sweep of curves its path,
+  extent, orientation and flip, not a twist, taper, end scale, guide rail
+  or guide surfaces (`Kernel::extrude_sheet`, `revolve_sheet`,
+  `sweep_sheet`).
+- With both, the profiles' walls are the first new body
+  (`<feature>.b0`), the curves' walls the second.
+- A loft's `curves` sections (`Kernel::loft_sheet`): every section a
+  chain of one sketch's curves, all open or all closed, through which the
+  surface runs in order, ruled or smooth, `closed` back to the first; no
+  end conditions, centre line or rails. Its faces are
+  `<feature>:side(<curve>)` after the first section's curves. A surface
+  loft of profiles and faces is the loft's own `surface`.
+- Refused: a join, cut or intersect; `curves` without `surface` (`only a
+  surface extrusion sweeps sketch curves`); neither profiles nor curves;
+  a thin surface extrusion; curves of another sketch than the profiles';
+  a curve section beside sections of another kind.
+
+The `.f3d` import brings surface extrusions, revolutions and sweeps
+(`isSolid` false) in as these; the `.solidcraft` import SolidCraft's
+SurfaceExtrude, SurfaceRevolve, SurfaceSweep and SurfaceLoft.
+
+### Free edges
+
+A surface body's open boundary is made of free edges (edges of one face
+only), which have no names of their own (`E{a|b}` needs two faces). The
+features that take free edges take them as `openings`
+(`features/sheet_edges.rs`):
+
+```json
+"openings": [{"opening": {"faces": ["F3:side(c1)", "F3:side(c2)"], "index": 1},
+              "faces": ["F3:side(c1)"], "at": [[10, 0, 5]]}]
+```
+
+- `opening`: a loop of free edges as [patch](#patch)'s `opening` names
+  it: the `index`-th, in the kernel's geometric order
+  (`Kernel::open_boundaries`), of those whose edges bound exactly
+  `faces`. Left out: every opening of the body.
+- `faces`: only the free edges that bound these faces; left out: all of
+  the opening's.
+- `at`: of those, only the edge nearest each point (mm, the component's
+  coordinates; with an `opening` only); left out: all. A surface of one
+  face has one loop of free edges, all bounding that face: the points
+  pick some of them, as an import's picks do.
+
+### offset_surface
+
+```json
+{"type": "offset_surface", "body": "F2.b0", "faces": ["F2:end(r{…})"], "distance": 2, "chain": false}
+```
+
+A new surface body of the faces (every face of the body when `faces` is
+left out; with `chain` also the faces joined to them through smooth
+edges) moved `distance` along their normals (the faces' orientations
+applied; against them when negative; 0 copies them). Faces
+`<feature>:offset(<face>)`. The body is not changed. OCCT offsets the
+faces as one sheet (`BRepOffset_MakeOffset`, intersecting where
+neighbours meet); a face curved more tightly than the distance fails.
+
+### ruled_surface
+
+```json
+{"type": "ruled_surface", "body": "F2.b0", "edges": ["E{…|…}"], "openings": [],
+ "face": "F2:end(r{…})", "distance": 3, "mode": "tangent", "angle": 0.5,
+ "direction": [0, 0, 1], "flip": false, "corners": "mitre"}
+```
+
+A new surface body: strips `distance` wide (more than 0) off chains of
+the body's edges (`edges` and the free edges of `openings` together, each
+run of them joined end to end a chain, open or closed; none branches).
+Each edge leaves the
+face beside it (`face` where an edge lies between two faces), and the
+strip goes
+- `normal` (the default): along that face's normal;
+- `tangent`: continuing the face, square to the edge, away from it;
+- `angle`: at `angle` (radians) from the face's normal (or from
+  `direction` when given), turned towards the tangent mode's direction;
+- `direction`: along the fixed `direction`;
+
+and the other way with `flip`. At a sharp corner of the chain the
+neighbouring strips are `mitre`d (their ends lean to meet along the
+corner's bisector) or joined by a `round` sector turned about the corner.
+Faces `<feature>:ruled(<edge>)`, for a free edge `<feature>:ruled(<face>)`
+after the face it leaves (`#k` pieces), and `<feature>:corner(<vertex>)`;
+the strips are sewn into one body. Refused: no edges, a distance of 0 or
+less, the direction mode without `direction`, the angle mode without
+`angle`, a direction of no length; the kernel fails edges that branch
+(three at a vertex) and an edge between two faces without `face`.
+
+### extend_surface
+
+```json
+{"type": "extend_surface", "body": "F3.b0", "openings": [{"faces": ["F3:side(c1)"]}],
+ "distance": 2, "mode": "natural"}
+```
+
+The surface body's faces extended `distance` (more than 0, along the
+surface) past free edges (`edges` by name, or `openings`): `natural`
+continues the surface (an analytic surface its parameter range, a
+B-spline its polynomials), `tangent` leaves the edge tangent to it (G1),
+`curvature` also with its curvature (G2; both by OCCT's
+`GeomLib::ExtendSurfByLength`). The body keeps its id and its faces their
+names: each extended face stays one face; the faces are sewn again where
+they meet. A face is extended where it is bounded by its surface's
+parameter range only (four sides, no holes), and each edge must run along
+a side of that range (`unsupported: …` otherwise); a solid is refused.
+Extending a whole periodic surface onto itself fails.
+
+### trim_surface
+
+```json
+{"type": "trim_surface", "body": "F3.b0", "tool": "F4", "offset": 2, "extend": true,
+ "keep": [[50, -1, 4]]}
+{"type": "trim_surface", "body": "F3.b0", "tool": {"sketch": "F5", "curves": ["c1", "c4"]},
+ "direction": [0, 0, 1], "keep": [[10, 5, 0]]}
+```
+
+A surface body cut by `tool` and only the pieces kept that the `keep`
+points (mm, the component's coordinates; at least one) pick, the piece
+nearest each. The tool is `split_face`'s
+([Face features](#face-features-shell-draft-offset_face-delete_face-replace_face-split_body-split_face)):
+a plane (moved `offset` along its normal), a face of any body (continued along its
+surface with `extend`, the default), a body, or sketch curves, open or
+closed, swept both ways along `direction` (the sketch's normal when left
+out). Pieces are the faces cut apart and joined again where their edges
+meet away from the tool. The body keeps its id and its faces their names
+(`#k` for the pieces of one face). Refused: a solid (`Split Body divides
+solids`), the body as its own tool, no keep point; the kernel fails a
+tool that does not cut the surface apart.
+
+### untrim_surface
+
+```json
+{"type": "untrim_surface", "body": "F8.b0", "face": "F8:end(r{…})", "holes": true,
+ "outer": false, "in_place": false}
+```
+
+A face restored towards its surface: `holes` (the default) takes its
+holes away, `outer` puts its outer boundary back at the surface's own
+bounds (a surface without bounds, such as a plane or a cylinder, at the
+face's span); at least one of them. The face may be of a solid or a
+surface body; the result is a new surface body of one face,
+`<feature>:untrim(<face>)`. With `in_place` the face of a surface body is
+untrimmed where it is: the body and the face keep their names (a solid is
+refused).
+
+### unstitch
+
+```json
+{"type": "unstitch", "body": "F1.b0", "faces": ["F1:end(r{…})"]}
+```
+
+A body taken apart into surface bodies: each face in `faces` its own new
+body (`<feature>.b0`, `.b1`, … in the order named) and the faces left one
+surface body that keeps the body's id. Without `faces` every face comes
+apart: the first stays the body, each other one a new body. A solid comes
+apart into surfaces; the faces keep their names.
+
+### reverse_normal
+
+```json
+{"type": "reverse_normal", "body": "F3.b0", "faces": []}
+```
+
+The surface body's faces in `faces` (every face when left out) turned
+over: their normals point the other way, which decides the side
+[thicken](#thicken), [offset_surface](#offset_surface) and the ruled
+surface's normal mode go to. The body and the faces keep their names. A
+solid is refused (its normals point out of its material).
+
+### Chains of edges
+
+Blend Surface, Boundary Surface and Match Surface take chains of a
+body's edges: `body`, named `edges` and free edges of `openings` ([Free
+edges](#free-edges)) that join end to end into one chain (open or
+closed), and `face` (`target_face` for a match), the face beside the
+chain where an edge lies between two faces (else each edge's one face;
+needed for G1 and G2 only). The body may be a surface body or a solid;
+it is not changed unless the feature says so.
+
+### blend_surface
+
+```json
+{"type": "blend_surface",
+ "from": {"body": "F2.b0", "openings": [{"opening": {"faces": ["F2:side(c1)"]}, "at": [[10, 0, 5]]}],
+          "continuity": "g1", "bulge": 0},
+ "to": {"body": "F4.b0", "edges": ["E{F4:bottom|F4:side0}"], "face": "F4:side0", "continuity": "g2"},
+ "stitch": false}
+```
+
+A new surface body of one face `<feature>:blend` bridging the chains
+`from` and `to` (both open or both closed; a closed pair starts the
+second where it is nearest the first's start). Each end leaves its chain
+through the edges (`g0`: straight towards the other end), tangent to the
+face beside it (`g1`, the default) or also curved as it (`g2`), with a
+speed of the chord between the chains times `1 + bulge` (`bulge` 0 the
+plain bridge, more fuller, down to -0.9 flatter). The chains are sampled
+by length (about a station a millimetre, 16 to 200) and the surface,
+cubic across (quintic with a `g2` end), is fitted through the stations:
+its edges lie within a few micrometres of the chains. With `stitch` the
+blend is sewn onto both bodies within 0.01 mm, into `from`'s body, which
+keeps its id; `to`'s body (when another) is consumed and no new body is
+made.
+
+### boundary_surface
+
+```json
+{"type": "boundary_surface", "boundary": [
+   {"sketch": "F1", "curves": ["c1", "c2"], "continuity": "g1"},
+   {"body": "F3.b0", "openings": [{"opening": {"faces": ["F3:side(c1)"]}}], "continuity": "g1"}]}
+{"type": "boundary_surface", "u": [{"sketch": "F1", "curves": ["c1"]}, {"point": [5, 5, 10]}]}
+{"type": "boundary_surface", "u": [{"sketch": "F1", "curves": ["c1"]}, {"sketch": "F1", "curves": ["c3"]}],
+ "v": [{"sketch": "F1", "curves": ["c2"]}, {"sketch": "F1", "curves": ["c4"]}]}
+```
+
+A new surface body of one face `<feature>:boundary`. Each curve is a
+chain of sketch curves (`sketch`, `curves`, `chain`), a chain of edges
+([Chains of edges](#chains-of-edges)) or a `point`, one of them.
+
+- `boundary`: a closed loop of curves in order (one closed chain, or
+  chains end to end), filled (`BRepOffsetAPI_MakeFilling`). Each meets
+  the face beside its edges, or along sketch curves the sketch's plane,
+  with its `continuity` (`g0`, the default, `g1`, `g2`). No points.
+- `u` (two or more) and `v` (none, or two or more): a network. Without
+  `v` the surface is lofted through `u` in order, the first or the last
+  of which may be a point (a cone-like patch); with `v` it runs through
+  every curve each way (`GeomFill_Gordon`: a Coons patch of two each
+  way), every `u` crossing every `v`. No continuity, no points.
+- Refused: both forms, a curve of none or several kinds, a point in a
+  loop or among crossing curves, one crossing curve.
+
+### match_surface
+
+```json
+{"type": "match_surface", "body": "F5.b0", "face": "F5:side(c1)", "target": "F7.b0",
+ "edges": ["E{F7:bottom|F7:side2}"], "target_face": "F7:side2", "continuity": "g2"}
+```
+
+A face of a surface body (`face`; left out: the body's only face) rebuilt
+against a chain of `target`'s edges (another body): the side of the face
+nearest the chain moves onto it, meeting the face beside the chain
+through it (`g0`), tangent (`g1`) or also curved as it (`g2`, the
+default), while the opposite side stays where it was. The face is
+resampled with the changes fading across it (quintic blends, no change
+at the opposite side) and fitted again, its slopes across held at both
+sides. The face must be bounded by its surface's parameter range alone
+(four sides, no holes; `unsupported: …` otherwise); a closed chain is not
+supported. The body keeps its id and the face its name; its faces are
+sewn again within 0.001 mm (neighbours along the moved sides come
+apart). A solid is refused.
+
+### fair_surface
+
+```json
+{"type": "fair_surface", "body": "F6.b0", "faces": ["F6:boundary"], "strength": 1, "iterations": 1,
+ "keep_edges": true, "tolerance": 0.1}
+```
+
+The B-spline faces among `faces` (every face when left out) smoothed:
+each step moves the inner control points `strength` (more than 0, at
+most 1) of a damped bi-Laplacian step towards a net of less bending, for
+`iterations` steps (1 to 1000), none farther than `tolerance` (a
+parameter, mm, more than 0) from where it was. The boundary row of
+control points stays, so the faces keep meeting their neighbours; with
+`keep_edges` (the default) the row next to it stays too, so they keep
+their tangents there. Faces of other surface types are fair already and
+stay as they are; a faired face must be bounded by its surface's
+parameter range alone. The body keeps its id and the faces their names.
+A solid is refused.
+
+The `.solidcraft` import maps SolidCraft's surface blend, boundary patch,
+network, match and fair to these ([core/import/README.md](../../../import/README.md)).
+
+Tests (surface modelling): `core/model/src/surface_modelling_tests.rs`
+(mock kernel), `geometry/tests/test_surface_modelling.cpp`
+(`geometry.surface_modelling`, the input check on), the `.solidcraft`
+test designs `surface-*` (`cli.import_solidcraft`, areas and boxes
+through the OCCT kernel), `core/import/src/solidcraft/tests.rs`,
+`tools/ui-surface-test.sh` and `tools/ui-surface-fill-test.sh` (the
+SURFACE group on a hidden display).
+
+## Plastic part features
+
+Molded plastic parts' features (mitcad#459, `core/model/src/features/plastic.rs`):
+a Boss, a Lip, a Groove, a Snap Fit and a Rest, each on a face of one body
+which it joins (a groove cuts it), and the plastic rules they take their
+defaults from. The application's Plastic Feature panel makes them all
+([app/COMMANDS.md](../../../../app/COMMANDS.md#notes-on-particular-commands)).
+
+A boss, a snap fit and a rest stand on `point` of `face` of `body`: put on
+the face's plane for a planar face, else the face's point nearest to it.
+They grow along `direction` ([x, y, z]; default: out of the face). The
+tools start a little inside the material (5 % of their height, 0.001 to
+0.5 mm) so that they overlap the body; sizes are measured at the face,
+and a draft (`draft_angle`, radians or an angle expression) narrows the
+walls from there. Values left out take the defaults below.
+
+### plastic_rule
+
+```json
+{"type": "plastic_rule", "rule_name": "ABS (1.5mm)", "material": "ABS Plastic",
+ "thickness": 1.5, "draft_angle": "2 deg", "clearance": 0.1, "min_thickness": 1.2,
+ "max_thickness": 3.5}
+```
+
+A molded part's design values; it changes no body. `thickness` is the
+nominal wall; `nominal_radius` (default half the thickness), `clearance`
+(0.1 mm), `knife_edge` (1 mm), `reveal_height` (0.5 mm),
+`thickness_variation` (0.15 times the thickness), `draft_angle` (2
+degrees), `min_draft_angle` (0.5 degrees), `min_thickness` and
+`max_thickness` (no limit without). A boss, rest or groove names one by
+its uid in `rule`: a left-out `draft_angle` of a boss or rest and a
+left-out `gap` of a groove are the rule's draft and clearance, and the
+feature warns when its draft is below the rule's `min_draft_angle`, or a
+wall (a boss's around its hole, a hollow rest's) is outside the rule's
+thicknesses. A suppressed rule is not used (a warning says so); a failed
+one fails the features that name it. Refused: a thickness not above 0,
+negative values, drafts of 85 degrees or more, a smallest thickness above
+the largest.
+
+### boss
+
+```json
+{"type": "boss", "body": "F1.b0", "face": "F1:top", "point": [30, 30, 3],
+ "diameter": 10, "height": 12, "hole_diameter": 4, "hole_depth": 10,
+ "draft_angle": "1 deg", "fillet": 1, "ribs": 4, "rib_thickness": 1.5,
+ "rib_length": 6, "rib_offset": 2, "rule": "F2"}
+```
+
+A round post `diameter` across at the face, `height` high, narrowing by
+its draft (default the rule's, else none). `ribs` (0 to 64, rounded; a
+count in a length slot, as pattern quantities) stand round it from half
+its radius out to `rib_length` past its wall (default its radius),
+`rib_thickness` thick (default 0.3 times its radius), their tops
+`rib_offset` below its top; the first along the direction × X (× Y for
+a direction near X: +Y on a face facing up). `fillet` rounds the root
+where the post meets the face (the post's wall only). The hole of
+`hole_diameter` runs `hole_depth` down from the top (default: to the
+face), straight. Faces: the post `side(c1)` and its top `end(r{c1})`, rib
+k's sides `side(c<10+4k>…)`, the hole's wall `side(c2)` and its bottom
+`start(r{c2})`, the root's rounds `fillet(<edge>)`. Refused: a draft that
+closes the post before its top, a hole not inside the top. A boss cannot
+be patterned or mirrored (its hole cuts after its post joins).
+
+### lip, groove
+
+```json
+{"type": "lip", "body": "F17.b0", "face": "F18:offset_cap(F17:top)", "width": 1, "height": 2}
+{"type": "groove", "body": "F20.b0", "face": "F21:offset_cap(F20:top)", "width": 1,
+ "depth": 2, "gap": 0.1, "outside": true, "rule": "F2"}
+```
+
+A band along a planar rim face: along its largest opening (an inner loop
+with no material over the face just inside it: the open end of a shelled
+body), or along its outer edge with `outside`. A lip raises the band
+`width` into the face and `height` up. A groove cuts it `width + gap` into
+the face and `depth + gap` down, `gap` defaulting to the rule's clearance
+(else 0), the cutter reaching as far past the edge so that none of its
+walls lies on the body's. Corners stay sharp; lines and arcs stay lines
+and arcs. Faces (`Kernel::rim_band`): `band_side(<edge>)` along the
+offset into the face and `band_edge(<edge>)` along the face's edge they
+follow, `band_top` and `band_bottom`. Refused: a face that is not planar,
+one with no inner loop, one whose inner loops are the feet of features
+standing on it ("not an opening"), one with two openings alike in size
+(the second more than half the first's area), a band that does not fit.
+
+### snap_fit
+
+```json
+{"type": "snap_fit", "body": "F15.b0", "face": "F15:top", "point": [20, 20, 4],
+ "hook": [1, 0, 0], "length": 15, "thickness": 1.5, "width": 6,
+ "catch_depth": 1, "catch_length": 3}
+```
+
+A cantilever arm `thickness` across (away from `hook`), `width` wide
+(centred on the point) and `length` up from the face, its face on the
+hook's side on the point; the catch at its tip sticks out `catch_depth`
+towards `hook` (across the direction) over `catch_length` (shorter than
+the arm), a triangle from its foot out to the tip. Faces `side(c1)` …
+`side(c6)` round its side profile (c1 the arm's foot, c2 its face on the
+hook's side, c3 and c4 the catch, c5 the tip, c6 its back), its ends
+`start(…)` and `end(…)`. It can be patterned and mirrored.
+
+### rest
+
+```json
+{"type": "rest", "body": "F10.b0", "face": "F10:top", "point": [430, 30, 3],
+ "along": [1, 0, 0], "width": 10, "length": 20, "height": 4,
+ "draft_angle": "2 deg", "thickness": 1, "rule": "F2"}
+```
+
+A pad centred on the point: round (`width` the diameter) or, with
+`length`, a rectangle `length` along `along` (default the direction × X,
+as a boss's first rib) and `width` across; `height` high, narrowing
+by its draft (default the rule's, else none), solid or with `thickness` a
+wall (thinner than half its width). Faces: its walls `side(c1)` …
+`side(c4)` (round: `side(c1)`), its hollow's `side(c5)` … (`side(c2)`),
+its top `end(…)`. Refused: a draft that closes it (or its wall) before its
+top. It can be patterned and mirrored.
+
+Tests: `core/model/src/features/plastic_tests.rs` (mock kernel),
+`cli.plastic` (`tools/cli/tests/plastic.json`: analytic volumes, round
+rims, the rules' defaults and warnings, refusals), the `.solidcraft` test
+design `plastic` (`cli.import_solidcraft`) and `tools/ui-plastic-test.sh`.
+
+## Body transfers
+
+A `body_transfer` feature (mitcad#465, `features/body_transfer.rs`) moves
+bodies of another component into its own component, an existing one, at
+its point of the timeline. [Moving features into
+components](#moving-features-into-components) moves the features that made
+the bodies, as if they had been made in the destination; Create Components
+from Bodies makes a new component of each body. A body transfer moves only
+the bodies, from where it is on the timeline:
+
+```json
+{"type": "body_transfer", "bodies": ["F2.b0"],
+ "link": {"source": "", "target": "O1"}}
+{"type": "body_transfer", "bodies": ["F5.b0"],
+ "link": {"source": "O2", "target": ""},
+ "transform": [[0, -1, 0, 0], [1, 0, 0, 30], [0, 0, 1, 0]]}
+```
+
+- The feature belongs to the destination. `bodies` are all of one other
+  component at that point (the source), each named by its id.
+- The bodies keep their ids, display names, attributes (appearance,
+  material, visibility) and the topological names of their faces; their
+  geometry is converted once from the source's coordinates into the
+  destination's, so that they stay where they are in the design. From
+  then on they are the destination's: its later features work on them
+  (in its coordinates), the source's no longer see them (`body F2.b0
+  (from Extrude1) belongs to Bracket; a feature works on the bodies of its
+  own component`), and a later Move of the destination's occurrence takes
+  them along. A sheet-metal body keeps its sheet state, moved with it.
+- `link` says where both components are seen, as the links of
+  [Geometry of other components](#geometry-of-other-components): the
+  occurrence path to the source (`source`) and to the destination
+  (`target`, the first path to it when it does not lead there); empty
+  paths are the root. The conversion is `placement(target)⁻¹ ·
+  placement(source)` at the feature's point, so the bodies stay in place
+  when placements before it change. `transform` (optional; rows of a
+  rotation and a translation) is a fixed conversion used instead, as an
+  import keeps the one its file records.
+- Fails (as features do, with the reason) when a body is not the
+  source's at that point, the source is the feature's own component, or
+  the conversion is not rigid. Moves of features, reparented components
+  and copies follow the link like the other links; Paste New and Make
+  Unique copy or refuse a component that takes bodies in as they do one
+  made from bodies (its bodies, as a base feature, are copied).
+
+| Command | Fields | Result |
+|---|---|---|
+| `transfer_bodies` | `bodies`, `source_occurrence` (optional: where they are seen, the first path to their component by default), `destination`: `{"component": "C2" or a name, "occurrence": "O2/O4"}` (the occurrence path optional, as `source_occurrence`), `name` (optional) | `uid`, `name`, `component`, `component_name`, `bodies` |
+
+`transfer_bodies` adds the feature at the marker in the destination, one
+undo step `Move Body1 into Bracket` (`Move 2 bodies into Bracket`).
+Refused, changing nothing, when the bodies are not of one component at
+the marker, the destination is their component, a linked component or a
+library part, the policy refuses it, or the transfer (or a feature that
+worked before) would fail. Features after the marker are not computed:
+one of the source that works on a moved body later fails when the marker
+passes it, with the reason above.
+
+| Query | Fields | Result |
+|---|---|---|
+| `transfer_bodies` | `bodies`, `source_occurrence` | `component`, `name` (the bodies' component), `source_occurrence`, `bodies` (`uid`, `name`), `destinations`: every placed component by occurrence path, the root first, as `move_to_component`'s rows (`component`, `name`, `occurrence`, `path`, `parent_occurrence`, `eligible`, `reason`) |
+
+The `.solidcraft` import maps SolidCraft's body transfers onto it (the
+file's feature is in its destination already): the link from the
+components' first placements, and the conversion the file records as
+`transform` only where the placements give another
+([.solidcraft import](#solidcraft-import)). The `.f3d` import translates a
+cut and paste of bodies into another component as this feature where Move
+to Component cannot take the features that made them
+(`core/import/README.md`, *Copies and cut and paste of bodies*). Tests:
+`core/model/src/body_transfer_tests.rs`, `cli.import_solidcraft`
+(`core/solidcraft/tests/designs/body-transfer.solidcraft.json`),
+`mitcad-import`'s `a_cut_and_paste_whose_features_cannot_go_transfers_the_body`.
+
+## Drawings
+
+`export_drawing` (mitcad#471, `api/drawing.rs`, `crate::drawing`) writes
+the bodies at the marker as a drawing on a sheet: orthographic views with
+hidden lines removed, the overall sizes of the views, the diameters of round
+holes, a hole table with their threads and a title block, as a PDF, SVG or
+DXF file. The views come from the kernel (`Kernel::project_view`: OCCT's
+hidden line removal, `geometry/include/mitcad/geometry/drawing.hpp`), the
+holes from `Kernel::round_holes`, their threads from the `threads` query.
+
+```json
+{"cmd":"export_drawing","path":"plate.pdf","bodies":["F2.b0"],
+ "sheet":"A3","orientation":"landscape","scale":"fit","projection":"third_angle",
+ "views":["front","top","right","iso"],"hidden_lines":true,
+ "section":{"analysis":"Section1"},"title":"Plate","date":"2026-10-20"}
+```
+
+| Field | Default | What |
+|---|---|---|
+| `path` | | the file; its extension (`.pdf`, `.svg`, `.dxf`) gives the format |
+| `format` | by the extension | `pdf`, `svg` or `dxf` |
+| `bodies` | the shown bodies | uids or names; each where the design shows it (every placement of a component's body) |
+| `sheet` | `A4` | `A4` … `A0` (ISO 216), `ANSI_A` … `ANSI_E` |
+| `orientation` | `landscape` | or `portrait` |
+| `scale` | `fit` | `fit`: the largest ISO 5455 scale (50:1 … 1:1000) at which the views fit; or `"1:2"`, `"2:1"`, a number (paper per model length) |
+| `projection` | `third_angle` | or `first_angle` (ISO 5456-2) |
+| `views` | `["front","top","right"]` | any of `front` (from -Y), `top` (from +Z), `right` (from +X), `iso` (from the front, right and above); Z is up |
+| `section` | none | a section view: `{"analysis": "<Section Analysis>"}` (where it cuts) or `{"origin": [x,y,z], "normal": [x,y,z]}`; what lies on the normal's side goes, the view looks against the normal |
+| `hidden_lines` | false | hidden edges dashed (not in the isometric and section views) |
+| `tangent_edges` | false | edges between faces that meet smoothly, thin |
+| `dimensions` | true | the width and height of each orthographic view, and one callout per hole size (`4x Ø6.6 THRU`, `CBORE Ø11 DEPTH 6.8`, a tapped hole by its thread) |
+| `sketch_dimensions` | false | the distances, lengths, radii and diameters of the sketches whose plane faces a view square on, in that view |
+| `hole_table` | true | the holes each view shows end on, tagged per view (`A1`, `A2`, … `B1`), with X and Y from the view's lower left corner, size, depth and thread |
+| `units` | the design's length unit | the unit of the values (`mm`, `in`, …) |
+| `title` | `Untitled` | the design's name in the title block |
+| `date` | today (UTC) | the date in the title block |
+| `per_body` | false | a sheet per body: pages of one PDF, or SVG and DXF files `<name>-2.svg`, … |
+| `exact` | true | exact edges; false: from a triangulation (quicker on large bodies; also the fallback when the exact projection fails, and for mesh bodies) |
+
+The sheet (ISO 5457): a frame 20 mm from the left edge and 10 mm from the
+others, the title block (ISO 7200) at the bottom right with the title, the
+bodies, the scale, the units, the date, the sheet, the projection method
+and its symbol; the hole table at the top right. Views go into a grid by the
+projection method (third angle: the top view above the front view, the right
+view on its right, the isometric view top right, the section right of the
+right view; first angle the other way), aligned with each other, each with
+room for its dimensions; the views are centred in what the title block and
+the table leave. Lines after ISO 128 (visible 0.5 mm, hidden 0.35 mm dashed,
+dimensions, leaders and tangent edges 0.25 mm, hatching 0.18 mm, the cutting
+plane long dash dotted with its arrows and letter); dimensions after ISO 129
+(30° closed filled arrowheads, text 3.5 mm above the dimension line, reading
+from below or from the right); text in Helvetica (sans serif, as ISO 3098).
+A hole is coaxial cylindrical faces with the material all round outside
+them: the narrowest is its drilled wall, a wider cylinder or a cone that
+meets it on the side it opens to its counterbore or countersink; an end is
+closed when material lies on the axis within twice its diameter beyond it.
+A view shows a hole end on when it looks along the axis from the side it
+opens to (a hole open at both ends from either side).
+
+Files: SVG in millimetres (`width="420mm"`), a `<g class="…">` per group:
+`view` (`id="view-front"`, `view-top`, `view-right`, `view-iso`,
+`view-section`), `dimension`, `sketch-dimension`, `hole-tag`, `hole-table`,
+`hole-row` (`id` the tag), `hole-datum`, `section-line`, `view-label`,
+`frame`, `title-block`. PDF 1.4, a page per sheet, the standard Helvetica
+font in WinAnsi encoding (`Ø`, `°`), uncompressed. DXF (R2000) in paper
+millimetres, a layer per kind of line: `VISIBLE`, `HIDDEN`, `THIN`, `HATCH`,
+`SECTION_LINE`, `FRAME`, and `TEXT` (the writer has no dashed line types:
+hidden edges are told apart by their layer; arrowheads are outlines).
+
+The answer: `path`, `format`, `files`, `sheets`, `pages` (of a PDF; 1
+otherwise), `sheet`, `orientation`, `scale` (`"1:1"`, of the first sheet)
+and `scales`, `views` (per sheet), `bodies` and `body_names`, `dimensions`,
+`holes`, `hole_table_rows`, `units`, `polygonal` (a view came from a
+triangulation) and `warnings` (a view that shows nothing, views that do not
+fit at the given scale, rows the table had no room for, holes that could not
+be found). Refused: an unknown format, unit, view or sheet, no views, a
+listed body that is not at the marker, an unknown Section Analysis, no
+bodies to draw. File IO (`classes.rs`); MCP's `model_export` writes one
+with `format: "pdf"` or `"svg"` (or `"dxf"` with `drawing`), the options in
+`drawing` (`docs/mcp.md`); `mitcad-cli export-drawing` runs it. Tests:
+`geometry.drawing` (the views, section and holes of a counterbored block),
+the model's `drawing::tests`, `cli.export_drawing`, `app.ui-windows-drawing`.
+
+## Gears
+
+A `gear` feature (mitcad#472; `core/model/src/features/gear.rs` the
+definition and its placement, `gear_profile.rs` the teeth, the kernel's
+`gear_sweep` and `gear_cone` (`geometry/include/mitcad/geometry/gear.hpp`)
+the solids, `api/gears.rs` the query and the command) makes a gear with
+involute teeth from parameters. The application's Gear panel makes them
+([app/COMMANDS.md](../../../../app/COMMANDS.md#notes-on-particular-commands)).
+Tests: `features::gear_profile` and `features::gear_tests`,
+`tools/cli/tests/gears.json`, `tools/cli/tests/gears_link.json`,
+`tools/ui-windows-gear-test.ps1`.
+
+```json
+{"type": "gear", "kind": "helical", "plane": "xy", "center": [0, 0], "module": 2, "teeth": 20,
+ "face_width": 10, "helix_angle": "20 deg", "backlash": 0.1,
+ "bore": {"type": "plain", "diameter": 8}, "keyway": true, "hub": {"diameter": 20, "length": 8},
+ "operation": "new_component"}
+```
+
+| Field | Value |
+|---|---|
+| `kind` | `spur`, `helical`, `herringbone`, `ring` (internal), `rack`, `bevel` (straight) |
+| `plane`, `center` | where the gear's axis meets its plane (the plane's normal), in the plane's coordinates; a rack's start. Not with `mesh_with` |
+| `angle` | turns the gear about its axis (tooth 1 centred on the plane's x axis without it; a rack about its start). Not with `mesh_with` |
+| `module`, `teeth` | the normal module (mm) and the number of teeth (a whole number, at least 5; a rack's at least 1) |
+| `pressure_angle` | the normal pressure angle, 20 degrees without it (10 to 35) |
+| `face_width` | along the axis (a bevel gear's along its pitch cone, less than half its cone distance) |
+| `helix_angle`, `left_handed` | helical and herringbone gears (needed), helical rings and racks (optional): up to 45 degrees, right-handed unless `left_handed` |
+| `gap` | a herringbone gear's gap between its halves, a groove a quarter module below the roots |
+| `rim` | a ring gear's rim outside its roots (needed) |
+| `height`, `length` | a rack's height from its back to its tips (needed), its length (at least, and without it, teeth times the pitch) |
+| `shaft_angle`, `mate_teeth`, `pair` | a bevel gear's shaft angle (90 degrees), its mate's teeth (its own) and whether it makes the mate too |
+| `backlash` | mm at the pitch circle: a tooth is thinner (a ring's space wider) by half of it, so two gears with the same value mesh with it (at most a quarter of the pitch) |
+| `profile_shift` | x in modules, away from the axis (-1 to 0.8; a ring's teeth outwards) |
+| `bore` | `{"type": "plain", "diameter": d}` or `{"type": "thread", "thread": {"designation": "M8x1.25"}}` (the size's minor diameter, its tap drill; `standard` as a thread's): spur, helical, herringbone and bevel gears, through the gear and its hub |
+| `keyway` | a DIN 6885-1 (form A) keyway in a plain bore of 6 to 230 mm: the hub's width and depth for the bore's diameter, at the gear's `angle` |
+| `hub` | `diameter`, `length`: on the end face (a bevel gear's back) |
+| `mesh_with` | `{"gear": "F3", "angle": <angle>, "position": <length>}`: in the plane of an earlier gear feature of the same component, at their mesh's centre distance in the direction `angle` from its centre (from its plane's x axis), or `position` along a rack from the middle of its teeth, turned so that the teeth engage |
+| `operation`, `participants` | as an extrusion's |
+
+- **Teeth:** the ISO 53 basic rack (profile A): addendum 1 m, dedendum
+  1.25 m, root fillet 0.38 m (smaller where it does not fit). An external
+  tooth is what that rack leaves rolling on the pitch circle: the flank is
+  the involute of the base circle (a cubic B-spline within 1e-7 mm), the
+  root the envelope of the rack's tip fillet, which also cuts the undercut
+  of small tooth counts (below 17 at 20 degrees) into the flank. Helical
+  teeth have the transverse rack's section (heights in the normal module)
+  turned along the axis by the helix (a screw motion of the section's
+  curves within about 1e-7 mm; the volume is the section's area times the
+  width). An internal gear's space is an external tooth's shape with a
+  circular root fillet, its tips at the base circle at least. A rack has
+  straight flanks. A straight bevel gear follows Tredgold's approximation
+  (ISO 23509 nomenclature): the virtual spur gear of z / cos(delta) teeth
+  on the back cone, wrapped onto it, the teeth ruled to the apex and
+  trimmed by the back and front cones; its pitch angle delta from the
+  teeth, the mate's teeth and the shaft angle.
+- **Faces:** tooth k (from 1, counter-clockwise about the axis) has
+  `tip(k)`, `flank_a(k)` and `fillet_a(k)` on its clockwise side,
+  `flank_b(k)` and `fillet_b(k)` on the other, `root(k)` after it (a
+  rack's `root(0)` before its first tooth); the caps `start`, `end`, a
+  herringbone gear's halves `#k` pieces; `rim`, `back`, `end_a`, `end_b`
+  (a rack's back and ends), `back`, `front`, `back_cone`, `front_cone`
+  (a bevel gear's), `bore`, `keyway_a`, `keyway_top`, `keyway_b`, `hub`,
+  `hub_end`, `groove`.
+- **Meshes:** the gears must share the module, the pressure angle and the
+  helix angle; external helical gears have opposite hands, a ring and its
+  pinion or a rack and its pinion the same. The centre distance takes the
+  profile shifts' working pressure angle; a rack's reference line lies
+  r + x m from its pinion's axis. A bevel gear meshes only through `pair`;
+  two rings or two racks do not mesh. A gear's result keeps its frame as
+  the mount `gear` (x, y and the axis as columns).
+- **Joints and links:** gears made as components (`new_component`) turn
+  on joints of their occurrences; `link_gears` couples two meshed gears'
+  joints.
+
+| Query | Fields | Result |
+|---|---|---|
+| `gear_values` | `uid` (a gear feature) or `def` (a definition as `add_feature` takes it, without `type`) | `kind`, `module`, `teeth`, `transverse_module`, `pressure_angle`, `circular_pitch`; `pitch_diameter`, `base_diameter`, `outside_diameter`, `root_diameter`, `tooth_thickness` (at the pitch circle), `undercut`, `form_diameter` (where the involute starts), `helix_angle`, `lead` (external gears); a ring's `inside_diameter`, `space_width`; a rack's `pitch_line_length`, `length`; a bevel gear's `pitch_angle`, `cone_distance`, `virtual_teeth`, `mate_teeth`, `mate_pitch_angle`, `shaft_angle`; `section_area` (the transverse section's, without bore and hub); with `mesh_with` `centre_distance`, `mate`, `ratio`, `pitch_radii`; `error` when the values make no gear |
+| `gear_link` | `gear` | `command`: the `add_motion_link` `link_gears` would run, or `reason` why it cannot |
+
+| Command | Fields | Result |
+|---|---|---|
+| `link_gears` | `gear` (a gear with `mesh_with`), `name` (optional) | as `add_motion_link`: a motion link between the joints the two gears' components' occurrences turn on (a rack's slides on), the mate's joint driving: `gear` (`internal` with a ring) by their pitch radii, or `rack_pinion` by the pinion's; `reverse` when a joint's axis runs against its gear's. Refused when a gear has no such joint, a joint's axis is not along its gear's, or the two are linked already |
+
+The `.f3d` and `.solidcraft` imports can map their files' gears onto the
+definition later; it is kept in the design file as it is.

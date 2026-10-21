@@ -950,6 +950,7 @@ fn follow_references(
             FeatureDef::Extrude(x) => !x.object_links.is_empty(),
             FeatureDef::ConstructionPlane(p) => !p.links.is_empty(),
             FeatureDef::Derive(d) => !d.links.is_empty(),
+            FeatureDef::BodyTransfer(_) => true,
             def => has_origins(def),
         };
         if !changes {
@@ -1001,6 +1002,11 @@ fn follow_references(
                 for (body, link) in &mut derive.links {
                     follow(link, &BTreeSet::from([body.feature]), own);
                 }
+            }
+            // A body transfer's source and destination (mitcad#465).
+            FeatureDef::BodyTransfer(transfer) => {
+                let names = transfer.bodies.iter().map(|b| b.feature).collect();
+                follow(&mut transfer.link, &names, own);
             }
             FeatureDef::Joint(joint) => {
                 for origin in [&mut joint.a, &mut joint.b] {

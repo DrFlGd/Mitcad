@@ -6,7 +6,10 @@
 //! nothing else: the bodies keep their shape and their place in the design.
 //! Mitcad's Move to Component with an existing destination does the same:
 //! the bodies and the features that made them go into the destination, and
-//! the bodies keep their identity (`move_features.rs` of the model). The
+//! the bodies keep their identity (`move_features.rs` of the model). Where
+//! the features cannot go there, a body transfer in the destination moves
+//! the bodies alone at the item's point of the timeline, as the item did
+//! (mitcad#465, `features/body_transfer.rs` of the model). The
 //! item has no state of its own to be checked against, so the replay's
 //! bodies must be as they were and be the destination's after the move.
 
@@ -38,7 +41,12 @@ impl<K: crate::ImportKernel> crate::Importer<'_, K> {
         let before = self.current_sigs();
         let mut last = "nothing to try".to_owned();
         for candidate in candidates {
-            let Some(command) = candidate.defs.first().filter(|d| d.get("cmd").is_some()) else {
+            let transfer = |d: &&serde_json::Value| d["type"] == "body_transfer";
+            let Some(command) = candidate
+                .defs
+                .first()
+                .filter(|d| d.get("cmd").is_some() || transfer(d))
+            else {
                 continue;
             };
             let moved: Vec<BodyUid> = command["bodies"]
@@ -58,6 +66,53 @@ impl<K: crate::ImportKernel> crate::Importer<'_, K> {
                     continue;
                 }
                 self.accepted(at, index, &[], &candidate, None);
+                return true;
+            }
+            // The bodies alone, by a body transfer in the destination
+            // (mitcad#465): the features that made them stay.
+            if transfer(&command) {
+                // (The tries before it were taken back: the state is as it was.)
+                let world_before = self.world_sigs();
+                let depth = self.doc.undo_depth();
+                let uid = match self.add_in(command, Some(&name), into) {
+                    Ok(uid) => uid,
+                    Err(e) => {
+                        if crate::tracing() {
+                            eprintln!("import: {name}: no body transfer: {e}");
+                        }
+                        self.undo_to(depth);
+                        continue;
+                    }
+                };
+                // Their place in the design, not in their component's
+                // coordinates, which the transfer changes.
+                if bodies_distance(&world_before, &self.world_sigs()).is_none()
+                    || moved
+                        .iter()
+                        .any(|b| self.doc.body_component(*b) != Some(into))
+                {
+                    if crate::tracing() {
+                        eprintln!(
+                            "import: {name}: no body transfer: the bodies are not as they were \
+                             in the design, or not the destination's"
+                        );
+                    }
+                    self.undo_to(depth);
+                    continue;
+                }
+                let mut accepted = candidate.clone();
+                accepted.note = Some(format!(
+                    "moves {} into {} by a body transfer; the features that made {} stay \
+                     ({last})",
+                    if moved.len() == 1 {
+                        "its body".to_owned()
+                    } else {
+                        format!("its {} bodies", moved.len())
+                    },
+                    self.doc.assembly().name(into),
+                    if moved.len() == 1 { "it" } else { "them" },
+                ));
+                self.accepted(at, index, &[uid], &accepted, None);
                 return true;
             }
             let depth = self.doc.undo_depth();
@@ -106,5 +161,20 @@ impl<K: crate::ImportKernel> crate::Importer<'_, K> {
             return true;
         }
         not(&last)
+    }
+
+    /// The bodies' signatures with their centres where the design places
+    /// them (their first instance).
+    fn world_sigs(&self) -> Vec<crate::history::Sig> {
+        let instances = self.doc.instances();
+        self.current_bodies()
+            .into_iter()
+            .map(|(uid, mut sig)| {
+                if let Some(i) = instances.iter().find(|i| i.body == uid) {
+                    sig.center = i.transform.apply_point(sig.center);
+                }
+                sig
+            })
+            .collect()
     }
 }

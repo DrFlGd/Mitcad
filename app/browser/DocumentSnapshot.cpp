@@ -379,6 +379,30 @@ QString featureIcon(const QString& type) {
       {QStringLiteral("motion_link"), QStringLiteral("motion-link")},
       // Emboss (mitcad#458).
       {QStringLiteral("emboss"), QStringLiteral("emboss")},
+      // Surface modelling (mitcad#456, mitcad#455).
+      {QStringLiteral("patch"), QStringLiteral("patch")},
+      {QStringLiteral("stitch"), QStringLiteral("stitch")},
+      {QStringLiteral("thicken"), QStringLiteral("thicken")},
+      {QStringLiteral("offset_surface"), QStringLiteral("offset-surface")},
+      {QStringLiteral("ruled_surface"), QStringLiteral("ruled-surface")},
+      {QStringLiteral("extend_surface"), QStringLiteral("surface-extend")},
+      {QStringLiteral("trim_surface"), QStringLiteral("surface-trim")},
+      {QStringLiteral("untrim_surface"), QStringLiteral("surface-untrim")},
+      {QStringLiteral("unstitch"), QStringLiteral("unstitch")},
+      {QStringLiteral("reverse_normal"), QStringLiteral("reverse-normal")},
+      {QStringLiteral("blend_surface"), QStringLiteral("blend-surface")},
+      {QStringLiteral("boundary_surface"), QStringLiteral("boundary-surface")},
+      {QStringLiteral("match_surface"), QStringLiteral("match-surface")},
+      {QStringLiteral("fair_surface"), QStringLiteral("fair-surface")},
+      // Plastic part features (mitcad#459).
+      {QStringLiteral("plastic_rule"), QStringLiteral("plastic")},
+      {QStringLiteral("boss"), QStringLiteral("plastic")},
+      {QStringLiteral("lip"), QStringLiteral("plastic")},
+      {QStringLiteral("groove"), QStringLiteral("plastic")},
+      {QStringLiteral("snap_fit"), QStringLiteral("plastic")},
+      {QStringLiteral("rest"), QStringLiteral("plastic")},
+      // Body transfers (mitcad#465).
+      {QStringLiteral("body_transfer"), QStringLiteral("component")},
   };
   return icons.value(type, QStringLiteral("feature"));
 }

@@ -24,6 +24,8 @@ target_link_libraries(mitcad-cli PRIVATE Qt6::Gui TKMesh TKFillet TKPrim TKTopAl
 # The imports, which the import corpus tests run, apart from the other
 # commands (tools/check-all.sh runs the corpus again when they change).
 target_sources(mitcad-cli PRIVATE import.cpp import.hpp)
+# Drawings with views, dimensions and a hole table (mitcad#471).
+target_sources(mitcad-cli PRIVATE drawing.cpp drawing.hpp)
 
 if(BUILD_TESTING)
   set(scripts "${CMAKE_CURRENT_SOURCE_DIR}/tests")
@@ -69,6 +71,13 @@ if(BUILD_TESTING)
   # Sweeps, lofts, pipes, coils, ribs and webs (F3): the T0 models' volumes
   # and analytic ones, names through parameter edits, failures.
   foreach(script f3_sweep f3_loft f3_pipe_coil f3_rib_web f3_names_follow_parameters f3_failures)
+    add_test(NAME cli.${script} COMMAND mitcad-cli run "${scripts}/${script}.json")
+  endforeach()
+  # Plastic part features and plastic rules (mitcad#459): analytic volumes,
+  # the rules' defaults and warnings, refused rims and hooks.
+  add_test(NAME cli.plastic COMMAND mitcad-cli run "${scripts}/plastic.json")
+  # Gears (mitcad#472).
+  foreach(script gears gears_link)
     add_test(NAME cli.${script} COMMAND mitcad-cli run "${scripts}/${script}.json")
   endforeach()
 
@@ -778,6 +787,16 @@ if(BUILD_TESTING)
               "-DGENERATOR=${PROJECT_SOURCE_DIR}/tools/libraries/make-profile-library.py"
               "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/profile-library"
               -P "${CMAKE_CURRENT_SOURCE_DIR}/profile-library-test.cmake")
+    # The timber parts (mitcad#478): the generator on the test's timber
+    # group files (boards, a sheet, wood fasteners, a bracket, a hanger, a
+    # post base); their manifest fields, designs and pickers.
+    add_test(NAME cli.timber-library
+      COMMAND "${CMAKE_COMMAND}" "-DCLI=$<TARGET_FILE:mitcad-cli>" "-DGIT=${GIT_EXECUTABLE}"
+              "-DPYTHON=${Python3_EXECUTABLE}"
+              "-DGENERATOR=${PROJECT_SOURCE_DIR}/tools/libraries/make-profile-library.py"
+              "-DGROUPS=${CMAKE_CURRENT_SOURCE_DIR}/tests/timber-groups"
+              "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/timber-library"
+              -P "${CMAKE_CURRENT_SOURCE_DIR}/timber-library-test.cmake")
   endif()
   # BUILD on the generated profile library (mitcad#376, mitcad#377): one
   # profile of each system and slot width with its frames and mass per
@@ -787,6 +806,13 @@ if(BUILD_TESTING)
     COMMAND "${CMAKE_COMMAND}" "-DCLI=$<TARGET_FILE:mitcad-cli>" "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/build-profiles"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/build-profiles-test.cmake")
   set_tests_properties(build.profiles PROPERTIES SKIP_REGULAR_EXPRESSION "build profiles: skipped")
+  # The timber parts of the generated library (mitcad#478): every family's
+  # sizes and marking, sections, densities, the fasteners and connectors;
+  # skipped without MITCAD_PROFILES_LIBRARY.
+  add_test(NAME build.timber
+    COMMAND "${CMAKE_COMMAND}" "-DCLI=$<TARGET_FILE:mitcad-cli>" "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/build-timber"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/build-timber-test.cmake")
+  set_tests_properties(build.timber PROPERTIES SKIP_REGULAR_EXPRESSION "build timber: skipped")
   # A sketch edit that splits the regions an extrusion uses (mitcad#407):
   # every piece stays extruded, with a warning naming them.
   add_test(NAME cli.region_split_pieces COMMAND mitcad-cli run "${scripts}/region_split_pieces.json")
@@ -1050,5 +1076,24 @@ if(BUILD_TESTING)
       set_property(TEST cli.mcp APPEND PROPERTY ENVIRONMENT_MODIFICATION
         "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
     endif()
+  endif()
+endif()
+
+# Drawings with views, dimensions and a hole table (mitcad#471): the design
+# tests/drawing.json makes, written as SVG, PDF and DXF by export-drawing
+# and read back (drawing-test.cmake).
+if(BUILD_TESTING)
+  set(drawing "${CMAKE_CURRENT_BINARY_DIR}/drawing")
+  file(MAKE_DIRECTORY "${drawing}")
+  add_test(NAME cli.drawing_design
+    COMMAND mitcad-cli run "${CMAKE_CURRENT_SOURCE_DIR}/tests/drawing.json" --save "${drawing}/drawing.mitcad")
+  set_tests_properties(cli.drawing_design PROPERTIES FIXTURES_SETUP cli_drawing)
+  add_test(NAME cli.export_drawing
+    COMMAND "${CMAKE_COMMAND}" "-DCLI=$<TARGET_FILE:mitcad-cli>" "-DDESIGN=${drawing}/drawing.mitcad"
+            "-DWORK=${drawing}/out" -P "${CMAKE_CURRENT_SOURCE_DIR}/drawing-test.cmake")
+  set_tests_properties(cli.export_drawing PROPERTIES FIXTURES_REQUIRED cli_drawing)
+  if(WIN32)
+    set_property(TEST cli.drawing_design cli.export_drawing APPEND PROPERTY ENVIRONMENT_MODIFICATION
+      "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
   endif()
 endif()

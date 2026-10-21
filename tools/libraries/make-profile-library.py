@@ -22,8 +22,9 @@ made one of three ways:
 - solid: the source's solids as a base feature, moved to Mitcad's
   coordinates with `place`;
 - model: no source; the design is built from `dimensions` (a plate, an
-  angle, a rod with a cosmetic thread) for sheets, plates, shafts and
-  screws sold without a CAD file.
+  angle, a rod with a cosmetic thread, a timber board, a wood screw or
+  nail, a joist hanger, a post base) for sheets, plates, shafts, screws
+  and the timber parts (mitcad#478) sold without a CAD file.
 
 Mount frames are joint origins named mount:<name>: found from a profile's
 section ({"auto": "profile"}) or listed. The supplier's files are read
@@ -37,11 +38,13 @@ section's curves, the profile regions' keys).
 """
 
 import argparse
+import base64
 import copy
 import glob
 import json
 import math
 import os
+import random
 import shutil
 import struct
 import subprocess
@@ -56,7 +59,8 @@ LIBRARY_DESCRIPTION = ("Mitcad's parts: ISO metric screws, nuts and washers, and
 LICENSE = "MIT"
 PROTOCOL = "2025-11-25"
 # Aluminium, kg per mm3: a profile's mass per metre when the group file
-# gives none.
+# gives none, and its density when neither the part nor its group file
+# names one (`density`, kg/m3).
 ALUMINIUM = 2.7e-6
 MAKES = ("section", "solid", "model")
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -96,6 +100,38 @@ def length_of(value, what):
         except ValueError:
             pass
     raise PartError(f"{what} is no length: {value!r}")
+
+
+def density_of(entry):
+    """The part's density in kg per m3: its own `density`, else its group
+    file's, else None. A number, or text with the unit kg/m3."""
+    for value in (entry.get("density"), entry.get("_group_density")):
+        if value is None:
+            continue
+        if isinstance(value, str):
+            text = value.strip()
+            if text.endswith("kg/m3"):
+                text = text[: -len("kg/m3")]
+            try:
+                value = float(text.strip().replace(",", "."))
+            except ValueError:
+                fail(f"{entry['id']}: density {value!r} is no number of kg/m3")
+        if not isinstance(value, (int, float)) or value <= 0:
+            fail(f"{entry['id']}: density {value!r} is no number of kg/m3 above 0")
+        return float(value)
+    return None
+
+
+def merged_block(base, over):
+    """`over` merged into a copy of `base`: objects key by key, other
+    values replaced (a configuration row's build block over its part's)."""
+    out = copy.deepcopy(base)
+    for key, value in over.items():
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = merged_block(out[key], value)
+        else:
+            out[key] = copy.deepcopy(value)
+    return out
 
 
 def run(command, cwd=None, check=True):
@@ -518,10 +554,14 @@ def listed_frames(entries, what):
                  "z and x are three numbers")
         if "kind" not in frame:
             fail(f"{what}: frame {name} has no kind")
-        if isinstance(origin[0], str) or isinstance(origin[1], str):
-            fail(f"{what}: frame {name}: only the z of an origin may name a parameter")
-        if isinstance(origin[2], str) and abs(abs(z[2]) - 1) > 1e-6:
-            fail(f"{what}: frame {name}: an origin that follows a parameter has its z along +Z or -Z")
+        # One coordinate may be an expression, the one along the frame's z
+        # (a timber board's face frames follow its width and thickness).
+        following = [i for i in range(3) if isinstance(origin[i], str)]
+        if len(following) > 1:
+            fail(f"{what}: frame {name}: only one coordinate of an origin may name a parameter")
+        if following and abs(abs(z[following[0]]) - 1) > 1e-6:
+            fail(f"{what}: frame {name}: an origin that follows a parameter has its z along "
+                 f"+{'XYZ'[following[0]]} or -{'XYZ'[following[0]]}")
         out.append((name, frame["kind"], origin, z, x, extra))
     return out
 
@@ -543,9 +583,28 @@ def add_frames(mcp, document, frames, length):
             definition["flip"] = True
         return definition
 
+    def follow_side(name, origin, z, x):
+        """A frame on a side whose x or y coordinate is an expression (a
+        board's face at W / 2): on a plane offset by it from a fixed plane
+        through the frame's other coordinates, facing the frame's z."""
+        i = 0 if isinstance(origin[0], str) else 1
+        expression = origin[i].strip()
+        normal = [0.0, 0.0, 0.0]
+        normal[i] = 1.0 if z[i] > 0 else -1.0
+        if z[i] < 0:
+            expression = expression[1:].strip() if expression.startswith("-") else f"-({expression})"
+        base = [0.0 if j == i else float(origin[j]) for j in range(3)]
+        plane = mcp.add(document, {"cmd": "add_feature", "name": f"Plane of {name}", "def": {
+            "type": "construction_plane", "definition": {
+                "type": "offset", "plane": {"origin": base, "normal": normal, "x_axis": x},
+                "distance": expression}}})
+        return {"type": "joint_origin", "geometry": plane}
+
     ordered = sorted(frames, key=lambda f: {"end_a": 0, "end_b": 1}.get(f[0], 2))
     for name, _, origin, z, x, _ in ordered:
-        if name == "end_a" and length and origin is None:
+        if origin is not None and (isinstance(origin[0], str) or isinstance(origin[1], str)):
+            definition = follow_side(name, origin, z, x)
+        elif name == "end_a" and length and origin is None:
             definition = {"type": "joint_origin", "geometry": "xy", "flip": True}
         elif name == "end_b" and length and origin is None:
             definition = follow(name, "End B plane", [0.0, 0.0, length], [0, 0, 1], [1, 0, 0])
@@ -875,7 +934,9 @@ def build_cut_part(ctx, mcp, entry, build, curves, face_areas, source_length, ho
             build.setdefault("section", {"width": mm(x1 - x0), "height": mm(y1 - y0)})
             if openings and "opening" not in build.get("slot", {}):
                 build.setdefault("slot", {})["opening"] = mm(min(openings))
-            build.setdefault("mass_per_metre", f"{per_length * 1000 * ALUMINIUM:.3f} kg")
+            density = density_of(entry)
+            per_mm3 = ALUMINIUM if density is None else density * 1e-9
+            build.setdefault("mass_per_metre", f"{per_length * 1000 * per_mm3:.3f} kg")
         finish_design(mcp, document, entry)
         return save(ctx, mcp, document, entry), {"kind": "section", "curves": curves}
     finally:
@@ -934,6 +995,288 @@ def make_solid(ctx, mcp, entry, build):
         mcp.close(document)
 
 
+# ---------------------------------------------------------------------
+# Timber parts (mitcad#478): boards, wood fasteners, sheets and the steel
+# connectors of timber, modelled from their dimensions.
+
+def value_of(value, parameters):
+    """A size in mm: a number, a text with a unit, or a parameter's name."""
+    if isinstance(value, str) and value.strip() in parameters:
+        value = parameters[value.strip()]
+    return length_of(value, "a size")
+
+
+def board_sketch(w, t, width, thickness):
+    """A rectangle `w` x `t` (parameter names) centred on the origin of XY,
+    the width along X: its corners dimensioned by the parameters, its
+    diagonal's middle on a fixed point at the origin."""
+    hw, ht = width / 2, thickness / 2
+    entities = [
+        {"id": "p1", "type": "point", "at": [-hw, -ht]},
+        {"id": "p2", "type": "point", "at": [hw, -ht]},
+        {"id": "p3", "type": "point", "at": [hw, ht]},
+        {"id": "p4", "type": "point", "at": [-hw, ht]},
+        {"id": "p5", "type": "point", "at": [0, 0], "fixed": True},
+        {"id": "c6", "type": "line", "start": "p1", "end": "p2"},
+        {"id": "c7", "type": "line", "start": "p2", "end": "p3"},
+        {"id": "c8", "type": "line", "start": "p3", "end": "p4"},
+        {"id": "c9", "type": "line", "start": "p4", "end": "p1"},
+        {"id": "c10", "type": "line", "start": "p1", "end": "p3", "construction": True},
+    ]
+    constraints = [
+        {"id": "k11", "type": "horizontal", "line": "c6"},
+        {"id": "k12", "type": "vertical", "line": "c7"},
+        {"id": "k13", "type": "horizontal", "line": "c8"},
+        {"id": "k14", "type": "vertical", "line": "c9"},
+        {"id": "k15", "type": "midpoint", "point": "p5", "curve": "c10"},
+    ]
+    dimensions = [
+        {"id": "k16", "type": "length", "line": "c6", "value": w},
+        {"id": "k17", "type": "length", "line": "c7", "value": t},
+    ]
+    return {"type": "sketch", "plane": "xy", "entities": entities, "constraints": constraints,
+            "dimensions": dimensions}
+
+
+def board_frames(w, t):
+    """A board's frames: its ends, and a face frame on each side at z = 0 on
+    the side's centre line, z out of the side and x along +Z (as a profile's
+    slot frames), following the width `w` and thickness `t`."""
+    return [
+        {"name": "end_a", "kind": "end"},
+        {"name": "end_b", "kind": "end"},
+        {"name": "face_xp", "kind": "face", "origin": [f"{w} / 2", 0, 0], "z": [1, 0, 0], "x": [0, 0, 1]},
+        {"name": "face_xn", "kind": "face", "origin": [f"-{w} / 2", 0, 0], "z": [-1, 0, 0], "x": [0, 0, 1]},
+        {"name": "face_yp", "kind": "face", "origin": [0, f"{t} / 2", 0], "z": [0, 1, 0], "x": [0, 0, 1]},
+        {"name": "face_yn", "kind": "face", "origin": [0, f"-{t} / 2", 0], "z": [0, -1, 0], "x": [0, 0, 1]},
+    ]
+
+
+# The `mount` frame of a bracket, hanger or post base is the design's
+# origin and axes: z into the member it is placed on (the carrier; the
+# post), x up the carried member's section (a hanger), out of the side it
+# sits on (a bracket) or along the post's +X.
+MOUNT = {"name": "mount", "kind": "face", "origin": [0, 0, 0], "z": [0, 0, 1], "x": [1, 0, 0]}
+
+
+def timber_connector(part, shape, dimensions):
+    """The plates (name, low corner, high corner), the screw holes and the
+    frames of a bracket, joist hanger or post base, in its mount frame's
+    coordinates. A hole is cut from the surface its fastener's head bears
+    on (its frame's origin, z out towards the head) through the plate;
+    hole_a_<n> go into member a (the carried member, the post), hole_b_<n>
+    into b (the carrier)."""
+    d = {key: length_of(value, f"{part}: dimensions.{key}") for key, value in dimensions.items()
+         if key not in ("shape", "legs", "holes")}
+    hole = d.get("hole", 5.0)
+    plates, holes = [], []
+
+    def drill(on, origin, z, depth):
+        n = sum(1 for h in holes if h["name"].startswith(f"hole_{on}_")) + 1
+        holes.append({"name": f"hole_{on}_{n}", "origin": [round(v, 6) + 0.0 for v in origin], "z": z,
+                      "diameter": hole, "depth": depth})
+
+    t = d["thickness"]
+    if shape == "bracket":
+        # An angle: one arm on the carrier's face (the plane z = 0, from
+        # the edge along +x), one on member a's side (the plane x = 0,
+        # along -z), `width` across y.
+        legs = dimensions["legs"]
+        if not isinstance(legs, list) or len(legs) != 2:
+            fail(f"{part}: dimensions.legs is a list of two lengths (on the carrier, on the member)")
+        on_b, on_a = (length_of(v, f"{part}: dimensions.legs") for v in legs)
+        w = d["width"]
+        plates = [("Arm on the carrier", [0, -w / 2, -t], [on_b, w / 2, 0]),
+                  ("Arm on the member", [0, -w / 2, -on_a], [t, w / 2, 0])]
+        spec = dimensions.get("holes") or {}
+        for x, y in spec.get("b", []):
+            drill("b", [x, y, -t], [0, 0, -1], 2 * t)
+        for z, y in spec.get("a", []):
+            drill("a", [t, y, -z], [1, 0, 0], 2 * t)
+        return plates, holes, [MOUNT]
+    if shape == "hanger":
+        # A U round the joist's end (`width` x `height`, x up), its flanges
+        # on the carrier's face (z = 0); the joist's end at the origin.
+        w, h, high, depth, f = d["width"], d["height"], d["hanger_height"], d["depth"], d["flange"]
+        bottom, top = -h / 2 - t, -h / 2 + high
+        plates = [("Seat", [bottom, -w / 2 - t, -depth], [-h / 2, w / 2 + t, 0]),
+                  ("Side 1", [bottom, w / 2, -depth], [top, w / 2 + t, 0]),
+                  ("Side 2", [bottom, -w / 2 - t, -depth], [top, -w / 2, 0]),
+                  ("Flange 1", [bottom, w / 2, -t], [top, w / 2 + t + f, 0]),
+                  ("Flange 2", [bottom, -w / 2 - t - f, -t], [top, -w / 2, 0])]
+        count = max(2, int(high // 40))
+        for side in (1, -1):
+            for i in range(count):
+                drill("b", [-h / 2 + high * (i + 0.5) / count, side * (w / 2 + t + f / 2), -t], [0, 0, -1], 2 * t)
+        for side in (1, -1):
+            for i in (1, 2):
+                drill("a", [-h / 2 + high * i / 3, side * (w / 2 + t), -depth / 2], [0, side, 0], 2 * t)
+        return plates, holes, [MOUNT]
+    # A post base: a plate under the post's end (z < 0) and two side plates
+    # up its x+ and x- faces.
+    w, high, size, below, side_width = d["width"], d["height"], d["plate"], d["plate_thickness"], d["side"]
+    plates = [("Base plate", [-size / 2, -size / 2, -below], [size / 2, size / 2, 0]),
+              ("Side 1", [w / 2, -side_width / 2, -below], [w / 2 + t, side_width / 2, high]),
+              ("Side 2", [-w / 2 - t, -side_width / 2, -below], [-w / 2, side_width / 2, high])]
+    for side in (1, -1):
+        drill("a", [side * (w / 2 + t), -side_width / 4, high / 3], [side, 0, 0], 2 * t)
+        drill("a", [side * (w / 2 + t), side_width / 4, 2 * high / 3], [side, 0, 0], 2 * t)
+    base = {"name": "base", "kind": "face", "origin": [0, 0, -below], "z": [0, 0, -1], "x": [1, 0, 0]}
+    return plates, holes, [MOUNT, base]
+
+
+def fill_fasteners(entry, build):
+    """A connector's fasteners given by the member they go into (`on`)
+    without frames: every hole frame of that member (hole_<on>_<n>), and
+    their count."""
+    connector = build.get("connector")
+    if not isinstance(connector, dict):
+        return
+    names = [f["name"] for f in build.get("frames") or []]
+    for fastener in connector.get("fasteners") or []:
+        if not isinstance(fastener, dict) or "frame" in fastener or "frames" in fastener:
+            continue
+        on = fastener.get("on")
+        if on not in ("a", "b"):
+            continue
+        frames = [n for n in names if n.startswith(f"hole_{on}_")]
+        if not frames:
+            raise PartError(f"its fasteners into {on} have no hole frames hole_{on}_<n>")
+        fastener["frames"] = frames
+        fastener["count"] = len(frames)
+
+
+# The end grain's tile (mm) and the pith's place in it: the rings of a
+# log whose pith lies 40 mm across and 120 mm up from a board's centre, so
+# that every section up to 150 mm thick and 300 mm wide shows arcs of one
+# pith, the tile's seams (where another tile's pith is as near) outside it.
+END_GRAIN_TILE = 400.0
+END_GRAIN_PITH = (40.0, 120.0)
+# The largest embedded end grain image, base64 (the published library's
+# designs keep their textures small).
+END_GRAIN_DATA = 64 << 10
+
+
+def texture_png(kind, colour, seed, pixels=None):
+    """A tiling texture image (PNG): `grain` (wood with the grain along the
+    image's height), `end_grain` (growth rings, one END_GRAIN_TILE square
+    of `pixels`, mitcad#484), `strands` (oriented strand board) or
+    `particles` (chipboard), in shades of `colour` (sRGB, 0..1)."""
+    rng = random.Random(f"{kind}:{seed}")
+    if kind == "grain":
+        width, height = 64, 256
+    elif kind == "end_grain":
+        width = height = pixels or 256
+    else:
+        width, height = 96, 96
+    shades = [[1.0] * width for _ in range(height)]
+    if kind == "end_grain":
+        # The distance to the nearest of the tiles' piths, so that the
+        # image tiles; the rings a little uneven and the latewood dark.
+        spacing = rng.uniform(7.5, 9.0)
+        p1, p2 = rng.uniform(0, 2 * math.pi), rng.uniform(0, 2 * math.pi)
+        size = END_GRAIN_TILE
+        for r in range(height):
+            for c in range(width):
+                dx = (c + 0.5) / width * size - END_GRAIN_PITH[0]
+                dy = (r + 0.5) / height * size - END_GRAIN_PITH[1]
+                dx -= size * round(dx / size)
+                dy -= size * round(dy / size)
+                radius = math.hypot(dx, dy)
+                angle = math.atan2(dy, dx)
+                phase = radius / spacing + 0.18 * math.sin(radius / 23 + p1) + 0.12 * math.sin(3 * angle + p2)
+                f = phase - math.floor(phase)
+                # Earlywood light, the latewood a soft dark band.
+                late = max(0.0, 1.0 - abs(f - 0.8) / 0.22)
+                late = late * late * (3 - 2 * late)
+                # Few levels: the image stays small enough to embed.
+                shades[r][c] = round((1.0 - 0.28 * late) * 24) / 24
+    elif kind == "grain":
+        streak = [rng.uniform(-1, 1) for _ in range(width)]
+        streak = [(streak[i - 1] + 2 * streak[i] + streak[(i + 1) % width]) / 4 for i in range(width)]
+        p1, p2, p3 = (rng.uniform(0, 2 * math.pi) for _ in range(3))
+        for r in range(height):
+            v = r / height
+            wobble = 0.04 * math.sin(2 * math.pi * v + p1) + 0.02 * math.sin(6 * math.pi * v + p2)
+            for c in range(width):
+                u = c / width
+                ring = 0.5 + 0.5 * math.sin(10 * math.pi * (u + wobble) + p3 + 0.8 * math.sin(4 * math.pi * u + p1))
+                shades[r][c] = 0.95 + 0.05 * streak[c] - 0.25 * ring ** 8
+    elif kind == "strands":
+        for _ in range(140):
+            cx, cy = rng.randrange(width), rng.randrange(height)
+            a, b = rng.randint(2, 6), rng.randint(6, 18)
+            if rng.random() < 0.5:
+                a, b = b, a
+            shade = rng.uniform(0.78, 1.15)
+            for dy in range(-b, b + 1):
+                for dx in range(-a, a + 1):
+                    shades[(cy + dy) % height][(cx + dx) % width] = shade
+    else:
+        for r in range(height):
+            for c in range(width):
+                shades[r][c] = 0.7 if rng.random() < 0.03 else rng.uniform(0.88, 1.06)
+    rows = []
+    for r in range(height):
+        line = []
+        for c in range(width):
+            line.extend(max(0, min(255, int(255 * channel * shades[r][c]))) for channel in colour)
+        rows.append(line)
+    return png(width, height, rows)
+
+
+def set_appearance(mcp, document, entry, caps=()):
+    """The bodies' appearance: `appearance` names one of Mitcad's library
+    (`steel_satin`), or is a new one of the design `{id, name, based_on,
+    base_color, roughness, texture, size}` whose texture (`grain`,
+    `strands`, `particles`) is made here and embedded, projected in the
+    body's coordinates so that a board's grain runs along its length (Z).
+    A board's `caps` (the faces of its ends) with a grain get its end
+    grain, `<id>-end`."""
+    look = entry.get("appearance")
+    if not look:
+        return
+    if isinstance(look, str):
+        appearance = look
+    else:
+        appearance = look.get("id") or "timber"
+        command = {"cmd": "create_appearance", "id": appearance, "name": look.get("name") or entry["name"],
+                   "based_on": look.get("based_on", "wood_maple")}
+        for key in ("base_color", "roughness", "specular"):
+            if key in look:
+                command[key] = look[key]
+        if look.get("texture"):
+            image = texture_png(look["texture"], look.get("base_color", [0.85, 0.72, 0.52]), entry["id"])
+            # `path` names the image; its data is embedded in the design.
+            command["texture"] = {"path": f"{appearance}-{look['texture']}.png",
+                                  "data": base64.b64encode(image).decode("ascii"),
+                                  "size": look.get("size", [100, 1000]), "projection": "box"}
+        mcp.command(document, command)
+    bodies = mcp.query(document, {"query": "bodies"})
+    for body in bodies:
+        mcp.command(document, {"cmd": "set_body_appearance", "uid": body["uid"], "appearance": appearance})
+    # A board's ends (mitcad#484): growth rings of a second appearance on
+    # the caps of its extrusion, which placed members show on their ends.
+    if caps and isinstance(look, dict) and look.get("texture") == "grain":
+        colour = [round(0.9 * c, 3) for c in look.get("base_color", [0.85, 0.72, 0.52])]
+        for pixels in (256, 192, 128):
+            data = base64.b64encode(texture_png("end_grain", colour, entry["id"], pixels)).decode("ascii")
+            if len(data) <= END_GRAIN_DATA:
+                break
+        else:
+            raise PartError(f"the end grain's image is larger than {END_GRAIN_DATA >> 10} KiB")
+        ends = f"{appearance}-end"
+        mcp.command(document, {"cmd": "create_appearance", "id": ends,
+                               "name": f"{look.get('name') or entry['name']}, end grain",
+                               "based_on": look.get("based_on", "wood_maple"), "base_color": colour,
+                               "roughness": min(1.0, look.get("roughness", 0.7) + 0.1),
+                               "texture": {"path": f"{ends}-end_grain.png", "data": data,
+                                           "size": [END_GRAIN_TILE, END_GRAIN_TILE], "projection": "box"}})
+        for body in bodies:
+            mcp.command(document, {"cmd": "set_face_appearance", "uid": body["uid"], "faces": caps,
+                                   "appearance": ends})
+
+
 def make_model(ctx, mcp, entry, build):
     """A sheet, plate, angle or rod from its `dimensions`: `shape`
     (`plate`, `angle`, `rod` or `none`), its sizes (a parameter of
@@ -945,15 +1288,33 @@ def make_model(ctx, mcp, entry, build):
     +Y) and its second along +Y (in the XY plane, `thickness` along +Z). A
     rod is a cylinder of `diameter` on the Z axis from z = 0 to `length`;
     with `thread` (a thread size: `standard`, `designation`, `class`) a
-    cosmetic thread over its whole side (mitcad#449)."""
+    cosmetic thread over its whole side (mitcad#449).
+
+    The timber parts (mitcad#478): a `board` is a rectangle `width` x
+    `thickness` centred on XY (width along X) extruded by `length` along
+    +Z, the layout of a profile, with its ends and four face frames that
+    follow the width and thickness; a `fastener` a wood screw or nail (a
+    shank of `diameter` from z = 0 to `length`, a head of `head_diameter`
+    and `head_height`, countersunk into z > 0 or bearing on z = 0); a
+    `sheet` a box from the origin, `width` along X, `height` along Y,
+    `thickness` along +Z; a `bracket`, `hanger` and `post_base` steel
+    plates of fixed sizes built in their `mount` frame's coordinates, with
+    their screw holes cut and named as hole frames (timber_connector)."""
     dimensions = entry.get("dimensions") or {}
     if not isinstance(dimensions, dict):
         fail(f"{entry['id']}: dimensions is no object")
     shape = dimensions.get("shape", "none")
     needed = {"plate": ("width", "thickness", "length"), "angle": ("legs", "width", "thickness"),
-              "rod": ("diameter", "length"), "none": ()}.get(shape)
+              "rod": ("diameter", "length"), "none": (),
+              "board": ("width", "thickness", "length"),
+              "fastener": ("diameter", "length", "head_diameter", "head_height"),
+              "sheet": ("width", "height", "thickness"),
+              "bracket": ("legs", "width", "thickness"),
+              "hanger": ("width", "height", "hanger_height", "depth", "flange", "thickness"),
+              "post_base": ("width", "height", "plate", "plate_thickness", "side", "thickness")}.get(shape)
     if needed is None:
-        fail(f"{entry['id']}: dimensions.shape '{shape}' is none of plate, angle, rod, none")
+        fail(f"{entry['id']}: dimensions.shape '{shape}' is none of plate, angle, rod, none, board, fastener, "
+             "sheet, bracket, hanger, post_base")
     missing = [n for n in needed if n not in dimensions]
     if missing:
         fail(f"{entry['id']}: the {shape} needs dimensions.{', dimensions.'.join(missing)}")
@@ -989,6 +1350,9 @@ def make_model(ctx, mcp, entry, build):
                 "type": "box", "plane": "xy", "corner": [0, 0], "length": length, "width": width,
                 "height": height, "operation": operation}})
 
+        # The frames a shape makes when the entry lists none, and the holes
+        # it has cut (their frames are added to the others).
+        default_frames, holes, caps = [], [], []
         if shape == "plate":
             w = size(dimensions["width"], "W")
             t = size(dimensions["thickness"], "T")
@@ -1022,19 +1386,76 @@ def make_model(ctx, mcp, entry, build):
                 if len(threads) != 1:
                     raise PartError(f"the rod's thread {thread['designation']} is not listed "
                                     f"({len(threads)} threads)")
+        elif shape == "board":
+            w = size(dimensions["width"], "W")
+            t = size(dimensions["thickness"], "T")
+            length = size(dimensions["length"], "L")
+            sketch = mcp.add(document, {"cmd": "add_feature", "name": "Section", "def": board_sketch(
+                w, t, value_of(dimensions["width"], parameters), value_of(dimensions["thickness"], parameters))})
+            regions = mcp.query(document, {"query": "sketch", "uid": sketch}).get("regions") or []
+            if len(regions) != 1:
+                raise PartError(f"the board's section has {len(regions)} regions, not one")
+            region = regions[0]["key"]
+            extrude = mcp.add(document, {"cmd": "add_feature", "name": "Profile", "def": {
+                "type": "extrude", "profiles": [{"sketch": sketch, "region": region}],
+                "extent": {"type": "distance", "distance": length}, "operation": "new_body"}})
+            caps = [f"{extrude}:start({region})", f"{extrude}:end({region})"]
+            default_frames = board_frames(w, t)
+        elif shape == "fastener":
+            d = size(dimensions["diameter"], "D")
+            length = size(dimensions["length"], "L")
+            dk = size(dimensions["head_diameter"], "DK")
+            k = size(dimensions["head_height"], "K")
+            head = dimensions.get("head", "countersunk")
+            if head not in ("countersunk", "flat", "pan", "washer"):
+                fail(f"{entry['id']}: dimensions.head '{head}' is none of countersunk, flat, pan, washer")
+            mcp.add(document, {"cmd": "add_feature", "name": "Shank", "def": {
+                "type": "cylinder", "plane": "xy", "center": [0, 0], "diameter": d, "height": length,
+                "operation": "new_body"}})
+            # A countersunk head lies in the material below the surface (z
+            # > 0), the others on it (z < 0).
+            mcp.add(document, {"cmd": "add_feature", "name": "Head", "def": {
+                "type": "cylinder", "plane": "xy", "center": [0, 0], "diameter": dk,
+                "height": k if head == "countersunk" else f"-{k}", "operation": "join"}})
+            default_frames = [{"name": "axis", "kind": "shaft", "origin": [0, 0, 0], "z": [0, 0, 1], "x": [1, 0, 0]}]
+        elif shape == "sheet":
+            w = size(dimensions["width"], "W")
+            h = size(dimensions["height"], "H")
+            t = size(dimensions["thickness"], "T")
+            box("Sheet", w, h, t, "new_body")
+            default_frames = [{"name": "face", "kind": "face", "origin": [0, 0, 0], "z": [0, 0, 1], "x": [1, 0, 0]}]
+        elif shape in ("bracket", "hanger", "post_base"):
+            plates, holes, default_frames = timber_connector(entry["id"], shape, dimensions)
+            for n, (name, low, high) in enumerate(plates):
+                mcp.add(document, {"cmd": "add_feature", "name": name, "def": {
+                    "type": "box", "plane": {"origin": [0, 0, low[2]], "normal": [0, 0, 1], "x_axis": [1, 0, 0]},
+                    "corner": [low[0], low[1]], "length": high[0] - low[0], "width": high[1] - low[1],
+                    "height": high[2] - low[2], "operation": "new_body" if n == 0 else "join"}})
         if shape in ("plate", "angle"):
             bodies = mcp.query(document, {"query": "bodies"})
             mcp.add(document, {"cmd": "add_feature", "name": "Centred", "def": {
                 "type": "move", "bodies": [body["uid"] for body in bodies],
                 "transform": {"type": "translate_xyz", "x": f"-{w} / 2", "y": 0, "z": 0}}})
+        for n, hole in enumerate(holes, 1):
+            # Cut from the surface the head bears on, into the plate.
+            z = hole["z"]
+            mcp.add(document, {"cmd": "add_feature", "name": f"Hole {n}", "def": {
+                "type": "cylinder", "plane": {"origin": hole["origin"], "normal": z,
+                                              "x_axis": [0, 0, 1] if abs(z[2]) < 0.9 else [1, 0, 0]},
+                "center": [0, 0], "diameter": hole["diameter"], "height": -hole["depth"], "operation": "cut"}})
         for command in entry.get("commands") or []:
             mcp.command(document, command)
         if not mcp.query(document, {"query": "bodies"}):
             raise PartError("the model makes no body")
-        frames = listed_frames(entry.get("frames") or [], entry["id"])
+        listed = (entry.get("frames") or default_frames) + [
+            {"name": h["name"], "kind": "hole", "origin": h["origin"], "z": h["z"],
+             "x": [0, 0, 1] if abs(h["z"][2]) < 0.9 else [1, 0, 0], "diameter": mm(h["diameter"])} for h in holes]
+        frames = listed_frames(listed, entry["id"])
         length = (build.get("length") or {}).get("parameter")
         add_frames(mcp, document, frames, length)
         set_frames(entry, build, frames, build.get("frames") or [])
+        fill_fasteners(entry, build)
+        set_appearance(mcp, document, entry, caps)
         finish_design(mcp, document, entry)
         return save(ctx, mcp, document, entry), {"kind": "model"}
     finally:
@@ -1231,6 +1652,62 @@ def preview(ctx, design, made, mcp_bounds):
     return box_preview(*mcp_bounds)
 
 
+def end_view(w, t, length):
+    """`add_named_view`'s fields for a board w x t (X, Y) from z = 0 to
+    `length`, seen from beyond end B and a little from +X and +Y, so that
+    the end, the +X side and the top show; orthographic, the piece filling
+    the view."""
+    look = [-0.3, -0.3, -1.0]  # from the eye to the piece
+    norm = math.sqrt(sum(c * c for c in look))
+    look = [c / norm for c in look]
+    up_hint = [0.0, 1.0, 0.0]
+    right = cross(look, up_hint)
+    norm = math.sqrt(sum(c * c for c in right))
+    right = [c / norm for c in right]
+    up = cross(right, look)
+    corners = [(x, y, z) for x in (-w / 2, w / 2) for y in (-t / 2, t / 2) for z in (0.0, length)]
+    target = [0.0, 0.0, length / 2]
+    across = max(abs(dot([c[i] - target[i] for i in range(3)], axis)) for c in corners for axis in (right, up))
+    distance = 4 * math.sqrt(w * w + t * t + length * length)
+    eye = [target[i] - look[i] * distance for i in range(3)]
+    return {"eye": eye, "target": target, "up": up, "perspective": False, "height": 2 * across * 1.1}
+
+
+def row_previews(ctx, mcp, design, entry):
+    """Each row of a timber board (mitcad#484) rendered from its end: a
+    piece 1.2 times its larger side long, so that the tiles show the
+    sections' proportions; PNG by row name, none without rendering."""
+    rows = entry.get("rows") or []
+    if not ctx.render or (entry.get("dimensions") or {}).get("shape") != "board" or not rows:
+        return {}
+    images = {}
+    for row in rows:
+        values = row.get("values") or {}
+        w = length_of(values.get("W"), f"{entry['id']} {row['name']}: W")
+        t = length_of(values.get("T"), f"{entry['id']} {row['name']}: T")
+        length = round(1.2 * max(w, t))
+        name = f"row-{entry['id']}-{row['name']}.mitcad"
+        document = mcp.open(os.path.relpath(design, ctx.scratch).replace("\\", "/"))
+        try:
+            mcp.command(document, {"cmd": "apply_configuration", "name": row["name"]})
+            mcp.command(document, {"cmd": "set_parameter", "name": "L", "expression": f"{length} mm"})
+            view = end_view(w, t, length)
+            view.update({"cmd": "add_named_view", "name": "End", "replace": True})
+            mcp.command(document, view)
+            mcp.save(document, name)
+        finally:
+            mcp.close(document)
+        target = os.path.join(ctx.scratch, name + ".png")
+        result = run([ctx.cli, "render", os.path.join(ctx.scratch, name), "-o", target, "--view", "End",
+                      "--size", f"{SIZE}x{SIZE}", "--samples", "16", "--time-limit", "30"], check=False)
+        if result.returncode != 0 or not os.path.isfile(target) or os.path.getsize(target) > 512 << 10:
+            raise PartError(f"row {row['name']}'s preview was not rendered: "
+                            f"{(result.stdout + result.stderr).strip()[-300:]}")
+        with open(target, "rb") as f:
+            images[row["name"]] = f.read()
+    return images
+
+
 def design_bounds(mcp, ctx, design):
     document = mcp.open(os.path.relpath(design, ctx.scratch).replace("\\", "/"))
     try:
@@ -1246,6 +1723,82 @@ def design_bounds(mcp, ctx, design):
 
 # ---------------------------------------------------------------------
 # Group files and the library folder.
+
+def expand_sizes(entry, group):
+    """A part's `sizes` made into its configuration `rows`, each with the
+    build block of its own (`build`, the manifest's `build.rows`): a
+    `board`'s sizes of timber (thickness x widths, nominal and actual,
+    species, density, tolerance, availability), a `fastener`'s diameters x
+    lengths, a `sheet`'s thicknesses."""
+    what = f"{group}: {entry['id']}"
+    sizes = entry.pop("sizes")
+    if entry.get("rows"):
+        fail(f"{what}: a part has `sizes` or `rows`, not both")
+    if not isinstance(sizes, dict) or not isinstance(sizes.get("rows"), list):
+        fail(f"{what}: sizes is an object with rows")
+    shape = (entry.get("dimensions") or {}).get("shape")
+    text = lambda v: f"{v:g}"
+    rows = []
+    for spec in sizes["rows"]:
+        if not isinstance(spec, dict):
+            fail(f"{what}: a row of sizes is no object")
+        availability = spec.get("availability", "standard")
+        if shape == "board":
+            species = spec.get("species", sizes.get("species_default"))
+            densities = sizes.get("species") or {}
+            if species not in densities:
+                fail(f"{what}: the species {species!r} has no density in sizes.species")
+            thickness = float(spec["thickness"])
+            for width in spec.get("widths") or []:
+                width = float(width)
+                actual = width - float(sizes.get("resawn", 0)) if spec.get("resawn") else width
+
+                def tolerance(size, dimension):
+                    for rule in (sizes.get("tolerance") or {}).get(dimension) or []:
+                        if rule[0] is None or size <= rule[0]:
+                            return [rule[1], rule[2]]
+                    return None
+
+                build = {"section": {"width": mm(actual), "height": mm(thickness)},
+                         "nominal": {"width": mm(width), "height": mm(thickness)},
+                         "availability": availability,
+                         "material": {"species": species, "density": densities[species]}}
+                if sizes.get("tolerance"):
+                    build["tolerance"] = {"thickness": tolerance(thickness, "thickness"),
+                                          "width": tolerance(width, "width")}
+                rows.append({"name": f"{text(thickness)}x{text(width)}",
+                             "select": {"Thickness": text(thickness), "Width": text(width)},
+                             "values": {"W": mm(actual), "T": mm(thickness)}, "build": build})
+        elif shape == "fastener":
+            diameter = float(spec["diameter"])
+            head = spec.get("head") or []
+            if len(head) != 2:
+                fail(f"{what}: a fastener's sizes give the head as [diameter, height]")
+            for length in spec.get("lengths") or []:
+                length = float(length)
+                build = {"wood": {"diameter": mm(diameter), "length": mm(length)}}
+                if "availability" in spec:
+                    build["availability"] = availability
+                rows.append({"name": f"{diameter:.1f}x{text(length)}",
+                             "select": {"Diameter": f"{diameter:.1f}", "Length": text(length)},
+                             "values": {"D": mm(diameter), "L": mm(length), "DK": mm(float(head[0])),
+                                        "K": mm(float(head[1]))}, "build": build})
+        elif shape == "sheet":
+            thickness = float(spec["thickness"])
+            rows.append({"name": text(thickness), "select": {"Thickness": text(thickness)},
+                         "values": {"T": mm(thickness)}, "build": {"availability": availability}})
+        else:
+            fail(f"{what}: sizes are made for a board, fastener or sheet, not a {shape}")
+    if shape == "board":
+        # Thickness by thickness, each by its widths (the pickers' order).
+        rows.sort(key=lambda r: (float(r["select"]["Thickness"]), float(r["select"]["Width"])))
+    entry["rows"] = rows
+    names = [r["name"] for r in rows]
+    if len(set(names)) != len(names):
+        fail(f"{what}: sizes make a row twice")
+    if entry.get("default") and entry["default"] not in names:
+        fail(f"{what}: the default {entry['default']} is no row of its sizes")
+
 
 def read_groups(folder, only):
     files = sorted(glob.glob(os.path.join(folder, "*.json")))
@@ -1273,6 +1826,11 @@ def read_groups(folder, only):
                     for n in notes):
                 fail(f"{name}: left_out is a list of {{\"source\", \"reason\"}}")
             left_out += [dict(n, _group=name) for n in notes]
+            # The density (kg/m3) of the group's parts that name none.
+            if data.get("density") is not None:
+                for entry in data.get("parts", data.get("components")) or []:
+                    if isinstance(entry, dict):
+                        entry["_group_density"] = data["density"]
         else:
             parts = data
         if not isinstance(parts, list):
@@ -1291,9 +1849,13 @@ def read_groups(folder, only):
                 fail(f"{name}: {entry['id']}: a {entry['make']} part names its source")
             if "build" in entry and not isinstance(entry["build"], dict):
                 fail(f"{name}: {entry['id']}: build is no object")
+            if "sizes" in entry:
+                expand_sizes(entry, name)
             for row in entry.get("rows") or []:
                 if isinstance(row, dict) and "source" in row and not isinstance(row["source"], str):
                     fail(f"{name}: {entry['id']}: the source of row {row.get('name')} is no path")
+                if isinstance(row, dict) and "build" in row and not isinstance(row["build"], dict):
+                    fail(f"{name}: {entry['id']}: the build of row {row.get('name')} is no object")
             seen.add(entry["id"])
             entry["_group"] = name
             if not only or entry["id"] in only:
@@ -1350,6 +1912,10 @@ def sources_text(components, entries, left_out=()):
     for component in components:
         entry = by_id[component["id"]]
         where = entry.get("source") or "the supplier's dimensions"
+        if not entry.get("source") and entry.get("data_source"):
+            # A part of no supplier (the timber parts): where its sizes
+            # come from.
+            where = entry["data_source"]
         if entry["make"] == "model" and entry.get("source"):
             where = f"modelled from the dimensions of {entry['source']}"
         url = entry.get("supplier_url") or ""
@@ -1383,6 +1949,18 @@ class Context:
 
 def make_part(ctx, mcp, entry):
     build = copy.deepcopy(entry.get("build") or {})
+    # The rows' own build blocks (a timber size's section, species and
+    # availability): the manifest's build.rows, merged over the part's by
+    # whoever reads a row; the part's own fields are its default row's.
+    row_builds = {row["name"]: row["build"] for row in entry.get("rows") or []
+                  if isinstance(row, dict) and isinstance(row.get("build"), dict)}
+    if row_builds:
+        default = entry.get("default") or entry["rows"][0]["name"]
+        build = merged_block(build, row_builds.get(default, {}))
+        build["rows"] = row_builds
+    density = density_of(entry)
+    if density is not None and isinstance(build.get("material"), dict):
+        build["material"].setdefault("density", int(density) if density.is_integer() else density)
     if entry["make"] == "section":
         design, made = make_section(ctx, mcp, entry, build)
     elif entry["make"] == "solid":
@@ -1394,9 +1972,15 @@ def make_part(ctx, mcp, entry):
     target = os.path.join(ctx.out, path)
     os.makedirs(os.path.dirname(target), exist_ok=True)
     shutil.copyfile(design, target)
-    image = preview(ctx, design, made, design_bounds(mcp, ctx, design) if made["kind"] != "section" else None)
-    preview_path = f"previews/{entry['id']}.png"
     os.makedirs(os.path.join(ctx.out, "previews"), exist_ok=True)
+    # A timber board's rows each from its end (mitcad#484); the part's
+    # picture its default row's.
+    by_row = row_previews(ctx, mcp, design, entry)
+    if by_row:
+        image = by_row.get(entry.get("default") or entry["rows"][0]["name"])
+    else:
+        image = preview(ctx, design, made, design_bounds(mcp, ctx, design) if made["kind"] != "section" else None)
+    preview_path = f"previews/{entry['id']}.png"
     with open(os.path.join(ctx.out, preview_path), "wb") as f:
         f.write(image)
     component = {"id": entry["id"], "path": path, "category": category, "name": entry["name"]}
@@ -1405,6 +1989,13 @@ def make_part(ctx, mcp, entry):
         if entry.get(key):
             component[key] = entry[key]
     component["preview"] = preview_path
+    if by_row:
+        component["row_previews"] = {}
+        for row, data in by_row.items():
+            row_path = f"previews/{entry['id']}-{row}.png"
+            with open(os.path.join(ctx.out, row_path), "wb") as f:
+                f.write(data)
+            component["row_previews"][row] = row_path
     # A plain part (no build block in its group file) stays one: the frames
     # the making found are not a BUILD part's.
     if build and entry.get("build"):

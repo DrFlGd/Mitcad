@@ -116,6 +116,7 @@
 #include "sketch/SketchTool.hpp"
 #include "update/UpdateController.hpp"
 #include "report/ReportCenter.hpp"
+#include "view/ModeBanner.hpp"
 #include "view/ViewController.hpp"
 #include "view/ViewTessellation.hpp"
 #include "mitcad/io/mesh.hpp"
@@ -308,6 +309,43 @@ void clipBodies(const Document& document, const QJsonValue& plane, const QJsonAr
   meshForView(clipped);
 }
 
+// The Sketch Palette in a scroll area: it keeps its rows at their size hint
+// and scrolls when its place is lower, in the docked command panel and in
+// the floating command card (mitcad#412, mitcad#470). `transparent`: the
+// card's glass shows through (the floating layout).
+QScrollArea* wrapPalette(sketch::SketchPalette* palette, bool transparent) {
+  auto* scroll = new QScrollArea;
+  scroll->setObjectName(QStringLiteral("sketchPaletteScroll"));
+  scroll->setWidgetResizable(true);
+  scroll->setFrameShape(QFrame::NoFrame);
+  scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+  scroll->setWidget(palette);
+  if (transparent) {
+    scroll->setAutoFillBackground(false);
+    scroll->viewport()->setAutoFillBackground(false);
+    palette->setAutoFillBackground(false);
+  }
+  // The Auto constraint section, which shows once a drawing tool has drawn,
+  // comes into view; the palette's places are logged again when it
+  // scrolls, for UI tests.
+  QObject::connect(palette, &sketch::SketchPalette::autoSectionShown, scroll,
+                   [scroll](QWidget* section) { scroll->ensureWidgetVisible(section, 0, 0); });
+  QObject::connect(scroll->verticalScrollBar(), &QScrollBar::valueChanged, palette, [scroll, palette] {
+    TestSync::singleShot(0, palette, [scroll, palette] {
+      if (palette->isVisible()) {
+        const QScrollBar* bar = scroll->verticalScrollBar();
+        qDebug().noquote() << QStringLiteral("Palette scrolled to %1 of %2 (view %3 high, palette %4)")
+                                  .arg(bar->value())
+                                  .arg(bar->maximum())
+                                  .arg(scroll->viewport()->height())
+                                  .arg(palette->height());
+        palette->logPlaces();
+      }
+    });
+  });
+  return scroll;
+}
+
 } // namespace
 
 MainWindow::MainWindow(bool demo, QWidget* parent, bool nativeUi)
@@ -377,6 +415,8 @@ MainWindow::MainWindow(bool demo, QWidget* parent, bool nativeUi)
   setUpOccurrenceDrag();
   // Sketch selection filters and Shift's wider clicks (mitcad#217).
   setUpSelectionScope();
+  // What Create Sketch waits for, over the view (mitcad#474).
+  m_modeBanner = new ModeBanner(m_viewer);
 
   m_registry = new CommandRegistry(this);
   m_sketch = new sketch::SketchController(*this, *m_viewer, *m_registry, this);
@@ -609,10 +649,14 @@ void MainWindow::registerCommands() {
   // The SOLID tab's families (U4), in menu order: Create Sketch goes
   // into CREATE after New Component.
   registerCreateCommands(*m_registry, *this, sketch);
+  // Gear (mitcad#472) ends the CREATE group.
+  registerGearCommands(*m_registry, *this, *this);
   registerModifyCommands(*m_registry, *this);
   // SHEET METAL (mitcad#210): its features, then the main window's actions.
   registerSheetMetalCommands(*m_registry, *this);
   registerSheetActions();
+  // SURFACE (mitcad#455).
+  registerSurfaceCommands(*m_registry, *this);
   registerAssembleCommands(*m_registry, *this);
   registerConstructCommands(*m_registry, *this);
   registerInspectCommands(*m_registry, *this, this, [this] { return m_selection; });
@@ -1118,25 +1162,7 @@ void MainWindow::createPanels() {
   // panel does: the stacked widget reserves every page's minimum height,
   // also the hidden palette's, so each row added to the palette made the
   // window taller (mitcad#412).
-  auto* paletteScroll = new QScrollArea;
-  paletteScroll->setObjectName(QStringLiteral("sketchPaletteScroll"));
-  paletteScroll->setWidgetResizable(true);
-  paletteScroll->setFrameShape(QFrame::NoFrame);
-  paletteScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-  paletteScroll->setWidget(m_palette);
-  // The Auto constraint section, which shows once a drawing tool has drawn,
-  // comes into view; the palette's places are logged again when it
-  // scrolls, for UI tests.
-  connect(m_palette, &sketch::SketchPalette::autoSectionShown, paletteScroll,
-          [paletteScroll](QWidget* section) { paletteScroll->ensureWidgetVisible(section, 0, 0); });
-  connect(paletteScroll->verticalScrollBar(), &QScrollBar::valueChanged, m_palette, [palette = m_palette] {
-    TestSync::singleShot(0, palette, [palette] {
-      if (palette->isVisible()) {
-        palette->logPlaces();
-      }
-    });
-  });
-  m_palettePage = paletteScroll;
+  m_palettePage = wrapPalette(m_palette, false);
   m_commandPages->addWidget(m_palettePage);
   auto* commandDock = new QDockWidget(tr("Command"), this);
   commandDock->setObjectName(QStringLiteral("commandDock"));
@@ -1185,8 +1211,12 @@ void MainWindow::createFloatingPanels() {
   m_idleInfo->setMargin(6);
   createIdlePage();
   m_palette = new sketch::SketchPalette(*m_sketch, *m_registry, sketchConstraintCommands());
-  m_palettePage = m_palette;
-  m_commandPages->addWidget(m_palette);
+  // The card is as high as its page asks for within the view's height
+  // (commandContentHeight); the palette scrolls in it when the card is
+  // shorter than its rows (mitcad#470: without, the stacked widget squeezed
+  // the rows below their size hint and they overlapped).
+  m_palettePage = wrapPalette(m_palette, true);
+  m_commandPages->addWidget(m_palettePage);
   m_commandCard = new GlassCard;
   m_commandCard->setObjectName(QStringLiteral("commandDock"));
   // A stacked widget normally reserves the minimum size of every page,
@@ -1362,6 +1392,7 @@ bool MainWindow::isAvailable(const CommandDef& def) const {
 
 void MainWindow::updateActions() {
   m_autoselect->setActive(m_mode == Mode::Idle);
+  updateModeBanner();
   // The commands' availability checks share their queries' answers.
   QHash<QString, QJsonValue> memo;
   m_queryMemo = &memo;
@@ -3077,6 +3108,16 @@ bool MainWindow::canChangeModel(bool visibilityOnly) const {
   return m_mode == Mode::Idle || (visibilityOnly && m_mode == Mode::Sketch);
 }
 
+QString MainWindow::changeBlockedReason() const {
+  if (windowReadOnly() && !readOnlyReason().isEmpty()) {
+    return readOnlyReason();
+  }
+  if (m_mode == Mode::PickPlane) {
+    return tr("Create Sketch is waiting for a plane: pick one or press Esc.");
+  }
+  return tr("Finish the command or the sketch first.");
+}
+
 void MainWindow::showStatus(const QString& message, bool error) {
   if (error) {
     showError(message);
@@ -3351,6 +3392,14 @@ void MainWindow::onPicked(const Selection& items, Qt::KeyboardModifiers modifier
         return;
       }
     }
+    // Nothing that takes the sketch: what was clicked says why
+    // (mitcad#474), a face that is not planar or one the design policy
+    // leaves out, which the view's filter does not pick.
+    if (!items.isEmpty()) {
+      refusePlanePick(items.first());
+    } else if (const std::optional<SelectionItem> refused = window ? std::nullopt : m_viewer->takeRefusedClick()) {
+      refusePlanePick(*refused);
+    }
     return;
   }
   if (m_mode == Mode::Sketch && m_sketch->tool() != nullptr) {
@@ -3405,6 +3454,7 @@ void MainWindow::setSelection(const Selection& items) {
 
 void MainWindow::updateIdleView() {
   m_autoselect->setActive(m_mode == Mode::Idle);
+  updateModeBanner();
   if (m_mode == Mode::Command) {
     return;
   }
@@ -3849,6 +3899,7 @@ void MainWindow::enterSketch(const QString& uid, bool existing) {
   m_sketchExisting = existing;
   m_mcpSketchEdited = false;
   m_mode = Mode::Sketch;
+  updateModeBanner(); // no plane is waited for (mitcad#474)
   m_selection.clear();
   inputActivated(SelectFilter()); // hides the origin planes
   m_sketch->enter(uid);
@@ -4680,6 +4731,7 @@ void MainWindow::resetCommandState() {
   if (m_mode == Mode::PickPlane) {
     m_mode = Mode::Idle;
     inputActivated(SelectFilter());
+    updateModeBanner();
   }
   m_selection.clear();
   m_section = QJsonValue();

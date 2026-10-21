@@ -1,0 +1,59 @@
+{
+  "categories": [{"id": "wood", "name": "Wood fasteners and connectors"}],
+  "density": 7850,
+  "parts": [
+    {
+      "id": "test-screw", "name": "Test wood screw", "category": "wood", "make": "model",
+      "data_source": "sizes made up for the test",
+      "designation": "Test wood screw {Diameter}x{Length}",
+      "dimensions": {"shape": "fastener", "diameter": "D", "length": "L", "head_diameter": "DK", "head_height": "K",
+                     "head": "countersunk", "parameters": {"D": 5, "L": 50, "DK": 10, "K": 3}},
+      "default": "5.0x50",
+      "sizes": {"rows": [{"diameter": 5.0, "head": [10, 3], "lengths": [40, 50]}]},
+      "appearance": "steel_satin",
+      "build": {"role": "fastener", "wood": {"kind": "screw", "head": "countersunk"}, "material": {"product": "steel"}}
+    },
+    {
+      "id": "test-nail", "name": "Test nail", "category": "wood", "make": "model",
+      "dimensions": {"shape": "fastener", "diameter": "D", "length": "L", "head_diameter": "DK", "head_height": "K",
+                     "head": "flat", "parameters": {"D": 4, "L": 40, "DK": 8, "K": 1.5}},
+      "sizes": {"rows": [{"diameter": 4.0, "head": [8, 1.5], "lengths": [40]}]},
+      "build": {"role": "fastener", "wood": {"kind": "nail", "head": "flat"}}
+    },
+    {
+      "id": "test-bracket", "name": "Test angle bracket", "category": "wood", "make": "model",
+      "dimensions": {"shape": "bracket", "legs": [60, 50], "width": 40, "thickness": 2, "hole": 5,
+                     "holes": {"b": [[20, -10], [20, 10]], "a": [[30, 0]]}},
+      "build": {"role": "connector",
+                "connector": {"placement": "outer", "space": "outer", "junctions": ["L", "T"],
+                              "fit": {"kind": "angle", "width": [28, 150]},
+                              "mates": [{"frame": "mount", "to": "face"}],
+                              "fasteners": [
+                                {"on": "a", "screw": {"library": "mitcad-parts", "component": "test-screw", "config": "5.0x40"}},
+                                {"on": "b", "nail": {"library": "mitcad-parts", "component": "test-nail", "config": "4.0x40"}}]}}
+    },
+    {
+      "id": "test-hanger", "name": "Test joist hanger 48x148", "category": "wood", "make": "model",
+      "dimensions": {"shape": "hanger", "width": 48, "height": 148, "hanger_height": 130, "depth": 70, "flange": 30,
+                     "thickness": 2, "hole": 5},
+      "build": {"role": "connector",
+                "connector": {"placement": "outer", "space": "outer", "junctions": ["T"],
+                              "fit": {"kind": "hanger", "section": [48, 148]},
+                              "mates": [{"frame": "mount", "to": "face"}],
+                              "fasteners": [
+                                {"on": "a", "screw": {"library": "mitcad-parts", "component": "test-screw", "config": "5.0x40"}},
+                                {"on": "b", "screw": {"library": "mitcad-parts", "component": "test-screw", "config": "5.0x40"}}]}}
+    },
+    {
+      "id": "test-post-base", "name": "Test post base 98x98", "category": "wood", "make": "model",
+      "dimensions": {"shape": "post_base", "width": 98, "height": 150, "plate": 160, "plate_thickness": 5,
+                     "side": 60, "thickness": 4, "hole": 5.5},
+      "build": {"role": "connector",
+                "connector": {"placement": "outer", "space": "outer", "junctions": ["surface"],
+                              "fit": {"kind": "post_base", "section": [98, 98]},
+                              "mates": [{"frame": "mount", "to": "end"}],
+                              "fasteners": [
+                                {"on": "a", "screw": {"library": "mitcad-parts", "component": "test-screw", "config": "5.0x50"}}]}}
+    }
+  ]
+}

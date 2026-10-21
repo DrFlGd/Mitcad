@@ -1,0 +1,16 @@
+{
+  "comment": "Worked out by hand. Block: a 20 x 10 x 5 box, 1000. Lid: its top face 2 up (the parameter gap), 20 x 10 = 200 at z 7. Frame: a strip 3 wide continuing the top past its four edges, mitred: 26 x 16 - 20 x 10 = 216, at z 5. Walls: the walls of a 20 x 10 rectangle at x 40..60, 5 high, extended 2 (gap) past their top edges: 2 (20 + 10) 7 = 420.",
+  "body_count": 4,
+  "total": {"volume_mm3": 1000},
+  "bbox": {"min": [-3, -3, 0], "max": [60, 13, 7]},
+  "bodies": [
+    {"name": "Block", "volume_mm3": 1000, "bbox": {"min": [0, 0, 0], "max": [20, 10, 5]}},
+    {"name": "Lid", "area_mm2": 200, "bbox": {"min": [0, 0, 7], "max": [20, 10, 7]}},
+    {"name": "Frame", "area_mm2": 216, "bbox": {"min": [-3, -3, 5], "max": [23, 13, 5]}},
+    {"name": "Walls", "area_mm2": 420, "bbox": {"min": [40, 0, 0], "max": [60, 10, 7]}}
+  ],
+  "timeline": [{"name": "BlockBox"}, {"name": "Lid"}, {"name": "Frame"}, {"name": "Outline"},
+               {"name": "Walls"}, {"name": "Taller"}],
+  "params": [{"name": "gap"}],
+  "parametric": 6
+}

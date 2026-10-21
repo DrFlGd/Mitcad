@@ -195,6 +195,12 @@ const COMMANDS: &[(&str, ApiClass)] = &[
     ("delete_contact_set", Model),
     // Motion links between joints (mitcad#466).
     ("add_motion_link", Model),
+    // Bodies moved into another component on the timeline (mitcad#465).
+    ("transfer_bodies", Model),
+    // Drawings as PDF, SVG or DXF files (mitcad#471).
+    ("export_drawing", FileIo),
+    // Gears: the motion link of a mesh (mitcad#472).
+    ("link_gears", Model),
 ];
 
 /// Every query (its `query`) with its class. A `cache` query with `disk`
@@ -279,6 +285,11 @@ const QUERIES: &[(&str, ApiClass)] = &[
     ("contact_check", Model),
     // Motion links between joints (mitcad#466).
     ("motion_link_offset", Model),
+    // Bodies moved into another component on the timeline (mitcad#465).
+    ("transfer_bodies", Model),
+    // Gears: derived values (mitcad#472).
+    ("gear_values", Model),
+    ("gear_link", Model),
 ];
 
 fn class_in(table: &[(&str, ApiClass)], name: &str) -> Option<ApiClass> {
@@ -362,6 +373,14 @@ pub fn command_class_with(request: &serde_json::Value) -> Option<ApiClass> {
     {
         return Some(Model);
     }
+    // Joinery cuts the design's members and reads no library (mitcad#478).
+    if name == "build_connect"
+        && request
+            .get("joint")
+            .is_some_and(serde_json::Value::is_object)
+    {
+        return Some(Model);
+    }
     command_class(name)
 }
 
@@ -433,6 +452,8 @@ mod tests {
             &crate::api::policy::COMMANDS[..],
             &crate::api::build::COMMANDS[..],
             &crate::api::motion::COMMANDS[..],
+            // Gears (mitcad#472).
+            &crate::api::gears::COMMANDS[..],
         ] {
             names.extend(list.iter().map(|name| (*name).to_owned()));
         }

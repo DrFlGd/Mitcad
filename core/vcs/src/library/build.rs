@@ -274,7 +274,7 @@ impl<'a> BuildPart<'a> {
                 .flatten()
                 .enumerate()
             {
-                for key in ["nut", "screw", "washer"] {
+                for key in ["nut", "screw", "washer", "nail"] {
                     if let Some(reference) = f.get(key).filter(|r| !r.is_null()) {
                         out.push((format!("connector.fasteners[{i}].{key}"), reference));
                     }
@@ -287,6 +287,65 @@ impl<'a> BuildPart<'a> {
             .filter(|c| !c.is_null())
         {
             out.push(("panel.clamp".to_owned(), clamp));
+        }
+        out
+    }
+
+    /// A timber member (mitcad#478): `kind` `timber`.
+    pub fn is_timber(&self) -> bool {
+        self.value.get("kind").and_then(Value::as_str) == Some("timber")
+    }
+
+    /// A connector on the members' outer faces, fitted by their sections
+    /// (a bracket, joist hanger or post base).
+    pub fn is_outer(&self) -> bool {
+        self.block("connector")
+            .and_then(|c| c.get("placement"))
+            .and_then(Value::as_str)
+            == Some("outer")
+    }
+
+    /// A wood screw or nail: a `wood` block.
+    pub fn is_wood_fastener(&self) -> bool {
+        self.block("wood").is_some()
+    }
+
+    /// A sheet laid on a member's face.
+    pub fn is_face_sheet(&self) -> bool {
+        self.block("panel")
+            .and_then(|p| p.get("mount"))
+            .and_then(Value::as_str)
+            == Some("face")
+    }
+
+    /// A part of timber construction: offered only where timber is asked
+    /// for, never in the slot profiles' pickers and junctions.
+    pub fn is_timber_family(&self) -> bool {
+        self.is_timber() || self.is_outer() || self.is_wood_fastener() || self.is_face_sheet()
+    }
+
+    /// The kinds a picker's `kind` may name: a linear part's, the block's
+    /// own (`timber`), `wood` for a wood fastener, `outer` and the fit's
+    /// kind (`angle`, `hanger`, `post_base`) for an outer connector.
+    fn kinds(&self) -> Vec<&'a str> {
+        let mut out: Vec<&'a str> = Vec::new();
+        let linear = self.block("linear").and_then(|l| l.get("kind"));
+        let fit = self
+            .block("connector")
+            .and_then(|c| c.get("fit"))
+            .and_then(|f| f.get("kind"));
+        for kind in [linear, self.value.get("kind"), fit]
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+        {
+            out.push(kind);
+        }
+        if self.is_wood_fastener() {
+            out.push("wood");
+        }
+        if self.is_outer() {
+            out.push("outer");
         }
         out
     }
@@ -406,11 +465,15 @@ pub fn check_component(
     let has_systems = systems
         .and_then(Value::as_array)
         .is_some_and(|a| !a.is_empty());
+    // Timber parts (mitcad#478) have no slot system: a member, an outer
+    // connector fitted by the members' sections.
+    let timber = part.is_timber();
+    let outer = part.is_outer();
     match role {
-        "profile" if build.get("system").is_none() => out.error(format!(
+        "profile" if build.get("system").is_none() && !timber => out.error(format!(
             "{label}: a profile names its slot system (build.system)"
         )),
-        "connector" | "cap" if !has_systems && build.get("system").is_none() => {
+        "connector" | "cap" if !has_systems && build.get("system").is_none() && !outer => {
             out.error(format!(
                 "{label}: a {role} lists the slot systems it fits (build.systems)"
             ));
@@ -461,6 +524,7 @@ pub fn check_component(
                     length_field(slot, key, "slot.", false, label, out);
                 }
             }
+            None if timber => {}
             None => out.warn(format!(
                 "{label}: no build.slot (depth, opening, inner width): panels and nuts cannot \
                  be fitted to it"
@@ -472,11 +536,14 @@ pub fn check_component(
                 Ok(_) => out.error(format!("{label}: build.mass_per_metre is not above 0")),
                 Err(e) => out.error(format!("{label}: build.mass_per_metre: {e}")),
             },
+            // A member's mass is its density times its volume.
+            None if timber => {}
             None => out.warn(format!(
                 "{label}: no build.mass_per_metre: the cut list shows no mass"
             )),
         }
     }
+    check_timber_fields(build, role, label, out);
 
     check_frames(&part, role, label, out);
 
@@ -651,7 +718,7 @@ fn check_frames(part: &BuildPart<'_>, role: &str, label: &str, out: &mut Problem
                 out.error(format!("{label}: a profile has the frame {end}"));
             }
         }
-        if !names.iter().any(|n| slot_frame(n).is_some()) {
+        if !part.is_timber() && !names.iter().any(|n| slot_frame(n).is_some()) {
             out.warn(format!(
                 "{label}: the profile has no slot frames: nothing can be placed on its sides"
             ));
@@ -732,12 +799,37 @@ fn check_connector(part: &BuildPart<'_>, connector: &Value, label: &str, out: &m
         .flatten()
         .enumerate()
     {
-        frame_known(
-            fastener.get("frame").and_then(Value::as_str),
-            &format!("fasteners[{i}]"),
-            out,
-        );
-        for key in ["nut", "screw", "washer"] {
+        // Wood fasteners (an outer connector's) name their hole frames,
+        // their count and the member they go into.
+        match fastener.get("frames").and_then(Value::as_array) {
+            Some(holes) => {
+                for (j, hole) in holes.iter().enumerate() {
+                    frame_known(hole.as_str(), &format!("fasteners[{i}].frames[{j}]"), out);
+                }
+                if fastener
+                    .get("count")
+                    .is_some_and(|c| c.as_u64() != Some(holes.len() as u64))
+                {
+                    out.error(format!(
+                        "{label}: build.connector.fasteners[{i}].count is not the number of its \
+                         frames ({})",
+                        holes.len()
+                    ));
+                }
+                if !matches!(fastener.get("on").and_then(Value::as_str), Some("a" | "b")) {
+                    out.error(format!(
+                        "{label}: build.connector.fasteners[{i}].on names the member they go \
+                         into (a or b)"
+                    ));
+                }
+            }
+            None => frame_known(
+                fastener.get("frame").and_then(Value::as_str),
+                &format!("fasteners[{i}]"),
+                out,
+            ),
+        }
+        for key in ["nut", "screw", "washer", "nail"] {
             if let Some(reference) = fastener.get(key).filter(|r| !r.is_null()) {
                 check_reference(
                     reference,
@@ -793,10 +885,28 @@ fn check_connector(part: &BuildPart<'_>, connector: &Value, label: &str, out: &m
 
 fn check_panel(panel: &Value, label: &str, out: &mut Problems) {
     let mount = panel.get("mount").and_then(Value::as_str).unwrap_or("");
-    if mount != "slot" && mount != "surface" {
+    if !matches!(mount, "slot" | "surface" | "face") {
         out.error(format!(
-            "{label}: build.panel.mount '{mount}' is neither slot nor surface"
+            "{label}: build.panel.mount '{mount}' is none of slot, surface, face"
         ));
+    }
+    // A sheet's sizes sold: [[width, height], ...].
+    if let Some(stock) = panel.get("stock").filter(|s| !s.is_null()) {
+        let sizes = stock.as_array().filter(|sizes| {
+            sizes.iter().all(|size| {
+                size.as_array().is_some_and(|wh| {
+                    wh.len() == 2
+                        && wh
+                            .iter()
+                            .all(|v| quantity(v, Kind::Length).is_ok_and(|v| v > 0.0))
+                })
+            })
+        });
+        if sizes.is_none() {
+            out.error(format!(
+                "{label}: build.panel.stock is no list of sheet sizes [width, height]"
+            ));
+        }
     }
     match panel.get("thickness").filter(|t| !t.is_null()) {
         Some(Value::String(name)) if mitcad_model::expr::is_valid_name(name.trim()) => {}
@@ -894,6 +1004,269 @@ fn check_linear(part: &BuildPart<'_>, linear: &Value, label: &str, out: &mut Pro
                 "{label}: build.linear.mate.axis {axis} is not x, y or z"
             ));
         }
+    }
+}
+
+// ---------------------------------------------------------------------
+// Timber construction (mitcad#478): members, wood fasteners, outer
+// connectors and sheets, and the configuration rows' own blocks.
+
+/// What a member's availability may be.
+pub const AVAILABILITIES: [&str; 2] = ["standard", "less common"];
+/// What an outer connector is fitted as.
+pub const FIT_KINDS: [&str; 3] = ["angle", "hanger", "post_base"];
+
+/// A density in kg/m3: a number, or text with the unit `kg/m3`.
+pub fn density(value: &Value) -> Result<f64, String> {
+    let number = match value {
+        Value::Number(n) => n.as_f64(),
+        Value::String(s) => s
+            .trim()
+            .trim_end_matches("kg/m3")
+            .trim_end_matches("kg/m³")
+            .trim()
+            .replace(',', ".")
+            .parse()
+            .ok(),
+        _ => None,
+    };
+    match number {
+        Some(v) if v.is_finite() && v > 0.0 => Ok(v),
+        _ => Err(format!("{value} is no density in kg/m3 above 0")),
+    }
+}
+
+/// The fields of timber parts in a build block, or in a configuration
+/// row's block (`build.rows`, merged over the part's by its readers).
+fn check_timber_fields(block: &Value, role: &str, label: &str, out: &mut Problems) {
+    check_timber_block(block, role, "", label, out);
+    let part = BuildPart { value: block };
+    if part.is_timber()
+        && role == "profile"
+        && block
+            .get("material")
+            .and_then(|m| m.get("density"))
+            .is_none()
+    {
+        out.warn(format!(
+            "{label}: no build.material.density: the cut list shows no mass"
+        ));
+    }
+    match block.get("rows") {
+        Some(Value::Object(rows)) => {
+            for (name, row) in rows {
+                if row.is_object() {
+                    check_timber_block(row, role, &format!("rows.{name}."), label, out);
+                } else {
+                    out.error(format!("{label}: build.rows.{name} is no object"));
+                }
+            }
+        }
+        Some(Value::Null) | None => {}
+        Some(_) => out.error(format!(
+            "{label}: build.rows is no object of configuration rows"
+        )),
+    }
+}
+
+fn check_timber_block(block: &Value, role: &str, path: &str, label: &str, out: &mut Problems) {
+    if let Some(kind) = block.get("kind").filter(|k| !k.is_null())
+        && kind.as_str() != Some("timber")
+    {
+        out.error(format!("{label}: build.{path}kind {kind} is not timber"));
+    }
+    if let Some(availability) = block.get("availability").filter(|a| !a.is_null())
+        && !availability
+            .as_str()
+            .is_some_and(|a| AVAILABILITIES.contains(&a))
+    {
+        out.error(format!(
+            "{label}: build.{path}availability {availability} is none of {}",
+            list(&AVAILABILITIES)
+        ));
+    }
+    match block.get("material").filter(|m| !m.is_null()) {
+        Some(material) if material.is_object() => {
+            if let Some(value) = material.get("density").filter(|d| !d.is_null())
+                && let Err(e) = density(value)
+            {
+                out.error(format!("{label}: build.{path}material.density: {e}"));
+            }
+        }
+        Some(_) => out.error(format!("{label}: build.{path}material is no object")),
+        None => {}
+    }
+    for key in ["section", "nominal"] {
+        if !path.is_empty()
+            && let Some(size) = block.get(key).filter(|s| !s.is_null())
+        {
+            for side in ["width", "height"] {
+                length_field(size, side, &format!("{path}{key}."), false, label, out);
+            }
+        }
+    }
+    if let Some(wood) = block.get("wood").filter(|w| !w.is_null()) {
+        if role != "fastener" {
+            out.error(format!(
+                "{label}: build.{path}wood belongs to a fastener, not a {role}"
+            ));
+        }
+        if let Some(kind) = wood.get("kind").filter(|k| !k.is_null())
+            && !matches!(kind.as_str(), Some("screw" | "nail"))
+        {
+            out.error(format!(
+                "{label}: build.{path}wood.kind {kind} is neither screw nor nail"
+            ));
+        }
+        for key in ["diameter", "length"] {
+            length_field(wood, key, &format!("{path}wood."), false, label, out);
+        }
+    }
+    let Some(connector) = block.get("connector").filter(|c| c.is_object()) else {
+        return;
+    };
+    if let Some(placement) = connector.get("placement").filter(|p| !p.is_null())
+        && placement.as_str() != Some("outer")
+    {
+        out.error(format!(
+            "{label}: build.{path}connector.placement {placement} is not outer"
+        ));
+    }
+    let outer = connector.get("placement").and_then(Value::as_str) == Some("outer");
+    match connector.get("fit").filter(|f| !f.is_null()) {
+        Some(fit) if fit.is_object() => {
+            let kind = fit.get("kind").and_then(Value::as_str).unwrap_or("");
+            if !FIT_KINDS.contains(&kind) {
+                out.error(format!(
+                    "{label}: build.{path}connector.fit.kind '{kind}' is none of {}",
+                    list(&FIT_KINDS)
+                ));
+            }
+            for key in ["section", "width"] {
+                let Some(pair) = fit.get(key).filter(|v| !v.is_null()) else {
+                    continue;
+                };
+                let values: Option<Vec<f64>> =
+                    pair.as_array().filter(|a| a.len() == 2).and_then(|a| {
+                        a.iter()
+                            .map(|v| quantity(v, Kind::Length).ok().filter(|v| *v > 0.0))
+                            .collect()
+                    });
+                match values {
+                    Some(v) if key == "width" && v[0] > v[1] => out.error(format!(
+                        "{label}: build.{path}connector.fit.width's min is above its max"
+                    )),
+                    Some(_) => {}
+                    None => out.error(format!(
+                        "{label}: build.{path}connector.fit.{key} is no pair of lengths above 0"
+                    )),
+                }
+            }
+        }
+        Some(_) => out.error(format!("{label}: build.{path}connector.fit is no object")),
+        None if outer && path.is_empty() => out.error(format!(
+            "{label}: an outer connector says what it fits (build.connector.fit)"
+        )),
+        None => {}
+    }
+}
+
+/// Whether an outer connector fits a junction of members whose sections
+/// `build_junctions` gives in its `wood` (`sections.a`, `sections.b`, [W,
+/// T] each): the junction's kind, and `fit.section` (member a's section,
+/// either way round, within 1 mm) or `fit.width` (a's smaller dimension
+/// within [min, max]) of the part or of one of its rows.
+fn fit_outer(part: &BuildPart<'_>, junction: &Value, wood: &Value) -> Fit {
+    let connector = part.block("connector");
+    let kind = junction.get("kind").and_then(Value::as_str).unwrap_or("");
+    let kinds: Vec<&str> = connector
+        .and_then(|c| c.get("junctions"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect();
+    if !kinds.contains(&kind) {
+        return Fit::Near(format!(
+            "it goes on {} junctions, not on {}",
+            if kinds.is_empty() {
+                "no".to_owned()
+            } else {
+                kinds.join(", ")
+            },
+            if kind.is_empty() { "this one" } else { kind }
+        ));
+    }
+    let section: Option<Vec<f64>> = wood
+        .get("sections")
+        .and_then(|s| s.get("a"))
+        .and_then(Value::as_array)
+        .filter(|a| a.len() == 2)
+        .and_then(|a| a.iter().map(Value::as_f64).collect());
+    let Some(a) = section else {
+        return Fit::Fits(0);
+    };
+    let fits = |fit: &Value| -> Result<u32, String> {
+        let pair = |key: &str| -> Option<Vec<f64>> {
+            fit.get(key)
+                .and_then(Value::as_array)
+                .filter(|p| p.len() == 2)
+                .and_then(|p| p.iter().map(|v| quantity(v, Kind::Length).ok()).collect())
+        };
+        if let Some(s) = pair("section") {
+            let same = |x: f64, y: f64| (x - y).abs() <= 1.0;
+            if !((same(s[0], a[0]) && same(s[1], a[1])) || (same(s[0], a[1]) && same(s[1], a[0]))) {
+                return Err(format!(
+                    "it fits {} x {}, the member is {} x {}",
+                    trim_number(s[0]),
+                    trim_number(s[1]),
+                    trim_number(a[0]),
+                    trim_number(a[1])
+                ));
+            }
+            return Ok(2);
+        }
+        if let Some(w) = pair("width") {
+            let smaller = a[0].min(a[1]);
+            if smaller < w[0] - 1e-6 || smaller > w[1] + 1e-6 {
+                return Err(format!(
+                    "it fits members {} to {} mm thick, the member is {}",
+                    trim_number(w[0]),
+                    trim_number(w[1]),
+                    trim_number(smaller)
+                ));
+            }
+        }
+        Ok(1)
+    };
+    let mut reason = None;
+    let rows = part.value.get("rows").and_then(Value::as_object);
+    let candidates =
+        connector
+            .and_then(|c| c.get("fit"))
+            .into_iter()
+            .chain(rows.into_iter().flat_map(|rows| {
+                rows.values()
+                    .filter_map(|r| r.get("connector").and_then(|c| c.get("fit")))
+            }));
+    for fit in candidates {
+        match fits(fit) {
+            Ok(score) => return Fit::Fits(score),
+            Err(why) => {
+                reason.get_or_insert(why);
+            }
+        }
+    }
+    Fit::Near(reason.unwrap_or_else(|| "it says nothing of what it fits".to_owned()))
+}
+
+/// How a timber part fits a junction of two members (one with `wood`):
+/// wood fasteners fit any, outer connectors by [`fit_outer`]; nothing else.
+fn fit_wood_junction(part: &BuildPart<'_>, junction: &Value, wood: &Value) -> Fit {
+    match part.role() {
+        "fastener" if part.is_wood_fastener() => Fit::Fits(0),
+        "connector" if part.is_outer() => fit_outer(part, junction, wood),
+        _ => Fit::No,
     }
 }
 
@@ -1069,6 +1442,19 @@ pub fn check_design(
                 "{label}: {}: the joint origin {MOUNT_PREFIX}{name} is not in build.frames",
                 component.path
             ));
+        }
+    }
+    // A configuration row's own block names a row of the design.
+    if let Some(own) = part.value.get("rows").and_then(Value::as_object) {
+        let names: BTreeSet<String> = rows(design).into_iter().map(|r| r.name).collect();
+        for name in own.keys() {
+            if !names.contains(name) {
+                out.error(format!(
+                    "{label}: {}: build.rows names {name}, which is no configuration row of the \
+                     design",
+                    component.path
+                ));
+            }
         }
     }
     for row in rows(design) {
@@ -1342,6 +1728,15 @@ pub fn fit_junction(component: &ManifestComponent, junction: &Value) -> Fit {
     let Some(part) = BuildPart::of(component) else {
         return Fit::No;
     };
+    // Timber (mitcad#478): a junction of two members (with `wood`) takes
+    // wood fasteners and outer connectors only; a junction of slot
+    // profiles never takes them.
+    if let Some(wood) = junction.get("wood").filter(|w| w.is_object()) {
+        return fit_wood_junction(&part, junction, wood);
+    }
+    if part.is_timber_family() {
+        return Fit::No;
+    }
     if part.role() != "connector" {
         return Fit::No;
     }
@@ -1470,12 +1865,18 @@ pub struct Picker<'a> {
     /// A linear part's `linear.size`: what it goes with (a rail's size, a
     /// shaft's diameter, a spindle, a belt's profile).
     pub size: Option<&'a Value>,
+    /// A panel's `panel.mount` (`face`: the sheets laid on members).
+    pub mount: Option<&'a str>,
 }
 
 impl Picker<'_> {
     /// Whether it asks for anything only BUILD parts have.
     pub fn is_empty(&self) -> bool {
-        self.role.is_none() && self.system.is_none() && self.kind.is_none() && self.size.is_none()
+        self.role.is_none()
+            && self.system.is_none()
+            && self.kind.is_none()
+            && self.size.is_none()
+            && self.mount.is_none()
     }
 }
 
@@ -1510,8 +1911,24 @@ pub fn fit_picker(component: &ManifestComponent, picker: &Picker<'_>) -> Fit {
         return Fit::No;
     }
     let linear = part.block("linear");
-    if let Some(kind) = picker.kind
-        && linear.and_then(|l| l.get("kind")).and_then(Value::as_str) != Some(kind)
+    // A picker's kind is a linear part's, or of timber (mitcad#478):
+    // `timber` (members), `wood` (wood fasteners), `outer`, `angle`,
+    // `hanger`, `post_base` (outer connectors). Timber parts are offered
+    // only when asked for (by that kind, or sheets by `mount: face`): the
+    // slot profiles' pickers list none.
+    if let Some(kind) = picker.kind {
+        if !part.kinds().contains(&kind) {
+            return Fit::No;
+        }
+    } else if part.is_timber_family() && !(picker.mount == Some("face") && part.is_face_sheet()) {
+        return Fit::No;
+    }
+    if let Some(mount) = picker.mount
+        && part
+            .block("panel")
+            .and_then(|p| p.get("mount"))
+            .and_then(Value::as_str)
+            != Some(mount)
     {
         return Fit::No;
     }

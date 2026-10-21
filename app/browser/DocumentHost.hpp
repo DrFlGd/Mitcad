@@ -42,6 +42,10 @@ public:
   // Whether the model can change now: no command panel open and no sketch
   // being edited. Visibility can also change while sketching.
   virtual bool canChangeModel(bool visibilityOnly = false) const = 0;
+  // Why the model cannot change now in the window's mode, for the user:
+  // "Finish the command or the sketch first.", or what Create Sketch waits
+  // for while it asks for a plane (mitcad#474).
+  virtual QString changeBlockedReason() const = 0;
   // The light bulbs of every mode (mitcad#295; BrowserController::
   // visibilityInEveryMode): runs visibility commands as one undo step
   // `label` (one command as its own step) in any mode, outside a running

@@ -10,10 +10,11 @@
 use serde::{Deserialize, Serialize};
 
 use super::extrude::{
-    Operation, ProfileRef, apply_operation, check_participants, check_profiles, participant_bodies,
+    Operation, ProfileRef, apply_operation, check_participants, participant_bodies,
     profile_references, profile_regions,
 };
-use super::path::{self, CurvePath};
+use super::path::{self, CurvePath, SketchCurves};
+use super::surface_sweeps;
 use super::{
     CheckContext, EvalContext, Evaluate, FeatureInfo, FeatureOutput, References, ToolUse, is_false,
 };
@@ -146,8 +147,13 @@ fn check_fractions(one: f64, two: f64, closed: bool) -> Result<(), String> {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SweepDef<P = ParamId> {
-    /// Regions of one sketch, a set (see `extrude::selected_regions`).
-    #[serde(deserialize_with = "super::extrude::profile_set")]
+    /// Regions of one sketch, a set (see `extrude::selected_regions`); none
+    /// for a surface sweep of curves only.
+    #[serde(
+        default,
+        deserialize_with = "super::extrude::profile_set",
+        skip_serializing_if = "Vec::is_empty"
+    )]
     pub profiles: Vec<ProfileRef>,
     pub path: CurvePath,
     #[serde(default, skip_serializing_if = "is_perpendicular")]
@@ -201,6 +207,15 @@ pub struct SweepDef<P = ParamId> {
     /// and is sized by its length (`profile_scaling`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guide_rail2: Option<CurvePath>,
+    /// A surface sweep (mitcad#455, `surface_sweeps.rs`): walls without
+    /// caps, a new surface body.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub surface: bool,
+    /// Sketch curves a surface sweep sweeps beside or instead of the
+    /// profiles: open chains or closed loops; not with twist, taper, guide
+    /// rails or guide surfaces.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub curves: Option<SketchCurves>,
     /// Where the rails' points are (mitcad#469): `plane`, where a rail
     /// crosses the plane square to the path, or `fraction` (left out: the
     /// designs saved before the option keep it), at the same fraction of
@@ -258,6 +273,8 @@ impl<P> SweepDef<P> {
                 .map(|v| f("end_scale", v))
                 .transpose()?,
             guide_rail2: self.guide_rail2.clone(),
+            surface: self.surface,
+            curves: self.curves.clone(),
             rail_point: self.rail_point,
         })
     }
@@ -294,6 +311,9 @@ impl FeatureInfo for SweepDef {
     fn references(&self) -> References {
         let mut references = References::default();
         profile_references(&self.profiles, &mut references);
+        if let Some(curves) = &self.curves {
+            curves.add_references(&mut references);
+        }
         self.path.add_references(&mut references);
         if let Some(rail) = &self.guide_rail {
             rail.add_references(&mut references);
@@ -311,7 +331,25 @@ impl FeatureInfo for SweepDef {
     }
 
     fn check(&self, ctx: &CheckContext<'_>) -> Result<(), String> {
-        check_profiles(ctx, &self.profiles)?;
+        surface_sweeps::check_inputs(
+            ctx,
+            self.surface,
+            self.operation,
+            &self.profiles,
+            self.curves.as_ref(),
+            "sweep",
+        )?;
+        if self.curves.is_some()
+            && (self.guide_rail.is_some()
+                || !self.guide_surfaces.is_empty()
+                || self.twist_angle.is_some()
+                || self.taper_angle.is_some())
+        {
+            return Err(
+                "a surface sweep of curves takes no twist, taper, guide rail or guide surfaces"
+                    .to_owned(),
+            );
+        }
         check_participants(ctx, self.operation, &self.participants)?;
         self.path.check(ctx).map_err(|e| format!("path: {e}"))?;
         if let Some(rail) = &self.guide_rail {
@@ -452,7 +490,15 @@ fn check_taper(taper: f64) -> Result<(), String> {
 
 impl<K: Kernel> Evaluate<K> for SweepDef {
     fn evaluate(&self, ctx: &mut EvalContext<'_, K>) -> Result<FeatureOutput<K::Shape>, String> {
-        let (sketch, regions) = profile_regions(ctx, &self.profiles)?;
+        let (sketch, regions) = match (&self.curves, self.profiles.is_empty()) {
+            (Some(curves), true) => (ctx.sketch(curves.sketch)?, Vec::new()),
+            _ => profile_regions(ctx, &self.profiles)?,
+        };
+        // A surface sweep's curves (mitcad#455).
+        let chains = match (&self.curves, self.surface) {
+            (Some(curves), true) => Some(surface_sweeps::chains(ctx, curves, &sketch.frame)?),
+            _ => None,
+        };
         let participants = participant_bodies(ctx, self.operation, &self.participants)?;
         let mut path = match &self.path {
             CurvePath::Path(PathRef::Edges { body, edges })
@@ -520,17 +566,39 @@ impl<K: Kernel> Evaluate<K> for SweepDef {
             binormal: self.binormal.map(check_binormal).transpose()?,
             end_scale,
         };
-        let tool = if surfaces.is_empty() {
-            ctx.kernel.sweep(&spec).map_err(|e| e.to_string())?
-        } else {
-            let guide: Vec<GuideSurface<'_, K::Shape>> = surfaces
-                .iter()
-                .map(|(body, face)| GuideSurface { body, face })
-                .collect();
-            ctx.kernel
-                .surface_sweep(&spec, &guide)
-                .map_err(kernel_error)?
+        let solid = |ctx: &mut EvalContext<'_, K>, spec: &SweepSpec<'_>| {
+            if surfaces.is_empty() {
+                ctx.kernel.sweep(spec).map_err(|e| e.to_string())
+            } else {
+                let guide: Vec<GuideSurface<'_, K::Shape>> = surfaces
+                    .iter()
+                    .map(|(body, face)| GuideSurface { body, face })
+                    .collect();
+                ctx.kernel.surface_sweep(spec, &guide).map_err(kernel_error)
+            }
         };
+        if self.surface {
+            // The profiles' walls (the solid sweep without its caps), then
+            // the curves' (mitcad#455).
+            let mut sheets = Vec::new();
+            if !regions.is_empty() {
+                let tool = solid(ctx, &spec)?;
+                sheets.push(surface_sweeps::walls(ctx, &tool)?);
+            }
+            if let Some(chains) = &chains {
+                let spec = SweepSpec {
+                    regions: &[],
+                    ..spec
+                };
+                sheets.push(
+                    ctx.kernel
+                        .sweep_sheet(&spec, chains)
+                        .map_err(|e| e.to_string())?,
+                );
+            }
+            return surface_sweeps::output(ctx, sheets);
+        }
+        let tool = solid(ctx, &spec)?;
         apply_operation(ctx, self.operation, participants, tool, "sweep")
     }
 }

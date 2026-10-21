@@ -724,7 +724,7 @@ bool AppearanceDialog::canChange() {
   if (m_host.canChangeModel()) {
     return true;
   }
-  m_message->setText(tr("Finish the command or the sketch first."));
+  m_message->setText(m_host.changeBlockedReason());
   qDebug().noquote() << "Appearances: finish the command or the sketch first";
   return false;
 }

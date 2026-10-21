@@ -23,10 +23,18 @@ pub(crate) mod parts;
 pub(crate) mod place;
 pub(crate) mod sources;
 pub(crate) mod tilt;
+// Timber construction (mitcad#478).
+pub(crate) mod joinery;
+pub(crate) mod spacing;
+pub(crate) mod timber;
+pub(crate) mod wood;
 
 pub use connect::{ConnectInput, PanelInput, RemoveResult};
-pub use cut_list::{CutList, CutListOptions, CutRow, MachiningItem, StockEntry};
+pub use cut_list::{
+    CutList, CutListOptions, CutRow, MachiningItem, StockEntry, TimberColumns, TimberTotals,
+};
 pub(crate) use geometry::*;
+pub use joinery::JointInput;
 pub use junctions::{Junction, JunctionSide};
 pub use meta::*;
 pub use place::{
@@ -34,6 +42,9 @@ pub use place::{
     MitreInput, OwnMachining, PartInput, PlaceAt, PlaceInput, PlaceKind, Placed, SideFrom,
 };
 pub use sources::{LibrarySourceDef, LibrarySources, SourceDesign};
+pub use spacing::{SpacingInput, SpacingMode};
+pub use timber::{Lie, PointTo};
+pub use wood::EndInput;
 
 #[cfg(test)]
 mod bound_tests;
@@ -53,6 +64,8 @@ mod source_tests;
 mod test_library;
 #[cfg(test)]
 mod tilt_tests;
+#[cfg(test)]
+mod timber_tests;
 
 use std::fmt;
 use std::str::FromStr;
@@ -149,6 +162,20 @@ pub struct BuildRecord {
     /// positive towards the host's end B.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tilt: Option<f64>,
+    // Timber construction (mitcad#478).
+    /// The part's own grade (a timber member's), else its row's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grade: Option<String>,
+    /// A member of a spacing set: the set's lead (its first member).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub set: Option<ComponentUid>,
+    /// The lead's: the set's definition (`spacing.rs`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spacing: Option<serde_json::Value>,
+    /// A member by two points: the placement it was made with (`build_place`'s
+    /// fields), to place it anew.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub points: Option<serde_json::Value>,
 }
 
 /// What a BUILD part is (`docs/libraries.md`, "BUILD parts").

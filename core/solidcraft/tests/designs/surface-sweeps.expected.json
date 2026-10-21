@@ -1,0 +1,17 @@
+{
+  "comment": "Worked out by hand. Walls: the 20 x 10 rectangle's walls 15 up (the parameter height), 2 (20 + 10) 15 = 900, and the open L of two 10 lines beside it, 20 x 15 = 300. Drum: a line 5 off the Z axis from z 0 to 10 turned a full turn, 2 pi 5 10 = 314.159. Swept: a 10 line at x 60..70 swept 20 up along a line of the XZ plane (its y down is z up), 200. Skin: a 10 line at y 30 lofted to the same line 10 above, ruled, 100. All surfaces, none a solid.",
+  "body_count": 5,
+  "bbox": {"min": [-5, -5, 0], "max": [70, 30, 20]},
+  "bodies": [
+    {"name": "Tube", "area_mm2": 900, "bbox": {"min": [0, 0, 0], "max": [20, 10, 15]}},
+    {"name": "Fence", "area_mm2": 300, "bbox": {"min": [40, 0, 0], "max": [50, 10, 15]}},
+    {"name": "Drum", "area_mm2": 314.159265, "bbox": {"min": [-5, -5, 0], "max": [5, 5, 10]}},
+    {"name": "Swept", "area_mm2": 200, "bbox": {"min": [60, 0, 0], "max": [70, 0, 20]}},
+    {"name": "Skin", "area_mm2": 100, "bbox": {"min": [0, 30, 0], "max": [10, 30, 10]}}
+  ],
+  "timeline": [{"name": "Base"}, {"name": "Walls"}, {"name": "Generator"}, {"name": "Drum"},
+               {"name": "Blade"}, {"name": "Rail"}, {"name": "Swept"}, {"name": "Low"},
+               {"name": "High"}, {"name": "Skin"}],
+  "params": [{"name": "height"}],
+  "parametric": 10
+}

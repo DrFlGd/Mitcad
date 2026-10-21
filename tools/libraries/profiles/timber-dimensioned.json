@@ -1,0 +1,57 @@
+{
+  "notes": [
+    "Dimensioned timber, machine-surfaced to size (mitcad#478): Mitcad's own parts of industry-standard sizes, no supplier. Sizes are thickness x width in mm (the actual size at 20 % moisture); the less common sizes are rows marked availability 'less common'.",
+    "Species: pine for thickness 20, spruce for the others.",
+    "Densities at 20 % moisture: spruce 450 kg/m3, pine 520 kg/m3 (grounds in timber-sawn.json's notes).",
+    "Tolerances (dimensioned): up to 100 mm +-1.0 mm, over 100 mm +-1.5 mm, for thickness and width each."
+  ],
+  "categories": [{"id": "dimensioned-timber", "name": "Dimensioned timber"}],
+  "parts": [
+    {
+      "id": "timber-dimensioned",
+      "name": "Dimensioned timber",
+      "category": "dimensioned-timber",
+      "make": "model",
+      "data_source": "industry-standard sizes of dimensioned timber (at 20 % moisture)",
+      "designation": "Dimensioned timber {Thickness}x{Width} L={L}",
+      "description": "Machine-surfaced spruce and pine for framing in the standard sizes 20x95 to 48x223 and the less common ones.",
+      "keywords": ["timber", "lumber", "dimensioned", "framing", "stud", "joist", "rafter", "spruce", "pine"],
+      "license": "MIT",
+      "dimensions": {
+        "shape": "board",
+        "width": "W",
+        "thickness": "T",
+        "length": "L",
+        "parameters": {"W": 98, "T": 48, "L": 3000}
+      },
+      "default": "48x98",
+      "sizes": {
+        "species": {"spruce": 450, "pine": 520},
+        "species_default": "spruce",
+        "tolerance": {
+          "thickness": [[100, -1.0, 1.0], [null, -1.5, 1.5]],
+          "width": [[100, -1.0, 1.0], [null, -1.5, 1.5]]
+        },
+        "rows": [
+          {"thickness": 20, "widths": [95, 120, 145], "species": "pine"},
+          {"thickness": 42, "widths": [66]},
+          {"thickness": 42, "widths": [73, 98, 123, 148, 173, 198, 223], "availability": "less common"},
+          {"thickness": 48, "widths": [48, 73, 98, 123, 148, 173, 198, 223]},
+          {"thickness": 48, "widths": [248], "availability": "less common"}
+        ]
+      },
+      "appearance": {
+        "id": "timber-dimensioned", "name": "Dimensioned spruce", "based_on": "wood_maple",
+        "base_color": [0.84, 0.71, 0.51], "roughness": 0.7, "texture": "grain", "size": [60, 600]
+      },
+      "build": {
+        "role": "profile",
+        "kind": "timber",
+        "material": {"species": "spruce", "finish": "dimensioned", "grade": "", "density": 450, "moisture": 20},
+        "availability": "standard",
+        "length": {"parameter": "L", "min": 100, "max": 6000, "default": 3000,
+                   "stock": [2700, 3000, 3300, 3600, 3900, 4200, 4500, 4800, 5100, 5400]}
+      }
+    }
+  ]
+}

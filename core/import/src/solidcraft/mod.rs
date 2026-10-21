@@ -36,6 +36,10 @@ mod sheet;
 mod sketch;
 // Patch, Stitch and Thicken (mitcad#456).
 mod surfaces;
+// Surface modelling: surface bodies and their features (mitcad#455).
+mod surface_modelling;
+// Plastic part features and rules (mitcad#459).
+mod plastic;
 #[cfg(test)]
 mod tests;
 
@@ -115,6 +119,7 @@ pub fn import_solidcraft_file<K: Kernel>(
         sheet_rule_features: HashMap::new(),
         sheet_bases: HashMap::new(),
         sheet_unfolds: HashMap::new(),
+        plastic_rules: HashMap::new(),
     };
     importer.run(options)?;
     let Importer {
@@ -186,6 +191,8 @@ pub(crate) struct Importer<'d, 'f, K: Kernel> {
     pub sheet_bases: HashMap<BodyUid, FeatureUid>,
     /// The last Unfold of each sheet body.
     pub sheet_unfolds: HashMap<BodyUid, FeatureUid>,
+    /// Plastic rules made, by the file's rule name (mitcad#459).
+    pub plastic_rules: HashMap<String, FeatureUid>,
 }
 
 /// The result of mapping one feature.
@@ -879,6 +886,15 @@ pub fn check(report: &SolidcraftReport, expected: &Value) -> CheckReport {
             failures.push(format!(
                 "{name}: volume {:.4} mm3, expected {v:.4}",
                 ours.volume_mm3
+            ));
+        }
+        // A surface body's area (mitcad#455), within the volume's tolerance.
+        if let Some(a) = b.get("area_mm2").and_then(Value::as_f64)
+            && (ours.area_mm2 - a).abs() > vtol * a.abs().max(1e-9)
+        {
+            failures.push(format!(
+                "{name}: area {:.4} mm2, expected {a:.4}",
+                ours.area_mm2
             ));
         }
         if let Some(bbox) = b.get("bbox")

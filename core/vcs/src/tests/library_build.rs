@@ -476,3 +476,347 @@ fn build_candidates_fit_junctions_and_pickers() {
     assert_eq!(ids(&answer, "components"), Vec::<String>::new());
     assert!(api::command(r#"{"cmd": "library_build_candidates"}"#, &cache, None, None).is_err());
 }
+
+// ---------------------------------------------------------------------
+// Timber construction (mitcad#478).
+
+/// A design with these user parameters, fixed frames of these names and a
+/// configuration table of `rows` (name and parameter values): a member in
+/// the profile layout when it has `L` (a 100 x 22 section on XY extruded by
+/// L, its ends' frames), else a 20 mm block.
+fn timber_design(
+    parameters: &[(&str, &str)],
+    frames: &[&str],
+    rows: &[(&str, &[(&str, &str)])],
+) -> String {
+    let mut commands: Vec<Value> = parameters
+        .iter()
+        .map(|(name, value)| json!({"cmd": "add_parameter", "name": name, "expression": value}))
+        .collect();
+    let member = parameters.iter().any(|(name, _)| *name == "L");
+    let (corner, width, height, distance) = if member {
+        ([-50, -11], 100, 22, json!("L"))
+    } else {
+        ([0, 0], 20, 20, json!(20))
+    };
+    commands.extend([
+        json!({"cmd": "sketch.create"}),
+        json!({"cmd": "sketch.add_rectangle", "sketch": "F1", "corner": corner, "width": width,
+               "height": height}),
+        json!({"cmd": "add_feature", "def": {"type": "extrude",
+            "profiles": [{"sketch": "F1", "region": SQUARE}],
+            "extent": {"type": "distance", "distance": distance}, "operation": "new_body"}}),
+    ]);
+    if member {
+        commands.extend([
+            json!({"cmd": "add_feature", "name": "End B plane", "def": {"type": "construction_plane",
+                "definition": {"type": "offset", "plane": "xy", "distance": "L"}}}),
+            json!({"cmd": "add_feature", "name": "mount:end_a", "def": {
+                "type": "joint_origin", "geometry": "xy", "flip": true}}),
+            json!({"cmd": "add_feature", "name": "mount:end_b", "def": {
+                "type": "joint_origin", "geometry": "F3"}}),
+        ]);
+    }
+    for (i, name) in frames.iter().enumerate() {
+        commands.push(frame(
+            name,
+            [i as f64, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 0.0, 0.0],
+        ));
+    }
+    if !rows.is_empty() {
+        let names: Vec<&str> = rows[0].1.iter().map(|(name, _)| *name).collect();
+        let table: Vec<Value> = rows
+            .iter()
+            .map(|(row, values)| {
+                let values: serde_json::Map<String, Value> = values
+                    .iter()
+                    .map(|(k, v)| ((*k).to_owned(), json!(v)))
+                    .collect();
+                json!({"name": row, "select": {"Size": row}, "values": values})
+            })
+            .collect();
+        commands.push(json!({"cmd": "set_configurations", "configurations": {
+            "selectors": ["Size"], "parameters": names, "rows": table}}));
+    }
+    design(&commands)
+}
+
+/// A sawn member with a less common re-sawn row, a wood screw, a joist
+/// hanger, an angle bracket and a sheet.
+fn timber_components() -> Value {
+    let screw = json!({"library": "test-profiles", "component": "wood-screw", "config": "5.0x40"});
+    let outer = |kind: &str, fit: Value| {
+        json!({"placement": "outer", "space": "outer", "junctions": ["L", "T"],
+               "fit": {"kind": kind, "section": fit["section"], "width": fit["width"]},
+               "mates": [{"frame": "mount", "to": "face"}],
+               "fasteners": [{"on": "a", "frames": ["hole_a_1"], "count": 1, "screw": screw},
+                             {"on": "b", "frames": ["hole_b_1"], "count": 1, "screw": screw}]})
+    };
+    let holes = json!([{"name": "mount", "kind": "face"}, {"name": "hole_a_1", "kind": "hole"},
+                       {"name": "hole_b_1", "kind": "hole"}]);
+    json!([
+        {"id": "timber-sawn", "path": "timber/timber-sawn.mitcad", "name": "Sawn timber",
+         "category": "profiles",
+         "preview": "previews/timber-sawn.png",
+         "row_previews": {"22x50": "previews/timber-sawn-22x50.png"},
+         "build": {"role": "profile", "kind": "timber",
+            "material": {"species": "spruce", "finish": "sawn", "grade": "", "density": 450,
+                         "moisture": 20},
+            "availability": "standard",
+            "section": {"width": "100 mm", "height": "22 mm"},
+            "nominal": {"width": "100 mm", "height": "22 mm"},
+            "length": {"parameter": "L", "min": 100, "max": 6000, "stock": [2700, 3000]},
+            "frames": [{"name": "end_a", "kind": "end"}, {"name": "end_b", "kind": "end"},
+                       {"name": "face_xp", "kind": "face"}, {"name": "face_yp", "kind": "face"}],
+            "rows": {"22x50": {"section": {"width": "48 mm", "height": "22 mm"},
+                               "nominal": {"width": "50 mm", "height": "22 mm"},
+                               "availability": "less common",
+                               "material": {"species": "pine", "density": 520}}}}},
+        {"id": "wood-screw", "path": "wood/wood-screw.mitcad", "name": "Wood screw",
+         "category": "connectors",
+         "build": {"role": "fastener",
+            "wood": {"kind": "screw", "head": "countersunk", "diameter": "5 mm", "length": "50 mm"},
+            "frames": [{"name": "axis", "kind": "shaft"}],
+            "rows": {"5.0x40": {"wood": {"length": "40 mm"}}}}},
+        {"id": "hanger-48x148", "path": "wood/hanger-48x148.mitcad", "name": "Joist hanger 48x148",
+         "category": "connectors",
+         "build": {"role": "connector", "frames": holes,
+                   "connector": outer("hanger", json!({"section": [48, 148]}))}},
+        {"id": "bracket-60", "path": "wood/bracket-60.mitcad", "name": "Angle bracket 60",
+         "category": "connectors",
+         "build": {"role": "connector", "frames": holes,
+                   "connector": outer("angle", json!({"width": [28, 150]}))}},
+        {"id": "plywood", "path": "wood/plywood.mitcad", "name": "Spruce plywood", "category": "connectors",
+         "build": {"role": "panel", "frames": [{"name": "face", "kind": "face"}],
+            "material": {"product": "plywood", "density": 460},
+            "panel": {"mount": "face", "thickness": "T", "width": "W", "height": "H",
+                      "stock": [[1200, 2400]]}}}
+    ])
+}
+
+fn timber_designs() -> Vec<(&'static str, String)> {
+    let block = &["mount", "hole_a_1", "hole_b_1"];
+    vec![
+        (
+            "timber/timber-sawn.mitcad",
+            timber_design(
+                &[("L", "3000 mm"), ("W", "100 mm"), ("T", "22 mm")],
+                &["face_xp", "face_yp"],
+                &[("22x100", &[("W", "100 mm")]), ("22x50", &[("W", "48 mm")])],
+            ),
+        ),
+        (
+            "wood/wood-screw.mitcad",
+            timber_design(
+                &[("D", "5 mm"), ("K", "50 mm")],
+                &["axis"],
+                &[("5.0x50", &[("K", "50 mm")]), ("5.0x40", &[("K", "40 mm")])],
+            ),
+        ),
+        ("wood/hanger-48x148.mitcad", timber_design(&[], block, &[])),
+        ("wood/bracket-60.mitcad", timber_design(&[], block, &[])),
+        (
+            "wood/plywood.mitcad",
+            timber_design(
+                &[("W", "1200 mm"), ("H", "2400 mm"), ("T", "12 mm")],
+                &["face"],
+                &[],
+            ),
+        ),
+    ]
+}
+
+#[test]
+fn timber_parts_are_checked_and_picked() {
+    let scratch = Scratch::new("library-build-timber");
+    let cache = LibraryCache::new(scratch.join("cache"));
+    let mut all = components();
+    all.as_array_mut()
+        .unwrap()
+        .extend(timber_components().as_array().unwrap().iter().cloned());
+    let mut files = designs();
+    files.extend(timber_designs());
+    // A picture of the part and one of its row 22x50 (mitcad#484).
+    const PART_PNG: &[u8] = &[0x89, b'P', b'N', b'G', b'1'];
+    const ROW_PNG: &[u8] = &[0x89, b'P', b'N', b'G', b'2'];
+    let good = scratch.join("good");
+    write_library(&good, all.clone(), &files);
+    fs::create_dir_all(good.join("previews")).unwrap();
+    fs::write(good.join("previews/timber-sawn.png"), PART_PNG).unwrap();
+    fs::write(good.join("previews/timber-sawn-22x50.png"), ROW_PNG).unwrap();
+    let (errors, warnings) = check(&cache, &good);
+    assert_eq!(errors, Vec::<String>::new());
+    // No slot block, mass per metre or slot frames asked of a member.
+    // (The test designs have no preview images; that warning is anyone's.)
+    assert!(
+        !warnings
+            .iter()
+            .any(|w| w.contains("timber-sawn") && !w.ends_with("no preview image")),
+        "{warnings:#?}"
+    );
+
+    // Broken timber parts: each rule once.
+    let mut broken = all.clone();
+    let parts = broken.as_array_mut().unwrap();
+    let n = parts.len();
+    parts[n - 5]["build"]["rows"]["22x75"] = json!({"availability": "rare"});
+    parts[n - 5]["build"]["material"]["density"] = json!("heavy");
+    parts[n - 5]["row_previews"] = json!({"22x75": "previews/none.png", "22x50": "../row.png"});
+    parts[n - 4]["build"]["wood"]["kind"] = json!("bolt");
+    parts[n - 3]["build"]["connector"]["fit"] = json!({"kind": "clip", "section": [48]});
+    parts[n - 2]["build"]["connector"]["fasteners"][0]["count"] = json!(3);
+    parts[n - 1]["build"]["panel"]["mount"] = json!("wall");
+    let bad = scratch.join("bad");
+    write_library(&bad, broken, &files);
+    let (errors, _) = check(&cache, &bad);
+    let has = |text: &str| errors.iter().any(|e| e.contains(text));
+    for expected in [
+        "timber-sawn: build.rows.22x75.availability \"rare\" is none of standard, less common",
+        "timber-sawn: build.material.density: \"heavy\" is no density",
+        "timber-sawn: timber/timber-sawn.mitcad: build.rows names 22x75, which is no configuration row",
+        "timber-sawn: row_previews names 22x75, which is no configuration row of timber/timber-sawn.mitcad",
+        "timber-sawn: previews/none.png is not in the folder",
+        "timber-sawn: the preview of row 22x50, '../row.png', is no path of a PNG image in the library",
+        "wood-screw: build.wood.kind \"bolt\" is neither screw nor nail",
+        "hanger-48x148: build.connector.fit.kind 'clip' is none of angle, hanger, post_base",
+        "hanger-48x148: build.connector.fit.section is no pair of lengths above 0",
+        "bracket-60: build.connector.fasteners[0].count is not the number of its frames (1)",
+        "plywood: build.panel.mount 'wall' is none of slot, surface, face",
+    ] {
+        assert!(has(expected), "{expected}\n{errors:#?}");
+    }
+
+    // The pickers: timber only where it is asked for, the slot profiles'
+    // pickers as before.
+    let Some(cli) = system_git() else {
+        return;
+    };
+    git(&good, &["init", "-q"]).unwrap();
+    git(&good, &["add", "-A"]).unwrap();
+    git(&good, &["commit", "-q", "-m", "Parts 1.0"]).unwrap();
+    git(&good, &["tag", "v1.0.0"]).unwrap();
+    let fetched = library_command(
+        &cache,
+        Some(&cli),
+        json!({"cmd": "library_fetch", "url": slashes(&good)}),
+    );
+    assert_eq!(fetched["error"], Value::Null, "{fetched}");
+    let run = |command: Value| library_command(&cache, None, command);
+    let ids = |answer: &Value, key: &str| -> Vec<String> {
+        answer[key]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["id"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let candidates = |mut picker: Value| {
+        picker["cmd"] = json!("library_build_candidates");
+        let answer = run(picker);
+        (ids(&answer, "components"), ids(&answer, "refused"))
+    };
+    let only = |id: &str| (vec![id.to_owned()], Vec::<String>::new());
+    let nothing = (Vec::<String>::new(), Vec::<String>::new());
+    assert_eq!(candidates(json!({"role": "profile"})), only("p30-b8"));
+    assert_eq!(
+        candidates(json!({"role": "profile", "kind": "timber"})),
+        only("timber-sawn")
+    );
+    assert_eq!(candidates(json!({"role": "fastener"})), only("tnut-b8"));
+    assert_eq!(
+        candidates(json!({"role": "fastener", "kind": "wood"})),
+        only("wood-screw")
+    );
+    assert_eq!(candidates(json!({"role": "panel"})), nothing);
+    assert_eq!(
+        candidates(json!({"role": "panel", "mount": "face"})),
+        only("plywood")
+    );
+    let found = run(json!({"cmd": "library_search", "role": "connector", "system": "B/8/30"}));
+    assert_eq!(ids(&found, "components"), ["bracket-b8"], "{found}");
+
+    // Every size its own entry (mitcad#484): the candidates carry their
+    // tables, a part without one is as before.
+    let timber =
+        run(json!({"cmd": "library_build_candidates", "role": "profile", "kind": "timber"}));
+    let table = &timber["components"][0]["configurations"];
+    assert_eq!(table["default"], "22x100", "{timber}");
+    assert_eq!(table["selectors"], json!(["Size"]), "{timber}");
+    let rows: Vec<&str> = table["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(rows, ["22x100", "22x50"], "{timber}");
+    assert_eq!(
+        table["rows"][1]["select"],
+        json!({"Size": "22x50"}),
+        "{timber}"
+    );
+    assert_eq!(
+        timber["components"][0]["build"]["rows"]["22x50"]["availability"],
+        "less common"
+    );
+    let profiles = run(json!({"cmd": "library_build_candidates", "role": "profile"}));
+    assert_eq!(profiles["components"][0]["id"], "p30-b8", "{profiles}");
+    assert!(
+        profiles["components"][0].get("configurations").is_none(),
+        "{profiles}"
+    );
+    let sheets = run(json!({"cmd": "library_build_candidates", "role": "panel", "mount": "face"}));
+    assert!(
+        sheets["components"][0].get("configurations").is_none(),
+        "{sheets}"
+    );
+    // A row with a picture of its own says so; library_preview gives it
+    // with `config`, the part's for another row or none.
+    assert_eq!(table["rows"][1]["preview"], true, "{timber}");
+    assert!(table["rows"][0].get("preview").is_none(), "{timber}");
+    let picture = |config: Value| {
+        let answer = run(json!({"cmd": "library_preview", "id": "test-profiles",
+                                "component": "timber-sawn", "config": config}));
+        mitcad_model::library::decode_base64(answer["png"].as_str().unwrap()).unwrap()
+    };
+    assert_eq!(picture(json!("22x50")), ROW_PNG);
+    assert_eq!(picture(json!("22x100")), PART_PNG);
+    assert_eq!(picture(Value::Null), PART_PNG);
+    // library_search answers without the tables, as before.
+    let searched = run(json!({"cmd": "library_search", "role": "profile", "kind": "timber"}));
+    assert_eq!(ids(&searched, "components"), ["timber-sawn"], "{searched}");
+    assert!(
+        searched["components"][0].get("configurations").is_none(),
+        "{searched}"
+    );
+
+    // A corner of slot profiles takes no timber connectors.
+    let corner = json!({"id": "J1", "kind": "L", "systems": [b8(), b8()],
+                        "space": {"x": 40, "y": 40, "z": 30}});
+    let answer = run(json!({"cmd": "library_build_candidates", "junction": corner}));
+    assert_eq!(ids(&answer, "components"), ["bracket-b8"], "{answer}");
+    assert_eq!(ids(&answer, "refused"), ["bracket-i5"], "{answer}");
+
+    // A joist 48 x 148 on a beam: the wood screw, the hanger and the
+    // bracket; a 48 x 123 joist: the hanger greyed with its reason.
+    let joist = |a: [f64; 2]| {
+        json!({"id": "J2", "kind": "T",
+               "wood": {"through": "b", "into": "a", "thickness": 48, "max_diameter": 6.8,
+                        "sections": {"a": a, "b": [148, 48]}}})
+    };
+    let answer = run(json!({"cmd": "library_build_candidates", "junction": joist([148.0, 48.0])}));
+    let mut fits = ids(&answer, "components");
+    fits.sort();
+    assert_eq!(
+        fits,
+        ["bracket-60", "hanger-48x148", "wood-screw"],
+        "{answer}"
+    );
+    let answer = run(json!({"cmd": "library_build_candidates", "junction": joist([123.0, 48.0])}));
+    assert_eq!(ids(&answer, "refused"), ["hanger-48x148"], "{answer}");
+    assert_eq!(
+        answer["refused"][0]["reason"], "it fits 48 x 148, the member is 123 x 48",
+        "{answer}"
+    );
+}

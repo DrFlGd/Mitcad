@@ -217,7 +217,7 @@ impl<K: Kernel> Document<K> {
     }
 
     /// A body at the marker by its uid or display name.
-    fn body_by_uid_or_name(&self, body: &str) -> Result<BodyUid, ApiError> {
+    pub(super) fn body_by_uid_or_name(&self, body: &str) -> Result<BodyUid, ApiError> {
         if let Ok(uid) = body.parse::<BodyUid>() {
             return Ok(uid);
         }

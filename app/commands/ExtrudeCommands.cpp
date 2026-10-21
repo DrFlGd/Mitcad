@@ -5,10 +5,13 @@
 #include <cmath>
 
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QKeySequence>
+#include <QtLogging>
 
 #include "CommandFactories.hpp"
 #include "CommandSupport.hpp"
+#include "../framework/CutTargetsPanel.hpp"
 
 namespace mitcad::cmd {
 namespace {
@@ -254,6 +257,33 @@ CommandDef extrudeCommand(const CommandContext& context) {
                                                               {QStringLiteral("excluded"), QJsonArray()},
                                                               {QStringLiteral("excluded_bodies"), QJsonArray()}}}});
     state.setChecked(QStringLiteral("cut_context_from_profile"), true);
+    // What the view hides now (mitcad#475): targets hidden there start
+    // unchecked when the previews find them. Editing a cut keeps its stored
+    // scope (no snapshot there), and the model's discovery never depends on
+    // the light bulbs.
+    const QJsonObject document = model.queryObject({{QStringLiteral("query"), QStringLiteral("document")}});
+    state.setObject(QStringLiteral("cut_view"),
+                    cutTargetVisibility(components, model.queryArray(QStringLiteral("bodies")), document));
+  };
+  def.previewReported = [](QJsonObject& report, CommandState& state) {
+    QJsonObject view = state.object(QStringLiteral("cut_view"));
+    QJsonObject scope = state.object(QStringLiteral("cut_scope"));
+    if (view.isEmpty() || scope.isEmpty() || state.choice(QStringLiteral("operation")) != QStringLiteral("cut") ||
+        !report.contains(QStringLiteral("cut_targets"))) {
+      return false;
+    }
+    const bool changed = excludeHiddenCutTargets(scope, view, report);
+    state.setObject(QStringLiteral("cut_view"), view);
+    if (changed) {
+      state.setObject(QStringLiteral("cut_scope"), scope);
+      const QJsonObject targets = scope.value(QStringLiteral("targets")).toObject();
+      qDebug().noquote() << QStringLiteral("Extrude: hidden targets start unchecked: excluded %1, excluded bodies %2")
+                                .arg(QString::fromUtf8(QJsonDocument(targets.value(QStringLiteral("excluded")).toArray())
+                                                           .toJson(QJsonDocument::Compact)),
+                                     QString::fromUtf8(QJsonDocument(targets.value(QStringLiteral("excluded_bodies")).toArray())
+                                                           .toJson(QJsonDocument::Compact)));
+    }
+    return changed;
   };
   // Thin walls follow sketch curves too, so a sketch of open curves is
   // enough (mitcad#463).
@@ -430,6 +460,10 @@ CommandDef extrudeCommand(const CommandContext& context) {
   // planes (the importer's) as objects, a flipped two-sided or symmetric
   // extrusion and thin walls of side two of a one-sided one.
   def.canEdit = [&context](const QJsonObject& feature) {
+    // A surface is the SURFACE group's to edit (mitcad#455).
+    if (feature.value(QStringLiteral("surface")).toBool()) {
+      return false;
+    }
     const QJsonObject extent = feature.value(QStringLiteral("extent")).toObject();
     const QString type = str(extent, "type");
     bool ok = true;
@@ -619,6 +653,10 @@ CommandDef revolveCommand(const CommandContext& context) {
   };
 
   def.canEdit = [&context](const QJsonObject& feature) {
+    // A surface is the SURFACE group's to edit (mitcad#455).
+    if (feature.value(QStringLiteral("surface")).toBool()) {
+      return false;
+    }
     const QJsonObject extent = feature.value(QStringLiteral("extent")).toObject();
     const QString type = str(extent, "type");
     if (type == kToObject && !objectShowable(extent.value(QStringLiteral("object")).toObject(), context)) {

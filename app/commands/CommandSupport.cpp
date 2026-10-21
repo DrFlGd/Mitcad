@@ -795,4 +795,128 @@ std::optional<gp_Pnt> pointOnPlane(const CommandState& state, const CommandConte
   return frame->origin.Translated(gp_Vec(frame->x) * u + gp_Vec(frame->y) * v);
 }
 
+// ---------------------------------------------------------------------------
+// Splitting and trimming tools (Split Face, Split Body, Trim)
+
+// A splitting tool: one plane, face or body, or sketch curves of one sketch.
+QJsonValue toolOf(const Selection& items, Built& error, const QString& input) {
+  if (items.first().kind == SelectKind::SketchCurve) {
+    const QString sketch = oneSketch(items, error, input);
+    for (const SelectionItem& item : items) {
+      if (item.kind != SelectKind::SketchCurve) {
+        error = Built::failure(QObject::tr("Select sketch curves, or one plane, face or body."), input);
+      }
+    }
+    return QJsonObject{{QStringLiteral("sketch"), sketch},
+                       {QStringLiteral("curves"), names(items, SelectKind::SketchCurve)}};
+  }
+  if (items.size() != 1) {
+    error = Built::failure(QObject::tr("Select one plane, face or body, or sketch curves of one sketch."), input);
+    return QJsonValue();
+  }
+  return items.first().reference();
+}
+
+std::optional<Selection> toolItems(const QJsonValue& tool, const CommandContext& context) {
+  const QJsonObject o = tool.toObject();
+  if (o.contains(QStringLiteral("sketch"))) {
+    if (o.contains(QStringLiteral("curve"))) {
+      return Selection{itemOf(tool, context)};
+    }
+    return pathItems(tool, context);
+  }
+  const SelectionItem item = itemOf(tool, context);
+  if (!item.isValid()) {
+    return std::nullopt;
+  }
+  return Selection{item};
+}
+
+// A tool of sketch curves can be swept along a direction (an along
+// vector); without one, along the sketch's normal.
+QVector<InputDef> directionInputs() {
+  const auto shown = [](const CommandState& s) {
+    const Selection& tool = s.items(QStringLiteral("tool"));
+    return !tool.isEmpty() && tool.first().kind == SelectKind::SketchCurve;
+  };
+  const auto vector = [shown](const CommandState& s) {
+    return shown(s) && s.choice(QStringLiteral("split_type")) == QStringLiteral("vector");
+  };
+  return {
+      choiceInput(QStringLiteral("split_type"), QObject::tr("Split Type"),
+                  {{QStringLiteral("normal"), QStringLiteral("Along Sketch Normal")},
+                   {QStringLiteral("vector"), QStringLiteral("Along Vector")}},
+                  QStringLiteral("normal"))
+          .withVisible(shown),
+      valueInput(QStringLiteral("dx"), QObject::tr("Direction X"), ValueKind::Unitless, QStringLiteral("0"))
+          .withVisible(vector),
+      valueInput(QStringLiteral("dy"), QObject::tr("Direction Y"), ValueKind::Unitless, QStringLiteral("0"))
+          .withVisible(vector),
+      valueInput(QStringLiteral("dz"), QObject::tr("Direction Z"), ValueKind::Unitless, QStringLiteral("1"))
+          .withVisible(vector),
+  };
+}
+
+// The tool, its plane's offset, extension and direction into a definition.
+bool addTool(QJsonObject& def, const CommandState& state, Built& error) {
+  const Selection& tool = state.items(QStringLiteral("tool"));
+  const QJsonValue ref = toolOf(tool, error, QStringLiteral("tool"));
+  if (!error.error.isEmpty()) {
+    return false;
+  }
+  def.insert(QStringLiteral("tool"), ref);
+  if (tool.first().kind == SelectKind::Plane && nonZero(state, QStringLiteral("offset"))) {
+    def.insert(QStringLiteral("offset"), state.expression(QStringLiteral("offset")));
+  }
+  if (tool.first().kind == SelectKind::SketchCurve && state.choice(QStringLiteral("split_type")) == QStringLiteral("vector")) {
+    const double x = state.value(QStringLiteral("dx"));
+    const double y = state.value(QStringLiteral("dy"));
+    const double z = state.value(QStringLiteral("dz"));
+    if (std::hypot(x, y, z) < 1e-12) {
+      error = Built::failure(QObject::tr("The direction is zero."), QStringLiteral("dz"));
+      return false;
+    }
+    def.insert(QStringLiteral("direction"), QJsonArray{x, y, z});
+  }
+  if (!state.checked(QStringLiteral("extend"))) {
+    def.insert(QStringLiteral("extend"), false);
+  }
+  return true;
+}
+
+void loadTool(const QJsonObject& feature, CommandState& state, const CommandContext& context) {
+  if (const auto items = toolItems(feature.value(QStringLiteral("tool")), context)) {
+    state.setItems(QStringLiteral("tool"), *items);
+  }
+  loadValue(state, QStringLiteral("offset"), feature.value(QStringLiteral("offset")), feature, context);
+  const QJsonArray direction = feature.value(QStringLiteral("direction")).toArray();
+  if (direction.size() == 3) {
+    state.setChoice(QStringLiteral("split_type"), QStringLiteral("vector"));
+    state.setText(QStringLiteral("dx"), number(direction[0].toDouble()));
+    state.setText(QStringLiteral("dy"), number(direction[1].toDouble()));
+    state.setText(QStringLiteral("dz"), number(direction[2].toDouble()));
+  }
+  state.setChecked(QStringLiteral("extend"), feature.value(QStringLiteral("extend")).toBool(true));
+}
+
+bool toolEditable(const QJsonObject& feature, const CommandContext& context) {
+  return toolItems(feature.value(QStringLiteral("tool")), context).has_value();
+}
+
+InputDef toolInput(const QString& label) {
+  return selectionInput(QStringLiteral("tool"), label.isEmpty() ? QObject::tr("Splitting Tool") : label,
+                        SelectKind::Plane | SelectKind::Face | SelectKind::Body | SelectKind::SketchCurve, 1, 0)
+      .withoutMeshes()
+      .withTooltip(QObject::tr("A plane, a face, a body, or sketch curves of one sketch"));
+}
+
+InputDef toolOffsetInput() {
+  return valueInput(QStringLiteral("offset"), QObject::tr("Offset"), ValueKind::Length, QStringLiteral("0 mm"))
+      .withTooltip(QObject::tr("Moves a plane tool along its normal"))
+      .withVisible([](const CommandState& s) {
+        const Selection& tool = s.items(QStringLiteral("tool"));
+        return !tool.isEmpty() && tool.first().kind == SelectKind::Plane;
+      });
+}
+
 } // namespace mitcad::cmd

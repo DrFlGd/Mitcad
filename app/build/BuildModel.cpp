@@ -90,6 +90,10 @@ BuildPart buildPartOf(const QJsonObject& entry) {
   part.machining = entry.value(QStringLiteral("machining")).toArray();
   part.flip = entry.value(QStringLiteral("flip")).toBool();
   part.rotate = quarterTurns(entry.value(QStringLiteral("rotate"))) * 90;
+  part.kind = text(entry, "kind");
+  part.grade = text(entry, "grade");
+  part.set = text(entry, "set");
+  part.spacing = entry.value(QStringLiteral("spacing")).toObject();
   return part;
 }
 

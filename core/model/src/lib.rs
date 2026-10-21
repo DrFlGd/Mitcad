@@ -240,3 +240,24 @@ pub mod surfaces;
 pub use surfaces::{OpenBoundary, PatchBoundary, PatchContinuity, PatchLoopSpec};
 #[cfg(test)]
 mod surface_tests;
+// Surface modelling: surface bodies and their features (mitcad#455).
+pub mod surface_modelling;
+#[cfg(test)]
+mod surface_modelling_tests;
+pub use kernel::Unstitched;
+pub use surface_modelling::{
+    BlendEnd, BlendSpec, BodyEdges, BoundaryCurve, BoundaryCurves, BoundarySpec, ExtendMode,
+    Fairing, OpeningEdges, RuledCorners, RuledMode, RuledSpec, TrimSpec, TrimTool,
+};
+// Plastic part features and plastic rules (mitcad#459).
+pub use features::plastic::PlasticValues;
+pub use kernel::RimBandSpec;
+// Bodies moved into another component on the timeline (mitcad#465).
+pub use document::TransferDestination;
+#[cfg(test)]
+mod body_transfer_tests;
+// Drawings: views with dimensions and a hole table as PDF, SVG or DXF
+// (mitcad#471).
+pub mod drawing;
+// Gears: spur, helical, herringbone, ring, rack and bevel (mitcad#472).
+pub use kernel::{GearConeSpec, GearStep, GearSweepSpec};

@@ -570,9 +570,6 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
     }
 
     pub(crate) fn sweep(&mut self, index: i64, d: &SweepDetail) -> Result<Vec<Candidate>, String> {
-        if d.is_solid == Some(false) {
-            return Err("surface sweeps are not supported".to_owned());
-        }
         // Guide surfaces (mitcad#157): the faces as found by their
         // fingerprints. The stream decoder may also give a guide rail
         // then (a slot the sweep keeps from another type): the surfaces
@@ -739,10 +736,14 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         let sketch_uid = self.sketches[&sketch].uid;
         let readings =
             self.operation_readings(index, operation, &d.participant_bodies, Some(sketch_uid));
-        Ok(with_operations(
-            candidates.into_iter().map(|(_, c)| c).collect(),
-            &readings,
-        ))
+        let candidates =
+            with_operations(candidates.into_iter().map(|(_, c)| c).collect(), &readings);
+        // A surface sweep of regions (mitcad#455).
+        Ok(if d.is_solid == Some(false) {
+            crate::features::surface_candidates(candidates)
+        } else {
+            candidates
+        })
     }
 
     pub(crate) fn pipe(&mut self, index: i64, d: &PipeDetail) -> Result<Vec<Candidate>, String> {

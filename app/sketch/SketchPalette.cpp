@@ -21,6 +21,8 @@
 #include <QVBoxLayout>
 #include <QtLogging>
 
+#include <initializer_list>
+
 #include "../framework/ChromeStyle.hpp"
 #include "../framework/GlassCard.hpp"
 #include "../framework/CommandRegistry.hpp"
@@ -298,6 +300,7 @@ SketchPalette::SketchPalette(SketchController& controller, CommandRegistry& regi
       button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
       button->setFocusPolicy(Qt::NoFocus);
     }
+    button->setObjectName(QStringLiteral("paletteFinish"));
     layout->addWidget(button, 0, Qt::AlignRight);
   }
   layout->addStretch();
@@ -449,6 +452,32 @@ void SketchPalette::logLayout() const {
   }
   const QPoint combo = GlassCard::mapToHost(m_dimensionText, m_dimensionText->rect().center());
   qDebug().noquote() << QStringLiteral("Palette %1 at %2,%3").arg(m_dimensionText->objectName()).arg(combo.x()).arg(combo.y());
+  // Each option row's place and size against its size hint, and the
+  // palette's against its own: a row laid out below its hint overlaps the
+  // next one (mitcad#470).
+  for (const QWidget* row : std::initializer_list<const QWidget*>{
+           m_construction, m_signed, m_grid, m_dimensions, m_constraints, m_profiles, m_hideAbove, m_dimensionText,
+           findChild<const QWidget*>(QStringLiteral("paletteFinish"))}) {
+    if (row == nullptr) {
+      continue;
+    }
+    const QPoint corner = GlassCard::mapToHost(row, QPoint(0, 0));
+    qDebug().noquote() << QStringLiteral("Palette row %1 at %2,%3 size %4x%5, hint %6x%7")
+                              .arg(row->objectName())
+                              .arg(corner.x())
+                              .arg(corner.y())
+                              .arg(row->width())
+                              .arg(row->height())
+                              .arg(row->sizeHint().width())
+                              .arg(row->sizeHint().height());
+  }
+  qDebug().noquote() << QStringLiteral("Palette size %1x%2, hint %3x%4, minimum hint %5x%6")
+                            .arg(width())
+                            .arg(height())
+                            .arg(sizeHint().width())
+                            .arg(sizeHint().height())
+                            .arg(minimumSizeHint().width())
+                            .arg(minimumSizeHint().height());
   m_warnings->logLayout();
   logCleanUp();
 }

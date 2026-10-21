@@ -3,7 +3,7 @@
 //! source, metadata, mount frames and length at the timeline marker, and
 //! the designation, supplier and part number a list gives it.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::{BuildMeta, BuildRecord, LibrarySourceDef, SourceId};
 use crate::document::{DocState, Document};
@@ -12,6 +12,7 @@ use crate::features::{FeatureDef, ValueInput};
 use crate::ids::{ComponentUid, FeatureUid, OccurrenceUid};
 use crate::kernel::{BoundingBox, Kernel};
 use crate::parameters::{ParamId, Parameters};
+use crate::topo::FaceName;
 use crate::transform::Transform;
 
 /// A BUILD part as the rules see it.
@@ -41,6 +42,40 @@ impl PartInfo {
             .iter()
             .filter(|(name, _)| self.frame_kind(name) == "slot")
             .collect()
+    }
+
+    /// The frames a part goes on a side at (mitcad#478): the slot frames,
+    /// and a member's `face` frames on the sides that have no slot frame.
+    pub fn sides(&self) -> Vec<(&String, &Transform)> {
+        let mut out = self.slots();
+        if self.meta.role != super::BuildRole::Profile {
+            return out;
+        }
+        let faces: Vec<(&String, &Transform)> = self
+            .mounts
+            .iter()
+            .filter(|(name, _)| self.frame_kind(name) == "face")
+            .collect();
+        for (name, t) in faces {
+            let z = super::z_axis(t);
+            if !out
+                .iter()
+                .any(|(_, s)| super::dot(super::z_axis(s), z) > 1.0 - 1e-6)
+            {
+                out.push((name, t));
+            }
+        }
+        out
+    }
+
+    /// Whether a frame is a side frame (a slot, or a member's face).
+    pub fn is_side(&self, name: &str) -> bool {
+        self.sides().iter().any(|(n, _)| *n == name)
+    }
+
+    /// Whether the part is a timber member (mitcad#478).
+    pub fn is_timber(&self) -> bool {
+        self.meta.is_timber()
     }
 
     /// A frame's kind: the metadata's, else guessed from its name
@@ -89,7 +124,10 @@ impl<K: Kernel> Document<K> {
         let meta = source
             .as_ref()
             .and_then(|s| s.build.as_ref())
-            .and_then(|b| BuildMeta::read(b).ok())
+            .and_then(|b| {
+                let row = part_def.as_ref().and_then(|d| d.config.as_deref());
+                BuildMeta::read_row(b, row).ok()
+            })
             .unwrap_or_else(|| BuildMeta {
                 role: record.role,
                 ..BuildMeta::default()
@@ -397,5 +435,93 @@ impl<K: Kernel> Document<K> {
             }
             Ok((label, lines))
         })
+    }
+}
+
+/// Gives a derived part's bodies their source's appearance and material
+/// (mitcad#478: a timber member shows its wood), for a part whose library
+/// block names a `material`: when the source's bodies
+/// that set one all set the same, every body the part makes takes it (the
+/// first `count`, at least one), and a document appearance of the source
+/// is copied into the design when it has none of that id.
+pub(crate) fn inherit_appearance(
+    state: &mut DocState,
+    part: FeatureUid,
+    source: &LibrarySourceDef,
+) {
+    // Only parts whose library block names a material (timber, sheets,
+    // their metal parts): slot profiles look as they did.
+    if source
+        .build
+        .as_ref()
+        .is_none_or(|b| b.get("material").is_none())
+    {
+        return;
+    }
+    let Ok(design) = source.design.state() else {
+        return;
+    };
+    let shown: Vec<&crate::document::BodyAttributes> = design
+        .body_attributes
+        .values()
+        .filter(|a| a.visible)
+        .collect();
+    let same = |pick: &dyn Fn(&crate::document::BodyAttributes) -> Option<String>| {
+        let values: Vec<String> = shown.iter().filter_map(|a| pick(a)).collect();
+        match values.first() {
+            Some(first) if values.iter().all(|v| v == first) => Some(first.clone()),
+            _ => None,
+        }
+    };
+    let appearance = same(&|a| a.appearance.clone());
+    let material = same(&|a| a.material.clone());
+    // The ends' look (mitcad#484: a timber member's end grain): the
+    // appearance the source's bodies give the caps of their extrusion
+    // (`<F>:start(...)`, `<F>:end(...)`, the faces at z = 0 and L), when
+    // they give one, goes to the part's end faces, cut or not.
+    let caps: BTreeSet<&String> = shown
+        .iter()
+        .flat_map(|a| a.face_appearances.iter())
+        .filter(|(face, _)| {
+            face.parse::<FaceName>()
+                .is_ok_and(|name| name.role == "start" || name.role == "end")
+        })
+        .map(|(_, id)| id)
+        .collect();
+    let ends = match (caps.len(), source.build.as_ref()) {
+        (1, Some(build)) if build.get("length").is_some() => caps.first().map(|id| (*id).clone()),
+        _ => None,
+    };
+    if appearance.is_none() && material.is_none() && ends.is_none() {
+        return;
+    }
+    for id in appearance.iter().chain(ends.iter()) {
+        if crate::appearance::library_appearance(id).is_none()
+            && !state.appearances.iter().any(|a| &a.id == id)
+            && let Some(own) = design.appearances.iter().find(|a| &a.id == id)
+        {
+            state.appearances.push(own.clone());
+        }
+    }
+    let count = shown.len().max(1);
+    for i in 0..count {
+        let entry = state
+            .body_attributes
+            .entry(crate::ids::BodyUid::new(part, i as u32))
+            .or_default();
+        if entry.appearance.is_none() {
+            entry.appearance = appearance.clone();
+        }
+        if entry.material.is_none() {
+            entry.material = material.clone();
+        }
+        if let Some(id) = &ends {
+            for end in ["end_a", "end_b"] {
+                entry
+                    .face_appearances
+                    .entry(FaceName::new(part, end, None).to_string())
+                    .or_insert_with(|| id.clone());
+            }
+        }
     }
 }

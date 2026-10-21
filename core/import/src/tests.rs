@@ -343,6 +343,10 @@ struct TestKernel {
     /// Whether extrusions against the sketch's normal differ from those
     /// along it (a marker in their history; the mock kernel's are alike).
     directed: bool,
+    /// Whether a shape moved without copying (`transform_shape` without an
+    /// instance) measures as the shape it was, its centre moved by the
+    /// translation, as a rigid motion keeps a solid's measures (mitcad#465).
+    rigid: bool,
     /// Shapes whose history contains this are invalid for the kernel's
     /// checker (`Kernel::is_valid`).
     invalid: Option<&'static str>,
@@ -653,6 +657,29 @@ impl Kernel for TestKernel {
 
     fn mass_properties(&self, shape: &MockShape) -> Result<MassProperties, KernelError> {
         self.hook("mass_properties");
+        // A moved shape (`moved(<history>,x,y,z)`): its original's measures.
+        if self.rigid
+            && let Some(inner) = shape
+                .history
+                .strip_prefix("moved(")
+                .and_then(|h| h.strip_suffix(')'))
+        {
+            let mut parts = inner.rsplitn(4, ',');
+            let offset: Vec<f64> = parts
+                .by_ref()
+                .take(3)
+                .filter_map(|p| p.parse().ok())
+                .collect();
+            if let (Some(history), [z, y, x]) = (parts.next(), offset.as_slice()) {
+                let original = MockShape {
+                    history: history.to_owned(),
+                    ..shape.clone()
+                };
+                let mut m = self.mass_properties(&original)?;
+                m.center = [m.center[0] + x, m.center[1] + y, m.center[2] + z];
+                return Ok(m);
+            }
+        }
         let f = self.fingerprint(shape);
         if self.alike && !f.contains("moved(") {
             // (Less than a prism of either rectangle adds.)
@@ -925,6 +952,7 @@ impl Kernel for TestKernel {
             slow: self.slow,
             slow_calls: Default::default(),
             directed: self.directed,
+            rigid: self.rigid,
             invalid: self.invalid,
             began: Arc::clone(&self.began),
             stopped: Arc::clone(&self.stopped),
@@ -940,6 +968,16 @@ impl Kernel for TestKernel {
         self.probes
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Err(KernelError::Unsupported("point classification"))
+    }
+
+    // Surface modelling (mitcad#455).
+    fn open_faces(
+        &self,
+        shape: &MockShape,
+        feature: FeatureUid,
+        roles: &[&str],
+    ) -> Result<MockShape, KernelError> {
+        self.mock.open_faces(shape, feature, roles)
     }
 }
 
@@ -1272,6 +1310,38 @@ fn extrusions_with_every_input_in_the_stream_are_read() {
     // A thin extrusion the stream does not mark as one is no read input.
     let (_, provenance) = decoded_extrusion(raw(json!({"thin": null})), Some(("Side1", "d4")));
     assert_ne!(provenance, Some(InputProvenance::Read));
+}
+
+/// A surface extrusion (`isSolid` false, mitcad#455) comes in as the
+/// extrusion with `surface` set: a new surface body of the region's walls.
+#[test]
+fn a_surface_extrusion_comes_in_as_a_surface() {
+    let mut items = decoded_small_rectangle();
+    items[1]["detail"]["isSolid"] = json!(false);
+    let mut doc = Document::new(TestKernel::default());
+    let report = import_design(
+        &mut doc,
+        &timeline_dump(items),
+        &mut NoGeometry,
+        &Options::default(),
+    );
+    assert_eq!(
+        report.items[1].outcome,
+        Outcome::Parametric,
+        "{}",
+        report.text()
+    );
+    let def: Value =
+        serde_json::from_str(&doc.query(r#"{"query": "feature", "uid": "F2"}"#).unwrap()).unwrap();
+    assert_eq!(def["def"]["surface"], true, "{def}");
+    assert_eq!(def["def"]["operation"], "new_body");
+    let bodies = doc.bodies();
+    assert_eq!(bodies.len(), 1);
+    let shape = doc.body_shape(bodies[0].uid).unwrap();
+    assert_eq!(
+        doc.kernel().body_kind(shape).unwrap(),
+        mitcad_model::BodyKind::Sheet
+    );
 }
 
 /// A one-sided extrusion through all of the decoded small rectangle, after a
@@ -9340,6 +9410,139 @@ fn a_cut_and_paste_moves_the_bodies_into_an_existing_component() {
         report.text()
     );
     assert!(report.items[2].features.is_empty());
+}
+
+/// A cut and paste of a body whose features cannot go into the existing
+/// component (a hole, between differently placed components): the body
+/// alone moves there by a body transfer at the item's point of the
+/// timeline (mitcad#465), keeping its place in the design; the features
+/// that made it stay.
+#[test]
+fn a_cut_and_paste_whose_features_cannot_go_transfers_the_body() {
+    let kernel = || TestKernel {
+        edge_points: true,
+        face_listing: true,
+        rigid: true,
+        ..TestKernel::default()
+    };
+    let mut first = vec![
+        rectangle_sketch(0),
+        extrude(1, 0, "NewBodyFeatureOperation", "d2"),
+    ];
+    let mut reference = Document::new(kernel());
+    import_design(
+        &mut reference,
+        &timeline_dump(first.clone()),
+        &mut NoGeometry,
+        &Options::default(),
+    );
+    let top = reference.bodies()[0]
+        .shape
+        .faces
+        .iter()
+        .find(|f| f.role == "end")
+        .cloned()
+        .expect("a top face");
+    first.push(json!({
+        "index": 2, "name": "Hole1", "objectType": "HoleFeature",
+        "detail": {
+            "holeType": "SimpleHoleType", "holeTapType": "SimpleHoleTapType",
+            "holeDiameter": param("d6", "5 mm", 0.5, "mm"),
+            "tipAngle": param("d7", "118 deg", 2.0594885173533086, "deg"),
+            "extentDefinition": {"_type": "DistanceExtentDefinition",
+                                 "distance": param("d8", "5 mm", 0.5, "mm")},
+            "position": [2.0, 1.0, 1.0],
+            "holePositionDefinition": {"planarEntity": {
+                "kind": "face", "geometry": {"type": "Plane"},
+                "point_on_face": face_point(&top).map(|x| x / 10.0)}}
+        }
+    }));
+    for item in &mut first {
+        item["component"] = json!("Assembly");
+    }
+    let mut reference = Document::new(kernel());
+    import_design(
+        &mut reference,
+        &timeline_dump(first.clone()),
+        &mut NoGeometry,
+        &Options::default(),
+    );
+    let shape = shapes(&reference)[0].clone();
+    let points: Vec<[f64; 3]> = shape
+        .edges
+        .iter()
+        .take(3)
+        .map(|(a, b)| edge_point(a, b).map(|x| x / 10.0))
+        .collect();
+    let body = json!({"kind": "body", "objectType": "BRepBody",
+                      "_f3d": {"recipe": "body", "entities": [[{"tag": "304", "kind": 7, "ops": []}]],
+                               "edge_points": points}});
+    let mut items = first;
+    items.push(
+        json!({"index": 3, "name": "CutPasteBodies1", "objectType": "CopyPasteBodies",
+               "component": "Box", "detail": {"sourceBody": [body]},
+               "_f3d": {"base_name": "CutPasteBodies"}}),
+    );
+    let mut value = serde_json::to_value(timeline_dump(items)).unwrap();
+    value["document"] = json!({"root_component": "Assembly"});
+    value["components"] = json!([
+        {"name": "Assembly", "is_root": true, "_f3d": {"object_id": 3}},
+        {"name": "Box", "_f3d": {"object_id": 10}}]);
+    value["occurrences"] = json!([
+        {"component": "Box",
+         "transform": [[1.0, 0.0, 0.0, 5.0], [0.0, 1.0, 0.0, 0.0],
+                       [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]],
+         "_f3d": {"component_object": 10}, "children": []}]);
+    let dump = Dump::from_json(&value.to_string()).unwrap();
+    let mut doc = Document::new(kernel());
+    let report = import_design(&mut doc, &dump, &mut NoGeometry, &Options::default());
+    assert_eq!(
+        report.items[3].outcome,
+        Outcome::Parametric,
+        "{}",
+        report.text()
+    );
+    let note = report.items[3].note.clone().unwrap_or_default();
+    assert!(
+        note.contains("moves its body into Box by a body transfer"),
+        "{}",
+        report.text()
+    );
+    let a = doc.assembly();
+    let boxed = a.components[0].uid;
+    let body = doc.bodies()[0].uid;
+    assert_eq!(doc.body_component(body), Some(boxed));
+    // The features that made it stay in the root; the transfer is the box's.
+    let transfer: Vec<_> = doc
+        .features()
+        .filter(|f| matches!(f.def, FeatureDef::BodyTransfer(_)))
+        .collect();
+    assert_eq!(transfer.len(), 1);
+    assert_eq!(transfer[0].component, boxed);
+    assert!(
+        doc.features()
+            .filter(|f| !matches!(f.def, FeatureDef::BodyTransfer(_)))
+            .all(|f| f.component == ComponentUid::ROOT)
+    );
+    assert!(doc.features().all(|f| doc.status(f.uid).unwrap().is_ok()));
+    // Where it was in the design: the box's placement and the body's
+    // coordinates in it make up its place in the root.
+    let instance = &doc.instances()[0];
+    assert_eq!(instance.transform.translation, [50.0, 0.0, 0.0]);
+    let local = doc
+        .kernel()
+        .bounding_box(doc.body_shape(body).unwrap())
+        .unwrap();
+    let root = reference
+        .kernel()
+        .bounding_box(reference.body_shape(reference.bodies()[0].uid).unwrap())
+        .unwrap();
+    if let (Some(local), Some(root)) = (local, root) {
+        assert!(
+            (local.min[0] + 50.0 - root.min[0]).abs() < 1e-9,
+            "{local:?} {root:?}"
+        );
+    }
 }
 
 /// Reference curves the file locks that do not meet exactly: two elliptical

@@ -173,6 +173,17 @@ void MainWindow::registerFileCommands() {
                         QStringLiteral("save as"), QStringLiteral("3mf"), QStringLiteral("usdz"),
                         QStringLiteral("augmented reality")};
   m_registry->add(exportDef);
+  // Drawings with views, dimensions and a hole table (mitcad#471,
+  // MainWindowDrawing.cpp).
+  CommandDef drawingDef = def("file.export_drawing", tr("Export Drawing..."), "export",
+                              tr("The bodies as a drawing: views, sizes, hole diameters and a hole table as PDF, "
+                                 "SVG or DXF"),
+                              [this] { exportDrawing(); });
+  drawingDef.tab.clear(); // the File menu
+  drawingDef.mode = CommandDef::Mode::Any;
+  drawingDef.keywords = {QStringLiteral("drawing"), QStringLiteral("pdf"), QStringLiteral("svg"),
+                         QStringLiteral("dxf"), QStringLiteral("print"), QStringLiteral("blueprint")};
+  m_registry->add(drawingDef);
   // 3D Print (mitcad#13, mitcad#234, MainWindowPrint.cpp): a panel in the
   // MAKE group, next to Render Image.
   m_registry->add(print3dCommand());
@@ -244,6 +255,7 @@ void MainWindow::createFileMenu() {
   file->addSeparator();
   command(file, "file.import", tr("&Import..."));
   command(file, "file.export", tr("&Export..."));
+  command(file, "file.export_drawing", tr("Export &Drawing..."));
   file->addSeparator();
   command(file, "file.recover", tr("Recover Doc&uments..."));
 #ifndef Q_OS_MACOS
@@ -562,7 +574,7 @@ bool MainWindow::importPath(const QString& path, bool interactive, QString* erro
 
 bool MainWindow::importCad(const QString& path, double unitMillimetres, QString* error) {
   if (!canChangeModel()) {
-    *error = tr("Finish the command or the sketch first.");
+    *error = changeBlockedReason();
     return false;
   }
   QJsonObject command = cmd("import_file", {{QStringLiteral("path"), QFileInfo(path).absoluteFilePath()}});
@@ -642,7 +654,7 @@ bool MainWindow::importDrawing(const QString& path, bool interactive, QString* e
     return true;
   }
   if (!canChangeModel()) {
-    *error = tr("Finish the command first.");
+    *error = changeBlockedReason();
     return false;
   }
   // A new sketch on a plane: an origin plane, or the selected plane or

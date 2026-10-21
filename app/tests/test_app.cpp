@@ -1946,6 +1946,7 @@ int agentFolderTests();
 int partPickerDataTests();
 int webPageTests();
 int projectWebTests();
+int drawingSettingsTests();
 
 int main(int argc, char* argv[]) {
   QApplication app(argc, argv);
@@ -1995,6 +1996,7 @@ int main(int argc, char* argv[]) {
     failures += partPickerDataTests();
     failures += webPageTests();
     failures += projectWebTests();
+    failures += drawingSettingsTests();
   }
   if (failures != 0) {
     std::fprintf(stderr, "%d check(s) failed\n", failures);

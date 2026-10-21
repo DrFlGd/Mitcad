@@ -260,6 +260,10 @@ CommandDef sweepCommand(const CommandContext& context) {
   // A rail with twist or taper (ignored by the model) and a chained path
   // with an unchained rail cannot be shown with one Chain Selection.
   def.canEdit = [](const QJsonObject& feature) {
+    // A surface is the SURFACE group's to edit (mitcad#455).
+    if (feature.value(QStringLiteral("surface")).toBool()) {
+      return false;
+    }
     if (!pathEditable(feature.value(QStringLiteral("path")))) {
       return false;
     }
@@ -533,6 +537,10 @@ CommandDef loftCommand(const CommandContext& context) {
   // Fixed points or paths, and rails chained and not (one Chain Selection
   // holds them), have no inputs.
   def.canEdit = [&context](const QJsonObject& feature) {
+    // A surface is the SURFACE group's to edit (mitcad#455).
+    if (feature.value(QStringLiteral("surface")).toBool()) {
+      return false;
+    }
     std::optional<bool> chained;
     for (const QJsonValue& rail : feature.value(kRails).toArray()) {
       const bool chain = rail.toObject().value(QStringLiteral("chain")).toBool();

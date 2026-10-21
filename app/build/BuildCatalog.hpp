@@ -44,6 +44,7 @@ struct Part {
   QString partNumber;
   QString supplierUrl;
   QJsonObject build;  // the manifest's `build`
+  bool ownPreview = false; // the row has a picture of its own (`row_previews`, mitcad#484)
 
   QString role() const;
   // "B8 30" (system, slot, grid), or the systems a connector fits.
@@ -68,6 +69,21 @@ struct Part {
   // The section's width and height in millimetres (0 when unknown).
   double sectionWidth() const;
   double sectionHeight() const;
+
+  // Timber construction (mitcad#478; docs/libraries.md, "Timber parts"):
+  // `build` is the component's block with its row's block (`build.rows`)
+  // merged over it.
+  // A timber member (`kind: timber`).
+  bool isTimber() const;
+  // A row the picker lists after the standard sizes (`availability: less
+  // common`).
+  bool lessCommon() const;
+  // A wood screw or nail (a `wood` block).
+  bool isWoodFastener() const;
+  // A connector on the members' outer faces (`connector.placement: outer`).
+  bool isOuter() const;
+  // A sheet laid on a member's face (`panel.mount: face`).
+  bool isFaceSheet() const;
 };
 
 // "30 mm" -> 30; a plain number is millimetres; NaN when it is not one.
@@ -82,6 +98,10 @@ public:
   // Reads the parts of a role ("profile", "panel", "linear", ...): the
   // design's sources first (they need no library), then the fetched
   // libraries'. Logs "BUILD parts <role>: <n> (<m> in the design)".
+  // Timber (mitcad#478) has pickers of its own: "timber" (the members,
+  // `role: profile` with `kind: timber`, the standard sizes first) and
+  // "sheet" (`role: panel` with `mount: face`); "profile" lists no timber
+  // and "panel" no sheets.
   void refresh(const QString& role, const CommandContext& context);
   QVector<Part> parts(const QString& role) const;
   // A part by its key, from any role read.
@@ -91,8 +111,14 @@ public:
 
   // The connectors that fit a junction (an entry of `build_junctions`),
   // best first, and those that nearly fit with the reason
-  // (library_build_candidates); asked once per junction until refresh.
+  // (library_build_candidates); asked once per junction until refresh. A
+  // junction of two timber members (its `wood`, mitcad#478) lists each wood
+  // fastener once, without a row (the model sizes it from the members), and
+  // of an outer connector the rows that fit member a's section.
   QVector<Part> forJunction(const QJsonObject& junction, QStringList* refused = nullptr);
+  // The configuration rows of a wood fastener forJunction lists once, by
+  // its key (mitcad#478).
+  QStringList rowsOf(const QString& key) const;
 
 private:
   mutable std::mutex m_mutex;
@@ -100,6 +126,7 @@ private:
   QHash<QString, QString> m_problems;
   QHash<QString, QVector<Part>> m_byJunction;
   QHash<QString, QStringList> m_refused;
+  QHash<QString, QStringList> m_rows;
   // The design's sources: by "<library>|<component>", their id.
   QHash<QString, QString> m_sources;
 };

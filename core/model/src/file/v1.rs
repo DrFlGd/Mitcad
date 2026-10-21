@@ -418,6 +418,8 @@ impl Converter<'_> {
                     participants,
                     cut_scope: None,
                     object_links: BTreeMap::new(),
+                    surface: false,
+                    curves: None,
                 })
             }
             FileFeature::Fillet {

@@ -259,7 +259,13 @@ design in a project.
   `document/move_features.rs`): their uids and topological names stay,
   the occurrence paths that reach their geometry (links, joint origins)
   take the new occurrence, and which features must go together follows
-  from what the last recompute read and changed.
+  from what the last recompute read and changed. Bodies alone move into
+  an existing component at a point of the timeline by a `body_transfer`
+  feature of the destination (mitcad#465, `features/body_transfer.rs`):
+  the same body ids, converted once into the destination's coordinates
+  (by the placements there along an `OccurrenceLink`, or a fixed rigid
+  transform an import keeps), owned by the destination from then on
+  (`FeatureOutput::owners`).
 - **Joints** (mitcad#55, `core/model/src/joints.rs`, phases 1 to 3):
   timeline features of a component (`joint`, `as_built_joint`,
   `joint_origin`, `rigid_group`) that connect its occurrences. The one
@@ -363,6 +369,30 @@ design in a project.
   new-component operation) that an owner's policy refuses is placed in the
   nearest owner above that takes components, at the same place, and the
   reply says so (`Document::component_parent_beside`, mitcad#292).
+- **Plastic part features** (mitcad#459, `core/model/src/features/plastic.rs`):
+  Boss, Snap Fit and Rest are built in the model from the kernel's
+  extrusions, booleans and fillets; Lip and Groove from the band along a
+  rim face's loop (`Kernel::rim_band`, `geometry/src/plastic.cpp`). A
+  plastic rule is a timeline feature that changes no body; the features
+  that name it read its parameters and its result (`Read::Output`), so
+  an edit of the rule computes them again
+  ([commands.md](../core/model/src/api/commands.md), "Plastic part
+  features").
+- **Gears** (mitcad#472, `core/model/src/features/gear.rs`): the teeth
+  are worked out in the model (`gear_profile.rs`: involute flanks fitted
+  as B-splines, the generating rack's root fillet and undercut, ring
+  spaces, racks, Tredgold bevel sections) and handed to the kernel as
+  loops of named curves: `Kernel::gear_sweep` sweeps them straight
+  (a prism) or along a screw motion in steps (helical, herringbone; faces
+  built from each curve's poles moved along the motion and sewn,
+  `geometry/src/gear.cpp`), `Kernel::gear_cone` rules a bevel gear's
+  section to its apex within its blank of revolution. Bores, hubs and
+  grooves are further sweeps joined or cut. A gear meshed with another
+  reads that gear's definition and parameters (and its result,
+  `Read::Output`) to place itself; its result keeps its frame as the
+  mount `gear`, which `link_gears` reads to couple the gears' joints with
+  a motion link ([commands.md](../core/model/src/api/commands.md),
+  "Gears").
 - **Extrude's automatic operation** (mitcad#289,
   `core/model/src/document/auto_operation.rs`): a preview asked for it
   evaluates the extrusion as a new body, tries its tool against the
@@ -408,6 +438,23 @@ design in a project.
   tools that hold it; the cells become new bodies or one tool that joins,
   cuts or intersects participants as an extrusion's does
   ([commands.md](../core/model/src/api/commands.md), "Boundary Fill").
+- **Surface modelling** (mitcad#455, beside Patch, Stitch and Thicken of
+  mitcad#456): surface (sheet) bodies are ordinary bodies whose shape is
+  open shells; `Kernel::body_kind` tells them from solids. Extrude,
+  Revolve, Sweep and Loft make them with `surface` set
+  (`features/surface_sweeps.rs`): the walls of profiles are the solid
+  feature's result without its caps (`Kernel::open_faces`), so the solid
+  feature's options and names apply, and sketch curves are swept by the
+  kernel's sheet methods (`geometry/src/surface_sweeps.cpp`). The
+  families of surface features that change surface bodies follow the
+  same pattern: a feature module, a block of `Kernel` methods with a
+  default `Unsupported`, and a geometry file of their own
+  (`surface_offsets.cpp`, `surface_edits.cpp`, `surface_fills.cpp`;
+  [commands.md](../core/model/src/api/commands.md), "Surface
+  modelling"); the application has them in the SOLID tab's SURFACE group.
+  Free edges (of one face only) have no names: features take them as
+  openings of the body, narrowed by faces and points
+  (`features/sheet_edges.rs`).
 
 ### Units
 
@@ -659,7 +706,18 @@ the `Shape` type.
   the surface's normals, in the order `Kernel::faces` lists them, so
   face appearances find their triangles): a mesh per placement under
   `Xform`s of the occurrences, materials from the appearances
-  (`core/model/src/exchange/usdz.rs`, `core/usdz`).
+  (`core/model/src/exchange/usdz.rs`, `core/usdz`). Drawings (mitcad#471,
+  `export_drawing`): `Kernel::project_view` gives a view's edges with
+  hidden lines removed (OCCT's `HLRBRep_Algo`, lines and circles exact,
+  other curves as polylines; `HLRBRep_PolyAlgo` on a triangulated copy
+  when asked or when the exact one fails, and for mesh bodies) and a
+  section's cut faces (Section Analysis' `analysis::clip` and
+  `analysis::section`), `Kernel::round_holes` the holes (coaxial
+  cylinders with the material outside, a counterbore or countersink
+  beside them); the model (`core/model/src/drawing`, no geometry library)
+  lays the sheet out (views by the projection method, sizes, callouts,
+  the hole table with the `threads` query's threads, the title block)
+  and writes PDF and SVG itself and DXF through `core/dxf`.
 - A mesh body (STL, OBJ) is a face with a triangulation and no surface.
   `geometry::transform_shape` moves a copy of the triangulation, and the
   validity check skips such faces. Surface operations do not take one
@@ -1171,7 +1229,10 @@ The Qt idle selection card uses the model's single-item `measure` query for
 up to eight selected faces, edges or bodies. Results are cached until the
 selection changes or the scene refreshes, so edits and undo invalidate them.
 Full topological references remain in the tooltip. Floating cards size their
-active page independently of the hidden sketch palette.
+active page independently of the hidden sketch palette. The palette sits in
+a scroll area in both layouts: in the floating command card it keeps its
+rows at their size hint and scrolls when the card (limited by the view's
+height) is shorter, instead of being squeezed below its hint (mitcad#470).
 
 With `MITCAD_MACOS_NATIVE_UI=ON`, macOS starts the AppKit frontend by
 default. `--ui=qt` selects the retained Qt frontend; `--chrome` also selects

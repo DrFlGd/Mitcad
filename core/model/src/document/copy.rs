@@ -810,6 +810,15 @@ impl CopyReferences<'_> {
                     .map(|b| bodies.get(b).copied().unwrap_or_else(|| self.body(*b)))
                     .collect();
             }
+            // A body transfer between components of the copy (mitcad#465):
+            // its bodies are the copies'.
+            (FeatureDef::BodyTransfer(copy), FeatureDef::BodyTransfer(original)) => {
+                let (link, internal) = self.link(&original.link, component)?;
+                copy.link = link;
+                if internal {
+                    copy.bodies = original.bodies.iter().map(|b| self.body(*b)).collect();
+                }
+            }
             // A split's tool bodies of other components: as a sweep's.
             (FeatureDef::SplitBody(copy), FeatureDef::SplitBody(original)) => {
                 copy.tool_links.clear();

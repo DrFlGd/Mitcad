@@ -18,6 +18,7 @@
 #include <QFontMetrics>
 #include <QFormLayout>
 #include <QHBoxLayout>
+#include <QHash>
 #include <QHeaderView>
 #include <QJsonArray>
 #include <QLabel>
@@ -79,6 +80,15 @@ QString machiningText(const QJsonValue& value) {
   QStringList holes;
   for (const QJsonValue& entry : value.toArray()) {
     const QJsonObject item = entry.toObject();
+    // A joinery cut (mitcad#478): {kind, size, with}, "half_lap 148 x 24 x 148".
+    if (!text(item, "kind").isEmpty()) {
+      QStringList size;
+      for (const QJsonValue& side : item.value(QStringLiteral("size")).toArray()) {
+        size << millimetresText(side.toDouble(kNaN));
+      }
+      holes << QStringLiteral("%1 %2").arg(text(item, "kind"), size.join(QStringLiteral(" x "))).trimmed();
+      continue;
+    }
     const QJsonObject hole = item.value(QStringLiteral("hole")).isObject() ? item.value(QStringLiteral("hole")).toObject() : item;
     QString shown = QStringLiteral("D%1").arg(millimetresText(hole.value(QStringLiteral("diameter")).toDouble(kNaN)));
     const double depth = hole.value(QStringLiteral("depth")).toDouble(kNaN);
@@ -101,6 +111,43 @@ QString machiningText(const QJsonValue& value) {
 // A mass in kilograms.
 QString massText(const QJsonValue& mass) {
   return mass.isDouble() ? QString::number(mass.toDouble(), 'f', 3) : QString();
+}
+
+// Running metres, three decimals; a volume in m³, four.
+QString metresText(const QJsonValue& metres) {
+  return metres.isDouble() ? QString::number(metres.toDouble(), 'f', 3) : QString();
+}
+QString volumeText(const QJsonValue& volume) {
+  return volume.isDouble() ? QString::number(volume.toDouble(), 'f', 4) : QString();
+}
+
+// A timber section as its rows name it, thickness first: {width: 148,
+// height: 48} is "48x148".
+QString sectionText(const QJsonValue& value) {
+  const QJsonObject section = value.toObject();
+  const double width = section.value(QStringLiteral("width")).toDouble(kNaN);
+  const double height = section.value(QStringLiteral("height")).toDouble(kNaN);
+  if (!std::isfinite(width) || !std::isfinite(height)) {
+    return QString();
+  }
+  return QStringLiteral("%1x%2").arg(height, 0, 'g', 6).arg(width, 0, 'g', 6);
+}
+
+// A cut row's timber columns (mitcad#478; commands.md, "BUILD: timber
+// construction", *Lists*): material, grade, finish, nominal and actual
+// section, running metres, volume; empty for a row that is no timber.
+QStringList timberCells(const QJsonObject& row) {
+  if (text(row, "kind") != QStringLiteral("timber")) {
+    return QStringList(7, QString());
+  }
+  const QJsonObject material = row.value(QStringLiteral("material")).toObject();
+  return {text(material, "species"),
+          text(material, "grade"),
+          text(material, "finish"),
+          sectionText(row.value(QStringLiteral("nominal"))),
+          sectionText(row.value(QStringLiteral("section"))),
+          metresText(row.value(QStringLiteral("running_metres"))),
+          volumeText(row.value(QStringLiteral("volume")))};
 }
 
 QString countText(const QJsonValue& value) {
@@ -172,26 +219,51 @@ QString csvOf(const QVector<ListTable>& tables) {
 }
 
 QVector<ListTable> cutListTables(const QJsonObject& answer) {
+  // Timber (mitcad#478): its columns only when the design has timber.
+  const bool timber = answer.value(QStringLiteral("timber")).toBool();
   ListTable rows{QObject::tr("Cut list"),
                  {QObject::tr("Quantity"), QObject::tr("Part"), QObject::tr("Length (mm)"), QObject::tr("End A"),
                   QObject::tr("End B"), QObject::tr("Machining"), QObject::tr("Own features"), QObject::tr("Supplier"),
                   QObject::tr("Part number"), QObject::tr("Mass each (kg)")},
                  {}};
+  if (timber) {
+    rows.columns << QObject::tr("Material") << QObject::tr("Grade") << QObject::tr("Finish")
+                 << QObject::tr("Nominal (mm)") << QObject::tr("Actual (mm)") << QObject::tr("Running metres (m)")
+                 << QObject::tr("Volume (m³)");
+  }
   for (const QJsonValue& value : answer.value(QStringLiteral("rows")).toArray()) {
     const QJsonObject row = value.toObject();
     const QJsonObject ends = row.value(QStringLiteral("ends")).toObject();
-    rows.rows.append({countText(row.value(QStringLiteral("quantity"))), text(row, "designation"),
+    QStringList cells{countText(row.value(QStringLiteral("quantity"))), text(row, "designation"),
                       millimetresText(lengthOf(row.value(QStringLiteral("length")))),
                       endText(ends.value(QStringLiteral("a"))), endText(ends.value(QStringLiteral("b"))),
                       machiningText(row.value(QStringLiteral("machining"))),
                       countText(row.value(QStringLiteral("features"))), text(row, "supplier"),
-                      text(row, "part_number"), massText(row.value(QStringLiteral("mass")))});
+                      text(row, "part_number"), massText(row.value(QStringLiteral("mass")))};
+    if (timber) {
+      cells << timberCells(row);
+    }
+    rows.rows.append(cells);
+  }
+  if (timber) {
+    // The totals of the timber rows.
+    const QJsonObject totals = answer.value(QStringLiteral("totals")).toObject();
+    QStringList total(rows.columns.size(), QString());
+    total[1] = QObject::tr("Total timber");
+    total[9] = massText(totals.value(QStringLiteral("mass")));
+    total[15] = metresText(totals.value(QStringLiteral("running_metres")));
+    total[16] = volumeText(totals.value(QStringLiteral("volume")));
+    rows.rows.append(total);
   }
   ListTable stock{QObject::tr("Stock"),
                   {QObject::tr("Part"), QObject::tr("Stock length (mm)"),
                    QObject::tr("Pieces (mm, in cutting order; | between stock pieces)"), QObject::tr("Stock pieces"),
                    QObject::tr("Offcut (mm)"), QObject::tr("Too long for the stock (mm)")},
                   {}};
+  if (timber) {
+    // Stock per size, each piece's stock length (mitcad#478).
+    stock.columns << QObject::tr("Size") << QObject::tr("Stock lengths (mm)");
+  }
   for (const QJsonValue& value : answer.value(QStringLiteral("stock")).toArray()) {
     // {source, designation, stock_length, pieces, bars, needed, offcut, too_long}
     const QJsonObject entry = value.toObject();
@@ -224,9 +296,17 @@ QVector<ListTable> cutListTables(const QJsonObject& answer) {
       longer << QObject::tr("yes");
     }
     const QString part = text(entry, "designation").isEmpty() ? text(entry, "source") : text(entry, "designation");
-    stock.rows.append({part, millimetresText(lengthOf(entry.value(QStringLiteral("stock_length")))),
-                       bars.join(QStringLiteral(" | ")), countText(entry.value(QStringLiteral("needed"))),
-                       millimetresText(lengthOf(entry.value(QStringLiteral("offcut")))), longer.join(QStringLiteral(", "))});
+    QStringList cells{part, millimetresText(lengthOf(entry.value(QStringLiteral("stock_length")))),
+                      bars.join(QStringLiteral(" | ")), countText(entry.value(QStringLiteral("needed"))),
+                      millimetresText(lengthOf(entry.value(QStringLiteral("offcut")))), longer.join(QStringLiteral(", "))};
+    if (timber) {
+      QStringList lengths;
+      for (const QJsonValue& length : entry.value(QStringLiteral("stock_lengths")).toArray()) {
+        lengths << millimetresText(lengthOf(length));
+      }
+      cells << text(entry, "config") << lengths.join(QStringLiteral(", "));
+    }
+    stock.rows.append(cells);
   }
   ListTable other{QObject::tr("Other parts"),
                   {QObject::tr("Quantity"), QObject::tr("Part"), QObject::tr("Supplier"), QObject::tr("Part number")},
@@ -240,17 +320,38 @@ QVector<ListTable> cutListTables(const QJsonObject& answer) {
   return {rows, stock, other};
 }
 
-QVector<ListTable> partsListTables(const QJsonObject& answer) {
+QVector<ListTable> partsListTables(const QJsonObject& answer, const QJsonObject& cut) {
   ListTable parts{QObject::tr("Parts list"),
                   {QObject::tr("Quantity"), QObject::tr("Part"), QObject::tr("Supplier"), QObject::tr("Part number"),
                    QObject::tr("Library"), QObject::tr("Version"), QObject::tr("Licence")},
                   {}};
+  // Timber (mitcad#478): the material and grade of the cut list's timber
+  // rows, by the components they list; the columns only with timber.
+  const bool timber = cut.value(QStringLiteral("timber")).toBool();
+  QHash<QString, QJsonObject> material;
+  if (timber) {
+    parts.columns << QObject::tr("Material") << QObject::tr("Grade");
+    for (const QJsonValue& value : cut.value(QStringLiteral("rows")).toArray()) {
+      const QJsonObject row = value.toObject();
+      if (text(row, "kind") != QStringLiteral("timber")) {
+        continue;
+      }
+      for (const QJsonValue& component : row.value(QStringLiteral("components")).toArray()) {
+        material.insert(component.toString(), row.value(QStringLiteral("material")).toObject());
+      }
+    }
+  }
   for (const QJsonValue& value : answer.value(QStringLiteral("rows")).toArray()) {
     const QJsonObject row = value.toObject();
-    parts.rows.append({countText(row.value(QStringLiteral("quantity"))),
-                       text(row, "designation").isEmpty() ? text(row, "name") : text(row, "designation"),
-                       text(row, "supplier"), text(row, "part_number"), text(row, "library"), text(row, "version"),
-                       text(row, "license")});
+    QStringList cells{countText(row.value(QStringLiteral("quantity"))),
+                      text(row, "designation").isEmpty() ? text(row, "name") : text(row, "designation"),
+                      text(row, "supplier"), text(row, "part_number"), text(row, "library"), text(row, "version"),
+                      text(row, "license")};
+    if (timber) {
+      const QJsonObject own = material.value(text(row, "component"));
+      cells << text(own, "species") << text(own, "grade");
+    }
+    parts.rows.append(cells);
   }
   return {parts};
 }
@@ -422,13 +523,16 @@ void BuildListsDialog::load() {
     qWarning().noquote() << QStringLiteral("Parts list not read: %1").arg(errorText(error));
   }
   m_cut = cutListTables(cut);
-  m_parts = partsListTables(parts);
+  m_parts = partsListTables(parts, cut);
   for (int i = 0; i < m_cut.size() && i < m_cutTables.size(); ++i) {
     fill(m_cutTables[i], m_cut[i]);
   }
   fill(m_partsTable, m_parts.first());
   // For UI tests: what the lists hold.
   for (const QStringList& row : std::as_const(m_cut[0].rows)) {
+    if (row[0].isEmpty()) {
+      continue; // the timber's totals (mitcad#478)
+    }
     qInfo().noquote() << QStringLiteral("Cut list row: %1 x %2, %3 mm, A %4, B %5%6")
                              .arg(row[0], row[1], row[2], row[3], row[4],
                                   row[5].isEmpty() ? QString() : QStringLiteral(", machining ") + row[5]);
@@ -436,6 +540,28 @@ void BuildListsDialog::load() {
   for (const QStringList& row : std::as_const(m_cut[1].rows)) {
     qInfo().noquote() << QStringLiteral("Cut list stock: %1, %2 mm stock x %3, pieces %4, offcut %5")
                              .arg(row[0], row[1], row[3], row[2], row[4]);
+  }
+  // Timber (mitcad#478): its columns, the totals and the stock per size.
+  if (cut.value(QStringLiteral("timber")).toBool()) {
+    for (const QStringList& row : std::as_const(m_cut[0].rows)) {
+      if (row.size() > 16 && !row[10].isEmpty()) {
+        qInfo().noquote() << QStringLiteral("Cut list timber row: %1: %2 %3 %4, nominal %5, actual %6, %7 m, %8 m3")
+                                 .arg(row[1], row[10], row[11].isEmpty() ? QStringLiteral("(no grade)") : row[11], row[12],
+                                      row[13], row[14], row[15], row[16]);
+      }
+    }
+    const QJsonObject totals = cut.value(QStringLiteral("totals")).toObject();
+    qInfo().noquote() << QStringLiteral("Cut list timber: %1 m, %2 m3, %3 kg; columns %4")
+                             .arg(metresText(totals.value(QStringLiteral("running_metres"))),
+                                  volumeText(totals.value(QStringLiteral("volume"))),
+                                  massText(totals.value(QStringLiteral("mass"))), m_cut[0].columns.join(QStringLiteral(", ")));
+    for (const QStringList& row : std::as_const(m_cut[1].rows)) {
+      if (row.size() > 7) {
+        qInfo().noquote() << QStringLiteral("Cut list timber stock: %1 %2: %3").arg(row[0], row[6], row[7]);
+      }
+    }
+  } else {
+    qInfo().noquote() << QStringLiteral("Cut list: no timber columns");
   }
   qInfo().noquote() << QStringLiteral("Cut list: %1 row(s), %2 stock, %3 other part(s), kerf %4 mm")
                            .arg(m_cut[0].rows.size())

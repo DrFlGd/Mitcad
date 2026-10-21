@@ -1,0 +1,51 @@
+{
+  "format": "solidcraft/27",
+  "name": "Body transfer",
+  "units": "mm",
+  "params": [],
+  "components": [
+    {"id": 101, "name": "Arm"},
+    {"id": 102, "name": "Holder"}
+  ],
+  "occurrences": [
+    {"id": 201, "component": 101, "name": "Arm:1",
+     "transform": [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [50, 0, 0, 1]]},
+    {"id": 202, "component": 102, "name": "Holder:1",
+     "transform": [[0, 1, 0, 0], [-1, 0, 0, 0], [0, 0, 1, 0], [0, 30, 0, 1]]}
+  ],
+  "features": [
+    {
+      "id": 1, "name": "Box1", "type": "box", "body_names": ["Block"],
+      "corner": [0, 0, 0], "length": "10", "width": "10", "height": "10",
+      "operation": "new_body"
+    },
+    {
+      "id": 2, "name": "BlockToArm", "type": "body_transfer", "component": 101,
+      "bodies": ["Block"], "from": 0, "to": 101,
+      "transform": [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [-50, 0, 0, 1]]
+    },
+    {
+      "id": 3, "name": "Box2", "type": "box", "component": 101, "body_names": ["Extension"],
+      "corner": [-40, 0, 0], "length": "10", "width": "10", "height": "10",
+      "operation": "new_body"
+    },
+    {
+      "id": 4, "name": "Combine1", "type": "combine", "component": 101,
+      "target": "Block", "tools": ["Extension"], "operation": "join"
+    },
+    {
+      "id": 5, "name": "Box3", "type": "box", "component": 102, "body_names": ["Pin"],
+      "corner": [0, 0, 0], "length": "6", "width": "4", "height": "4",
+      "operation": "new_body"
+    },
+    {
+      "id": 6, "name": "PinToRoot", "type": "body_transfer",
+      "bodies": ["Pin"], "from": 102, "to": 0,
+      "transform": [[0, 1, 0, 0], [-1, 0, 0, 0], [0, 0, 1, 0], [0, 30, 0, 1]]
+    },
+    {
+      "id": 7, "name": "Move1", "type": "move", "bodies": ["Pin"], "translate": ["0", "0", "10"]
+    }
+  ],
+  "next_id": 8
+}

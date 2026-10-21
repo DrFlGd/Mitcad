@@ -47,7 +47,11 @@ use crate::transform::Transform;
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConnectInput {
+    /// A junction (`build_junctions`' id); a post base names `end` instead.
+    #[serde(default)]
     pub junction: String,
+    /// The connector or wood fastener; left out with `joint`.
+    #[serde(default)]
     pub part: PartInput,
     #[serde(default = "yes")]
     pub fasteners: bool,
@@ -55,6 +59,19 @@ pub struct ConnectInput {
     pub machining: bool,
     #[serde(default)]
     pub name: Option<String>,
+    // Timber construction (mitcad#478).
+    /// How many screws or nails (default 2).
+    #[serde(default)]
+    pub count: Option<u32>,
+    /// An angle bracket's side of member a: `x+`, `x-`, `y+`, `y-`.
+    #[serde(default)]
+    pub side: Option<String>,
+    /// A post base's member end.
+    #[serde(default)]
+    pub end: Option<super::wood::EndInput>,
+    /// Joinery instead of a part.
+    #[serde(default)]
+    pub joint: Option<super::joinery::JointInput>,
 }
 
 fn yes() -> bool {
@@ -73,6 +90,9 @@ pub struct PanelInput {
     pub parameters: BTreeMap<String, ValueInput>,
     #[serde(default)]
     pub name: Option<String>,
+    /// A sheet on a face (mitcad#478): more faces it covers.
+    #[serde(default)]
+    pub faces: Vec<super::BindInput>,
 }
 
 /// What `build_remove` removed.
@@ -169,7 +189,7 @@ fn origin_of(path: &[OccurrenceUid], part: FeatureUid, name: &str) -> JointOrigi
 /// A library reference resolved against the library it came with: its
 /// URL and version when it names the same library, else the library's
 /// default branch.
-fn request_of(reference: &PartRef, with: &LibrarySourceDef) -> PartInput {
+pub(crate) fn request_of(reference: &PartRef, with: &LibrarySourceDef) -> PartInput {
     let same = reference.library == with.library.library || reference.library.is_empty();
     PartInput {
         library: Some(if reference.library.is_empty() {
@@ -233,9 +253,11 @@ pub(crate) fn make_piece(
             parameters: piece.values.clone(),
             ends: Ends { a: None, b: None },
             operation: Operation::NewBody,
+            cuts: Vec::new(),
         }),
         made,
     )?;
+    super::parts::inherit_appearance(state, part, &piece.source.def);
     let mut position = BTreeMap::new();
     if let Some((motion, value)) = &piece.slide_value {
         position.insert(*motion, value.clone());
@@ -292,7 +314,7 @@ fn evaluated<K: Kernel>(
 impl<K: Kernel> Document<K> {
     /// A source for a part reference, also one without `build` (a screw
     /// of a fastener library).
-    fn fastener_source(&self, part: &PartInput) -> Result<SourceUse, ModelError> {
+    pub(crate) fn fastener_source(&self, part: &PartInput) -> Result<SourceUse, ModelError> {
         match self.source_use(part) {
             Ok(source) => Ok(source),
             Err(_) if part.source.is_none() => {
@@ -632,6 +654,13 @@ impl<K: Kernel> Document<K> {
 
     /// Places a connector at a junction (`build_connect`).
     pub fn build_connect(&mut self, input: &ConnectInput) -> Result<Placed, ModelError> {
+        // Timber (mitcad#478): joinery, wood fasteners, outer connectors.
+        if input.joint.is_some() {
+            return self.build_joinery(input);
+        }
+        if self.is_wood_connect(input) {
+            return self.build_wood_connect(input);
+        }
         let plan = self.plan_connect(input)?;
         let active = self.build_host();
         self.state().editable(active)?;
@@ -683,6 +712,7 @@ impl<K: Kernel> Document<K> {
                     warnings: plan.warnings.clone(),
                     place: "junction",
                     fits: None,
+                    set: Vec::new(),
                 },
             ))
         })
@@ -696,6 +726,10 @@ impl<K: Kernel> Document<K> {
             return Err(refuse(format!("{label} is no panel")));
         }
         let panel = source.meta.panel.clone().unwrap_or_default();
+        // A sheet laid on members' faces (mitcad#478).
+        if panel.on_face() {
+            return self.plan_face_sheet(input, source);
+        }
         let geometry = input
             .at
             .geometry
@@ -1171,6 +1205,7 @@ impl<K: Kernel> Document<K> {
                     warnings: plan.warnings.clone(),
                     place: "panel",
                     fits: Some((plan.fits, plan.reason.clone())),
+                    set: Vec::new(),
                 },
             ))
         })
@@ -1181,7 +1216,51 @@ impl<K: Kernel> Document<K> {
     /// end on it or start from it (detached first, so those parts keep their
     /// lengths). Parts placed on it stay where they are.
     pub fn build_remove(&mut self, component: &str) -> Result<RemoveResult, ModelError> {
+        self.build_remove_with(component, false)
+    }
+
+    /// `build_remove`; with `set`, every member of the component's spacing
+    /// set goes (mitcad#478).
+    pub fn build_remove_with(
+        &mut self,
+        component: &str,
+        set: bool,
+    ) -> Result<RemoveResult, ModelError> {
         let component = self.component_by_ref(component)?;
+        let mut targets = vec![component];
+        if set {
+            let lead = self
+                .part_info(component)
+                .and_then(|i| i.record.set)
+                .unwrap_or(component);
+            targets = self.set_members(lead);
+            if targets.is_empty() {
+                targets = vec![component];
+            }
+        }
+        let mut plans = Vec::new();
+        for c in &targets {
+            plans.push(self.plan_remove(*c)?);
+        }
+        let label = match plans.as_slice() {
+            [one] => format!("Remove {}", one.name),
+            _ => format!("Remove {} x{}", plans[0].name, plans.len()),
+        };
+        self.apply(|state| {
+            let mut out = RemoveResult::default();
+            for plan in &plans {
+                let removed = apply_remove(state, plan)?;
+                out.components.extend(removed.components);
+                out.features.extend(removed.features);
+                out.detached.extend(removed.detached);
+            }
+            Ok((label, out))
+        })
+    }
+
+    /// What removing a BUILD part takes with it, planned against the
+    /// document as it is.
+    pub(crate) fn plan_remove(&self, component: ComponentUid) -> Result<RemovePlan, ModelError> {
         let info = self.part_info(component).ok_or_else(|| {
             refuse(format!(
                 "{} is no BUILD part",
@@ -1279,39 +1358,98 @@ impl<K: Kernel> Document<K> {
                 features.insert(entry.uid);
             }
         }
-        let name = info.name.clone();
-        self.apply(|state| {
-            let mut detached = Vec::new();
-            for (other, bound, part) in &others {
-                detach(state, *other, *bound, *part)?;
-                detached.push(*bound);
-            }
-            for (occurrence, t) in &keep {
-                if let Some(o) = state.assembly.occurrence_mut(*occurrence) {
-                    o.transform = *t;
-                }
-            }
-            let mut removed = Vec::new();
-            if !features.is_empty() {
-                let mut all = features.clone();
-                all.extend(state.dependents(&features));
-                removed.extend(state.remove_features(&all));
-            }
-            for bound in current_bounds(state, component) {
-                if !removed.contains(&bound) {
-                    removed.extend(state.remove_features(&BTreeSet::from([bound])));
-                }
-            }
-            removed.extend(state.delete_components(components.clone()));
-            Ok((
-                format!("Remove {name}"),
-                RemoveResult {
-                    components: components.iter().copied().collect(),
-                    features: removed,
-                    detached,
-                },
-            ))
+        Ok(RemovePlan {
+            component,
+            name: info.name.clone(),
+            components,
+            features,
+            others,
+            keep,
         })
+    }
+}
+
+/// What `build_remove` takes away (one part's): it and what it added, the
+/// features that go with them, the other parts' bound lengths to detach
+/// and the occurrences to keep where they are.
+#[derive(Debug, Clone)]
+pub(crate) struct RemovePlan {
+    pub component: ComponentUid,
+    pub name: String,
+    pub components: BTreeSet<ComponentUid>,
+    pub features: BTreeSet<FeatureUid>,
+    pub others: Vec<(ComponentUid, FeatureUid, FeatureUid)>,
+    pub keep: Vec<(OccurrenceUid, Transform)>,
+}
+
+/// Removes what a plan says, in `state`.
+pub(crate) fn apply_remove(
+    state: &mut DocState,
+    plan: &RemovePlan,
+) -> Result<RemoveResult, ModelError> {
+    let components = &plan.components;
+    let component = plan.component;
+    let mut detached = Vec::new();
+    for (other, bound, part) in &plan.others {
+        if state.position(*bound).is_none() {
+            continue;
+        }
+        detach(state, *other, *bound, *part)?;
+        detached.push(*bound);
+    }
+    for (occurrence, t) in &plan.keep {
+        if let Some(o) = state.assembly.occurrence_mut(*occurrence) {
+            o.transform = *t;
+        }
+    }
+    // A spacing set's lead hands the set to the next member (mitcad#478),
+    // and joinery with the parts that go is taken out of the others.
+    super::spacing::hand_over_set(state, components);
+    super::spacing::drop_cuts_with(state, components)?;
+    let mut removed = Vec::new();
+    let features: BTreeSet<FeatureUid> = plan
+        .features
+        .iter()
+        .copied()
+        .filter(|f| state.position(*f).is_some())
+        .collect();
+    if !features.is_empty() {
+        let mut all = features.clone();
+        all.extend(state.dependents(&features));
+        removed.extend(state.remove_features(&all));
+    }
+    for bound in current_bounds(state, component) {
+        if !removed.contains(&bound) {
+            removed.extend(state.remove_features(&BTreeSet::from([bound])));
+        }
+    }
+    let alive: BTreeSet<ComponentUid> = components
+        .iter()
+        .copied()
+        .filter(|c| state.assembly.exists(*c))
+        .collect();
+    removed.extend(state.delete_components(alive));
+    Ok(RemoveResult {
+        components: components.iter().copied().collect(),
+        features: removed,
+        detached,
+    })
+}
+
+impl<K: Kernel> Document<K> {
+    /// The members of a spacing set, by their lead (mitcad#478), in the
+    /// order they were made.
+    pub(crate) fn set_members(&self, lead: ComponentUid) -> Vec<ComponentUid> {
+        self.assembly()
+            .components
+            .iter()
+            .filter(|c| {
+                c.build
+                    .as_ref()
+                    .is_some_and(|b| b.set == Some(lead) || (c.uid == lead && b.spacing.is_some()))
+            })
+            .map(|c| c.uid)
+            .collect()
     }
 }
 

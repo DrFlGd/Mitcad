@@ -1,0 +1,55 @@
+{
+  "format": "solidcraft/27",
+  "name": "Plastic part features",
+  "units": "mm",
+  "params": [{"name": "wall", "expr": "2 mm", "unit": "mm"}],
+  "features": [
+    {
+      "id": 1, "name": "Box1", "type": "box", "body_names": ["Case"],
+      "corner": [0, 0, 0], "length": "80", "width": "50", "height": "30",
+      "operation": "new_body"
+    },
+    {
+      "id": 2, "name": "Shell1", "type": "shell", "faces": [[40.0, 25.0, 30.0]], "thickness": "wall"
+    },
+    {
+      "id": 3, "name": "Groove1", "type": "lip", "face": [1.0, 25.0, 30.0], "width": "1", "height": "2",
+      "groove": true, "outside": true
+    },
+    {
+      "id": 4, "name": "Box2", "type": "box", "body_names": ["Plate"],
+      "corner": [100, 0, 0], "length": "60", "width": "60", "height": "3",
+      "operation": "new_body"
+    },
+    {
+      "id": 5, "name": "Boss1", "type": "boss", "position": [130.0, 30.0, 3.0], "direction": [0.0, 0.0, 1.0],
+      "diameter": "10", "height": "12", "hole_diameter": "4", "draft": "0 deg",
+      "ribs": "4", "rib_thickness": "1.5", "rib_length": "6", "rib_offset": "2"
+    },
+    {
+      "id": 6, "name": "Rest1", "type": "rest", "position": [110.0, 50.0, 3.0], "direction": [0.0, 0.0, 1.0],
+      "width": "8", "height": "3"
+    },
+    {
+      "id": 7, "name": "SnapFit1", "type": "snap_fit", "position": [150.0, 10.0, 3.0], "direction": [0.0, 0.0, 1.0],
+      "hook": [0.0, 1.0, 0.0], "length": "10", "thickness": "1.2", "width": "5", "catch_depth": "0.8",
+      "catch_length": "1.5"
+    },
+    {
+      "id": 8, "name": "Lip1", "type": "lip", "face": [1.8, 25.0, 30.0], "width": "0.5", "height": "1"
+    }
+  ],
+  "next_id": 9,
+  "plastic": {
+    "active": "ABS (1.5mm)",
+    "assigned": {"Case": "Stiff"},
+    "rules": [
+      {
+        "name": "Stiff", "material": "Polycarbonate", "thickness": "1.5 mm",
+        "nominal_radius": "0.5 * Thickness", "clearance": "0.1 * Thickness", "knife_edge": "1 mm",
+        "reveal_height": "0.5 mm", "thickness_variation": "0.15 * Thickness", "draft": "1 deg",
+        "max_thickness": "3 mm", "min_thickness": "1 mm", "min_draft": "0.5 deg"
+      }
+    ]
+  }
+}

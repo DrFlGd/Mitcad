@@ -141,16 +141,18 @@ fn an_old_format_comes_in_upgraded() {
             .any(|f| f.def.type_name() == "construction_plane")
     );
 }
-
-/// Kinds without a Mitcad counterpart are named in the report and hold
-/// their place as suppressed placeholders; the timeline goes on.
+/// Features without a Mitcad counterpart (here options Mitcad has not) are
+/// named in the report and hold their place as suppressed placeholders;
+/// the timeline goes on.
 #[test]
 fn unmapped_features_are_placeholders() {
     let v = json!({"format": "solidcraft/27", "name": "U", "params": [], "features": [
         {"id": 1, "name": "Box1", "type": "box", "corner": [0, 0, 0], "length": "10", "width": "10", "height": "10",
          "body_names": ["B"]},
-        {"id": 2, "name": "SurfaceOffset1", "type": "surface_offset", "bodies": ["B"], "distance": "1"},
-        {"id": 3, "name": "Lip1", "type": "lip", "face": [0, 0, 10], "width": "1", "height": "1"},
+        {"id": 2, "name": "SurfaceTrim1", "type": "surface_trim", "body": "B", "with": "B", "keep": [5, 5, 5],
+         "plane": {"type": "offset", "base": {"type": "origin", "name": "XY"}, "distance": "2"}},
+        {"id": 3, "name": "SurfaceUntrim1", "type": "surface_untrim", "face": {"body": "B", "point": [5, 5, 10]},
+         "holes": [[5, 5, 10]]},
         {"id": 4, "name": "Box2", "type": "box", "corner": [20, 0, 0], "length": "5", "width": "5", "height": "5"}]});
     let file = mitcad_solidcraft::SolidcraftFile::from_value(v).unwrap();
     let mut doc = Document::new(MockKernel::default());
@@ -161,14 +163,17 @@ fn unmapped_features_are_placeholders() {
         &SolidcraftOptions::default(),
     )
     .unwrap();
-    assert_eq!(outcome(&report, "SurfaceOffset1"), Outcome::Unmapped);
-    assert_eq!(outcome(&report, "Lip1"), Outcome::Unmapped);
+    assert_eq!(outcome(&report, "SurfaceTrim1"), Outcome::Unmapped);
+    assert_eq!(outcome(&report, "SurfaceUntrim1"), Outcome::Unmapped);
     assert_eq!(outcome(&report, "Box2"), Outcome::Parametric);
     assert_eq!(
         report.unmapped,
-        [("SurfaceOffset".to_owned(), 1), ("Lip".to_owned(), 1)]
+        [
+            ("SurfaceTrim".to_owned(), 1),
+            ("SurfaceUntrim".to_owned(), 1)
+        ]
     );
-    let placeholder = doc.features().find(|f| f.name == "SurfaceOffset1").unwrap();
+    let placeholder = doc.features().find(|f| f.name == "SurfaceTrim1").unwrap();
     assert!(placeholder.suppressed);
     assert!(
         doc.import_note(placeholder.uid)
@@ -632,4 +637,163 @@ fn spline_radii_end_scales_two_rails_and_chains_come_in() {
     let p = doc.parameters();
     let scale = p.find("taper").unwrap();
     assert_eq!(p.value(scale), Some(0.5));
+}
+
+/// Surface extrude, revolve, sweep and loft come in as the solid features'
+/// surface mode (mitcad#455): every one parametric, a surface body of each
+/// (two of the extrude: its profile's walls and its curves'), named as the
+/// file names them.
+#[test]
+fn surface_sweeps_come_in() {
+    let (doc, report) = import(
+        "surface-sweeps.solidcraft.json",
+        &SolidcraftOptions::default(),
+    );
+    for name in ["Walls", "Drum", "Swept", "Skin"] {
+        assert_eq!(outcome(&report, name), Outcome::Parametric, "{name}");
+    }
+    assert!(report.unmapped.is_empty(), "{:?}", report.unmapped);
+    let mut names: Vec<String> = doc.bodies().iter().map(|b| b.name.clone()).collect();
+    names.sort();
+    assert_eq!(names, ["Drum", "Fence", "Skin", "Swept", "Tube"]);
+    let surface = |name: &str| match &doc.features().find(|f| f.name == name).unwrap().def {
+        FeatureDef::Extrude(d) => d.surface,
+        FeatureDef::Revolve(d) => d.surface,
+        FeatureDef::Sweep(d) => d.surface,
+        FeatureDef::Loft(d) => d.surface,
+        other => panic!("{name} is a {}", other.type_name()),
+    };
+    for name in ["Walls", "Drum", "Swept", "Skin"] {
+        assert!(surface(name), "{name}");
+    }
+}
+
+/// Offset Surface comes in as `offset_surface` (mitcad#455): every face of
+/// the body without picks; an extend up to an object is not mapped, with
+/// the reason.
+#[test]
+fn surface_offsets_come_in() {
+    let v = json!({"format": "solidcraft/27", "name": "O", "params": [], "features": [
+        {"id": 1, "name": "Box1", "type": "box", "corner": [0, 0, 0], "length": "10", "width": "10", "height": "10",
+         "body_names": ["B"]},
+        {"id": 2, "name": "Offset1", "type": "surface_offset", "body": "B", "distance": "1 mm",
+         "body_names": ["Skin"], "chain": true},
+        {"id": 3, "name": "Extend1", "type": "surface_extend", "body": "Skin", "edges": [[0, 0, 11]],
+         "distance": "1", "up_to": "bounds"}]});
+    let file = mitcad_solidcraft::SolidcraftFile::from_value(v).unwrap();
+    let mut doc = Document::new(MockKernel::default());
+    let report = import_solidcraft_file(
+        &mut doc,
+        file,
+        "o.solidcraft",
+        &SolidcraftOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(outcome(&report, "Offset1"), Outcome::Parametric);
+    assert_eq!(outcome(&report, "Extend1"), Outcome::Unmapped);
+    let offset = doc.features().find(|f| f.name == "Offset1").unwrap();
+    let FeatureDef::OffsetSurface(def) = &offset.def else {
+        panic!("Offset1 is not an offset surface")
+    };
+    assert!(def.chain && def.faces.is_empty());
+    assert!(doc.bodies().iter().any(|b| b.name == "Skin"));
+}
+
+/// Trim and Reverse Normal come in as `trim_surface` and `reverse_normal`
+/// (mitcad#455), with the trim's keep point; a trim's "trim with" option and an untrim of some of a face's holes are
+/// not mapped, with the reason.
+#[test]
+fn surface_trims_come_in() {
+    let v = json!({"format": "solidcraft/27", "name": "T", "params": [], "features": [
+        {"id": 1, "name": "Box1", "type": "box", "corner": [0, 0, 0], "length": "10", "width": "10", "height": "10",
+         "body_names": ["B"]},
+        {"id": 2, "name": "Offset1", "type": "surface_offset", "body": "B", "distance": "1 mm",
+         "body_names": ["Skin"], "chain": true},
+        {"id": 3, "name": "Trim1", "type": "surface_trim", "body": "Skin",
+         "plane": {"type": "offset", "base": {"type": "origin", "name": "XY"}, "distance": "4 mm"},
+         "keep": [5, 5, 10]},
+        {"id": 4, "name": "Trim2", "type": "surface_trim", "body": "Skin",
+         "plane": {"type": "origin", "name": "YZ"}, "keep": [5, 5, 10], "with": "mutual"},
+        {"id": 5, "name": "Flip1", "type": "reverse_normal", "body": "Skin"},
+        {"id": 6, "name": "Untrim1", "type": "surface_untrim", "face": {"body": "Skin", "point": [5, 5, 11]},
+         "holes": [[5, 5, 11]]}]});
+    let file = mitcad_solidcraft::SolidcraftFile::from_value(v).unwrap();
+    let mut doc = Document::new(MockKernel::default());
+    let report = import_solidcraft_file(
+        &mut doc,
+        file,
+        "t.solidcraft",
+        &SolidcraftOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(outcome(&report, "Trim1"), Outcome::Parametric);
+    assert_eq!(outcome(&report, "Flip1"), Outcome::Parametric);
+    assert_eq!(outcome(&report, "Trim2"), Outcome::Unmapped);
+    assert_eq!(outcome(&report, "Untrim1"), Outcome::Unmapped);
+    let trim = doc.features().find(|f| f.name == "Trim1").unwrap();
+    let FeatureDef::TrimSurface(def) = &trim.def else {
+        panic!("Trim1 is not a trim")
+    };
+    assert_eq!(def.keep, [[5.0, 5.0, 10.0]]);
+    let flip = doc.features().find(|f| f.name == "Flip1").unwrap();
+    assert!(matches!(&flip.def, FeatureDef::ReverseNormal(d) if d.faces.is_empty()));
+}
+
+/// Boundary patches, networks and fairings come in as `boundary_surface`
+/// and `fair_surface` (mitcad#455): four curves a loop, two a loft of
+/// them, a network of curves each way; a crowned patch is not mapped.
+#[test]
+fn boundary_surfaces_and_fairings_come_in() {
+    let sketch = json!({
+        "points": [
+            {"id": "origin", "pos": [0.0, 0.0], "fixed": true},
+            {"id": "p1", "pos": [0.0, 0.0], "fixed": true}, {"id": "p2", "pos": [10.0, 0.0], "fixed": true},
+            {"id": "p3", "pos": [10.0, 10.0], "fixed": true}, {"id": "p4", "pos": [0.0, 10.0], "fixed": true}],
+        "curves": [
+            {"id": "l1", "type": "line", "a": 1, "b": 2}, {"id": "l2", "type": "line", "a": 2, "b": 3},
+            {"id": "l3", "type": "line", "a": 3, "b": 4}, {"id": "l4", "type": "line", "a": 4, "b": 1}],
+        "constraints": []});
+    let curve = |c: &str| json!({"sketch": 1, "curves": [c]});
+    let v = json!({"format": "solidcraft/27", "name": "N", "params": [], "features": [
+        {"id": 1, "name": "Square", "type": "sketch", "plane": {"type": "origin", "name": "XY"}, "sketch": sketch},
+        {"id": 2, "name": "Lid", "type": "surface_boundary", "sketch": 1, "curves": ["l1", "l2", "l3", "l4"],
+         "body_names": ["Lid"]},
+        {"id": 3, "name": "Bridge", "type": "surface_boundary", "sketch": 1, "curves": ["l1", "l3"],
+         "orders": ["g1", "g2"], "body_names": ["Bridge"]},
+        {"id": 4, "name": "Dome", "type": "surface_boundary", "sketch": 1, "curves": ["l1", "l3"], "crown": 0.5},
+        {"id": 5, "name": "Net", "type": "surface_network", "u": [curve("l1"), curve("l3")],
+         "v": [curve("l2"), curve("l4")], "body_names": ["Net"]},
+        {"id": 6, "name": "Smooth", "type": "surface_fair", "body": "Net", "tolerance": "0.2 mm",
+         "iterations": 3, "keep_edges": false}]});
+    let file = mitcad_solidcraft::SolidcraftFile::from_value(v).unwrap();
+    let mut doc = Document::new(MockKernel::default());
+    let report = import_solidcraft_file(
+        &mut doc,
+        file,
+        "n.solidcraft",
+        &SolidcraftOptions::default(),
+    )
+    .unwrap();
+    for name in ["Lid", "Bridge", "Net", "Smooth"] {
+        assert_eq!(outcome(&report, name), Outcome::Parametric, "{name}");
+    }
+    assert_eq!(outcome(&report, "Dome"), Outcome::Unmapped);
+    let def = |name: &str| {
+        doc.features()
+            .find(|f| f.name == name)
+            .map(|f| f.def.clone())
+            .unwrap()
+    };
+    assert!(matches!(def("Lid"), FeatureDef::BoundarySurface(d) if d.boundary.len() == 4));
+    assert!(
+        matches!(def("Bridge"), FeatureDef::BoundarySurface(d) if d.u.len() == 2 && d.v.is_empty())
+    );
+    assert!(
+        matches!(def("Net"), FeatureDef::BoundarySurface(d) if d.u.len() == 2 && d.v.len() == 2)
+    );
+    let FeatureDef::FairSurface(fair) = def("Smooth") else {
+        panic!("Smooth is not a fairing")
+    };
+    assert!(fair.iterations == 3 && !fair.keep_edges && fair.faces.is_empty());
+    assert_eq!(doc.parameters().value(fair.tolerance), Some(0.2));
 }

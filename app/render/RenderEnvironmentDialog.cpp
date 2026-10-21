@@ -368,7 +368,7 @@ void RenderEnvironmentDialog::change(const QString& key, const QJsonValue& value
   // Not in the middle of a command or a sketch, whose undo steps the
   // change would come between.
   if (!m_host.canChangeModel()) {
-    m_message->setText(tr("Finish the command or the sketch first."));
+    m_message->setText(m_host.changeBlockedReason());
     qDebug().noquote() << "Render settings: finish the command or the sketch first";
     refresh();
     return;
@@ -410,7 +410,7 @@ void RenderEnvironmentDialog::browseImage() {
 
 void RenderEnvironmentDialog::reset() {
   if (!m_host.canChangeModel()) {
-    m_message->setText(tr("Finish the command or the sketch first."));
+    m_message->setText(m_host.changeBlockedReason());
     return;
   }
   if (m_host.runModelCommand({{QStringLiteral("cmd"), QStringLiteral("reset_render_settings")}})) {
@@ -797,7 +797,7 @@ void RenderEnvironmentDialog::refreshLights() {
 
 void RenderEnvironmentDialog::addLight() {
   if (!m_host.canChangeModel()) {
-    m_message->setText(tr("Finish the command or the sketch first."));
+    m_message->setText(m_host.changeBlockedReason());
     return;
   }
   // At the camera, shining where it looks (a sun: from behind the camera).
@@ -828,7 +828,7 @@ void RenderEnvironmentDialog::deleteLight() {
     return;
   }
   if (!m_host.canChangeModel()) {
-    m_message->setText(tr("Finish the command or the sketch first."));
+    m_message->setText(m_host.changeBlockedReason());
     return;
   }
   stopAiming();
@@ -848,7 +848,7 @@ void RenderEnvironmentDialog::changeLight(const QJsonObject& fields, const QStri
     return;
   }
   if (!m_host.canChangeModel()) {
-    m_message->setText(tr("Finish the command or the sketch first."));
+    m_message->setText(m_host.changeBlockedReason());
     refresh();
     return;
   }

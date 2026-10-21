@@ -25,19 +25,23 @@ const char* const kLibraryUsage = R"(  mitcad-cli library fetch <url> [--librari
       A fetched library at a version (default the newest): its components
       with their sizes, licence and versions; an index's libraries.
   mitcad-cli library search [<words>] [--license SPDX]... [--unlicensed] [--role R] [--system T/S/G]
-                            [--kind K] [--size S] [--supplier S] [--part-number N] [--libraries DIR] [--json]
+                            [--kind K] [--size S] [--mount M] [--supplier S] [--part-number N] [--libraries DIR]
+                            [--json]
       Components of the fetched libraries and libraries the fetched
       indexes list, by words (also suppliers and part numbers), with the
       given licences; items without a licence only with --unlicensed.
       BUILD parts by their role (profile, connector, fastener, panel,
       linear, cap), slot system (B/8/30: type, slot width, series; B/8 any
-      series), a linear part's kind (carriage, nut, ...) and size (what it
-      goes with: a rail's size, a shaft's diameter), supplier and part
-      number (also a size's own).
-  mitcad-cli library candidates [<words>] (--junction <junction.json> | --role R [--system T/S/G] [--kind K] [--size S])
-                                [--libraries DIR] [--json]
+      series), a linear part's kind (carriage, nut, ...) or a timber kind
+      (timber, wood, outer, angle, hanger, post_base) and size (what it
+      goes with: a rail's size, a shaft's diameter), a panel's mount (face:
+      sheets), supplier and part number (also a size's own). Timber parts
+      are listed only when their kind or mount face is asked for.
+  mitcad-cli library candidates [<words>] (--junction <junction.json> | --role R [--system T/S/G] [--kind K] [--size S]
+                                [--mount M]) [--libraries DIR] [--json]
       The BUILD parts that fit a junction of two profiles (an entry of the
-      build_junctions query, as JSON in a file), or a role with a slot
+      build_junctions query, as JSON in a file; one of timber members, with
+      its wood, takes wood fasteners and outer connectors), or a role with a slot
       system, kind or size, best first; then those that nearly fit, with
       the reason.
   mitcad-cli library diff <id> <from> <to> [--url URL] [--part <component>[:<size>]]... [--json]
@@ -227,7 +231,7 @@ int library(const std::vector<std::string>& args) {
   if (!parse(args, 1,
              {"--libraries", "--rev", "--url", "--part", "--license", "--id", "--name", "--author", "--description",
               "--category", "--standard", "--keyword", "--designation", "--preview", "--role", "--system", "--supplier",
-              "--part-number", "--junction", "--kind", "--size"},
+              "--part-number", "--junction", "--kind", "--size", "--mount"},
              {"--json", "--unlicensed"}, a, error)) {
     return problem(error);
   }
@@ -270,7 +274,7 @@ int library(const std::vector<std::string>& args) {
       command += R"(, "unlicensed": true)";
     }
     command += optional("--role", "role") + optional("--system", "system") + optional("--kind", "kind") +
-               optional("--size", "size") + optional("--supplier", "supplier") +
+               optional("--size", "size") + optional("--mount", "mount") + optional("--supplier", "supplier") +
                optional("--part-number", "part_number");
     return run(command + "}", json);
   }
@@ -290,7 +294,7 @@ int library(const std::vector<std::string>& args) {
       return problem("library candidates needs --junction or --role");
     }
     command += optional("--role", "role") + optional("--system", "system") + optional("--kind", "kind") +
-               optional("--size", "size");
+               optional("--size", "size") + optional("--mount", "mount");
     return run(command + "}", json);
   }
   if (what == "diff" && count == 4) {

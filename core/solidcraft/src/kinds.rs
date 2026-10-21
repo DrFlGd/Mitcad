@@ -992,6 +992,86 @@ pub struct SheetConvert {
     pub bends: Vec<Vec3>,
 }
 
+/// A plastic boss (mitcad#459).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Boss {
+    pub position: Vec3,
+    #[serde(default = "z_axis")]
+    pub direction: Vec3,
+    pub diameter: Expr,
+    pub height: Expr,
+    #[serde(default)]
+    pub hole_diameter: Option<Expr>,
+    #[serde(default)]
+    pub hole_depth: Option<Expr>,
+    #[serde(default)]
+    pub draft: Option<Expr>,
+    #[serde(default)]
+    pub fillet: Option<Expr>,
+    #[serde(default)]
+    pub ribs: Option<Expr>,
+    #[serde(default)]
+    pub rib_thickness: Option<Expr>,
+    #[serde(default)]
+    pub rib_length: Option<Expr>,
+    #[serde(default)]
+    pub rib_offset: Option<Expr>,
+    #[serde(default)]
+    pub body: Option<String>,
+}
+
+/// A plastic lip, or a groove (mitcad#459).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Lip {
+    pub face: Vec3,
+    pub width: Expr,
+    pub height: Expr,
+    #[serde(default)]
+    pub groove: bool,
+    #[serde(default)]
+    pub gap: Option<Expr>,
+    #[serde(default)]
+    pub outside: bool,
+    #[serde(default)]
+    pub body: Option<String>,
+}
+
+/// A plastic snap fit (mitcad#459).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct SnapFit {
+    pub position: Vec3,
+    #[serde(default = "z_axis")]
+    pub direction: Vec3,
+    pub hook: Vec3,
+    pub length: Expr,
+    pub thickness: Expr,
+    pub width: Expr,
+    pub catch_depth: Expr,
+    pub catch_length: Expr,
+    #[serde(default)]
+    pub body: Option<String>,
+}
+
+/// A plastic rest (mitcad#459).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Rest {
+    pub position: Vec3,
+    #[serde(default = "z_axis")]
+    pub direction: Vec3,
+    #[serde(default)]
+    pub along: Option<Vec3>,
+    pub width: Expr,
+    #[serde(default)]
+    pub length: Option<Expr>,
+    pub height: Expr,
+    #[serde(default)]
+    pub draft: Option<Expr>,
+    #[serde(default)]
+    pub thickness: Option<Expr>,
+    #[serde(default)]
+    pub body: Option<String>,
+}
+
 /// A perforation field (mitcad#461).
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct SheetPerforate {
@@ -1140,4 +1220,283 @@ pub struct Thicken {
     pub operation: Operation,
     #[serde(default)]
     pub targets: Vec<String>,
+}
+
+// Surface modelling: surface bodies and their features (mitcad#455).
+
+/// A surface extrude, revolve or sweep: the walls the boundaries of
+/// `profiles` (none: only `curves`) and the chains of `curves` sweep.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct SurfaceExtrude {
+    pub sketch: u64,
+    #[serde(default)]
+    pub profiles: Option<ProfileSel>,
+    #[serde(default)]
+    pub curves: Vec<String>,
+    pub extent: Extent,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct SurfaceRevolve {
+    pub sketch: u64,
+    #[serde(default)]
+    pub profiles: Option<ProfileSel>,
+    #[serde(default)]
+    pub curves: Vec<String>,
+    pub axis: AxisRef,
+    pub angle: Expr,
+    #[serde(default)]
+    pub angle2: Option<Expr>,
+    #[serde(default)]
+    pub symmetric: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct SurfaceSweep {
+    pub sketch: u64,
+    #[serde(default)]
+    pub profiles: Option<ProfileSel>,
+    #[serde(default)]
+    pub curves: Vec<String>,
+    pub path_sketch: u64,
+    pub path: Vec<String>,
+    #[serde(default)]
+    pub orientation: Option<Value>,
+    #[serde(default)]
+    pub twist: Option<Expr>,
+    #[serde(default)]
+    pub scale: Option<Expr>,
+    #[serde(default)]
+    pub rails: Vec<SweepRail>,
+    #[serde(default)]
+    pub rail_fit: Option<String>,
+}
+
+/// A section of a surface loft: one chain of a sketch (a profile's
+/// boundary or curves end to end), or an edge chain of a body.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct SheetSection {
+    pub sketch: u64,
+    #[serde(default)]
+    pub profiles: Option<ProfileSel>,
+    #[serde(default)]
+    pub curves: Vec<String>,
+    #[serde(default)]
+    pub body: Option<String>,
+    #[serde(default)]
+    pub edges: Vec<Vec3>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct SurfaceLoft {
+    pub sections: Vec<SheetSection>,
+    /// At the first and the last section (`g0` to `g2`).
+    #[serde(default)]
+    pub continuity: Option<[String; 2]>,
+    #[serde(default)]
+    pub crown: Option<[f64; 2]>,
+}
+
+/// Faces picked by points copied out along their normals.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct SurfaceOffset {
+    #[serde(default)]
+    pub faces: Vec<Vec3>,
+    #[serde(default)]
+    pub body: Option<String>,
+    pub distance: Expr,
+    #[serde(default)]
+    pub chain: bool,
+    #[serde(default)]
+    pub tolerance: Option<Expr>,
+}
+
+/// A ruled strip off a chain of edges picked by points.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct SurfaceRuled {
+    pub body: String,
+    pub edges: Vec<Vec3>,
+    pub distance: Expr,
+    /// `normal`, `tangent`, `angle` or `direction`.
+    #[serde(default)]
+    pub mode: Option<String>,
+    #[serde(default)]
+    pub angle: Option<Expr>,
+    #[serde(default)]
+    pub direction: Option<Vec3>,
+    #[serde(default)]
+    pub flip: bool,
+    /// `mitre` or `round`.
+    #[serde(default)]
+    pub corners: Option<String>,
+    #[serde(default)]
+    pub face: Option<Vec3>,
+}
+
+/// A surface body extended past edges picked by points.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct SurfaceExtend {
+    pub body: String,
+    pub edges: Vec<Vec3>,
+    pub distance: Expr,
+    /// `natural`, `tangent` or `curvature`.
+    #[serde(default)]
+    pub mode: Option<String>,
+    #[serde(default)]
+    pub up_to: Option<Value>,
+    #[serde(default = "yes")]
+    pub neighbours: bool,
+}
+
+/// Sketch curves swept onto a surface to trim it.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct TrimCurves {
+    pub sketch: u64,
+    #[serde(default)]
+    pub curves: Vec<String>,
+    #[serde(default)]
+    pub direction: Option<Vec3>,
+}
+
+/// A surface body trimmed by a plane, a face or sketch curves.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct SurfaceTrim {
+    pub body: String,
+    pub plane: PlaneRef,
+    #[serde(default)]
+    pub tool: Option<FaceAt>,
+    pub keep: Vec3,
+    #[serde(default)]
+    pub keep_more: Vec<Vec3>,
+    #[serde(default)]
+    pub curves: Option<TrimCurves>,
+    #[serde(default)]
+    pub with: Option<String>,
+}
+
+/// A face restored towards its surface.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct SurfaceUntrim {
+    pub face: FaceAt,
+    #[serde(default)]
+    pub holes: Option<Vec<Vec3>>,
+    #[serde(default)]
+    pub outer: bool,
+    #[serde(default)]
+    pub in_place: bool,
+}
+
+/// Faces of a body picked by points (every face when none): an unstitch's
+/// or a reverse normal's.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct BodyFaces {
+    pub body: String,
+    #[serde(default)]
+    pub faces: Vec<Vec3>,
+}
+
+/// One end of a blend: a body and points on the edges of its chain.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct BlendSide {
+    pub body: String,
+    #[serde(default)]
+    pub edges: Vec<Vec3>,
+}
+
+fn g1_pair() -> [String; 2] {
+    ["g1".to_owned(), "g1".to_owned()]
+}
+
+/// A blend surface bridging two chains of edges (`g0` to `g3` per end).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct SurfaceBlend {
+    pub from: BlendSide,
+    pub to: BlendSide,
+    #[serde(default = "g1_pair")]
+    pub continuity: [String; 2],
+    #[serde(default)]
+    pub bulge: [f64; 2],
+    #[serde(default)]
+    pub align: Option<[Vec3; 2]>,
+    #[serde(default)]
+    pub stitch: bool,
+}
+
+/// A boundary patch through two to four curves of a sketch in loop order.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct SurfaceBoundary {
+    pub sketch: u64,
+    pub curves: Vec<String>,
+    #[serde(default)]
+    pub orders: Vec<String>,
+    #[serde(default)]
+    pub crown: f64,
+}
+
+/// A curve of a network: sketch curves, a body's edges at points, or a
+/// point; `continuity` with the face beside a chain of open edges.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct NetworkCurve {
+    #[serde(default)]
+    pub sketch: Option<u64>,
+    #[serde(default)]
+    pub curves: Vec<String>,
+    #[serde(default)]
+    pub body: Option<String>,
+    #[serde(default)]
+    pub edges: Vec<Vec3>,
+    #[serde(default)]
+    pub point: Option<Vec3>,
+    #[serde(default = "g0")]
+    pub continuity: String,
+}
+
+/// A surface through a network of curves.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct SurfaceNetwork {
+    pub u: Vec<NetworkCurve>,
+    #[serde(default)]
+    pub v: Vec<NetworkCurve>,
+    #[serde(default)]
+    pub operation: Operation,
+}
+
+fn g2() -> String {
+    "g2".to_owned()
+}
+
+/// A face of a surface body rebuilt against a chain of another body's
+/// edges.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct SurfaceMatch {
+    pub body: String,
+    #[serde(default)]
+    pub faces: Vec<Vec3>,
+    pub target: String,
+    pub edges: Vec<Vec3>,
+    #[serde(default = "g2")]
+    pub order: String,
+}
+
+fn one() -> f64 {
+    1.0
+}
+
+fn one_step() -> u32 {
+    1
+}
+
+/// B-spline faces of a body faired.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct SurfaceFair {
+    pub body: String,
+    #[serde(default)]
+    pub faces: Vec<Vec3>,
+    #[serde(default = "one")]
+    pub strength: f64,
+    #[serde(default = "one_step")]
+    pub iterations: u32,
+    #[serde(default = "yes")]
+    pub keep_edges: bool,
+    pub tolerance: Expr,
 }

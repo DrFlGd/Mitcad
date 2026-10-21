@@ -241,6 +241,16 @@ if(MITCAD_MESA_DIR)
               -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-build"
               -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
     set_tests_properties(app.ui-windows-build PROPERTIES TIMEOUT 900)
+    # The Timber tool (mitcad#478): synthetic timber, a slot profile and a
+    # wood screw fetched from a local git repository; the pickers apart, a
+    # post, a member on its side, a member by two points, a spacing set and
+    # its edit, a timber junction screwed, the cut list's timber.
+    add_test(NAME app.ui-windows-timber
+      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+              -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-timber-test.ps1"
+              -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-timber"
+              -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
+    set_tests_properties(app.ui-windows-timber PROPERTIES TIMEOUT 600)
 
     # The window's layout chosen in Preferences (mitcad#419): Floating
     # asks to restart, Later and Restart Now (unsaved changes asked about,
@@ -282,6 +292,23 @@ if(MITCAD_MESA_DIR)
               -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-browser-open"
               -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
     set_tests_properties(app.ui-windows-browser-open PROPERTIES TIMEOUT 300)
+    # File > Export Drawing (mitcad#471): the dialog with its defaults, a
+    # typed SVG file, A3 chosen, the drawing written (3 views, 2 bodies,
+    # A3, 1:1), the choices kept.
+    add_test(NAME app.ui-windows-drawing
+      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+              -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-drawing-test.ps1"
+              -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-drawing"
+              -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
+    set_tests_properties(app.ui-windows-drawing PROPERTIES TIMEOUT 300)
+
+    # Gear (mitcad#472): a spur gear from the panel, a rack meshing it.
+    add_test(NAME app.ui-windows-gear
+      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+              -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-gear-test.ps1"
+              -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-gear"
+              -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
+    set_tests_properties(app.ui-windows-gear PROPERTIES TIMEOUT 300)
   endif()
 elseif(WIN32 AND CMAKE_RUNTIME_OUTPUT_DIRECTORY)
   # Turned off again: remove earlier copies, or they would stay in use.

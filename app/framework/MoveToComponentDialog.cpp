@@ -14,6 +14,7 @@
 #include <QPushButton>
 #include <QRadioButton>
 #include <QSet>
+#include <QSignalBlocker>
 #include <QStringList>
 #include <QTreeWidget>
 #include <QVBoxLayout>
@@ -42,6 +43,14 @@ public:
     m_create->setObjectName(QStringLiteral("moveCreateNew"));
     layout->addWidget(m_existing);
     layout->addWidget(m_create);
+    // Bodies alone, from the timeline marker on (mitcad#465): a body
+    // transfer into an existing component; their features stay.
+    m_transfer = new QCheckBox(tr("Move &Only the Bodies (a Body Transfer on the Timeline)"));
+    m_transfer->setObjectName(QStringLiteral("moveBodiesOnly"));
+    m_transfer->setToolTip(tr("The bodies go into an existing component at the timeline marker and stay where "
+                              "they are; the features that made them stay in their component."));
+    m_transfer->setVisible(bodiesOnly());
+    layout->addWidget(m_transfer);
     m_targetLabel = new QLabel;
     layout->addWidget(m_targetLabel);
     m_targets = new QTreeWidget;
@@ -109,6 +118,7 @@ public:
     connect(m_create, &QRadioButton::toggled, this, [this] { refresh(); });
     connect(m_name, &QLineEdit::textChanged, this, [this] { refresh(); });
     connect(m_together, &QCheckBox::toggled, this, [this] { refresh(); });
+    connect(m_transfer, &QCheckBox::toggled, this, [this] { refresh(); });
     connect(m_buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
     connect(m_buttons, &QDialogButtonBox::accepted, this, [this] { move(); });
     refresh();
@@ -116,6 +126,93 @@ public:
   }
 
 private:
+  // A selection of bodies only (a body's row): they can also move alone.
+  bool bodiesOnly() const {
+    return !m_selection.value(QStringLiteral("bodies")).toArray().isEmpty() &&
+           m_selection.value(QStringLiteral("features")).toArray().isEmpty() &&
+           m_selection.value(QStringLiteral("groups")).toArray().isEmpty();
+  }
+
+  bool transferring() const { return m_transfer != nullptr && m_transfer->isChecked(); }
+
+  // The body transfer's plan: where the bodies can go, by occurrence path.
+  void refreshTransfer() {
+    QStringList problems;
+    QHash<QString, QJsonObject> rows;
+    QJsonObject plan;
+    try {
+      QJsonObject query{{QStringLiteral("query"), QStringLiteral("transfer_bodies")},
+                        {QStringLiteral("bodies"), m_selection.value(QStringLiteral("bodies"))}};
+      if (m_selection.contains(QStringLiteral("source_occurrence"))) {
+        query.insert(QStringLiteral("source_occurrence"), m_selection.value(QStringLiteral("source_occurrence")));
+      }
+      plan = m_model.query(query);
+    } catch (const std::exception& e) {
+      problems << QString::fromUtf8(e.what());
+    }
+    for (const QJsonValue& value : plan.value(QStringLiteral("destinations")).toArray()) {
+      const QJsonObject row = value.toObject();
+      rows.insert(row.value(QStringLiteral("occurrence")).toString(), row);
+    }
+    for (QTreeWidgetItem* item : m_rows) {
+      const QString occurrence =
+          item->data(0, Qt::UserRole).toJsonObject().value(QStringLiteral("occurrence")).toString();
+      const QString reason = rows.value(occurrence).value(QStringLiteral("reason")).toString();
+      item->setToolTip(0, reason);
+      item->setToolTip(1, reason);
+    }
+    if (const QTreeWidgetItem* item = m_targets->currentItem()) {
+      const QString occurrence =
+          item->data(0, Qt::UserRole).toJsonObject().value(QStringLiteral("occurrence")).toString();
+      const QJsonObject row = rows.value(occurrence);
+      if (!row.value(QStringLiteral("eligible")).toBool()) {
+        const QString reason = row.value(QStringLiteral("reason")).toString();
+        problems << (reason.isEmpty() ? tr("This destination is unavailable.") : reason);
+      }
+    } else {
+      problems << tr("Select a destination component.");
+    }
+    problems.removeDuplicates();
+    QStringList lines;
+    if (!problems.isEmpty()) { lines << problems << QString(); }
+    lines << tr("A Body Transfer at the timeline marker moves these bodies into the destination, where they "
+                "are now; the features that made them stay in %1.")
+                 .arg(plan.value(QStringLiteral("name")).toString())
+          << QString() << tr("Bodies:");
+    m_transferNames.clear();
+    for (const QJsonValue& value : plan.value(QStringLiteral("bodies")).toArray()) {
+      const QJsonObject body = value.toObject();
+      const QString name = body.value(QStringLiteral("name")).toString();
+      m_transferNames << name;
+      lines << tr("%1 [%2]").arg(name, body.value(QStringLiteral("uid")).toString());
+    }
+    m_together->setVisible(false);
+    m_details->setPlainText(lines.join(QLatin1Char('\n')));
+    m_buttons->button(QDialogButtonBox::Ok)->setEnabled(problems.isEmpty());
+  }
+
+  // Runs the body transfer (one undo step); a refused one keeps the dialog.
+  void transfer() {
+    refresh();
+    if (!m_buttons->button(QDialogButtonBox::Ok)->isEnabled()) { return; }
+    const QJsonObject row = m_targets->currentItem()->data(0, Qt::UserRole).toJsonObject();
+    QJsonObject command{{QStringLiteral("cmd"), QStringLiteral("transfer_bodies")},
+                        {QStringLiteral("bodies"), m_selection.value(QStringLiteral("bodies"))},
+                        {QStringLiteral("destination"),
+                         QJsonObject{{QStringLiteral("component"), row.value(QStringLiteral("component"))},
+                                     {QStringLiteral("occurrence"), row.value(QStringLiteral("occurrence"))}}}};
+    if (m_selection.contains(QStringLiteral("source_occurrence"))) {
+      command.insert(QStringLiteral("source_occurrence"), m_selection.value(QStringLiteral("source_occurrence")));
+    }
+    QJsonObject result;
+    if (!m_model.run(command, &result)) { return; }
+    qDebug().noquote() << QStringLiteral("Transferred %1 into %2 (%3)")
+                             .arg(m_transferNames.join(QStringLiteral(", ")),
+                                  result.value(QStringLiteral("component_name")).toString(),
+                                  result.value(QStringLiteral("name")).toString());
+    accept();
+  }
+
   QJsonObject destination() const {
     const QTreeWidgetItem* item = m_targets->currentItem();
     if (item == nullptr) { return {}; }
@@ -144,6 +241,21 @@ private:
   }
 
   void refresh() {
+    // A body transfer goes into an existing component only.
+    const bool transfer = transferring();
+    m_create->setEnabled(!transfer);
+    if (transfer && m_create->isChecked()) {
+      const QSignalBlocker blockExisting(m_existing);
+      const QSignalBlocker blockCreate(m_create);
+      m_existing->setChecked(true);
+    }
+    if (transfer) {
+      m_targetLabel->setText(tr("&Destination component:"));
+      m_nameLabel->setVisible(false);
+      m_name->setVisible(false);
+      refreshTransfer();
+      return;
+    }
     const bool creating = m_create->isChecked();
     m_targetLabel->setText(creating ? tr("&Parent component:") : tr("&Destination component:"));
     m_nameLabel->setVisible(creating);
@@ -211,6 +323,10 @@ private:
   }
 
   void move() {
+    if (transferring()) {
+      transfer();
+      return;
+    }
     // Validate again before running the single atomic model command. Failed
     // moves leave this dialog open, with its explicit destination intact.
     refresh();
@@ -258,6 +374,8 @@ private:
   QLineEdit* m_name = nullptr;
   QPlainTextEdit* m_details = nullptr;
   QCheckBox* m_together = nullptr;
+  QCheckBox* m_transfer = nullptr;
+  QStringList m_transferNames;
   QDialogButtonBox* m_buttons = nullptr;
 };
 

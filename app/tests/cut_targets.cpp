@@ -22,6 +22,96 @@ QJsonObject candidate(const QString& component, const QString& occurrence, bool 
                                                                {QStringLiteral("checked"), checked}}});
   return result;
 }
+
+QJsonObject withBodies(QJsonObject row, const QStringList& bodies) {
+  QJsonArray list;
+  for (const QString& body : bodies) {
+    list.append(QJsonObject{{QStringLiteral("body"), body}, {QStringLiteral("checked"), true}});
+  }
+  row.insert(QStringLiteral("bodies"), list);
+  return row;
+}
+
+QJsonObject report(const QJsonArray& rows) {
+  return {{QStringLiteral("cut_targets"), QJsonObject{{QStringLiteral("rows"), rows}}}};
+}
+
+QJsonArray targetList(const QJsonObject& scope, const char* key) {
+  return scope.value(QStringLiteral("targets")).toObject().value(QLatin1String(key)).toArray();
+}
+
+// A new cut's hidden targets start unchecked (mitcad#475).
+int hiddenTargetsTests() {
+  int failures = 0;
+  const auto check = [&failures](bool ok, const char* message) {
+    if (!ok) { std::fprintf(stderr, "hidden cut targets: %s\n", message); ++failures; }
+  };
+  // Root (C0) with Body F1.b0 shown and F3.b0 hidden; Shown:1 (O1, C1) with
+  // Inner:1 (O3, C3) whose light bulb is off; Hidden:1 (O2, C2) off.
+  const QJsonObject components{
+      {QStringLiteral("occurrences"),
+       QJsonArray{QJsonObject{{QStringLiteral("uid"), QStringLiteral("O1")}, {QStringLiteral("visible"), true},
+                              {QStringLiteral("children"),
+                               QJsonArray{QJsonObject{{QStringLiteral("uid"), QStringLiteral("O3")},
+                                                      {QStringLiteral("visible"), false}}}}},
+                  QJsonObject{{QStringLiteral("uid"), QStringLiteral("O2")}, {QStringLiteral("visible"), false}}}}};
+  const QJsonArray bodies{QJsonObject{{QStringLiteral("uid"), QStringLiteral("F1.b0")}, {QStringLiteral("visible"), true}},
+                          QJsonObject{{QStringLiteral("uid"), QStringLiteral("F3.b0")}, {QStringLiteral("visible"), false}}};
+  QJsonObject view = mitcad::cutTargetVisibility(components, bodies, {});
+  check(view.value(QStringLiteral("hidden_occurrences")).toArray() == QJsonArray{QStringLiteral("O1/O3"), QStringLiteral("O2")},
+        "the occurrences whose light bulbs are off, by path");
+  check(view.value(QStringLiteral("hidden_bodies")).toArray() == QJsonArray{QStringLiteral("F3.b0")}, "the hidden bodies");
+
+  const QJsonObject context = identity(QStringLiteral("C0"), QString());
+  QJsonObject scope = mitcad::selectCutTargets({{QStringLiteral("context"), context}}, true);
+  const QJsonObject root = withBodies(candidate(QStringLiteral("C0"), QString(), true), {QStringLiteral("F1.b0"), QStringLiteral("F3.b0")});
+  const QJsonObject shown = withBodies(candidate(QStringLiteral("C1"), QStringLiteral("O1"), true), {QStringLiteral("F5.b0")});
+  const QJsonObject hidden = withBodies(candidate(QStringLiteral("C2"), QStringLiteral("O2"), true), {QStringLiteral("F7.b0")});
+  QJsonObject answer = report({root, shown, hidden});
+  check(mitcad::excludeHiddenCutTargets(scope, view, answer), "hidden targets change a new scope");
+  check(targetList(scope, "excluded") == QJsonArray{identity(QStringLiteral("C2"), QStringLiteral("O2"))},
+        "a hidden occurrence is excluded as a whole");
+  QJsonObject hiddenBody = context;
+  hiddenBody.insert(QStringLiteral("body"), QStringLiteral("F3.b0"));
+  check(targetList(scope, "excluded_bodies") == QJsonArray{hiddenBody}, "a hidden body of a shown row only by itself");
+  const QJsonArray rows = answer.value(QStringLiteral("cut_targets")).toObject().value(QStringLiteral("rows")).toArray();
+  check(rows[2].toObject().value(QStringLiteral("hidden")).toBool() && !rows[1].toObject().contains(QStringLiteral("hidden")) &&
+            !rows[0].toObject().contains(QStringLiteral("hidden")),
+        "the report marks the hidden row");
+  check(rows[0].toObject().value(QStringLiteral("bodies")).toArray()[1].toObject().value(QStringLiteral("hidden")).toBool(),
+        "and the hidden body");
+
+  // The user checks the hidden one again: later previews keep it.
+  scope = mitcad::setCutTargetChecked(scope, identity(QStringLiteral("C2"), QStringLiteral("O2")), QString(), true);
+  answer = report({root, shown, hidden});
+  check(!mitcad::excludeHiddenCutTargets(scope, view, answer) && targetList(scope, "excluded").isEmpty(),
+        "a row seen before keeps the user's choice");
+
+  // A hidden target that joins later (a new intersection) starts unchecked.
+  const QJsonObject inner = withBodies(candidate(QStringLiteral("C3"), QStringLiteral("O1/O3"), true), {QStringLiteral("F9.b0")});
+  answer = report({root, shown, hidden, inner});
+  check(mitcad::excludeHiddenCutTargets(scope, view, answer) &&
+            targetList(scope, "excluded") == QJsonArray{identity(QStringLiteral("C3"), QStringLiteral("O1/O3"))},
+        "an occurrence below a hidden one joining later is excluded");
+
+  // An explicit scope (Select none) takes nothing new; Isolate hides what
+  // it leaves out.
+  QJsonObject isolatedView = mitcad::cutTargetVisibility(
+      {}, {}, {{QStringLiteral("display"),
+                QJsonObject{{QStringLiteral("isolated"), QJsonArray{QJsonObject{{QStringLiteral("occurrence"), QStringLiteral("O1")}}}}}}});
+  QJsonObject isolatedScope = mitcad::selectCutTargets({{QStringLiteral("context"), context}}, true);
+  answer = report({root, shown});
+  check(mitcad::excludeHiddenCutTargets(isolatedScope, isolatedView, answer) &&
+            targetList(isolatedScope, "excluded") == QJsonArray{context} && targetList(isolatedScope, "excluded_bodies").isEmpty(),
+        "Isolate counts as hidden for what it hides");
+  QJsonObject explicitView = mitcad::cutTargetVisibility(components, bodies, {});
+  QJsonObject none = mitcad::selectCutTargets({{QStringLiteral("context"), context}}, false);
+  const QJsonObject before = none;
+  answer = report({hidden});
+  check(!mitcad::excludeHiddenCutTargets(none, explicitView, answer) && none == before,
+        "an explicit scope is left as it is");
+  return failures;
+}
 } // namespace
 
 int cutTargetsTests() {
@@ -85,5 +175,6 @@ int cutTargetsTests() {
   scope = mitcad::setCutTargetChecked(scope, b, QString(), true);
   check(scope.value(QStringLiteral("targets")).toObject().value(QStringLiteral("excluded_bodies")).toArray().isEmpty(),
         "explicitly enabling the whole component clears its finer exclusions");
+  failures += hiddenTargetsTests();
   return failures;
 }

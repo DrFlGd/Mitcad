@@ -63,6 +63,12 @@ geometry::Tool to_tool(const ToolSpec& spec, const ShapeList& shapes, const Fram
 
 } // namespace
 
+// The surface modelling features' tools (mitcad#455, surface_edits.cpp).
+geometry::Tool tool_of(const ToolSpec& spec, const ShapeList& shapes, const Frame* frame,
+                       rust::Slice<const Region> regions) {
+  return to_tool(spec, shapes, frame, regions);
+}
+
 std::shared_ptr<geometry::Shape> shell(rust::Str feature, const geometry::Shape& body,
                                        rust::Slice<const rust::String> faces,
                                        const ShellParams& params) {

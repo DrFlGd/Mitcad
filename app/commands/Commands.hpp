@@ -64,11 +64,20 @@ void registerSheetMetalCommands(CommandRegistry& registry, const CommandContext&
 void registerBuildCommands(CommandRegistry& registry, const CommandContext& context, DocumentHost& host,
                            QWidget* window, std::function<QString()> designName);
 
+// Gear (mitcad#472, GearCommands.cpp), at the end of the SOLID tab's CREATE
+// group: `host` links the joints of gears it meshes.
+void registerGearCommands(CommandRegistry& registry, const CommandContext& context, DocumentHost& host);
+
 // Equal spacing in sketches (mitcad#221, EqualSpacingCommands.cpp): Equal
 // Spacing, Equal Spacing Dimension and Edit Equal Spacing. Sketch Dimension
 // with three or more points, circles, arcs or lines selected opens Equal
 // Spacing Dimension instead of its tool (true then).
 void registerEqualSpacingCommands(CommandRegistry& registry, sketch::SketchController& controller);
 bool dimensionEqualSpacing(sketch::SketchController& controller);
+
+// SURFACE (mitcad#455, SurfaceCommands.cpp): Surface Extrude, Surface
+// Revolve, Surface Sweep, Surface Loft, Patch, Stitch, Thicken and the
+// surface features that make and change surface bodies.
+void registerSurfaceCommands(CommandRegistry& registry, const CommandContext& context);
 
 } // namespace mitcad

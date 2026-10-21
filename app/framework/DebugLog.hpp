@@ -155,6 +155,7 @@ private:
   bool m_pending = false;            // started; the file opens once the graphics are known
   qint64 m_graphicsAt = -1;          // where a header's graphics line waits for them
   QTimer* m_graphicsTimer = nullptr; // or after graphicsWaitMs
+  bool m_closing = false;            // stop() writes the file's last line: no roll-over
 };
 
 } // namespace mitcad

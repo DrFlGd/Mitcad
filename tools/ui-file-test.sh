@@ -94,7 +94,7 @@ expect_title "Untitled - Mitcad"
 project_menu="New Project | Open Project | Open from Cloud | - | Sync | Check for Newer Versions | Open in Browser"
 project_menu="$project_menu | - | Move to a Project | Project Settings | - | Web Viewer | Update Web Viewer"
 file_menu="New Design | Open | Open Recent > | Open Read-Only | Close | - | Save | Save As | Save with Description"
-file_menu="$file_menu | Version History | - | Project > [$project_menu] | - | Import | Export | - | Recover Documents"
+file_menu="$file_menu | Version History | - | Project > [$project_menu] | - | Import | Export | Export Drawing | - | Recover Documents"
 file_menu="$file_menu | - | Exit"
 ui_mark
 ui_step "file menu (Alt+F)"              ui_key alt+f

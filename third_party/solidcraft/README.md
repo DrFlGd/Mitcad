@@ -1,4 +1,4 @@
-# SolidCraft: format upgrade steps and cam geometry
+# SolidCraft: format upgrade steps, cam geometry and plastic rules
 
 The `.solidcraft` import (`core/solidcraft`, mitcad#450) reads designs of
 every SolidCraft file format by first upgrading an older file to the one
@@ -6,15 +6,17 @@ format it maps (27 with the changes pending after it). The upgrade steps
 are SolidCraft's own, adapted here. The cam geometry of motion links
 (`cam.rs`, mitcad#466: where a follower touches a cam's profile over a
 turn) is adapted from SolidCraft too and built into `core/model`
-(`motion_links.rs`).
+(`motion_links.rs`). The plastic rule library (`plastic.rs`, mitcad#459)
+is SolidCraft's too, as data the import maps onto Mitcad's plastic
+rules.
 
 - Source: https://github.com/tangency-labs/solidcraft, commit
   `0b787f8eae4244cd40f07dddccd2e1b27e4cf9f8` (19.10.2026, after release
   0.16.2).
 - Licence: MIT OR Apache-2.0, Copyright (c) 2026 SolidCraft contributors;
   used under MIT. Both licence texts are here (`LICENSE-MIT`,
-  `LICENSE-APACHE`, copied from the repository). `format.rs` and
-  `cam.rs` keep the licence and copyright in their headers.
+  `LICENSE-APACHE`, copied from the repository). `format.rs`, `cam.rs`
+  and `plastic.rs` keep the licence and copyright in their headers.
 - Nothing of SolidCraft is a dependency: no crate of it is built or linked.
 
 ## Files
@@ -26,6 +28,7 @@ turn) is adapted from SolidCraft too and built into `core/model`
 | | `crates/doc/src/params.rs` (`Document::name_all_feature_inputs`) | `5e453620d6be17163b0dcfb4d7f7c0d3983c64d05521ba4671ae407c02a22515` |
 | `cam.rs` | `crates/doc/src/joints_cam.rs` (the follower's contact with a cam's profile: `first_contact_along`, `touches_turning`, `overlaps_turning`, `first_contact_turning`, `next_contact_turning`, `dist_to_segment`, `inside`, `area`, `round`, the sampling loop of `table`) | `b31e49db7a82e8a72a472d2f2b128b5dce3c71ad6926093eb38436bc59a877cc` |
 | `mesh_convert.rs` | `crates/kernel/src/mesh_convert.rs` (Convert Mesh, mitcad#462, built into `core/model/src/features/mesh_convert.rs`: `convert_prismatic_mesh`, `weld`, `extrusion`, `certify_nesting`, `fit_loop`) | `982246e109a52b8270d07073fad4ebcf144bdbde16c05096a165a7747665905e` |
+| `plastic.rs` | `crates/doc/src/plastic.rs` (`PlasticRule::new`, `PlasticRule::library`, the order of `PlasticRule::fields`; mitcad#459) | `2a6dbad07597fe331bb5cf2a1f11f12e1bfbc38a2a2f8029fc0a7152a72aa7d4` |
 
 ## Changes
 
@@ -49,3 +52,6 @@ turn) is adapted from SolidCraft too and built into `core/model`
   the section's area times the height, and the fitted loops' nesting is
   certified geometrically (raw loops may not meet, a fitted circle may not
   reach across another loop) instead of by SolidCraft's planar booleans.
+- `plastic.rs` gives the rule library as the design file's JSON form of a
+  rule (the form of a design's own rules), which the import maps onto
+  Mitcad's plastic rules.

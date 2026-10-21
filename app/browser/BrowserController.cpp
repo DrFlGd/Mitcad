@@ -326,7 +326,7 @@ bool BrowserController::canChange(bool visibilityOnly) {
     return true;
   }
   const QString readOnly = m_host.readOnlyReason();
-  m_host.showStatus(readOnly.isEmpty() ? tr("Finish the command or the sketch first.") : readOnly, true);
+  m_host.showStatus(readOnly.isEmpty() ? m_host.changeBlockedReason() : readOnly, true);
   return false;
 }
 

@@ -15,6 +15,8 @@ use serde::{Deserialize, Serialize};
 use super::base::apply_tool;
 use super::path::{self, SketchCurves};
 use super::reference::ExtentObject;
+// Surface extrusions (mitcad#455).
+use super::surface_sweeps;
 use super::{
     BodyChange, CheckContext, EvalContext, Evaluate, FeatureInfo, FeatureOutput, References,
     SketchOutput, ToolUse, is_false,
@@ -221,6 +223,14 @@ pub struct ExtrudeDef<P = ParamId> {
     /// placements at its point of the timeline.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub object_links: BTreeMap<BodyUid, OccurrenceLink>,
+    /// A surface extrusion (mitcad#455, `surface_sweeps.rs`): walls without
+    /// caps, a new surface body; not thin.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub surface: bool,
+    /// Sketch curves a surface extrusion sweeps beside or instead of the
+    /// profiles: open chains or closed loops.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub curves: Option<SketchCurves>,
 }
 
 type Mapper<'a, P, Q, E> = dyn FnMut(&str, &P) -> Result<Q, E> + 'a;
@@ -334,15 +344,19 @@ impl<P> ExtrudeDef<P> {
             participants: self.participants.clone(),
             cut_scope: self.cut_scope.clone(),
             object_links: self.object_links.clone(),
+            surface: self.surface,
+            curves: self.curves.clone(),
         })
     }
 
-    /// The sketch of the profiles (or of the curves thin walls follow).
+    /// The sketch of the profiles (or of the curves thin walls follow or a
+    /// surface extrusion sweeps).
     pub fn sketch(&self) -> Option<FeatureUid> {
         self.profiles
             .first()
             .map(|p| p.sketch)
             .or_else(|| self.wall_curves().map(|c| c.sketch))
+            .or_else(|| self.curves.as_ref().map(|c| c.sketch))
     }
 
     /// The curves thin walls follow instead of the profiles' boundaries.
@@ -563,6 +577,9 @@ impl FeatureInfo for ExtrudeDef {
         if let Some(curves) = self.wall_curves() {
             curves.add_references(&mut references);
         }
+        if let Some(curves) = &self.curves {
+            curves.add_references(&mut references);
+        }
         for body in &self.participants {
             references.body(*body);
         }
@@ -576,12 +593,29 @@ impl FeatureInfo for ExtrudeDef {
     }
 
     fn check(&self, ctx: &CheckContext<'_>) -> Result<(), String> {
+        if self.surface {
+            if self.thin.is_some() {
+                return Err("a surface extrusion has no thin walls".to_owned());
+            }
+            if self.cut_scope.is_some() {
+                return Err("a surface extrusion cuts nothing".to_owned());
+            }
+        } else if self.curves.is_some() && self.wall_curves().is_some() {
+            return Err("only a surface extrusion sweeps sketch curves".to_owned());
+        }
         match self.wall_curves() {
             Some(_) if !self.profiles.is_empty() => {
                 return Err("thin walls along curves take no profiles".to_owned());
             }
             Some(curves) => curves.check(ctx)?,
-            None => check_profiles(ctx, &self.profiles)?,
+            None => surface_sweeps::check_inputs(
+                ctx,
+                self.surface,
+                self.operation,
+                &self.profiles,
+                self.curves.as_ref(),
+                "extrusion",
+            )?,
         }
         if let Some(scope) = &self.cut_scope {
             if self.operation != Operation::Cut || !self.participants.is_empty() {
@@ -730,6 +764,9 @@ impl<'a> SideView<'a> {
 
 impl<K: Kernel> Evaluate<K> for ExtrudeDef {
     fn evaluate(&self, ctx: &mut EvalContext<'_, K>) -> Result<FeatureOutput<K::Shape>, String> {
+        if self.surface {
+            return self.surface_output(ctx);
+        }
         let (sketch, regions) = self.sketch_regions(ctx)?;
         let discovery = self
             .cut_scope
@@ -779,7 +816,7 @@ impl<K: Kernel> Evaluate<K> for ExtrudeDef {
         feature: FeatureUid,
         placement: &Transform,
     ) -> Option<Result<K::Shape, String>> {
-        if self.cut_scope.is_some() || !self.depends_on_bodies() {
+        if self.surface || self.cut_scope.is_some() || !self.depends_on_bodies() {
             return None;
         }
         let (sketch, regions) = match self.sketch_regions(ctx) {
@@ -852,6 +889,22 @@ impl ExtrudeDef {
         participants: &[(BodyUid, K::Shape)],
         placement: &Transform,
         feature: FeatureUid,
+    ) -> Result<K::Shape, String> {
+        self.tool_with(ctx, sketch, regions, participants, placement, feature, None)
+    }
+
+    /// [`Self::tool`], or with `sheet` the surface the curves sweep
+    /// ([`Kernel::extrude_sheet`]).
+    #[allow(clippy::too_many_arguments)]
+    fn tool_with<K: Kernel>(
+        &self,
+        ctx: &mut EvalContext<'_, K>,
+        sketch: &SketchOutput,
+        regions: &[ProfileRegion],
+        participants: &[(BodyUid, K::Shape)],
+        placement: &Transform,
+        feature: FeatureUid,
+        sheet: Option<&SketchCurves>,
     ) -> Result<K::Shape, String> {
         let frame = placement.apply_frame(&sketch.frame);
         let normal = frame.normal();
@@ -1005,6 +1058,10 @@ impl ExtrudeDef {
             return Err("the two extrude distances must add up to more than zero".to_owned());
         }
 
+        let sheet = match sheet {
+            Some(curves) => Some(surface_sweeps::chains(ctx, curves, &frame)?),
+            None => None,
+        };
         let chains = match self.wall_curves() {
             Some(curves) => Some(path::wall_chains(curves.curves_on(ctx, &frame)?, &frame)?),
             None => None,
@@ -1018,11 +1075,40 @@ impl ExtrudeDef {
             side1,
             side2,
         };
-        match &chains {
-            Some(chains) => ctx.kernel.extrude_curves(&spec, chains),
-            None => ctx.kernel.extrude_feature(&spec),
+        match (&sheet, &chains) {
+            (Some(sheet), _) => ctx.kernel.extrude_sheet(&spec, sheet),
+            (None, Some(chains)) => ctx.kernel.extrude_curves(&spec, chains),
+            (None, None) => ctx.kernel.extrude_feature(&spec),
         }
         .map_err(|e| e.to_string())
+    }
+
+    /// A surface extrusion's bodies (mitcad#455): the profiles' walls (the
+    /// solid tool without its caps), then the curves'.
+    fn surface_output<K: Kernel>(
+        &self,
+        ctx: &mut EvalContext<'_, K>,
+    ) -> Result<FeatureOutput<K::Shape>, String> {
+        let uid = ctx.uid;
+        let mut sheets = Vec::new();
+        if !self.profiles.is_empty() {
+            let (sketch, regions) = profile_regions(ctx, &self.profiles)?;
+            let tool = self.tool(ctx, &sketch, &regions, &[], &Transform::IDENTITY, uid)?;
+            sheets.push(surface_sweeps::walls(ctx, &tool)?);
+        }
+        if let Some(curves) = &self.curves {
+            let sketch = ctx.sketch(curves.sketch)?;
+            sheets.push(self.tool_with(
+                ctx,
+                &sketch,
+                &[],
+                &[],
+                &Transform::IDENTITY,
+                uid,
+                Some(curves),
+            )?);
+        }
+        surface_sweeps::output(ctx, sheets)
     }
 }
 

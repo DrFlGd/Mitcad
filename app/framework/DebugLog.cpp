@@ -324,6 +324,10 @@ void DebugLog::stop() {
       return;
     }
     path = m_file.fileName();
+    // The off line stays the file's last line also when it takes the file
+    // over its size: a roll-over would leave it followed by "--- Continued
+    // in" and a new file with a header only (mitcad#476).
+    m_closing = true;
   }
   // The file's last line.
   qInfo().noquote() << QStringLiteral("Debug log off: %1").arg(native(path));
@@ -336,6 +340,7 @@ void DebugLog::stop() {
     m_file.close();
     m_asked.clear();
     m_dirty = false;
+    m_closing = false;
   }
   m_graphicsTimer->stop();
   m_timer->stop();
@@ -436,7 +441,7 @@ void DebugLog::write(QtMsgType type, const mcp::LogLine& line) {
     m_dirty = false;
     m_lastFlush = now;
   }
-  if (m_written >= m_limits.fileBytes) {
+  if (m_written >= m_limits.fileBytes && !m_closing) {
     rollOver();
   }
 }

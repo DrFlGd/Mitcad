@@ -4,7 +4,7 @@
 //! `mitcad-index.json` and `libraries/<id>.json` say, and what is wrong
 //! with them. The format is documented in `docs/libraries.md`.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -99,6 +99,11 @@ pub struct ManifestComponent {
     /// A PNG image of the default configuration.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub preview: String,
+    /// PNG images of single configuration rows by the row's name
+    /// (mitcad#484: a timber size seen from its end); a row without one
+    /// shows `preview`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub row_previews: BTreeMap<String, String>,
     /// The component's own licence; the library's when left out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub license: Option<String>,
@@ -379,6 +384,14 @@ impl Manifest {
                     "{label}: '{}' is no path of a PNG image in the library",
                     c.preview
                 ));
+            }
+            for (row, path) in &c.row_previews {
+                if !valid_path(path) || !path.ends_with(".png") {
+                    out.error(format!(
+                        "{label}: the preview of row {row}, '{path}', is no path of a PNG image in \
+                         the library"
+                    ));
+                }
             }
             if let Some(license) = c.license.as_deref()
                 && license_note(license).is_none()

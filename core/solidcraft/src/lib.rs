@@ -27,6 +27,10 @@ pub mod sketch;
 #[path = "../../../third_party/solidcraft/format.rs"]
 pub mod format;
 
+// SolidCraft's plastic rule library (mitcad#459).
+#[path = "../../../third_party/solidcraft/plastic.rs"]
+pub mod plastic;
+
 use std::path::Path;
 
 use serde_json::Value;

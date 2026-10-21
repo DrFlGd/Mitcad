@@ -21,22 +21,32 @@ namespace {
 // Lower is a better match; -1 is none.
 int score(const CommandDef& def, const QString& text) {
   if (text.isEmpty()) {
-    return 5;
+    return 6;
   }
   const QString name = def.name.toLower();
-  if (name.startsWith(text)) {
+  // The whole name first, so "export" finds Export... before Export Drawing...
+  QString bare = name;
+  if (bare.endsWith(QStringLiteral("..."))) {
+    bare.chop(3);
+  } else if (bare.endsWith(QChar(0x2026))) {
+    bare.chop(1);
+  }
+  if (bare == text) {
     return 0;
+  }
+  if (name.startsWith(text)) {
+    return 1;
   }
   const QStringList words = name.split(QLatin1Char(' '), Qt::SkipEmptyParts);
   if (std::any_of(words.begin(), words.end(), [&](const QString& w) { return w.startsWith(text); })) {
-    return 1;
+    return 2;
   }
   if (name.contains(text)) {
-    return 2;
+    return 3;
   }
   for (const QString& keyword : def.keywords) {
     if (keyword.toLower().startsWith(text)) {
-      return 3;
+      return 4;
     }
   }
   // The letters in order, as in "fll" for Fillet.
@@ -48,7 +58,7 @@ int score(const CommandDef& def, const QString& text) {
     }
     ++at;
   }
-  return 4;
+  return 5;
 }
 
 } // namespace

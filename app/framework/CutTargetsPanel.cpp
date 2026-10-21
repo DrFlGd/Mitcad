@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 #include "CutTargetsPanel.hpp"
 
+#include <algorithm>
+
 #include <QEvent>
 #include <QHeaderView>
 #include <QHideEvent>
@@ -11,6 +13,7 @@
 #include <QScrollBar>
 #include <QSet>
 #include <QSignalBlocker>
+#include <QTimer>
 #include <QTreeWidget>
 #include <QVBoxLayout>
 #include <QtLogging>
@@ -71,6 +74,139 @@ QJsonObject selectCutTargets(const QJsonObject& scope, bool all) {
                             {all ? QStringLiteral("excluded") : QStringLiteral("included"), QJsonArray()},
                             {QStringLiteral("excluded_bodies"), QJsonArray()}});
   return result;
+}
+
+namespace {
+
+void hiddenOccurrences(const QJsonArray& occurrences, const QString& parent, QJsonArray& hidden) {
+  for (const QJsonValue& value : occurrences) {
+    const QJsonObject occurrence = value.toObject();
+    const QString uid = occurrence.value(QStringLiteral("uid")).toString();
+    const QString path = parent.isEmpty() ? uid : parent + QLatin1Char('/') + uid;
+    if (!occurrence.value(QStringLiteral("visible")).toBool(true)) {
+      hidden.append(path); // what is in it is hidden with it
+      continue;
+    }
+    hiddenOccurrences(occurrence.value(QStringLiteral("children")).toArray(), path, hidden);
+  }
+}
+
+bool within(const QString& path, const QString& above) {
+  return path == above || path.startsWith(above + QLatin1Char('/'));
+}
+
+// Whether Isolate shows a body where an occurrence places it (as the view
+// decides it, MainWindow::isIsolated); everything when nothing is isolated.
+bool isolatedBody(const QJsonArray& isolated, const QString& body, const QString& occurrence) {
+  if (isolated.isEmpty()) {
+    return true;
+  }
+  for (const QJsonValue& value : isolated) {
+    const QJsonObject item = value.toObject();
+    const QString at = item.value(QStringLiteral("occurrence")).toString();
+    if (item.contains(QStringLiteral("body")) ? item.value(QStringLiteral("body")).toString() == body && at == occurrence
+                                              : within(occurrence, at)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+} // namespace
+
+QJsonObject cutTargetVisibility(const QJsonObject& components, const QJsonArray& bodies,
+                                const QJsonObject& document) {
+  QJsonArray occurrences;
+  hiddenOccurrences(components.value(QStringLiteral("occurrences")).toArray(), QString(), occurrences);
+  QJsonArray hiddenBodies;
+  for (const QJsonValue& value : bodies) {
+    const QJsonObject body = value.toObject();
+    if (!body.value(QStringLiteral("visible")).toBool(true)) {
+      hiddenBodies.append(body.value(QStringLiteral("uid")));
+    }
+  }
+  return {{QStringLiteral("hidden_occurrences"), occurrences},
+          {QStringLiteral("hidden_bodies"), hiddenBodies},
+          {QStringLiteral("isolated"),
+           document.value(QStringLiteral("display")).toObject().value(QStringLiteral("isolated")).toArray()},
+          {QStringLiteral("seen"), QJsonArray()}};
+}
+
+bool excludeHiddenCutTargets(QJsonObject& scope, QJsonObject& visibility, QJsonObject& report) {
+  QJsonObject targets = scope.value(QStringLiteral("targets")).toObject();
+  const bool automatic = targets.value(QStringLiteral("type")).toString() == QStringLiteral("automatic");
+  QJsonArray excluded = targets.value(QStringLiteral("excluded")).toArray();
+  QJsonArray excludedBodies = targets.value(QStringLiteral("excluded_bodies")).toArray();
+  QJsonArray seen = visibility.value(QStringLiteral("seen")).toArray();
+  const QJsonArray hiddenPaths = visibility.value(QStringLiteral("hidden_occurrences")).toArray();
+  const QJsonArray hiddenBodies = visibility.value(QStringLiteral("hidden_bodies")).toArray();
+  const QJsonArray isolated = visibility.value(QStringLiteral("isolated")).toArray();
+  QJsonObject cut = report.value(QStringLiteral("cut_targets")).toObject();
+  QJsonArray rows = cut.value(QStringLiteral("rows")).toArray();
+  bool changed = false;
+  for (int i = 0; i < rows.size(); ++i) {
+    QJsonObject row = rows[i].toObject();
+    const QString path = row.value(QStringLiteral("occurrence")).toString();
+    const QJsonObject target = identity(row);
+    QJsonArray bodies = row.value(QStringLiteral("bodies")).toArray();
+    bool rowHidden = std::any_of(hiddenPaths.begin(), hiddenPaths.end(),
+                                 [&path](const QJsonValue& hidden) { return within(path, hidden.toString()); });
+    // Isolate showing none of its bodies hides the row as a whole.
+    if (!isolated.isEmpty() && !bodies.isEmpty() &&
+        std::none_of(bodies.begin(), bodies.end(), [&isolated, &path](const QJsonValue& body) {
+          return isolatedBody(isolated, body.toObject().value(QStringLiteral("body")).toString(), path);
+        })) {
+      rowHidden = true;
+    }
+    QStringList hidden;
+    for (int b = 0; b < bodies.size(); ++b) {
+      QJsonObject body = bodies[b].toObject();
+      const QString uid = body.value(QStringLiteral("body")).toString();
+      const bool bodyHidden = rowHidden || hiddenBodies.contains(QJsonValue(uid)) || !isolatedBody(isolated, uid, path);
+      if (bodyHidden) {
+        hidden << uid;
+        body.insert(QStringLiteral("hidden"), true);
+        bodies[b] = body;
+      }
+    }
+    row.insert(QStringLiteral("bodies"), bodies);
+    if (rowHidden || (!bodies.isEmpty() && hidden.size() == bodies.size())) {
+      row.insert(QStringLiteral("hidden"), true);
+    }
+    rows[i] = row;
+    const QString key = target.value(QStringLiteral("component")).toString() + QLatin1Char('@') + path;
+    if (seen.contains(QJsonValue(key))) {
+      continue; // the user's choice stays
+    }
+    seen.append(key);
+    if (!automatic) {
+      continue;
+    }
+    if (rowHidden) {
+      if (!excluded.contains(target)) {
+        excluded.append(target);
+        changed = true;
+      }
+      continue;
+    }
+    for (const QString& uid : hidden) {
+      QJsonObject item = target;
+      item.insert(QStringLiteral("body"), uid);
+      if (!excludedBodies.contains(item)) {
+        excludedBodies.append(item);
+        changed = true;
+      }
+    }
+  }
+  cut.insert(QStringLiteral("rows"), rows);
+  report.insert(QStringLiteral("cut_targets"), cut);
+  visibility.insert(QStringLiteral("seen"), seen);
+  if (changed) {
+    targets.insert(QStringLiteral("excluded"), excluded);
+    targets.insert(QStringLiteral("excluded_bodies"), excludedBodies);
+    scope.insert(QStringLiteral("targets"), targets);
+  }
+  return changed;
 }
 
 CutTargetsPanel::CutTargetsPanel(QWidget* parent) : QWidget(parent) {
@@ -154,7 +290,9 @@ void CutTargetsPanel::rebuild() {
     const QString reason = row.value(QStringLiteral("reason")).toString();
     const bool eligible = row.value(QStringLiteral("eligible")).toBool();
     const bool intersects = row.value(QStringLiteral("intersects")).toBool();
+    const bool hidden = row.value(QStringLiteral("hidden")).toBool(); // mitcad#475
     QString text = name;
+    if (hidden) { text += tr(" (hidden)"); }
     if (!intersects) { text += tr(" — outside current cut"); }
     if (!reason.isEmpty()) { text += QStringLiteral(" — ") + reason; }
     auto* item = new QTreeWidgetItem(m_tree, {text});
@@ -168,7 +306,9 @@ void CutTargetsPanel::rebuild() {
     for (const QJsonValue& bodyValue : row.value(QStringLiteral("bodies")).toArray()) {
       const QJsonObject body = bodyValue.toObject();
       const QString uid = body.value(QStringLiteral("body")).toString();
-      auto* child = new QTreeWidgetItem(item, {body.value(QStringLiteral("name")).toString(uid)});
+      auto* child = new QTreeWidgetItem(
+          item, {body.value(QStringLiteral("name")).toString(uid) +
+                 (body.value(QStringLiteral("hidden")).toBool() ? tr(" (hidden)") : QString())});
       child->setData(0, kTargetRole, identity(row));
       child->setData(0, kBodyRole, uid);
       child->setData(0, kBodiesRole, QJsonArray{body});
@@ -183,10 +323,11 @@ void CutTargetsPanel::rebuild() {
       child->setToolTip(0, item->toolTip(0) + QStringLiteral("\n") + uid);
     }
     item->setExpanded(expanded.contains(item->data(0, NativeControlIdentifierRole).toString()));
-    qDebug().noquote() << QStringLiteral("Cut target %1@%2: %3, %4, %5")
+    qDebug().noquote() << QStringLiteral("Cut target %1@%2: %3, %4, %5%6")
         .arg(component, path, eligible ? QStringLiteral("eligible") : QStringLiteral("unavailable"),
              item->checkState(0) == Qt::Checked ? QStringLiteral("checked") : item->checkState(0) == Qt::PartiallyChecked
-                 ? QStringLiteral("partial") : QStringLiteral("unchecked"), intersects ? QStringLiteral("intersects") : QStringLiteral("outside"));
+                 ? QStringLiteral("partial") : QStringLiteral("unchecked"), intersects ? QStringLiteral("intersects") : QStringLiteral("outside"),
+             hidden ? QStringLiteral(", hidden") : QString());
   }
   m_tree->verticalScrollBar()->setValue(scroll);
   m_all->setEnabled(m_current);
@@ -196,6 +337,27 @@ void CutTargetsPanel::rebuild() {
       : selected > 0 ? tr("%1 components selected (%2 bodies)").arg(selected).arg(m_report.value(QStringLiteral("selected_bodies")).toInt())
       : rows.isEmpty() ? tr("No eligible components intersect the cut.") : tr("No components selected."));
   m_refreshing = false;
+  // Where each row is in the window once laid out, for UI tests: "Cut
+  // target row C2@O2 at x,y" (a click there selects it, Space checks it).
+  QTimer::singleShot(0, this, [this] {
+    if (!m_tree->isVisible()) {
+      return;
+    }
+    for (int i = 0; i < m_tree->topLevelItemCount(); ++i) {
+      QTreeWidgetItem* item = m_tree->topLevelItem(i);
+      const QRect rect = m_tree->visualItemRect(item);
+      if (!rect.isValid() || !m_tree->viewport()->rect().contains(rect.center())) {
+        continue;
+      }
+      const QPoint at = m_tree->viewport()->mapTo(window(), rect.center());
+      const QJsonObject target = item->data(0, kTargetRole).toJsonObject();
+      qDebug().noquote() << QStringLiteral("Cut target row %1@%2 at %3,%4")
+                                .arg(target.value(QStringLiteral("component")).toString(),
+                                     target.value(QStringLiteral("occurrence")).toString())
+                                .arg(at.x())
+                                .arg(at.y());
+    }
+  });
 }
 
 void CutTargetsPanel::highlight(const QModelIndex& index) {

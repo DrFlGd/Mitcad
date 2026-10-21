@@ -1249,6 +1249,301 @@ pub trait Kernel {
     ) -> Result<Self::Shape, KernelError> {
         Err(KernelError::Unsupported("thicken"))
     }
+
+    // Surface modelling, surface sweeps: Extrude, Revolve, Sweep and Loft
+    // making surface bodies (mitcad#455; `crate::surface_modelling`).
+
+    /// The shape's faces but `feature`'s faces in one of the `roles` (a
+    /// sweep's caps `start`, `end` and `mid`), as a surface body: one shell
+    /// per shell of the shape they were in. The faces keep their names.
+    fn open_faces(
+        &self,
+        _shape: &Self::Shape,
+        _feature: FeatureUid,
+        _roles: &[&str],
+    ) -> Result<Self::Shape, KernelError> {
+        Err(KernelError::Unsupported("surface sweeps"))
+    }
+
+    /// A surface body swept straight from chains of curves (each in order,
+    /// running along it; open or closed; `features::path::wall_chains`):
+    /// from the start, side one's
+    /// distance along `spec.direction` and side two's against it. The
+    /// start is the profile plane moved along the sketch normal; ends at
+    /// targets and tapers are not taken, the regions are not used. Faces
+    /// `<feature>:side(<curve>)`.
+    fn extrude_sheet(
+        &self,
+        _spec: &ExtrudeFeatureSpec<'_, Self::Shape>,
+        _chains: &[Vec<crate::sweeps::PathCurve>],
+    ) -> Result<Self::Shape, KernelError> {
+        Err(KernelError::Unsupported("surface extrusions of curves"))
+    }
+
+    /// A surface body turned from chains of curves about `spec.axis`, by
+    /// `angle1` and `angle2` the other way; no target, the regions are not
+    /// used. Faces `<feature>:side(<curve>)`.
+    fn revolve_sheet(
+        &self,
+        _spec: &RevolveSpec<'_, Self::Shape>,
+        _chains: &[Vec<crate::sweeps::PathCurve>],
+    ) -> Result<Self::Shape, KernelError> {
+        Err(KernelError::Unsupported("surface revolutions of curves"))
+    }
+
+    /// A surface body swept from chains of curves along `spec.path`, with
+    /// its extents, orientation and end scale; no twist, taper or guide
+    /// rail, the regions are not used. Faces `<feature>:side(<curve>)`.
+    fn sweep_sheet(
+        &self,
+        _spec: &SweepSpec<'_>,
+        _chains: &[Vec<crate::sweeps::PathCurve>],
+    ) -> Result<Self::Shape, KernelError> {
+        Err(KernelError::Unsupported("surface sweeps of curves"))
+    }
+
+    /// A surface body lofted through sections in order, each one chain of
+    /// curves (all open or all closed), smooth or `ruled`; `closed` runs
+    /// from the last section back to the first. Faces
+    /// `<feature>:side(<curve>)` after the first section's curves.
+    fn loft_sheet(
+        &self,
+        _feature: FeatureUid,
+        _sections: &[Vec<crate::sweeps::PathCurve>],
+        _ruled: bool,
+        _closed: bool,
+    ) -> Result<Self::Shape, KernelError> {
+        Err(KernelError::Unsupported("surface lofts of curves"))
+    }
+
+    // Surface modelling: Offset Surface, Ruled Surface and Extend
+    // (mitcad#455; `crate::surface_modelling`).
+
+    /// A new surface body of the faces (every face when empty; with
+    /// `chain` also the faces joined to them through smooth edges) copied
+    /// `distance` along their normals (the faces' orientations applied;
+    /// against them when negative; 0 copies them). Faces
+    /// `<feature>:offset(<face>)`. The body is not changed.
+    fn offset_surface(
+        &self,
+        _feature: FeatureUid,
+        _body: &Self::Shape,
+        _faces: &[FaceName],
+        _distance: f64,
+        _chain: bool,
+    ) -> Result<Self::Shape, KernelError> {
+        Err(KernelError::Unsupported("offset surfaces"))
+    }
+
+    /// A new surface body: a ruled strip off a chain of the body's edges
+    /// ([`crate::surface_modelling::RuledSpec`]), a face
+    /// `<feature>:ruled(<edge>)` per edge and `<feature>:corner(<vertex>)`
+    /// for a round corner. The body is not changed.
+    fn ruled_surface(
+        &self,
+        _spec: &crate::surface_modelling::RuledSpec<'_, Self::Shape>,
+    ) -> Result<Self::Shape, KernelError> {
+        Err(KernelError::Unsupported("ruled surfaces"))
+    }
+
+    /// The body with the faces along the edges (free edges of a surface
+    /// body, named or of openings, each on a side of its face's parameter
+    /// range) extended `distance` past them: the surface continued, or
+    /// tangent or curved as it is across the edge. The extended faces keep
+    /// their names.
+    fn extend_surface(
+        &self,
+        _body: &Self::Shape,
+        _edges: &[EdgeName],
+        _openings: &[crate::surface_modelling::OpeningEdges<'_>],
+        _distance: f64,
+        _mode: crate::surface_modelling::ExtendMode,
+    ) -> Result<Self::Shape, KernelError> {
+        Err(KernelError::Unsupported("surface extensions"))
+    }
+
+    // Surface modelling: Trim, Untrim, Unstitch and Reverse Normal
+    // (mitcad#455; `crate::surface_modelling`).
+
+    /// The surface body cut by the tool
+    /// ([`crate::surface_modelling::TrimSpec`]) and only the pieces kept
+    /// that the keep points pick (the piece nearest each; pieces are what
+    /// hangs together once cut). The faces keep their names (`#k` for
+    /// pieces).
+    fn trim_surface(
+        &self,
+        _spec: &crate::surface_modelling::TrimSpec<'_, Self::Shape>,
+    ) -> Result<Self::Shape, KernelError> {
+        Err(KernelError::Unsupported("trimmed surfaces"))
+    }
+
+    /// A face restored towards its surface: without its holes (`holes`)
+    /// and with its outer boundary the surface's own bounds (`outer`; a
+    /// surface without bounds: the face's span). With `in_place` the body
+    /// with the face replaced (its name kept), else a new surface body of
+    /// one face `<feature>:untrim(<face>)`.
+    fn untrim_surface(
+        &self,
+        _feature: FeatureUid,
+        _body: &Self::Shape,
+        _face: &FaceName,
+        _holes: bool,
+        _outer: bool,
+        _in_place: bool,
+    ) -> Result<Self::Shape, KernelError> {
+        Err(KernelError::Unsupported("untrimmed surfaces"))
+    }
+
+    /// The body taken apart: what is left once the named faces are taken
+    /// out (None when nothing is), then each named face as a surface body
+    /// of its own, in the order named. The faces keep their names.
+    fn unstitch(
+        &self,
+        _body: &Self::Shape,
+        _faces: &[FaceName],
+    ) -> Result<Unstitched<Self::Shape>, KernelError> {
+        Err(KernelError::Unsupported("unstitch"))
+    }
+
+    /// The body with the faces (every face when none is named) turned
+    /// over; names kept.
+    fn reverse_faces(
+        &self,
+        _body: &Self::Shape,
+        _faces: &[FaceName],
+    ) -> Result<Self::Shape, KernelError> {
+        Err(KernelError::Unsupported("reversed faces"))
+    }
+
+    // Surface modelling: Blend Surface, Boundary Surface, Match Surface and
+    // Fair Surface (mitcad#455; `crate::surface_modelling`).
+
+    /// A new surface body of one face `<feature>:blend` bridging the two
+    /// chains of edges ([`crate::surface_modelling::BlendSpec`]): each end
+    /// leaves its chain repeating the face beside it up to its continuity.
+    /// The bodies are not changed.
+    fn blend_surface(
+        &self,
+        _spec: &crate::surface_modelling::BlendSpec<'_, Self::Shape>,
+    ) -> Result<Self::Shape, KernelError> {
+        Err(KernelError::Unsupported("blend surfaces"))
+    }
+
+    /// A new surface body of one face `<feature>:boundary` through the
+    /// curves ([`crate::surface_modelling::BoundarySpec`]). The bodies of
+    /// edge curves are not changed.
+    fn boundary_surface(
+        &self,
+        _spec: &crate::surface_modelling::BoundarySpec<'_, Self::Shape>,
+    ) -> Result<Self::Shape, KernelError> {
+        Err(KernelError::Unsupported("boundary surfaces"))
+    }
+
+    /// The surface body with its face (its only face when none is named;
+    /// one bounded by its surface's parameter range alone) rebuilt: the
+    /// side of the face nearest the chain of the target's edges moved onto
+    /// that chain, meeting the target's face beside it with `continuity`,
+    /// the opposite side kept. The face keeps its name; the body's faces
+    /// are sewn again.
+    fn match_surface(
+        &self,
+        _body: &Self::Shape,
+        _face: Option<&FaceName>,
+        _target: &crate::surface_modelling::BodyEdges<'_, Self::Shape>,
+        _continuity: crate::surfaces::PatchContinuity,
+    ) -> Result<Self::Shape, KernelError> {
+        Err(KernelError::Unsupported("matched surfaces"))
+    }
+
+    /// The body with its B-spline faces among `faces` (every face when
+    /// none is named) faired ([`crate::surface_modelling::Fairing`]): their
+    /// inner control points moved to smooth the faces, their boundaries
+    /// kept. Faces of other surface types stay as they are; the faces keep
+    /// their names.
+    fn fair_surface(
+        &self,
+        _body: &Self::Shape,
+        _faces: &[FaceName],
+        _fairing: crate::surface_modelling::Fairing,
+    ) -> Result<Self::Shape, KernelError> {
+        Err(KernelError::Unsupported("faired surfaces"))
+    }
+    // Plastic part features: the band of a lip or a groove (mitcad#459;
+    // `features::plastic`).
+
+    /// The band along one loop of a planar rim face, swept along the
+    /// face's outward normal ([`RimBandSpec`]): the tool a lip joins and a
+    /// groove cuts.
+    fn rim_band(&self, _spec: &RimBandSpec<'_, Self::Shape>) -> Result<Self::Shape, KernelError> {
+        Err(KernelError::Unsupported("lip and groove bands"))
+    }
+
+    // Drawings: views with hidden lines removed and round holes
+    // (mitcad#471; `crate::drawing`).
+
+    /// The edges of the shapes seen along the view, with hidden lines
+    /// removed (see [`crate::drawing::ViewSpec`]); a section view's cut
+    /// faces as loops. The shapes are not changed.
+    fn project_view(
+        &self,
+        _shapes: &[&Self::Shape],
+        _spec: &crate::drawing::ViewSpec,
+    ) -> Result<crate::drawing::ViewProjection, KernelError> {
+        Err(KernelError::Unsupported("drawing views"))
+    }
+
+    /// The round holes of a solid body ([`crate::drawing::RoundHole`]), in a
+    /// deterministic geometric order; none for other bodies.
+    fn round_holes(
+        &self,
+        _shape: &Self::Shape,
+    ) -> Result<Vec<crate::drawing::RoundHole>, KernelError> {
+        Err(KernelError::Unsupported("round holes"))
+    }
+
+    // Gears: toothed profiles swept along their axis or ruled to an apex
+    // (mitcad#472; `features::gear`).
+
+    /// A gear's profile swept along its axis ([`GearSweepSpec`]): straight,
+    /// turned about the axis (helical teeth) or moved across it (a helical
+    /// rack's), in steps.
+    fn gear_sweep(&self, _spec: &GearSweepSpec<'_>) -> Result<Self::Shape, KernelError> {
+        Err(KernelError::Unsupported("gears"))
+    }
+
+    /// A straight bevel gear's teeth ruled to its apex and trimmed by its
+    /// blank ([`GearConeSpec`]).
+    fn gear_cone(&self, _spec: &GearConeSpec<'_>) -> Result<Self::Shape, KernelError> {
+        Err(KernelError::Unsupported("bevel gears"))
+    }
+}
+
+/// Input of [`Kernel::rim_band`] (mitcad#459). The face `face` of `body`
+/// must be planar. The band follows its outer loop (`outside`) or its
+/// largest opening: an inner loop with no material over the face just
+/// inside it (the cavity under a shelled body's rim, not the foot of a
+/// boss standing on the face); a face without an opening, or with two
+/// openings alike in size (the second more than half the largest's area),
+/// is refused. In the face's plane the band runs
+/// from the loop `width` into the face to `free` beyond the loop, away
+/// from the face (0: on the loop), with sharp corners where the offset
+/// loops' edges meet; along the outward normal from `start` to `end`
+/// (offsets from the face's plane, `start < end`). Faces are named
+/// `<feature>:band_side(<edge>)` along the offset into the face and
+/// `<feature>:band_edge(<edge>)` along the loop (`<edge>` the face's edge
+/// they follow, or its number in the loop when it has no name),
+/// `<feature>:band_top` at `end` and `<feature>:band_bottom` at `start`; a
+/// wall the offset made of no edge of the loop is `<feature>:band_wall(<k>)`.
+#[derive(Debug, Clone, Copy)]
+pub struct RimBandSpec<'a, S> {
+    pub feature: FeatureUid,
+    pub body: &'a S,
+    pub face: &'a FaceName,
+    pub outside: bool,
+    pub width: f64,
+    pub free: f64,
+    pub start: f64,
+    pub end: f64,
 }
 
 /// Two bodies, each placed by a rigid transform from its own coordinates
@@ -2015,4 +2310,57 @@ pub struct EmbossWrapSpec<'a> {
 pub struct BoundaryCell<S> {
     pub shape: S,
     pub holders: Vec<usize>,
+}
+
+/// What [`Kernel::unstitch`] gives: the body left when the faces are taken
+/// out (None when nothing is) and each named face as a surface body.
+pub type Unstitched<S> = (Option<S>, Vec<S>);
+
+// Gears (mitcad#472).
+
+/// One stretch of a [`GearSweepSpec`]: `length` along the axis, while the
+/// profile turns `twist` radians about the axis (right-handed about the
+/// frame's normal: a right-hand helix) and moves `shift` along the frame's
+/// x axis.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GearStep {
+    pub length: f64,
+    pub twist: f64,
+    pub shift: f64,
+}
+
+/// Input of [`Kernel::gear_sweep`]: closed loops of named curves in the
+/// frame's coordinates (the first the outer boundary, the others holes),
+/// turned by `turn` about the axis (the frame's normal through its origin)
+/// and moved `start` along it, swept by the steps one after another into
+/// one solid. A face swept from a curve is named `<feature>:<curve's
+/// name>` (pieces of several steps `#k`), the caps `<feature>:<start_name>`
+/// and `<feature>:<end_name>`.
+#[derive(Debug, Clone, Copy)]
+pub struct GearSweepSpec<'a> {
+    pub feature: FeatureUid,
+    pub frame: SketchFrame,
+    pub loops: &'a [Vec<crate::features::gear_profile::NamedSegment>],
+    pub turn: f64,
+    pub start: f64,
+    pub steps: &'a [GearStep],
+    pub start_name: &'a str,
+    pub end_name: &'a str,
+}
+
+/// Input of [`Kernel::gear_cone`]: the heel section's loops in the frame's
+/// plane, ruled to their copy scaled by `scale` about the apex (on the
+/// axis, `apex` along the frame's normal), and that solid's common part
+/// with the blank: the closed loop `blank` in (radius, height along the
+/// normal) coordinates turned about the axis. Faces are named after the
+/// curves they come from, as [`Kernel::gear_sweep`] names them; the heel
+/// and toe caps `<feature>:back` and `<feature>:front`.
+#[derive(Debug, Clone, Copy)]
+pub struct GearConeSpec<'a> {
+    pub feature: FeatureUid,
+    pub frame: SketchFrame,
+    pub loops: &'a [Vec<crate::features::gear_profile::NamedSegment>],
+    pub apex: f64,
+    pub scale: f64,
+    pub blank: &'a [crate::features::gear_profile::NamedSegment],
 }

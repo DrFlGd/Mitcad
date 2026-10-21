@@ -525,6 +525,10 @@ pub(crate) fn footprint<K: crate::kernel::Kernel>(
             bodies.extend(&d.bodies);
             None
         }
+        F::BodyTransfer(d) => {
+            bodies.extend(&d.bodies);
+            None
+        }
         F::RemoveBody(d) => {
             bodies.extend(&d.bodies);
             None
@@ -600,6 +604,20 @@ pub(crate) fn footprint<K: crate::kernel::Kernel>(
             if d.remove_tools {
                 bodies.extend(&d.tools);
             }
+            None
+        }
+        // Plastic part features (mitcad#459); Rest and Snap Fit say so by
+        // their tool use.
+        F::Boss(d) => {
+            bodies.push(d.body);
+            None
+        }
+        F::Lip(d) => {
+            bodies.push(d.body);
+            None
+        }
+        F::Groove(d) => {
+            bodies.push(d.body);
             None
         }
         _ => None,

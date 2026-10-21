@@ -211,7 +211,7 @@ fn meet(p: &Placed, q: &Placed) -> Option<Junction> {
         // The side face it stands on: the slot frame whose plane holds the
         // point and faces it, else a side of the box.
         let mut at = None;
-        for (name, slot) in q.info.slots() {
+        for (name, slot) in q.info.sides() {
             let [o, _, _, z] = parts(slot);
             if dot(sub(point, o), z).abs() <= TOLERANCE && dot(out_of_p, z) < -1.0 + 1e-6 {
                 at = Some((name.clone(), q.world.after(slot)));
@@ -272,7 +272,7 @@ fn cross(p: &Placed, q: &Placed) -> Option<Junction> {
                 };
                 let target = centre(&to.world_box);
                 from.info
-                    .slots()
+                    .sides()
                     .into_iter()
                     .map(|(n, t)| (n.clone(), from.world.after(t)))
                     .max_by(|x, y| {

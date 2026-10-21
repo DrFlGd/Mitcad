@@ -32,6 +32,8 @@
 #include "live.hpp"
 // Headless Model Context Protocol (mitcad#124).
 #include "mcp.hpp"
+// Drawings with views, dimensions and a hole table (mitcad#471).
+#include "drawing.hpp"
 
 namespace {
 
@@ -296,6 +298,24 @@ const char* const kUsage = R"(usage:
       in the fixed panel's frame seen from its front (--back: the back),
       in millimetres unless --unit says otherwise. An invalid pattern is
       refused with its reasons.
+)"
+                          R"(  mitcad-cli export-drawing <file.mitcad> <out.pdf|out.svg|out.dxf> [--bodies <b>,...]
+                    [--sheet A4|A3|A2|A1|A0|ANSI_A..ANSI_E] [--portrait] [--scale fit|1:2|2:1]
+                    [--first-angle] [--views front,top,right,iso] [--hidden] [--tangent-edges]
+                    [--section x,y,z --normal x,y,z | --section-analysis <name>]
+                    [--no-dimensions] [--sketch-dimensions] [--no-hole-table]
+                    [--unit mm|cm|m|in|ft] [--title <text>] [--date YYYY-MM-DD]
+                    [--per-body] [--polygonal] [--json]
+      Writes a drawing of the shown bodies (or the listed uids or names):
+      the front, top and right views (third angle; --first-angle) with
+      hidden lines removed (--hidden draws them dashed), an isometric
+      view and a section view when asked, the overall sizes of the views,
+      the diameters of round holes, a hole table with their threads, and a
+      title block with the design's name (the file's, or --title), the
+      bodies, the scale, the date and the unit (the design's, or --unit).
+      The sheet is A4 landscape and the scale fits it unless given. A PDF
+      has a page per sheet; --per-body makes a sheet per body, and an SVG
+      or DXF file per sheet (<out>-2.svg, ...).
 )"
                           // MSVC takes at most 16 KiB in one literal (C2026).
                           R"(  mitcad-cli project init <folder> [--author "Name <email>"] [--no-history]
@@ -1361,6 +1381,9 @@ int run(int argc, char* argv[]) {
     }
     if (mode == "export-flat") {
       return export_flat(args);
+    }
+    if (mode == "export-drawing") {
+      return mitcad::cli::export_drawing(args);
     }
     if (mode == "measure") {
       return measure(args);

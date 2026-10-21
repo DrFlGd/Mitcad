@@ -4,11 +4,12 @@
 //! SolidCraft keeps them). And body transfers between components.
 
 use mitcad_model::features::Operation;
-use mitcad_model::{BaseInput, ComponentUid, ImportBody, Kernel};
+use mitcad_model::{BaseInput, BodyUid, ComponentUid, ImportBody, Kernel, Transform};
 use mitcad_solidcraft::Feature;
 use mitcad_solidcraft::kinds as k;
+use serde_json::json;
 
-use super::{Importer, MapResult, Mapped, NotMapped};
+use super::{Importer, MapResult, Mapped, NotMapped, Outcome, transform};
 
 impl<K: Kernel> Importer<'_, '_, K> {
     /// The STEP text of an Import feature, read by the kernel from a
@@ -93,11 +94,89 @@ impl<K: Kernel> Importer<'_, '_, K> {
         Ok(())
     }
 
-    /// Bodies moved into another component on the timeline.
-    pub(super) fn body_transfer(&mut self, _f: &Feature, _component: ComponentUid) -> MapResult {
-        Err(NotMapped::Unmapped(
-            "moving bodies into another component at a point of the timeline".to_owned(),
-        ))
+    /// Bodies moved into another component on the timeline (mitcad#465): a
+    /// `body_transfer` in the destination (the file's feature is the
+    /// destination's), the bodies by the file's names, seen at the source's
+    /// and the destination's placements. The file records the conversion
+    /// it made (from the source's coordinates into the destination's); it
+    /// is kept as the feature's fixed conversion where the placements now
+    /// give another (an occurrence moved after the transfer), else the
+    /// placements give it and it follows them.
+    pub(super) fn body_transfer(&mut self, f: &Feature, component: ComponentUid) -> MapResult {
+        let t: k::BodyTransfer = f.typed()?;
+        let from = self.component_of(t.from);
+        let to = self.component_of(t.to);
+        if to != component {
+            return Err(NotMapped::Failed(
+                "the transfer is not in its destination component".to_owned(),
+            ));
+        }
+        let bodies: Vec<BodyUid> = t
+            .bodies
+            .iter()
+            .map(|name| self.body(name))
+            .collect::<Result<_, _>>()?;
+        if bodies
+            .iter()
+            .all(|b| self.doc.body_component(*b) == Some(to))
+        {
+            return Ok(Mapped {
+                outcome: Outcome::Skipped,
+                notes: vec![format!(
+                    "its bodies are in {} already",
+                    self.doc.assembly().name(to)
+                )],
+            });
+        }
+        let assembly = self.doc.assembly();
+        let path = |c: ComponentUid| -> Result<String, NotMapped> {
+            let paths = assembly.paths_to(c);
+            let first = paths
+                .first()
+                .ok_or_else(|| NotMapped::Failed(format!("{} is not placed", assembly.name(c))))?;
+            Ok(first
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("/"))
+        };
+        let (source, target) = (path(from)?, path(to)?);
+        let recorded = transform(&t.transform);
+        if !recorded.is_finite() || !recorded.is_rigid() {
+            return Err(NotMapped::Failed(
+                "the recorded conversion is not a rigid motion".to_owned(),
+            ));
+        }
+        // The conversion the placements give now.
+        let along = |c: ComponentUid| {
+            assembly
+                .paths_to(c)
+                .first()
+                .map_or(Transform::IDENTITY, |p| {
+                    p.iter().fold(Transform::IDENTITY, |acc, o| {
+                        acc.after(&self.doc.placement(*o).unwrap_or(Transform::IDENTITY))
+                    })
+                })
+        };
+        let placed = mitcad_model::assembly::inverse(&along(to)).after(&along(from));
+        let same = (0..3).all(|i| {
+            (placed.translation[i] - recorded.translation[i]).abs() < 1e-6
+                && (0..3).all(|j| (placed.linear[i][j] - recorded.linear[i][j]).abs() < 1e-9)
+        });
+        let mut def = json!({"type": "body_transfer",
+            "bodies": bodies.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            "link": {"source": source, "target": target}});
+        let mut notes = Vec::new();
+        if !same {
+            def["transform"] = json!(mitcad_model::assembly::matrix_rows(&recorded));
+            notes.push(
+                "keeps the conversion the file records: the occurrences are placed elsewhere \
+                 now than when the bodies moved"
+                    .to_owned(),
+            );
+        }
+        self.add(&def, Some(&f.name), to)?;
+        Ok(Mapped::partial(notes))
     }
 
     /// A mesh body rebuilt as planes and cylinders (mitcad#462): Mitcad's

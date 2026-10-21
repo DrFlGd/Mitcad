@@ -62,6 +62,7 @@ class ProjectIndicator;
 class ProjectsPanel;
 class RemoteController;
 class LiveController;
+class ModeBanner;
 class Ribbon;
 class SelectionFilterPanel;
 class TitleBar;
@@ -208,6 +209,7 @@ public:
   bool runModelCommands(const QJsonArray& commands, const QString& label) override;
   QString lastError() const override { return m_lastError; }
   bool canChangeModel(bool visibilityOnly = false) const override;
+  QString changeBlockedReason() const override;
   QString readOnlyReason() const override;
   // The live MCP document id, new with every design (mitcad#452).
   QString designId() const override { return m_mcpDocumentId; }
@@ -452,6 +454,15 @@ private:
   // light bulb changed what is shown (mitcad#295).
   bool sketchShowsOrigin() const;
   void logSketchPicks();
+  // While Create Sketch waits for a plane (mitcad#474): the text of the
+  // view's banner and of the MCP's hint, the banner shown while the mode
+  // lasts, and why a face or plane picked cannot take the sketch (a face
+  // that is not planar, or what the design policy leaves out), shown and
+  // logged as "Create Sketch: refused pick ...".
+  QString pickPlaneText() const;
+  void updateModeBanner();
+  void refusePlanePick(const SelectionItem& item);
+  ModeBanner* m_modeBanner = nullptr;
   // The occurrence paths ("O1/O4", "" the root) whose geometry the active
   // component's sketches may not lie on, with the reason.
   QHash<QString, QString> m_sketchDenied;
@@ -796,6 +807,8 @@ private:
   // again with them (`options`: those it ran with).
   void offerDeviations(const QString& path, const QJsonObject& result, QJsonObject options);
   void exportFile();
+  // Export Drawing (mitcad#471; files/MainWindowDrawing.cpp).
+  void exportDrawing();
   // 3D Print (mitcad#13, mitcad#234; files/MainWindowPrint.cpp): a panel of
   // the bodies to send, picked in the view, and the format, refinement and
   // slicer; OK writes the files and starts the slicer (sendToSlicer: false

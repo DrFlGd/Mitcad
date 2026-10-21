@@ -5,17 +5,20 @@
 use serde::{Deserialize, Serialize};
 
 use super::extrude::{
-    Operation, ProfileRef, apply_operation, check_participants, check_profiles, participant_bodies,
+    Operation, ProfileRef, apply_operation, check_participants, participant_bodies,
     profile_references, profile_regions,
 };
 use super::geom_ref::{GeomRef, Want};
+use super::path::SketchCurves;
 use super::reference::{ExtentObject, project_axis};
+use super::surface_sweeps;
 use super::{
     CheckContext, EvalContext, Evaluate, FeatureInfo, FeatureOutput, References, ToolUse, is_false,
 };
 use crate::ids::{BodyUid, FeatureUid};
-use crate::kernel::{Axis, Kernel, RevolveSpec};
+use crate::kernel::{Axis, Kernel, RevolveSpec, Target};
 use crate::parameters::ParamId;
+use crate::profile::{ProfileRegion, SketchFrame};
 
 const FULL_TURN: f64 = std::f64::consts::TAU;
 
@@ -39,8 +42,13 @@ pub enum RevolveExtent<P = ParamId> {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RevolveDef<P = ParamId> {
-    /// Regions of one sketch, a set (see `extrude::selected_regions`).
-    #[serde(deserialize_with = "super::extrude::profile_set")]
+    /// Regions of one sketch, a set (see `extrude::selected_regions`); none
+    /// for a surface revolution of curves only.
+    #[serde(
+        default,
+        deserialize_with = "super::extrude::profile_set",
+        skip_serializing_if = "Vec::is_empty"
+    )]
     pub profiles: Vec<ProfileRef>,
     /// A sketch line, an origin or construction axis, a straight edge or a
     /// fixed axis.
@@ -52,6 +60,14 @@ pub struct RevolveDef<P = ParamId> {
     pub operation: Operation,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub participants: Vec<BodyUid>,
+    /// A surface revolution (mitcad#455, `surface_sweeps.rs`): walls
+    /// without caps, a new surface body.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub surface: bool,
+    /// Sketch curves a surface revolution turns beside or instead of the
+    /// profiles: open chains or closed loops.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub curves: Option<SketchCurves>,
 }
 
 impl<P> RevolveDef<P> {
@@ -85,12 +101,17 @@ impl<P> RevolveDef<P> {
             extent,
             operation: self.operation,
             participants: self.participants.clone(),
+            surface: self.surface,
+            curves: self.curves.clone(),
         })
     }
 
-    /// The sketch of the profiles.
+    /// The sketch of the profiles (or of the curves).
     pub fn sketch(&self) -> Option<FeatureUid> {
-        self.profiles.first().map(|p| p.sketch)
+        self.profiles
+            .first()
+            .map(|p| p.sketch)
+            .or_else(|| self.curves.as_ref().map(|c| c.sketch))
     }
 }
 
@@ -98,6 +119,9 @@ impl FeatureInfo for RevolveDef {
     fn references(&self) -> References {
         let mut references = References::default();
         profile_references(&self.profiles, &mut references);
+        if let Some(curves) = &self.curves {
+            curves.add_references(&mut references);
+        }
         self.axis.add_to(&mut references);
         if let RevolveExtent::ToObject { object } = &self.extent {
             object.add_references(&mut references);
@@ -109,7 +133,14 @@ impl FeatureInfo for RevolveDef {
     }
 
     fn check(&self, ctx: &CheckContext<'_>) -> Result<(), String> {
-        check_profiles(ctx, &self.profiles)?;
+        surface_sweeps::check_inputs(
+            ctx,
+            self.surface,
+            self.operation,
+            &self.profiles,
+            self.curves.as_ref(),
+            "revolution",
+        )?;
         check_participants(ctx, self.operation, &self.participants)?;
         self.axis.check(ctx, Want::Line)?;
         if let RevolveExtent::ToObject { object } = &self.extent {
@@ -181,7 +212,10 @@ fn check_angles(extent: &RevolveExtent, value: &dyn Fn(ParamId) -> f64) -> Resul
 
 impl<K: Kernel> Evaluate<K> for RevolveDef {
     fn evaluate(&self, ctx: &mut EvalContext<'_, K>) -> Result<FeatureOutput<K::Shape>, String> {
-        let (sketch, regions) = profile_regions(ctx, &self.profiles)?;
+        let (sketch, regions) = match (&self.curves, self.profiles.is_empty()) {
+            (Some(curves), true) => (ctx.sketch(curves.sketch)?, Vec::new()),
+            _ => profile_regions(ctx, &self.profiles)?,
+        };
         let participants = participant_bodies(ctx, self.operation, &self.participants)?;
         let line = ctx.axis(&self.axis)?;
         let mut axis = Axis {
@@ -233,6 +267,9 @@ impl<K: Kernel> Evaluate<K> for RevolveDef {
             }
             RevolveExtent::ToObject { object } => target = Some(object.resolve(ctx)?),
         }
+        if self.surface {
+            return self.surface_output(ctx, sketch.frame, &regions, axis, angle1, angle2, target);
+        }
         let spec = RevolveSpec {
             feature: ctx.uid,
             frame: sketch.frame,
@@ -244,6 +281,56 @@ impl<K: Kernel> Evaluate<K> for RevolveDef {
         };
         let tool = ctx.kernel.revolve(&spec).map_err(|e| e.to_string())?;
         apply_operation(ctx, self.operation, participants, tool, "revolution")
+    }
+}
+
+impl RevolveDef {
+    /// A surface revolution's bodies (mitcad#455): the profiles' walls (the
+    /// solid revolution without its caps), then the curves'.
+    #[allow(clippy::too_many_arguments)]
+    fn surface_output<K: Kernel>(
+        &self,
+        ctx: &mut EvalContext<'_, K>,
+        frame: SketchFrame,
+        regions: &[ProfileRegion],
+        axis: Axis,
+        angle1: f64,
+        angle2: Option<f64>,
+        target: Option<Target<K::Shape>>,
+    ) -> Result<FeatureOutput<K::Shape>, String> {
+        let chains = match &self.curves {
+            Some(_) if target.is_some() => {
+                return Err(
+                    "a surface revolution of curves turns by angles, not up to an object"
+                        .to_owned(),
+                );
+            }
+            Some(curves) => Some(surface_sweeps::chains(ctx, curves, &frame)?),
+            None => None,
+        };
+        let mut spec = RevolveSpec {
+            feature: ctx.uid,
+            frame,
+            regions,
+            axis,
+            angle1,
+            angle2,
+            target,
+        };
+        let mut sheets = Vec::new();
+        if !regions.is_empty() {
+            let tool = ctx.kernel.revolve(&spec).map_err(|e| e.to_string())?;
+            sheets.push(surface_sweeps::walls(ctx, &tool)?);
+        }
+        if let Some(chains) = &chains {
+            spec.regions = &[];
+            sheets.push(
+                ctx.kernel
+                    .revolve_sheet(&spec, chains)
+                    .map_err(|e| e.to_string())?,
+            );
+        }
+        surface_sweeps::output(ctx, sheets)
     }
 }
 

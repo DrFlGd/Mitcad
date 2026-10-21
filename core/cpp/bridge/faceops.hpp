@@ -8,6 +8,7 @@
 
 #include "bridge/shape.hpp"
 #include "mitcad/geometry/shape.hpp"
+#include "mitcad/geometry/tool.hpp"
 #include "mitcad_bridge/kernel/profile.h"
 #include "rust/cxx.h"
 
@@ -17,6 +18,11 @@ namespace mitcad::bridge {
 struct ToolSpec;
 struct ShellParams;
 struct DraftParams;
+
+// The geometry library's tool of a ToolSpec; sketch curves need the
+// frame and the regions (mitcad#455).
+geometry::Tool tool_of(const ToolSpec& spec, const ShapeList& shapes, const Frame* frame,
+                       rust::Slice<const Region> regions);
 
 std::shared_ptr<geometry::Shape> shell(rust::Str feature, const geometry::Shape& body,
                                        rust::Slice<const rust::String> faces,

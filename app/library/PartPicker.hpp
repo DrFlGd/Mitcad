@@ -80,6 +80,7 @@ struct PickerPart {
   QString sizes;        // the main sizes under the name ("30x30", "M5x16")
   QString system;       // the slot system(s) of a BUILD part ("B8 30")
   bool preview = true;  // the library has a picture of it
+  bool rowPreview = false; // `config` has a picture of its own (library_preview with it, mitcad#484)
   QString refused;      // not choosable: why (greyed, the reason in the tooltip)
   // An index's library that is not fetched (Insert from Library, Community
   // Library): a tile of its own in the group "Libraries to get".

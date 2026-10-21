@@ -251,11 +251,17 @@ QJsonObject MainWindow::mcpUiState() {
       {QStringLiteral("redo"), document.value(QStringLiteral("redo"))},
       {QStringLiteral("undo_depth"), document.value(QStringLiteral("undo_depth"))},
       {QStringLiteral("selection"), selectionJson(m_selection)},
-      {QStringLiteral("hint"), m_statusLabel->text()},
+      // While Create Sketch waits for a plane, what the view's banner says
+      // (mitcad#474), with the status line beside it when it says more.
+      {QStringLiteral("hint"), m_mode == Mode::PickPlane ? pickPlaneText() : m_statusLabel->text()},
       // An error is shown red (setErrorStyleSheet), a hint plain.
-      {QStringLiteral("hint_is_error"), !m_statusLabel->styleSheet().isEmpty()},
+      {QStringLiteral("hint_is_error"), m_mode != Mode::PickPlane && !m_statusLabel->styleSheet().isEmpty()},
       {QStringLiteral("agents"), m_mcpAgents},
       {QStringLiteral("editable"), mcpBlockedReason(true).isEmpty()}};
+  if (m_mode == Mode::PickPlane && !m_statusLabel->text().isEmpty() && m_statusLabel->text() != pickPlaneText()) {
+    state.insert(QStringLiteral("status_line"), m_statusLabel->text());
+    state.insert(QStringLiteral("status_line_is_error"), !m_statusLabel->styleSheet().isEmpty());
+  }
   if (windowReadOnly()) {
     state.insert(QStringLiteral("read_only_reason"), readOnlyReason());
   }
@@ -813,6 +819,9 @@ QJsonObject MainWindow::mcpUiCommand(const QJsonObject& arguments) {
   } else if (!edit.isEmpty()) {
     // As a double-click in the timeline: a sketch opens in sketch mode,
     // another feature in its panel.
+    if (m_mode == Mode::PickPlane) {
+      refuse(tr("Create Sketch waits for a plane to be picked: pick one or cancel it first."));
+    }
     if (m_mode != Mode::Idle) {
       refuse(tr("Finish the sketch or command first."));
     }
@@ -894,7 +903,7 @@ QJsonObject MainWindow::mcpUiCommand(const QJsonObject& arguments) {
   result.insert(QStringLiteral("undo"), document.value(QStringLiteral("undo")));
   result.insert(QStringLiteral("previews"), previews);
   result.insert(QStringLiteral("log"), lines);
-  result.insert(QStringLiteral("hint"), m_statusLabel->text());
+  result.insert(QStringLiteral("hint"), m_mode == Mode::PickPlane ? pickPlaneText() : m_statusLabel->text());
   qInfo().noquote() << QStringLiteral("MCP: an agent ran the UI command %1").arg(
       result.value(QStringLiteral("command")).toString());
   return result;

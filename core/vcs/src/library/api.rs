@@ -245,6 +245,10 @@ fn component_json(
                 if let Some(designation) = &r.designation {
                     row["designation"] = json!(designation);
                 }
+                // A picture of its own (mitcad#484): library_preview with `config`.
+                if component.row_previews.contains_key(&r.name) {
+                    row["preview"] = json!(true);
+                }
                 row
             }).collect::<Vec<_>>(),
         });
@@ -344,6 +348,7 @@ fn picker_fields(command: &Value) -> Result<Picker<'_>, VcsError> {
             .map_err(invalid)?,
         kind: optional(command, "kind"),
         size: command.get("size").filter(|v| !v.is_null()),
+        mount: optional(command, "mount"),
     })
 }
 
@@ -365,7 +370,8 @@ fn component_texts<'a>(manifest: &'a Manifest, c: &'a ManifestComponent) -> Vec<
     texts
 }
 
-/// A found component with its library's fields.
+/// A found component with its library's fields; with `tables`, its
+/// configuration table (`configurations`) as `library_show` gives it.
 fn found_json(
     repo: &LibraryRepo,
     commit: ObjectId,
@@ -373,8 +379,9 @@ fn found_json(
     c: &ManifestComponent,
     url: &str,
     version: &LibraryVersion,
+    tables: bool,
 ) -> Value {
-    let mut item = component_json(repo, commit, manifest, c, false);
+    let mut item = component_json(repo, commit, manifest, c, tables);
     item["library"] = json!(manifest.id);
     item["library_name"] = json!(manifest.name);
     item["url"] = json!(url);
@@ -465,7 +472,9 @@ fn search(cache: &LibraryCache, command: &Value) -> Result<Value, VcsError> {
                         hidden += 1;
                         continue;
                     }
-                    components.push(found_json(&repo, commit, &manifest, c, &url, &version));
+                    components.push(found_json(
+                        &repo, commit, &manifest, c, &url, &version, false,
+                    ));
                 }
             }
             RepoKind::Index => indexes.push((repo, head, url)),
@@ -558,7 +567,8 @@ fn build_candidates(cache: &LibraryCache, command: &Value) -> Result<Value, VcsE
                 Fit::Fits(score) => fits.push((
                     score,
                     c.name.to_lowercase(),
-                    found_json(&repo, commit, &manifest, c, &url, &version),
+                    // With its rows: every row a part of the picker (mitcad#484).
+                    found_json(&repo, commit, &manifest, c, &url, &version, true),
                 )),
                 // A greyed row: which part, and why.
                 Fit::Near(reason) => refused.push(json!({
@@ -591,7 +601,8 @@ fn entry_matches(entry: &IndexEntry, words: &[String]) -> bool {
     matches(words, &texts)
 }
 
-/// `library_preview`: a component's preview image (PNG, base64), or null.
+/// `library_preview`: a component's preview image (PNG, base64), or null;
+/// with `config`, that row's own when it has one (mitcad#484).
 fn preview(cache: &LibraryCache, command: &Value) -> Result<Value, VcsError> {
     let repo = repo_of(cache, command)?;
     let commit = commit_of(&repo, command)?;
@@ -600,10 +611,13 @@ fn preview(cache: &LibraryCache, command: &Value) -> Result<Value, VcsError> {
     let component = manifest
         .component(id)
         .ok_or_else(|| VcsError::NotFound(format!("{} has no component '{id}'", manifest.id)))?;
-    if component.preview.is_empty() {
+    let path = optional(command, "config")
+        .and_then(|row| component.row_previews.get(row))
+        .unwrap_or(&component.preview);
+    if path.is_empty() {
         return Ok(json!({"png": null}));
     }
-    let data = repo.read(commit, &component.preview)?;
+    let data = repo.read(commit, path)?;
     Ok(match data {
         Some(data)
             if data.len() <= super::manifest::MAX_PREVIEW && data.starts_with(b"\x89PNG") =>

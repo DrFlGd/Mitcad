@@ -72,7 +72,7 @@ impl<'de> Deserialize<'de> for CurvePath {
 }
 
 /// Curve ids in files and commands: `["c1", "c2"]`.
-mod curves_serde {
+pub(crate) mod curves_serde {
     use serde::Deserialize;
 
     use crate::ids::EntityUid;

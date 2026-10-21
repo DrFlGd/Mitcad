@@ -66,7 +66,20 @@ int moveToComponentTests() {
                             QString(), QStringLiteral("Root/Assembly")),
                         row(QStringLiteral("C3"), QStringLiteral("Part"), QStringLiteral("O3"),
                             QString(), QStringLiteral("Root/Part"))}}};
-  const QJsonObject selection{{QStringLiteral("component"), QStringLiteral("C0")},
+  // A body transfer's plan (mitcad#465): the root is the bodies' own.
+  const QJsonObject transferPlan{
+      {QStringLiteral("component"), QStringLiteral("C0")}, {QStringLiteral("name"), QStringLiteral("Root")},
+      {QStringLiteral("bodies"), QJsonArray{QJsonObject{{QStringLiteral("uid"), QStringLiteral("F2.b0")},
+                                                        {QStringLiteral("name"), QStringLiteral("Body1")}}}},
+      {QStringLiteral("destinations"), QJsonArray{
+           row(QStringLiteral("C0"), QStringLiteral("Root"), QString(), QString(), QStringLiteral("Root"), false),
+           row(QStringLiteral("C1"), QStringLiteral("Assembly"), QStringLiteral("O1"), QString(),
+               QStringLiteral("Root/Assembly")),
+           row(QStringLiteral("C2"), QStringLiteral("Part"), QStringLiteral("O1/O2"), QStringLiteral("O1"),
+               QStringLiteral("Root/Assembly/Part")),
+           row(QStringLiteral("C3"), QStringLiteral("Part"), QStringLiteral("O3"), QString(),
+               QStringLiteral("Root/Part"))}}};
+  QJsonObject selection{{QStringLiteral("component"), QStringLiteral("C0")},
                               {QStringLiteral("source_occurrence"), QString()},
                               {QStringLiteral("features"), QJsonArray{QStringLiteral("F2")}}};
   QList<QJsonObject> commands;
@@ -77,6 +90,7 @@ int moveToComponentTests() {
       [&](const QJsonObject& query) {
         queries.append(query);
         if (queryThrows) { throw std::runtime_error("The source occurrence is ambiguous."); }
+        if (query.value(QStringLiteral("query")) == QStringLiteral("transfer_bodies")) { return transferPlan; }
         return plan;
       },
       [&](const QJsonObject& command, QJsonObject* result) {
@@ -233,5 +247,47 @@ int moveToComponentTests() {
     dialog->reject();
   }), "ambiguous source cannot move");
   check(commands.isEmpty(), "query failure cannot mutate the model");
+
+  // A body's row: the bodies alone by a body transfer (mitcad#465).
+  queryThrows = false;
+  runSucceeds = true;
+  check(!exercise([&](QDialog* dialog, QTreeWidget*, QPushButton*) {
+    check(dialog->findChild<QCheckBox*>(QStringLiteral("moveBodiesOnly"))->isHidden(),
+          "a feature selection offers no body transfer");
+    dialog->reject();
+  }), "feature selection cancelled");
+  selection = {{QStringLiteral("component"), QStringLiteral("C0")},
+               {QStringLiteral("source_occurrence"), QString()},
+               {QStringLiteral("bodies"), QJsonArray{QStringLiteral("F2.b0")}}};
+  check(exercise([&](QDialog* dialog, QTreeWidget* tree, QPushButton* move) {
+    auto* bodiesOnly = dialog->findChild<QCheckBox*>(QStringLiteral("moveBodiesOnly"));
+    check(!bodiesOnly->isHidden() && !bodiesOnly->isChecked(), "a body's row offers the body transfer, off");
+    dialog->findChild<QRadioButton*>(QStringLiteral("moveCreateNew"))->click();
+    bodiesOnly->click();
+    check(dialog->findChild<QRadioButton*>(QStringLiteral("moveExisting"))->isChecked() &&
+              !dialog->findChild<QRadioButton*>(QStringLiteral("moveCreateNew"))->isEnabled(),
+          "a body transfer goes into an existing component");
+    tree->setCurrentItem(target(tree, QString()));
+    check(!move->isEnabled(), "the bodies' own component is no destination");
+    tree->setCurrentItem(target(tree, QStringLiteral("O1/O2")));
+    const QString details = dialog->findChild<QPlainTextEdit*>(QStringLiteral("moveDetails"))->toPlainText();
+    check(details.contains(QStringLiteral("Body Transfer")) && details.contains(QStringLiteral("Body1 [F2.b0]")),
+          "the plan names the transfer and the bodies");
+    check(queries.last().value(QStringLiteral("query")) == QStringLiteral("transfer_bodies"),
+          "the transfer's own query plans it");
+    check(move->isEnabled(), "an eligible destination enables Move");
+    move->click();
+  }), "body transfer succeeds");
+  check(commands.size() == 1, "a body transfer is one command");
+  if (!commands.isEmpty()) {
+    const QJsonObject command = commands.first();
+    const QJsonObject destination = command.value(QStringLiteral("destination")).toObject();
+    check(command.value(QStringLiteral("cmd")) == QStringLiteral("transfer_bodies") &&
+              command.value(QStringLiteral("bodies")) == selection.value(QStringLiteral("bodies")) &&
+              command.contains(QStringLiteral("source_occurrence")) &&
+              destination.value(QStringLiteral("component")) == QStringLiteral("C2") &&
+              destination.value(QStringLiteral("occurrence")) == QStringLiteral("O1/O2"),
+          "the transfer names the bodies, their occurrence and the chosen destination");
+  }
   return failures;
 }

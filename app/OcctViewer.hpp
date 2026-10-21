@@ -512,6 +512,13 @@ public:
   // edge or vertex of the shown bodies that the filter takes (only those
   // a click there would pick).
   std::vector<std::pair<SelectionItem, QPoint>> pickPoints(SelectFilter kinds);
+  // The same for what the filter's kinds take but its finer test refuses
+  // (mitcad#474: the faces Create Sketch cannot sketch on).
+  std::vector<std::pair<SelectionItem, QPoint>> refusedPickPoints(SelectFilter kinds);
+  // What the last click hit of the filter's kinds that the finer test
+  // refused, when the click picked nothing (mitcad#474: Create Sketch says
+  // why a face cannot take a sketch); once per click.
+  std::optional<SelectionItem> takeRefusedClick();
   // The OpenGL version string (with the driver's version), once the view
   // is initialised; for error reports (mitcad#61).
   QString glVersion() const { return m_glVersion; }
@@ -836,6 +843,12 @@ private:
   QString m_glVersion;              // GL_VERSION (glVersion())
   // The left press that starts a pick, and whether its release was a drag.
   QPointF m_pressPosition;
+  // Where the last click was released, and whether it picked nothing
+  // (takeRefusedClick); accepts() skips the finer test while
+  // m_untestedPicks is set.
+  QPointF m_clickPosition;
+  bool m_clickPickedNothing = false;
+  bool m_untestedPicks = false;
   Qt::KeyboardModifiers m_pressModifiers;
   bool m_windowPick = false;
   bool m_cubeClick = false;

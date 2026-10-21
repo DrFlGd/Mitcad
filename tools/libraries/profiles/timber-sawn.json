@@ -1,0 +1,76 @@
+{
+  "notes": [
+    "Sawn timber (mitcad#478): Mitcad's own parts of industry-standard sizes, no supplier. Sizes are thickness x width in mm, nominal at 20 % moisture; the less common sizes are rows marked availability 'less common'. Re-sawn sizes are 2 mm narrower than nominal.",
+    "Species: pine for thicknesses 19 and 25, spruce for the others (22 and 44 usually spruce).",
+    "Densities at 20 % moisture: spruce 450 kg/m3, pine 520 kg/m3. Grounds: the mean density of strength class C24 (EN 338) is 420 kg/m3 at 12 % moisture, and the usual mean of spruce is 430-450 kg/m3 and of pine 480-500 kg/m3 there; a piece at 20 % moisture is about (1 + 0.20) / (1 + 0.12) = 1.07 times as heavy for nearly the same volume, so 450 and 520 (rounded). Checked against no supplier's data; good to within some 10 %.",
+    "Tolerances (sawn): up to 100 mm -1/+3 mm, over 100 mm -2/+4 mm, for thickness and width each."
+  ],
+  "categories": [{"id": "sawn-timber", "name": "Sawn timber"}],
+  "parts": [
+    {
+      "id": "timber-sawn",
+      "name": "Sawn timber",
+      "category": "sawn-timber",
+      "make": "model",
+      "data_source": "industry-standard sizes of sawn timber (nominal at 20 % moisture)",
+      "designation": "Sawn timber {Thickness}x{Width} L={L}",
+      "description": "Sawn spruce and pine in the standard sizes 19x100 to 150x150 and the less common ones; re-sawn sizes 2 mm under nominal.",
+      "keywords": ["timber", "lumber", "sawn", "spruce", "pine", "joist", "post", "board"],
+      "license": "MIT",
+      "dimensions": {
+        "shape": "board",
+        "width": "W",
+        "thickness": "T",
+        "length": "L",
+        "parameters": {"W": 100, "T": 22, "L": 3000}
+      },
+      "default": "22x100",
+      "sizes": {
+        "species": {"spruce": 450, "pine": 520},
+        "species_default": "spruce",
+        "resawn": 2,
+        "tolerance": {
+          "thickness": [[100, -1, 3], [null, -2, 4]],
+          "width": [[100, -1, 3], [null, -2, 4]]
+        },
+        "rows": [
+          {"thickness": 19, "widths": [100], "species": "pine"},
+          {"thickness": 19, "widths": [125, 150], "species": "pine", "availability": "less common"},
+          {"thickness": 22, "widths": [50, 75], "resawn": true},
+          {"thickness": 22, "widths": [100, 125, 150, 200]},
+          {"thickness": 22, "widths": [175], "availability": "less common"},
+          {"thickness": 25, "widths": [100], "species": "pine"},
+          {"thickness": 25, "widths": [50, 75, 125, 150, 175, 200, 225], "species": "pine", "availability": "less common"},
+          {"thickness": 32, "widths": [100]},
+          {"thickness": 32, "widths": [75, 125, 150, 175, 200, 225], "availability": "less common"},
+          {"thickness": 38, "widths": [100, 125]},
+          {"thickness": 38, "widths": [150, 175, 200, 225], "availability": "less common"},
+          {"thickness": 44, "widths": [100, 125, 150, 175, 200, 225, 250], "availability": "less common"},
+          {"thickness": 50, "widths": [75], "resawn": true},
+          {"thickness": 50, "widths": [100, 125, 150, 175, 200]},
+          {"thickness": 50, "widths": [225], "availability": "less common"},
+          {"thickness": 63, "widths": [100, 125, 150, 175, 200, 225], "availability": "less common"},
+          {"thickness": 75, "widths": [75], "resawn": true, "availability": "less common"},
+          {"thickness": 75, "widths": [100, 125, 150, 175], "availability": "less common"},
+          {"thickness": 75, "widths": [200, 225]},
+          {"thickness": 100, "widths": [100]},
+          {"thickness": 100, "widths": [125, 150, 175, 200, 225], "availability": "less common"},
+          {"thickness": 125, "widths": [125]},
+          {"thickness": 150, "widths": [150]}
+        ]
+      },
+      "appearance": {
+        "id": "timber-sawn", "name": "Sawn spruce", "based_on": "wood_maple",
+        "base_color": [0.80, 0.66, 0.47], "roughness": 0.85, "texture": "grain", "size": [60, 600]
+      },
+      "build": {
+        "role": "profile",
+        "kind": "timber",
+        "material": {"species": "spruce", "finish": "sawn", "grade": "", "density": 450, "moisture": 20},
+        "availability": "standard",
+        "length": {"parameter": "L", "min": 100, "max": 6000, "default": 3000,
+                   "stock": [2700, 3000, 3300, 3600, 3900, 4200, 4500, 4800, 5100, 5400]}
+      }
+    }
+  ]
+}

@@ -63,7 +63,7 @@ are refused, and paths stay inside the repository.
 | `authors`, `homepage`, `sources` | for the attribution and the data's origin |
 | `units` | `mm` |
 | `categories` | `id` and `name` of the groups components belong to |
-| `components` | `id`, `path` (a `.mitcad` file), `name` (required); `category`, `standard`, `description`, `keywords` (or `tags`), `preview` (a PNG), `license` (instead of the library's), `designation`, `supplier`, `part_number`, `supplier_url`, `build` |
+| `components` | `id`, `path` (a `.mitcad` file), `name` (required); `category`, `standard`, `description`, `keywords` (or `tags`), `preview` (a PNG), `row_previews`, `license` (instead of the library's), `designation`, `supplier`, `part_number`, `supplier_url`, `build` |
 
 `supplier` (who sells the part, `Motedis`), `part_number` (the
 supplier's article number) and `supplier_url` (the product page, https
@@ -72,6 +72,14 @@ first, as a sheet sold in widths has a number and a page per width) are shown wh
 the part is chosen and listed: Insert from Library, Library Parts, the
 parts list and the BUILD tab's cut list. `build` makes the component a
 part of the BUILD tab ([below](#build-parts)).
+
+`row_previews` gives single configuration rows a picture of their own,
+`{"<row name>": "previews/<id>-<row>.png"}` (mitcad#484: each timber size
+shows its section from its end); a row without one shows `preview`. The
+BUILD tab's pickers list every row as an entry of its own and show a row's picture in
+its tile (`library_preview` with `config`). `library check` checks that
+every key names a configuration row of the design and every path a PNG
+image of the folder.
 
 `designation` is how a bill of materials names a part: `{standard}`,
 `{name}`, `{config}` and the selectors' names in braces (`{Size}`) are
@@ -283,6 +291,123 @@ form):
   names the `x+`, `x-`, `y+` and `y-` sides only, and automatic frames
   find only those.
 
+### Timber parts
+
+Timber construction (mitcad#478) uses BUILD parts of its own: members
+(sawn, planed and dimensioned timber), wood screws and nails, brackets,
+joist hangers and post bases fitted by the members' sections, and sheets
+laid on a member's face. None of them has a slot system, and the slot
+path does not offer them: the pickers list them only where timber is
+asked for (below). How the BUILD tab places and lists them is in
+[commands.md](../core/model/src/api/commands.md#build-timber-construction).
+
+```json
+{"id": "timber-dimensioned", "path": "dimensioned-timber/timber-dimensioned.mitcad", "name": "Dimensioned timber",
+ "category": "dimensioned-timber", "license": "MIT", "designation": "Dimensioned timber {Thickness}x{Width} L={L}",
+ "build": {
+   "role": "profile", "kind": "timber",
+   "material": {"species": "spruce", "finish": "dimensioned", "grade": "", "density": 450, "moisture": 20},
+   "availability": "standard",
+   "section": {"width": "98 mm", "height": "48 mm"}, "nominal": {"width": "98 mm", "height": "48 mm"},
+   "tolerance": {"thickness": [-1.0, 1.0], "width": [-1.0, 1.0]},
+   "length": {"parameter": "L", "min": 100, "max": 6000, "default": 3000,
+              "stock": [2700, 3000, 3300, 3600, 3900, 4200, 4500, 4800, 5100, 5400]},
+   "frames": [{"name": "end_a", "kind": "end"}, {"name": "end_b", "kind": "end"},
+              {"name": "face_xp", "kind": "face"}, {"name": "face_xn", "kind": "face"},
+              {"name": "face_yp", "kind": "face"}, {"name": "face_yn", "kind": "face"}],
+   "rows": {"48x98": {"section": {"width": "98 mm", "height": "48 mm"}, "availability": "standard", "...": "..."},
+            "48x248": {"section": {"width": "248 mm", "height": "48 mm"},
+                       "nominal": {"width": "248 mm", "height": "48 mm"},
+                       "availability": "less common", "material": {"species": "spruce", "density": 450},
+                       "tolerance": {"thickness": [-1.0, 1.0], "width": [-1.5, 1.5]}}}}}
+```
+
+**Configuration rows' own blocks.** A part sold in sizes of different
+data (a timber family's sizes differ in section, species and
+availability; a wood screw's in length) gives each row a block of its own
+in `build.rows`: `{"<row name>": {a partial build block}}`. Whoever reads
+a row merges its block over the part's: objects key by key, other values
+(numbers, texts, lists) replaced. The part's own fields are those of its
+default row, so a reader that knows nothing of rows sees a whole part.
+`library check` checks that every key names a configuration row of the
+design and checks the rows' fields as the part's.
+
+**Values.** A length or mass as elsewhere in the block; a `density` in
+kg/m³ (a number, or text with the unit `kg/m3`), a `moisture` in %.
+
+- **A member** (`role: "profile"`, `kind: "timber"`): the layout of a
+  profile ([above](#build-parts)): the section on XY centred at the
+  origin, its width W along X and its thickness T along Y, extruded by `L`
+  along +Z. `section` `{width, height}` is the actual size (W, T),
+  `nominal` the nominal one (at 20 % moisture; a re-sawn size is 2 mm
+  narrower than its nominal width). `material`: `species` (`spruce`,
+  `pine`, …), `finish` (`sawn`, `planed`, `dimensioned`), `grade` (`""`
+  by default, `C24`, …), `density`, `moisture`. `availability`
+  (`standard` or `less common`: the picker lists the standard sizes
+  first). `tolerance` `{thickness, width}`, each `[minus, plus]` in mm.
+  `length` as a profile's, its `stock` the lengths sold. Its frames are
+  `end_a` and `end_b`, and a `face` frame on each side, `face_xp`,
+  `face_xn`, `face_yp`, `face_yn` (the side facing +X, −X, +Y, −Y): at z =
+  0 on the side's centre line, z out of the side and x along +Z, as a
+  profile's slot frames; they follow the width and thickness of the row.
+  No `system`, no `slot`, no slot frames and no `mass_per_metre`: the mass
+  is the density times the volume.
+- **A wood fastener** (`role: "fastener"`): `wood` `{kind: "screw" |
+  "nail", head: "countersunk" | "flat" | "pan" | "washer", diameter,
+  length}` (each row's diameter and length in its own block), `material`
+  `{product, density}`, and the frame `axis` (kind `shaft`): on the axis at
+  the head's bearing surface, z along the shank towards the tip, which is
+  at z = `length`. A countersunk head lies under that surface (z > 0), the
+  others on it (z < 0).
+- **A bracket, joist hanger or post base** (`role: "connector"`):
+  `connector.placement: "outer"` (on the members' outer faces; `space`
+  `outer`), `junctions` as other connectors (`L`, `T`; a post base
+  `surface`), and `fit` `{kind, section, width}`: `kind` `angle`, `hanger`
+  or `post_base`; `section` `[a, b]`, the actual section of the member it
+  carries (the joist, the post), either way round; `width` `[min, max]`,
+  the range of that member's smaller dimension (a bracket). No `systems`.
+  `mates`: its first frame, `mount`, places it, and the design is built in
+  that frame's coordinates (the frame is the design's origin and axes):
+  - a hanger: at the middle of the joist's end on the carrier's face, z
+    into the carrier, x up the joist's section (the seat half the joist's
+    height below, at −x);
+  - an angle bracket: on the carrier's face at the middle of the edge
+    where the chosen side of member a meets it, z into the carrier, x
+    that side's outward normal (one arm on the carrier in the plane z = 0
+    towards +x, one on member a in the plane x = 0 towards −z);
+  - a post base: at the middle of the post's end, z into the post along
+    its axis, x its +X (its base plate under it, at z < 0).
+
+  `fasteners`: `[{"on": "a" | "b", "frames": [hole frames], "count": n,
+  "screw" (or "nail"): {library reference with its row}}]`, one entry per
+  member they go into (`a` the member whose end meets, the joist, the
+  post; `b` the carrier). A hole frame (kind `hole`, with its `diameter`)
+  lies on the connector's surface the fastener's head bears on, z out of
+  it towards the head, so that it faces the fastener's `axis` frame.
+- **A sheet** (`role: "panel"`): `panel.mount: "face"` (laid on a
+  member's face), `thickness` (its parameter), `width` and `height` (the
+  parameters the BUILD tab sets from the faces it covers), `stock`
+  (`[[width, height], …]`, the sheet sizes sold, mm); `material`
+  `{product: "plywood" | "osb" | "chipboard", species, finish, grade,
+  density}`; thicknesses as rows. The design is a box from the origin:
+  width along X, height along Y, thickness along +Z, its back on z = 0;
+  its `face` frame at the origin, z +Z.
+
+**Pickers.** `library_search` and `library_build_candidates` take `kind`
+for timber too: `timber` (members), `wood` (wood fasteners), `outer`,
+`angle`, `hanger`, `post_base` (outer connectors), and `mount` (`face`:
+sheets). A timber part is listed only when it is asked for: `role:
+"profile"` without `kind` (the Profile picker) lists no timber, `role:
+"panel"` without `mount` no sheets, `role: "fastener"` without `kind` no
+wood fasteners, and a slot system's picker or junction none of them. A
+junction of two members (`build_junctions` gives it `wood`, with the
+members' `sections`) is offered wood fasteners and the outer connectors
+whose `junctions` hold its kind and whose `fit` holds member a's section
+(within 1 mm) or smaller dimension, from the part or one of its rows;
+one that does not is greyed with the reason (`it fits 48 x 148, the
+member is 48 x 123`). `mitcad-cli library search` and `library
+candidates` take `--kind` and `--mount`.
+
 ### Versions
 
 A library's versions are its commits; released ones are tags
@@ -372,7 +497,14 @@ Mitcad offers, kept in a repository of its own
   from their dimensions: sheets and plates, the round precision shafts h6
   (6 to 25 mm), the trapezoidal lead screws (Tr8x1.5 to Tr16x4) and the
   threaded rods DIN 976 (M5 to M12), the screws and rods with their
-  threads as cosmetic thread features (mitcad#449).
+  threads as cosmetic thread features (mitcad#449);
+- the timber parts (mitcad#478), Mitcad's own in industry-standard sizes
+  and naming no supplier: sawn, planed and dimensioned timber (one part
+  each, its sizes as rows, the less common ones marked), wood screws,
+  connector screws, ring shank nails and structural screws, angle
+  brackets, joist hangers and post bases, and spruce and birch plywood,
+  OSB and chipboard sheets ([Timber parts](#timber-parts); their group
+  files' notes give the densities' grounds).
 
 Its categories are those of both (screws, nuts, washers, profiles,
 connectors, caps, panels, linear, …). `LICENSE` says which licence
@@ -503,6 +635,58 @@ library component:
     "class": "7e"}` for a lead screw, `{"designation": "M8"}` for a
     threaded rod). `commands` (optional, Mitcad commands as
     `mitcad-cli run` takes them) add anything more.
+    The [timber parts](#timber-parts)' shapes: a `board` (`width`,
+    `thickness`, `length`) is a rectangle centred on XY, its width along
+    X, sketched with its sides dimensioned by the parameters and
+    extruded by the length along +Z (the profile layout); without
+    `frames` it has `end_a`, `end_b` and the four face frames, which lie on
+    planes offset by `W / 2` and `T / 2` and so follow a row's size. A
+    `fastener` (`diameter`, `length`, `head_diameter`, `head_height`,
+    `head`: `countersunk`, `flat`, `pan`, `washer`) is a shank on the Z
+    axis from z = 0 to its length and a cylindrical head (under z = 0 but
+    countersunk, in z > 0), with an `axis` frame at the origin. A `sheet`
+    (`width`, `height`, `thickness`) is a box from the origin, with a
+    `face` frame there. A `bracket` (`legs` [on the carrier, on the
+    member], `width`, `thickness`, `hole`, `holes` `{"b": [[x, y], …],
+    "a": [[depth, y], …]}`), a `hanger` (`width` and `height` of the
+    joist, `hanger_height`, `depth`, `flange`, `thickness`, `hole`) and a
+    `post_base` (`width` of the post, `height`, `plate`,
+    `plate_thickness`, `side`, `thickness`, `hole`) are steel plates of
+    those fixed sizes (boxes joined), built in their `mount` frame's
+    coordinates, with their screw holes cut and made frames `hole_a_<n>`
+    (into member a) and `hole_b_<n>` (into b). A frame's origin may name a
+    parameter in its x or y too, when its z is along X or Y.
+  - `sizes` (instead of `rows`, for a `board`, `fastener` or `sheet`):
+    the rows made from a compact table. A board's `{"species": {name:
+    density}, "species_default", "resawn": 2, "tolerance": {"thickness":
+    [[up_to, minus, plus], …], "width": …}, "rows": [{"thickness",
+    "widths": [...], "species", "availability", "resawn": true}]}` makes a
+    row `<thickness>x<width>` (selectors Thickness and Width, values W and
+    T) for each width, with its own block (section, nominal, availability,
+    material, tolerance: the first rule whose `up_to` is the size or more,
+    or null); a fastener's `{"rows": [{"diameter", "head": [diameter,
+    height], "lengths": [...]}]}` a row `<d>x<length>` (Diameter, Length;
+    D, L, DK, K; `wood.diameter` and `wood.length`); a sheet's `{"rows":
+    [{"thickness", "availability"}]}` a row of each thickness (T).
+  - A row's `build` (as `sizes` make them, or written) is the row's own
+    block: the manifest's `build.rows`, and the part's block takes its
+    default row's.
+  - `density` (a part's or the group file's, kg/m³): a section's mass per
+    metre is its volume per length times it (aluminium, 2.7 g/cm³, when
+    neither names one); a part's `build.material.density` defaults to it.
+  - `appearance`: a library appearance's id (`steel_satin`), or one of the
+    design's own `{"id", "name", "based_on", "base_color", "roughness",
+    "texture", "size"}` whose texture the generator draws and embeds:
+    `grain` (wood, the grain along the image's height), `strands` (OSB),
+    `particles` (chipboard), repeated every `size` mm and projected as a
+    box in the body's coordinates, so that a board's grain runs along its
+    length and a sheet's along its height. Every body of the design takes
+    it. A `board` with a `grain` gets a second appearance of its own,
+    `<id>-end`, on the two caps of its extrusion: growth rings (a 400 mm
+    tile, the pith off the section), which the members placed from it show
+    on their ends (mitcad#484).
+  - `data_source` (a part of no supplier and no source file): what its
+    sizes are, for SOURCES.md (`industry-standard sizes of sawn timber`).
 - `rows`: configuration rows (`name`, `select`, `values`, `part_number`,
   `supplier_url`, `designation`, `source`) for parts sold in sizes;
   `values` may be empty (one solid for every thread size, a rail's stock
@@ -536,7 +720,9 @@ library component:
   `build.section` (the section's bounds), `build.slot.opening` (the
   narrowest slot found) and `build.mass_per_metre` (the design's
   volume per length in aluminium, 2.7 g/cm³), each only when the group file has none; `build.length.parameter`
-  for a section.
+  for a section; `build.rows` (the rows' own blocks) and the default
+  row's fields; an outer connector's `fasteners` `frames` and `count`
+  when an entry names only the member (`on`) they go into.
 - The designs hold their features in the root, as a part: no components,
   occurrences, active component or root policy (each starts from a blank
   design `mitcad-cli` makes, not from MCP's `document_create`, whose root
@@ -555,7 +741,10 @@ library component:
   temporary folder in `--work` (default the folder above `--out`; not in
   a Mitcad project). It draws a section's preview (the section seen from
   end B) and renders the others with `mitcad-cli render` (`--no-render`,
-  or a render that fails: their bounds drawn as a box), writes the
+  or a render that fails: their bounds drawn as a box); a `board`'s rows
+  each from beyond its end B, a piece 1.2 times its larger side long, so
+  that the tiles show the sections (`row_previews`; the part's picture its
+  default row's; mitcad#484), writes the
   manifest, an MIT `LICENSE`, `README.md` and `SOURCES.md` (the source
   file, supplier, part number and URL of each part), checks the folder
   with `library check` (errors stop it) and, with `--commit`, records and
@@ -581,7 +770,16 @@ library component:
   generated library named by `MITCAD_PROFILES_LIBRARY`) places a profile
   of each system, linear parts on a frame, slot nuts in their M5 rows and
   a cover cap, and a precision shaft with its bearing and support and a
-  lead screw with its nut.
+  lead screw with its nut. ctest `cli.timber-library`
+  (`tools/cli/timber-library-test.cmake`) runs the generator on small
+  timber group files (a board family with a re-sawn and a less common
+  size, wood screws, a bracket, a hanger, a post base and a sheet): their
+  manifest fields and rows' blocks, the board's section and face frames
+  following a row, the fastener's head, the connectors' holes, the
+  pickers. ctest `build.timber` (`tools/cli/build-timber-test.cmake`, on
+  `MITCAD_PROFILES_LIBRARY`) checks every timber part of the generated
+  library: the sizes and their marking, sections, densities and masses
+  of rows of each family, the fasteners' and connectors' frames.
 
 ## Where libraries are kept
 

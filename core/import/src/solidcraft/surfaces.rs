@@ -31,7 +31,7 @@ const OPENING_REACH: f64 = REACH + 0.25;
 
 /// What a pick of a patch's loop found.
 #[derive(Debug, Clone, PartialEq)]
-enum Pick {
+pub(super) enum Pick {
     /// An opening of the body: its index among the kernel's open
     /// boundaries.
     Opening(BodyUid, usize),
@@ -171,7 +171,7 @@ impl<K: Kernel> Importer<'_, '_, K> {
 
     /// What a pick of a loop is on: an opening of a body near it, else a
     /// named edge.
-    fn loop_pick(
+    pub(super) fn loop_pick(
         &self,
         component: ComponentUid,
         body: Option<&str>,
@@ -213,7 +213,7 @@ impl<K: Kernel> Importer<'_, '_, K> {
 
     /// The `opening` of a patch: the faces the body's open boundary at
     /// `index` runs along, and its place among those along the same faces.
-    fn opening(&self, body: BodyUid, index: usize) -> Result<Value, NotMapped> {
+    pub(super) fn opening(&self, body: BodyUid, index: usize) -> Result<Value, NotMapped> {
         let shape = self
             .doc
             .body_shape(body)

@@ -3777,10 +3777,17 @@ memory cannot be caught: a fillet with a strip 1e-4 wide did, hence the
   section, position, rotation, operation) are decoded since mitcad#25; a
   coil comes in where it rises along its plane's normal and starts on its
   x axis. No design of the corpus has a rib or a web.
-- Surface extrusions, revolutions and sweeps (`isSolid` false) are not
-  translated: their sheets come in as stored bodies (*Threads, tapped holes
-  and sheets*). The stream decoder tells surface extrusions since
-  mitcad#154 (none in the corpora).
+- Surface extrusions, revolutions and sweeps (`isSolid` false; the stream
+  decoder tells surface extrusions since mitcad#154) come in as the solid
+  features with `surface` set (mitcad#455): a new surface body of the
+  walls of the profile's regions, or, for an extrusion whose profile is
+  not regions, of the curves it names, else of its sketch's curves when
+  the sketch has no regions (a guess the history settles, as a thin
+  extrusion's walls). A surface revolution or sweep of open curves is not
+  translated (the decoder does not give their curves). Other surface
+  features (patches, trims, boundaries, offsets and the like) are classes
+  the stream decoder does not know: their sheets come in as stored bodies
+  (*Threads, tapped holes and sheets*).
 - Sketch patterns, offsets and polygons (*Sketch patterns, offsets and
   polygons*) are left out, and their copies and offset curves come in as
   plain curves, where Mitcad has no counterpart: patterns with instances
@@ -6254,9 +6261,21 @@ Found by importing real designs one at a time; each rule is general.
   into the component the item is in, an existing one placed once like the
   source, and the bodies keep their identity and their place in the design.
   The item has no state of its own, so the check is that the replay's
-  bodies are unchanged and the destination's afterwards; a second command
-  that also takes the bodies a feature ties to the first ones is tried when
-  the first is refused. Bodies that went with an earlier cut (the features
+  bodies are unchanged and the destination's afterwards. The item's other
+  translation is a `body_transfer` in the destination (mitcad#465): the
+  bodies alone move at the item's point of the timeline and the features
+  that made them stay in their component, which is exactly what the item
+  does in the file (both are parametric; neither takes the file's stored
+  bodies). Move to Component comes first because it also gives the
+  destination the bodies' history; where it is refused (a definition that
+  cannot yet change coordinates between differently placed components,
+  such as a hole; a feature of the source that works on other bodies too)
+  the body transfer is the item's mapping. Its check is the same: the
+  bodies are where they were in the design (their centres placed by their
+  occurrences) and the destination's afterwards, and the note names why
+  the features stay. A last command that also takes the bodies a feature
+  ties to the first ones (a guess, more bodies than the item moves) is
+  tried when both are refused. Bodies that went with an earlier cut (the features
   that made them also made the bodies of that cut) are in the destination
   already: the item is satisfied. A cut whose item has no body input (the
   file keeps the cached result of a reference that failed there) says so.
@@ -10173,6 +10192,7 @@ goes on. Command, options and report: [commands.md](../model/src/api/commands.md
 | emboss (from the sketch plane, or wrapped onto the cylindrical wall its face picks; deboss) | `emboss` (mitcad#458): the wall found by its persistent name or at its point, `sink` for a deboss |
 | construction plane, axis, point | `construction_plane`, `construction_axis`, `construction_point` |
 | import (STEP), mesh import | `base` features of the bodies the kernel reads |
+| body transfer (bodies by name, from one component into another; `imports.rs`) | `body_transfer` in the destination, linked at the components' first placements (mitcad#465) |
 | components, occurrences (placements, grounded), joints (rigid, revolute, slider, cylindrical, pin slot, planar, ball; `assembly.rs`) | components, occurrences, `joint` where it holds at the file's placements (driven at the file's values, else free), else `as_built_joint` |
 | sheet rules, base flange, edge flange, hem, fold, unfold, refold (`sheet.rs`) | `sheet_rules`, `sheet_face`, `sheet_flange` (a hem a 180-degree flange), `sheet_fold`, `sheet_unfold`, `sheet_refold` |
 | contact sets (occurrences, suppressed; contact off, all contact; `assembly.rs`) | contact sets of the occurrences' paths (mitcad#454): suppressed as in the file, all of them with contact off; all contact a set `All Contact` of every occurrence |
@@ -10183,10 +10203,19 @@ goes on. Command, options and report: [commands.md](../model/src/api/commands.md
 | boundary fill (tools, a point in each cell, operation, `remove_tools`; `features.rs`) | `boundary_fill` (mitcad#457): the same tools and points; a join, cut or intersection works on the feature's participants (`*` or none: all bodies of its component), the tools it removes left out of them. Two points in one cell fill it once (the file makes two bodies there); a join of cells that touch no participant fails (the file adds them to its first body as lumps of their own) |
 | mesh conversion (`imports.rs`, mitcad#462) | `mesh_convert` of the body by its name, the tolerance its input's parameter (the body keeps its name) |
 | patch (sketch regions; a closed loop of a body's edges picked by points, its continuity and points; `surfaces.rs`), stitch, thicken (one side or symmetric, new body or joined, cut or intersected with its targets; mitcad#456) | `patch` (a region's surface body each; the loop the named edges at the picks, or the body's opening the picks lie on, by the faces it runs along; single edges' continuity where they have names; the crown left out with a note), `stitch` (the first body keeps its name; a tolerance of 0 Mitcad's own precision), `thicken` (the surfaces stay) |
+| surface extrude, surface revolve, surface sweep (profiles, none without a selection; curves; `surface_modelling.rs`, mitcad#455) | `extrude`, `revolve`, `sweep` with `surface` and `curves`, mapped as the solid ones (extent, angles turned towards the sketch normal, path); a sweep of curves with a twist, an end scale or rails is not mapped (Mitcad sweeps curves without them) |
+| surface loft (sections: a profile or curves of a sketch; end continuity, crown) | `loft` with `surface`: `profile` or `curves` sections, ruled between two sections and smooth through more; continuity and crown beyond G0 left out with a note; a mix of profile and curve sections, and sections on a body's edges, are not mapped |
+| offset surface (faces picked, or a body; chain; tolerance), ruled surface (edges picked, mode, angle, direction, flip, corners, the face beside), extend (edges picked, distance, mode, neighbours) | `offset_surface` (the faces at the picks; every face of the body without; the tolerance not needed: the offset is exact), `ruled_surface`, `extend_surface`: picked edges are the named edges at the picks or, on an open boundary (free edges, which have no names), the opening the picks lie on with the faces the picked edges bound; an extend up to a plane, a face or the bounds is not mapped, one without `neighbours` notes that its sides follow the surface |
+| surface trim (a plane, a tool face picked or sketch curves with a direction; keep points; a mutual trim `with`), surface untrim (the face picked; holes, all or picked; outer; in place), unstitch, reverse normal (faces picked, none: every face) | `trim_surface` (the plane as a reference, the face at its pick, the sketch's curves; every keep point), `untrim_surface`, `unstitch`, `reverse_normal`; a mutual trim, a trim by every curve of a sketch and an untrim of some of a face's holes are not mapped |
+| surface blend (two chains of edges picked on bodies; continuity and bulge per end; align; stitch), boundary patch (two to four curves of a sketch; orders; crown), network (curves one way and crossing: sketch curves, edges picked, a point; continuity; new body or join), match (a face picked or the first; the target's edges picked; order), fair (faces picked or every face; strength, iterations, keep edges, tolerance) | `blend_surface` (each end's chain from its picks, its continuity up to G2 and bulge; the alignment points left out with a note; a stitched blend sewn into the first body, which keeps its name), `boundary_surface` (three or four curves a loop, two a loft of them: the curves lie in the sketch's plane, so every order holds; a crowned patch is not mapped), `boundary_surface` with `u` and `v` (a joined one followed by a `stitch` named `<name> Join` into the body of its first curve on edges; continuity on network curves is not mapped), `match_surface` (one face; several are not mapped), `fair_surface` (the tolerance its input's parameter); G3 is not mapped. Free edges picked on a surface are the opening the pick lies on, the faces the picked edges bound and the picks (`at`) |
+| boss, lip and groove, snap fit, rest (`plastic.rs`, mitcad#459); the plastic rule assigned to the feature's body, else the active one (a design's own rule before the library's, `third_party/solidcraft/plastic.rs`) | `boss`, `lip` or `groove` (the file's height a groove's depth), `snap_fit`, `rest`, each at its pick's face with the file's direction; the rule a `plastic_rule` feature (every expression, `Thickness` its own thickness parameter) made before the first feature that needs it, named in their `rule` |
 
-features (`surface_*`, unstitch, reverse normal), boss, lip, snap fit,
-rest and a body transfer between components. Exploded views are read and
-kept by
+Every SolidCraft feature kind has a Mitcad counterpart; options Mitcad has not
+are named in each row (such a feature is a placeholder with the reason).
+Body transfers between components are `body_transfer`
+features in their destinations (mitcad#465; the file's recorded
+conversion kept as the feature's `transform` only where the components'
+placements give another). Exploded views are read and kept by
 `core/solidcraft` and named in the report as not mapped.
 
 References (`refs.rs`, `names.rs`): SolidCraft resolves a pick by its

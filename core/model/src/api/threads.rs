@@ -107,6 +107,25 @@ impl<K: Kernel> Document<K> {
                         }
                     }
                 }
+                // A gear's threaded bore, cosmetic (mitcad#472).
+                FeatureDef::Gear(def) => {
+                    let Some(crate::features::gear::Bore::Thread { thread }) = &def.bore else {
+                        continue;
+                    };
+                    let of = ThreadOf {
+                        entry,
+                        size: thread.clone(),
+                        modeled: false,
+                        part: None,
+                        chamfer: None,
+                        profile: (None, 0.0),
+                        on_input: false,
+                    };
+                    let bore = FaceName::new(entry.uid, "bore", None);
+                    for body in self.bodies() {
+                        threads.extend(self.thread_json(&of, body.uid, &bore));
+                    }
+                }
                 _ => {}
             }
         }

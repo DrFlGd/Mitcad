@@ -1,0 +1,115 @@
+// SPDX-License-Identifier: MIT
+#pragma once
+
+// Drawings (mitcad#471): the edges of bodies seen along a view with hidden
+// lines removed, and the round holes a drawing dimensions and tabulates.
+// Lengths are millimetres; angles radians.
+//
+// A view looks at the shapes from far away along -toward_eye (an
+// orthographic projection). Its 2D coordinates are those of the plane at
+// right angles to toward_eye through the model origin: x along x_axis, y
+// along toward_eye x x_axis. The projection is OCCT's hidden line removal:
+// HLRBRep_Algo on the exact B-rep (lines and circles stay lines and arcs,
+// other curves come as polylines), or HLRBRep_PolyAlgo on a triangulation
+// of copies of the shapes when the exact one is not asked for or fails.
+// The shapes are not modified.
+
+#include <array>
+#include <optional>
+#include <string>
+#include <vector>
+
+#include <gp_Dir.hxx>
+#include <gp_Pnt.hxx>
+
+#include "mitcad/geometry/shape.hpp"
+
+namespace mitcad::geometry {
+
+using Point2 = std::array<double, 2>;
+
+// A plane cutting a section view: what lies on its normal side goes (Section
+// Analysis' cut, analysis::clip), and the view looks along -normal at the
+// cut, so toward_eye must be the normal.
+struct DrawingSection {
+  gp_Pnt origin;
+  gp_Dir normal;
+};
+
+struct DrawingViewSpec {
+  gp_Dir toward_eye{0.0, 0.0, 1.0};
+  // At right angles to toward_eye.
+  gp_Dir x_axis{1.0, 0.0, 0.0};
+  // Also the hidden edges (DrawnCurve::visible false).
+  bool hidden = false;
+  // Also the edges between faces that meet tangentially.
+  bool smooth = false;
+  // The exact algorithm first; false: the polygonal one only.
+  bool exact = true;
+  std::optional<DrawingSection> section;
+  // The largest distance of a polyline from the curve it stands for.
+  double deflection = 0.01;
+};
+
+enum class DrawnKind { Sharp, Smooth, Outline };
+
+// One projected edge: a line (two points), an arc of a circle counter-
+// clockwise from `start` to `end` (a full circle from 0 to 2 pi), or a
+// polyline.
+struct DrawnCurve {
+  enum class Type { Line, Arc, Polyline };
+  bool visible = true;
+  DrawnKind kind = DrawnKind::Sharp;
+  Type type = Type::Line;
+  std::vector<Point2> points;
+  Point2 center{0.0, 0.0};
+  double radius = 0.0;
+  double start = 0.0;
+  double end = 0.0;
+};
+
+// The faces a section view's plane cuts, each as its closed loops
+// (polylines, the last point not repeated), in view coordinates.
+using CutFace = std::vector<std::vector<Point2>>;
+
+struct DrawnView {
+  std::vector<DrawnCurve> curves;
+  std::vector<CutFace> cuts;
+  // The polygonal algorithm made the view (asked for, or the exact one
+  // failed).
+  bool polygonal = false;
+};
+
+// The edges of the shapes seen along the view. Throws std::runtime_error
+// when neither algorithm can project them.
+DrawnView project_view(const std::vector<ShapePtr>& shapes, const DrawingViewSpec& spec);
+
+// A round hole: coaxial cylindrical faces with the material all round
+// outside them (the pieces of a split cylinder taken together), the
+// narrowest the drilled wall. A wider cylinder or a cone that meets it
+// end to end on the side it opens to is its counterbore or countersink.
+struct RoundHole {
+  // The first name of the drilled wall's face; empty when unnamed.
+  std::string face;
+  // On the axis where the hole opens (the top of a counterbore or a
+  // countersink), and the axis direction into the material. A hole open at
+  // both ends opens towards +Z, else +Y, else +X.
+  gp_Pnt opening;
+  gp_Dir direction;
+  double diameter = 0.0;
+  bool through = false;
+  // From the opening to the end of the drilled wall (also of a hole open
+  // at both ends).
+  double depth = 0.0;
+  double cbore_diameter = 0.0; // 0: none
+  double cbore_depth = 0.0;
+  double csink_diameter = 0.0; // 0: none
+  double csink_angle = 0.0;    // the full included angle
+};
+
+// The round holes of a shape, in a deterministic geometric order. An end of
+// a hole is closed when material lies on its axis within twice its
+// diameter beyond it (a flat bottom, a drill point).
+std::vector<RoundHole> round_holes(const Shape& shape);
+
+} // namespace mitcad::geometry

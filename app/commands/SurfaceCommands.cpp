@@ -356,14 +356,12 @@ CommandDef surfaceSweepCommand(const CommandContext& context) {
 
 CommandDef surfaceLoftCommand(const CommandContext& context) {
   CommandDef def = surfaceCommand("surface.loft", QObject::tr("Surface Loft"), "surface-loft",
-                                  QObject::tr("A surface through sections in order: sketch curves (each with the "
-                                              "curves joined to it), or profiles"));
+                                  QObject::tr("A surface through sections in order: sketch curves or profiles"));
   def.featureType = QStringLiteral("loft");
   def.inputs = {
       selectionInput(QStringLiteral("sections"), QObject::tr("Sections"),
                      SelectKind::Profile | SelectKind::SketchCurve, 2, 0)
-          .withTooltip(QObject::tr("Sections in the order the surface goes through them: a sketch curve "
-                                   "and the curves joined to it, or a profile"))
+          .withTooltip(QObject::tr("Sections in the order the surface goes through them"))
           .withOrdered(),
       checkInput(QStringLiteral("closed"), QObject::tr("Closed"), false)
           .withTooltip(QObject::tr("From the last section back to the first")),
@@ -859,8 +857,7 @@ const QString kKept = QStringLiteral("kept_points");
 
 CommandDef trimSurfaceCommand(const CommandContext& context) {
   CommandDef def = surfaceCommand("surface.trim", QObject::tr("Trim"), "surface-trim",
-                                  QObject::tr("Cuts a surface body with a plane, a face, a body or sketch curves "
-                                              "and keeps the pieces clicked"));
+                                  QObject::tr("Cuts a surface body and keeps the pieces clicked"));
   def.featureType = QStringLiteral("trim_surface");
   def.keywords << QStringLiteral("trim surface") << QStringLiteral("cut");
   def.inputs = {
@@ -921,8 +918,7 @@ CommandDef trimSurfaceCommand(const CommandContext& context) {
 
 CommandDef untrimSurfaceCommand(const CommandContext& context) {
   CommandDef def = surfaceCommand("surface.untrim", QObject::tr("Untrim"), "surface-untrim",
-                                  QObject::tr("Restores a face towards its surface: its holes closed, its outer "
-                                              "boundary put back"));
+                                  QObject::tr("Restores a face towards its surface: holes closed, outline put back"));
   def.featureType = QStringLiteral("untrim_surface");
   def.keywords << QStringLiteral("untrim surface") << QStringLiteral("fill holes");
   def.inputs = {
@@ -1190,8 +1186,7 @@ std::optional<Selection> singleCurveItems(const QJsonArray& entries, const Comma
 
 CommandDef boundarySurfaceCommand(const CommandContext& context) {
   CommandDef def = surfaceCommand("surface.boundary", QObject::tr("Boundary Surface"), "boundary-surface",
-                                  QObject::tr("A surface filling a loop of curves, or through curves one way and "
-                                              "crossing curves"));
+                                  QObject::tr("A surface filling a loop of curves, or through a network of curves"));
   def.featureType = QStringLiteral("boundary_surface");
   def.keywords << QStringLiteral("network") << QStringLiteral("fill") << QStringLiteral("coons");
   const auto loop = choiceIs(QStringLiteral("mode"), kLoop);
@@ -1349,8 +1344,7 @@ CommandDef boundarySurfaceCommand(const CommandContext& context) {
 
 CommandDef matchSurfaceCommand(const CommandContext& context) {
   CommandDef def = surfaceCommand("surface.match", QObject::tr("Match Surface"), "match-surface",
-                                  QObject::tr("Rebuilds a face of a surface body so that its nearest side meets a "
-                                              "chain of another body's edges"));
+                                  QObject::tr("Rebuilds a surface's face so that a side meets another body's edges"));
   def.featureType = QStringLiteral("match_surface");
   def.keywords << QStringLiteral("match") << QStringLiteral("align surface");
   def.inputs = {

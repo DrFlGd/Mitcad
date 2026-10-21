@@ -37,7 +37,7 @@ pub(crate) fn query(doc: &Document<MockKernel>, query: Value) -> Value {
 
 /// A frame of a design: a joint origin named `mount:<name>` on a fixed
 /// plane.
-fn fixed_frame(
+pub(crate) fn fixed_frame(
     doc: &mut Document<MockKernel>,
     name: &str,
     origin: [f64; 3],
@@ -515,6 +515,11 @@ impl TestLibrary {
         add("hanger148", V1, hanger(148.0, 48.0));
         add("postbase98", V1, post_base());
         add("plywood", V1, plywood());
+        // Profiled boards (mitcad#477): tongue and groove (two tongues),
+        // shiplap, feather-edge and a grooved deck board.
+        for (id, part) in super::profiled_tests::boards() {
+            add(id, V1, part);
+        }
         Arc::new(library)
     }
 }

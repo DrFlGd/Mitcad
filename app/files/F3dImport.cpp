@@ -165,8 +165,7 @@ public:
     auto* buttons = new QDialogButtonBox(this);
     m_stopButton =
         buttons->addButton(F3dImport::tr("&Stop and Keep What Is Imported"), QDialogButtonBox::ActionRole);
-    m_stopButton->setToolTip(F3dImport::tr("End the import now: what is imported stays, and the remaining "
-                                              "timeline items come in as the file's bodies"));
+    m_stopButton->setToolTip(F3dImport::tr("End the import now and keep what is imported"));
     QPushButton* cancelButton = buttons->addButton(F3dImport::tr("&Cancel Import"), QDialogButtonBox::RejectRole);
     cancelButton->setToolTip(F3dImport::tr("Discard the import; the open document stays as it is"));
     for (QPushButton* button : {m_stopButton, cancelButton}) {
@@ -696,11 +695,9 @@ void F3dImport::askRetryBodies(const QString& question) {
                       m_window.data());
   box->setObjectName(QStringLiteral("importRetryBodies"));
   QPushButton* keep = box->addButton(tr("&Keep Imported Bodies"), QMessageBox::AcceptRole);
-  keep->setToolTip(tr("The bodies imported as features stay; the item comes in as the file's bodies if it "
-                      "does not build on them"));
+  keep->setToolTip(tr("The bodies imported as features stay"));
   QPushButton* replace = box->addButton(tr("&Replace with Stored Bodies"), QMessageBox::DestructiveRole);
-  replace->setToolTip(tr("The file's stored bodies replace them, so that the item can build on those; the "
-                         "features before it no longer shape the bodies replaced"));
+  replace->setToolTip(tr("The file's stored bodies replace them, so that the item can build on those"));
   box->setDefaultButton(keep);
   box->setEscapeButton(keep);
   m_question = box;

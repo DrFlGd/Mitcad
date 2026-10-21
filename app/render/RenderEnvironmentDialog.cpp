@@ -591,8 +591,7 @@ QWidget* RenderEnvironmentDialog::buildLights() {
   m_lightOn = new QCheckBox(tr("On"));
   m_lightOn->setToolTip(tr("An off light is kept but lights nothing"));
   m_lightCamera = new QCheckBox(tr("Follows the camera"));
-  m_lightCamera->setToolTip(tr("The light's place and direction are relative to the camera (x to the right, y up, "
-                               "z toward you): it moves with the view"));
+  m_lightCamera->setToolTip(tr("The light moves with the view, placed relative to the camera"));
   auto* checks = new QHBoxLayout;
   checks->addWidget(m_lightOn);
   checks->addWidget(m_lightCamera);
@@ -667,12 +666,10 @@ QWidget* RenderEnvironmentDialog::buildLights() {
     });
   };
   m_lightPower = lightNumber(0.0, 1e6, 1.0, 2, QStringLiteral(" W"),
-                             tr("Point, spot and area lights: watts (5 W light 300 mm away about as much as the "
-                                "studio's key light); a sun: W/m²"));
+                             tr("Watts for point, spot and area lights; W/m² for a sun"));
   numberRow(tr("Power"), QStringLiteral("power"), m_lightPower, 1.0);
   m_lightSize = lightNumber(0.0, 1e6, 5.0, 1, QStringLiteral(" mm"),
-                            tr("The light's size: a larger one gives softer shadows (point and spot: the ball's "
-                               "diameter; area: the width, or the disc's diameter)"));
+                            tr("The light's size: a larger one gives softer shadows"));
   numberRow(tr("Size"), QStringLiteral("size"), m_lightSize, 1.0);
   m_lightSizeY = lightNumber(0.0, 1e6, 5.0, 1, QStringLiteral(" mm"), tr("An area light's rectangle: its height"));
   numberRow(tr("Height"), QStringLiteral("size_y"), m_lightSizeY, 1.0);
@@ -700,8 +697,7 @@ QWidget* RenderEnvironmentDialog::buildLights() {
   m_aimDistance->setValue(200.0);
   m_aim = new QPushButton(tr("Aim at Face"));
   m_aim->setCheckable(true);
-  m_aim->setToolTip(tr("Click a face in the view: the light goes this far out along the face's normal and "
-                       "shines at the point (Esc cancels)"));
+  m_aim->setToolTip(tr("Places the light this far out from a face you click, shining at it"));
   m_fromCamera = new QPushButton(tr("At Camera"));
   m_fromCamera->setToolTip(tr("The light goes to the camera and shines where it looks"));
   for (QPushButton* button : {m_aim, m_fromCamera}) {

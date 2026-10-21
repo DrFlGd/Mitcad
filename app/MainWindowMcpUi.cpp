@@ -210,7 +210,8 @@ bool opensDialog(const QString& id) {
       return true;
     }
   }
-  for (const char* known : {"sketch.insert_dxf", "sketch.import_dxf", "sheet.export_dxf", "make.print3d",
+  for (const char* known : {"sketch.insert_dxf", "sketch.import_dxf", "sketch.insert_svg", "sketch.import_svg",
+                            "sheet.export_dxf", "make.print3d",
                             "view.render_environment", "view.grid_settings", "solid.parameters"}) {
     if (id == QLatin1String(known)) {
       return true;

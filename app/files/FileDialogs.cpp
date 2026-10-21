@@ -10,6 +10,7 @@
 #include <QCoreApplication>
 #include <QDialog>
 #include <QButtonGroup>
+#include <QCheckBox>
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
 #include <QFileDialog>
@@ -168,8 +169,7 @@ std::optional<ExportChoice> askExport(QWidget* parent, const QString& path, int 
   auto* coordinates = new QComboBox;
   coordinates->addItem(QObject::tr("Where the design shows them"), QStringLiteral("design"));
   coordinates->addItem(QObject::tr("Each in its component's coordinates"), QStringLiteral("component"));
-  coordinates->setToolTip(QObject::tr("A component placed twice is written twice where the design shows it, a "
-                                      "STEP file as an assembly; or each body once as its component has it"));
+  coordinates->setToolTip(QObject::tr("Where the design shows the bodies, or each in its own component's coordinates"));
   form->addRow(QObject::tr("Coor&dinates:"), coordinates);
   auto* unit = unitBox();
   unit->setToolTip(QObject::tr("The length unit of the file; the bodies keep their size"));
@@ -473,6 +473,105 @@ std::optional<DxfChoice> askDxfInsert(QWidget* parent, const QString& file,
     return choice;
   }
   return std::nullopt;
+}
+
+std::optional<DxfChoice> askSvgInsert(QWidget* parent, const QString& file,
+                                      const QVector<QPair<QString, QString>>& planes, const QJsonObject& info) {
+  QDialog dialog(parent);
+  dialog.setWindowTitle(QObject::tr("Insert SVG"));
+  auto* layout = new QVBoxLayout(&dialog);
+  const QString name = QFileInfo(file).fileName();
+  layout->addWidget(new QLabel(planes.isEmpty() ? QObject::tr("%1 goes into the edited sketch.").arg(name)
+                                                : QObject::tr("%1 goes into a new sketch.").arg(name)));
+  auto* form = new QFormLayout;
+  layout->addLayout(form);
+  auto* plane = new QComboBox;
+  for (const auto& [value, label] : planes) {
+    plane->addItem(label, value);
+  }
+  form->addRow(QObject::tr("Plane:"), plane);
+  form->setRowVisible(plane, !planes.isEmpty());
+  auto* scale = new DecimalSpinBox;
+  scale->setRange(1e-6, 1e6);
+  scale->setDecimals(4);
+  scale->setValue(1.0);
+  scale->setToolTip(QObject::tr("Millimetres in the sketch per millimetre of the drawing"));
+  form->addRow(QObject::tr("Scale:"), scale);
+  const auto coordinate = [] {
+    auto* box = new DecimalSpinBox;
+    box->setRange(-1e6, 1e6);
+    box->setDecimals(3);
+    box->setSuffix(QStringLiteral(" mm"));
+    return box;
+  };
+  auto* x = coordinate();
+  auto* y = coordinate();
+  x->setToolTip(QObject::tr("Where the drawing's lower left corner goes in the sketch"));
+  form->addRow(QObject::tr("Lower left at X:"), x);
+  form->addRow(QObject::tr("Lower left at Y:"), y);
+  auto* bands = new QCheckBox(QObject::tr("Stroked paths as bands of their stroke width"));
+  bands->setToolTip(QObject::tr("A stroked path becomes the outline of its stroke, a region to extrude; "
+                                "otherwise its middle line"));
+  bands->setEnabled(info.value(QStringLiteral("stroked")).toInt() > 0);
+  form->addRow(QString(), bands);
+  const QJsonArray drawn = info.value(QStringLiteral("size")).toArray();
+  auto* size = new QLabel;
+  form->addRow(QObject::tr("Size:"), size);
+  const auto updateSize = [size, scale, drawn] {
+    size->setText(QObject::tr("%1 x %2 mm")
+                      .arg(drawn.at(0).toDouble() * scale->value(), 0, 'g', 6)
+                      .arg(drawn.at(1).toDouble() * scale->value(), 0, 'g', 6));
+  };
+  QObject::connect(scale, &QDoubleSpinBox::valueChanged, &dialog, [updateSize] { updateSize(); });
+  updateSize();
+  form->addRow(QObject::tr("Contents:"),
+               new QLabel(QObject::tr("%1 filled shapes, %2 stroked, %3 texts")
+                              .arg(info.value(QStringLiteral("filled")).toInt())
+                              .arg(info.value(QStringLiteral("stroked")).toInt())
+                              .arg(info.value(QStringLiteral("texts")).toInt())));
+  auto* buttons = okCancel(dialog);
+  layout->addWidget(buttons);
+  scale->setFocus();
+  scale->selectAll();
+  qDebug().noquote() << QStringLiteral("Insert SVG dialog opened: %1, %2 filled, %3 stroked, %4 texts")
+                            .arg(size->text())
+                            .arg(info.value(QStringLiteral("filled")).toInt())
+                            .arg(info.value(QStringLiteral("stroked")).toInt())
+                            .arg(info.value(QStringLiteral("texts")).toInt());
+  // Where the inputs are, in the main window's coordinates (UI tests).
+  TestSync::singleShot(200, &dialog, [scale, x, y, bands, buttons, parent] {
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::LayoutRequest);
+    const QPoint origin = parent != nullptr ? parent->window()->mapToGlobal(QPoint(0, 0)) : QPoint();
+    const auto at = [&origin](const QWidget* widget) {
+      const QPoint global = widget->mapToGlobal(widget->rect().center()) - origin;
+      return QStringLiteral("%1,%2").arg(global.x()).arg(global.y());
+    };
+    for (const auto& [label, widget] :
+         {std::pair<const char*, QWidget*>{"scale", scale}, std::pair<const char*, QWidget*>{"x", x},
+          std::pair<const char*, QWidget*>{"y", y}, std::pair<const char*, QWidget*>{"bands", bands}}) {
+      qDebug().noquote() << QStringLiteral("Insert SVG %1 at %2").arg(QLatin1String(label), at(widget));
+    }
+    if (QPushButton* ok = buttons->button(QDialogButtonBox::Ok)) {
+      qDebug().noquote() << QStringLiteral("Insert SVG OK at %1").arg(at(ok));
+    }
+  });
+
+  prepareModal(&dialog);
+  if (execDialog(&dialog) != QDialog::Accepted) {
+    return std::nullopt;
+  }
+  DxfChoice choice;
+  choice.plane = plane->currentData().toString();
+  choice.scale = scale->value();
+  choice.x = x->value();
+  choice.y = y->value();
+  choice.strokeOutline = bands->isChecked();
+  qDebug().noquote() << QStringLiteral("Insert SVG: scale %1, lower left at (%2, %3), bands %4")
+                            .arg(choice.scale)
+                            .arg(choice.x)
+                            .arg(choice.y)
+                            .arg(choice.strokeOutline ? QStringLiteral("on") : QStringLiteral("off"));
+  return choice;
 }
 
 std::optional<double> askMeshUnit(QWidget* parent, const QString& file) {

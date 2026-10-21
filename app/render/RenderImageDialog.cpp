@@ -190,8 +190,7 @@ RenderImageDialog::RenderImageDialog(DocumentHost& host, OcctViewer& viewer, QWi
   image->addRow(tr("Height"), m_height);
   m_aspect = choice(QStringLiteral("aspect"),
                     {{QStringLiteral("view"), tr("From the View")}, {QStringLiteral("fixed"), tr("Fixed")}});
-  m_aspect->setToolTip(tr("From the view: as high as the view is in proportion. Fixed: width × height, and the "
-                          "view shows the image's frame"));
+  m_aspect->setToolTip(tr("As high as the view is in proportion, or a fixed width × height"));
   image->addRow(tr("Aspect"), m_aspect);
 
   QFormLayout* quality = group(tr("Quality"));
@@ -220,8 +219,7 @@ RenderImageDialog::RenderImageDialog(DocumentHost& host, OcctViewer& viewer, QWi
                                                {QStringLiteral("png16"), tr("PNG, 16 bits per channel")},
                                                {QStringLiteral("jpeg"), tr("JPEG")},
                                                {QStringLiteral("exr"), tr("OpenEXR (linear light)")}});
-  m_format->setToolTip(tr("PNG and JPEG as the view shows the render (exposure and view transform); OpenEXR keeps "
-                          "the render's linear light as it is, without them"));
+  m_format->setToolTip(tr("PNG and JPEG as the view shows the render; OpenEXR in linear light"));
   file->addRow(tr("Format"), m_format);
   m_quality = spin(QStringLiteral("quality"), 1, 100, QString(), tr("JPEG's quality: higher is larger and finer"));
   file->addRow(tr("JPEG quality"), m_quality);

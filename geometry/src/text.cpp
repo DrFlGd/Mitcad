@@ -254,6 +254,33 @@ TextOutlines text_outlines(const std::string& family, bool bold, bool italic, co
   return result;
 }
 
+FontFile font_file(const std::string& family, bool bold, bool italic) {
+  FontFile result;
+  if (family.empty() || lower(family) == lower(kBundledFont)) {
+    return result;
+  }
+  const std::lock_guard<std::mutex> lock(font_mutex());
+  Font_FontAspect aspect = bold ? (italic ? Font_FontAspect_BoldItalic : Font_FontAspect_Bold)
+                                : (italic ? Font_FontAspect_Italic : Font_FontAspect_Regular);
+  const occ::handle<Font_SystemFont> found = Font_FontMgr::GetInstance()->FindFont(
+      TCollection_AsciiString(family.c_str()), Font_StrictLevel_Strict, aspect, false);
+  if (found.IsNull()) {
+    return result;
+  }
+  bool synthesize = false;
+  int face = 0;
+  const TCollection_AsciiString& path = found->FontPathAny(aspect, synthesize, face);
+  if (path.IsEmpty()) {
+    return result;
+  }
+  result.found = true;
+  result.family = found->FontName().ToCString();
+  result.path = path.ToCString();
+  result.index = face;
+  result.synthetic_italic = italic && synthesize;
+  return result;
+}
+
 std::vector<std::string> font_families() {
   const std::lock_guard<std::mutex> lock(font_mutex());
   NCollection_Sequence<occ::handle<TCollection_HAsciiString>> names;

@@ -303,8 +303,7 @@ ProjectSettingsDialog::ProjectSettingsDialog(QWidget* parent, QString root, cons
   auto* webColumn = new QVBoxLayout(m_webBox);
   m_webUpdate = new QCheckBox(tr("&Update the web viewer on each Save"));
   m_webUpdate->setObjectName(QStringLiteral("projectWebViewerUpdate"));
-  m_webUpdate->setToolTip(tr("A Save that records a version also writes that design's page in the project's web "
-                             "folder and its index again; off: only File > Project > Update Web Viewer does"));
+  m_webUpdate->setToolTip(tr("Each Save that records a version also updates the design's web page"));
   m_webNote = note();
   webColumn->addWidget(m_webUpdate);
   webColumn->addWidget(m_webNote);
@@ -461,8 +460,7 @@ void ProjectSettingsDialog::showKind() {
   m_browser->setEnabled(!addressWebPage(m_url).isEmpty());
   m_fields->m_displayName->setPlaceholderText(defaultName());
   m_fields->m_displayName->setToolTip(
-      tr("The name the Projects panel shows for this project on this computer. The folder "
-         "and the repository keep their names. Empty: %1").arg(defaultName()));
+      tr("The name the Projects panel shows for this project on this computer; empty: %1").arg(defaultName()));
   m_status->setText(m_host.status ? m_host.status() : QString());
   // Several remotes and none followed (mitcad#89): which one first; the
   // project neither syncs nor has edit locks before.

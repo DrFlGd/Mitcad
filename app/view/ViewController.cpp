@@ -73,6 +73,8 @@
 // Texture folders for Edit Appearances (mitcad#315).
 #include "../materials/TexturePreferences.hpp"
 #include "../mcp/AgentFolders.hpp"
+// Font folders for sketch text (mitcad#473).
+#include "../sketch/FontFiles.hpp"
 
 namespace mitcad {
 namespace {
@@ -215,6 +217,8 @@ const PreferencePage kPreferencePages[] = {
     {"textures", QT_TRANSLATE_NOOP("View", "Textures"), "texture folders maps materials appearance images"},
     // The folders MCP agents may save to and open from (mitcad#402).
     {"agents", QT_TRANSLATE_NOOP("View", "Agents"), "mcp agent ai folders save open connection"},
+    // Folders of font files for sketch text (mitcad#473).
+    {"fonts", QT_TRANSLATE_NOOP("View", "Fonts"), "font folders text ttf otf woff typeface"},
 };
 
 QString onOff(bool on) { return on ? QStringLiteral("on") : QStringLiteral("off"); }
@@ -503,7 +507,7 @@ void ViewController::registerCommands() {
     syncChecks();
     qDebug() << "Component colors" << (m_settings.componentColors ? "on" : "off");
   }, {QStringLiteral("component"), QStringLiteral("color"), QStringLiteral("colour"), QStringLiteral("assembly")},
-      tr("Shows each component in a distinct color; toggle off to restore appearance colors"));
+      tr("Shows each component in a distinct color"));
   add("view.grid", tr("Layout Grid"), "grid", [this] { setGridShown(!m_settings.gridShown); },
       {QStringLiteral("grid")}, tr("Shows the grid on the ground or sketch plane"));
   add("view.snap_grid", tr("Snap to Grid"), "grid", [this] { setSnapToGrid(!m_settings.snapToGrid); },
@@ -537,7 +541,7 @@ void ViewController::registerCommands() {
   preferences.mode = CommandDef::Mode::Any;
   preferences.tab.clear();
   preferences.keywords = {QStringLiteral("options"), QStringLiteral("settings")};
-  preferences.tooltip = tr("General settings, navigation, display, cache, cloud, updates, 3D print and diagnostics");
+  preferences.tooltip = tr("General, navigation, display, cache, cloud, updates and other settings");
   preferences.run = [this] { showPreferences(); };
   preferences.duringCommands = true;
 #ifdef Q_OS_MACOS
@@ -1023,9 +1027,7 @@ void ViewController::showPreferences(const QString& page) {
   importTolerance->setSingleStep(0.001);
   importTolerance->setSuffix(tr(" mm"));
   importTolerance->setValue(general->importTolerance);
-  importTolerance->setToolTip(tr("How far an imported design's replayed geometry may be from the file's where it "
-                                 "is not exact: edges and faces the file names are found within it, and a "
-                                 "feature's new faces must lie on the file's within it"));
+  importTolerance->setToolTip(tr("How far replayed geometry of an imported design may be from the file's"));
   generalForm->addRow(tr("Import tolerance:"), importTolerance);
   groups.insert(QStringLiteral("general"), generalBox);
   // Automatic updates (mitcad#9).
@@ -1051,10 +1053,7 @@ void ViewController::showPreferences(const QString& page) {
   auto* debugLog = new QCheckBox(tr("&Write a debug log"));
   debugLog->setObjectName(QStringLiteral("debugLog"));
   debugLog->setChecked(DebugLog::instance().running());
-  debugLog->setToolTip(tr("Writes what Mitcad does (commands, sketch operations, computations, warnings) to a file "
-                          "in the log folder, so that a problem can be traced; on until turned off, also after a "
-                          "restart. A file rolls over at 20 MB; the folder keeps the newest 10 files, 200 MB at "
-                          "most."));
+  debugLog->setToolTip(tr("Writes what Mitcad does to a file in the log folder, so that a problem can be traced"));
   control(diagnosticsForm, debugLog);
   auto* logFolderPath = new QLineEdit(QDir::toNativeSeparators(DebugLog::instance().folder()));
   logFolderPath->setReadOnly(true);
@@ -1087,6 +1086,9 @@ void ViewController::showPreferences(const QString& page) {
   // Folders for MCP agents (mitcad#402).
   auto* agentsBox = new mcp::AgentPreferencesBox;
   groups.insert(QStringLiteral("agents"), agentsBox);
+  // Font folders for sketch text (mitcad#473).
+  auto* fontsBox = new sketch::FontPreferencesBox;
+  groups.insert(QStringLiteral("fonts"), fontsBox);
 
   QWidget* navigationBox = section(tr("Navigation"));
   auto* navigation = new QFormLayout(navigationBox);
@@ -1205,8 +1207,7 @@ void ViewController::showPreferences(const QString& page) {
     layoutChoice->addItem(tr("Docked"), int(ChromeStyle::Docked));
     layoutChoice->addItem(tr("Floating"), int(ChromeStyle::Floating));
     layoutChoice->setCurrentIndex(layoutChoice->findData(int(layoutPreference().value_or(defaultChromeStyle()))));
-    layoutChoice->setToolTip(tr("Docked: the panels in docks around the 3D view. Floating: the panels as cards over "
-                                "the 3D view. Takes effect when Mitcad starts again."));
+    layoutChoice->setToolTip(tr("Docked: panels in docks around the 3D view; Floating: cards over it"));
     display->addRow(tr("&Layout:"), layoutChoice);
   }
   // The layout chosen when the window opened or last applied.
@@ -1223,9 +1224,7 @@ void ViewController::showPreferences(const QString& page) {
     browserBackground->addItem(tr("Rows"), browserBackgroundId(BrowserBackground::Rows));
     browserBackground->setCurrentIndex(
         browserBackground->findData(browserBackgroundId(savedBrowserBackground())));
-    browserBackground->setToolTip(tr("Card: the Browser on a card. Rows: each row on a small box of its own, the "
-                                     "view between and beside them, where clicks, drags and the wheel reach "
-                                     "the view"));
+    browserBackground->setToolTip(tr("Card: the Browser on a card; Rows: each row on a small box of its own"));
     display->addRow(tr("&Browser background:"), browserBackground);
     if (chromeStyle() != ChromeStyle::Floating) {
       auto* note = new QLabel(tr("Applies in the Floating layout."));
@@ -1249,8 +1248,7 @@ void ViewController::showPreferences(const QString& page) {
   auto* ghostInactive = new QCheckBox(tr("&Ghost inactive components"));
   ghostInactive->setObjectName(QStringLiteral("ghostInactive"));
   ghostInactive->setChecked(m_settings.ghostInactive);
-  ghostInactive->setToolTip(tr("While a component other than the root is active, everything outside it is drawn "
-                               "faded; it can still be picked as a reference"));
+  ghostInactive->setToolTip(tr("Draws everything outside the active component faded"));
   control(display, ghostInactive);
   const auto applyGhostInactive = [this, ghostInactive] {
     if (ghostInactive->isChecked() == m_settings.ghostInactive) {
@@ -1266,9 +1264,8 @@ void ViewController::showPreferences(const QString& page) {
   auto* activePickPriority = new QCheckBox(tr("&Pick the active component first"));
   activePickPriority->setObjectName(QStringLiteral("activePickPriority"));
   activePickPriority->setChecked(m_settings.activePickPriority);
-  activePickPriority->setToolTip(tr("While a component other than the root is active, a click takes its items "
-                                    "under the cursor before nearer items of other components; click where only "
-                                    "another component lies to pick it"));
+  activePickPriority->setToolTip(
+      tr("A click takes the active component's items before nearer ones of other components"));
   control(display, activePickPriority);
   const auto applyActivePickPriority = [this, activePickPriority] {
     if (activePickPriority->isChecked() == m_settings.activePickPriority) {
@@ -1291,7 +1288,15 @@ void ViewController::showPreferences(const QString& page) {
 
   *commit = [this, general, top, bottom, scheme, zoomToCursor, reverseZoom, constrained, animate, camera, background,
              autosave, minutes, importTolerance, cacheBox, updatesBox, slicerBox, remoteBox, renderDevice, debugLog,
-             debugLogApplied, texturesBox, agentsBox, layoutChoice, layoutApplied] {
+             debugLogApplied, texturesBox, agentsBox, fontsBox, layoutChoice, layoutApplied] {
+    // Font folders for sketch text (mitcad#473).
+    const QStringList fontFolders = fontsBox->chosen();
+    if (fontFolders != sketch::savedFontFolders()) {
+      sketch::saveFontFolders(fontFolders);
+      qDebug().noquote() << QStringLiteral("Preferences: font folders %1")
+                                .arg(fontFolders.isEmpty() ? QStringLiteral("none")
+                                                           : fontFolders.join(QStringLiteral(", ")));
+    }
     // Folders for MCP agents (mitcad#402).
     const QStringList agentFolders = agentsBox->chosen();
     if (agentFolders != mcp::savedAgentFolders()) {
@@ -1441,6 +1446,7 @@ void ViewController::showPreferences(const QString& page) {
         {"diagnostics", "ladybug", "wrench"},
         {"textures", "photo.on.rectangle", "photo"},
         {"agents", "person.badge.key", "person.crop.circle"},
+        {"fonts", "textformat", "textformat.alt"},
     };
     for (const PreferencePage& entry : kPreferencePages) {
       QWidget* group = groups.value(QLatin1String(entry.id));
@@ -1484,6 +1490,7 @@ void ViewController::showPreferences(const QString& page) {
     connect(cacheBox, &CachePreferencesBox::changed, host, changed);
     connect(texturesBox, &TexturePreferencesBox::changed, host, changed);
     connect(agentsBox, &mcp::AgentPreferencesBox::changed, host, changed);
+    connect(fontsBox, &sketch::FontPreferencesBox::changed, host, changed);
     // The boxes of the other pages tell no change of their own: their
     // controls do.
     for (QWidget* box : std::initializer_list<QWidget*>{updatesBox, slicerBox, remoteBox}) {

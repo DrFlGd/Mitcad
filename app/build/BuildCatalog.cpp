@@ -218,6 +218,18 @@ bool Part::isFaceSheet() const {
   return text(build.value(QStringLiteral("panel")).toObject(), "mount") == QStringLiteral("face");
 }
 
+QString Part::boardProfile() const { return text(build.value(QStringLiteral("board")).toObject(), "profile"); }
+
+double Part::joinedCover() const {
+  const QString profile = boardProfile();
+  if (profile != QStringLiteral("tongue_and_groove") && profile != QStringLiteral("shiplap") &&
+      profile != QStringLiteral("feather_edge")) {
+    return 0.0;
+  }
+  const double cover = millimetres(build.value(QStringLiteral("board")).toObject().value(QStringLiteral("cover")));
+  return std::isfinite(cover) && cover > 0.0 ? cover : 0.0;
+}
+
 QString Part::slotsText() const {
   int slotCount = 0;
   for (const QJsonValue& value : build.value(QStringLiteral("frames")).toArray()) {
@@ -242,6 +254,10 @@ QString Part::label() const {
   }
   if (!config.isEmpty()) {
     about << config;
+  }
+  // A profiled board's cover width (mitcad#477): "cover 112".
+  if (joinedCover() > 0.0) {
+    about << QObject::tr("cover %1").arg(joinedCover(), 0, 'g', 6);
   }
   if (lessCommon()) {
     about << QObject::tr("less common");
@@ -317,10 +333,18 @@ void Catalog::refresh(const QString& role, const CommandContext& context) {
   // that asks for timber; the slot pickers list none of it.
   const bool timber = role == QStringLiteral("timber");
   const bool sheet = role == QStringLiteral("sheet");
-  const QString libraryRole = timber ? QStringLiteral("profile") : sheet ? QStringLiteral("panel") : role;
+  // The wood fasteners a timber frame drives at its junctions (mitcad#479).
+  const bool wood = role == QStringLiteral("wood");
+  const QString libraryRole = timber ? QStringLiteral("profile")
+                              : sheet ? QStringLiteral("panel")
+                              : wood  ? QStringLiteral("fastener")
+                                      : role;
   const auto keep = [&](const Part& part) {
     if (part.role() != libraryRole) {
       return false;
+    }
+    if (wood) {
+      return part.isWoodFastener();
     }
     if (libraryRole == QStringLiteral("profile")) {
       return part.isTimber() == timber;
@@ -363,6 +387,8 @@ void Catalog::refresh(const QString& role, const CommandContext& context) {
     request.insert(QStringLiteral("kind"), QStringLiteral("timber"));
   } else if (sheet) {
     request.insert(QStringLiteral("mount"), QStringLiteral("face"));
+  } else if (wood) {
+    request.insert(QStringLiteral("kind"), QStringLiteral("wood"));
   }
   QJsonObject answer = libraryCommand(request);
   if (answer.contains(QStringLiteral("error"))) {

@@ -796,6 +796,9 @@ private:
   bool importPath(const QString& path, bool interactive, QString* error = nullptr);
   bool importCad(const QString& path, double unitMillimetres, QString* error);
   bool importDrawing(const QString& path, bool interactive, QString* error);
+  // Insert SVG (mitcad#473): an SVG drawing into a new sketch, or the
+  // edited one.
+  void insertSvg();
   void insertMesh();
   void insertDxf();
   void insertComponent(const QString& path = QString());

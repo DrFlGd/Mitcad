@@ -909,6 +909,13 @@ lint use half the cores unless `CMAKE_BUILD_PARALLEL_LEVEL` /
   `mitcad_utf8_code_page(<target>)` (`cmake/Utf8CodePage.cmake`), so that
   its `argv` and file names are UTF-8 too.
 - Match the surrounding style and comment density.
+- A tooltip says in one short line what the control is or does: a
+  command's (`CommandDef::tooltip`, the ribbon and the menus) at most 80
+  characters, an input's or any other control's at most 100. No usage
+  instructions, no parenthesised asides, no lists of exceptions; a short
+  shortcut hint ("Place timber members (Enter places)") is allowed and
+  counts. The detail goes into the [user guide](user-guide.md). The ctest
+  `repo.tooltips` (`tools/tooltip-check`) checks the texts in `app/`.
 - Metric defaults everywhere ([architecture](architecture.md#units)).
 - New geometry operation: a `Kernel` method with a default
   `Err(Unsupported)` in `core/model/src/kernel.rs`, grouped by family;

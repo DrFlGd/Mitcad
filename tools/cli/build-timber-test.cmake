@@ -16,6 +16,13 @@
 #    mount frames and holes, the sheets.
 # 4. The pickers: the Profile picker lists no timber, the Timber picker
 #    the three families, sheets only on a face.
+# 5. The profiled boards (mitcad#477): tongue and groove floorboards and
+#    panel boards, shiplap and feather-edge cladding, deck boards smooth
+#    and grooved: their rows' profiles, cover widths and areas (the
+#    designs' volume per length at two rows each), their tongue and groove
+#    frames, and the pickers.
+# 6. Profiled boards placed: a floorboard on another's tongue, a shiplap
+#    row stepping by its cover, the cut list's area.
 #
 # cmake -DCLI=<mitcad-cli> -DWORK=<folder> -P build-timber-test.cmake
 
@@ -268,4 +275,119 @@ cli(library candidates --role panel)
 if(out MATCHES "plywood|osb-3|chipboard")
   message(FATAL_ERROR "the slot panels' picker lists sheets:\n${out}")
 endif()
-message("the timber parts: their sizes, designs, fasteners, connectors, sheets and pickers")
+
+# 5. The profiled boards (mitcad#477): each family a part of its
+#    category, every row a profile, a cover width not over its width and
+#    an area; no supplier. Their designs at two rows: the body's volume at
+#    a length of 1 mm is the row's area (so the mass, the density times
+#    it, is the cut list's); a board that joins the next has its tongue
+#    and groove the cover width apart.
+foreach(entry IN ITEMS "floorboard-tg|tongue-and-groove|tongue_and_groove|8|28x120|21x95"
+                       "panel-board-tg|tongue-and-groove|tongue_and_groove|8|15x95|20x120"
+                       "cladding-shiplap|cladding|shiplap|5|22x145|28x170"
+                       "cladding-feather-edge|cladding|feather_edge|4|22x150|22x100"
+                       "deck-board|decking|deck|5|28x120|34x145"
+                       "deck-board-grooved|decking|deck|3|28x120|34x145")
+  string(REPLACE "|" ";" fields "${entry}")
+  list(GET fields 0 id)
+  list(GET fields 1 category)
+  list(GET fields 2 profile)
+  list(GET fields 3 count)
+  list(GET fields 4 first_row)
+  list(GET fields 5 second_row)
+  component_index("${id}" index)
+  string(JSON value GET "${manifest}" components ${index} category)
+  same("${value}" "${category}" "${id}: its category")
+  foreach(key supplier part_number supplier_url)
+    string(JSON value ERROR_VARIABLE missing GET "${manifest}" components ${index} ${key})
+    if(NOT missing)
+      message(FATAL_ERROR "${id} names a ${key}: ${value}")
+    endif()
+  endforeach()
+  expect_field("${id}" "timber" kind)
+  expect_field("${id}" "${profile}" board profile)
+  string(JSON rows LENGTH "${manifest}" components ${index} build rows)
+  same("${rows}" "${count}" "${id}: its sizes")
+  math(EXPR last "${rows} - 1")
+  foreach(i RANGE ${last})
+    string(JSON name MEMBER "${manifest}" components ${index} build rows ${i})
+    string(JSON row GET "${manifest}" components ${index} build rows ${name})
+    string(JSON row_profile GET "${row}" board profile)
+    same("${row_profile}" "${profile}" "${id} ${name}: its profile")
+    string(JSON cover GET "${row}" board cover)
+    string(JSON width GET "${row}" section width)
+    string(REGEX REPLACE " mm$" "" cover "${cover}")
+    string(REGEX REPLACE " mm$" "" width "${width}")
+    if(cover GREATER width)
+      message(FATAL_ERROR "${id} ${name}: its cover ${cover} is over its width ${width}")
+    endif()
+    if(profile STREQUAL "deck" AND NOT cover STREQUAL width)
+      message(FATAL_ERROR "${id} ${name}: a deck board covers its width, not ${cover}")
+    endif()
+    string(JSON area GET "${row}" board area)
+  endforeach()
+  component_index("${id}" index)
+  string(JSON path GET "${manifest}" components ${index} path)
+  foreach(row ${first_row} ${second_row})
+    build_field("${id}" area rows ${row} board area)
+    file(WRITE "${WORK}/${id}-${row}.json" "[
+  {\"cmd\": \"apply_configuration\", \"name\": \"${row}\"},
+  {\"cmd\": \"set_parameter\", \"name\": \"L\", \"expression\": \"1 mm\"},
+  {\"expect\": {\"bodies\": 1}},
+  {\"expect\": {\"total_volume\": ${area}, \"tolerance\": 1e-5}}
+]")
+    cli(run "${WORK}/${id}-${row}.json" --open "${library}/${path}")
+    build_field("${id}" cover rows ${row} board cover)
+    message("${id} ${row}: ${area} mm2, covers ${cover}")
+  endforeach()
+  if(NOT profile STREQUAL "deck")
+    expect_field("${id}" "groove" frames 6 kind)
+    expect_field("${id}" "tongue" frames 7 kind)
+  endif()
+endforeach()
+# The floorboard 28x120: its tongue (mount:tongue, F17) 112 from its groove
+# (F15).
+file(WRITE "${WORK}/floorboard-frames.json" "[
+  {\"cmd\": \"apply_configuration\", \"name\": \"28x120\"},
+  {\"expect\": {\"query\": {\"query\": \"datum\", \"uid\": \"F15\"}, \"result\": {\"origin\": [-60, 0, 0], \"normal\": [-1, 0, 0]}}},
+  {\"expect\": {\"query\": {\"query\": \"datum\", \"uid\": \"F17\"}, \"result\": {\"origin\": [52, 0, 0], \"normal\": [1, 0, 0]}}}
+]")
+component_index(floorboard-tg index)
+string(JSON path GET "${manifest}" components ${index} path)
+cli(run "${WORK}/floorboard-frames.json" --open "${library}/${path}")
+cli(library candidates --role profile --kind timber)
+foreach(id floorboard-tg panel-board-tg cladding-shiplap cladding-feather-edge deck-board deck-board-grooved)
+  if(NOT out MATCHES "mitcad-parts/${id} ")
+    message(FATAL_ERROR "the Timber picker has no ${id}:\n${out}")
+  endif()
+endforeach()
+cli(library candidates --role profile)
+if(out MATCHES "floorboard|cladding-|deck-board")
+  message(FATAL_ERROR "the Profile picker lists profiled boards:\n${out}")
+endif()
+
+# 6. Placed (with the kernel): a floorboard 28x120 on another's tongue
+#    lies 112 on, its groove on that tongue; a row of shiplap 22x145 over
+#    1000 steps by its cover, 133 (eight boards, the last ripped to 69);
+#    the cut list's area: 2 x 0.112 + 1.0 m2.
+file(TO_CMAKE_PATH "${library}" url)
+set(floorboard "{\"library\": \"mitcad-parts\", \"url\": \"${url}\", \"rev\": \"HEAD\", \"component\": \"floorboard-tg\", \"config\": \"28x120\"}")
+set(shiplap "{\"library\": \"mitcad-parts\", \"url\": \"${url}\", \"rev\": \"HEAD\", \"component\": \"cladding-shiplap\", \"config\": \"22x145\"}")
+file(WRITE "${WORK}/profiled-placed.json" "[
+  {\"cmd\": \"build_place\", \"part\": ${floorboard}, \"at\": {\"point\": [0, 0, 0]}, \"length\": 1000},
+  {\"cmd\": \"build_place\", \"part\": {\"source\": \"S1\", \"config\": \"28x120\"}, \"length\": 1000,
+   \"at\": {\"occurrence\": \"O1\", \"geometry\": {\"mount\": \"F1:mount(tongue)\"}}},
+  {\"expect\": {\"query\": {\"query\": \"joint_frame\", \"occurrence\": \"O2\", \"geometry\": {\"mount\": \"F2:mount(groove)\"}},
+               \"result\": {\"origin\": [52, 0, 0], \"z_axis\": [-1, 0, 0]}}},
+  {\"expect\": {\"query\": {\"query\": \"joint_frame\", \"occurrence\": \"O2\", \"geometry\": {\"mount\": \"F2:mount(tongue)\"}},
+               \"result\": {\"origin\": [164, 0, 0], \"z_axis\": [1, 0, 0]}}},
+  {\"cmd\": \"build_place\", \"part\": ${shiplap}, \"at\": {\"point\": [0, 500, 0]}, \"to\": {\"point\": [1000, 500, 0]},
+   \"spacing\": {\"mode\": \"gap\", \"along\": [0, 1, 0], \"length\": 1000}},
+  {\"expect\": {\"query\": {\"query\": \"build_cut_list\"}, \"result\": {\"profiled\": true, \"totals\": {\"area\": 1.224}}}}
+]")
+cli(run "${WORK}/profiled-placed.json")
+if(NOT out MATCHES "Placed bodies: 10\n")
+  message(FATAL_ERROR "the shiplap row is not of eight boards:\n${out}")
+endif()
+
+message("the timber parts: their sizes, designs, fasteners, connectors, sheets, profiled boards and pickers")

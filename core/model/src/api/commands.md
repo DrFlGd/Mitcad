@@ -378,6 +378,54 @@ millimetres, angles radians. Build sketches with the
   (`sketch.edit_text`) drops `glyphs`: the text is laid out in its font,
   or in Droid Sans with the warning. The `.ipt` import sets it from the
   glyph contours the file keeps; `.f3d` files keep none.
+  `glyphs` may also hold the font's vertical metrics in the same units,
+  `ascender`, `descender` and `line_spacing`; then they are used instead
+  of the substitute font's.
+  `font_file` (mitcad#473, `sketch/fonts.rs`): `{"path": "…/Font.ttf",
+  "index": 0, "licence": "…"}`, the font file the text's font comes from
+  instead of an installed font (`.ttf`, `.otf`, a collection `.ttc` with
+  the face `index`, `.woff` or `.woff2`), and what the file's name table
+  says of its copyright and licence. `font` is then the file's family, and
+  the text's `glyphs` (with the metrics) are the file's outlines of the
+  text, stored when the file is chosen and whenever the string or the
+  style changes: while they fit the text, the text is laid out from them
+  and the file is not read, so the design is the same on every computer
+  (`stored_outlines` is true). Outlines that do not fit are read from the
+  file again; a file that is not there then fails the sketch with "choose
+  the font file again". The model reads the file itself (`skrifa`; `wuff`
+  decodes WOFF and WOFF2), not through the kernel. A font file is one
+  face: `bold` does not change it, `italic` slants an upright face by 0.2
+  of the height.
+  Shaping and both directions (mitcad#473): a text in a font file, and a
+  text in an installed font with characters of right-to-left or joining
+  scripts, combining marks or bidirectional controls (Hebrew, Arabic,
+  Syriac, the Indic scripts, Thai, …; `sketch::fonts::needs_shaping`), is
+  shaped by the model (`harfrust`: joined forms, ligatures, marks,
+  kerning) from the font's file (an installed font's through the kernel's
+  `font_source`), in runs of one direction by the Unicode bidirectional
+  algorithm (`unicode-bidi`), each line on its own. Characters that shape
+  together (a ligature, a letter and its marks) are one glyph `g<k>`, `k`
+  the first character's index, with all their contours; the others of
+  the cluster have none. Every line's characters are laid out in their
+  visual order (`text::visual_lines`): a right-to-left run reads from
+  right to left, numbers in it from left to right, and alignment,
+  frames, paths and flips work on the visual line. Other installed-font
+  text keeps the kernel's glyphs. Glyphs of joined letters overlap a
+  little, as fonts draw them, so a letter's contour can cut its
+  neighbour's region in two: extrude the whole word.
+  `code` (mitcad#473, `sketch/code.rs`): `{"kind": "qr", "ecc": "M"}`, the
+  text is a QR code of its `text` (the `qrcode` crate; error correction
+  `L`, `M` the default, `Q` or `H`) instead of characters: `height` is a
+  module's size (mm), `at` the lower left corner of the modules, turned
+  by `angle`; fonts, alignment, frames and paths do not apply (a frame or
+  a path is refused). The dark modules that share sides are one area,
+  bounded by one contour along their outside and one round each light
+  island in it, glyph contours `t9.g0.c<j>` numbered from the lowest
+  leftmost one up; modules that touch only at a corner are apart there
+  (their contours meet at that point). A region bounded by several such
+  contours (a light island that meets another at a corner) still has
+  the region's `text`, and `letter` true when a point inside it lies
+  within an odd number of the text's contours (the material).
 - `patterns`: copy groups, `{"id": "k5", "type": "circular", "center":
   "p3", "count": 6, "angle": "d4", "entities": ["c2", "p7"], "copies":
   [{"index": [1, 0], "entities": {"c2": "c9", "p7": "p10"}}, …]}` or
@@ -538,6 +586,15 @@ parameters.
     radius on its inside, or one that folds over itself, fails.
 - `flip`: reverses the direction (the sketch normal by default).
 - `operation`, `participants`: see the shared rules.
+- `wrap` (optional, mitcad#473): `{"body": "F2.b0", "face":
+  "F2:side(c1)"}`, a cylindrical or conical face the profiles are wrapped
+  onto as an [emboss](#emboss) wraps them (`Kernel::wrapped_emboss`: by
+  arc length on a cylinder, by the development on a cone), and grown
+  along the face's normals by the distance: out of the material, or into
+  it with `flip` or a negative distance (an engraving, with `cut`). It
+  takes profiles and an extent `distance` without a taper, from the
+  profile plane, without `thin` or `cut_scope`; the sketch plane is
+  parallel to the axis. Faces as an emboss's.
 
 Faces: `side(<segment>)`; `outer(<segment>)` and `inner(<segment>)` for
 thin walls (side 1 and side 2); `start(<region>)` and `end(<region>)`.
@@ -1768,6 +1825,19 @@ with `"mode": "sink"` sunk into it and cut (mitcad#458,
   outer face when raised, inwards when sunk; on a bore's wall the other
   way. A sink that reaches the axis, profiles wider than the
   circumference and a sketch across the axis fail.
+- `face` a conical face (mitcad#473, `Kernel::face_cone`): the profiles
+  are laid onto the cone by its development, the sketch laid against the
+  cone along the generator under the sketch's origin. With the sketch
+  plane parallel to the axis, a sketch point at `s` across the axis and
+  `t` along it (from the origin's height, towards where the cone widens)
+  goes to the distance `hypot(s, t + ρ0)` from the apex along the
+  generator turned `atan2(s, t + ρ0) / sin α` about the axis (α the half
+  angle, ρ0 the slant distance of the origin's height): lengths, angles
+  and areas on the cone are the sketch's. The profiles grow along the
+  cone's normals by `depth` (the top a cone of the same angle), out of
+  the material when raised; on a countersink's wall the other way. A
+  sketch origin past the apex, profiles past the apex or around the
+  cone, and a sink that reaches the axis fail.
 - No `face`: from the sketch plane along its normal (raise) or against
   it (sink).
 - `participants`: the bodies joined or cut; empty for the face's body,
@@ -3124,8 +3194,8 @@ made, in order) and `status` (as the `sketch` query: `dof`,
 | `sketch.slot` | `mode`: `center_to_center` (`a`, `b`), `center_point` (`center`, `end`: an end's centre), `arc` (`center`, `start`, `end`); `width` | two end arcs, two tangent sides, a construction centre line or arc with the arc centres at its ends, equal end arcs |
 | `sketch.ellipse` | `center` (point input), `major` (end of the major axis), `minor_radius`, `start` and `end` (point inputs; an elliptical arc), `construction` | |
 | `sketch.spline` | `points` (point inputs), `degree` (optional), `construction` | without `degree` a cubic through the points; with it, a B-spline with these control points |
-| `sketch.add_text` | `text`, `at` (or `frame`), `height`, `angle`, `font`, `bold`, `italic`, `align`, `valign`, `spacing`, `frame` (three point ids, or `{"corner": [x, y], "diagonal": [x, y]}`: a new construction rectangle, turned by `angle`), `path`, `flip_x`, `flip_y`, `cap_height`, `wrap`, `line_spacing`, `pen_align`, `ink_top`, `glyphs` (stored outlines, see the sketch definition's `texts`) | the glyphs bound profiles |
-| `sketch.edit_text` | `id`, and any of `text`, `at`, `height`, `angle`, `font`, `bold`, `italic`, `align`, `valign`, `spacing`, `path`, `flip_x`, `flip_y`, `cap_height`, `wrap`, `line_spacing`, `pen_align`, `ink_top` | a new `text`, `font`, `bold` or `italic` drops the text's stored `glyphs` |
+| `sketch.add_text` | `text`, `at` (or `frame`), `height`, `angle`, `font`, `bold`, `italic`, `align`, `valign`, `spacing`, `frame` (three point ids, or `{"corner": [x, y], "diagonal": [x, y]}`: a new construction rectangle, turned by `angle`), `path`, `flip_x`, `flip_y`, `cap_height`, `wrap`, `line_spacing`, `pen_align`, `ink_top`, `glyphs` (stored outlines, see the sketch definition's `texts`), `font_file` (a font file's path instead of `font`, mitcad#473: the file's family becomes `font`, its outlines of the text are stored; a file that cannot be read or is not a font is refused) | the glyphs bound profiles |
+| `sketch.edit_text` | `id`, and any of `text`, `at`, `height`, `angle`, `font`, `bold`, `italic`, `align`, `valign`, `spacing`, `path`, `flip_x`, `flip_y`, `cap_height`, `wrap`, `line_spacing`, `pen_align`, `ink_top`, `font_file` (a font file's path; `""` leaves the file for `font`) | a new `text`, `font`, `bold` or `italic` drops the text's stored `glyphs`; for a text in a font file it stores the file's outlines again (refused when the file is not there), and another `font` leaves the file |
 | `sketch.add_constraint` | `constraint`: as in the definition, without `id` | a `coincident` between the end points of two curves merges them into one point (see [Points that become one](#points-that-become-one)): the result has no new constraint, `removed` lists the removed point (and what the merge dropped), and `merged` is `{"kept": "p3", "removed": "p7"}`; a constraint that older geometric constraints imply in part replaces them: `removed` lists them and `implied_removed` is `[{"constraint": "k1", "type": "horizontal"}]` (see [A constraint that replaces one it makes redundant](#a-constraint-that-replaces-one-it-makes-redundant)) |
 | `sketch.add_dimension` | `dimension`: as in the definition, without `id`, `value`, `driven`; `value` (default: what it measures now), `driven`, `text` [x, y] | |
 | `sketch.set_dimension` | `dimension` (`k3`), `value` | a number or an expression changes the dimension's own parameter; a parameter name makes the dimension use that parameter; `name = expression` renames its parameter and sets it (see [Values](#values)); a driven dimension becomes driving (its reference parameter becomes its parameter, under the same name) |
@@ -3150,6 +3220,9 @@ made, in order) and `status` (as the `sketch` query: `dof`,
 | `sketch.edit_pattern` | `pattern` (`k5`), and any of `count` (n, or [n1, n2]), `angle`, `spacing`, `direction`, `center`, `entities` (the originals) | the copies follow |
 | `sketch.project` | `source`: an edge, a face (its boundary) or a vertex of the bodies before the sketch, `body` (optional), `linked` (default false), `occurrence` and `context` (optional: geometry of another component, see [Geometry of other components](#geometry-of-other-components)), `section` (default false: a face's section curves instead, see [Section curves in sketches](#section-curves-in-sketches)) | fixed reference entities, a curve or point the same as another of the source once; a planar B-spline seen edge on is the line between its extreme points (mitcad#389), as a conic is; a linked projection follows its source when the model changes, each entity the fresh curve of its kind most like it (`by_geometry` in its record, since 0.4.1); a projection without it (files of earlier versions, imports) follows only a source whose curves come back of the same kinds, in the same order and joined the same way, and otherwise keeps its geometry and warns (mitcad#249) |
 | `sketch.import_dxf` | `path` (.dxf), `unit` (of a drawing that names none: `mm` default, `cm`, `m`, `in`, `ft`), `at` (the sketch point the drawing's origin goes to, default [0, 0]), `layers` (only the entities on these layers; all when left out; a layer with nothing on it is refused) | as other edits, and `curves`, `points` (shared points made), `text_count`, `warnings`; undo step `Insert DXF into Sketch1`; see [DXF](#dxf-into-sketches) |
+| `sketch.import_svg` | `path` (.svg), `scale`, `at`, `stroke_outline` (mitcad#473) | see [SVG](#svg-into-sketches) |
+| `sketch.add_code` | `text` (the content), `at` (the lower left corner, default [0, 0]), `module` (mm, default 1), `angle`, `kind` (`qr`), `ecc` (`L`, `M` default, `Q`, `H`) (mitcad#473) | a text with `code` (see the sketch definition's `texts`), `texts` [its id]; undo step `Add QR Code to Sketch1`; a content no QR code holds (too long for the level) or a module of no size is refused |
+| `sketch.edit_code` | `id` (`t5`), and any of `text`, `at`, `module`, `angle`, `ecc` | undo step `Edit QR Code in Sketch1`; refused as `sketch.add_code` |
 | `sketch.clean_up_projections` | `merge` (default true: also lines on or overlapping a collinear one) | as other edits, and `cleaned` (`[{"curve", "kept", "how", "link"}]`; `how`: `same`, `on` or `joined`; `link`: the source the removed curve followed when the kept one does not) and `warnings` (what it removed, links lost, regions later features use that change their names); undo step `Clean Up Projections in Sketch1`; see [Clean Up Projections](#clean-up-projections) |
 | `sketch.clean_up_stale_projections` | none | as other edits, and `stale` (`{"removed": [curves], "trimmed": [lines], "unlinked": [sources], "kept": [{"curve", "why"}], "preview": {"removed": [{"curve", "type", "geometry"}], "cut": [{"line", "start", "end"}]}}`; `why`: `region`, `user_curve`, `constrained` or `used`; `preview`: the removed curves as they were, geometry as the `sketch` query gives it, and the pieces trimmed off lines, from the old end to the new one, for a preview to draw) and `warnings` (the same in words, and regions later features use that change their names); undo step `Clean Up Stale Projections in Sketch1`; see [Clean Up Stale Projections](#clean-up-stale-projections) |
 | `sketch.convert_projected` | `entities`: curves and points | the projected ones become ordinary free sketch geometry; as other edits, and `converted` (the entities converted), `kept` (their points that stay projected) and `warnings`; undo step `Convert to Sketch Geometry in Sketch1`; see [Convert to Sketch Geometry](#convert-to-sketch-geometry) |
@@ -4038,6 +4111,51 @@ centres closer than 1e-6 mm become one sketch point, so joined curves
 stay joined; nothing is constrained or dimensioned. `warnings` lists what
 the reader approximated and entities left out. A drawing with nothing a
 sketch can hold is refused.
+
+### SVG into sketches
+
+| Command / query | Fields | Result |
+|---|---|---|
+| `sketch.import_svg` | `sketch`, `path` (.svg), `scale` (sketch mm per mm of the drawing, default 1), `at` (where the drawing's lower left corner goes, default [0, 0]), `stroke_outline` (default false: stroked paths also as bands of their stroke width) | as other edits, and `curves`, `points` (shared points made), `text_count`, `bands` (strokes made bands), `filled` (the keys of the sketch's regions the drawing paints), `size` ([w, h] mm), `warnings`; undo step `Insert SVG into Sketch1` |
+| `svg_info` query | `path` (.svg) | `size` ([w, h] mm at scale 1), `shapes`, `paths`, `filled` and `stroked` (shapes), `texts`, `warnings` |
+
+`sketch.import_svg` (mitcad#473, `sketch/svg.rs`) reads `path`, `rect`
+(rounded corners too), `circle`, `ellipse`, `line`, `polyline`, `polygon`,
+`text` (with its spans' text: a sketch text at its anchor, `font-size`
+high, in its first `font-family`, aligned by `text-anchor`) and `use`
+(of an element or a `symbol`), through groups and their `transform`s,
+with `fill`, `fill-rule`, `stroke`, `stroke-width`, `display` and
+`visibility` from attributes and `style` attributes (style sheets are
+not read: a warning). Images and foreign objects are left out with a
+warning.
+
+- Geometry, exactly: lines are lines; quadratic and cubic Bézier pieces
+  are splines of degree 2 and 3 with the same control points; elliptical
+  arcs and circles are arcs and circles of the sketch where the drawing's
+  transforms keep them round, and elliptical arcs and ellipses where they
+  do not (`preserveAspectRatio="none"`, a non-uniform `scale`). End
+  points closer than 1e-6 mm are one sketch point.
+- Units: a user unit is a millimetre, unless the root `svg` has a
+  `viewBox` and a `width` or `height`: the viewBox then fills that size
+  (`mm`, `cm`, `in`, `pt`, `pc`, `px` at 96 per inch; a plain number is
+  millimetres), uniformly and centred unless `preserveAspectRatio` is
+  `none`. Absolute lengths inside the drawing follow the same scale.
+  `scale` multiplies it all. The drawing's y runs down, the sketch's up;
+  its viewport's lower left corner (or its content's, without a size)
+  goes to `at`.
+- `filled`: each region of the sketch after the insert is tested at a
+  point inside it against every filled shape by its `fill-rule`
+  (`nonzero`, the default, counts the windings of its subpaths;
+  `evenodd` their crossings), and with `stroke_outline` against the
+  bands, so a logo's letters with their counters or a ring with its hole
+  extrude as drawn when Extrude takes the `filled` regions.
+- `stroke_outline`: a stroked path also becomes the band of its stroke
+  width (the sketch's offset by half the width to both sides, round at
+  corners; square ends on an open path); a path that is only stroked
+  then leaves its middle line out. Without it a stroked path is its
+  middle line. A band whose offset fails (a curve tighter than half the
+  width) is left out with a warning.
+- A drawing with nothing a sketch can hold is refused.
 
 ### Base features from shapes
 
@@ -8985,7 +9103,8 @@ cladding (a board row: a gap).
     is `ceil(span / (w + gap))` and the last board is ripped to
     what is left (a `rip` cut, *Joinery*, when less than `w`); with `fit`
     `spread` the count is `floor((span + gap) / (w + gap))` and the gaps
-    are widened so that the last board ends at the span.
+    are widened so that the last board ends at the span. Profiled boards
+    that join are laid edge to edge instead (*Profiled boards* below).
   - `count` (optional) fixes the count instead: `centre` spreads the
     members evenly over the span, `gap` spreads the gaps; `0` (in
     `build_edit`) goes back to the count from the span.
@@ -9131,7 +9250,8 @@ The cuts are kept in the members' derived parts, in `cuts` (beside
   `depth` (a number) is the depth the joint was asked for, kept to cut it
   anew.
   `kind` is `housing`, `notch`, `half_lap` or `rip` (a board ripped to the
-  width left, *Spacing sets*). `with` and `junction` name the other
+  width left, *Spacing sets*), or `birdsmouth` (a rafter notched over a
+  wall's top plate, *BUILD: timber frames*). `with` and `junction` name the other
   member and the junction.
 - **Bound to the members.** The coordinate along the member is an
   expression: of the other member's slide when it slides on this one
@@ -9176,8 +9296,12 @@ The cuts are kept in the members' derived parts, in `cuts` (beside
   adds `kind` (`timber` or null), `material` (`{species, finish, grade,
   density}`, the grade the part's own), `nominal` and `section`
   (`{width, height}`, mm), `availability`, `running_metres` (length ×
-  quantity / 1000) and `volume` (m³, W × T × length × quantity). A timber
-  row's `mass` (each) is the density × W × T × length.
+  quantity / 1000) and `volume` (m³, the section's area × length ×
+  quantity; the area W × T, a profiled board's `board.area`). A timber
+  row's `mass` (each) is the density × the area × length.
+- With profiled boards (*Profiled boards* below) the answer adds
+  `profiled: true` and `totals.area`, and every row `profile`, `cover`
+  and `area` (null for other rows).
 - Rows are grouped by the grade too, and `machining` lists the joinery
   cuts after the holes: `{at: null, kind, size, with, diameter: null}`.
 - `stock` is per source and configuration row (`config` in the entry when
@@ -9187,7 +9311,8 @@ The cuts are kept in the members' derived parts, in `cuts` (beside
   each piece shortened).
 - `build_parts` adds to each part `kind` (`timber` or null), `grade`,
   `set` (the lead's component or null), `spacing` (the lead's: the
-  definition and `count`), `cuts` (`{kind, with, junction, size}`).
+  definition and `count`), `cuts` (`{kind, with, junction, size}`), and
+  `board` (a profiled board's `{profile, cover, joined}`, else null).
 - `build_junctions` adds `wood` to a junction whose members are both
   timber: `{through, into, thickness, max_diameter, sections}` (the member a
   fastener goes through and the one it goes into, the thickness gone
@@ -9195,6 +9320,54 @@ The cuts are kept in the members' derived parts, in `cuts` (beside
   `{"a": [W, T], "b": [W, T]}` for the pickers).
 - `build_place`, `build_edit` take `grade` (text; null clears): the
   part's own grade, else its row's `material.grade`.
+
+### Profiled boards
+
+Tongue and groove boards, shiplap and feather-edge cladding and deck boards
+(mitcad#477; `build/profiled.rs`, tests `build/profiled_tests.rs`) are
+timber members with a `board` block (docs/libraries.md, *Timber parts*):
+
+```json
+"board": {"profile": "tongue_and_groove", "cover": "112 mm", "area": 3123.5,
+          "tongue": {"length": "8 mm", "thickness": "8 mm"}}
+```
+
+- `profile`: `tongue_and_groove`, `shiplap`, `feather_edge` or `deck`;
+  `cover` the width a board covers in a row (a deck board's: its width,
+  when left out); `area` the section's area in mm²; `tongue`, `overlap`,
+  `edge_radius` and `grooves` the sizes of its joint or edges (a row's own
+  through `build.rows`). The section's box lies as any member's (centred,
+  `section.width` its full width along X, the thickness along Y), its
+  visible face towards +Y.
+- **Boards that join** (tongue and groove, shiplap, feather-edge) have
+  two more frames: `groove` (kind `groove`) on the box's −X side, z −X,
+  and `tongue` (kind `tongue`) the cover width on from it, z +X, both at
+  y = 0 and z = 0, x along +Z. The tongue's edge goes under the next
+  board (a shiplap's lip, a feather-edge board's thin edge).
+- **Against another board.** `build_place` with `at.geometry` a board's
+  `tongue` frame mates the new board's `groove` there (its `tongue` in a
+  `groove` frame): a `rigid` joint, flipped, so the new board lies beside
+  it the cover width on, tongue into groove, its ends level (its length as
+  `length` gives). The profiles must match: both boards of one `profile`
+  and thickness, with the same tongue (length and thickness) or overlap
+  within 0.01 mm; otherwise refused (`the profiles do not match: the
+  tongues of <new> and <target> differ`). The answer's `place` is `frame`.
+- **Rows.** A spacing set in `gap` mode (*Spacing sets*) of boards that
+  join, laid across their width (the set's direction along the board's X),
+  is laid edge to edge: the step is the cover width `c`, no gap (a gap
+  asked for is not kept, and `warnings` says so: `<part> joins edge to
+  edge: laid without the gap of 5 mm`), the count `ceil((span - (w - c)) /
+  c)` with `w` the full width, and the last board ripped to what is left
+  (`span - (n - 1) × c`) when that is less than `w`. `fit` `spread` lays
+  them as `cut`; a `count` lays that many edge to edge (refused when they
+  do not fit the span). Deck boards, and boards laid another way, keep the
+  gap and the rules above.
+- **Lists.** A profiled board's `mass` and `volume` come from its
+  `board.area`. With profiled boards the cut list adds `profiled: true`,
+  each row `profile`, `cover` (mm) and `area` (m², the area covered: the
+  cover width × length × quantity; a ripped board covers what is left of
+  it up to its cover width), and `totals.area`. `build_parts` gives each
+  part's `board`.
 
 ### Pickers
 
@@ -9207,6 +9380,47 @@ The cuts are kept in the members' derived parts, in `cuts` (beside
 - A junction with `wood` (from `build_junctions`) is offered wood
   fasteners and outer connectors whose `fit` fits its members, and no
   slot connectors; a junction without `wood`, as before.
+
+### Frames of members (mitcad#485)
+
+Three rules for frames of members (code `build/place.rs`; tests
+`build/close_tests.rs`):
+
+- **A member on the ground lies flat or on edge.** `build_place`'s `lie`
+  (*Members by two points*) also turns a member placed on the ground
+  along `at.direction`: on a plane or a face (the plane's normal is "up")
+  or grounded (the host's +Z): `flat` puts the section's smaller dimension
+  across the plane, `edge` the larger one. A member standing square to the
+  plane keeps its X along the host's X. Without `lie` (Profile) the
+  placement is as before.
+- **A member on a member's end lies as that member does.** A timber
+  member placed on a timber member's end, straight on or turned at a
+  corner, has its thickness axis (its section's smaller side) parallel to
+  the target's where the direction allows it: the end frame's x is turned
+  a quarter about the new axis when only that does (straight on, a
+  `frame_override` with `x_axis` only). Two boards of one size meet with
+  ends of the same width and flush faces. `rotate` and `flip` turn it
+  further; a square section, or a slot profile, is placed as before.
+- **Closing a frame.** A part placed on an end (`place` `end`) whose length
+  is bound (`length.bind`) to a member its far end meets end to end, as a
+  corner, gets that end made as its start: the ray from its start along
+  its axis meets the member, not along the member's axis, within the
+  member's section size of one of its ends (as `build_junctions` finds an
+  `L`), and the member is not the one the start is on. Then:
+  - with the start mitred (a cut at the end that meets, a corner's shared
+    mitre), both ends at the corner get a shared mitre, each by half the
+    angle between the axes (45° in a square frame), leaning towards the
+    other's axis away from the corner, and the bound length's `mode` is
+    `through`: the length runs to the member's outer side, the long point,
+    so the outer corners meet;
+  - with the start square, the bound length's `mode` is `face`: a square
+    butt on the member's face, never into it.
+
+  The bound length stays: moving either member (a length changed, a joint
+  dragged) keeps the corner. `build_preview` answers it as `closing`:
+  `{component, end ("a" or "b": the member's end at the corner), mitre
+  ("shared" or "none"), angle}`, null when the placing closes no corner;
+  its `length.mode` is the mode the length gets.
 
 ### Classes
 
@@ -10542,3 +10756,153 @@ Tests: `features::gear_profile` and `features::gear_tests`,
 
 The `.f3d` and `.solidcraft` imports can map their files' gears onto the
 definition later; it is kept in the design file as it is.
+
+## BUILD: timber frames
+
+A wall, floor or roof frame of timber members made from a few values
+(mitcad#479), edited afterwards as one. Its members are ordinary BUILD
+parts (*BUILD: timber construction*): grounded members by two points of
+the library's timber, in the cut list, junctions and lists like any
+other. The app's Timber tool makes them in its Frame mode and Timber
+Frame lays them out again (`app/COMMANDS.md`, *Timber*). Code:
+`core/model/src/build/frames.rs`; tests `core/model/src/build/frame_tests.rs`.
+
+```json
+{"cmd": "build_frame", "kind": "wall", "part": {"source": "S1", "config": "48x98"},
+ "start": [0, 0, 0], "end": [3600, 0, 0], "height": "2400 mm", "spacing": 600,
+ "openings": [{"offset": 600, "width": 900, "height": 1200, "sill": 900}],
+ "fastener": {"library": "mitcad-parts", "url": "...", "rev": "...", "component": "wood-screw"}}
+```
+
+`build_frame` (class `remote`) takes `kind` (`wall`, `floor` or `roof`),
+`part` (the members' timber: studs, joists, rafters; `role: profile`,
+`kind: timber`, cut to length, with its `section`) and, by kind, the fields
+below. Points are in the BUILD host's coordinates, lengths values (mm or
+an expression), openings numbers in mm. `name` (optional) names the frame
+(`Wall 1`, `Floor 1`, `Roof 1` by default; unique among the frames); the
+members' components are named after it and their role (`Wall 1 stud
+(3)`). `fastener` (optional) is a wood fastener: two of them, sized from
+the members (*Wood fasteners*' default), are driven at every junction of
+two of the frame's members that has no connector; a junction they are
+refused at is left as it is.
+
+- **A wall** (`kind: wall`): `start` and `end`, its centre line at its
+  base (made level with the start); `height` (default 2400 mm, the
+  underside of the bottom plate to the top of the top plate); `spacing`
+  (the studs' centre distance, default 600); `plates` `{bottom, top}`
+  (1 or 2 each, default 1); `plate` and `header` (parts, default `part`);
+  `openings` `[{offset, width, height, sill}]` (`offset` from the start
+  along the wall to the rough opening's near side, `sill` its underside's
+  height above the base; 0 or left out: a door); `joins` `{start, end}`:
+  the wall frames (any member of each) its ends butt against.
+  - The plates lie flat, the studs stand with the larger section size
+    across the wall: the wall's depth is the stud's larger size. The end
+    studs stand flush with its ends; the others at `k × spacing` from its
+    start (centres), one that would touch the end stud left out.
+  - An opening: king studs (full height) and trimmer studs (the bottom
+    plate to the header) on each side; a header on edge between the king
+    studs on the trimmers, of as many plies as the wall's depth takes
+    (`floor(depth / thickness)`, two 48 mm plies in a 98 wall); a window's
+    sill flat between the trimmers; cripple studs at the stud places in
+    the opening, above the header and below the sill. A door cuts the
+    bottom plates. The studs at the opening's place give way. Refused:
+    an opening that does not fit between the end studs, openings whose
+    studs overlap, a header above the top plate, a sill below the bottom
+    plate.
+  - **Corners and T-junctions:** a wall's end in `joins` stops at the face
+    of the wall it names (on the side the wall is on); that wall gets a
+    stud for each wall that joins it: where the joining wall's centre line
+    meets it within that wall's depth of its end, a corner (it runs on to
+    the joining wall's outer face, the stud just inside the corner), else
+    a T (a stud on each side of the joining wall). A wall that joins
+    another one lays that one out again with it.
+- **A floor or ceiling** (`kind: floor`): `outline` (a closed outline,
+  three points at least, at its first point's height: the joists'
+  underside), `spacing` (default 400), `direction` (the joists'; default
+  square to the outline's first side, into it), `rim` (default `part`),
+  `blocking` (rows of blocking, default 0), `openings` `[{offset: [a, b],
+  size: [w, l]}]` (from the outline's least corner across the joists and
+  along them), `trimmers` (default 2).
+  - Rim joists on edge along every side, inside the outline; at a corner
+    the side across the joists runs through (exact at square corners).
+    Joists on edge at `k × spacing` from the outline's least point across
+    them, from rim to rim (each place cut where the outline is open, as an
+    L or a U), one that would touch a rim along the joists left out.
+  - A row of blocking runs across the joists halfway (rows evenly along
+    them), a block between each two neighbouring joists or rims.
+  - An opening (a stair's): `trimmers` trimmer joists each side, full span;
+    as many header joists each side between the inner trimmers; tail
+    joists from the rims to the headers at the joist places inside it.
+    Refused when it does not fit inside the rims with its trimmers.
+- **A roof** (`kind: roof`): `walls` (two parallel wall frames, any member
+  of each), `roof` (`gable`, the default, or `mono`), `pitch` (an angle,
+  5 to 75 degrees; a gable's default 30; a mono-pitch roof's default from
+  the walls' heights), `spacing` (the rafters', default 600), `overhang`
+  (the rafters' horizontal run beyond the walls' outer faces, default
+  300), `ridge` (default `part`).
+  - The rafters stand on edge at the centre distance along the walls
+    where both run (the first and last flush with those ends), each plumb
+    cut at both ends (`ends` at the pitch: end A leaning up, its long
+    point the bottom edge at the eave; end B leaning down, its long point
+    the top edge) and notched by a **birdsmouth** over each wall's top
+    plate: a `birdsmouth` cut (*Joinery*) in its derived part, the box
+    under the top of the plate over its width, `with` the wall's lead. The
+    seat is the plate's width, or less so that the notch is at most a
+    third of the rafter's depth; a gable roof's rafters bear on the outer
+    edge of each wall.
+  - Gable: the rafters of each side run from the eave to a ridge board on
+    edge halfway between the walls' outer faces, its top at the rafters'
+    tops; the walls must be of one height. Mono-pitch: from the lower wall
+    over the higher one, notched over both.
+  - Warnings: a ridge board shallower than the rafters' plumb cut, a
+    birdsmouth deeper than a third of the rafter, rafters that do not bear
+    on a wall.
+
+The answer: `component` and `frame` (the lead), `name`, `kind`, `members`
+(`[{component, member}]`), `count`, `fasteners` (the junctions given
+fasteners), `relaid` (other frames laid out again with it), `warnings`
+(the frame's, the layout's, and the first ten fasteners' warnings);
+undo step `Place wall frame Wall 1`, one step with the fasteners.
+
+**What is kept.** The lead (a wall's top plate, a floor's first rim, a
+gable roof's ridge board, a mono-pitch roof's first rafter) keeps the
+frame's definition in its record (`framing`: `{frame, count}`, its parts
+as `{source, config}`, `joins` and `walls` as the frames' leads); every
+member's record has `frame` (the lead) and `member`, its place in the
+frame: `plate.top.0`, `plate.bottom.0` (`.0`, `.1`, ... when a door cuts
+it), `stud.start`, `stud.end`, `stud.<k>`, `junction.<wall>.<end>`,
+`opening.<n>.king.a`, `.trimmer.b`, `.header.<ply>`, `.sill`,
+`.cripple.top.<k>`, `.cripple.bottom.<k>`; `rim.<side>`, `joist.<k>`,
+`joist.<k>.tail.a`, `opening.<n>.trimmer.a.<i>`, `.header.b.<i>`,
+`block.<row>.<k>`; `ridge`, `rafter.a.<k>`, `rafter.b.<k>`,
+`rafter.<k>`. `build_parts` adds `frame`, `member` and the lead's
+`framing` (`{definition, count}`).
+
+**Editing a frame.** `build_edit` with `frame` (any of the fields above;
+`{}` lays it out again as it is) and optionally `config` (the members'
+row) through any member: the frame laid out again with these fields over
+its definition, in one undo step `Edit Wall 1`. A wall's `length` moves
+its end along it. The members whose place stays keep their components
+(placed anew, their length, row and cuts; connectors on them stay), new
+places are made, the others removed as by `build_remove`; the frame's
+fasteners are taken away and driven anew. The frames that depend on it
+are laid out again too: the walls it joins and those that join it
+(before and after the edit), and the roofs on any of these walls; one
+that can no longer be laid out stays as it was, with a warning. The
+answer as `build_frame`'s, with `changed` (`frame`, `config`).
+Members of a frame are otherwise ordinary parts: a member edited alone
+(its length, ends) keeps its change until the frame is laid out again.
+
+**Preview.** `build_preview` with `frame` (`build_frame`'s fields, or a
+frame edit's with `component`) answers `place: "frame"`, `kind`, `name`,
+`count`, `roles` (`{role: count}`), `members` (`[{member, role, start,
+end, length, x, section}]` in the design: the axis, the section's X and
+its `[W, T]`), `warnings`, `problems`.
+
+**Removing.** `build_remove` with `"set": true` on a member removes the
+whole frame with its fasteners. A lead removed alone hands the frame to
+the next member. Walls that join a removed wall keep their layout until
+they are laid out again (their join is then left out, with a warning).
+
+`build_edit` with `frame` is class `remote` (the fasteners are read from
+a library).

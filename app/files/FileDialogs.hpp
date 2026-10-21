@@ -51,8 +51,17 @@ struct DxfChoice {
   double x = 0.0; // mm: the sketch point the drawing's origin goes to
   double y = 0.0;
   QStringList layers; // empty: all
+  // Insert SVG (mitcad#473): x, y are where the drawing's lower left
+  // corner goes; the scale, and stroked paths as bands of their width.
+  double scale = 1.0;
+  bool strokeOutline = false;
 };
 std::optional<DxfChoice> askDxfInsert(QWidget* parent, const QString& file,
+                                      const QVector<QPair<QString, QString>>& planes, const QJsonObject& info);
+// Insert SVG (mitcad#473): the plane of a new sketch (as Insert DXF), the
+// scale, where the lower left corner goes and the stroke bands. `info`:
+// the model's `svg_info` of the file.
+std::optional<DxfChoice> askSvgInsert(QWidget* parent, const QString& file,
                                       const QVector<QPair<QString, QString>>& planes, const QJsonObject& info);
 
 // Insert Mesh: millimetres per unit of the file.

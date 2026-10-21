@@ -1038,6 +1038,12 @@ if(BUILD_TESTING)
   set_tests_properties(cli.mesh_convert_reopen PROPERTIES FIXTURES_REQUIRED cli_mesh_convert)
 endif()
 
+# Wrap (mitcad#473): Extrude's wrap onto a rod as an emboss, raised and
+# engraved, and profiles developed onto a cone by Emboss and Extrude.
+if(BUILD_TESTING)
+  add_test(NAME cli.wrap COMMAND mitcad-cli run "${scripts}/wrap.json")
+endif()
+
 # mitcad-cli loads Qt's DLLs (mitcad-cli render): on Windows its tests find
 # them through PATH, as app.unit does.
 if(BUILD_TESTING AND WIN32)

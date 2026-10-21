@@ -46,4 +46,17 @@ TextOutlines text_outlines(const std::string& family, bool bold, bool italic, co
 // The families of the installed fonts and the bundled one, sorted.
 std::vector<std::string> font_families();
 
+// The file of an installed font family and style (mitcad#473), which the
+// model reads itself to shape text that needs it (right-to-left and joined
+// scripts). `found` is false for a family that is not installed and for
+// the bundled font, which has no file.
+struct FontFile {
+  bool found = false;
+  std::string family;
+  std::string path;
+  int index = 0;              // the face in a collection
+  bool synthetic_italic = false; // italic asked of a family without it
+};
+FontFile font_file(const std::string& family, bool bold, bool italic);
+
 } // namespace mitcad::geometry

@@ -8,17 +8,28 @@
 #include <cmath>
 #include <cstdio>
 #include <limits>
+#include <vector>
 
+#include <BRepAdaptor_Curve.hxx>
+#include <BRepAdaptor_Surface.hxx>
 #include <BRepAlgoAPI_Cut.hxx>
 #include <BRepAlgoAPI_Fuse.hxx>
+#include <BRepBuilderAPI_MakeVertex.hxx>
+#include <BRepCheck_Analyzer.hxx>
 #include <BRepClass3d_SolidClassifier.hxx>
+#include <BRepExtrema_DistShapeShape.hxx>
 #include <BRepGProp.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
 #include <BRep_Builder.hxx>
+#include <BRep_Tool.hxx>
+#include <GCPnts_AbscissaPoint.hxx>
 #include <GProp_GProps.hxx>
+#include <TopExp_Explorer.hxx>
+#include <TopoDS.hxx>
 #include <TopoDS_Compound.hxx>
 
+#include "../src/face_join.hpp"
 #include "../src/history.hpp"
 #include "check.hpp"
 
@@ -91,11 +102,9 @@ Diameters loosened(const Diameters& d, double radial, bool internal) {
   return {d.major + shift, d.minor + shift, d.pitch + shift};
 }
 
-gp_Pnt centre(const Shape& shape) {
-  GProp_GProps props;
-  BRepGProp::VolumeProperties(shape.occt(), props);
-  return props.CentreOfMass();
-}
+// The centre of mass, by the analysis library's integrals (OCCT's own
+// integration loses precision on faces that run many turns).
+gp_Pnt centre(const Shape& shape) { return mass_properties(shape).center; }
 
 bool inside(const Shape& shape, const gp_Pnt& point) {
   BRepClass3d_SolidClassifier classifier(shape.occt(), point, 1e-7);
@@ -658,6 +667,247 @@ void test_large_body() {
   CHECK(large_ms < 4.0 * small_ms + 2000.0);
 }
 
+// A face's name the grooves gave while they were swept one turn at a time,
+// and a point on that face then.
+struct LegacyPiece {
+  const char* name;
+  double x;
+  double y;
+  double z;
+};
+
+// The largest tolerance of the shape's vertices and edges.
+double max_tolerance(const Shape& shape) {
+  double tolerance = 0.0;
+  for (TopExp_Explorer v(shape.occt(), TopAbs_VERTEX); v.More(); v.Next()) {
+    tolerance = std::max(tolerance, BRep_Tool::Tolerance(TopoDS::Vertex(v.Current())));
+  }
+  for (TopExp_Explorer e(shape.occt(), TopAbs_EDGE); e.More(); e.Next()) {
+    tolerance = std::max(tolerance, BRep_Tool::Tolerance(TopoDS::Edge(e.Current())));
+  }
+  return tolerance;
+}
+
+void test_pieces_on_screw_surfaces_and_legacy_names() {
+  // The thread's pieces, a crest, two flanks and a root a turn, are put on
+  // the exact screw surfaces of the groove's section (mitcad#343), each
+  // flank's pieces on one surface, where they were sweeps of their own. The
+  // names those 57 pieces had (taken from a build of that time, with a point
+  // on each) still name the piece that holds the point, and only it, so
+  // that references saved then resolve.
+  const ShapePtr rod = extrude("F2", {circle(1, 0, 0, 5)}, 0, 20);
+  ThreadSpec spec = spec_of("F3", "F2:side(c1)", 1.5, k6g);
+  // The points were taken on Linux. The pieces of whole turns have their
+  // centres on the axis, so their numbers (FaceNamer's order of centres,
+  // rounded to 1e-6 mm) follow the nanometres by which the booleans'
+  // intersection curves make some turns differ from the others, and which
+  // turns those are differs between the platforms' maths libraries
+  // (0.16.1-rc1 on Windows: six names on other whole turns). Elsewhere such
+  // a name may name another whole turn's piece, with a note; the other
+  // pieces' names, and every name on Linux, hold exactly.
+#if !defined(__linux__)
+  const auto on_axis = [](const TopoDS_Shape& face) {
+    GProp_GProps properties;
+    BRepGProp::SurfaceProperties(face, properties);
+    const gp_Pnt centre = properties.CentreOfMass();
+    return std::hypot(centre.X(), centre.Y()) < 1e-4;
+  };
+#endif
+  const auto distance_to = [](const LegacyPiece& piece, const TopoDS_Shape& face) {
+    const TopoDS_Vertex at = BRepBuilderAPI_MakeVertex(gp_Pnt(piece.x, piece.y, piece.z));
+    BRepExtrema_DistShapeShape between(at, face);
+    return between.IsDone() ? between.Value() : 1.0;
+  };
+  const auto check_pieces = [&](const Shape& threaded, const std::vector<LegacyPiece>& pieces) {
+    const std::vector<int> all = threaded.find_faces("F3:thread(F2:side(c1))");
+    CHECK(all.size() == 57);
+    for (const LegacyPiece& piece : pieces) {
+      const std::vector<int> faces = threaded.find_faces(piece.name);
+      CHECK(faces.size() == 1);
+      if (faces.size() != 1) {
+        std::printf("  %s names %zu faces\n", piece.name, faces.size());
+        continue;
+      }
+      const double distance = distance_to(piece, threaded.face(faces.front()));
+      if (distance < 2e-4) {
+        continue;
+      }
+#if !defined(__linux__)
+      bool whole_turns = on_axis(threaded.face(faces.front()));
+      bool held = false;
+      for (const int i : all) {
+        if (distance_to(piece, threaded.face(i)) < 2e-4) {
+          held = true;
+          whole_turns = whole_turns && on_axis(threaded.face(i));
+        }
+      }
+      if (held && whole_turns) {
+        std::printf("  note: %s names another whole turn's piece here (its point is %g from it)\n", piece.name,
+                    distance);
+        continue;
+      }
+#endif
+      CHECK(distance < 2e-4);
+      std::printf("  %s is %g from its point\n", piece.name, distance);
+    }
+  };
+  const ShapePtr bolt = modeled_thread(*rod, spec);
+  check_pieces(*bolt, {
+                          {"F3:thread(F2:side(c1))#56", 4.006096174, 2.182098960, 0.062583800},
+                          {"F3:thread(F2:side(c1))#55", 4.068958467, -0.112013955, 0.346257715},
+                          {"F3:thread(F2:side(c1))#54", 2.735840279, -3.488917118, 0.516242316},
+                          {"F3:thread(F2:side(c1))#2", -4.854156205, -0.832341600, 0.370152455},
+                          {"F3:thread(F2:side(c1))#18", 2.071030938, -4.064627041, 1.181013414},
+                          {"F3:thread(F2:side(c1))#19", 1.847968323, -3.626842013, 1.590328100},
+                          {"F3:thread(F2:side(c1))#20", 2.012840691, -3.950422251, 1.969984694},
+                          {"F3:thread(F2:side(c1))#6", -4.388207132, 2.235903211, 1.789115846},
+                          {"F3:thread(F2:side(c1))#33", 2.071030938, -4.064627041, 8.681013414},
+                          {"F3:thread(F2:side(c1))#53", 2.012840691, -3.950422251, 18.469984694},
+                          {"F3:thread(F2:side(c1))#17", -4.388207132, 2.235903211, 18.289115846},
+                          {"F3:thread(F2:side(c1))#5", 2.071030938, -4.064627041, 19.181013414},
+                          {"F3:thread(F2:side(c1))#4", 0.908611370, -3.967794710, 19.531570384},
+                          {"F3:thread(F2:side(c1))#1", -2.074516276, -3.918385626, 19.741242409},
+                          {"F3:thread(F2:side(c1))#3", -0.884984551, 4.844835121, 19.581867354},
+                          {"F3:thread(F2:side(c1))#0", -3.750502502, 2.726913306, 19.999999926},
+                      });
+  // The faces put on the exact screw surfaces of the section's edges, the
+  // per-turn pieces were approximations of: the shape valid, its tolerances
+  // no larger, and its volume and area those of the per-turn thread (taken
+  // from a build of that time) within 1e-6, as with the clearances and the
+  // end chamfers.
+  const auto as_before = [](const Shape& threaded, double volume, double area) {
+    CHECK(BRepCheck_Analyzer(threaded.occt()).IsValid());
+    CHECK(max_tolerance(threaded) <= 5.0e-6 + 1.0e-12);
+    const MassProperties properties = mass_properties(threaded);
+    CHECK_NEAR_TOL(properties.volume, volume, 1e-6);
+    CHECK_NEAR_TOL(properties.area, area, 1e-6);
+  };
+  as_before(*bolt, 1264.964921282, 1061.486141608);
+  ThreadSpec loose = spec;
+  loose.radial_clearance = 0.2;
+  loose.flank_clearance = 0.05;
+  as_before(*modeled_thread(*rod, loose), 1119.469785640, 997.042469442);
+  ThreadSpec chamfered = spec;
+  chamfered.chamfer = true;
+  chamfered.chamfer_angle = kPi / 4.0;
+  chamfered.chamfer_diameter = 7.8;
+  chamfered.chamfer_ends = {{true, true}};
+  as_before(*modeled_thread(*rod, chamfered), 1252.800363702, 1017.873373268);
+  spec.right_handed = false;
+  check_pieces(*modeled_thread(*rod, spec),
+               {
+                   {"F3:thread(F2:side(c1))#0", -4.361517055, 1.243916527, 0.107568637},
+                   {"F3:thread(F2:side(c1))#53", 4.427586400, -0.232039955, 0.744984711},
+                   {"F3:thread(F2:side(c1))#54", 3.890516701, -1.197016826, 0.424085815},
+                   {"F3:thread(F2:side(c1))#3", 2.424278895, -3.864354288, 0.184755699},
+                   {"F3:thread(F2:side(c1))#1", -2.884529314, 3.991881215, 0.555228680},
+                   {"F3:thread(F2:side(c1))#20", -4.388207132, 2.235903211, 2.003826227},
+                   {"F3:thread(F2:side(c1))#7", 4.427586400, -0.232039955, 2.244984711},
+                   {"F3:thread(F2:side(c1))#19", 4.555585836, -0.238748121, 1.456013361},
+                   {"F3:thread(F2:side(c1))#52", -4.388207132, 2.235903211, 5.003826227},
+                   {"F3:thread(F2:side(c1))#5", -4.388207132, 2.235903211, 11.003826227},
+                   {"F3:thread(F2:side(c1))#17", 4.427586496, -0.232039960, 11.244984767},
+                   {"F3:thread(F2:side(c1))#55", 4.516306830, 0.642912705, 19.409755738},
+                   {"F3:thread(F2:side(c1))#4", -3.528993778, -3.435378860, 19.581867357},
+                   {"F3:thread(F2:side(c1))#2", 0.110111675, 4.432295064, 19.863414325},
+                   {"F3:thread(F2:side(c1))#56", 2.131486164, 3.467814422, 19.609398484},
+               });
+}
+
+// The bolt's crest edge between z 3 and 5 (a turn's piece of it).
+std::string crest_edge_of(const Shape& bolt) {
+  for (int i = 0; i < bolt.edge_count(); ++i) {
+    BRepAdaptor_Curve c(bolt.edge(i));
+    const gp_Pnt m = c.Value(0.5 * (c.FirstParameter() + c.LastParameter()));
+    if (std::abs(std::hypot(m.X(), m.Y()) - 4.925) < 1e-4 && c.GetType() == GeomAbs_BSplineCurve && m.Z() > 3 &&
+        m.Z() < 5) {
+      return bolt.edge_name(i);
+    }
+  }
+  return {};
+}
+
+void test_thread_pieces_join_smoothly() {
+  // The crest's and the flanks' pieces of a thread joined for a rounding
+  // along them: their edges along the thread joined into edges that keep
+  // their speed across the joints, as one curve swept at one pace does (a
+  // rounding's guide along a curve whose speed jumps at its joints ends off
+  // the face at its end, mitcad#343).
+  const ShapePtr rod = extrude("F2", {circle(1, 0, 0, 5)}, 0, 8);
+  const ShapePtr bolt = modeled_thread(*rod, spec_of("F3", "F2:side(c1)", 1.5, k6g));
+  std::vector<int> pieces;
+  for (int i = 0; i < bolt->face_count(); ++i) {
+    for (const std::string& name : bolt->face_names(i)) {
+      if (name.rfind("F3:thread(", 0) == 0) {
+        pieces.push_back(i);
+        break;
+      }
+    }
+  }
+  const ShapePtr joined = detail::join_surface_pieces(*bolt, pieces);
+  CHECK(joined != nullptr);
+  CHECK(joined->face_count() < bolt->face_count());
+  int long_edges = 0;
+  for (int e = 0; e < joined->edge_count(); ++e) {
+    BRepAdaptor_Curve c(joined->edge(e));
+    if (c.GetType() != GeomAbs_BSplineCurve || GCPnts_AbscissaPoint::Length(c) < 40.0) {
+      continue;
+    }
+    ++long_edges;
+    double low = std::numeric_limits<double>::max();
+    double high = 0.0;
+    for (int k = 0; k <= 400; ++k) {
+      gp_Pnt p;
+      gp_Vec d;
+      c.D1(c.FirstParameter() + (c.LastParameter() - c.FirstParameter()) * k / 400.0, p, d);
+      low = std::min(low, d.Magnitude());
+      high = std::max(high, d.Magnitude());
+    }
+    CHECK(high < 1.05 * low);
+  }
+  CHECK(long_edges > 0);
+}
+
+void test_rounding_along_a_thread_keeps_its_pieces() {
+  // A rounding along a thread's crest edge: the crest's and the flanks'
+  // pieces, a turn each on one surface, are joined for the rounding's walk,
+  // and its result split again where they met, so that the body keeps its
+  // thread a turn a face and each piece its name, and the rounding is a face
+  // a piece of the edge, named after that piece (mitcad#343).
+  const ShapePtr rod = extrude("F2", {circle(1, 0, 0, 5)}, 0, 8);
+  const ShapePtr bolt = modeled_thread(*rod, spec_of("F3", "F2:side(c1)", 1.5, k6g));
+  const std::string crest_edge = crest_edge_of(*bolt);
+  CHECK(!crest_edge.empty());
+  FilletSet set;
+  set.edges = {crest_edge};
+  set.radius = 0.05;
+  set.tangent_chain = true;
+  const ShapePtr rounded = fillet("F4", *bolt, std::vector<FilletSet>{set});
+  CHECK(BRepCheck_Analyzer(rounded->occt()).IsValid());
+  for (int i = 0; i < bolt->face_count(); ++i) {
+    for (const std::string& name : bolt->face_names(i)) {
+      CHECK(rounded->find_faces(name).size() == 1);
+    }
+  }
+  // (No face over more than one piece of the thread.)
+  for (int i = 0; i < rounded->face_count(); ++i) {
+    int pieces = 0;
+    for (const std::string& name : rounded->face_names(i)) {
+      pieces += name.rfind("F3:thread(", 0) == 0 ? 1 : 0;
+    }
+    CHECK(pieces <= 1);
+  }
+  int roundings = 0;
+  for (int i = 0; i < rounded->face_count(); ++i) {
+    for (const std::string& name : rounded->face_names(i)) {
+      roundings += name.rfind("F4:fillet(", 0) == 0 ? 1 : 0;
+    }
+  }
+  CHECK(roundings > 2);
+  const double removed = volume(*bolt) - volume(*rounded);
+  CHECK(removed > 0.0 && removed < 0.1);
+}
+
 } // namespace
 
 void thread_tests() {
@@ -670,6 +920,9 @@ void thread_tests() {
   guarded("test_end_chamfers", test_end_chamfers);
   guarded("test_sized_chamfered_end", test_sized_chamfered_end);
   guarded("test_large_body", test_large_body);
+  guarded("test_pieces_on_screw_surfaces_and_legacy_names", test_pieces_on_screw_surfaces_and_legacy_names);
+  guarded("test_thread_pieces_join_smoothly", test_thread_pieces_join_smoothly);
+  guarded("test_rounding_along_a_thread_keeps_its_pieces", test_rounding_along_a_thread_keeps_its_pieces);
 }
 
 } // namespace test

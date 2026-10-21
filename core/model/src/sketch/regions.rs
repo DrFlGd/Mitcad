@@ -651,6 +651,25 @@ impl<'a> Arrangement<'a> {
         } else {
             (edge.t1, -1.0)
         };
+        // At a knot of a spline the derivatives are those of the edge's own
+        // side: a composite curve's pieces meet at corners there (a QR
+        // code's contours touching at a corner, mitcad#473).
+        let t = match self.curve(h / 2) {
+            Curve2::Nurbs(n) => {
+                let (lo, hi) = n.domain();
+                let wrapped = if t > hi { lo + (t - hi) } else { t };
+                let at_knot = n
+                    .knots
+                    .iter()
+                    .any(|k| (k - wrapped).abs() <= 1e-12 * (hi - lo).max(1.0));
+                if at_knot {
+                    t + sign * 1e-9 * (hi - lo)
+                } else {
+                    t
+                }
+            }
+            _ => t,
+        };
         let [_, d1, d2] = self.eval(h / 2, t);
         let d1 = scale(d1, sign);
         let speed = norm(d1);

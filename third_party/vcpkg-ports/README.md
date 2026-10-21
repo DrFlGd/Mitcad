@@ -251,6 +251,21 @@ short of it.
 0920 keeps a radius law the caller sets on a fillet's contour, which the
 spine dropped (a B-spline radius along the edges, mitcad#464).
 
+0910 starts an OnSame end's cap at the opposite contact's crossing with
+the prolonged edge itself, not where the contact's approximated curve
+crosses the face at the end (a rounding along a thread's chamfer cone
+ending on the thread's root cylinder, mitcad#343).
+
+0911 makes an end where the face at the end goes on tangentially from a
+face of the spine's edge, behind that edge, an OnSame end: the face at the
+end cuts the blend and grows up to it (a pin's foot rounded up to the
+slot whose sides are tangent to the pin, mitcad#343).
+
+0930 lets a rounding roll on another's contact line (0016) where the two
+spines run opposite ways: its side on the line runs from the line's end to
+its start (both rims of a ring rounded, the rims' circles turning opposite
+ways, mitcad#343).
+
 - `0006-shapeupgrade-unifysamedomain-seam-search-by-vertex.patch`: the face
   merge after booleans (`ShapeUpgrade_UnifySameDomain`) looks up the edges
   it removed by vertex instead of going through all of them at each step of
@@ -2994,6 +3009,84 @@ edges is a B-spline of the position (Mitcad's `spline` fillet size).
   on no edge, its largest radius is sampled from the law, `Reset` keeps it,
   and a radius set at a point or a reset of all data drops it.
 
+The patch 0910 comes from mitcad#343 (round 11), a rounding of radius 0.5
+along a thread's chamfer cone that ends where its contact on the cone runs
+into the thread's root, an exact cylinder.
+
+- `0910-chfi3d-onsame-cap-from-the-contacts-point-on-the-prolonged-edge.patch`:
+  in an OnSame end whose faces are not tangent along the prolonged edge,
+  `IntersUpdateOnSame` takes the opposite contact's crossing with that
+  edge's curve on the face at the end (unbounded) where the point found by
+  intersecting the contact's 3D curve with the face's surface lies within
+  the tolerance of it, and `PerformOneCorner` makes the cap start there
+  (`ChFi3d_CapFromPoint`: the end poles of the cap's curve and of its
+  curves on the blend and on the face moved onto the point, by no more than
+  ten times the tolerance). The contact's approximated curve lay 2e-6 off
+  the cone and crossed the cylinder at a small angle, its point 1.3e-6
+  below the cone's circle on the cylinder. The blend is tangent to the cone
+  along its contact, so the cap leaves the circle tangentially, and as it
+  is nearly tangent to the cylinder there it rises from it slowly: it
+  crossed the circle 0.026 from the vertex, a self-intersecting wire for
+  the checker (the circle's tolerance is 1e-7). On the thread swept a turn
+  at a time, whose root was a B-spline, the same end had passed only behind
+  a cap whose 3D curve lay 1.4 off its curves on the faces, with vertex
+  tolerances of 2.
+
+The patch 0911 comes from mitcad#343 (round 12), the foot of a pin of
+radius 4.5 standing out of a wall, rounded with 1 along its arc on the
+wall, which ends where the wall ends in a slot whose sides are tangent to
+the pin.
+
+- `0911-chfi3d-onsame-end-where-the-face-at-the-end-goes-on-tangentially.patch`:
+  `ChFi3d_EdgeState` decides an end's state from the sides of the faces at
+  the vertex's two other edges, sampled inside each edge; where an edge
+  lies between faces tangent to each other, those sides follow no rule.
+  At the pin's arc ends the slot's side goes on tangentially from the pin
+  across their common edge, and the wall's edge with the slot's side runs
+  into the vertex tangent to the arc (the wall a cusp there); the end came
+  out OnDiff, the walk past the wall's edge rolled on it into the vertex
+  (a blend ending in a point, 0770) or, with the end not taken as that
+  edge's, ran round the pin to its seam, and the corner walked round the
+  vertex: the result was 0.14 mm off the file's or invalid. Where exactly
+  one of the two edges lies between tangent faces and leaves the vertex
+  behind the spine's edge (on the side away from the interior of the face
+  the two edges share, whose corner there is reflex, so that the blend's
+  contact on that face does not meet it: `ChFi3d_TangentEdgeBehindSpine`),
+  the end is now OnSame: the face at the end cuts the blend and grows up
+  to it along the tangent edge prolonged (`PerformOneCorner`'s OnSame end,
+  whose tangent case seeks the contact's crossing with that edge). Where
+  such an edge leaves into that face (an earlier rounding of another of its
+  edges coming in at the vertex, its contact line the tangent edge), the
+  blend's contact runs onto the face at the end before the vertex, and the
+  state is decided as before (an OnSame end failed in two such corners of
+  another design, which build as before). On the stored body before the
+  rounding: the file's change of volume within 2.4e-4 mm³ and every new
+  face on the file's within 1e-5 mm.
+
+The patch 0930 comes from mitcad#343 (round 13): both rims of a ring
+rounded.
+
+- `0930-chfi3d-rounding-riding-anothers-contact-line-against-it.patch`:
+  0016 makes the later of two roundings of a face narrower than both roll
+  on the earlier one's contact line, and `ApplyRides` makes the two blends
+  meet on that line, the earlier blend's, run its spine's way; the later
+  blend's side was set on it from its start to its end. A spine follows its
+  edge's curve, and the two circles of a ring's band, which start at one
+  point, may turn opposite ways round the axis (a ring 2.5 thick rounded
+  with 1.5 on both rims, whose bottom circle came from a cylinder standing
+  upside down): the later blend then used the line against its own
+  direction, and its face came out reversed (its area −1617 mm²) with a
+  wire not closed. `ApplyRides` now finds which way the later blend's own
+  line on the support runs along the earlier one's (`rideRunsAgainst`, the
+  tangents at 30 and 70 % of it); where against, that side runs from the
+  line's end to its start, its ends and points are the earlier blend's the
+  other way round, and once the stripes are in the data structure the
+  line's transition on the later blend's surface is turned
+  (`turnRidesAgainst`), as for blends cut by each other between two
+  crossings. On the ring's replayed body the change of volume is the file's
+  within 1.4e-7 of the stored state in either order of the rims; on the
+  stored body, whose circles turn the same way, it is unchanged.
+
 The patch 0540 goes on with the corners where a rounding ends (mitcad#236,
 eighth round): a rounding that runs on into an earlier rounding's tube.
 
@@ -3261,9 +3354,24 @@ for 0920, mitcad#464 and a block's edge rounded with a B-spline radius, in
 material removed is 1 − π/4 times the integral of the radius squared along
 the edge, and each cross-section misses 1 − π/4 times the radius there
 squared, within 2e-3; without the patch the contour has no radius);
+for 0911, mitcad#343 and a pin standing out of a wedge whose sides are
+tangent to it, its foot rounded along its arc on the wedge's top, in
+`geometry/tests/test_fillet_tangent_end_face.cpp` (valid, one torus, the
+material added the ring at the foot within the sides' planes within 1e-6;
+4.514 against 4.764 and invalid without the patch);
+for 0930, mitcad#343 and a disc 2.5 thick, its rims' circles turning
+opposite ways, rounded with 1.5 on both rims in either order, in
+`geometry/tests/test_fillet_ride_against.cpp` (valid, the volume the
+section's revolution has within 1e-6; invalid, 1322 against 3035, without
+the patch);
 each fails without its patch (0802 has no such test: its contact meets the
 spine's own edge only through the stored bodies' micrometre deviations at
-the walk's steps there, which no synthetic body reproduced).
+the walk's steps there, which no synthetic body reproduced; nor has 0910: its
+cap crosses the edge only through the contact curve's approximation lying
+on the wrong side of the face at the end by 1.3e-6 mm, at a
+corner where the blend is nearly tangent to that face, verified on the
+design's replayed body; a bolt's thread cut by a chamfer cone and rounded
+there failed elsewhere first).
 Sending them upstream is the
 maintainers' step. When the
 baseline moves to a newer OCCT, check which of the changes OCCT has made;

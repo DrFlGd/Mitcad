@@ -449,8 +449,7 @@ CommandDef sheetFlangeCommand(const CommandContext& context) {
       flipInput(QStringLiteral("flip"), QObject::tr("Flip")),
       valueInput(QStringLiteral("length"), QObject::tr("Length"), ValueKind::Length, QStringLiteral("10 mm")),
       choiceInput(QStringLiteral("length_mode"), QObject::tr("Measured"), kLengthModes, QStringLiteral("tangent"))
-          .withTooltip(QObject::tr("Where the length is measured from: the bend's tangent line, or the "
-                                   "virtual sharp corner of the inner or outer surfaces")),
+          .withTooltip(QObject::tr("Where the length is measured from: the tangent line or a virtual sharp corner")),
       choiceInput(QStringLiteral("position"), QObject::tr("Position"), kPositions, QStringLiteral("bend_line"))
           .withTooltip(QObject::tr("Where the edge ends up: the bend line's middle, the inner or the outer "
                                    "virtual sharp corner")),
@@ -539,8 +538,7 @@ CommandDef sheetBendCommand(const CommandContext& context) {
                   {{QStringLiteral("bend"), QStringLiteral("Bend")},
                    {QStringLiteral("double"), QStringLiteral("Double Bend")}},
                   QStringLiteral("bend"))
-          .withTooltip(QObject::tr("Bend: one bend between the edges. Double Bend: two opposite bends of the "
-                                   "angle and a straight between them, joining parallel faces of two sheets")),
+          .withTooltip(QObject::tr("One bend, or two opposite bends joining parallel faces of two sheets")),
       choiceInput(QStringLiteral("fixed"), QObject::tr("Whole Face"),
                   {{QStringLiteral("stationary"), QStringLiteral("Fixed")},
                    {QStringLiteral("moving"), QStringLiteral("Moving")}},
@@ -813,8 +811,7 @@ CommandDef sheetCornerReliefCommand(const CommandContext& context) {
           .withTooltip(QObject::tr("Faces of the two bends that meet"))
           .withAccepts(isBendFace),
       selectionInput(QStringLiteral("panel"), QObject::tr("Face"), SelectKind::Face, 0, 1)
-          .withTooltip(QObject::tr("The flat face both bends leave, when they leave several; for bends on different "
-                                   "faces, the face held (one next to either bend)"))
+          .withTooltip(QObject::tr("The flat face the bends leave, or the face held for bends on different faces"))
           .withAccepts(isPanelFace),
       checkInput(QStringLiteral("custom_relief"), QObject::tr("Own Corner Relief"), false)
           .withTooltip(QObject::tr("Off: the rules' corner relief")),
@@ -1034,8 +1031,7 @@ CommandDef sheetCutCommand(const CommandContext& context) {
   def.id = QStringLiteral("sheet.cut");
   def.name = QObject::tr("Sheet Cut");
   def.icon = QStringLiteral("sheet-cut");
-  def.tooltip = QObject::tr("Cuts sketch profiles (of one or several sketches on a flat face) through the "
-                            "thickness, also across bends opened for the cut");
+  def.tooltip = QObject::tr("Cuts sketch profiles through a sheet's thickness, also across bends");
   def.group = kGroup;
   def.keywords = {QStringLiteral("sheet metal"), QStringLiteral("hole"), QStringLiteral("cutout")};
   def.featureType = QStringLiteral("sheet_cut");

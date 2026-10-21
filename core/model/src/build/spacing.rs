@@ -106,7 +106,8 @@ pub(crate) struct SetDef {
 /// Where the members' near faces go from the first one's (along the set),
 /// and the last one's width when it is ripped: `span` from the first
 /// member's near face to the last one's far face, `w` a member's width
-/// along the set.
+/// along the set; `cover` the width a board that joins the next covers
+/// (mitcad#477), its row laid edge to edge.
 pub(crate) fn positions(
     mode: SpacingMode,
     distance: Option<f64>,
@@ -114,6 +115,7 @@ pub(crate) fn positions(
     fit: SpacingFit,
     span: f64,
     w: f64,
+    cover: Option<f64>,
 ) -> Result<(Vec<f64>, Option<f64>), String> {
     const TOL: f64 = 1e-6;
     if w.is_nan() || w <= 0.0 {
@@ -160,6 +162,27 @@ pub(crate) fn positions(
             if gap < 0.0 {
                 return Err("the gap must not be negative".to_owned());
             }
+            // Boards that join (mitcad#477): edge to edge, each the cover
+            // width on from the last, no gap; the last ripped.
+            if let Some(c) = cover.filter(|c| *c > TOL && *c <= w + TOL) {
+                let n = match count.filter(|n| *n > 0) {
+                    Some(n) => {
+                        let n = n as usize;
+                        if (n - 1) as f64 * c + w > span + TOL {
+                            return Err(format!(
+                                "{n} boards do not fit in {} mm",
+                                super::round(span)
+                            ));
+                        }
+                        return Ok(((0..n).map(|i| i as f64 * c).collect(), None));
+                    }
+                    None => (((span - (w - c)) / c - TOL).ceil().max(1.0)) as usize,
+                };
+                let out: Vec<f64> = (0..n).map(|i| i as f64 * c).collect();
+                let last = span - (n - 1) as f64 * c;
+                let rip = (last < w - TOL).then_some(last);
+                return Ok((out, rip));
+            }
             if let Some(n) = count.filter(|n| *n > 0) {
                 let n = n as usize;
                 if n as f64 * w > span + TOL {
@@ -193,6 +216,8 @@ pub(crate) fn positions(
 pub(crate) struct SetPlan {
     pub plans: Vec<Plan>,
     pub rip: Option<PartCut<ValueInput>>,
+    /// What the set notes (a gap boards that join do not keep).
+    pub warnings: Vec<String>,
 }
 
 impl<K: Kernel> Document<K> {
@@ -215,6 +240,13 @@ impl<K: Kernel> Document<K> {
         let mm = |v: &Option<ValueInput>| -> Result<Option<f64>, ModelError> {
             v.as_ref().map(|v| value_in(self, v, Unit::MM)).transpose()
         };
+        // Boards that join (mitcad#477) laid across their width: edge to
+        // edge, the step their cover width.
+        let cover = |along_host: V3| -> Option<f64> {
+            let c = first.source.meta.joined_cover()?;
+            let local = inverse(&first.placement).apply_vector(along_host);
+            (mode == SpacingMode::Gap && local[0].abs() > 1.0 - 1e-6).then_some(c)
+        };
         let side = match &first.spot {
             Spot::Joint(j) if first.place == "side" => j.side.map(|s| (s, j.frame_b)),
             _ => None,
@@ -228,8 +260,16 @@ impl<K: Kernel> Document<K> {
                     .ok_or_else(|| refuse("the member it stands on has no length"))?;
                 let from = mm(&spacing.from)?.unwrap_or(0.0);
                 let to = mm(&spacing.to)?.unwrap_or(length);
-                let (offsets, rip) =
-                    positions(mode, distance, spacing.count, fit, to - from, w).map_err(refuse)?;
+                let (offsets, rip) = positions(
+                    mode,
+                    distance,
+                    spacing.count,
+                    fit,
+                    to - from,
+                    w,
+                    cover(x_axis(&frame_b)),
+                )
+                .map_err(refuse)?;
                 let n = offsets.len();
                 for (i, o) in offsets.iter().enumerate() {
                     let mut input = base.clone();
@@ -266,8 +306,16 @@ impl<K: Kernel> Document<K> {
                     .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), v| {
                         (a.min(v), b.max(v))
                     });
-                let (offsets, rip) =
-                    positions(mode, distance, spacing.count, fit, span, hi - lo).map_err(refuse)?;
+                let (offsets, rip) = positions(
+                    mode,
+                    distance,
+                    spacing.count,
+                    fit,
+                    span,
+                    hi - lo,
+                    cover(along),
+                )
+                .map_err(refuse)?;
                 for o in offsets {
                     let mut input = base.clone();
                     let mut at = input.at.clone().unwrap_or_default();
@@ -327,7 +375,20 @@ impl<K: Kernel> Document<K> {
             }
             _ => None,
         };
-        Ok(SetPlan { plans, rip })
+        // Boards that join keep no gap (mitcad#477).
+        let mut warnings = Vec::new();
+        if cover(along_host).is_some() && distance.is_some_and(|d| d > 1e-9) {
+            warnings.push(format!(
+                "{} joins edge to edge: laid without the gap of {} mm",
+                first.source.def.label(),
+                super::round(distance.unwrap_or(0.0))
+            ));
+        }
+        Ok(SetPlan {
+            plans,
+            rip,
+            warnings,
+        })
     }
 
     /// Places a spacing set (`build_place` with `spacing`).
@@ -383,6 +444,7 @@ impl<K: Kernel> Document<K> {
             }
             let mut placed = placed.expect("one member at least");
             placed.set = members;
+            placed.warnings.extend(set.warnings.iter().cloned());
             Ok((label, placed))
         })
     }

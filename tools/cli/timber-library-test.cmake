@@ -8,8 +8,11 @@
 # manifest's timber fields and the rows' own blocks, the designs (the
 # board's section, volume and face frames following a row, its wood
 # appearance; the fastener's head; the connectors' plates, holes and
-# frames; the sheet), and the pickers: timber only where it is asked
-# for, a junction of members offered the wood fasteners and the
+# frames; the sheet), the profiled boards (mitcad#477: tongue and groove
+# with and without a V-joint, shiplap, feather-edge and a grooved deck
+# board; their board blocks, volumes and tongue and groove frames
+# following rows and parameters), and the pickers: timber only where it
+# is asked for, a junction of members offered the wood fasteners and the
 # connectors that fit its section. Nothing goes over the network.
 #
 # cmake -DCLI=<mitcad-cli> -DGIT=<git> -DPYTHON=<python3> -DGENERATOR=<make-profile-library.py>
@@ -58,12 +61,12 @@ set(out "${out}${err}")
 if(NOT status EQUAL 0)
   message(FATAL_ERROR "the generator failed (${status}):\n${out}")
 endif()
-expect("mitcad-parts 1.0.0: 7 components" "the generator's summary")
+expect("mitcad-parts 1.0.0: 12 components" "the generator's summary")
 if(out MATCHES "left out|warning")
   message(FATAL_ERROR "a part left out or warned of:\n${out}")
 endif()
 cli(ok library check "${library}")
-expect("mitcad-parts: 7 components, no errors" "the library's check")
+expect("mitcad-parts: 12 components, no errors" "the library's check")
 file(READ "${library}/SOURCES.md" sources)
 if(NOT sources MATCHES "test-board \\(Test timber\\): sizes made up for the test")
   message(FATAL_ERROR "SOURCES.md:\n${sources}")
@@ -210,12 +213,100 @@ connector(test-hanger "-76, -56, -70" "56, 56, 0" 59127.30091830)
 # joined), four 5.5 mm holes through 4 mm.
 connector(test-post-base "-80, -80, -5" "80, 80, 150" 199619.86727)
 
+#    Profiled boards (mitcad#477, c-profiled.json): their board blocks
+#    (profile, cover width, area, joint), per row; their frames, a board
+#    that joins the next with its groove and tongue the cover width apart.
+field("tongue_and_groove" "the floorboard's profile" 7 build board profile)
+field("112 mm" "the floorboard's cover" 7 build board cover)
+field("3123.5" "the floorboard's area" 7 build board area)
+field("8 mm" "the floorboard's tongue" 7 build board tongue length)
+field("137 mm" "28x145's cover" 7 build rows 28x145 board cover)
+field("3823.5" "28x145's area" 7 build rows 28x145 board area)
+frames(7 "end_a;end_b;face_xp;face_xn;face_yp;face_yn;groove;tongue")
+field("groove" "the floorboard's groove frame" 7 build frames 6 kind)
+field("86 mm" "the panel board's cover" 8 build board cover)
+field("shiplap" "the shiplap's profile" 9 build board profile)
+field("133 mm" "the shiplap 22x145's cover" 9 build rows 22x145 board cover)
+field("12 mm" "the shiplap's overlap" 9 build board overlap)
+field("feather_edge" "the feather-edge's profile" 10 build board profile)
+field("120.3521 mm" "the feather-edge's cover" 10 build board cover)
+field("100.4223 mm" "the feather-edge 22x125's cover (overlap 25)" 10 build rows 22x125 board cover)
+field("25 mm" "the feather-edge 22x125's overlap" 10 build rows 22x125 board overlap)
+field("deck" "the deck board's profile" 11 build board profile)
+field("120 mm" "the deck board's cover (its width)" 11 build board cover)
+field("4" "the deck board's grooves" 11 build board grooves)
+field("5 mm" "the deck board's edge radius" 11 build board edge_radius)
+frames(11 "end_a;end_b;face_xp;face_xn;face_yp;face_yn")
+
+#    Their designs: the volume the area times the length, in every row and
+#    when a parameter changes; the frames follow (mount:groove F15,
+#    mount:tongue F17). The floorboard: 112 x 28 + a tongue 8 x 8 less a
+#    groove 9 x 8.5.
+file(WRITE "${WORK}/floorboard.json" "[
+  {\"expect\": {\"total_volume\": 9370500, \"tolerance\": 1e-6}},
+  {\"expect\": {\"query\": {\"query\": \"datum\", \"uid\": \"F15\"}, \"result\": {\"origin\": [-60, 0, 0], \"normal\": [-1, 0, 0], \"x_axis\": [0, 0, 1]}}},
+  {\"expect\": {\"query\": {\"query\": \"datum\", \"uid\": \"F17\"}, \"result\": {\"origin\": [52, 0, 0], \"normal\": [1, 0, 0], \"x_axis\": [0, 0, 1]}}},
+  {\"expect\": {\"query\": {\"query\": \"bodies\", \"properties\": true},
+               \"result\": [{\"appearance\": \"test-floor\", \"bbox\": {\"min\": [-60, -14, 0], \"max\": [60, 14, 3000]}}]}},
+  {\"cmd\": \"apply_configuration\", \"name\": \"28x145\"},
+  {\"expect\": {\"total_volume\": 11470500, \"tolerance\": 1e-6}},
+  {\"expect\": {\"query\": {\"query\": \"datum\", \"uid\": \"F17\"}, \"result\": {\"origin\": [64.5, 0, 0]}}},
+  {\"cmd\": \"set_parameter\", \"name\": \"TL\", \"expression\": \"10 mm\"},
+  {\"expect\": {\"total_volume\": 11299500, \"tolerance\": 1e-6}},
+  {\"expect\": {\"query\": {\"query\": \"datum\", \"uid\": \"F17\"}, \"result\": {\"origin\": [62.5, 0, 0]}}}
+]")
+cli(ok run "${WORK}/floorboard.json" --open "${library}/profiled/test-floorboard.mitcad")
+#    The panel board with its V-joint: 86 x 15 + 9 x 5 - 10 x 5.5 less two
+#    chamfers 2 x 2 at 45 degrees; at 30 degrees they are 2 x 2 tan(30).
+file(WRITE "${WORK}/panel.json" "[
+  {\"expect\": {\"total_volume\": 3828000, \"tolerance\": 1e-6}},
+  {\"cmd\": \"set_parameter\", \"name\": \"VA\", \"expression\": \"30 deg\"},
+  {\"expect\": {\"total_volume\": 3833071.797, \"tolerance\": 1e-6}}
+]")
+cli(ok run "${WORK}/panel.json" --open "${library}/profiled/test-panel.mitcad")
+#    The shiplap: 120 x 22 less 12 x 13 and 12 x 9; its tongue (the lip)
+#    the cover width from its groove.
+file(WRITE "${WORK}/shiplap.json" "[
+  {\"expect\": {\"total_volume\": 7128000, \"tolerance\": 1e-6}},
+  {\"expect\": {\"query\": {\"query\": \"datum\", \"uid\": \"F17\"}, \"result\": {\"origin\": [48, 0, 0]}}},
+  {\"cmd\": \"apply_configuration\", \"name\": \"22x145\"},
+  {\"expect\": {\"total_volume\": 8778000, \"tolerance\": 1e-6}},
+  {\"expect\": {\"query\": {\"query\": \"datum\", \"uid\": \"F15\"}, \"result\": {\"origin\": [-72.5, 0, 0]}}}
+]")
+cli(ok run "${WORK}/shiplap.json" --open "${library}/profiled/test-shiplap.mitcad")
+#    The feather-edge: (22 + 6) / 2 x 150, turned as laid (by atan2(9.2,
+#    120)); the cover from the overlap; its box centred.
+file(WRITE "${WORK}/feather.json" "[
+  {\"expect\": {\"total_volume\": 6300000, \"tolerance\": 1e-6}},
+  {\"expect\": {\"parameter\": \"COV\", \"value\": 120.35214996002357}},
+  {\"expect\": {\"query\": {\"query\": \"bodies\", \"properties\": true},
+               \"result\": [{\"bbox\": {\"min\": [-75.00987729, -16.70098956, 0], \"max\": [75.00987729, 16.70098956, 3000]}}]}},
+  {\"expect\": {\"query\": {\"query\": \"datum\", \"uid\": \"F17\"}, \"result\": {\"origin\": [45.34227267, 0, 0]}}},
+  {\"cmd\": \"apply_configuration\", \"name\": \"22x125\"},
+  {\"expect\": {\"total_volume\": 5250000, \"tolerance\": 1e-6}},
+  {\"expect\": {\"parameter\": \"COV\", \"value\": 100.42230827858917}}
+]")
+cli(ok run "${WORK}/feather.json" --open "${library}/profiled/test-feather-edge.mitcad")
+#    The deck board: 120 x 28 less four corners of radius 5 and four
+#    grooves 5 x 3.
+file(WRITE "${WORK}/deck.json" "[
+  {\"expect\": {\"total_volume\": 9835619.448, \"tolerance\": 1e-6}},
+  {\"cmd\": \"apply_configuration\", \"name\": \"28x145\"},
+  {\"expect\": {\"total_volume\": 11935619.448, \"tolerance\": 1e-6}},
+  {\"cmd\": \"set_parameter\", \"name\": \"R\", \"expression\": \"8 mm\"},
+  {\"expect\": {\"total_volume\": 11835185.787, \"tolerance\": 1e-6}}
+]")
+cli(ok run "${WORK}/deck.json" --open "${library}/profiled/test-deck.mitcad")
+
 # 4. The pickers: fetched, timber only where asked for.
 cli(ok library fetch "${library}")
 cli(ok library candidates --role profile --kind timber)
 expect("mitcad-parts/test-board" "the Timber picker")
+foreach(id test-floorboard test-panel test-shiplap test-feather-edge test-deck)
+  expect("mitcad-parts/${id}" "the Timber picker's profiled boards")
+endforeach()
 cli(ok library candidates --role profile)
-if(out MATCHES "test-board")
+if(out MATCHES "test-board|test-floorboard|test-shiplap|test-deck")
   message(FATAL_ERROR "the Profile picker lists timber:\n${out}")
 endif()
 cli(ok library candidates --role panel --mount face)

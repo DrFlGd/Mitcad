@@ -1516,6 +1516,45 @@ pub trait Kernel {
     fn gear_cone(&self, _spec: &GearConeSpec<'_>) -> Result<Self::Shape, KernelError> {
         Err(KernelError::Unsupported("bevel gears"))
     }
+
+    // Sketch text shaped by the model (mitcad#473; `sketch::fonts`).
+
+    /// The file of an installed font family and style ([`FontSource`]),
+    /// which the model reads to shape a text that needs it (right-to-left
+    /// or joined scripts). An error when the family is not installed.
+    fn font_source(&self, _request: &FontRequest<'_>) -> Result<FontSource, KernelError> {
+        Err(KernelError::Unsupported("font files of installed fonts"))
+    }
+
+    /// A conical face ([`ConeFace`]): sketch profiles wrap onto it by its
+    /// development (`EmbossWrapSpec::half_angle`).
+    fn face_cone(&self, _shape: &Self::Shape, _face: &FaceName) -> Result<ConeFace, KernelError> {
+        Err(KernelError::Unsupported("face cones"))
+    }
+}
+
+/// A conical face ([`Kernel::face_cone`], mitcad#473).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ConeFace {
+    pub apex: [f64; 3],
+    /// From the apex along the axis, where the radius grows (a unit vector).
+    pub axis: [f64; 3],
+    /// Radians, between 0 and π/2.
+    pub half_angle: f64,
+    /// The material lies outside the cone (a countersink's wall).
+    pub internal: bool,
+}
+
+/// An installed font's file ([`Kernel::font_source`], mitcad#473).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FontSource {
+    /// The installed family's name.
+    pub family: String,
+    pub path: String,
+    /// The face in a collection.
+    pub index: u32,
+    /// The style asked for is made by slanting an upright face.
+    pub synthetic_italic: bool,
 }
 
 /// Input of [`Kernel::rim_band`] (mitcad#459). The face `face` of `body`
@@ -2291,6 +2330,17 @@ pub(crate) fn simple_extrude<K: Kernel + ?Sized>(
 /// Faces are named as an extrusion's: `side(<segment>)` grown from a
 /// profile segment, `start(<region>)` on the cylinder of `radius` and
 /// `end(<region>)` on that of `to_radius`.
+///
+/// On a cone (`half_angle` not zero, mitcad#473) the sketch is the cone's
+/// development, laid against it along the generator under the sketch's
+/// origin: `axis` starts at the apex and points where the radius grows,
+/// `radius` is the cone's radius at the sketch origin's height along the
+/// axis, and `to_radius - radius` is the growth along the cone's normals
+/// (outwards when positive). A sketch point at `s` across the axis and `t`
+/// along it (from the origin's height) goes to the distance `hypot(s, t +
+/// ρ0)` from the apex along the generator turned `atan2(s, t + ρ0) /
+/// sin(half_angle)` about the axis, ρ0 = `radius / sin(half_angle)`:
+/// lengths and angles on the cone are the sketch's.
 #[derive(Debug, Clone, Copy)]
 pub struct EmbossWrapSpec<'a> {
     pub feature: FeatureUid,
@@ -2299,6 +2349,8 @@ pub struct EmbossWrapSpec<'a> {
     pub axis: Axis,
     pub radius: f64,
     pub to_radius: f64,
+    /// Radians: 0 for a cylinder.
+    pub half_angle: f64,
 }
 
 // Boundary Fill (mitcad#457).

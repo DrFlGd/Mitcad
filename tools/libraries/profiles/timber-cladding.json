@@ -1,0 +1,105 @@
+{
+  "notes": [
+    "Exterior cladding boards (mitcad#477): Mitcad's own parametric sections of industry-standard sizes, no supplier and no manufacturer's drawing. Sizes are thickness x width in mm (the actual size; a feather-edge board's thickness its thick edge).",
+    "Shiplap (rebated): a lip LT thick and LW wide on the back of the +X edge goes under the next board, whose -X edge laps over it from the front; the cover width is the width less LW. The sizes and covers are those of public product lists; the lap's sizes are Mitcad's own.",
+    "Feather-edge: a wedge from the thick edge T to the thin edge TN, each board overlapping the one under it by O. The section lies as the board is laid on the wall: turned by the angle at which its thick edge rests on the face of the board under it, so that the boards of a row step by the cover width (from the overlap) without touching but along that line.",
+    "Species: spruce. Density at 20 % moisture: spruce 450 kg/m3 (grounds in timber-sawn.json's notes).",
+    "Tolerances: as planed timber for shiplap; feather-edge boards are sawn (up to 100 mm -1/+3 mm, over 100 mm -2/+4 mm)."
+  ],
+  "categories": [{"id": "cladding", "name": "Cladding boards"}],
+  "parts": [
+    {
+      "id": "cladding-shiplap",
+      "name": "Cladding board, shiplap",
+      "category": "cladding",
+      "make": "model",
+      "data_source": "industry-standard sizes and cover widths of shiplap cladding boards (at 20 % moisture)",
+      "designation": "Shiplap cladding {Thickness}x{Width} L={L}",
+      "description": "Spruce shiplap (rebated) cladding boards for exterior walls, 22x120 to 28x170.",
+      "keywords": ["timber", "cladding", "siding", "weatherboard", "shiplap", "rebated", "spruce", "profiled"],
+      "license": "MIT",
+      "dimensions": {
+        "shape": "board",
+        "profile": "shiplap",
+        "width": "W",
+        "thickness": "T",
+        "length": "L",
+        "parameters": {"W": 145, "T": 22, "L": 3000, "LW": 12, "LT": 9}
+      },
+      "default": "22x145",
+      "sizes": {
+        "species": {"spruce": 450},
+        "species_default": "spruce",
+        "tolerance": {
+          "thickness": [[20, -0.5, 0.5], [null, -1.0, 1.0]],
+          "width": [[100, -1.0, 1.0], [null, -1.5, 1.5]]
+        },
+        "rows": [
+          {"thickness": 22, "widths": [120, 145, 170], "covers": [108, 133, 158], "profile": {"LT": 9}},
+          {"thickness": 28, "widths": [145, 170], "covers": [133, 158], "profile": {"LT": 12},
+           "availability": "less common"}
+        ]
+      },
+      "appearance": {
+        "id": "cladding-spruce", "name": "Planed spruce", "based_on": "wood_maple",
+        "base_color": [0.9, 0.79, 0.6], "roughness": 0.6, "texture": "grain", "size": [60, 600]
+      },
+      "build": {
+        "role": "profile",
+        "kind": "timber",
+        "material": {"species": "spruce", "finish": "planed", "grade": "", "density": 450, "moisture": 20},
+        "availability": "standard",
+        "length": {"parameter": "L", "min": 100, "max": 6000, "default": 3000,
+                   "stock": [2700, 3000, 3300, 3600, 3900, 4200, 4500, 4800, 5100, 5400]}
+      }
+    },
+    {
+      "id": "cladding-feather-edge",
+      "name": "Cladding board, feather-edge",
+      "category": "cladding",
+      "make": "model",
+      "data_source": "industry-standard sizes of feather-edge cladding boards (at 20 % moisture)",
+      "designation": "Feather-edge cladding {Thickness}x{Width} L={L}",
+      "description": "Sawn spruce feather-edge boards, 22x100 to 22x175, thin edge 6 mm, overlapping by 25 to 35 mm.",
+      "keywords": ["timber", "cladding", "siding", "feather edge", "featheredge", "bevel", "spruce", "profiled",
+                   "fence"],
+      "license": "MIT",
+      "dimensions": {
+        "shape": "board",
+        "profile": "feather_edge",
+        "width": "W",
+        "thickness": "T",
+        "length": "L",
+        "parameters": {"W": 150, "T": 22, "L": 3000, "TN": 6, "O": 30}
+      },
+      "default": "22x150",
+      "sizes": {
+        "species": {"spruce": 450},
+        "species_default": "spruce",
+        "tolerance": {
+          "thickness": [[100, -1, 3], [null, -2, 4]],
+          "width": [[100, -1, 3], [null, -2, 4]]
+        },
+        "profile": {"TN": 6},
+        "rows": [
+          {"thickness": 22, "widths": [100], "profile": {"O": 25}, "availability": "less common"},
+          {"thickness": 22, "widths": [125], "profile": {"O": 25}},
+          {"thickness": 22, "widths": [150], "profile": {"O": 30}},
+          {"thickness": 22, "widths": [175], "profile": {"O": 35}, "availability": "less common"}
+        ]
+      },
+      "appearance": {
+        "id": "cladding-sawn-spruce", "name": "Sawn spruce", "based_on": "wood_maple",
+        "base_color": [0.84, 0.72, 0.53], "roughness": 0.75, "texture": "grain", "size": [60, 600]
+      },
+      "build": {
+        "role": "profile",
+        "kind": "timber",
+        "material": {"species": "spruce", "finish": "sawn", "grade": "", "density": 450, "moisture": 20},
+        "availability": "standard",
+        "length": {"parameter": "L", "min": 100, "max": 6000, "default": 3000,
+                   "stock": [2700, 3000, 3300, 3600, 3900, 4200, 4500, 4800, 5100, 5400]}
+      }
+    }
+  ]
+}

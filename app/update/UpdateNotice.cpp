@@ -41,8 +41,7 @@ UpdateNotice::UpdateNotice(QWidget* parent) : QWidget(parent) {
   };
   m_notes = button(tr("&Release Notes"), tr("Opens the release's page"), &UpdateNotice::releaseNotesClicked);
   m_install = button(tr("&Install"),
-                     tr("Downloads and verifies the update, then closes Mitcad (asking to save your work), "
-                        "installs it and starts Mitcad again"),
+                     tr("Downloads, verifies and installs the update, then starts Mitcad again"),
                      &UpdateNotice::installClicked);
   m_skip = button(tr("S&kip This Version"), tr("No more notices of this version"), &UpdateNotice::skipClicked);
   m_later = button(tr("&Later"), tr("Hides the notice until the next check"), &UpdateNotice::laterClicked);

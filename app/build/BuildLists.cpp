@@ -150,6 +150,22 @@ QStringList timberCells(const QJsonObject& row) {
           volumeText(row.value(QStringLiteral("volume")))};
 }
 
+// A covered area in m², three decimals (mitcad#477).
+QString areaText(const QJsonValue& area) {
+  return area.isDouble() ? QString::number(area.toDouble(), 'f', 3) : QString();
+}
+
+// A cut row's profiled board columns (mitcad#477; commands.md, "BUILD:
+// timber construction", *Profiled boards*): the profile, the cover width
+// and the area covered; empty for a row that is no profiled board.
+QStringList boardCells(const QJsonObject& row) {
+  if (text(row, "profile").isEmpty()) {
+    return QStringList(3, QString());
+  }
+  return {text(row, "profile").replace(QLatin1Char('_'), QLatin1Char(' ')),
+          millimetresText(row.value(QStringLiteral("cover")).toDouble(kNaN)), areaText(row.value(QStringLiteral("area")))};
+}
+
 QString countText(const QJsonValue& value) {
   if (value.isDouble()) {
     return QString::number(value.toInt());
@@ -231,6 +247,12 @@ QVector<ListTable> cutListTables(const QJsonObject& answer) {
                  << QObject::tr("Nominal (mm)") << QObject::tr("Actual (mm)") << QObject::tr("Running metres (m)")
                  << QObject::tr("Volume (m³)");
   }
+  // Profiled boards (mitcad#477): their columns only when the design has
+  // them.
+  const bool profiled = timber && answer.value(QStringLiteral("profiled")).toBool();
+  if (profiled) {
+    rows.columns << QObject::tr("Profile") << QObject::tr("Cover width (mm)") << QObject::tr("Area covered (m²)");
+  }
   for (const QJsonValue& value : answer.value(QStringLiteral("rows")).toArray()) {
     const QJsonObject row = value.toObject();
     const QJsonObject ends = row.value(QStringLiteral("ends")).toObject();
@@ -243,6 +265,9 @@ QVector<ListTable> cutListTables(const QJsonObject& answer) {
     if (timber) {
       cells << timberCells(row);
     }
+    if (profiled) {
+      cells << boardCells(row);
+    }
     rows.rows.append(cells);
   }
   if (timber) {
@@ -253,6 +278,9 @@ QVector<ListTable> cutListTables(const QJsonObject& answer) {
     total[9] = massText(totals.value(QStringLiteral("mass")));
     total[15] = metresText(totals.value(QStringLiteral("running_metres")));
     total[16] = volumeText(totals.value(QStringLiteral("volume")));
+    if (profiled) {
+      total[19] = areaText(totals.value(QStringLiteral("area")));
+    }
     rows.rows.append(total);
   }
   ListTable stock{QObject::tr("Stock"),
@@ -559,6 +587,17 @@ void BuildListsDialog::load() {
       if (row.size() > 7) {
         qInfo().noquote() << QStringLiteral("Cut list timber stock: %1 %2: %3").arg(row[0], row[6], row[7]);
       }
+    }
+    // Profiled boards (mitcad#477): the profile, cover width and area.
+    if (cut.value(QStringLiteral("profiled")).toBool()) {
+      for (const QStringList& row : std::as_const(m_cut[0].rows)) {
+        if (row.size() > 19 && !row[17].isEmpty()) {
+          qInfo().noquote() << QStringLiteral("Cut list profiled row: %1: %2, cover %3 mm, %4 m2")
+                                   .arg(row[1], row[17], row[18], row[19]);
+        }
+      }
+      qInfo().noquote() << QStringLiteral("Cut list profiled boards: %1 m2")
+                               .arg(areaText(totals.value(QStringLiteral("area"))));
     }
   } else {
     qInfo().noquote() << QStringLiteral("Cut list: no timber columns");

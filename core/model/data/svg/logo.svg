@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: MIT -->
+<!-- A test drawing for sketch.import_svg (mitcad#473): 100 x 60 mm, a
+     viewBox unit 0.5 mm. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="100mm" height="60mm" viewBox="0 0 200 120">
+  <!-- A square ring: its hole by the even-odd rule. -->
+  <path fill-rule="evenodd" d="M10 10 H90 V90 H10 Z M30 30 H70 V70 H30 Z"/>
+  <!-- A disc with a round hole by the nonzero rule: the inner circle runs
+       the other way. -->
+  <path d="M150 20 A30 30 0 1 1 150 80 A30 30 0 1 1 150 20 Z
+           M150 35 A15 15 0 1 0 150 65 A15 15 0 1 0 150 35 Z"/>
+  <!-- A stroked line, 8 units wide. -->
+  <path d="M10 110 H190" fill="none" stroke="black" stroke-width="8"/>
+  <text x="100" y="100" font-size="10" text-anchor="middle">MIT</text>
+</svg>

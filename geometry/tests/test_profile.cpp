@@ -5,6 +5,7 @@
 #include <TopExp.hxx>
 
 #include <cmath>
+#include <string>
 
 #include "check.hpp"
 
@@ -289,9 +290,30 @@ void test_a_circle_starts_where_its_rotation_says() {
   CHECK(near(back.X(), -4.0) && near(back.Y(), 2.0));
 }
 
+// mitcad#473: holes that touch each other at a corner (a QR code's light
+// modules on a diagonal) share the vertex there; the face is valid and its
+// prism has the region's area times the length.
+void test_holes_touching_each_other_at_a_corner() {
+  const auto square = [](const std::string& name, double x, double y, double size) {
+    const std::string a = name + "a", b = name + "b", c = name + "c", d = name + "d";
+    return Loop{{line(a.c_str(), x, y, x + size, y), line(b.c_str(), x + size, y, x + size, y + size),
+                 line(c.c_str(), x + size, y + size, x, y + size), line(d.c_str(), x, y + size, x, y)}};
+  };
+  const Region region{"r", {square("o", 0, 0, 4), square("h1_", 1, 1, 1), square("h2_", 2, 2, 1)}};
+  const ProfileFace profile = make_profile(Frame(), region);
+  CHECK(profile.pinched);
+  CHECK(near(area_of(region), 14.0));
+  ExtrudeFeatureSpec spec;
+  spec.feature = "F2";
+  spec.regions = {region};
+  spec.side1.distance = 2.0;
+  CHECK(near(mass_properties(*extrude_feature(spec)).volume, 28.0));
+}
+
 } // namespace
 
 void profile_tests() {
+  test_holes_touching_each_other_at_a_corner();
   test_rectangle_profile_names_its_edges();
   test_arcs_ellipses_and_splines();
   test_holes_and_orientation();

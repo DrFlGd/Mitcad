@@ -1,0 +1,214 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: a rounding that rolls on another's contact line against it, the
+spines of the two edges running opposite ways (mitcad#343).
+
+The case: both rims of a ring 2.5 thick rounded with 1.5, so that no ball
+touches both flat faces: the rounding computed second rolls on the first
+one's contact line on the band (0016, RideOnOverlap) and ApplyRides makes
+the two blends meet on that line. The line is the first blend's, run its
+spine's way; the second blend's side was set on it from its start to its
+end, as if the second spine ran the same way. A stripe's spine follows its
+edge's curve, and the band's two circles, which start at one point, may
+turn opposite ways round the axis (the bottom circle of a ring made from a
+cylinder standing upside down): the second blend then used the line
+against its own direction, and its face came out reversed (its area
+negative) with a wire not closed.
+
+ApplyRides now finds which way the second blend's own line on the support
+runs along the first one's (rideRunsAgainst: the tangents at 30 and 70 %
+of it, compared with the line's at their projections); where it runs
+against it, the second blend's side on the line runs from the line's end
+to its start, its ends are checked against the first blend's ends the
+other way round, its points there are the first one's the other way round,
+and once the stripes are in the data structure the line's transition on
+the second blend's surface is turned (turnRidesAgainst), as for the
+blends cut by each other between two crossings. On the ring's replayed
+body: valid, the file's change of volume within 1.4e-7 of the stored
+state's (it failed in both orders of the two rims); on the stored body,
+whose circles turn the same way, unchanged.
+
+Upstream: new.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.cxx
+index f517a95c..2104b967 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.cxx
+@@ -1784,6 +1784,101 @@ static void meetOnCurve(TopOpeBRepDS_DataStructure& DStr,
+   }
+ }
+ 
++// Whether the blend of SurfData SB, whose side OnB rolls on the contact line
++// C (from T1 to T2) of another blend, runs along C against it: its own line
++// there (before it is replaced by C) runs the other way.
++static bool rideRunsAgainst(const TopOpeBRepDS_DataStructure&   DStr,
++                            const occ::handle<ChFiDS_SurfData>& SB,
++                            const int                           OnB,
++                            const occ::handle<Geom_Curve>&      C,
++                            const double                        T1,
++                            const double                        T2)
++{
++  const ChFiDS_FaceInterference& FIB = SB->Interference(OnB);
++  if (FIB.LineIndex() <= 0 || DStr.Curve(FIB.LineIndex()).Curve().IsNull())
++  {
++    return false;
++  }
++  const occ::handle<Geom_Curve>& CB = DStr.Curve(FIB.LineIndex()).Curve();
++  const double                   b1 = FIB.FirstParameter(), b2 = FIB.LastParameter();
++  if (std::abs(b2 - b1) <= Precision::PConfusion())
++  {
++    return false;
++  }
++  // (Away from the ends, which are one point on a closed line.)
++  double aDot = 0.;
++  for (const double aFrac : {0.3, 0.7})
++  {
++    gp_Pnt aPB;
++    gp_Vec aDB;
++    CB->D1(b1 + aFrac * (b2 - b1), aPB, aDB);
++    if (b2 < b1)
++    {
++      aDB.Reverse();
++    }
++    GeomAPI_ProjectPointOnCurve aProj(aPB, C, T1, T2);
++    if (aProj.NbPoints() == 0)
++    {
++      return false;
++    }
++    gp_Pnt aPC;
++    gp_Vec aDC;
++    C->D1(aProj.LowerDistanceParameter(), aPC, aDC);
++    if (aDB.Magnitude() <= gp::Resolution() || aDC.Magnitude() <= gp::Resolution())
++    {
++      return false;
++    }
++    const double aCos = aDB.Dot(aDC) / (aDB.Magnitude() * aDC.Magnitude());
++    if (aDot != 0. && (aCos < 0.) != (aDot < 0.))
++    {
++      return false;
++    }
++    aDot = aCos;
++  }
++  return aDot < -0.5;
++}
++
++// The blends of stripes that roll on another's contact line against it
++// (ApplyRides: their side on the line runs from its end to its start) use
++// the line the other way on their surfaces: its transition there is turned,
++// once the stripes are in the data structure.
++static void turnRidesAgainst(TopOpeBRepDS_DataStructure&                         DStr,
++                             const NCollection_List<occ::handle<ChFiDS_Stripe>>& Rides)
++{
++  for (NCollection_List<occ::handle<ChFiDS_Stripe>>::Iterator itB(Rides); itB.More(); itB.Next())
++  {
++    const occ::handle<ChFiDS_Stripe>& B = itB.Value();
++    if (B->SetOfSurfData().IsNull())
++    {
++      continue;
++    }
++    for (int i = 1; i <= B->SetOfSurfData()->Length(); i++)
++    {
++      const occ::handle<ChFiDS_SurfData>& SD = B->SetOfSurfData()->Value(i);
++      for (int k = 1; k <= 2; k++)
++      {
++        const ChFiDS_FaceInterference& FI = SD->Interference(k);
++        if (SD->Index(k) != 0 || FI.LineIndex() <= 0 || FI.FirstParameter() <= FI.LastParameter())
++        {
++          continue;
++        }
++        for (NCollection_List<occ::handle<TopOpeBRepDS_Interference>>::Iterator it(
++               DStr.ChangeSurfaceInterferences(SD->Surf()));
++             it.More();
++             it.Next())
++        {
++          if (it.Value()->GeometryType() == TopOpeBRepDS_CURVE
++              && it.Value()->Geometry() == FI.LineIndex())
++          {
++            const TopAbs_Orientation anO = it.Value()->Transition().Orientation(TopAbs_IN);
++            it.ChangeValue()->ChangeTransition() = TopOpeBRepDS_Transition(TopAbs::Reverse(anO));
++          }
++        }
++      }
++    }
++  }
++}
++
+ void ChFi3d_Builder::ApplyRides()
+ {
+   TopOpeBRepDS_DataStructure&                            DStr = myDS->ChangeDS();
+@@ -1807,9 +1902,17 @@ void ChFi3d_Builder::ApplyRides()
+     }
+     const occ::handle<Geom_Curve>& C  = DStr.Curve(FI.LineIndex()).Curve();
+     const double                   t1 = FI.FirstParameter(), t2 = FI.LastParameter();
+-    // (B's start at A's start: the line runs the same way for both.)
+-    if (C.IsNull() || t2 - t1 <= Precision::PConfusion()
+-        || SB->Vertex(true, onB).Point().Distance(SA->Vertex(true, onA).Point()) > 10. * tolapp3d)
++    if (C.IsNull() || t2 - t1 <= Precision::PConfusion())
++    {
++      continue;
++    }
++    // Whether B runs along the line against A (the spines of the two edges
++    // running opposite ways round the face between them: two rims of a
++    // band whose circles turn opposite ways). B's own line on the support,
++    // computed by rolling on A's, runs B's way.
++    const bool against = rideRunsAgainst(DStr, SB, onB, C, t1, t2);
++    // (B's start at A's start, or at A's end where B runs against A.)
++    if (SB->Vertex(true, onB).Point().Distance(SA->Vertex(!against, onA).Point()) > 10. * tolapp3d)
+     {
+       continue;
+     }
+@@ -1826,7 +1929,7 @@ void ChFi3d_Builder::ApplyRides()
+       for (int f = 0; f < 2 && ends; f++)
+       {
+         const ChFiDS_CommonPoint& CPA = SA->Vertex(f == 0, onA);
+-        const ChFiDS_CommonPoint& CPB = SB->Vertex(f == 0, onB);
++        const ChFiDS_CommonPoint& CPB = SB->Vertex((f == 0) != against, onB);
+         if (CPA.IsOnArc() && CPB.IsOnArc())
+         {
+           ends = !CPA.IsVertex() && !CPB.IsVertex() && CPA.Arc().IsSame(CPB.Arc());
+@@ -1836,7 +1939,7 @@ void ChFi3d_Builder::ApplyRides()
+           atPoint[f] = true;
+           ends       = !CPA.IsOnArc() && !CPB.IsOnArc()
+                  && CPA.Point().Distance(CPB.Point()) <= 10. * tolapp3d
+-                 && A->IndexPoint(f == 0, onA) > 0 && B->IndexPoint(f == 0, onB) > 0;
++                 && A->IndexPoint(f == 0, onA) > 0 && B->IndexPoint((f == 0) != against, onB) > 0;
+         }
+       }
+       if (!ends || (!atPoint[0] && !atPoint[1]))
+@@ -1857,8 +1960,11 @@ void ChFi3d_Builder::ApplyRides()
+     }
+     ChFiDS_FaceInterference& aFIB = SB->ChangeInterference(onB);
+     aFIB.SetInterference(FI.LineIndex(), aFIB.Transition(), PCB, PCB);
+-    aFIB.SetFirstParameter(t1);
+-    aFIB.SetLastParameter(t2);
++    // (Run from t2 to t1 where B runs against A: the line's transition on
++    // B's surface is turned once B is in the data structure,
++    // TurnRidesAgainst.)
++    aFIB.SetFirstParameter(against ? t2 : t1);
++    aFIB.SetLastParameter(against ? t1 : t2);
+     if (onA == 1)
+     {
+       SA->ChangeIndexOfS1(0);
+@@ -1921,8 +2027,8 @@ void ChFi3d_Builder::ApplyRides()
+       if (A->IndexPoint(f == 0, onA) > 0)
+       {
+         const int aNew  = A->IndexPoint(f == 0, onA);
+-        const int anOld = B->IndexPoint(f == 0, onB);
+-        B->SetIndexPoint(aNew, f == 0, onB);
++        const int anOld = B->IndexPoint((f == 0) != against, onB);
++        B->SetIndexPoint(aNew, (f == 0) != against, onB);
+         // (At an end inside F, B's corner already used its own point: the
+         // corners' curves there, which cut F off, meet at A's.)
+         if (atPoint[f] && anOld > 0 && anOld != aNew)
+@@ -2694,6 +2800,11 @@ void ChFi3d_Builder::Compute()
+                   aCutAgainst(ip),
+                   10. * tolapp3d);
+     }
++    // (Rides on a contact line against it use the line the other way.)
++    if (done)
++    {
++      turnRidesAgainst(DStr, myRideStripes);
++    }
+     if (done)
+     {
+       BRep_Builder B1;

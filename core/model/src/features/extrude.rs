@@ -231,6 +231,11 @@ pub struct ExtrudeDef<P = ParamId> {
     /// profiles: open chains or closed loops.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub curves: Option<SketchCurves>,
+    /// The profiles wrapped onto this cylindrical or conical face (mitcad#473),
+    /// as an emboss wraps them, and grown along its normals by the distance:
+    /// out of the material, or into it with `flip` or a negative distance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wrap: Option<super::reference::FaceRef>,
 }
 
 type Mapper<'a, P, Q, E> = dyn FnMut(&str, &P) -> Result<Q, E> + 'a;
@@ -346,6 +351,7 @@ impl<P> ExtrudeDef<P> {
             object_links: self.object_links.clone(),
             surface: self.surface,
             curves: self.curves.clone(),
+            wrap: self.wrap.clone(),
         })
     }
 
@@ -589,6 +595,9 @@ impl FeatureInfo for ExtrudeDef {
         if let Some(scope) = &self.cut_scope {
             scope.add_references(&mut references);
         }
+        if let Some(face) = &self.wrap {
+            face.add_references(&mut references);
+        }
         references
     }
 
@@ -602,6 +611,24 @@ impl FeatureInfo for ExtrudeDef {
             }
         } else if self.curves.is_some() && self.wall_curves().is_some() {
             return Err("only a surface extrusion sweeps sketch curves".to_owned());
+        }
+        if let Some(face) = &self.wrap {
+            // Wrapped (mitcad#473): profiles by a distance, nothing else.
+            if self.wall_curves().is_some() || self.thin.is_some() || self.surface {
+                return Err(
+                    "a wrapped extrusion takes profiles, not thin walls or surfaces".to_owned(),
+                );
+            }
+            if !matches!(self.extent, Extent::Distance { taper: None, .. }) {
+                return Err("a wrapped extrusion goes a distance, without a taper".to_owned());
+            }
+            if !matches!(self.start, Start::ProfilePlane) || self.cut_scope.is_some() {
+                return Err(
+                    "a wrapped extrusion starts on the face it wraps onto, in its own component"
+                        .to_owned(),
+                );
+            }
+            face.check(ctx)?;
         }
         match self.wall_curves() {
             Some(_) if !self.profiles.is_empty() => {
@@ -768,6 +795,21 @@ impl<K: Kernel> Evaluate<K> for ExtrudeDef {
             return self.surface_output(ctx);
         }
         let (sketch, regions) = self.sketch_regions(ctx)?;
+        if let (Some(face), Extent::Distance { distance, .. }) = (&self.wrap, &self.extent) {
+            // Wrapped onto a cylinder or a cone (mitcad#473), as an emboss.
+            let d = ctx.param(*distance)?;
+            let raise = (d > 0.0) != self.flip;
+            let participants = participant_bodies(ctx, self.operation, &self.participants)?;
+            let tool =
+                super::emboss::wrapped_tool(ctx, sketch.frame, &regions, face, d.abs(), raise)?
+                    .ok_or_else(|| {
+                        format!(
+                            "to wrap the profiles onto face {}, it must be cylindrical or conical",
+                            face.face
+                        )
+                    })?;
+            return apply_operation(ctx, self.operation, participants, tool, "extrusion");
+        }
         let discovery = self
             .cut_scope
             .as_ref()

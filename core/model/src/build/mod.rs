@@ -28,11 +28,17 @@ pub(crate) mod joinery;
 pub(crate) mod spacing;
 pub(crate) mod timber;
 pub(crate) mod wood;
+// Profiled boards (mitcad#477).
+pub(crate) mod profiled;
+// Timber frames (mitcad#479).
+pub(crate) mod frames;
 
 pub use connect::{ConnectInput, PanelInput, RemoveResult};
 pub use cut_list::{
-    CutList, CutListOptions, CutRow, MachiningItem, StockEntry, TimberColumns, TimberTotals,
+    BoardColumns, CutList, CutListOptions, CutRow, MachiningItem, StockEntry, TimberColumns,
+    TimberTotals,
 };
+pub use frames::{FrameInput, FrameKind, Opening, OpeningOffset, RoofKind};
 pub(crate) use geometry::*;
 pub use joinery::JointInput;
 pub use junctions::{Junction, JunctionSide};
@@ -49,13 +55,19 @@ pub use wood::EndInput;
 #[cfg(test)]
 mod bound_tests;
 #[cfg(test)]
+mod close_tests;
+#[cfg(test)]
 mod cut_list_tests;
 #[cfg(test)]
 mod easy_tests;
 #[cfg(test)]
+mod frame_tests;
+#[cfg(test)]
 mod junction_tests;
 #[cfg(test)]
 mod place_tests;
+#[cfg(test)]
+mod profiled_tests;
 #[cfg(test)]
 mod side_end_tests;
 #[cfg(test)]
@@ -176,6 +188,16 @@ pub struct BuildRecord {
     /// fields), to place it anew.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub points: Option<serde_json::Value>,
+    // Timber frames (mitcad#479).
+    /// A member of a timber frame: the frame's lead (its first member).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frame: Option<ComponentUid>,
+    /// The lead's: the frame's definition (`frames.rs`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub framing: Option<serde_json::Value>,
+    /// The member's place in its frame (`stud.3`, `plate.top.0`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub member: Option<String>,
 }
 
 /// What a BUILD part is (`docs/libraries.md`, "BUILD parts").

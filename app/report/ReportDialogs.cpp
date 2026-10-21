@@ -226,8 +226,7 @@ FeedbackDialog::FeedbackDialog(const QImage& screenshot, std::function<bool(cons
   form->addRow(tr("&Description:"), m_description);
   m_contact = new QLineEdit(this);
   m_contact->setPlaceholderText(tr("Optional; the report is public"));
-  m_contact->setToolTip(tr("An e-mail address or name for questions about the report. The issue tracker is "
-                           "public: everyone can read it."));
+  m_contact->setToolTip(tr("An e-mail address or name for questions about the report; the report is public"));
   form->addRow(tr("C&ontact:"), m_contact);
   layout->addLayout(form);
 

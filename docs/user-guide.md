@@ -57,6 +57,11 @@ import tolerance), a dialog asks once per import:
 The import report lists, per feature tried again, the bodies kept and
 replaced.
 
+The *Import tolerance* (Preferences › General) is how far replayed
+geometry may be from the file's where it is not exact: the edges and
+faces the file names are found within it, and a feature's new faces
+must lie on the file's within it.
+
 A feature whose own definition builds, but not quite the file's result
 (a rounding that removes 9 % more than the file's, say), comes in as the
 file's bodies too. Once the import report is closed, the dialog **Keep
@@ -97,7 +102,13 @@ result as a `.mitcad` design. More in [.f3d import](#f3d-import).
 - **File › Import** (also the INSERT group): STEP, IGES and BRep come in
   as a base feature, STL and OBJ as mesh bodies (Insert Mesh asks for the
   unit), DXF into a new sketch on a chosen plane (Insert DXF; in sketch
-  mode into the sketch being edited), another Mitcad design as a
+  mode into the sketch being edited), SVG the same way (Insert SVG: a
+  scale, in sketch millimetres per millimetre of the drawing (its user
+  unit, or the size its width and height give), where its lower left
+  corner goes, and whether stroked paths
+  become bands of their stroke width; curves come in exactly, texts as
+  sketch texts, and the regions the drawing fills come selected, so
+  Extrude makes a logo with its holes at once), another Mitcad design as a
   component, linked or as a copy (Insert Component). FreeCAD documents,
   `.f3d` designs, `.ipt` parts and SolidCraft designs open as new documents
   with their history ([FreeCAD import](#freecad-import), [.f3d
@@ -211,31 +222,75 @@ tab](#build-tab). Other commands of the SOLID tab, in menu order:
   their walls stand square to the face. A sketch on a plane parallel to
   the cylinder's axis wraps onto the side facing the sketch (for a plane
   through the axis, the side its normal points to); a bore's wall takes them too
-  (raised into the hole). The profiles must stay within one turn. Helix turns
+  (raised into the hole). The profiles must stay within one turn. On a
+  conical face (a cone or a countersink) Emboss lays the profiles onto
+  the cone's development, so lengths, angles and areas on the cone are
+  the sketch's, and raises them along the cone's normals. Extrude's
+  **Wrap Onto** does the same from the Extrude panel: pick a cylindrical
+  or conical face and the profiles (a text, an inserted SVG logo) are
+  wrapped onto it and grown by the distance out of the material, or
+  engraved into it with Flip and Cut; the text stays a sketch text, so
+  its string can still be edited. Helix turns
   sketch profiles about an axis while they rise along it, as a screw
   moves (a thread's profile, a twisted ridge): give the revolutions and
   the pitch, the revolutions and the height, or the height and the pitch,
   right- or left-handed; a Growth moves the profiles that far out from
   the axis each turn (negative: in), widening the helix into a cone or a
-  spiral. A Thin Extrude also takes sketch curves instead of profiles
+  spiral. Sweep can follow a *Guide Rail* as well as the path: *Rail
+  Point* says where the rail meets the profile, on the plane square to
+  the path or at the same fraction of the rail's length as of the path's,
+  and an optional *Second Rail* (sketch curves or edges) turns and sizes
+  the profile with the line between the two rails. Each end of a Loft
+  has a *Start* or *End Condition*: Free; for a profile, a Direction (the
+  *Takeoff Angle* from the profile's normal, outwards when positive); for
+  a face, Tangent or Smooth to the faces next to it; for a point, a sharp
+  or a rounded (tangent) tip. A Thin Extrude also takes sketch curves instead of profiles
   (pick them in Profiles once the type is Thin Extrude): an open line,
   arc or chain of them gets a wall along it, square at its ends, Side 1
   on the outside of its bend and Side 2 on the inside (a straight chain:
   Side 1 to the right of the first picked curve as it was drawn), Center
-  half each way; a closed chain gets walls as a profile's outline does. A
+  half each way; a closed chain gets walls as a profile's outline does.
+  Holes are clicked onto a face or placed at sketch points. A
   hole can be counterdrilled (a counterbore
   whose floor is a cone down to the hole) and tapered (Taper Angle: the
   wall leans in as the hole goes deeper). A thread, cosmetic or modelled,
   can have *Chamfer Ends*: a cone cut at the free ends it runs out
   through (a shaft's tip, a hole's mouth), so that the first turn starts
-  on the cone without a knife edge. The size comes from the thread size
-  (45 degrees, just inside the minor diameter of a shaft, just outside the
-  major diameter of a hole) and follows it, or is given as an angle and
-  a diameter.
+  on the cone without a knife edge: an external thread is chamfered to
+  below its minor diameter, an internal one countersunk past its major
+  diameter. Ends inside the face or against more material get none;
+  *Ends* chooses both, the start (the end the thread location measures
+  from, the high end by default) or the end. The size comes from the
+  thread size (45 degrees to the axis, a tenth of a pitch inside the
+  minor diameter of a shaft or outside the major diameter of a hole) and
+  follows a change of the size, or is given as an angle and a diameter.
+  A modelled thread's *Extra clearance* makes it fit looser while its
+  size, class and pitch stay. *Radial clearance* is per side, along the
+  radius: it moves the whole profile away from the material, enlarging an
+  internal thread and shrinking an external one; it is not a diameter, so
+  0.2 mm changes each diameter by 0.4 mm. *Flank clearance* is on each
+  flank, measured perpendicular to the flank (not along the axis, not a
+  scale factor), after the radial clearance: it thins an external
+  thread's teeth or widens an internal thread's groove, keeping the pitch
+  and the flank angle. Clearances on both mating parts add up; the other
+  part is not changed.
 - **MODIFY:** Press Pull, Fillet, Chamfer, Shell, Draft, Scale, Combine,
   Offset Face, Replace Face, Split Face, Split Body, Move/Copy, Align,
   Delete Face, Physical Material, Appearance, Edit Appearances, Change
-  Parameters. Edit Appearances (also Appearance... in a body's context
+  Parameters. **Press Pull** acts on what is selected: a face is offset,
+  an edge rounded, a profile extruded; a face of a fillet opens that
+  fillet. **Fillet** rounds edges in sets (a face picked rounds all its
+  edges), each set with its own Radius Type: Constant; Chord Length (the
+  rounding's width across the edge); Variable (a start and an end radius,
+  and Mid Radii at positions from 0 at the start to 1 at the end);
+  Asymmetric (a distance on each face, the first on the Reference Face);
+  or Spline (control radii along the chain, whose Knots run from 0 to 1
+  with each end repeated degree + 1 times, as many knots as the control
+  radii and the degree and one more; empty: evenly spaced, of degree 3 at
+  most). The Radius field holds the first of these values. **Chamfer**
+  bevels edges in sets the same way; its Corner Type sets where three
+  bevelled edges meet: a small face of its own (Chamfer), the bevels
+  running on until they meet (Miter), or a smooth patch (Blend). Edit Appearances (also Appearance... in a body's context
   menu) shows the appearance library with a preview of each: base colour,
   metalness, roughness, specular, transmission, index of refraction, coat,
   emission and opacity. New copies the selected appearance into the design,
@@ -343,6 +398,10 @@ from one component to the next, and they stay in every visual style and also
 when the bodies are drawn in Component Colors, by appearance or rendered.
 Small caps get fewer, closer lines, large ones are not filled with them.
 
+**Pattern on Path** repeats its objects along a path: a sketch line, arc
+or circle, or lines and arcs of one sketch joined end to end, followed
+from the free end of the first.
+
 **Pattern at Points** repeats Features, Bodies or Components at sketch points,
 construction points or vertices. Select the source objects, then the Target
 Points: every target receives one additional copy with the source orientation,
@@ -411,7 +470,17 @@ application menu.
   HDR image, `.hdr` or `.exr`, with its rotation and strength), what is
   behind the bodies (the view's background, a colour or the environment
   itself), the ground (shadows, reflections, its height) and the film
-  (exposure, Standard, Filmic or Neutral). These settings are kept in the
+  (exposure, Standard, Filmic or Neutral). Its Lights page adds lights
+  of your own: point, spot, area and sun. A light's Power is in watts
+  for a point, spot or area light (5 W, 300 mm away, give about as much
+  light as the studio's key light) and in W/m² for a sun; its Size makes
+  the shadows softer as it grows (a point or spot light's ball diameter,
+  an area light's width or its disc's diameter). A light that *Follows
+  the camera* has its place and direction relative to the camera (x to
+  the right, y up, z toward you), so it moves with the view. **Aim at
+  Face**: click a face in the view, and the light goes the given distance
+  out along the face's normal and shines at the point (Esc cancels).
+  These settings are kept in the
   design and saved with it; each change is a step of Undo.
 - **Render Image** (the MAKE group, also View › Visual Style) renders
   the current view, or a named view, to an image file in these
@@ -547,7 +616,7 @@ and constraints (CONSTRAINTS). The CREATE menu groups its tools:
 | Circles | Center Diameter, 2-Point, 3-Point, 2-Tangent and 3-Tangent Circle |
 | Arcs | 3-Point, Center Point and Tangent Arc |
 | Other Geometry | Ellipse, the polygons, the slots, the splines and Point |
-| Text | Text |
+| Text | Text, QR Code |
 | Patterns | Rectangular Pattern, Circular Pattern and Mirror |
 | Project | Project (references from the bodies) |
 | Sketch Dimension | Sketch Dimension |
@@ -715,6 +784,15 @@ stays on for the next sketch.
   ordinary sketch geometry, free and no longer following their source.
   A corner that projected curves you do not convert also use stays
   projected, and the converted curve stays joined to it.
+- **Clean Up Projections** (CREATE › References) removes projected curves
+  that repeat another and projected lines that lie on another, keeping
+  their constraints and dimensions on the curve kept. *Merge Overlapping
+  Lines* also takes a projected line lying on a longer one and
+  overlapping unlinked lines; a merged line follows one source only.
+  **Clean Up Stale Projections** (also a button on the sketch palette
+  while the sketch has stale projections) removes the projected curves
+  that no longer match their source and that nothing uses, trims the ones
+  the profiles still use, and unlinks the projections that cannot follow.
 - **Equal Spacing** (Constraints) keeps the intervals between three or
   more independent objects equal without copying them: points, circles
   and arcs (their centres) and lines (their midpoints), mixed as needed.
@@ -747,6 +825,29 @@ stays on for the next sketch.
 - Text letters are profiles (letters as regions, their openings as
   holes), and the copies of sketch patterns follow their originals; Edit
   Text, Edit Pattern and Edit Offset change them later.
+- **Fonts** (Edit Text): the font chooser lists the bundled Droid Sans,
+  the installed fonts, then the font files of the folders of
+  **Preferences › Fonts**, each with a preview; **File...** beside it
+  chooses any font file (`.ttf`, `.otf`, `.ttc`, `.woff`, `.woff2`). A text
+  in a font file keeps the file's outlines, its path and its licence note
+  in the design, so the design looks the same on a computer without the
+  file; there a new string or style asks for the file again (a file of
+  the same name in the font folders is found by itself). A font file is
+  one face: Bold leaves it as it is (choose the bold file), Italic slants
+  an upright one.
+- **Right-to-left and joined scripts:** Hebrew, Arabic and other scripts
+  that join their letters or carry marks are shaped as the font says
+  (joined forms, ligatures, marks) and read from right to left; a line
+  that mixes them with Latin text or numbers is ordered as it is read.
+  This works with font files and with installed fonts that have the
+  script (the bundled Droid Sans has neither Hebrew nor Arabic). Joined
+  letters overlap a little: extrude the whole word.
+- **QR Code** (CREATE › Text): a QR code of a text or an address, its
+  module size, its error correction (L, M, Q or H: about 7 to 30 % of the
+  code may be lost) and its lower left corner. The dark modules are
+  profiles; Extrude started next takes all of the code at once, so it
+  extrudes or engraves as one. A double-click on the code opens Edit QR
+  Code (content, module size, error correction).
 - Limits: the quadrant of an angular dimension cannot be chosen, and no
   constraints can be added to the curves of an offset of an ellipse or a
   spline.
@@ -1016,6 +1117,10 @@ can be moved apart. A set can be suppressed (it stops nothing), edited,
 renamed and deleted from the browser's **Contact Sets** folder; a design
 can have several.
 
+**Animate Joint** (ASSEMBLE) plays a joint's free motion through its
+range: the joint selected in the timeline, else the newest one. It
+changes nothing in the design.
+
 A **motion study** (ASSEMBLE › Motion Study, or Play on a study in the
 browser's **Motion Studies** folder) keys joints along a number of steps:
 per joint and free motion (a cylindrical joint's slide and turn each),
@@ -1132,7 +1237,10 @@ active and holds components. The panel says where (*Adds to: Part1*).
     Typing an offset moves it from the same reference (from end A to its
     near face, from end B to its far face, from the middle to its centre);
     changing **From** keeps it where it is and shows its offset from the
-    new reference. A new click replaces both.
+    new reference. A new click replaces both. **Tilt** leans it along the
+    profile it stands on, towards that profile's end B (positive) or end
+    A, up to 80 degrees (0 stands square); its foot is cut to lie on the
+    side, and an automatic length ends flush on the face it meets.
   - **On an end** (a click on its end face) the click decides: in the
     middle of the end face the new profile continues straight on; near an
     edge it turns towards that edge (a corner), in the profile's own axes.
@@ -1166,7 +1274,8 @@ active and holds components. The panel says where (*Adds to: Part1*).
 - **Panel:** click the inner face of a frame's profile and the panel fills
   the frame in its slots, sized to the frame (a sheet sold in fixed widths
   keeps its width and says when it does not fit); an outer face puts it on
-  the face, held by clamps. A generic panel takes any thickness.
+  the face, held by clamps. On a timber member's face it puts a sheet on
+  that face. A generic panel takes any thickness.
 - **Linear Part:** rails (cut to length, their hole pitch kept from end A),
   carriages (a carriage on its rail slides along it: drag it, or Animate
   Joint), slot-mounted carriage mounts, bearings and motor plates.
@@ -1187,7 +1296,11 @@ active and holds components. The panel says where (*Adds to: Part1*).
   and the picker follows the junction you move on to. **Connect** places the
   chosen one with its nuts and screws and the end machining it needs (a
   bore in the profile's end), and moves on to the next junction. Removing
-  a connector removes what it added.
+  a connector removes what it added. At a timber junction the
+  connector is a wood fastener (its count of screws or nails in a row
+  along the contact, and its size) or a joint; the fastener's *Auto* size
+  takes the diameter from the thinner member and the length through the
+  first member and well into the other.
 - **Fasteners:** a connector's nuts and screws in another size, taken off,
   or added again.
 
@@ -1213,11 +1326,90 @@ active and holds components. The panel says where (*Adds to: Part1*).
 - **Parts List:** every part with its quantity, supplier and part number,
   also as CSV and PDF.
 
+**Timber**
+
+The **Timber** tool (PROFILE) places members of the timber chosen in its
+Part tile. Its **Mode** buttons choose how:
+
+- **On a member** (the default): on a member's side or end, or on a
+  plane, as Profile places a profile, with the length you typed last.
+- **Spacing:** a row of members. *Spacing On* puts it *Between two
+  members* (studs, joists: on one member's side, each reaching the other)
+  or *Over the supporting faces* (deck boards, battens): the row runs along
+  the **Supporting Faces** you pick, such as the joists' top faces, each
+  member across all of them. **Spacing** is a centre distance (studs,
+  joists, rafters; 400 mm) or a gap between boards (a deck, a fence,
+  cladding; 5 mm); with a gap, **Last Board** is cut to what is left or
+  the gaps are spread evenly.
+- **Frame:** a wall, floor or roof frame (below).
+- **Two points:** **Start** is a plane or a face the member lies on, or
+  another member (its ends, sides and centre lines snap); **End** is
+  where it ends, moved onto the start's plane (Shift+click places).
+
+**Lie** lays a member placed by two points, over faces or on the ground
+*Flat* (its thinner side across the plane it lies on) or *On edge* (the
+wider one); Tab turns it. **Spacing Set** (MODIFY) changes a row
+afterwards: pick one of its members and change its distance, count or
+members' size, and the members are laid out again.
+
+**Timber frames**
+
+The **Timber** tool's **Frame** mode (its fourth Mode button) makes a
+whole frame of the timber chosen in its Part tile, in one step:
+
+- **Wall:** click where the wall's centre line starts and ends (or press
+  Enter: from the origin, **Length** along **Direction**), give its
+  **Height** and the studs' **Spacing** (600 mm). It gets a bottom and a
+  top plate (two top plates if you choose), studs at the spacing from its
+  start and one at each end. **Openings** are typed as `offset
+  widthxheight sill`, separated by `;`: `600 900x1200 900` is a window
+  900 wide and 1200 high, 600 mm from the wall's start, its sill 900 mm
+  above the floor; without a sill it is a door. Each opening gets king and
+  trimmer studs, a header, a sill and cripple studs. A wall whose start
+  or end you click on a member of another wall frame makes a corner (at
+  that wall's end) or a T-junction (along it) with it: the other wall runs
+  through and gets the extra studs, and this one stops at its face.
+- **Floor or ceiling:** click two opposite corners (or give Length and
+  Width): rim joists all round, joists at the spacing (400 mm), a row of
+  **Blocking** if you want it, and stair **Openings** (`a b
+  widthxlength`) framed with doubled trimmers and headers.
+- **Roof:** click a member of each of two parallel wall frames, choose
+  **Gable** or **Mono-pitch**, the **Pitch** and the **Overhang**: rafters
+  at the spacing, plumb cut at their ends and notched with a birdsmouth
+  over each wall's top plate, and a gable roof's ridge board.
+
+With **Fasteners** checked, two wood screws from the library go into each
+junction of the frame, sized from the members. The preview shows the
+members and counts them, with any warning (a ridge board too shallow, a
+birdsmouth too deep). Every member is an ordinary BUILD part: it shows in
+the cut list with the other timber, grouped by size. **Timber Frame**
+(MODIFY) changes a frame afterwards: pick one of its members and change
+its length, height, spacing, openings or the members' size; the frame is
+laid out again in one step (an undo takes it back), and a roof on a wall
+follows the wall.
+
 The BUILD commands work through live MCP as the other panels do
 ([docs/mcp.md](mcp.md)); the model's commands behind them are in
 commands.md, *BUILD: profile assemblies*.
 
 ### Sheet metal: contour flanges, conversions and perforations
+
+**Edit Sheet Rules** (a sheet body's context menu, or a double-click on
+the rules row under it in the browser) edits the thickness, bend radius,
+K-factor and reliefs: every sheet that uses those rules follows. **Export
+Flat Pattern** writes the selected sheet's Flat Pattern to a DXF file,
+with its cut contours and bend lines.
+
+A **Flange**'s Length is *Measured* from the bend's tangent line, or from
+the virtual sharp corner of the inner or the outer surfaces. **Bend**
+makes one bend between two edges, or with the Bend Type *Double Bend* two
+opposite bends of the angle with a straight between them, joining
+parallel faces of two sheets. **Corner Relief** takes faces of the two
+bends that meet and, when they leave several flat faces, the Face they
+leave; for bends on different faces, the face held (one next to either
+bend). **Sheet Cut** cuts sketch profiles (of one or several sketches on
+a flat face) through the thickness, also across bends it opens for the
+cut.
 
 Besides the SHEET METAL group's commands (Face, Flange, Bend, Fold,
 corners, cuts, reliefs, Unfold, Refold and the Flat Pattern;
@@ -1822,8 +2014,10 @@ that something changed.
   publishes one message under the prefix and waits for it, and lists the
   steps.
 
-**Tools › Preferences › Cloud:** the git program (found on `PATH`, on
-Windows also where Git for Windows installs itself, or chosen), the
+**Tools › Preferences › Cloud:** the git program that sends and gets the
+versions of Cloud projects (found on `PATH`, on Windows also where Git
+for Windows installs itself, or chosen; signing in is its own, and Local
+projects need none), the
 default author (when git has none), the defaults of projects for sending
 each version at once and for how often to check for newer versions,
 whether live updates are allowed (off: no project connects to a broker),

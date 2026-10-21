@@ -122,8 +122,7 @@ void MainWindow::registerVersionCommands() {
   m_registry->add(version);
   // P12e.
   CommandDef versions = def("file.version_history", tr("Version History..."), "versions",
-                            tr("The versions of this design: compare one with another or with the open design, "
-                               "open, restore or save a copy of one"),
+                            tr("The versions of this design: compare, open, restore or save a copy"),
                             [this] { showVersionHistory(); });
   versions.shortcut = QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_H);
   versions.keywords = {QStringLiteral("versions"), QStringLiteral("history"), QStringLiteral("compare"),

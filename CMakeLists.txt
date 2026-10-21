@@ -13,7 +13,7 @@ endif()
 include(cmake/RenderDeps.cmake)
 
 project(Mitcad
-  VERSION 0.16.0
+  VERSION 0.16.1
   DESCRIPTION "Open source parametric desktop CAD"
   LANGUAGES CXX)
 
@@ -127,6 +127,8 @@ if(BUILD_TESTING)
   if(BASH_EXECUTABLE AND NOT WIN32)
     add_test(NAME repo.spdx COMMAND "${BASH_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/check-spdx.sh")
   endif()
+  # Every tooltip of the app is one short line (tools/tooltip-check).
+  add_subdirectory(tools/tooltip-check)
   # The hypothesis tester of the .f3d import's learning dump (mitcad#96) and
   # the comparison with the API reference dumps (apiref.py).
   find_package(Python3 COMPONENTS Interpreter QUIET)

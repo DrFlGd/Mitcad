@@ -13,6 +13,7 @@
 #include <GProp_GProps.hxx>
 #include <Precision.hxx>
 #include <TopoDS.hxx>
+#include <gp_Cone.hxx>
 #include <gp_Cylinder.hxx>
 
 #include "util.hpp"
@@ -114,6 +115,36 @@ CylinderFace face_cylinder(const Shape& shape, const std::string& face) {
                                axis.Direction().XYZ() *
                                    gp_Vec(axis.Location(), point).Dot(gp_Vec(axis.Direction()))),
                         point);
+    result.internal = radial.Dot(gp_Vec(normal)) < 0.0;
+    return result;
+  });
+}
+
+ConeFace face_cone(const Shape& shape, const std::string& face) {
+  return detail::run("face cone", [&] {
+    const std::vector<TopoDS_Face> faces = faces_named(shape, face);
+    const BRepAdaptor_Surface surface(faces.front());
+    if (surface.GetType() != GeomAbs_Cone) {
+      throw std::invalid_argument("face " + face + " is not conical");
+    }
+    const gp_Cone cone = surface.Cone();
+    for (const TopoDS_Face& piece : faces) {
+      const BRepAdaptor_Surface own(piece);
+      if (own.GetType() != GeomAbs_Cone || own.Cone().Apex().Distance(cone.Apex()) > Precision::Confusion() ||
+          !own.Cone().Axis().IsParallel(cone.Axis(), 1.0e-9)) {
+        throw std::invalid_argument("the pieces of face " + face + " are not one cone");
+      }
+    }
+    ConeFace result;
+    result.apex = cone.Apex();
+    // OCCT's semi-angle is negative when the radius shrinks along the axis.
+    result.axis = cone.SemiAngle() < 0.0 ? cone.Axis().Direction().Reversed() : cone.Axis().Direction();
+    result.half_angle = std::abs(cone.SemiAngle());
+    gp_Pnt point;
+    const gp_Dir normal = outward_normal(faces.front(), point);
+    const gp_Vec along(result.axis);
+    const gp_Vec from(result.apex, point);
+    const gp_Vec radial = from - along * from.Dot(along);
     result.internal = radial.Dot(gp_Vec(normal)) < 0.0;
     return result;
   });

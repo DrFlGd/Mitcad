@@ -11,6 +11,7 @@
 #include <vector>
 
 #include <BRepAdaptor_Curve.hxx>
+#include <BSplCLib.hxx>
 #include <BRepLib.hxx>
 #include <BRepTools_WireExplorer.hxx>
 #include <BRep_Builder.hxx>
@@ -85,10 +86,15 @@ struct Screw {
 // same curve shifted by a turn, to rounding, away from the family's ends.
 class Helices {
 public:
-  Helices(const Screw& screw, double turns, double radius) : m_screw(screw) {
+  Helices(const Screw& screw, double turns, double radius, double exact = kHelixExact, int degree = 3)
+      : m_screw(screw) {
+    if (degree > 3) {
+      build_of_degree(turns, radius, exact, degree);
+      return;
+    }
     // The cubic interpolation of a circle of radius r at steps h deviates
     // about 5/384 r h^4.
-    const double step = std::pow(kHelixExact * 384.0 / (5.0 * std::max(radius, 1.0e-3)), 0.25);
+    const double step = std::pow(exact * 384.0 / (5.0 * std::max(radius, 1.0e-3)), 0.25);
     const int per_turn = std::clamp(static_cast<int>(std::ceil(kTwoPi / step / 8.0)) * 8, 32, 1024);
     const int from = -2 * per_turn;
     const int to = static_cast<int>(std::ceil(turns * per_turn)) + 2 * per_turn;
@@ -152,6 +158,91 @@ public:
   }
 
 private:
+  // The family interpolated at the Greville points of uniform knots with
+  // the given degree, with as few spans a turn as keep the helices within
+  // `exact` of the screw motion, measured: the bound of an interpolation of
+  // degree d at steps h, r h^(d+1) / (d+1)!, asks about four times as many
+  // as are needed, and on the surfaces swept along them a boolean samples
+  // and evaluates each span (mitcad#343: the grooves of a thread cut near
+  // another thread's faces took a tenth longer with them than with the
+  // sweeps a turn at a time).
+  void build_of_degree(double turns, double radius, double exact, int degree) {
+    double factorial = 1.0;
+    for (int k = 2; k <= degree + 1; ++k) {
+      factorial *= k;
+    }
+    const double r = std::max(radius, 1.0e-3);
+    const double step = std::pow(exact * factorial / r, 1.0 / (degree + 1));
+    const int bound = std::clamp(static_cast<int>(std::ceil(kTwoPi / step)), 4, 1024);
+    for (int per_turn = std::max(4, bound / 8);; ++per_turn) {
+      interpolate(turns, degree, per_turn);
+      if (per_turn >= bound || deviation(per_turn) * r <= exact) {
+        return;
+      }
+    }
+  }
+
+  // The family interpolated with `per_turn` spans a turn.
+  void interpolate(double turns, int degree, int per_turn) {
+    const int spans = static_cast<int>(std::ceil((turns + 4.0) * per_turn));
+    const double first = -2.0 * kTwoPi;
+    NCollection_Array1<double> knots(1, spans + 1);
+    NCollection_Array1<int> multiplicities(1, spans + 1);
+    for (int k = 0; k <= spans; ++k) {
+      knots.SetValue(k + 1, first + kTwoPi * k / per_turn);
+      multiplicities.SetValue(k + 1, k == 0 || k == spans ? degree + 1 : 1);
+    }
+    const int count = spans + degree;
+    NCollection_Array1<double> flat(1, count + degree + 1);
+    BSplCLib::KnotSequence(knots, multiplicities, flat);
+    NCollection_Array1<double> params(1, count);
+    BSplCLib::BuildSchoenbergPoints(degree, flat, params);
+    NCollection_Array1<int> contact(1, count);
+    contact.Init(0);
+    NCollection_Array1<gp_Pnt> cos_poles(1, count), sin_poles(1, count), rise_poles(1, count);
+    for (int i = 1; i <= count; ++i) {
+      const double v = params(i);
+      cos_poles.SetValue(i, gp_Pnt(cos_of(v)));
+      sin_poles.SetValue(i, gp_Pnt(sin_of(v)));
+      rise_poles.SetValue(i, gp_Pnt(m_screw.axis.Direction().XYZ() * (m_screw.pitch * v / kTwoPi)));
+    }
+    for (NCollection_Array1<gp_Pnt>* poles : {&cos_poles, &sin_poles, &rise_poles}) {
+      int problem = 0;
+      BSplCLib::Interpolate(degree, flat, params, contact, *poles, problem);
+      if (problem != 0) {
+        throw std::runtime_error("the helix could not be built");
+      }
+    }
+    m_x = new Geom_BSplineCurve(cos_poles, knots, multiplicities, degree);
+    m_y = new Geom_BSplineCurve(sin_poles, knots, multiplicities, degree);
+    m_rise = new Geom_BSplineCurve(rise_poles, knots, multiplicities, degree);
+  }
+
+  // The largest distance of the unit circle's interpolation from it, over
+  // a turn in the middle of the family (all spans alike but the end ones,
+  // which lie beyond the turns used), sixteen points a span.
+  double deviation(int per_turn) const {
+    double worst = 0.0;
+    const double from = 0.5 * (m_x->FirstParameter() + m_x->LastParameter());
+    const int samples = 16 * per_turn;
+    for (int k = 0; k <= samples; ++k) {
+      const double v = from + kTwoPi * k / samples;
+      worst = std::max({worst, m_x->Value(v).XYZ().Subtracted(cos_of(v)).Modulus(),
+                        m_y->Value(v).XYZ().Subtracted(sin_of(v)).Modulus()});
+    }
+    return worst;
+  }
+
+  gp_XYZ cos_of(double v) const {
+    const double a = m_screw.sign * v;
+    return m_screw.x.XYZ() * std::cos(a) + m_screw.y.XYZ() * std::sin(a);
+  }
+
+  gp_XYZ sin_of(double v) const {
+    const double a = m_screw.sign * v;
+    return m_screw.y.XYZ() * std::cos(a) - m_screw.x.XYZ() * std::sin(a);
+  }
+
   Screw m_screw;
   occ::handle<Geom_BSplineCurve> m_x;
   occ::handle<Geom_BSplineCurve> m_y;
@@ -784,6 +875,84 @@ ShapePtr screwed_brep(const NamedWire& loop, const gp_Ax1& axis, double pitch, d
     }
   }
   return namer.shape();
+}
+
+std::vector<occ::handle<Geom_Surface>> screwed_surfaces(const NamedWire& loop, const gp_Ax1& axis, double pitch,
+                                                        double revolutions, bool left_handed, double exact) {
+  Screw screw;
+  screw.axis = axis;
+  const gp_Ax3 frame(axis.Location(), axis.Direction());
+  screw.x = frame.XDirection();
+  screw.y = frame.YDirection();
+  screw.pitch = pitch;
+  screw.sign = left_handed ? -1.0 : 1.0;
+  const gp_Vec up(axis.Direction());
+  // The profile's edges as screwed_brep takes them (no side whose turns
+  // meet), each ending exactly where the next starts.
+  std::vector<ProfileEdge> edges;
+  for (BRepTools_WireExplorer w(loop.wire); w.More(); w.Next()) {
+    const TopoDS_Edge& edge = w.Current();
+    ProfileEdge e;
+    e.curve = as_bspline(edge);
+    const BRepAdaptor_Curve adaptor(edge);
+    if (adaptor.GetType() == GeomAbs_Line) {
+      const gp_Vec d(e.curve->StartPoint(), e.curve->EndPoint());
+      e.along_axis = d.Magnitude() > Precision::Confusion() &&
+                     std::abs(std::abs(d.Normalized().Dot(up)) - 1.0) < 1.0e-12 &&
+                     gp_Lin(axis).Distance(e.curve->StartPoint()) > Precision::Confusion();
+    }
+    edges.push_back(e);
+  }
+  const std::size_t n = edges.size();
+  if (n == 0) {
+    throw std::invalid_argument("the profile has no edges");
+  }
+  for (std::size_t i = 0; i < n; ++i) {
+    const std::size_t next = (i + 1) % n;
+    const gp_Pnt start = edges[i].curve->StartPoint();
+    const gp_Pnt to = edges[next].curve->StartPoint();
+    if (edges[i].curve->EndPoint().Distance(to) > 1.0e-5) {
+      throw std::invalid_argument("the profile's edges do not join");
+    }
+    edges[i].curve->SetPole(1, start);
+    edges[i].curve->SetPole(edges[i].curve->NbPoles(), to);
+  }
+  double radius = 0.0;
+  for (const ProfileEdge& e : edges) {
+    for (int k = 1; k <= e.curve->NbPoles(); ++k) {
+      radius = std::max(radius, gp_Lin(axis).Distance(e.curve->Pole(k)));
+    }
+  }
+  const Helices helices(screw, revolutions, radius, exact, 7);
+  std::vector<occ::handle<Geom_Surface>> surfaces;
+  for (const ProfileEdge& e : edges) {
+    if (e.along_axis) {
+      surfaces.push_back(new Geom_CylindricalSurface(frame, gp_Lin(axis).Distance(e.curve->StartPoint())));
+      continue;
+    }
+    // The edge's B-spline with each pole moved along its helix.
+    const occ::handle<Geom_BSplineCurve>& c = e.curve;
+    const int nu = c->NbPoles();
+    const int nv = helices.poles();
+    NCollection_Array2<gp_Pnt> poles(1, nu, 1, nv);
+    NCollection_Array2<double> weights(1, nu, 1, nv);
+    for (int k = 1; k <= nu; ++k) {
+      const std::vector<gp_Pnt> helix = helices.of(c->Pole(k));
+      for (int j = 1; j <= nv; ++j) {
+        poles.SetValue(k, j, helix[static_cast<std::size_t>(j) - 1]);
+        weights.SetValue(k, j, c->Weight(k));
+      }
+    }
+    const occ::handle<Geom_BSplineCurve>& basis = helices.basis();
+    if (c->IsRational()) {
+      surfaces.push_back(new Geom_BSplineSurface(poles, weights, c->Knots(), basis->Knots(), c->Multiplicities(),
+                                                 basis->Multiplicities(), c->Degree(), basis->Degree()));
+    } else {
+      surfaces.push_back(new Geom_BSplineSurface(poles, c->Knots(), basis->Knots(), c->Multiplicities(),
+                                                 basis->Multiplicities(), c->Degree(), basis->Degree()));
+    }
+  }
+  return surfaces;
 }
 
 } // namespace mitcad::geometry::detail

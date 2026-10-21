@@ -555,6 +555,42 @@ void newestProfile(CommandState& state, const CommandContext& context) {
     const Selection unused = context.unusedProfiles();
     if (!unused.isEmpty()) {
       profiles.append(unused.last());
+      // A region of a QR code brings the code's other dark regions: the
+      // code extrudes whole (mitcad#473).
+      const QString sketch = unused.last().owner;
+      const QJsonObject model =
+          context.queryObject({{QStringLiteral("query"), QStringLiteral("sketch")}, {QStringLiteral("uid"), sketch}});
+      const QJsonArray regions = model.value(QStringLiteral("regions")).toArray();
+      QString text;
+      for (const QJsonValue& value : regions) {
+        const QJsonObject region = value.toObject();
+        if (region.value(QStringLiteral("key")).toString() == unused.last().name) {
+          text = region.value(QStringLiteral("text")).toString();
+        }
+      }
+      bool code = false;
+      for (const QJsonValue& value : model.value(QStringLiteral("texts")).toArray()) {
+        const QJsonObject t = value.toObject();
+        code = code || (!text.isEmpty() && t.value(QStringLiteral("id")).toString() == text &&
+                        t.value(QStringLiteral("code")).isObject());
+      }
+      if (code) {
+        profiles.clear();
+        for (const QJsonValue& value : regions) {
+          const QJsonObject region = value.toObject();
+          const QString key = region.value(QStringLiteral("key")).toString();
+          const bool free = std::any_of(unused.begin(), unused.end(), [&](const SelectionItem& item) {
+            return item.owner == sketch && item.name == key;
+          });
+          if (free && region.value(QStringLiteral("text")).toString() == text &&
+              region.value(QStringLiteral("letter")).toBool()) {
+            profiles.append({SelectKind::Profile, sketch, key, QStringLiteral("plane")});
+          }
+        }
+        if (profiles.isEmpty()) {
+          profiles.append(unused.last());
+        }
+      }
     }
   }
 }

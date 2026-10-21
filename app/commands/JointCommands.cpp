@@ -1282,8 +1282,7 @@ CommandDef constraintCommand(const CommandContext& context) {
   def.id = QStringLiteral("assemble.constraint");
   def.name = QObject::tr("Constraint");
   def.icon = QStringLiteral("constraint");
-  def.tooltip = QObject::tr("Holds components against each other in rows: align, angle, center, tangent "
-                            "and insert; the type follows the picks");
+  def.tooltip = QObject::tr("Holds components against each other: align, angle, center, tangent, insert");
   def.group = QStringLiteral("ASSEMBLE");
   def.pinned = true;
   def.keywords = {QStringLiteral("assembly"), QStringLiteral("mate"),    QStringLiteral("align"),
@@ -1713,7 +1712,7 @@ CommandDef motionLinkCommand(const CommandContext& context) {
   def.id = QStringLiteral("assemble.motion_link");
   def.name = QObject::tr("Motion Link");
   def.icon = QStringLiteral("motion-link");
-  def.tooltip = QObject::tr("Makes one joint's motion follow another's: gears, a rack and pinion, a screw or a cam");
+  def.tooltip = QObject::tr("Makes one joint's motion follow another's: gears, rack and pinion, screw, cam");
   def.group = QStringLiteral("ASSEMBLE");
   def.keywords = {QStringLiteral("gear"),  QStringLiteral("rack"),     QStringLiteral("pinion"),
                   QStringLiteral("screw"), QStringLiteral("cam"),      QStringLiteral("coupling"),

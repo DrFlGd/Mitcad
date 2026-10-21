@@ -34,9 +34,11 @@
 #include <BRepPrimAPI_MakeCylinder.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
 #include <BRepPrimAPI_MakeRevol.hxx>
+#include <BRep_Builder.hxx>
 #include <BRep_Tool.hxx>
 #include <GC_MakeArcOfCircle.hxx>
 #include <GProp_GProps.hxx>
+#include <Geom2d_Curve.hxx>
 #include <Geom_TrimmedCurve.hxx>
 #include <NCollection_Map.hxx>
 #include <ShapeUpgrade_UnifySameDomain.hxx>
@@ -49,6 +51,7 @@
 #include <gp_Ax1.hxx>
 #include <gp_Ax2.hxx>
 #include <gp_Trsf.hxx>
+#include <gp_Vec2d.hxx>
 
 #include "../src/util.hpp"
 #include "check.hpp"
@@ -485,7 +488,17 @@ void test_mitcad_fillet_carried_across_a_notch() {
     std::sort(names.begin(), names.end());
     return names;
   };
-  CHECK(names_of(*one) == names_of(*both));
+  // With both arcs given, the joined face is named after one of them (which
+  // one follows the order the contours are added in).
+  std::vector<std::string> both_names = names_of(*both);
+  for (std::string& name : both_names) {
+    if (name == "F2:fillet(" + right + ")") {
+      name = "F2:fillet(" + left + ")";
+    }
+  }
+  std::sort(both_names.begin(), both_names.end());
+  CHECK(names_of(*one) == both_names);
+  CHECK(faces_named(*both, "F2:fillet(" + left + ")") + faces_named(*both, "F2:fillet(" + right + ")") == 1);
   CHECK(faces_named(*one, "F2:fillet(" + left + ")") == 1);
   CHECK(edge_names_unique(*one));
 }
@@ -577,6 +590,113 @@ void test_mitcad_fillet_chain_through_points_where_the_rounding_vanishes() {
   CHECK(volume_of(one->occt()) > volume_of(body->occt()));
 }
 
+// The lowest z of the faces named `name`.
+double lowest_z_of(const mitcad::geometry::Shape& shape, const std::string& name) {
+  double low = 1e100;
+  for (int i = 0; i < shape.face_count(); ++i) {
+    const auto& names = shape.face_names(i);
+    if (std::find(names.begin(), names.end(), name) == names.end()) {
+      continue;
+    }
+    for (TopExp_Explorer v(shape.face(i), TopAbs_VERTEX); v.More(); v.Next()) {
+      low = std::min(low, BRep_Tool::Pnt(TopoDS::Vertex(v.Current())).Z());
+    }
+  }
+  return low;
+}
+
+// Mitcad's fillet of both front edges of a plate 2.5 thick with 1.5, more
+// than half the front face: no ball touches the top and the bottom at once,
+// so the rounding of one edge is whole and the other's rolls on its contact
+// line on the front face (port patch 0016). Which one is whole follows the
+// order the edges are listed in, as in the bodies the `.f3d` files store
+// (mitcad#343: a ring's rim rounded on both edges, its blends meeting 1.5
+// from the edge listed first); before, it followed the body's own order of
+// its edges.
+void test_mitcad_fillet_of_both_rims_follows_the_order_of_its_edges() {
+  const ShapePtr plate = import_body(BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), gp_Pnt(40, 20, 2.5)).Shape(), "F1", 0);
+  const std::string top = plate->edge_name(edge_index_near(*plate, gp_Pnt(20, 0, 2.5)));
+  const std::string bottom = plate->edge_name(edge_index_near(*plate, gp_Pnt(20, 0, 0)));
+  CHECK(top != bottom);
+  const ShapePtr top_first = mitcad::geometry::fillet("F2", *plate, std::vector<std::string>{top, bottom}, 1.5);
+  const ShapePtr bottom_first =
+    mitcad::geometry::fillet("F2", *plate, std::vector<std::string>{bottom, top}, 1.5);
+  for (const ShapePtr& rounded : {top_first, bottom_first}) {
+    CHECK(mitcad::geometry::detail::is_valid(rounded->occt()));
+    CHECK(rounded->notes().empty());
+    // The front face is gone; the two blends meet on a line along x.
+    CHECK(rounded->face_count() == plate->face_count() + 1);
+  }
+  // The blends meet 1.5 below the top when the top edge is listed first,
+  // 1.5 above the bottom when the bottom edge is.
+  CHECK_NEAR_TOL(lowest_z_of(*top_first, "F2:fillet(" + top + ")"), 1.0, 1e-6);
+  CHECK_NEAR_TOL(lowest_z_of(*bottom_first, "F2:fillet(" + top + ")"), 1.5, 1e-6);
+  // The same material either way (the plate is symmetric about z = 1.25).
+  CHECK_NEAR_TOL(volume_of(top_first->occt()), volume_of(bottom_first->occt()), 1e-7);
+}
+
+// A block whose top front edge has its curve on the top face 1e-5 off its
+// 3D curve, with a tolerance of 1e-7 (a stored body's edge lay 1e-5 beyond
+// its tolerance, mitcad#343).
+TopoDS_Shape block_with_an_edge_off_its_tolerance() {
+  BRepPrimAPI_MakeBox box(gp_Pnt(0, 0, 0), gp_Pnt(20, 20, 10));
+  const TopoDS_Face top = box.TopFace();
+  for (TopExp_Explorer e(top, TopAbs_EDGE); e.More(); e.Next()) {
+    const TopoDS_Edge front = TopoDS::Edge(e.Current());
+    const BRepAdaptor_Curve curve(front);
+    if (curve.Value(0.5 * (curve.FirstParameter() + curve.LastParameter())).Distance(gp_Pnt(10, 0, 10)) < 1e-9) {
+      double first = 0.0, last = 0.0;
+      const occ::handle<Geom2d_Curve> pcurve = BRep_Tool::CurveOnSurface(front, top, first, last);
+      const double d = 1e-5 / std::sqrt(2.0);
+      BRep_Builder().UpdateEdge(front, occ::down_cast<Geom2d_Curve>(pcurve->Translated(gp_Vec2d(d, d))), top, 1e-7);
+    }
+  }
+  return box.Shape();
+}
+
+// The block's vertical edge at (20, 0).
+TopoDS_Edge corner_of(const TopoDS_Shape& block) {
+  for (TopExp_Explorer e(block, TopAbs_EDGE); e.More(); e.Next()) {
+    const BRepAdaptor_Curve curve(TopoDS::Edge(e.Current()));
+    if (curve.Value(0.5 * (curve.FirstParameter() + curve.LastParameter())).Distance(gp_Pnt(20, 0, 5)) < 1e-9) {
+      return TopoDS::Edge(e.Current());
+    }
+  }
+  return TopoDS_Edge();
+}
+
+// The block's vertical edge rounded where it meets the front edge, which
+// the rounding cuts back at its end: the input's own defect. OCCT's result
+// holds a piece of that edge, as far off as the edge itself; its tolerance
+// is widened to that, and the result is taken as OCCT built it.
+void test_mitcad_fillet_keeps_an_input_edge_s_own_deviation() {
+  // OCCT's fillet alone: the piece of the front edge it keeps is off its
+  // tolerance as the edge is; widened, the result is valid.
+  const TopoDS_Shape block = block_with_an_edge_off_its_tolerance();
+  const TopoDS_Edge corner = corner_of(block);
+  CHECK(!corner.IsNull());
+  if (corner.IsNull()) {
+    return;
+  }
+  BRepFilletAPI_MakeFillet fillet(block);
+  fillet.Add(2.0, corner);
+  fillet.Build();
+  CHECK(fillet.IsDone());
+  if (!fillet.IsDone()) {
+    return;
+  }
+  const TopoDS_Shape result = fillet.Shape();
+  CHECK(!BRepCheck_Analyzer(result).IsValid());
+  CHECK(mitcad::geometry::detail::widen_inherited_curve_tolerances(result, block) == 1);
+  CHECK(BRepCheck_Analyzer(result).IsValid());
+  // Mitcad's fillet takes it so.
+  const ShapePtr body = import_body(block_with_an_edge_off_its_tolerance(), "F1", 0);
+  const std::string name = body->edge_name(edge_index_near(*body, gp_Pnt(20, 0, 5)));
+  const ShapePtr rounded = mitcad::geometry::fillet("F2", *body, std::vector<std::string>{name}, 2.0);
+  CHECK(mitcad::geometry::detail::is_valid(rounded->occt()));
+  CHECK_NEAR_TOL(volume_of(body->occt()) - volume_of(rounded->occt()), (4.0 - kPi) * 10.0, 1e-4);
+}
+
 } // namespace
 
 void fillet_chain_tests() {
@@ -588,6 +708,10 @@ void fillet_chain_tests() {
   guarded("test_mitcad_fillet_carried_across_a_notch", test_mitcad_fillet_carried_across_a_notch);
   guarded("test_mitcad_fillet_chain_through_points_where_the_rounding_vanishes",
           test_mitcad_fillet_chain_through_points_where_the_rounding_vanishes);
+  guarded("test_mitcad_fillet_of_both_rims_follows_the_order_of_its_edges",
+          test_mitcad_fillet_of_both_rims_follows_the_order_of_its_edges);
+  guarded("test_mitcad_fillet_keeps_an_input_edge_s_own_deviation",
+          test_mitcad_fillet_keeps_an_input_edge_s_own_deviation);
 }
 
 } // namespace test

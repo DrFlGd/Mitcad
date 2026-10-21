@@ -131,8 +131,7 @@ void ReportCenter::registerCommands(CommandRegistry& registry) {
   feedback.kind = CommandDef::Kind::Action;
   feedback.mode = CommandDef::Mode::Any;
   feedback.tab.clear();
-  feedback.tooltip = tr("Report a problem or suggest an improvement; you see and can edit the report before "
-                        "it is sent");
+  feedback.tooltip = tr("Report a problem or suggest an improvement");
   feedback.keywords = {QStringLiteral("bug"), QStringLiteral("report"), QStringLiteral("issue"),
                        QStringLiteral("wish"), QStringLiteral("problem"), QStringLiteral("feedback")};
   feedback.duringCommands = true;

@@ -118,8 +118,7 @@ std::optional<DrawingChoice> askDrawing(QWidget* parent, const QString& path, in
   auto* projection = new QComboBox;
   projection->addItems({QObject::tr("Third angle"), QObject::tr("First angle")});
   projection->setCurrentIndex(s.firstAngle ? 1 : 0);
-  projection->setToolTip(QObject::tr("Third angle: the top view above the front view, the right view on its "
-                                     "right; first angle: the top view below, the right view on the left"));
+  projection->setToolTip(QObject::tr("Where the top and right views go: third or first angle projection"));
   form->addRow(QObject::tr("&Projection:"), projection);
 
   auto* front = check(QObject::tr("Front"), s.front);

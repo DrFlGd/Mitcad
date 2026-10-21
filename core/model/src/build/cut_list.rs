@@ -42,7 +42,7 @@ pub struct MachiningItem {
     pub thread: Option<String>,
     /// Added by a connector (else the part's own).
     pub connector: Option<ComponentUid>,
-    /// Joinery: `housing`, `notch`, `half_lap` or `rip`.
+    /// Joinery: `housing`, `notch`, `half_lap`, `rip` or `birdsmouth`.
     pub kind: Option<String>,
     pub size: Option<[f64; 3]>,
     pub with: Option<ComponentUid>,
@@ -61,6 +61,21 @@ pub struct TimberColumns {
     pub running_metres: f64,
     /// m3, over the row's quantity.
     pub volume: f64,
+    /// A profiled board's (mitcad#477): its profile, the width it covers
+    /// (mm) and the area it covers (m², over the row's quantity).
+    pub board: Option<BoardColumns>,
+}
+
+/// A profiled board's cut list columns (mitcad#477).
+#[derive(Debug, Clone, PartialEq)]
+pub struct BoardColumns {
+    /// `tongue_and_groove`, `shiplap`, `feather_edge`, `deck`.
+    pub profile: String,
+    pub cover: f64,
+    pub area: f64,
+    /// The width each board of the row covers: the cover width, or less
+    /// for a ripped board.
+    pub each: f64,
 }
 
 /// A group of identical cut parts.
@@ -112,6 +127,9 @@ pub struct TimberTotals {
     pub running_metres: f64,
     pub volume: f64,
     pub mass: f64,
+    /// The area the profiled boards cover, m² (mitcad#477); None without
+    /// profiled boards.
+    pub area: Option<f64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -281,9 +299,20 @@ impl<K: Kernel> Document<K> {
                         .collect::<Vec<_>>()
                 ));
             }
+            // A ripped board (the last of a row) covers what is left of it
+            // (mitcad#477): the rip box reaches 1 mm past the board on
+            // its three other sides.
+            let kept = joinery
+                .iter()
+                .find(|m| m.kind.as_deref() == Some("rip"))
+                .and_then(|m| m.size)
+                .zip(info.meta.section_size())
+                .and_then(|(s, [w, _])| (s[0] < w + 2.0 - 1e-6).then(|| w - (s[0] - 1.0)));
             machining.extend(joinery);
             let quantity = quantities.get(&info.component).copied().unwrap_or(1).max(1);
             let section = info.meta.section_size();
+            // A profiled board's area is its own (mitcad#477).
+            let area = info.meta.section_area();
             let row = groups.entry(key).or_insert_with(|| CutRow {
                 source: source.id,
                 designation: designation(source, config, &values),
@@ -295,8 +324,8 @@ impl<K: Kernel> Document<K> {
                 machining,
                 features: own.len(),
                 quantity: 0,
-                mass: match (timber, info.meta.density(), section) {
-                    (true, Some(density), Some([w, t])) => Some(density * w * t * length / 1e9),
+                mass: match (timber, info.meta.density(), area) {
+                    (true, Some(density), Some(area)) => Some(density * area * length / 1e9),
                     _ => info
                         .meta
                         .kilograms_per_metre()
@@ -311,13 +340,25 @@ impl<K: Kernel> Document<K> {
                     availability: info.meta.availability.clone(),
                     running_metres: 0.0,
                     volume: 0.0,
+                    board: info.meta.board.as_ref().zip(info.meta.cover_width()).map(
+                        |(b, cover)| BoardColumns {
+                            profile: b.profile.clone(),
+                            cover,
+                            area: 0.0,
+                            each: kept.map_or(cover, |k| k.min(cover)),
+                        },
+                    ),
                 }),
             });
             row.quantity += quantity;
             row.components.push(info.component);
             if let Some(t) = &mut row.timber {
-                t.running_metres = row.length * row.quantity as f64 / 1000.0;
-                t.volume = t.section[0] * t.section[1] * row.length * row.quantity as f64 / 1e9;
+                let n = row.quantity as f64;
+                t.running_metres = row.length * n / 1000.0;
+                t.volume = area.unwrap_or(t.section[0] * t.section[1]) * row.length * n / 1e9;
+                if let Some(b) = &mut t.board {
+                    b.area = b.each * row.length * n / 1e6;
+                }
             }
         }
         let rows: Vec<CutRow> = groups.into_values().collect();
@@ -424,6 +465,10 @@ impl<K: Kernel> Document<K> {
                 .iter()
                 .map(|r| r.mass.unwrap_or(0.0) * r.quantity as f64)
                 .sum(),
+            area: timber_rows
+                .iter()
+                .filter_map(|r| r.timber.as_ref()?.board.as_ref().map(|b| b.area))
+                .reduce(|a, b| a + b),
         });
         CutList {
             rows,

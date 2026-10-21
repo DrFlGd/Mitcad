@@ -183,6 +183,8 @@ const COMMANDS: &[(&str, ApiClass)] = &[
     ("build_panel", Remote),
     ("build_edit", Model),
     ("build_remove", Model),
+    // A timber frame (mitcad#479): its parts and fasteners from a library.
+    ("build_frame", Remote),
     // Motion studies and contact sets (mitcad#454).
     ("add_motion_study", Model),
     ("edit_motion_study", Model),
@@ -201,6 +203,10 @@ const COMMANDS: &[(&str, ApiClass)] = &[
     ("export_drawing", FileIo),
     // Gears: the motion link of a mesh (mitcad#472).
     ("link_gears", Model),
+    // SVG drawings and QR codes in sketches (mitcad#473).
+    ("sketch.import_svg", FileIo),
+    ("sketch.add_code", Model),
+    ("sketch.edit_code", Model),
 ];
 
 /// Every query (its `query`) with its class. A `cache` query with `disk`
@@ -290,6 +296,8 @@ const QUERIES: &[(&str, ApiClass)] = &[
     // Gears: derived values (mitcad#472).
     ("gear_values", Model),
     ("gear_link", Model),
+    // An SVG drawing for Insert SVG (mitcad#473).
+    ("svg_info", FileIo),
 ];
 
 fn class_in(table: &[(&str, ApiClass)], name: &str) -> Option<ApiClass> {
@@ -366,6 +374,15 @@ pub fn command_class_with(request: &serde_json::Value) -> Option<ApiClass> {
             Model
         });
     }
+    // A text's font read from a file by its path (mitcad#473).
+    if matches!(name, "sketch.add_text" | "sketch.edit_text")
+        && request
+            .get("font_file")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|f| !f.is_empty())
+    {
+        return Some(FileIo);
+    }
     if matches!(name, "build_place" | "build_connect" | "build_panel")
         && request
             .pointer("/part/source")
@@ -380,6 +397,15 @@ pub fn command_class_with(request: &serde_json::Value) -> Option<ApiClass> {
             .is_some_and(serde_json::Value::is_object)
     {
         return Some(Model);
+    }
+    // A timber frame laid out again drives its fasteners from a library
+    // (mitcad#479).
+    if name == "build_edit"
+        && request
+            .get("frame")
+            .is_some_and(serde_json::Value::is_object)
+    {
+        return Some(Remote);
     }
     command_class(name)
 }

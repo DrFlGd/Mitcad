@@ -1,0 +1,110 @@
+{
+  "notes": [
+    "Tongue and groove boards (mitcad#477): Mitcad's own parametric sections of industry-standard sizes, no supplier and no manufacturer's drawing. Sizes are thickness x width in mm (the actual size, the width over the tongue); the cover width (the width a board covers in a floor or a wall) is a row's own, the width less its tongue's length.",
+    "The section: the tongue (length TL, thickness TT, its centre TO from the board's middle) on the +X edge, a groove 1 mm (GC) deeper and 0.5 mm (GW) wider than the tongue on the -X edge, the visible face towards +Y. Panel boards have a V-joint: the face edges chamfered by VB at the angle VA to the face. The sizes and covers are those of public product lists; the tongue's and groove's sizes are Mitcad's own.",
+    "Species: floorboards pine, panel boards spruce. Densities at 20 % moisture: spruce 450 kg/m3, pine 520 kg/m3 (grounds in timber-sawn.json's notes).",
+    "Tolerances (planed): thickness up to 20 mm +-0.5 mm, over 20 mm +-1.0 mm; width up to 100 mm +-1.0 mm, over 100 mm +-1.5 mm."
+  ],
+  "categories": [{"id": "tongue-and-groove", "name": "Tongue and groove boards"}],
+  "parts": [
+    {
+      "id": "floorboard-tg",
+      "name": "Floorboard, tongue and groove",
+      "category": "tongue-and-groove",
+      "make": "model",
+      "data_source": "industry-standard sizes and cover widths of tongue and groove floorboards (at 20 % moisture)",
+      "designation": "Floorboard {Thickness}x{Width} L={L}",
+      "description": "Pine floorboards with a tongue and groove, 21x95 to 28x170; the tongue below the middle for the wear.",
+      "keywords": ["timber", "floorboard", "flooring", "tongue and groove", "T&G", "pine", "profiled"],
+      "license": "MIT",
+      "dimensions": {
+        "shape": "board",
+        "profile": "tongue_and_groove",
+        "width": "W",
+        "thickness": "T",
+        "length": "L",
+        "parameters": {"W": 120, "T": 28, "L": 3000, "TL": 8, "TT": 8, "TO": -2}
+      },
+      "default": "28x120",
+      "sizes": {
+        "species": {"spruce": 450, "pine": 520},
+        "species_default": "pine",
+        "tolerance": {
+          "thickness": [[20, -0.5, 0.5], [null, -1.0, 1.0]],
+          "width": [[100, -1.0, 1.0], [null, -1.5, 1.5]]
+        },
+        "profile": {"TL": 8, "GC": 1, "GW": 0.5},
+        "rows": [
+          {"thickness": 21, "widths": [95, 120, 145], "covers": [87, 112, 137], "profile": {"TT": 6, "TO": -1.5}},
+          {"thickness": 28, "widths": [95, 120, 145], "covers": [87, 112, 137], "profile": {"TT": 8, "TO": -2}},
+          {"thickness": 28, "widths": [170], "covers": [162], "profile": {"TT": 8, "TO": -2},
+           "availability": "less common"},
+          {"thickness": 33, "widths": [145], "covers": [137], "profile": {"TT": 9, "TO": -3},
+           "availability": "less common"}
+        ]
+      },
+      "appearance": {
+        "id": "floorboard-pine", "name": "Planed pine", "based_on": "wood_maple",
+        "base_color": [0.88, 0.7, 0.48], "roughness": 0.55, "texture": "grain", "size": [60, 600]
+      },
+      "build": {
+        "role": "profile",
+        "kind": "timber",
+        "material": {"species": "pine", "finish": "planed", "grade": "", "density": 520, "moisture": 20},
+        "availability": "standard",
+        "length": {"parameter": "L", "min": 100, "max": 6000, "default": 3000,
+                   "stock": [2700, 3000, 3300, 3600, 3900, 4200, 4500, 4800, 5100, 5400]}
+      }
+    },
+    {
+      "id": "panel-board-tg",
+      "name": "Panel board, tongue and groove",
+      "category": "tongue-and-groove",
+      "make": "model",
+      "data_source": "industry-standard sizes and cover widths of tongue and groove panel boards (at 20 % moisture)",
+      "designation": "Panel board {Thickness}x{Width} L={L}",
+      "description": "Spruce panel boards for walls and ceilings with a tongue and groove and a V-joint, 12x95 to 20x145.",
+      "keywords": ["timber", "panel", "panelling", "ceiling", "tongue and groove", "T&G", "V-joint", "spruce",
+                   "profiled"],
+      "license": "MIT",
+      "dimensions": {
+        "shape": "board",
+        "profile": "tongue_and_groove",
+        "v_joint": true,
+        "width": "W",
+        "thickness": "T",
+        "length": "L",
+        "parameters": {"W": 95, "T": 15, "L": 3000, "TL": 9, "TT": 5, "TO": 0, "VB": 2, "VA": "45 deg"}
+      },
+      "default": "15x95",
+      "sizes": {
+        "species": {"spruce": 450, "pine": 520},
+        "species_default": "spruce",
+        "tolerance": {
+          "thickness": [[20, -0.5, 0.5], [null, -1.0, 1.0]],
+          "width": [[100, -1.0, 1.0], [null, -1.5, 1.5]]
+        },
+        "profile": {"TL": 9, "TO": 0, "GC": 1, "GW": 0.5, "VB": 2, "VA": "45 deg"},
+        "rows": [
+          {"thickness": 12, "widths": [95], "covers": [86], "profile": {"TT": 4}},
+          {"thickness": 15, "widths": [95, 120, 145], "covers": [86, 111, 136], "profile": {"TT": 5}},
+          {"thickness": 20, "widths": [95, 120], "covers": [86, 111], "profile": {"TT": 6}},
+          {"thickness": 20, "widths": [145], "covers": [136], "profile": {"TT": 6}, "availability": "less common"},
+          {"thickness": 12, "widths": [70], "covers": [61], "profile": {"TT": 4}, "availability": "less common"}
+        ]
+      },
+      "appearance": {
+        "id": "panel-spruce", "name": "Planed spruce", "based_on": "wood_maple",
+        "base_color": [0.9, 0.8, 0.62], "roughness": 0.55, "texture": "grain", "size": [60, 600]
+      },
+      "build": {
+        "role": "profile",
+        "kind": "timber",
+        "material": {"species": "spruce", "finish": "planed", "grade": "", "density": 450, "moisture": 20},
+        "availability": "standard",
+        "length": {"parameter": "L", "min": 100, "max": 6000, "default": 3000,
+                   "stock": [2700, 3000, 3300, 3600, 3900, 4200, 4500, 4800, 5100, 5400]}
+      }
+    }
+  ]
+}

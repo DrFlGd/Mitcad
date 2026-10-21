@@ -684,8 +684,7 @@ void MainWindow::registerCommands() {
   // ASSEMBLE (mitcad#55): after Drive Joint.
   CommandDef animate = action("assemble.animate_joint", tr("Animate Joint"), "drive-joint",
                               CommandDef::Mode::Model, [this] { animateSelectedJoint(); });
-  animate.tooltip = tr("Shows a joint's free motion through its range: the joint selected in the "
-                       "timeline, else the newest; nothing changes");
+  animate.tooltip = tr("Plays a joint's free motion through its range");
   animate.tab = QStringLiteral("SOLID");
   animate.group = QStringLiteral("ASSEMBLE");
   animate.keywords = {QStringLiteral("motion"), QStringLiteral("play"), QStringLiteral("simulate")};
@@ -700,8 +699,7 @@ void MainWindow::registerCommands() {
   // new one (the browser's Play opens another).
   CommandDef study = action("assemble.motion_study", tr("Motion Study"), "motion-study", CommandDef::Mode::Model,
                             [this] { openMotionStudy(QString()); });
-  study.tooltip = tr("Joints' values keyed along steps, played back: the components follow, and contact sets "
-                     "stop them where they touch");
+  study.tooltip = tr("Keys joints' values along steps and plays them back");
   study.tab = QStringLiteral("SOLID");
   study.group = QStringLiteral("ASSEMBLE");
   study.keywords = {QStringLiteral("motion"), QStringLiteral("play"), QStringLiteral("simulate"),
@@ -789,7 +787,7 @@ void MainWindow::registerCommands() {
 #endif
                                        m_controller->timeline()->openSearch();
                                      });
-  timelineSearch.tooltip = tr("Finds features by name, type, component and status (%1 in the timeline or the browser)")
+  timelineSearch.tooltip = tr("Finds features by name, type, component and status (%1)")
                                .arg(QKeySequence(QKeySequence::Find).toString(QKeySequence::NativeText));
   timelineSearch.keywords = {QStringLiteral("find"), QStringLiteral("feature"), QStringLiteral("history"),
                              QStringLiteral("failed"), QStringLiteral("warning")};
@@ -800,8 +798,7 @@ void MainWindow::registerCommands() {
   // to do with all of them; also the magnifier on the browser's title row.
   CommandDef findInDesign = action("view.find_in_design", tr("Find in Design..."), "search", CommandDef::Mode::Any,
                                    [this] { m_controller->openFind(); });
-  findInDesign.tooltip = tr("Finds components and bodies by name, and shows, hides, selects them or gives them "
-                            "an appearance all at once");
+  findInDesign.tooltip = tr("Finds components and bodies by name and acts on all of them at once");
   findInDesign.keywords = {QStringLiteral("find"), QStringLiteral("body"), QStringLiteral("component"),
                            QStringLiteral("name"), QStringLiteral("hide"), QStringLiteral("show"),
                            QStringLiteral("wildcard")};
@@ -827,16 +824,14 @@ void MainWindow::registerCommands() {
   // Design Policy... opens it for any component.
   CommandDef policy = action("assembly.policy", tr("Design Policy..."), "component", CommandDef::Mode::Model,
                              [this] { m_controller->openPolicy(m_snapshot.activeComponent); });
-  policy.tooltip = tr("What the active component may hold, and which links to and from other components "
-                      "it allows: Hybrid (everything, the default), Part and Assembly presets and nine settings");
+  policy.tooltip = tr("Sets what the active component may hold and link to");
   policy.keywords = {QStringLiteral("policy"), QStringLiteral("permissions"), QStringLiteral("assembly"),
                      QStringLiteral("part"), QStringLiteral("attach"), QStringLiteral("hybrid")};
   m_registry->add(policy);
   // Appearances with their physically based parameters (mitcad#46).
   CommandDef appearances = action("solid.appearances", tr("Edit Appearances..."), "appearance",
                                   CommandDef::Mode::Model, [this] { m_controller->openAppearances(appearanceTargets()); });
-  appearances.tooltip = tr("The appearance library and this design's own appearances: colour, metalness, "
-                           "roughness, transmission and more; assigns one to the selected bodies");
+  appearances.tooltip = tr("Edits appearances and assigns one to the selected bodies");
   appearances.tab = QStringLiteral("SOLID");
   appearances.group = QStringLiteral("MODIFY");
   appearances.keywords = {QStringLiteral("material"), QStringLiteral("colour"), QStringLiteral("color"),
@@ -3637,8 +3632,9 @@ void MainWindow::showContextMenu(const QPoint& globalPosition, const SelectionIt
               k != nullptr && k->type == QStringLiteral("equal_spacing")) {
             add(m_registry->action(QStringLiteral("sketch.edit_equal_spacing")));
           }
-          if (model.text(id) != nullptr) {
-            add(m_registry->action(QStringLiteral("sketch.edit_text")));
+          if (const sketch::TextData* text = model.text(id); text != nullptr) {
+            // A QR code has a panel of its own (mitcad#473).
+            add(m_registry->action(text->code ? QStringLiteral("sketch.edit_code") : QStringLiteral("sketch.edit_text")));
           }
           if (model.patternOf(id) != nullptr) {
             add(m_registry->action(QStringLiteral("sketch.edit_pattern")));

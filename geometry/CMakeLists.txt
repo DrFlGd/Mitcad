@@ -230,6 +230,12 @@ target_link_libraries(mitcad_geometry PRIVATE TKHLR TKMesh)
 target_sources(mitcad_geometry PRIVATE
   src/gear.cpp
   include/mitcad/geometry/gear.hpp)
+# Faces that are pieces of one surface joined into one face, their edges
+# along one curve into one edge (a thread's faces over all its turns,
+# mitcad#343).
+target_sources(mitcad_geometry PRIVATE
+  src/face_join.cpp
+  src/face_join.hpp)
 target_include_directories(mitcad_geometry PUBLIC include)
 # Volumes and areas come from the analysis library's integrals, so that
 # every reported volume agrees (query.cpp, brep_import.cpp).
@@ -394,6 +400,17 @@ if(BUILD_TESTING)
   add_executable(test_fillet_tangent_overflow tests/test_fillet_tangent_overflow.cpp)
   target_link_libraries(test_fillet_tangent_overflow PRIVATE mitcad_geometry mitcad_warnings)
   add_test(NAME geometry.fillet_tangent_overflow COMMAND test_fillet_tangent_overflow)
+  # A rounding ending where the face at the end goes on tangentially from
+  # one of its faces, cut by that face, with the port's patch 0911
+  # (mitcad#343).
+  add_executable(test_fillet_tangent_end_face tests/test_fillet_tangent_end_face.cpp)
+  target_link_libraries(test_fillet_tangent_end_face PRIVATE mitcad_geometry mitcad_warnings)
+  add_test(NAME geometry.fillet_tangent_end_face COMMAND test_fillet_tangent_end_face)
+  # Both rims of a disc thinner than the two roundings, the rims' circles
+  # turning opposite ways, with the port's patch 0930 (mitcad#343).
+  add_executable(test_fillet_ride_against tests/test_fillet_ride_against.cpp)
+  target_link_libraries(test_fillet_ride_against PRIVATE mitcad_geometry mitcad_warnings)
+  add_test(NAME geometry.fillet_ride_against COMMAND test_fillet_ride_against)
   # Boundary Fill: the cells tool bodies enclose (mitcad#457).
   add_executable(test_boundary_fill tests/test_boundary_fill.cpp)
   target_link_libraries(test_boundary_fill PRIVATE mitcad_geometry mitcad_warnings)

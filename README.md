@@ -13,7 +13,7 @@ Linux and macOS (Apple Silicon, macOS 14.4 or newer), licensed under the
   designs and `.ipt` parts open with their history, IFC and `.rvt` building models with their
   storeys and elements, DWG drawings with their 3D solids and blocks;
   STEP, IGES, BRep, STL, OBJ, DXF and 3MF import and
-  export; USDZ, web page and drawing (PDF, SVG) export
+  export; SVG import; USDZ, web page and drawing (PDF, SVG) export
   ([the table below](#support-for-multiple-cad-formats)).
 - **3D printing:** bodies straight to a slicer (Bambu Studio, OrcaSlicer,
   PrusaSlicer, UltiMaker Cura).
@@ -61,6 +61,7 @@ well. It is free to use, change and share under the MIT licence.
 | STL | Meshes | Meshes | – |
 | OBJ | Meshes | Meshes | – |
 | DXF | Into a sketch | From a sketch; a drawing | – |
+| SVG | Into a sketch: paths, shapes and texts, filled regions by their fill rule, strokes as bands | – | – |
 | 3MF | – | For slicers | – |
 | USDZ | – | For AR and 3D viewers: meshes with appearances, components kept | – |
 | Web page (`.html`) | – | The design in one HTML file with its viewer, for any browser | – |

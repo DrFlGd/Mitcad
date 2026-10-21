@@ -71,8 +71,7 @@ void MainWindow::registerSheetActions() {
     }
     editFeature(uid);
   });
-  rules.tooltip = tr("Edits the thickness, bend radius, K-factor and reliefs of the selected sheet's rules: "
-                     "every sheet using them follows");
+  rules.tooltip = tr("Edits the selected sheet's thickness, bend radius, K-factor and reliefs");
   rules.keywords = {QStringLiteral("sheet metal"), QStringLiteral("thickness"), QStringLiteral("k-factor")};
   m_registry->add(rules);
 
@@ -99,7 +98,7 @@ void MainWindow::registerSheetActions() {
     }
     exportFlatPattern(sheet.value(QStringLiteral("body")).toString());
   });
-  exporting.tooltip = tr("Writes the selected sheet's Flat Pattern to a DXF file: cut contours and bend lines");
+  exporting.tooltip = tr("Writes the selected sheet's Flat Pattern to a DXF file");
   exporting.keywords = {QStringLiteral("sheet metal"), QStringLiteral("dxf"), QStringLiteral("laser"),
                         QStringLiteral("drawing")};
   m_registry->add(exporting);

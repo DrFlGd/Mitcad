@@ -20,6 +20,14 @@
 // message, as do options OCCT lacks (see the model's fillet and
 // chamfer features); the importer then falls back to the stored body.
 //
+// The contours go to OCCT in the order the sets list their edges: where two
+// roundings of a face narrower than both cannot be one blend, the later
+// rides on the earlier one's contact line, and the `.f3d` files' bodies make
+// the rounding of the edge listed first the whole one. Where that order
+// does not build, the contours are tried once more in the body's order of
+// its edges (OCCT's join of roundings over a narrow face depends on which
+// end it meets first).
+//
 // When OCCT's dressup fails at the sizes asked, the same OCCT algorithm is
 // tried again on the body with the pieces of its edges merged (a whole
 // circle in two arcs between the same faces, on which it fails), then, for

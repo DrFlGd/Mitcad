@@ -652,6 +652,33 @@ impl SketchDef {
     ) -> Result<Vec<TextOutline>, String> {
         let mut out = Vec::new();
         for t in &self.texts {
+            // A QR code's modules (mitcad#473).
+            if let Some(code) = &t.code {
+                out.push(crate::sketch::code::outline(t, code)?);
+                continue;
+            }
+            // A font file's outlines, stored with the text (mitcad#473).
+            if let Some(found) = text::font_file_glyphs(t) {
+                let (glyphs, stored) = found?;
+                let mut outline = text::layout(t, &glyphs, &solved.points, &solved.curves)?;
+                outline.stored = stored;
+                out.push(outline);
+                continue;
+            }
+            // Right-to-left and joined scripts in an installed font: shaped
+            // from the font's file (mitcad#473).
+            if crate::sketch::fonts::needs_shaping(&t.text)
+                && let Ok(source) = kernel.font_source(&text::request(t))
+                && let Ok(font) = crate::sketch::fonts::FontData::read(
+                    std::path::Path::new(&source.path),
+                    source.index,
+                )
+            {
+                let mut glyphs = font.shape(&t.text, source.synthetic_italic).glyphs;
+                glyphs.family = source.family;
+                out.push(text::layout(t, &glyphs, &solved.points, &solved.curves)?);
+                continue;
+            }
             let mut glyphs = match kernel.font_glyphs(&text::request(t)) {
                 Ok(glyphs) => glyphs,
                 Err(KernelError::Unsupported(_)) => return Ok(Vec::new()),

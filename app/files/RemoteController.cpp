@@ -206,8 +206,7 @@ void RemoteController::registerCommands(CommandRegistry& registry) {
     return d;
   };
   CommandDef syncDef = def("file.sync", tr("Sync"), "sync",
-                           tr("Brings the project's versions and the remote's together: takes the newer ones, "
-                              "sends yours"),
+                           tr("Takes the remote's newer versions and sends yours"),
                            [this] { sync(); });
   syncDef.shortcut = QKeySequence(Qt::CTRL | Qt::ALT | Qt::Key_Y);
   syncDef.keywords = {QStringLiteral("push"),  QStringLiteral("pull"),   QStringLiteral("fetch"),
@@ -215,8 +214,7 @@ void RemoteController::registerCommands(CommandRegistry& registry) {
                       QStringLiteral("upload"), QStringLiteral("download"), QStringLiteral("git")};
   registry.add(syncDef);
   CommandDef checkDef = def("file.check_remote", tr("Check for Newer Versions"), "sync",
-                            tr("Asks the remote whether it has versions this project lacks (git fetch); "
-                               "nothing changes here"),
+                            tr("Asks the remote whether it has versions this project lacks"),
                             [this] { check(); });
   checkDef.keywords = {QStringLiteral("fetch"), QStringLiteral("remote"), QStringLiteral("newer"),
                        QStringLiteral("git"), QStringLiteral("cloud")};

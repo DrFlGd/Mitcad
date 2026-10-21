@@ -19,7 +19,10 @@ use super::manifest::{Manifest, ManifestComponent, Problems, valid_id};
 /// What a BUILD part is.
 pub const ROLES: [&str; 6] = ["profile", "connector", "fastener", "panel", "linear", "cap"];
 /// The kinds of mount frames.
-pub const FRAME_KINDS: [&str; 7] = ["end", "slot", "bore", "face", "rail", "shaft", "hole"];
+/// (`tongue` and `groove`: a profiled board's edges, mitcad#477.)
+pub const FRAME_KINDS: [&str; 9] = [
+    "end", "slot", "bore", "face", "rail", "shaft", "hole", "tongue", "groove",
+];
 /// Where a connector can go.
 pub const JUNCTIONS: [&str; 5] = ["L", "T", "cross", "inline", "surface"];
 /// Where a connector sits at its junction.
@@ -1015,6 +1018,78 @@ fn check_linear(part: &BuildPart<'_>, linear: &Value, label: &str, out: &mut Pro
 pub const AVAILABILITIES: [&str; 2] = ["standard", "less common"];
 /// What an outer connector is fitted as.
 pub const FIT_KINDS: [&str; 3] = ["angle", "hanger", "post_base"];
+/// A profiled board's profile (mitcad#477).
+pub const BOARD_PROFILES: [&str; 4] = ["tongue_and_groove", "shiplap", "feather_edge", "deck"];
+
+/// A profiled board's `board` block (mitcad#477; the part's, or a row's,
+/// merged over it by its readers): its profile, a cover width above 0 and
+/// not over the section's width, its area (mm², above 0), its tongue,
+/// overlap and edge radius as lengths and its grooves as a count.
+fn check_board(
+    block: &Value,
+    board: &Value,
+    role: &str,
+    path: &str,
+    label: &str,
+    out: &mut Problems,
+) {
+    let at = format!("{path}board.");
+    if !board.is_object() {
+        out.error(format!("{label}: build.{path}board is no object"));
+        return;
+    }
+    if role != "profile" {
+        out.error(format!(
+            "{label}: build.{path}board belongs to a timber member, not a {role}"
+        ));
+    }
+    match board.get("profile").filter(|p| !p.is_null()) {
+        Some(profile)
+            if profile
+                .as_str()
+                .is_some_and(|p| BOARD_PROFILES.contains(&p)) => {}
+        Some(profile) => out.error(format!(
+            "{label}: build.{at}profile {profile} is none of {}",
+            list(&BOARD_PROFILES)
+        )),
+        None if path.is_empty() => out.error(format!(
+            "{label}: a profiled board names its profile (build.board.profile)"
+        )),
+        None => {}
+    }
+    let cover = length_field(board, "cover", &at, false, label, out);
+    let width = block
+        .get("section")
+        .and_then(|s| s.get("width"))
+        .and_then(|w| quantity(w, Kind::Length).ok());
+    if let (Some(cover), Some(width)) = (cover, width)
+        && cover > width + 1e-6
+    {
+        out.error(format!(
+            "{label}: build.{at}cover is {cover} mm, wider than the board's {width} mm"
+        ));
+    }
+    match board.get("area").filter(|a| !a.is_null()) {
+        Some(area) if area.as_f64().is_some_and(|a| a > 0.0) => {}
+        Some(area) => out.error(format!(
+            "{label}: build.{at}area {area} is no number of mm² above 0"
+        )),
+        None => {}
+    }
+    if let Some(tongue) = board.get("tongue").filter(|t| !t.is_null()) {
+        for key in ["length", "thickness"] {
+            length_field(tongue, key, &format!("{at}tongue."), false, label, out);
+        }
+    }
+    for key in ["overlap", "edge_radius"] {
+        length_field(board, key, &at, false, label, out);
+    }
+    if let Some(grooves) = board.get("grooves").filter(|g| !g.is_null())
+        && grooves.as_u64().is_none()
+    {
+        out.error(format!("{label}: build.{at}grooves {grooves} is no count"));
+    }
+}
 
 /// A density in kg/m3: a number, or text with the unit `kg/m3`.
 pub fn density(value: &Value) -> Result<f64, String> {
@@ -1104,6 +1179,9 @@ fn check_timber_block(block: &Value, role: &str, path: &str, label: &str, out: &
                 length_field(size, side, &format!("{path}{key}."), false, label, out);
             }
         }
+    }
+    if let Some(board) = block.get("board").filter(|b| !b.is_null()) {
+        check_board(block, board, role, path, label, out);
     }
     if let Some(wood) = block.get("wood").filter(|w| !w.is_null()) {
         if role != "fastener" {

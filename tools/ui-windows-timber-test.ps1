@@ -1,32 +1,40 @@
 # SPDX-License-Identifier: MIT
-# check-all sources: app/build app/commands/BuildCommands.cpp app/framework app/library app/OcctViewer.cpp tools/cli
-# Input-driven Windows UI test of the BUILD tab's Timber tool (mitcad#478)
-# in the build VM (tools/ui-windows-lib.ps1 says how the input is posted).
-# A library of small synthetic parts made here (mitcad-cli; a slot profile,
-# two timber members, one of a less common size, and a wood screw), fetched
-# from a local git repository; skipped where git is not installed:
+# check-all sources: app/build app/commands/BuildCommands.cpp app/framework app/library app/OcctViewer.cpp tools/cli core/model/src/build
+# Input-driven Windows UI test of the BUILD tab's Timber tool (mitcad#478,
+# mitcad#485) in the build VM (tools/ui-windows-lib.ps1 says how the input
+# is posted). A library of small synthetic parts made here (mitcad-cli; a
+# slot profile, two timber members, one of a less common size, and a wood
+# screw), fetched from a local git repository; skipped where git is not
+# installed:
 #   1. Profile's picker lists no timber, Timber's no profile, its standard
-#      size first.
+#      size first; Timber's first start (mitcad#485): On a member, a typed
+#      length of the part's default (3000 mm), along X, flat, the
+#      dimensioned 48x98.
 #   2. On a member: a post standing on the XY plane (Enter at the origin),
-#      then a member on the post's side.
-#   3. From a click, two points: a member lying on the second member's
-#      side, from a click there to across from the post's side, previewed
-#      to where the mouse is before the second click; Tab turns it on edge.
+#      then a member on the post's side; the next start takes the length
+#      typed last and the direction (mitcad#485).
+#   3. Two points (mitcad#485): a member from a click on the second
+#      member's side to a click on the post's side, nothing previewed
+#      towards the mouse between the clicks; Tab turns it on edge.
 #   4. Spacing: members at a centre distance along the second member's
 #      side, placed as one set; Spacing Set edits its distance.
 #   5. Connector at a timber junction: wood screws by default, sized from
 #      the members, one click.
-#   6. From a click, its length as Profile's: a click on the second
-#      member's side, the mouse over the post's side: the auto length bound
-#      to what the way meets, Tab steps it to the centre and through; then a
-#      typed length of 1200 placed that long towards the mouse.
-#   7. Profile again: the design's timber is not in its picker; Cut List:
+#   6. Profile again: the design's timber is not in its picker; Cut List:
 #      the timber rows.
-#   8. Every size a tile of its own (mitcad#484): the picker lists the 48
+#   7. Every size a tile of its own (mitcad#484): the picker lists the 48
 #      member's three rows and the 28 one, the families as groups, a row's
 #      own picture; a search by 48x148 finds its tile, which places that
 #      row with its section.
+#   8. A frame of four members with shared mitres (mitcad#485): each on the
+#      end of the one before, turned at a corner, lying flat as it does
+#      (ends of the same width); the last one's auto length bound to the
+#      first closes the corner with a shared mitre, as long as the first
+#      one's outer side.
+#   9. The same frame of slot profiles with Profile, the last one's length
+#      through the first: a shared mitre, not into it.
 #
+# Usage: powershell -ExecutionPolicy Bypass -File tools\ui-windows-timber-test.ps1 [-App build\dev\mitcad.exe] [-Out dir] [-QtBin dir]
 # Usage: powershell -ExecutionPolicy Bypass -File tools\ui-windows-timber-test.ps1 [-App build\dev\mitcad.exe] [-Out dir] [-QtBin dir]
 param(
   [string]$App = (Join-Path $PSScriptRoot '..\build\dev\mitcad.exe'),
@@ -191,7 +199,7 @@ Set-Content -Encoding ascii (Join-Path $library 'mitcad-library.json') @'
        "material": {"species": "spruce", "finish": "dimensioned", "grade": "", "density": 450, "moisture": 20},
        "availability": "standard",
        "section": {"width": "98 mm", "height": "48 mm"}, "nominal": {"width": "98 mm", "height": "48 mm"},
-       "length": {"parameter": "L", "min": "100 mm", "max": "6000 mm", "default": "600 mm",
+       "length": {"parameter": "L", "min": "100 mm", "max": "6000 mm", "default": "3000 mm",
                   "stock": ["3000 mm", "3600 mm"]},
        "frames": [{"name": "end_a", "kind": "end"}, {"name": "end_b", "kind": "end"},
                   {"name": "face_xp", "kind": "face"}, {"name": "face_xn", "kind": "face"},
@@ -267,6 +275,128 @@ function Place([string]$What) {
 }
 $side = ':part(F2:side('
 
+# Refresh-At CMD: the view fitted to the parts and CMD's Place On picked
+# again: the places a click picks logged again.
+function Refresh-At([string]$Cmd) {
+  Ui-Step 'fit the view (F6)'            { Ui-Key 'F6' }
+  Ui-Step "$Cmd's Place On again"        { Ui-ClickLogged "Panel $Cmd input at" }
+}
+# Expect-Inspect CMD TEXTS description: an "Inspect CMD:" line since the
+# mark has every text.
+function Expect-Inspect([string]$Cmd, [string[]]$Texts, [string]$Description) {
+  for ($i = 0; $i -lt 30; $i++) {
+    $found = Ui-LogLines | Select-Object -Skip $script:UiMark | Where-Object { $_.StartsWith("Inspect ${Cmd}: ") } |
+      Where-Object { $line = $_; @($Texts | Where-Object { -not $line.Contains($_) }).Count -eq 0 } |
+      Select-Object -First 1
+    if ($found) { Write-Host "ok   $Description"; return }
+    Start-Sleep -Milliseconds 200
+  }
+  Ui-Fail "${Description}: no 'Inspect ${Cmd}:' line since the mark with $($Texts -join ' / ')"
+}
+# Marker-At CMD LABEL: where CMD's last preview marker LABEL (a regex; also
+# the taken one, "> LABEL") is; its point is on the face picked, so a click
+# there clicks that face (tools/ui-windows-build-test.ps1).
+function Marker-At([string]$Cmd, [string]$Label) {
+  $line = Ui-LogLines | Where-Object { $_ -match "^Preview marker $Cmd (> )?$Label world " } | Select-Object -Last 1
+  if ("$line" -notmatch ' at (\d+),(\d+)$') { Ui-Fail "no preview marker '$Label' of $Cmd logged" }
+  return @([int]$Matches[1], [int]$Matches[2])
+}
+# Pick-Markers CMD AREA: the mouse off the parts (to a corner of the view,
+# AREA: x y width height) and the pick's markers logged again, not the
+# hover's (tools/ui-windows-build-test.ps1).
+function Pick-Markers([string]$Cmd, [int[]]$Area) {
+  $inset = 6
+  $corners = @(@(($Area[0] + $inset), ($Area[1] + $inset)),
+               @(($Area[0] + $inset), ($Area[1] + $Area[3] - $inset)),
+               @(($Area[0] + $Area[2] - $inset), ($Area[1] + $Area[3] - $inset)))
+  $inspect = -1
+  foreach ($corner in $corners) {
+    [UiInput]::Move($script:UiWindow, $corner[0], $corner[1], 0x04)
+    for ($i = 0; $i -lt 20 -and $inspect -lt 0; $i++) {
+      Ui-Sync
+      $lines = @(Ui-LogLines)
+      $lastLine = -1
+      for ($j = $lines.Count - 1; $j -ge 0; $j--) { if ($lines[$j].StartsWith("Inspect ${Cmd}: ")) { $lastLine = $j; break } }
+      if ($lastLine -lt 0 -or -not $lines[$lastLine].Contains('; on the hover')) { $inspect = [Math]::Max($lastLine, 0) }
+      else { Start-Sleep -Milliseconds 100 }
+    }
+    if ($inspect -ge 0) { break }
+  }
+  if ($inspect -lt 0) { Ui-Fail "the hover's preview stayed with the mouse in the view's corners" }
+  for ($i = 0; $i -lt 25; $i++) {
+    if (Ui-LogLines | Select-Object -Skip $inspect | Where-Object { $_.StartsWith("Preview marker $Cmd ") }) { return }
+    Start-Sleep -Milliseconds 100
+  }
+}
+# Marker-InMiddle CMD LABEL: where CMD's marker LABEL is once it lies in the
+# middle half of the view, the view zoomed step by step at its centre until
+# then (tools/ui-windows-build-test.ps1).
+function Marker-InMiddle([string]$Cmd, [string]$Label) {
+  $area = @((Ui-LastMatch 'View area (\d+ \d+ \d+ \d+)') -split ' ' | ForEach-Object { [int]$_ })
+  if ($area.Count -lt 4) { Ui-Fail 'the app did not log its view area' }
+  $cx = [int]($area[0] + $area[2] / 2)
+  $cy = [int]($area[1] + $area[3] / 2)
+  $sign = -1
+  $last = $null
+  for ($i = 0; $i -lt 16; $i++) {
+    Pick-Markers $Cmd $area
+    $at = Marker-At $Cmd $Label
+    $off = [Math]::Max([Math]::Abs($at[0] - $cx) / $area[2], [Math]::Abs($at[1] - $cy) / $area[3])
+    if ($off -lt 0.25) { return $at }
+    if ($null -ne $last -and $off -gt $last) { $sign = -$sign }
+    $last = $off
+    [UiInput]::Move($script:UiWindow, $cx, $cy, 0x04)
+    Start-Sleep -Milliseconds 80
+    [UiInput]::Wheel($script:UiWindow, $cx, $cy, $sign)
+    Ui-Sync
+    Start-Sleep -Milliseconds 500
+  }
+  Ui-Fail "${Cmd}'s marker '$Label' did not come into the middle of the view"
+}
+# Wheel-Choice CMD INPUT STEPS: a panel drop-down moved by STEPS entries
+# (positive: down the list), one wheel step at a time.
+function Wheel-Choice([string]$Cmd, [string]$Choice, [int]$Steps) {
+  for ($i = 0; $i -lt [Math]::Abs($Steps); $i++) {
+    Ui-WheelLogged "Panel $Cmd input $Choice" ([Math]::Sign(-$Steps))
+    Start-Sleep -Milliseconds 150
+  }
+}
+# Corner CMD BODY TURN [LENGTH]: a part on BODY's end B turned towards TURN
+# (a host axis: "-Y") by a click on the end face's band along that edge (its
+# zone's marker), with a shared mitre, LENGTH mm long (none: the auto length
+# to the face, mitcad#485).
+function Corner([string]$Cmd, [string]$Body, [string]$Turn, [string]$Length) {
+  Refresh-At $Cmd
+  $ends = @(Faces-Of $Body ':end_b')
+  if ($ends.Count -eq 0) { Ui-Fail "no end B of $Body to pick" }
+  Ui-Mark
+  Ui-Step "$Body's end B, in the middle"  { Pick-Face $Body $ends[0] }
+  Ui-ExpectNew 'BUILD end click: straight towards ' 'the end picked, straight on'
+  $at = Marker-InMiddle $Cmd ('turn ' + [regex]::Escape($Turn))
+  Ui-Mark
+  Ui-Step "near its edge towards $Turn"  { Ui-Click $at[0] $at[1] }
+  Ui-ExpectNew "BUILD end click: edge towards $Turn" "turned towards $Turn"
+  # The panel keeps the mitre chosen for the corner before.
+  $line = $null
+  for ($i = 0; $i -lt 30 -and -not $line; $i++) {
+    $line = Ui-LogLines | Select-Object -Skip $script:UiMark |
+      Where-Object { $_.StartsWith("Inspect ${Cmd}: ") -and $_.Contains("; end edge towards $Turn") } | Select-Object -Last 1
+    if (-not $line) { Start-Sleep -Milliseconds 200 }
+  }
+  if (-not "$line".Contains('mitre shared')) {
+    Ui-Mark
+    Ui-Step 'Mitre: Shared'              { Wheel-Choice $Cmd 'mitre' 2 }
+  }
+  Expect-Inspect $Cmd @("; end edge towards $Turn", 'mitre shared, offset 0.0 mm') 'a shared mitre at the corner'
+  Ui-Mark
+  if ($Length) {
+    Ui-Step "$Length mm long"            { Ui-TypeIn "Panel $Cmd input length" $Length }
+    Expect-Inspect $Cmd @("length $Length.00 mm (typed)", "; end edge towards $Turn", 'mitre shared') "$Length mm, the corner mitred"
+  } else {
+    Ui-Step 'Auto: to the face'          { Ui-ClickLogged "Panel $Cmd input length_mode=face" }
+  }
+}
+
 # A new design (mitcad#394): Part1 active.
 Ui-StartApp 'timber-new'
 Ui-Mark
@@ -274,7 +404,7 @@ Ui-Step 'the BUILD tab'                  { Ui-ClickLogged 'Ribbon tab BUILD' }
 Ui-ExpectNew 'Ribbon BUILD/PROFILE at' 'its PROFILE group'
 Ui-ExpectLog 'Ribbon button build.timber at' 'the Timber button on the BUILD tab'
 
-Write-Host '--- 1. The pickers'
+Write-Host '--- 1. The pickers, the first start'
 Ui-Mark
 Ui-Step 'Profile (F3)'                   { Ui-Key 'F3' }
 Ui-ExpectNew 'BUILD parts profile: 1 (0 in the design)' "Profile's picker: the slot profile only, no timber"
@@ -284,13 +414,17 @@ Ui-Mark
 Ui-Step 'the Timber button'              { Ui-ClickLogged 'Ribbon button build.timber' }
 Ui-ExpectNew 'Command Timber started' 'Timber started'
 Ui-ExpectNew 'BUILD parts timber: 4 (0 in the design)' "Timber's picker: the members' four sizes (mitcad#484), no profile"
-Ui-ExpectNew 'BUILD timber starts with test-timber/timber-48-test' 'the standard size first, the less common one after it'
-Ui-ExpectNew 'BUILD timber adds to Part1, points' 'two points at first'
+Ui-ExpectNew "BUILD timber starts with test-timber/timber-48-test: the first time's dimensioned 48x98" 'the dimensioned 48x98 the first time'
+Ui-ExpectNew 'BUILD timber adds to Part1, member' 'On a member at first (mitcad#485)'
+Ui-ExpectNew "BUILD timber starts: length 3000 mm (the part's default), typed; along x, flat" "a typed length, the part's default, along X, flat"
+Expect-Inspect 'Timber' @('place grounded, length 3000.00 mm (typed)', '; along x, flat', '; thickness along Z',
+                          '; part Timber 48x98 test') 'the preview: 3000 mm along X, lying flat'
 
-Write-Host '--- 2. On a member'
+Write-Host '--- 2. On a member, the next start'
+Ui-Step '600 mm long'                    { Ui-TypeIn 'Panel Timber input length' '600' }
 Ui-Mark
-Ui-Step 'On a member'                    { Ui-ClickLogged 'Panel Timber input how=member' }
-Ui-ExpectNew 'Inspect Timber: place grounded, length 600.00 mm (typed)' 'a post at the origin, standing'
+Ui-Step 'standing (Z)'                   { Ui-ClickLogged 'Panel Timber input axis=z' }
+Expect-Inspect 'Timber' @('place grounded, length 600.00 mm (typed)', '; along z') 'a post at the origin, standing'
 Place 'Timber 48x98 test'
 $post = Placed-Body
 if (-not $post) { Ui-Fail 'no body of the post' }
@@ -303,10 +437,17 @@ Ui-ExpectNew 'Inspect Timber: place side' "on the post's side, a free offset"
 Place 'Timber 48x98 test'
 $beam = Placed-Body
 if (-not $beam) { Ui-Fail 'no body of the member on the post' }
-
-Write-Host '--- 3. From a click, two points'
+Ui-Step 'Close (Escape)'                 { Ui-Key 'Escape' }
 Ui-Mark
-Ui-Step 'From a click'                   { Ui-ClickLogged 'Panel Timber input how=points' }
+Ui-Step 'Timber (F4)'                    { Ui-Key 'F4' }
+Ui-ExpectNew 'Command Timber started' 'Timber again'
+Ui-ExpectNew 'BUILD timber starts with test-timber/timber-48-test: chosen last in the tool' 'the part chosen last'
+Ui-ExpectNew 'BUILD timber adds to Part1, member' 'the mode used last'
+Ui-ExpectNew 'BUILD timber starts: length 600 (typed last), typed; along z, flat' 'the length typed last and the direction'
+
+Write-Host '--- 3. Two points'
+Ui-Mark
+Ui-Step 'Two points'                     { Ui-ClickLogged 'Panel Timber input how=points' }
 Ui-ExpectNew 'View hint Timber: Click where the member starts' "the view's hint for the start"
 Ui-Step 'fit the view (F6)'              { Ui-Key 'F6' }
 Ui-Step 'the start pick'                 { Ui-ClickLogged 'Panel Timber input start' }
@@ -314,18 +455,22 @@ Ui-Mark
 $beamSides = @(Faces-Of $beam $side)
 if ($beamSides.Count -eq 0) { Ui-Fail "no side of the member ($beam) to start on" }
 Ui-Step "the start on the member's side" { Pick-Face $beam $beamSides[0] }
-Ui-ExpectNew 'View hint Timber: Click where it ends' 'the end next'
+Ui-ExpectNew 'View hint Timber: Click where it ends; Shift+click places at once' 'the end next'
 $postSides = @(Faces-Of $post $side)
 if ($postSides.Count -eq 0) { Ui-Fail "no side of the post ($post) to end at" }
 $at = Pick-At $post $postSides[0]
 Ui-Mark
 # MK_SHIFT keeps the move in session 0 (tools/ui-windows-build-test.ps1).
 Ui-Step "the mouse over the post's side" { [UiInput]::Move($script:UiWindow, $at[0], $at[1], 0x04) }
-Ui-ExpectNew 'Inspect Timber: points, length ' 'previewed to where the mouse is' 10
-Ui-ExpectNew '; on the hover' 'the hover'
+Start-Sleep -Milliseconds 1500
+Ui-Sync
+$towards = @(Ui-LogLines | Select-Object -Skip $script:UiMark | Where-Object { $_.StartsWith('Inspect Timber: points') })
+if ($towards.Count -gt 0) { Ui-Fail "a member previewed towards the mouse before the second click: $($towards[0])" }
+Write-Host 'ok   nothing follows the mouse before the second click'
 Ui-Mark
 Ui-Step 'the end there'                  { Ui-Click $at[0] $at[1] }
-Ui-ExpectNew 'Inspect Timber: points, length ' 'ended there'
+Ui-ExpectNew 'Inspect Timber: points, length ' 'two clicks give the member'
+Ui-ExpectNew '; length by two points' 'its length from the points'
 Ui-Mark
 Ui-Step 'Tab: on edge'                   { Ui-Key 'Tab' }
 Ui-ExpectNew 'Inspect Timber: points, length ' 'previewed again'
@@ -381,84 +526,7 @@ Ui-Step 'Connect (Enter)'                { Ui-Key 'Return' }
 Ui-ExpectNew 'Connected Wood screw test at junction ' 'one click finishes the joint' 30
 Ui-Step 'Close (Escape)'                 { Ui-Key 'Escape' }
 
-Write-Host '--- 6. From a click: an auto length, a typed length'
-Ui-Mark
-Ui-Step 'Timber (F4)'                    { Ui-Key 'F4' }
-Ui-ExpectNew 'Command Timber started' 'Timber again'
-Ui-Step 'From a click'                   { Ui-ClickLogged 'Panel Timber input how=points' }
-# The start on a side of the member on the post, the mouse over the post's
-# side: the member runs from the click towards the mouse. The note of the
-# length the preview logged goes to $script:Towards ("bound, auto: to the
-# face to ...", "typed"). Without a face: the first side of any member a
-# click picks now, away from where the mouse then goes (the members placed
-# here may cover the member's sides).
-function Start-Towards-Post([string]$Face) {
-  Refresh-Picks 'start'
-  Ui-Mark
-  if ($Face) {
-    $postSides = @(Faces-Of $post $side)
-    if ($postSides.Count -eq 0) { Ui-Fail "no side of the post ($post) to point at" }
-    $at = Pick-At $post $postSides[0]
-    Ui-Step "the start on the member's side" { Pick-Face $beam $Face }
-  } else {
-    # The sides a click picks now: the mouse over the first, the start on
-    # one of another member away from it.
-    $lines = @(Ui-LogLines)
-    $from = 0
-    for ($i = $lines.Count - 1; $i -ge 0; $i--) { if ($lines[$i].Contains('Pick places:')) { $from = $i; break } }
-    $sides = @()
-    foreach ($line in $lines[$from..($lines.Count - 1)]) {
-      if ($line -match '^\s*Pick face (\S+)/\S*:part\(F2:side\(\S* at (\d+),(\d+)$') {
-        $sides += , @($Matches[1], [int]$Matches[2], [int]$Matches[3])
-      }
-    }
-    if ($sides.Count -lt 2) { Ui-Fail 'no two members'' sides to start on and point at' }
-    $at = @($sides[0][1], $sides[0][2])
-    $start = $sides | Where-Object {
-      $_[0] -ne $sides[0][0] -and ([math]::Abs($_[1] - $at[0]) + [math]::Abs($_[2] - $at[1])) -gt 40 } |
-      Select-Object -First 1
-    if (-not $start) { Ui-Fail 'no side of another member to start on' }
-    Ui-Step "the start on a member's side" { Ui-Click $start[1] $start[2] }
-  }
-  Ui-ExpectLog 'View hint Timber: Click where it ends, or type its length' 'the end or the length next'
-  Ui-Mark
-  Ui-Step 'the mouse over the side pointed at' { [UiInput]::Move($script:UiWindow, $at[0], $at[1], 0x04) }
-  Ui-ExpectNew '; on the hover' 'previewed towards the mouse' 10
-  $script:Towards = Ui-LastMatch '^Inspect Timber: points, .*; length ([^;]*); on the hover'
-}
-# A side of the member from which the way to the post meets something (its
-# top or bottom: a member lying on a side face is beside the post).
-$startFace = $null
-foreach ($face in @(Faces-Of $beam $side)) {
-  Start-Towards-Post $face | Out-Null
-  $note = $script:Towards
-  Write-Host "     from $face`: length $note"
-  if ("$note".StartsWith('bound, auto: to the face')) { $startFace = $face; break }
-}
-if (-not $startFace) { Ui-Fail 'no side of the member gave an auto length towards the post' }
-Write-Host 'ok   the auto length binds to what the way from the click meets'
-Ui-Mark
-Ui-Step 'to the centre (Tab)'            { Ui-Key 'Tab' }
-Ui-ExpectNew 'Timber: Tab steps Length' 'Tab steps the auto length'
-Ui-ExpectNew '; length bound, auto: to the centre to ' 'Tab: to the centre'
-Ui-Mark
-Ui-Step 'through (Tab)'                  { Ui-Key 'Tab' }
-Ui-ExpectNew '; length bound, auto: through to ' 'Tab: through'
-Ui-ExpectLog 'Cursor box Timber length: ' 'the auto length in the box at the cursor'
-Place 'Timber 48x98 test'
-Ui-ExpectNew 'length bound, auto: through' 'placed with its length bound'
-# Another start (the member placed may cover the first one's place).
-Start-Towards-Post '' | Out-Null
-Ui-Mark
-Ui-Step 'a typed length of 1200'         { Ui-TypeIn 'Panel Timber input length' '1200' }
-Ui-ExpectNew 'BUILD length typed: detached from the auto length' 'typing detaches the auto length'
-Ui-ExpectNew 'Inspect Timber: points, length 1200.00 mm, ' '1200 mm towards the mouse'
-Ui-ExpectNew '; length typed; on the hover' 'typed, its way the mouse''s'
-Place 'Timber 48x98 test'
-Ui-ExpectNew 'length typed' 'placed 1200 mm long'
-Ui-Step 'Close (Escape)'                 { Ui-Key 'Escape' }
-
-Write-Host '--- 7. Profile again, the cut list'
+Write-Host '--- 6. Profile again, the cut list'
 Ui-Mark
 Ui-Step 'Profile (F3)'                   { Ui-Key 'F3' }
 Ui-ExpectNew 'BUILD parts profile: 1 (0 in the design)' "the design's timber is not in Profile's picker"
@@ -474,7 +542,7 @@ Ui-ExpectNew 'columns Quantity, Part, Length (mm)' 'the timber columns after the
 Ui-Step 'close (Escape)'                 { Ui-Key 'Escape' }
 Ui-FocusMain
 
-Write-Host '--- 8. Every size a tile of its own, the families as groups'
+Write-Host '--- 7. Every size a tile of its own, the families as groups'
 Ui-Mark
 Ui-Step 'Timber (F4)'                    { Ui-Key 'F4' }
 Ui-ExpectNew 'Command Timber started' 'Timber again'
@@ -520,5 +588,63 @@ $wanted = 148 * 48 * $length
 if ([math]::Abs($volume - $wanted) -gt 1) { Ui-Fail "the 48x148 member is $volume mm3, not 148 x 48 x $length = $wanted" }
 Write-Host "ok   placed as 48x148: $volume mm3 (148 x 48 x $length)"
 Ui-Step 'Close (Escape)'                 { Ui-Key 'Escape' }
+
+# Frame-Of-Four CMD KEY PART L1 L2 [-Through]: a frame on the XY plane, L1
+# along X and L2 across, of four members (PART) each on the end of the
+# one before with a shared mitre (mitcad#485): the first along X at the
+# origin, the second turned to -Y, the third to -X; the view then from the
+# front left (the third's end faces -X), the fourth turned to +Y, its auto
+# length bound to the first (Tab-stepped to "through" with THROUGH): it
+# closes the corner with a shared mitre, L2 long.
+function Frame-Of-Four([string]$Cmd, [string]$Key, [string]$Part, [string]$L1, [string]$L2, [switch]$Through) {
+  Ui-Mark
+  Ui-Step "$Cmd ($Key)"                  { Ui-Key $Key }
+  Ui-ExpectNew "Command $Cmd started" "$Cmd started"
+  Ui-Step "$L1 mm long"                  { Ui-TypeIn "Panel $Cmd input length" $L1 }
+  Ui-Mark
+  Ui-Step 'along X'                      { Ui-ClickLogged "Panel $Cmd input axis=x" }
+  Expect-Inspect $Cmd @("place grounded, length $L1.00 mm (typed)", '; along x') "the first along X"
+  Place $Part
+  $m1 = Placed-Body
+  $m1Name = Ui-LastMatch '^Placed .* as (.*) \(O[0-9/]*\), length'
+  if (-not $m1) { Ui-Fail 'no body of the first member' }
+  Corner $Cmd $m1 '-Y' $L2
+  if ($Cmd -eq 'Timber') {
+    Expect-Inspect $Cmd @('place end', '; thickness along Z') 'on the end lying flat as the first: ends of the same width'
+  }
+  Place $Part
+  $m2 = Placed-Body
+  Corner $Cmd $m2 '-X' $L1
+  Place $Part
+  $m3 = Placed-Body
+  # The third one's end faces -X: the view from the front left (the cube's
+  # places logged, MITCAD_LOG_ORIENTATION_CUBE).
+  Ui-Step 'the view from the front left' { Ui-ClickLogged 'Orientation cube front-left-top' }
+  Ui-Sync
+  Start-Sleep -Milliseconds 800
+  Corner $Cmd $m3 '+Y' ''
+  if ($Through) {
+    Ui-Step 'to the centre (Tab)'        { Ui-Key 'Tab' }
+    Ui-Mark
+    Ui-Step 'through (Tab)'              { Ui-Key 'Tab' }
+    Ui-ExpectNew '(bound, auto: through to ' 'bound through the first'
+  }
+  Expect-Inspect $Cmd @("length $L2.00 mm", "; closes the corner at end A of $m1Name, shared mitre") 'the last one closes the corner with a shared mitre, as long as the side'
+  Place $Part
+  Ui-ExpectNew 'length bound, auto: ' 'placed with its length bound to the first'
+  Write-Host "ok   a frame of $Cmd closed: $m1, $m2, $m3 and the last one"
+  Ui-Step 'Close (Escape)'               { Ui-Key 'Escape' }
+}
+
+Write-Host '--- 8. A frame of four timber members, mitred'
+$env:MITCAD_LOG_ORIENTATION_CUBE = '1'
+Ui-StartApp 'timber-frame'
+Ui-Step 'the BUILD tab'                  { Ui-ClickLogged 'Ribbon tab BUILD' }
+Frame-Of-Four 'Timber' 'F4' 'Timber 48x98 test' '400' '300'
+
+Write-Host '--- 9. A frame of four slot profiles, mitred, the last one through the first'
+Ui-StartApp 'timber-profile-frame'
+Ui-Step 'the BUILD tab'                  { Ui-ClickLogged 'Ribbon tab BUILD' }
+Frame-Of-Four 'Profile' 'F3' 'Profile 20 test' '200' '150' -Through
 
 Ui-Finish 'UI Windows timber test'

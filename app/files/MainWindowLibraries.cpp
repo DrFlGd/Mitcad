@@ -34,8 +34,7 @@ void MainWindow::registerLibraryCommands() {
     return d;
   };
   CommandDef insert = def("insert.library_component", tr("Insert from Library"), "insert-library",
-                          tr("Places a part of a component library (a fastener in a size, ...), linked at the "
-                             "version you choose or as a copy"),
+                          tr("Places a part of a component library, linked or as a copy"),
                           [this] { insertFromLibrary(false); });
   insert.mode = CommandDef::Mode::Model;
   insert.tab = QStringLiteral("SOLID");
@@ -45,7 +44,7 @@ void MainWindow::registerLibraryCommands() {
                      QStringLiteral("standard part"), QStringLiteral("iso")};
   m_registry->add(insert);
   CommandDef parts = def("tools.library_parts", tr("Library Parts..."), "parts-list",
-                         tr("The design's library parts: their versions and sizes, updates, and the parts list"),
+                         tr("The design's library parts: versions, sizes, updates and the parts list"),
                          [this] { showLibraryParts(); });
   parts.keywords = {QStringLiteral("update library"), QStringLiteral("bill of materials"), QStringLiteral("bom"),
                     QStringLiteral("parts list"), QStringLiteral("licence"), QStringLiteral("attribution")};
@@ -57,8 +56,7 @@ void MainWindow::registerLibraryCommands() {
                         QStringLiteral("sources")};
   m_registry->add(libraries);
   CommandDef community = def("tools.community_library", tr("Community Library..."), "library",
-                             tr("Designs and components others share in git repositories: search, licences, "
-                                "insert"),
+                             tr("Searches and inserts designs others share in git repositories"),
                              [this] { insertFromLibrary(true); });
   community.keywords = {QStringLiteral("community"), QStringLiteral("share"), QStringLiteral("download"),
                         QStringLiteral("index"), QStringLiteral("library")};

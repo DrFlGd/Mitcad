@@ -14,9 +14,13 @@ namespace mitcad::bridge {
 
 // Shared with Rust; defined in the generated mitcad_bridge/kernel/emboss.h.
 struct EmbossWrap;
+struct ConeOutput;
 
 // geometry::wrapped_emboss.
 std::shared_ptr<geometry::Shape> wrapped_emboss(rust::Str feature, const Frame& frame,
                                                 rust::Slice<const Region> regions, const EmbossWrap& wrap);
+
+// geometry::face_cone (mitcad#473).
+ConeOutput face_cone(const geometry::Shape& shape, rust::Str face);
 
 } // namespace mitcad::bridge

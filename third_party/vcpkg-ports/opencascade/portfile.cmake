@@ -197,6 +197,9 @@ vcpkg_from_github(
         0908-chfi3d-overflow-start-sampled-finer-where-none-is-found.patch
         0909-chfi3d-rounding-vanishing-a-hair-short-of-the-vertex-it-rolls-into.patch
         0920-chfi3d-radius-law-of-the-callers-along-a-contour.patch
+        0910-chfi3d-onsame-cap-from-the-contacts-point-on-the-prolonged-edge.patch
+        0911-chfi3d-onsame-end-where-the-face-at-the-end-goes-on-tangentially.patch
+        0930-chfi3d-rounding-riding-anothers-contact-line-against-it.patch
 )
 
 if (VCPKG_LIBRARY_LINKAGE STREQUAL "dynamic")

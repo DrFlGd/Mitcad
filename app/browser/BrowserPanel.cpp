@@ -1282,8 +1282,7 @@ void BrowserPanel::addSheetRows(QTreeWidgetItem* bodyRow, const DocumentSnapshot
                        mm("k_factor"));
   QTreeWidgetItem* row =
       addRow(bodyRow, node, QStringLiteral("sheet-rules"),
-             tr("Sheet rules %1: thickness %2 mm, bend radius %3 mm, K-factor %4; double-click to edit them for "
-                "every sheet that uses them")
+             tr("Sheet rules %1: thickness %2 mm, bend radius %3 mm, K-factor %4")
                  .arg(sheet.value(QStringLiteral("rules_name")).toString(rules), mm("thickness"), mm("bend_radius"),
                       mm("k_factor")));
   if (!shown) {

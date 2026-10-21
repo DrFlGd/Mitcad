@@ -420,6 +420,7 @@ impl Converter<'_> {
                     object_links: BTreeMap::new(),
                     surface: false,
                     curves: None,
+                    wrap: None,
                 })
             }
             FileFeature::Fillet {

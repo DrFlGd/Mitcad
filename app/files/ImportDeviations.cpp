@@ -151,8 +151,7 @@ QSet<qint64> askDeviations(QWidget* parent, const QString& file, const std::vect
     auto* choice = new QTableWidgetItem(QObject::tr("Use stored"));
     choice->setFlags(Qt::ItemIsUserCheckable | Qt::ItemIsEnabled | Qt::ItemIsSelectable);
     choice->setCheckState(Qt::Unchecked);
-    choice->setToolTip(QObject::tr("Checked: the item stays parametric with its own result; unchecked: the file's "
-                                   "stored geometry stands in for it (the default)"));
+    choice->setToolTip(QObject::tr("Checked: the item stays parametric; unchecked: the file's stored geometry"));
     table->setItem(r, 0, choice);
     const auto text = [&](int column, const QString& value, const QString& tip = QString()) {
       auto* cell = new QTableWidgetItem(value);
@@ -222,8 +221,7 @@ QSet<qint64> askDeviations(QWidget* parent, const QString& file, const std::vect
   QPushButton* none = buttons->addButton(QObject::tr("&Use Stored for All"), QDialogButtonBox::ActionRole);
   none->setToolTip(QObject::tr("The file's stored geometry stands in for every item listed (as imported)"));
   QPushButton* apply = buttons->addButton(QObject::tr("&Apply"), QDialogButtonBox::AcceptRole);
-  apply->setToolTip(QObject::tr("Keep the items checked parametric: the import runs again with them; the others "
-                                "stay the file's stored geometry"));
+  apply->setToolTip(QObject::tr("Runs the import again with the checked items kept parametric"));
   QPushButton* cancel = buttons->addButton(QDialogButtonBox::Cancel);
   cancel->setToolTip(QObject::tr("Leave the design as imported: the file's stored geometry for every item listed"));
   for (QPushButton* button : {all, none, cancel}) {

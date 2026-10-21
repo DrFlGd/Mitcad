@@ -202,6 +202,17 @@ CommandDef extrudeCommand(const CommandContext& context) {
           .withAccepts(isPlanar)
           .withVisible(choiceIs(QStringLiteral("start"), QStringLiteral("object"))),
       choiceInput(QStringLiteral("direction"), QObject::tr("Direction"), kDirections, kOneSide),
+      // Wrapped onto a cylinder or a cone (mitcad#473), as an emboss.
+      selectionInput(QStringLiteral("wrap"), QObject::tr("Wrap Onto"), SelectKind::Face, 0, 1)
+          .withTooltip(QObject::tr("A cylindrical or conical face to wrap the profiles onto"))
+          .withAccepts([](const SelectionItem& item) {
+            return item.geometry == QStringLiteral("cylinder") || item.geometry == QStringLiteral("cone");
+          })
+          .withoutMeshes()
+          .withVisible([thin](const CommandState& s) {
+            return !thin(s) && s.choice(QStringLiteral("direction")) == kOneSide &&
+                   s.choice(QStringLiteral("start")) == QStringLiteral("profile_plane");
+          }),
   };
   def.inputs += sideInputs(QString(), always, QString());
   def.inputs.append(choiceInput(QStringLiteral("measurement"), QObject::tr("Measurement"),
@@ -388,8 +399,20 @@ CommandDef extrudeCommand(const CommandContext& context) {
     if (direction == kOneSide && state.checked(QStringLiteral("flip"))) {
       result.def.insert(QStringLiteral("flip"), true);
     }
+    // Wrapped onto a face (mitcad#473): a distance on one side, no taper,
+    // in the feature's own component (no assembly cut scope).
+    const Selection& wrap = state.items(QStringLiteral("wrap"));
+    const bool wrapped =
+        !wrap.isEmpty() && !thinType && direction == kOneSide && start == QStringLiteral("profile_plane");
+    if (wrapped) {
+      if (str(extent, "type") != kDistance || extent.contains(QStringLiteral("taper"))) {
+        return Built::failure(QObject::tr("A wrapped extrusion goes a distance, without a taper."),
+                              QStringLiteral("extent"));
+      }
+      result.def.insert(QStringLiteral("wrap"), wrap.first().reference());
+    }
     addOperation(result.def, state);
-    if (state.choice(QStringLiteral("operation")) == QStringLiteral("cut") &&
+    if (!wrapped && state.choice(QStringLiteral("operation")) == QStringLiteral("cut") &&
         !state.object(QStringLiteral("cut_scope")).isEmpty()) {
       QJsonObject scope = state.object(QStringLiteral("cut_scope"));
       if (state.checked(QStringLiteral("cut_context_from_profile"))) {
@@ -452,6 +475,10 @@ CommandDef extrudeCommand(const CommandContext& context) {
                 feature, context);
     }
     state.setChecked(QStringLiteral("flip"), feature.value(QStringLiteral("flip")).toBool());
+    const SelectionItem wrap = itemOf(feature.value(QStringLiteral("wrap")), context);
+    if (wrap.isValid()) {
+      state.setItems(QStringLiteral("wrap"), {wrap});
+    }
     loadOperation(feature, state);
     state.setObject(QStringLiteral("cut_scope"), feature.value(QStringLiteral("cut_scope")).toObject());
   };
@@ -500,6 +527,11 @@ CommandDef extrudeCommand(const CommandContext& context) {
       ok = ok && str(object, "type") == QStringLiteral("plane") &&
            isShowable(object.value(QStringLiteral("plane")), context);
     }
+    // The face a wrapped extrusion wraps onto (mitcad#473).
+    const QJsonValue wrap = feature.value(QStringLiteral("wrap"));
+    if (!wrap.isUndefined() && !wrap.isNull()) {
+      ok = ok && isShowable(wrap, context);
+    }
     return ok;
   };
 
@@ -511,9 +543,15 @@ CommandDef extrudeCommand(const CommandContext& context) {
     } else if (kind == kToObject) {
       extent = QStringLiteral("to object");
     }
-    return QStringLiteral("Added %1extrude (%2), distance %3")
+    const Selection& wrap = state.items(QStringLiteral("wrap"));
+    const QString wrapped = wrap.isEmpty() ? QString()
+                                           : QStringLiteral(", wrapped onto a %1 face")
+                                                 .arg(wrap.first().geometry == QStringLiteral("cone")
+                                                          ? QStringLiteral("conical")
+                                                          : QStringLiteral("cylindrical"));
+    return QStringLiteral("Added %1extrude (%2), distance %3%4")
         .arg(state.choice(QStringLiteral("type")) == QStringLiteral("thin") ? QStringLiteral("thin ") : QString(),
-             label(kOperations, state.choice(QStringLiteral("operation"))), extent);
+             label(kOperations, state.choice(QStringLiteral("operation"))), extent, wrapped);
   };
   return def;
 }

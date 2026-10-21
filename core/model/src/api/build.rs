@@ -44,16 +44,36 @@ pub(crate) enum BuildCommand {
         #[serde(default)]
         set: bool,
     },
+    // Timber frames (mitcad#479).
+    BuildFrame(Box<crate::build::FrameInput>),
 }
 
 /// The commands' names, to send them here.
-pub(crate) const COMMANDS: [&str; 5] = [
+pub(crate) const COMMANDS: [&str; 6] = [
     "build_place",
     "build_edit",
     "build_connect",
     "build_panel",
     "build_remove",
+    "build_frame",
 ];
+
+/// What a timber frame's command made (mitcad#479).
+fn framed_json(framed: &crate::build::frames::Framed) -> Value {
+    json!({
+        "component": framed.lead,
+        "frame": framed.lead,
+        "name": framed.name,
+        "kind": framed.kind,
+        "members": framed.members.iter()
+            .map(|(c, key)| json!({"component": c, "member": key}))
+            .collect::<Vec<_>>(),
+        "count": framed.members.len(),
+        "fasteners": framed.fasteners,
+        "relaid": framed.relaid,
+        "warnings": framed.warnings,
+    })
+}
 
 /// The `build_junctions` query.
 #[derive(Debug, Deserialize)]
@@ -127,6 +147,16 @@ impl<K: Kernel> Document<K> {
     pub(crate) fn run_build_command(&mut self, command: BuildCommand) -> Result<Value, ApiError> {
         Ok(match command {
             BuildCommand::BuildPlace(input) => placed_json(&self.build_place(&input)?),
+            // A timber frame laid out again (mitcad#479).
+            BuildCommand::BuildEdit(input) if input.frame.is_some() => {
+                let component = self.component_by_ref(&input.component)?;
+                let frame = input.frame.clone().unwrap_or_default();
+                let framed = self.edit_frame(component, &frame, input.config.as_ref())?;
+                let mut answer = framed_json(&framed);
+                answer["changed"] = json!(framed.changed);
+                answer
+            }
+            BuildCommand::BuildFrame(input) => framed_json(&self.build_frame(&input)?),
             BuildCommand::BuildEdit(input) => {
                 let changed = self.build_edit(&input)?;
                 let mut answer = json!({"changed": changed});
@@ -215,6 +245,17 @@ impl<K: Kernel> Document<K> {
     /// The `build_preview` query.
     pub(crate) fn build_preview_json(&self, fields: Map<String, Value>) -> Result<Value, ApiError> {
         let problems = |e: crate::document::ModelError| json!({"problems": [e.to_string()]});
+        // A timber frame's members (mitcad#479).
+        if let Some(frame) = fields.get("frame") {
+            let input: crate::build::FrameInput = super::parse(frame.clone(), "frame")?;
+            let component = match fields.get("component").and_then(Value::as_str) {
+                Some(c) => Some(self.component_by_ref(c)?),
+                None => None,
+            };
+            return Ok(self
+                .preview_frame(&input, component)
+                .unwrap_or_else(problems));
+        }
         Ok(match self.preview_input(fields)? {
             PreviewInput::Place(input) => match self.preview_place(&input) {
                 Ok(plan) => {
@@ -506,9 +547,20 @@ impl<K: Kernel> Document<K> {
                 "mitre": mitre,
             });
         }
+        // A corner the bound length closes (mitcad#485).
+        let closing = match &plan.closing {
+            Some(c) => json!({
+                "component": c.component,
+                "end": if c.end_b { "b" } else { "a" },
+                "mitre": if c.cut.is_some() { "shared" } else { "none" },
+                "angle": c.cut.as_ref().and_then(|cut| value_in(self, &cut.angle, Unit::DEG).ok()),
+            }),
+            None => Value::Null,
+        };
         json!({
             "frame": frame_json(&frame),
             "place": plan.place,
+            "closing": closing,
             "length": {
                 "value": length_value,
                 "default": default,
@@ -832,6 +884,16 @@ impl<K: Kernel> Document<K> {
                         "kind": c.kind, "with": c.with, "junction": c.junction,
                         "size": c.size.map(|id| params.value(id)),
                     })).collect::<Vec<_>>()).unwrap_or_default(),
+                    // A profiled board's (mitcad#477).
+                    "board": info.meta.board.as_ref().map(|b| json!({
+                        "profile": b.profile, "cover": info.meta.cover_width(),
+                        "joined": b.is_joined(),
+                    })),
+                    // Timber frames (mitcad#479).
+                    "frame": info.record.frame,
+                    "member": info.record.member,
+                    "framing": info.record.framing.as_ref().map(|f| json!({
+                        "definition": f["frame"], "count": f["count"]})),
                 })
             })
             .collect();
@@ -911,6 +973,7 @@ impl<K: Kernel> Document<K> {
             None => Value::Null,
         };
         let has_timber = list.timber.is_some();
+        let profiled = list.timber.is_some_and(|t| t.area.is_some());
         let rows: Vec<Value> = list
             .rows
             .iter()
@@ -957,6 +1020,14 @@ impl<K: Kernel> Document<K> {
                     row["running_metres"] = json!(t.map(|t| t.running_metres));
                     row["volume"] = json!(t.map(|t| t.volume));
                 }
+                // Profiled boards' columns (mitcad#477), only in a design
+                // with profiled boards.
+                if profiled {
+                    let b = r.timber.as_ref().and_then(|t| t.board.as_ref());
+                    row["profile"] = json!(b.map(|b| b.profile.clone()));
+                    row["cover"] = json!(b.map(|b| b.cover));
+                    row["area"] = json!(b.map(|b| b.area));
+                }
                 row
             })
             .collect();
@@ -1000,6 +1071,10 @@ impl<K: Kernel> Document<K> {
             answer["timber"] = json!(true);
             answer["totals"] = json!({
                 "running_metres": t.running_metres, "volume": t.volume, "mass": t.mass});
+            if let Some(area) = t.area {
+                answer["profiled"] = json!(true);
+                answer["totals"]["area"] = json!(area);
+            }
         }
         Ok(answer)
     }

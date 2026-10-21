@@ -40,6 +40,11 @@
 #include <NCollection_List.hxx>
 #include <NCollection_Map.hxx>
 #include <Precision.hxx>
+#include <Adaptor3d_CurveOnSurface.hxx>
+#include <BRepLib_ValidateEdge.hxx>
+#include <Geom2dAdaptor_Curve.hxx>
+#include <GeomAdaptor_Surface.hxx>
+#include <Geom_Surface.hxx>
 #include <ShapeBuild_ReShape.hxx>
 #include <ShapeFix_Edge.hxx>
 #include <ShapeFix_Shape.hxx>
@@ -56,6 +61,7 @@
 #include "canonical.hpp"
 #include "corner.hpp"
 #include "cutouts.hpp"
+#include "face_join.hpp"
 #include "face_select.hpp"
 #include "history.hpp"
 #include "mitcad/geometry/boolean.hpp"
@@ -177,6 +183,39 @@ std::vector<int> check_contours(const BRepFilletAPI_LocalOperation& maker, const
     contour_sets.push_back(set);
   }
   return contour_sets;
+}
+
+// The body's edges the sets own in the order the sets list them (each
+// set's edge names in turn), then the others (the edges of the faces named,
+// those the tangent chains added, the pieces merged on a working copy whose
+// names no longer resolve, and those no set owns) in the body's order.
+template <class Set>
+std::vector<int> seed_order(const Shape& body, const std::vector<Set>& sets, const std::vector<int>& owner) {
+  std::vector<int> order;
+  std::vector<char> placed(static_cast<std::size_t>(body.edge_count()), 0);
+  for (std::size_t s = 0; s < sets.size(); ++s) {
+    std::vector<int> listed;
+    for (const std::string& name : sets[s].edges) {
+      const std::vector<int> found = body.find_edges(name);
+      listed.insert(listed.end(), found.begin(), found.end());
+    }
+    for (int edge : listed) {
+      if (edge < 0 || edge >= body.edge_count()) {
+        continue;
+      }
+      char& done = placed[static_cast<std::size_t>(edge)];
+      if (owner[static_cast<std::size_t>(edge)] == static_cast<int>(s) && done == 0) {
+        done = 1;
+        order.push_back(edge);
+      }
+    }
+  }
+  for (int edge = 0; edge < body.edge_count(); ++edge) {
+    if (placed[static_cast<std::size_t>(edge)] == 0) {
+      order.push_back(edge);
+    }
+  }
+  return order;
 }
 
 // Whether a set's selection grows by Mitcad's own tangent chains
@@ -363,6 +402,89 @@ bool inherited_faults_only(const TopoDS_Shape& result, const TopoDS_Shape& input
   return true;
 }
 
+} // namespace
+
+// (util.hpp)
+int detail::widen_inherited_curve_tolerances(const TopoDS_Shape& result, const TopoDS_Shape& input) {
+  using EdgeFaces =
+    NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>;
+  // The largest distance between the edge's 3D curve and its curves on its
+  // faces, as OCCT's checker measures it (but exactly, not at sample points).
+  const auto deviation_of = [](const TopoDS_Edge& edge, const EdgeFaces& faces_of) {
+    double deviation = 0.0;
+    const int index = faces_of.FindIndex(edge);
+    if (index == 0) {
+      return deviation;
+    }
+    const occ::handle<Adaptor3d_Curve> curve = new BRepAdaptor_Curve(edge);
+    for (const TopoDS_Shape& face : faces_of(index)) {
+      for (TopExp_Explorer e(face.Oriented(TopAbs_FORWARD), TopAbs_EDGE); e.More(); e.Next()) {
+        if (!e.Current().IsSame(edge)) {
+          continue;
+        }
+        const TopoDS_Face forward = TopoDS::Face(face.Oriented(TopAbs_FORWARD));
+        double first = 0.0, last = 0.0;
+        const occ::handle<Geom2d_Curve> pcurve =
+          BRep_Tool::CurveOnSurface(TopoDS::Edge(e.Current()), forward, first, last);
+        const occ::handle<Geom_Surface> surface = BRep_Tool::Surface(forward);
+        if (pcurve.IsNull() || surface.IsNull()) {
+          continue;
+        }
+        const occ::handle<Adaptor3d_CurveOnSurface> on_surface = new Adaptor3d_CurveOnSurface(
+          new Geom2dAdaptor_Curve(pcurve, first, last), new GeomAdaptor_Surface(surface));
+        BRepLib_ValidateEdge validate(curve, on_surface, BRep_Tool::SameParameter(edge));
+        validate.SetExactMethod(true);
+        validate.Process();
+        if (validate.IsDone()) {
+          deviation = std::max(deviation, validate.GetMaxDistance());
+        }
+      }
+    }
+    return deviation;
+  };
+  std::map<const Geom_Curve*, TopoDS_Edge> input_curves;
+  ShapeMap input_edges;
+  TopExp::MapShapes(input, TopAbs_EDGE, input_edges);
+  for (int i = 1; i <= input_edges.Extent(); ++i) {
+    const TopoDS_Edge& edge = TopoDS::Edge(input_edges(i));
+    double first = 0.0, last = 0.0;
+    const occ::handle<Geom_Curve> curve = BRep_Tool::Curve(edge, first, last);
+    if (!curve.IsNull()) {
+      input_curves.emplace(curve.get(), edge);
+    }
+  }
+  EdgeFaces result_faces, input_faces;
+  TopExp::MapShapesAndAncestors(result, TopAbs_EDGE, TopAbs_FACE, result_faces);
+  BRep_Builder builder;
+  int widened = 0;
+  for (int i = 1; i <= result_faces.Extent(); ++i) {
+    const TopoDS_Edge& edge = TopoDS::Edge(result_faces.FindKey(i));
+    if (input_edges.Contains(edge) || BRep_Tool::Degenerated(edge)) {
+      continue;
+    }
+    double first = 0.0, last = 0.0;
+    const occ::handle<Geom_Curve> curve = BRep_Tool::Curve(edge, first, last);
+    const auto source = curve.IsNull() ? input_curves.end() : input_curves.find(curve.get());
+    if (source == input_curves.end()) {
+      continue;
+    }
+    const double deviation = deviation_of(edge, result_faces);
+    if (deviation <= BRep_Tool::Tolerance(edge)) {
+      continue;
+    }
+    if (input_faces.IsEmpty()) {
+      TopExp::MapShapesAndAncestors(input, TopAbs_EDGE, TopAbs_FACE, input_faces);
+    }
+    if (deviation <= deviation_of(source->second, input_faces) + Precision::Confusion()) {
+      builder.UpdateEdge(edge, deviation);
+      ++widened;
+    }
+  }
+  return widened;
+}
+
+namespace {
+
 // Set while a dressup is tried again another way (dress): a result OCCT's
 // checker rejects is then not healed. Healing keeps a repair within a
 // quarter of the volume, too loose to take a second way's result on trust.
@@ -502,7 +624,11 @@ ShapePtr name_result(BRepFilletAPI_LocalOperation& maker, const std::string& fea
   }
   // One check of a valid result: on a large body BRepCheck takes about as
   // long as the fillet itself (on OCCT's thread pool, mitcad#181).
-  if (BRepCheck_Analyzer(namer.result(), true, true).IsValid()) {
+  bool valid = BRepCheck_Analyzer(namer.result(), true, true).IsValid();
+  if (!valid && detail::widen_inherited_curve_tolerances(namer.result(), body.occt()) > 0) {
+    valid = BRepCheck_Analyzer(namer.result(), true, true).IsValid();
+  }
+  if (valid) {
     // Found valid: a boolean on it checks only what it changes
     // (detail::is_valid_where_changed).
     namer.set_valid(true);
@@ -1081,9 +1207,11 @@ std::vector<int> concave_after_convex(const BRepFilletAPI_MakeFillet& maker, con
 }
 
 // The rolling ball fillets of the sets (none asymmetric or G2) that own the
-// body's edges, at their sizes times `scale`.
+// body's edges, at their sizes times `scale`, their contours added in the
+// order the sets list their edges (`listed`) or in the body's.
 ShapePtr round_edges(const std::string& feature, const Shape& body, const std::vector<FilletSet>& sets,
-                     const std::vector<int>& owner, bool rolling_ball_corners, double scale, bool tight) {
+                     const std::vector<int>& owner, bool rolling_ball_corners, double scale, bool tight,
+                     bool listed = true) {
   BRepFilletAPI_MakeFillet maker(body.occt());
   if (tight) {
     maker.SetParams(kTight[0], kTight[1], kTight[2], kTight[3], kTight[4], kTight[5]);
@@ -1101,7 +1229,17 @@ ShapePtr round_edges(const std::string& feature, const Shape& body, const std::v
     }
   }
   maker.StopChainsAtTurns(selected);
-  for (int edge = 0; edge < body.edge_count(); ++edge) {
+  // In the order the sets list their edges: where two roundings of a face
+  // narrower than both cannot be one blend, the later one rolls on the
+  // earlier one's contact line there (port patch 0016), and the bodies the
+  // `.f3d` files store make the rounding of the edge listed first the whole
+  // one (a plate's rim 2.5 thick rounded with 1.5 on both edges: the two
+  // blends meet at 1.5 from the edge listed first, mitcad#343).
+  std::vector<int> order = seed_order(body, sets, owner);
+  if (!listed) {
+    std::sort(order.begin(), order.end());
+  }
+  for (const int edge : order) {
     const int s = owner[static_cast<std::size_t>(edge)];
     if (s < 0 || maker.Contour(body.edge(edge)) != 0) {
       continue;
@@ -1180,6 +1318,23 @@ ShapePtr round_edges(const std::string& feature, const Shape& body, const std::v
     }
   }
   detail::build(maker);
+  if (!maker.IsDone() && listed) {
+    // OCCT's corners where roundings join over a narrow face depend on which
+    // contour comes first (port patch 0700's join, walked from the first
+    // end it meets): the contours once more in the body's order, as before
+    // they followed the sets' order (mitcad#343).
+    std::vector<int> body_order = order;
+    std::sort(body_order.begin(), body_order.end());
+    if (body_order != order) {
+      try {
+        OCC_CATCH_SIGNALS
+        return round_edges(feature, body, sets, owner, rolling_ball_corners, scale, tight, false);
+      } catch (const Cancelled&) {
+        throw;
+      } catch (...) {
+      }
+    }
+  }
   if (!maker.IsDone()) {
     // A convex and a concave rounding that overlap on the face between
     // them: the convex one first, then the concave one on that result, its
@@ -2299,6 +2454,88 @@ ShapePtr over_cutouts(const Shape& input, const std::vector<FilletSet>& sets, co
   return result;
 }
 
+// The body with the pieces of one surface joined (detail::join_surface_pieces)
+// where the selected edges (`owner`, as select_edges gives it) run along
+// them: a thread's flanks, root and crest, a face a turn on one screw
+// surface each, as one face each over all the turns, as the bodies stored
+// in files keep threads, so that a rounding along the thread walks one face
+// (mitcad#343). Only where a B-spline surface is in pieces there; the faces
+// away from the selected edges keep their pieces. The joined faces hold all
+// their pieces' names, so the result's faces are named after them as
+// before; `pieces` gets the faces joined (indices in `body`). The body
+// itself where nothing is to be joined or it cannot be.
+ShapePtr surface_pieces_joined(const Shape& body, const std::vector<int>& owner, std::vector<int>& pieces) {
+  pieces.clear();
+  NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher> edge_faces;
+  TopExp::MapShapesAndUniqueAncestors(body.occt(), TopAbs_EDGE, TopAbs_FACE, edge_faces);
+  const auto on_one_surface = [](const TopoDS_Shape& a, const TopoDS_Shape& b) {
+    TopLoc_Location la, lb;
+    const occ::handle<Geom_Surface> sa = BRep_Tool::Surface(TopoDS::Face(a), la);
+    const occ::handle<Geom_Surface> sb = BRep_Tool::Surface(TopoDS::Face(b), lb);
+    return la.IsEqual(lb) && a.Orientation() == b.Orientation() && detail::same_surface(sa, sb);
+  };
+  std::vector<char> taken(static_cast<std::size_t>(body.face_count()), 0);
+  std::vector<int> faces;
+  bool split_spline = false;
+  for (int e = 0; e < body.edge_count(); ++e) {
+    if (owner[static_cast<std::size_t>(e)] < 0 || !edge_faces.Contains(body.edge(e))) {
+      continue;
+    }
+    for (const TopoDS_Shape& seed : edge_faces.FindFromKey(body.edge(e))) {
+      const int s = body.face_index(seed);
+      if (s < 0 || taken[static_cast<std::size_t>(s)] != 0 ||
+          BRepAdaptor_Surface(TopoDS::Face(seed), false).GetType() == GeomAbs_Plane) {
+        continue;
+      }
+      // The face's pieces: its neighbours on its surface, theirs, ...
+      std::vector<int> group{s};
+      taken[static_cast<std::size_t>(s)] = 1;
+      for (std::size_t g = 0; g < group.size(); ++g) {
+        for (TopExp_Explorer x(body.face(group[g]), TopAbs_EDGE); x.More(); x.Next()) {
+          for (const TopoDS_Shape& neighbour : edge_faces.FindFromKey(x.Current())) {
+            const int n = body.face_index(neighbour);
+            if (n >= 0 && taken[static_cast<std::size_t>(n)] == 0 &&
+                on_one_surface(neighbour, body.face(group[g]))) {
+              taken[static_cast<std::size_t>(n)] = 1;
+              group.push_back(n);
+            }
+          }
+        }
+      }
+      // (Not where a piece is closed round its surface, a band about a
+      // cylinder with its seam: joined with the pieces of a thread's crest
+      // running on from it, it gave a face over more than the pieces.)
+      const bool seamed = std::any_of(group.begin(), group.end(), [&](int g) {
+        for (TopExp_Explorer x(body.face(g), TopAbs_EDGE); x.More(); x.Next()) {
+          if (BRep_Tool::IsClosed(TopoDS::Edge(x.Current()), body.face(g))) {
+            return true;
+          }
+        }
+        return false;
+      });
+      if (group.size() > 1 && !seamed) {
+        split_spline = split_spline ||
+                       BRepAdaptor_Surface(body.face(s), false).GetType() == GeomAbs_BSplineSurface;
+        faces.insert(faces.end(), group.begin(), group.end());
+      }
+    }
+  }
+  if (!split_spline) {
+    return std::make_shared<Shape>(body);
+  }
+  ShapePtr joined;
+  try {
+    joined = detail::join_surface_pieces(body, faces);
+  } catch (const Standard_Failure&) {
+    joined = nullptr;
+  }
+  if (!joined) {
+    return std::make_shared<Shape>(body);
+  }
+  pieces = faces;
+  return joined;
+}
+
 // The dressup's result with the faces OCCT walked as B-splines where they
 // are exactly analytic given their analytic surfaces (canonical.hpp,
 // mitcad#328): a later rounding along them builds, as on the bodies the
@@ -2314,12 +2551,16 @@ ShapePtr canonical(const Shape& input, ShapePtr result) {
 
 } // namespace
 
-ShapePtr fillet(const std::string& feature, const Shape& input, const std::vector<FilletSet>& sets,
+ShapePtr fillet(const std::string& feature, const Shape& given, const std::vector<FilletSet>& sets,
                 bool rolling_ball_corners) {
   for (const FilletSet& set : sets) {
     check_fillet_set(set);
   }
-  detail::require_surfaces(input.occt(), "fillet");
+  detail::require_surfaces(given.occt(), "fillet");
+  // (A thread's faces, a turn each, joined where the edges run along them.)
+  std::vector<int> pieces;
+  const ShapePtr joined = surface_pieces_joined(given, select_edges(given, sets), pieces);
+  const Shape& input = *joined;
   const std::vector<int> owner = select_edges(input, sets);
   std::vector<char> blended(sets.size(), 0);
   bool any_blended = false;
@@ -2327,7 +2568,8 @@ ShapePtr fillet(const std::string& feature, const Shape& input, const std::vecto
     blended[s] = sets[s].size == FilletSize::Asymmetric || sets[s].curvature ? 1 : 0;
     any_blended = any_blended || blended[s] != 0;
   }
-  return canonical(input, with_own_chains("fillet", input, sets, owner, [&](const std::vector<int>& selected) {
+  ShapePtr result = canonical(input, with_own_chains("fillet", input, sets, owner,
+                                                    [&](const std::vector<int>& selected) {
     const auto build = [&](const Shape& target, const std::vector<int>& own_edges) {
       const auto rings = [&](const Shape& body) { return ring_fillet(feature, body, sets, own_edges); };
       return or_rings("fillet", target, [&] {
@@ -2366,6 +2608,25 @@ ShapePtr fillet(const std::string& feature, const Shape& input, const std::vecto
       throw;
     }
   }));
+  // (The joined pieces split again: the body keeps its thread a turn a face,
+  // as later operations near it take far longer on faces of many turns.)
+  if (!result || pieces.empty()) {
+    return result;
+  }
+  double reach = 0.0;
+  for (const FilletSet& set : sets) {
+    reach = std::max({reach, set.radius, set.radius2, set.chord});
+    for (const auto& point : set.mid) {
+      reach = std::max(reach, point.second);
+    }
+  }
+  ShapePtr split;
+  try {
+    split = detail::split_joined_pieces(*result, given, pieces, feature, "fillet", 3.0 * reach);
+  } catch (const Standard_Failure&) {
+    split = nullptr;
+  }
+  return split ? split : result;
 }
 
 ShapePtr fillet(const std::string& feature, const Shape& body, const std::vector<std::string>& edges,

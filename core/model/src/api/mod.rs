@@ -573,6 +573,10 @@ enum Query {
     // Gears: derived values (mitcad#472, `gears.rs`).
     GearValues(gears::GearValuesQuery),
     GearLink(gears::GearLinkQuery),
+    // An SVG drawing for Insert SVG (mitcad#473, `sketch/svg.rs`).
+    SvgInfo {
+        path: String,
+    },
 }
 
 fn names(names: &[String]) -> Value {
@@ -1407,6 +1411,8 @@ impl<K: Kernel> Document<K> {
             // Gears (mitcad#472).
             Query::GearValues(query) => self.gear_values_json(&query)?,
             Query::GearLink(query) => self.gear_link_json(&query),
+            // An SVG drawing (mitcad#473).
+            Query::SvgInfo { path } => sketch::svg_info_json(&path)?,
         };
         Ok(result.to_string())
     }
@@ -1761,6 +1767,10 @@ mod texture_map_tests;
 mod failed_features_tests;
 #[cfg(test)]
 mod insert_feature_tests;
+// Sketch text from font files, shaped in both directions, SVG drawings and
+// QR codes (mitcad#473).
+#[cfg(test)]
+mod sketch_text_473_tests;
 
 /// The feature a command edits by name (mitcad#401): `edit_feature`,
 /// `suppress_feature` and `reorder_feature` its `uid`, a sketch command

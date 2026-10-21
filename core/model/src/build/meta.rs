@@ -40,6 +40,8 @@ pub struct BuildMeta {
     pub availability: Option<String>,
     /// A wood screw's or nail's sizes.
     pub wood: Option<WoodMeta>,
+    /// A profiled board's section (mitcad#477).
+    pub board: Option<BoardMeta>,
 }
 
 impl BuildMeta {
@@ -80,6 +82,89 @@ impl BuildMeta {
             .as_ref()?
             .millimetres()
             .filter(|d| *d > 0.0)
+    }
+
+    /// A member's section area, mm²: a profiled board's own (mitcad#477),
+    /// else the actual width times the thickness.
+    pub fn section_area(&self) -> Option<f64> {
+        if let Some(area) = self
+            .board
+            .as_ref()
+            .and_then(|b| b.area.as_ref())
+            .and_then(MetaValue::millimetres)
+            .filter(|a| a.is_finite() && *a > 0.0)
+        {
+            return Some(area);
+        }
+        self.section_size().map(|[w, t]| w * t)
+    }
+
+    /// The width a profiled board covers, mm (mitcad#477): its `cover`,
+    /// else its actual width; None for a part that is no profiled board.
+    pub fn cover_width(&self) -> Option<f64> {
+        let board = self.board.as_ref()?;
+        board
+            .cover
+            .as_ref()
+            .and_then(MetaValue::millimetres)
+            .filter(|c| *c > 0.0)
+            .or_else(|| self.section_size().map(|[w, _]| w))
+    }
+
+    /// A board laid edge to edge in a row (tongue and groove, shiplap,
+    /// feather-edge, mitcad#477): its cover width, the step of a row;
+    /// None for one laid with a gap (a deck board, a plain board).
+    pub fn joined_cover(&self) -> Option<f64> {
+        self.board
+            .as_ref()
+            .filter(|b| b.is_joined())
+            .and_then(|_| self.cover_width())
+    }
+}
+
+/// A profiled board's section (mitcad#477; `docs/libraries.md`, "Timber
+/// parts"): its profile, the width it covers, its area and the sizes of
+/// its joint.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct BoardMeta {
+    /// `tongue_and_groove`, `shiplap`, `feather_edge` or `deck`.
+    pub profile: String,
+    /// The width it covers in a row (the visible width).
+    pub cover: Option<MetaValue>,
+    /// The section's area, mm².
+    pub area: Option<MetaValue>,
+    /// A tongue and groove's tongue: `{length, thickness}`.
+    pub tongue: Option<TongueMeta>,
+    /// A shiplap's or feather-edge board's overlap.
+    pub overlap: Option<MetaValue>,
+    /// A deck board's edge radius.
+    pub edge_radius: Option<MetaValue>,
+    /// The grooves of a grooved face (0: smooth).
+    pub grooves: Option<f64>,
+}
+
+/// A tongue's size.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct TongueMeta {
+    pub length: Option<MetaValue>,
+    pub thickness: Option<MetaValue>,
+}
+
+impl BoardMeta {
+    /// Whether boards of this profile are laid edge to edge, each joining
+    /// the next (tongue and groove, shiplap, feather-edge).
+    pub fn is_joined(&self) -> bool {
+        matches!(
+            self.profile.as_str(),
+            "tongue_and_groove" | "shiplap" | "feather_edge"
+        )
+    }
+
+    /// The profile for people: `tongue and groove`.
+    pub fn profile_text(&self) -> String {
+        self.profile.replace('_', " ")
     }
 }
 

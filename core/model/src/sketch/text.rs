@@ -20,10 +20,13 @@ use std::collections::BTreeMap;
 use serde_json::Value;
 
 use super::edit::SketchEdit;
+use super::fonts::FontData;
 use super::geometry::{Curve2, Nurbs, P2, add, dist, dot, perp, scale, sub, unit};
 use super::regions::RegionCurve;
 use super::tools::RectangleMode;
-use super::{EntityIndex, EntityKind, SketchText, TextAlign, TextVAlign};
+use super::{
+    EntityIndex, EntityKind, FontFile, SketchText, StoredGlyph, StoredGlyphs, TextAlign, TextVAlign,
+};
 use crate::ids::EntityUid;
 use crate::kernel::{FontGlyphs, FontRequest, Glyph};
 use crate::topo::CurveId;
@@ -93,13 +96,25 @@ pub fn stored_glyphs(text: &SketchText, font: &FontGlyphs) -> Option<FontGlyphs>
     } else {
         1.0
     };
-    Some(FontGlyphs {
+    let mut glyphs = stored_font(stored);
+    if stored.line_spacing == 0.0 {
+        glyphs.ascender = font.ascender * unit;
+        glyphs.descender = font.descender * unit;
+        glyphs.line_spacing = font.line_spacing * unit;
+    }
+    Some(glyphs)
+}
+
+/// Stored outlines as a font whose em is the text's height (see
+/// [`stored_glyphs`]), with the vertical metrics stored with them.
+fn stored_font(stored: &StoredGlyphs) -> FontGlyphs {
+    FontGlyphs {
         family: stored.font.clone(),
         fallback: false,
-        ascender: font.ascender * unit,
-        descender: font.descender * unit,
+        ascender: stored.ascender,
+        descender: stored.descender,
         cap_height: 1.0,
-        line_spacing: font.line_spacing * unit,
+        line_spacing: stored.line_spacing,
         glyphs: stored
             .glyphs
             .iter()
@@ -108,7 +123,93 @@ pub fn stored_glyphs(text: &SketchText, font: &FontGlyphs) -> Option<FontGlyphs>
                 contours: g.contours.clone(),
             })
             .collect(),
-    })
+    }
+}
+
+/// The outlines of a text to store with it (mitcad#473): a font's glyphs
+/// in units of the text's height, with the font's vertical metrics.
+pub fn to_stored(text: &SketchText, font: &FontGlyphs) -> StoredGlyphs {
+    let unit = if text.cap_height && font.cap_height > 0.0 {
+        1.0 / font.cap_height
+    } else {
+        1.0
+    };
+    let scaled = |p: &[f64; 2]| [p[0] * unit, p[1] * unit];
+    StoredGlyphs {
+        text: text.text.clone(),
+        font: text.font.clone(),
+        bold: text.bold,
+        italic: text.italic,
+        glyphs: font
+            .glyphs
+            .iter()
+            .map(|g| StoredGlyph {
+                advance: g.advance * unit,
+                contours: g
+                    .contours
+                    .iter()
+                    .map(|c| {
+                        c.iter()
+                            .map(|piece| piece.iter().map(scaled).collect())
+                            .collect()
+                    })
+                    .collect(),
+            })
+            .collect(),
+        ascender: font.ascender * unit,
+        descender: font.descender * unit,
+        line_spacing: font.line_spacing * unit,
+    }
+}
+
+/// Gives a text the font of a file (mitcad#473): its family as the font,
+/// the file's path and licence note, and the outlines of the text as it is
+/// now stored with it.
+pub fn use_font_file(text: &mut SketchText, path: &str) -> Result<(), String> {
+    let font = FontData::read(std::path::Path::new(path), 0)?;
+    let family = font.family();
+    text.font = if family.is_empty() {
+        FontFile {
+            path: path.to_owned(),
+            index: 0,
+            licence: String::new(),
+        }
+        .name()
+        .to_owned()
+    } else {
+        family
+    };
+    text.font_file = Some(FontFile {
+        path: path.to_owned(),
+        index: 0,
+        licence: font.licence(),
+    });
+    let glyphs = font.shape(&text.text, text.italic).glyphs;
+    text.glyphs = Some(to_stored(text, &glyphs));
+    Ok(())
+}
+
+/// The font file of a text read and its text shaped (mitcad#473).
+pub fn file_font(text: &SketchText, file: &FontFile) -> Result<FontGlyphs, String> {
+    let font = FontData::read(std::path::Path::new(&file.path), file.index)?;
+    Ok(font.shape(&text.text, text.italic).glyphs)
+}
+
+/// The glyphs of a text whose font is a file (mitcad#473): the outlines
+/// stored with it while they are the text's as it is now, so the design
+/// is the same on every computer; otherwise the file's, read again. None
+/// for a text of an installed font. The flag tells stored outlines.
+pub fn font_file_glyphs(text: &SketchText) -> Option<Result<(FontGlyphs, bool), String>> {
+    let file = text.font_file.as_ref()?;
+    if let Some(stored) = text.glyphs.as_ref().filter(|g| g.fit(text)) {
+        return Some(Ok((stored_font(stored), true)));
+    }
+    Some(file_font(text, file).map(|g| (g, false)).map_err(|e| {
+        format!(
+            "t{}: {e}; choose the font file again (the text has no outlines stored for it)",
+            text.id.0
+        )
+    }))
 }
 
 /// The Bézier control points of a piece raised to `degree`.
@@ -348,6 +449,44 @@ fn wrap_line(
     lines
 }
 
+/// Lines of a text's characters (indices into its characters, in logical
+/// order) in their visual order by the Unicode bidirectional algorithm
+/// (mitcad#473): the runs of a line in the order they are seen, a
+/// right-to-left run reversed. Lines without right-to-left characters stay
+/// as they are.
+pub fn visual_lines(text: &str, lines: &[Vec<usize>]) -> Vec<Vec<usize>> {
+    let bidi = unicode_bidi::BidiInfo::new(text, None);
+    if !bidi.has_rtl() {
+        return lines.to_vec();
+    }
+    let bytes: Vec<(usize, usize)> = text
+        .char_indices()
+        .map(|(b, c)| (b, b + c.len_utf8()))
+        .collect();
+    lines
+        .iter()
+        .map(|line| {
+            let (Some(first), Some(last)) = (line.first(), line.last()) else {
+                return line.clone();
+            };
+            let (start, end) = (bytes[*first].0, bytes[*last].1);
+            let Some(para) = bidi
+                .paragraphs
+                .iter()
+                .find(|p| p.range.start <= start && start < p.range.end)
+            else {
+                return line.clone();
+            };
+            let levels = bidi.reordered_levels_per_char(para, start..end.min(para.range.end));
+            let ours: Vec<unicode_bidi::Level> = line.iter().map(|k| levels[*k]).collect();
+            unicode_bidi::BidiInfo::reorder_visual(&ours)
+                .into_iter()
+                .map(|i| line[i])
+                .collect()
+        })
+        .collect()
+}
+
 /// Lays a text out from its font's glyphs. `points` and `curves` are the
 /// solved sketch (for frames and paths).
 pub fn layout(
@@ -394,6 +533,9 @@ pub fn layout(
             .flat_map(|line| wrap_line(line, &chars, &advance, limit))
             .collect();
     }
+    // Each line's characters in the order they are seen (mitcad#473): a
+    // right-to-left run reads from right to left.
+    let lines: Vec<Vec<usize>> = visual_lines(&text.text, &lines);
     let (ascender, descender, spacing) = (
         glyphs.ascender * h,
         glyphs.descender * h,
@@ -610,6 +752,11 @@ pub fn check(text: &SketchText, index: &EntityIndex<'_>) -> Result<(), String> {
     {
         return Err(format!("{what}: invalid placement"));
     }
+    if text.code.is_some() && (!text.frame.is_empty() || text.path.is_some()) {
+        return Err(format!(
+            "{what}: a code is placed by its corner, not in a frame or along a path"
+        ));
+    }
     if !text.frame.is_empty() {
         if text.frame.len() != 3 {
             return Err(format!("{what}: a frame has three corner points"));
@@ -734,27 +881,30 @@ impl SketchEdit<'_> {
 /// those inside an even number of the text's other contours (an outer
 /// contour, or an island inside a counter).
 pub fn letter_contours(outline: &TextOutline) -> std::collections::BTreeSet<CurveId> {
-    let polygons: Vec<(CurveId, Vec<P2>)> = outline
+    // Each contour with a point of it off its ends (the middle of its first
+    // piece): contours that touch at a corner (a QR code's modules,
+    // mitcad#473) do not count each other there.
+    let polygons: Vec<(CurveId, Vec<P2>, P2)> = outline
         .contours
         .iter()
         .filter_map(|c| {
             let curve = composite(&c.parts)?;
             let (lo, hi) = curve.domain();
-            Some((c.id, curve.sample(lo, hi)))
+            Some((c.id, curve.sample(lo, hi), curve.point(lo + 0.5)))
         })
         .collect();
     polygons
         .iter()
-        .filter(|(id, points)| {
-            let probe = points[0];
+        .filter(|(id, _, probe)| {
+            let probe = *probe;
             let depth = polygons
                 .iter()
-                .filter(|(other, polygon)| {
+                .filter(|(other, polygon, _)| {
                     other != id && super::geometry::polygon_contains(polygon, probe)
                 })
                 .count();
             depth % 2 == 0
         })
-        .map(|(id, _)| *id)
+        .map(|(id, _, _)| *id)
         .collect()
 }

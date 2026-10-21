@@ -17,8 +17,8 @@ use super::reference::FaceRef;
 use super::{CheckContext, EvalContext, Evaluate, FeatureInfo, FeatureOutput, References, ToolUse};
 use crate::ids::BodyUid;
 use crate::kernel::{
-    Bound, EmbossWrapSpec, ExtrudeFeatureSpec, ExtrudeSide, ExtrudeStart, Kernel, Plane, SideEnd,
-    Target,
+    Axis, Bound, EmbossWrapSpec, ExtrudeFeatureSpec, ExtrudeSide, ExtrudeStart, Kernel, Plane,
+    SideEnd, Target,
 };
 use crate::parameters::ParamId;
 use crate::profile::{ProfileRegion, SketchFrame, dot};
@@ -162,6 +162,103 @@ impl<K: Kernel> Evaluate<K> for EmbossDef {
 const PARALLEL: f64 = 1e-9;
 const ALONG_AXIS: f64 = 1e-6;
 
+/// The tool of profiles wrapped onto a cylindrical face by arc length, or
+/// onto a conical one by its development (mitcad#473), raised out of the
+/// material by `depth` or sunk into it; None for a face of another kind.
+/// Emboss and Extrude's `wrap` build it alike.
+pub(crate) fn wrapped_tool<K: Kernel>(
+    ctx: &mut EvalContext<'_, K>,
+    frame: SketchFrame,
+    regions: &[ProfileRegion],
+    face: &FaceRef,
+    depth: f64,
+    raise: bool,
+) -> Result<Option<K::Shape>, String> {
+    let normal = frame.normal();
+    let shape = ctx.surface_body(face.body)?;
+    let found = ctx.face_on(face.body, &shape, &face.face)?;
+    if let Ok(cylinder) = ctx.kernel.face_cylinder(&shape, &found) {
+        let axis = cylinder.axis;
+        if dot(normal, axis.direction).abs() > ALONG_AXIS {
+            return Err(format!(
+                "to wrap onto face {}, the sketch plane must be parallel to the \
+                 cylinder's axis",
+                face.face
+            ));
+        }
+        // Out of the material: away from the axis on an outer face,
+        // towards it on a bore's wall.
+        let outwards = if cylinder.internal { -1.0 } else { 1.0 };
+        let along = if raise { outwards } else { -outwards };
+        let to_radius = cylinder.radius + along * depth;
+        if to_radius <= cylinder.radius * 1e-6 {
+            return Err(format!(
+                "the depth {depth} mm reaches the axis of face {} (radius {} mm)",
+                face.face, cylinder.radius
+            ));
+        }
+        let spec = EmbossWrapSpec {
+            feature: ctx.uid,
+            frame,
+            regions,
+            axis,
+            radius: cylinder.radius,
+            to_radius,
+            half_angle: 0.0,
+        };
+        return ctx
+            .kernel
+            .wrapped_emboss(&spec)
+            .map(Some)
+            .map_err(|e| e.to_string());
+    }
+    if let Ok(cone) = ctx.kernel.face_cone(&shape, &found) {
+        if dot(normal, cone.axis).abs() > ALONG_AXIS {
+            return Err(format!(
+                "to wrap onto face {}, the sketch plane must be parallel to the cone's axis",
+                face.face
+            ));
+        }
+        // The cone's radius at the height of the sketch's origin.
+        let from: [f64; 3] = std::array::from_fn(|i| frame.origin[i] - cone.apex[i]);
+        let height = dot(from, cone.axis);
+        let radius = height * cone.half_angle.tan();
+        if radius.is_nan() || radius <= 0.0 {
+            return Err(format!(
+                "to wrap onto face {}, the sketch's origin must lie beside the cone, not \
+                 beyond its apex",
+                face.face
+            ));
+        }
+        let outwards = if cone.internal { -1.0 } else { 1.0 };
+        let offset = if raise { outwards } else { -outwards } * depth;
+        if radius + offset * cone.half_angle.cos() <= radius * 1e-6 {
+            return Err(format!(
+                "the depth {depth} mm reaches the axis of face {}",
+                face.face
+            ));
+        }
+        let spec = EmbossWrapSpec {
+            feature: ctx.uid,
+            frame,
+            regions,
+            axis: Axis {
+                origin: cone.apex,
+                direction: cone.axis,
+            },
+            radius,
+            to_radius: radius + offset,
+            half_angle: cone.half_angle,
+        };
+        return ctx
+            .kernel
+            .wrapped_emboss(&spec)
+            .map(Some)
+            .map_err(|e| e.to_string());
+    }
+    Ok(None)
+}
+
 impl EmbossDef {
     /// The tool body: the profiles extruded from a plane, or wrapped onto
     /// a cylinder and grown radially; faces named after the feature.
@@ -186,41 +283,14 @@ impl EmbossDef {
                 depth,
             );
         };
+        if let Some(tool) = wrapped_tool(ctx, frame, regions, face, depth, raise)? {
+            return Ok(tool);
+        }
         let shape = ctx.surface_body(face.body)?;
         let found = ctx.face_on(face.body, &shape, &face.face)?;
-        if let Ok(cylinder) = ctx.kernel.face_cylinder(&shape, &found) {
-            let axis = cylinder.axis;
-            if dot(normal, axis.direction).abs() > ALONG_AXIS {
-                return Err(format!(
-                    "to wrap onto face {}, the sketch plane must be parallel to the \
-                     cylinder's axis",
-                    face.face
-                ));
-            }
-            // Out of the material: away from the axis on an outer face,
-            // towards it on a bore's wall.
-            let outwards = if cylinder.internal { -1.0 } else { 1.0 };
-            let along = if raise { outwards } else { -outwards };
-            let to_radius = cylinder.radius + along * depth;
-            if to_radius <= cylinder.radius * 1e-6 {
-                return Err(format!(
-                    "the emboss depth {depth} mm reaches the axis of face {} (radius {} mm)",
-                    face.face, cylinder.radius
-                ));
-            }
-            let spec = EmbossWrapSpec {
-                feature: ctx.uid,
-                frame,
-                regions,
-                axis,
-                radius: cylinder.radius,
-                to_radius,
-            };
-            return ctx.kernel.wrapped_emboss(&spec).map_err(|e| e.to_string());
-        }
         let plane = ctx.kernel.face_plane(&shape, &found).map_err(|e| {
             format!(
-                "face {} is neither planar nor cylindrical, which an emboss needs: {e}",
+                "face {} is neither planar, cylindrical nor conical, which an emboss needs: {e}",
                 face.face
             )
         })?;

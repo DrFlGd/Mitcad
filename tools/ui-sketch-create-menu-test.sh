@@ -31,7 +31,7 @@ OTHER="$OTHER | Control Point Spline | Point"
 PATTERNS="Rectangular Pattern | Circular Pattern | Mirror"
 REFERENCES="Project | Clean Up Projections | Clean Up Stale Projections"
 CREATE="Line | Rectangles > [$RECTANGLES] | Circles > [$CIRCLES] | Arcs > [$ARCS] | Other Geometry > [$OTHER]"
-CREATE="$CREATE | Text | Patterns > [$PATTERNS] | References > [$REFERENCES] | Sketch Dimension"
+CREATE="$CREATE | Text > [Text | QR Code] | Patterns > [$PATTERNS] | References > [$REFERENCES] | Sketch Dimension"
 
 # last_line "prefix": the last log line starting with the prefix, without it.
 last_line() {

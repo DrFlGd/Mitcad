@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <exception>
 #include <string>
 #include <vector>
@@ -55,9 +56,14 @@ inline void check_near(double a, double b, double relative, const char* expressi
 #define CHECK_NEAR_TOL(a, b, relative)                                                             \
   ::test::check_near((a), (b), (relative), #a " ~ " #b, __FILE__, __LINE__)
 
-// Runs a test function; an exception it throws counts as a failure.
+// Runs a test function; an exception it throws counts as a failure. With
+// MITCAD_TEST_ONLY set, only the tests whose names contain it run.
 template <class F>
 void guarded(const char* name, F&& f) {
+  const char* only = std::getenv("MITCAD_TEST_ONLY");
+  if (only != nullptr && *only != '\0' && std::string(name).find(only) == std::string::npos) {
+    return;
+  }
   try {
     f();
   } catch (const std::exception& error) {

@@ -37,6 +37,12 @@ pub mod dxf;
 pub mod offset;
 pub mod pattern;
 pub mod text;
+// Font files, shaping and both directions of text, SVG drawings
+// (mitcad#473).
+pub mod fonts;
+pub mod svg;
+// QR codes (mitcad#473).
+pub mod code;
 // Equal spacing (mitcad#221).
 pub mod spacing;
 // Duplicate and overlapping projected curves (mitcad#232).
@@ -1173,6 +1179,76 @@ pub struct SketchText {
     /// is still the one they are the outlines of (`text.rs`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub glyphs: Option<StoredGlyphs>,
+    /// The font file the text's font comes from (mitcad#473), instead of
+    /// an installed font: `font` is the file's family, and the outlines
+    /// are stored in `glyphs`, so the design looks the same without it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub font_file: Option<FontFile>,
+    /// A code of the text's content instead of its characters (mitcad#473,
+    /// `code.rs`): `height` is a module's size, `at` the lower left corner
+    /// of the modules, turned by `angle`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<SketchCode>,
+}
+
+/// A code a sketch text draws (mitcad#473).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SketchCode {
+    #[serde(default)]
+    pub kind: CodeKind,
+    /// The error correction level.
+    #[serde(default)]
+    pub ecc: CodeEcc,
+}
+
+/// The kinds of codes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CodeKind {
+    #[default]
+    Qr,
+}
+
+/// A QR code's error correction: about 7, 15, 25 or 30 % of it may be
+/// lost.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CodeEcc {
+    L,
+    #[default]
+    M,
+    Q,
+    H,
+}
+
+/// A font file a text uses (mitcad#473; `fonts.rs`): where it was read and
+/// what its licence says, kept with the design.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FontFile {
+    /// The file's path when it was read (`.ttf`, `.otf`, `.ttc`, `.woff`
+    /// or `.woff2`).
+    pub path: String,
+    /// The face in a collection.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub index: u32,
+    /// The font's copyright and licence notes (its name table).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub licence: String,
+}
+
+impl FontFile {
+    /// The file's name, without its folder.
+    pub fn name(&self) -> &str {
+        self.path
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or(self.path.as_str())
+    }
+}
+
+fn is_zero_u32(value: &u32) -> bool {
+    *value == 0
 }
 
 /// The glyph outlines a file stores with a text (mitcad#416): what the
@@ -1192,6 +1268,15 @@ pub struct StoredGlyphs {
     pub italic: bool,
     /// One per character of `text`, newlines included.
     pub glyphs: Vec<StoredGlyph>,
+    /// The font's vertical metrics in the same units, when they were
+    /// stored (a font file's, mitcad#473): above and below the baseline
+    /// and from one baseline to the next. Zero: not stored.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub ascender: f64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub descender: f64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub line_spacing: f64,
 }
 
 /// One character's stored outline (see [`StoredGlyphs`]).
@@ -1244,6 +1329,8 @@ impl SketchText {
             pen_align: false,
             ink_top: false,
             glyphs: None,
+            font_file: None,
+            code: None,
         }
     }
 }

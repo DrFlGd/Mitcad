@@ -5,6 +5,7 @@
 
 #include "bridge/profile.hpp"
 #include "mitcad/geometry/emboss.hpp"
+#include "mitcad/geometry/reference.hpp"
 #include "mitcad_bridge/kernel/emboss.h"
 
 namespace mitcad::bridge {
@@ -19,7 +20,18 @@ std::shared_ptr<geometry::Shape> wrapped_emboss(rust::Str feature, const Frame& 
                      gp_Dir(wrap.axis_direction[0], wrap.axis_direction[1], wrap.axis_direction[2]));
   spec.radius = wrap.radius;
   spec.to_radius = wrap.to_radius;
+  spec.half_angle = wrap.half_angle;
   return geometry::wrapped_emboss(spec);
+}
+
+ConeOutput face_cone(const geometry::Shape& shape, rust::Str face) {
+  const geometry::ConeFace cone = geometry::face_cone(shape, std::string(face));
+  ConeOutput out{};
+  out.apex = {cone.apex.X(), cone.apex.Y(), cone.apex.Z()};
+  out.axis = {cone.axis.X(), cone.axis.Y(), cone.axis.Z()};
+  out.half_angle = cone.half_angle;
+  out.internal = cone.internal;
+  return out;
 }
 
 } // namespace mitcad::bridge

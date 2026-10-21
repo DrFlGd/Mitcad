@@ -9,12 +9,17 @@
 
 #include <cmath>
 
+#include <QDir>
+#include <QFileInfo>
 #include <QFontDatabase>
 #include <QJsonArray>
 #include <QKeySequence>
 #include <QSet>
 
+#include "../browser/DocumentHost.hpp"
 #include "../framework/CommandRegistry.hpp"
+#include "../framework/Dialogs.hpp"
+#include "../sketch/FontFiles.hpp"
 #include "../sketch/SketchController.hpp"
 #include "../sketch/SketchTool.hpp"
 #include "CommandSupport.hpp"
@@ -23,6 +28,7 @@ namespace mitcad {
 namespace {
 
 using cmd::negated;
+using cmd::number;
 using sketch::SketchController;
 
 const QString kSketchTab = QStringLiteral("SKETCH");
@@ -331,13 +337,11 @@ void addCleanUpProjections(CommandRegistry& registry, SketchController& c) {
   CommandDef def = sketchCommand("sketch.clean_up_projections", QObject::tr("Clean Up Projections"), "project",
                                  "CREATE/References", CommandDef::Kind::Feature);
   def.sketchCommand = true;
-  def.tooltip = QObject::tr("Removes projected curves that repeat another, and projected lines that lie on "
-                            "another, keeping their constraints and dimensions on the curve kept");
+  def.tooltip = QObject::tr("Removes repeated projected curves and projected lines lying on another");
   def.keywords = {QStringLiteral("duplicate"), QStringLiteral("overlapping"), QStringLiteral("merge")};
   def.inputs = {
       checkInput(QStringLiteral("merge"), QObject::tr("Merge Overlapping Lines"), true)
-          .withTooltip(QObject::tr("Also a projected line on a longer one, and overlapping unlinked lines; a "
-                                   "merged line follows one source only")),
+          .withTooltip(QObject::tr("Also merges overlapping projected and unlinked lines")),
   };
   def.build = [&c](const CommandState& s, const CommandContext&) -> Built {
     QJsonObject cmd = base(c, "sketch.clean_up_projections");
@@ -362,9 +366,7 @@ void addCleanUpStaleProjections(CommandRegistry& registry, SketchController& c) 
   CommandDef def = sketchCommand("sketch.clean_up_stale_projections", QObject::tr("Clean Up Stale Projections"),
                                  "project", "CREATE/References", CommandDef::Kind::Feature);
   def.sketchCommand = true;
-  def.tooltip = QObject::tr("Removes projected curves that no longer match their source and that nothing uses, "
-                            "trims the ones the profiles still use, and unlinks the projections that cannot "
-                            "follow");
+  def.tooltip = QObject::tr("Removes, trims or unlinks projected curves that no longer match their source");
   def.keywords = {QStringLiteral("stale"), QStringLiteral("outdated"), QStringLiteral("unlink")};
   def.build = [&c](const CommandState&, const CommandContext&) -> Built {
     return Built::of(base(c, "sketch.clean_up_stale_projections"));
@@ -387,8 +389,7 @@ void addConvertProjected(CommandRegistry& registry, SketchController& c) {
                                  "convert-projected", "MODIFY", CommandDef::Kind::Action);
   def.run = [&c] { c.convertProjected(); };
   def.enabled = [&c] { return c.selectionHasProjected(); };
-  def.tooltip = QObject::tr("Turns the selected projected geometry into ordinary sketch geometry: no link to its "
-                            "source, not fixed");
+  def.tooltip = QObject::tr("Turns the selected projected geometry into ordinary sketch geometry");
   def.keywords = {QStringLiteral("projected"), QStringLiteral("unlink"), QStringLiteral("reference"),
                   QStringLiteral("convert")};
   registry.add(def);
@@ -643,15 +644,158 @@ void addEditOffset(CommandRegistry& registry, SketchController& c) {
   registry.add(def);
 }
 
-// The font families: the bundled one first, then the system's.
-QVector<QPair<QString, QString>> fontChoices() {
+// The font families: the bundled one first, then the system's, then the
+// files of Preferences' font folders (mitcad#473) and a file `chosen` now
+// that is in none of them.
+QVector<QPair<QString, QString>> fontChoices(const QString& chosen = QString()) {
   QVector<QPair<QString, QString>> choices = {{QStringLiteral("Droid Sans"), QStringLiteral("Droid Sans")}};
-  for (const QString& family : QFontDatabase::families()) {
+  for (const QString& family : sketch::installedFontFamilies()) {
     if (family != QStringLiteral("Droid Sans")) {
       choices.append({family, family});
     }
   }
+  bool listed = sketch::fontFileOfChoice(chosen).isEmpty();
+  for (const sketch::FolderFont& font : sketch::savedFolderFonts()) {
+    const QString value = sketch::fontFileChoice(font.path);
+    choices.append({value, QStringLiteral("%1 (%2)").arg(font.family, QFileInfo(font.path).fileName())});
+    listed = listed || value == chosen;
+  }
+  if (!listed) {
+    choices.append({chosen, sketch::fontFileLabel(sketch::fontFileOfChoice(chosen))});
+  }
   return choices;
+}
+
+// The font chooser of Edit Text: installed fonts and font files, each with
+// a preview, and a button that chooses a font file (mitcad#473).
+InputDef fontInput(SketchController& c) {
+  InputDef input = choiceInput(QStringLiteral("font"), QObject::tr("Font"), {}, QStringLiteral("Droid Sans"));
+  input.choicesFor = [](const CommandState& s) { return fontChoices(s.choice(QStringLiteral("font"))); };
+  input.choiceImage = [](const QString& value) { return sketch::fontPreview(value); };
+  input.buttonText = QObject::tr("File...");
+  input.buttonTooltip = QObject::tr("Chooses a font file (.ttf, .otf, .woff, .woff2); its outlines are kept in the "
+                                    "design");
+  input.onButton = [&c](const CommandState& s, const CommandContext&) {
+    auto* window = dynamic_cast<QWidget*>(&c.host());
+    const QString current = sketch::fontFileOfChoice(s.choice(QStringLiteral("font")));
+    const QString path = dialogOpenFileName(
+        window, QObject::tr("Font File"), current.isEmpty() ? QString() : QFileInfo(current).absolutePath(),
+        QObject::tr("Fonts (*.ttf *.otf *.ttc *.woff *.woff2);;All files (*)"));
+    if (path.isEmpty()) {
+      return;
+    }
+    qDebug().noquote() << QStringLiteral("Edit Text font file %1").arg(path);
+    auto* host = dynamic_cast<DocumentHost*>(&c.host());
+    if (host == nullptr || !host->chooseInCommand(QStringLiteral("sketch.edit_text"), QStringLiteral("font"),
+                                                  sketch::fontFileChoice(QDir::cleanPath(path)))) {
+      qInfo().noquote() << QStringLiteral("Edit Text: the font file was not chosen");
+    }
+  };
+  return input;
+}
+
+// QR codes (mitcad#473): the error correction levels.
+const QVector<QPair<QString, QString>> kCodeLevels = {
+    {QStringLiteral("L"), QStringLiteral("L (7 %)")},
+    {QStringLiteral("M"), QStringLiteral("M (15 %)")},
+    {QStringLiteral("Q"), QStringLiteral("Q (25 %)")},
+    {QStringLiteral("H"), QStringLiteral("H (30 %)")},
+};
+
+// QR Code (mitcad#473): a QR code of a content in the sketch, its modules
+// a size, its lower left corner at a point (`sketch.add_code`).
+void addQrCode(CommandRegistry& registry, SketchController& c) {
+  CommandDef def =
+      sketchCommand("sketch.add_code", QObject::tr("QR Code"), "text", "CREATE/Text", CommandDef::Kind::Feature);
+  def.sketchCommand = true;
+  def.tooltip = QObject::tr("A QR code of a text or an address; its dark modules are profiles to extrude");
+  def.keywords = {QStringLiteral("qr"), QStringLiteral("code"), QStringLiteral("barcode"), QStringLiteral("url")};
+  def.inputs = {
+      textInput(QStringLiteral("content"), QObject::tr("Content")),
+      valueInput(QStringLiteral("module"), QObject::tr("Module Size"), ValueKind::Length, QStringLiteral("1 mm"))
+          .withTooltip(QObject::tr("The side of one square of the code")),
+      choiceInput(QStringLiteral("ecc"), QObject::tr("Error Correction"), kCodeLevels, QStringLiteral("M"))
+          .withTooltip(QObject::tr("How much of the code may be lost and it still reads")),
+      valueInput(QStringLiteral("x"), QObject::tr("Corner X"), ValueKind::Length, QStringLiteral("0 mm")),
+      valueInput(QStringLiteral("y"), QObject::tr("Corner Y"), ValueKind::Length, QStringLiteral("0 mm")),
+  };
+  def.build = [&c](const CommandState& s, const CommandContext&) -> Built {
+    const QString content = s.text(QStringLiteral("content"));
+    if (content.isEmpty()) {
+      return Built::failure(QObject::tr("Type the code's content."), QStringLiteral("content"));
+    }
+    const double module = s.value(QStringLiteral("module"));
+    if (!(module > 0.0)) {
+      return Built::failure(QObject::tr("The module size must be greater than zero."), QStringLiteral("module"));
+    }
+    QJsonObject cmd = base(c, "sketch.add_code");
+    cmd.insert(QStringLiteral("text"), content);
+    cmd.insert(QStringLiteral("module"), module);
+    cmd.insert(QStringLiteral("ecc"), s.choice(QStringLiteral("ecc")));
+    const double x = s.value(QStringLiteral("x"));
+    const double y = s.value(QStringLiteral("y"));
+    cmd.insert(QStringLiteral("at"), QJsonArray{std::isnan(x) ? 0.0 : x, std::isnan(y) ? 0.0 : y});
+    return Built::of(cmd);
+  };
+  def.describe = [](const CommandState& s, const CommandContext&) {
+    return QStringLiteral("Added QR code \"%1\", module %2, level %3")
+        .arg(s.text(QStringLiteral("content")), number(s.value(QStringLiteral("module"))),
+             s.choice(QStringLiteral("ecc")));
+  };
+  registry.add(def);
+}
+
+// Edit QR Code (mitcad#473): a code's content, module size and error
+// correction (`sketch.edit_code`); a double-click on the code opens it.
+void addEditCode(CommandRegistry& registry, SketchController& c) {
+  CommandDef def = sketchCommand("sketch.edit_code", QObject::tr("Edit QR Code"), "text", "MODIFY",
+                                 CommandDef::Kind::Feature);
+  def.sketchCommand = true;
+  def.tooltip = QObject::tr("A QR code's content, module size and error correction");
+  const auto lookup = [](const sketch::SketchModel& m, const QString& id) -> const sketch::TextData* {
+    const sketch::TextData* t = m.text(id);
+    return t != nullptr && t->code ? t : nullptr;
+  };
+  def.inputs = {
+      selectionInput(QStringLiteral("code"), QObject::tr("QR Code"), SelectKind::SketchCurve, 1, 1)
+          .withAccepts(editable(c, lookup)),
+      textInput(QStringLiteral("content"), QObject::tr("Content")),
+      valueInput(QStringLiteral("module"), QObject::tr("Module Size"), ValueKind::Length, QStringLiteral("1 mm")),
+      choiceInput(QStringLiteral("ecc"), QObject::tr("Error Correction"), kCodeLevels, QStringLiteral("M")),
+  };
+  def.init = [&c, lookup](CommandState& s, const CommandContext& context) {
+    const Selection& picked = s.items(QStringLiteral("code"));
+    const sketch::TextData* t = picked.isEmpty() ? nullptr : lookup(c.model(), picked.first().name);
+    if (t == nullptr) {
+      return;
+    }
+    s.setText(QStringLiteral("content"), t->text);
+    s.setText(QStringLiteral("module"), QString::number(t->height / context.unitMillimetres(), 'g', 12));
+    s.setChoice(QStringLiteral("ecc"), t->ecc);
+  };
+  def.build = [&c, lookup](const CommandState& s, const CommandContext&) -> Built {
+    const Selection& picked = s.items(QStringLiteral("code"));
+    if (picked.isEmpty() || lookup(c.model(), picked.first().name) == nullptr) {
+      return Built::failure(QObject::tr("Pick a QR code."), QStringLiteral("code"));
+    }
+    const QString content = s.text(QStringLiteral("content"));
+    if (content.isEmpty()) {
+      return Built::failure(QObject::tr("Type the code's content."), QStringLiteral("content"));
+    }
+    QJsonObject cmd = base(c, "sketch.edit_code");
+    cmd.insert(QStringLiteral("id"), picked.first().name);
+    cmd.insert(QStringLiteral("text"), content);
+    cmd.insert(QStringLiteral("module"), s.value(QStringLiteral("module")));
+    cmd.insert(QStringLiteral("ecc"), s.choice(QStringLiteral("ecc")));
+    return Built::of(cmd);
+  };
+  def.describe = [](const CommandState& s, const CommandContext&) {
+    const Selection& picked = s.items(QStringLiteral("code"));
+    return QStringLiteral("Edited QR code %1: \"%2\", module %3, level %4")
+        .arg(picked.isEmpty() ? QString() : picked.first().name, s.text(QStringLiteral("content")),
+             number(s.value(QStringLiteral("module"))), s.choice(QStringLiteral("ecc")));
+  };
+  registry.add(def);
 }
 
 void addEditText(CommandRegistry& registry, SketchController& c) {
@@ -659,7 +803,11 @@ void addEditText(CommandRegistry& registry, SketchController& c) {
                                  CommandDef::Kind::Feature);
   def.sketchCommand = true;
   def.tooltip = QObject::tr("A sketch text's content, size, font, style, alignment and path");
-  const auto lookup = [](const sketch::SketchModel& m, const QString& id) { return m.text(id); };
+  // A QR code has Edit QR Code (mitcad#473).
+  const auto lookup = [](const sketch::SketchModel& m, const QString& id) -> const sketch::TextData* {
+    const sketch::TextData* t = m.text(id);
+    return t != nullptr && !t->code ? t : nullptr;
+  };
   const auto free = [&c](const CommandState& s) {
     const Selection& picked = s.items(QStringLiteral("text"));
     const sketch::TextData* t = picked.isEmpty() ? nullptr : c.model().text(picked.first().name);
@@ -673,7 +821,7 @@ void addEditText(CommandRegistry& registry, SketchController& c) {
       valueInput(QStringLiteral("height"), QObject::tr("Height"), ValueKind::Length, QStringLiteral("5")),
       valueInput(QStringLiteral("angle"), QObject::tr("Angle"), ValueKind::Angle, QStringLiteral("0 deg"))
           .withVisible(free),
-      choiceInput(QStringLiteral("font"), QObject::tr("Font"), fontChoices(), QStringLiteral("Droid Sans")),
+      fontInput(c),
       checkInput(QStringLiteral("bold"), QObject::tr("Bold")),
       checkInput(QStringLiteral("italic"), QObject::tr("Italic")),
       choiceInput(QStringLiteral("align"), QObject::tr("Horizontal Alignment"),
@@ -701,6 +849,8 @@ void addEditText(CommandRegistry& registry, SketchController& c) {
       checkInput(QStringLiteral("fit"), QObject::tr("Fit on Path")).withVisible(onPath),
   };
   def.init = [&c](CommandState& s, const CommandContext& context) {
+    // The font folders' files as they are now (mitcad#473).
+    sketch::forgetFolderFonts();
     const Selection& picked = s.items(QStringLiteral("text"));
     const sketch::TextData* t = picked.isEmpty() ? nullptr : c.model().text(picked.first().name);
     if (t == nullptr) {
@@ -709,7 +859,14 @@ void addEditText(CommandRegistry& registry, SketchController& c) {
     s.setText(QStringLiteral("content"), t->text);
     s.setText(QStringLiteral("height"), QString::number(t->height / context.unitMillimetres(), 'g', 12));
     s.setText(QStringLiteral("angle"), QStringLiteral("%1 deg").arg(t->angle * 180.0 / 3.14159265358979323846, 0, 'g', 12));
-    s.setChoice(QStringLiteral("font"), t->font.isEmpty() ? QStringLiteral("Droid Sans") : t->font);
+    if (!t->fontFile.isEmpty()) {
+      // The file where it is now: where it was read, or one of the same
+      // name in the font folders.
+      s.setChoice(QStringLiteral("font"),
+                  sketch::fontFileChoice(sketch::findFontFile(t->fontFile, sketch::savedFontFolders())));
+    } else {
+      s.setChoice(QStringLiteral("font"), t->font.isEmpty() ? QStringLiteral("Droid Sans") : t->font);
+    }
     s.setChecked(QStringLiteral("bold"), t->bold);
     s.setChecked(QStringLiteral("italic"), t->italic);
     s.setChoice(QStringLiteral("align"), t->align);
@@ -739,7 +896,12 @@ void addEditText(CommandRegistry& registry, SketchController& c) {
     if (!std::isnan(s.value(QStringLiteral("angle")))) {
       cmd.insert(QStringLiteral("angle"), s.value(QStringLiteral("angle")));
     }
-    cmd.insert(QStringLiteral("font"), s.choice(QStringLiteral("font")));
+    const QString fontFile = sketch::fontFileOfChoice(s.choice(QStringLiteral("font")));
+    if (fontFile.isEmpty()) {
+      cmd.insert(QStringLiteral("font"), s.choice(QStringLiteral("font")));
+    } else {
+      cmd.insert(QStringLiteral("font_file"), fontFile);
+    }
     cmd.insert(QStringLiteral("bold"), s.checked(QStringLiteral("bold")));
     cmd.insert(QStringLiteral("italic"), s.checked(QStringLiteral("italic")));
     cmd.insert(QStringLiteral("align"), s.choice(QStringLiteral("align")));
@@ -761,9 +923,11 @@ void addEditText(CommandRegistry& registry, SketchController& c) {
   };
   def.describe = [](const CommandState& s, const CommandContext&) {
     const Selection& picked = s.items(QStringLiteral("text"));
+    const QString font = s.choice(QStringLiteral("font"));
+    const QString file = sketch::fontFileOfChoice(font);
     return QStringLiteral("Edited text %1: \"%2\", %3, %4")
         .arg(picked.isEmpty() ? QString() : picked.first().name, s.text(QStringLiteral("content")),
-             s.choice(QStringLiteral("font")), s.choice(QStringLiteral("align")));
+             file.isEmpty() ? font : sketch::fontFileLabel(file), s.choice(QStringLiteral("align")));
   };
   registry.add(def);
 }
@@ -904,6 +1068,9 @@ void registerSketchCommands(CommandRegistry& registry, SketchController& c) {
   addEditPattern(registry, c);
   addEditOffset(registry, c);
   addEditText(registry, c);
+  // QR codes (mitcad#473).
+  addQrCode(registry, c);
+  addEditCode(registry, c);
   add({"sketch.construction", QObject::tr("Construction"), "construction", "MODIFY",
        [&c] { c.toggleConstruction(); }, QKeySequence(Qt::Key_X), false,
        QObject::tr("Turns the selected curves into construction geometry and back; with nothing selected, "
@@ -953,8 +1120,7 @@ void registerSketchCommands(CommandRegistry& registry, SketchController& c) {
     if (type == QStringLiteral("horizontal_vertical")) {
       def.tooltip = QObject::tr("A line horizontal or vertical (as it is nearer to), or two points level");
     } else if (type == QStringLiteral("coincident")) {
-      def.tooltip = QObject::tr("A point on a curve or at another point; two curve ends become one point, "
-                                "as curves drawn from the same point share it");
+      def.tooltip = QObject::tr("A point on a curve or at another point; two curve ends become one point");
     } else if (type == QStringLiteral("fix")) {
       def.tooltip = QObject::tr("Fixes geometry in place, or frees it");
     }

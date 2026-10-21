@@ -103,9 +103,7 @@ void CloudSection::build() {
   m_url->setObjectName(QStringLiteral("cloudAddress"));
   m_url->setMinimumWidth(380);
   m_url->setPlaceholderText(tr("https://… or git@…:owner/repo.git"));
-  m_url->setToolTip(tr("The repository's address: paste the one your server shows (https://host/owner/repo.git, "
-                       "git@host:owner/repo.git, ssh://…, or the page's address), or a folder. The details "
-                       "below are read from it."));
+  m_url->setToolTip(tr("The repository's address, as your server shows it, or a folder"));
   m_form->addRow(tr("Repository addr&ess:"), m_url);
   m_details = new QToolButton;
   m_details->setObjectName(QStringLiteral("cloudDetails"));

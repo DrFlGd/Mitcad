@@ -350,22 +350,25 @@ bool share_touching_vertices(TopoDS_Wire& hole, const TopoDS_Wire& outer,
   return true;
 }
 
-// Gives the vertices the outer wire shares with holes kTouchTolerance.
+// Gives the vertices that wires share (the outer wire with holes, holes
+// with each other) kTouchTolerance.
 void widen_touching_vertices(const std::vector<TopoDS_Wire>& wires) {
   if (wires.size() < 2) {
     return;
   }
-  ShapeMap outer;
-  for (TopExp_Explorer it(wires.front(), TopAbs_VERTEX); it.More(); it.Next()) {
-    outer.Add(it.Current());
-  }
+  ShapeMap earlier;
   BRep_Builder builder;
-  for (std::size_t i = 1; i < wires.size(); ++i) {
+  for (std::size_t i = 0; i < wires.size(); ++i) {
+    ShapeMap own;
     for (TopExp_Explorer it(wires[i], TopAbs_VERTEX); it.More(); it.Next()) {
       const TopoDS_Vertex& vertex = TopoDS::Vertex(it.Current());
-      if (outer.Contains(vertex) && BRep_Tool::Tolerance(vertex) < kTouchTolerance) {
+      if (earlier.Contains(vertex) && BRep_Tool::Tolerance(vertex) < kTouchTolerance) {
         builder.UpdateVertex(vertex, kTouchTolerance);
       }
+      own.Add(vertex);
+    }
+    for (int k = 1; k <= own.Extent(); ++k) {
+      earlier.Add(own(k));
     }
   }
 }
@@ -382,8 +385,17 @@ ProfileFace exact_profile(const Frame& frame, const Region& region) {
       touching = touching_hole_wire(frame, region.loops[i], wires.front(), names);
     }
     TopoDS_Wire wire = touching ? *touching : make_wire(frame, region.loops[i], names);
-    if (i > 0 && !touching && share_touching_vertices(wire, wires.front(), names)) {
-      touching = wire;
+    if (i > 0 && !touching) {
+      // The outer wire's vertices, and those of the holes before it: holes
+      // touch each other at corners too (a QR code's light modules,
+      // mitcad#473).
+      bool shares = false;
+      for (const TopoDS_Wire& earlier : wires) {
+        shares = share_touching_vertices(wire, earlier, names) || shares;
+      }
+      if (shares) {
+        touching = wire;
+      }
     }
     pinched = pinched || touching.has_value();
     // Material on the left: the outer boundary counter-clockwise, holes clockwise.

@@ -1,0 +1,75 @@
+{
+  "categories": [{"id": "profiled", "name": "Profiled boards"}],
+  "parts": [
+    {
+      "id": "test-floorboard", "name": "Test floorboard", "category": "profiled", "make": "model",
+      "data_source": "sizes made up for the test",
+      "designation": "Test floorboard {Thickness}x{Width} L={L}",
+      "dimensions": {"shape": "board", "profile": "tongue_and_groove", "width": "W", "thickness": "T", "length": "L",
+                     "parameters": {"W": 120, "T": 28, "L": 3000, "TL": 8, "TT": 8, "TO": -2}},
+      "default": "28x120",
+      "sizes": {
+        "species": {"pine": 520}, "species_default": "pine",
+        "profile": {"TT": 8, "TO": -2},
+        "rows": [{"thickness": 28, "widths": [120, 145], "covers": [112, 137]}]
+      },
+      "appearance": {"id": "test-floor", "name": "Test floor", "texture": "grain", "size": [60, 600]},
+      "build": {"role": "profile", "kind": "timber", "availability": "standard",
+                "material": {"species": "pine", "finish": "planed", "grade": "", "density": 520, "moisture": 20},
+                "length": {"parameter": "L", "min": 100, "max": 6000, "stock": [3000, 3600]}}
+    },
+    {
+      "id": "test-panel", "name": "Test panel board", "category": "profiled", "make": "model",
+      "data_source": "sizes made up for the test",
+      "dimensions": {"shape": "board", "profile": "tongue_and_groove", "v_joint": true,
+                     "width": "W", "thickness": "T", "length": "L",
+                     "parameters": {"W": 95, "T": 15, "L": 3000, "TL": 9, "TT": 5, "VB": 2, "VA": "45 deg"}},
+      "build": {"role": "profile", "kind": "timber", "availability": "standard",
+                "section": {"width": "95 mm", "height": "15 mm"},
+                "material": {"species": "spruce", "finish": "planed", "grade": "", "density": 450, "moisture": 20},
+                "length": {"parameter": "L", "min": 100, "max": 6000, "stock": [3000]}}
+    },
+    {
+      "id": "test-shiplap", "name": "Test shiplap", "category": "profiled", "make": "model",
+      "data_source": "sizes made up for the test",
+      "dimensions": {"shape": "board", "profile": "shiplap", "width": "W", "thickness": "T", "length": "L",
+                     "parameters": {"W": 120, "T": 22, "L": 3000, "LW": 12, "LT": 9}},
+      "default": "22x120",
+      "sizes": {
+        "species": {"spruce": 450}, "species_default": "spruce",
+        "rows": [{"thickness": 22, "widths": [120, 145], "covers": [108, 133]}]
+      },
+      "build": {"role": "profile", "kind": "timber", "availability": "standard",
+                "material": {"species": "spruce", "finish": "planed", "grade": "", "density": 450, "moisture": 20},
+                "length": {"parameter": "L", "min": 100, "max": 6000, "stock": [3000]}}
+    },
+    {
+      "id": "test-feather-edge", "name": "Test feather-edge", "category": "profiled", "make": "model",
+      "data_source": "sizes made up for the test",
+      "dimensions": {"shape": "board", "profile": "feather_edge", "width": "W", "thickness": "T", "length": "L",
+                     "parameters": {"W": 150, "T": 22, "L": 3000, "TN": 6, "O": 30}},
+      "default": "22x150",
+      "sizes": {
+        "species": {"spruce": 450}, "species_default": "spruce",
+        "rows": [{"thickness": 22, "widths": [150]}, {"thickness": 22, "widths": [125], "profile": {"O": 25}}]
+      },
+      "build": {"role": "profile", "kind": "timber", "availability": "standard",
+                "material": {"species": "spruce", "finish": "sawn", "grade": "", "density": 450, "moisture": 20},
+                "length": {"parameter": "L", "min": 100, "max": 6000, "stock": [3000]}}
+    },
+    {
+      "id": "test-deck", "name": "Test deck board", "category": "profiled", "make": "model",
+      "data_source": "sizes made up for the test",
+      "dimensions": {"shape": "board", "profile": "deck", "grooves": 4, "width": "W", "thickness": "T", "length": "L",
+                     "parameters": {"W": 120, "T": 28, "L": 3000, "R": 5, "GG": 5, "GD": 3}},
+      "default": "28x120",
+      "sizes": {
+        "species": {"pine": 520}, "species_default": "pine",
+        "rows": [{"thickness": 28, "widths": [120, 145]}]
+      },
+      "build": {"role": "profile", "kind": "timber", "availability": "standard",
+                "material": {"species": "pine", "finish": "planed", "grade": "", "density": 520, "moisture": 20},
+                "length": {"parameter": "L", "min": 100, "max": 6000, "stock": [3000]}}
+    }
+  ]
+}

@@ -1825,6 +1825,25 @@ impl Kernel for MockKernel {
         })
     }
 
+    /// The test fonts of `data/fonts` as installed (mitcad#473): Liberation
+    /// Sans and Noto Sans Arabic.
+    fn font_source(
+        &self,
+        request: &FontRequest<'_>,
+    ) -> Result<crate::kernel::FontSource, KernelError> {
+        let file = match request.family {
+            "Liberation Sans" => "LiberationSans-Regular.ttf",
+            "Noto Sans Arabic" => "NotoSansArabic-Regular.ttf",
+            _ => return Err(KernelError::failed("not installed")),
+        };
+        Ok(crate::kernel::FontSource {
+            family: request.family.to_owned(),
+            path: format!("{}/data/fonts/{file}", env!("CARGO_MANIFEST_DIR")),
+            index: 0,
+            synthetic_italic: request.italic,
+        })
+    }
+
     // Model warnings (P9).
 
     fn notes(&self, shape: &MockShape) -> Vec<String> {

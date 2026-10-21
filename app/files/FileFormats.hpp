@@ -13,7 +13,7 @@ enum class FileKind {
   FreeCad, // .FCStd: a new document with the document's stored bodies
   Cad,     // .step, .stp, .iges, .igs, .brep, .brp: bodies without history
   Mesh,    // .stl, .obj: mesh bodies
-  Drawing, // .dxf: a sketch
+  Drawing, // .dxf, .svg (mitcad#473): a sketch
   Ipt,     // .ipt or .iam: a new document with the part or the assembly (mitcad#60)
   Ifc,     // .ifc, .ifczip: a new document with the building model (mitcad#273)
   Rvt,     // .rvt, .rfa, .rte, .rft: a new document with the project's elements by level (mitcad#274)
@@ -22,6 +22,8 @@ enum class FileKind {
 };
 
 FileKind fileKind(const QString& path);
+// A drawing that is an SVG one, not DXF (mitcad#473).
+bool isSvgDrawing(const QString& path);
 
 // File dialog filters: everything File > Open opens (each kind becomes a
 // document), and everything Import brings into the open document.

@@ -1,0 +1,103 @@
+{
+  "notes": [
+    "Deck boards (mitcad#477): Mitcad's own parametric sections of industry-standard sizes, no supplier and no manufacturer's drawing. Sizes are thickness x width in mm (the actual size); the four long edges rounded by the radius R; the grooved board has seven grooves GG wide and GD deep on its face (+Y), evenly over its width.",
+    "Deck boards keep a gap in a row: their cover width is their width.",
+    "Species: pine (usually pressure-treated). Density at 20 % moisture: pine 520 kg/m3 (grounds in timber-sawn.json's notes); the treatment's weight is not counted.",
+    "Tolerances (planed): thickness over 20 mm +-1.0 mm; width up to 100 mm +-1.0 mm, over 100 mm +-1.5 mm."
+  ],
+  "categories": [{"id": "decking", "name": "Deck boards"}],
+  "parts": [
+    {
+      "id": "deck-board",
+      "name": "Deck board",
+      "category": "decking",
+      "make": "model",
+      "data_source": "industry-standard sizes of deck boards (at 20 % moisture)",
+      "designation": "Deck board {Thickness}x{Width} L={L}",
+      "description": "Pine deck boards with rounded edges, 28x95 to 34x145.",
+      "keywords": ["timber", "deck", "decking", "terrace", "pine", "pressure-treated", "rounded", "profiled"],
+      "license": "MIT",
+      "dimensions": {
+        "shape": "board",
+        "profile": "deck",
+        "width": "W",
+        "thickness": "T",
+        "length": "L",
+        "parameters": {"W": 120, "T": 28, "L": 3000, "R": 5}
+      },
+      "default": "28x120",
+      "sizes": {
+        "species": {"pine": 520},
+        "species_default": "pine",
+        "tolerance": {
+          "thickness": [[20, -0.5, 0.5], [null, -1.0, 1.0]],
+          "width": [[100, -1.0, 1.0], [null, -1.5, 1.5]]
+        },
+        "profile": {"R": 5},
+        "rows": [
+          {"thickness": 28, "widths": [95, 120, 145]},
+          {"thickness": 34, "widths": [120, 145], "availability": "less common"}
+        ]
+      },
+      "appearance": {
+        "id": "deck-pine", "name": "Treated pine", "based_on": "wood_maple",
+        "base_color": [0.72, 0.66, 0.46], "roughness": 0.65, "texture": "grain", "size": [60, 600]
+      },
+      "build": {
+        "role": "profile",
+        "kind": "timber",
+        "material": {"species": "pine", "finish": "planed", "grade": "", "density": 520, "moisture": 20},
+        "availability": "standard",
+        "length": {"parameter": "L", "min": 100, "max": 6000, "default": 3000,
+                   "stock": [2700, 3000, 3300, 3600, 3900, 4200, 4500, 4800, 5100, 5400]}
+      }
+    },
+    {
+      "id": "deck-board-grooved",
+      "name": "Deck board, grooved",
+      "category": "decking",
+      "make": "model",
+      "data_source": "industry-standard sizes of grooved deck boards (at 20 % moisture)",
+      "designation": "Grooved deck board {Thickness}x{Width} L={L}",
+      "description": "Pine deck boards with rounded edges and a grooved face, 28x120 to 34x145.",
+      "keywords": ["timber", "deck", "decking", "terrace", "grooved", "ribbed", "pine", "pressure-treated",
+                   "profiled"],
+      "license": "MIT",
+      "dimensions": {
+        "shape": "board",
+        "profile": "deck",
+        "grooves": 7,
+        "width": "W",
+        "thickness": "T",
+        "length": "L",
+        "parameters": {"W": 120, "T": 28, "L": 3000, "R": 5, "GG": 5, "GD": 3}
+      },
+      "default": "28x120",
+      "sizes": {
+        "species": {"pine": 520},
+        "species_default": "pine",
+        "tolerance": {
+          "thickness": [[20, -0.5, 0.5], [null, -1.0, 1.0]],
+          "width": [[100, -1.0, 1.0], [null, -1.5, 1.5]]
+        },
+        "profile": {"R": 5, "GG": 5, "GD": 3},
+        "rows": [
+          {"thickness": 28, "widths": [120, 145]},
+          {"thickness": 34, "widths": [145], "availability": "less common"}
+        ]
+      },
+      "appearance": {
+        "id": "deck-pine", "name": "Treated pine", "based_on": "wood_maple",
+        "base_color": [0.72, 0.66, 0.46], "roughness": 0.65, "texture": "grain", "size": [60, 600]
+      },
+      "build": {
+        "role": "profile",
+        "kind": "timber",
+        "material": {"species": "pine", "finish": "planed", "grade": "", "density": 520, "moisture": 20},
+        "availability": "standard",
+        "length": {"parameter": "L", "min": 100, "max": 6000, "default": 3000,
+                   "stock": [2700, 3000, 3300, 3600, 3900, 4200, 4500, 4800, 5100, 5400]}
+      }
+    }
+  ]
+}

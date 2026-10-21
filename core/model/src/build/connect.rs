@@ -1228,7 +1228,12 @@ impl<K: Kernel> Document<K> {
     ) -> Result<RemoveResult, ModelError> {
         let component = self.component_by_ref(component)?;
         let mut targets = vec![component];
-        if set {
+        // A timber frame goes whole, with its fasteners (mitcad#479).
+        let frame = self.frame_lead(component).filter(|_| set);
+        if let Some(lead) = frame {
+            targets = self.frame_fasteners(lead);
+            targets.extend(self.frame_members(lead));
+        } else if set {
             let lead = self
                 .part_info(component)
                 .and_then(|i| i.record.set)
@@ -1406,6 +1411,8 @@ pub(crate) fn apply_remove(
     // and joinery with the parts that go is taken out of the others.
     super::spacing::hand_over_set(state, components);
     super::spacing::drop_cuts_with(state, components)?;
+    // A timber frame's lead likewise (mitcad#479).
+    super::frames::hand_over_frame(state, components);
     let mut removed = Vec::new();
     let features: BTreeSet<FeatureUid> = plan
         .features

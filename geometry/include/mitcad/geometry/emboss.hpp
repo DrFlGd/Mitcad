@@ -32,6 +32,18 @@ namespace mitcad::geometry {
 //   <feature>:start(<region>)  on the cylinder of `radius`
 //   <feature>:end(<region>)    on the cylinder of `to_radius`
 // Several regions are fused; the result may hold several solids.
+//
+// On a cone (mitcad#473: `half_angle` not zero), the sketch is the cone's
+// development laid against it along the generator under the sketch's
+// origin: `axis` runs from the apex where the radius grows, `radius` is the
+// cone's radius at the sketch origin's height along the axis (ρ0 = radius
+// / sin(half_angle) along the generator from the apex), and `to_radius -
+// radius` is how far the profiles grow along the cone's normal (outwards
+// when positive). A sketch point at s across the axis and t along it (from
+// the origin's height) goes to the point of the cone at the distance
+// hypot(s, t + ρ0) from the apex along a generator turned by
+// atan2(s, t + ρ0) / sin(half_angle) about the axis: lengths and angles on
+// the cone are the sketch's. The walls stand along the cone's normals.
 struct EmbossWrapSpec {
   std::string feature;
   Frame frame;
@@ -39,6 +51,7 @@ struct EmbossWrapSpec {
   gp_Ax1 axis;
   double radius = 0.0;
   double to_radius = 0.0;
+  double half_angle = 0.0; // radians: 0 for a cylinder
 };
 
 // Throws std::invalid_argument for a sketch plane across the axis, sizes

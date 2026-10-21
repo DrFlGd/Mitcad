@@ -263,6 +263,10 @@ bool SketchModel::load(const QJsonObject& sketch) {
     text.flipX = flag(t, "flip_x");
     text.flipY = flag(t, "flip_y");
     text.outlined = !t.value(QStringLiteral("outline")).toArray().isEmpty();
+    text.fontFile = t.value(QStringLiteral("font_file")).toObject().value(QStringLiteral("path")).toString();
+    const QJsonObject code = t.value(QStringLiteral("code")).toObject();
+    text.code = !code.isEmpty();
+    text.ecc = code.value(QStringLiteral("ecc")).toString(QStringLiteral("M"));
     texts.push_back(text);
   }
 

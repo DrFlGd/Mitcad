@@ -31,8 +31,7 @@ RemotePreferencesBox::RemotePreferencesBox(QWidget* parent)
   auto* form = new QFormLayout(this);
   m_git = new QLineEdit(QDir::toNativeSeparators(m_settings.git));
   m_git->setPlaceholderText(tr("Found automatically"));
-  m_git->setToolTip(tr("The git program that sends and gets the versions of Cloud projects; signing in is its own "
-                       "(SSH keys, a credential helper). Local projects need no git program."));
+  m_git->setToolTip(tr("The git program that sends and gets the versions of Cloud projects"));
   auto* browse = new QPushButton(tr("Bro&wse..."));
   auto* gitRow = new QHBoxLayout;
   gitRow->addWidget(m_git, 1);
@@ -62,17 +61,14 @@ RemotePreferencesBox::RemotePreferencesBox(QWidget* parent)
   form->addRow(QString(), authorNote);
   m_push = new QCheckBox(tr("Send each saved version at &once (default for projects)"));
   m_push->setChecked(m_settings.autoPush);
-  m_push->setToolTip(tr("Without a connection the versions wait, and go when the remote can be reached again; "
-                        "off: only Sync sends them. Project Settings can set it for a project."));
+  m_push->setToolTip(tr("Off: only Sync sends the versions"));
   form->addRow(QString(), m_push);
   m_minutes = new QSpinBox;
   m_minutes->setRange(0, RemoteSettings::kMaxCheckMinutes);
   m_minutes->setSuffix(tr(" min"));
   m_minutes->setSpecialValueText(tr("never"));
   m_minutes->setValue(m_settings.checkMinutes);
-  m_minutes->setToolTip(tr("When a design of a Cloud project opens, and then this often, Mitcad asks the remote for "
-                           "newer versions (git fetch); never: only Sync and Check for Newer Versions do. Project "
-                           "Settings can set it for a project."));
+  m_minutes->setToolTip(tr("How often Mitcad asks the remote for newer versions; never: only when you ask"));
   auto* minutesRow = new QHBoxLayout;
   minutesRow->addWidget(m_minutes);
   minutesRow->addWidget(new QLabel(tr("(default for projects)")));
@@ -82,8 +78,7 @@ RemotePreferencesBox::RemotePreferencesBox(QWidget* parent)
   form->addRow(minutesLabel, minutesRow);
   m_live = new QCheckBox(tr("Allow &live updates (MQTT)"));
   m_live->setChecked(m_settings.allowLive);
-  m_live->setToolTip(tr("Edit locks and new versions reach the others at once through the broker a project names; "
-                        "off: no project connects to a broker"));
+  m_live->setToolTip(tr("Edit locks and new versions reach the others at once through a broker"));
   form->addRow(QString(), m_live);
   m_broker = new QLineEdit(m_settings.defaultBroker);
   m_broker->setPlaceholderText(QStringLiteral("mqtts://broker.example.com:8883"));
@@ -99,9 +94,7 @@ RemotePreferencesBox::RemotePreferencesBox(QWidget* parent)
   m_brokers->setHeaderLabels({tr("Broker"), tr("User"), tr("Answer")});
   m_brokers->setRootIsDecorated(false);
   m_brokers->setMaximumHeight(110);
-  m_brokers->setToolTip(tr("Brokers you answered the question for that comes before the first connection to one. "
-                           "Sign Out removes the user name and password from the system's keychain; Forget also "
-                           "the answer, so that the next connection asks again."));
+  m_brokers->setToolTip(tr("The brokers you answered the trust question for, with the user you signed in as"));
   m_signOut = new QPushButton(tr("Si&gn Out"));
   m_forget = new QPushButton(tr("&Forget"));
   for (QPushButton* button : {m_signOut, m_forget}) {

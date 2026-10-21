@@ -340,7 +340,7 @@ fn refusals() {
         .unwrap()
         .uid;
     assert!(
-        error(&b.doc, uid).contains("is neither planar nor cylindrical"),
+        error(&b.doc, uid).contains("is neither planar, cylindrical nor conical"),
         "{}",
         error(&b.doc, uid)
     );
@@ -368,5 +368,61 @@ fn refusals() {
             .unwrap_err()
             .to_string()
             .contains("unknown variant `lift`")
+    );
+}
+
+/// An extrusion with `wrap` (mitcad#473): the profiles wrapped onto the
+/// face as an emboss wraps them, out of the material by the distance, into
+/// it flipped; the operation is the extrusion's.
+#[test]
+fn an_extrusion_wraps_its_profiles_onto_a_cylinder() {
+    let (mut doc, rod) = rod();
+    let (sketch, region) = rectangle(&mut doc, SketchPlane::Xz, [-5.0, 10.0], [10.0, 6.0]);
+    let wrapped = |distance: f64, operation: &str, flip: bool| {
+        let profiles = json!([{"sketch": sketch, "region": region}]);
+        def(json!({"type": "extrude", "profiles": profiles,
+                   "extent": {"type": "distance", "distance": distance},
+                   "operation": operation, "flip": flip,
+                   "wrap": {"body": rod, "face": "F2:side(c1)"}}))
+    };
+    let uid = doc
+        .add_feature(&wrapped(1.5, "join", false), None)
+        .unwrap()
+        .uid;
+    assert_eq!(status(&doc, uid), FeatureStatus::Ok);
+    assert_eq!(
+        last_spec(&doc),
+        "wrap F4 about 0 0 0 along 0 0 1 radius 10 to 11.5"
+    );
+    assert_eq!(
+        history(&doc, rod),
+        "join(prism(F2:0..30),wrap(F4:10..11.5))"
+    );
+    // Engraved: flipped, cut.
+    doc.edit_feature(uid, &wrapped(2.0, "cut", true)).unwrap();
+    assert_eq!(status(&doc, uid), FeatureStatus::Ok);
+    assert_eq!(history(&doc, rod), "cut(prism(F2:0..30),wrap(F4:10..8))");
+    // A negative distance goes in too.
+    doc.edit_feature(uid, &wrapped(-2.0, "cut", false)).unwrap();
+    assert_eq!(history(&doc, rod), "cut(prism(F2:0..30),wrap(F4:10..8))");
+    // The definition keeps the face; a taper is refused.
+    let saved = doc.to_json();
+    assert!(saved.contains("\"wrap\""), "{saved}");
+    let mut tapered = json!({"type": "extrude", "profiles": [{"sketch": sketch, "region": region}],
+        "extent": {"type": "distance", "distance": 1, "taper": 0.1}, "operation": "join",
+        "wrap": {"body": rod, "face": "F2:side(c1)"}});
+    let why = doc
+        .add_feature(&def(tapered.clone()), None)
+        .unwrap_err()
+        .to_string();
+    assert!(why.contains("without a taper"), "{why}");
+    // A face that is neither a cylinder nor a cone.
+    tapered["extent"] = json!({"type": "distance", "distance": 1});
+    tapered["wrap"] = json!({"body": rod, "face": "F2:end(r{c1})"});
+    let uid = doc.add_feature(&def(tapered), None).unwrap().uid;
+    assert!(
+        error(&doc, uid).contains("must be cylindrical or conical"),
+        "{}",
+        error(&doc, uid)
     );
 }

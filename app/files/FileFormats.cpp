@@ -7,6 +7,8 @@
 
 namespace mitcad {
 
+bool isSvgDrawing(const QString& path) { return QFileInfo(path).suffix().toLower() == QStringLiteral("svg"); }
+
 FileKind fileKind(const QString& path) {
   const QString suffix = QFileInfo(path).suffix().toLower();
   if (suffix == QStringLiteral("mitcad")) {
@@ -26,7 +28,7 @@ FileKind fileKind(const QString& path) {
   if (suffix == QStringLiteral("stl") || suffix == QStringLiteral("obj")) {
     return FileKind::Mesh;
   }
-  if (suffix == QStringLiteral("dxf")) {
+  if (suffix == QStringLiteral("dxf") || suffix == QStringLiteral("svg")) {
     return FileKind::Drawing;
   }
   if (suffix == QStringLiteral("ipt") || suffix == QStringLiteral("iam")) {
@@ -59,7 +61,7 @@ namespace {
 const char* const kCad = "*.FCStd *.fcstd *.f3d *.f3z *.ipt *.IPT *.iam *.IAM *.ifc *.IFC *.ifczip *.rvt *.RVT *.rfa *.RFA "
                          "*.rte *.rft *.solidcraft *.dwg *.DWG *.step *.stp *.iges *.igs *.brep *.brp";
 const char* const kMesh = "*.stl *.obj";
-const char* const kDrawing = "*.dxf";
+const char* const kDrawing = "*.dxf *.svg";
 
 QString kinds(bool designs) {
   QStringList filters;
@@ -69,7 +71,7 @@ QString kinds(bool designs) {
   filters << QObject::tr("Mitcad designs (*.mitcad)");
   filters << QObject::tr("CAD files (%1)").arg(QLatin1String(kCad));
   filters << QObject::tr("Meshes: STL and OBJ (%1)").arg(QLatin1String(kMesh));
-  filters << QObject::tr("DXF drawings (%1)").arg(QLatin1String(kDrawing));
+  filters << QObject::tr("Drawings: DXF and SVG (%1)").arg(QLatin1String(kDrawing));
   filters << QObject::tr("All files (*)");
   return filters.join(QStringLiteral(";;"));
 }

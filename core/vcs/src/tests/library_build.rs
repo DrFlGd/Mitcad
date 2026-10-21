@@ -820,3 +820,65 @@ fn timber_parts_are_checked_and_picked() {
         "{answer}"
     );
 }
+
+/// Profiled boards (mitcad#477): a tongue-and-groove family whose rows
+/// give their cover width and area, its `tongue` and `groove` frames; the
+/// `board` block's rules.
+#[test]
+fn profiled_boards_are_checked() {
+    let scratch = Scratch::new("library-build-profiled");
+    let cache = LibraryCache::new(scratch.join("cache"));
+    let mut all = components();
+    let mut board = timber_components()[0].clone();
+    board["id"] = json!("floorboard");
+    board["path"] = json!("timber/floorboard.mitcad");
+    board["name"] = json!("Floorboard");
+    board.as_object_mut().unwrap().remove("row_previews");
+    board.as_object_mut().unwrap().remove("preview");
+    board["build"]["board"] = json!({"profile": "tongue_and_groove", "cover": "92 mm",
+                                     "area": 2120.5, "tongue": {"length": 8, "thickness": 6}});
+    board["build"]["rows"]["22x50"]["board"] = json!({"cover": "40 mm", "area": 1020});
+    for frame in ["groove", "tongue"] {
+        board["build"]["frames"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"name": frame, "kind": frame}));
+    }
+    all.as_array_mut().unwrap().push(board);
+    let mut files = designs();
+    files.push((
+        "timber/floorboard.mitcad",
+        timber_design(
+            &[("L", "3000 mm"), ("W", "100 mm"), ("T", "22 mm")],
+            &["face_xp", "face_yp", "groove", "tongue"],
+            &[("22x100", &[("W", "100 mm")]), ("22x50", &[("W", "48 mm")])],
+        ),
+    ));
+    let good = scratch.join("good");
+    write_library(&good, all.clone(), &files);
+    let (errors, _) = check(&cache, &good);
+    assert_eq!(errors, Vec::<String>::new());
+
+    let mut broken = all.clone();
+    let parts = broken.as_array_mut().unwrap();
+    let n = parts.len();
+    parts[n - 1]["build"]["board"]["profile"] = json!("beaded");
+    parts[n - 1]["build"]["board"]["area"] = json!("large");
+    parts[n - 1]["build"]["board"]["grooves"] = json!(2.5);
+    parts[n - 1]["build"]["board"]["tongue"]["thickness"] = json!(-6);
+    parts[n - 1]["build"]["rows"]["22x50"]["board"]["cover"] = json!("60 mm");
+    let bad = scratch.join("bad");
+    write_library(&bad, broken, &files);
+    let (errors, _) = check(&cache, &bad);
+    let has = |text: &str| errors.iter().any(|e| e.contains(text));
+    for expected in [
+        "floorboard: build.board.profile \"beaded\" is none of tongue_and_groove, shiplap, \
+         feather_edge, deck",
+        "floorboard: build.board.area \"large\" is no number of mm² above 0",
+        "floorboard: build.board.grooves 2.5 is no count",
+        "floorboard: build.board.tongue.thickness is -6 mm; it must be above 0",
+        "floorboard: build.rows.22x50.board.cover is 60 mm, wider than the board's 48 mm",
+    ] {
+        assert!(has(expected), "{expected}\n{errors:#?}");
+    }
+}

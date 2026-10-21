@@ -144,6 +144,19 @@ void MainWindow::registerFileCommands() {
   dxfSketch.tab = QStringLiteral("SKETCH");
   dxfSketch.mode = CommandDef::Mode::Sketch;
   m_registry->add(dxfSketch);
+  // SVG drawings (mitcad#473).
+  CommandDef svg = def("insert.svg", tr("Insert SVG"), "insert-dxf",
+                       tr("Brings an SVG drawing into a new sketch on a plane"),
+                       [this] { insertSvg(); });
+  svg.keywords = {QStringLiteral("svg"), QStringLiteral("logo"), QStringLiteral("icon"), QStringLiteral("vector"),
+                  QStringLiteral("drawing")};
+  m_registry->add(svg);
+  CommandDef svgSketch = svg;
+  svgSketch.id = QStringLiteral("sketch.insert_svg");
+  svgSketch.tooltip = tr("Brings an SVG drawing into the sketch");
+  svgSketch.tab = QStringLiteral("SKETCH");
+  svgSketch.mode = CommandDef::Mode::Sketch;
+  m_registry->add(svgSketch);
   CommandDef component = def("insert.component", tr("Insert Component"), "insert-component",
                              tr("Places another Mitcad design here, linked or as a copy"),
                              [this] { insertComponent(); });
@@ -152,10 +165,7 @@ void MainWindow::registerFileCommands() {
   component.keywords = {QStringLiteral("assembly"), QStringLiteral("external"), QStringLiteral("mitcad")};
   m_registry->add(component);
   CommandDef importDef = def("file.import", tr("Import..."), "import",
-                             tr("STEP, IGES, BRep, STL, OBJ, DXF or another design into this one; an .f3d "
-                                "design as a new document with its history, a FreeCAD document, an .ipt "
-                                "part, an .iam assembly, an IFC building model, an .rvt project's elements, a "
-                                "SolidCraft design with its history or a .dwg drawing's 3D content"),
+                             tr("Brings in STEP, IGES, STL, DXF and other CAD files, or opens them as designs"),
                              [this] { importFile(); });
   importDef.keywords = {QStringLiteral("step"),    QStringLiteral("iges"),  QStringLiteral("brep"),
                         QStringLiteral("f3d"),     QStringLiteral("f3z"),   QStringLiteral("freecad"),
@@ -176,8 +186,7 @@ void MainWindow::registerFileCommands() {
   // Drawings with views, dimensions and a hole table (mitcad#471,
   // MainWindowDrawing.cpp).
   CommandDef drawingDef = def("file.export_drawing", tr("Export Drawing..."), "export",
-                              tr("The bodies as a drawing: views, sizes, hole diameters and a hole table as PDF, "
-                                 "SVG or DXF"),
+                              tr("The bodies as a drawing with views, sizes and a hole table: PDF, SVG or DXF"),
                               [this] { exportDrawing(); });
   drawingDef.tab.clear(); // the File menu
   drawingDef.mode = CommandDef::Mode::Any;
@@ -412,9 +421,11 @@ bool MainWindow::startImportedDocument(const QString& path, QString& error) {
     if (kind == FileKind::Drawing) {
       const QJsonObject created = run(cmd("sketch.create", {{QStringLiteral("plane"), QStringLiteral("xy")}}));
       sketch = created.value(QStringLiteral("uid")).toString();
-      result = run(cmd("sketch.import_dxf", {{QStringLiteral("sketch"), sketch},
-                                            {QStringLiteral("path"), file},
-                                            {QStringLiteral("unit"), QStringLiteral("mm")}}));
+      result = isSvgDrawing(file) ? run(cmd("sketch.import_svg", {{QStringLiteral("sketch"), sketch},
+                                                                 {QStringLiteral("path"), file}}))
+                                  : run(cmd("sketch.import_dxf", {{QStringLiteral("sketch"), sketch},
+                                                                 {QStringLiteral("path"), file},
+                                                                 {QStringLiteral("unit"), QStringLiteral("mm")}}));
       run(cmd("merge_undo", {{QStringLiteral("depth"), 0},
                               {QStringLiteral("label"), tr("Insert %1").arg(name)}}));
     } else {
@@ -597,30 +608,51 @@ bool MainWindow::importCad(const QString& path, double unitMillimetres, QString*
 
 bool MainWindow::importDrawing(const QString& path, bool interactive, QString* error) {
   const QString file = QFileInfo(path).absoluteFilePath();
-  const auto report = [this, &path](const QJsonObject& result, const QString& sketch) {
+  // An SVG drawing (mitcad#473) or a DXF one.
+  const bool svg = isSvgDrawing(path);
+  const auto report = [this, &path, svg](const QJsonObject& result, const QString& sketch) {
     const QJsonObject model = queryObject({{QStringLiteral("query"), QStringLiteral("sketch")},
                                            {QStringLiteral("uid"), sketch}});
     qInfo().noquote() << QStringLiteral("Inserted %1 into %2: %3 curves, %4 points, %5 texts, %6 profiles, "
-                                        "%7 warnings")
+                                        "%7 warnings%8")
                              .arg(QFileInfo(path).fileName(), model.value(QStringLiteral("name")).toString())
                              .arg(result.value(QStringLiteral("curves")).toInt())
                              .arg(result.value(QStringLiteral("points")).toInt())
                              .arg(result.value(QStringLiteral("text_count")).toInt())
                              .arg(model.value(QStringLiteral("regions")).toArray().size())
-                             .arg(result.value(QStringLiteral("warnings")).toArray().size());
+                             .arg(result.value(QStringLiteral("warnings")).toArray().size())
+                             .arg(svg ? QStringLiteral(", %1 filled, %2 bands")
+                                            .arg(result.value(QStringLiteral("filled")).toArray().size())
+                                            .arg(result.value(QStringLiteral("bands")).toInt())
+                                      : QString());
   };
-  // The drawing's unit, layers and extent for the dialog (P9).
+  // The drawing's unit, layers and extent for the dialog (P9), or an SVG
+  // drawing's size and contents.
   QJsonObject info;
   if (interactive) {
     try {
-      info = queryObject({{QStringLiteral("query"), QStringLiteral("dxf_info")}, {QStringLiteral("path"), file}});
+      info = queryObject({{QStringLiteral("query"), svg ? QStringLiteral("svg_info") : QStringLiteral("dxf_info")},
+                          {QStringLiteral("path"), file}});
     } catch (const std::exception& e) {
       *error = errorText(e);
       return false;
     }
   }
+  const auto ask = [this, &path, &info, svg](const QVector<QPair<QString, QString>>& planes) {
+    return svg ? askSvgInsert(this, path, planes, info) : askDxfInsert(this, path, planes, info);
+  };
   // Where it goes and which layers.
-  const auto importCommand = [&file](const QString& sketch, const DxfChoice& choice) {
+  const auto importCommand = [&file, svg](const QString& sketch, const DxfChoice& choice) {
+    if (svg) {
+      QJsonObject command = cmd("sketch.import_svg", {{QStringLiteral("sketch"), sketch},
+                                                      {QStringLiteral("path"), file},
+                                                      {QStringLiteral("scale"), choice.scale},
+                                                      {QStringLiteral("stroke_outline"), choice.strokeOutline}});
+      if (choice.x != 0.0 || choice.y != 0.0) {
+        command.insert(QStringLiteral("at"), QJsonArray{choice.x, choice.y});
+      }
+      return command;
+    }
     QJsonObject command = cmd("sketch.import_dxf", {{QStringLiteral("sketch"), sketch},
                                                     {QStringLiteral("path"), file},
                                                     {QStringLiteral("unit"), choice.unit}});
@@ -637,7 +669,7 @@ bool MainWindow::importDrawing(const QString& path, bool interactive, QString* e
     DxfChoice choice;
     choice.unit = QStringLiteral("mm");
     if (interactive) {
-      const std::optional<DxfChoice> chosen = askDxfInsert(this, path, {}, info);
+      const std::optional<DxfChoice> chosen = ask({});
       if (!chosen) {
         *error = QString();
         return false;
@@ -680,7 +712,7 @@ bool MainWindow::importDrawing(const QString& path, bool interactive, QString* e
   choice.plane = planes.first().first;
   choice.unit = QStringLiteral("mm");
   if (interactive) {
-    const std::optional<DxfChoice> chosen = askDxfInsert(this, path, planes, info);
+    const std::optional<DxfChoice> chosen = ask(planes);
     if (!chosen) {
       *error = QString();
       return false;
@@ -717,9 +749,28 @@ bool MainWindow::importDrawing(const QString& path, bool interactive, QString* e
                                 {QStringLiteral("label"), tr("Insert %1").arg(QFileInfo(path).fileName())}}));
   refreshScene();
   report(result, sketch);
-  showHint(tr("Inserted %1. Extrude (E) a profile of it.").arg(QFileInfo(path).fileName()));
+  const QJsonArray filled = result.value(QStringLiteral("filled")).toArray();
+  if (svg && !filled.isEmpty()) {
+    // The regions the drawing fills, selected for Extrude (mitcad#473).
+    Selection profiles;
+    for (const QJsonValue& key : filled) {
+      profiles.append({SelectKind::Profile, sketch, key.toString(), QStringLiteral("plane")});
+    }
+    setSelection(profiles);
+    showHint(tr("Inserted %1: its filled regions are selected. Extrude (E) them.").arg(QFileInfo(path).fileName()));
+  } else {
+    showHint(tr("Inserted %1. Extrude (E) a profile of it.").arg(QFileInfo(path).fileName()));
+  }
   m_viewer->fitAll();
   return true;
+}
+
+void MainWindow::insertSvg() {
+  const QString path = dialogOpenFileName(this, tr("Insert SVG"), fileDialogDirectory(),
+                                          tr("SVG drawings (*.svg);;All files (*)"));
+  if (!path.isEmpty()) {
+    importPath(path, true);
+  }
 }
 
 void MainWindow::insertMesh() {

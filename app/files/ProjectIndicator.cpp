@@ -158,8 +158,7 @@ void ProjectIndicator::refresh() {
       shown << tr("No versions: inside the git repository %1").arg(QDir::toNativeSeparators(m_project.outer));
       logged << name << QStringLiteral("no versions (inside %1)").arg(m_project.outer);
     }
-    tip << tr("The project %1 keeps no versions: Mitcad records versions only in a repository of the project's "
-              "own. Click for Move to a Project.")
+    tip << tr("The project %1 keeps no versions: it has no repository of its own")
                .arg(QDir::toNativeSeparators(m_project.root));
     break;
   case ProjectState::Kind::Local:
@@ -256,8 +255,7 @@ void ProjectIndicator::refresh() {
   if (!m_agentText.isEmpty()) {
     shown << m_agentText;
     logged << m_agentText.toLower();
-    tip << tr("An agent is connected to this window through MCP: its changes are labelled (agent) in the undo text. "
-              "The menu disconnects it.");
+    tip << tr("An agent is connected to this window through MCP");
   }
   if (!m_debugLogText.isEmpty()) {
     shown << m_debugLogText;

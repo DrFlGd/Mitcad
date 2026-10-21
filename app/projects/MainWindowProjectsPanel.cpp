@@ -90,8 +90,7 @@ void MainWindow::registerProjectsPanelCommands() {
   design.id = QStringLiteral("file.new_design");
   design.name = tr("New Design...");
   design.icon = QStringLiteral("add");
-  design.tooltip = tr("A new design: in the current project's selected folder, named first and recorded as a "
-                      "version; outside projects an untitled one");
+  design.tooltip = tr("A new design in the current project's selected folder, or an untitled one");
   design.kind = CommandDef::Kind::Action;
   design.mode = CommandDef::Mode::Any;
   design.tab.clear(); // the File menu

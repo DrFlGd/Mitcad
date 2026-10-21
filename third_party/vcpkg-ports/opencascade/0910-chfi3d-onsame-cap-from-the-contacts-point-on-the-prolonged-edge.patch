@@ -1,0 +1,178 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: an OnSame end's cap starts at the opposite contact's crossing
+with the prolonged edge itself (mitcad#343).
+
+The case: a rounding of radius 0.5 along a thread's chamfer cone, ending
+where its contact on the cone runs into the thread's root cylinder (the
+face at the end). The contact's approximated curve lies about 2e-6 off the
+cone and crosses the cylinder at a small angle, so its point on the
+cylinder (IntersUpdateOnSame) lay 1.3e-6 below the cone's edge with the
+cylinder, an exact circle; the cap, the intersection of the blend's
+approximated surface with the cylinder, started there too. The blend is
+tangent to the cone along its contact, so the cap leaves that edge
+tangentially, and nearly tangent to the cylinder it rises from it slowly:
+it crossed the circle 0.026 from the vertex, and BRepCheck rejected the
+cylinder's wire as self-intersecting (the circle's tolerance is 1e-7).
+
+- IntersUpdateOnSame: where the faces are not tangent along the prolonged
+  edge (the tangent case already seeks the crossing with the edge) and the
+  contact's point on the face at the end lies within the tolerance of that
+  edge's curve (unbounded: the contact may cross it on its prolongation),
+  the contact's crossing with the edge on the face is taken (Update with
+  the edge's curve on the face, as in the tangent case).
+- PerformOneCorner: the cap computed by ChFi3d_ComputeCurves in an OnSame
+  end is made to start at that point, on the blend and on the face, where
+  it ends off it by no more than ten times the tolerance
+  (ChFi3d_CapFromPoint: the end poles of its curves moved there).
+
+Upstream: new.
+
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
+index 45cb8a61..2411e415 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
+@@ -59,6 +59,7 @@
+ #include <Geom2d_TrimmedCurve.hxx>
+ #include <Geom2dAdaptor_Curve.hxx>
+ #include <Geom2dConvert.hxx>
++#include <GeomConvert.hxx>
+ #include <Geom2dInt_GInter.hxx>
+ #include <Geom_BezierSurface.hxx>
+ #include <Geom_BoundedCurve.hxx>
+@@ -331,6 +332,63 @@ static bool Update(const occ::handle<Adaptor3d_Surface>& fb,
+   return false;
+ }
+ 
++//=======================================================================
++// function : ChFi3d_CapFromPoint
++// purpose  : The cap Cc (on the blend Ps, on the face at the end Pc) made
++//            to start (theAtFirst) or end at the corner's point P (uvS on
++//            the blend, uvF on the face): the intersection of the blend's
++//            approximated surface with the face's surface ends off that
++//            point by up to the approximation's tolerance. Where the cap
++//            leaves the prolonged edge tangentially (the blend tangent to
++//            Fop along its contact, P on Fop's edge with the face), a cap
++//            starting on the wrong side of that edge crosses it on the
++//            face. The curves' end poles are moved onto the point; no
++//            more than Tol.
++//=======================================================================
++
++static void ChFi3d_CapFromPoint(occ::handle<Geom_Curve>&   Cc,
++                                occ::handle<Geom2d_Curve>& Ps,
++                                occ::handle<Geom2d_Curve>& Pc,
++                                const bool                 theAtFirst,
++                                const gp_Pnt&              P,
++                                const gp_Pnt2d&            uvS,
++                                const gp_Pnt2d&            uvF,
++                                const double               Tol,
++                                double&                    tolreached)
++{
++  if (Cc.IsNull() || Ps.IsNull() || Pc.IsNull())
++  {
++    return;
++  }
++  const double t = theAtFirst ? Cc->FirstParameter() : Cc->LastParameter();
++  const double d = Cc->Value(t).Distance(P);
++  if (d <= Precision::Confusion() || d > Tol)
++  {
++    return;
++  }
++  occ::handle<Geom_BSplineCurve>   c3  = GeomConvert::CurveToBSplineCurve(Cc);
++  occ::handle<Geom2d_BSplineCurve> cs  = Geom2dConvert::CurveToBSplineCurve(Ps);
++  occ::handle<Geom2d_BSplineCurve> cf  = Geom2dConvert::CurveToBSplineCurve(Pc);
++  const double                     tol = Precision::PConfusion();
++  if (c3.IsNull() || cs.IsNull() || cf.IsNull()
++      || std::abs(c3->FirstParameter() - Cc->FirstParameter()) > tol
++      || std::abs(c3->LastParameter() - Cc->LastParameter()) > tol
++      || std::abs(cs->FirstParameter() - Cc->FirstParameter()) > tol
++      || std::abs(cf->FirstParameter() - Cc->FirstParameter()) > tol
++      || std::abs(cs->LastParameter() - Cc->LastParameter()) > tol
++      || std::abs(cf->LastParameter() - Cc->LastParameter()) > tol)
++  {
++    return;
++  }
++  c3->SetPole(theAtFirst ? 1 : c3->NbPoles(), P);
++  cs->SetPole(theAtFirst ? 1 : cs->NbPoles(), uvS);
++  cf->SetPole(theAtFirst ? 1 : cf->NbPoles(), uvF);
++  Cc         = c3;
++  Ps         = cs;
++  Pc         = cf;
++  tolreached = std::max(tolreached, d);
++}
++
+ //=======================================================================
+ // function : IntersUpdateOnSame
+ // purpose  : Intersect  curve <c3dFI> of ChFi-<Fop> interference with extended
+@@ -383,7 +441,47 @@ static bool IntersUpdateOnSame(occ::handle<GeomAdaptor_Surface>& HGs,
+       || (!ChFi3d::IsTangentFaces(Eprol, Fprol, Fop)
+           && !ChFi3d::IsTangentFaces(Eprol, TopoDS::Face(Fprol.Reversed()), Fop)))
+   {
+-    return Update(HBs, Hc3df, FIop, CPop, FprolUV, isFirst, c3dU);
++    if (!Update(HBs, Hc3df, FIop, CPop, FprolUV, isFirst, c3dU))
++    {
++      return false;
++    }
++    // The contact lies on Fop, so it meets the face at the end on their
++    // common edge, the prolonged one: where the point found lies within
++    // the tolerance of that edge, the contact's crossing with the edge
++    // itself is taken. The contact's curve lies a little off Fop (its
++    // approximation); where it crosses the face's surface at a small angle,
++    // its point there lies off the edge on that surface, and the cap from
++    // it, leaving the edge tangentially, crosses the edge on the face
++    // (ChFi3d_CapFromPoint). (The edge's curve unbounded: the contact may
++    // cross it on its prolongation.)
++    if (!Eprol.IsNull() && !BRep_Tool::Degenerated(Eprol))
++    {
++      double                        ef = 0., el = 0.;
++      const occ::handle<Geom_Curve> c3dprol = BRep_Tool::Curve(Eprol, ef, el);
++      occ::handle<Geom2d_Curve>     gpc     = BRep_Tool::CurveOnSurface(Eprol, Fprol, ef, el);
++      if (!c3dprol.IsNull() && !gpc.IsNull())
++      {
++        GeomAPI_ProjectPointOnCurve aProj(CPop.Point(), c3dprol);
++        if (aProj.NbPoints() > 0 && aProj.LowerDistance() <= Tol)
++        {
++          ChFiDS_FaceInterference          aFI     = FIop;
++          ChFiDS_CommonPoint               aCP     = CPop;
++          gp_Pnt2d                         aUV     = FprolUV;
++          double                           aW      = c3dU;
++          double                           partemp = aProj.LowerDistanceParameter();
++          occ::handle<Geom2dAdaptor_Curve> pcprol  = new Geom2dAdaptor_Curve(gpc);
++          if (Update(HBs, pcprol, HGs, aFI, aCP, aUV, isFirst, partemp, aW, Tol)
++              && aCP.Point().Distance(CPop.Point()) <= Tol)
++          {
++            FIop    = aFI;
++            CPop    = aCP;
++            FprolUV = aUV;
++            c3dU    = aW;
++          }
++        }
++      }
++    }
++    return true;
+   }
+   ChFiDS_FaceInterference aFI[2] = {FIop, FIop};
+   ChFiDS_CommonPoint      aCP[2] = {CPop, CPop};
+@@ -4497,6 +4595,21 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
+     {
+       throw Standard_Failure("OneCorner : echec calcul intersection");
+     }
++    else if (onsame && !isRolledEnd && !isRolledPast && !isSliverEnd && !Arcprol.IsNull())
++    {
++      // (The cap from the opposite contact's point on the prolonged edge.)
++      const gp_Pnt2d& uvF = IFopArc == 1 ? pfac1 : pfac2;
++      const gp_Pnt2d& uvS = IFopArc == 1 ? pfil1 : pfil2;
++      ChFi3d_CapFromPoint(Cc,
++                          Ps,
++                          Pc,
++                          IFopArc == 1,
++                          Bs.Value(uvF.X(), uvF.Y()),
++                          uvS,
++                          uvF,
++                          10 * tolapp3d,
++                          tolreached);
++    }
+ 
+     Udeb = Cc->FirstParameter();
+     Ufin = Cc->LastParameter();

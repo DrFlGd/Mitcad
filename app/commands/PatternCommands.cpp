@@ -406,8 +406,7 @@ CommandDef pathPatternCommand(const CommandContext& context) {
   def.inputs += {
       // Several curves are a chain, joined end to end (mitcad#464).
       selectionInput(QStringLiteral("path"), QObject::tr("Path"), SelectKind::SketchCurve, 1, 0)
-          .withTooltip(QObject::tr("A sketch line, arc or circle, or lines and arcs of one sketch "
-                                   "joined end to end (from the free end of the first)"))
+          .withTooltip(QObject::tr("A sketch line, arc or circle, or a chain of them in one sketch"))
           .withAccepts([](const SelectionItem& item) { return isLine(item) || isCircular(item); }),
       valueInput(QStringLiteral("quantity"), QObject::tr("Quantity"), ValueKind::Unitless, QStringLiteral("3")),
       valueInput(QStringLiteral("distance"), QObject::tr("Distance"), ValueKind::Length, QStringLiteral("20 mm")),

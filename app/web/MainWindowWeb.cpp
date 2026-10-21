@@ -139,12 +139,10 @@ void MainWindow::registerWebViewerCommands() {
     return d;
   };
   m_registry->add(def("file.web_viewer", tr("Web Viewer..."), "web",
-                      tr("Turns on the project's web viewer: a web folder in the project with a page per design "
-                         "and an index, opened in any browser, kept up to date on each Save"),
+                      tr("Turns on the project's web viewer: a web page per design and an index"),
                       [this] { writeWebViewer(true); }));
   m_registry->add(def("file.update_web_viewer", tr("Update Web Viewer"), "update",
-                      tr("Writes the project's web viewer again: every design's page from its newest version, "
-                         "and the index"),
+                      tr("Writes every design's web page and the index again"),
                       [this] { writeWebViewer(false); }));
 }
 

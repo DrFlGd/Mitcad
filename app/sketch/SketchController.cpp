@@ -1778,7 +1778,9 @@ bool SketchController::viewerEvent(QEvent* event) {
     if (selected.size() == 1 && selected.first().owner == m_uid &&
         (selected.first().kind == SelectKind::SketchCurve || selected.first().kind == SelectKind::SketchPoint)) {
       const QString id = selected.first().name;
-      const char* command = m_model.text(id) != nullptr       ? "sketch.edit_text"
+      const sketch::TextData* text = m_model.text(id);
+      const char* command = text != nullptr && text->code ? "sketch.edit_code"
+                            : text != nullptr             ? "sketch.edit_text"
                             : m_model.offsetOf(id) != nullptr ? "sketch.edit_offset"
                             : m_model.patternOf(id) != nullptr ? "sketch.edit_pattern"
                                                                : nullptr;
@@ -2187,8 +2189,7 @@ void SketchController::openValueEditor(const QPointF& at, const QString& text, F
     edit->setProperty("nativeInlineName", label->text());
   }
   edit->setFixedWidth(width);
-  edit->setToolTip(tr("A value or an expression, such as 20, 2 in or d1 * 2; name = value renames; "
-                      "a click on another dimension inserts its name; Enter accepts"));
+  edit->setToolTip(tr("A value or an expression, such as 20, 2 in or d1 * 2; name = value renames"));
   const QSize size = edit->sizeHint();
   if (m_editorLabel) {
     m_editorLabel->setFixedHeight(size.height());

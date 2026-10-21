@@ -963,3 +963,8 @@ if(BUILD_TESTING)
   # The settings and the command they make: plain Qt Core.
   target_sources(test_app PRIVATE tests/drawing_settings.cpp files/DrawingSettings.cpp files/DrawingSettings.hpp)
 endif()
+# Sketch text from font files: Preferences' Fonts page and the font
+# chooser of Edit Text (mitcad#473).
+target_sources(mitcad PRIVATE
+  sketch/FontFiles.cpp
+  sketch/FontFiles.hpp)

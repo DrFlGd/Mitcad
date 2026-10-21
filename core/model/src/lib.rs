@@ -110,7 +110,7 @@ pub use document::NamedView;
 // Analyses kept in the document (mitcad#41).
 pub use document::{Analysis, AnalysisDef, SectionAnalysis, SectionPlane};
 // Sketch text (P3).
-pub use kernel::{FontGlyphs, FontRequest, Glyph};
+pub use kernel::{ConeFace, FontGlyphs, FontRequest, FontSource, Glyph};
 pub use topo::CurveId;
 // Sweeps along guide surfaces (mitcad#157).
 pub use sweeps::GuideSurface;

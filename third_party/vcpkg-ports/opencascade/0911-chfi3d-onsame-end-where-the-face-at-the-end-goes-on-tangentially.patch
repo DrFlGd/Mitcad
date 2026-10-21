@@ -1,0 +1,164 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: an end where the face at the end goes on tangentially from a
+face of the spine's edge is an OnSame end (mitcad#343).
+
+The case: a pin of radius 4.5 standing out of a wall, rounded at its foot
+with 1 (a concave rounding), whose foot's arc ends where the wall ends in
+a slot: the slot's sides are planes tangent to the pin along the lines
+through the arc's end vertices, so at each end the wall's edge with the
+slot's side runs into the vertex tangent to the arc (the wall a cusp
+there), and the slot's side goes on tangentially from the pin across
+their common edge. The bodies stored in the file cut the rounding by the
+slot's side, which grows up to it along that edge prolonged (to where the
+rounding's contact on the pin crosses it): the torus runs on to both ends.
+
+ChFi3d_EdgeState decides the end's state from the faces' sides at the two
+other edges of the vertex, sampled inside each edge; at an edge between
+tangent faces those sides follow no rule, and the end was OnDiff here. The
+walk past the wall's edge then rolled on that edge into the vertex (a
+blend ending in a point there, 0770) or ended on the pin's seam far round,
+and the corner walked round the vertex: the result was off the file's by
+0.14 or invalid. Where exactly one of the two edges lies between faces
+tangent to each other and leaves the vertex behind the spine's edge (on
+the side away from the interior of the face it shares with the spine's
+edge, whose corner there is reflex: the blend's contact on that face does
+not reach it, ChFi3d_TangentEdgeBehindSpine), the end is now OnSame: the
+face at the end cuts the blend and grows up to it along the tangent edge
+prolonged (PerformOneCorner's OnSame end, whose tangent case seeks the
+contact's crossing with that edge). Where such an edge leaves into that
+face (an earlier rounding of one of its other edges coming in at the
+vertex), the contact runs onto the face at the end before the vertex and
+the state is decided as before. On the stored body before the rounding:
+the file's change of volume within 2.4e-4 mm3 and every new face on the
+file's within 1e-5.
+
+Upstream: new.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
+index aa0c4bd0..9927b376 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
+@@ -22,6 +22,8 @@
+ 
+ #include <AppParCurves_MultiBSpCurve.hxx>
+ #include <Approx_SameParameter.hxx>
++#include <BRepAdaptor_Curve.hxx>
++#include <BRepAdaptor_Surface.hxx>
+ #include <BRepLib.hxx>
+ #include <BRepTools.hxx>
+ #include <BRepTopAdaptor_HVertex.hxx>
+@@ -509,6 +511,90 @@ void ChFi3d_conexfaces(const TopoDS_Edge& E,
+   }
+ }
+ 
++//=======================================================================
++// function : ChFi3d_TangentEdgeBehindSpine
++// purpose  : Whether the edge Et, between faces tangent to each other,
++//            leaves the vertex it shares with the spine's edge Es on the
++//            side of Es away from the interior of their common face Fs
++//            (Fs's corner at the vertex reflex): the blend's contact on
++//            Fs, inside Fs along Es, does not meet Et before the vertex,
++//            and Et is to be prolonged up to it there.
++//=======================================================================
++
++static bool ChFi3d_TangentEdgeBehindSpine(const TopoDS_Edge& Es, const TopoDS_Edge& Et, const ChFiDS_Map& EFMap)
++{
++  TopoDS_Vertex V;
++  if (!TopExp::CommonVertex(Es, Et, V) || V.IsNull() || !EFMap.Contains(Es) || !EFMap.Contains(Et))
++  {
++    return false;
++  }
++  TopoDS_Face Fs;
++  for (NCollection_List<TopoDS_Shape>::Iterator itT(EFMap(Et)); itT.More() && Fs.IsNull(); itT.Next())
++  {
++    for (NCollection_List<TopoDS_Shape>::Iterator itS(EFMap(Es)); itS.More(); itS.Next())
++    {
++      if (itS.Value().IsSame(itT.Value()))
++      {
++        Fs = TopoDS::Face(itT.Value());
++        break;
++      }
++    }
++  }
++  if (Fs.IsNull())
++  {
++    return false;
++  }
++  // Es as its wire in Fs runs (Fs on its left, seen from Fs's outside).
++  TopoDS_Edge EsF;
++  for (TopExp_Explorer ex(Fs, TopAbs_EDGE); ex.More(); ex.Next())
++  {
++    if (ex.Current().IsSame(Es))
++    {
++      EsF = TopoDS::Edge(ex.Current());
++      break;
++    }
++  }
++  if (EsF.IsNull() || BRep_Tool::IsClosed(EsF, Fs))
++  {
++    return false;
++  }
++  double                          f = 0., l = 0.;
++  const occ::handle<Geom2d_Curve> pc = BRep_Tool::CurveOnSurface(EsF, Fs, f, l);
++  if (pc.IsNull())
++  {
++    return false;
++  }
++  const double      ws = BRep_Tool::Parameter(V, Es);
++  BRepAdaptor_Curve cs(Es);
++  gp_Pnt            P;
++  gp_Vec            ts;
++  cs.D1(ws, P, ts);
++  if (EsF.Orientation() == TopAbs_REVERSED)
++  {
++    ts.Reverse();
++  }
++  const gp_Pnt2d      uv = pc->Value(ws);
++  BRepAdaptor_Surface su(Fs, false);
++  gp_Vec              du, dv;
++  su.D1(uv.X(), uv.Y(), P, du, dv);
++  gp_Vec N = du.Crossed(dv);
++  if (Fs.Orientation() == TopAbs_REVERSED)
++  {
++    N.Reverse();
++  }
++  const gp_Vec inward = N.Crossed(ts);
++  BRepAdaptor_Curve ct(Et);
++  const double      wt = BRep_Tool::Parameter(V, Et);
++  gp_Vec            te;
++  ct.D1(wt, P, te);
++  if (std::abs(wt - ct.LastParameter()) < std::abs(wt - ct.FirstParameter()))
++  {
++    te.Reverse();
++  }
++  const double scale = inward.Magnitude() * te.Magnitude();
++  return scale > gp::Resolution() && te.Dot(inward) < -1.e-6 * scale;
++}
++
+ //=======================================================================
+ // function : EdgeState
+ // purpose  : check concavities for the tops with 3 edges.
+@@ -567,7 +653,21 @@ ChFiDS_State ChFi3d_EdgeState(TopoDS_Edge* E, const ChFiDS_Map& EFMap)
+     i = ChFi3d::ConcaveSide(F3, F4, E[1], o11, o12);
+     j = ChFi3d::ConcaveSide(F5, F6, E[2], o21, o22);
+ 
+-    if (o01 == o11 && o02 == o21 && o12 == o22)
++    // One of the other two edges between faces tangent to each other (the
++    // face at the end going on tangentially from a face of the spine's
++    // edge, the other edge sharp), leaving the vertex behind the spine's
++    // edge (that face's corner there reflex, so that the blend's contact on
++    // it does not run onto the face at the end): the face at the end cuts
++    // the blend and grows up to it along that edge prolonged, an OnSame
++    // end. Sampled inside such an edge, the faces' sides above give either
++    // state.
++    const bool aTangent1 = !F3.IsSame(F4) && ChFi3d::IsTangentFaces(E[1], F3, F4);
++    const bool aTangent2 = !F5.IsSame(F6) && ChFi3d::IsTangentFaces(E[2], F5, F6);
++    if (aTangent1 != aTangent2 && ChFi3d_TangentEdgeBehindSpine(E[0], aTangent1 ? E[1] : E[2], EFMap))
++    {
++      sst = ChFiDS_OnSame;
++    }
++    else if (o01 == o11 && o02 == o21 && o12 == o22)
+     {
+       sst = ChFiDS_AllSame;
+     }

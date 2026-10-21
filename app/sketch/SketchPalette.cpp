@@ -123,9 +123,7 @@ SketchPalette::SketchPalette(SketchController& controller, CommandRegistry& regi
     m_cleanUp->setFocusPolicy(Qt::NoFocus);
   }
   m_cleanUp->setObjectName(QStringLiteral("paletteCleanUpStale"));
-  m_cleanUp->setToolTip(tr("Removes the projected curves that no longer match their source and that nothing "
-                           "uses, trims the ones the profiles still use, and unlinks the projections that "
-                           "cannot follow"));
+  m_cleanUp->setToolTip(tr("Removes, trims or unlinks projected curves that no longer match their source"));
   m_cleanUp->hide();
   layout->addWidget(m_cleanUp, 0, Qt::AlignLeft);
   CommandRegistry* commands = &registry;
@@ -153,9 +151,7 @@ SketchPalette::SketchPalette(SketchController& controller, CommandRegistry& regi
   m_construction = check(tr("Construction (X)"), QStringLiteral("paletteConstruction"),
                          tr("New geometry is construction geometry: not in profiles"));
   m_signed = check(tr("Signed distances"), QStringLiteral("paletteSignedDistances"),
-                   tr("Sketch Dimension makes horizontal and vertical distances signed: the offset from the "
-                      "first point picked, negative to its left or below it, so that an expression such as "
-                      "r * cos(a) may change sign"));
+                   tr("Sketch Dimension makes horizontal and vertical distances signed"));
   m_grid = check(tr("Snap to grid"), QStringLiteral("paletteGrid"),
                  tr("Points that snap to nothing else snap to a grid that follows the zoom"));
   m_dimensions = check(tr("Show dimensions"), QStringLiteral("paletteDimensions"), QString());

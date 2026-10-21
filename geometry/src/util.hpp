@@ -213,4 +213,16 @@ ChecksWhereChanged checks_where_changed();
 // edges need, in place: only on a shape of one's own (a working copy).
 int inflated_vertices(const TopoDS_Shape& shape, bool tighten);
 
+// The pieces of the input's edges in a dressup's result (new edges on an
+// input edge's 3D curve, which OCCT's build shares with it) whose curves on
+// their faces lie off the 3D curve beyond their tolerance, but no farther
+// than the input edge's own curves lie off it: the input's edge was already
+// off its tolerance, which OCCT's checker, sampling the whole edge at other
+// points, did not see (mitcad#343: a stored body's edge whose curve on a
+// cylinder lies 1e-5 beyond its tolerance of 2.4e-4, cut back by a rounding
+// at its end). Their tolerances are widened to their deviation, in place:
+// only the result's own edges, not the input's (dressup.cpp). The number
+// widened.
+int widen_inherited_curve_tolerances(const TopoDS_Shape& result, const TopoDS_Shape& input);
+
 } // namespace mitcad::geometry::detail

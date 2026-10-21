@@ -11,7 +11,9 @@
 
 #include <optional>
 #include <string>
+#include <vector>
 
+#include <Geom_Surface.hxx>
 #include <TopoDS_Edge.hxx>
 #include <gp_Ax1.hxx>
 #include <gp_Dir.hxx>
@@ -45,5 +47,13 @@ struct MeetingSide {
 ShapePtr screwed_brep(const NamedWire& loop, const gp_Ax1& axis, double pitch, double revolutions,
                       bool left_handed, const NameList& first, const NameList& last,
                       const std::optional<MeetingSide>& meeting, double piece_turns);
+
+// The surfaces screwed_brep sweeps (a loop without a side whose turns
+// meet), each edge's over all the turns, without building the solid: a
+// cylinder for an edge along the axis, a B-spline for the others, its
+// helices of degree 7 within `exact` of the screw motion (far fewer spans
+// than the solid's cubic ones, for booleans on faces on them).
+std::vector<occ::handle<Geom_Surface>> screwed_surfaces(const NamedWire& loop, const gp_Ax1& axis, double pitch,
+                                                        double revolutions, bool left_handed, double exact);
 
 } // namespace mitcad::geometry::detail

@@ -161,7 +161,8 @@ A value is a number (mm, kg) or text with a unit: `"9 mm"`, `"6 m"`,
   feature of the design named `mount:<name>` (`mount:slot_x+_1`). A frame
   is where another part mates; its x axis runs along the slot or rail,
   its z axis as below. `name`: letters, digits, `_`, `-`, `+` and
-  `.`; `kind`: `end`, `slot`, `bore`, `face`, `rail`, `shaft`, `hole`;
+  `.`; `kind`: `end`, `slot`, `bore`, `face`, `rail`, `shaft`, `hole`,
+  `tongue`, `groove` (a profiled board's edges, [Timber parts](#timber-parts));
   `accepts` (optional) lists the roles that may mate there
   (`["connector", "panel", "linear"]`, default anything that fits the
   system); `diameter` (optional) a bore's or hole's.
@@ -352,6 +353,37 @@ kg/m³ (a number, or text with the unit `kg/m3`), a `moisture` in %.
   profile's slot frames; they follow the width and thickness of the row.
   No `system`, no `slot`, no slot frames and no `mass_per_metre`: the mass
   is the density times the volume.
+- **A profiled board** (mitcad#477): a member as above whose section is
+  shaped, with a `board` block (each row's own, through `build.rows`):
+
+  ```json
+  "board": {"profile": "tongue_and_groove", "cover": "112 mm", "area": 3123.5,
+            "tongue": {"length": "8 mm", "thickness": "8 mm"}}
+  ```
+
+  `profile` is the shape (below); `cover` the width the board covers in a
+  floor, wall or deck (left out: its width); `area` the section's area in
+  mm², from which its mass and volume come; `tongue` `{length,
+  thickness}`, `overlap`, `edge_radius` and `grooves` (a count) the sizes
+  of its joint or edges. The section lies as a member's: its box centred
+  on the origin, `section.width` the full width (over a tongue) along X,
+  the thickness along Y, the visible face towards +Y. Its face frames are
+  on the box's sides. A board that joins the next has two more frames,
+  `groove` (kind `groove`) on the box's −X side with z −X, and `tongue`
+  (kind `tongue`) the cover width on from it with z +X, both at y = 0,
+  x along +Z: the edge with the tongue goes under the next board, so a
+  board whose `groove` frame mates another's `tongue` lies beside it
+  tongue into groove, and a row of them steps by the cover width. The
+  profiles are Mitcad's own parametric sections (no manufacturer's
+  drawing); their sizes and cover widths are those of public product
+  lists:
+
+  | `profile` | the section | joins the next |
+  |---|---|---|
+  | `tongue_and_groove` | a tongue `TL` long and `TT` thick on the +X edge, its centre `TO` from the board's middle (below it in a floorboard); a groove on the −X edge `GC` (1 mm) deeper and `GW` (0.5 mm) wider; panel boards with a V-joint, the face's edges chamfered `VB` wide at the angle `VA` to the face. Cover: W − TL | yes |
+  | `shiplap` | rebated: a lip `LT` thick and `LW` wide on the back of the +X edge, the −X edge's front lapping over the lip of the board before. Cover: W − LW | yes |
+  | `feather_edge` | a wedge from the thick edge `T` to the thin edge `TN`, overlapping the board under it by `O`; the section lies as the board is laid on a wall, turned by the angle at which its thick edge rests on the face of the board under it, so that the boards of a row, the cover width (`sqrt((W - O)² + v²)`, v the board's thickness `O` from its thin edge) apart, touch along that line only | yes |
+  | `deck` | the four long edges rounded by `R`; grooved: `grooves` grooves `GG` wide and `GD` deep on the face, evenly over the width. Cover: its width | no: a deck keeps a gap |
 - **A wood fastener** (`role: "fastener"`): `wood` `{kind: "screw" |
   "nail", head: "countersunk" | "flat" | "pan" | "washer", diameter,
   length}` (each row's diameter and length in its own block), `material`
@@ -504,7 +536,13 @@ Mitcad offers, kept in a repository of its own
   connector screws, ring shank nails and structural screws, angle
   brackets, joist hangers and post bases, and spruce and birch plywood,
   OSB and chipboard sheets ([Timber parts](#timber-parts); their group
-  files' notes give the densities' grounds).
+  files' notes give the densities' grounds);
+- the profiled boards (mitcad#477), Mitcad's own parametric sections in
+  industry-standard sizes and cover widths, naming no supplier: tongue and
+  groove floorboards and panel boards with a V-joint (category
+  `tongue-and-groove`), shiplap and feather-edge cladding boards
+  (`cladding`), and deck boards with rounded edges, smooth or grooved
+  (`decking`); each one part with its sizes as rows.
 
 Its categories are those of both (screws, nuts, washers, profiles,
 connectors, caps, panels, linear, …). `LICENSE` says which licence
@@ -641,6 +679,22 @@ library component:
     extruded by the length along +Z (the profile layout); without
     `frames` it has `end_a`, `end_b` and the four face frames, which lie on
     planes offset by `W / 2` and `T / 2` and so follow a row's size. A
+    `board` with a `profile` (mitcad#477: `tongue_and_groove`, with
+    `"v_joint": true` for panel boards; `shiplap`; `feather_edge`; `deck`,
+    with `"grooves": n` for a grooved face) is a profiled board ([Timber
+    parts](#timber-parts)): its `width` and `thickness` are the parameters
+    `W` and `T`, its profile's parameters (`TL`, `TT`, `TO`, `GC`, `GW`,
+    `VB`, `VA`; `LW`, `LT`; `TN`, `O`; `R`, `GG`, `GD`) user parameters
+    with defaults of their own that `parameters` may replace (an angle as
+    `"45 deg"`), and a feather-edge board's turn, cover and box (`FA`,
+    `COV`, `HX`, `HY`, `YC`) parameters derived from them. The section
+    is a sketch of its points (and a deck board's corner arcs), each
+    dimensioned from a fixed point at the origin by signed horizontal and
+    vertical distances whose values are expressions of those parameters,
+    so a row, or a changed tongue or radius, reshapes it; its face frames
+    follow the box and its `groove` and `tongue` frames the cover width.
+    The generator checks the design's volume against the area it computes
+    for the `board` block. A
     `fastener` (`diameter`, `length`, `head_diameter`, `head_height`,
     `head`: `countersunk`, `flat`, `pan`, `washer`) is a shank on the Z
     axis from z = 0 to its length and a cylindrical head (under z = 0 but
@@ -664,7 +718,15 @@ library component:
     row `<thickness>x<width>` (selectors Thickness and Width, values W and
     T) for each width, with its own block (section, nominal, availability,
     material, tolerance: the first rule whose `up_to` is the size or more,
-    or null); a fastener's `{"rows": [{"diameter", "head": [diameter,
+    or null); a profiled board's rows also take `profile` (its profile's
+    parameters, in `sizes` for every row and in a row for its widths) and
+    `covers` (one per width: a tongue and groove board's or shiplap's cover
+    width, which sets `TL` or `LW` to the width less it), every profile
+    parameter a value of the row, and its block's `board` (profile, cover,
+    area, joint) computed from them, sizes that make no section refused
+    (a tongue over half the width, a groove outside the thickness, a
+    V-joint reaching the groove, a radius over half the thickness, grooves
+    that do not fit); a fastener's `{"rows": [{"diameter", "head": [diameter,
     height], "lengths": [...]}]}` a row `<d>x<length>` (Diameter, Length;
     D, L, DK, K; `wood.diameter` and `wood.length`); a sheet's `{"rows":
     [{"thickness", "availability"}]}` a row of each thickness (T).
@@ -722,7 +784,8 @@ library component:
   volume per length in aluminium, 2.7 g/cm³), each only when the group file has none; `build.length.parameter`
   for a section; `build.rows` (the rows' own blocks) and the default
   row's fields; an outer connector's `fasteners` `frames` and `count`
-  when an entry names only the member (`on`) they go into.
+  when an entry names only the member (`on`) they go into; a profiled
+  board's `build.board` (its rows' and, without rows, the part's).
 - The designs hold their features in the root, as a part: no components,
   occurrences, active component or root policy (each starts from a blank
   design `mitcad-cli` makes, not from MCP's `document_create`, whose root
@@ -776,10 +839,16 @@ library component:
   size, wood screws, a bracket, a hanger, a post base and a sheet): their
   manifest fields and rows' blocks, the board's section and face frames
   following a row, the fastener's head, the connectors' holes, the
-  pickers. ctest `build.timber` (`tools/cli/build-timber-test.cmake`, on
-  `MITCAD_PROFILES_LIBRARY`) checks every timber part of the generated
-  library: the sizes and their marking, sections, densities and masses
-  of rows of each family, the fasteners' and connectors' frames.
+  pickers; and profiled boards (tongue and groove with and without a
+  V-joint, shiplap, feather-edge, a grooved deck board): their `board`
+  blocks per row, their volumes and `tongue` and `groove` frames
+  following a row and a changed parameter. ctest `build.timber`
+  (`tools/cli/build-timber-test.cmake`, on `MITCAD_PROFILES_LIBRARY`)
+  checks every timber part of the generated library: the sizes and their
+  marking, sections, densities and masses of rows of each family, the
+  fasteners' and connectors' frames, and the profiled boards' rows,
+  covers, areas (the designs' volumes) and frames, a floorboard placed
+  on another's tongue and a shiplap row stepping by its cover.
 
 ## Where libraries are kept
 

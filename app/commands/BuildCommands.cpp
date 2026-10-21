@@ -39,8 +39,10 @@
 #include <QWidget>
 #include <QtLogging>
 
+#include <BRep_Builder.hxx>
 #include <BRep_Tool.hxx>
 #include <TopAbs_ShapeEnum.hxx>
+#include <TopoDS_Compound.hxx>
 #include <TopExp_Explorer.hxx>
 #include <TopoDS.hxx>
 #include <TopoDS_Shape.hxx>
@@ -109,6 +111,17 @@ struct Shared {
   QHash<QString, QString> lastSystem;
   // How the Timber tool placed last (mitcad#478): its next start's.
   QString timberHow;
+  // What the Timber tool's next start takes (mitcad#485): the length typed
+  // last (empty: the part's default), a ground placement's direction and
+  // lie, and the part chosen last (empty the first time: a dimensioned
+  // 48x98, else the picker's first).
+  struct TimberMemory {
+    QString length;
+    QString axis = QStringLiteral("x");
+    QString lie = QStringLiteral("flat");
+    QString part;
+  };
+  TimberMemory timber;
   // The configuration rows of a source's component (Fasteners' sizes).
   QHash<QString, Choices> rows;
   // The library's preview image of a part, by "<library>|<component>",
@@ -380,8 +393,7 @@ void followFilter(const Shared& shared, const QString& role, CommandState& state
 // The button beside the field that opens it.
 const QString kButtonText = QStringLiteral("...");
 QString buttonTip() {
-  return QObject::tr("The part picker: the parts as pictures, your favourites first, and the parts this design "
-                     "uses; a click chooses one");
+  return QObject::tr("Opens the part picker: the parts as pictures");
 }
 
 // The id and the picker's title of a role's command.
@@ -473,6 +485,9 @@ void systemFromPart(Shared& shared, const QString& role, CommandState& state) {
   }
   shared.lastPart.insert(role, part.key);
   shared.lastSystem.insert(role, state.choice(kSystem));
+  if (role == QStringLiteral("timber")) {
+    shared.timber.part = part.key; // mitcad#485
+  }
 }
 
 // The picker open for the command shows what its panel chose: the part
@@ -552,8 +567,7 @@ QVector<InputDef> pickerInputs(const SharedPtr& shared, const RoleOf& roleOf) {
                           picker->ask(roleRequest(*shared, roleOf(state), state));
                         }
                       })
-          .withTooltip(QObject::tr("The part chosen: a click (or Enter) opens the part picker with the library's "
-                                   "parts as pictures, your favourites first")),
+          .withTooltip(QObject::tr("The part chosen; a click (or Enter) opens the part picker")),
   };
 }
 
@@ -616,6 +630,21 @@ QString placedLast(const Shared& shared, const QString& role, bool& any) {
   return {};
 }
 
+// The Timber tool's first part (mitcad#485): the first dimensioned timber
+// (`material.finish`) 48 x 98 in section; empty when the catalog has none.
+QString dimensioned48x98(const QVector<Part>& parts) {
+  for (const Part& part : parts) {
+    const double thin = std::min(part.sectionWidth(), part.sectionHeight());
+    const double wide = std::max(part.sectionWidth(), part.sectionHeight());
+    if (part.isTimber() && std::abs(thin - 48.0) < 0.5 && std::abs(wide - 98.0) < 0.5 &&
+        part.build.value(QStringLiteral("material")).toObject().value(QStringLiteral("finish")).toString() ==
+            QStringLiteral("dimensioned")) {
+      return part.key;
+    }
+  }
+  return {};
+}
+
 // The picker's parts read again; the part chosen in the panel stays. Else
 // (mitcad#452) a design with parts of the role starts with the one chosen
 // or placed last in it, and a design without them (a new one) with the
@@ -639,6 +668,16 @@ void startPicker(Shared& shared, const QString& role, CommandState& state, const
     followPart(shared, state, context);
     return;
   }
+  // The Timber tool starts with the part chosen last in it, in any design
+  // (mitcad#485).
+  const bool timber = role == QStringLiteral("timber");
+  if (timber && !shared.timber.part.isEmpty() && shared.catalog.find(shared.timber.part, known)) {
+    state.setChoice(kPart, known.key);
+    qInfo().noquote() << QStringLiteral("BUILD %1 starts with %2/%3: chosen last in the tool")
+                             .arg(role, known.library, known.component);
+    followPart(shared, state, context);
+    return;
+  }
   bool inDesign = false;
   QString chosen = placedLast(shared, role, inDesign);
   QString why = QStringLiteral("placed last in this design");
@@ -646,6 +685,10 @@ void startPicker(Shared& shared, const QString& role, CommandState& state, const
   if (inDesign && !last.isEmpty() && shared.catalog.find(last, known)) {
     chosen = last;
     why = QStringLiteral("chosen last in this design");
+  } else if (chosen.isEmpty() && timber && !dimensioned48x98(parts).isEmpty()) {
+    // The Timber tool's first time (mitcad#485).
+    chosen = dimensioned48x98(parts);
+    why = QStringLiteral("the first time's dimensioned 48x98");
   } else if (chosen.isEmpty()) {
     chosen = pickerFirst(parts, state.choice(kSystem));
     const bool starred = shared.catalog.find(chosen, known) &&
@@ -1006,8 +1049,12 @@ Placement placement(const Shared& shared, const QString& role, const CommandStat
   }
   if (result.how == Against::Ground) {
     // On the picked plane, face or point, else (Enter) at the origin,
-    // along X, Y or Z.
+    // along X, Y or Z; a timber member flat or on edge (mitcad#485).
     at->insert(QStringLiteral("direction"), axisVector(state.choice(QStringLiteral("axis"))));
+    if (role == QStringLiteral("timber")) {
+      const QString lie = state.choice(QStringLiteral("lie"));
+      fields.insert(QStringLiteral("lie"), lie.isEmpty() ? QStringLiteral("flat") : lie);
+    }
   } else {
     at->insert(QStringLiteral("place"), place == QStringLiteral("side") || place == QStringLiteral("end")
                                             ? place
@@ -1519,6 +1566,32 @@ Inspection inspectPlacement(const SharedPtr& shared, const QString& role, const 
   }
   if (placed.how == Against::Ground) {
     result.log += QStringLiteral("; along %1").arg(state.choice(QStringLiteral("axis")));
+    if (placed.fields.contains(QStringLiteral("lie"))) {
+      result.log += QStringLiteral(", %1").arg(str(placed.fields, "lie"));
+    }
+  }
+  // How a member lies (mitcad#485): the design's axis its thickness (the
+  // section's smaller side) runs along.
+  if (part.isTimber() && frame.valid && part.sectionWidth() > 0.0 &&
+      std::abs(part.sectionWidth() - part.sectionHeight()) > 1e-6) {
+    const gp_Dir thin = part.sectionWidth() < part.sectionHeight() ? frame.x : frame.z.Crossed(frame.x);
+    const QString axis = std::abs(thin.X()) > 1.0 - 1e-6   ? QStringLiteral("X")
+                         : std::abs(thin.Y()) > 1.0 - 1e-6 ? QStringLiteral("Y")
+                         : std::abs(thin.Z()) > 1.0 - 1e-6 ? QStringLiteral("Z")
+                                                           : QStringLiteral("none of X, Y, Z");
+    result.log += QStringLiteral("; thickness along %1").arg(axis);
+  }
+  // A corner the bound length closes (mitcad#485).
+  if (const QJsonObject closing = answer.value(QStringLiteral("closing")).toObject(); !closing.isEmpty()) {
+    const QString name = build::componentName(str(closing, "component"), context);
+    const QString atEnd = str(closing, "end").toUpper();
+    const bool mitred = str(closing, "mitre") == QStringLiteral("shared");
+    lines.insert(lines.size() - (hovered ? 1 : 0),
+                 mitred ? QObject::tr("Closes the corner at end %1 of %2: a shared mitre").arg(atEnd, name.toHtmlEscaped())
+                        : QObject::tr("Closes the corner at end %1 of %2: a square butt").arg(atEnd, name.toHtmlEscaped()));
+    result.text = lines.join(QStringLiteral("<br>"));
+    result.log += QStringLiteral("; closes the corner at end %1 of %2, %3")
+                      .arg(atEnd, name, mitred ? QStringLiteral("shared mitre") : QStringLiteral("square butt"));
   }
   if (std::isfinite(bodyLength)) {
     result.log += QStringLiteral("; body %1 mm").arg(bodyLength, 0, 'f', 2);
@@ -1692,9 +1765,7 @@ QVector<InputDef> placementInputs(const SharedPtr& shared, const QString& role, 
           .withHiddenConstruction()
           // Shift + click: the pick and Place in one (mitcad#451).
           .withShiftClickApplies()
-          .withTooltip(QObject::tr("The first part: a plane, a point or a face, or none (Enter: at the origin). "
-                                   "Then a profile: near an end on its side, or its end face. Shift+click places "
-                                   "at once")),
+          .withTooltip(QObject::tr("Where the part goes: a plane, a point, a face, or a profile's side or end")),
       // Icon buttons (mitcad#427), each one's tooltip naming it; Tab steps
       // face, centre, through.
       choiceInput(QStringLiteral("length_mode"), QObject::tr("Length"), kLengthButtons, QStringLiteral("face"))
@@ -1733,8 +1804,7 @@ QVector<InputDef> placementInputs(const SharedPtr& shared, const QString& role, 
             }
             return cmd::arrow(frame.origin, frame.z);
           })
-          .withTooltip(QObject::tr("The part's length: its stock length or 500 mm at first; typed here or in the "
-                                   "box at the cursor, or dragged by its handle at the free end")),
+          .withTooltip(QObject::tr("The part's length: typed, in the box at the cursor, or dragged by its handle")),
       choiceInput(QStringLiteral("axis"), QObject::tr("Direction"), kAxes, QStringLiteral("z"))
           .withChoiceIcons(kAxisIcons)
           .withVisible(ground)
@@ -1746,9 +1816,7 @@ QVector<InputDef> placementInputs(const SharedPtr& shared, const QString& role, 
                   Choices{{kAuto, QObject::tr("Auto: by the click")}}, kAuto)
           .withChoices([](const CommandState& state) { return directionChoices(state); })
           .withVisible(onEnd)
-          .withTooltip(QObject::tr("On an end: by the click (the middle of the end face straight on, near an edge "
-                                   "turned towards it), straight on, or turned to a side of the part it meets "
-                                   "(a corner)")),
+          .withTooltip(QObject::tr("On an end: by the click, straight on, or turned to a side of the part it meets")),
       valueInput(QStringLiteral("corner_offset"), QObject::tr("Offset"), ValueKind::Length, QStringLiteral("0 mm"))
           .withVisible(cornered)
           .withOnChange([](CommandState& state, const CommandContext&) {
@@ -1759,8 +1827,7 @@ QVector<InputDef> placementInputs(const SharedPtr& shared, const QString& role, 
               qInfo().noquote() << QStringLiteral("BUILD corner offset: the shared mitre goes (it needs offset 0)");
             }
           })
-          .withTooltip(QObject::tr("On a corner: the new part's end from the outer side of the part it meets (the "
-                                   "side away from the turn), positive towards the turn; 0 is flush")),
+          .withTooltip(QObject::tr("The new part's end from the corner's outer side, positive towards the turn")),
   };
   if (profile) {
     const auto mitred = [onEnd](const CommandState& state) {
@@ -1770,8 +1837,8 @@ QVector<InputDef> placementInputs(const SharedPtr& shared, const QString& role, 
     inputs.append(choiceInput(QStringLiteral("mitre"), QObject::tr("Mitre"), kMitres, kAuto)
                       .withChoices([](const CommandState& state) { return mitreChoices(state); })
                       .withVisible([cut, onEnd](const CommandState& state) { return cut(state) && onEnd(state); })
-                      .withTooltip(QObject::tr("On an end: Auto (none: a square corner lies on the end face), none, "
-                                               "both on the bisector (shared), the new part or the existing one")));
+                      .withTooltip(
+                          QObject::tr("The end cut: none, shared on the bisector, the new part or the existing one")));
     inputs.append(valueInput(QStringLiteral("mitre_angle"), QObject::tr("Mitre Angle"), ValueKind::Angle,
                              QStringLiteral("45 deg"))
                       .withVisible(mitred));
@@ -1787,9 +1854,7 @@ QVector<InputDef> placementInputs(const SharedPtr& shared, const QString& role, 
                                                  .arg(fromText(state.choice(QStringLiteral("from"))));
                       }
                     })
-                    .withTooltip(QObject::tr("From End A to the new part's near face, from End B to its far face "
-                                             "(towards A), from the Middle to its centre (towards B); 0 is flush, "
-                                             "or centred")));
+                    .withTooltip(QObject::tr("The distance from the reference From names; 0 is flush, or centred")));
   inputs.append(choiceInput(QStringLiteral("from"), QObject::tr("From"), kFroms, QStringLiteral("a"))
                     .withVisible(onSide)
                     .withOnChange([shared](CommandState& state, const CommandContext& context) {
@@ -1822,10 +1887,8 @@ QVector<InputDef> placementInputs(const SharedPtr& shared, const QString& role, 
                         handle.reference = foot.normal;
                         return handle;
                       })
-                      .withTooltip(QObject::tr("On a side: the lean along the part it stands on, towards its end B "
-                                               "(positive) or end A, up to 80 degrees; 0 stands square. The foot is "
-                                               "cut to lie on the side; an auto length ends flush on the face it "
-                                               "meets")));
+                      .withTooltip(
+                          QObject::tr("The lean along the part it stands on, up to 80 degrees; 0 stands square")));
   }
   inputs.append(flipInput(QStringLiteral("flip"), QObject::tr("Flip")).withVisible(onPart));
   // Placement as icon buttons (mitcad#427: shown directly, no More), once
@@ -1871,6 +1934,9 @@ bool placeNow(Shared& shared, DocumentHost& host, const QString& role, const Par
   state.setObject(kEndPick, {});
   state.setChecked(kOffsetTyped, false);
   shared.lastPart.insert(role, part.key);
+  if (role == QStringLiteral("timber")) {
+    shared.timber.part = part.key; // mitcad#485
+  }
   shared.catalog.refresh(role, context); // its source is the design's now
   shared.refreshDesign(context);
   return true;
@@ -1882,11 +1948,8 @@ CommandDef placeCommand(const SharedPtr& shared, DocumentHost& host, const QStri
   def.id = profile ? QStringLiteral("build.profile") : QStringLiteral("build.linear");
   def.name = profile ? QObject::tr("Profile") : QObject::tr("Linear Part");
   def.icon = profile ? QStringLiteral("build-profile") : QStringLiteral("build-linear");
-  def.tooltip = profile ? QObject::tr("Places slot profiles: pick one, click where it goes (the first one: a plane, "
-                                      "or Enter at the origin), its length runs to the part in the way; Enter "
-                                      "places it and the next one follows; Shift+click places at once")
-                        : QObject::tr("Places rails, carriages, bearings and motor plates: a carriage on its rail "
-                                      "slides along it");
+  def.tooltip = profile ? QObject::tr("Places slot profiles; their length runs to the part in the way")
+                        : QObject::tr("Places rails, carriages, bearings and motor plates");
   def.tab = kTab;
   def.group = QStringLiteral("PROFILE");
   def.pinned = true;
@@ -1942,30 +2005,35 @@ CommandDef placeCommand(const SharedPtr& shared, DocumentHost& host, const QStri
 // `spacing`; commands.md, "BUILD: timber construction"); its picker lists
 // timber only, Profile's none.
 //
-//   From a click  a member from a click towards the mouse, its length as
-//               Profile's (typed, or the auto length to what it meets; Tab
-//               steps it), or to a second click (two points); snapped to the
-//               ends, the sides and the centre lines of the other members;
-//               flat or on edge.
 //   On a member as Profile places: on a side or an end (a free offset, no
-//               slot grid), or standing on a plane.
+//               slot grid), or on a plane (the first one); the default
+//               (mitcad#485).
 //   Spacing     repeated: between two members (on a member's side, its
 //               length bound to the member it meets) or over the picked
 //               supporting faces (a board row), at a centre distance or with
 //               a gap.
+//   Frame       a wall, floor or roof frame (mitcad#479).
+//   Two points  a member from a click to a second click (mitcad#485: the
+//               points give its length; nothing follows the mouse); snapped
+//               to the ends, the sides and the centre lines of the other
+//               members; flat or on edge.
 
 const QString kTimberRole = QStringLiteral("timber");
 const QString kHow = QStringLiteral("how");
 const QString kPoints = QStringLiteral("points");
 const QString kOnMember = QStringLiteral("member");
 const QString kSpacing = QStringLiteral("spacing");
-const Choices kHows = {{kPoints, QStringLiteral("From a click: its length typed, to what it meets, or to a second "
-                                                "click (two points)")},
-                       {kOnMember, QStringLiteral("On a member's side or end, or standing on a plane")},
-                       {kSpacing, QStringLiteral("Spacing: repeated at a centre distance, or a board row with a gap")}};
+// A wall, floor or roof frame (mitcad#479).
+const QString kFrame = QStringLiteral("frame");
+// The buttons' order (mitcad#485): On a member first, Two points last.
+const Choices kHows = {{kOnMember, QStringLiteral("On a member's side or end, or on a plane")},
+                       {kSpacing, QStringLiteral("Spacing: repeated at a centre distance, or a board row with a gap")},
+                       {kFrame, QStringLiteral("Frame: a wall, floor or roof frame")},
+                       {kPoints, QStringLiteral("Two points: from a click to a second click")}};
 const QHash<QString, QString> kHowIcons = {{kPoints, QStringLiteral("build-timber-points")},
                                            {kOnMember, QStringLiteral("build-place-auto")},
-                                           {kSpacing, QStringLiteral("build-timber-spacing")}};
+                                           {kSpacing, QStringLiteral("build-timber-spacing")},
+                                           {kFrame, QStringLiteral("build-timber-frame")}};
 const QString kStart = QStringLiteral("start");
 const QString kEndPoint = QStringLiteral("end");
 const QString kLie = QStringLiteral("lie");
@@ -1984,11 +2052,6 @@ const QString kDistance = QStringLiteral("distance");
 const QString kFit = QStringLiteral("fit");
 const Choices kFits = {{QStringLiteral("cut"), QStringLiteral("The last board cut to what is left")},
                        {QStringLiteral("spread"), QStringLiteral("The gaps spread evenly")}};
-// The point under the mouse while the end is to be clicked: {point, snap}.
-const QString kHoverEnd = QStringLiteral("hover_end");
-// Whether the end clicked gives the length (two points): set by the click,
-// cleared by a length typed (or dragged) and by Length's mode chosen.
-const QString kEndLength = QStringLiteral("end_length");
 // The snap distance without a view's (an inspection on the model's worker).
 constexpr double kDefaultSnap = 10.0;
 
@@ -2116,10 +2179,15 @@ QJsonArray vectorJson(const gp_Vec& vector) { return QJsonArray{vector.X(), vect
 
 // How many members a set lays out (commands.md, *Spacing sets*), for the
 // panel: over `span` with `width` along the set; 0 when it cannot say.
-int setCount(const QString& mode, double distance, const QString& fit, double span, double width) {
+// Boards that join (`cover` above 0, mitcad#477) step by their cover width
+// with no gap.
+int setCount(const QString& mode, double distance, const QString& fit, double span, double width, double cover = 0.0) {
   constexpr double kTolerance = 1e-6;
   if (!(width > 0.0) || !(span >= width - kTolerance) || !std::isfinite(distance)) {
     return 0;
+  }
+  if (mode == kGap && cover > kTolerance && cover <= width + kTolerance) {
+    return std::max(1, static_cast<int>(std::ceil((span - (width - cover)) / cover - kTolerance)));
   }
   if (mode == kGap) {
     const double step = width + std::max(distance, 0.0);
@@ -2133,7 +2201,7 @@ int setCount(const QString& mode, double distance, const QString& fit, double sp
   return free <= kTolerance ? 1 : static_cast<int>(std::ceil(free / distance - kTolerance)) + 1;
 }
 
-QString howOf(const CommandState& state) { return state.choice(kHow).isEmpty() ? kPoints : state.choice(kHow); }
+QString howOf(const CommandState& state) { return state.choice(kHow).isEmpty() ? kOnMember : state.choice(kHow); }
 
 // Whether the panel places as Profile does: on a member, or a set between
 // two members.
@@ -2160,10 +2228,10 @@ double widthAcross(const Part& part, const QString& lie) {
   return lie == QStringLiteral("edge") ? std::min(w, t) : std::max(w, t);
 }
 
-// A member from a click: build_place's fields (`at`, `to`, `lie`, and
-// `length` unless the end clicked gives it), the points in the design with
-// the snaps they took; `end` is the end clicked, else the point under the
-// mouse (the direction).
+// A member by two points (mitcad#485): build_place's fields (`at`, `to`,
+// `lie`; the points give the length), the points in the design with the
+// snaps they took. Nothing until the end is clicked: no direction follows
+// the mouse.
 struct PointsPlacement {
   QJsonObject fields;
   QString problem;
@@ -2171,17 +2239,7 @@ struct PointsPlacement {
   gp_Pnt end;
   QString startSnap;
   QString endSnap;
-  bool hovered = false;   // the end is where the mouse is
-  bool byPoints = false;  // the length is the points' distance
-  QJsonObject target;     // what the auto length runs to, or empty
-  QString lengthNote;     // how the length was chosen
 };
-
-// Length's mode (Profile's buttons): face, centre, through or typed.
-QString lengthModeOf(const CommandState& state) {
-  const QString mode = state.choice(QStringLiteral("length_mode"));
-  return mode.isEmpty() ? QStringLiteral("face") : mode;
-}
 
 // `at` for the start's item: the plane or face it lies on (its occurrence
 // from the host), or only the point.
@@ -2214,10 +2272,6 @@ PointsPlacement pointsPlacement(const Shared& shared, const CommandState& state,
     return result;
   }
   const QVector<Member> members = membersOf(shared);
-  const auto snapOf = [](const QJsonValue& value) {
-    const double snap = value.toDouble(kNaN);
-    return std::isfinite(snap) && snap > 0.0 ? snap : kDefaultSnap;
-  };
   const std::optional<gp_Pnt> start = build::pickPoint(kStart, state, context);
   if (!start) {
     result.problem = QObject::tr("Click where the member starts.");
@@ -2226,19 +2280,12 @@ PointsPlacement pointsPlacement(const Shared& shared, const CommandState& state,
   const Snapped first = snapToMembers(members, *start, build::pickSnap(kStart, state).value_or(kDefaultSnap));
   result.start = first.point;
   result.startSnap = first.kind;
-  std::optional<gp_Pnt> end = build::pickPoint(kEndPoint, state, context);
-  double endSnap = build::pickSnap(kEndPoint, state).value_or(kDefaultSnap);
+  const std::optional<gp_Pnt> end = build::pickPoint(kEndPoint, state, context);
   if (!end) {
-    const QJsonObject hover = state.object(kHoverEnd);
-    end = pointOf(hover.value(QStringLiteral("point")));
-    endSnap = snapOf(hover.value(QStringLiteral("snap")));
-    result.hovered = end.has_value();
-  }
-  if (!end) {
-    result.problem = QObject::tr("Click where it ends, or point the way it runs and type its length.");
+    result.problem = QObject::tr("Click where the member ends.");
     return result;
   }
-  const Snapped last = snapToMembers(members, *end, endSnap);
+  const Snapped last = snapToMembers(members, *end, build::pickSnap(kEndPoint, state).value_or(kDefaultSnap));
   result.end = last.point;
   result.endSnap = last.kind;
   // On the start's plane: the end is moved onto it.
@@ -2254,36 +2301,10 @@ PointsPlacement pointsPlacement(const Shared& shared, const CommandState& state,
   if (const std::optional<double> snap = build::pickSnap(kStart, state)) {
     at.insert(QStringLiteral("snap"), *snap);
   }
-  QJsonObject fields{{QStringLiteral("part"), part.ref()},
-                     {kAt, at},
-                     {QStringLiteral("to"), QJsonObject{{QStringLiteral("point"), build::pointJson(build::inHost(result.end, context))}}},
-                     {kLie, state.choice(kLie).isEmpty() ? QStringLiteral("flat") : state.choice(kLie)}};
-  // The length (Profile's Length, mitcad#478): the end clicked gives it
-  // until a length is typed or a mode chosen; else typed, or the auto
-  // length to what the direction meets (`to.point` then only points the
-  // way); nothing in the way: to the end, as two points.
-  const bool clicked = !state.items(kEndPoint).isEmpty();
-  const QString mode = lengthModeOf(state);
-  if (!part.cutToLength() || (clicked && state.checked(kEndLength))) {
-    result.byPoints = true;
-    result.lengthNote = QObject::tr("by two points");
-  } else if (mode == kTyped) {
-    fields.insert(QStringLiteral("length"), state.expression(QStringLiteral("length")));
-    result.lengthNote = QObject::tr("typed");
-  } else {
-    if (!bindAutoLength(fields, mode, context, result.target, result.problem)) {
-      return result;
-    }
-    result.byPoints = result.target.isEmpty();
-    if (!result.byPoints) {
-      result.lengthNote = QObject::tr("bound, %1").arg(cmd::label(kLengthModes, mode).toLower());
-    } else if (clicked) {
-      result.lengthNote = QObject::tr("by two points: nothing in the way for an auto length");
-    } else {
-      result.lengthNote = QObject::tr("to the mouse: nothing in the way for an auto length");
-    }
-  }
-  result.fields = fields;
+  result.fields = {{QStringLiteral("part"), part.ref()},
+                   {kAt, at},
+                   {QStringLiteral("to"), QJsonObject{{QStringLiteral("point"), build::pointJson(build::inHost(result.end, context))}}},
+                   {kLie, state.choice(kLie).isEmpty() ? QStringLiteral("flat") : state.choice(kLie)}};
   return result;
 }
 
@@ -2295,6 +2316,7 @@ struct RowPlacement {
   QString problem;
   double span = kNaN;
   double width = kNaN;
+  double cover = 0.0;  // a board that joins the next: its step (mitcad#477)
 };
 
 RowPlacement rowPlacement(const Shared& shared, const CommandState& state, const CommandContext& context,
@@ -2341,6 +2363,10 @@ RowPlacement rowPlacement(const Shared& shared, const CommandState& state, const
   }
   const QString lie = state.choice(kLie).isEmpty() ? QStringLiteral("flat") : state.choice(kLie);
   result.width = widthAcross(part, lie);
+  // Boards that join lying flat: edge to edge, the cover width apart.
+  if (lie == QStringLiteral("flat") && part.sectionWidth() >= part.sectionHeight()) {
+    result.cover = part.joinedCover();
+  }
   result.span = highAlong - lowAlong;
   // The first member's axis half its width in from the start, across all
   // the faces, on the first face's plane.
@@ -2424,17 +2450,21 @@ Inspection inspectTimber(const SharedPtr& shared, const CommandState& state, con
     problem = placed.problem;
     if (problem.isEmpty()) {
       const int count = setCount(state.choice(kSpacingMode), state.value(kDistance), state.choice(kFit), placed.span,
-                                 placed.width);
+                                 placed.width, placed.cover);
+      // Boards that join are laid edge to edge (mitcad#477).
+      const bool joined = placed.cover > 0.0 && state.choice(kSpacingMode) == kGap;
+      const QString spacing = joined ? QObject::tr("edge to edge, cover %1 mm").arg(placed.cover, 0, 'g', 6)
+                                     : spacingText(state);
       lines << QObject::tr("Over %1 face(s), %2 mm: %3 member(s), %4")
                    .arg(state.items(kFaces).size())
                    .arg(placed.span, 0, 'f', 1)
                    .arg(count)
-                   .arg(spacingText(state).toHtmlEscaped());
+                   .arg(spacing.toHtmlEscaped());
       logged = QStringLiteral("row over %1 face(s), span %2 mm, %3 member(s), %4")
                 .arg(state.items(kFaces).size())
                 .arg(placed.span, 0, 'f', 1)
                 .arg(count)
-                .arg(spacingText(state));
+                .arg(spacing);
     } else {
       result.viewHint = QObject::tr("Click the faces the members lie on; Enter places the row");
     }
@@ -2445,8 +2475,7 @@ Inspection inspectTimber(const SharedPtr& shared, const CommandState& state, con
     if (state.items(kStart).isEmpty()) {
       result.viewHint = QObject::tr("Click where the member starts: a plane, a face or a member");
     } else if (state.items(kEndPoint).isEmpty()) {
-      result.viewHint = QObject::tr("Click where it ends, or type its length; Tab steps the auto length; Shift+click "
-                                    "places at once");
+      result.viewHint = QObject::tr("Click where it ends; Shift+click places at once");
     }
     if (!problem.isEmpty() && !state.items(kStart).isEmpty()) {
       // The start alone: its snap.
@@ -2470,56 +2499,32 @@ Inspection inspectTimber(const SharedPtr& shared, const CommandState& state, con
   const build::Frame frame = build::frameOf(preview.answer.value(QStringLiteral("frame")));
   double length = build::lengthOf(preview.answer.value(QStringLiteral("length")));
   if (!row) {
-    // From the start towards the end (clicked, or the mouse): as long as
-    // the preview says (typed, bound, or the points' distance).
+    // From the start to the end clicked: their distance, as the preview
+    // says.
     if (!std::isfinite(length)) {
-      length = points.byPoints ? points.start.Distance(points.end) : state.value(QStringLiteral("length"));
+      length = points.start.Distance(points.end);
     }
-    const gp_Vec along = gp_Vec(points.start, points.end).Normalized();
-    const gp_Pnt end = std::isfinite(length) ? points.start.Translated(along * length) : points.end;
     const QString lie = state.choice(kLie).isEmpty() ? QStringLiteral("flat") : state.choice(kLie);
-    QString shown = std::isfinite(length) ? QObject::tr("Length %1 mm").arg(length, 0, 'f', 1) : QObject::tr("Length");
-    if (!points.target.isEmpty()) {
-      shown += QObject::tr(", to %1 (Tab: face, centre, through; typing a length detaches it)")
-                   .arg(targetText(points.target, context).toHtmlEscaped());
-    } else {
-      shown += QStringLiteral(" (%1)").arg(points.lengthNote.toHtmlEscaped());
-    }
-    lines << shown;
-    // Tab turns it while Length's mode is not shown (the end clicked gives
-    // the length).
-    const bool tabLie = !state.items(kEndPoint).isEmpty() && state.checked(kEndLength);
-    lines << (tabLie ? QObject::tr("%1 (Tab: flat or on edge)") : QStringLiteral("%1")).arg(cmd::label(kLies, lie));
+    lines << (std::isfinite(length) ? QObject::tr("Length %1 mm (by two points)").arg(length, 0, 'f', 1)
+                                    : QObject::tr("Length"));
+    lines << QObject::tr("%1 (Tab: flat or on edge)").arg(cmd::label(kLies, lie));
     const auto snapLine = [](const QString& what, const QString& kind) {
       return kind.isEmpty() ? QObject::tr("%1: where clicked").arg(what) : QObject::tr("%1: on a member's %2").arg(what, kind);
     };
     lines << snapLine(QObject::tr("Start"), points.startSnap) << snapLine(QObject::tr("End"), points.endSnap);
-    if (points.hovered) {
-      lines << (points.byPoints ? QObject::tr("<i>Where the mouse is: click to end it there</i>")
-                                : QObject::tr("<i>Towards the mouse: Enter places it, a click ends it there</i>"));
-    }
     markers.append(marker(points.startSnap.isEmpty() ? QObject::tr("start") : QStringLiteral("> ") + points.startSnap,
                           points.start));
-    markers.append(marker(points.endSnap.isEmpty() || !points.byPoints ? QObject::tr("end")
-                                                                        : QStringLiteral("> ") + points.endSnap,
-                          end));
-    markers.append(marker(QStringLiteral("%1 mm").arg(length, 0, 'f', 1), points.start.Translated(gp_Vec(points.start, end) * 0.5)));
+    markers.append(marker(points.endSnap.isEmpty() ? QObject::tr("end") : QStringLiteral("> ") + points.endSnap,
+                          points.end));
+    markers.append(marker(QStringLiteral("%1 mm").arg(length, 0, 'f', 1),
+                          points.start.Translated(gp_Vec(points.start, points.end) * 0.5)));
     result.report.insert(QStringLiteral("markers"), markers);
-    logged = QStringLiteral("points, length %1 mm, %2; start snap %3, end snap %4; length %5%6%7")
+    logged = QStringLiteral("points, length %1 mm, %2; start snap %3, end snap %4; length by two points")
                  .arg(length, 0, 'f', 2)
                  .arg(lie, points.startSnap.isEmpty() ? QStringLiteral("none") : points.startSnap,
-                      points.endSnap.isEmpty() ? QStringLiteral("none") : points.endSnap, points.lengthNote,
-                      points.target.isEmpty() ? QString() : QStringLiteral(" to ") + targetText(points.target, context),
-                      points.hovered ? QStringLiteral("; on the hover") : QString());
-    // The box at the cursor shows the length while it is not typed (the
-    // auto length, two points); typing there detaches it.
-    if ((points.byPoints || !points.target.isEmpty()) && std::isfinite(length)) {
-      result.report.insert(QStringLiteral("cursor"),
-                           QJsonObject{{QStringLiteral("length"), cmd::lengthText(std::round(length * 10.0) / 10.0, context)}});
-    }
-    highlightTarget(result, points.target, context);
+                      points.endSnap.isEmpty() ? QStringLiteral("none") : points.endSnap);
   }
-  shared->setPreview(frame, length, !points.target.isEmpty());
+  shared->setPreview(frame, length, false);
   if (result.shape.IsNull() && part.sectionWidth() > 0.0 && std::isfinite(length)) {
     result.shape = build::boxAlong(frame, part.sectionWidth(), part.sectionHeight(), length);
   }
@@ -2539,39 +2544,15 @@ Inspection inspectSetOnSide(const SharedPtr& shared, const CommandState& state, 
   }
   // The set runs the whole side, from end A to end B.
   const Shared::Side side = shared->shownSide();
-  const int count = setCount(state.choice(kSpacingMode), state.value(kDistance), state.choice(kFit), side.length, side.width);
+  // Boards that join step by their cover width when their width runs along
+  // the side (mitcad#477).
+  const double cover = std::abs(side.width - part.sectionWidth()) < 1e-3 ? part.joinedCover() : 0.0;
+  const int count =
+      setCount(state.choice(kSpacingMode), state.value(kDistance), state.choice(kFit), side.length, side.width, cover);
   result.text += QStringLiteral("<br>") +
                  QObject::tr("A set along the member: %1 member(s), %2").arg(count).arg(spacingText(state).toHtmlEscaped());
   result.log += QStringLiteral("; set of %1, %2").arg(count).arg(spacingText(state));
   return result;
-}
-
-// The hover while the end is to be clicked (mitcad#478): the member shown
-// towards where the mouse is. True when it changed. Off the bodies (the
-// mouse on the panel, a length being typed) the last point stays: the
-// direction a typed length runs.
-bool hoverEnd(const SelectionItem& item, CommandState& state, const CommandContext& context) {
-  const QJsonObject before = state.object(kHoverEnd);
-  const bool wanted = !state.items(kStart).isEmpty() && state.items(kEndPoint).isEmpty();
-  if (wanted && !item.isValid()) {
-    return false;
-  }
-  const QJsonObject record = wanted && item.at ? build::pickRecord(item, context) : QJsonObject();
-  if (record.isEmpty()) {
-    if (before.isEmpty()) {
-      return false;
-    }
-    state.setObject(kHoverEnd, {});
-    return true;
-  }
-  const std::optional<gp_Pnt> was = pointOf(before.value(QStringLiteral("point")));
-  const std::optional<gp_Pnt> now = pointOf(record.value(QStringLiteral("point")));
-  const double step = record.value(QStringLiteral("snap")).toDouble(0.0) * kHoverStepPixels / build::kSnapPixels;
-  if (was && now && was->Distance(*now) < step) {
-    return false;
-  }
-  state.setObject(kHoverEnd, record);
-  return true;
 }
 
 // Shows an input of Profile's placement only while the Timber panel places
@@ -2582,28 +2563,561 @@ InputDef onMemberOnly(InputDef input) {
   return input;
 }
 
-// Profile's Length (its mode and its value) also for a member from a click
-// (mitcad#478): the value always, its mode unless the end clicked gives the
-// length; a length typed or dragged, or a mode chosen, takes the length
-// from the end clicked.
-InputDef lengthFromAClick(const SharedPtr& shared, InputDef input) {
-  const std::function<bool(const CommandState&)> own = input.visible;
-  const bool mode = input.id == QStringLiteral("length_mode");
-  input.visible = [shared, own, mode](const CommandState& state) {
-    if (howOf(state) != kPoints) {
-      return placesOnMember(state) && (!own || own(state));
+// --- Timber frames (mitcad#479; app/COMMANDS.md, "Timber", Frame)
+//
+// The Timber tool's Frame mode makes a wall, floor or roof frame from a
+// few values (build_frame; commands.md, "BUILD: timber frames"), its
+// members of the part chosen and two wood screws at each junction; Timber
+// Frame (MODIFY) lays a frame out again with other values.
+
+const QString kFrameKind = QStringLiteral("frame_kind");
+const QString kWall = QStringLiteral("wall");
+const QString kFloor = QStringLiteral("floor");
+const QString kRoof = QStringLiteral("roof");
+const Choices kFrameKinds = {{kWall, QStringLiteral("Wall")},
+                             {kFloor, QStringLiteral("Floor or ceiling")},
+                             {kRoof, QStringLiteral("Roof")}};
+const QString kFrameLength = QStringLiteral("frame_length");
+const QString kFrameWidth = QStringLiteral("frame_width");
+const QString kFrameAlong = QStringLiteral("frame_along");
+const Choices kFrameAlongs = {{QStringLiteral("x"), QStringLiteral("+X")},
+                              {QStringLiteral("y"), QStringLiteral("+Y")},
+                              {QStringLiteral("-x"), QStringLiteral("-X")},
+                              {QStringLiteral("-y"), QStringLiteral("-Y")}};
+const QString kFrameHeight = QStringLiteral("frame_height");
+const QString kFrameSpacing = QStringLiteral("frame_spacing");
+const QString kFrameTop = QStringLiteral("frame_top");
+const Choices kFrameTops = {{QStringLiteral("1"), QStringLiteral("One")}, {QStringLiteral("2"), QStringLiteral("Two")}};
+const QString kFrameOpenings = QStringLiteral("frame_openings");
+const QString kFrameBlocking = QStringLiteral("frame_blocking");
+const QString kFrameWalls = QStringLiteral("frame_walls");
+const QString kFrameRoof = QStringLiteral("frame_roof");
+const Choices kFrameRoofs = {{QStringLiteral("gable"), QStringLiteral("Gable")},
+                             {QStringLiteral("mono"), QStringLiteral("Mono-pitch")}};
+const QString kFramePitch = QStringLiteral("frame_pitch");
+const QString kFramePitchAuto = QStringLiteral("frame_pitch_auto");
+const QString kFrameOverhang = QStringLiteral("frame_overhang");
+const QString kFrameFasteners = QStringLiteral("frame_fasteners");
+const QString kWoodRole = QStringLiteral("wood");
+
+QString frameKindOf(const CommandState& state) {
+  return state.choice(kFrameKind).isEmpty() ? kWall : state.choice(kFrameKind);
+}
+
+// A frame's defaults by its kind: studs and rafters at 600, joists at 400;
+// a wall 3600 long, a floor 4000.
+QString defaultFrameSpacing(const QString& kind) {
+  return kind == kFloor ? QStringLiteral("400 mm") : QStringLiteral("600 mm");
+}
+QString defaultFrameLength(const QString& kind) {
+  return kind == kFloor ? QStringLiteral("4000 mm") : QStringLiteral("3600 mm");
+}
+
+// A value input's millimetres: its value, else its text (or the default)
+// read as a length.
+double millimetresOf(const CommandState& state, const QString& id, double fallback) {
+  const double value = state.value(id);
+  if (std::isfinite(value)) {
+    return value;
+  }
+  const double typed = build::millimetres(QJsonValue(state.text(id).trimmed()));
+  return std::isfinite(typed) ? typed : fallback;
+}
+
+// A value input's expression for the model, else its default.
+QString expressionOr(const CommandState& state, const QString& id, const QString& fallback) {
+  const QString typed = state.expression(id).trimmed();
+  return typed.isEmpty() ? fallback : typed;
+}
+
+// A number the Openings row writes, "900" or "900 mm".
+std::optional<double> openingNumber(QString text) {
+  text = text.trimmed();
+  if (text.endsWith(QStringLiteral("mm"))) {
+    text.chop(2);
+  }
+  bool ok = false;
+  const double value = text.trimmed().toDouble(&ok);
+  return ok && std::isfinite(value) ? std::optional<double>(value) : std::nullopt;
+}
+
+// A frame's openings as the panel writes them, separated by ';': a wall's
+// "offset widthxheight [sill]" (no sill, or 0: a door), a floor's "a b
+// widthxlength" (from the outline's corner, across and along the joists).
+QJsonArray openingsOf(const QString& text, bool floor, QString& problem) {
+  QJsonArray openings;
+  const QString format = floor ? QObject::tr("a floor's opening is \"a b widthxlength\" (mm)")
+                               : QObject::tr("a wall's opening is \"offset widthxheight [sill]\" (mm; no sill: a door)");
+  for (const QString& entry : text.split(QLatin1Char(';'), Qt::SkipEmptyParts)) {
+    const QStringList words = entry.simplified().split(QLatin1Char(' '), Qt::SkipEmptyParts);
+    if (words.isEmpty()) {
+      continue;
     }
-    return shownForCut(*shared, state) &&
-           !(mode && !state.items(kEndPoint).isEmpty() && state.checked(kEndLength));
-  };
-  const std::function<void(CommandState&, const CommandContext&)> changed = input.onChange;
-  input.onChange = [changed](CommandState& state, const CommandContext& context) {
-    if (changed) {
-      changed(state, context);
+    const int sizeAt = floor ? 2 : 1;
+    if (words.size() <= sizeAt || words.size() > sizeAt + (floor ? 1 : 2)) {
+      problem = QObject::tr("Openings: %1").arg(format);
+      return {};
     }
-    state.setChecked(kEndLength, false);
+    const QStringList size = words[sizeAt].toLower().split(QLatin1Char('x'));
+    std::vector<std::optional<double>> numbers;
+    for (int i = 0; i < sizeAt; ++i) {
+      numbers.push_back(openingNumber(words[i]));
+    }
+    numbers.push_back(size.size() == 2 ? openingNumber(size[0]) : std::nullopt);
+    numbers.push_back(size.size() == 2 ? openingNumber(size[1]) : std::nullopt);
+    if (!floor && words.size() == 3) {
+      numbers.push_back(openingNumber(words[2]));
+    }
+    if (std::any_of(numbers.begin(), numbers.end(), [](const std::optional<double>& n) { return !n; })) {
+      problem = QObject::tr("Openings: %1").arg(format);
+      return {};
+    }
+    QJsonObject opening;
+    if (floor) {
+      opening.insert(QStringLiteral("offset"), QJsonArray{*numbers[0], *numbers[1]});
+      opening.insert(QStringLiteral("size"), QJsonArray{*numbers[2], *numbers[3]});
+    } else {
+      opening.insert(QStringLiteral("offset"), *numbers[0]);
+      opening.insert(QStringLiteral("width"), *numbers[1]);
+      opening.insert(QStringLiteral("height"), *numbers[2]);
+      if (numbers.size() > 3) {
+        opening.insert(QStringLiteral("sill"), *numbers[3]);
+      }
+    }
+    openings.append(opening);
+  }
+  return openings;
+}
+
+// The Openings row's text of a frame's definition (the reverse).
+QString openingsText(const QJsonArray& openings) {
+  const auto number = [](const QJsonValue& value) { return QString::number(value.toDouble(), 'g', 10); };
+  QStringList entries;
+  for (const QJsonValue& value : openings) {
+    const QJsonObject opening = value.toObject();
+    const QJsonValue offset = opening.value(QStringLiteral("offset"));
+    if (offset.isArray()) {
+      const QJsonArray at = offset.toArray();
+      const QJsonArray size = opening.value(QStringLiteral("size")).toArray();
+      entries << QStringLiteral("%1 %2 %3x%4").arg(number(at.at(0)), number(at.at(1)), number(size.at(0)), number(size.at(1)));
+    } else {
+      QString entry = QStringLiteral("%1 %2x%3")
+                          .arg(number(offset), number(opening.value(QStringLiteral("width"))),
+                               number(opening.value(QStringLiteral("height"))));
+      if (opening.value(QStringLiteral("sill")).toDouble() > 0.0) {
+        entry += QLatin1Char(' ') + number(opening.value(QStringLiteral("sill")));
+      }
+      entries << entry;
+    }
+  }
+  return entries.join(QStringLiteral("; "));
+}
+
+// The wood screw the frame drives at its junctions (the model sizes it from
+// the members): the library's first screw, else its first wood fastener.
+std::optional<QJsonObject> frameFastener(const Shared& shared) {
+  const QVector<Part> wood = shared.catalog.parts(kWoodRole);
+  const auto screw = std::find_if(wood.begin(), wood.end(), [](const Part& part) {
+    return str(part.build.value(QStringLiteral("wood")).toObject(), "kind") == QStringLiteral("screw");
+  });
+  const auto chosen = screw != wood.end() ? screw : wood.begin();
+  if (chosen == wood.end()) {
+    return std::nullopt;
+  }
+  QJsonObject ref = chosen->ref();
+  ref.remove(QStringLiteral("config"));
+  return ref;
+}
+
+// The lead of the frame a BUILD part is a member of (empty: none).
+QString frameLeadOf(const BuildPart& part) { return str(part.raw, "frame"); }
+
+// A frame's definition as its lead's record keeps it.
+QJsonObject frameDefinition(const BuildPart& lead) {
+  return lead.raw.value(QStringLiteral("framing")).toObject().value(QStringLiteral("definition")).toObject();
+}
+
+// The wall frame a Start or End click is on (a corner or T-junction with
+// it): its lead and its base's height in the host.
+std::optional<std::pair<QString, double>> wallClicked(const Shared& shared, const CommandState& state,
+                                                      const QString& key) {
+  const Selection& items = state.items(key);
+  const std::optional<BuildPart> member = items.isEmpty() ? std::nullopt : shared.partAt(items.first().occurrence);
+  const QString lead = member ? frameLeadOf(*member) : QString();
+  if (lead.isEmpty()) {
+    return std::nullopt;
+  }
+  for (const BuildPart& part : shared.designParts()) {
+    if (part.component != lead) {
+      continue;
+    }
+    const QJsonObject definition = frameDefinition(part);
+    if (str(definition, "kind") != kWall) {
+      return std::nullopt;
+    }
+    const std::optional<gp_Pnt> base = pointOf(definition.value(QStringLiteral("start")));
+    return std::make_pair(lead, base ? base->Z() : 0.0);
+  }
+  return std::nullopt;
+}
+
+// A frame from the panel: build_frame's fields.
+struct FramePlacement {
+  QJsonObject fields;
+  QString problem;
+  QString what; // "wall 3600 x 2400 mm", for the panel and the log
+};
+
+FramePlacement framePlacement(const Shared& shared, const CommandState& state, const CommandContext& context,
+                              const Part& part) {
+  FramePlacement result;
+  const QString kind = frameKindOf(state);
+  if (!part.isTimber() || !part.cutToLength()) {
+    result.problem = QObject::tr("Choose timber for the frame's members.");
+    return result;
+  }
+  QJsonObject fields{{QStringLiteral("kind"), kind},
+                     {QStringLiteral("part"), part.ref()},
+                     {QStringLiteral("spacing"), expressionOr(state, kFrameSpacing, defaultFrameSpacing(kind))}};
+  if (state.checked(kFrameFasteners)) {
+    if (const std::optional<QJsonObject> fastener = frameFastener(shared)) {
+      fields.insert(QStringLiteral("fastener"), *fastener);
+    }
+  }
+  if (kind == kRoof) {
+    QStringList walls;
+    for (const SelectionItem& item : state.items(kFrameWalls)) {
+      const std::optional<BuildPart> member = shared.partAt(item.occurrence);
+      const QString lead = member ? frameLeadOf(*member) : QString();
+      if (!lead.isEmpty() && !walls.contains(lead)) {
+        walls << lead;
+      }
+    }
+    if (walls.size() < 2) {
+      result.problem = QObject::tr("Pick a member of each of the two wall frames the roof stands on.");
+      return result;
+    }
+    const QString roof = state.choice(kFrameRoof).isEmpty() ? QStringLiteral("gable") : state.choice(kFrameRoof);
+    fields.insert(QStringLiteral("walls"), QJsonArray{walls[0], walls[1]});
+    fields.insert(QStringLiteral("roof"), roof);
+    fields.insert(QStringLiteral("overhang"), expressionOr(state, kFrameOverhang, QStringLiteral("300 mm")));
+    if (roof == QStringLiteral("gable") || !state.checked(kFramePitchAuto)) {
+      fields.insert(QStringLiteral("pitch"), expressionOr(state, kFramePitch, QStringLiteral("30 deg")));
+    }
+    result.what = QObject::tr("%1 roof").arg(cmd::label(kFrameRoofs, roof).toLower());
+    result.fields = fields;
+    return result;
+  }
+  // From the start clicked (else the host's origin) to the end clicked
+  // (else Length along Direction), level with the start.
+  gp_Pnt start(0.0, 0.0, 0.0);
+  if (const std::optional<gp_Pnt> picked = build::pickPoint(kStart, state, context)) {
+    start = build::inHost(*picked, context);
+  }
+  const QString axis = state.choice(kFrameAlong).isEmpty() ? QStringLiteral("x") : state.choice(kFrameAlong);
+  const gp_Vec along = axis == QStringLiteral("y")    ? gp_Vec(0, 1, 0)
+                       : axis == QStringLiteral("-x") ? gp_Vec(-1, 0, 0)
+                       : axis == QStringLiteral("-y") ? gp_Vec(0, -1, 0)
+                                                      : gp_Vec(1, 0, 0);
+  const gp_Vec left = gp_Vec(0, 0, 1).Crossed(along);
+  const double length = millimetresOf(state, kFrameLength, kind == kFloor ? 4000.0 : 3600.0);
+  const double width = millimetresOf(state, kFrameWidth, 3000.0);
+  std::optional<gp_Pnt> end;
+  if (const std::optional<gp_Pnt> picked = build::pickPoint(kEndPoint, state, context)) {
+    end = build::inHost(*picked, context);
+    end->SetZ(start.Z());
+  }
+  QString problem;
+  const QJsonArray openings = openingsOf(state.text(kFrameOpenings), kind == kFloor, problem);
+  if (!problem.isEmpty()) {
+    result.problem = problem;
+    return result;
+  }
+  if (!openings.isEmpty()) {
+    fields.insert(QStringLiteral("openings"), openings);
+  }
+  if (kind == kFloor) {
+    QVector<gp_Pnt> corners;
+    if (end) {
+      corners = {start, gp_Pnt(end->X(), start.Y(), start.Z()), *end, gp_Pnt(start.X(), end->Y(), start.Z())};
+    } else {
+      corners = {start, start.Translated(along * length), start.Translated(along * length + left * width),
+                 start.Translated(left * width)};
+    }
+    const double a = corners[0].Distance(corners[1]);
+    const double b = corners[1].Distance(corners[2]);
+    if (a < 1.0 || b < 1.0) {
+      result.problem = QObject::tr("Click two opposite corners of the floor, or give its length and width.");
+      return result;
+    }
+    QJsonArray outline;
+    for (const gp_Pnt& corner : corners) {
+      outline.append(build::pointJson(corner));
+    }
+    fields.insert(QStringLiteral("outline"), outline);
+    if (state.checked(kFrameBlocking)) {
+      fields.insert(QStringLiteral("blocking"), 1);
+    }
+    result.what = QObject::tr("floor %1 x %2 mm").arg(a, 0, 'f', 0).arg(b, 0, 'f', 0);
+  } else {
+    // A start or end on another wall frame: a corner or a T-junction with
+    // it, at its base's height.
+    QJsonObject joins;
+    const std::optional<std::pair<QString, double>> startWall = wallClicked(shared, state, kStart);
+    const std::optional<std::pair<QString, double>> endWall = wallClicked(shared, state, kEndPoint);
+    if (startWall) {
+      joins.insert(QStringLiteral("start"), startWall->first);
+      start.SetZ(startWall->second);
+    } else if (endWall) {
+      start.SetZ(endWall->second);
+    }
+    if (endWall) {
+      joins.insert(QStringLiteral("end"), endWall->first);
+    }
+    gp_Pnt last = end ? *end : start.Translated(along * length);
+    last.SetZ(start.Z());
+    if (start.Distance(last) < 1.0) {
+      result.problem = QObject::tr("Click where the wall ends, or give its length.");
+      return result;
+    }
+    if (!joins.isEmpty()) {
+      fields.insert(QStringLiteral("joins"), joins);
+    }
+    fields.insert(QStringLiteral("start"), build::pointJson(start));
+    fields.insert(QStringLiteral("end"), build::pointJson(last));
+    fields.insert(QStringLiteral("height"), expressionOr(state, kFrameHeight, QStringLiteral("2400 mm")));
+    fields.insert(QStringLiteral("plates"),
+                  QJsonObject{{QStringLiteral("top"), state.choice(kFrameTop) == QStringLiteral("2") ? 2 : 1}});
+    result.what = QObject::tr("wall %1 x %2 mm")
+                      .arg(start.Distance(last), 0, 'f', 0)
+                      .arg(millimetresOf(state, kFrameHeight, 2400.0), 0, 'f', 0);
+  }
+  result.fields = fields;
+  return result;
+}
+
+// A frame's preview (build_preview with `frame`, and `component` for a
+// frame laid out again): its members as boxes, their roles counted.
+struct FramePreview {
+  QJsonObject answer;
+  TopoDS_Shape shape;
+  QString counts; // "5 stud, 2 king stud, ..."
+  QString error;
+};
+
+FramePreview previewFrame(const QJsonObject& frame, const QString& component, const CommandContext& context) {
+  FramePreview result;
+  QJsonObject request{{QStringLiteral("query"), QStringLiteral("build_preview")}, {QStringLiteral("frame"), frame}};
+  if (!component.isEmpty()) {
+    request.insert(QStringLiteral("component"), component);
+  }
+  try {
+    result.answer = context.queryObject(request);
+  } catch (const std::exception& error) {
+    result.error = errorText(error);
+    return result;
+  }
+  result.error = problemsOf(result.answer);
+  QStringList counts;
+  const QJsonObject roles = result.answer.value(QStringLiteral("roles")).toObject();
+  for (auto it = roles.begin(); it != roles.end(); ++it) {
+    counts << QStringLiteral("%1 %2").arg(it.value().toInt()).arg(it.key());
+  }
+  result.counts = counts.join(QStringLiteral(", "));
+  BRep_Builder builder;
+  TopoDS_Compound boxes;
+  builder.MakeCompound(boxes);
+  bool any = false;
+  for (const QJsonValue& value : result.answer.value(QStringLiteral("members")).toArray()) {
+    const QJsonObject member = value.toObject();
+    const std::optional<gp_Pnt> from = pointOf(member.value(QStringLiteral("start")));
+    const std::optional<gp_Pnt> to = pointOf(member.value(QStringLiteral("end")));
+    const std::optional<gp_Pnt> x = pointOf(member.value(QStringLiteral("x")));
+    const QJsonArray section = member.value(QStringLiteral("section")).toArray();
+    if (!from || !to || !x || section.size() < 2 || from->Distance(*to) < 1e-6 ||
+        gp_Vec(x->XYZ()).Magnitude() < 1e-9) {
+      continue;
+    }
+    build::Frame at;
+    at.origin = *from;
+    at.z = gp_Dir(gp_Vec(*from, *to));
+    at.x = gp_Dir(gp_Vec(x->XYZ()));
+    at.valid = true;
+    const TopoDS_Shape box = build::boxAlong(at, section[0].toDouble(), section[1].toDouble(), from->Distance(*to));
+    if (!box.IsNull()) {
+      builder.Add(boxes, box);
+      any = true;
+    }
+  }
+  if (any) {
+    result.shape = boxes;
+  }
+  return result;
+}
+
+// The inspection of the Frame mode.
+Inspection inspectFrame(const SharedPtr& shared, const CommandState& state, const CommandContext& context) {
+  Inspection result;
+  Part part;
+  if (!chosenPart(*shared, state, part)) {
+    result.error = noPartsText(*shared, kTimberRole);
+    return result;
+  }
+  const build::Host host = build::buildHost(context);
+  const QString kind = frameKindOf(state);
+  QStringList lines{QStringLiteral("<b>%1</b>").arg(part.name.toHtmlEscaped()),
+                    QObject::tr("Adds to: %1").arg(host.name).toHtmlEscaped()};
+  const FramePlacement placed = framePlacement(*shared, state, context, part);
+  if (kind != kRoof && state.items(kStart).isEmpty()) {
+    result.viewHint = QObject::tr("Click where the %1 starts, or press Enter: from the origin along Direction")
+                          .arg(kind == kFloor ? QObject::tr("floor") : QObject::tr("wall"));
+  } else if (kind == kRoof && state.items(kFrameWalls).size() < 2) {
+    result.viewHint = QObject::tr("Click a member of each of the two walls the roof stands on");
+  }
+  if (!placed.problem.isEmpty()) {
+    result.text = lines.join(QStringLiteral("<br>"));
+    result.error = placed.problem;
+    result.log = QStringLiteral("frame %1 waiting: %2; adds to %3; part %4").arg(kind, placed.problem, host.name, part.name);
+    return result;
+  }
+  const FramePreview preview = previewFrame(placed.fields, QString(), context);
+  result.shape = preview.shape;
+  const int count = preview.answer.value(QStringLiteral("count")).toInt();
+  const QString name = str(preview.answer, "name");
+  lines << QObject::tr("%1, %2: %3 member(s)").arg(name, placed.what).arg(count).toHtmlEscaped();
+  if (!preview.counts.isEmpty()) {
+    lines << preview.counts.toHtmlEscaped();
+  }
+  const bool fastened = placed.fields.contains(QStringLiteral("fastener"));
+  lines << (fastened ? QObject::tr("Two wood screws at each junction, sized from the members")
+                     : state.checked(kFrameFasteners) ? QObject::tr("No wood screws in the libraries: no fasteners")
+                                                      : QObject::tr("No fasteners"));
+  QStringList warnings;
+  for (const QJsonValue& warning : preview.answer.value(QStringLiteral("warnings")).toArray()) {
+    warnings << warning.toString();
+    lines << QStringLiteral("<i>%1</i>").arg(warning.toString().toHtmlEscaped());
+  }
+  result.text = lines.join(QStringLiteral("<br>"));
+  result.error = preview.error;
+  result.log = QStringLiteral("frame %1 %2, %3, %4 member(s) (%5); fasteners %6%7; adds to %8; part %9")
+                   .arg(kind, name, placed.what)
+                   .arg(count)
+                   .arg(preview.counts, fastened ? QStringLiteral("yes") : QStringLiteral("no"),
+                        warnings.isEmpty() ? QString() : QStringLiteral("; warnings: ") + warnings.join(QStringLiteral(" / ")),
+                        host.name, part.name);
+  return result;
+}
+
+// Places the frame the Frame mode shows.
+bool applyFrame(Shared& shared, DocumentHost& host, CommandState& state, const CommandContext& context,
+                const Part& part) {
+  const FramePlacement placed = framePlacement(shared, state, context, part);
+  if (!placed.problem.isEmpty()) {
+    host.showStatus(placed.problem, true);
+    return false;
+  }
+  QJsonObject command = placed.fields;
+  command.insert(QStringLiteral("cmd"), QStringLiteral("build_frame"));
+  QJsonObject result;
+  if (!host.runModelCommand(command, &result)) {
+    return false;
+  }
+  qInfo().noquote() << QStringLiteral("Placed frame %1 (%2, lead %3): %4 member(s), %5 junction(s) fastened")
+                           .arg(str(result, "name"), str(result, "kind"), str(result, "frame"))
+                           .arg(result.value(QStringLiteral("count")).toInt())
+                           .arg(result.value(QStringLiteral("fasteners")).toInt());
+  for (const QJsonValue& warning : result.value(QStringLiteral("warnings")).toArray()) {
+    qInfo().noquote() << QStringLiteral("Frame warning: %1").arg(warning.toString());
+  }
+  shared.refreshDesign(context);
+  state.setItems(kStart, {});
+  state.setItems(kEndPoint, {});
+  state.setObject(kStart + QStringLiteral("_pick"), {});
+  state.setObject(kEndPoint + QStringLiteral("_pick"), {});
+  state.setItems(kFrameWalls, {});
+  return true;
+}
+
+// The Frame mode's inputs (after the Timber panel's own).
+std::vector<InputDef> frameInputs() {
+  const auto frame = [](const CommandState& state) { return howOf(state) == kFrame; };
+  const auto kindIs = [](const QString& kind) {
+    return [kind](const CommandState& state) { return howOf(state) == kFrame && frameKindOf(state) == kind; };
   };
-  return input;
+  const auto noEnd = [](const QString& kind) {
+    return [kind](const CommandState& state) {
+      return howOf(state) == kFrame && state.items(kEndPoint).isEmpty() &&
+             (kind.isEmpty() ? frameKindOf(state) != kRoof : frameKindOf(state) == kind);
+    };
+  };
+  std::vector<InputDef> inputs;
+  inputs.push_back(
+      choiceInput(kFrameKind, QObject::tr("Frame"), kFrameKinds, kWall)
+          .withVisible(frame)
+          .withOnChange([](CommandState& state, const CommandContext&) {
+            // The defaults follow the kind while they are the other kind's.
+            const QString kind = frameKindOf(state);
+            const QString spacing = state.text(kFrameSpacing).trimmed();
+            if (spacing.isEmpty() || spacing == defaultFrameSpacing(kWall) || spacing == defaultFrameSpacing(kFloor)) {
+              state.setText(kFrameSpacing, defaultFrameSpacing(kind));
+              state.setValue(kFrameSpacing, kNaN);
+            }
+            const QString length = state.text(kFrameLength).trimmed();
+            if (length.isEmpty() || length == defaultFrameLength(kWall) || length == defaultFrameLength(kFloor)) {
+              state.setText(kFrameLength, defaultFrameLength(kind));
+              state.setValue(kFrameLength, kNaN);
+            }
+          })
+          .withTooltip(QObject::tr("A wall, a floor or ceiling, or a roof on two wall frames")));
+  inputs.push_back(valueInput(kFrameLength, QObject::tr("Length"), ValueKind::Length, QStringLiteral("3600 mm"))
+                       .withVisible(noEnd(QString()))
+                       .withTooltip(QObject::tr("Without an end clicked: how far it runs from its start along "
+                                                "Direction")));
+  inputs.push_back(valueInput(kFrameWidth, QObject::tr("Width"), ValueKind::Length, QStringLiteral("3000 mm"))
+                       .withVisible(noEnd(kFloor))
+                       .withTooltip(QObject::tr("Without an end clicked: the floor's size to the left of Direction")));
+  inputs.push_back(choiceInput(kFrameAlong, QObject::tr("Direction"), kFrameAlongs, QStringLiteral("x"))
+                       .withVisible(noEnd(QString())));
+  inputs.push_back(valueInput(kFrameHeight, QObject::tr("Height"), ValueKind::Length, QStringLiteral("2400 mm"))
+                       .withVisible(kindIs(kWall))
+                       .withTooltip(QObject::tr("From the underside of the bottom plate to the top of the top plate")));
+  inputs.push_back(valueInput(kFrameSpacing, QObject::tr("Spacing"), ValueKind::Length, QStringLiteral("600 mm"))
+                       .withVisible(frame)
+                       .withTooltip(QObject::tr("The studs', joists' or rafters' centre distance, from the start")));
+  inputs.push_back(choiceInput(kFrameTop, QObject::tr("Top Plates"), kFrameTops, QStringLiteral("1"))
+                       .withVisible(kindIs(kWall)));
+  inputs.push_back(textInput(kFrameOpenings, QObject::tr("Openings"))
+                       .withVisible([](const CommandState& state) {
+                         return howOf(state) == kFrame && frameKindOf(state) != kRoof;
+                       })
+                       .withTooltip(
+                           QObject::tr("Openings separated by ';', such as \"600 900x1200 900\" in a wall")));
+  inputs.push_back(checkInput(kFrameBlocking, QObject::tr("Blocking"), false)
+                       .withVisible(kindIs(kFloor))
+                       .withTooltip(QObject::tr("A row of blocking between the joists, halfway along them")));
+  inputs.push_back(selectionInput(kFrameWalls, QObject::tr("Walls"), kPartKinds, 0, 2)
+                       .withVisible(kindIs(kRoof))
+                       .withTooltip(QObject::tr("A member of each of the two wall frames the roof stands on")));
+  inputs.push_back(choiceInput(kFrameRoof, QObject::tr("Roof"), kFrameRoofs, QStringLiteral("gable"))
+                       .withVisible(kindIs(kRoof)));
+  inputs.push_back(checkInput(kFramePitchAuto, QObject::tr("Pitch From Walls"), true)
+                       .withVisible([](const CommandState& state) {
+                         return howOf(state) == kFrame && frameKindOf(state) == kRoof &&
+                                state.choice(kFrameRoof) == QStringLiteral("mono");
+                       })
+                       .withTooltip(QObject::tr("A mono-pitch roof's pitch from the walls' heights")));
+  inputs.push_back(valueInput(kFramePitch, QObject::tr("Pitch"), ValueKind::Angle, QStringLiteral("30 deg"))
+                       .withVisible([](const CommandState& state) {
+                         return howOf(state) == kFrame && frameKindOf(state) == kRoof &&
+                                (state.choice(kFrameRoof) != QStringLiteral("mono") || !state.checked(kFramePitchAuto));
+                       }));
+  inputs.push_back(valueInput(kFrameOverhang, QObject::tr("Overhang"), ValueKind::Length, QStringLiteral("300 mm"))
+                       .withVisible(kindIs(kRoof))
+                       .withTooltip(QObject::tr("How far the rafters run beyond the walls' outer faces")));
+  inputs.push_back(checkInput(kFrameFasteners, QObject::tr("Fasteners"), true)
+                       .withVisible(frame)
+                       .withTooltip(QObject::tr("Two wood screws at each junction of the frame's members")));
+  return inputs;
 }
 
 CommandDef timberCommand(const SharedPtr& shared, DocumentHost& host) {
@@ -2612,10 +3126,7 @@ CommandDef timberCommand(const SharedPtr& shared, DocumentHost& host) {
   def.id = QStringLiteral("build.timber");
   def.name = QObject::tr("Timber");
   def.icon = QStringLiteral("build-timber");
-  def.tooltip = QObject::tr("Places timber: a member from a click (its length typed, to what it meets, or to a "
-                            "second click), on another member's side or end, or "
-                            "repeated (studs, joists at a centre distance, deck boards with a gap); Enter places it "
-                            "and the next one follows");
+  def.tooltip = QObject::tr("Places timber: on a member, at a spacing, as a frame or by two points");
   def.tab = kTab;
   def.group = QStringLiteral("PROFILE");
   def.pinned = true;
@@ -2629,68 +3140,64 @@ CommandDef timberCommand(const SharedPtr& shared, DocumentHost& host) {
   const auto overFaces = [](const CommandState& state) {
     return howOf(state) == kSpacing && state.choice(kOver) == kOverFaces;
   };
+  // Start and End: a member's, or a wall's or floor's (mitcad#479).
+  const auto startEnd = [](const CommandState& state) {
+    return howOf(state) == kPoints || (howOf(state) == kFrame && frameKindOf(state) != kRoof);
+  };
   def.inputs = pickerInputs(shared, role);
-  def.inputs.append(choiceInput(kHow, QObject::tr("Mode"), kHows, kPoints)
+  // On a member first and the default, Two points last (mitcad#485).
+  def.inputs.append(choiceInput(kHow, QObject::tr("Mode"), kHows, kOnMember)
                         .withChoiceIcons(kHowIcons)
-                        .withOnChange([shared](CommandState& state, const CommandContext&) {
+                        .withOnChange([shared](CommandState& state, const CommandContext& context) {
                           shared->timberHow = howOf(state);
-                          state.setObject(kHoverEnd, {});
                           state.setObject(kHover, {});
+                          // A frame's wood screws (mitcad#479).
+                          if (howOf(state) == kFrame) {
+                            shared->catalog.refresh(kWoodRole, context);
+                          }
                         })
-                        .withTooltip(QObject::tr("From a click (its length typed, to what it meets, or to a second "
-                                                 "click), on a member (or standing on a plane), or a spacing set")));
+                        .withTooltip(QObject::tr("How the member is placed: on a member, at a spacing, as a frame or "
+                                                 "by two points")));
   def.inputs.append(selectionInput(kStart, QObject::tr("Start"),
                                    SelectKind::Face | SelectKind::Plane | SelectKind::Point | SelectKind::Vertex, 0, 1)
-                        .withVisible(how(kPoints))
+                        .withVisible(startEnd)
                         .withOnPick([](const SelectionItem& item, CommandState& state, const CommandContext& context) {
                           build::recordPick(kStart, item, state, context);
-                          state.setObject(kHoverEnd, {});
                         },
                                     false)
-                        .withTooltip(QObject::tr("Where the member starts: a plane or a face it lies on, or another "
-                                                 "member (its ends, sides and centre lines snap)")));
+                        .withTooltip(
+                            QObject::tr("Where the member starts: a plane or a face it lies on, or another member")));
   def.inputs.append(selectionInput(kEndPoint, QObject::tr("End"),
                                    SelectKind::Face | SelectKind::Plane | SelectKind::Point | SelectKind::Vertex, 0, 1)
-                        .withVisible(how(kPoints))
+                        .withVisible(startEnd)
                         .withOnPick([](const SelectionItem& item, CommandState& state, const CommandContext& context) {
                           build::recordPick(kEndPoint, item, state, context);
-                          state.setObject(kHoverEnd, {});
-                          // Two points: the end gives the length (a length
-                          // typed after it runs that long its way).
-                          state.setChecked(kEndLength, true);
                         },
                                     false)
                         .withShiftClickApplies()
-                        .withTooltip(QObject::tr("Where it ends, moved onto the start's plane (two points); without "
-                                                 "it the member runs towards the mouse, as long as Length says; "
-                                                 "Shift+click places at once")));
+                        .withTooltip(QObject::tr("Where the member ends, moved onto the start's plane (Shift+click "
+                                                 "places)")));
   def.inputs.append(choiceInput(kOver, QObject::tr("Spacing On"), kOvers, kBetween)
                         .withVisible(how(kSpacing))
-                        .withTooltip(QObject::tr("Between two members (studs, joists: on one member's side, each "
-                                                 "reaching the other), or over the faces the members lie on (deck "
-                                                 "boards, battens)")));
+                        .withTooltip(QObject::tr("Between two members, or over the faces the members lie on")));
   def.inputs.append(selectionInput(kFaces, QObject::tr("Supporting Faces"), SelectKind::Face, 0, 0)
                         .withVisible(overFaces)
-                        .withTooltip(QObject::tr("The faces the row lies on (the joists' top faces): it runs along "
-                                                 "them, each member across all of them")));
-  // Profile's placement inputs; its Length also for a member from a click.
+                        .withTooltip(QObject::tr("The faces the row lies on, such as the joists' top faces")));
+  // Profile's placement inputs (two points give the length, mitcad#485).
   for (InputDef& input : placementInputs(shared, role, true)) {
-    if (input.id == QStringLiteral("length_mode") || input.id == QStringLiteral("length")) {
-      def.inputs.append(lengthFromAClick(shared, std::move(input)));
-    } else {
-      def.inputs.append(onMemberOnly(std::move(input)));
-    }
+    def.inputs.append(onMemberOnly(std::move(input)));
   }
-  // Flat or on edge: Tab steps it (one key) while it is shown and Length's
-  // mode, before it, is not (the end clicked gives the length, a board row).
+  // Flat or on edge: by two points, over faces, and on the ground
+  // (mitcad#485); Tab steps it (one key) where Length's mode, before it, is
+  // not shown.
   def.inputs.append(choiceInput(kLie, QObject::tr("Lie"), kLies, QStringLiteral("flat"))
-                        .withVisible([overFaces](const CommandState& state) {
-                          return howOf(state) == kPoints || overFaces(state);
+                        .withVisible([shared, overFaces](const CommandState& state) {
+                          return howOf(state) == kPoints || overFaces(state) ||
+                                 (howOf(state) == kOnMember && against(*shared, kTimberRole, state) == Against::Ground);
                         })
                         .withTabCycle({QStringLiteral("flat"), QStringLiteral("edge")})
-                        .withTooltip(QObject::tr("Flat: the section's thinner side across the plane it lies on; on "
-                                                 "edge: the wider. Tab turns it while Length's auto length is not "
-                                                 "shown")));
+                        .withTooltip(QObject::tr("Flat: the thinner side across the plane it lies on; on edge: the "
+                                                 "wider (Tab turns it)")));
   def.inputs.append(choiceInput(kSpacingMode, QObject::tr("Spacing"), kSpacingModes, kCentre)
                         .withVisible(how(kSpacing))
                         .withOnChange([](CommandState& state, const CommandContext&) {
@@ -2711,6 +3218,10 @@ CommandDef timberCommand(const SharedPtr& shared, DocumentHost& host) {
                         .withVisible([](const CommandState& state) {
                           return howOf(state) == kSpacing && state.choice(kSpacingMode) == kGap;
                         }));
+  // A wall, floor or roof frame (mitcad#479).
+  for (InputDef& input : frameInputs()) {
+    def.inputs.append(std::move(input));
+  }
   def.init = [shared, role](CommandState& state, const CommandContext& context) {
     startPicker(*shared, role, state, context);
     // The profiles' sections for the snaps, when the design has them.
@@ -2720,14 +3231,36 @@ CommandDef timberCommand(const SharedPtr& shared, DocumentHost& host) {
     if (!shared->timberHow.isEmpty()) {
       state.setChoice(kHow, shared->timberHow);
     }
+    if (howOf(state) == kFrame) {
+      shared->catalog.refresh(kWoodRole, context);
+    }
+    // A typed length (Auto stays a choice), and what the tool remembers:
+    // the length typed last (the first time the part's default), the
+    // ground placement's direction and lie (mitcad#485).
+    const Shared::TimberMemory& memory = shared->timber;
+    state.setChoice(QStringLiteral("length_mode"), kTyped);
+    if (!memory.length.isEmpty()) {
+      state.setText(QStringLiteral("length"), memory.length);
+      state.setValue(QStringLiteral("length"), kNaN);
+    }
+    state.setChoice(QStringLiteral("axis"), memory.axis);
+    state.setChoice(kLie, memory.lie);
     qInfo().noquote() << QStringLiteral("BUILD timber adds to %1, %2")
                              .arg(build::buildHost(context).name, howOf(state));
+    qInfo().noquote() << QStringLiteral("BUILD timber starts: length %1 (%2), typed; along %3, %4")
+                             .arg(state.text(QStringLiteral("length")),
+                                  memory.length.isEmpty() ? QStringLiteral("the part's default")
+                                                          : QStringLiteral("typed last"),
+                                  memory.axis, memory.lie);
     if (PartPicker* picker = pinnedPicker(*shared)) {
       picker->ask(roleRequest(*shared, role, state));
     }
   };
   def.ended = pickerEnded(shared, def.id);
   def.inspect = [shared, role](const CommandState& state, const CommandContext& context) {
+    if (howOf(state) == kFrame) {
+      return inspectFrame(shared, state, context);
+    }
     if (howOf(state) == kOnMember) {
       return inspectPlacement(shared, role, state, context, true);
     }
@@ -2737,10 +3270,8 @@ CommandDef timberCommand(const SharedPtr& shared, DocumentHost& host) {
     return inspectTimber(shared, state, context);
   };
   def.previewMarkers = markersOf;
+  // Two points follow nothing of the mouse (mitcad#485).
   def.hoverPreview = [shared, role](const SelectionItem& item, CommandState& state, const CommandContext& context) {
-    if (howOf(state) == kPoints) {
-      return hoverEnd(item, state, context);
-    }
     return placesOnMember(state) && hoverFace(*shared, role, item, state, context);
   };
   def.apply = [shared, &host, role](CommandState& state, const CommandContext& context) {
@@ -2748,6 +3279,21 @@ CommandDef timberCommand(const SharedPtr& shared, DocumentHost& host) {
     if (!chosenPart(*shared, state, part)) {
       host.showStatus(noPartsText(*shared, role), true);
       return false;
+    }
+    // What the next start takes (mitcad#485): the length typed, the ground
+    // placement's direction and lie.
+    if (placesOnMember(state) && state.choice(QStringLiteral("length_mode")) == kTyped &&
+        !state.text(QStringLiteral("length")).trimmed().isEmpty()) {
+      shared->timber.length = state.text(QStringLiteral("length")).trimmed();
+    }
+    if (!state.choice(QStringLiteral("axis")).isEmpty()) {
+      shared->timber.axis = state.choice(QStringLiteral("axis"));
+    }
+    if (!state.choice(kLie).isEmpty()) {
+      shared->timber.lie = state.choice(kLie);
+    }
+    if (howOf(state) == kFrame) {
+      return applyFrame(*shared, host, state, context, part);
     }
     if (placesOnMember(state)) {
       const Placement placed = placement(*shared, role, state, context, part, true);
@@ -2773,25 +3319,20 @@ CommandDef timberCommand(const SharedPtr& shared, DocumentHost& host) {
       state.setItems(kFaces, {});
       return true;
     }
-    // From the click: to the end clicked, or towards the mouse as long as
-    // Length says (typed, or to what it meets).
+    // Two points: from the start to the end clicked.
     const PointsPlacement placed = pointsPlacement(*shared, state, context, part);
     if (!placed.problem.isEmpty()) {
       host.showStatus(placed.problem, true);
       return false;
     }
-    const QString note = placed.byPoints
-                             ? QObject::tr("by two points, %1 mm").arg(placed.start.Distance(placed.end), 0, 'f', 1)
-                             : placed.lengthNote;
+    const QString note = QObject::tr("by two points, %1 mm").arg(placed.start.Distance(placed.end), 0, 'f', 1);
     if (!placeNow(*shared, host, role, part, placed.fields, note, state, context)) {
       return false;
     }
-    state.setChecked(kEndLength, false);
     state.setItems(kStart, {});
     state.setItems(kEndPoint, {});
     state.setObject(kStart + QStringLiteral("_pick"), {});
     state.setObject(kEndPoint + QStringLiteral("_pick"), {});
-    state.setObject(kHoverEnd, {});
     return true;
   };
   return def;
@@ -2822,8 +3363,7 @@ CommandDef spacingCommand(const SharedPtr& shared, DocumentHost& host, const Com
   def.id = QStringLiteral("build.spacing");
   def.name = QObject::tr("Spacing Set");
   def.icon = QStringLiteral("build-timber-spacing");
-  def.tooltip = QObject::tr("A spacing set of members as one: its distance, its count and its members' size; the "
-                            "members are laid out again");
+  def.tooltip = QObject::tr("Changes a spacing set's distance, count and members' size");
   def.tab = kTab;
   def.group = QStringLiteral("MODIFY");
   def.pinned = true;
@@ -2936,6 +3476,277 @@ CommandDef spacingCommand(const SharedPtr& shared, DocumentHost& host, const Com
   return def;
 }
 
+// --- A timber frame laid out again (mitcad#479)
+
+// The lead of the frame a picked member is in.
+std::optional<BuildPart> frameOfPick(const Shared& shared, const CommandState& state) {
+  const Selection& items = state.items(kPart);
+  const std::optional<BuildPart> picked = items.isEmpty() ? std::nullopt : shared.partAt(items.first().occurrence);
+  const QString lead = picked ? frameLeadOf(*picked) : QString();
+  if (lead.isEmpty()) {
+    return std::nullopt;
+  }
+  for (const BuildPart& part : shared.designParts()) {
+    if (part.component == lead) {
+      return part;
+    }
+  }
+  return std::nullopt;
+}
+
+// A definition's value as a value input shows it: an expression as it is,
+// a number in mm (or radians, shown in degrees).
+QString valueText(const QJsonValue& value, const QString& fallback, bool angle, const CommandContext& context) {
+  if (value.isString()) {
+    return value.toString();
+  }
+  if (value.isDouble()) {
+    return angle ? QStringLiteral("%1 deg").arg(value.toDouble() * 180.0 / kPi, 0, 'g', 10)
+                 : cmd::lengthText(value.toDouble(), context);
+  }
+  return fallback;
+}
+
+// A frame's outline is a rectangle (four points, square corners): its
+// Length and Width can be changed.
+bool isRectangle(const QJsonArray& outline) {
+  if (outline.size() != 4) {
+    return false;
+  }
+  QVector<gp_Pnt> p;
+  for (const QJsonValue& value : outline) {
+    p.append(pointOf(value).value_or(gp_Pnt()));
+  }
+  for (int i = 0; i < 4; ++i) {
+    const gp_Vec a(p[i], p[(i + 1) % 4]);
+    const gp_Vec b(p[(i + 1) % 4], p[(i + 2) % 4]);
+    if (a.Magnitude() < 1.0 || b.Magnitude() < 1.0 || std::abs(a.Normalized().Dot(b.Normalized())) > 1e-6) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// The fields of build_edit's `frame` from the panel.
+QJsonObject frameEditFields(const BuildPart& lead, const CommandState& state, QString& problem) {
+  const QJsonObject definition = frameDefinition(lead);
+  const QString kind = str(definition, "kind").isEmpty() ? kWall : str(definition, "kind");
+  QJsonObject frame{{QStringLiteral("spacing"), expressionOr(state, kFrameSpacing, defaultFrameSpacing(kind))}};
+  if (kind == kRoof) {
+    frame.insert(QStringLiteral("pitch"), expressionOr(state, kFramePitch, QStringLiteral("30 deg")));
+    frame.insert(QStringLiteral("overhang"), expressionOr(state, kFrameOverhang, QStringLiteral("300 mm")));
+    return frame;
+  }
+  const QJsonArray openings = openingsOf(state.text(kFrameOpenings), kind == kFloor, problem);
+  if (!problem.isEmpty()) {
+    return {};
+  }
+  frame.insert(QStringLiteral("openings"), openings);
+  if (kind == kWall) {
+    frame.insert(QStringLiteral("length"), expressionOr(state, kFrameLength, defaultFrameLength(kind)));
+    frame.insert(QStringLiteral("height"), expressionOr(state, kFrameHeight, QStringLiteral("2400 mm")));
+    frame.insert(QStringLiteral("plates"),
+                 QJsonObject{{QStringLiteral("top"), state.choice(kFrameTop) == QStringLiteral("2") ? 2 : 1}});
+    return frame;
+  }
+  frame.insert(QStringLiteral("blocking"), state.checked(kFrameBlocking) ? 1 : 0);
+  const QJsonArray outline = definition.value(QStringLiteral("outline")).toArray();
+  if (isRectangle(outline)) {
+    const gp_Pnt p0 = pointOf(outline[0]).value_or(gp_Pnt());
+    const gp_Dir e0(gp_Vec(p0, pointOf(outline[1]).value_or(gp_Pnt())));
+    const gp_Dir e1(gp_Vec(pointOf(outline[1]).value_or(gp_Pnt()), pointOf(outline[2]).value_or(gp_Pnt())));
+    const double length = millimetresOf(state, kFrameLength, 4000.0);
+    const double width = millimetresOf(state, kFrameWidth, 3000.0);
+    if (!(length > 1.0) || !(width > 1.0)) {
+      problem = QObject::tr("A floor's length and width must be greater than zero.");
+      return {};
+    }
+    frame.insert(QStringLiteral("outline"),
+                 QJsonArray{build::pointJson(p0), build::pointJson(p0.Translated(gp_Vec(e0) * length)),
+                            build::pointJson(p0.Translated(gp_Vec(e0) * length + gp_Vec(e1) * width)),
+                            build::pointJson(p0.Translated(gp_Vec(e1) * width))});
+  }
+  return frame;
+}
+
+CommandDef frameCommand(const SharedPtr& shared, DocumentHost& host, const CommandContext& context) {
+  CommandDef def;
+  def.id = QStringLiteral("build.frame");
+  def.name = QObject::tr("Timber Frame");
+  def.icon = QStringLiteral("build-timber-frame");
+  def.tooltip = QObject::tr("Changes a timber frame's length, height, spacing, openings and members' size");
+  def.tab = kTab;
+  def.group = QStringLiteral("MODIFY");
+  def.pinned = true;
+  def.keywords = {QStringLiteral("frame"), QStringLiteral("wall"), QStringLiteral("floor"), QStringLiteral("roof"),
+                  QStringLiteral("studs"), QStringLiteral("joists"), QStringLiteral("rafters"), QStringLiteral("build")};
+  const QString kSize = QStringLiteral("size");
+  const QString kRectangle = QStringLiteral("frame_rectangle");
+  const auto kindIs = [](const QString& kind) {
+    return [kind](const CommandState& state) { return state.choice(kFrameKind) == kind; };
+  };
+  def.inputs = {
+      selectionInput(kPart, QObject::tr("Member"), kPartKinds, 1, 1)
+          .withOnPick([shared, kSize, kRectangle](const SelectionItem&, CommandState& state, const CommandContext& model) {
+            shared->refreshDesign(model);
+            const std::optional<BuildPart> lead = frameOfPick(*shared, state);
+            if (!lead) {
+              state.setChoice(kFrameKind, QString());
+              return;
+            }
+            // The frame's definition as the panel's values.
+            const QJsonObject definition = frameDefinition(*lead);
+            const QString kind = str(definition, "kind").isEmpty() ? kWall : str(definition, "kind");
+            state.setChoice(kFrameKind, kind);
+            const auto set = [&state](const QString& id, const QString& text) {
+              state.setText(id, text);
+              state.setValue(id, kNaN);
+            };
+            set(kFrameSpacing, valueText(definition.value(QStringLiteral("spacing")), defaultFrameSpacing(kind), false, model));
+            set(kFrameOpenings, openingsText(definition.value(QStringLiteral("openings")).toArray()));
+            if (kind == kWall) {
+              const std::optional<gp_Pnt> start = pointOf(definition.value(QStringLiteral("start")));
+              const std::optional<gp_Pnt> end = pointOf(definition.value(QStringLiteral("end")));
+              if (start && end) {
+                const double length = std::hypot(end->X() - start->X(), end->Y() - start->Y());
+                set(kFrameLength, cmd::lengthText(length, model));
+              }
+              set(kFrameHeight, valueText(definition.value(QStringLiteral("height")), QStringLiteral("2400 mm"), false, model));
+              const int top = definition.value(QStringLiteral("plates")).toObject().value(QStringLiteral("top")).toInt(1);
+              state.setChoice(kFrameTop, QString::number(top));
+            } else if (kind == kFloor) {
+              const QJsonArray outline = definition.value(QStringLiteral("outline")).toArray();
+              const bool rectangle = isRectangle(outline);
+              state.setChoice(kRectangle, rectangle ? QStringLiteral("yes") : QString());
+              if (rectangle) {
+                const gp_Pnt p0 = pointOf(outline[0]).value_or(gp_Pnt());
+                const gp_Pnt p1 = pointOf(outline[1]).value_or(gp_Pnt());
+                const gp_Pnt p2 = pointOf(outline[2]).value_or(gp_Pnt());
+                set(kFrameLength, cmd::lengthText(p0.Distance(p1), model));
+                set(kFrameWidth, cmd::lengthText(p1.Distance(p2), model));
+              }
+              state.setChecked(kFrameBlocking, definition.value(QStringLiteral("blocking")).toInt() > 0);
+            } else {
+              set(kFramePitch, valueText(definition.value(QStringLiteral("pitch")), QStringLiteral("30 deg"), true, model));
+              set(kFrameOverhang, valueText(definition.value(QStringLiteral("overhang")), QStringLiteral("300 mm"), false, model));
+            }
+            state.setChoice(kSize, lead->config);
+          },
+                      false)
+          .withTooltip(QObject::tr("A member of the frame")),
+      valueInput(kFrameLength, QObject::tr("Length"), ValueKind::Length, QStringLiteral("3600 mm"))
+          .withVisible([kRectangle](const CommandState& state) {
+            return state.choice(kFrameKind) == kWall ||
+                   (state.choice(kFrameKind) == kFloor && !state.choice(kRectangle).isEmpty());
+          })
+          .withTooltip(QObject::tr("A wall's length from its start (its end moves along it); a floor's first side")),
+      valueInput(kFrameWidth, QObject::tr("Width"), ValueKind::Length, QStringLiteral("3000 mm"))
+          .withVisible([kRectangle](const CommandState& state) {
+            return state.choice(kFrameKind) == kFloor && !state.choice(kRectangle).isEmpty();
+          }),
+      valueInput(kFrameHeight, QObject::tr("Height"), ValueKind::Length, QStringLiteral("2400 mm")).withVisible(kindIs(kWall)),
+      valueInput(kFrameSpacing, QObject::tr("Spacing"), ValueKind::Length, QStringLiteral("600 mm"))
+          .withVisible([](const CommandState& state) { return !state.choice(kFrameKind).isEmpty(); }),
+      choiceInput(kFrameTop, QObject::tr("Top Plates"), kFrameTops, QStringLiteral("1")).withVisible(kindIs(kWall)),
+      textInput(kFrameOpenings, QObject::tr("Openings"))
+          .withVisible([](const CommandState& state) {
+            return state.choice(kFrameKind) == kWall || state.choice(kFrameKind) == kFloor;
+          })
+          .withTooltip(
+              QObject::tr("Separated by ';': a wall's \"offset widthxheight [sill]\", a floor's \"a b widthxlength\"")),
+      checkInput(kFrameBlocking, QObject::tr("Blocking"), false).withVisible(kindIs(kFloor)),
+      valueInput(kFramePitch, QObject::tr("Pitch"), ValueKind::Angle, QStringLiteral("30 deg")).withVisible(kindIs(kRoof)),
+      valueInput(kFrameOverhang, QObject::tr("Overhang"), ValueKind::Length, QStringLiteral("300 mm"))
+          .withVisible(kindIs(kRoof)),
+      choiceInput(kSize, QObject::tr("Size"), {}, QString())
+          .withChoices([shared](const CommandState& state) {
+            // The rows of the members' source in the Timber picker's catalog.
+            Choices sizes;
+            const std::optional<BuildPart> lead = frameOfPick(*shared, state);
+            if (!lead) {
+              return sizes;
+            }
+            for (const Part& part : shared->catalog.parts(kTimberRole)) {
+              if (part.source == lead->source && !part.config.isEmpty()) {
+                sizes.append({part.config, part.lessCommon() ? QObject::tr("%1 (less common)").arg(part.config) : part.config});
+              }
+            }
+            if (sizes.isEmpty() && !lead->config.isEmpty()) {
+              sizes.append({lead->config, lead->config});
+            }
+            return sizes;
+          })
+          .withVisible([](const CommandState& state) { return !state.choice(kFrameKind).isEmpty(); })
+          .withTooltip(QObject::tr("The members' size (studs, joists, rafters)")),
+  };
+  def.enabled = [&context] {
+    const QVector<BuildPart> parts = build::buildParts(context);
+    return std::any_of(parts.begin(), parts.end(), [](const BuildPart& part) { return !frameLeadOf(part).isEmpty(); });
+  };
+  def.init = [shared](CommandState&, const CommandContext& model) {
+    shared->refreshDesign(model);
+    shared->catalog.refresh(kTimberRole, model);
+  };
+  def.inspect = [shared](const CommandState& state, const CommandContext& model) {
+    Inspection result;
+    const std::optional<BuildPart> lead = frameOfPick(*shared, state);
+    if (!lead) {
+      result.error = QObject::tr("Pick a member of a timber frame.");
+      return result;
+    }
+    const QString name = str(frameDefinition(*lead), "name");
+    QString problem;
+    const QJsonObject frame = frameEditFields(*lead, state, problem);
+    if (!problem.isEmpty()) {
+      result.error = problem;
+      result.log = QStringLiteral("frame %1 waiting: %2").arg(name, problem);
+      return result;
+    }
+    const FramePreview preview = previewFrame(frame, lead->component, model);
+    result.shape = preview.shape;
+    const int count = preview.answer.value(QStringLiteral("count")).toInt();
+    QStringList lines{QStringLiteral("<b>%1</b>").arg(name.toHtmlEscaped()),
+                      QObject::tr("%1 member(s): %2").arg(count).arg(preview.counts).toHtmlEscaped()};
+    for (const QJsonValue& warning : preview.answer.value(QStringLiteral("warnings")).toArray()) {
+      lines << QStringLiteral("<i>%1</i>").arg(warning.toString().toHtmlEscaped());
+    }
+    result.text = lines.join(QStringLiteral("<br>"));
+    result.error = preview.error;
+    result.log = QStringLiteral("frame %1 laid out again: %2 member(s) (%3)").arg(name).arg(count).arg(preview.counts);
+    return result;
+  };
+  def.apply = [shared, &host, kSize](CommandState& state, const CommandContext& model) {
+    const std::optional<BuildPart> lead = frameOfPick(*shared, state);
+    if (!lead) {
+      host.showStatus(QObject::tr("Pick a member of a timber frame."), true);
+      return false;
+    }
+    QString problem;
+    const QJsonObject frame = frameEditFields(*lead, state, problem);
+    if (!problem.isEmpty()) {
+      host.showStatus(problem, true);
+      return false;
+    }
+    QJsonObject command{{QStringLiteral("cmd"), QStringLiteral("build_edit")},
+                        {QStringLiteral("component"), lead->component},
+                        {QStringLiteral("frame"), frame}};
+    if (!state.choice(kSize).isEmpty() && state.choice(kSize) != lead->config) {
+      command.insert(QStringLiteral("config"), state.choice(kSize));
+    }
+    QJsonObject result;
+    if (!host.runModelCommand(command, &result)) {
+      return false;
+    }
+    qInfo().noquote() << QStringLiteral("Timber frame %1: %2 member(s), %3 junction(s) fastened")
+                             .arg(str(result, "name"))
+                             .arg(result.value(QStringLiteral("count")).toInt())
+                             .arg(result.value(QStringLiteral("fasteners")).toInt());
+    shared->refreshDesign(model);
+    return true;
+  };
+  return def;
+}
+
 // --- Panels
 
 // A panel's thickness is a parameter of its own (else a fixed value).
@@ -2995,8 +3806,7 @@ CommandDef panelCommand(const SharedPtr& shared, DocumentHost& host) {
   def.id = QStringLiteral("build.panel");
   def.name = QObject::tr("Panel");
   def.icon = QStringLiteral("build-panel");
-  def.tooltip = QObject::tr("Fills a frame with a sheet: an inner face puts it in the slots, sized to the frame; an "
-                            "outer face puts it on the face with clamps");
+  def.tooltip = QObject::tr("Fills a frame with a sheet, in its slots or on its face");
   def.tab = kTab;
   def.group = QStringLiteral("PROFILE");
   def.pinned = true;
@@ -3012,9 +3822,8 @@ CommandDef panelCommand(const SharedPtr& shared, DocumentHost& host) {
                                     false)
                         // Shift + click: the pick and Place in one (mitcad#451).
                         .withShiftClickApplies()
-                        .withTooltip(QObject::tr("A face of one of the frame's profiles: inside the frame for the "
-                                                 "slots, outside for the surface; a timber member's face for a sheet "
-                                                 "on it. Shift+click places at once")));
+                        .withTooltip(
+                            QObject::tr("A face of a frame's profile, inside or outside, or a timber member's face")));
   def.inputs.append(valueInput(QStringLiteral("thickness"), QObject::tr("Thickness"), ValueKind::Length,
                                QStringLiteral("3 mm"))
                         .withVisible([shared](const CommandState& state) {
@@ -3308,8 +4117,7 @@ CommandDef connectorCommand(const SharedPtr& shared, DocumentHost& host, const C
   def.id = QStringLiteral("build.connector");
   def.name = QObject::tr("Connector");
   def.icon = QStringLiteral("build-connector");
-  def.tooltip = QObject::tr("Connects two profiles where they meet: the junctions are marked; the list has the "
-                            "connectors that fit, each placed with its nuts, screws and end machining");
+  def.tooltip = QObject::tr("Connects two profiles where they meet with a connector that fits");
   def.tab = kTab;
   def.group = QStringLiteral("CONNECT");
   def.pinned = true;
@@ -3378,8 +4186,7 @@ CommandDef connectorCommand(const SharedPtr& shared, DocumentHost& host, const C
             Part part;
             return shared->catalog.find(key, part) ? shared->thumbnail(part) : QImage();
           })
-          .withTooltip(QObject::tr("The connector chosen among those that fit the junction's systems and room: a "
-                                   "click (or Enter) opens the part picker, the best fitting first")),
+          .withTooltip(QObject::tr("The connector chosen; a click (or Enter) opens the part picker")),
       // A timber junction (mitcad#478): a wood fastener's count and size, a
       // joint's depth; the nuts and the end machining are the slots'.
       valueInput(QStringLiteral("count"), QObject::tr("Count"), ValueKind::Unitless, QStringLiteral("2"))
@@ -3394,8 +4201,7 @@ CommandDef connectorCommand(const SharedPtr& shared, DocumentHost& host, const C
             return sizes;
           })
           .withVisible([shared](const CommandState& state) { return woodFastenerChosen(*shared, state); })
-          .withTooltip(QObject::tr("Auto: the diameter from the thinner member, the length through the first "
-                                   "member and well into the other")),
+          .withTooltip(QObject::tr("The fastener's size, or Auto: sized from the members it joins")),
       checkInput(QStringLiteral("own_depth"), QObject::tr("Own Depth"), false)
           .withVisible([](const CommandState& state) { return isJoint(state.choice(kPart)); })
           .withTooltip(QObject::tr("Off: the joint's default depth (a half-lap half and half, a housing a third)")),
@@ -3914,8 +4720,7 @@ CommandDef lengthCommand(DocumentHost& host, const CommandContext& context) {
   def.id = QStringLiteral("build.length");
   def.name = QObject::tr("Length");
   def.icon = QStringLiteral("build-length");
-  def.tooltip = QObject::tr("A part's length: bound to the part it runs to (it follows when that one moves), or "
-                            "detached as a number");
+  def.tooltip = QObject::tr("Binds a part's length to the part it runs to, or makes it a number");
   def.tab = kTab;
   def.group = QStringLiteral("MODIFY");
   def.pinned = true;
@@ -4055,8 +4860,7 @@ CommandDef endsCommand(DocumentHost& host, const CommandContext& context) {
   def.id = QStringLiteral("build.ends");
   def.name = QObject::tr("Ends");
   def.icon = QStringLiteral("build-ends");
-  def.tooltip = QObject::tr("A part's end cut: a mitre's angle and the axis it turns about, also shared with the "
-                            "part that meets it there");
+  def.tooltip = QObject::tr("A part's end cut: a mitre's angle and the axis it turns about");
   def.tab = kTab;
   def.group = QStringLiteral("MODIFY");
   def.pinned = true;
@@ -4259,8 +5063,7 @@ CommandDef listCommand(const CommandContext& context, QWidget* window, std::func
   def.id = cut ? QStringLiteral("build.cut_list") : QStringLiteral("build.parts_list");
   def.name = cut ? QObject::tr("Cut List") : QObject::tr("Parts List");
   def.icon = cut ? QStringLiteral("build-cut-list") : QStringLiteral("parts-list");
-  def.tooltip = cut ? QObject::tr("The parts to cut with their lengths, end angles, machining, supplier and part "
-                                  "number, the stock they come from; Copy as CSV, Save as PDF")
+  def.tooltip = cut ? QObject::tr("The parts to cut with their lengths, end angles and the stock they come from")
                     : QObject::tr("Every part with its quantity, supplier and part number; Copy as CSV, Save as PDF");
   def.tab = kTab;
   def.group = QStringLiteral("OUTPUT");
@@ -4305,6 +5108,7 @@ void registerBuildCommands(CommandRegistry& registry, const CommandContext& cont
   registry.add(turnCommand(host, context, false));
   registry.add(turnCommand(host, context, true));
   registry.add(spacingCommand(shared, host, context)); // mitcad#478
+  registry.add(frameCommand(shared, host, context));   // mitcad#479
   // OUTPUT
   registry.add(listCommand(context, window, designName, true));
   registry.add(listCommand(context, window, designName, false));

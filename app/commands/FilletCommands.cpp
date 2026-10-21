@@ -225,8 +225,7 @@ CommandDef filletCommand(const CommandContext& context) {
   def.id = QStringLiteral("solid.fillet");
   def.name = QObject::tr("Fillet");
   def.icon = QStringLiteral("fillet");
-  def.tooltip = QObject::tr("Rounds edges; a face rounds all its edges. Sets of edges can each "
-                            "have their own radius");
+  def.tooltip = QObject::tr("Rounds edges, each set of edges with its own radius");
   def.shortcut = QKeySequence(Qt::Key_F);
   def.group = QStringLiteral("MODIFY");
   def.pinned = true;
@@ -246,9 +245,7 @@ CommandDef filletCommand(const CommandContext& context) {
                              QStringLiteral("constant")),
                  valueInput(QStringLiteral("radius"), QObject::tr("Radius"), ValueKind::Length,
                             QStringLiteral("2 mm"))
-                     .withTooltip(QObject::tr("The radius; the chord length; the start radius of a "
-                                              "variable one; the first distance of an asymmetric "
-                                              "one; or the first control radius of a spline"))
+                     .withTooltip(QObject::tr("The radius, or the first size of the other radius types"))
                      .withManipulator([](const CommandState& row,
                                          const CommandContext& model) -> std::optional<Manipulator> {
                        // A handle at the middle of the rounding of the set's
@@ -273,10 +270,7 @@ CommandDef filletCommand(const CommandContext& context) {
                        return size == QStringLiteral("variable") || size == QStringLiteral("spline");
                      }),
                  textInput(QStringLiteral("knots"), QObject::tr("Knots"))
-                     .withTooltip(QObject::tr("The spline's knots from 0 to 1, each end repeated "
-                                              "degree + 1 times (as many as the control radii and "
-                                              "the degree and one more); empty: evenly spaced, "
-                                              "degree 3 at most"))
+                     .withTooltip(QObject::tr("The spline's knots from 0 to 1; empty: evenly spaced"))
                      .withVisible(sizeIs(QStringLiteral("spline"))),
                  valueInput(QStringLiteral("distance2"), QObject::tr("Distance 2"), ValueKind::Length,
                             QStringLiteral("4 mm"))
@@ -566,8 +560,7 @@ CommandDef chamferCommand(const CommandContext& context) {
   def.id = QStringLiteral("solid.chamfer");
   def.name = QObject::tr("Chamfer");
   def.icon = QStringLiteral("chamfer");
-  def.tooltip = QObject::tr("Bevels edges; a face bevels all its edges. Sets of edges can each "
-                            "have their own size");
+  def.tooltip = QObject::tr("Bevels edges, each set of edges with its own size");
   def.group = QStringLiteral("MODIFY");
   def.pinned = true;
   def.keywords = {QStringLiteral("bevel")};
@@ -612,9 +605,7 @@ CommandDef chamferCommand(const CommandContext& context) {
                    {QStringLiteral("miter"), QStringLiteral("Miter")},
                    {QStringLiteral("blend"), QStringLiteral("Blend")}},
                   QStringLiteral("chamfer"))
-          .withTooltip(QObject::tr("Where three bevelled edges meet: a small face of its own "
-                                   "(Chamfer), the bevels running on until they meet (Miter), or a "
-                                   "smooth patch (Blend)")),
+          .withTooltip(QObject::tr("How three bevelled edges meet: a corner face, a miter or a smooth blend")),
   };
   def.enabled = [&context] { return hasBodies(context); };
 
@@ -726,8 +717,7 @@ CommandDef pressPullCommand(const CommandContext& context) {
   def.id = QStringLiteral("solid.press_pull");
   def.name = QObject::tr("Press Pull");
   def.icon = QStringLiteral("press-pull");
-  def.tooltip = QObject::tr("Pushes or pulls what is selected: faces are offset, edges rounded, "
-                            "profiles extruded; a fillet's face opens the fillet");
+  def.tooltip = QObject::tr("Offsets faces, rounds edges or extrudes profiles");
   def.shortcut = QKeySequence(Qt::Key_Q);
   def.group = QStringLiteral("MODIFY");
   def.pinned = true;

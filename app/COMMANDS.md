@@ -14,7 +14,7 @@ CommandDef chamfer(const CommandContext& context) {
   def.id = "solid.chamfer";            // unique, also the settings key of its shortcut
   def.name = QObject::tr("Chamfer");
   def.icon = "chamfer";                // app/icons/chamfer.svg
-  def.tooltip = QObject::tr("Bevels edges; a face bevels all its edges");
+  def.tooltip = QObject::tr("Bevels edges"); // one short line, at most 80 characters
   def.shortcut = QKeySequence();       // none by default
   def.tab = "SOLID";                   // SOLID, BUILD or SKETCH; empty: menus only
   def.group = "MODIFY";                // see Ribbon::groups()
@@ -755,6 +755,33 @@ Texts, patterns and offsets stay editable:
   panels on the picked text, pattern curve or offset curve; `init` fills
   them from `SketchModel::text`, `patternOf`, `offsetOf`. A double-click
   on such a selected curve opens its panel (`SketchHost::trigger`).
+- Edit Text's font (mitcad#473, `sketch/FontFiles.*`): the choice lists
+  Droid Sans, the installed families (as the system has them before any
+  font file is loaded into the application) and the font files of the
+  folders of Preferences › Fonts (the setting `fonts/folders`, found
+  again each time the panel starts), the files as the value
+  `file:<path>` labelled `<family> (<file name>)`; each option has a
+  preview ("Ag" in the font, `choiceImage`). **File...** beside it
+  (`onButton`) opens a file dialog and chooses the file it gives
+  (`DocumentHost::chooseInCommand`), listed then too. A file choice
+  sends `font_file` instead of `font`. A text in a font file starts with
+  the file where it was read, or one of the same name in the font
+  folders. Right-to-left and joined scripts need nothing of the app: the
+  model shapes them and orders the line (commands.md, the sketch's
+  `texts`), and the text shows the outlines it gives
+  (`tools/ui-text-fonts-test.sh` checks a Hebrew word's order).
+- **QR Code** (`sketch.add_code`, CREATE › Text, mitcad#473) and **Edit
+  QR Code** (`sketch.edit_code`) are panels like Edit Text: content,
+  module size, error correction (`L`, `M`, `Q`, `H`), and for a new code
+  its lower left corner. A code is a text with `code` (`TextData::code`,
+  `ecc`), displayed by its outlines; a double-click on it (and its
+  context menu) opens Edit QR Code instead of Edit Text, which does not
+  take codes. `newestProfile` (Extrude, Emboss, …): when the newest unused
+  profile is a region of a code, the command starts with all of the
+  code's material regions (`letter` in the sketch query's regions), so a
+  code extrudes whole. Logged `Added QR code "https://mitcad.org", module
+  1, level M` and `Edited QR code t2: "…", module 0.5, level M`. Test:
+  `tools/ui-qr-code-test.sh`.
 - A derived offset spline (of an ellipse or spline) shows only its ends
   as points: the query marks what the offset computes `derived`, and
   `SketchModel` drops the other control points (no snapping to them).
@@ -1604,16 +1631,17 @@ places one and closes it.
 | Command | Panel | Model |
 |---|---|---|
 | `build.profile` Profile | grows as the placement needs it (mitcad#394). At first: Part, a tile with the chosen part's picture, name, supplier and part number (`withChoiceTile`, mitcad#427); a click on it, or Enter or Space, opens the part picker with the role's parts, filtered to the system chosen last (mitcad#418); Search and System are hidden inputs (for live MCP); Place On (none needed for the first part); Length (the part's stock length, else 500 mm; also a box at the cursor, `withCursorBox`, and a handle at the free end while the length is a number); for a ground placement Direction, three icon buttons X, Y, Z (`withChoiceIcons`, default Z: standing; `at.direction`). Once a part is placed, Length's mode as four icon buttons (mitcad#427, `withChoiceIcons`: Auto: to the face it meets, Auto: to its centre, Auto: through it, Typed length; their labels the tooltips) and, by the pick: an **end pick** adds Direction (mitcad#417: Auto, the click's zone of the end face, `Auto: by the click (+X)`; Straight; the four turns square to the part it meets, `end.turns`, named by the host axis they run along, `+X`, else `Side 1`..`Side 4`), on a corner Offset (the new part's end from the outer side, positive towards the turn, default 0) and Mitre (Auto, `Auto (none)`: the panel's turns are square, and a square corner lies on the end face, mitcad#427; `Auto (<cut>)` when the click's preview says another; None; Shared, not offered at a corner offset other than 0; Cut the new part; Cut the existing part) with Mitre Angle; a **side pick** adds Offset and From (End A, End B, Middle), which the click fills; either adds Rotate (0, 90, 180, 270 deg) and Flip, and a side pick of a profile Tilt below Rotate (mitcad#444: 0 deg, the lean along the part it stands on, positive towards its end B, up to 80 deg; an arc handle at the foot, a ring about the slot's cross axis, drags it, the angle in the box at the cursor while it is dragged; the foot is cut to lie on the side, an auto length ends flush on the face it meets; Offset and From then refer to the foot's long point; sent as `tilt` when not 0). Placement, last, once the design has a part to go on: four icon buttons (mitcad#427, no More; Automatic: where the click is, the default; On a profile's side; On a profile's end; On a plane (as the first part): a ground placement again; their labels the tooltips). The result names where the part goes (`Adds to: Root`, the `build_host` query). **Place** (Enter) places it, also without a pick in a ground placement (at the origin), and the panel stays for the next one; **Shift + click** (mitcad#451, [Selection inputs](#selection-inputs)) on a place Place On takes picks it and places the part at once with the panel's values, then the next one follows as after Place (a plain click still only previews; one that cannot be placed makes nothing and the panel says why); the view's hint says `Shift+click places at once`; **Close** (Esc) keeps what was placed | `build_host`, `build_preview` while the inputs change, `build_place` on Place |
-| `build.timber` Timber | [Timber](#timber) (mitcad#478): Part (the picker of timber only, `timber`), Mode (three icon buttons: From a click, On a member, Spacing), then Mode's inputs; From a click and On a member with Profile's Length (Auto: face, centre, through, Tab; typed, the box at the cursor, the handle); Place (Enter) repeats, Close keeps what was placed | `build_preview`, `build_place` with `to`, `lie`, `length`, `spacing` |
+| `build.timber` Timber | [Timber](#timber) (mitcad#478): Part (the picker of timber only, `timber`), Mode (four icon buttons: From a click, On a member, Spacing, Frame: a wall, floor or roof frame, mitcad#479), then Mode's inputs; From a click and On a member with Profile's Length (Auto: face, centre, through, Tab; typed, the box at the cursor, the handle); Place (Enter) repeats, Close keeps what was placed | `build_preview`, `build_place` with `to`, `lie`, `length`, `spacing`; `build_frame` (Frame) |
 | `build.panel` Panel | Part, the tile that opens the part picker (panels; mitcad#427; on a timber member's face sheets, mitcad#478); Frame Face (an inner face of a frame puts it in the slots, an outer face on the surface with clamps, a timber member's face a sheet on it); Thickness when the panel's thickness is a parameter. Place repeats; Shift + click on a face places at once (mitcad#451) | `build_preview`, `build_panel`; `fits` false is shown with its reason, not refused |
 | `build.linear` Linear Part | as Profile (its part picker too) without the mitre (rails are cut to length; a carriage on its rail gets the joint its `mate` says) | `build_preview`, `build_place` |
 | `build.connector` Connector | Near (a click on a profile chooses the nearest junction), Junction (every junction, `L junction of Part1 and Part2`, `, connected`), Connector (the parts that fit, best first, each with the library's picture of it (`library_preview`, `withChoiceImages`), its supplier and part number; shown as a tile, `withChoiceTile`, mitcad#427, that opens the part picker with the fitting connectors first and, greyed with the reason, those that nearly fit; a new junction gives it new ones), With Nuts and Screws, With End Machining, Show All Junctions. The junctions of the profile under the mouse are marked in the view at their `at_frame` (`L`, `T (connected)`; `CommandDef::hover`, `previewMarkersIn`), the chosen one always (`> L`), every one with Show All Junctions; the panel lists the fitting connectors and, greyed, those that nearly fit with the reason; the two profiles are highlighted. The chosen connector is previewed where it goes (`build_preview` with `build_connect`'s fields; its shape `analysis_shape` `{"shape": "build_preview", "junction", "part", ...}`), its fasteners as markers, the machining it needs in the panel; choosing another in the list previews that one. **Connect** repeats and moves on to the nearest junction not connected; Shift + click near a junction connects it at once (mitcad#451; the view's hint says so while Near is empty) | `build_junctions`, `library_build_candidates` with the junction, `build_preview`, `build_connect` |
 | `build.fasteners` Fasteners | Connector (a connector, or one of its nuts or screws), With Nuts and Screws, Fastener (the kinds it has), Size (the rows of its library component, `library_show`) | `build_edit` with `config`; off: `build_remove` of each; on for a connector without them: `build_remove` and `build_connect` again with them; one undo step `Fasteners of <name>` |
 | `build.spacing` Spacing Set | Member (a member of a spacing set, mitcad#478; its set's values fill the panel), Spacing (Centre distance, Gap), Distance, Last Board (gap: cut, spread), Count (0: from the distance), Size (the rows of the set's source); enabled while the design has a set | `build_edit` of the set's lead with `spacing` (and `config`): the members laid out again in one undo step |
+| `build.frame` Timber Frame | Member (a member of a timber frame, mitcad#479; its frame's values fill the panel), by its kind Length, Width, Height, Spacing, Top Plates, Openings, Blocking, Pitch, Overhang, Size (the members' row); the members previewed as boxes | `build_preview` with `frame` and `component`, `build_edit` with `frame` (one undo step) |
 | `build.length` Length | Part, Length (Detached: this length, Bound: to the face, to the centre, through), Value, Bound To (none: the face it is bound to now); the bound target highlighted | `build_edit` with `length` (a value detaches, a `bind` binds) |
 | `build.ends` Ends | Part (the end nearer the click; an end face by its name), End, Angle, About (x, -x, y, -y), Also the Part It Meets (a shared mitre: the end that meets this one in an `L` or `inline` junction); End Machining (As it is, A bore: Diameter, Depth, Thread; None takes the part's end machining away) | `build_edit` with `ends` and `machining`, the part's whole list (`[{end, hole: {diameter, depth, thread}}]`): `build_parts`' list with this end's entries replaced by the bore, or left out for None; one undo step for both parts |
 | `build.flip` Flip, `build.rotate` Rotate 90 deg | Parts (any number); Rotate repeats (Enter turns them again) | `build_edit` with `flip` / `rotate`, one undo step |
-| `build.cut_list` Cut List, `build.parts_list` Parts List | an action: `BuildListsDialog` (`build/BuildLists.cpp`) with the tabs Cut List (Kerf; the cut parts grouped as the model groups them: quantity, part, length, end A and B, machining, own features, supplier, part number, mass each; the stock: pieces in cutting order, stock pieces, offcut; the other parts) and Parts List (`parts_list`: quantity, part, supplier, part number, library, version, licence); **Copy as CSV** (Alt+C) copies the shown tab's tables, **Save as PDF...** (Alt+P) writes them with `QPdfWriter` (Qt Gui; A4 landscape) under the list's title and the design's name with the date. A design with timber (the cut list's `timber`, mitcad#478) adds columns after these: the cut parts' material, grade, finish, nominal and actual section (thickness first, `48x148`), running metres and volume (m³), and a row of the timber's totals; the stock's size and each stock piece's length; the parts list's material and grade. A design without timber lists exactly as before | `build_cut_list` (`kerf`), `parts_list` |
+| `build.cut_list` Cut List, `build.parts_list` Parts List | an action: `BuildListsDialog` (`build/BuildLists.cpp`) with the tabs Cut List (Kerf; the cut parts grouped as the model groups them: quantity, part, length, end A and B, machining, own features, supplier, part number, mass each; the stock: pieces in cutting order, stock pieces, offcut; the other parts) and Parts List (`parts_list`: quantity, part, supplier, part number, library, version, licence); **Copy as CSV** (Alt+C) copies the shown tab's tables, **Save as PDF...** (Alt+P) writes them with `QPdfWriter` (Qt Gui; A4 landscape) under the list's title and the design's name with the date. A design with timber (the cut list's `timber`, mitcad#478) adds columns after these: the cut parts' material, grade, finish, nominal and actual section (thickness first, `48x148`), running metres and volume (m³), and a row of the timber's totals; the stock's size and each stock piece's length; the parts list's material and grade. A design with profiled boards (the cut list's `profiled`, mitcad#477) adds three more: the profile, the cover width and the area covered (m²), its total in the totals row. A design without timber lists exactly as before | `build_cut_list` (`kerf`), `parts_list` |
 
 - **The picker** (`build/BuildCatalog`): the parts of the role from
   `library_build_candidates` (`library_search` with the `role` when the
@@ -1817,39 +1845,31 @@ profile`, `kind: timber`).
   section. The families are groups of their own (the library's
   categories `sawn-timber`, `planed-timber`, `dimensioned-timber`). A
   row with a picture of its own (`row_previews`, docs/libraries.md; the
-  timber's show the section from its end) shows it in its tile.
-- **Mode**, three icon buttons (the last one is the next start's):
-  - **From a click** (the default; click, then define the length, as
-    Profile places): Start (a plane or a face the member lies on, a
-    member, or a point), then the member runs
-    from it towards the mouse (the point under it snapped and moved onto
-    the start's plane, as End's; off the bodies, on the panel while a
-    length is typed, the last point stays). Its length is **Profile's
-    Length** (`lengthFromAClick`: the same two inputs, `length_mode` and
-    `length`, shown here too): Auto (to the face it meets, to its centre,
-    through it) binds it to what the way from the start meets first
-    (`bindAutoLength`, Profile's: the preview's `length.target`, then
-    `length: {bind, mode, add: 0}`; the target highlighted, the length in
-    the box at the cursor), **Tab** steps face, centre, through; nothing in
-    the way: to the mouse; typed (the panel, the box at the cursor, the
-    handle at the free end) runs it that long that way, and typing
-    detaches the auto length (Typed length). **Place** (Enter) places it.
-    **End** (a second click; Shift + click places at once) gives the other
-    end: two points, the length their distance (no `length` sent) until a
-    length is typed or a mode chosen, which then run along the end's way;
-    while it gives the length, Length's mode is not shown and **Tab** steps
-    **Lie** (Flat or On edge) instead. Start and End snap to the members of
-    the design (timber and profiles): to an end's middle within the snap
-    distance (`at.snap`, 12 pixels), else to the nearest centre line or
-    side's centre line (`snapToMembers`, from each member's placement,
-    length and its source's section). `build_place` with `at` (`geometry`
-    the plane or face picked, `point`), `to.point` (the end, or the point
-    the way runs to), `lie` and, unless two points give it, `length`.
+  timber's show the section from its end) shows it in its tile. Profiled
+  boards (mitcad#477: tongue and groove, cladding and deck boards, each
+  family a group: `tongue-and-groove`, `cladding`, `decking`) are timber
+  too; a board that joins the next adds its cover width to its label
+  (`cover 112`).
+- **Mode**, four icon buttons in this order (mitcad#485): On a member (the
+  default), Spacing, Frame (mitcad#479, below) and Two points; the one used
+  last is the next start's.
   - **On a member**: Profile's placement inputs and rules (a ground
     placement on a plane, Direction X/Y/Z; a click on a side near an end or
     on an end face; Offset and From, but no slot grid: the model places on
     a member's `face` frames with a free offset; the auto length, Tab, the
-    mitres, Rotate, Flip, Tilt; the hover's preview).
+    mitres, Rotate, Flip, Tilt; the hover's preview). Its Length starts as
+    **Typed length**; Auto (to the face, the centre, through) stays a
+    choice and binds as Profile's (`bindAutoLength`). A ground placement
+    also has **Lie** (Flat or On edge, Tab steps it; `build_place`'s `lie`
+    with `at.direction`). A member on another member's end lies as that
+    one does (the model's rule, commands.md, *Frames of members*):
+    two boards of one size meet with ends of the same width and flush
+    faces; Rotate and Flip still turn it. The last member of a frame, its
+    length bound to the first one it meets end to end, closes that corner
+    as its start was made: a shared mitre cutting both after a mitred
+    start, a square butt after a square one (commands.md, *Frames of
+    members*); the panel says so (`Closes the corner at end A of <part>: a
+    shared mitre`).
   - **Spacing**: Spacing On: **Between two members** (on a member's side as
     On a member, the auto length bound to the member it meets: studs,
     joists, rafters), or **Over the supporting faces** (Supporting Faces:
@@ -1859,9 +1879,64 @@ profile`, `kind: timber`).
     Lie as above). Spacing: Centre distance (default 400 mm) or Gap (a
     board row, default 5 mm; Last Board: cut to what is left, or the gaps
     spread). The panel counts the members as the model will. One
-    `build_place` with `spacing`: one undo step for the set.
+    `build_place` with `spacing`: one undo step for the set. Profiled
+    boards that join (tongue and groove, shiplap, feather-edge, mitcad#477;
+    `build::Part::joinedCover`) lying flat are laid edge to edge in a Gap
+    row: the panel counts them by their cover width and says `edge to
+    edge, cover 112 mm` instead of the gap, which the model does not keep
+    (its warning says so); deck boards keep the gap.
+  - **Two points** (mitcad#485: two clicks; nothing follows the mouse):
+    **Start** (a plane or a face the member lies on, a member, or a point)
+    and **End** (a second click, moved onto the start's plane; Shift +
+    click places at once) give the member and its length, their distance
+    (no `length` sent; no Length inputs in this mode). **Lie** (Flat or On
+    edge, **Tab** steps it). Start and End snap to the members of the
+    design (timber and profiles): to an end's middle within the snap
+    distance (`at.snap`, 12 pixels), else to the nearest centre line or
+    side's centre line (`snapToMembers`, from each member's placement,
+    length and its source's section). `build_place` with `at` (`geometry`
+    the plane or face picked, `point`), `to.point` and `lie`.
+- **What the tool remembers** (mitcad#485, while the application runs):
+  the length typed last, the ground placement's Direction and Lie, and
+  the part chosen last (in any design). The first time: the part's default
+  length (the library's `length.default`, 3000 mm for timber), Direction X,
+  Flat, and a dimensioned 48x98 (`material.finish: dimensioned`, a 48 x 98
+  section), else the picker's first part. Logged as `BUILD timber starts:
+  length 3000 mm (the part's default), typed; along x, flat` and `BUILD
+  timber starts with <library>/<component>: the first time's dimensioned
+  48x98` (`chosen last in the tool` later).
 - **Spacing Set** (`build.spacing`, MODIFY) edits a set as one afterwards:
   its distance, mode, count and members' size.
+- **Frame** (Mode's third button, mitcad#479; the model's side in
+  commands.md, "BUILD: timber frames"): a whole frame of the chosen
+  timber in one `build_frame`, one undo step. Frame: **Wall**, **Floor or
+  ceiling** or **Roof**.
+  - Wall: Start (a click; none: the host's origin) and End (a click,
+    level with the start; none: Length along Direction, +X by default),
+    Height (2400 mm), Spacing (600 mm; a floor's 400 mm), Top Plates (one
+    or two), Openings: a text, each opening `offset widthxheight [sill]`
+    in mm separated by `;` (no sill: a door), `600 900x1200 900`. A Start
+    or End clicked on a member of another wall frame joins it (`joins`:
+    a corner or a T-junction) at that wall's base height.
+  - Floor: Start and End two opposite corners (axis-aligned in the host),
+    or Length and Width from the start (Width to the left of Direction);
+    Blocking (a row halfway); Openings `a b widthxlength` (from the
+    corner, across and along the joists).
+  - Roof: Walls (a member of each of two wall frames), Roof (Gable or
+    Mono-pitch), Pitch (30 deg; a mono-pitch roof's from the walls'
+    heights while Pitch From Walls is checked), Overhang (300 mm).
+  - Fasteners (checked): the library's first wood screw (the catalog's
+    `wood`: `library_build_candidates` with `role: fastener`, `kind:
+    wood`), two at each junction, sized by the model.
+  The preview (`build_preview` with `frame`) draws the members as boxes
+  and counts them by role, with the layout's warnings. Enter places it;
+  the panel stays for the next one.
+- **Timber Frame** (`build.frame`, MODIFY) lays a frame out again: a
+  member picked, its frame's values in the panel (a wall's Length, Height,
+  Spacing, Top Plates, Openings; a floor's Length and Width when its
+  outline is a rectangle, Spacing, Blocking, Openings; a roof's Spacing,
+  Pitch, Overhang; Size, the members' row), previewed, `build_edit` with
+  `frame` (and `config`).
 - **Connector** at a junction of two timber members (`build_junctions`'s
   `wood`): the catalog's `forJunction` lists each wood fastener once
   without a row (`(sized from the members)`: the model sizes it) and the
@@ -1881,12 +1956,13 @@ profile`, `kind: timber`).
   without slot profiles.
 
 Logs: `BUILD parts timber: <n> (<m> in the design)`, `BUILD timber starts
-with <library>/<component>: ...`, `BUILD timber adds to <host>, points`,
-`Inspect Timber: points, length 742.50 mm, flat; start snap end, end snap
-none; length bound, auto: to the face to <face> of <part>; adds to Part1;
-part <part>` (the length's note: `by two points`, `typed`, `bound, auto:
-...`, `to the mouse: nothing in the way for an auto length`; `; on the
-hover` while the way is the mouse's), `Timber: Tab steps Length`, `BUILD
+with <library>/<component>: ...`, `BUILD timber adds to <host>, member`,
+`BUILD timber starts: length 3000 mm (the part's default), typed; along x,
+flat`, `Inspect Timber: points, length 742.50 mm, flat; start snap end, end
+snap none; length by two points; adds to Part1; part <part>`, `Inspect
+Timber: place grounded, length 3000.00 mm (typed), ...; along x, flat`,
+`...; closes the corner at end A of <part>, shared mitre` (`square butt`),
+`Timber: Tab steps Lie`, `BUILD
 length typed: detached from the auto length`, `Cursor box Timber length:
 2451.0 mm at x,y`, `Inspect Timber: row over 3 face(s), span 2400.0 mm, 18
 member(s), gap 5 mm, the last board cut; ...`, Profile's `Inspect
@@ -1897,10 +1973,22 @@ distance 600 mm`, `Connected half_lap at junction <id> (cross): 2 cut(s)`,
 `BUILD panel picker: sheets on a face`, `Cut list timber: <m> m, <v> m3,
 <kg> kg; columns ...`, `Cut list timber row: <part>: spruce C24
 dimensioned, nominal 48x148, actual 48x148, 3.000 m, 0.0213 m3`, `Cut
-list timber stock: <part> <size>: <lengths>`, `Cut list: no timber
+list timber stock: <part> <size>: <lengths>`, `Cut list profiled row: <part>:
+tongue and groove, cover 112.0 mm, 0.917 m2`, `Cut list profiled boards:
+2.048 m2`, `Cut list: no timber
 columns`, `Ribbon button build.timber at x,y` (the shown page's command
 buttons). Tests: `tools/ui-windows-timber-test.ps1` (ctest
 `app.ui-windows-timber`).
+
+Frames' logs (mitcad#479): `BUILD parts wood: <n> (<m> in the design)`,
+`Inspect Timber: frame wall Wall 1, wall 3600 x 2400 mm, 16 member(s) (1
+bottom plate, 2 cripple stud, ...); fasteners yes; adds to Part1; part
+<part>` (`frame <kind> waiting: <problem>; ...` while it cannot be laid
+out), `Placed frame Wall 1 (wall, lead C3): 16 member(s), 31 junction(s)
+fastened`, `Frame warning: <warning>`, `Inspect Timber Frame: frame Wall 1
+laid out again: 20 member(s) (...)`, `Timber frame Wall 1: 20 member(s),
+36 junction(s) fastened`. Test: `tools/ui-timber-frame-test.sh` (a wall
+with a window, the cut list).
 
 ## The view
 
@@ -1972,7 +2060,8 @@ settings in the user's settings (`ViewSettings`, group `view`);
 - **Preferences** (`tools.preferences`): one page per group (General,
   Navigation, Display with the window's Layout, Cache, Cloud, Updates, 3D
   Print, Diagnostics, Textures: `TexturePreferencesBox`, the texture
-  folders, mitcad#315) so the window fits 1366 × 768; each page is also a command
+  folders, mitcad#315, Agents, Fonts: `sketch::FontPreferencesBox`, the
+  folders of font files Edit Text offers, mitcad#473) so the window fits 1366 × 768; each page is also a command
   `tools.preferences.<page>` that the search finds by its settings. OK
   saves every page. On macOS the pages are the panes of `SettingsWindow`
   (Settings, Cmd+,), whose changes apply as they are made. In builds with
@@ -2300,6 +2389,7 @@ UI thread.
 | `framework/ManipulatorOverlay.*` | handles a command draws over the view: distance arrows, angle rings |
 | `framework/Appearances.*` | appearances as the model's `appearances` query lists them (`Appearance`: the physically based parameters and the display colour), a preview swatch (`appearanceSwatch`), and the physical materials |
 | `materials/TextureSource.*`, `materials/FolderTextureSource.*`, `materials/TextureBrowser.*`, `materials/TextureUse.*`, `materials/TexturePreferences.*` | texture sources (mitcad#315): the `TextureSource` interface, its registry, `TextureSettings` and the texture cache's folders; local texture folders (map detection in file names, the scan, thumbnails); Edit Appearances' grid; Use's `create_appearance`; Preferences' Textures group |
+| `sketch/FontFiles.*` | font files for sketch text (mitcad#473): the font folders' setting and their files, the families and previews of Edit Text's font chooser, Preferences' Fonts group |
 | `materials/PolyHavenTextureSource.*`, `materials/TextureFetcher.*` | Poly Haven as an online texture source (mitcad#313): reading the API's lists, the cached list, files and thumbnails, the downloads; the requests of online sources (Qt Network, or fixture files for UI tests) |
 | `framework/Cursors.*`, `framework/Icons.*`, `framework/Numbers.*` | the sketch tools' pointer; icons from `app/icons`; numbers with decimal commas |
 | `framework/AppSettings.*` | general settings (autosave) |
@@ -2385,6 +2475,7 @@ same ways without questions (mm, the XY plane, linked).
 | STEP, IGES, BRep | a base feature (`import_file`, one undo step `Import part.step`) |
 | STL, OBJ | mesh bodies, after asking the unit (Insert Mesh) |
 | DXF | a new sketch on a plane (`sketch.create` + `sketch.import_dxf`, one undo step `Insert drawing.dxf`), or into the edited sketch; the dialog uses the `dxf_info` query (origin placement, layers) |
+| SVG | as DXF (`importDrawing`; Insert SVG, `insert.svg` and in sketch mode `sketch.insert_svg`, mitcad#473): a new sketch on a plane (`sketch.create` + `sketch.import_svg`, one undo step `Insert logo.svg`) or into the edited sketch; the dialog (`askSvgInsert`) shows the `svg_info` query's size and contents and asks the scale, where the lower left corner goes and whether strokes become bands; in a new sketch the `filled` regions the result lists are selected as profiles, so Extrude takes them (`tools/ui-svg-test.sh`) |
 | `.mitcad` | Insert Component, linked or as a copy (`insert_component`); in a project with versions the design is chosen in the [project picker](#project-picker) (Another File... the file dialog; mitcad#176) |
 
 **The `.f3d` worker** (`files/F3dImport`): the application runs itself as
@@ -3606,12 +3697,22 @@ SVG at several sizes (`themeIcon`).
   place once laid out). Test: `tools/ui-cut-hidden-targets-test.sh`.
 - **Emboss** (`solid.emboss`, `EmbossCommands.cpp`, mitcad#458): Profiles
   (the newest unused one at start; a text's letters are profiles), Face
-  (one planar or cylindrical face, `withAccepts`; none: the sketch
+  (one planar, cylindrical or conical face, `withAccepts`; none: the sketch
   plane), Depth, Raise or Sink (`mode`, left out for Raise) and Objects
   (`participants`; none: the face's body). The model wraps the profiles
-  onto a cylindrical face (commands.md, *emboss*). Logged `Added emboss
-  (Raise) of 1 profile(s) on a cylindrical face, wrapped, depth 1`. Test:
-  `tools/ui-create-test.sh` (Emboss).
+  onto a cylindrical face, and onto a conical one by its development
+  (mitcad#473; commands.md, *emboss*). Logged `Added emboss
+  (Raise) of 1 profile(s) on a cylindrical face, wrapped, depth 1` (`a
+  conical face, wrapped`). Test: `tools/ui-create-test.sh` (Emboss).
+- **Extrude's Wrap Onto** (`wrap`, mitcad#473): a face input (0 or 1, a
+  cylindrical or conical face, `withAccepts`), shown for a solid
+  extrusion to one side from the profile plane; with a face the
+  definition gets `wrap` (commands.md, *extrude*: wrapped as an emboss,
+  out of the material by the distance, into it flipped), refuses an
+  extent other than a distance or a taper ("A wrapped extrusion goes a
+  distance, without a taper."), and sends no assembly cut scope. Logged
+  `Extrude Wrap Onto: 1 face` and `Added extrude (Join), distance 1,
+  wrapped onto a cylindrical face`. Test: `tools/ui-wrap-test.sh`.
 - **Plastic Feature** (`solid.plastic`, `PlasticCommands.cpp`,
   mitcad#459): one panel for the model's `boss`, `lip`, `groove`,
   `snap_fit`, `rest` and `plastic_rule` (commands.md, *Plastic part
@@ -3752,6 +3853,7 @@ next screenshot.
 | `Palette row paletteGrid at x,y size 276x22, hint 93x22` (each option row, `paletteDimensionText`, `paletteFinish`), `Palette size 270x512, hint 242x512, minimum hint 242x512`, `Palette scrolled to 137 of 137 (view 375 high, palette 512)` | the palette's rows against their size hints (mitcad#470): in the floating layout the palette is in a scroll area in the command card, so a card shorter than the rows scrolls them instead of squeezing them below their hints; logged with the places, again when the palette scrolls |
 | `Dragged p5 to (x, y)`, `Dragged c7 to (x, y)`, `Drag of p5 did not move it` | a drag ended: where the point is, or the curve's point nearest the cursor |
 | `Double-click on t26: sketch.edit_text`, `Edited text t26: "MIT", Droid Sans, center`, `Edited pattern k8: 4 in all`, `Edited offset k13: 3 mm` | the edit panels of texts, patterns and offsets |
+| `Edited text t1: "MIT", Liberation Sans (LiberationSans-Regular.ttf), left`, `Edit Text font file <path>`, `Preferences font folder at x,y`, `Preferences: font folders <folders>` (`none`) | a text in a font file, the file chosen with File..., Preferences › Fonts (mitcad#473, `tools/ui-text-fonts-test.sh`) |
 | `Equal spacing k4 horizontal: p1, c2, c5 (spacing k6 = 12.00)` (`… along c9`; without the spacing when it is free), `Equal spacing k4 removed`, `Equal spacing preview: p1, c5, c2` (the panel's objects in its order), `Sketch Dimension on 3 objects: Equal Spacing Dimension`, `Double-click on k4: sketch.edit_equal_spacing`, `Equal spacing of 3 object(s), horizontal, spacing 12 mm`, `Edited equal spacing k4 of 4 object(s), vertical` | equal spacings (mitcad#221): each chain in the order the model keeps, when it changes (also during a preview), the panels |
 | `Timeline Sketch1 at x,y`, `Timeline marker at x,y`, `Timeline button back at x,y` (start, back, forward, end) | the timeline's items, when they changed, also when the timeline moves in the window (a banner or another panel makes room) |
 | `Timeline search opened` / `closed`, `Timeline search field at x,y`, `Timeline button search at x,y` (`search-previous`, `search-next`), `Timeline search "fillet in:cover": 2 matches: Fillet2 (Cover), Fillet7 (Cover)` (`no matches`, `unknown filter is:x`), `Timeline search result Fillet2 (Cover) at x,y`, `Timeline search results hidden`, `Timeline search match 1 of 2: Fillet2 (Cover)`, `Timeline search cleared` / `cleared: selected Plane1 again, scrolled to 0`, `Selection restored after the timeline search: 1 item(s)` | the timeline search (mitcad#179): its field, the matches (when they change), the listed ones in sight, a step, the end and what it restored |
@@ -3807,6 +3909,7 @@ next screenshot.
 | `Export dialog opened: unit mm (mm \| cm \| m \| in \| ft)` (with occurrences also `, coordinates design (design \| component)`), `Insert Mesh dialog opened: unit …`, `Insert DXF dialog opened: unit …`, `Units dialog opened: mm (…)`, `Add User Parameter dialog opened: unit mm`, `Grid settings dialog opened: automatic, fixed spacing 10 mm` | a dialog that offers units opened, with its default first |
 | `Panel Hole choices: placement=face, …, standard=iso_metric, size=6, designation=M6x1, class=6H`, `Panel Hole options size: 1 \| 1.1 \| …` | a panel's choices when it starts; the options of a `withChoices` input when they change |
 | `Imported block.step as Base1: 1 body(ies)`, `Inserted drawing.dxf into Sketch2: 4 curves, 4 points, 0 texts, 1 profiles, 0 warnings`, `Inserted component block (linked) from block.mitcad` | import |
+| `Insert SVG dialog opened: 100 x 60 mm, 2 filled, 1 stroked, 1 texts`, `Insert SVG scale at x,y` (`x`, `y`, `bands`, `OK`), `Insert SVG: scale 1, lower left at (0, 0), bands on`, `Inserted logo.svg into Sketch1: 16 curves, 17 points, 1 texts, 8 profiles, 0 warnings, 3 filled, 1 bands` | the Insert SVG dialog (places in the main window's coordinates), what it chose and what came in (mitcad#473) |
 | `Insert DXF drawing: unit mm, layers Outline (4) \| Holes (1) off`, `Insert DXF place lower_left at x,y`, `Insert DXF x at …`, `Insert DXF layer Holes at …`, `Insert DXF OK at …`, `Insert DXF: lower left corner at (10, 5), layers Outline` | the Insert DXF dialog (places in the main window's coordinates) and what it chose |
 | `Import of part.f3d started`, `Import item 3: Extrude2 parametric`, `Import of part.f3d: stop requested after 12 s`, `Import of part.f3d stopping: the remaining items take the file's bodies`, `Import of part.f3d cancelled`, `Import of part.f3d failed: …`, `Imported part.f3d: 2 bodies; items …[; stopped at Extrude3 (item 5)]`, `Import report: part.f3d: 28 items (25 parametric, …), 2 bodies, 2 of the file's 2 solids match[, stopped at Extrude3 (item 5)]`, `Import report summary: <the report's text above its list>`, `Import report kept: Pad.Length = Sheet.w * 2: <why>` | an `.f3d` or FreeCAD import (`stopped after the last item` when only the final comparison was left; `kept`: a FreeCAD expression kept as its value) |
 | `References dialog: Part version 2 of Assembly v1.f3d` (`?` without a name), `References dialog: chose Part v2.f3d`, `References dialog: skipped`, `Import references of Assembly v1.f3d: 2 found, 0 skipped`, `Imported Assembly v1.f3d: documents referred to: Part linked, Holder skipped` | an `.f3d` design's documents referred to (mitcad#196): a file dialog for one not found, the choice, the documents found before the import, how each came in |

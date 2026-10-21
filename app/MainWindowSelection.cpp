@@ -88,9 +88,7 @@ QAction* MainWindow::createSketchFilterAction() {
   m_sketchFilterAction = new QAction(themeIcon(QStringLiteral("filter")), tr("Selection Filter"), this);
   m_sketchFilterAction->setObjectName(QStringLiteral("sketchSelectionFilter"));
   m_sketchFilterAction->setMenu(menu);
-  m_sketchFilterAction->setToolTip(
-      tr("What a click and a window select in the sketch: per row empty (nothing), square (a click) or "
-         "cross (a click and a window). Shift+click also selects what empty rows hold."));
+  m_sketchFilterAction->setToolTip(tr("What a click and a window select in the sketch"));
   return m_sketchFilterAction;
 }
 

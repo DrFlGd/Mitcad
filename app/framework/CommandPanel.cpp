@@ -543,8 +543,7 @@ CommandPanel::Row* CommandPanel::createRow(const InputDef& input, const QString&
     row.edit = new QLineEdit(scope.text(input.id));
     if (input.type == InputDef::Type::Value) {
       row.edit->setToolTip(input.tooltip.isEmpty()
-                               ? tr("A value or an expression, such as 20, 2 in or d1 * 2; a click on a "
-                                    "dimension or a value in the view inserts its name")
+                               ? tr("A value or an expression, such as 20, 2 in or d1 * 2")
                                : input.tooltip);
     } else {
       row.edit->setToolTip(input.tooltip);

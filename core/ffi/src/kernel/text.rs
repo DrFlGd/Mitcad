@@ -21,6 +21,15 @@ pub mod ffi {
         glyphs: Vec<TextGlyph>,
     }
 
+    /// An installed font's file (mitcad#473).
+    struct FontFileInfo {
+        found: bool,
+        family: String,
+        path: String,
+        index: u32,
+        synthetic_italic: bool,
+    }
+
     unsafe extern "C++" {
         include!("bridge/text.hpp");
 
@@ -32,10 +41,30 @@ pub mod ffi {
             italic: bool,
             text: &str,
         ) -> Result<TextOutlines>;
+
+        /// The file of an installed font family and style.
+        fn font_file(family: &str, bold: bool, italic: bool) -> FontFileInfo;
     }
 }
 
-use mitcad_model::{FontGlyphs, FontRequest, Glyph, KernelError};
+use mitcad_model::{FontGlyphs, FontRequest, FontSource, Glyph, KernelError};
+
+/// The kernel's `font_source` (mitcad#473).
+pub fn font_source(request: &FontRequest<'_>) -> Result<FontSource, KernelError> {
+    let file = ffi::font_file(request.family, request.bold, request.italic);
+    if !file.found {
+        return Err(KernelError::failed(format!(
+            "the font {:?} is not installed",
+            request.family
+        )));
+    }
+    Ok(FontSource {
+        family: file.family,
+        path: file.path,
+        index: file.index,
+        synthetic_italic: file.synthetic_italic,
+    })
+}
 
 /// The kernel's `font_glyphs`.
 pub fn font_glyphs(request: &FontRequest<'_>) -> Result<FontGlyphs, KernelError> {

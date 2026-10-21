@@ -429,6 +429,19 @@ design in a project.
   them as ordinary components, features, joints and parameters
   ([commands.md](../core/model/src/api/commands.md), "BUILD: profile
   assemblies").
+- **Timber frames** (mitcad#479, `core/model/src/build/frames.rs`): a
+  wall, floor or roof frame is a set of ordinary BUILD members (grounded
+  members by two points, with plumb end cuts and `birdsmouth` cuts in
+  their derived parts) whose definition the lead member's record keeps
+  (`framing`; each member's `frame` and `member`, its place in the
+  frame). Laying a frame out is geometry from definitions only: a wall
+  reads the walls it butts against and those that butt against it, a
+  roof its two walls; an edit plans the frame and the frames that depend
+  on it, keeps the members whose place stays (`replace_member`), makes
+  and removes the others in one `apply`, drives the fasteners through
+  `build_connect` and merges it all into one undo step (`merge_undo`)
+  ([commands.md](../core/model/src/api/commands.md), "BUILD: timber
+  frames").
 - **Boundary Fill** (mitcad#457, `features/boundary_fill.rs`): a
   `boundary_fill` feature fills the cells its tool bodies enclose, each
   picked by a point inside it (a cell: inside every tool that holds the
@@ -906,7 +919,19 @@ entities and constraints, shared by the UI and the imports.
   each outline is a region curve `t<n>.g<k>.c<j>`. A text may carry the
   outlines a file stores for it (`glyphs`, mitcad#416), laid out instead
   of the fallback font's while its font is missing and its string and
-  font are unchanged.
+  font are unchanged. Font files and shaping (mitcad#473,
+  `sketch/fonts.rs`): a text's font may come from a file the model reads
+  itself (skrifa; WOFF and WOFF2 decoded by wuff), its outlines stored
+  with the text; text in a font file, and right-to-left or joined
+  scripts in an installed font (its file through `Kernel::font_source`),
+  is shaped by harfrust in runs of one direction (unicode-bidi), the
+  C++ side giving only the installed fonts' outlines and files; every
+  line is laid out in its visual order. QR codes (`sketch/code.rs`) are
+  texts whose `code` turns their content into module contours.
+- **SVG drawings** (`sketch/svg.rs`, mitcad#473): read with roxmltree and
+  svgtypes into exact sketch geometry (lines, Bézier splines, circular or
+  elliptical arcs), texts as sketch texts, the regions a drawing fills
+  found by its fill rules after the insert.
 - **Patterns** (`sketch/pattern.rs`): copies are tied to originals by
   solver constraints (`Translated`, `Rotated`, `TurnedDirection`,
   `EqualSize`), so they add no DOF and keep ids when the count changes.

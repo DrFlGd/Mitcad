@@ -33,4 +33,16 @@ struct CylinderFace {
 
 CylinderFace face_cylinder(const Shape& shape, const std::string& face);
 
+// A conical face (mitcad#473: profiles wrapped onto cones).
+struct ConeFace {
+  gp_Pnt apex;
+  // From the apex along the axis, where the radius grows.
+  gp_Dir axis;
+  double half_angle = 0.0; // radians, in (0, pi/2)
+  // The material lies outside the cone (a countersink's wall).
+  bool internal = false;
+};
+
+ConeFace face_cone(const Shape& shape, const std::string& face);
+
 } // namespace mitcad::geometry

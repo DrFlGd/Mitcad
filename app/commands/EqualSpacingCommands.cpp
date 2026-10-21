@@ -216,8 +216,7 @@ QVector<InputDef> spacingInputs(SketchController& c, int minimum, bool dimension
           .withTooltip(QObject::tr("The line the intervals are measured along")),
       checkInput(QStringLiteral("keep_order"), QObject::tr("Keep Listed Order"), false)
           .withVisible(directional)
-          .withTooltip(QObject::tr("The list's order instead of the order along the direction; needed when two "
-                                   "objects are at the same place along it")),
+          .withTooltip(QObject::tr("Orders the objects as listed, not along the direction")),
       checkInput(QStringLiteral("order_confirmed"), QObject::tr("Chain in Listed Order"), false)
           .withVisible(chained)
           .withTooltip(QObject::tr("The objects are chained in the list's order; move them in the list to "
@@ -280,8 +279,7 @@ void addEqualSpacing(CommandRegistry& registry, SketchController& c, bool dimens
   CommandDef def = spacingCommand(dimension ? "sketch.equal_spacing_dimension" : "sketch.equal_spacing",
                                   dimension ? QObject::tr("Equal Spacing Dimension") : QObject::tr("Equal Spacing"));
   def.tooltip = dimension ? QObject::tr("One dimension for the equal intervals between three or more objects")
-                          : QObject::tr("Equal intervals between three or more points, circles, arcs or lines, "
-                                        "without copying or aligning them");
+                          : QObject::tr("Equal intervals between three or more points, circles, arcs or lines");
   def.inputs = spacingInputs(c, 3, dimension);
   def.init = [&c](CommandState& s, const CommandContext& context) {
     const QStringList members = namesOf(s.items(QStringLiteral("members")));
@@ -369,8 +367,7 @@ void loadSpacing(SketchController& c, CommandState& s, const QString& picked, co
 
 void addEditEqualSpacing(CommandRegistry& registry, SketchController& c) {
   CommandDef def = spacingCommand("sketch.edit_equal_spacing", QObject::tr("Edit Equal Spacing"));
-  def.tooltip = QObject::tr("The objects, order, measurement and common spacing of an equal spacing, picked by "
-                            "its symbol or one of its objects");
+  def.tooltip = QObject::tr("Changes an equal spacing's objects, order, measurement and spacing");
   def.inputs = {
       selectionInput(QStringLiteral("constraint"), QObject::tr("Equal Spacing"),
                      SelectKind::SketchConstraint | SelectKind::SketchCurve | SelectKind::SketchPoint, 1, 1)

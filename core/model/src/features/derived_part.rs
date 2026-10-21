@@ -155,7 +155,7 @@ pub struct DerivedPartDef<P = ParamId> {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PartCut<P = ParamId> {
-    /// `housing`, `notch`, `half_lap` or `rip`.
+    /// `housing`, `notch`, `half_lap`, `rip` or `birdsmouth` (mitcad#479).
     pub kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub with: Option<ComponentUid>,

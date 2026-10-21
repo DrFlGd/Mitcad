@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <utility>
@@ -18,22 +19,37 @@
 #include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepClass3d_SolidClassifier.hxx>
 #include <BRepLib.hxx>
-#include <BRepOffset_MakeOffset.hxx>
 #include <BRepOffsetAPI_MakePipeShell.hxx>
+#include <BRepOffset_MakeOffset.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
 #include <BRepPrimAPI_MakeRevol.hxx>
+#include <BRepTools.hxx>
+#include <BRepTools_ReShape.hxx>
 #include <BRep_Builder.hxx>
+#include <Geom2dAPI_Interpolate.hxx>
+#include <Geom2dConvert.hxx>
+#include <Geom2d_BSplineCurve.hxx>
 #include <Geom2d_Line.hxx>
+#include <Geom2d_TrimmedCurve.hxx>
+#include <GeomAPI_ProjectPointOnSurf.hxx>
+#include <GeomAdaptor_Surface.hxx>
 #include <Geom_CylindricalSurface.hxx>
+#include <Geom_BSplineSurface.hxx>
+#include <Geom_Surface.hxx>
+#include <NCollection_HArray1.hxx>
 #include <NCollection_List.hxx>
+#include <ShapeAnalysis_Surface.hxx>
 #include <TopExp.hxx>
 #include <TopExp_Explorer.hxx>
 #include <TopoDS.hxx>
 #include <TopoDS_Compound.hxx>
+#include <TopoDS_Iterator.hxx>
 #include <gp_Ax2.hxx>
 #include <gp_Ax3.hxx>
+#include <gp_GTrsf2d.hxx>
 #include <gp_Pnt2d.hxx>
 
+#include "helix_brep.hpp"
 #include "history.hpp"
 #include "local_boolean.hpp"
 #include "mitcad/geometry/reference.hpp"
@@ -50,6 +66,9 @@ constexpr double kCos30 = 0.86602540378443864676;
 constexpr double kSame = 1.0e-6;
 // The narrowest crest a flank clearance may leave, in pitches.
 constexpr double kMinCrest = 0.02;
+// How near the screw surfaces of the grooves' faces keep to the screw
+// motion (mm), finer than the sweeps a turn at a time (on_screw_surfaces).
+constexpr double kScrewExact = 1.0e-7;
 
 // One face's thread: the face's cylinder and the profile on it.
 struct Thread {
@@ -191,16 +210,40 @@ TopoDS_Shape groove_sweep(const Thread& t, double theta, int turns, double low, 
   return pipe.Shape();
 }
 
+// The surfaces groove_sweep's faces approximate a turn at a time: each
+// edge of the groove's section moved by the thread's screw motion over all
+// the turns (detail::screwed_surfaces with the same section, from the same
+// start: for a left-hand groove its other end, where the screw motion
+// rises from), as the bodies stored in files keep threads.
+std::vector<occ::handle<Geom_Surface>> screw_surfaces(const Thread& t, double theta, int turns, double low,
+                                                      double high) {
+  const double start = t.right_handed ? theta : theta + kTwoPi * turns;
+  const gp_Dir start_direction = t.direction(start);
+  const gp_Pnt base = t.origin.Translated(gp_Vec(t.along) * t.groove_centre(start));
+  const auto corner = [&](double side, double radius) {
+    return base.Translated(gp_Vec(t.along) * (side * t.groove_half(radius)) + gp_Vec(start_direction) * radius);
+  };
+  BRepBuilderAPI_MakePolygon section(corner(-1.0, low), corner(1.0, low), corner(1.0, high), corner(-1.0, high),
+                                     true);
+  detail::NamedWire loop;
+  loop.wire = section.Wire();
+  return detail::screwed_surfaces(loop, gp_Ax1(t.origin, t.along), t.pitch, static_cast<double>(turns),
+                                  !t.right_handed, kScrewExact);
+}
+
 // The grooves between two radii, from `from` to `to` along the axis: whole
 // turns covering more than a pitch past both ends, cut to the length by a
-// cylinder of radius `outer`.
-TopoDS_Shape grooves(const Thread& t, double low, double high, double from, double to, double outer) {
+// cylinder of radius `outer`. `screws` gets the screw surfaces its faces
+// approximate (screw_surfaces).
+TopoDS_Shape grooves(const Thread& t, double low, double high, double from, double to, double outer,
+                     std::vector<occ::handle<Geom_Surface>>& screws) {
   const double sign = t.right_handed ? 1.0 : -1.0;
   // The turns start a pitch before the start of the thread's helix (the
   // low end of a right-hand thread, the high end of a left-hand one).
   const double target = t.right_handed ? from - 1.5 * t.pitch : to + 1.5 * t.pitch;
   const double first = t.angle + sign * kTwoPi * (target - t.groove_centre(t.angle)) / t.pitch;
   const int turns = static_cast<int>(std::ceil((to - from) / t.pitch)) + 3;
+  screws = screw_surfaces(t, first, turns, low, high);
   return common_of(groove_sweep(t, first, turns, low, high), tube(t, 0.0, outer, from, to),
                    "the thread's grooves could not be cut to length");
 }
@@ -410,9 +453,11 @@ ShapePtr chamfer_face(const Shape& body, const Thread& t, double from, double to
 
 // One face's thread on the body: the teeth added where the face lies
 // inside the crest, the end chamfers cut, then the grooves (and what lies
-// beyond the crest) removed.
+// beyond the crest) removed. `screws` gets the screw surfaces the grooves'
+// faces approximate.
 ShapePtr thread_face(const Shape& body, const std::string& face_reference, const Thread& t, double from, double to,
-                     const EndChamfers& chamfers, const std::string& name) {
+                     const EndChamfers& chamfers, const std::string& name,
+                     std::vector<occ::handle<Geom_Surface>>& screws) {
   const double margin = 0.1 * t.pitch;
   // The face inside the crest: the band between them is filled first,
   // over the face itself (its pieces moved out to the crest, along the
@@ -463,10 +508,10 @@ ShapePtr thread_face(const Shape& body, const std::string& face_reference, const
   TopoDS_Shape cut;
   if (t.internal) {
     const double past = std::min(margin / 2.0, 0.5 * (t.minor_radius - (t.pitch_radius - reach)));
-    cut = grooves(t, t.minor_radius - past, t.major_radius, from, to, t.major_radius + margin);
+    cut = grooves(t, t.minor_radius - past, t.major_radius, from, to, t.major_radius + margin, screws);
   } else {
     const double past = std::min(margin / 2.0, 0.5 * (t.pitch_radius + reach - t.major_radius));
-    cut = grooves(t, t.minor_radius, t.major_radius + past, from, to, t.major_radius + margin);
+    cut = grooves(t, t.minor_radius, t.major_radius + past, from, to, t.major_radius + margin, screws);
   }
   return detail::local_boolean(*current, cut, detail::LocalOperation::Cut, name).shape;
 }
@@ -496,6 +541,312 @@ void check_clearance(const ThreadSpec& spec, bool internal) {
     throw std::invalid_argument("the thread's radial clearance of " + text(spec.radial_clearance) +
                                 " mm leaves the external thread no core");
   }
+}
+
+// Whether a face holds one of the threads' names, numbered or not.
+bool thread_named(const NameList& names, const std::vector<std::string>& threads) {
+  for (const std::string& name : names) {
+    for (const std::string& thread : threads) {
+      if (name.compare(0, thread.size(), thread) == 0 &&
+          (name.size() == thread.size() || name[thread.size()] == '#')) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+// The faces named after each thread (its grooves' faces, a turn each, its
+// crest's and its teeth's) numbered in the order of their keys, as
+// FaceNamer::finish numbers split names, before the pieces are put on
+// their screw surfaces (on_screw_surfaces, mitcad#343): their keys are
+// those of the pieces swept a turn at a time, so that references saved
+// before keep their faces.
+ShapePtr per_turn_names(const Shape& body, const std::vector<std::string>& threads) {
+  std::vector<NameList> names(static_cast<std::size_t>(body.face_count()));
+  for (int i = 0; i < body.face_count(); ++i) {
+    names[static_cast<std::size_t>(i)] = body.face_names(i);
+  }
+  for (const std::string& thread : threads) {
+    std::vector<std::pair<detail::ShapeKey, int>> keyed;
+    for (int i = 0; i < body.face_count(); ++i) {
+      NameList& own = names[static_cast<std::size_t>(i)];
+      const auto found = std::find(own.begin(), own.end(), thread);
+      if (found != own.end()) {
+        own.erase(found);
+        keyed.emplace_back(detail::shape_key(body.face(i)), i);
+      }
+    }
+    std::sort(keyed.begin(), keyed.end());
+    for (std::size_t k = 0; k < keyed.size(); ++k) {
+      names[static_cast<std::size_t>(keyed[k].second)].push_back(
+          keyed.size() == 1 ? thread : thread + '#' + std::to_string(k));
+    }
+  }
+  detail::FaceNamer namer(body.occt());
+  for (int i = 0; i < body.face_count(); ++i) {
+    for (const std::string& name : names[static_cast<std::size_t>(i)]) {
+      namer.add(body.face(i), name);
+    }
+  }
+  return namer.shape();
+}
+
+// The parameters of the point of surface `s` nearest to `p`, from `seed`
+// near them: Newton's steps on the distance (the normal equations of the
+// tangent plane's least squares), a few as the seed is close.
+gp_Pnt2d nearest_on(const occ::handle<Geom_Surface>& s, const gp_Pnt2d& seed, const gp_Pnt& p) {
+  double u = seed.X();
+  double v = seed.Y();
+  for (int k = 0; k < 8; ++k) {
+    gp_Pnt q;
+    gp_Vec su, sv;
+    s->D1(u, v, q, su, sv);
+    const gp_Vec r(q, p);
+    const double a = su.Dot(su), b = su.Dot(sv), c = sv.Dot(sv);
+    const double det = a * c - b * b;
+    if (det <= gp::Resolution()) {
+      break;
+    }
+    const double du = (c * r.Dot(su) - b * r.Dot(sv)) / det;
+    const double dv = (a * r.Dot(sv) - b * r.Dot(su)) / det;
+    u += du;
+    v += dv;
+    if (std::abs(du) + std::abs(dv) < 1.0e-14) {
+      break;
+    }
+  }
+  return gp_Pnt2d(u, v);
+}
+
+// The threads' faces that are pieces of the grooves' faces (each the sweep
+// of a section's edge along a turn, an approximation of that edge's screw
+// surface) put on the screw surface of their edge (`screws`, each over all
+// the turns; each piece on its own copy of it), with the same edges: the
+// pieces of one face then lie on one surface, and a rounding along them
+// joins them (detail::join_surface_pieces). A piece's parameters map
+// affinely onto the screw surface's (the section's edge runs as the edge
+// itself does, the sweep along its turn as the screw motion's angle, or for
+// a cylinder its angle and height), so its edges' p-curves are mapped so.
+// The map is found by projecting three points of each piece onto the screw
+// surface (from where the map of the piece before takes them) and checked
+// at nine points of the piece. A piece that lies on none of them, or
+// whose map does not hold, stays as it is.
+ShapePtr on_screw_surfaces(const Shape& body, const std::vector<std::string>& threads,
+                           const std::vector<occ::handle<Geom_Surface>>& screws) {
+  // (How far the pieces may lie from the screw surfaces: the sweeps'
+  // approximation is finer.)
+  constexpr double kOnScrew = 1.0e-4;
+  struct Screw {
+    occ::handle<Geom_Surface> surface;
+    occ::handle<ShapeAnalysis_Surface> analysis;
+    std::optional<gp_GTrsf2d> last;
+  };
+  std::vector<Screw> known;
+  for (const occ::handle<Geom_Surface>& s : screws) {
+    known.push_back({s, nullptr, std::nullopt});
+  }
+  occ::handle<BRepTools_ReShape> reshape = new BRepTools_ReShape();
+  bool any = false;
+  for (int i = 0; i < body.face_count(); ++i) {
+    if (!thread_named(body.face_names(i), threads)) {
+      continue;
+    }
+    const TopoDS_Face face = TopoDS::Face(body.face(i).Oriented(TopAbs_FORWARD));
+    const BRepAdaptor_Surface surface(face, false);
+    if (surface.GetType() != GeomAbs_BSplineSurface) {
+      continue;
+    }
+    double u0 = 0, u1 = 0, v0 = 0, v1 = 0;
+    BRepTools::UVBounds(face, u0, u1, v0, v1);
+    if (u1 - u0 < Precision::PConfusion() || v1 - v0 < Precision::PConfusion()) {
+      continue;
+    }
+    // Whether a map takes the piece onto a surface.
+    const auto holds = [&](const occ::handle<Geom_Surface>& s, const gp_GTrsf2d& map) {
+      for (const double fu : {0.0, 0.5, 1.0}) {
+        for (const double fv : {0.0, 0.5, 1.0}) {
+          gp_XY uv(u0 + fu * (u1 - u0), v0 + fv * (v1 - v0));
+          const gp_Pnt p = surface.Value(uv.X(), uv.Y());
+          map.Transforms(uv);
+          if (s->Value(uv.X(), uv.Y()).Distance(p) > kOnScrew) {
+            return false;
+          }
+        }
+      }
+      return true;
+    };
+    // The piece's map onto a screw surface: its first point projected (from
+    // where the surface's last map takes it, so that the projection only
+    // refines it), the derivatives from steps of an eighth of the piece (a
+    // periodic parameter, a cylinder's angle, taken within its period), and
+    // checked.
+    const Screw* screw = nullptr;
+    gp_GTrsf2d map;
+    for (Screw& s : known) {
+      if (s.analysis.IsNull()) {
+        s.analysis = new ShapeAnalysis_Surface(s.surface);
+      }
+      const gp_Pnt first = surface.Value(u0, v0);
+      gp_Pnt2d p00;
+      if (s.last) {
+        gp_XY seed(u0, v0);
+        s.last->Transforms(seed);
+        p00 = nearest_on(s.surface, gp_Pnt2d(seed), first);
+        if (s.surface->Value(p00.X(), p00.Y()).Distance(first) > kOnScrew) {
+          continue;
+        }
+        // (The pieces of one face map alike but for a drift of micrometres:
+        // the last map moved onto this piece's first point.)
+        gp_GTrsf2d moved = *s.last;
+        gp_XY at(u0, v0);
+        moved.Transforms(at);
+        moved.SetTranslationPart(moved.TranslationPart() + (p00.XY() - at));
+        if (holds(s.surface, moved)) {
+          s.last = moved;
+          screw = &s;
+          map = moved;
+          break;
+        }
+      } else {
+        // (The first piece on it: projected over the whole surface, whose
+        // turns a local projection may confuse.)
+        GeomAPI_ProjectPointOnSurf projection(first, s.surface);
+        if (projection.NbPoints() == 0 || projection.LowerDistance() > kOnScrew) {
+          continue;
+        }
+        double pu = 0, pv = 0;
+        projection.LowerDistanceParameters(pu, pv);
+        p00.SetCoord(pu, pv);
+      }
+      const double hu = (u1 - u0) / 8.0;
+      const double hv = (v1 - v0) / 8.0;
+      const auto step = [&](double u, double v) {
+        gp_XY d = s.analysis->NextValueOfUV(p00, surface.Value(u, v), Precision::Confusion()).XY() - p00.XY();
+        if (s.surface->IsUPeriodic()) {
+          d.SetX(d.X() - s.surface->UPeriod() * std::round(d.X() / s.surface->UPeriod()));
+        }
+        if (s.surface->IsVPeriodic()) {
+          d.SetY(d.Y() - s.surface->VPeriod() * std::round(d.Y() / s.surface->VPeriod()));
+        }
+        return d;
+      };
+      const gp_XY du = step(u0 + hu, v0) / hu;
+      const gp_XY dv = step(u0, v0 + hv) / hv;
+      gp_GTrsf2d m;
+      m.SetValue(1, 1, du.X());
+      m.SetValue(1, 2, dv.X());
+      m.SetValue(2, 1, du.Y());
+      m.SetValue(2, 2, dv.Y());
+      m.SetTranslationPart(p00.XY() - du * u0 - dv * v0);
+      if (holds(s.surface, m)) {
+        s.last = m;
+        screw = &s;
+        map = m;
+        break;
+      }
+    }
+    if (screw == nullptr) {
+      continue;
+    }
+    // Where the map turns the parameters' orientation round (the screw
+    // surface's normal runs the other way), the loops run the other way
+    // round and the face is reversed.
+    const bool flipped = map.Value(1, 1) * map.Value(2, 2) - map.Value(1, 2) * map.Value(2, 1) < 0.0;
+    BRep_Builder builder;
+    TopoDS_Face on_screw;
+    // (Each piece on its own piece of the surface: the turn it lies in and a
+    // little more, as the sweeps a turn at a time were. Booleans would join
+    // faces of one surface into faces of many turns, and on a surface of
+    // many turns they take far longer. A rounding along the pieces joins
+    // their surfaces again: detail::join_surface_pieces.)
+    occ::handle<Geom_Surface> own = occ::down_cast<Geom_Surface>(screw->surface->Copy());
+    if (const auto spline = occ::down_cast<Geom_BSplineSurface>(own)) {
+      double v_low = RealLast(), v_high = -RealLast();
+      for (const double fu : {0.0, 1.0}) {
+        for (const double fv : {0.0, 1.0}) {
+          gp_XY uv(u0 + fu * (u1 - u0), v0 + fv * (v1 - v0));
+          map.Transforms(uv);
+          v_low = std::min(v_low, uv.Y());
+          v_high = std::max(v_high, uv.Y());
+        }
+      }
+      double a0 = 0, a1 = 0, b0 = 0, b1 = 0;
+      spline->Bounds(a0, a1, b0, b1);
+      const double margin = 0.25 * (v_high - v_low);
+      const double from = std::max(b0, v_low - margin);
+      const double to = std::min(b1, v_high + margin);
+      if (from < to) {
+        spline->Segment(a0, a1, from, to);
+      }
+    }
+    builder.MakeFace(on_screw, own, BRep_Tool::Tolerance(face));
+    for (TopoDS_Iterator w(face); w.More(); w.Next()) {
+      builder.Add(on_screw, flipped ? w.Value().Reversed() : w.Value());
+    }
+    for (TopExp_Explorer e(face, TopAbs_EDGE); e.More(); e.Next()) {
+      const TopoDS_Edge& edge = TopoDS::Edge(e.Current());
+      if (BRep_Tool::Degenerated(edge) || BRep_Tool::IsClosed(edge, face)) {
+        return std::make_shared<Shape>(body);
+      }
+      double f = 0, l = 0;
+      const occ::handle<Geom2d_Curve> old = BRep_Tool::CurveOnSurface(edge, face, f, l);
+      if (old.IsNull()) {
+        return std::make_shared<Shape>(body);
+      }
+      // The p-curve on the screw surface through the projections of the
+      // edge's points at its parameters, each from where the map takes the
+      // old p-curve's point there (the map is affine only to a few
+      // micrometres: the pieces were approximations).
+      double cf = 0, cl = 0;
+      const occ::handle<Geom_Curve> curve = BRep_Tool::Curve(edge, cf, cl);
+      if (curve.IsNull()) {
+        return std::make_shared<Shape>(body);
+      }
+      const occ::handle<Geom2d_BSplineCurve> spline =
+          Geom2dConvert::CurveToBSplineCurve(new Geom2d_TrimmedCurve(old, f, l));
+      const int n = std::clamp(8 * spline->NbPoles() + 1, 65, 1601);
+      occ::handle<NCollection_HArray1<gp_Pnt2d>> points = new NCollection_HArray1<gp_Pnt2d>(1, n);
+      occ::handle<NCollection_HArray1<double>> params = new NCollection_HArray1<double>(1, n);
+      for (int k = 0; k < n; ++k) {
+        const double t = f + (l - f) * k / (n - 1);
+        gp_XY seed = old->Value(t).XY();
+        map.Transforms(seed);
+        gp_Pnt2d q = nearest_on(screw->surface, gp_Pnt2d(seed), curve->Value(t));
+        if (screw->surface->IsUPeriodic()) {
+          const double period = screw->surface->UPeriod();
+          q.SetX(q.X() + period * std::round((seed.X() - q.X()) / period));
+        }
+        if (screw->surface->IsVPeriodic()) {
+          const double period = screw->surface->VPeriod();
+          q.SetY(q.Y() + period * std::round((seed.Y() - q.Y()) / period));
+        }
+        points->SetValue(k + 1, q);
+        params->SetValue(k + 1, t);
+      }
+      Geom2dAPI_Interpolate interpolation(points, params, false, Precision::PConfusion());
+      interpolation.Perform();
+      if (!interpolation.IsDone()) {
+        return std::make_shared<Shape>(body);
+      }
+      const occ::handle<Geom2d_BSplineCurve> mapped = interpolation.Curve();
+      builder.UpdateEdge(edge, mapped, on_screw, BRep_Tool::Tolerance(edge));
+      builder.Range(edge, on_screw, f, l);
+      // (The edge's tolerance takes in how far the piece lay from the screw
+      // surface.)
+      builder.SameParameter(edge, false);
+      BRepLib::SameParameter(edge, BRep_Tool::Tolerance(edge));
+    }
+    reshape->Replace(face, flipped ? on_screw.Reversed() : on_screw);
+    any = true;
+  }
+  if (!any) {
+    return std::make_shared<Shape>(body);
+  }
+  const TopoDS_Shape result = reshape->Apply(body.occt());
+  detail::FaceNamer namer(result);
+  namer.carry(*reshape->History(), body);
+  return namer.shape();
 }
 
 } // namespace
@@ -547,6 +898,8 @@ ShapePtr modeled_thread(const Shape& body, const ThreadSpec& spec) {
   }
   return detail::run("thread", [&] {
     ShapePtr current = std::make_shared<Shape>(body);
+    std::vector<std::string> threads;
+    std::vector<occ::handle<Geom_Surface>> screws;
     for (std::size_t k = 0; k < spec.faces.size(); ++k) {
       const std::string& face = spec.faces[k];
       const CylinderFace cylinder = face_cylinder(*current, face);
@@ -595,10 +948,26 @@ ShapePtr modeled_thread(const Shape& body, const ThreadSpec& spec) {
         std::swap(chamfers.low_name, chamfers.high_name);
       }
       if (spec.groove) {
-        current = thread_face(*current, face, thread, from, to, chamfers, face_name(spec.feature, "thread", face));
+        threads.push_back(face_name(spec.feature, "thread", face));
+        std::vector<occ::handle<Geom_Surface>> own;
+        current = thread_face(*current, face, thread, from, to, chamfers, threads.back(), own);
+        screws.insert(screws.end(), own.begin(), own.end());
       } else {
         current = chamfer_face(*current, thread, from, to, chamfers, face);
       }
+    }
+    // The threads' faces and the threaded faces' pieces (a crest the face
+    // itself) numbered a turn each as their pieces are, then the grooves'
+    // pieces put on their screw surfaces: a rounding along the thread joins
+    // the pieces of each into one face over all the turns, as the bodies
+    // stored in files keep threads (fillet, detail::join_surface_pieces).
+    if (!threads.empty()) {
+      std::vector<std::string> named = threads;
+      if (spec.groove) {
+        named.insert(named.end(), spec.faces.begin(), spec.faces.end());
+      }
+      current = per_turn_names(*current, named);
+      current = on_screw_surfaces(*current, threads, screws);
     }
     // Number the pieces of split names, and check the faces that changed.
     detail::FaceNamer namer(current->occt());

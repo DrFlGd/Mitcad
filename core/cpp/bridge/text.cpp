@@ -37,4 +37,15 @@ TextOutlines text_outlines(rust::Str family, bool bold, bool italic, rust::Str t
   return out;
 }
 
+FontFileInfo font_file(rust::Str family, bool bold, bool italic) {
+  const geometry::FontFile file = geometry::font_file(std::string(family), bold, italic);
+  FontFileInfo out{};
+  out.found = file.found;
+  out.family = rust::String(file.family);
+  out.path = rust::String(file.path);
+  out.index = static_cast<std::uint32_t>(file.index < 0 ? 0 : file.index);
+  out.synthetic_italic = file.synthetic_italic;
+  return out;
+}
+
 } // namespace mitcad::bridge

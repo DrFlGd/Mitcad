@@ -84,6 +84,13 @@ struct Part {
   bool isOuter() const;
   // A sheet laid on a member's face (`panel.mount: face`).
   bool isFaceSheet() const;
+
+  // Profiled boards (mitcad#477; docs/libraries.md, "Timber parts"): the
+  // `board` block's profile ("tongue_and_groove", "shiplap",
+  // "feather_edge", "deck"; empty for others), and the width a board that
+  // joins the next covers in a row (0 for one laid with a gap).
+  QString boardProfile() const;
+  double joinedCover() const;
 };
 
 // "30 mm" -> 30; a plain number is millimetres; NaN when it is not one.

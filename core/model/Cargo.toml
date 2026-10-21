@@ -19,6 +19,20 @@ mitcad-dxf = { path = "../dxf" }
 mitcad-3mf = { path = "../3mf" }
 # USDZ export for AR viewers and other programs (mitcad#123).
 mitcad-usdz = { path = "../usdz" }
+# Sketch text from font files, shaped, in both directions (mitcad#473).
+harfrust = "0.14.0"
+skrifa = "0.48.0"
+unicode-bidi = "0.3.18"
+wuff = "0.2.9"
+# SVG drawings into sketches (mitcad#473).
+roxmltree = "0.20.0"
+svgtypes = "0.16.1"
+# QR codes in sketches (mitcad#473).
+qrcode = { version = "0.14.1", default-features = false }
+
+[dev-dependencies]
+# QR codes read back in the tests (mitcad#473).
+rqrr = { version = "0.11.0", default-features = false }
 
 [features]
 # The mock geometry kernel (`mitcad_model::testing`) for other crates' tests.

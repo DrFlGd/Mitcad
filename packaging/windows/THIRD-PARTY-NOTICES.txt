@@ -69,4 +69,9 @@ Rust libraries compiled into mitcad.exe and mitcad-cli.exe
   rustls-webpki and untrusted (ISC, Copyright 2015 Brian Smith), and ring
   (ISC, Copyright 2015-2025 Brian Smith, with code from BoringSSL under
   the Apache License 2.0 and the ISC licence, and from fiat-crypto under
-  the MIT licence).
+  the MIT licence). Sketch text from font files: harfrust (MIT), skrifa,
+  read-fonts and font-types (MIT or Apache-2.0), unicode-bidi (MIT or
+  Apache-2.0), wuff (MIT) with brotli-decompressor (BSD-3-Clause or MIT)
+  and flate2 (MIT or Apache-2.0). SVG drawings: svgtypes and kurbo (MIT
+  or Apache-2.0) with roxmltree (MIT or Apache-2.0). QR codes: qrcode
+  (MIT or Apache-2.0).

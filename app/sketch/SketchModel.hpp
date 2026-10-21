@@ -97,6 +97,11 @@ struct TextData {
   bool flipX = false;
   bool flipY = false;
   bool outlined = false; // the model gave its glyph outlines
+  QString fontFile;      // the font file its font comes from (mitcad#473)
+  // A QR code of `text` (mitcad#473): `height` is a module's size, `at` its
+  // lower left corner; `ecc` its error correction (L, M, Q, H).
+  bool code = false;
+  QString ecc;
 };
 
 // A pattern of the sketch (commands.md, `sketch.circular_pattern`).

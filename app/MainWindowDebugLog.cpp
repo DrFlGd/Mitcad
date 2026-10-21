@@ -27,7 +27,7 @@ void MainWindow::registerDebugLogCommands() {
   open.kind = CommandDef::Kind::Action;
   open.mode = CommandDef::Mode::Any;
   open.tab.clear(); // the Help menu
-  open.tooltip = tr("The folder of the debug log's files; Preferences: Diagnostics switches the log on");
+  open.tooltip = tr("Opens the folder of the debug log's files");
   open.keywords = {QStringLiteral("debug log"), QStringLiteral("logs"), QStringLiteral("diagnostics"),
                    QStringLiteral("trace")};
   open.duringCommands = true;

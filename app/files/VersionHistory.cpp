@@ -152,8 +152,7 @@ VersionHistoryDialog::VersionHistoryDialog(QWidget* parent, const QString& file,
   m_open = new QPushButton(tr("&Open"));
   m_open->setToolTip(tr("Opens this version as a new, untitled design; the file stays as it is"));
   m_restore = new QPushButton(tr("&Restore..."));
-  m_restore->setToolTip(tr("Makes this version the latest: it is recorded as a new version, and the versions "
-                           "since stay in the history"));
+  m_restore->setToolTip(tr("Makes this version the latest by recording it as a new version"));
   m_copy = new QPushButton(tr("Save &Copy As..."));
   m_copy->setToolTip(tr("Saves this version as a file of its own"));
   auto* close = new QPushButton(tr("Close"));

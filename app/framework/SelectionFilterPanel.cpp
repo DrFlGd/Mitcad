@@ -96,9 +96,7 @@ SelectionFilterPanel::SelectionFilterPanel(std::function<SelectionScope*()> scop
     legendRow->addSpacing(6);
   }
   legendRow->addStretch();
-  legend->setToolTip(tr("Click a row to change it: empty (cannot be selected), square (a click selects it), "
-                        "cross (a click and a window select it). Shift+click also selects what empty rows "
-                        "hold."));
+  legend->setToolTip(tr("Click a row to change what a click and a window select"));
   column->addWidget(legend);
 
   // The actions are the main window's, so that the test driver finds them

@@ -78,8 +78,7 @@ void MainWindow::registerProjectCommands() {
     return d;
   };
   CommandDef project = def("file.new_project", tr("New Project..."), "new-project",
-                           tr("A folder whose designs keep their versions: Local on this computer, or Cloud in a "
-                              "git repository that others share"),
+                           tr("A folder whose designs keep their versions, on this computer or shared"),
                            [this] { newProject(); });
   project.keywords = {QStringLiteral("project"),         QStringLiteral("folder"),
                       QStringLiteral("git"),             QStringLiteral("cloud"),
@@ -87,8 +86,7 @@ void MainWindow::registerProjectCommands() {
                       QStringLiteral("start version history"), QStringLiteral("repository")};
   m_registry->add(project);
   CommandDef openProject = def("file.open_project", tr("Open Project..."), "folder",
-                               tr("Opens a project's folder: a design of it, or a folder of designs or a git "
-                                  "repository made a project"),
+                               tr("Opens a project's folder, or makes a folder of designs a project"),
                                [this] { openProjectFolder(); });
   openProject.keywords = {QStringLiteral("project"),    QStringLiteral("folder"), QStringLiteral("git"),
                           QStringLiteral("repository"), QStringLiteral("cloud"),  QStringLiteral("local")};
@@ -99,16 +97,14 @@ void MainWindow::registerProjectCommands() {
   readOnly.keywords = {QStringLiteral("view"), QStringLiteral("lock"), QStringLiteral("read only")};
   m_registry->add(readOnly);
   CommandDef cloud = def("file.open_remote", tr("Open from Cloud..."), "remote-open",
-                         tr("Opens a Cloud project from its git repository into a new folder, or makes one in an "
-                            "empty repository"),
+                         tr("Opens a Cloud project from its git repository into a new folder"),
                          [this] { openFromCloud(); });
   cloud.keywords = {QStringLiteral("clone"),  QStringLiteral("remote"), QStringLiteral("download"),
                     QStringLiteral("git"),    QStringLiteral("cloud"),  QStringLiteral("server"),
                     QStringLiteral("github"), QStringLiteral("gitlab"), QStringLiteral("forgejo")};
   m_registry->add(cloud);
   CommandDef settings = def("file.project_settings", tr("Project Settings..."), "settings",
-                            tr("The current project: Local or Cloud (share it, stop syncing, its address), edit "
-                               "locks and live updates for everyone, the author and syncing on this computer"),
+                            tr("The current project's storage, sharing, edit locks and syncing"),
                             [this] { showProjectSettings(); });
   settings.keywords = {QStringLiteral("connect"), QStringLiteral("remote"),     QStringLiteral("share"),
                        QStringLiteral("git"),     QStringLiteral("cloud"),      QStringLiteral("address"),
@@ -116,8 +112,7 @@ void MainWindow::registerProjectCommands() {
                        QStringLiteral("lock"),    QStringLiteral("mqtt"),       QStringLiteral("github")};
   m_registry->add(settings);
   CommandDef move = def("file.move_to_project", tr("Move to a Project..."), "new-project",
-                        tr("Moves a design that is in no project into a new project or one you have: its versions "
-                           "are kept from then on"),
+                        tr("Moves a design into a project, so that its versions are kept"),
                         [this] { moveToProject(); });
   move.keywords = {QStringLiteral("start version history"), QStringLiteral("version history"),
                    QStringLiteral("versions"), QStringLiteral("project"), QStringLiteral("git")};

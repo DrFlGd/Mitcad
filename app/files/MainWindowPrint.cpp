@@ -98,8 +98,7 @@ CommandDef MainWindow::print3dCommand() {
                   {{QStringLiteral("stl"), tr("STL, one file per body")},
                    {QStringLiteral("3mf"), tr("3MF, one object with parts")}},
                   QStringLiteral("stl"))
-          .withTooltip(tr("3MF keeps the bodies together as the parts of one object in their places; "
-                          "STL gives the slicer a file per body")),
+          .withTooltip(tr("3MF: the bodies as the parts of one object; STL: a file per body")),
       choiceInput(QStringLiteral("refinement"), tr("Refinement"),
                   {{QStringLiteral("low"), tr("Low")},
                    {QStringLiteral("medium"), tr("Medium")},

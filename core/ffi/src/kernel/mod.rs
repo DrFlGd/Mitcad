@@ -1778,6 +1778,7 @@ impl Kernel for OcctKernel {
             axis_direction: spec.axis.direction,
             radius: spec.radius,
             to_radius: spec.to_radius,
+            half_angle: spec.half_angle,
         };
         emboss::ffi::wrapped_emboss(
             &spec.feature.to_string(),
@@ -2281,6 +2282,29 @@ impl Kernel for OcctKernel {
             &gear::loop_of(spec.blank),
         )
         .map_err(failed)
+    }
+
+    // Sketch text shaped by the model (mitcad#473; text.rs).
+
+    fn font_source(
+        &self,
+        request: &mitcad_model::FontRequest<'_>,
+    ) -> Result<mitcad_model::FontSource, KernelError> {
+        text::font_source(request)
+    }
+
+    fn face_cone(
+        &self,
+        shape: &Self::Shape,
+        face: &FaceName,
+    ) -> Result<mitcad_model::ConeFace, KernelError> {
+        let cone = emboss::ffi::face_cone(occt(shape)?, &face.to_string()).map_err(failed)?;
+        Ok(mitcad_model::ConeFace {
+            apex: cone.apex,
+            axis: cone.axis,
+            half_angle: cone.half_angle,
+            internal: cone.internal,
+        })
     }
 }
 

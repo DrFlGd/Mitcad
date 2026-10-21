@@ -107,8 +107,7 @@ CommandDef sweepCommand(const CommandContext& context) {
   // A second rail (mitcad#464): the profile moves with the first rail and
   // turns and sizes with the line across to the second.
   def.inputs += selectionInput(QStringLiteral("rail2"), QObject::tr("Second Rail"), kPathKinds, 0, 0)
-                    .withTooltip(QObject::tr("Optional: sketch curves or edges of a second rail; the "
-                                             "profile turns and sizes with the line between the rails"))
+                    .withTooltip(QObject::tr("Optional: a second rail the profile turns and sizes with"))
                     .withVisible(rail);
   // Guide surfaces (mitcad#157): faces the path lies on.
   def.inputs += selectionInput(QStringLiteral("surfaces"), QObject::tr("Guide Surface"), SelectKind::Face, 1, 0)
@@ -151,8 +150,7 @@ CommandDef sweepCommand(const CommandContext& context) {
                   {{QStringLiteral("plane"), QStringLiteral("Square to Path")},
                    {QStringLiteral("fraction"), QStringLiteral("Fraction of Length")}},
                   QStringLiteral("plane"))
-          .withTooltip(QObject::tr("Where the rail meets the plane square to the path, or at the same "
-                                   "fraction of the rail's length as of the path's"))
+          .withTooltip(QObject::tr("Where the profile meets the rail: square to the path or at the same fraction"))
           .withVisible(rail),
       flipInput(QStringLiteral("flip"), QObject::tr("Flip")).withTooltip(QObject::tr("Run the path the other way")),
   };
@@ -357,8 +355,7 @@ QVector<InputDef> endInputs(bool last) {
       choiceInput(endKey(last, "condition"), last ? QObject::tr("End Condition") : QObject::tr("Start Condition"),
                   kProfileEnds, QStringLiteral("free"))
           .withChoices([last](const CommandState& state) { return endChoices(state, last); })
-          .withTooltip(QObject::tr("How the loft leaves the section: a direction from a profile, tangent or "
-                                   "smooth to the faces next to a face, a rounded tip at a point")),
+          .withTooltip(QObject::tr("How the loft leaves the section: free, a direction, tangent, smooth or a tip")),
       valueInput(endKey(last, "angle"), QObject::tr("Takeoff Angle"), ValueKind::Angle, QStringLiteral("0 deg"))
           .withTooltip(QObject::tr("From the profile's normal, outwards for a positive angle"))
           .withVisible(is([](const QString& c) { return c == QStringLiteral("direction"); })),

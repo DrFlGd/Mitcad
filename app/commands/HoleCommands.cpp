@@ -281,17 +281,10 @@ QVector<InputDef> clearanceInputs(const std::function<bool(const CommandState&)>
   return {
       valueInput(kRadialClearance, QObject::tr("Radial clearance"), ValueKind::Length, QStringLiteral("0 mm"))
           .withHeading(QObject::tr("Extra clearance"))
-          .withTooltip(QObject::tr("Extra clearance per side, along the radius: moves the whole profile away from "
-                                   "the material, enlarging an internal thread and shrinking an external one. Not a "
-                                   "diameter: 0.2 mm changes each diameter by 0.4 mm. The size, class and pitch "
-                                   "stay. Clearance on both mating parts adds up; the other part is not changed."))
+          .withTooltip(QObject::tr("Extra clearance per side, along the radius, not on the diameter"))
           .withVisible(shown),
       valueInput(kFlankClearance, QObject::tr("Flank clearance"), ValueKind::Length, QStringLiteral("0 mm"))
-          .withTooltip(QObject::tr("Extra clearance on each flank, measured perpendicular to the flank of the "
-                                   "profile (not along the axis, not a scale factor): thins an external thread's "
-                                   "teeth or widens an internal thread's groove, keeping the pitch and the flank "
-                                   "angle. It applies to each flank, after the radial clearance. Clearance on both "
-                                   "mating parts adds up; the other part is not changed."))
+          .withTooltip(QObject::tr("Extra clearance on each flank, measured perpendicular to the flank"))
           .withVisible(shown),
   };
 }
@@ -357,25 +350,19 @@ QVector<InputDef> chamferInputs(const CommandContext& context) {
   return {
       checkInput(kChamfer, QObject::tr("Chamfer Ends"), false)
           .withHeading(QObject::tr("End chamfer"))
-          .withTooltip(QObject::tr("Cut a cone at the free ends the thread runs out through (a shaft's free end, a "
-                                   "hole's mouth), so that the first turn starts on the cone: an external thread "
-                                   "chamfered to below its minor diameter, an internal one countersunk past its "
-                                   "major diameter. Ends inside the face or against more material get none.")),
+          .withTooltip(QObject::tr("Cut a cone at the free ends the thread runs out through")),
       choiceInput(kChamferEnds, QObject::tr("Ends"),
                   {{QStringLiteral("both"), QStringLiteral("Both")},
                    {QStringLiteral("start"), QStringLiteral("Start")},
                    {QStringLiteral("end"), QStringLiteral("End")}},
                   QStringLiteral("both"))
-          .withTooltip(QObject::tr("The start is the end the thread location measures from (the high end by "
-                                   "default), the end the other one"))
+          .withTooltip(QObject::tr("Which ends are chamfered; the start is where the thread location measures from"))
           .withVisible(chamfered),
       choiceInput(kChamferSize, QObject::tr("Chamfer Size"),
                   {{QStringLiteral("default"), QStringLiteral("From Thread Size")},
                    {QStringLiteral("custom"), QStringLiteral("Custom")}},
                   QStringLiteral("default"))
-          .withTooltip(QObject::tr("From the thread size: 45 degrees to the axis, a tenth of a pitch inside the "
-                                   "minor diameter (external) or outside the major diameter (internal); it follows "
-                                   "a change of the size"))
+          .withTooltip(QObject::tr("From the thread size, following it, or an angle and a diameter of your own"))
           .withVisible(chamfered)
           .withOnChange(startValues),
       valueInput(kChamferAngle, QObject::tr("Chamfer Angle"), ValueKind::Angle, QStringLiteral("45 deg"))
@@ -422,8 +409,7 @@ CommandDef holeCommand(const CommandContext& context) {
   def.id = QStringLiteral("solid.hole");
   def.name = QObject::tr("Hole");
   def.icon = QStringLiteral("hole");
-  def.tooltip = QObject::tr("Drilled holes: simple, counterbore, countersink or counterdrill, straight or "
-                            "tapered, tapped or not, clicked onto a face or at sketch points");
+  def.tooltip = QObject::tr("Drilled holes: simple, counterbore, countersink or counterdrill, tapped or not");
   def.shortcut = QKeySequence(Qt::Key_H);
   def.group = QStringLiteral("CREATE");
   def.pinned = true;

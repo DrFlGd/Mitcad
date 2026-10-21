@@ -908,10 +908,7 @@ TimelineWidget::TimelineWidget(const CommandContext& model, QWidget* parent)
   m_searchField = new QLineEdit(m_searchBar);
   m_searchField->setObjectName(QStringLiteral("timelineSearch"));
   m_searchField->setPlaceholderText(tr("Name or type; is:failed, in:component"));
-  m_searchField->setToolTip(
-      tr("Features whose name or type contains the words. Filters: in:<component>, is:failed, is:warning "
-         "(import notes too), is:suppressed, is:rolled-back. Enter and Down: next match; Shift+Enter and Up: "
-         "previous; Esc: close."));
+  m_searchField->setToolTip(tr("Finds features by name or type; filters such as is:failed and in:<component>"));
   m_searchField->setClearButtonEnabled(true);
   m_searchField->setFixedWidth(240);
   m_searchField->installEventFilter(this);

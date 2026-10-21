@@ -34,11 +34,11 @@ const CELL: f64 = 1e-4;
 /// The points in a cell of the index, with their positions.
 type Cell = Vec<(EntityUid, [f64; 2])>;
 
-/// The shared points made so far, by position.
+/// The shared points made so far, by position (also the SVG import's).
 #[derive(Default)]
-struct SharedPoints {
+pub(super) struct SharedPoints {
     cells: HashMap<(i64, i64), Cell>,
-    made: usize,
+    pub(super) made: usize,
 }
 
 impl SharedPoints {
@@ -48,7 +48,7 @@ impl SharedPoints {
 
     /// The point at a position: an earlier one within the tolerance, or a
     /// new one.
-    fn at(&mut self, edit: &mut SketchEdit<'_>, p: [f64; 2]) -> EntityUid {
+    pub(super) fn at(&mut self, edit: &mut SketchEdit<'_>, p: [f64; 2]) -> EntityUid {
         let (cx, cy) = Self::cell(p);
         for dx in -1..=1 {
             for dy in -1..=1 {

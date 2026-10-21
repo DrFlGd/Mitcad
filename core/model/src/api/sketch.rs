@@ -227,6 +227,9 @@ pub(super) enum SketchCommand {
         ink_top: bool,
         #[serde(default)]
         glyphs: Option<crate::sketch::StoredGlyphs>,
+        /// A font file instead of an installed font (mitcad#473).
+        #[serde(default)]
+        font_file: Option<String>,
     },
     // Sketch text edited afterwards (P3).
     #[serde(rename = "sketch.edit_text")]
@@ -269,6 +272,9 @@ pub(super) enum SketchCommand {
         pen_align: Option<bool>,
         #[serde(default)]
         ink_top: Option<bool>,
+        /// A font file (mitcad#473); "" leaves it for the installed `font`.
+        #[serde(default)]
+        font_file: Option<String>,
     },
     #[serde(rename = "sketch.add_constraint")]
     AddConstraint {
@@ -545,6 +551,102 @@ pub(super) enum SketchCommand {
         sketch: FeatureUid,
         entities: Vec<Ref>,
     },
+    // An SVG drawing's geometry and texts into the sketch (mitcad#473).
+    #[serde(rename = "sketch.import_svg")]
+    ImportSvg {
+        sketch: FeatureUid,
+        path: String,
+        /// Sketch millimetres per millimetre of the drawing.
+        #[serde(default = "one")]
+        scale: f64,
+        /// Where the drawing's lower left corner goes.
+        #[serde(default)]
+        at: Option<[f64; 2]>,
+        /// Stroked paths also as bands of their stroke width.
+        #[serde(default)]
+        stroke_outline: bool,
+    },
+    // QR codes (mitcad#473): a text drawn as a code of its content.
+    #[serde(rename = "sketch.add_code")]
+    AddCode {
+        sketch: FeatureUid,
+        text: String,
+        /// The lower left corner of the modules.
+        #[serde(default)]
+        at: [f64; 2],
+        /// A module's size, mm.
+        #[serde(default = "one")]
+        module: f64,
+        #[serde(default)]
+        angle: f64,
+        #[serde(default)]
+        kind: crate::sketch::CodeKind,
+        #[serde(default)]
+        ecc: crate::sketch::CodeEcc,
+    },
+    #[serde(rename = "sketch.edit_code")]
+    EditCode {
+        sketch: FeatureUid,
+        id: String,
+        #[serde(default)]
+        text: Option<String>,
+        #[serde(default)]
+        at: Option<[f64; 2]>,
+        #[serde(default)]
+        module: Option<f64>,
+        #[serde(default)]
+        angle: Option<f64>,
+        #[serde(default)]
+        ecc: Option<crate::sketch::CodeEcc>,
+    },
+}
+
+fn one() -> f64 {
+    1.0
+}
+
+/// A code's content, size and place checked before it is added or
+/// changed (mitcad#473): a content a QR code holds, a module's size above
+/// zero.
+fn code_fits(text: &SketchText) -> Result<(), String> {
+    if text.text.is_empty() {
+        return Err("the code's content is empty".to_owned());
+    }
+    if !(text.height.is_finite() && text.height > 0.0) {
+        return Err(format!(
+            "the module size must be greater than zero, got {}",
+            text.height
+        ));
+    }
+    if let Some(code) = &text.code {
+        crate::sketch::code::modules(&text.text, code)?;
+    }
+    Ok(())
+}
+
+/// An SVG file read (mitcad#473).
+fn read_svg(
+    path: &str,
+    options: &crate::sketch::svg::SvgOptions,
+) -> Result<crate::sketch::svg::SvgDrawing, ApiError> {
+    let text = std::fs::read_to_string(path).map_err(|e| ApiError(format!("{path}: {e}")))?;
+    crate::sketch::svg::read(&text, options).map_err(|e| ApiError(format!("{path}: {e}")))
+}
+
+/// The `svg_info` query (mitcad#473): what the Insert SVG dialog shows, the
+/// drawing's size in millimetres and what it holds.
+pub(super) fn svg_info_json(path: &str) -> Result<Value, ApiError> {
+    let drawing = read_svg(path, &crate::sketch::svg::SvgOptions::default())?;
+    let paths: usize = drawing.shapes.iter().map(|s| s.paths.len()).sum();
+    Ok(json!({
+        "size": drawing.size,
+        "shapes": drawing.shapes.len(),
+        "paths": paths,
+        "filled": drawing.shapes.iter().filter(|s| s.fill.is_some()).count(),
+        "stroked": drawing.shapes.iter().filter(|s| s.stroke.is_some()).count(),
+        "texts": drawing.texts.len(),
+        "warnings": drawing.warnings,
+    }))
 }
 
 /// The `dxf_info` query (P9): what the Insert DXF dialog offers, its
@@ -898,8 +1000,62 @@ impl<K: Kernel> Document<K> {
             SketchCommand::ConvertProjected { sketch, entities } => {
                 self.convert_projected(sketch, &entities)?
             }
+            SketchCommand::ImportSvg {
+                sketch,
+                path,
+                scale,
+                at,
+                stroke_outline,
+            } => self.import_svg(sketch, &path, scale, at, stroke_outline)?,
             command => self.edit_command(command)?,
         })
+    }
+
+    /// `sketch.import_svg` (mitcad#473): the drawing's curves and texts into
+    /// the sketch, with the regions its fills cover (`filled`).
+    fn import_svg(
+        &mut self,
+        sketch: FeatureUid,
+        path: &str,
+        scale: f64,
+        at: Option<[f64; 2]>,
+        stroke_outline: bool,
+    ) -> Result<Value, ApiError> {
+        use crate::sketch::svg;
+        let options = svg::SvgOptions {
+            scale,
+            at: at.unwrap_or_default(),
+            stroke_outline,
+        };
+        let drawing = read_svg(path, &options)?;
+        let (inserted, report) = self.edit_sketch(sketch, "Insert SVG into {sketch}", |edit| {
+            svg::insert(edit, &drawing, stroke_outline)
+        })?;
+        let mut value = report_json(&report, self.sketch_def(sketch));
+        // The regions the drawing paints, by a point inside each.
+        let filled: Vec<String> = self
+            .sketch_output(sketch)
+            .map(|output| {
+                output
+                    .region_info
+                    .iter()
+                    .filter(|r| {
+                        svg::interior_point(&r.outline, &r.holes, r.centroid).is_some_and(|p| {
+                            drawing.shapes.iter().any(|s| s.covers(p, stroke_outline))
+                        })
+                    })
+                    .map(|r| r.profile.key.to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+        value["curves"] = json!(inserted.curves);
+        value["points"] = json!(inserted.points);
+        value["text_count"] = json!(inserted.texts);
+        value["bands"] = json!(inserted.bands);
+        value["filled"] = json!(filled);
+        value["size"] = json!(drawing.size);
+        value["warnings"] = json!(inserted.skipped);
+        Ok(value)
     }
 
     /// The commands that edit a sketch through [`SketchEdit`].
@@ -954,6 +1110,8 @@ impl<K: Kernel> Document<K> {
             C::SetDimensionText { sketch, .. } => (*sketch, "Move Dimension in {sketch}"),
             C::AddEqualSpacing { sketch, .. } => (*sketch, "Equal Spacing in {sketch}"),
             C::EditEqualSpacing { sketch, .. } => (*sketch, "Edit Equal Spacing in {sketch}"),
+            C::AddCode { sketch, .. } => (*sketch, "Add QR Code to {sketch}"),
+            C::EditCode { sketch, .. } => (*sketch, "Edit QR Code in {sketch}"),
             C::Create { .. }
             | C::AddRectangle { .. }
             | C::AddCircle { .. }
@@ -961,7 +1119,8 @@ impl<K: Kernel> Document<K> {
             | C::ImportDxf { .. }
             | C::CleanUpProjections { .. }
             | C::CleanUpStaleProjections { .. }
-            | C::ConvertProjected { .. } => {
+            | C::ConvertProjected { .. }
+            | C::ImportSvg { .. } => {
                 unreachable!("handled above")
             }
         };
@@ -1209,6 +1368,7 @@ impl<K: Kernel> Document<K> {
                     pen_align,
                     ink_top,
                     glyphs,
+                    font_file,
                     ..
                 } => {
                     let mut t = SketchText {
@@ -1230,6 +1390,9 @@ impl<K: Kernel> Document<K> {
                         ink_top,
                         ..SketchText::new(EntityUid(0), &text, at.unwrap_or_default(), height)
                     };
+                    if let Some(file) = font_file.as_deref().filter(|f| !f.is_empty()) {
+                        crate::sketch::text::use_font_file(&mut t, file)?;
+                    }
                     match (frame, at, path) {
                         (Some(frame), _, _) => {
                             t.frame = edit.text_frame(&frame, angle)?;
@@ -1265,6 +1428,7 @@ impl<K: Kernel> Document<K> {
                     line_spacing,
                     pen_align,
                     ink_top,
+                    font_file,
                     ..
                 } => {
                     let uid = crate::ids::parse_number(&id, "t")
@@ -1288,6 +1452,7 @@ impl<K: Kernel> Document<K> {
                     if let Some(v) = angle {
                         t.angle = v;
                     }
+                    let font_changed = font.as_ref().is_some_and(|f| *f != t.font);
                     if let Some(v) = font {
                         t.font = v;
                     }
@@ -1330,6 +1495,27 @@ impl<K: Kernel> Document<K> {
                     }
                     if let Some(v) = ink_top {
                         t.ink_top = v;
+                    }
+                    // A font file chosen, left for an installed font, or
+                    // read again for a new string or style (mitcad#473).
+                    match font_file.as_deref() {
+                        Some("") => t.font_file = None,
+                        Some(path) => crate::sketch::text::use_font_file(t, path)?,
+                        None if font_changed => t.font_file = None,
+                        None => {}
+                    }
+                    if t.font_file.is_some() && !t.glyphs.as_ref().is_some_and(|g| g.fit(t)) {
+                        let path = t
+                            .font_file
+                            .as_ref()
+                            .map(|f| f.path.clone())
+                            .unwrap_or_default();
+                        crate::sketch::text::use_font_file(t, &path).map_err(|e| {
+                            format!(
+                                "text {id}: {e}; choose the font file again for a new \
+                                 string or style"
+                            )
+                        })?;
                     }
                     // Stored outlines of another string, font or style are
                     // dropped (mitcad#416).
@@ -1619,6 +1805,60 @@ impl<K: Kernel> Document<K> {
                     }
                     made_ref.push(constraint.to_string());
                 }
+                C::AddCode {
+                    text,
+                    at,
+                    module,
+                    angle,
+                    kind,
+                    ecc,
+                    ..
+                } => {
+                    let t = SketchText {
+                        angle,
+                        code: Some(crate::sketch::SketchCode { kind, ecc }),
+                        ..SketchText::new(EntityUid(0), &text, at, module)
+                    };
+                    code_fits(&t)?;
+                    let id = edit.text(t)?;
+                    made_ref.push(format!("t{}", id.0));
+                }
+                C::EditCode {
+                    id,
+                    text,
+                    at,
+                    module,
+                    angle,
+                    ecc,
+                    ..
+                } => {
+                    let uid = crate::ids::parse_number(&id, "t")
+                        .map(EntityUid)
+                        .ok_or_else(|| format!("'{id}' is not a code like \"t5\""))?;
+                    let t = edit
+                        .def
+                        .texts
+                        .iter_mut()
+                        .find(|t| t.id == uid && t.code.is_some())
+                        .ok_or_else(|| format!("code {id} does not exist"))?;
+                    if let Some(v) = text {
+                        t.text = v;
+                    }
+                    if let Some(v) = at {
+                        t.at = v;
+                    }
+                    if let Some(v) = module {
+                        t.height = v;
+                    }
+                    if let Some(v) = angle {
+                        t.angle = v;
+                    }
+                    if let (Some(v), Some(code)) = (ecc, t.code.as_mut()) {
+                        code.ecc = v;
+                    }
+                    code_fits(t)?;
+                    made_ref.push(id);
+                }
                 C::Create { .. }
                 | C::AddRectangle { .. }
                 | C::AddCircle { .. }
@@ -1626,7 +1866,8 @@ impl<K: Kernel> Document<K> {
                 | C::ImportDxf { .. }
                 | C::CleanUpProjections { .. }
                 | C::CleanUpStaleProjections { .. }
-                | C::ConvertProjected { .. } => {
+                | C::ConvertProjected { .. }
+                | C::ImportSvg { .. } => {
                     unreachable!("handled above")
                 }
             }
@@ -2070,6 +2311,38 @@ impl<K: Kernel> Document<K> {
                         {
                             value["text"] = json!(format!("t{}", text.0));
                             value["letter"] = json!(letters.contains(curve));
+                        } else if let Some(text) = outer.first().and_then(|c| c.text())
+                            && outer.iter().all(|c| c.text() == Some(text))
+                        {
+                            // Bounded by several contours of one text, which
+                            // touch at corners (a QR code's modules,
+                            // mitcad#473): material when a point inside lies
+                            // within an odd number of its contours.
+                            value["text"] = json!(format!("t{}", text.0));
+                            let inside = crate::sketch::svg::interior_point(
+                                &r.outline, &r.holes, r.centroid,
+                            );
+                            let material = inside.is_some_and(|p| {
+                                o.texts
+                                    .iter()
+                                    .filter(|t| t.id == text)
+                                    .flat_map(|t| t.contours.iter())
+                                    .filter(|c| {
+                                        crate::sketch::text::composite(&c.parts).is_some_and(
+                                            |curve| {
+                                                let (lo, hi) = curve.domain();
+                                                crate::sketch::geometry::polygon_contains(
+                                                    &curve.sample(lo, hi),
+                                                    p,
+                                                )
+                                            },
+                                        )
+                                    })
+                                    .count()
+                                    % 2
+                                    == 1
+                            });
+                            value["letter"] = json!(material);
                         }
                         value
                     })

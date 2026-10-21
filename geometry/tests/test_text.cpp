@@ -101,6 +101,17 @@ void test_fallback_and_styles() {
   CHECK(top(italic) > top(regular) + 0.05);
   CHECK(!font_families().empty());
   CHECK(throws_with([] { text_outlines("", false, false, std::string("a\xff", 2)); }, "UTF-8"));
+  // Files of installed fonts (mitcad#473): none for the bundled font or a
+  // family that is not installed; an installed one's file is there.
+  CHECK(!font_file("", false, false).found);
+  CHECK(!font_file("No Such Font Family", false, false).found);
+  for (const std::string& family : font_families()) {
+    if (family != kBundledFont) {
+      const FontFile file = font_file(family, false, false);
+      CHECK(file.found && !file.path.empty() && !file.family.empty());
+      break;
+    }
+  }
 }
 
 } // namespace

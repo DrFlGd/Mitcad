@@ -47,8 +47,7 @@ public:
     // transfer into an existing component; their features stay.
     m_transfer = new QCheckBox(tr("Move &Only the Bodies (a Body Transfer on the Timeline)"));
     m_transfer->setObjectName(QStringLiteral("moveBodiesOnly"));
-    m_transfer->setToolTip(tr("The bodies go into an existing component at the timeline marker and stay where "
-                              "they are; the features that made them stay in their component."));
+    m_transfer->setToolTip(tr("Moves only the bodies into an existing component at the timeline marker"));
     m_transfer->setVisible(bodiesOnly());
     layout->addWidget(m_transfer);
     m_targetLabel = new QLabel;

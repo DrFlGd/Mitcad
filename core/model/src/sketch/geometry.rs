@@ -581,6 +581,38 @@ impl Curve2 {
                     .filter(|w| w[1] > w[0] && w[0] < t1 && w[1] > t0)
                     .count()
                     .max(1);
+                let (lo, hi) = n.domain();
+                if (spans * 8 * n.degree.max(1) > 512 || t1 > hi) && t1 > t0 {
+                    // Many spans (a long contour of pieces, a QR code's,
+                    // mitcad#473), or a stretch past the end of a closed
+                    // curve: samples from knot to knot, the same number in
+                    // each span, so that every corner where pieces meet is
+                    // a sample (the knots past the end are the first ones
+                    // again).
+                    let period = hi - lo;
+                    let mut cuts: Vec<f64> = n
+                        .knots
+                        .iter()
+                        .flat_map(|k| [*k, *k + period])
+                        .filter(|k| *k > t0 && *k < t1)
+                        .collect();
+                    cuts.sort_by(f64::total_cmp);
+                    cuts.dedup();
+                    cuts.insert(0, t0);
+                    cuts.push(t1);
+                    let spans = cuts.len() - 1;
+                    let per = (8 * n.degree.max(1))
+                        .max(16usize.div_ceil(spans))
+                        .min((512 / spans).max(1));
+                    let mut params: Vec<f64> = cuts
+                        .windows(2)
+                        .flat_map(|w| {
+                            (0..per).map(move |i| w[0] + (w[1] - w[0]) * i as f64 / per as f64)
+                        })
+                        .collect();
+                    params.push(t1);
+                    return params;
+                }
                 (spans * 8 * n.degree.max(1)).clamp(16, 512)
             }
             _ => (((t1 - t0).abs() / TAU) * 72.0).ceil().max(2.0) as usize,

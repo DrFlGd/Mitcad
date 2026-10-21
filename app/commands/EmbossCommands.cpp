@@ -13,10 +13,12 @@ namespace {
 const Choices kModes = {{QStringLiteral("raise"), QStringLiteral("Raise")},
                         {QStringLiteral("sink"), QStringLiteral("Sink")}};
 
-// A planar face, or a cylindrical one to wrap onto.
+// A planar face, or a cylindrical or conical one to wrap onto (cones:
+// mitcad#473).
 bool takesEmbossFace(const SelectionItem& item) {
   return item.kind == SelectKind::Face &&
-         (item.geometry == QStringLiteral("plane") || item.geometry == QStringLiteral("cylinder"));
+         (item.geometry == QStringLiteral("plane") || item.geometry == QStringLiteral("cylinder") ||
+          item.geometry == QStringLiteral("cone"));
 }
 
 } // namespace
@@ -26,7 +28,7 @@ CommandDef embossCommand(const CommandContext& context) {
   def.id = QStringLiteral("solid.emboss");
   def.name = QObject::tr("Emboss");
   def.icon = QStringLiteral("emboss");
-  def.tooltip = QObject::tr("Raises or sinks sketch profiles and texts on a face, wrapped onto a cylinder");
+  def.tooltip = QObject::tr("Raises or sinks sketch profiles on a flat, cylindrical or conical face");
   def.group = QStringLiteral("CREATE");
   def.keywords = {QStringLiteral("deboss"), QStringLiteral("engrave"), QStringLiteral("wrap"),
                   QStringLiteral("text"), QStringLiteral("label")};
@@ -35,8 +37,8 @@ CommandDef embossCommand(const CommandContext& context) {
       selectionInput(QStringLiteral("profiles"), QObject::tr("Profiles"), SelectKind::Profile, 1, 0)
           .withTooltip(QObject::tr("Profiles of one sketch; a text's letters are profiles too")),
       selectionInput(QStringLiteral("face"), QObject::tr("Face"), SelectKind::Face, 0, 1)
-          .withTooltip(QObject::tr("A planar face, or a cylindrical face the profiles wrap onto; "
-                                   "none: the sketch plane"))
+          .withTooltip(QObject::tr("A planar face, or a cylindrical or conical face the profiles wrap "
+                                   "onto; none: the sketch plane"))
           .withAccepts(takesEmbossFace)
           .withoutMeshes(),
       valueInput(QStringLiteral("depth"), QObject::tr("Depth"), ValueKind::Length, QStringLiteral("1 mm")),
@@ -95,7 +97,8 @@ CommandDef embossCommand(const CommandContext& context) {
     const QString on = face.isEmpty() ? QStringLiteral("the sketch plane")
                        : face.first().geometry == QStringLiteral("cylinder")
                            ? QStringLiteral("a cylindrical face, wrapped")
-                           : QStringLiteral("a planar face");
+                       : face.first().geometry == QStringLiteral("cone") ? QStringLiteral("a conical face, wrapped")
+                                                                         : QStringLiteral("a planar face");
     return QStringLiteral("Added emboss (%1) of %2 profile(s) on %3, depth %4")
         .arg(label(kModes, state.choice(QStringLiteral("mode"))))
         .arg(state.items(QStringLiteral("profiles")).size())

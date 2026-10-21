@@ -521,8 +521,9 @@ void MainWindow::dropEvent(QDropEvent* event) {
 // Import
 
 void MainWindow::importFile() {
-  const QString path = dialogOpenFileName(this, tr("Import"), fileDialogDirectory(), importFilter());
+  const QString path = dialogOpenFileName(this, tr("Import"), dialogFolder(DialogGroup::Import), importFilter());
   if (!path.isEmpty()) {
+    rememberDialogFolder(DialogGroup::Import, path);
     importPath(path, true);
   }
 }
@@ -766,25 +767,28 @@ bool MainWindow::importDrawing(const QString& path, bool interactive, QString* e
 }
 
 void MainWindow::insertSvg() {
-  const QString path = dialogOpenFileName(this, tr("Insert SVG"), fileDialogDirectory(),
+  const QString path = dialogOpenFileName(this, tr("Insert SVG"), dialogFolder(DialogGroup::Import),
                                           tr("SVG drawings (*.svg);;All files (*)"));
   if (!path.isEmpty()) {
+    rememberDialogFolder(DialogGroup::Import, path);
     importPath(path, true);
   }
 }
 
 void MainWindow::insertMesh() {
-  const QString path = dialogOpenFileName(this, tr("Insert Mesh"), fileDialogDirectory(),
-                                                    tr("Meshes (*.stl *.obj);;All files (*)"));
+  const QString path = dialogOpenFileName(this, tr("Insert Mesh"), dialogFolder(DialogGroup::Import),
+                                          tr("Meshes (*.stl *.obj);;All files (*)"));
   if (!path.isEmpty()) {
+    rememberDialogFolder(DialogGroup::Import, path);
     importPath(path, true);
   }
 }
 
 void MainWindow::insertDxf() {
-  const QString path = dialogOpenFileName(this, tr("Insert DXF"), fileDialogDirectory(),
-                                                    tr("DXF drawings (*.dxf);;All files (*)"));
+  const QString path = dialogOpenFileName(this, tr("Insert DXF"), dialogFolder(DialogGroup::Import),
+                                          tr("DXF drawings (*.dxf);;All files (*)"));
   if (!path.isEmpty()) {
+    rememberDialogFolder(DialogGroup::Import, path);
     importPath(path, true);
   }
 }
@@ -814,11 +818,12 @@ void MainWindow::insertComponent(const QString& given) {
     }
   }
   if (path.isEmpty()) {
-    path = dialogOpenFileName(this, tr("Insert Component"), fileDialogDirectory(),
-                                        tr("Mitcad designs (*.mitcad)"));
+    path = dialogOpenFileName(this, tr("Insert Component"), dialogFolder(DialogGroup::Import),
+                              tr("Mitcad designs (*.mitcad)"));
     if (path.isEmpty()) {
       return;
     }
+    rememberDialogFolder(DialogGroup::Import, path);
   }
   const std::optional<bool> linked = askLinked(this, path);
   if (!linked) {
@@ -1030,13 +1035,14 @@ void MainWindow::exportFile() {
   }
   const QStringList selected = selectedBodies(m_selection);
   const QString base = m_filePath.isEmpty() ? documentName() : QFileInfo(m_filePath).completeBaseName();
-  const QString suggested = QDir(fileDialogDirectory()).filePath(base + (sketch.isEmpty() ? QStringLiteral(".step")
-                                                                                           : QStringLiteral(".dxf")));
+  const QString suggested = QDir(dialogFolder(DialogGroup::Export))
+                                .filePath(base + (sketch.isEmpty() ? QStringLiteral(".step") : QStringLiteral(".dxf")));
   const std::optional<ExportChoice> choice = askExport(this, suggested, static_cast<int>(selected.size()), sketches,
                                                        sketch, !m_snapshot.occurrences.isEmpty());
   if (!choice) {
     return;
   }
+  rememberDialogFolder(DialogGroup::Export, choice->path);
   if (choice->format == QStringLiteral("html")) {
     // A web page (mitcad#423, web/WebPage.hpp): the visible bodies meshed
     // within the refinement's tolerances (as STL and OBJ), the viewer and
@@ -1136,12 +1142,12 @@ void MainWindow::exportFile() {
 
 void MainWindow::exportSketch(const QString& sketch) {
   const QString name = featureName(sketch);
-  const QString path = dialogSaveFileName(this, tr("Save As DXF"),
-                                                    QDir(fileDialogDirectory()).filePath(name + QStringLiteral(".dxf")),
-                                                    tr("DXF drawings (*.dxf)"));
+  const QString suggested = QDir(dialogFolder(DialogGroup::Export)).filePath(name + QStringLiteral(".dxf"));
+  const QString path = dialogSaveFileName(this, tr("Save As DXF"), suggested, tr("DXF drawings (*.dxf)"));
   if (path.isEmpty()) {
     return;
   }
+  rememberDialogFolder(DialogGroup::Export, path);
   QJsonObject result;
   if (!runCommand(cmd("export_sketch", {{QStringLiteral("sketch"), sketch}, {QStringLiteral("path"), path}}),
                   &result)) {

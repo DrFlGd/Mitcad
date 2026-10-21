@@ -40,11 +40,16 @@ pub(crate) fn refuse(message: impl Into<String>) -> ModelError {
     ModelError::Invalid(message.into())
 }
 
+/// How near a typed length must end to another member's face or outer
+/// side to meet it as a corner (mitcad#492), mm: half the 0.1 mm a length
+/// typed from the one shown is rounded to.
+const MEETS: f64 = 0.05;
+
 // Inputs.
 
 /// The part a command places: a library's component at a version, or a
 /// source the design has.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PartInput {
     #[serde(default)]
@@ -983,7 +988,17 @@ impl<K: Kernel> Document<K> {
                                 .find(|a| dot(*a, d).abs() < 1.0 - 1e-6)
                                 .unwrap_or(super::geometry::X),
                         };
-                        super::geometry::frame(point, hint, d)
+                        let frame = super::geometry::frame(point, hint, d);
+                        // Lying on the XY plane it rests on it, not centred
+                        // on it (mitcad#492).
+                        let up = super::geometry::Z;
+                        match bounds.as_ref() {
+                            Some(b) if dot(d, up).abs() < 1e-6 => {
+                                Transform::translation(scale(up, rest_lift(b, &frame, point, up)))
+                                    .after(&frame)
+                            }
+                            _ => frame,
+                        }
                     }
                     None => Transform::translation(point),
                 };
@@ -1014,7 +1029,9 @@ impl<K: Kernel> Document<K> {
                             &at,
                             touch,
                             &mounts,
-                            input.lie.map(|lie| (lie, bounds.as_ref())),
+                            input.lie,
+                            bounds.as_ref(),
+                            rotate,
                         )?,
                         "geometry",
                     ),
@@ -1174,56 +1191,117 @@ impl<K: Kernel> Document<K> {
                 _ => return Err(refuse("a mitre needs a profile's side or end to meet")),
             }
         }
-        // Closing a frame (mitcad#485): a part on an end whose length is
-        // bound to a member its far end meets end to end, as a corner. A
-        // mitred start gets a shared mitre there too, cutting both (the
-        // length through to the member's outer side, the long point); a
-        // square start a square butt on its face, never into it.
+        // Closing a frame (mitcad#485): a part on an end whose far end meets
+        // a member end to end, as a corner: its length bound to that
+        // member, or typed to end on its face or its outer side (mitcad#492,
+        // within `MEETS`). A mitred start gets a shared mitre there too,
+        // cutting both (the length through to the member's outer side, the
+        // long point); a square start a square butt on its face, never into
+        // it. A typed length that ends inside the member gets a warning.
+        // A member by two points (mitcad#492) has a square start: its far end
+        // a square butt on the face, else the warning.
         let mut closing = None;
-        if let (LengthPlan::Bound { to, mode, .. }, Spot::Joint(joint), "end") =
-            (&mut length, &spot, place)
-            && let Some(ray) = &joint.ray
+        let start_ray = match (&spot, place) {
+            (Spot::Joint(joint), "end") => Some((
+                joint.own == "end_b",
+                match &joint.ray {
+                    Some(ray) => (ray.start, ray.along),
+                    None => (joint.frame_b.translation, z_axis(&joint.frame_b)),
+                },
+            )),
+            // From end A along the part's axis (the points as `flip` ordered
+            // them).
+            (_, "points") => {
+                let end_a = mounts.get("end_a").map_or([0.0; 3], |t| t.translation);
+                Some((
+                    false,
+                    (
+                        placement.apply_point(end_a),
+                        placement.apply_vector(super::geometry::Z),
+                    ),
+                ))
+            }
+            _ => None,
+        };
+        if let Some((start_b, (start, along))) = start_ray
             && source.meta.length.is_some()
             && tilt.abs() <= 1e-12
-            && let Some((other, end_b, away)) =
-                self.closing_corner(to, ray.start, ray.along, target.as_ref())
         {
-            let start_b = joint.own == "end_b";
             let mitred = if start_b {
                 own_ends.b.is_some()
             } else {
                 own_ends.a.is_some()
             };
-            let half = angle_between(ray.along, away) / 2.0;
-            let cut = if mitred && half > 1e-9 && other.info.is_cut_to_length() {
-                *mode = BoundMode::Through;
-                // As at a corner's start: each end leans towards the
-                // other's axis away from the corner.
-                let far = Some(EndCut {
-                    angle: ValueInput::Number(half),
-                    tilt: Tilt::towards(inverse(&placement).apply_vector(away)),
-                });
-                if start_b {
-                    own_ends.a = far;
-                } else {
-                    own_ends.b = far;
-                }
-                Some(EndCut {
-                    angle: ValueInput::Number(half),
-                    tilt: Tilt::towards(
-                        inverse(&other.placement).apply_vector(scale(ray.along, -1.0)),
-                    ),
-                })
-            } else {
-                *mode = BoundMode::Face;
-                None
+            // Whether a mitred start takes a shared mitre at the corner.
+            let shares = |other: &Target, away: V3| {
+                mitred && angle_between(along, away) / 2.0 > 1e-9 && other.info.is_cut_to_length()
             };
-            closing = Some(Closing {
-                component: other.info.component,
-                part: other.part()?,
-                end_b,
-                cut,
-            });
+            let mut corner = None;
+            match &mut length {
+                // A member by two points keeps the bound mode it was given.
+                LengthPlan::Bound { to, mode, .. } if place == "end" => {
+                    if let Some(other) = self.target(&to.occurrence.0)
+                        && let Some((end_b, away, _)) =
+                            self.closing_corner(&other, start, along, target.as_ref())
+                    {
+                        let through = shares(&other, away);
+                        *mode = if through {
+                            BoundMode::Through
+                        } else {
+                            BoundMode::Face
+                        };
+                        corner = Some((other, end_b, away, through));
+                    }
+                }
+                LengthPlan::Value(_, l) => {
+                    if let Some((other, end_b, away, (near, far))) =
+                        self.typed_corner(*l, start, along, target.as_ref())
+                    {
+                        let through = shares(&other, away) && (*l - far).abs() <= MEETS;
+                        if through || (*l - near).abs() <= MEETS {
+                            corner = Some((other, end_b, away, through));
+                        } else {
+                            warnings.push(format!(
+                                "its far end ends inside {}: a length of {} mm meets its face, {} mm its outer side",
+                                other.info.name,
+                                super::meta::round(near),
+                                super::meta::round(far)
+                            ));
+                        }
+                    }
+                }
+                LengthPlan::Bound { .. } | LengthPlan::None => {}
+            }
+            if let Some((other, end_b, away, through)) = corner {
+                let half = angle_between(along, away) / 2.0;
+                let cut = if through {
+                    // As at a corner's start: each end leans towards the
+                    // other's axis away from the corner.
+                    let far = Some(EndCut {
+                        angle: ValueInput::Number(half),
+                        tilt: Tilt::towards(inverse(&placement).apply_vector(away)),
+                    });
+                    if start_b {
+                        own_ends.a = far;
+                    } else {
+                        own_ends.b = far;
+                    }
+                    Some(EndCut {
+                        angle: ValueInput::Number(half),
+                        tilt: Tilt::towards(
+                            inverse(&other.placement).apply_vector(scale(along, -1.0)),
+                        ),
+                    })
+                } else {
+                    None
+                };
+                closing = Some(Closing {
+                    component: other.info.component,
+                    part: other.part()?,
+                    end_b,
+                    cut,
+                });
+            }
         }
         let mut shown = BTreeMap::new();
         for (name, v) in &numbers {
@@ -1265,21 +1343,22 @@ impl<K: Kernel> Document<K> {
         })
     }
 
-    /// The member a bound length's far end meets end to end, as a corner
+    /// Whether a part's far end meets `other` end to end, as a corner
     /// (mitcad#485): the ray from `start` along `along` (the part's axis,
-    /// in the host's coordinates) meets `to`'s part, not along its axis,
-    /// within its section's size of one of its ends (as `build_junctions`
-    /// finds an `L`), and that part is not the one the start is on. The
-    /// part, whether the corner is at its end B, and its axis away from
-    /// the corner.
+    /// in the host's coordinates) runs through `other` (not along one of its
+    /// faces), not along its axis, within
+    /// its section's size of one of its ends (as `build_junctions` finds an
+    /// `L`), and `other` is not the part the start is on (`from`). Whether
+    /// the corner is at its end B, its axis away from the corner, and how
+    /// far along the ray its box begins and ends (its face, its outer
+    /// side).
     fn closing_corner(
         &self,
-        to: &BoundTo,
+        other: &Target,
         start: V3,
         along: V3,
         from: Option<&Target>,
-    ) -> Option<(Target, bool, V3)> {
-        let other = self.target(&to.occurrence.0)?;
+    ) -> Option<(bool, V3, (f64, f64))> {
         if from.is_some_and(|t| t.info.component == other.info.component) {
             return None;
         }
@@ -1291,8 +1370,14 @@ impl<K: Kernel> Document<K> {
             return None;
         }
         let bounds = self.part_bounds(other.info.component)?;
-        let (near, _) = super::geometry::box_along(&bounds, &other.placement, start, along);
+        let (near, far) = super::geometry::box_along(&bounds, &other.placement, start, along);
         if near <= 1e-6 {
+            return None;
+        }
+        // Through it, not along one of its faces (a board on a stud's face).
+        let middle =
+            inverse(&other.placement).apply_point(add(start, scale(along, (near + far) / 2.0)));
+        if !(0..3).all(|i| middle[i] > bounds.min[i] + 1e-3 && middle[i] < bounds.max[i] - 1e-3) {
             return None;
         }
         let at = dot(sub(add(start, scale(along, near)), ea), axis);
@@ -1306,7 +1391,40 @@ impl<K: Kernel> Document<K> {
         if from_end > section + tolerance {
             return None;
         }
-        Some((other, end_b, if end_b { scale(axis, -1.0) } else { axis }))
+        let away = if end_b { scale(axis, -1.0) } else { axis };
+        Some((end_b, away, (near, far)))
+    }
+
+    /// The member a typed length's far end meets as a corner (mitcad#492):
+    /// of the members cut to length its axis meets ([`Self::closing_corner`]),
+    /// the nearest one whose box the far end, `length` from `start` along
+    /// `along`, is in (within [`MEETS`]).
+    fn typed_corner(
+        &self,
+        length: f64,
+        start: V3,
+        along: V3,
+        from: Option<&Target>,
+    ) -> Option<(Target, bool, V3, (f64, f64))> {
+        self.build_parts_info()
+            .into_iter()
+            .filter(|info| info.is_cut_to_length())
+            .filter_map(|info| {
+                let path = self.placed_in_host(info.component)?;
+                let other = Target {
+                    placement: self.path_transform(&path),
+                    path,
+                    info,
+                };
+                let (end_b, away, (near, far)) = self.closing_corner(&other, start, along, from)?;
+                (length >= near - MEETS && length <= far + MEETS).then_some((
+                    other,
+                    end_b,
+                    away,
+                    (near, far),
+                ))
+            })
+            .min_by(|a, b| a.3.0.total_cmp(&b.3.0))
     }
 
     /// Plans a part on a BUILD part: on a side's slot, on an end, or on a
@@ -1759,7 +1877,23 @@ impl<K: Kernel> Document<K> {
         // Mating frames face each other: z against z.
         let flip = true;
         // How far the new part reaches along the slot from its frame.
-        let own_local = mounts.get(&own).copied().unwrap_or(Transform::IDENTITY);
+        let mut own_local = mounts.get(&own).copied().unwrap_or(Transform::IDENTITY);
+        // A member standing on a member's side lies as the target does
+        // (mitcad#492): its own frame turned a quarter about its axis when
+        // only that puts its section's axes parallel to the target's
+        // (`rotate` turns it further).
+        let mut own_turn = None;
+        if new.tilt.abs() <= 1e-12
+            && own == touch
+            && source.meta.is_timber()
+            && target.info.is_timber()
+            && let (Some(own_box), Some(target_box)) =
+                (new.bounds, self.part_bounds(target.info.component))
+            && let Some(o) = side_lie(&slot_local, &own_local, own_box, &target_box)
+        {
+            own_local = crate::joints::apply_override(&own_local, &o).map_err(refuse)?;
+            own_turn = Some(o);
+        }
         // Tilted along the host (mitcad#444): its foot cut to lie on the
         // side, its long point where the slide puts it.
         let length_now = match length {
@@ -1890,7 +2024,7 @@ impl<K: Kernel> Document<K> {
                 from: Some(side.from),
                 side: Some(side),
                 end: None,
-                own_override: tilted.as_ref().map(|(plan, ..)| plan.own),
+                own_override: tilted.as_ref().map(|(plan, ..)| plan.own).or(own_turn),
                 cuts,
                 warnings,
             })),
@@ -2186,7 +2320,9 @@ impl<K: Kernel> Document<K> {
     /// Plans the first part: on a plane, a point or a face (of the BUILD host,
     /// or of an occurrence that is no BUILD part), at the picked point, along
     /// `at.direction` when given; `lie` (and the part's box) turns a member
-    /// about it, flat or on edge on the plane (mitcad#485).
+    /// about it, flat or on edge on the plane (mitcad#485). A member lying
+    /// on it (`at.direction` along the plane) rests on it, on its normal's
+    /// side, as turned by `rotate` (mitcad#492).
     #[allow(clippy::too_many_arguments)]
     fn plan_on_geometry(
         &self,
@@ -2196,7 +2332,9 @@ impl<K: Kernel> Document<K> {
         at: &PlaceAt,
         touch: &str,
         mounts: &BTreeMap<String, Transform>,
-        lie: Option<(super::Lie, Option<&BoundingBox>)>,
+        lie: Option<super::Lie>,
+        bounds: Option<&BoundingBox>,
+        rotate: f64,
     ) -> Result<Spot, ModelError> {
         let label = source.def.label();
         let local = crate::joints::origin_frame(&mut self.resolver(), geometry)
@@ -2221,19 +2359,20 @@ impl<K: Kernel> Document<K> {
         let hint = turn.map(|d| {
             let [_, ex, ey, ez] = parts(&local);
             match lie {
-                Some((lie, bounds)) => super::timber::lie_axes(d, bounds, ez, lie, 0.0).0,
+                Some(lie) => super::timber::lie_axes(d, bounds, ez, lie, 0.0).0,
                 None => [ex, ey, ez]
                     .into_iter()
                     .find(|a| dot(*a, d).abs() < 1.0 - 1e-6)
                     .unwrap_or(ex),
             }
         });
-        let override_frame = (point_local.is_some() || turn.is_some()).then_some(FrameOverride {
-            origin: point_local,
-            z_axis: turn,
-            x_axis: hint,
-            shift: None,
-        });
+        let mut override_frame =
+            (point_local.is_some() || turn.is_some()).then_some(FrameOverride {
+                origin: point_local,
+                z_axis: turn,
+                x_axis: hint,
+                shift: None,
+            });
         let direction = match turn {
             Some(d) => RayDirection::Vector(inverse(&local).apply_vector(d)),
             None => RayDirection::default(),
@@ -2242,6 +2381,23 @@ impl<K: Kernel> Document<K> {
         if let Some(o) = &override_frame {
             at_point = crate::joints::apply_override(&local, o).map_err(refuse)?;
         }
+        // Lying on the plane or face it rests on it, on its normal's side
+        // (mitcad#492): lifted along the normal by how far its box, as the
+        // joint places it, reaches below.
+        let up = z_axis(&local);
+        let lift = match (bounds, turn, override_frame.as_mut()) {
+            (Some(b), Some(d), Some(o)) if dot(d, up).abs() < 1e-6 => {
+                let own_local = mounts.get(&own).copied().unwrap_or(Transform::IDENTITY);
+                let part = at_point
+                    .after(&crate::joints::alignment(rotate, 0.0, true))
+                    .after(&inverse(&own_local));
+                let lift = rest_lift(b, &part, at_point.translation, up);
+                o.origin = Some(add(at_point.translation, scale(up, lift)));
+                at_point = crate::joints::apply_override(&local, o).map_err(refuse)?;
+                lift
+            }
+            _ => 0.0,
+        };
         let shift = point_local.map_or([0.0; 3], |p| inverse(&local).apply_point(p));
         let frame_b = placement.after(&at_point);
         Ok(Spot::Joint(Box::new(JointPlan {
@@ -2262,7 +2418,7 @@ impl<K: Kernel> Document<K> {
                     geometry: geometry.clone(),
                     frame_override: None,
                 },
-                shift: [shift[0], shift[1], 0.0],
+                shift: [shift[0], shift[1], lift],
                 shift_by_joint: false,
                 slide_extra: 0.0,
                 direction,
@@ -2307,6 +2463,13 @@ impl<K: Kernel> Document<K> {
     pub(crate) fn preview_place(&self, input: &PlaceInput) -> Result<Plan, ModelError> {
         self.plan_place(input)
     }
+}
+
+/// How far a part lying on a plane moves along the plane's normal `up` to
+/// rest on it (mitcad#492): its box (moved by `placement`) with its lowest
+/// point on the plane through `origin`, on the normal's side.
+fn rest_lift(bounds: &BoundingBox, placement: &Transform, origin: V3, up: V3) -> f64 {
+    -super::geometry::box_along(bounds, placement, origin, up).0
 }
 
 /// The least and the most of points along a direction.
@@ -2468,6 +2631,54 @@ pub(crate) fn same_lie_x(
     }
     let quarter = cross(z, hint);
     (unit(quarter).is_some() && parallel(quarter)).then_some(quarter)
+}
+
+/// The override of the own frame `own` (an end) of a member standing on a
+/// member's side (mitcad#492), mated flipped and not rotated with the side
+/// frame `slot` (in the target's coordinates): its x turned a quarter about
+/// its axis when only that puts the new member's thickness axis parallel
+/// to the target's, or, where its axis takes the target's thickness axis
+/// (on the target's wide face), its width axis parallel to the target's,
+/// so that same-size members have flush sides. None when it lies so
+/// already, or neither can (a section is square).
+pub(crate) fn side_lie(
+    slot: &Transform,
+    own: &Transform,
+    new: &BoundingBox,
+    target: &BoundingBox,
+) -> Option<FrameOverride> {
+    let (thin_new, thin_target) = (thickness_axis(new)?, thickness_axis(target)?);
+    let wide = |thin: V3| {
+        if thin[0].abs() > 0.5 {
+            super::geometry::Y
+        } else {
+            super::geometry::X
+        }
+    };
+    let lies = |own: &Transform| {
+        let to_target = slot
+            .after(&crate::joints::alignment(0.0, 0.0, true))
+            .after(&inverse(own));
+        let parallel = |a: V3, b: V3| dot(to_target.apply_vector(a), b).abs() > 1.0 - 1e-6;
+        (
+            parallel(thin_new, thin_target),
+            parallel(wide(thin_new), wide(thin_target)),
+        )
+    };
+    let o = FrameOverride {
+        origin: None,
+        z_axis: None,
+        x_axis: Some(parts(own)[2]),
+        shift: None,
+    };
+    let turned = crate::joints::apply_override(own, &o).ok()?;
+    let (now, quarter) = (lies(own), lies(&turned));
+    let turn = if now.0 || quarter.0 {
+        quarter.0 && !now.0
+    } else {
+        quarter.1 && !now.1
+    };
+    turn.then_some(o)
 }
 
 /// The name of the target's end a joint's b side names.
@@ -3044,6 +3255,8 @@ impl<K: Kernel> Document<K> {
             }
             None => None,
         };
+        let rest = self.plan_rest(&info, rotate, input.flip);
+        let side_turn = self.plan_side_lie(&info, input.flip);
         self.apply(|state| {
             let mut changed = Vec::new();
             if let Some((motion, value, from, from_given)) = offset {
@@ -3088,7 +3301,30 @@ impl<K: Kernel> Document<K> {
                     edit_part(state, part, |def| {
                         std::mem::swap(&mut def.ends.a, &mut def.ends.b);
                     })?;
+                    // On a member's side it lies as that member does from
+                    // its other end too (mitcad#492).
+                    if let Some(turn) = side_turn {
+                        edit_joint(state, joint, |j| j.a.frame_override = turn)?;
+                    }
                     changed.push("flip".to_owned());
+                }
+            }
+            // Turned or flipped lying on a plane: resting on it again
+            // (mitcad#492), a bound length's ray from the lifted axis.
+            if let (Some((origin, lift)), Some(joint)) = (rest, joint) {
+                edit_joint(state, joint, |j| {
+                    if let Some(o) = j.b.frame_override.as_mut() {
+                        o.origin = Some(origin);
+                    }
+                })?;
+                for bound in current_bounds(state, component) {
+                    edit_bound(state, bound, |b| {
+                        if lift.abs() > 1e-12 {
+                            b.from.shift.insert(ShiftAxis::Z, ValueInput::Number(lift));
+                        } else {
+                            b.from.shift.remove(&ShiftAxis::Z);
+                        }
+                    })?;
                 }
             }
             match &input.length {
@@ -3299,6 +3535,103 @@ impl<K: Kernel> Document<K> {
             .ok_or_else(|| refuse(format!("no component {text}")))
     }
 
+    /// Where a part lying on a plane or a face (placed on geometry that is
+    /// no BUILD part, its axis along the plane) goes when an edit turns it
+    /// (`rotate`) or flips it, to rest on the plane again (mitcad#492): its
+    /// joint's override origin, in the plane's component's coordinates,
+    /// and its lift off the plane. None for any other part or edit.
+    fn plan_rest(
+        &self,
+        info: &PartInfo,
+        rotate: Option<f64>,
+        flip: Option<bool>,
+    ) -> Option<(V3, f64)> {
+        if rotate.is_none() && flip.is_none() {
+            return None;
+        }
+        let Some(FeatureDef::Joint(j)) = self.feature(info.record.joint?).map(|e| &e.def) else {
+            return None;
+        };
+        let o = j.b.frame_override?;
+        let (Some(origin), Some(z)) = (o.origin, o.z_axis) else {
+            return None;
+        };
+        if j.kind != JointKind::Rigid || self.target(&j.b.occurrence.0).is_some() {
+            return None;
+        }
+        let GeomRef::Mount { name: own_name, .. } = &j.a.geometry else {
+            return None;
+        };
+        let local = crate::joints::origin_frame(&mut self.resolver(), &j.b.geometry).ok()?;
+        let up = z_axis(&local);
+        if dot(unit(z)?, up).abs() >= 1e-6 {
+            return None;
+        }
+        let own_name = match (flip, own_name.as_str()) {
+            (Some(true), "end_a") => "end_b",
+            (Some(false), "end_b") => "end_a",
+            (_, name) => name,
+        };
+        let mut own = *info.mount(own_name)?;
+        if let Some(a) = &j.a.frame_override {
+            own = crate::joints::apply_override(&own, a).ok()?;
+        }
+        let angle = rotate
+            .or_else(|| j.angle.and_then(|id| self.parameters().value(id)))
+            .unwrap_or(0.0);
+        let bounds = self.part_bounds(info.component)?;
+        let on_plane = sub(origin, scale(up, dot(sub(origin, local.translation), up)));
+        let at_point = crate::joints::apply_override(
+            &local,
+            &FrameOverride {
+                origin: Some(on_plane),
+                ..o
+            },
+        )
+        .ok()?;
+        let part = at_point
+            .after(&crate::joints::alignment(angle, 0.0, j.flip))
+            .after(&inverse(&own));
+        let lift = rest_lift(&bounds, &part, on_plane, up);
+        Some((add(on_plane, scale(up, lift)), lift))
+    }
+
+    /// The own frame override of a timber member standing on a timber
+    /// member's side (mitcad#492) when a Flip edit makes its other end the
+    /// one that meets: [`side_lie`] for that end, as a fresh placement
+    /// gives it (None inside: no turn). None for any other part or edit,
+    /// and for a tilted part, whose override is its tilt's.
+    fn plan_side_lie(&self, info: &PartInfo, flip: Option<bool>) -> Option<Option<FrameOverride>> {
+        let flip = flip?;
+        if super::tilt::is_tilted(info.record.tilt) || !info.is_timber() {
+            return None;
+        }
+        let Some(FeatureDef::Joint(j)) = self.feature(info.record.joint?).map(|e| &e.def) else {
+            return None;
+        };
+        let (GeomRef::Mount { name: own, .. }, GeomRef::Mount { name: slot, .. }) =
+            (&j.a.geometry, &j.b.geometry)
+        else {
+            return None;
+        };
+        let wanted = if flip { "end_b" } else { "end_a" };
+        if j.kind != JointKind::Slider
+            || !matches!(own.as_str(), "end_a" | "end_b")
+            || own == wanted
+        {
+            return None;
+        }
+        let target = self.target(&j.b.occurrence.0)?;
+        if !target.info.is_timber() || !target.info.is_side(slot) {
+            return None;
+        }
+        let slot_local = target.info.mount(slot)?;
+        let own_local = info.mount(wanted)?;
+        let own_box = self.part_bounds(info.component)?;
+        let target_box = self.part_bounds(target.info.component)?;
+        Some(side_lie(slot_local, own_local, &own_box, &target_box))
+    }
+
     /// The length parameter of the part a joint's b side is on.
     fn joint_target_length(&self, joint: FeatureUid) -> (Option<f64>, Option<String>) {
         let Some(FeatureDef::Joint(j)) = self.feature(joint).map(|e| &e.def) else {
@@ -3347,7 +3680,13 @@ impl<K: Kernel> Document<K> {
         if j.kind != JointKind::Slider || !on_slot {
             return (0.0, 0.0);
         }
-        let own = info.mount(own).copied().unwrap_or(Transform::IDENTITY);
+        let mut own = info.mount(own).copied().unwrap_or(Transform::IDENTITY);
+        // Turned as it lies on the side (mitcad#492).
+        if let Some(o) = &j.a.frame_override
+            && let Ok(turned) = crate::joints::apply_override(&own, o)
+        {
+            own = turned;
+        }
         let angle = rotate
             .or_else(|| j.angle.and_then(|id| self.parameters().value(id)))
             .unwrap_or(0.0);

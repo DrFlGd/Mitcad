@@ -682,7 +682,51 @@ function Ui-LoggedAt([string]$Text) {
   Ui-Fail "no place logged for '$Text'"
 }
 
+# Ui-PanelReveal "Panel <command> input <id>": a long panel scrolled, by
+# wheel steps over its scroll bar, until the input's logged place is in its
+# view. In session 0's 1024x768 desktop a panel can be higher than its dock
+# (Timber's frame with its fasteners), and a click on a place scrolled away
+# hits whatever is there instead. The panel logs its view with its places
+# ("Panel <command> view y A to B, scrolled S of M, bar at x,y"; the bar
+# only while it scrolls) and logs them again when it scrolls.
+function Ui-PanelReveal([string]$Text) {
+  if ($Text -notmatch '^Panel (.+) input \S+$') { return }
+  $view = "Panel $($Matches[1]) view y "
+  $synced = $false
+  for ($i = 0; $i -lt 30; $i++) {
+    $lines = Ui-LogLines
+    $line = $lines | Where-Object { $_.StartsWith($view) } | Select-Object -Last 1
+    if ("$line" -notmatch ' view y (-?\d+) to (-?\d+), scrolled \d+ of \d+, bar at (\d+),(\d+)$') { return }
+    if (-not $synced) {
+      # The places and the view of one layout, logged whole.
+      Ui-Sync
+      $synced = $true
+      continue
+    }
+    $top = [int]$Matches[1]
+    $bottom = [int]$Matches[2]
+    $bar = @([int]$Matches[3], [int]$Matches[4])
+    $place = $lines | Where-Object { $_.Contains("$Text at ") } | Select-Object -Last 1
+    if ("$place" -notmatch ' at (\d+),(\d+)' -or "$place".EndsWith('(hidden)')) { return }
+    $y = [int]$Matches[2]
+    $margin = 12
+    if ($y -ge $top + $margin -and $y -le $bottom - $margin) { return }
+    $step = if ($y -gt $bottom - $margin) { -1 } else { 1 }
+    $count = $lines.Count
+    [UiInput]::Move($script:UiWindow, $bar[0], $bar[1], 0)
+    Start-Sleep -Milliseconds 80
+    [UiInput]::Wheel($script:UiWindow, $bar[0], $bar[1], $step)
+    for ($j = 0; $j -lt 30; $j++) {
+      if (Ui-LogLines | Select-Object -Skip $count | Where-Object { $_.StartsWith($view) }) { break }
+      Start-Sleep -Milliseconds 100
+    }
+    Ui-Sync
+  }
+  Ui-Fail "the panel did not scroll '$Text' into its view"
+}
+
 function Ui-ClickLogged([string]$Text, [int]$Button = 1) {
+  Ui-PanelReveal $Text
   $at = Ui-LoggedAt $Text
   Ui-Click $at[0] $at[1] $Button
 }
@@ -714,6 +758,7 @@ function Ui-ClickWith([string]$Modifiers, [int]$X, [int]$Y) {
 # panel's drop-down ("Panel 3D Print input format"), whose list cannot open
 # in session 0: -1 (a step towards the user) chooses the next entry.
 function Ui-WheelLogged([string]$Text, [int]$Steps) {
+  Ui-PanelReveal $Text
   $at = Ui-LoggedAt $Text
   [UiInput]::Move($script:UiWindow, $at[0], $at[1], 0)
   Start-Sleep -Milliseconds 80
@@ -721,6 +766,7 @@ function Ui-WheelLogged([string]$Text, [int]$Steps) {
 }
 
 function Ui-DoubleClickLogged([string]$Text) {
+  Ui-PanelReveal $Text
   $at = Ui-LoggedAt $Text
   Ui-DoubleClick $at[0] $at[1]
 }

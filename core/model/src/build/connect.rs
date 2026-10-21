@@ -297,7 +297,7 @@ pub(crate) fn make_piece(
 }
 
 /// The new part's evaluated frames and box in its own coordinates.
-fn evaluated<K: Kernel>(
+pub(crate) fn evaluated<K: Kernel>(
     doc: &Document<K>,
     source: &SourceUse,
     values: &[(String, f64)],
@@ -1238,7 +1238,10 @@ impl<K: Kernel> Document<K> {
                 .part_info(component)
                 .and_then(|i| i.record.set)
                 .unwrap_or(component);
-            targets = self.set_members(lead);
+            // With the fasteners it was fastened to its hosts with
+            // (mitcad#497).
+            targets = self.set_fasteners(lead);
+            targets.extend(self.set_members(lead));
             if targets.is_empty() {
                 targets = vec![component];
             }

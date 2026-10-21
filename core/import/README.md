@@ -119,8 +119,9 @@ Matching rules:
   keeps the closest: a set of regions next to the right one, or the
   wrong reading of a two-distance chamfer or asymmetric fillet (the
   other reading is tried right after each definition; which face takes
-  which distance is decoded for two-distance chamfers only, *Named
-  inputs*), can come within 1e-3, and the
+  which distance is decoded for two-distance chamfers, and a distance and
+  angle's face from the file's flag, *Named inputs*), can come within
+  1e-3, and the
   difference grows in later items. A fillet or chamfer is replaced only
   by one that comes closer by a quarter at least: another edge set's
   rounding can come a little closer to a stored spline rounding by
@@ -358,7 +359,10 @@ just before the item (its `_f3d.result_no`) and finds them there
     it, seen against the face's normal): the import sets `flip` so that
     the replay's first distance lands there (per tangent chain, by the
     most of its edges; sets of equal distances keep theirs), and the
-    other reading stays a guess after it;
+    other reading stays a guess after it; a distance-and-angle chamfer's
+    distance and angle lie on that face too where the file's flag
+    (`isFlipped`) is off, on the other face where it is on (mitcad#343,
+    round 16), whichever order the replay's edge name puts its faces in;
   - the edges found by their names are also tried one tangent chain at a
     time (a feature per chain), right after all at once.
 - **Bodies** of moves, splits, body patterns and mirrors: by their tags;
@@ -1318,7 +1322,11 @@ When the step does not move for that many seconds, the
 thread is abandoned and the import reruns on a new document with the item
 in `Options::hung_items`: it takes its history state without trying
 definitions (note "the geometry kernel did not finish a definition of
-it"), and the report warns. The items before it replay as before, so those
+it"), and the report warns. With the import's trace on
+(`MITCAD_IMPORT_TRACE`), each definition is named before it is evaluated
+("evaluating […]"), so the trace of a try given up ends with the
+definition the kernel did not finish (mitcad#495). The items before it
+replay as before, so those
 whose definitions gave no state (`Progress::failed_items`) take their
 states at once in the next try, with the same note
 (`Options::failed_items`): a pattern of a thousand copies took minutes in
@@ -9815,6 +9823,274 @@ after; history states matching): `6418ebb1` and `920a1cef` 42 → 43 of 50
 body lay 2.2 mm off). Unchanged: `a9e82a9a` and `de7b8b9d` 184 of 199 (120
 of 145 built), `5ef2dbd5` 83 of 98, `db73863f` 135 of 145 (its final body's
 deviation of 0.49 mm as before), `52ba7a15` 97 of 110, `61526c66` 14 of 14.
+
+### A key's edge rounded past its side (round 15 of mitcad#343)
+
+The roundings round 14 left in `5ef2dbd5`, `a9e82a9a`/`de7b8b9d` and
+`6418ebb1`/`920a1cef`, each design imported alone with the failure dump,
+traced through OCCT's fillet alone on the history's stored body before
+the item and on the replay's.
+
+- **`5ef2dbd5` item 38 (Fillet12, radius 2): parametric, verified, inputs
+  read (port patch 0940).** The edge is a key's top edge in a bore: the
+  key's side B, a plane strip between the edge and the bore's wall C (a
+  torus) across a concave crease, is 2.2 high in the middle and lower than
+  the ball towards both ends, where B and C end at the key's end
+  roundings of 0.5. The first deviation is in the walk, not at the
+  corners where it failed: past the crossings 0.538 either side of the
+  middle, where the ball's contact on B reaches the crease, OCCT's ball
+  rolled on the crease (0011's obstacle), a ball that sticks out of the
+  key's side, and the corners at the ends (four edges each) failed. The
+  file's rounding is one cylinder tangent to the top and to B's plane all
+  along, cut where the bore's wall runs through it; the wall grows over
+  the strip up to that cut, and at each end the end rounding cuts the
+  blend from where its junction with the wall, run on along its circle,
+  meets the blend, down to the top. 0940 makes 0531's narrow-face
+  computation take such a rounding (only across a concave crease) and lets
+  the face beyond cut the blend's narrow side from the crossing on. On
+  the stored body: valid, every new face on the file's within 1e-3 mm, the
+  change -9.5996 against the file's -9.5954 mm³; in the import its faces
+  lie on the file's within 0.01 mm but for the file's sliver of B (0.0024
+  mm²) at one end, 0.020 mm off: the file's two ends differ (at the
+  edge's start the wall grows up to the top and B keeps that sliver, at
+  its end the end rounding cuts the blend), ours are alike. OCCT-only test
+  `geometry.fillet_narrow_cut` (a key in a spherical hollow; with end walls
+  invalid without the patch).
+- Knock-ons in `5ef2dbd5`, item 38 no longer bringing the stored state:
+  item 39 (Fillet13) rounds the file's edge of the blend and the wall at
+  the edge's start, 7.041 long up to the top there; ours ends 0.35 mm
+  shorter at the end rounding's cut, so its edges are found against
+  history state 24 (parametric and verified as before, inputs inferred
+  instead of read). Item 97 (Extrude5, the part of a cut across components
+  that cuts nothing in this one) was skipped because the bodies before it
+  were the file's state; item 37's corner faces up to 0.063 mm off (its
+  verified result, within the deviation the owner accepts) now reach it,
+  and a base feature brings the state (fallback). The final bodies are the
+  file's as before.
+
+Not fixed, each failing the same way on the history's stored body before
+the item:
+
+- `a9e82a9a`, `de7b8b9d` item 29 (Fillet13, radius 1.5): the tangent
+  chain is the whole outline of a window's ceiling and floor, strips 3 wide
+  between the ring's cylinders: convex along both arcs, concave round the
+  window's ends, where the wall's ends are full-rounded (half cylinders of
+  1.5 standing into the window). The chain changes from convex to concave
+  at its tangent vertices; OCCT's inner contour fails in the walk. The
+  file makes each strip one torus (113.5, 1.5) ended by the wall ends'
+  half cylinders, which grow up to the tori's tubes. Needed: the chain cut
+  where it turns concave, the roundings ended by the faces there grown up
+  to them. Item 31 (Fillet16) rounds the same strips of the pattern's
+  copies (its stored-state definition 16 edges of those faces), not traced
+  separately.
+- `a9e82a9a`, `de7b8b9d` item 191 (Fillet44, radius 10): the walk rolls
+  on the wall's top edges as the file's four pieces do, but past the
+  spine's start it runs on 3.07, rolling on two edges onto the wall beside
+  the groove, its end points 5 mm past the vertex on no arc ("Corner
+  OnSame: no point on arc"); the file cuts the blend there by the end
+  plane and, for 0.14 mm past it, by that wall. The other end fails
+  writing the cap. Needed: the run past the start ended where the faces at
+  the end cut it.
+- `a9e82a9a`, `de7b8b9d` item 137 (Fillet34, radius 9 in slots 19 wide):
+  the slots' end edges 3.7 long fail in the walk rolling on an edge; one
+  long edge alone gives an invalid shape at the slot's end, where a step
+  of 6 by 2 meets it. Not traced further.
+- `a9e82a9a`, `de7b8b9d` item 99 (Chamfer7, 1 on the rim, 2 down the wall):
+  the spine is the whole rim (closed), which 0531's chamfer over a narrow
+  face does not take. Along the short arc the wall is 1 high above the
+  underside of a ledge; the chamfer's contact 2 down lies below it, in the
+  air, and the file's cone is cut lengthwise by that underside (which
+  keeps r ≤ 84.5) and near the arc's ends by a pocket's cylinder (a piece
+  of 0.30 mm²). Needed: the narrow-face chamfer on a closed spine and a
+  third kind of crossing (contact on the narrow face past it in the gap,
+  the other contact in the face's material: the face cuts the chamfer
+  lengthwise and keeps its part outside it), cut by several faces along
+  the gap.
+- `5ef2dbd5` item 30 (Fillet4, radius 3): the chain along a cylinder of
+  radius 10 and a profile of arcs of radius 0.4, 1.25, 12, 1.25 and 0.4;
+  OCCT's walk fails before the concave arc of 1.25, tighter than the ball,
+  as in round 13.
+- `6418ebb1`, `920a1cef` item 37 (Fillet1): the stored bodies before and
+  after the item are invalid themselves; not traced further.
+
+| Item | Achieved / target | Cause of the gap |
+|---|---|---|
+| `5ef2dbd5` 38 | 1 / 1 parametric, verified, inputs read (0940) | |
+| `5ef2dbd5` 39, 97 (knock-ons) | 39: parametric, verified, inputs inferred (read before); 97: fallback (skipped before) | the file's two ends of item 38 differ, ours are alike; item 37's accepted 0.063 mm reaches item 97 |
+| `a9e82a9a`, `de7b8b9d` 29, 31, 99, 137, 191; `5ef2dbd5` 30; `6418ebb1`, `920a1cef` 37 | 0 / 13 | kernel gaps above |
+
+Designs, each imported alone (features parametric of all, before →
+after; history states matching): `5ef2dbd5` 84 → 85 of 98 (58 → 59
+items matched; inputs 60 read and 3 inferred → 60 and 4; the final bodies
+as before). Unchanged, item by item: `a9e82a9a` and `de7b8b9d` 184 of
+199, `6418ebb1` and `920a1cef` 43 of 50, `db73863f` 135 of 145, `52ba7a15`
+95 of 110, `61526c66` 14 of 14.
+
+### A cut that changes nothing beyond the tolerance, and a chamfer's measured face (round 16 of mitcad#343)
+
+- **`52ba7a15`: 97 of 110, not 95.** Round 15's 95 was an import without
+  the design's reference designs: imported alone with them (the reference
+  folder next to the file is found by itself), main 102ffd7b and 4010c8eb
+  both give 97 parametric, 1 fallback (Mirror1) and 12 skipped; without
+  them (`--no-references`, or the file copied without its folder) both give
+  95, items 9 and 66 (Extrude1, cuts through all of the linked parts'
+  bodies) falling back with "there are no bodies to extrude through". No
+  change between rounds 11 and 15 dropped an item.
+- **`5ef2dbd5` item 97 (Extrude5): skipped again, not a fallback.** It is
+  the part of item 66's cut across components that falls in the bar's
+  component. In the file its operation changes the bar's body by 0.063 mm³
+  and 4 faces, its faces within 4.3e-3 mm of the state before: a few
+  micrometres where the cutting tool grazes the body. None of its
+  definitions touches the body, on the replay or on the stored state before
+  it ("does not cut into any participant body"). Since round 15 the bar
+  carries item 37's corner faces 0.063 mm off the file's (a verified result
+  the owner accepts), so the bodies were not the item's state within the
+  tolerance and a base feature brought the state in. Now an item whose
+  states before and after agree within the geometric tolerance
+  (`Importer::change_within_tolerance`: every solid paired in its
+  component, the same or with its faces on the other's within the
+  tolerance both ways, the sheets the same), on bodies the replay took as
+  the state before it, is skipped with the bodies as they are ("the file's
+  history shows no change by it beyond the geometric tolerance"), carrying
+  what they carried. Test: `an_item_whose_change_stays_within_the_tolerance_is_skipped`.
+- **A distance-and-angle chamfer's measured face from the edges'
+  directions** (`5ef2dbd5` item 85, Chamfer1, the fin's root chamfered by
+  a distance and an angle, the file's flag set). Its `flip` was taken against the first face of each edge's
+  name, whose order follows the names (`E{F123:…|F142:end(…)}` on one
+  replay, `E{F141:end(…)|F80:…}` on another): the same input gave the file's
+  chamfer when the item before it was a base feature and one 8.6 % off when
+  it was replayed, item 85 parametric only on the stored state. The file's
+  flag (`isFlipped`, decoded per set) now picks the face against the file
+  edge's own direction, as a two-distance chamfer's sides are
+  (`Importer::decoded_sides`): not flipped, the face on its left; flipped,
+  the other. A tangent chain takes its edges' majority, and sets whose
+  chains differ are split. Item 85 builds the file's chamfer on both bodies
+  (its state within 5.3e-6). The controlled models of a block chamfered by
+  5 mm at 30° with the flag on and off (`c33814fe`, `8728caa3`) had their
+  chamfers on the wrong face, taken only because the block's measures came
+  within 8.3e-5; now each is its state within 2e-16. The other designs with
+  distance-and-angle chamfers imported again keep every outcome
+  (`98a29231`, `24523ade`, `eecf90bd`, `d498ea9d`).
+
+The rest of `5ef2dbd5`, traced on the history's stored body before each
+item (now: items 86, 87, 91, 92 and 93 fall back):
+
+- Item 86 (Chamfer2, 0.263 at 45° on the fin's two top chains): fails on
+  the stored body too, with the file's edges as two chains ("the distance
+  may be too large"; before port patch 0940 a self-intersecting wire). The
+  sides are not the cause (45° on faces at right angles). Not traced
+  further.
+- Item 87 (Fillet27, radius 0.2): OCCT fails two contours on the stored
+  body ("cannot end the rounding at a vertex where more than three sharp
+  edges meet").
+- Item 91 (Fillet20, radius 0.3 round the bar's outline on both sides): the
+  corner's computation gives no result on the stored body.
+- Item 92 (Fillet21, radius 0.3 on both rims of an arch-shaped slot through
+  the bar): the first deviation is the file's own. The stored body's slot
+  wall steps by 4.3 µm at the rims' ends: two plane strips 14 by 0.0043
+  (0.0596 mm²) join walls 0.0043 apart. OCCT's result has the file's 190
+  faces but the side plane comes out with a broken wire (area −642 mm²
+  against 689) and the strip at the chain's end with none. The import's
+  collapse of strips narrower than the tolerance (mitcad#299) does not take
+  it, as the strip stands for a step between parallel walls, not for a
+  crease. In the file the rounding runs on across the step and ends 0.12
+  below it in a corner (tori of 0.079 mm²). Needed: the step taken as one
+  wall within the tolerance, or OCCT's end across such a step.
+- Item 93 (Fillet22, radius 0.5): OCCT fails the rounding's computation
+  along its chain on the stored body (one faulty contour; mitcad#322 listed
+  it among the rational sections' weights).
+
+| Item | Achieved / target | Cause of the gap |
+|---|---|---|
+| `52ba7a15` 97 of 110 | confirmed on 102ffd7b and 4010c8eb | 95 only without its reference designs |
+| `5ef2dbd5` 97 | 1 / 1 skipped as before (its change 4.3e-3 mm) | |
+| `5ef2dbd5` 85 | 1 / 1 parametric on the replayed body, verified | |
+| `5ef2dbd5` 86, 87, 91, 92, 93 | 0 / 5 | kernel gaps on the stored bodies; 92: the file's 4.3 µm step |
+
+### A chamfer that hung in the kernel (mitcad#495)
+
+`98a29231` (also `24523ade`) item 31, Chamfer1: the feet of four round
+bosses (radius 7.5, 13 long) under a plate chamfered by 13 on the plate's
+underside. Without `--hang-limit` the import never returned; with it the
+item fell back as hung. Traced with the import's trace (each definition is
+now named before it is evaluated, *Time limit, stop and hangs*), the
+replayed body before the item from the dressup dump
+(`MITCAD_IMPORT_DRESSUPS_ITEMS` naming item 27, the last item before it
+that changes the body), and a probe outside the repository sampling the
+stack on a timer:
+
+- **Where it hung:** not in the chamfer itself. OCCT's chamfer returned an
+  invalid result in 0.1 s; the dressup healed it (`healed`,
+  `ShapeFix_Shape`), and `ShapeFix_IntersectionTool::FixIntersectingWires`
+  never returned on one boss's bottom face: two arcs of the boss's rim in
+  two wires of that face met end to end, their intersection was a segment
+  of no length at the common vertex, and the edges were "cut" there and
+  intersected again for ever (`CutEdge` reported a trimmed circle cut
+  though it cuts only trimmed lines). Port patch 0942 makes `CutEdge`
+  report a cut only where it made one; the repair then goes on (with it
+  alone the definition fails at once with "an invalid shape").
+- **Why the result was invalid:** two of the bosses stand under the
+  plate's corners, rounded with 20 about the bosses' axes, one side of
+  each corner slanted (tangent to the arc). The chamfer's contact on the
+  underside (radius 20.5) runs 0.5 beyond the outline round the corner and
+  along both sides (port patch 0142's gap, cut by the chain of the faces
+  beyond, which grow down to the cone). The bosses' seams, the closed
+  spines' starts, lie just before the gap, so the gap is long and ends
+  towards the spine's end; its last crossing's parameter on the boss's
+  circle was taken a period early (-0.286 for 5.997), and the last piece
+  ran more than once round the circle (the bottom face's rim in arcs over
+  four wires, the cone's seam a tolerance of 58 mm). Port patch 0941 takes
+  the crossings in the period that follows the piece before the gap. Each
+  boss alone on the replayed body: two built right before, the other two
+  +618 and -733 mm³ off and invalid; now all four are the file's.
+- **On the file's stored body before the item** (state 18): OCCT's
+  chamfer, with the bosses' feet found by their geometry, did not hang
+  there before either (its repair returns). With the patches the two
+  bosses above build there too, but the result is invalid at another boss,
+  whose gap crosses the plate's edge exactly at the boss's seam: the
+  crossing lies 1e-7 mm before the spine's start (on both bodies), and the
+  stripe is split at the start, leaving a piece of that length; on the
+  stored body its parameter on the boss's circle is 1.3e-8 rad off the
+  seam (1e-15 on the replayed body), and the boss's bottom face gets edges
+  back and forth over those 1.3e-8 rad. Not fixed: the replay builds and
+  verifies, so no retry on the stored state is made.
+
+Item 31 is now parametric and verified on the replayed body (its change
+of volume +25112.5803 against the file's +25112.5808 mm³, the change
+difference within the tolerance), and the import returns without a hang
+limit. The items after it replay on the chamfer's result instead of the
+file's state 19; their outcomes are unchanged (item 33, Fillet3, falls
+back as before, its note now that the rounding's surface and the face at
+its end do not intersect, before that the surface twists).
+
+The designs of mitcad#343, each imported alone once with the patches
+(parametric / fallback / skipped of all items; before: round 16's, on
+main 904963b8):
+
+| Design | Before | After | Final bodies |
+|---|---|---|---|
+| `98a29231`, `24523ade` | 79 / 4 / 5 of 88 (item 31 hung) | 80 / 3 / 5, item 31 parametric and verified, no hang limit | as before (2.7e-8) |
+| `52ba7a15` | 97 / 1 / 12 of 110 | same | as before (2.2e-5) |
+| `5ef2dbd5` | 85 / 6 / 7 of 98 | same | as before (8.0e-7) |
+| `a9e82a9a`, `de7b8b9d` | 184 / 8 / 7 of 199 | same | as before (1.1e-6) |
+| `6418ebb1`, `920a1cef` | 43 / 5 / 1 (+1 partial) of 50 | same | as before (4.1e-6) |
+| `db73863f` | 135 / 2 / 8 of 145 | same | 4.5e-4 |
+| `61526c66` | 14 of 14 | same | 1.6e-5 |
+| `4d3c4d1b` | 33 / 2 of 35 | same | 3.8e-7 |
+| `eecf90bd`, `d498ea9d` | outcomes kept in round 16 (no counts) | 101 / 7 / 12 of 120 | 4.8e-7 |
+
+`eecf90bd` and `d498ea9d` have another item the kernel does not finish:
+item 50 (Fillet7, radius 1 on ten edges) runs on in OCCT's corner of more
+than three edges (`PerformMoreThreeCorner`, the plate surface's projection
+of a boundary curve, `ProjLib_CompProjectedCurve`), with or without these
+patches (the patched files are not on that path); the corpus's hang limit
+(600 s) gives it its state, as before. Not traced further here.
+
+Left from the synthetic cases: the boss's seam inside the gap, in its
+piece along the corner's arc (seams from 200 to 240 degrees in the test's
+geometry), gives an invalid result with and without 0941: the piece across
+the spine's start is split there, and its part after the start keeps its
+parameters on the boss's circle a period on.
 
 ### Chamfers left after mitcad#240 (mitcad#263)
 

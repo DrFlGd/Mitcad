@@ -71,6 +71,15 @@ pub struct SpacingInput {
     pub length: Option<ValueInput>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fit: Option<SpacingFit>,
+    // Fasteners (mitcad#497).
+    /// The wood fastener each member is fastened to its hosts with (its
+    /// `config` a chosen size, else sized from the members); none: no
+    /// fasteners.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fastener: Option<super::PartInput>,
+    /// How many at each junction (default 2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fastener_count: Option<u32>,
 }
 
 impl SpacingInput {
@@ -90,6 +99,8 @@ impl SpacingInput {
             along: edit.along.or(self.along),
             length: pick(&self.length, &edit.length),
             fit: edit.fit.or(self.fit),
+            fastener: edit.fastener.clone().or_else(|| self.fastener.clone()),
+            fastener_count: edit.fastener_count.or(self.fastener_count),
         }
     }
 }
@@ -258,8 +269,24 @@ impl<K: Kernel> Document<K> {
                 let length = s
                     .length
                     .ok_or_else(|| refuse("the member it stands on has no length"))?;
-                let from = mm(&spacing.from)?.unwrap_or(0.0);
-                let to = mm(&spacing.to)?.unwrap_or(length);
+                // The base placement's typed offset (the panel's Offset and
+                // From, mitcad#492) places the set where it places the
+                // first member: from end A (or the middle) the first one's
+                // near face, from end B the last one's far face.
+                let typed = base
+                    .at
+                    .as_ref()
+                    .and_then(|a| a.offset.as_ref().map(|_| a.from));
+                let from = match mm(&spacing.from)? {
+                    Some(v) => v,
+                    None if typed.is_some_and(|f| f != Some(SideFrom::B)) => s.offset,
+                    None => 0.0,
+                };
+                let to = match mm(&spacing.to)? {
+                    Some(v) => v,
+                    None if typed == Some(Some(SideFrom::B)) => s.offset + w,
+                    None => length,
+                };
                 let (offsets, rip) = positions(
                     mode,
                     distance,
@@ -393,7 +420,8 @@ impl<K: Kernel> Document<K> {
 
     /// Places a spacing set (`build_place` with `spacing`).
     pub(crate) fn build_place_set(&mut self, input: &PlaceInput) -> Result<Placed, ModelError> {
-        let spacing = input.spacing.clone().unwrap_or_default();
+        let mut spacing = input.spacing.clone().unwrap_or_default();
+        spacing.fastener = spacing.fastener.map(|f| self.kept_fastener(&f));
         let mut set = self.plan_set(input, &spacing)?;
         let active = self.build_host();
         self.state().editable(active)?;
@@ -423,7 +451,10 @@ impl<K: Kernel> Document<K> {
             count,
         };
         let label = format!("Place {designation} x{count}");
-        self.apply(|state| {
+        let fastener = def.spacing.fastener.clone();
+        let fastener_count = def.spacing.fastener_count;
+        let depth = self.undo_depth();
+        let mut placed = self.apply(|state| {
             let mut placed: Option<Placed> = None;
             let mut members = Vec::new();
             for plan in &set.plans {
@@ -445,8 +476,62 @@ impl<K: Kernel> Document<K> {
             let mut placed = placed.expect("one member at least");
             placed.set = members;
             placed.warnings.extend(set.warnings.iter().cloned());
-            Ok((label, placed))
-        })
+            Ok((label.clone(), placed))
+        })?;
+        // Each member fastened to its hosts (mitcad#497), in the same step.
+        if let (Some(part), Some(lead)) = (&fastener, placed.set.first().copied()) {
+            let mut warnings = Vec::new();
+            self.fasten_set(lead, part, fastener_count, &mut warnings);
+            placed.warnings.extend(warnings);
+            self.merge_undo(depth, &label);
+        }
+        Ok(placed)
+    }
+
+    /// The wood fasteners a set's members are fastened to their hosts with
+    /// (mitcad#497): of every junction of a member with a part outside the
+    /// set, the first fastener (which takes the others with it).
+    pub(crate) fn set_fasteners(&self, lead: ComponentUid) -> Vec<ComponentUid> {
+        let members: BTreeSet<ComponentUid> = self.set_members(lead).into_iter().collect();
+        self.assembly()
+            .components
+            .iter()
+            .filter(|c| {
+                c.build.as_ref().is_some_and(|b| {
+                    b.role == super::BuildRole::Fastener
+                        && b.added_by.is_none()
+                        && b.junction.as_deref().is_some_and(|j| {
+                            let sides = junction_components(j);
+                            sides.len() == 2
+                                && sides.iter().filter(|c| members.contains(c)).count() == 1
+                        })
+                })
+            })
+            .map(|c| c.uid)
+            .collect()
+    }
+
+    /// Fastens each member of a set to its hosts (mitcad#497): `count`
+    /// fasteners of `part` (default 2) at every junction of a member with a
+    /// part outside the set that has no connector. Returns how many
+    /// junctions got them.
+    pub(crate) fn fasten_set(
+        &mut self,
+        lead: ComponentUid,
+        part: &super::PartInput,
+        count: Option<u32>,
+        warnings: &mut Vec<String>,
+    ) -> usize {
+        let members: BTreeSet<ComponentUid> = self.set_members(lead).into_iter().collect();
+        let list: Vec<ComponentUid> = members.iter().copied().collect();
+        let junctions: Vec<String> = self
+            .build_junctions(Some(&list))
+            .into_iter()
+            .filter(|j| members.contains(&j.a.component) != members.contains(&j.b.component))
+            .filter(|j| j.connectors.is_empty())
+            .map(|j| j.id)
+            .collect();
+        self.fasten_junctions(&junctions, part, count, warnings)
     }
 
     /// Edits a spacing set as one (`build_edit` with `spacing`): the set's
@@ -471,7 +556,8 @@ impl<K: Kernel> Document<K> {
             .clone()
             .and_then(|v| serde_json::from_value(v).ok())
             .ok_or_else(|| refuse(format!("{} is in no spacing set", info.name)))?;
-        let spacing = def.spacing.merged(edit);
+        let mut spacing = def.spacing.merged(edit);
+        spacing.fastener = spacing.fastener.map(|f| self.kept_fastener(&f));
         let mut base = def.base.clone();
         if let Some(config) = config {
             base.part.config = Some(config.clone());
@@ -480,6 +566,14 @@ impl<K: Kernel> Document<K> {
         let set = self.plan_set(&base, &spacing)?;
         let keep = members.len().min(set.plans.len());
         let mut removals = Vec::new();
+        // A set fastened to its hosts (mitcad#497): its fasteners go first
+        // and are driven anew.
+        let fastened = def.spacing.fastener.is_some() || spacing.fastener.is_some();
+        if fastened {
+            for f in self.set_fasteners(lead) {
+                removals.push(self.plan_remove(f)?);
+            }
+        }
         for c in &members[keep..] {
             removals.push(self.plan_remove(*c)?);
         }
@@ -496,7 +590,10 @@ impl<K: Kernel> Document<K> {
             changed.push("config".to_owned());
         }
         let label = format!("Edit {}", lead_info.name);
-        self.apply(|state| {
+        let fastener = def.spacing.fastener.clone();
+        let fastener_count = def.spacing.fastener_count;
+        let depth = self.undo_depth();
+        let changed = self.apply(|state| {
             let mut all = Vec::new();
             for (i, plan) in set.plans.iter().enumerate() {
                 if i < keep {
@@ -514,9 +611,22 @@ impl<K: Kernel> Document<K> {
             if let (Some(rip), Some(last)) = (&set.rip, all.last()) {
                 add_rip(state, *last, rip.clone())?;
             }
-            Ok((label, changed))
-        })
+            Ok((label.clone(), changed))
+        })?;
+        if let Some(part) = &fastener {
+            let mut warnings = Vec::new();
+            self.fasten_set(lead, part, fastener_count, &mut warnings);
+            self.merge_undo(depth, &label);
+        }
+        Ok(changed)
     }
+}
+
+/// The components of a junction's id (`C5:end_a|C3:face_xp`).
+fn junction_components(id: &str) -> Vec<ComponentUid> {
+    id.split('|')
+        .filter_map(|side| side.split(':').next()?.parse().ok())
+        .collect()
 }
 
 /// Marks the members of a set and keeps its definition on the lead.

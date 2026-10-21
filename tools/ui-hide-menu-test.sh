@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# check-all sources: app/browser app/MainWindow.cpp app/MainWindowVisibility.cpp tools/cli
+# check-all sources: app/browser app/MainWindow.cpp app/MainWindowVisibility.cpp tools/cli app/MainWindowContextMenu.cpp
 # The view's context menu Hide submenu (mitcad#347) through the real UI, on
 # a design with a component (Component1) placed twice, Component1:1 (O1)
 # and Component1:2 (O2) 50 mm apart, and a body of the root beside them:

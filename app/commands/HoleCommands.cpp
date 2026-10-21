@@ -753,6 +753,9 @@ CommandDef threadCommand(const CommandContext& context) {
   def.group = QStringLiteral("CREATE");
   def.keywords = {QStringLiteral("tap"), QStringLiteral("screw"), QStringLiteral("bolt")};
   def.featureType = QStringLiteral("thread");
+  // The faces are what it threads, not where it goes: the view's context
+  // menu offers it first for them (mitcad#494).
+  def.completes = [](const Selection&) { return true; };
   const auto partial = [](const CommandState& s) { return !s.checked(QStringLiteral("full_length")); };
   def.inputs = {
       selectionInput(QStringLiteral("faces"), QObject::tr("Faces"), SelectKind::Face, 1, 0)

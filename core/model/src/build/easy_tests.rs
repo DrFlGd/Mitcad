@@ -164,7 +164,8 @@ fn the_first_part_goes_to_the_origin_without_a_pick_along_x_y_or_z() {
     let at = placed(&doc, occurrence(&z));
     assert!(close(at.translation, [0.0; 3]));
     assert!(close(axis(&at), [0.0, 0.0, 1.0]));
-    // Along X and Y.
+    // Along X and Y: lying on the XY plane, resting on it (mitcad#492),
+    // its axis half its 30 above.
     for (direction, expected) in [
         ([1.0, 0.0, 0.0], [1.0, 0.0, 0.0]),
         ([0.0, 1.0, 0.0], [0.0, 1.0, 0.0]),
@@ -175,10 +176,10 @@ fn the_first_part_goes_to_the_origin_without_a_pick_along_x_y_or_z() {
         );
         all_ok(&doc);
         let at = placed(&doc, occurrence(&p));
-        assert!(close(at.translation, [0.0; 3]));
+        assert!(close(at.translation, [0.0, 0.0, 15.0]), "{at:?}");
         assert!(close(axis(&at), expected), "{at:?}");
     }
-    // On the root's XY plane, lying along X from the click.
+    // On the root's XY plane, lying along X from the click, resting on it.
     let x = place(
         &mut doc,
         json!({"part": {"source": "S1"},
@@ -188,12 +189,12 @@ fn the_first_part_goes_to_the_origin_without_a_pick_along_x_y_or_z() {
     all_ok(&doc);
     assert_eq!(x["place"], "geometry");
     let at = placed(&doc, occurrence(&x));
-    assert!(close(at.translation, [0.0, 200.0, 0.0]), "{at:?}");
+    assert!(close(at.translation, [0.0, 200.0, 15.0]), "{at:?}");
     assert!(close(axis(&at), [1.0, 0.0, 0.0]), "{at:?}");
     // Its far end where the length puts it.
     assert!(close(
         at.apply_point([0.0, 0.0, 500.0]),
-        [500.0, 200.0, 0.0]
+        [500.0, 200.0, 15.0]
     ));
 }
 

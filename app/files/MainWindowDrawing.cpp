@@ -43,12 +43,13 @@ void MainWindow::exportDrawing() {
     }
   }
   const QString base = m_filePath.isEmpty() ? documentName() : QFileInfo(m_filePath).completeBaseName();
-  const QString suggested = QDir(fileDialogDirectory()).filePath(base);
+  const QString suggested = QDir(dialogFolder(DialogGroup::Export)).filePath(base);
   const std::optional<DrawingChoice> choice =
       askDrawing(this, suggested, static_cast<int>(selected.size()), analyses);
   if (!choice) {
     return;
   }
+  rememberDialogFolder(DialogGroup::Export, choice->path);
   const QJsonObject command =
       choice->settings.command(choice->path, choice->selectedOnly ? selected : QStringList(), base, choice->section);
   QJsonObject result;

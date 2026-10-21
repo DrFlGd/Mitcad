@@ -214,11 +214,11 @@ fn a_joist_set_at_400_between_two_beams_follows_its_distance() {
     // On edge the beams' Y (their 48) runs along -Y: face_yn faces +Y.
     let on = mount(&doc, &b1, "face_yn");
     let to = mount(&doc, &b2, "face_yp");
+    // The joists on edge as the beams lie, unturned (mitcad#492).
     let set = place(
         &mut doc,
         json!({"part": {"source": "S1"},
                "at": {"occurrence": b1["occurrence"], "geometry": on},
-               "rotate": "90 deg",
                "length": {"bind": {"occurrence": b2["occurrence"],
                                    "geometry": to}},
                "spacing": {"mode": "centre", "distance": 400}}),
@@ -226,7 +226,7 @@ fn a_joist_set_at_400_between_two_beams_follows_its_distance() {
     all_ok(&doc);
     // 3000 long, joists 48 wide: (3000 - 48) / 400 rounded up, and one.
     assert_eq!(set["count"], 9, "{set}");
-    let mut preview = json!({"query": "build_preview", "part": {"source": "S1"}, "rotate": "90 deg",
+    let mut preview = json!({"query": "build_preview", "part": {"source": "S1"},
         "at": {"occurrence": b1["occurrence"], "geometry": mount(&doc, &b1, "face_yn")},
         "spacing": {"mode": "centre", "distance": 400}});
     preview["length"] = json!(1952);
@@ -316,6 +316,51 @@ fn a_joist_set_at_400_between_two_beams_follows_its_distance() {
     );
 }
 
+#[test]
+fn a_set_between_two_beams_starts_at_its_typed_offset() {
+    let mut doc = design();
+    let (b1, b2) = two_beams(&mut doc);
+    // The panel's Offset and From (mitcad#492): from end A the first
+    // member's near face 200 from it, from end B the last one's far face.
+    for (from, count, first_near, last_far) in [("a", 11, 200.0, 3000.0), ("b", 11, 0.0, 2800.0)] {
+        let fields = json!({"part": part("rows98"),
+            "at": {"occurrence": b1["occurrence"], "geometry": mount(&doc, &b1, "face_yn"),
+                   "from": from, "offset": 200},
+            "length": {"bind": {"occurrence": b2["occurrence"],
+                                "geometry": mount(&doc, &b2, "face_yp")}},
+            "spacing": {"mode": "centre", "distance": 300}});
+        let mut probe = fields.clone();
+        probe["query"] = json!("build_preview");
+        let shown = query(&doc, probe);
+        assert_eq!(shown["spacing"]["count"], count, "{from}: {shown}");
+        let set = place(&mut doc, fields);
+        assert_eq!(set["count"], count, "{from}: {set}");
+        all_ok(&doc);
+        let near = |c: &Value| {
+            let o = doc
+                .assembly()
+                .occurrences
+                .iter()
+                .find(|o| o.component.to_string() == c.as_str().unwrap())
+                .unwrap()
+                .uid;
+            let b = doc
+                .part_bounds(c.as_str().unwrap().parse().unwrap())
+                .unwrap();
+            super::moved_box(&b, &placed(&doc, o))
+        };
+        let members = set["set"].as_array().unwrap();
+        let (a, z) = (near(&members[0]), near(members.last().unwrap()));
+        assert!((a.min[0] - first_near).abs() < 1e-6, "{from}: {a:?}");
+        assert!((z.max[0] - last_far).abs() < 1e-6, "{from}: {z:?}");
+        command(
+            &mut doc,
+            json!({"cmd": "build_remove", "component": members[0], "set": true}),
+        )
+        .unwrap();
+    }
+}
+
 fn junctions(doc: &Document<MockKernel>) -> Vec<Value> {
     query(doc, json!({"query": "build_junctions"}))["junctions"]
         .as_array()
@@ -368,7 +413,7 @@ fn a_small_frame_of_posts_beams_joists_hangers_a_half_lap_and_screws() {
     let to = mount(&doc, &b2, "face_yp");
     let joists = place(
         &mut doc,
-        json!({"part": {"source": "S2"}, "rotate": "90 deg",
+        json!({"part": {"source": "S2"},
                "at": {"occurrence": b1["occurrence"], "geometry": on},
                "length": {"bind": {"occurrence": b2["occurrence"], "geometry": to}},
                "spacing": {"distance": 600}}),
@@ -774,7 +819,7 @@ fn a_housing_follows_the_joist_along_its_beam() {
     let on = mount(&doc, &beam, "face_yn");
     let joist = place(
         &mut doc,
-        json!({"part": {"source": "S1"}, "rotate": "90 deg",
+        json!({"part": {"source": "S1"},
                "at": {"occurrence": beam["occurrence"], "geometry": on, "offset": 1000},
                "length": 1000}),
     );

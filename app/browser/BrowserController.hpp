@@ -77,6 +77,14 @@ public:
   // bulbs, one undo step.
   void hideBodies(const Selection& items);
   void hideOccurrences(const Selection& items);
+  // The view's context menu Delete submenu (mitcad#494), each one undo
+  // step: Delete Body takes the bodies out (a remove_body feature in each
+  // body's component), Delete Component deletes the occurrences, and a
+  // feature is deleted as the browser's Delete does (the features that use
+  // it too, when the user says so).
+  void deleteBodies(const Selection& items);
+  void deleteOccurrences(const Selection& items);
+  void deleteFeature(const QString& uid);
   // Find in Design (mitcad#350): the window that finds components and
   // bodies by name and shows, hides, selects or gives them an appearance
   // all at once; opened by the magnifier button (on the browser's title
@@ -145,7 +153,6 @@ private:
   void rename(const BrowserNode& node, const QString& name);
   void renameFeature(const QString& uid, const QString& name);
   void deleteNode(const BrowserNode& node);
-  void deleteFeature(const QString& uid);
   // Opens Flat Pattern on a sheet-metal body: its settings, or a new one
   // (mitcad#210).
   void editFlatPattern(const QString& body);

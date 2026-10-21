@@ -302,4 +302,86 @@ const InputDef* CommandDef::primarySelection() const {
   return nullptr;
 }
 
+namespace {
+
+// An input's default in a state, as CommandSession sets it at the start.
+void setDefault(const InputDef& input, const QString& key, CommandState& state) {
+  switch (input.type) {
+  case InputDef::Type::Value:
+  case InputDef::Type::Text:
+    state.setText(key, input.defaultText);
+    break;
+  case InputDef::Type::Choice:
+    state.setChoice(key, input.defaultChoice);
+    break;
+  case InputDef::Type::Check:
+  case InputDef::Type::Flip:
+    state.setChecked(key, input.defaultChecked);
+    break;
+  case InputDef::Type::List:
+    state.setRows(key, input.minRows);
+    break;
+  case InputDef::Type::Selection:
+  case InputDef::Type::CutTargets:
+    break;
+  }
+}
+
+} // namespace
+
+CommandState CommandDef::initialState() const {
+  CommandState state;
+  for (const InputDef& input : inputs) {
+    setDefault(input, input.id, state);
+    if (input.type == InputDef::Type::List) {
+      for (int i = 0; i < input.minRows; ++i) {
+        for (const InputDef& child : input.children) {
+          setDefault(child, CommandState::rowKey(input.id, i, child.id), state);
+        }
+      }
+    }
+  }
+  return state;
+}
+
+bool CommandDef::completedBy(const Selection& selection) const {
+  const InputDef* first = primarySelection();
+  const int count = static_cast<int>(selection.size());
+  if (first == nullptr || count == 0 || count < first->min || (first->max > 0 && count > first->max) ||
+      !std::all_of(selection.begin(), selection.end(),
+                   [first](const SelectionItem& item) { return first->accepts(item); })) {
+    return false;
+  }
+  // Any other selection input it needs at the start is a further pick.
+  const CommandState state = initialState();
+  const auto needed = [first](const InputDef& input, const CommandState& scope) {
+    return &input != first && input.type == InputDef::Type::Selection && input.min > 0 &&
+           (!input.visible || input.visible(scope));
+  };
+  for (const InputDef& input : inputs) {
+    if (needed(input, state)) {
+      return false;
+    }
+    if (input.type != InputDef::Type::List || (input.visible && !input.visible(state))) {
+      continue;
+    }
+    for (int i = 0; i < state.rows(input.id); ++i) {
+      const CommandState row = state.row(input.id, i);
+      if (std::any_of(input.children.begin(), input.children.end(),
+                      [&needed, &row](const InputDef& child) { return needed(child, row); })) {
+        return false;
+      }
+    }
+  }
+  if (completes) {
+    return completes(selection);
+  }
+  // A face or a plane is only where a creation command goes (a box on it,
+  // a hole in it): its sizes and places are picked next.
+  const bool places = std::any_of(selection.begin(), selection.end(), [](const SelectionItem& item) {
+    return item.kind == SelectKind::Face || item.kind == SelectKind::Plane;
+  });
+  return !(group == QStringLiteral("CREATE") && places);
+}
+
 } // namespace mitcad

@@ -431,11 +431,12 @@ void MainWindow::openReadOnly() {
   if (!maybeSave()) {
     return;
   }
-  const QString path = dialogOpenFileName(this, tr("Open Read-Only"), fileDialogDirectory(),
-                                                    tr("Mitcad designs (*.mitcad)"));
+  const QString path = dialogOpenFileName(this, tr("Open Read-Only"), dialogFolder(DialogGroup::Open),
+                                          tr("Mitcad designs (*.mitcad)"));
   if (path.isEmpty()) {
     return;
   }
+  rememberDialogFolder(DialogGroup::Open, path);
   // The lock controller reads it while the design opens: no edit lock is
   // taken, and the window is read-only (files/LockController.hpp).
   m_openingReadOnly = true;

@@ -6,6 +6,7 @@
 #include <iterator>
 #include <utility>
 
+#include <QAbstractScrollArea>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QCoreApplication>
@@ -1235,6 +1236,26 @@ void CommandPanel::logLayout() const {
   // Wider than the page would cut its right side off (mitcad#198).
   const QWidget* page = parentWidget() != nullptr ? parentWidget() : this;
   qDebug().noquote() << QStringLiteral("Panel %1 width %2 of %3").arg(m_def.name).arg(width()).arg(page->width());
+  // What a long panel's page shows of it: a place outside the view is
+  // scrolled away, and a wheel over the bar scrolls it (UI tests in a low
+  // window; MainWindow logs the places again when it scrolls).
+  const auto* area = parentWidget() != nullptr
+                         ? qobject_cast<const QAbstractScrollArea*>(parentWidget()->parentWidget())
+                         : nullptr;
+  if (area != nullptr && area->viewport() == parentWidget()) {
+    const QPoint top = GlassCard::mapToHost(page, QPoint(0, 0));
+    const QScrollBar* bar = area->verticalScrollBar();
+    QString line = QStringLiteral("Panel %1 view y %2 to %3, scrolled %4 of %5")
+                       .arg(m_def.name)
+                       .arg(top.y())
+                       .arg(top.y() + page->height())
+                       .arg(bar->value())
+                       .arg(bar->maximum());
+    if (bar->isVisible()) {
+      line += QStringLiteral(", bar at %1").arg(position(bar));
+    }
+    qDebug().noquote() << line;
+  }
 }
 
 bool CommandPanel::eventFilter(QObject* watched, QEvent* event) {

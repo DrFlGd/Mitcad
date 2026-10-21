@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT
 // The part picker's data (mitcad#418): the order of parts and groups with
 // stars (starred first, starred groups first in Favourites, stable within
-// each class), the stars' round trip through the settings (an INI file in
-// a folder of the test's own) and the design's used library parts read from
-// the model's `library_usage` answer (core/model/src/library_tests.rs and
+// each class), the stars of configuration rows (mitcad#491), the stars'
+// round trip through the settings (an INI file in a folder of the test's
+// own) and the design's used library parts read from the model's
+// `library_usage` answer (core/model/src/library_tests.rs and
 // build/source_tests.rs check the model's side).
 #include "library/PartFavourites.hpp"
 #include "library/UsedParts.hpp"
@@ -90,12 +91,12 @@ void usedPartsTests() {
 
 QList<OrderedPart> sampleParts() {
   return {
-      {QStringLiteral("parts"), QStringLiteral("p30"), QStringLiteral("profiles")},     // 0
-      {QStringLiteral("parts"), QStringLiteral("m6x12"), QStringLiteral("screws")},     // 1
-      {QStringLiteral("parts"), QStringLiteral("p40"), QStringLiteral("profiles")},     // 2
-      {QStringLiteral("other"), QStringLiteral("m6x12"), QStringLiteral("screws")},     // 3
-      {QStringLiteral("parts"), QStringLiteral("nut-m6"), QStringLiteral("nuts")},      // 4
-      {QStringLiteral("parts"), QStringLiteral("m6x16"), QStringLiteral("screws")},     // 5
+      {QStringLiteral("parts"), QStringLiteral("p30"), QStringLiteral("profiles"), QString(), false},   // 0
+      {QStringLiteral("parts"), QStringLiteral("m6x12"), QStringLiteral("screws"), QString(), false},   // 1
+      {QStringLiteral("parts"), QStringLiteral("p40"), QStringLiteral("profiles"), QString(), false},   // 2
+      {QStringLiteral("other"), QStringLiteral("m6x12"), QStringLiteral("screws"), QString(), false},   // 3
+      {QStringLiteral("parts"), QStringLiteral("nut-m6"), QStringLiteral("nuts"), QString(), false},    // 4
+      {QStringLiteral("parts"), QStringLiteral("m6x16"), QStringLiteral("screws"), QString(), false},   // 5
   };
 }
 
@@ -141,9 +142,9 @@ void orderAndSettingsTests() {
     CHECK(reread.starred(QStringLiteral("parts"), QStringLiteral("p40")));
     CHECK(reread.groupStarred(QStringLiteral("screws")));
     CHECK(!reread.groupStarred(QStringLiteral("nuts")));
-    const QList<QPair<QString, QString>> expected{{QStringLiteral("parts"), QStringLiteral("nut-m6")},
-                                                  {QStringLiteral("parts"), QStringLiteral("p40")},
-                                                  {QStringLiteral("parts"), QStringLiteral("m6x16")}};
+    const QList<PartStar> expected{{QStringLiteral("parts"), QStringLiteral("nut-m6"), QString()},
+                                   {QStringLiteral("parts"), QStringLiteral("p40"), QString()},
+                                   {QStringLiteral("parts"), QStringLiteral("m6x16"), QString()}};
     CHECK(reread.starredParts() == expected);
   }
   CHECK(QSettings().value(QStringLiteral("partPicker/starredParts")).isValid());
@@ -176,6 +177,104 @@ void orderAndSettingsTests() {
   CHECK(favourites.starredParts().isEmpty());
 }
 
+// A timber family's sizes, each a tile of its own (mitcad#484), its
+// default row 48x148, and a part without rows.
+QList<OrderedPart> timberTiles() {
+  const QString library = QStringLiteral("timber");
+  const QString family = QStringLiteral("dimensioned-48");
+  const QString group = QStringLiteral("dimensioned-timber");
+  return {
+      {library, family, group, QStringLiteral("48x98"), false},                // 0
+      {library, family, group, QStringLiteral("48x148"), true},                // 1
+      {library, family, group, QStringLiteral("48x198"), false},               // 2
+      {library, QStringLiteral("batten-28"), group, QString(), false},         // 3
+  };
+}
+
+// The tiles of `parts` starred.
+QList<int> starredOf(const PartFavourites& favourites, const QList<OrderedPart>& parts) {
+  QList<int> starred;
+  for (int i = 0; i < parts.size(); ++i) {
+    const OrderedPart& part = parts.at(i);
+    if (favourites.starred(part.library, part.component, part.row, part.defaultRow)) {
+      starred << i;
+    }
+  }
+  return starred;
+}
+
+// Stars of configuration rows (mitcad#491): a star stars one size, an old
+// star without a row marks only the default row, a part without rows keeps
+// its star as it was.
+void rowTests() {
+  PartFavourites& favourites = PartFavourites::instance();
+  const QList<OrderedPart> tiles = timberTiles();
+  const QString library = QStringLiteral("timber");
+  const QString family = QStringLiteral("dimensioned-48");
+  CHECK(favourites.starredParts().isEmpty());
+
+  // One size starred: only its tile, first; the family without a row is not.
+  favourites.setStarred(library, family, QStringLiteral("48x198"), false, true);
+  CHECK(starredOf(favourites, tiles) == (QList<int>{2}));
+  CHECK(!favourites.starred(library, family));
+  CHECK(pickerOrder(tiles, false) == (QList<int>{2, 0, 1, 3}));
+  CHECK(pickerOrder(tiles, true) == (QList<int>{2, 0, 1, 3}));
+  // Kept with its row: another reader finds that size only.
+  {
+    const PartFavourites reread;
+    CHECK(reread.starredParts() == (QList<PartStar>{{library, family, QStringLiteral("48x198")}}));
+    CHECK(starredOf(reread, tiles) == (QList<int>{2}));
+  }
+  CHECK(QSettings().value(QStringLiteral("partPicker/starredParts")).toByteArray().contains("\"row\":\"48x198\""));
+  // A second size, then the first one's star off: the second stays.
+  favourites.setStarred(library, family, QStringLiteral("48x98"), false, true);
+  CHECK(starredOf(favourites, tiles) == (QList<int>{0, 2}));
+  favourites.setStarred(library, family, QStringLiteral("48x198"), false, false);
+  CHECK(starredOf(favourites, tiles) == (QList<int>{0}));
+  favourites.setStarred(library, family, QStringLiteral("48x98"), false, false);
+  CHECK(favourites.starredParts().isEmpty());
+
+  // Stars kept before mitcad#491, without rows: the family's marks only its
+  // default row; the part without rows is starred as before.
+  QSettings().setValue(QStringLiteral("partPicker/starredParts"),
+                       QByteArray(R"([{"library":"timber","component":"dimensioned-48"},)"
+                                  R"({"library":"timber","component":"batten-28"}])"));
+  {
+    const PartFavourites reread;
+    CHECK(reread.starredParts().size() == 2);
+    CHECK(starredOf(reread, tiles) == (QList<int>{1, 3}));
+    CHECK(reread.starred(library, QStringLiteral("batten-28")));
+    CHECK(reread.starred(library, family, QStringLiteral("48x148"), true));
+    CHECK(!reread.starred(library, family, QStringLiteral("48x98"), false));
+    CHECK(!reread.starred(library, family, QStringLiteral("48x198"), false));
+  }
+  // The same in the picker's order (the old stars made here as they were
+  // kept: without a row).
+  favourites.setStarred(library, family, true);
+  favourites.setStarred(library, QStringLiteral("batten-28"), true);
+  CHECK(starredOf(favourites, tiles) == (QList<int>{1, 3}));
+  CHECK(pickerOrder(tiles, false) == (QList<int>{1, 3, 0, 2}));
+  // Starring the default row again changes nothing; its star off turns the
+  // old star off too; the part without rows keeps its own.
+  int changes = 0;
+  const QMetaObject::Connection counting =
+      QObject::connect(&favourites, &PartFavourites::changed, [&changes] { ++changes; });
+  favourites.setStarred(library, family, QStringLiteral("48x148"), true, true);
+  CHECK(changes == 0);
+  favourites.setStarred(library, family, QStringLiteral("48x148"), true, false);
+  CHECK(changes == 1);
+  QObject::disconnect(counting);
+  CHECK(starredOf(favourites, tiles) == (QList<int>{3}));
+  CHECK(!favourites.starred(library, family));
+  CHECK(favourites.starredParts() == (QList<PartStar>{{library, QStringLiteral("batten-28"), QString()}}));
+  // Groups' stars as before.
+  favourites.setGroupStarred(QStringLiteral("dimensioned-timber"), true);
+  CHECK(pickerOrder(tiles, true) == (QList<int>{3, 0, 1, 2}));
+  favourites.setGroupStarred(QStringLiteral("dimensioned-timber"), false);
+  favourites.setStarred(library, QStringLiteral("batten-28"), false);
+  CHECK(favourites.starredParts().isEmpty());
+}
+
 } // namespace
 
 int partPickerDataTests() {
@@ -192,6 +291,7 @@ int partPickerDataTests() {
   QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, directory.path());
   CHECK(QSettings().fileName().startsWith(directory.path()));
   orderAndSettingsTests();
+  rowTests();
   QSettings::setDefaultFormat(format);
   QCoreApplication::setOrganizationName(organization);
   QCoreApplication::setApplicationName(application);

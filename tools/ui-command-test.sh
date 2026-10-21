@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# check-all sources: app/framework app/commands app/MainWindow.cpp
+# check-all sources: app/framework app/commands app/MainWindow.cpp app/MainWindowContextMenu.cpp
 # The command framework through the real UI (app/COMMANDS.md): a panel
 # generated from a definition, a group menu of the toolbar, a shortcut from
 # the settings, Create Sketch by its default Alt+S with no default shortcut
@@ -78,14 +78,20 @@ expect_count "Selected: 1 face [face F2:end(" 2 "Shift takes it away again"
 echo "--- Context menu: commands that fit a face"
 ui_step "right-click the top face"         ui_view_click 50 50 3
 ui_expect_log "Context menu: " "context menu opened"
-for entry in Fillet Chamfer "Create Sketch" "Edit Extrude1"; do
+for entry in "Create Sketch" "Edit Extrude1"; do
   grep "Context menu: " "$UI_LOG" | tail -1 | grep -qF "$entry" ||
     ui_fail "no '$entry' in the context menu of a face"
   echo "ok   '$entry' offered for a face"
 done
-grep "Context menu: " "$UI_LOG" | tail -1 | grep -qE "\| Extrude \||Revolve" &&
+# The face completes Fillet and Chamfer: Solid's first entries (mitcad#494).
+for entry in Fillet Chamfer; do
+  grep "Context menu Solid: " "$UI_LOG" | tail -1 | grep -qF "$entry" ||
+    ui_fail "no '$entry' in the Solid submenu of a face"
+  echo "ok   '$entry' offered for a face"
+done
+grep -E "Context menu( Solid| Solid More)?: " "$UI_LOG" | tail -3 | grep -qE "[:|] (Extrude|Revolve)( \||$)" &&
   ui_fail "profile commands offered for a face"
-ui_step "choose Fillet"                    ui_menu_choose "Fillet"
+ui_step "choose Solid > Fillet"            ui_menu_choose "Solid" "Fillet"
 ui_expect_log "Command Fillet started" "fillet started from the context menu"
 ui_expect_log "Fillet Edges: 1 face" "the selected face went to the edges input"
 

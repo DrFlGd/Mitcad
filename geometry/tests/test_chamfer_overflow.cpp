@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Chamfers wider than a face beside them (mitcad#240, mitcad#263), with the
 // OCCT port's patches 0140 and later (third_party/vcpkg-ports/opencascade;
-// a groove's end wall chamfered past its flanks, 0671, mitcad#235),
+// a groove's end wall chamfered past its flanks, 0671, mitcad#235; a boss's
+// foot past a slanted plate corner, 0941, mitcad#495),
 // on synthetic shapes and OCCT's chamfer alone. The cross-sections are
 // exact, so are the volumes.
 
@@ -33,11 +34,13 @@
 #include <BRepFilletAPI_MakeFillet2d.hxx>
 #include <BRepGProp.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
+#include <BRepPrimAPI_MakeCone.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
 #include <BRepPrimAPI_MakeRevol.hxx>
 #include <BRep_Builder.hxx>
 #include <BRep_Tool.hxx>
+#include <GC_MakeArcOfCircle.hxx>
 #include <GProp_GProps.hxx>
 #include <Geom2d_Curve.hxx>
 #include <Geom_Curve.hxx>
@@ -453,6 +456,66 @@ void test_chamfer_of_a_boss_beyond_a_plate_corner(bool exact, bool away) {
   CHECK_NEAR_TOL(exact_volume_of(result) - exact_volume_of(body), ring - corner - sides, 1e-8);
   // The cone one face; the boss's side gone with the exact length.
   CHECK(faces_of(result) == faces_of(body) + (exact ? 0 : 1));
+}
+
+// The plate of test_chamfer_of_a_boss_beyond_a_plate_corner with one side
+// slanted: its corner an arc of radius 20 about (81.5, 20) from (81.5, 0),
+// where the side along y = 0 leaves it, round to 196.4 degrees, where a
+// side tangent to it leaves it towards y = 150 (z from `z0`, `height`
+// high). The boss under it (radius 7.5, `length` long) has its axis down,
+// so that its foot's circle, the closed spine, runs clockwise from the
+// boss's seam at `seam` degrees. Chamfered by 13, the contact on the
+// plate's underside (radius 20.5) runs 0.5 beyond the outline from 196.4
+// degrees round to 282.7 (patch 0142's gap, cut by the slanted side, the
+// corner's cylinder and the side along y = 0). With the seam from 120 to
+// 180 degrees the gap is long and ends towards the spine's end: its last
+// crossing's parameter on the boss's circle was taken a period early, the
+// last piece ran more than once round the circle, and the chamfer was
+// invalid (patch 0941; with the boss as long as the chamfer the repair of
+// its bottom face then never ended, 0942). The volume: the plate and boss
+// with the chamfer's cone cut by the plate's outline prolonged down.
+TopoDS_Shape slanted_corner_plate(double z0, double height) {
+  const double t = kPi + 0.28618; // where the slanted side leaves the arc
+  const gp_Pnt a(81.5, 0, z0);
+  const double tm = 0.5 * (1.5 * kPi + t);
+  const gp_Pnt m(81.5 + 20 * std::cos(tm), 20 + 20 * std::sin(tm), z0);
+  const gp_Pnt b(81.5 + 20 * std::cos(t), 20 + 20 * std::sin(t), z0);
+  const double reach = (150.0 - b.Y()) / -std::cos(t);
+  const gp_Pnt c(b.X() + reach * std::sin(t), 150.0, z0);
+  BRepBuilderAPI_MakeWire wire;
+  wire.Add(BRepBuilderAPI_MakeEdge(GC_MakeArcOfCircle(b, m, a).Value()).Edge());
+  wire.Add(BRepBuilderAPI_MakeEdge(a, gp_Pnt(200, 0, z0)).Edge());
+  wire.Add(BRepBuilderAPI_MakeEdge(gp_Pnt(200, 0, z0), gp_Pnt(200, 150, z0)).Edge());
+  wire.Add(BRepBuilderAPI_MakeEdge(gp_Pnt(200, 150, z0), c).Edge());
+  wire.Add(BRepBuilderAPI_MakeEdge(c, b).Edge());
+  return BRepPrimAPI_MakePrism(BRepBuilderAPI_MakeFace(wire.Wire(), true).Face(), gp_Vec(0, 0, height)).Shape();
+}
+
+void test_chamfer_of_a_boss_beyond_a_slanted_plate_corner(double seam, double length) {
+  const double s = seam * kPi / 180.0;
+  const TopoDS_Shape boss =
+      BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(81.5, 20, 0), gp_Dir(0, 0, -1), gp_Dir(std::cos(s), std::sin(s), 0)), 7.5,
+                               length)
+          .Shape();
+  const TopoDS_Shape body = fuse(slanted_corner_plate(0, 17), boss);
+  const std::vector<TopoDS_Edge> foot = edges_where(body, [](const gp_Pnt& p) {
+    return std::abs(p.Z()) < 1e-6 && std::abs(std::hypot(p.X() - 81.5, p.Y() - 20) - 7.5) < 1e-6;
+  });
+  CHECK(foot.size() == 1u);
+  const TopoDS_Shape result = chamfered(body, foot, 13.0);
+  CHECK(!result.IsNull());
+  if (result.IsNull()) {
+    return;
+  }
+  CHECK(BRepCheck_Analyzer(result).IsValid());
+  CHECK(pcurves_fit(result));
+  const TopoDS_Shape cone =
+      BRepPrimAPI_MakeCone(gp_Ax2(gp_Pnt(81.5, 20, -13), gp_Dir(0, 0, 1)), 7.5, 20.5, 13).Shape();
+  BRepAlgoAPI_Common ring(cone, slanted_corner_plate(-length, length));
+  const double expected = exact_volume_of(fuse(body, ring.Shape())) - exact_volume_of(body);
+  CHECK_NEAR_TOL(exact_volume_of(result) - exact_volume_of(body), expected, 1e-8);
+  // The cone one face; the boss's side gone with the exact length.
+  CHECK(faces_of(result) == faces_of(body) + (length == 13.0 ? 0 : 1));
 }
 
 // A hexagonal prism (inradius 4, z 0..4) under a disc of radius 8.5 (z
@@ -1574,6 +1637,14 @@ void chamfer_overflow_tests() {
   for (const auto& [along, down] : {std::pair<double, double>{1.5, 1.15}, {2.0, 1.18}, {1.0, 1.12}}) {
     guarded("test_chamfer_of_a_groove_end_wall",
             [&, along = along, down = down] { test_chamfer_of_a_groove_end_wall(along, down); });
+  }
+  // (the boss's seam in degrees: before the gap, failing without 0941, or
+  // away from it; the boss's length: as the chamfer, or longer)
+  for (const double seam : {180.0, 150.0, 120.0, 300.0}) {
+    for (const double length : {13.0, 15.0}) {
+      guarded("test_chamfer_of_a_boss_beyond_a_slanted_plate_corner",
+              [&] { test_chamfer_of_a_boss_beyond_a_slanted_plate_corner(seam, length); });
+    }
   }
 }
 

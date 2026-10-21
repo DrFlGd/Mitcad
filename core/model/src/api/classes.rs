@@ -185,6 +185,8 @@ const COMMANDS: &[(&str, ApiClass)] = &[
     ("build_remove", Model),
     // A timber frame (mitcad#479): its parts and fasteners from a library.
     ("build_frame", Remote),
+    // Fasteners swapped in place (mitcad#497): the new one from a library.
+    ("build_swap_fasteners", Remote),
     // Motion studies and contact sets (mitcad#454).
     ("add_motion_study", Model),
     ("edit_motion_study", Model),
@@ -403,6 +405,22 @@ pub fn command_class_with(request: &serde_json::Value) -> Option<ApiClass> {
     if name == "build_edit"
         && request
             .get("frame")
+            .is_some_and(serde_json::Value::is_object)
+    {
+        return Some(Remote);
+    }
+    // Fasteners swapped for a source of the design read no library; a set
+    // laid out again with its fasteners does (mitcad#497).
+    if name == "build_swap_fasteners"
+        && request
+            .pointer("/part/source")
+            .is_some_and(serde_json::Value::is_string)
+    {
+        return Some(Model);
+    }
+    if name == "build_edit"
+        && request
+            .pointer("/spacing/fastener")
             .is_some_and(serde_json::Value::is_object)
     {
         return Some(Remote);

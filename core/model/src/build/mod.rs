@@ -32,6 +32,8 @@ pub(crate) mod wood;
 pub(crate) mod profiled;
 // Timber frames (mitcad#479).
 pub(crate) mod frames;
+// Fasteners chosen and swapped (mitcad#497).
+pub(crate) mod swap;
 
 pub use connect::{ConnectInput, PanelInput, RemoveResult};
 pub use cut_list::{
@@ -49,6 +51,7 @@ pub use place::{
 };
 pub use sources::{LibrarySourceDef, LibrarySources, SourceDesign};
 pub use spacing::{SpacingInput, SpacingMode};
+pub use swap::{SwapInput, Swapped};
 pub use timber::{Lie, PointTo};
 pub use wood::EndInput;
 
@@ -60,6 +63,8 @@ mod close_tests;
 mod cut_list_tests;
 #[cfg(test)]
 mod easy_tests;
+#[cfg(test)]
+mod fastener_tests;
 #[cfg(test)]
 mod frame_tests;
 #[cfg(test)]

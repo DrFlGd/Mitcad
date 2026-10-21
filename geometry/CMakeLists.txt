@@ -416,6 +416,12 @@ if(BUILD_TESTING)
   add_executable(test_fillet_seam_run_on tests/test_fillet_seam_run_on.cpp)
   target_link_libraries(test_fillet_seam_run_on PRIVATE mitcad_geometry mitcad_warnings)
   add_test(NAME geometry.fillet_seam_run_on COMMAND test_fillet_seam_run_on)
+  # A rounding over a narrow face whose far edge is a concave crease, the
+  # face beyond cutting the blend's side and growing up to it, with the
+  # port's patch 0940 (mitcad#343).
+  add_executable(test_fillet_narrow_cut tests/test_fillet_narrow_cut.cpp)
+  target_link_libraries(test_fillet_narrow_cut PRIVATE mitcad_geometry mitcad_warnings)
+  add_test(NAME geometry.fillet_narrow_cut COMMAND test_fillet_narrow_cut)
   # Boundary Fill: the cells tool bodies enclose (mitcad#457).
   add_executable(test_boundary_fill tests/test_boundary_fill.cpp)
   target_link_libraries(test_boundary_fill PRIVATE mitcad_geometry mitcad_warnings)

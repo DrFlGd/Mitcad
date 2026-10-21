@@ -787,7 +787,9 @@ void MainWindow::saveVersionCopy(QWidget* parent, const QString& file, const Fil
     chosen = picked->other ? QString() : picked->path;
   }
   if (chosen.isEmpty()) {
-    QFileDialog dialog(parent, tr("Save Copy As"), info.absolutePath(), tr("Mitcad designs (*.mitcad)"));
+    // Always the design's own folder: no remembered one (mitcad#498).
+    QFileDialog dialog(parent, tr("Save Copy As"), dialogStartFolder(DialogGroup::SaveCopy, info.absolutePath()),
+                       tr("Mitcad designs (*.mitcad)"));
     prepareFileDialog(&dialog);
     dialog.setAcceptMode(QFileDialog::AcceptSave);
     dialog.setDefaultSuffix(QStringLiteral("mitcad"));

@@ -120,6 +120,15 @@ struct Shared {
     QString axis = QStringLiteral("x");
     QString lie = QStringLiteral("flat");
     QString part;
+    // The fastener of frames and spacing sets (mitcad#497): the wood
+    // fastener (empty: the library's first wood screw), its size ("auto"
+    // or a row), how many at each junction, and whether a frame (on the
+    // first time) and a set (off) are fastened.
+    QString fastener;
+    QString fastenerSize = QStringLiteral("auto");
+    QString fastenerCount = QStringLiteral("2");
+    bool frameFasteners = true;
+    bool setFasteners = false;
   };
   TimberMemory timber;
   // The configuration rows of a source's component (Fasteners' sizes).
@@ -138,6 +147,9 @@ struct Shared {
     // The offset is to a tilted part's foot long point (mitcad#444), not
     // to its faces.
     bool longPoint = false;
+    // A set's members as the model lays them out from the offset
+    // (mitcad#492); -1 without a set.
+    int setCount = -1;
   };
   Side side;
   // Where the part shown last stands on a slot (mitcad#444): the foot's
@@ -434,11 +446,13 @@ PartPicker* partPicker(Shared& shared, bool create) {
     shared.picker = picker;
     DocumentHost* host = shared.host;
     picker->setDesignParts([host] { return usedLibraryParts(host->model()); });
-    QObject::connect(picker, &PartPicker::chosen, picker, [host](const PickerPart& part, const QString& command) {
+    QObject::connect(picker, &PartPicker::chosen, picker, [host, picker](const PickerPart& part, const QString& command) {
       if (!command.startsWith(QStringLiteral("build."))) {
         return; // another caller's
       }
-      if (!host->chooseInCommand(command, kPart, part.key)) {
+      // The part, or another input it was asked for (a fastener, mitcad#497).
+      const QString input = picker->input().isEmpty() ? kPart : picker->input();
+      if (!host->chooseInCommand(command, input, part.key)) {
         qInfo().noquote() << QStringLiteral("BUILD picker: %1 not chosen, %2 does not run").arg(part.name, command);
       }
     });
@@ -494,7 +508,8 @@ void systemFromPart(Shared& shared, const QString& role, CommandState& state) {
 // and, with `system`, the system (set through live MCP's `system` or
 // `search`; a part chosen in the picker leaves the picker's filter alone).
 void syncPicker(const Shared& shared, const QString& role, const CommandState& state, bool system) {
-  if (PartPicker* picker = shownPicker(shared, commandOf(role))) {
+  PartPicker* picker = shownPicker(shared, commandOf(role));
+  if (picker != nullptr && picker->input().isEmpty()) { // not a fastener's (mitcad#497)
     if (system) {
       picker->grid()->setSystem(state.choice(kSystem));
     }
@@ -596,7 +611,7 @@ QString pickerFirst(const QVector<Part>& parts, const QString& system) {
     const QStringList systems = part.systemText().split(QStringLiteral(", "), Qt::SkipEmptyParts);
     if (system.isEmpty() || systems.isEmpty() || systems.contains(system)) {
       shown.append(&part);
-      order.append({part.library, part.component, QString()});
+      order.append({part.library, part.component, QString(), part.config, part.defaultRow});
     }
   }
   if (shown.isEmpty()) {
@@ -692,7 +707,7 @@ void startPicker(Shared& shared, const QString& role, CommandState& state, const
   } else if (chosen.isEmpty()) {
     chosen = pickerFirst(parts, state.choice(kSystem));
     const bool starred = shared.catalog.find(chosen, known) &&
-                         PartFavourites::instance().starred(known.library, known.component);
+                         PartFavourites::instance().starred(known.library, known.component, known.config, known.defaultRow);
     why = starred ? QStringLiteral("the first favourite") : QStringLiteral("the picker's first part");
   }
   if (!chosen.isEmpty()) {
@@ -1529,11 +1544,14 @@ Inspection inspectPlacement(const SharedPtr& shared, const QString& role, const 
   // bound to, which a change of From keeps in place.
   QString sideLog;
   if (!side.isEmpty()) {
-    const Shared::Side shown = sideOf(answer, [&] {
+    Shared::Side shown = sideOf(answer, [&] {
       const Selection& items = state.items(kAt);
       const std::optional<BuildPart> target = items.isEmpty() ? std::nullopt : shared->partAt(items.first().occurrence);
       return target ? target->length : kNaN;
     }());
+    shown.setCount = spacing.isEmpty()
+                         ? -1
+                         : answer.value(QStringLiteral("spacing")).toObject().value(QStringLiteral("count")).toInt(-1);
     if (!hovered) {
       shared->setSide(shown);
     }
@@ -1634,7 +1652,15 @@ Inspection inspectPlacement(const SharedPtr& shared, const QString& role, const 
                                                            : QStringLiteral("none of X, Y, Z");
     result.log += QStringLiteral("; thickness along %1").arg(axis);
   }
-  // A corner the bound length closes (mitcad#485).
+  // Where its end A goes (mitcad#492: a member lying on a plane rests on
+  // it), in tenths of a millimetre, no negative zero.
+  if (frame.valid) {
+    const auto tenths = [](double v) { return QString::number(std::round(v * 10.0) / 10.0 + 0.0, 'f', 1); };
+    result.log += QStringLiteral("; end A at %1, %2, %3")
+                      .arg(tenths(frame.origin.X()), tenths(frame.origin.Y()), tenths(frame.origin.Z()));
+  }
+  // A corner the length closes, bound (mitcad#485) or typed to end there
+  // (mitcad#492).
   if (const QJsonObject closing = answer.value(QStringLiteral("closing")).toObject(); !closing.isEmpty()) {
     const QString name = build::componentName(str(closing, "component"), context);
     const QString atEnd = str(closing, "end").toUpper();
@@ -1976,9 +2002,14 @@ bool placeNow(Shared& shared, DocumentHost& host, const QString& role, const Par
   const QStringList warnings = warningsOf(result);
   // A spacing set (mitcad#478): its count.
   const QJsonValue count = result.value(QStringLiteral("count"));
+  // A set fastened to its hosts (mitcad#497): the junctions fastened.
+  const QJsonValue fastened = result.value(QStringLiteral("fasteners"));
+  QString set = count.isDouble() ? QStringLiteral("; a set of %1").arg(count.toInt()) : QString();
+  if (fastened.isDouble()) {
+    set += QStringLiteral(", %1 junction(s) fastened").arg(fastened.toInt());
+  }
   qInfo().noquote() << QStringLiteral("Placed %1 as %2 (%3), length %4%5%6")
-                           .arg(part.name, str(result, "name"), str(result, "occurrence"), lengthNote,
-                                count.isDouble() ? QStringLiteral("; a set of %1").arg(count.toInt()) : QString(),
+                           .arg(part.name, str(result, "name"), str(result, "occurrence"), lengthNote, set,
                                 warnings.isEmpty() ? QString() : QStringLiteral("; ") + warnings.join(QStringLiteral("; ")));
   if (!warnings.isEmpty()) {
     host.showStatus(warnings.join(QLatin1Char(' ')), false);
@@ -2015,6 +2046,14 @@ CommandDef placeCommand(const SharedPtr& shared, DocumentHost& host, const QStri
                                        QStringLiteral("bearing"), QStringLiteral("nema"), QStringLiteral("build")};
   def.okLabel = QObject::tr("Place");
   def.repeats = true;
+  // A slot profile or a rail is of no timber member's system: on a member's
+  // face the view's context menu offers it under More (mitcad#494).
+  def.completes = [&host](const Selection& selection) {
+    return std::none_of(selection.begin(), selection.end(), [&host](const SelectionItem& item) {
+      const std::optional<BuildPart> part = build::partOf(item, host.model());
+      return part && part->isTimber();
+    });
+  };
   def.inputs = pickerInputs(shared, role);
   def.inputs += placementInputs(shared, role, profile);
   def.init = [shared, role](CommandState& state, const CommandContext& context) {
@@ -2602,13 +2641,15 @@ Inspection inspectSetOnSide(const SharedPtr& shared, const CommandState& state, 
   if (!result.error.isEmpty() || !chosenPart(*shared, state, part)) {
     return result;
   }
-  // The set runs the whole side, from end A to end B.
+  // The set as the model lays it out: from the typed Offset and From
+  // (mitcad#492), else the whole side, from end A to end B.
   const Shared::Side side = shared->shownSide();
   // Boards that join step by their cover width when their width runs along
   // the side (mitcad#477).
   const double cover = std::abs(side.width - part.sectionWidth()) < 1e-3 ? part.joinedCover() : 0.0;
-  const int count =
-      setCount(state.choice(kSpacingMode), state.value(kDistance), state.choice(kFit), side.length, side.width, cover);
+  const int count = side.setCount >= 0 ? side.setCount
+                                       : setCount(state.choice(kSpacingMode), state.value(kDistance),
+                                                  state.choice(kFit), side.length, side.width, cover);
   result.text += QStringLiteral("<br>") +
                  QObject::tr("A set along the member: %1 member(s), %2").arg(count).arg(spacingText(state).toHtmlEscaped());
   result.log += QStringLiteral("; set of %1, %2").arg(count).arg(spacingText(state));
@@ -2773,20 +2814,204 @@ QString openingsText(const QJsonArray& openings) {
   return entries.join(QStringLiteral("; "));
 }
 
-// The wood screw the frame drives at its junctions (the model sizes it from
-// the members): the library's first screw, else its first wood fastener.
-std::optional<QJsonObject> frameFastener(const Shared& shared) {
-  const QVector<Part> wood = shared.catalog.parts(kWoodRole);
-  const auto screw = std::find_if(wood.begin(), wood.end(), [](const Part& part) {
+// --- The fastener of a frame or a spacing set (mitcad#497; app/COMMANDS.md,
+// "Timber", Fasteners)
+//
+// A wood fastener of the libraries (Fastener: its tile opens the part
+// picker of wood fasteners), its size (Auto: sized from the members, or one
+// of its rows) and how many at each junction (Count). A frame is fastened
+// by default, a spacing set when its Fasteners is on; the choice is
+// remembered for the next Timber start (mitcad#485).
+
+const QString kSetFasteners = QStringLiteral("set_fasteners");
+const QString kWoodFastener = QStringLiteral("fastener");
+const QString kWoodSize = QStringLiteral("fastener_size");
+const QString kWoodCount = QStringLiteral("fastener_count");
+const QString kWoodAuto = QStringLiteral("auto");
+
+// A wood fastener's key in Fastener: its library and component (its rows
+// are Size's).
+QString woodKey(const Part& part) { return part.library + QLatin1Char('|') + part.component; }
+
+// The libraries' wood fasteners, each once and without a row, in the
+// catalog's order.
+QVector<Part> woodFasteners(const Shared& shared) {
+  QVector<Part> fasteners;
+  for (Part part : shared.catalog.parts(kWoodRole)) {
+    const QString key = woodKey(part);
+    if (std::any_of(fasteners.begin(), fasteners.end(), [&key](const Part& known) { return known.key == key; })) {
+      continue;
+    }
+    part.config.clear();
+    part.partNumber.clear();
+    part.ownPreview = false;
+    part.key = key;
+    fasteners.append(part);
+  }
+  return fasteners;
+}
+
+std::optional<Part> woodFastener(const Shared& shared, const QString& key) {
+  for (const Part& part : woodFasteners(shared)) {
+    if (part.key == key) {
+      return part;
+    }
+  }
+  return std::nullopt;
+}
+
+// A wood fastener's rows (Size's choices besides Auto).
+QStringList woodRows(const Shared& shared, const QString& key) {
+  QStringList rows;
+  for (const Part& part : shared.catalog.parts(kWoodRole)) {
+    if (woodKey(part) == key && !part.config.isEmpty() && !rows.contains(part.config)) {
+      rows << part.config;
+    }
+  }
+  return rows;
+}
+
+Choices woodSizeChoices(const Shared& shared, const QString& key) {
+  Choices sizes{{kWoodAuto, QObject::tr("Auto: from the members")}};
+  for (const QString& row : woodRows(shared, key)) {
+    sizes.append({row, row});
+  }
+  return sizes;
+}
+
+// The fastener the tool starts with: the one chosen last, else the
+// libraries' first wood screw, else their first wood fastener.
+QString startingWoodFastener(const Shared& shared) {
+  const QVector<Part> fasteners = woodFasteners(shared);
+  if (std::any_of(fasteners.begin(), fasteners.end(),
+                  [&shared](const Part& part) { return part.key == shared.timber.fastener; })) {
+    return shared.timber.fastener;
+  }
+  const auto screw = std::find_if(fasteners.begin(), fasteners.end(), [](const Part& part) {
     return str(part.build.value(QStringLiteral("wood")).toObject(), "kind") == QStringLiteral("screw");
   });
-  const auto chosen = screw != wood.end() ? screw : wood.begin();
-  if (chosen == wood.end()) {
+  if (screw != fasteners.end()) {
+    return screw->key;
+  }
+  return fasteners.isEmpty() ? QString() : fasteners.first().key;
+}
+
+// Fastener, Size and Count as the tool remembers them, the wood fasteners
+// read (a mode that fastens is shown).
+void startFasteners(Shared& shared, CommandState& state, const CommandContext& context) {
+  shared.catalog.refresh(kWoodRole, context);
+  if (!woodFastener(shared, state.choice(kWoodFastener))) {
+    state.setChoice(kWoodFastener, startingWoodFastener(shared));
+  }
+  const QString size = shared.timber.fastenerSize;
+  state.setChoice(kWoodSize, woodRows(shared, state.choice(kWoodFastener)).contains(size) ? size : kWoodAuto);
+}
+
+// How many at each junction (at least one; 2 when not a number).
+int woodCount(const CommandState& state) {
+  double count = state.value(kWoodCount);
+  if (!std::isfinite(count)) {
+    bool ok = false;
+    count = state.text(kWoodCount).trimmed().toDouble(&ok);
+    if (!ok) {
+      count = 2.0;
+    }
+  }
+  return std::max(1, static_cast<int>(std::lround(count)));
+}
+
+// The fastener's `part` for the model: its row unless Auto.
+std::optional<QJsonObject> woodFastenerRef(const Shared& shared, const CommandState& state) {
+  const std::optional<Part> part = woodFastener(shared, state.choice(kWoodFastener));
+  if (!part) {
     return std::nullopt;
   }
-  QJsonObject ref = chosen->ref();
+  QJsonObject ref = part->ref();
   ref.remove(QStringLiteral("config"));
+  const QString size = state.choice(kWoodSize);
+  if (!size.isEmpty() && size != kWoodAuto) {
+    ref.insert(QStringLiteral("config"), size);
+  }
   return ref;
+}
+
+// The fastener in words: "3 x Ring nail 3.1x90 at each junction", "2 x
+// Wood screw at each junction, sized from the members"; empty without one.
+QString woodText(const Shared& shared, const CommandState& state) {
+  const std::optional<Part> part = woodFastener(shared, state.choice(kWoodFastener));
+  if (!part) {
+    return {};
+  }
+  const QString size = state.choice(kWoodSize);
+  const bool sized = size.isEmpty() || size == kWoodAuto;
+  return sized ? QObject::tr("%1 x %2 at each junction, sized from the members").arg(woodCount(state)).arg(part->name)
+               : QObject::tr("%1 x %2 %3 at each junction").arg(woodCount(state)).arg(part->name, size);
+}
+
+// The fastener's tile (as the part's, mitcad#427).
+ChoiceTile woodTile(Shared& shared, const CommandState& state) {
+  const std::optional<Part> part = woodFastener(shared, state.choice(kWoodFastener));
+  if (!part) {
+    return {QImage(), QObject::tr("No wood fasteners"), QString()};
+  }
+  const QString kind = str(part->build.value(QStringLiteral("wood")).toObject(), "kind");
+  return {shared.thumbnail(*part), part->name, kind == QStringLiteral("nail") ? QObject::tr("Nail") : QObject::tr("Screw")};
+}
+
+// What Fastener asks the part picker for: the wood fasteners, chosen into
+// Fastener of `command`.
+PickerRequest woodRequest(const Shared& shared, const QString& command, const CommandState& state) {
+  PickerRequest request;
+  request.command = command;
+  request.title = QObject::tr("Fastener");
+  request.parts = pickerParts(woodFasteners(shared));
+  request.current = state.choice(kWoodFastener);
+  request.input = kWoodFastener;
+  return request;
+}
+
+// Fastener, Size and Count, shown while `shown` holds.
+QVector<InputDef> woodInputs(const SharedPtr& shared, const QString& command,
+                             const std::function<bool(const CommandState&)>& shown) {
+  return {
+      choiceInput(kWoodFastener, QObject::tr("Fastener"), {}, QString())
+          .withVisible(shown)
+          .withChoices([shared](const CommandState&) {
+            Choices choices;
+            for (const Part& part : woodFasteners(*shared)) {
+              choices.append({part.key, part.name});
+            }
+            return choices;
+          })
+          .withChoiceTile([shared](const CommandState& state) { return woodTile(*shared, state); })
+          .withButton(kButtonText, buttonTip(),
+                      [shared, command](const CommandState& state, const CommandContext&) {
+                        if (PartPicker* picker = partPicker(*shared, true)) {
+                          picker->ask(woodRequest(*shared, command, state));
+                        }
+                      })
+          .withOnChange([shared](CommandState& state, const CommandContext&) {
+            // Another fastener: Auto unless it has the row chosen.
+            if (!woodRows(*shared, state.choice(kWoodFastener)).contains(state.choice(kWoodSize))) {
+              state.setChoice(kWoodSize, kWoodAuto);
+            }
+            shared->timber.fastener = state.choice(kWoodFastener);
+            if (PartPicker* picker = shared->picker.data();
+                picker != nullptr && picker->isVisible() && picker->input() == kWoodFastener) {
+              picker->setCurrent(state.choice(kWoodFastener));
+            }
+          })
+          .withTooltip(QObject::tr("The wood screw or nail; a click (or Enter) opens the part picker")),
+      choiceInput(kWoodSize, QObject::tr("Size"), {{kWoodAuto, QStringLiteral("Auto: from the members")}}, kWoodAuto)
+          .withVisible(shown)
+          .withChoices([shared](const CommandState& state) {
+            return woodSizeChoices(*shared, state.choice(kWoodFastener));
+          })
+          .withTooltip(QObject::tr("The fastener's size, or Auto: sized from the members it joins")),
+      valueInput(kWoodCount, QObject::tr("Count"), ValueKind::Unitless, QStringLiteral("2"))
+          .withVisible(shown)
+          .withTooltip(QObject::tr("How many at each junction, in a row along the contact")),
+  };
 }
 
 // The lead of the frame a BUILD part is a member of (empty: none).
@@ -2828,6 +3053,26 @@ struct FramePlacement {
   QString what; // "wall 3600 x 2400 mm", for the panel and the log
 };
 
+// A wall's size for the panel and the log: "wall 3600 x 2400 mm".
+QString wallWhat(double length, double height) {
+  return QObject::tr("wall %1 x %2 mm").arg(length, 0, 'f', 0).arg(height, 0, 'f', 0);
+}
+
+// Where a wall started on another wall's side meets it (the answer's
+// `junction`, mitcad#493): "Wall 2: an L corner at Wall 1's end B", "Wall
+// 2: a T on Wall 1 at 2000 mm"; empty without one.
+QString junctionText(const QJsonValue& value, const QString& name) {
+  const QJsonObject junction = value.toObject();
+  if (junction.isEmpty()) {
+    return {};
+  }
+  const QString wall = str(junction, "wall");
+  if (str(junction, "kind") == QStringLiteral("L")) {
+    return QObject::tr("%1: an L corner at %2's end %3").arg(name, wall, str(junction, "end").toUpper());
+  }
+  return QObject::tr("%1: a T on %2 at %3 mm").arg(name, wall).arg(junction.value(QStringLiteral("at")).toDouble(), 0, 'f', 0);
+}
+
 FramePlacement framePlacement(const Shared& shared, const CommandState& state, const CommandContext& context,
                               const Part& part) {
   FramePlacement result;
@@ -2839,9 +3084,11 @@ FramePlacement framePlacement(const Shared& shared, const CommandState& state, c
   QJsonObject fields{{QStringLiteral("kind"), kind},
                      {QStringLiteral("part"), part.ref()},
                      {QStringLiteral("spacing"), expressionOr(state, kFrameSpacing, defaultFrameSpacing(kind))}};
+  // The fastener chosen, its size and count (mitcad#497).
   if (state.checked(kFrameFasteners)) {
-    if (const std::optional<QJsonObject> fastener = frameFastener(shared)) {
+    if (const std::optional<QJsonObject> fastener = woodFastenerRef(shared, state)) {
       fields.insert(QStringLiteral("fastener"), *fastener);
+      fields.insert(QStringLiteral("fastener_count"), woodCount(state));
     }
   }
   if (kind == kRoof) {
@@ -2934,6 +3181,27 @@ FramePlacement framePlacement(const Shared& shared, const CommandState& state, c
     if (endWall) {
       joins.insert(QStringLiteral("end"), endWall->first);
     }
+    const QString height = expressionOr(state, kFrameHeight, QStringLiteral("2400 mm"));
+    const QJsonObject plates{{QStringLiteral("top"), state.choice(kFrameTop) == QStringLiteral("2") ? 2 : 1}};
+    if (startWall) {
+      // A start on another wall's side (mitcad#493): square to it, an L
+      // corner near one of its ends or a T elsewhere, as the model works it
+      // out; as far as the end clicked is along it, else Length.
+      fields.insert(QStringLiteral("joins"), joins);
+      fields.insert(QStringLiteral("square"), true);
+      fields.insert(QStringLiteral("start"), build::pointJson(start));
+      if (end) {
+        fields.insert(QStringLiteral("end"), build::pointJson(*end));
+      } else {
+        fields.insert(QStringLiteral("length"), expressionOr(state, kFrameLength, defaultFrameLength(kind)));
+      }
+      fields.insert(QStringLiteral("height"), height);
+      fields.insert(QStringLiteral("plates"), plates);
+      // The length the model works out replaces it (inspectFrame).
+      result.what = wallWhat(length, millimetresOf(state, kFrameHeight, 2400.0));
+      result.fields = fields;
+      return result;
+    }
     gp_Pnt last = end ? *end : start.Translated(along * length);
     last.SetZ(start.Z());
     if (start.Distance(last) < 1.0) {
@@ -2945,12 +3213,9 @@ FramePlacement framePlacement(const Shared& shared, const CommandState& state, c
     }
     fields.insert(QStringLiteral("start"), build::pointJson(start));
     fields.insert(QStringLiteral("end"), build::pointJson(last));
-    fields.insert(QStringLiteral("height"), expressionOr(state, kFrameHeight, QStringLiteral("2400 mm")));
-    fields.insert(QStringLiteral("plates"),
-                  QJsonObject{{QStringLiteral("top"), state.choice(kFrameTop) == QStringLiteral("2") ? 2 : 1}});
-    result.what = QObject::tr("wall %1 x %2 mm")
-                      .arg(start.Distance(last), 0, 'f', 0)
-                      .arg(millimetresOf(state, kFrameHeight, 2400.0), 0, 'f', 0);
+    fields.insert(QStringLiteral("height"), height);
+    fields.insert(QStringLiteral("plates"), plates);
+    result.what = wallWhat(start.Distance(last), millimetresOf(state, kFrameHeight, 2400.0));
   }
   result.fields = fields;
   return result;
@@ -3033,6 +3298,8 @@ Inspection inspectFrame(const SharedPtr& shared, const CommandState& state, cons
                           .arg(kind == kFloor ? QObject::tr("floor") : QObject::tr("wall"));
   } else if (kind == kRoof && state.items(kFrameWalls).size() < 2) {
     result.viewHint = QObject::tr("Click a member of each of the two walls the roof stands on");
+  } else if (placed.fields.value(QStringLiteral("square")).toBool() && state.items(kEndPoint).isEmpty()) {
+    result.viewHint = QObject::tr("Click where the wall ends, or press Enter: Length square to the wall clicked");
   }
   if (!placed.problem.isEmpty()) {
     result.text = lines.join(QStringLiteral("<br>"));
@@ -3044,13 +3311,25 @@ Inspection inspectFrame(const SharedPtr& shared, const CommandState& state, cons
   result.shape = preview.shape;
   const int count = preview.answer.value(QStringLiteral("count")).toInt();
   const QString name = str(preview.answer, "name");
-  lines << QObject::tr("%1, %2: %3 member(s)").arg(name, placed.what).arg(count).toHtmlEscaped();
+  // A wall started on another wall's side: the corner or T it makes, its
+  // length as the model works it out (mitcad#493).
+  const QJsonValue junction = preview.answer.value(QStringLiteral("junction"));
+  const QString joined = junctionText(junction, name);
+  const QString what =
+      joined.isEmpty() ? placed.what
+                       : wallWhat(junction.toObject().value(QStringLiteral("length")).toDouble(),
+                                  millimetresOf(state, kFrameHeight, 2400.0));
+  lines << QObject::tr("%1, %2: %3 member(s)").arg(name, what).arg(count).toHtmlEscaped();
+  if (!joined.isEmpty()) {
+    lines << joined.toHtmlEscaped();
+  }
   if (!preview.counts.isEmpty()) {
     lines << preview.counts.toHtmlEscaped();
   }
   const bool fastened = placed.fields.contains(QStringLiteral("fastener"));
-  lines << (fastened ? QObject::tr("Two wood screws at each junction, sized from the members")
-                     : state.checked(kFrameFasteners) ? QObject::tr("No wood screws in the libraries: no fasteners")
+  const QString fastening = woodText(*shared, state); // mitcad#497
+  lines << (fastened ? fastening.toHtmlEscaped()
+                     : state.checked(kFrameFasteners) ? QObject::tr("No wood fasteners in the libraries: no fasteners")
                                                       : QObject::tr("No fasteners"));
   QStringList warnings;
   for (const QJsonValue& warning : preview.answer.value(QStringLiteral("warnings")).toArray()) {
@@ -3060,11 +3339,17 @@ Inspection inspectFrame(const SharedPtr& shared, const CommandState& state, cons
   result.text = lines.join(QStringLiteral("<br>"));
   result.error = preview.error;
   result.log = QStringLiteral("frame %1 %2, %3, %4 member(s) (%5); fasteners %6%7; adds to %8; part %9")
-                   .arg(kind, name, placed.what)
+                   .arg(kind, name, what)
                    .arg(count)
                    .arg(preview.counts, fastened ? QStringLiteral("yes") : QStringLiteral("no"),
                         warnings.isEmpty() ? QString() : QStringLiteral("; warnings: ") + warnings.join(QStringLiteral(" / ")),
                         host.name, part.name);
+  if (!joined.isEmpty()) {
+    result.log += QStringLiteral("; %1").arg(joined);
+  }
+  if (fastened) {
+    result.log += QStringLiteral("; fastener %1").arg(fastening); // mitcad#497
+  }
   return result;
 }
 
@@ -3086,6 +3371,10 @@ bool applyFrame(Shared& shared, DocumentHost& host, CommandState& state, const C
                            .arg(str(result, "name"), str(result, "kind"), str(result, "frame"))
                            .arg(result.value(QStringLiteral("count")).toInt())
                            .arg(result.value(QStringLiteral("fasteners")).toInt());
+  const QString joined = junctionText(result.value(QStringLiteral("junction")), str(result, "name"));
+  if (!joined.isEmpty()) {
+    qInfo().noquote() << QStringLiteral("Frame junction: %1").arg(joined);
+  }
   for (const QJsonValue& warning : result.value(QStringLiteral("warnings")).toArray()) {
     qInfo().noquote() << QStringLiteral("Frame warning: %1").arg(warning.toString());
   }
@@ -3099,7 +3388,7 @@ bool applyFrame(Shared& shared, DocumentHost& host, CommandState& state, const C
 }
 
 // The Frame mode's inputs (after the Timber panel's own).
-std::vector<InputDef> frameInputs() {
+std::vector<InputDef> frameInputs(const SharedPtr& shared) {
   const auto frame = [](const CommandState& state) { return howOf(state) == kFrame; };
   const auto kindIs = [](const QString& kind) {
     return [kind](const CommandState& state) { return howOf(state) == kFrame && frameKindOf(state) == kind; };
@@ -3132,12 +3421,17 @@ std::vector<InputDef> frameInputs() {
   inputs.push_back(valueInput(kFrameLength, QObject::tr("Length"), ValueKind::Length, QStringLiteral("3600 mm"))
                        .withVisible(noEnd(QString()))
                        .withTooltip(QObject::tr("Without an end clicked: how far it runs from its start along "
-                                                "Direction")));
+                                                "Direction, or square to a wall clicked")));
   inputs.push_back(valueInput(kFrameWidth, QObject::tr("Width"), ValueKind::Length, QStringLiteral("3000 mm"))
                        .withVisible(noEnd(kFloor))
                        .withTooltip(QObject::tr("Without an end clicked: the floor's size to the left of Direction")));
+  // A wall started on another wall's side runs square to it (mitcad#493).
+  const auto direction = noEnd(QString());
   inputs.push_back(choiceInput(kFrameAlong, QObject::tr("Direction"), kFrameAlongs, QStringLiteral("x"))
-                       .withVisible(noEnd(QString())));
+                       .withVisible([shared, direction](const CommandState& state) {
+                         return direction(state) &&
+                                !(frameKindOf(state) == kWall && wallClicked(*shared, state, kStart));
+                       }));
   inputs.push_back(valueInput(kFrameHeight, QObject::tr("Height"), ValueKind::Length, QStringLiteral("2400 mm"))
                        .withVisible(kindIs(kWall))
                        .withTooltip(QObject::tr("From the underside of the bottom plate to the top of the top plate")));
@@ -3176,7 +3470,7 @@ std::vector<InputDef> frameInputs() {
                        .withTooltip(QObject::tr("How far the rafters run beyond the walls' outer faces")));
   inputs.push_back(checkInput(kFrameFasteners, QObject::tr("Fasteners"), true)
                        .withVisible(frame)
-                       .withTooltip(QObject::tr("Two wood screws at each junction of the frame's members")));
+                       .withTooltip(QObject::tr("The fastener below at each junction of the frame's members")));
   return inputs;
 }
 
@@ -3212,9 +3506,10 @@ CommandDef timberCommand(const SharedPtr& shared, DocumentHost& host) {
                           shared->timberHow = howOf(state);
                           state.setObject(kHover, {});
                           state.setObject(kHoverPick, {});
-                          // A frame's wood screws (mitcad#479).
-                          if (howOf(state) == kFrame) {
-                            shared->catalog.refresh(kWoodRole, context);
+                          // A frame's and a set's fastener (mitcad#479,
+                          // mitcad#497).
+                          if (howOf(state) == kFrame || howOf(state) == kSpacing) {
+                            startFasteners(*shared, state, context);
                           }
                         })
                         .withTooltip(QObject::tr("How the member is placed: on a member, at a spacing, as a frame or "
@@ -3279,10 +3574,25 @@ CommandDef timberCommand(const SharedPtr& shared, DocumentHost& host) {
                         .withVisible([](const CommandState& state) {
                           return howOf(state) == kSpacing && state.choice(kSpacingMode) == kGap;
                         }));
+  // A spacing set fastened to its hosts (mitcad#497), off by default.
+  def.inputs.append(checkInput(kSetFasteners, QObject::tr("Fasteners"), false)
+                        .withVisible(how(kSpacing))
+                        .withOnChange([shared](CommandState& state, const CommandContext&) {
+                          shared->timber.setFasteners = state.checked(kSetFasteners);
+                        })
+                        .withTooltip(QObject::tr("Each member fastened to the members it stands on, reaches or "
+                                                 "crosses")));
   // A wall, floor or roof frame (mitcad#479).
-  for (InputDef& input : frameInputs()) {
+  for (InputDef& input : frameInputs(shared)) {
     def.inputs.append(std::move(input));
   }
+  // The fastener, its size and count (mitcad#497): under the frame's or
+  // the set's Fasteners while it is on.
+  const auto fastening = [](const CommandState& state) {
+    return (howOf(state) == kFrame && state.checked(kFrameFasteners)) ||
+           (howOf(state) == kSpacing && state.checked(kSetFasteners));
+  };
+  def.inputs += woodInputs(shared, def.id, fastening);
   def.init = [shared, role](CommandState& state, const CommandContext& context) {
     startPicker(*shared, role, state, context);
     // The profiles' sections for the snaps, when the design has them.
@@ -3292,8 +3602,20 @@ CommandDef timberCommand(const SharedPtr& shared, DocumentHost& host) {
     if (!shared->timberHow.isEmpty()) {
       state.setChoice(kHow, shared->timberHow);
     }
-    if (howOf(state) == kFrame) {
-      shared->catalog.refresh(kWoodRole, context);
+    // The fasteners as chosen last (mitcad#497).
+    {
+      const Shared::TimberMemory& memory = shared->timber;
+      state.setChecked(kFrameFasteners, memory.frameFasteners);
+      state.setChecked(kSetFasteners, memory.setFasteners);
+      state.setText(kWoodCount, memory.fastenerCount);
+      state.setValue(kWoodCount, kNaN);
+    }
+    if (howOf(state) == kFrame || howOf(state) == kSpacing) {
+      startFasteners(*shared, state, context);
+      qInfo().noquote() << QStringLiteral("BUILD timber fasteners: frame %1, set %2; %3")
+                               .arg(state.checked(kFrameFasteners) ? QStringLiteral("on") : QStringLiteral("off"),
+                                    state.checked(kSetFasteners) ? QStringLiteral("on") : QStringLiteral("off"),
+                                    woodText(*shared, state));
     }
     // A typed length (Auto stays a choice), and what the tool remembers:
     // the length typed last (the first time the part's default), the
@@ -3325,10 +3647,17 @@ CommandDef timberCommand(const SharedPtr& shared, DocumentHost& host) {
     if (howOf(state) == kOnMember) {
       return inspectPlacement(shared, role, state, context, true);
     }
-    if (placesOnMember(state)) {
-      return inspectSetOnSide(shared, state, context);
+    Inspection result =
+        placesOnMember(state) ? inspectSetOnSide(shared, state, context) : inspectTimber(shared, state, context);
+    // A set fastened to its hosts (mitcad#497).
+    if (howOf(state) == kSpacing) {
+      const QString with = state.checked(kSetFasteners) ? woodText(*shared, state) : QString();
+      result.text += QStringLiteral("<br>") +
+                     (with.isEmpty() ? QObject::tr("No fasteners")
+                                     : QObject::tr("Fastened to its hosts: %1").arg(with).toHtmlEscaped());
+      result.log += QStringLiteral("; fasteners %1").arg(with.isEmpty() ? QStringLiteral("no") : with);
     }
-    return inspectTimber(shared, state, context);
+    return result;
   };
   def.previewMarkers = markersOf;
   // Two points follow nothing of the mouse (mitcad#485); a set between two
@@ -3361,6 +3690,34 @@ CommandDef timberCommand(const SharedPtr& shared, DocumentHost& host) {
     if (!state.choice(kLie).isEmpty()) {
       shared->timber.lie = state.choice(kLie);
     }
+    // The fasteners (mitcad#497): whether a frame and a set are fastened,
+    // with what, in which size and how many.
+    if (howOf(state) == kFrame) {
+      shared->timber.frameFasteners = state.checked(kFrameFasteners);
+    }
+    if (howOf(state) == kSpacing) {
+      shared->timber.setFasteners = state.checked(kSetFasteners);
+    }
+    if ((howOf(state) == kFrame && state.checked(kFrameFasteners)) ||
+        (howOf(state) == kSpacing && state.checked(kSetFasteners))) {
+      shared->timber.fastener = state.choice(kWoodFastener);
+      shared->timber.fastenerSize = state.choice(kWoodSize).isEmpty() ? kWoodAuto : state.choice(kWoodSize);
+      shared->timber.fastenerCount = QString::number(woodCount(state));
+    }
+    // A set's fastener, its size and count (mitcad#497).
+    const auto fastenSet = [shared, &state](QJsonObject& fields) {
+      if (!state.checked(kSetFasteners)) {
+        return;
+      }
+      const std::optional<QJsonObject> fastener = woodFastenerRef(*shared, state);
+      if (!fastener) {
+        return;
+      }
+      QJsonObject spacing = fields.value(QStringLiteral("spacing")).toObject();
+      spacing.insert(QStringLiteral("fastener"), *fastener);
+      spacing.insert(QStringLiteral("fastener_count"), woodCount(state));
+      fields.insert(QStringLiteral("spacing"), spacing);
+    };
     if (howOf(state) == kFrame) {
       return applyFrame(*shared, host, state, context, part);
     }
@@ -3373,15 +3730,17 @@ CommandDef timberCommand(const SharedPtr& shared, DocumentHost& host) {
       QJsonObject fields = placed.fields;
       if (howOf(state) == kSpacing) {
         fields.insert(QStringLiteral("spacing"), spacingFields(state));
+        fastenSet(fields);
       }
       return placeNow(*shared, host, role, part, fields, placed.lengthNote, state, context);
     }
     if (howOf(state) == kSpacing) {
-      const RowPlacement placed = rowPlacement(*shared, state, context, part);
+      RowPlacement placed = rowPlacement(*shared, state, context, part);
       if (!placed.problem.isEmpty()) {
         host.showStatus(placed.problem, true);
         return false;
       }
+      fastenSet(placed.fields);
       if (!placeNow(*shared, host, role, part, placed.fields, QObject::tr("across the faces"), state, context)) {
         return false;
       }
@@ -3403,6 +3762,29 @@ CommandDef timberCommand(const SharedPtr& shared, DocumentHost& host) {
     state.setObject(kStart + QStringLiteral("_pick"), {});
     state.setObject(kEndPoint + QStringLiteral("_pick"), {});
     return true;
+  };
+  // A part's face selected before Timber (the view's context menu, BUILD >
+  // Timber, mitcad#494) is where it goes, On a member, as a click there
+  // places it; the selection would else wait in Start, hidden.
+  std::function<void(const SelectionItem&, CommandState&, const CommandContext&)> pickAt;
+  for (const InputDef& input : def.inputs) {
+    if (input.id == kAt) {
+      pickAt = input.onPick;
+    }
+  }
+  def.init = [init = def.init, pickAt](CommandState& state, const CommandContext& context) {
+    init(state, context);
+    const Selection start = state.items(kStart);
+    if (start.size() != 1 || start.first().kind != SelectKind::Face || !state.items(kAt).isEmpty() ||
+        !build::partOf(start.first(), context)) {
+      return;
+    }
+    state.setItems(kStart, {});
+    state.setItems(kAt, start);
+    state.setChoice(kHow, kOnMember);
+    if (pickAt) {
+      pickAt(start.first(), state, context);
+    }
   };
   return def;
 }
@@ -3438,6 +3820,13 @@ CommandDef spacingCommand(const SharedPtr& shared, DocumentHost& host, const Com
   def.pinned = true;
   def.keywords = {QStringLiteral("spacing"), QStringLiteral("joists"), QStringLiteral("studs"),
                   QStringLiteral("boards"), QStringLiteral("set"), QStringLiteral("build")};
+  // The view's context menu offers it for members of a set only (mitcad#494).
+  def.offeredFor = [&context](const Selection& selection) {
+    return std::all_of(selection.begin(), selection.end(), [&context](const SelectionItem& item) {
+      const std::optional<BuildPart> part = build::partOf(item, context);
+      return part && (!part->set.isEmpty() || !part->spacing.isEmpty());
+    });
+  };
   const QString kSize = QStringLiteral("size");
   const QString kCount = QStringLiteral("count");
   def.inputs = {
@@ -3649,6 +4038,14 @@ CommandDef frameCommand(const SharedPtr& shared, DocumentHost& host, const Comma
   def.pinned = true;
   def.keywords = {QStringLiteral("frame"), QStringLiteral("wall"), QStringLiteral("floor"), QStringLiteral("roof"),
                   QStringLiteral("studs"), QStringLiteral("joists"), QStringLiteral("rafters"), QStringLiteral("build")};
+  // Only a frame's member completes it; another is offered under More in
+  // the view's context menu (mitcad#494).
+  def.completes = [&context](const Selection& selection) {
+    return std::all_of(selection.begin(), selection.end(), [&context](const SelectionItem& item) {
+      const std::optional<BuildPart> part = build::partOf(item, context);
+      return part && !frameLeadOf(*part).isEmpty();
+    });
+  };
   const QString kSize = QStringLiteral("size");
   const QString kRectangle = QStringLiteral("frame_rectangle");
   const auto kindIs = [](const QString& kind) {
@@ -4769,6 +5166,317 @@ CommandDef fastenersCommand(const SharedPtr& shared, DocumentHost& host, const C
   return def;
 }
 
+// --- Swap Fastener (mitcad#497; app/COMMANDS.md, "Swap Fastener")
+//
+// The fasteners selected made from another fastener where they are, in
+// their joints and junctions (build_swap_fasteners, one undo step). Its
+// Fastener offers the compatible ones: wood fasteners for wood screws and
+// nails (with Size: Auto, sized from the members, or a row), the other
+// fasteners of the first one's slot system for a connector's nuts and
+// screws. In the view's context menu under BUILD for fasteners only.
+
+const QString kSwapCommand = QStringLiteral("build.swap_fastener");
+const QString kSwapItems = QStringLiteral("fasteners");
+const QString kSlotFastenerRole = QStringLiteral("fastener");
+// A fastener is small: a right-click on it may hit any of its items.
+constexpr SelectFilter kFastenerKinds = SelectKind::Face | SelectKind::Body | SelectKind::Edge | SelectKind::Vertex;
+
+// The fasteners the items belong to, each once (from the design's parts
+// as read last).
+QVector<BuildPart> swapTargets(const Shared& shared, const Selection& items) {
+  QVector<BuildPart> found;
+  for (const SelectionItem& item : items) {
+    const std::optional<BuildPart> part = shared.partAt(item.occurrence);
+    if (part && part->role == QStringLiteral("fastener") &&
+        std::none_of(found.begin(), found.end(), [&part](const BuildPart& known) { return known.component == part->component; })) {
+      found.append(*part);
+    }
+  }
+  return found;
+}
+
+// The libraries' part a fastener of the design is made from (its source):
+// a wood fastener's without its row, another's in its row.
+std::optional<Part> sourcePart(const Shared& shared, const BuildPart& fastener) {
+  for (const Part& part : woodFasteners(shared)) {
+    if (!fastener.source.isEmpty() && part.source == fastener.source) {
+      return part;
+    }
+  }
+  for (const Part& part : shared.catalog.parts(kWoodRole)) {
+    if (!fastener.source.isEmpty() && part.source == fastener.source) {
+      return woodFastener(shared, woodKey(part));
+    }
+  }
+  for (const Part& part : shared.catalog.parts(kSlotFastenerRole)) {
+    if (!fastener.source.isEmpty() && part.source == fastener.source &&
+        (part.config == fastener.config || fastener.config.isEmpty())) {
+      return part;
+    }
+  }
+  return std::nullopt;
+}
+
+// Whether the fasteners selected are wood screws and nails (a `wood`
+// block, or driven at a junction of members).
+bool swapsWood(const Shared& shared, const QVector<BuildPart>& targets) {
+  if (targets.isEmpty()) {
+    return true;
+  }
+  const std::optional<Part> part = sourcePart(shared, targets.first());
+  return part ? part->isWoodFastener() : !str(targets.first().raw, "junction").isEmpty();
+}
+
+// What may replace the fasteners selected: wood fasteners for wood ones,
+// else the other fasteners that share the first one's slot system.
+QVector<Part> swapCandidates(const Shared& shared, const QVector<BuildPart>& targets) {
+  if (swapsWood(shared, targets)) {
+    return woodFasteners(shared);
+  }
+  const std::optional<Part> own = targets.isEmpty() ? std::nullopt : sourcePart(shared, targets.first());
+  const QStringList systems = own ? own->systemText().split(QStringLiteral(", "), Qt::SkipEmptyParts) : QStringList();
+  QVector<Part> candidates;
+  for (const Part& part : shared.catalog.parts(kSlotFastenerRole)) {
+    if (part.isWoodFastener()) {
+      continue;
+    }
+    const QStringList theirs = part.systemText().split(QStringLiteral(", "), Qt::SkipEmptyParts);
+    if (systems.isEmpty() || theirs.isEmpty() ||
+        std::any_of(theirs.begin(), theirs.end(), [&systems](const QString& s) { return systems.contains(s); })) {
+      candidates.append(part);
+    }
+  }
+  return candidates;
+}
+
+std::optional<Part> swapPart(const Shared& shared, const CommandState& state) {
+  for (const Part& part : swapCandidates(shared, swapTargets(shared, state.items(kSwapItems)))) {
+    if (part.key == state.choice(kPart)) {
+      return part;
+    }
+  }
+  return std::nullopt;
+}
+
+// The selection read: Fastener stays when it fits, else the fasteners' own
+// part (then Size alone changes them).
+void followSwapSelection(Shared& shared, CommandState& state) {
+  const QVector<BuildPart> targets = swapTargets(shared, state.items(kSwapItems));
+  if (swapPart(shared, state)) {
+    return;
+  }
+  const std::optional<Part> own = targets.isEmpty() ? std::nullopt : sourcePart(shared, targets.first());
+  const QVector<Part> candidates = swapCandidates(shared, targets);
+  state.setChoice(kPart, own ? own->key : candidates.isEmpty() ? QString() : candidates.first().key);
+  state.setChoice(kWoodSize, kWoodAuto);
+}
+
+PickerRequest swapRequest(const Shared& shared, const CommandState& state) {
+  PickerRequest request;
+  request.command = kSwapCommand;
+  request.title = QObject::tr("Swap Fastener");
+  request.parts = pickerParts(swapCandidates(shared, swapTargets(shared, state.items(kSwapItems))));
+  request.current = state.choice(kPart);
+  return request;
+}
+
+CommandDef swapFastenerCommand(const SharedPtr& shared, DocumentHost& host, const CommandContext& context) {
+  CommandDef def;
+  def.id = kSwapCommand;
+  def.name = QObject::tr("Swap Fastener");
+  def.icon = QStringLiteral("build-fasteners");
+  def.tooltip = QObject::tr("Replaces the fasteners selected with another fastener or size, where they are");
+  def.tab = kTab;
+  def.group = QStringLiteral("CONNECT");
+  def.keywords = {QStringLiteral("screw"), QStringLiteral("nail"), QStringLiteral("nut"), QStringLiteral("replace"),
+                  QStringLiteral("fastener"), QStringLiteral("build")};
+  def.okLabel = QObject::tr("Swap");
+  // The view's context menu offers it for fasteners only (mitcad#494).
+  def.offeredFor = [&context](const Selection& selection) {
+    return !selection.isEmpty() && std::all_of(selection.begin(), selection.end(), [&context](const SelectionItem& item) {
+      const std::optional<BuildPart> part = build::partOf(item, context);
+      return part && part->role == QStringLiteral("fastener");
+    });
+  };
+  def.inputs = {
+      selectionInput(kSwapItems, QObject::tr("Fasteners"), kFastenerKinds, 1, 0)
+          .withPickRule([](const CommandState&) { return kFastenerKinds; },
+                        [shared](const SelectionItem& item, const CommandState&) {
+                          const std::optional<BuildPart> part = shared->partAt(item.occurrence);
+                          return part && part->role == QStringLiteral("fastener");
+                        })
+          .withOnPick([shared](const SelectionItem&, CommandState& state, const CommandContext&) {
+            followSwapSelection(*shared, state);
+            if (PartPicker* picker = shownPicker(*shared, kSwapCommand)) {
+              picker->setParts(swapRequest(*shared, state).parts, state.choice(kPart));
+            }
+          })
+          .withTooltip(QObject::tr("The fasteners to swap: wood screws and nails, or a connector's nuts and screws")),
+      choiceInput(kPart, QObject::tr("Fastener"), {}, QString())
+          .withChoices([shared](const CommandState& state) {
+            Choices choices;
+            for (const Part& part : swapCandidates(*shared, swapTargets(*shared, state.items(kSwapItems)))) {
+              choices.append({part.key, part.config.isEmpty() || part.isWoodFastener()
+                                            ? part.name
+                                            : QStringLiteral("%1 (%2)").arg(part.name, part.config)});
+            }
+            return choices;
+          })
+          .withChoiceTile([shared](const CommandState& state) {
+            const std::optional<Part> part = swapPart(*shared, state);
+            if (!part) {
+              return ChoiceTile{QImage(), QObject::tr("No fastener"), QString()};
+            }
+            return ChoiceTile{shared->thumbnail(*part),
+                              part->config.isEmpty() ? part->name : QStringLiteral("%1 (%2)").arg(part->name, part->config),
+                              part->isWoodFastener() ? QObject::tr("Wood fastener") : part->systemText()};
+          })
+          .withButton(kButtonText, buttonTip(),
+                      [shared](const CommandState& state, const CommandContext&) {
+                        if (PartPicker* picker = partPicker(*shared, true)) {
+                          picker->ask(swapRequest(*shared, state));
+                        }
+                      })
+          .withOnChange([shared](CommandState& state, const CommandContext&) {
+            if (!woodRows(*shared, state.choice(kPart)).contains(state.choice(kWoodSize))) {
+              state.setChoice(kWoodSize, kWoodAuto);
+            }
+            if (PartPicker* picker = shownPicker(*shared, kSwapCommand)) {
+              picker->setCurrent(state.choice(kPart));
+            }
+          })
+          .withTooltip(QObject::tr("The fastener they become; a click (or Enter) opens the part picker")),
+      choiceInput(kWoodSize, QObject::tr("Size"), {{kWoodAuto, QStringLiteral("Auto: from the members")}}, kWoodAuto)
+          .withVisible([shared](const CommandState& state) {
+            const std::optional<Part> part = swapPart(*shared, state);
+            return part && part->isWoodFastener();
+          })
+          .withChoices([shared](const CommandState& state) { return woodSizeChoices(*shared, state.choice(kPart)); })
+          .withTooltip(QObject::tr("The fastener's size, or Auto: sized from the members each joins")),
+  };
+  def.enabled = [&context] {
+    const QVector<BuildPart> parts = build::buildParts(context);
+    return std::any_of(parts.begin(), parts.end(),
+                       [](const BuildPart& part) { return part.role == QStringLiteral("fastener"); });
+  };
+  // The fasteners selected before it (the view's context menu) are its
+  // Fasteners, read against the design as it is now.
+  def.preselect = [shared](const Selection& selection, CommandState& state, const CommandContext& model) {
+    shared->refreshDesign(model);
+    Selection items;
+    for (const SelectionItem& item : selection) {
+      const std::optional<BuildPart> part = shared->partAt(item.occurrence);
+      if (part && part->role == QStringLiteral("fastener") && kFastenerKinds.testFlag(item.kind)) {
+        items.append(item);
+      }
+    }
+    state.setItems(kSwapItems, items);
+  };
+  def.init = [shared](CommandState& state, const CommandContext& model) {
+    shared->refreshDesign(model);
+    shared->catalog.refresh(kWoodRole, model);
+    shared->catalog.refresh(kSlotFastenerRole, model);
+    followSwapSelection(*shared, state);
+    qInfo().noquote() << QStringLiteral("BUILD swap fastener starts with %1 fastener(s), %2")
+                             .arg(swapTargets(*shared, state.items(kSwapItems)).size())
+                             .arg(state.choice(kPart));
+    if (PartPicker* picker = pinnedPicker(*shared)) {
+      picker->ask(swapRequest(*shared, state));
+    }
+  };
+  def.ended = pickerEnded(shared, def.id);
+  def.inspect = [shared](const CommandState& state, const CommandContext&) {
+    Inspection result;
+    const QVector<BuildPart> targets = swapTargets(*shared, state.items(kSwapItems));
+    if (targets.isEmpty()) {
+      result.error = QObject::tr("Select the fasteners to swap: wood screws and nails, or a connector's nuts and screws.");
+      return result;
+    }
+    // What they are now, by kind: "2 x Wood screw 5x80".
+    QStringList kinds;
+    QHash<QString, int> counts;
+    for (const BuildPart& part : targets) {
+      const QString shown = part.designation.isEmpty() ? part.shownName() : part.designation;
+      if (!counts.contains(shown)) {
+        kinds << shown;
+      }
+      counts[shown] += 1;
+    }
+    QStringList now;
+    for (const QString& kind : kinds) {
+      now << QStringLiteral("%1 x %2").arg(counts.value(kind)).arg(kind);
+    }
+    const std::optional<Part> part = swapPart(*shared, state);
+    const bool wood = swapsWood(*shared, targets);
+    QString becomes = QObject::tr("no fastener of the libraries fits");
+    if (part) {
+      const QString size = state.choice(kWoodSize);
+      becomes = !part->isWoodFastener() ? (part->config.isEmpty() ? part->name : QStringLiteral("%1 %2").arg(part->name, part->config))
+                : size.isEmpty() || size == kWoodAuto ? QObject::tr("%1, sized from the members").arg(part->name)
+                                                      : QStringLiteral("%1 %2").arg(part->name, size);
+    }
+    result.text = QStringLiteral("<b>%1</b><br>%2").arg(QObject::tr("%1 fastener(s)").arg(targets.size()),
+                                                        QObject::tr("%1 become %2").arg(now.join(QStringLiteral(", ")), becomes)
+                                                            .toHtmlEscaped());
+    if (!part) {
+      result.error = QObject::tr("No %1 fastener in the libraries to swap them for.")
+                         .arg(wood ? QObject::tr("wood") : QObject::tr("slot"));
+    }
+    result.log = QStringLiteral("swap %1 fastener(s) (%2, %3) for %4")
+                     .arg(targets.size())
+                     .arg(wood ? QStringLiteral("wood") : QStringLiteral("slot"), now.join(QStringLiteral(", ")), becomes);
+    return result;
+  };
+  def.apply = [shared, &host](CommandState& state, const CommandContext& model) {
+    const QVector<BuildPart> targets = swapTargets(*shared, state.items(kSwapItems));
+    const std::optional<Part> part = swapPart(*shared, state);
+    if (targets.isEmpty() || !part) {
+      host.showStatus(QObject::tr("Select the fasteners to swap and the fastener they become."), true);
+      return false;
+    }
+    QJsonObject ref = part->ref();
+    if (part->isWoodFastener()) {
+      ref.remove(QStringLiteral("config"));
+      const QString size = state.choice(kWoodSize);
+      if (!size.isEmpty() && size != kWoodAuto) {
+        ref.insert(QStringLiteral("config"), size);
+      }
+    }
+    QJsonArray components;
+    for (const BuildPart& target : targets) {
+      components.append(target.component);
+    }
+    QJsonObject result;
+    if (!host.runModelCommand(QJsonObject{{QStringLiteral("cmd"), QStringLiteral("build_swap_fasteners")},
+                                          {kSwapItems, components},
+                                          {QStringLiteral("part"), ref}},
+                              &result)) {
+      return false;
+    }
+    // The warnings of the new size (embedment, edges, ends).
+    const QStringList warnings = warningsOf(result);
+    QStringList sizes;
+    for (const QJsonValue& value : result.value(QStringLiteral("sizes")).toArray()) {
+      const QString config = str(value.toObject(), "config");
+      if (!config.isEmpty() && !sizes.contains(config)) {
+        sizes << config;
+      }
+    }
+    qInfo().noquote() << QStringLiteral("Swapped %1 fastener(s) for %2%3%4")
+                             .arg(result.value(QStringLiteral("count")).toInt())
+                             .arg(str(result, "designation"),
+                                  sizes.isEmpty() ? QString() : QStringLiteral(" (%1)").arg(sizes.join(QStringLiteral(", "))),
+                                  warnings.isEmpty() ? QString() : QStringLiteral("; ") + warnings.join(QStringLiteral("; ")));
+    if (!warnings.isEmpty()) {
+      host.showStatus(warnings.join(QLatin1Char(' ')), false);
+    }
+    shared->refreshDesign(model);
+    shared->catalog.refresh(kWoodRole, model);
+    return true;
+  };
+  return def;
+}
+
 // --- MODIFY: a part picked
 
 QString partsText(const QVector<BuildPart>& parts) {
@@ -5171,6 +5879,7 @@ void registerBuildCommands(CommandRegistry& registry, const CommandContext& cont
   // CONNECT
   registry.add(connectorCommand(shared, host, context));
   registry.add(fastenersCommand(shared, host, context));
+  registry.add(swapFastenerCommand(shared, host, context)); // mitcad#497
   // MODIFY
   registry.add(lengthCommand(host, context));
   registry.add(endsCommand(host, context));

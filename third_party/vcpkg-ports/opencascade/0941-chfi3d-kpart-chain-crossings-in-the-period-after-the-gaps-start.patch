@@ -1,0 +1,66 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets and chamfers: on a closed line of the other contact, the parameters
+of a gap's crossings in the period that follows the piece before the gap
+(mitcad#495).
+
+The case: a plate's corner rounded with radius 20 about the axis of a boss
+of radius 7.5 under it, a side of the plate tangent to the corner's arc
+(not square to the boss's seam), the boss's foot chamfered by 13 so that
+the contact on the plate's underside (radius 20.5) runs 0.5 beyond the
+plate's outline along the corner and both sides (patch 0142's gap, cut by
+a chain of the faces beyond). The boss's seam, the closed spine's start,
+lies before the gap (a little short of where the gap ends, going along the
+spine), so the gap is long and ends towards the spine's end.
+ChFi3d_KPartEdgeCrossing takes a crossing's parameter on the other
+contact's line (a circle on the boss) in the period around the middle of
+the piece before the gap: past half a turn from there, a period early
+(-0.286 for 5.997). The last piece of the chain, from that crossing to the
+next piece's start (6.218), then ran more than once round the circle: the
+boss's bottom face got edges covering more than its rim, the cone's seam a
+tolerance of 58 mm, and the result was invalid (when the boss was as long
+as the chamfer, its bottom face's repair then never ended, patch 0942).
+
+ChFi3d_KPartChainPieces now takes each crossing's parameter in the period
+that follows the end of the piece before the gap (or the chain's given
+start), where the gap does not run across the spine's start (the
+parameters grow along the spine); a gap across the start keeps the
+parameters as before (0145 and 0146 take them across the period's end).
+
+On the design's replayed body before the item: valid, the four bosses'
+chamfers the change of volume of the file's (+25112.58 against
++25112.65 mm3, the replayed body itself 0.067 mm3 off the stored one);
+before, invalid (two of the four wrong by +618 and -733 mm3). Synthetic:
+the plate and boss of the case (the boss 15 long), the boss's seam turned
+in steps of 15 degrees: valid, the volume of the boss with the chamfer's
+cone cut by the plate's outline within 1e-6 mm3; before, invalid for the
+seam from 120 to 180 degrees.
+
+Upstream: new.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+@@ -8037,6 +8037,22 @@ static bool ChFi3d_KPartChainPieces(TopOpeBRepDS_DataStructure&
+       return false;
+     }
+     anEnd.tO  = X.tO;
++    // (On a closed line of the other contact, the crossing's parameter is
++    // taken in the period around the middle of Full's own stretch: a long
++    // gap that ends towards the spine's end, past half a turn from there,
++    // got it a period early, and the piece from it to Next's start ran
++    // more than once round the line. Where the gap does not run across the
++    // spine's start, it is taken in the period that follows Prev's end (or
++    // the chain's given start): the line's parameters grow along the
++    // spine.)
++    const occ::handle<Geom_Curve>& aCO = DStr.Curve(FO.LineIndex()).Curve();
++    if (aCO->IsPeriodic() && (!Prev.IsNull() || GivenStart != nullptr)
++        && Wa >= Spine->FirstParameter() - Precision::PConfusion())
++    {
++      const double aFrom = (!Prev.IsNull() ? Prev->Interference(opp).LastParameter() : GivenStart->tO)
++                           - Precision::PConfusion();
++      anEnd.tO = ElCLib::InPeriod(X.tO, aFrom, aFrom + aCO->Period());
++    }
+     anEnd.V   = TopoDS_Vertex();
+     anEnd.CPN.Reset();
+     anEnd.CPN.SetPoint(X.P);

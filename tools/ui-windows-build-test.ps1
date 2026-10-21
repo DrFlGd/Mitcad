@@ -473,10 +473,10 @@ Ui-ExpectNew 'BUILD profile adds to Part1 (a ground placement)' 'a new design ag
 Ui-Step '60 mm long'                     { Ui-TypeIn 'Panel Profile input length' '60' }
 Ui-Mark
 Ui-Step 'along X'                        { Ui-ClickLogged 'Panel Profile input axis=x' }
-Ui-ExpectNew '; along x' 'the preview along X'
+Expect-Inspect @('; along x', '; end A at 0.0, 0.0, 10.0') 'the preview along X, resting on the XY plane (mitcad#492)'
 Ui-Mark
 Ui-Step 'standing (Z)'                   { Ui-ClickLogged 'Panel Profile input axis=z' }
-Ui-ExpectNew '; along z' 'the preview standing'
+Expect-Inspect @('; along z', '; end A at 0.0, 0.0, 0.0') 'the preview standing on its end at the origin'
 Place 'Profile 20 test'
 No-PolicyMessage
 $b0 = Placed-Body

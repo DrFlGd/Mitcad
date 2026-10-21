@@ -147,9 +147,13 @@ pub struct FrameInput {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ridge: Option<PartInput>,
     /// The wood fastener driven at every junction of the frame's members
-    /// (two, sized from the members, as `build_connect`'s default).
+    /// (two, sized from the members, as `build_connect`'s default; its
+    /// `config` a chosen size, mitcad#497).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fastener: Option<PartInput>,
+    /// How many at each junction (default 2, mitcad#497).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fastener_count: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     // A wall.
@@ -173,6 +177,11 @@ pub struct FrameInput {
     pub openings: Option<Vec<Opening>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub joins: Option<FrameJoins>,
+    /// `build_frame`'s and its preview's only (mitcad#493): `start` is a
+    /// point on the side of the wall `joins.start` names, and the wall
+    /// starts square to that wall, an L corner at its end or a T; not kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub square: Option<bool>,
     // A floor.
     /// The closed outline the floor fills (its first point's height).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -216,6 +225,7 @@ impl FrameInput {
             rim: pick!(rim),
             ridge: pick!(ridge),
             fastener: pick!(fastener),
+            fastener_count: pick!(fastener_count),
             name: pick!(name),
             start: pick!(start),
             end: pick!(end),
@@ -225,6 +235,7 @@ impl FrameInput {
             plates: pick!(plates),
             openings: pick!(openings),
             joins: pick!(joins),
+            square: None,
             outline: pick!(outline),
             direction: pick!(direction),
             blocking: pick!(blocking),
@@ -263,6 +274,38 @@ pub struct Framed {
     /// Other frames laid out again with it (their leads).
     pub relaid: Vec<ComponentUid>,
     pub changed: Vec<String>,
+    /// A wall started square on another wall's side: where it meets it.
+    pub junction: Option<StartJunction>,
+}
+
+/// Where a wall started on another wall's side (`square`, mitcad#493)
+/// meets that wall.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StartJunction {
+    /// `L` (a corner at one of the wall's ends) or `T`.
+    pub kind: &'static str,
+    /// The wall's name and lead.
+    pub wall: String,
+    pub frame: ComponentUid,
+    /// An L's end of that wall: `a` (its start) or `b`.
+    pub end: Option<&'static str>,
+    /// Along that wall from its start to the new wall's centre line, mm.
+    pub at: f64,
+    /// The new wall's length from that wall's centre line, mm.
+    pub length: f64,
+}
+
+impl StartJunction {
+    pub fn to_json(&self) -> Value {
+        json!({
+            "kind": self.kind,
+            "wall": self.wall,
+            "frame": self.frame,
+            "end": self.end,
+            "at": (self.at * 1e6).round() / 1e6,
+            "length": (self.length * 1e6).round() / 1e6,
+        })
+    }
 }
 
 /// A frame's member before it is planned: where its axis runs (in the
@@ -284,9 +327,12 @@ pub(crate) struct MemberSpec {
 }
 
 /// A box a member is notched by, in the host: from `origin` along `x`, `y`
-/// and their cross product by `size`; `with` the wall's lead.
+/// and their cross product by `size`; `with` the other wall's lead (None:
+/// the frame being made); `kind` the cut's (`birdsmouth`, a lapped
+/// corner's `half_lap`).
 #[derive(Debug, Clone)]
 struct Notch {
+    kind: &'static str,
     origin: V3,
     x: V3,
     y: V3,
@@ -463,6 +509,19 @@ struct WallSpan {
     t1: f64,
     extra: Vec<(f64, String)>,
     warnings: Vec<String>,
+    /// The lapped corners at its start and its end (mitcad#493).
+    laps: [Option<Lap>; 2],
+}
+
+/// A wall's plates at an L corner, lapped with the other wall's: `to`
+/// along it, the lap's other end (beyond its end where it butts against
+/// the other wall, `over` its plates; else the other wall's inner face,
+/// under its plates); `with` the other wall's lead.
+#[derive(Debug, Clone, Copy)]
+struct Lap {
+    to: f64,
+    over: bool,
+    with: Option<ComponentUid>,
 }
 
 /// A wall's span: its own ends butting against the walls they join, and
@@ -503,6 +562,18 @@ fn wall_span(w: &WallGeo, walls: &[WallGeo]) -> WallSpan {
         } else {
             span.t1 = t;
         }
+        // At a corner (its centre line meets the other's within its depth of
+        // an end, as the other wall finds it) its plates lap over the other's,
+        // to that wall's outer face.
+        if let Some(tx) = line_param(x.start, x.u, w.start, w.u)
+            && (tx < w.depth() || tx > x.length - w.depth())
+        {
+            span.laps[k] = Some(Lap {
+                to: (-side * x.depth() / 2.0 - dot(sub(w.start, x.start), x.n)) / along,
+                over: true,
+                with: x.lead,
+            });
+        }
     }
     let Some(me) = w.lead else {
         return span;
@@ -522,12 +593,23 @@ fn wall_span(w: &WallGeo, walls: &[WallGeo]) -> WallSpan {
             let db = b.depth();
             let key = format!("junction.{}.{k}", b.name.replace(' ', "_"));
             if tj < db {
-                // A corner at its start: it runs to the other's outer face.
+                // A corner at its start: it runs to the other's outer face,
+                // its plates lapped under the other's.
                 span.t0 = span.t0.min(tj - db / 2.0);
                 span.extra.push((tj + db / 2.0, key));
+                span.laps[0] = Some(Lap {
+                    to: tj + db / 2.0,
+                    over: false,
+                    with: b.lead,
+                });
             } else if tj > w.length - db {
                 span.t1 = span.t1.max(tj + db / 2.0);
                 span.extra.push((tj - db / 2.0 - ts, key));
+                span.laps[1] = Some(Lap {
+                    to: tj - db / 2.0,
+                    over: false,
+                    with: b.lead,
+                });
             } else {
                 span.extra.push((tj - db / 2.0 - ts, format!("{key}.a")));
                 span.extra.push((tj + db / 2.0, format!("{key}.b")));
@@ -693,27 +775,71 @@ fn wall_layout(w: &WallGeo, span: &WallSpan) -> Result<Layout, ModelError> {
         }
         zones.push(zone);
     }
-    // The plates: the top ones through, the bottom ones cut at the doors.
+    // The plates: the top ones through, the bottom ones cut at the doors;
+    // at a lapped corner the outer layer runs over the corner on the wall
+    // that butts and stops at its face on the other, one plate of each is
+    // half-lapped (that wall's half outside).
+    let pw = w.plate.depth();
+    let plate_run = |top: bool, layer: usize, z: f64| -> ([f64; 2], Vec<Notch>) {
+        let count = if top { w.top } else { w.bottom };
+        let mut ends = [t0, t1];
+        let mut notches = Vec::new();
+        for (k, lap) in span.laps.iter().enumerate() {
+            let Some(lap) = lap else { continue };
+            if count == 1 {
+                let face = ends[k];
+                if lap.over {
+                    ends[k] = lap.to;
+                }
+                let (mut lo, mut hi) = (face.min(lap.to), face.max(lap.to));
+                if k == 0 {
+                    lo -= 1.0;
+                } else {
+                    hi += 1.0;
+                }
+                // The half cut away: the inner one where it lies over the
+                // other's, else the outer one.
+                let upper = top != lap.over;
+                let z0 = if upper { z } else { z - tp / 2.0 - 1.0 };
+                notches.push(Notch {
+                    kind: "half_lap",
+                    origin: w.at(lo, z0, -pw / 2.0 - 1.0),
+                    x: w.u,
+                    y: w.n,
+                    size: [hi - lo, pw + 2.0, tp / 2.0 + 1.0],
+                    with: lap.with,
+                });
+            } else if layer == 0 {
+                ends[k] = lap.to;
+            }
+        }
+        (ends, notches)
+    };
     for j in 0..w.top {
         let z = w.height - (j as f64 + 0.5) * tp;
+        let (ends, notches) = plate_run(true, j, z);
         out.add(
             format!("plate.top.{j}"),
             "top plate",
             Which::Plate,
-            [w.at(t0, z, 0.0), w.at(t1, z, 0.0)],
+            [w.at(ends[0], z, 0.0), w.at(ends[1], z, 0.0)],
             across,
         );
+        if let Some(m) = out.members.last_mut() {
+            m.notches = notches;
+        }
     }
     doors.sort_by(|a, b| a.0.total_cmp(&b.0));
     for i in 0..w.bottom {
         let z = (i as f64 + 0.5) * tp;
+        let (ends, notches) = plate_run(false, i, z);
         let mut pieces = Vec::new();
-        let mut from = t0;
+        let mut from = ends[0];
         for (a, b) in &doors {
             pieces.push((from, *a));
             from = *b;
         }
-        pieces.push((from, t1));
+        pieces.push((from, ends[1]));
         let many = pieces.len() > 1;
         for (k, (a, b)) in pieces.into_iter().enumerate() {
             if b - a < 1.0 {
@@ -731,6 +857,16 @@ fn wall_layout(w: &WallGeo, span: &WallSpan) -> Result<Layout, ModelError> {
                 [w.at(a, z, 0.0), w.at(b, z, 0.0)],
                 across,
             );
+            // A piece takes the laps along it.
+            let along = |n: &Notch| dot(sub(n.origin, w.start), w.u);
+            let mine: Vec<Notch> = notches
+                .iter()
+                .filter(|n| along(n) < b - EPS && along(n) + n.size[0] > a + EPS)
+                .cloned()
+                .collect();
+            if let Some(m) = out.members.last_mut() {
+                m.notches = mine;
+            }
         }
     }
     // The studs: the ends, the junctions, the centre distance.
@@ -1275,6 +1411,7 @@ fn roof_layout(r: &RoofGeo) -> Result<Layout, ModelError> {
     // below its top.
     let e3 = cross(s, Z);
     let notch = |x0: f64, x1: f64, h: f64, along: f64, with: Option<ComponentUid>| Notch {
+        kind: "birdsmouth",
         origin: sub(
             point(x0, h - plumb - (x1 - x0) * tan - 50.0, along),
             scale(e3, tr / 2.0 + 1.0),
@@ -1813,7 +1950,7 @@ impl<K: Kernel> Document<K> {
                 .map(|n| {
                     let o = to_part.apply_point(n.origin);
                     PartCut {
-                        kind: "birdsmouth".to_owned(),
+                        kind: n.kind.to_owned(),
                         with: n.with,
                         junction: None,
                         origin: o.map(tidy),
@@ -1937,6 +2074,8 @@ impl<K: Kernel> Document<K> {
         let mut world = self.known_frames();
         let mut def = input.clone();
         def.kind = Some(kind);
+        def.fastener = def.fastener.map(|f| self.kept_fastener(&f));
+        let junction = self.square_start(&mut def, &world)?;
         match &def.name {
             Some(name) if world.iter().any(|k| k.def.name.as_deref() == Some(name)) => {
                 return Err(refuse(format!("a frame is already named '{name}'")));
@@ -1958,7 +2097,100 @@ impl<K: Kernel> Document<K> {
         world.push(Known { lead: None, def });
         let target = world.len() - 1;
         let affected = self.affected(target, None, &world);
-        self.lay_out(&world, &affected, None, Vec::new())
+        let mut framed = self.lay_out(&world, &affected, None, Vec::new())?;
+        framed.junction = junction;
+        Ok(framed)
+    }
+
+    /// A wall started on another wall's side (`square`, mitcad#493): its
+    /// start and end made square to that wall. The start clicked near one
+    /// of that wall's ends (within half its stud spacing, at least its
+    /// depth) starts it at that end's corner, an L, else at the click, a T;
+    /// both on that wall's centre line at its base. It runs to the side
+    /// clicked (the end's side when the click is on the centre line), as
+    /// far as `end` is along it, else `length`.
+    fn square_start(
+        &self,
+        def: &mut FrameInput,
+        world: &[Known],
+    ) -> Result<Option<StartJunction>, ModelError> {
+        if def.square.take() != Some(true) {
+            return Ok(None);
+        }
+        let name = def.name.clone().unwrap_or_else(|| "The wall".to_owned());
+        if def.kind() != FrameKind::Wall {
+            return Err(refuse("only a wall starts square on another wall (square)"));
+        }
+        let text = def
+            .joins
+            .as_ref()
+            .and_then(|j| j.start.clone())
+            .ok_or_else(|| {
+                refuse(format!(
+                    "{name}: square needs the wall it starts on (joins.start)"
+                ))
+            })?;
+        let lead = self.lead_of_ref(&text)?;
+        let known = world
+            .iter()
+            .find(|k| k.lead == Some(lead) && k.def.kind() == FrameKind::Wall)
+            .ok_or_else(|| refuse(format!("{text} is no wall frame")))?;
+        let x = self.wall_geo(known)?;
+        let click = def
+            .start
+            .ok_or_else(|| refuse(format!("{name} needs its start")))?;
+        let rel = sub(click, x.start);
+        let (t, a) = (dot(rel, x.u), dot(rel, x.n));
+        if t < -x.depth() || t > x.length + x.depth() {
+            return Err(refuse(format!(
+                "{name}'s start is not on {}'s side: {} mm along it, beyond its ends",
+                x.name,
+                round(t)
+            )));
+        }
+        let side = if a.abs() > EPS {
+            a.signum()
+        } else {
+            match def.end.map(|e| dot(sub(e, x.start), x.n)) {
+                Some(b) if b.abs() > EPS => b.signum(),
+                _ => 1.0,
+            }
+        };
+        let d = scale(x.n, side);
+        let near = (x.spacing / 2.0).max(x.depth()).min(x.length / 2.0);
+        let (kind, end, at) = if t <= near {
+            ("L", Some("a"), 0.0)
+        } else if t >= x.length - near {
+            ("L", Some("b"), x.length)
+        } else {
+            ("T", None, t)
+        };
+        let start = x.at(at, 0.0, 0.0);
+        let length = match (def.end, &def.length) {
+            (Some(e), _) => dot(sub(e, start), d),
+            (None, Some(l)) => value_in(self, l, Unit::MM)?,
+            (None, None) => {
+                return Err(refuse(format!("{name} needs its end or its length")));
+            }
+        };
+        if length <= x.depth() / 2.0 + EPS {
+            return Err(refuse(format!(
+                "{name} would end {} mm from {}'s centre line, not beyond its side",
+                round(length),
+                x.name
+            )));
+        }
+        def.start = Some(start);
+        def.end = Some(add(start, scale(d, length)));
+        def.length = None;
+        Ok(Some(StartJunction {
+            kind,
+            wall: x.name.clone(),
+            frame: lead,
+            end,
+            at,
+            length,
+        }))
     }
 
     /// A frame's `build_edit`: its definition with the edit's fields over
@@ -1983,6 +2215,7 @@ impl<K: Kernel> Document<K> {
             .ok_or_else(|| refuse("the frame's definition is gone"))?;
         let before = world[target].def.clone();
         let mut def = self.edited_def(&before, edit)?;
+        def.fastener = def.fastener.map(|f| self.kept_fastener(&f));
         if let Some(config) = config
             && let Some(part) = &mut def.part
         {
@@ -2032,6 +2265,7 @@ impl<K: Kernel> Document<K> {
         component: Option<ComponentUid>,
     ) -> Result<Value, ModelError> {
         let mut world = self.known_frames();
+        let mut junction = None;
         let target = match component {
             Some(c) => {
                 let lead = self
@@ -2046,6 +2280,7 @@ impl<K: Kernel> Document<K> {
             }
             None => {
                 let mut def = input.clone();
+                junction = self.square_start(&mut def, &world)?;
                 if def.name.is_none() {
                     def.name = Some(self.free_frame_name(def.kind(), &world));
                 }
@@ -2077,6 +2312,7 @@ impl<K: Kernel> Document<K> {
             })).collect::<Vec<_>>(),
             "warnings": plan.warnings,
             "problems": [],
+            "junction": junction.as_ref().map(StartJunction::to_json),
         }))
     }
 
@@ -2129,9 +2365,10 @@ impl<K: Kernel> Document<K> {
             for removal in &removals {
                 apply_remove(state, removal)?;
             }
-            let mut made = Vec::new();
+            let mut made: Vec<(ComponentUid, Vec<(ComponentUid, String)>)> = Vec::new();
             for plan in &plans {
-                made.push(apply_frame(state, plan, active)?);
+                let first = made.first().map(|(lead, _)| *lead);
+                made.push(apply_frame(state, plan, active, first)?);
             }
             Ok((label.clone(), made))
         })?;
@@ -2141,7 +2378,7 @@ impl<K: Kernel> Document<K> {
         let mut fasteners = 0;
         for (plan, (lead, _)) in plans.iter().zip(&made) {
             if let Some(part) = &plan.def.fastener {
-                fasteners += self.fasten_frame(*lead, part, &mut warnings);
+                fasteners += self.fasten_frame(*lead, part, plan.def.fastener_count, &mut warnings);
             }
         }
         self.merge_undo(depth, &label);
@@ -2161,16 +2398,19 @@ impl<K: Kernel> Document<K> {
             warnings,
             relaid: made[1..].iter().map(|(l, _)| *l).collect(),
             changed,
+            junction: None,
         })
     }
 
-    /// Drives the default fasteners at every junction of a frame's members
-    /// without a connector; returns how many junctions got them. A junction
-    /// they are refused at is left as it is.
+    /// Drives the frame's fasteners (`count` at each, default 2; sized
+    /// from the members unless `part` names a row) at every junction of a
+    /// frame's members without a connector; returns how many junctions got
+    /// them. A junction they are refused at is left as it is.
     fn fasten_frame(
         &mut self,
         lead: ComponentUid,
         part: &PartInput,
+        count: Option<u32>,
         warnings: &mut Vec<String>,
     ) -> usize {
         let members: BTreeSet<ComponentUid> = self.frame_members(lead).into_iter().collect();
@@ -2182,14 +2422,31 @@ impl<K: Kernel> Document<K> {
             .filter(|j| j.connectors.is_empty())
             .map(|j| j.id)
             .collect();
+        self.fasten_junctions(&junctions, part, count, warnings)
+    }
+
+    /// Drives `count` wood fasteners (default 2) of `part` at each of the
+    /// junctions (mitcad#479, mitcad#497); returns how many got them, the
+    /// first ten fastener warnings added. A junction they are refused at is
+    /// left as it is.
+    pub(crate) fn fasten_junctions(
+        &mut self,
+        junctions: &[String],
+        part: &PartInput,
+        count: Option<u32>,
+        warnings: &mut Vec<String>,
+    ) -> usize {
         let mut done = 0;
         let mut own = Vec::new();
         for id in junctions {
-            let input: super::ConnectInput =
-                match serde_json::from_value(json!({"junction": id, "part": part})) {
-                    Ok(input) => input,
-                    Err(_) => continue,
-                };
+            let mut fields = json!({"junction": id, "part": part});
+            if let Some(n) = count {
+                fields["count"] = json!(n.max(1));
+            }
+            let input: super::ConnectInput = match serde_json::from_value(fields) {
+                Ok(input) => input,
+                Err(_) => continue,
+            };
             match self.build_connect(&input) {
                 Ok(placed) => {
                     done += 1;
@@ -2208,13 +2465,21 @@ impl<K: Kernel> Document<K> {
     }
 }
 
+/// The cuts a frame makes in its members (laid out anew with it): a
+/// rafter's birdsmouth, a lapped corner's half lap (no junction).
+fn frame_cut<P>(c: &PartCut<P>) -> bool {
+    c.kind == "birdsmouth" || (c.kind == "half_lap" && c.junction.is_none())
+}
+
 /// Makes a planned frame in `state`: the sources it adds, its members kept
 /// (placed anew), made or notched, its definition on its lead. Returns the
-/// lead and the members.
+/// lead and the members. `made_first`: the lead of the frame made first in
+/// the step, for the cuts with the frame being made.
 fn apply_frame(
     state: &mut DocState,
     plan: &FramePlan,
     active: ComponentUid,
+    made_first: Option<ComponentUid>,
 ) -> Result<(ComponentUid, Vec<(ComponentUid, String)>), ModelError> {
     // The sources, each once.
     let mut ids: BTreeMap<Which, SourceId> = BTreeMap::new();
@@ -2284,16 +2549,23 @@ fn apply_frame(
             .and_then(|c| c.build.as_ref())
             .and_then(|b| b.part);
         if let Some(part) = had {
-            let notches = m.cuts.clone();
+            // A cut with the frame being made: with its lead.
+            let notches: Vec<PartCut<ValueInput>> = m
+                .cuts
+                .iter()
+                .cloned()
+                .map(|mut c| {
+                    c.with = c.with.or(made_first);
+                    c
+                })
+                .collect();
             let has = state.entry(part).is_some_and(|e| match &e.def {
-                crate::features::FeatureDef::DerivedPart(d) => {
-                    d.cuts.iter().any(|c| c.kind == "birdsmouth")
-                }
+                crate::features::FeatureDef::DerivedPart(d) => d.cuts.iter().any(frame_cut),
                 _ => false,
             });
             if has || !notches.is_empty() {
                 edit_part(state, part, |d| {
-                    d.cuts.retain(|c| c.kind != "birdsmouth");
+                    d.cuts.retain(|c| !frame_cut(c));
                     d.cuts.extend(notches);
                 })?;
             }

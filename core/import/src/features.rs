@@ -5624,7 +5624,12 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
     /// (mitcad#96): the file's first distance is taken to lie on the face
     /// on the left of the edge's own direction in the file (the face whose
     /// coedge runs along the edge), Mitcad's on the first face of the edge's
-    /// name unless `flip` ([`refs::first_face_on_left`]). A tangent chain
+    /// name unless `flip` ([`refs::first_face_on_left`]). A distance and
+    /// angle lie on that face too where the file's flag (`isFlipped`, the
+    /// set's `flip` as decoded) is off and on the other face where it is on
+    /// (mitcad#343: the replay's names order an edge's faces either way, so
+    /// that the flag taken against the name's first face put the chamfer on
+    /// the wrong face of every other replay). A tangent chain
     /// takes the reading of most of its edges (the kernel carries the side
     /// of the chain's first edge along it); a set whose chains differ is
     /// split. Sets of equal distances and edges whose side is not known
@@ -5669,7 +5674,10 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                     Section::Chamfer(a, b) => (a - b).abs() > 1e-9 * a.max(b),
                     _ => false,
                 });
-            if set["size"]["type"] != "two_distances" || !unequal {
+            // A distance and angle: the file's flag says which side of the
+            // edge the distance is measured on (mitcad#343).
+            let angled = set["size"]["type"] == "distance_angle";
+            if !angled && (set["size"]["type"] != "two_distances" || !unequal) {
                 out.push(set.clone());
                 continue;
             }
@@ -5690,9 +5698,18 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                         let e = found
                             .iter()
                             .find(|e| e.body == body && e.name.to_string() == *name)?;
-                        refs::first_face_on_left(kernel, &shape, e).map(|left| !left)
+                        refs::first_face_on_left(kernel, &shape, e)
+                            .map(|left| if angled { left == flip } else { !left })
                     })
                     .collect();
+                if crate::tracing() {
+                    eprintln!(
+                        "import: [{:.2}] {} set {k}: the file's flag {flip}, by the edges' sides \
+                         {flips:?}",
+                        crate::trace_clock(),
+                        set["size"]["type"]
+                    );
+                }
                 let flipped = flips.iter().filter(|&&f| f).count();
                 let f = match flipped * 2 {
                     _ if flips.is_empty() => flip,

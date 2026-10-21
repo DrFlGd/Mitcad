@@ -570,25 +570,38 @@ ui_sketch_drag() {
   xdotool mouseup 1
 }
 
-# ui_menu_choose "entry": picks an entry of the context menu just opened,
-# with the arrow keys, from the logged "Context menu: a | b | c".
+# ui_menu_choose "entry" ["entry of its submenu" ...]: picks an entry of
+# the context menu just opened, with the arrow keys, from the logged
+# "Context menu: a | b | c"; with more entries, the first opens a submenu
+# (Return opens it, its first entry active) whose entries are logged as
+# "Context menu <entry>: ...", and so on ("Solid" "More" "Draft": the log's
+# "Context menu Solid More: ..."; mitcad#494).
 ui_menu_choose() {
-  local entries index=0 found=""
+  local entries index found path="" level=0 item
   ui_sync
-  entries=$(grep "Context menu: " "$UI_LOG" | tail -1 | sed 's/.*Context menu: //')
-  IFS='|' read -ra items <<< "$entries"
-  for item in "${items[@]}"; do
-    index=$((index + 1))
-    item=${item# }
-    item=${item% }
-    if [ "$item" = "$1" ]; then
-      found=$index
-      break
-    fi
+  for wanted in "$@"; do
+    entries=$(grep -F "Context menu${path}: " "$UI_LOG" | tail -1 | sed "s/.*Context menu${path}: //")
+    IFS='|' read -ra items <<< "$entries"
+    index=0
+    found=""
+    for item in "${items[@]}"; do
+      index=$((index + 1))
+      item=${item# }
+      item=${item% }
+      if [ "$item" = "$wanted" ]; then
+        found=$index
+        break
+      fi
+    done
+    [ -n "$found" ] || ui_fail "'$wanted' is not in the context menu${path}: $entries"
+    # The menu opens with nothing active; a submenu with its first entry.
+    [ $level = 0 ] || found=$((found - 1))
+    [ "$found" -le 0 ] || xdotool key --delay 80 --repeat "$found" Down
+    ui_key Return
+    path="$path $wanted"
+    level=$((level + 1))
+    [ $level = $# ] || ui_sync
   done
-  [ -n "$found" ] || ui_fail "'$1' is not in the context menu: $entries"
-  xdotool key --delay 80 --repeat "$found" Down
-  ui_key Return
 }
 
 # ui_double_click_logged "text": a double-click at the last "<text> at x,y".

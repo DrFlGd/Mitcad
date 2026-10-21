@@ -655,9 +655,31 @@ struct CommandDef {
   // change no model: Fit, standard views, styles, ...).
   bool duringCommands = false;
 
+  // The view's context menu (mitcad#494; app/COMMANDS.md, "The view's
+  // context menu") offers a feature command whose first selection input
+  // takes everything selected, in the submenu of its kind: first when the
+  // selection alone completes it (completedBy), else under More. What the
+  // inputs cannot say is said here: a command that works on surface bodies
+  // only is offered for their items only; `offeredFor`, when set, must also
+  // hold for the command to be offered; `completes`, when set, says whether
+  // a selection its inputs would complete does, in place of the rule for
+  // creation commands.
+  bool surfaceBodiesOnly = false;
+  std::function<bool(const Selection&)> offeredFor;
+  std::function<bool(const Selection&)> completes;
+
   int inputIndex(const QString& inputId) const;
   // The first selection input, which the context menu matches.
   const InputDef* primarySelection() const;
+  // The inputs' state as the command starts, before any pick: every
+  // input's default, a list's first rows.
+  CommandState initialState() const;
+  // Whether the selection alone completes the command (mitcad#494): the
+  // first selection input takes all of it and as many as it needs, every
+  // other selection input shown at the start can stay empty, and, unless
+  // `completes` decides, it is no creation command (group CREATE) given a
+  // face or a plane, which would only be where it goes.
+  bool completedBy(const Selection& selection) const;
 };
 
 } // namespace mitcad

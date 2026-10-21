@@ -77,8 +77,13 @@ QVector<Part> partsOf(const QJsonObject& component) {
     part.name = part.designation.isEmpty() ? part.component : part.designation;
   }
   QVector<Part> parts;
-  const QJsonArray rows =
-      component.value(QStringLiteral("configurations")).toObject().value(QStringLiteral("rows")).toArray();
+  const QJsonObject configurations = component.value(QStringLiteral("configurations")).toObject();
+  const QJsonArray rows = configurations.value(QStringLiteral("rows")).toArray();
+  // The default row: the table names it, else the first (docs/libraries.md).
+  QString defaultRow = text(configurations, "default");
+  if (defaultRow.isEmpty() && !rows.isEmpty()) {
+    defaultRow = text(rows.first().toObject(), "name");
+  }
   if (rows.isEmpty()) {
     // A recorded source is one row of its component.
     part.build = inRow(part.build, part.config);
@@ -98,6 +103,7 @@ QVector<Part> partsOf(const QJsonObject& component) {
     }
     one.build = inRow(part.build, one.config);
     one.ownPreview = row.value(QStringLiteral("preview")).toBool();
+    one.defaultRow = one.config == defaultRow;
     parts.append(one);
   }
   return parts;

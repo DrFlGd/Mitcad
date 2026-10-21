@@ -438,10 +438,10 @@ ui_step "60 mm long"                       ui_type_in "Panel Profile input lengt
 ui_mark
 ui_step "along X"                          ui_click_logged "Panel Profile input axis=x"
 ui_expect_new "Profile: Direction = Along X" "the X button"
-ui_expect_new "; along x" "the preview along X"
+expect_inspect "; along x" "; end A at 0.0, 0.0, 10.0" "the preview along X, resting on the XY plane (mitcad#492)"
 ui_mark
 ui_step "standing (Z)"                     ui_click_logged "Panel Profile input axis=z"
-ui_expect_new "; along z" "the preview standing"
+expect_inspect "; along z" "; end A at 0.0, 0.0, 0.0" "the preview standing on its end at the origin"
 ui_mark
 ui_step "Place without a pick (Enter)"     ui_key Return
 ui_expect_new "Placed Profile 20 test as " "placed at the origin by Enter" 30

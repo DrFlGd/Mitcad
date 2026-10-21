@@ -27,12 +27,15 @@
 #include <QPainter>
 #include <QPdfWriter>
 #include <QPushButton>
+#include <QStandardPaths>
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QVBoxLayout>
 #include <QtLogging>
 
+#include "../browser/DocumentHost.hpp"
 #include "../framework/Command.hpp"
+#include "../framework/DialogFolders.hpp"
 #include "../framework/Dialogs.hpp"
 #include "../framework/Json.hpp"
 #include "BuildModel.hpp"
@@ -626,12 +629,20 @@ void BuildListsDialog::savePdf() {
   const bool cutList = m_tabs->currentIndex() == 0;
   const QString what = cutList ? tr("cut list") : tr("parts list");
   const QString name = m_design.isEmpty() ? tr("Untitled") : m_design;
+  // The Export group's folder (mitcad#498), else the design's, else Documents.
+  const auto* host = dynamic_cast<const DocumentHost*>(parentWidget());
+  QString folder = host != nullptr ? host->documentFolder() : QString();
+  if (folder.isEmpty()) {
+    folder = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+  }
+  const QString suggested = QDir(dialogStartFolder(DialogGroup::Export, folder))
+                                .filePath(QStringLiteral("%1 %2.pdf").arg(QFileInfo(name).completeBaseName(), what));
   const QString path = dialogSaveFileName(this, cutList ? tr("Save Cut List as PDF") : tr("Save Parts List as PDF"),
-                                          QStringLiteral("%1 %2.pdf").arg(QFileInfo(name).completeBaseName(), what),
-                                          tr("PDF documents (*.pdf)"));
+                                          suggested, tr("PDF documents (*.pdf)"));
   if (path.isEmpty()) {
     return;
   }
+  rememberDialogFolder(DialogGroup::Export, path);
   const QString title = cutList ? tr("Cut list") : tr("Parts list");
   const QString subtitle = tr("%1, %2").arg(name, QDate::currentDate().toString(Qt::ISODate));
   QString error;

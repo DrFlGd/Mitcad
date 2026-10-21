@@ -1,0 +1,63 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+ShapeFix: the repair of intersecting wires of a face never ends where two
+arcs of one circle in two wires meet end to end (mitcad#495).
+
+The case: an invalid chamfer's result (before patch 0941), the bottom face
+of a boss whose rim came in arcs spread over several wires, healed with
+ShapeFix_Shape: FixIntersectingWires intersected an arc of one wire with
+the next arc of the same circle in another wire, and the intersection of
+the two circles gave a segment of no length at their common vertex. Both
+ends of the segment lie at a vertex, so each edge was to be cut there
+(CutEdge) and the same pair intersected again "with modified ranges"
+(without counting a modification). CutEdge of an edge that is not same
+parameter, whose p-curve is a trimmed curve, cut it only when the trimmed
+curve is a line, but answered that it had cut it for any trimmed curve: the
+arcs were never cut, the segment stayed, and the loop never ended (the
+import of a design hung in the kernel).
+
+CutEdge now answers that it cut an edge only where it did: a trimmed curve
+that is not a line is left as it is and reported so, and a line whose cut
+keeps its whole range is no cut either. FixIntersectingWires then goes on
+to the next pair of edges.
+
+Synthetic: a planar face of two wires, each an arc of the circle of radius
+7.5 (from 0.5 to 1 and from 1 to 1.5 radians, and two other spans) closed
+by a chord, the arcs' edges not same parameter with trimmed circles as
+p-curves: FixIntersectingWires returns (nothing to fix); before, it never
+returned. With same-parameter edges it returned before as well.
+
+Upstream: new.
+diff --git a/src/ModelingAlgorithms/TKShHealing/ShapeFix/ShapeFix_IntersectionTool.cxx b/src/ModelingAlgorithms/TKShHealing/ShapeFix/ShapeFix_IntersectionTool.cxx
+--- a/src/ModelingAlgorithms/TKShHealing/ShapeFix/ShapeFix_IntersectionTool.cxx
++++ b/src/ModelingAlgorithms/TKShHealing/ShapeFix/ShapeFix_IntersectionTool.cxx
+@@ -223,6 +223,12 @@ bool ShapeFix_IntersectionTool::CutEdge(const TopoDS_Edge& edge,
+         occ::handle<Geom2d_TrimmedCurve> tc = occ::down_cast<Geom2d_TrimmedCurve>(Crv);
+         if (tc->BasisCurve()->IsKind(STANDARD_TYPE(Geom2d_Line)))
+         {
++          // (Cut to the range it has, nothing is cut.)
++          if (std::abs(std::min(pend, cut) - fp) < Precision::PConfusion()
++              && std::abs(std::max(pend, cut) - lp) < Precision::PConfusion())
++          {
++            return false;
++          }
+           BRep_Builder B;
+           B.Range(edge, std::min(pend, cut), std::max(pend, cut));
+           if (std::abs(pend - lp) < Precision::PConfusion())
+@@ -237,9 +243,13 @@ bool ShapeFix_IntersectionTool::CutEdge(const TopoDS_Edge& edge,
+             B.Range(edge, a, b - cut3d, true);
+             iscutline = true;
+           }
++          return true;
+         }
+-
+-        return true;
++        // (Another trimmed curve is not cut: the edge is as it was. Telling
++        // the caller it was made FixIntersectingWires intersect the same
++        // two edges again for ever, where two arcs of one circle in two
++        // wires meet end to end and the intersection gives a segment of
++        // no length at their common vertex.)
+       }
+     }
+     return false;

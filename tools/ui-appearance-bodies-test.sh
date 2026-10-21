@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# check-all sources: app/browser app/framework/Appearances.cpp app/framework/Appearances.hpp app/MainWindow.cpp tools/cli
+# check-all sources: app/browser app/framework/Appearances.cpp app/framework/Appearances.hpp app/MainWindow.cpp tools/cli app/MainWindowContextMenu.cpp
 # Edit Appearances: Assign to N bodies (mitcad#346) through the real UI, on
 # three boxes side by side (F1.b0, F2.b0, F3.b0):
 #   - With bodies only selected there is no Assign to N bodies button.

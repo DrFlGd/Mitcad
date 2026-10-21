@@ -34,6 +34,7 @@
 #include <QVBoxLayout>
 #include <QtLogging>
 
+#include "../framework/DialogFolders.hpp"
 #include "../framework/Dialogs.hpp"
 #include "../framework/Icons.hpp"
 #include "../framework/TestSync.hpp"
@@ -1217,11 +1218,15 @@ void AppearanceDialog::chooseTexture() {
   if (a == nullptr || a->library) {
     return;
   }
-  const QString start = a->hasTexture && !a->texture.file.isEmpty() ? QFileInfo(a->texture.file).absolutePath()
-                                                                     : m_host.documentFolder();
-  const QString path = dialogOpenFileName(this, tr("Texture Image"), start,
-                                                    tr("Images (*.png *.jpg *.jpeg);;All files (*)"));
+  // The Texture group's last folder (mitcad#498), else the texture's, else
+  // the design's.
+  const QString fallback = a->hasTexture && !a->texture.file.isEmpty() ? QFileInfo(a->texture.file).absolutePath()
+                                                                        : m_host.documentFolder();
+  const QString start = dialogStartFolder(DialogGroup::Texture, fallback);
+  const QString path =
+      dialogOpenFileName(this, tr("Texture Image"), start, tr("Images (*.png *.jpg *.jpeg);;All files (*)"));
   if (!path.isEmpty()) {
+    rememberDialogFolder(DialogGroup::Texture, path);
     setTexturePath(path);
   }
 }

@@ -125,12 +125,12 @@ void MainWindow::toggleFlatPattern(const QString& body) {
 
 void MainWindow::exportFlatPattern(const QString& body) {
   const QString name = bodyName(body);
-  const QString path = dialogSaveFileName(this, tr("Export Flat Pattern"),
-                                          QDir(fileDialogDirectory()).filePath(name + QStringLiteral(".dxf")),
-                                          tr("DXF drawings (*.dxf)"));
+  const QString suggested = QDir(dialogFolder(DialogGroup::Export)).filePath(name + QStringLiteral(".dxf"));
+  const QString path = dialogSaveFileName(this, tr("Export Flat Pattern"), suggested, tr("DXF drawings (*.dxf)"));
   if (path.isEmpty()) {
     return;
   }
+  rememberDialogFolder(DialogGroup::Export, path);
   QJsonObject result;
   if (!runCommand({{QStringLiteral("cmd"), QStringLiteral("export_flat_pattern_dxf")},
                    {QStringLiteral("body"), body},

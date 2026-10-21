@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MIT
 # check-all sources: app/build app/commands/BuildCommands.cpp app/framework app/library app/OcctViewer.cpp tools/cli core/model/src/build core/model/src/api/build.rs
+# check-all sources: app/MainWindowContextMenu.cpp
 # Input-driven Windows UI test of the BUILD tab's Timber tool (mitcad#478,
 # mitcad#485) in the build VM (tools/ui-windows-lib.ps1 says how the input
 # is posted). A library of small synthetic parts made here (mitcad-cli; a
@@ -9,7 +10,7 @@
 #   1. Profile's picker lists no timber, Timber's no profile, its standard
 #      size first; Timber's first start (mitcad#485): On a member, a typed
 #      length of the part's default (3000 mm), along X, flat, the
-#      dimensioned 48x98.
+#      dimensioned 48x98, resting on the XY plane (mitcad#492).
 #   2. On a member: a post standing on the XY plane (Enter at the origin),
 #      then a member on the post's side; the next start takes the length
 #      typed last and the direction (mitcad#485).
@@ -20,16 +21,18 @@
 #      side; the hover names only the face a click picks, nothing previewed
 #      or inspected before the click (mitcad#489); every member previewed
 #      after the click and again when the
-#      distance changes their count (mitcad#487), placed as one set of as
-#      many; Spacing Set edits its distance.
+#      distance changes their count (mitcad#487) and again when the Offset
+#      typed after the click moves the set (mitcad#492), placed as one set
+#      of as many; Spacing Set edits its distance.
 #   5. Connector at a timber junction: wood screws by default, sized from
 #      the members, one click.
 #   6. Profile again: the design's timber is not in its picker; Cut List:
 #      the timber rows.
 #   7. Every size a tile of its own (mitcad#484): the picker lists the 48
 #      member's three rows and the 28 one, the families as groups, a row's
-#      own picture; a search by 48x148 finds its tile, which places that
-#      row with its section.
+#      own picture; starring 48x148 stars that size only (mitcad#491): it
+#      comes first and Favourites lists it alone; a search by 48x148 finds
+#      its tile, which places that row with its section.
 #   8. A frame of four members with shared mitres (mitcad#485): each on the
 #      end of the one before, turned at a corner, lying flat as it does
 #      (ends of the same width); the last one's auto length bound to the
@@ -37,6 +40,25 @@
 #      one's outer side.
 #   9. The same frame of slot profiles with Profile, the last one's length
 #      through the first: a shared mitre, not into it.
+#  10. Frame mode's walls (mitcad#493): a wall along X, then a wall started
+#      by a click on its side near its end (an L corner at its end B) and
+#      one by a click mid-side (a T), each with a typed length: the panel
+#      names the junction, each placed with the members previewed and a
+#      junction stud more in the first wall.
+#  11. The timber frame again, the last one's length typed to the first's
+#      outer side: it closes the corner with a shared mitre too (mitcad#492).
+#  12. A board along X on the ground rests on it (its axis 24 mm up); a
+#      member standing on its top face from end A at offset 0 lies as it
+#      does: its width along the board's, its sides flush (mitcad#492).
+#  13. Fasteners (mitcad#497; the library adds a wood screw and a ring
+#      nail in two sizes each, with heads to click on): Frame with a chosen
+#      fastener (the picker's), size 5.0x90 and three at each junction;
+#      Spacing on the wall's top plate with Fasteners on, each member
+#      fastened; two of the wall's screws selected, the context menu's
+#      BUILD > Swap Fastener (chosen with the keys) on them makes them
+#      3.1x90 ring nails, one undo step. The Frame's fastener rows lie
+#      below the dock in session 0's low window: the panel scrolls to them
+#      (Ui-PanelReveal).
 #
 # Usage: powershell -ExecutionPolicy Bypass -File tools\ui-windows-timber-test.ps1 [-App build\dev\mitcad.exe] [-Out dir] [-QtBin dir]
 # Usage: powershell -ExecutionPolicy Bypass -File tools\ui-windows-timber-test.ps1 [-App build\dev\mitcad.exe] [-Out dir] [-QtBin dir]
@@ -168,6 +190,18 @@ $screw = @('[',
   '  {"cmd": "add_feature", "def": {"type": "box", "plane": {"type": "origin", "plane": "xy"}, "corner": [0, 0], "length": 5, "width": 5, "height": 70, "operation": "new_body"}},',
   (Frame 'axis' '[2.5, 2.5, 0]' '[0, 0, 1]' '[1, 0, 0]')) -join "`n"
 Design 'fasteners\wood-screw-test.mitcad' ($screw + $end)
+# Fasteners in two sizes (mitcad#497): a head SIZE x SIZE x 10 above the
+# axis frame (the entry point), outside the members to click on.
+function Head-Fastener([int]$Size, [string]$Row1, [string]$Row2) {
+  return @('[',
+    ('  {"cmd": "add_feature", "def": {"type": "box", "plane": {"type": "origin", "plane": "xy"}, "corner": [-' + ($Size / 2) +
+     ', -' + ($Size / 2) + '], "length": ' + $Size + ', "width": ' + $Size + ', "height": 10, "operation": "new_body"}},'),
+    (Frame 'axis' '[0, 0, 10]' '[0, 0, 1]' '[1, 0, 0]'),
+    ('  {"cmd": "set_configurations", "configurations": {"parameters": [], "default": "' + $Row1 + '", "rows": [{"name": "' +
+     $Row1 + '"}, {"name": "' + $Row2 + '"}]}},')) -join "`n"
+}
+Design 'fasteners\wood-screw-head-test.mitcad' ((Head-Fastener 30 '5.0x70' '5.0x90') + $end)
+Design 'fasteners\ring-nail-test.mitcad' ((Head-Fastener 20 '2.8x50' '3.1x90') + $end)
 
 Set-Content -Encoding ascii (Join-Path $library 'mitcad-library.json') @'
 {
@@ -216,7 +250,21 @@ Set-Content -Encoding ascii (Join-Path $library 'mitcad-library.json') @'
      "category": "fasteners", "designation": "Wood screw test 5x70",
      "build": {"role": "fastener", "wood": {"kind": "screw", "head": "countersunk", "diameter": "5 mm", "length": "70 mm"},
        "material": {"product": "steel", "density": 7850},
-       "frames": [{"name": "axis", "kind": "shaft"}]}}
+       "frames": [{"name": "axis", "kind": "shaft"}]}},
+    {"id": "wood-screw-head-test", "path": "fasteners/wood-screw-head-test.mitcad", "name": "Wood screw head test",
+     "category": "fasteners", "designation": "Wood screw head test {config}",
+     "build": {"role": "fastener", "wood": {"kind": "screw", "head": "countersunk", "diameter": "5 mm", "length": "70 mm"},
+       "material": {"product": "steel", "density": 7850},
+       "frames": [{"name": "axis", "kind": "shaft"}],
+       "rows": {"5.0x70": {"wood": {"diameter": "5 mm", "length": "70 mm"}},
+                "5.0x90": {"wood": {"diameter": "5 mm", "length": "90 mm"}}}}},
+    {"id": "ring-nail-test", "path": "fasteners/ring-nail-test.mitcad", "name": "Ring nail test",
+     "category": "fasteners", "designation": "Ring nail test {config}",
+     "build": {"role": "fastener", "wood": {"kind": "nail", "diameter": "3.1 mm", "length": "90 mm"},
+       "material": {"product": "steel", "density": 7850},
+       "frames": [{"name": "axis", "kind": "shaft"}],
+       "rows": {"2.8x50": {"wood": {"diameter": "2.8 mm", "length": "50 mm"}},
+                "3.1x90": {"wood": {"diameter": "3.1 mm", "length": "90 mm"}}}}}
   ]
 }
 '@
@@ -446,7 +494,8 @@ Ui-ExpectNew "BUILD timber starts with test-timber/timber-48-test: the first tim
 Ui-ExpectNew 'BUILD timber adds to Part1, member' 'On a member at first (mitcad#485)'
 Ui-ExpectNew "BUILD timber starts: length 3000 mm (the part's default), typed; along x, flat" "a typed length, the part's default, along X, flat"
 Expect-Inspect 'Timber' @('place grounded, length 3000.00 mm (typed)', '; along x, flat', '; thickness along Z',
-                          '; part Timber 48x98 test') 'the preview: 3000 mm along X, lying flat'
+                          '; end A at 0.0, 0.0, 24.0', '; part Timber 48x98 test') `
+  'the preview: 3000 mm along X, lying flat, resting on the XY plane (mitcad#492)'
 
 Write-Host '--- 2. On a member, the next start'
 Ui-Step '600 mm long'                    { Ui-TypeIn 'Panel Timber input length' '600' }
@@ -540,6 +589,17 @@ Ui-Mark
 Ui-Step 'a distance of 200'              { Ui-TypeIn 'Panel Timber input distance' '200' }
 $at200 = Set-Previewed 'centre distance 200' 'at 200'
 if ($at200 -le $at400) { Ui-Fail "200 mm previewed $at200 members, not more than the $at400 at 400 mm" }
+# The Offset typed after the click moves the set (mitcad#492): from its
+# reference it starts 300 mm in, fewer members; back to 0, as before.
+Ui-Mark
+Ui-Step 'an offset of 300'               { Ui-TypeIn 'Panel Timber input offset' '300' }
+Expect-Inspect 'Timber' @(' at 300.0 mm from ', 'centre distance 200') 'the set previewed 300 mm from its reference'
+$at300 = Set-Previewed ' at 300.0 mm from ' 'offset 300'
+if ($at300 -ge $at200) { Ui-Fail "offset 300 previewed $at300 members, not fewer than the $at200 at offset 0" }
+Ui-Mark
+Ui-Step 'the offset back to 0'           { Ui-TypeIn 'Panel Timber input offset' '0' }
+$again0 = Set-Previewed ' at 0.0 mm from ' 'offset 0 again'
+if ($again0 -ne $at200) { Ui-Fail "offset 0 previewed $again0 members, not the $at200 before" }
 Place 'Timber 48x98 test'
 Ui-ExpectNew '; a set of ' 'placed as one set'
 $set = Ui-LastMatch '; a set of (\d+)'
@@ -569,11 +629,11 @@ Write-Host '--- 5. Connector at a timber junction'
 Ui-Mark
 Ui-Step 'Connector (F8)'                 { Ui-Key 'F8' }
 Ui-ExpectNew 'Inspect Connector: junction ' 'a junction chosen'
-Ui-ExpectNew 'preview Wood screw test with 2 fastener(s)' 'two wood screws by default'
+Ui-ExpectNew 'preview Wood screw head test with 2 fastener(s)' 'two sized wood screws by default'
 Ui-ExpectNew ', size ' 'sized from the members'
 Ui-Mark
 Ui-Step 'Connect (Enter)'                { Ui-Key 'Return' }
-Ui-ExpectNew 'Connected Wood screw test at junction ' 'one click finishes the joint' 30
+Ui-ExpectNew 'Connected Wood screw head test at junction ' 'one click finishes the joint' 30
 Ui-Step 'Close (Escape)'                 { Ui-Key 'Escape' }
 
 Write-Host '--- 6. Profile again, the cut list'
@@ -607,6 +667,26 @@ foreach ($tile in @('test-timber/timber-48-test (48x98)', 'test-timber/timber-48
 Ui-ExpectNew 'Part picker group row Dimensioned timber at ' 'the dimensioned timber a group of its own'
 Ui-ExpectNew 'Part picker group row Planed timber at ' 'the planed timber a group of its own'
 Ui-ExpectLog 'BUILD preview image of test-timber/timber-48-test: 16x16' "the part's picture in the panel's tile"
+# A size's star stars that size only (mitcad#491), not its family's rows.
+Ui-Mark
+Ui-Step 'the 48x148 tile'                { Picker-Click 'Part picker tile test-timber/timber-48-test (48x148)' }
+Ui-ExpectNew 'Part picker chose test-timber/timber-48-test (48x148)' '48x148 chosen'
+# The panel reads a picture once a session: the row's own, now.
+Ui-ExpectNew 'BUILD preview image of test-timber/timber-48-test (48x148): 24x24' "the row's own picture in the tile"
+Ui-Mark
+Ui-Step 'star it (Star)'                 { Picker-Click 'Part picker place star' }
+Ui-ExpectNew 'Part picker star timber-48-test (48x148) on' 'the size 48x148 starred'
+Ui-ExpectNew 'Part picker group All parts: 4 parts, first test-timber/timber-48-test (48x148)' 'that size first, not its family'
+Ui-Mark
+Ui-Step 'Favourites'                     { Picker-Click 'Part picker group row Favourites' }
+Ui-ExpectNew 'Part picker group Favourites: 1 parts, first test-timber/timber-48-test (48x148)' 'Favourites lists that size alone'
+Ui-Mark
+Ui-Step 'All parts'                      { Picker-Click 'Part picker group row All parts' }
+Ui-ExpectNew 'Part picker group All parts: 4 parts, first test-timber/timber-48-test (48x148)' 'every size again'
+Ui-ExpectNew 'Part picker tile test-timber/timber-48-test (48x98) at ' "48x98's tile after the starred one"
+Ui-Mark
+Ui-Step 'the 48x98 tile again'           { Picker-Click 'Part picker tile test-timber/timber-48-test (48x98)' }
+Ui-ExpectNew 'Part picker chose test-timber/timber-48-test (48x98)' '48x98 chosen again'
 Ui-Step 'the search field'               { Picker-Click 'Part picker place search' }
 Ui-Mark
 Ui-Step 'search 48x148'                  { Picker-Type '48x148' }
@@ -617,7 +697,7 @@ Ui-Mark
 Ui-Step 'the 48x148 tile'                { Picker-Click 'Part picker tile test-timber/timber-48-test (48x148)' }
 Ui-ExpectNew 'Part picker chose test-timber/timber-48-test (48x148)' '48x148 chosen'
 Ui-ExpectNew 'Panel Timber tile part: Timber 48x98 test (48x148)' "the panel's tile names the size"
-Ui-ExpectNew 'BUILD preview image of test-timber/timber-48-test (48x148): 24x24' "the row's own picture in the tile"
+Ui-ExpectLog 'BUILD preview image of test-timber/timber-48-test (48x148): 24x24' "the row's own picture (read when first chosen)"
 Ui-Step 'On a member'                    { Ui-ClickLogged 'Panel Timber input how=member' }
 Refresh-Picks 'at'
 # A side of any member a click picks now.
@@ -644,9 +724,11 @@ Ui-Step 'Close (Escape)'                 { Ui-Key 'Escape' }
 # one before with a shared mitre (mitcad#485): the first along X at the
 # origin, the second turned to -Y, the third to -X; the view then from the
 # front left (the third's end faces -X), the fourth turned to +Y, its auto
-# length bound to the first (Tab-stepped to "through" with THROUGH): it
-# closes the corner with a shared mitre, L2 long.
-function Frame-Of-Four([string]$Cmd, [string]$Key, [string]$Part, [string]$L1, [string]$L2, [switch]$Through) {
+# length bound to the first (Tab-stepped to "through" with THROUGH), or
+# with TYPED its length typed as L2 (mitcad#492): it closes the corner with
+# a shared mitre, L2 long.
+function Frame-Of-Four([string]$Cmd, [string]$Key, [string]$Part, [string]$L1, [string]$L2, [switch]$Through,
+                       [switch]$Typed) {
   Ui-Mark
   Ui-Step "$Cmd ($Key)"                  { Ui-Key $Key }
   Ui-ExpectNew "Command $Cmd started" "$Cmd started"
@@ -672,7 +754,7 @@ function Frame-Of-Four([string]$Cmd, [string]$Key, [string]$Part, [string]$L1, [
   Ui-Step 'the view from the front left' { Ui-ClickLogged 'Orientation cube front-left-top' }
   Ui-Sync
   Start-Sleep -Milliseconds 800
-  Corner $Cmd $m3 '+Y' ''
+  Corner $Cmd $m3 '+Y' $(if ($Typed) { $L2 } else { '' })
   if ($Through) {
     Ui-Step 'to the centre (Tab)'        { Ui-Key 'Tab' }
     Ui-Mark
@@ -681,7 +763,9 @@ function Frame-Of-Four([string]$Cmd, [string]$Key, [string]$Part, [string]$L1, [
   }
   Expect-Inspect $Cmd @("length $L2.00 mm", "; closes the corner at end A of $m1Name, shared mitre") 'the last one closes the corner with a shared mitre, as long as the side'
   Place $Part
-  Ui-ExpectNew 'length bound, auto: ' 'placed with its length bound to the first'
+  if (-not $Typed) {
+    Ui-ExpectNew 'length bound, auto: ' 'placed with its length bound to the first'
+  }
   Write-Host "ok   a frame of $Cmd closed: $m1, $m2, $m3 and the last one"
   Ui-Step 'Close (Escape)'               { Ui-Key 'Escape' }
 }
@@ -696,5 +780,247 @@ Write-Host '--- 9. A frame of four slot profiles, mitred, the last one through t
 Ui-StartApp 'timber-profile-frame'
 Ui-Step 'the BUILD tab'                  { Ui-ClickLogged 'Ribbon tab BUILD' }
 Frame-Of-Four 'Profile' 'F3' 'Profile 20 test' '200' '150' -Through
+
+# Wall-Sides BODIES: the side faces of these bodies a click on Start picks
+# now (after the last "Pick places:"), each @(body, face, x, y).
+function Wall-Sides([string[]]$Bodies) {
+  $lines = @(Ui-LogLines)
+  $start = 0
+  for ($i = $lines.Count - 1; $i -ge 0; $i--) { if ($lines[$i].Contains('Pick places:')) { $start = $i; break } }
+  return @($lines[$start..($lines.Count - 1)] | ForEach-Object {
+      if ($_ -match '^Pick face (F[0-9]+\.b[0-9]+)/(\S*:part\(F2:side\(\S*) at (\d+),(\d+)$' -and $Bodies -contains $Matches[1]) {
+        , @($Matches[1], $Matches[2], [int]$Matches[3], [int]$Matches[4])
+      } })
+}
+# New-Bodies: the bodies made since the mark.
+function New-Bodies {
+  return @(Ui-LogLines | Select-Object -Skip $script:UiMark |
+    ForEach-Object { if ($_ -match '^New body .* \((F[0-9]+\.b[0-9]+)\): volume') { $Matches[1] } })
+}
+# Wall-From NAME AT LENGTH TEXT: a wall started by a click at AT (x, y) on
+# Wall 1's side, LENGTH mm long (typed): the panel names the junction
+# (TEXT), the wall is placed with as many members as previewed, and Wall 1
+# gets at least STUDS more (a T's studs may take a stud's place).
+function Wall-From([string]$Name, [int[]]$At, [string]$Length, [string]$Text, [int]$Studs) {
+  Ui-Mark
+  Ui-Step "the start on Wall 1's side"   { Ui-Click $At[0] $At[1] }
+  Ui-ExpectNew 'View hint Timber: Click where the wall ends, or press Enter: Length square to the wall clicked' `
+    'the end next, else Length square to the wall'
+  Ui-Mark
+  Ui-Step "$Length mm long"              { Ui-TypeIn 'Panel Timber input frame_length' $Length }
+  Expect-Inspect 'Timber' @("frame wall $Name, wall $Length x 2400 mm", "; $Name`: $Text") "$Name previewed: $Text"
+  $line = Ui-LogLines | Select-Object -Skip $script:UiMark |
+    Where-Object { $_.StartsWith('Inspect Timber: ') -and $_.Contains("; $Name`: $Text") } | Select-Object -Last 1
+  if ("$line" -notmatch ', (\d+) member\(s\) \(') { Ui-Fail "no member count in: $line" }
+  $previewed = [int]$Matches[1]
+  Ui-Mark
+  Ui-Step 'Place (Enter)'                { Ui-Key 'Return' }
+  Ui-ExpectNew "Placed frame $Name (wall, lead " "$Name placed" 60
+  Ui-ExpectNew "Frame junction: $Name`: $Text" "$Name placed: $Text"
+  $placed = [int](Ui-LastMatch "^Placed frame $Name \(wall, lead [^)]*\): (\d+) member")
+  if ($placed -ne $previewed) { Ui-Fail "$Name placed $placed member(s), the preview showed $previewed" }
+  $made = @(New-Bodies).Count
+  if ($made -lt $placed + $Studs) {
+    Ui-Fail "$($made) new bodies after $Name, not its $placed members and at least $Studs junction stud(s) of Wall 1"
+  }
+  Write-Host "ok   $Name`: $placed members, Wall 1 $($made - $placed) body(ies) more"
+}
+
+Write-Host "--- 10. Walls: an L corner from near a wall's end, a T from mid-side (mitcad#493)"
+Ui-StartApp 'timber-walls'
+Ui-Step 'the BUILD tab'                  { Ui-ClickLogged 'Ribbon tab BUILD' }
+Ui-Mark
+Ui-Step 'Timber (F4)'                    { Ui-Key 'F4' }
+Ui-ExpectNew 'Command Timber started' 'Timber started'
+Ui-Mark
+Ui-Step 'Mode: Frame'                    { Ui-ClickLogged 'Panel Timber input how=frame' }
+Expect-Inspect 'Timber' @('frame wall Wall 1, wall 3600 x 2400 mm', 'fasteners yes') 'a wall from the origin along +X'
+Ui-Mark
+Ui-Step 'no fasteners'                   { Ui-ClickLogged 'Panel Timber input frame_fasteners' }
+Expect-Inspect 'Timber' @('frame wall Wall 1, wall 3600 x 2400 mm', 'fasteners no') 'without fasteners'
+Ui-Mark
+Ui-Step 'Place (Enter)'                  { Ui-Key 'Return' }
+Ui-ExpectNew 'Placed frame Wall 1 (wall, lead ' 'the first wall placed' 60
+$wall1 = @(New-Bodies)
+if ($wall1.Count -lt 4) { Ui-Fail "Wall 1 made $($wall1.Count) bodies" }
+# Its side faces: the one furthest right is near its end B (+X to the
+# right in the view), the one nearest the middle mid-side.
+Ui-Step 'fit the view (F6)'              { Ui-Key 'F6' }
+Ui-Step "Timber's Start"                 { Ui-ClickLogged 'Panel Timber input start' }
+$sides = @(Wall-Sides $wall1)
+if ($sides.Count -lt 3) { Ui-Fail "only $($sides.Count) side face(s) of Wall 1 to click" }
+$right = $sides | Sort-Object { $_[2] } | Select-Object -Last 1
+Wall-From 'Wall 2' @($right[2], $right[3]) '3000' "an L corner at Wall 1's end B" 1
+Ui-Step 'fit the view (F6)'              { Ui-Key 'F6' }
+Ui-Step "Timber's Start"                 { Ui-ClickLogged 'Panel Timber input start' }
+$sides = @(Wall-Sides $wall1)
+if ($sides.Count -lt 3) { Ui-Fail "only $($sides.Count) side face(s) of Wall 1 to click" }
+$xs = @($sides | ForEach-Object { $_[2] } | Sort-Object)
+$middle = ($xs[0] + $xs[-1]) / 2
+$mid = $sides | Sort-Object { [Math]::Abs($_[2] - $middle) } | Select-Object -First 1
+Wall-From 'Wall 3' @($mid[2], $mid[3]) '2000' 'a T on Wall 1 at ' 1
+Ui-Step 'Close (Escape)'                 { Ui-Key 'Escape' }
+
+Write-Host '--- 11. A frame of four timber members, the last one typed to the first one''s outer side'
+Ui-StartApp 'timber-typed-frame'
+Ui-Step 'the BUILD tab'                  { Ui-ClickLogged 'Ribbon tab BUILD' }
+Frame-Of-Four 'Timber' 'F4' 'Timber 48x98 test' '400' '300' -Typed
+
+Write-Host '--- 12. A board on the ground rests on it; one standing on its top face lies as it does'
+Ui-StartApp 'timber-lie'
+Ui-Step 'the BUILD tab'                  { Ui-ClickLogged 'Ribbon tab BUILD' }
+Ui-Mark
+Ui-Step 'Timber (F4)'                    { Ui-Key 'F4' }
+Ui-ExpectNew 'Command Timber started' 'Timber started'
+Ui-Step '600 mm long'                    { Ui-TypeIn 'Panel Timber input length' '600' }
+Ui-Mark
+Ui-Step 'along X'                        { Ui-ClickLogged 'Panel Timber input axis=x' }
+Expect-Inspect 'Timber' @('place grounded, length 600.00 mm (typed)', '; along x, flat', '; thickness along Z',
+                          '; end A at 0.0, 0.0, 24.0') 'flat along X, resting on the XY plane: its axis 24 mm up'
+Place 'Timber 48x98 test'
+$board = Placed-Body
+if (-not $board) { Ui-Fail 'no body of the board' }
+Refresh-Picks 'at'
+# Its section's side at +Y (the sketch's line c8) faces up when it lies flat.
+$tops = @(Faces-Of $board ':part(F2:side(c8[')
+if ($tops.Count -eq 0) { Ui-Fail "no top face of the board ($board) to pick" }
+Ui-Mark
+Ui-Step "the board's top face"           { Pick-Face $board $tops[0] }
+Ui-ExpectNew 'Inspect Timber: place side' 'on its top face'
+Ui-Mark
+Ui-Step 'from end A'                     { Wheel-Choice 'Timber' 'from' -2 }
+Ui-Step 'offset 0'                       { Ui-TypeIn 'Panel Timber input offset' '0' }
+# Standing up from end A at offset 0, not rotated: its 48 along the board,
+# its 98 across the board's 98, its sides flush (it came turned a quarter).
+Expect-Inspect 'Timber' @('place side', ' at 0.0 mm from a', '; thickness along X', '; end A at 24.0, 0.0, 48.0') `
+  'standing on the top face from end A at 0: its width along the board''s width, flush'
+Place 'Timber 48x98 test'
+Ui-Step 'Close (Escape)'                 { Ui-Key 'Escape' }
+
+Write-Host '--- 13. Fasteners: a frame''s and a set''s, Swap Fastener (mitcad#497)'
+# Heads-Since VOLUME: the fasteners' head bodies made since the mark (a
+# head's volume: 9000 the screw's, 4000 the nail's).
+function Heads-Since([string]$Volume) {
+  return @(Ui-LogLines | Select-Object -Skip $script:UiMark |
+    ForEach-Object { if ($_ -match "^New body .* \((F[0-9]+\.b[0-9]+)\): volume $Volume\b") { $Matches[1] } })
+}
+# Choose-Fastener CMD INPUT PART: the input's tile opens the part picker, a
+# click on the part's tile chooses it.
+function Choose-Fastener([string]$Cmd, [string]$Field, [string]$Part) {
+  Ui-Mark
+  Ui-Step "the $Field tile"              { Ui-ClickLogged "Panel $Cmd input $Field" }
+  Ui-ExpectNew 'Part picker opened: ' "the part picker for $Cmd's $Field"
+  Ui-ExpectNew "Part picker tile $Part at " "$Part's tile in the picker"
+  Ui-Mark
+  Ui-Step "$Part in the picker"          { Picker-Click "Part picker tile $Part" }
+  Ui-ExpectNew "Part picker chose $Part" "$Part chosen in the picker"
+  # The picker stays open beside the panel (input is posted to the main
+  # window, which it does not cover) and closes with the command.
+}
+Ui-StartApp 'timber-fasteners'
+Ui-Step 'the BUILD tab'                  { Ui-ClickLogged 'Ribbon tab BUILD' }
+Ui-Mark
+Ui-Step 'Timber (F4)'                    { Ui-Key 'F4' }
+Ui-ExpectNew 'Command Timber started' 'Timber started'
+Ui-Mark
+Ui-Step 'Mode: Frame'                    { Ui-ClickLogged 'Panel Timber input how=frame' }
+Expect-Inspect 'Timber' @('frame wall Wall 1', 'fastener 2 x Wood screw head test at each junction, sized from the members') `
+  'the first time: two of the library''s first sized wood screw, sized from the members'
+# The frame: three 5.0x90 screws with heads at each junction.
+Choose-Fastener 'Timber' 'fastener' 'test-timber/wood-screw-head-test'
+Ui-Mark
+Ui-Step 'Size 5.0x90'                    { Wheel-Choice 'Timber' 'fastener_size' 2 }
+Ui-Step 'three at each junction'         { Ui-TypeIn 'Panel Timber input fastener_count' '3' }
+Ui-Step '1800 mm long'                   { Ui-TypeIn 'Panel Timber input frame_length' '1800' }
+Ui-Step '600 mm high'                    { Ui-TypeIn 'Panel Timber input frame_height' '600' }
+Expect-Inspect 'Timber' @('frame wall Wall 1, wall 1800 x 600 mm', 'fastener 3 x Wood screw head test 5.0x90 at each junction') `
+  'a chosen fastener and size, three at each junction'
+Ui-Mark
+Ui-Step 'Place (Enter)'                  { Ui-Key 'Return' }
+Ui-ExpectNew 'Placed frame Wall 1 (wall, lead ' 'the wall placed with its screws' 60
+$fastened = [int](Ui-LastMatch '^Placed frame Wall 1 \(wall, lead [^)]*\): \d+ member\(s\), (\d+) junction')
+$screws = @(Heads-Since '9000')
+if ($fastened -lt 1 -or $screws.Count -ne 3 * $fastened) {
+  Ui-Fail "$($screws.Count) screw(s) at $fastened junction(s), not three at each"
+}
+Write-Host "ok   $fastened junction(s), three 5.0x90 screws each"
+$wall = @(New-Bodies | Where-Object { $screws -notcontains $_ })
+
+# A set on the wall's top plate (its highest side face), fastened to it.
+Ui-Step 'Mode: Spacing'                  { Ui-ClickLogged 'Panel Timber input how=spacing' }
+Ui-Step '300 mm long'                    { Ui-TypeIn 'Panel Timber input length' '300' }
+Ui-Step 'fit the view (F6)'              { Ui-Key 'F6' }
+Ui-Step "Timber's Place On again"        { Ui-ClickLogged 'Panel Timber input at' }
+$top = @(Wall-Sides $wall) | Sort-Object { $_[3] } | Select-Object -First 1
+if (-not $top) { Ui-Fail 'no side face of the wall to set the members on' }
+Ui-Mark
+Ui-Step 'the top plate''s top'           { Ui-Click $top[2] $top[3] }
+Expect-Inspect 'Timber' @('place side', '; set of ', '; fasteners no') 'a set on the plate, no fasteners by default'
+Ui-Mark
+Ui-Step 'Fasteners on'                   { Ui-ClickLogged 'Panel Timber input set_fasteners' }
+Expect-Inspect 'Timber' @('place side', '; set of ', '; fasteners 3 x Wood screw head test 5.0x90 at each junction') `
+  'a set on the plate, fastened with the fastener chosen last'
+Ui-Mark
+Ui-Step 'Place (Enter)'                  { Ui-Key 'Return' }
+Ui-ExpectNew 'Placed Timber 48x98 test as ' 'the set placed' 60
+$set = Ui-LastMatch '^Placed Timber 48x98 test as .*; a set of (\d+, \d+) junction'
+$counts = "$set" -split ', '
+if ($counts.Count -ne 2 -or [int]$counts[0] -lt 2 -or $counts[0] -ne $counts[1]) {
+  Ui-Fail "not every member of the set fastened to the plate: $set"
+}
+Write-Host "ok   a set of $($counts[0]), each member fastened"
+Ui-Step 'Close (Escape)'                 { Ui-Key 'Escape' }
+
+# Swap Fastener: two of the frame's screws, the head highest in the view and
+# the next highest at another junction. In session 0's low window a head is
+# a few pixels wide and the three of a junction overlap, so a click on the
+# middle of one there may pick another's corner: two clicks at one junction
+# can take the same screw.
+Ui-Step 'fit the view (F6)'              { Ui-Key 'F6' }
+Ui-Sync
+$placed = @($screws | ForEach-Object {
+    $body = $_
+    $line = Ui-LogLines | Where-Object { $_ -match "^Body $([regex]::Escape($body)) in [O\d/]+ at \d+,\d+$" } | Select-Object -Last 1
+    if ("$line" -match '^Body (.*) at (\d+),(\d+)$') { , @($Matches[1], [int]$Matches[2], [int]$Matches[3]) }
+  } | Sort-Object { $_[2] })
+$heads = @()
+if ($placed.Count -gt 0) {
+  $first = $placed[0]
+  $other = $placed | Where-Object { [Math]::Abs($_[1] - $first[1]) + [Math]::Abs($_[2] - $first[2]) -gt 40 } | Select-Object -First 1
+  if ($other) { $heads = @($first, $other) }
+}
+if ($heads.Count -ne 2) { Ui-Fail 'no two screw heads at two junctions in the view' }
+Ui-Step 'click a screw'                  { Ui-Click $heads[0][1] $heads[0][2] }
+Ui-Step 'Ctrl+click another'             { Ui-ClickWith 'ctrl' $heads[1][1] $heads[1][2] }
+# The context menu is filled and logged: its BUILD has Swap Fastener for
+# the screws. It stays open and takes the keys (as in
+# tools/ui-windows-browser-open-test.ps1), so it is chosen with them, as on
+# Linux with the mouse: BUILD is its third entry, Swap Fastener the first of
+# its submenu.
+Ui-Mark
+Ui-Step 'right-click it'                 { Ui-Click $heads[1][1] $heads[1][2] 3 }
+Ui-ExpectNew 'Context menu BUILD: ' 'the context menu''s BUILD'
+$menu = Ui-LastMatch '^Context menu BUILD: (.*)$'
+if (-not "$menu".StartsWith('Swap Fastener')) { Ui-Fail "BUILD has no Swap Fastener first: $menu" }
+$entries = Ui-LastMatch '^Context menu: (.*)$'
+if (-not "$entries".StartsWith('Repeat Timber | Solid | BUILD |')) { Ui-Fail "BUILD is not the menu's third entry: $entries" }
+Write-Host 'ok   the context menu''s BUILD offers Swap Fastener'
+Ui-Mark
+Ui-Step 'BUILD > Swap Fastener'          { Ui-Key 'Down'; Ui-Key 'Down'; Ui-Key 'Down'; Ui-Key 'Right'; Ui-Key 'Return' }
+Ui-ExpectNew 'Command Swap Fastener started' 'Swap Fastener started'
+Ui-ExpectNew 'BUILD swap fastener starts with 2 fastener(s), test-timber|wood-screw-head-test' `
+  'with the two screws selected, their own part'
+Choose-Fastener 'Swap Fastener' 'part' 'test-timber/ring-nail-test'
+Ui-Mark
+Ui-Step 'Size 3.1x90'                    { Wheel-Choice 'Swap Fastener' 'fastener_size' 2 }
+Expect-Inspect 'Swap Fastener' @('swap 2 fastener(s) (wood, 2 x Wood screw head test 5.0x90)', 'for Ring nail test 3.1x90') `
+  'two screws to become 3.1x90 ring nails'
+Ui-Mark
+Ui-Step 'Swap (Enter)'                   { Ui-Key 'Return' }
+Ui-ExpectNew 'Swapped 2 fastener(s) for Ring nail test 3.1x90 (3.1x90)' 'the two screws are ring nails' 30
+Ui-Step 'Close (Escape)'                 { Ui-Key 'Escape' }
+Ui-Mark
+Ui-Step 'undo (Ctrl+Z)'                  { Ui-Key 'ctrl+z' }
+Ui-ExpectNew 'Undo: Swap 2 fastener(s) for Ring nail test 3.1x90' 'one undo step takes the swap back'
 
 Ui-Finish 'UI Windows timber test'

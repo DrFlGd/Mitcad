@@ -207,7 +207,14 @@ a keyword followed by the record's fields (without the header): `plane`,
   u degree, v degree, four enums (u closure, v closure, u singularity, v
   singularity), u knot count, v knot count, u knots, v knots, control
   points with u varying fastest *(verified with rational surfaces of
-  revolution: the weights of a circular arc follow v)*.
+  revolution: the weights of a circular arc follow v)*. As curves,
+  periodic surfaces are stored clamped and made periodic in OCCT
+  (`SetUPeriodic`, `SetVPeriodic`) so that faces can cross the seam; so
+  are closed ones (closure 1) whose ends meet: faces cross their seam too,
+  their parameter curves running past it *(seen: a part saved from a STEP
+  model, two faces on closed degree-5 surfaces; left unwrapped, the
+  faces lay on the surface's extrapolation, kilometres long, and meshing
+  them did not end, mitcad#499)*.
 
 ### Subtype objects
 

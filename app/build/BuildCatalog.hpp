@@ -45,6 +45,7 @@ struct Part {
   QString supplierUrl;
   QJsonObject build;  // the manifest's `build`
   bool ownPreview = false; // the row has a picture of its own (`row_previews`, mitcad#484)
+  bool defaultRow = false; // `config` is its component's default row (mitcad#491)
 
   QString role() const;
   // "B8 30" (system, slot, grid), or the systems a connector fits.

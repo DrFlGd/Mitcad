@@ -528,6 +528,8 @@ impl<'a> Ctx<'a> {
             weights: b.rational.then_some(weights),
             u_periodic: b.u_closure == 2,
             v_periodic: b.v_closure == 2,
+            u_closed: b.u_closure == 1,
+            v_closed: b.v_closure == 1,
         };
         if !out.is_valid() {
             return Err(GeomError("invalid B-spline surface".into()));
@@ -1492,6 +1494,73 @@ mod tests {
         let seam = vec![forward(0), forward(1), forward(2), back];
         let (loops, spurs, pinches) = tidy_loop(seam.clone(), &edges, false);
         assert_eq!((loops, spurs, pinches), (vec![seam], 0, 0));
+    }
+
+    #[test]
+    fn closed_bspline_surfaces_wrap_like_periodic_ones() {
+        // mitcad#499: a surface the file keeps closed in u (closure 1),
+        // whose faces' parameter curves run past its seam, is built with
+        // its parameter wrapping, as a periodic one (closure 2) is.
+        let mut w = crate::asm::writer::Writer::new(1, 2);
+        w.record("asmheader")
+            .ptr(-1)
+            .int(-1)
+            .str("231.6.3.65535")
+            .end();
+        let file = AsmFile::parse(&w.finish()).unwrap();
+        let ctx = Ctx {
+            file: &file,
+            view: None,
+            opt: Options::default(),
+            body: Body::default(),
+            issues: Vec::new(),
+            vertex_map: IdMap::default(),
+            edge_map: IdMap::default(),
+            degenerate_edges: 0,
+            tidied: LoopTidy::default(),
+            surface_map: IdMap::default(),
+        };
+        // Degree 1 both ways, three poles round in u (the last on the
+        // first), two in v; the file's end multiplicities are the degree.
+        let surface = |u_closure| Bs3Surface {
+            u_degree: 1,
+            v_degree: 1,
+            rational: false,
+            u_closure,
+            v_closure: 0,
+            u_knots: vec![0.0, 0.5, 1.0],
+            u_mults: vec![1, 1, 1],
+            v_knots: vec![0.0, 1.0],
+            v_mults: vec![1, 1],
+            nu: 3,
+            nv: 2,
+            ctrl: vec![
+                [1.0, 0.0, 0.0, 1.0],
+                [-1.0, 0.0, 0.0, 1.0],
+                [1.0, 0.0, 0.0, 1.0],
+                [1.0, 0.0, 1.0, 1.0],
+                [-1.0, 0.0, 1.0, 1.0],
+                [1.0, 0.0, 1.0, 1.0],
+            ],
+        };
+        let wraps = |s: &BSplineSurface| {
+            let body = Body {
+                surfaces: vec![Surface::BSpline(s.clone())],
+                ..Body::default()
+            };
+            let flat = crate::flat::FlatBody::from_body(&body);
+            let at = flat.surfaces[0].int_offset as usize;
+            (flat.ints[at + 7], flat.ints[at + 8])
+        };
+        let open = ctx.bspline_surface(&surface(0)).unwrap();
+        assert!(!open.u_periodic && !open.u_closed);
+        assert_eq!(wraps(&open), (0, 0));
+        let closed = ctx.bspline_surface(&surface(1)).unwrap();
+        assert!(!closed.u_periodic && closed.u_closed && !closed.v_closed);
+        assert_eq!(wraps(&closed), (1, 0));
+        let periodic = ctx.bspline_surface(&surface(2)).unwrap();
+        assert!(periodic.u_periodic && !periodic.u_closed);
+        assert_eq!(wraps(&periodic), (1, 0));
     }
 
     #[test]

@@ -9433,6 +9433,51 @@ Three rules for frames of members (code `build/place.rs`; tests
   ("shared" or "none"), angle}`, null when the placing closes no corner;
   its `length.mode` is the mode the length gets.
 
+### Resting, lying as the host, typed corners (mitcad#492)
+
+Four more rules (code `build/place.rs`, `build/spacing.rs`; tests
+`build/close_tests.rs`, `build/timber_tests.rs`):
+
+- **A member lying on a plane rests on it.** A part placed on the ground
+  (`place` `grounded`: on the host's XY plane; `geometry`: on a picked
+  plane or planar face) with `at.direction` along the plane is lifted
+  along the plane's normal until its box's lowest point is on the plane:
+  it lies on the normal's side (+Z on XY, +Y on XZ, +X on YZ, a face's
+  outward side), not centred on the plane, timber and slot profiles
+  alike, as `lie`, `rotate` and `flip` turn it. On a picked plane or face
+  the lift is in the joint's `frame_override.origin` (and a bound
+  length's ray starts from the lifted axis); `build_edit`'s `rotate` and
+  `flip` lift it anew, so it keeps resting. A part standing along the
+  normal (or without `at.direction`) stands on its end as before.
+- **A member on a member's side lies as that member does.** A timber
+  member placed standing on a timber member's side (`place` `side`, not
+  tilted) is turned a quarter about its axis when only that puts its
+  section's thickness axis parallel to the target's or, where its axis
+  takes the target's thickness axis (on the target's wide face), its
+  width axis parallel to the target's width axis: same-size members have
+  flush sides. The turn is the joint's own frame override (`a.frame_override`
+  with `x_axis`), so the slide along the side and its offsets are as
+  before; `rotate` turns it further, and a `flip` edit sets the turn anew
+  for the end that then meets. A square section, or a slot profile, is
+  placed as before.
+- **A typed length closes a corner too.** A part placed on an end whose
+  typed length (`length` a value) ends on the face or the outer side of a
+  member it meets as a corner (as *Closing a frame* finds it, the far
+  end within 0.05 mm of that face or side) closes the corner as a bound
+  length does: ending on the outer side after a mitred start, both ends
+  get the shared mitre; on the face, a square butt. A typed length that
+  ends inside the member gets a warning naming the two lengths that would
+  meet it. `build_preview` answers it as `closing`. Its axis must run
+  through the member, not along one of its faces. A member by two points
+  (`place` `points`, whose start is square) with the points' distance or
+  a typed length gets the same: a square butt where it ends on the
+  member's face, else the warning; a bound length keeps the mode given.
+- **A set on a side starts at the typed offset.** In a spacing set on a
+  side whose base placement has `at.offset` (the app's Offset and From)
+  and no `spacing.from` or `spacing.to`: from end A (or the middle) the
+  first member's near face is where that offset puts it; from end B the
+  last member's far face.
+
 ### Classes
 
 `build_connect` with `joint` (no `part`) is class `model`; with a part,
@@ -10826,7 +10871,35 @@ refused at is left as it is.
     meets it within that wall's depth of its end, a corner (it runs on to
     the joining wall's outer face, the stud just inside the corner), else
     a T (a stud on each side of the joining wall). A wall that joins
-    another one lays that one out again with it.
+    another one lays that one out again with it. At a corner the plates
+    lap (mitcad#493): where each wall has one plate (at the top, and at
+    the bottom), both run to the corner's outer faces and are half-lapped
+    over the other wall's depth (a `half_lap` cut each, no `junction`,
+    `with` the other wall's lead), the joining wall's half outside (the
+    upper half of a top plate, the lower half of a bottom plate); with two,
+    the joining wall's outer plate (the upper top plate, the lower bottom
+    plate) runs over the corner to the other wall's outer face and the other
+    wall's stops at the joining wall's inner face, the inner plates as at a
+    butt. At a T the plates butt.
+  - **A wall started on another wall's side** (mitcad#493): with `square:
+    true` and `joins.start`, `start` is a point on that wall's side (a
+    click; within its depth of its ends) and the wall starts square to it,
+    at its base, towards the side the point is on (the end's side when the
+    point is on its centre line, else its left):
+    - an **L corner** when the point is near one of its ends (within half
+      its stud spacing, at least its depth, at most half its length): the
+      new wall's centre line starts at that end of the wall's centre line;
+    - a **T** elsewhere: its centre line starts at the point's place along
+      the wall.
+
+    Its length runs from there: as far as `end` is along it (a second
+    click, anywhere), else `length` (refused without either, and when it
+    would not reach beyond the wall's side). The definition keeps the
+    `start` and `end` worked out (not `square`). The answer, and
+    `build_preview`'s with `frame`, add `junction`: `{kind ("L" or "T"),
+    wall (its name), frame (its lead), end ("a" or "b" for an L, else
+    null), at (mm along the wall from its start), length (mm)}`; null
+    without `square`.
 - **A floor or ceiling** (`kind: floor`): `outline` (a closed outline,
   three points at least, at its first point's height: the joists'
   underside), `spacing` (default 400), `direction` (the joists'; default
@@ -10917,3 +10990,69 @@ they are laid out again (their join is then left out, with a warning).
 
 `build_edit` with `frame` is class `remote` (the fasteners are read from
 a library).
+
+## BUILD: choosing and swapping fasteners
+
+The wood fastener of a timber frame and of a spacing set, its size and
+count, and fasteners of a design made from another fastener where they
+are (mitcad#497). The app's Timber tool chooses them in its Frame and
+Spacing modes, Swap Fastener swaps them (`app/COMMANDS.md`, *Timber* and
+*Swap Fastener*). Code: `core/model/src/build/frames.rs`, `spacing.rs`,
+`swap.rs`; tests `core/model/src/build/fastener_tests.rs`.
+
+**A frame's fastener.** `build_frame` (and a frame's `build_edit`) takes
+`fastener` (a wood screw or nail, *Wood fasteners*) and `fastener_count`
+(how many at each junction, default 2). With a row in `fastener.config`
+every junction gets that size (a nail `3.1x90`); without one each
+junction's are sized from its members, as `build_connect` sizes them. The
+definition keeps both: a frame laid out again drives the same fastener,
+size and count. The warnings are `build_connect`'s (the first ten).
+
+**A spacing set's fasteners.** `build_place` with `spacing` takes
+`spacing.fastener` and `spacing.fastener_count` (as a frame's; none: no
+fasteners, the default). Each member is then fastened to its hosts: at
+every junction of a member with a part outside the set that has no
+connector (a joist on the beams it stands on and reaches, a deck board on
+each joist it crosses), `fastener_count` of them as `build_connect` drives
+them, in the same undo step as the set. The answer adds `fasteners`, the
+junctions fastened, and its `warnings` the fasteners'. The set keeps them
+in its definition: `build_edit` with `spacing` (which may change
+`fastener` and `fastener_count`) takes the set's fasteners away and
+drives them anew with the members, in its one undo step, and answers
+`fasteners` too; `build_remove` with `"set": true` removes them with the
+set. A set's fasteners are the wood fasteners at junctions of exactly one
+of its members with another part; one connected there by hand is taken
+away with them when the set is laid out again. `build_edit` with
+`spacing.fastener` is class `remote`.
+
+```json
+{"cmd": "build_swap_fasteners", "fasteners": ["C41", "C42"],
+ "part": {"library": "mitcad-parts", "url": "...", "rev": "...", "component": "ring-nail",
+          "config": "3.1x90"}}
+```
+
+**Swapping fasteners.** `build_swap_fasteners` (class `remote`; `model`
+with `part.source`) makes each fastener of `fasteners` (components of
+role `fastener`) from `part`, in place: the component, its occurrence,
+its derived part (another source and row), its joint (holding it by the
+new part's frame of the same kind) and its junction stay, so it stays
+where it is and what removes or lists it finds it as before; its name
+becomes the new designation. One undo step, `Swap 2 fastener(s) for Ring
+nail 3.1x90`.
+
+- **Which can replace which.** A wood screw or nail (a `wood` block)
+  only another wood fastener (`... is no wood screw or nail: C41 is
+  driven into timber`); a connector's nut, screw or washer only another
+  fastener without `wood`, and when both name slot `systems`, one that
+  fits (`the systems do not fit: ...`). Another part is refused (`... is
+  no fastener`).
+- **The size.** `part.config` names the row. Left out, a wood fastener at
+  a junction is sized from the junction's members as `build_connect`
+  sizes it (once per junction); one without a junction (a hanger's
+  screws) and a connector's fastener take the source's default row.
+- **The warnings** of each wood fastener at its junction for the new
+  size, as `build_connect` gives them (embedment, edges, the member's
+  end, through), numbered by the fastener's place at its junction.
+- The answer: `swapped` (the components), `count`, `designation`,
+  `sizes` (`[{component, config, diameter, length}]`, the diameter and
+  length a wood fastener's) and `warnings`.

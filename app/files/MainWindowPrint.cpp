@@ -123,8 +123,10 @@ CommandDef MainWindow::print3dCommand() {
             }
             // Another program: an AppImage, a slicer installed elsewhere,
             // an application bundle.
-            const QString program = dialogOpenFileName(this, tr("Slicer Program"));
+            const QString program =
+                dialogOpenFileName(this, tr("Slicer Program"), dialogStartFolder(DialogGroup::Program, QString()));
             if (!program.isEmpty()) {
+              rememberDialogFolder(DialogGroup::Program, program);
               panel->other = slicerForProgram(QFileInfo(program).completeBaseName(), program);
               panel->previous = slicerChoice(panel->other);
             }

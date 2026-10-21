@@ -24,6 +24,7 @@
 #include "ResultCache.hpp"
 #include "mitcad_bridge/lib.h"
 
+#include "DialogFolders.hpp"
 #include "Dialogs.hpp"
 
 namespace mitcad {
@@ -346,11 +347,12 @@ QString CacheDiagnosticsDialog::reportText(const QJsonObject& report) {
 
 void CacheDiagnosticsDialog::exportReport() {
   QString filter;
-  const QString path = dialogSaveFileName(this, tr("Export Report"), QString(),
-                                                    tr("JSON (*.json);;Text (*.txt)"), &filter);
+  const QString start = dialogStartFolder(DialogGroup::Export, m_host.folder ? m_host.folder() : QString());
+  const QString path = dialogSaveFileName(this, tr("Export Report"), start, tr("JSON (*.json);;Text (*.txt)"), &filter);
   if (path.isEmpty()) {
     return;
   }
+  rememberDialogFolder(DialogGroup::Export, path);
   const bool json = QFileInfo(path).suffix().compare(QLatin1String("txt"), Qt::CaseInsensitive) != 0;
   const QByteArray content =
       json ? QJsonDocument(m_report).toJson(QJsonDocument::Indented) : reportText(m_report).toUtf8();

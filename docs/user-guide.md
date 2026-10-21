@@ -120,6 +120,13 @@ result as a `.mitcad` design. More in [.f3d import](#f3d-import).
   file dialogs list the CAD formats under one *CAD files* filter. Which
   formats Mitcad reads and writes, and which keep their design history:
   [Support for multiple CAD formats](../README.md#support-for-multiple-cad-formats).
+- **Where the file dialogs start:** each kind of dialog remembers the
+  folder it was last used in, also after a restart: Open (with Open
+  Read-Only and Save As), Export (every export, Save as PDF and a saved
+  rendered image), Import (with the Insert commands), texture images and
+  programs (the slicer, git). A remembered folder that no longer exists
+  gives way to the design's folder, the project or Documents. Save Copy
+  As of a version starts in the design's own folder.
 - **File › Export:** STEP (AP214 or AP242), IGES, STL (refinement,
   binary or text), OBJ, BRep, 3MF and USDZ ([USDZ for AR and 3D
   viewers](#usdz-for-ar-and-3d-viewers)) of all or the selected bodies, a
@@ -507,7 +514,17 @@ application menu.
   edge or vertex in the same colour; geometry in front of it hides the
   highlight.
 - The right mouse button opens the commands that fit the selection, Edit
-  (of a feature) and Repeat (the last command).
+  (of a feature) and Repeat (the last command). The commands are in
+  submenus by kind, **Solid**, **BUILD** (on BUILD parts) and
+  **Construct**: first those the selection alone completes (on a face:
+  Press Pull, Fillet, Chamfer, Shell, Offset Face, Delete Face), then
+  **More** with the ones that need further picks (Draft, Hole, Joint,
+  Loft, and Box, Cylinder and the other creation commands that would only
+  stand on the face). Commands for surface bodies (Untrim, Unstitch,
+  Reverse Normal, ...) show on surface bodies only. **Delete** removes a
+  whole thing, each in one undo step: a BUILD member with what it added,
+  its spacing set, the body, the component (its occurrence), or the
+  feature that made the face.
 
 ### Command panels
 
@@ -1378,8 +1395,21 @@ whole frame of the timber chosen in its Part tile, in one step:
   at the spacing, plumb cut at their ends and notched with a birdsmouth
   over each wall's top plate, and a gable roof's ridge board.
 
-With **Fasteners** checked, two wood screws from the library go into each
-junction of the frame, sized from the members. The preview shows the
+With **Fasteners** checked, wood screws or nails go into each junction of
+the frame: **Fastener** (its picture opens the part picker with the
+library's wood screws, ring nails and structural screws), **Size** (*Auto*
+sizes them from the members, or choose a size such as 5.0x90 or a nail's
+3.1x90) and **Count** at each junction (2). The first time it is two of
+the library's first wood screw, sized from the members; the tool
+remembers your choice. **Spacing** has the same **Fasteners** row, off at
+first: on, each member of the row is fastened to the members it stands
+on, reaches or crosses. **Swap Fastener** (BUILD, CONNECT; in the view's
+right-click menu under BUILD when fasteners are selected) makes the
+fasteners you selected into another fastener or size where they are, in
+one undo step: wood screws and nails into another wood fastener, a
+connector's nuts and screws into another of their slot system; the status
+bar shows the warnings for the new size (too short, too near an edge or
+an end). The preview shows the
 members and counts them, with any warning (a ridge board too shallow, a
 birdsmouth too deep). Every member is an ordinary BUILD part: it shows in
 the cut list with the other timber, grouped by size. **Timber Frame**

@@ -185,6 +185,13 @@ what was done (`tidied`, `messages`):
   there into loops sharing the vertex; such wires are healed again
   without ShapeFix's repair of intersecting wires, which put edges of no
   length at the shared point.
+- **Faces across the seam of a closed surface**: a B-spline surface the
+  file keeps closed but not periodic (closure 1, the ends meet) has
+  faces whose parameter curves run past its seam; it is built periodic,
+  as a periodic one is, so that the face wraps round instead of lying on
+  the surface's extrapolation *(seen: a third-party part, two faces
+  of 1e19 mm² whose meshing took more than 6 GB and minutes; now 1e4 mm²
+  each, the part meshed in seconds, mitcad#499)*.
 - **Edges of more than two faces** of a shell (solids that touch along an
   edge, stored as one shell): the body is healed again with ShapeFix
   orienting the shells, which splits them at those edges, when that keeps

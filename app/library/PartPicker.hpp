@@ -81,6 +81,7 @@ struct PickerPart {
   QString system;       // the slot system(s) of a BUILD part ("B8 30")
   bool preview = true;  // the library has a picture of it
   bool rowPreview = false; // `config` has a picture of its own (library_preview with it, mitcad#484)
+  bool defaultRow = false; // `config` is its component's default row (an old star marks it, mitcad#491)
   QString refused;      // not choosable: why (greyed, the reason in the tooltip)
   // An index's library that is not fetched (Insert from Library, Community
   // Library): a tile of its own in the group "Libraries to get".
@@ -260,6 +261,9 @@ struct PickerRequest {
   QList<PickerPart> parts;   // what the command takes; refused ones greyed with their reason
   QString current;           // the key chosen now
   QString system;            // the system filter to start with (empty: all)
+  // The command's input the choice goes into, when not its part (a Timber
+  // frame's fastener, mitcad#497); empty for the part.
+  QString input;
 };
 
 class PartPicker : public QDialog {
@@ -281,6 +285,8 @@ public:
   // The command ended: the picker closes unless it is pinned.
   void commandEnded(const QString& command);
   QString command() const { return m_request.command; }
+  // The input the choice goes into (PickerRequest::input; empty: the part).
+  QString input() const { return m_request.input; }
   bool isPinned() const;
   void setPinned(bool on);
   // How In this design is read: when the picker shows and on

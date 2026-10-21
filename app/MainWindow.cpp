@@ -872,6 +872,7 @@ void MainWindow::showDiagnostics() {
       return QJsonObject();
     }
   };
+  host.folder = [this] { return fileDialogDirectory(); };
   CacheDiagnosticsDialog dialog(std::move(host), QApplication::activeModalWidget() != nullptr
                                                       ? QApplication::activeModalWidget()
                                                       : this);
@@ -1529,6 +1530,15 @@ void MainWindow::startFeatureCommand(const CommandDef& def, const QString& editU
     panel->setAutoFillBackground(false);
     m_floating->watchContent(panel);
   }
+  // Its places are logged again when it scrolls, for UI tests (a low
+  // window, such as the 1024x768 desktop of a Windows test).
+  connect(scroll->verticalScrollBar(), &QScrollBar::valueChanged, panel, [panel] {
+    TestSync::singleShot(0, panel, [panel] {
+      if (panel->isVisible()) {
+        panel->logLayout();
+      }
+    });
+  });
   m_commandPages->addWidget(scroll);
   m_commandPages->setCurrentWidget(scroll);
   m_panelScroll = scroll;
@@ -3674,68 +3684,7 @@ void MainWindow::showContextMenu(const QPoint& globalPosition, const SelectionIt
       // A right click on something not selected selects it.
       setSelection({item});
     }
-    if (const CommandDef* last = m_registry->find(m_lastCommand); last && isAvailable(*last)) {
-      const QString id = last->id;
-      addCall(last->icon, tr("Repeat %1").arg(last->name), [this, id] { trigger(id); });
-      menu.addSeparator();
-    }
-    if (!m_selection.isEmpty()) {
-      addFitting();
-      const SelectionItem& first = m_selection.first();
-      if (m_selection.size() == 1 && isSketchPlane(first)) {
-        add(m_registry->action(QStringLiteral("sketch.create")));
-      }
-      const QString feature = first.creatingFeature();
-      QString name;
-      if (m_selection.size() == 1 && !feature.isEmpty() && editorOf(feature, &name) != nullptr) {
-        addCall(QStringLiteral("edit"), tr("Edit %1").arg(name), [this, feature] { editFeature(feature); });
-      }
-      const QString sketch = sketchOf(first);
-      if (m_selection.size() == 1 && !sketch.isEmpty()) {
-        addCall(QStringLiteral("sketch"), tr("Edit Sketch"), [this, sketch] { editSketch(sketch); });
-        addCall(QStringLiteral("export"), tr("Save As DXF"), [this, sketch] { exportSketch(sketch); });
-      }
-      const bool onBody = first.kind == SelectKind::Face || first.kind == SelectKind::Edge ||
-                          first.kind == SelectKind::Vertex || first.kind == SelectKind::Body;
-      // Appearances of the bodies selected or picked on (mitcad#46).
-      if (const Selection targets = appearanceTargets(); !targets.isEmpty()) {
-        addCall(QStringLiteral("appearance"), tr("Appearance..."),
-                [this, targets] { m_controller->openAppearances(targets); });
-      }
-      // Hide Body and Hide Component: the bodies of the faces, edges, vertices
-      // and bodies selected, and the occurrences that place them (mitcad#347).
-      const Selection hiding = m_selection;
-      const QStringList hideBodies = BrowserController::hideableBodies(hiding);
-      const QStringList hideComponents = BrowserController::hideableOccurrences(hiding);
-      if (!hideBodies.isEmpty()) {
-        QMenu* hide = new QMenu(tr("Hide"), &menu);
-        QStringList hideEntries;
-        const auto addHide = [hide, &hideEntries](const QString& text, std::function<void()> call) {
-          QAction* action = hide->addAction(text);
-          connect(action, &QAction::triggered, hide, std::move(call));
-          hideEntries << text;
-        };
-        addHide(hideBodies.size() == 1 ? tr("Hide Body") : tr("Hide %1 Bodies").arg(hideBodies.size()),
-                [this, hiding] { m_controller->hideBodies(hiding); });
-        if (!hideComponents.isEmpty()) {
-          addHide(hideComponents.size() == 1 ? tr("Hide Component")
-                                             : tr("Hide %1 Components").arg(hideComponents.size()),
-                  [this, hiding] { m_controller->hideOccurrences(hiding); });
-        }
-        menu.addMenu(hide);
-        entries << hide->title();
-        qDebug().noquote() << QStringLiteral("Context menu Hide: %1").arg(hideEntries.join(QStringLiteral(" | ")));
-      }
-      // A feature selected as its faces (mitcad#28) has no row of its own.
-      if (m_selection.size() == 1 && first.kind != SelectKind::Feature &&
-          (onBody || !first.creatingFeature().isEmpty())) {
-        addCall(QStringLiteral("browser"), tr("Find in Browser"),
-                [this, first] { m_controller->findInBrowser(first); });
-      }
-      menu.addSeparator();
-      addCall(QString(), tr("Clear Selection"), [this] { setSelection({}); });
-    }
-    add(m_registry->action(QStringLiteral("edit.undo")));
+    fillModelContextMenu(menu, entries);
   }
   menu.addSeparator();
   add(m_registry->action(QStringLiteral("view.fit")));
@@ -4161,11 +4110,11 @@ void MainWindow::openDocument() {
   if (!maybeSave()) {
     return;
   }
-  const QString path =
-      dialogOpenFileName(this, tr("Open"), fileDialogDirectory(), openFilter());
+  const QString path = dialogOpenFileName(this, tr("Open"), dialogFolder(DialogGroup::Open), openFilter());
   if (path.isEmpty()) {
     return;
   }
+  rememberDialogFolder(DialogGroup::Open, path);
   QString error;
   if (!openFile(path, error) && !error.isEmpty()) {
     const QString message = tr("Could not open %1:\n%2").arg(QDir::toNativeSeparators(path), error);
@@ -4306,7 +4255,7 @@ bool MainWindow::saveAs() {
       return true;
     }
   }
-  QFileDialog dialog(this, tr("Save As"), fileDialogDirectory(),
+  QFileDialog dialog(this, tr("Save As"), dialogFolder(DialogGroup::Open),
                      tr("Mitcad designs (*.%1)").arg(kFileSuffix));
   prepareFileDialog(&dialog);
   dialog.setAcceptMode(QFileDialog::AcceptSave);
@@ -4316,6 +4265,7 @@ bool MainWindow::saveAs() {
   if (execDialog(&dialog) != QDialog::Accepted || dialog.selectedFiles().isEmpty()) {
     return false;
   }
+  rememberDialogFolder(DialogGroup::Open, dialog.selectedFiles().constFirst());
   return writeFile(dialog.selectedFiles().constFirst());
 }
 
@@ -4527,6 +4477,10 @@ QString MainWindow::fileDialogDirectory() const {
     return m_project.root;
   }
   return QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+}
+
+QString MainWindow::dialogFolder(DialogGroup group) const {
+  return dialogStartFolder(group, fileDialogDirectory());
 }
 
 bool MainWindow::installDocument(const QString& label, const QString& path, const DocumentMaker& make,

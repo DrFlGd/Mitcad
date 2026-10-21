@@ -130,6 +130,8 @@ fn surface(s: &BoundarySurface) -> Surface {
                 weights: (!weights.is_empty()).then(|| weights.iter().flatten().copied().collect()),
                 u_periodic: false,
                 v_periodic: false,
+                u_closed: false,
+                v_closed: false,
             })
         }
         BoundarySurface::Extrusion { curve: c, dir } => Surface::Extrusion {

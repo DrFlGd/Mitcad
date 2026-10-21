@@ -59,10 +59,17 @@ QString str(const QJsonObject& object, const char* key) { return object.value(QL
 
 QColor starColour() { return QColor(232, 170, 0); }
 
-// "<library>|<component>": how stars and the design's parts know a part.
+// "<library>|<component>": how the design's parts know a part (a star
+// knows a tile's row too, starredTile).
 QString partId(const PickerPart& part) { return part.library + QLatin1Char('|') + part.component; }
 
 QString partLabel(const PickerPart& part) { return part.library + QLatin1Char('/') + part.component; }
+
+// Whether the tile is starred: a tile of a configuration row by its row
+// (mitcad#491).
+bool starredTile(const PickerPart& part) {
+  return PartFavourites::instance().starred(part.library, part.component, part.config, part.defaultRow);
+}
 
 // The label with its row, as the tiles are logged: each row is a tile of
 // its own (mitcad#484).
@@ -362,6 +369,7 @@ PickerPart pickerPart(const build::Part& source) {
   part.component = source.component;
   part.config = source.config;
   part.rowPreview = source.ownPreview;
+  part.defaultRow = source.defaultRow;
   part.name = source.name;
   part.designation = source.designation;
   part.supplier = source.supplier;
@@ -486,7 +494,7 @@ QVariant PartGridModel::data(const QModelIndex& index, int role) const {
     if (shown->libraryEntry) {
       return {};
     }
-    return PartFavourites::instance().starred(shown->library, shown->component);
+    return starredTile(*shown);
   case kRefusedRole:
     return shown->refused;
   case kImageRole: {
@@ -891,11 +899,12 @@ void PartGrid::star(const QString& key) {
     if (listed.key != key || listed.libraryEntry) {
       continue;
     }
-    PartFavourites& favourites = PartFavourites::instance();
-    const bool on = !favourites.starred(listed.library, listed.component);
-    qInfo().noquote() << QStringLiteral("Part picker star %1 %2")
-                             .arg(listed.component, on ? QStringLiteral("on") : QStringLiteral("off"));
-    favourites.setStarred(listed.library, listed.component, on);
+    // Only this tile: a row is starred by itself (mitcad#491).
+    const bool on = !starredTile(listed);
+    const QString which =
+        listed.config.isEmpty() ? listed.component : QStringLiteral("%1 (%2)").arg(listed.component, listed.config);
+    qInfo().noquote() << QStringLiteral("Part picker star %1 %2").arg(which, on ? QStringLiteral("on") : QStringLiteral("off"));
+    PartFavourites::instance().setStarred(listed.library, listed.component, listed.config, listed.defaultRow, on);
     return;
   }
 }
@@ -1027,7 +1036,7 @@ void PartGrid::fillSystems() {
 
 bool PartGrid::passes(const PickerPart& part) const {
   if (m_group == kFavourites) {
-    if (part.libraryEntry || !PartFavourites::instance().starred(part.library, part.component)) {
+    if (part.libraryEntry || !starredTile(part)) {
       return false;
     }
   } else if (m_group == kInDesign) {
@@ -1081,7 +1090,7 @@ void PartGrid::refill(bool notify) {
   for (const PickerPart& listed : m_parts) {
     if (passes(listed)) {
       kept.append(listed);
-      order.append({listed.library, listed.component, listed.category});
+      order.append({listed.library, listed.component, listed.category, listed.config, listed.defaultRow});
     }
   }
   // Starred first, then the rest, each in the given order; in Favourites
@@ -1389,7 +1398,7 @@ PartPicker::~PartPicker() {
 
 void PartPicker::ask(const PickerRequest& request) {
   const bool following = isVisible() && isPinned() && request.command != m_request.command;
-  const bool another = request.command != m_request.command;
+  const bool another = request.command != m_request.command || request.input != m_request.input;
   m_request = request;
   setWindowTitle(request.title.isEmpty() ? tr("Part Picker") : tr("Part Picker - %1").arg(request.title));
   if (m_designStale) {

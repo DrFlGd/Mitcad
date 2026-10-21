@@ -363,6 +363,53 @@ impl<K: ImportKernel> Importer<'_, K> {
         pairs
     }
 
+    /// How far the bodies of history state `after` lie from those of state
+    /// `before` when the operations between them change nothing beyond the
+    /// geometric tolerance: every solid pairs with one of the other state
+    /// in its component, the same solid or one whose faces lie on its faces
+    /// within the tolerance ([`geometric::body_distance`], both ways), and
+    /// the sheets are the same. None otherwise, or when a state is not
+    /// rebuilt. (mitcad#343: a cut across components that shaves a few
+    /// micrometres off this component's body where its tool grazes it.)
+    pub(crate) fn change_within_tolerance(&mut self, before: usize, after: usize) -> Option<f64> {
+        let kernel = self.doc.kernel();
+        let from = self.oracle.state(kernel, before).ok()?.to_vec();
+        let to = self.oracle.state(kernel, after).ok()?.to_vec();
+        let sheets_from = self.oracle.sheets(kernel, before).ok()?.to_vec();
+        let sheets_to = self.oracle.sheets(kernel, after).ok()?.to_vec();
+        if from.len() != to.len() || sheets_from.len() != sheets_to.len() {
+            return None;
+        }
+        let mut used = vec![false; sheets_to.len()];
+        for (_, sig) in &sheets_from {
+            let j = (0..sheets_to.len()).find(|&j| !used[j] && sheets_to[j].1.same(sig))?;
+            used[j] = true;
+        }
+        let tolerance = geometric::tolerance();
+        let mut used = vec![false; to.len()];
+        let mut worst: f64 = 0.0;
+        for (body, sig) in &from {
+            let mut near: Vec<usize> = (0..to.len())
+                .filter(|&j| {
+                    !used[j] && to[j].0.component == body.component && to[j].1.matches(sig)
+                })
+                .collect();
+            near.sort_by(|&a, &b| sig.distance(&to[a].1).total_cmp(&sig.distance(&to[b].1)));
+            let (j, d) = near.into_iter().find_map(|j| {
+                if to[j].1.same(sig) {
+                    return Some((j, 0.0));
+                }
+                match geometric::body_distance(kernel, &body.shape, &to[j].0.shape) {
+                    Ok(d) if d <= tolerance => Some((j, d)),
+                    _ => None,
+                }
+            })?;
+            used[j] = true;
+            worst = worst.max(d);
+        }
+        Some(worst)
+    }
+
     /// Brings the bodies to state `q` for the retry of the item at `at`
     /// (named `name`) as `retry` says, and notes the bodies kept and
     /// replaced in its report. Ok(None): no retry (nothing differs, or the

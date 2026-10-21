@@ -36,6 +36,7 @@
 
 #include "OcctViewer.hpp"
 #include "browser/DocumentHost.hpp"
+#include "framework/DialogFolders.hpp"
 #include "framework/Icons.hpp"
 #include "framework/TestSync.hpp"
 #include "framework/Theme.hpp"
@@ -670,12 +671,14 @@ void RenderImageDialog::save() {
                          : m_imageFormat == QLatin1String("exr") ? tr("OpenEXR images (*.exr)")
                                                                   : tr("PNG images (*.png)");
   const QString name = (m_documentName.isEmpty() ? tr("Render") : m_documentName) + QLatin1Char('.') + extension;
-  const QString start = m_documentFolder.isEmpty() ? name : QDir(m_documentFolder).filePath(name);
+  const QString folder = dialogStartFolder(DialogGroup::Export, m_documentFolder);
+  const QString start = folder.isEmpty() ? name : QDir(folder).filePath(name);
   qDebug().noquote() << "Render image save dialog";
   QString path = dialogSaveFileName(this, tr("Save Rendered Image"), start, filter);
   if (path.isEmpty()) {
     return;
   }
+  rememberDialogFolder(DialogGroup::Export, path);
   if (QFileInfo(path).suffix().isEmpty()) {
     path += QLatin1Char('.') + extension;
   }

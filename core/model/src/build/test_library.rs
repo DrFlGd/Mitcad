@@ -520,6 +520,8 @@ impl TestLibrary {
         for (id, part) in super::profiled_tests::boards() {
             add(id, V1, part);
         }
+        // A ring nail in rows (mitcad#497).
+        add("ring-nail", V1, ring_nail());
         Arc::new(library)
     }
 }
@@ -682,6 +684,49 @@ fn wood_screw() -> Part {
         part_number: String::new(),
         name: "Wood screw".to_owned(),
         designation: "Wood screw {config}".to_owned(),
+    }
+}
+
+/// A ring nail 3.1 x 90 (rows 2.8x50 and 3.1x90, mitcad#497): its `axis`
+/// frame at the head, z along the shank.
+fn ring_nail() -> Part {
+    let mut doc: Document<MockKernel> = Document::from_json(
+        &block_design(
+            [3.0, 3.0, 90.0],
+            [-1.5, -1.5],
+            &[("axis", [0.0; 3], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0])],
+        ),
+        MockKernel::default(),
+    )
+    .unwrap();
+    let names = ["2.8x50", "3.1x90"];
+    let rows: Vec<Value> = names.iter().map(|r| json!({"name": r})).collect();
+    command(
+        &mut doc,
+        json!({"cmd": "set_configurations", "configurations": {
+            "parameters": [], "default": "3.1x90", "rows": rows}}),
+    )
+    .unwrap();
+    let mut by_row = serde_json::Map::new();
+    for name in names {
+        let (d, l) = name.split_once('x').unwrap();
+        by_row.insert(
+            name.to_owned(),
+            json!({"wood": {"diameter": d.parse::<f64>().unwrap(),
+                            "length": l.parse::<f64>().unwrap()}}),
+        );
+    }
+    Part {
+        text: doc.to_json(),
+        build: Some(json!({
+            "role": "fastener",
+            "wood": {"kind": "nail", "diameter": "3.1 mm", "length": "90 mm"},
+            "frames": [{"name": "axis", "kind": "shaft"}],
+            "rows": by_row,
+        })),
+        part_number: String::new(),
+        name: "Ring nail".to_owned(),
+        designation: "Ring nail {config}".to_owned(),
     }
 }
 

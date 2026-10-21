@@ -1,11 +1,20 @@
 // SPDX-License-Identifier: MIT
 #include "Dialogs.hpp"
 
+#include <QAbstractItemView>
+#include <QCompleter>
 #include <QDialog>
+#include <QDir>
 #include <QEvent>
 #include <QEventLoop>
 #include <QFileDialog>
+#include <QFileSystemModel>
 #include <QInputDialog>
+#include <QItemSelectionModel>
+#include <QKeyEvent>
+#include <QLineEdit>
+#include <QListView>
+#include <QtLogging>
 #include <QPointer>
 #include <QProgressDialog>
 #include <QTimer>
@@ -32,6 +41,95 @@ int execDialog(QDialog* dialog) {
   return dialog->exec();
 }
 
+namespace {
+
+// Qt's own file dialog selects, in its list, each existing file or folder
+// a name passes through while it is typed ("/home", then "/home/me/parts",
+// then the file) and does not always drop the earlier one again (seen:
+// the dialog's own folder, typed on the way to a file in it, stayed
+// selected with the file). Enter or Open takes the selected entries
+// before the typed name: with a folder selected, the dialog went into it
+// and cleared the name instead of opening the file. mitcad#498 makes a
+// dialog start in the folder of the file opened last, so typing a path in
+// it hit this. So the selection is kept to the typed name: after each edit
+// of the name, and when Enter is pressed in it, a selection holding any
+// entry other than the name itself is cleared (with nothing selected, the
+// dialog takes the typed name). Multi-file dialogs are left alone.
+class TypedNameKeeper : public QObject {
+public:
+  explicit TypedNameKeeper(QFileDialog* dialog) : QObject(dialog), m_dialog(dialog) {
+    dialog->installEventFilter(this);
+  }
+
+  bool eventFilter(QObject* watched, QEvent* event) override {
+    if (watched == m_dialog && event->type() == QEvent::Show && m_edit == nullptr) {
+      attach();
+    } else if ((watched == m_edit || watched == m_popup) && event->type() == QEvent::KeyPress) {
+      const int key = static_cast<QKeyEvent*>(event)->key();
+      if (key == Qt::Key_Return || key == Qt::Key_Enter) {
+        keepTypedName();
+      }
+    }
+    return QObject::eventFilter(watched, event);
+  }
+
+private:
+  void attach() {
+    m_edit = m_dialog->findChild<QLineEdit*>(QStringLiteral("fileNameEdit"));
+    m_list = m_dialog->findChild<QListView*>(QStringLiteral("listView"));
+    if (m_edit == nullptr || m_list == nullptr) {
+      return;
+    }
+    // Enter reaches the name field, or the completer's list while it is
+    // open (which hands it on to the field past the field's filters).
+    m_edit->installEventFilter(this);
+    if (QCompleter* completer = m_edit->completer(); completer != nullptr && completer->popup() != nullptr) {
+      m_popup = completer->popup();
+      m_popup->installEventFilter(this);
+    }
+    // After each edit, once the dialog's own selection update has run (so
+    // that Open clicked with the mouse takes the typed name too).
+    QObject::connect(m_edit, &QLineEdit::textEdited, this,
+                     [this] { QTimer::singleShot(0, this, [this] { keepTypedName(); }); });
+  }
+
+  void keepTypedName() {
+    if (m_edit == nullptr || m_list == nullptr || m_dialog->fileMode() == QFileDialog::ExistingFiles) {
+      return;
+    }
+    const QString text = m_edit->text().trimmed();
+    QItemSelectionModel* selection = m_list->selectionModel();
+    if (text.isEmpty() || text.contains(QLatin1Char('"')) || selection == nullptr) {
+      return;
+    }
+    const QString typed = QDir::cleanPath(QDir(m_dialog->directory().absolutePath()).absoluteFilePath(text));
+    QStringList stale;
+    const QModelIndexList rows = selection->selectedRows();
+    for (const QModelIndex& row : rows) {
+      const QString path = QDir::cleanPath(row.data(QFileSystemModel::FilePathRole).toString());
+      if (path != typed) {
+        stale.append(path);
+      }
+    }
+    if (stale.isEmpty()) {
+      return;
+    }
+    // The whole selection goes: a selection left behind would be written
+    // into the name field as its bare file name while the field has no
+    // focus, and the typed name is what the dialog takes when none is.
+    qInfo().noquote() << QStringLiteral("Typed name kept in %1: deselected %2")
+                             .arg(m_dialog->windowTitle(), stale.join(QStringLiteral(" | ")));
+    selection->clearSelection();
+  }
+
+  QFileDialog* m_dialog;
+  QPointer<QLineEdit> m_edit;
+  QPointer<QListView> m_list;
+  QPointer<QAbstractItemView> m_popup;
+};
+
+} // namespace
+
 void prepareFileDialog(QFileDialog* dialog) {
 #ifdef MITCAD_MACOS_NATIVE_UI
   if (nativeDialogsActive()) {
@@ -39,9 +137,13 @@ void prepareFileDialog(QFileDialog* dialog) {
     // Keep those values in the widget presenter used by our AppKit panel.
     dialog->setOption(QFileDialog::DontUseNativeDialog);
   }
-#else
-  Q_UNUSED(dialog);
 #endif
+  // Qt's own dialog (not a native one): a typed name is what opens.
+  static const char* const kKept = "mitcadTypedNameKept";
+  if (!dialog->property(kKept).toBool()) {
+    dialog->setProperty(kKept, true);
+    new TypedNameKeeper(dialog);
+  }
 }
 
 void showDialog(QWidget* widget) {

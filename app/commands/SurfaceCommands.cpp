@@ -524,6 +524,7 @@ CommandDef stitchCommand(const CommandContext& context) {
                                               "where they close up"));
   def.keywords << QStringLiteral("sew") << QStringLiteral("knit");
   def.featureType = QStringLiteral("stitch");
+  def.surfaceBodiesOnly = true; // the view's context menu (mitcad#494)
   def.inputs = {
       selectionInput(QStringLiteral("bodies"), QObject::tr("Bodies"), SelectKind::Body, 1, 0)
           .withTooltip(QObject::tr("The first keeps its name and becomes the sewn body"))
@@ -552,6 +553,7 @@ CommandDef thickenCommand(const CommandContext& context) {
                                   QObject::tr("Makes surface bodies solid by a wall along their normals"));
   def.pinned = true;
   def.featureType = QStringLiteral("thicken");
+  def.surfaceBodiesOnly = true; // the view's context menu (mitcad#494)
   def.inputs = {
       selectionInput(QStringLiteral("bodies"), QObject::tr("Surfaces"), SelectKind::Body, 1, 0)
           .withTooltip(QObject::tr("Surface bodies; they stay as they are"))
@@ -808,6 +810,7 @@ CommandDef extendSurfaceCommand(const CommandContext& context) {
   CommandDef def = surfaceCommand("surface.extend", QObject::tr("Extend"), "surface-extend",
                                   QObject::tr("Extends a surface body past its open edges"));
   def.featureType = QStringLiteral("extend_surface");
+  def.surfaceBodiesOnly = true; // the view's context menu (mitcad#494)
   def.keywords << QStringLiteral("extend surface") << QStringLiteral("lengthen");
   def.inputs = sheetEdgeInputs();
   def.inputs += {
@@ -859,6 +862,7 @@ CommandDef trimSurfaceCommand(const CommandContext& context) {
   CommandDef def = surfaceCommand("surface.trim", QObject::tr("Trim"), "surface-trim",
                                   QObject::tr("Cuts a surface body and keeps the pieces clicked"));
   def.featureType = QStringLiteral("trim_surface");
+  def.surfaceBodiesOnly = true; // the view's context menu (mitcad#494)
   def.keywords << QStringLiteral("trim surface") << QStringLiteral("cut");
   def.inputs = {
       selectionInput(QStringLiteral("body"), QObject::tr("Surface"), SelectKind::Body, 1, 1)
@@ -920,6 +924,7 @@ CommandDef untrimSurfaceCommand(const CommandContext& context) {
   CommandDef def = surfaceCommand("surface.untrim", QObject::tr("Untrim"), "surface-untrim",
                                   QObject::tr("Restores a face towards its surface: holes closed, outline put back"));
   def.featureType = QStringLiteral("untrim_surface");
+  def.surfaceBodiesOnly = true; // the view's context menu (mitcad#494)
   def.keywords << QStringLiteral("untrim surface") << QStringLiteral("fill holes");
   def.inputs = {
       selectionInput(QStringLiteral("face"), QObject::tr("Face"), SelectKind::Face, 1, 1).withoutMeshes(),
@@ -976,6 +981,7 @@ CommandDef bodyFacesCommand(const char* id, const QString& name, const char* ico
                             const QString& type, const CommandContext& context) {
   CommandDef def = surfaceCommand(id, name, icon, tooltip);
   def.featureType = type;
+  def.surfaceBodiesOnly = true; // the view's context menu (mitcad#494)
   def.inputs = {
       selectionInput(QStringLiteral("faces"), QObject::tr("Faces/Body"), SelectKind::Face | SelectKind::Body, 1, 0)
           .withTooltip(QObject::tr("Faces of one body, or a body for all of its faces"))
@@ -1346,6 +1352,7 @@ CommandDef matchSurfaceCommand(const CommandContext& context) {
   CommandDef def = surfaceCommand("surface.match", QObject::tr("Match Surface"), "match-surface",
                                   QObject::tr("Rebuilds a surface's face so that a side meets another body's edges"));
   def.featureType = QStringLiteral("match_surface");
+  def.surfaceBodiesOnly = true; // the view's context menu (mitcad#494)
   def.keywords << QStringLiteral("match") << QStringLiteral("align surface");
   def.inputs = {
       selectionInput(QStringLiteral("face"), QObject::tr("Face"), SelectKind::Face, 1, 1)
@@ -1423,6 +1430,7 @@ CommandDef fairSurfaceCommand(const CommandContext& context) {
   CommandDef def = surfaceCommand("surface.fair", QObject::tr("Fair Surface"), "fair-surface",
                                   QObject::tr("Smooths B-spline faces within a tolerance, their edges kept"));
   def.featureType = QStringLiteral("fair_surface");
+  def.surfaceBodiesOnly = true; // the view's context menu (mitcad#494)
   def.keywords << QStringLiteral("fair") << QStringLiteral("smooth");
   def.inputs = {
       selectionInput(QStringLiteral("faces"), QObject::tr("Faces/Body"), SelectKind::Face | SelectKind::Body, 1, 0)

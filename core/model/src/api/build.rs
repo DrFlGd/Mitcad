@@ -62,16 +62,19 @@ pub(crate) enum BuildCommand {
     },
     // Timber frames (mitcad#479).
     BuildFrame(Box<crate::build::FrameInput>),
+    // Fasteners swapped in place (mitcad#497).
+    BuildSwapFasteners(Box<crate::build::SwapInput>),
 }
 
 /// The commands' names, to send them here.
-pub(crate) const COMMANDS: [&str; 6] = [
+pub(crate) const COMMANDS: [&str; 7] = [
     "build_place",
     "build_edit",
     "build_connect",
     "build_panel",
     "build_remove",
     "build_frame",
+    "build_swap_fasteners",
 ];
 
 /// What a timber frame's command made (mitcad#479).
@@ -88,6 +91,7 @@ fn framed_json(framed: &crate::build::frames::Framed) -> Value {
         "fasteners": framed.fasteners,
         "relaid": framed.relaid,
         "warnings": framed.warnings,
+        "junction": framed.junction.as_ref().map(|j| j.to_json()),
     })
 }
 
@@ -162,7 +166,18 @@ enum PreviewInput {
 impl<K: Kernel> Document<K> {
     pub(crate) fn run_build_command(&mut self, command: BuildCommand) -> Result<Value, ApiError> {
         Ok(match command {
-            BuildCommand::BuildPlace(input) => placed_json(&self.build_place(&input)?),
+            BuildCommand::BuildPlace(input) => {
+                let placed = self.build_place(&input)?;
+                let mut value = placed_json(&placed);
+                // A set fastened to its hosts (mitcad#497): the junctions
+                // given fasteners.
+                if input.spacing.as_ref().is_some_and(|s| s.fastener.is_some())
+                    && let Some(lead) = placed.set.first()
+                {
+                    value["fasteners"] = json!(self.set_fasteners(*lead).len());
+                }
+                value
+            }
             // A timber frame laid out again (mitcad#479).
             BuildCommand::BuildEdit(input) if input.frame.is_some() => {
                 let component = self.component_by_ref(&input.component)?;
@@ -184,6 +199,7 @@ impl<K: Kernel> Document<K> {
                     let members = self.set_members(lead);
                     answer["set"] = json!(members);
                     answer["count"] = json!(members.len());
+                    answer["fasteners"] = json!(self.set_fasteners(lead).len());
                 }
                 answer
             }
@@ -203,6 +219,21 @@ impl<K: Kernel> Document<K> {
                     "features": removed.features,
                     "detached": removed.detached,
                 }})
+            }
+            BuildCommand::BuildSwapFasteners(input) => {
+                let swapped = self.build_swap_fasteners(&input)?;
+                json!({
+                    "swapped": swapped.components,
+                    "count": swapped.components.len(),
+                    "designation": swapped.designation,
+                    "sizes": swapped.sizes.iter().map(|(c, config, size)| json!({
+                        "component": c,
+                        "config": config,
+                        "diameter": size.map(|s| s.0),
+                        "length": size.map(|s| s.1),
+                    })).collect::<Vec<_>>(),
+                    "warnings": swapped.warnings,
+                })
             }
         })
     }

@@ -2397,6 +2397,11 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
         let own = candidate_seconds(candidate).map(|s| clock + seconds(s));
         let shared = share.map(|s| clock + seconds(s));
         self.deadline = [item_deadline, own, shared].into_iter().flatten().min();
+        trace!(
+            "{}: evaluating {}",
+            name.unwrap_or("?"),
+            serde_json::Value::Array(candidate.defs.clone())
+        );
         let added = self.add_all(candidate, name);
         self.deadline = item_deadline;
         self.trying = false;
@@ -4032,6 +4037,33 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                     self.undo_to(depth);
                 }
             }
+            return;
+        }
+        // An item whose change in the file stays within the geometric
+        // tolerance (a cut that shaves micrometres off a face its tool
+        // grazes, which no definition reaches): the bodies as they are, at
+        // the state before it, are its state too, carrying what the items
+        // before them carried. Skipped, as where the bodies are its state
+        // within the tolerance, so that no base feature takes an earlier
+        // item's accepted deviation away (mitcad#343: corner faces of a
+        // rounding 0.063 mm off reached a cut across components that cuts
+        // nothing more in this one).
+        if let Some(before) = states.before.filter(|&b| b < state)
+            && self.pending.is_empty()
+            && self.oracle.cursor == Some(before)
+            && let Some(d) = self.change_within_tolerance(before, state)
+        {
+            trace!("{name}: {last_error}; states {before} and {state} agree within {d:.1e} mm");
+            self.oracle.cursor = Some(state);
+            self.commit(Before::Keep, Some(state), None);
+            self.note(
+                at,
+                Outcome::Skipped,
+                format!(
+                    "{last_error}; the file's history shows no change by it beyond the geometric \
+                     tolerance ({d:.1e} mm)"
+                ),
+            );
             return;
         }
         let label = self.report.items[at].name.clone();

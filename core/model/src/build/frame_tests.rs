@@ -291,15 +291,18 @@ fn a_corner_and_a_t_junction_between_wall_frames() {
     assert_eq!(w2["relaid"], json!([lead1]), "{w2}");
     let lead2 = w2["frame"].clone();
     // The second starts at the first one's inner face; the first runs to
-    // the second's outer face and has a stud for the corner's inside.
+    // the second's outer face and has a stud for the corner's inside. The
+    // plates lap (mitcad#493): the second's run on over the first to its
+    // outer face.
     let second = members(&doc, &lead2);
     let plate = member(&second, "plate.top.0");
     assert!(
-        (length(plate) - (3000.0 - 49.0)).abs() < 1e-6,
+        (length(plate) - (3000.0 + 49.0)).abs() < 1e-6,
         "{}",
         length(plate)
     );
-    assert!((end_a(&doc, plate)[1] - 49.0).abs() < 1e-6);
+    assert!((end_a(&doc, plate)[1] + 49.0).abs() < 1e-6);
+    assert!((end_a(&doc, member(&second, "stud.start"))[1] - 73.0).abs() < 1e-6);
     let first = members(&doc, &lead1);
     assert!((length(member(&first, "plate.top.0")) - 3649.0).abs() < 1e-6);
     let corner = member(&first, "junction.Wall_2.0");
@@ -555,4 +558,324 @@ fn a_mono_pitch_roof_from_the_lower_wall() {
     )
     .unwrap_err();
     assert!(refused.contains("needs its pitch"), "{refused}");
+}
+
+// --- Walls started on another wall's side (mitcad#493).
+
+/// A frame's members as its preview lays them out: (place, box min, box
+/// max) in the design, from each member's axis, `x` and section.
+fn boxes(doc: &Document<MockKernel>, lead: &Value) -> Vec<(String, [f64; 3], [f64; 3])> {
+    let preview = query(
+        doc,
+        json!({"query": "build_preview", "frame": {}, "component": lead}),
+    );
+    let v = |p: &Value| -> [f64; 3] {
+        let a = p.as_array().unwrap();
+        [0, 1, 2].map(|i| a[i].as_f64().unwrap())
+    };
+    preview["members"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{preview}"))
+        .iter()
+        .map(|m| {
+            let (s, e, x) = (v(&m["start"]), v(&m["end"]), v(&m["x"]));
+            let w = m["section"][0].as_f64().unwrap();
+            let t = m["section"][1].as_f64().unwrap();
+            let l = ((e[0] - s[0]).powi(2) + (e[1] - s[1]).powi(2) + (e[2] - s[2]).powi(2)).sqrt();
+            let d = [0, 1, 2].map(|i| (e[i] - s[i]) / l);
+            let y = [
+                d[1] * x[2] - d[2] * x[1],
+                d[2] * x[0] - d[0] * x[2],
+                d[0] * x[1] - d[1] * x[0],
+            ];
+            let (mut lo, mut hi) = ([f64::MAX; 3], [f64::MIN; 3]);
+            for a in [0.0, l] {
+                for b in [-w / 2.0, w / 2.0] {
+                    for c in [-t / 2.0, t / 2.0] {
+                        for i in 0..3 {
+                            let p = s[i] + d[i] * a + x[i] * b + y[i] * c;
+                            lo[i] = lo[i].min(p);
+                            hi[i] = hi[i].max(p);
+                        }
+                    }
+                }
+            }
+            (m["member"].as_str().unwrap().to_owned(), lo, hi)
+        })
+        .collect()
+}
+
+/// The pairs of members of two frames whose boxes overlap (by more than
+/// 1e-6 mm each way).
+fn overlaps(doc: &Document<MockKernel>, a: &Value, b: &Value) -> Vec<(String, String)> {
+    let (one, two) = (boxes(doc, a), boxes(doc, b));
+    let mut out = Vec::new();
+    for (ka, la, ha) in &one {
+        for (kb, lb, hb) in &two {
+            if (0..3).all(|i| ha[i].min(hb[i]) - la[i].max(lb[i]) > 1e-6) {
+                out.push((ka.clone(), kb.clone()));
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// A member's half laps: `with` each.
+fn half_laps(p: &Value) -> Vec<Value> {
+    p["cuts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|c| c["kind"] == "half_lap")
+        .map(|c| c["with"].clone())
+        .collect()
+}
+
+/// A wall started on the side of the wall `on` at `click`, square to it,
+/// clicked to `end` or `length` long.
+fn wall_on(doc: &mut Document<MockKernel>, on: &Value, click: [f64; 3], extra: Value) -> Value {
+    let mut fields = json!({"kind": "wall", "part": part("rows98"), "start": click,
+                            "joins": {"start": on}, "square": true, "height": 2400,
+                            "spacing": 600});
+    for (k, v) in extra.as_object().unwrap() {
+        fields[k] = v.clone();
+    }
+    frame(doc, fields)
+}
+
+fn close(a: f64, b: f64) -> bool {
+    (a - b).abs() < 1e-6
+}
+
+/// A wall's start and end as its lead's definition keeps them.
+fn ends_of(doc: &Document<MockKernel>, lead: &Value) -> ([f64; 3], [f64; 3]) {
+    let p = parts_of(doc)
+        .into_iter()
+        .find(|p| p["component"] == *lead)
+        .unwrap();
+    let def = &p["framing"]["definition"];
+    let v = |p: &Value| -> [f64; 3] { [0, 1, 2].map(|i| p[i].as_f64().unwrap()) };
+    assert!(def.get("square").is_none(), "{def}");
+    (v(&def["start"]), v(&def["end"]))
+}
+
+#[test]
+fn an_l_corner_from_a_click_near_a_walls_end() {
+    let mut doc = design();
+    let w1 = wall(&mut doc, [0.0, 0.0, 0.0], [3600.0, 0.0, 0.0], json!({}));
+    let lead1 = w1["frame"].clone();
+    // The preview names the corner before anything is made.
+    let preview = query(
+        &doc,
+        json!({"query": "build_preview", "frame": {"kind": "wall", "part": part("rows98"),
+               "start": [3500, 49, 1000], "end": [3300, 3000, 1000],
+               "joins": {"start": lead1}, "square": true}}),
+    );
+    assert_eq!(
+        preview["junction"],
+        json!({"kind": "L", "wall": "Wall 1", "frame": lead1, "end": "b", "at": 3600.0,
+               "length": 3000.0}),
+        "{preview}"
+    );
+    // A click on its +Y side 100 mm from its end B, the end clicked: an L
+    // from that end's corner to +Y, as long as the end is along it.
+    let w2 = wall_on(
+        &mut doc,
+        &lead1,
+        [3500.0, 49.0, 1000.0],
+        json!({"end": [3300, 3000, 1000]}),
+    );
+    all_ok(&doc);
+    assert_eq!(w2["junction"]["kind"], "L", "{w2}");
+    assert_eq!(w2["junction"]["end"], "b", "{w2}");
+    assert_eq!(w2["relaid"], json!([lead1]), "{w2}");
+    let lead2 = w2["frame"].clone();
+    // At right angles from the corner, at the first one's base.
+    let (s, e) = ends_of(&doc, &lead2);
+    assert!(
+        close(s[0], 3600.0) && close(s[1], 0.0) && close(s[2], 0.0),
+        "{s:?}"
+    );
+    assert!(
+        close(e[0], 3600.0) && close(e[1], 3000.0) && close(e[2], 0.0),
+        "{e:?}"
+    );
+    // It butts: its start stud against the first one's face.
+    let second = members(&doc, &lead2);
+    let stud = end_a(&doc, member(&second, "stud.start"));
+    assert!(
+        close(stud[0], 3600.0) && close(stud[1], 49.0 + 24.0),
+        "{stud:?}"
+    );
+    // The corner's studs: the first one's end stud under the second one's
+    // end, and its stud just inside the corner.
+    let first = members(&doc, &lead1);
+    assert!(close(
+        end_a(&doc, member(&first, "stud.end"))[0],
+        3649.0 - 24.0
+    ));
+    assert!(close(
+        end_a(&doc, member(&first, "junction.Wall_2.0"))[0],
+        3600.0 - 49.0 - 24.0
+    ));
+    // The plates lap: the first one's to the second one's outer face, the
+    // second one's over the first to its outer face, each half-lapped with
+    // the other.
+    for key in ["plate.top.0", "plate.bottom.0"] {
+        let one = member(&first, key);
+        let two = member(&second, key);
+        assert!(close(length(one), 3649.0), "{key}: {}", length(one));
+        assert!(close(length(two), 3049.0), "{key}: {}", length(two));
+        assert!(close(end_a(&doc, two)[1], -49.0), "{key}");
+        assert_eq!(half_laps(one), vec![lead2.clone()], "{key}");
+        assert_eq!(half_laps(two), vec![lead1.clone()], "{key}");
+    }
+    // No overlap but the lapped plates.
+    let lapped = vec![
+        ("plate.bottom.0".to_owned(), "plate.bottom.0".to_owned()),
+        ("plate.top.0".to_owned(), "plate.top.0".to_owned()),
+    ];
+    assert_eq!(overlaps(&doc, &lead1, &lead2), lapped);
+
+    // A click on its -Y side near end A, the length typed: an L to -Y.
+    let w3 = wall_on(
+        &mut doc,
+        &lead1,
+        [180.0, -49.0, 300.0],
+        json!({"length": "2000 mm"}),
+    );
+    all_ok(&doc);
+    assert_eq!(
+        w3["junction"],
+        json!({"kind": "L", "wall": "Wall 1", "frame": lead1, "end": "a", "at": 0.0,
+               "length": 2000.0}),
+        "{w3}"
+    );
+    let lead3 = w3["frame"].clone();
+    let (s, e) = ends_of(&doc, &lead3);
+    assert!(close(s[0], 0.0) && close(s[1], 0.0), "{s:?}");
+    assert!(close(e[0], 0.0) && close(e[1], -2000.0), "{e:?}");
+    let third = members(&doc, &lead3);
+    assert!(close(length(member(&third, "plate.top.0")), 2049.0));
+    assert!(close(end_a(&doc, member(&third, "stud.start"))[1], -73.0));
+    let first = members(&doc, &lead1);
+    assert!(close(length(member(&first, "plate.top.0")), 3698.0));
+    assert!(close(
+        end_a(&doc, member(&first, "junction.Wall_3.0"))[0],
+        49.0 + 24.0
+    ));
+    assert_eq!(half_laps(member(&first, "plate.top.0")).len(), 2);
+    assert_eq!(overlaps(&doc, &lead1, &lead3), lapped);
+}
+
+#[test]
+fn a_t_from_a_click_mid_side() {
+    let mut doc = design();
+    let w1 = wall(&mut doc, [0.0, 0.0, 0.0], [3600.0, 0.0, 0.0], json!({}));
+    let lead1 = w1["frame"].clone();
+    // A click on its -Y side at 2000, the length typed: a T to -Y.
+    let w2 = wall_on(
+        &mut doc,
+        &lead1,
+        [2000.0, -49.0, 1200.0],
+        json!({"length": 2500}),
+    );
+    all_ok(&doc);
+    assert_eq!(
+        w2["junction"],
+        json!({"kind": "T", "wall": "Wall 1", "frame": lead1, "end": null, "at": 2000.0,
+               "length": 2500.0}),
+        "{w2}"
+    );
+    let lead2 = w2["frame"].clone();
+    let (s, e) = ends_of(&doc, &lead2);
+    assert!(close(s[0], 2000.0) && close(s[1], 0.0), "{s:?}");
+    assert!(close(e[0], 2000.0) && close(e[1], -2500.0), "{e:?}");
+    // It butts against the first one's face, its plates too.
+    let second = members(&doc, &lead2);
+    let plate = member(&second, "plate.top.0");
+    assert!(close(length(plate), 2500.0 - 49.0));
+    assert!(close(end_a(&doc, plate)[1], -49.0));
+    assert!(half_laps(plate).is_empty());
+    // The first gets a stud each side of it; its plates run on.
+    let first = members(&doc, &lead1);
+    assert!(close(
+        end_a(&doc, member(&first, "junction.Wall_2.0.a"))[0],
+        2000.0 - 49.0 - 24.0
+    ));
+    assert!(close(
+        end_a(&doc, member(&first, "junction.Wall_2.0.b"))[0],
+        2000.0 + 49.0 + 24.0
+    ));
+    assert!(close(length(member(&first, "plate.top.0")), 3600.0));
+    assert!(half_laps(member(&first, "plate.top.0")).is_empty());
+    assert_eq!(
+        overlaps(&doc, &lead1, &lead2),
+        Vec::<(String, String)>::new()
+    );
+
+    // A click on its +Y side at 1000, the end clicked off square: a T to
+    // +Y, as long as the end is along it.
+    let w3 = wall_on(
+        &mut doc,
+        &lead1,
+        [1000.0, 49.0, 300.0],
+        json!({"end": [1500, 2800, 0]}),
+    );
+    all_ok(&doc);
+    assert_eq!(w3["junction"]["kind"], "T", "{w3}");
+    assert_eq!(w3["junction"]["at"], 1000.0, "{w3}");
+    let lead3 = w3["frame"].clone();
+    let (s, e) = ends_of(&doc, &lead3);
+    assert!(close(s[0], 1000.0) && close(s[1], 0.0), "{s:?}");
+    assert!(close(e[0], 1000.0) && close(e[1], 2800.0), "{e:?}");
+    let first = members(&doc, &lead1);
+    assert_eq!(count_of(&first, "junction.Wall_3.0."), 2);
+    assert_eq!(
+        overlaps(&doc, &lead1, &lead3),
+        Vec::<(String, String)>::new()
+    );
+
+    // An end on the other side of the wall is refused.
+    let refused = command(
+        &mut doc,
+        json!({"cmd": "build_frame", "kind": "wall", "part": part("rows98"),
+               "start": [2600, 49, 0], "end": [2600, -1000, 0], "joins": {"start": lead1},
+               "square": true}),
+    )
+    .unwrap_err();
+    assert!(refused.contains("not beyond its side"), "{refused}");
+}
+
+#[test]
+fn two_top_plates_lap_at_an_l_corner() {
+    let mut doc = design();
+    let two = json!({"plates": {"top": 2}});
+    let w1 = wall(&mut doc, [0.0, 0.0, 0.0], [3600.0, 0.0, 0.0], two.clone());
+    let lead1 = w1["frame"].clone();
+    let w2 = wall_on(
+        &mut doc,
+        &lead1,
+        [3550.0, 49.0, 2000.0],
+        json!({"length": 3000, "plates": {"top": 2}}),
+    );
+    all_ok(&doc);
+    let lead2 = w2["frame"].clone();
+    let (first, second) = (members(&doc, &lead1), members(&doc, &lead2));
+    // The upper top plate of the wall that butts runs over the corner, the
+    // other's stops at its inner face; the lower ones as at a butt.
+    assert!(close(length(member(&second, "plate.top.0")), 3049.0));
+    assert!(close(length(member(&second, "plate.top.1")), 2951.0));
+    assert!(close(length(member(&first, "plate.top.0")), 3551.0));
+    assert!(close(length(member(&first, "plate.top.1")), 3649.0));
+    for key in ["plate.top.0", "plate.top.1"] {
+        assert!(half_laps(member(&first, key)).is_empty(), "{key}");
+        assert!(half_laps(member(&second, key)).is_empty(), "{key}");
+    }
+    // The one bottom plate of each half-lapped.
+    assert_eq!(
+        overlaps(&doc, &lead1, &lead2),
+        vec![("plate.bottom.0".to_owned(), "plate.bottom.0".to_owned())]
+    );
 }

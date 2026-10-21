@@ -27,10 +27,12 @@ class CacheDiagnosticsDialog : public QDialog {
 public:
   // What the dialog asks of the window: the `cache` query (with the
   // store's files and the process's memory), and the memory cache
-  // cleared (the clear_cache command's answer).
+  // cleared (the clear_cache command's answer), and where Export Report
+  // starts when the Export group remembers no folder (mitcad#498).
   struct Host {
     std::function<QJsonObject()> report;
     std::function<QJsonObject()> clearMemory;
+    std::function<QString()> folder;
   };
 
   CacheDiagnosticsDialog(Host host, QWidget* parent);

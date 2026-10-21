@@ -293,7 +293,7 @@ impl<K: Kernel> Document<K> {
 
     /// A wood fastener's size: its row's, or by the sizing rule when the
     /// source has rows and none is named.
-    fn wood_size(
+    pub(crate) fn wood_size(
         &self,
         source: &SourceUse,
         fastening: Option<&Fastening>,
@@ -376,7 +376,7 @@ impl<K: Kernel> Document<K> {
     /// The warnings of a fastener `i` (from 1) at `point` on the contact
     /// plane: its embedment, its distance to the contact's edges and to an
     /// end of the member it goes through.
-    fn fastener_warnings(
+    pub(crate) fn fastener_warnings(
         &self,
         fastening: &Fastening,
         size: &WoodSize,
@@ -451,7 +451,7 @@ impl<K: Kernel> Document<K> {
         self.plan_outer(input, source, &label)
     }
 
-    fn junction_of(&self, id: &str) -> Result<Junction, ModelError> {
+    pub(crate) fn junction_of(&self, id: &str) -> Result<Junction, ModelError> {
         self.build_junctions(None)
             .into_iter()
             .find(|j| j.id == id)
@@ -912,7 +912,7 @@ impl<K: Kernel> Document<K> {
 
 /// A fastener's frame that goes on the hole: its `axis` frame (kind
 /// `shaft`), else its first frame.
-fn axis_frame(source: &SourceUse) -> String {
+pub(crate) fn axis_frame(source: &SourceUse) -> String {
     source
         .meta
         .frames

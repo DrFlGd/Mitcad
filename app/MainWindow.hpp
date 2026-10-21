@@ -28,6 +28,7 @@
 #include "files/ProjectDialogs.hpp"
 #include "files/Projects.hpp"
 #include "framework/CommandSession.hpp"
+#include "framework/DialogFolders.hpp"
 #include "framework/DocumentSession.hpp"
 #include "framework/ModelWorker.hpp"
 #include "mitcad/geometry/shape.hpp"
@@ -435,6 +436,14 @@ private:
   void updateIdleView();
   SelectFilter idleFilter() const;
   void showContextMenu(const QPoint& globalPosition, const SelectionItem& item);
+  // The menu outside sketches and commands (mitcad#494,
+  // MainWindowContextMenu.cpp): the commands that fit the selection in
+  // Solid, BUILD and Construct, Delete and Hide; `entries` gets what it
+  // adds, as the log shows it.
+  void fillModelContextMenu(QMenu& menu, QStringList& entries);
+  // Delete Member and Delete Spacing Set of the menu: build_remove of the
+  // BUILD parts (components) given, or of their sets, one undo step.
+  void deleteBuildParts(const QStringList& components, bool sets);
   bool keepSelected(const SelectionItem& item) const;
 
   // Sketches: Create Sketch picks the plane, then sketch mode until Finish
@@ -832,7 +841,12 @@ private:
   bool maybeSave();
   bool isModified() const;
   QString documentName() const;
+  // Where a file dialog starts: the design's folder, else the project,
+  // the Projects panel's folder, else Documents.
   QString fileDialogDirectory() const;
+  // Where a file dialog of the group starts: its last folder while it
+  // exists, else fileDialogDirectory() (mitcad#498, framework/DialogFolders).
+  QString dialogFolder(DialogGroup group) const;
   // A new, empty document (New, Close, a file brought in as a document).
   // False when replacing the current design is cancelled or refused.
   bool installEmptyDocument(const QString& name, QString* error = nullptr);

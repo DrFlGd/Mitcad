@@ -84,6 +84,12 @@ pub struct BSplineSurface {
     /// the seam, as edges may on periodic curves.
     pub u_periodic: bool,
     pub v_periodic: bool,
+    /// Closed in u or v without being periodic (the ends meet, the
+    /// derivatives need not): faces may cross the seam too, the files'
+    /// parameter curves run past it (mitcad#499). Built so the parameter
+    /// wraps, as on a periodic surface, where the geometry is closed.
+    pub u_closed: bool,
+    pub v_closed: bool,
 }
 
 fn full_knots(knots: &[f64], mults: &[usize]) -> Vec<f64> {

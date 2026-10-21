@@ -203,6 +203,9 @@ vcpkg_from_github(
         0931-chfi3d-seam-run-on-to-a-corners-cut-past-its-end.patch
         0932-chfi3d-walk-cut-before-a-singular-section-ends-there.patch
         0933-chfi3d-ends-joined-over-a-narrow-face-that-pokes-through-the-blend.patch
+        0940-chfi3d-rounding-over-a-narrow-face-cut-by-the-face-beyond-its-concave-edge.patch
+        0941-chfi3d-kpart-chain-crossings-in-the-period-after-the-gaps-start.patch
+        0942-shapefix-intersecting-wires-cut-reported-only-where-cut.patch
 )
 
 if (VCPKG_LIBRARY_LINKAGE STREQUAL "dynamic")

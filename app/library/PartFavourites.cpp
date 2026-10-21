@@ -13,9 +13,21 @@ namespace mitcad {
 namespace {
 
 // The settings: JSON arrays, as the libraries' sources (files/Libraries.cpp),
-// so that any id keeps as it is in the registry and in INI files.
+// so that any id keeps as it is in the registry and in INI files. A part's
+// entry is {library, component} and, for a configuration row (mitcad#491),
+// `row`.
 const QString kPartsKey = QStringLiteral("partPicker/starredParts");
 const QString kGroupsKey = QStringLiteral("partPicker/starredGroups");
+
+// "<library>|<component>", "<library>|<component>|<row>" for a row: a
+// star's key (the parts of a key kept apart by a character no id has).
+QString starKey(const PartStar& star) {
+  QString key = star.library + QChar(0x1f) + star.component;
+  if (!star.row.isEmpty()) {
+    key += QChar(0x1f) + star.row;
+  }
+  return key;
+}
 
 } // namespace
 
@@ -29,11 +41,12 @@ PartFavourites::PartFavourites(QObject* parent) : QObject(parent) {
   const QJsonArray parts = QJsonDocument::fromJson(store.value(kPartsKey).toByteArray()).array();
   for (const QJsonValue& value : parts) {
     const QJsonObject part = value.toObject();
-    const QPair<QString, QString> key(part.value(QStringLiteral("library")).toString(),
-                                      part.value(QStringLiteral("component")).toString());
-    if (!key.first.isEmpty() && !key.second.isEmpty() && !m_partSet.contains(key)) {
-      m_parts.append(key);
-      m_partSet.insert(key);
+    const PartStar star{part.value(QStringLiteral("library")).toString(),
+                        part.value(QStringLiteral("component")).toString(),
+                        part.value(QStringLiteral("row")).toString()};
+    if (!star.library.isEmpty() && !star.component.isEmpty() && !contains(star)) {
+      m_parts.append(star);
+      m_partSet.insert(starKey(star));
     }
   }
   const QJsonArray groups = QJsonDocument::fromJson(store.value(kGroupsKey).toByteArray()).array();
@@ -45,21 +58,46 @@ PartFavourites::PartFavourites(QObject* parent) : QObject(parent) {
   }
 }
 
+bool PartFavourites::contains(const PartStar& star) const { return m_partSet.contains(starKey(star)); }
+
 bool PartFavourites::starred(const QString& library, const QString& component) const {
-  return m_partSet.contains(qMakePair(library, component));
+  return starred(library, component, QString(), false);
 }
 
 void PartFavourites::setStarred(const QString& library, const QString& component, bool on) {
-  const QPair<QString, QString> key(library, component);
-  if (library.isEmpty() || component.isEmpty() || m_partSet.contains(key) == on) {
+  setStarred(library, component, QString(), false, on);
+}
+
+bool PartFavourites::starred(const QString& library, const QString& component, const QString& row,
+                             bool defaultRow) const {
+  if (library.isEmpty() || component.isEmpty()) {
+    return false;
+  }
+  if (contains({library, component, row})) {
+    return true;
+  }
+  // A star without a row marks the default row only (mitcad#491).
+  return !row.isEmpty() && defaultRow && contains({library, component, QString()});
+}
+
+void PartFavourites::setStarred(const QString& library, const QString& component, const QString& row,
+                                bool defaultRow, bool on) {
+  if (library.isEmpty() || component.isEmpty() || starred(library, component, row, defaultRow) == on) {
     return;
   }
+  const PartStar star{library, component, row};
   if (on) {
-    m_parts.append(key);
-    m_partSet.insert(key);
+    m_parts.append(star);
+    m_partSet.insert(starKey(star));
   } else {
-    m_parts.removeAll(key);
-    m_partSet.remove(key);
+    m_parts.removeAll(star);
+    m_partSet.remove(starKey(star));
+    if (!row.isEmpty() && defaultRow) {
+      // The star without a row that marked it.
+      const PartStar whole{library, component, QString()};
+      m_parts.removeAll(whole);
+      m_partSet.remove(starKey(whole));
+    }
   }
   save();
   emit changed();
@@ -80,12 +118,16 @@ void PartFavourites::setGroupStarred(const QString& group, bool on) {
   emit changed();
 }
 
-QList<QPair<QString, QString>> PartFavourites::starredParts() const { return m_parts; }
+QList<PartStar> PartFavourites::starredParts() const { return m_parts; }
 
 void PartFavourites::save() const {
   QJsonArray parts;
-  for (const QPair<QString, QString>& part : m_parts) {
-    parts.append(QJsonObject{{QStringLiteral("library"), part.first}, {QStringLiteral("component"), part.second}});
+  for (const PartStar& part : m_parts) {
+    QJsonObject entry{{QStringLiteral("library"), part.library}, {QStringLiteral("component"), part.component}};
+    if (!part.row.isEmpty()) {
+      entry.insert(QStringLiteral("row"), part.row);
+    }
+    parts.append(entry);
   }
   QSettings store;
   store.setValue(kPartsKey, QJsonDocument(parts).toJson(QJsonDocument::Compact));
@@ -100,7 +142,7 @@ QList<int> pickerOrder(const QList<OrderedPart>& parts, bool inFavourites) {
   for (int i = 0; i < parts.size(); ++i) {
     const OrderedPart& part = parts.at(i);
     int rank = 2;
-    if (favourites.starred(part.library, part.component)) {
+    if (favourites.starred(part.library, part.component, part.row, part.defaultRow)) {
       rank = inFavourites && favourites.groupStarred(part.group) ? 0 : 1;
     }
     classes[static_cast<size_t>(rank)].append(i);

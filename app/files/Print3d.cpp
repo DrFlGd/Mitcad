@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT
+#include "../framework/DialogFolders.hpp"
 #include "../framework/Dialogs.hpp"
 #include "Print3d.hpp"
 
@@ -484,11 +485,13 @@ QComboBox* slicerComboBox(const QVector<Slicer>& found, const Slicer& current, c
     }
     // Another program: an AppImage, a slicer installed elsewhere, an
     // application bundle.
-    const QString program = dialogOpenFileName(combo->window(), QObject::tr("Slicer Program"));
+    const QString program = dialogOpenFileName(combo->window(), QObject::tr("Slicer Program"),
+                                               dialogStartFolder(DialogGroup::Program, QString()));
     if (program.isEmpty()) {
       combo->setCurrentIndex(combo->property("previous").toInt());
       return;
     }
+    rememberDialogFolder(DialogGroup::Program, program);
     const Slicer chosenSlicer = slicerForProgram(QFileInfo(program).completeBaseName(), program);
     combo->insertItem(index, itemLabel(chosenSlicer), slicerData(chosenSlicer));
     combo->setCurrentIndex(index);

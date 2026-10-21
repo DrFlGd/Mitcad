@@ -394,7 +394,9 @@ References (`commands/CommandSupport`):
 - The context menu offers the feature commands whose first selection
   input takes everything selected, "Edit <feature>" for an item a feature
   made, and Repeat; in sketch mode, model faces, edges and vertices get
-  Project.
+  Project. Outside sketches the commands are in submenus by kind, those
+  the selection completes first (see [The view's context
+  menu](#the-views-context-menu)).
 - Inputs that take `SelectKind::Feature` get the timeline's and browser's
   clicks on features (`DocumentHost::takesFeatures`); a face clicked in
   the view goes in as the feature that made it (`withConvert`).
@@ -403,7 +405,7 @@ References (`commands/CommandSupport`):
   through `OcctViewer::viewChanged` and `toWidgetF`; a new display style
   or section view must keep these right.
 - Long panels scroll (`m_panelScroll`); adding or removing a list row logs
-  the panel's places again.
+  the panel's places again, and so does scrolling it.
 - The panel is never wider than its page, which does not scroll sideways
   (mitcad#198): its message (`CommandMessage`) breaks between words and
   inside a word longer than the line (a profile's or face's name), shows
@@ -411,6 +413,66 @@ References (`commands/CommandSupport`):
   whole, and is hidden when empty; the notes under the fields break long
   words too (`breakableText`). A row that still asks for more width is
   squeezed rather than pushing the fields and OK and Cancel out of sight.
+
+### The view's context menu
+
+Outside sketches and commands (`MainWindowContextMenu.cpp`, mitcad#494;
+sketch mode's menu and a command's OK / Cancel are as they were):
+
+```
+Repeat <last command>
+Solid      >  the commands the selection completes ... | More > the others
+BUILD      >  (only on BUILD parts)                    | More > ...
+Construct  >  ...                                      | More > ...
+Create Sketch, Edit <feature>, Edit Sketch, Save As DXF
+Measure (and the other INSPECT commands that take the selection)
+Appearance...
+Delete     >  Member, Spacing Set, Body, Component, Feature
+Hide       >  Body, Component
+Find in Browser
+Clear Selection, Undo, Fit, Command Search
+```
+
+- **Kinds.** A command of the BUILD tab goes into BUILD, one of the
+  CONSTRUCT group into Construct, one of INSPECT into the menu itself,
+  every other feature command into Solid; a submenu with nothing is left
+  out. BUILD is there only when every item is on a BUILD part
+  (`build::partOf`); a face of an ordinary body has no BUILD.
+- **First, or under More** (`CommandDef::completedBy`, computed from the
+  definition): first when the selection alone completes the command: its
+  first selection input takes every item and as many as it needs (its
+  `min` to `max`), every other selection input shown at the start (the
+  inputs' defaults, a list's first rows) may stay empty, and it is no
+  creation command (group CREATE) given a face or a plane, which would
+  only be where it goes (Box, Cylinder, Hole, Coil, Gear, Plastic Feature).
+  Otherwise, needing further picks, it is under **More**, the submenu's
+  last entry. In each, the commands keep the registry's (the ribbon's)
+  order. A definition says what its inputs cannot:
+  - `completes`, when set, replaces the creation rule: Thread (the faces
+    are what it threads), Profile and Linear Part (not on a timber
+    member: under More there), Timber Frame (only a frame's member
+    completes it).
+  - `offeredFor`, when set, must hold too: Spacing Set only on members of
+    a spacing set; Swap Fastener (mitcad#497) only when every item is on a
+    fastener, which then completes it (BUILD's first entries).
+  - `surfaceBodiesOnly`: offered only when every item is on a surface body
+    (no solid): Stitch, Thicken, Extend, Trim, Untrim, Unstitch, Reverse
+    Normal, Match Surface, Fair Surface.
+- **Delete** holds whole things, each when the selection has it, each one
+  undo step: **Delete Member** (`build_remove` of each BUILD part, with
+  the joints, fasteners and holes it added), **Delete Spacing Set**
+  (`build_remove` with `set: true`, when a member is in a set), **Delete
+  Body** (a `remove_body` feature in each body's component,
+  `BrowserController::deleteBodies`), **Delete Component** (the
+  occurrences, `delete_occurrence`), **Delete Feature** (the one feature
+  that made the items, as the browser's Delete: the features that use it
+  too when the user says so; not for BUILD parts, which go as members).
+  Counts as Hide's: "Delete 2 Bodies". Delete Face stays in Solid.
+- The log names each submenu's entries: `Context menu: Repeat Box | Solid
+  | Construct | Create Sketch | ...`, `Context menu Solid: Press Pull |
+  Fillet | ... | More`, `Context menu Solid More: Draft | Hole | ...`,
+  `Context menu Delete: Delete Body | Delete Feature`, `Context menu Hide:
+  Hide Body`; `tools/ui-context-menu-test.sh`.
 
 ## Actions and tools
 
@@ -1636,6 +1698,7 @@ places one and closes it.
 | `build.linear` Linear Part | as Profile (its part picker too) without the mitre (rails are cut to length; a carriage on its rail gets the joint its `mate` says) | `build_preview`, `build_place` |
 | `build.connector` Connector | Near (a click on a profile chooses the nearest junction), Junction (every junction, `L junction of Part1 and Part2`, `, connected`), Connector (the parts that fit, best first, each with the library's picture of it (`library_preview`, `withChoiceImages`), its supplier and part number; shown as a tile, `withChoiceTile`, mitcad#427, that opens the part picker with the fitting connectors first and, greyed with the reason, those that nearly fit; a new junction gives it new ones), With Nuts and Screws, With End Machining, Show All Junctions. The junctions of the profile under the mouse are marked in the view at their `at_frame` (`L`, `T (connected)`; `CommandDef::hover`, `previewMarkersIn`), the chosen one always (`> L`), every one with Show All Junctions; the panel lists the fitting connectors and, greyed, those that nearly fit with the reason; the two profiles are highlighted. The chosen connector is previewed where it goes (`build_preview` with `build_connect`'s fields; its shape `analysis_shape` `{"shape": "build_preview", "junction", "part", ...}`), its fasteners as markers, the machining it needs in the panel; choosing another in the list previews that one. **Connect** repeats and moves on to the nearest junction not connected; Shift + click near a junction connects it at once (mitcad#451; the view's hint says so while Near is empty) | `build_junctions`, `library_build_candidates` with the junction, `build_preview`, `build_connect` |
 | `build.fasteners` Fasteners | Connector (a connector, or one of its nuts or screws), With Nuts and Screws, Fastener (the kinds it has), Size (the rows of its library component, `library_show`) | `build_edit` with `config`; off: `build_remove` of each; on for a connector without them: `build_remove` and `build_connect` again with them; one undo step `Fasteners of <name>` |
+| `build.swap_fastener` Swap Fastener | [Timber](#timber), Swap Fastener (mitcad#497): Fasteners (the fasteners selected; the view's context menu, BUILD, for fasteners only), Fastener (the compatible ones, a tile that opens the part picker), Size (a wood fastener's: Auto or a row) | `build_swap_fasteners`, one undo step |
 | `build.spacing` Spacing Set | Member (a member of a spacing set, mitcad#478; its set's values fill the panel), Spacing (Centre distance, Gap), Distance, Last Board (gap: cut, spread), Count (0: from the distance), Size (the rows of the set's source); enabled while the design has a set | `build_edit` of the set's lead with `spacing` (and `config`): the members laid out again in one undo step |
 | `build.frame` Timber Frame | Member (a member of a timber frame, mitcad#479; its frame's values fill the panel), by its kind Length, Width, Height, Spacing, Top Plates, Openings, Blocking, Pitch, Overhang, Size (the members' row); the members previewed as boxes | `build_preview` with `frame` and `component`, `build_edit` with `frame` (one undo step) |
 | `build.length` Length | Part, Length (Detached: this length, Bound: to the face, to the centre, through), Value, Bound To (none: the face it is bound to now); the bound target highlighted | `build_edit` with `length` (a value detaches, a `bind` binds) |
@@ -1869,7 +1932,15 @@ profile`, `kind: timber`).
     as its start was made: a shared mitre cutting both after a mitred
     start, a square butt after a square one (commands.md, *Frames of
     members*); the panel says so (`Closes the corner at end A of <part>: a
-    shared mitre`).
+    shared mitre`). A typed length that ends on that member's outer side
+    (or its face) closes the corner the same way (mitcad#492). A member
+    lying on a plane (a ground placement along X or Y on XY, or on a
+    picked plane or face) rests on it, on the plane's normal side, not
+    centred on it; one standing along the normal stands on its end. A
+    member standing on another member's side lies as that one does: its
+    width along the other's width, same-size members flush (Rotate turns
+    it further). The inspection logs where end A goes (`; end A at x, y,
+    z`). Commands.md, *Resting, lying as the host, typed corners*.
   - **Spacing**: Spacing On: **Between two members** (on a member's side as
     On a member, the auto length bound to the member it meets: studs,
     joists, rafters), or **Over the supporting faces** (Supporting Faces:
@@ -1883,7 +1954,10 @@ profile`, `kind: timber`).
     cut (`build_preview` with `spacing`, mitcad#487), after the click: the
     hover between two members shows only the face a click picks (the
     view's hover highlight; no set laid out and no inspection while the
-    mouse moves, mitcad#489: laying the set out on every move lagged). One
+    mouse moves, mitcad#489: laying the set out on every move lagged).
+    Offset and From typed after the click move the set (mitcad#492): from
+    End A the first member's near face, from End B the last one's far
+    face; the count is the model's (`spacing.count` of the preview). One
     `build_place` with `spacing`: one undo step for the set. Profiled
     boards that join (tongue and groove, shiplap, feather-edge, mitcad#477;
     `build::Part::joinedCover`) lying flat are laid edge to edge in a Gap
@@ -1922,7 +1996,15 @@ profile`, `kind: timber`).
     or two), Openings: a text, each opening `offset widthxheight [sill]`
     in mm separated by `;` (no sill: a door), `600 900x1200 900`. A Start
     or End clicked on a member of another wall frame joins it (`joins`:
-    a corner or a T-junction) at that wall's base height.
+    a corner or a T-junction) at that wall's base height. A Start clicked
+    on another wall's side (mitcad#493; `square`) starts the wall square
+    to it, towards the side clicked: an L corner at that wall's end when
+    the click is near it (within half its stud spacing), else a T at the
+    click; as far as the End clicked is along that direction, else Length
+    (Direction is hidden). The panel says which (`Wall 2: an L corner at
+    Wall 1's end B`, `Wall 2: a T on Wall 1 at 2000 mm`) and the length the
+    model works out; the existing wall continues, the new one butts
+    against it, the corner's plates lap.
   - Floor: Start and End two opposite corners (axis-aligned in the host),
     or Length and Width from the start (Width to the left of Direction);
     Blocking (a row halfway); Openings `a b widthxlength` (from the
@@ -1930,12 +2012,49 @@ profile`, `kind: timber`).
   - Roof: Walls (a member of each of two wall frames), Roof (Gable or
     Mono-pitch), Pitch (30 deg; a mono-pitch roof's from the walls'
     heights while Pitch From Walls is checked), Overhang (300 mm).
-  - Fasteners (checked): the library's first wood screw (the catalog's
-    `wood`: `library_build_candidates` with `role: fastener`, `kind:
-    wood`), two at each junction, sized by the model.
+  - Fasteners (checked): under it while it is on, **Fastener**, **Size**
+    and **Count** (mitcad#497; below, *Fasteners of frames and sets*): two
+    of the library's first wood screw at each junction, sized by the
+    model, until another is chosen.
   The preview (`build_preview` with `frame`) draws the members as boxes
   and counts them by role, with the layout's warnings. Enter places it;
   the panel stays for the next one.
+- **Fasteners of frames and sets** (mitcad#497; the model's side in
+  commands.md, "BUILD: choosing and swapping fasteners"): Frame's
+  Fasteners (on the first time) and Spacing's **Fasteners** (off the first
+  time: each member of the set fastened to the members it stands on,
+  reaches or crosses) show, while on, three inputs shared by both modes:
+  - **Fastener**: a tile with the fastener's picture that opens the part
+    picker with the libraries' wood fasteners (the catalog's `wood`:
+    `library_build_candidates` with `role: fastener`, `kind: wood`; each
+    once, its rows are Size's), the choice going into Fastener
+    (`PickerRequest::input`, `fastener`); the first time the library's
+    first wood screw, else its first wood fastener;
+  - **Size**: **Auto** (sized from the members at each junction, the
+    model's rule) or one of the fastener's rows (`3.1x90`);
+  - **Count**: how many at each junction (2).
+
+  A frame sends `fastener` (its row unless Auto) and `fastener_count` with
+  `build_frame`; a set `spacing.fastener` and `spacing.fastener_count` with
+  `build_place`. The panel says it (`3 x Ring nail 3.1x90 at each
+  junction`, `2 x Wood screw at each junction, sized from the members`;
+  a set's `Fastened to its hosts: ...`, `No fasteners`). The tool
+  remembers both switches, the fastener, its size and count for its next
+  start (with its other choices, mitcad#485).
+- **Swap Fastener** (`build.swap_fastener`, CONNECT; mitcad#497): the
+  fasteners selected (Fasteners: wood screws and nails, or a connector's
+  nuts and screws; picked in the view, a pick rule takes fasteners only)
+  made from another one where they are. **Fastener** offers the compatible
+  ones (a tile that opens the part picker): wood fasteners for wood ones,
+  with **Size** (Auto: sized from the members each joins, or a row); the
+  other fasteners of the first one's slot system (`library_build_candidates`
+  with `role: fastener`, without a `wood` block) for a connector's, each
+  row a choice. It starts with the fasteners' own part (only Size to
+  change), Auto. **Swap** (Enter) runs `build_swap_fasteners`: one undo
+  step; the model's warnings for the new size (embedment, edges, ends) in
+  the status bar. The view's context menu offers it under **BUILD** when
+  everything selected is a fastener (`offeredFor`), the selection its
+  Fasteners (`preselect`).
 - **Timber Frame** (`build.frame`, MODIFY) lays a frame out again: a
   member picked, its frame's values in the panel (a wall's Length, Height,
   Spacing, Top Plates, Openings; a floor's Length and Width when its
@@ -1993,11 +2112,26 @@ Frames' logs (mitcad#479): `BUILD parts wood: <n> (<m> in the design)`,
 `Inspect Timber: frame wall Wall 1, wall 3600 x 2400 mm, 16 member(s) (1
 bottom plate, 2 cripple stud, ...); fasteners yes; adds to Part1; part
 <part>` (`frame <kind> waiting: <problem>; ...` while it cannot be laid
-out), `Placed frame Wall 1 (wall, lead C3): 16 member(s), 31 junction(s)
-fastened`, `Frame warning: <warning>`, `Inspect Timber Frame: frame Wall 1
+out; `...; Wall 2: an L corner at Wall 1's end B` for a wall started on
+another wall's side), `Placed frame Wall 1 (wall, lead C3): 16 member(s), 31 junction(s)
+fastened`, `Frame junction: Wall 2: a T on Wall 1 at 1800 mm`, `Frame
+warning: <warning>`, `Inspect Timber Frame: frame Wall 1
 laid out again: 20 member(s) (...)`, `Timber frame Wall 1: 20 member(s),
-36 junction(s) fastened`. Test: `tools/ui-timber-frame-test.sh` (a wall
-with a window, the cut list).
+36 junction(s) fastened`. Tests: `tools/ui-timber-frame-test.sh` (a wall
+with a window, the cut list), `tools/ui-windows-timber-test.ps1` (a wall,
+then an L wall from near its end and a T wall from mid-side).
+
+Fasteners' logs (mitcad#497): `BUILD timber fasteners: frame on, set off;
+2 x Wood screw at each junction, sized from the members` (a start in
+Frame or Spacing), `Inspect Timber: frame ...; fasteners yes; ...;
+fastener 3 x Ring nail 3.1x90 at each junction`, a set's `...; fasteners
+2 x Wood screw ...` (`; fasteners no`), `Placed <part> as <name> (<o>),
+length ...; a set of 6, 12 junction(s) fastened`, `BUILD swap fastener
+starts with 2 fastener(s), <key>`, `Inspect Swap Fastener: swap 2
+fastener(s) (wood, 2 x Wood screw 5x80) for Ring nail 3.1x90`, `Swapped 2
+fastener(s) for Ring nail 3.1x90 (3.1x90); <warnings>`. Tests:
+`tools/ui-timber-fasteners-test.sh`, `tools/ui-windows-timber-test.ps1`
+(section 11).
 
 ## The view
 
@@ -2426,7 +2560,7 @@ UI thread.
 | `commands/SheetCommands.cpp` | `registerSheetMetalCommands`: the SHEET METAL group (mitcad#210): Face, Flange, Bend, Fold, Corner Round, Corner Chamfer, Sheet Cut, Corner Relief, Unfold, Refold, Flat Pattern, Sheet Rules |
 | `MainWindowSheet.cpp` | Edit Sheet Rules, Show Flat Pattern, Export Flat Pattern and its dialog |
 | `commands/SurfaceCommands.cpp` | `registerSurfaceCommands`: the SURFACE group (mitcad#455, [Surface modelling](#surface-modelling)): Surface Extrude, Surface Revolve, Surface Sweep, Surface Loft, Patch, Stitch, Thicken and the surface features |
-| `commands/BuildCommands.cpp` | `registerBuildCommands`: the BUILD tab (mitcad#375, [BUILD](#build)): Profile, Panel, Linear Part, Connector, Fasteners, Length, Ends, Flip, Rotate 90 deg, Cut List, Parts List |
+| `commands/BuildCommands.cpp` | `registerBuildCommands`: the BUILD tab (mitcad#375, [BUILD](#build)): Profile, Panel, Linear Part, Connector, Fasteners, Swap Fastener, Length, Ends, Flip, Rotate 90 deg, Cut List, Parts List |
 | `build/BuildCatalog.*`, `build/BuildModel.*`, `build/BuildLists.*` | BUILD's parts for the pickers (library commands, the design's sources); what it reads of the model (paths, placements, picks as `at`, BUILD parts, junctions, preview frames); the Cut List and Parts List dialog with CSV and PDF |
 | `library/PartPicker.*`, `library/PartFavourites.*`, `library/UsedParts.*` | the part picker (mitcad#418, [Part picker](#part-picker)): the grid of the library's parts (`PartGrid`), the floating window of the part-choosing commands (`PartPicker`), Insert from Library's results; the favourites and their order; the design's library parts |
 | `commands/SketchCommands.cpp` | the SKETCH tab: drawing tools, Sketch Dimension, constraints, Offset, Mirror, patterns, Project, sketch Fillet and Chamfer, Move/Copy, Trim, Extend, Construction, Convert to Sketch Geometry, Delete |
@@ -2449,6 +2583,7 @@ UI thread.
 | `LayoutGrid.*` | the layout grid |
 | `files/MainWindowFiles.cpp` | the File menu (mitcad#175; groups: New Design, Open, Open Recent, Open Read-Only, Close; Save, Save As, Save with Description, Version History; the Project submenu with New Project, Open Project, Open from Cloud, Sync, Check for Newer Versions, Open in Browser, Move to a Project, Project Settings; Import, Export; Recover Documents; Exit. 3D Print, Insert Component and Render Image are on the ribbon only): open, recent files, close, import, export, Insert Component, drops |
 | `files/FileFormats.*`, `files/FileDialogs.*` | file kinds by extension and dialog filters; Export, Insert DXF, Insert Mesh, linked or copy, the import report |
+| `framework/DialogFolders.*` | the file dialogs' folders per group, remembered across restarts ([below](#file-dialogs-folders), mitcad#498) |
 | `files/F3dImport.*` | `.f3d`, FreeCAD, `.ipt` and `.iam` import in a worker process behind a progress dialog |
 | `files/Autosave.*`, `files/Recovery.*`, `files/MainWindowAutosave.cpp` | autosave and recovery |
 | `files/MainWindowVersions.cpp`, `files/VersionDialogs.*` | saving versions: Save and Save with Description in a versioned project, the author, changes and renames made outside Mitcad, the indicator's version |
@@ -2767,6 +2902,39 @@ mode.
   wheel, OK at its logged place, the log line, the file's views, size,
   callout and table, the choices kept).
 
+### File dialogs' folders
+
+`framework/DialogFolders` (mitcad#498). The file dialogs come in groups,
+and each group remembers the folder of the file last accepted in one of
+its dialogs (not a cancelled one), across restarts (settings
+`fileDialogs/<group>`, written at once). A dialog starts in its group's
+folder while that folder exists, else where it started before the groups
+(`MainWindow::fileDialogDirectory`: the design's folder, the project, the
+Projects panel's folder, Documents; for the dialogs of other windows
+their own earlier start):
+
+| Group | Dialogs |
+|---|---|
+| `open` | Open, Open Read-Only, Save As (also the first save of an untitled design, and Another Folder... of the project picker) |
+| `export` | Export (the dialog's suggested file), Export Drawing, Export Flat Pattern, Save As DXF, the Cut List's and Parts List's Save as PDF, Help › Diagnostics' Export Report, Render's Save Rendered Image: the last export folder, also while a design is open |
+| `import` | Import, Insert SVG, Insert Mesh, Insert DXF, Insert Component (Another File... in a project) |
+| `texture` | Edit Appearances' texture image |
+| `program` | the 3D Print slicer program (the panel's and Preferences'), Preferences' git program |
+
+Version History's Save Copy As starts in the design's own folder and
+remembers nothing (`DialogGroup::SaveCopy`). Other file dialogs (a font
+file, Render's environment image, folders, the `.f3d` import's
+documents) keep their own start. `MainWindow::dialogFolder(group)` gives the start with the
+window's fallback; `dialogStartFolder` and `rememberDialogFolder` the
+rest. Tests: `app.unit` (`tests/dialog_folders.cpp`),
+`tools/ui-dialog-folders-test.sh` and `app.ui-windows-dialog-folders`
+(Import, Export and Open each in their own folder, also after a restart).
+
+A path typed into Qt's own file dialog is what Enter or Open takes, also
+when the dialog starts in a folder on that path (`prepareFileDialog` in
+`framework/Dialogs.cpp` clears list selections other than the typed name;
+`tools/ui-import-test.sh` opens a part again from its own folder).
+
 ### Unsaved changes
 
 The title's `*` and the question on New Design, Open, Close and exit
@@ -3045,8 +3213,9 @@ Project Folder...** (a folder that is no project: Make It a Project). An
 open design that is moved or renamed follows its new path (its version
 base and edit lock: `openDesignMoved`); a deleted open design closes. Save
 of an untitled design starts in the panel's selected folder (the project
-picker's preselection, `saveAsProjectPlace`; the file dialog's
-`fileDialogDirectory` after Another Folder...).
+picker's preselection, `saveAsProjectPlace`; after Another Folder... the
+file dialog starts in the Open group's [folder](#file-dialogs-folders),
+else in `fileDialogDirectory`).
 
 | Model command | Used by |
 |---|---|
@@ -3295,8 +3464,15 @@ Profile, Panel, Linear Part and Connector).
   part; a click on a group's star (Ctrl+Shift+D) stars the group. Stars
   are the user's (`PartFavourites`, settings group `partPicker`, keys
   `starredParts` and `starredGroups`), keyed by the library's id and the
-  component's id, so they survive library updates; a starred part that
-  is not listed is left out of Favourites. Order (`pickerOrder`,
+  component's id and, for a tile of one configuration row, the row
+  (`library|component|row`, mitcad#491: every size is a tile of its own,
+  so starring 48x148 stars that size only), so they survive library
+  updates; a part without rows keeps its key `library|component`. A star
+  kept without a row on a component that has rows (starred before
+  mitcad#491, or on a tile without rows) marks only its default row
+  (`configurations.default`, else the first), and turning that tile's
+  star off removes it. A starred part that is not listed is left out of
+  Favourites. Order (`pickerOrder`,
   `groupOrder`): starred first, then the rest, each in the given order;
   starred groups first after Favourites, In this design and All parts;
   in Favourites the parts of starred groups first. Search and the system
@@ -3323,7 +3499,7 @@ parts, first <library>/<component>` (every time the tiles change: a
 group, a search, the system, a star), `Part picker search '<text>'`
 (searched by the grid), `Part picker system <system|all>`, `Part picker
 in this design: <n> parts: <library>/<component> x<count>, ...`, `Part
-picker star <component> on|off`, `Part picker group star <group>
+picker star <component>[ (<row>)] on|off`, `Part picker group star <group>
 on|off`, `Part picker chose <library>/<component>[ (<row>)]`, `Part
 picker refused <library>/<component>: <reason>`, `Part picker shows the
 part chosen: <library>/<component>` (`ask` scrolled to it and highlighted
@@ -3819,6 +3995,7 @@ next screenshot.
 | `Ribbon split SKETCH/CREATE/Circles at x,y`, `Ribbon split SKETCH/CREATE/Circles arrow at x,y` | a subgroup's split button: the part that starts its default, the arrow that opens the submenu (mitcad#222; logged with the group menus) |
 | `Ribbon menu SKETCH/CREATE: Line \| Rectangles > [2-Point Rectangle \| …] \| … \| Sketch Dimension`, `Ribbon menu SKETCH/CREATE/Circles: Center Diameter Circle \| …` | a group menu or a subgroup's submenu as it opens (`-` a separator, a submenu as `Name > [its entries]`) |
 | `Panel <command> input <id> at x,y [(hidden)]`, `Panel <command> OK at x,y` | a panel opened |
+| `Panel <command> view y 160 to 668, scrolled 0 of 297, bar at 1015,414` | with a panel's places: the part of the window its page shows, how far it is scrolled, and its scroll bar while it scrolls (a long panel in a low window); the places are logged again when it scrolls (`Ui-PanelReveal` in `tools/ui-windows-lib.ps1`) |
 | `Datum xy at x,y`, `Sketch entity F1/c4 at x,y` | an input that takes them became active |
 | `Datum F4 at x,y`, `Datum F4 in O1 at x,y` | with `MITCAD_LOG_PICKS`: where a click picks a shown construction feature, a component's where its occurrence places it (mitcad#432) |
 | `View highlight places: face F2.b0/F2:side(c1) in O1 at 60.0,0.0,10.0; plane F4 in O1 at …` (`none`) | with `MITCAD_LOG_PICKS`: the highlighted faces, edges, vertices and datums changed: each with its occurrence and the middle of its bounding box in the design (mitcad#432: a loaded face of a placed component drawn where the view shows it) |
@@ -3835,6 +4012,7 @@ next screenshot.
 | `Sketches shown: F1, …` | the sketches the view shows |
 | `Timing refresh: 36.5 ms`, `Timing display: 1093 ms, 166 bodies, 166 new`, `Timing hover: …`, `Timing frame: …`, `Timing open: …` | with `MITCAD_LOG_TIMING=1` (`framework/Diagnostics.hpp`): how long the steps take, for `tools/perf-measure.sh` |
 | `Selected: 1 face [face F2:end(…) of F2.b0]`, `Context menu: A \| B` | outside commands |
+| `Context menu Solid: Press Pull \| Fillet \| More`, `Context menu Solid More: Draft \| Hole` (`BUILD`, `Construct`), `Context menu Delete: Delete Member \| Delete Body \| Delete Component`, `Deleted member <name>` (`spacing set of <name>`), `Deleted body Body1`, `Deleted component Component1:1` | the view's context menu's submenus (mitcad#494; [The view's context menu](#the-views-context-menu)) and what Delete did, one undo step each; `tools/ui-context-menu-test.sh` |
 | `Eye click Root/Bodies/Body1 (press)` (`(double-click)`) | a click on a light bulb in the browser, before its `Visibility …` line; the press, its moves and its release belong to the light bulb and never reach the tree's selection (mitcad#344; `tools/ui-browser-test.sh`, `tools/ui-windows-browser-test.ps1`) |
 | `Context menu Hide: Hide Body \| Hide Component` (`Hide 2 Bodies`, `Hide 2 Components`; the submenu of the view's context menu, mitcad#347), `Hid body Body2`, `Hid component Component1:1` | Hide > Hide Body / Hide Component: `set_body_visible` for the bodies of the selected faces, edges, vertices and bodies, `set_occurrence_visible` for their occurrences (none for the root's bodies, so no Hide Component), each once, as the browser's light bulbs do (`BrowserController::hideBodies`, `hideOccurrences`), one undo step; `tools/ui-hide-menu-test.sh` |
 | `Find in Design opened`, `Find in Design found: 5 bodies, 0 components`, `Find in Design: hid 3 bodies` (`showed`, `1 component`; `selected …`, `appearance for N bodies`), `Find in Design button at x,y`, `Find in Design field\|components\|bodies\|visibility\|show\|hide\|appearance\|select\|all\|none\|close at x,y`, `Find in Design row N at x,y` | the Find in Design window (mitcad#350): the results after each search, what each button did (bodies by uid and components by occurrence, each once), and where the controls and the rows in sight are; the field is also logged as `Dialog field Find in Design: <text>`; `tools/ui-find-in-design-test.sh` |
@@ -3963,6 +4141,8 @@ next screenshot.
 | `Floating cards: window 1028x749, top bar bottom 21, view top 21, floating rows bottom 172; titleCard 12,33 1004x52; ribbonGroup_SOLID/CREATE 12,93 180x67; ribbonGroup_SOLID/MODIFY 200,93 120x67; projectsDock 12,180 260x200; browserDock 12,388 260x300; timelineDock 12,688 1004x48; commandDock 716,370 300x200`, `Floating view between the cards at 196,126` | the Floating layout's visible cards (main window coordinates, also for cards that are windows), the rows' cards first (mitcad#425: the title card, the group cards with spaces in their names as `_`, the notice card), the bottom of the bar above the view (the menu bar, the header on macOS), the view's top and the lowest row's bottom (the bar's bottom without rows), when it changed (mitcad#419: no card's top above the bar's bottom; mitcad#425: on Windows and Linux the view's top is the menu bar's bottom, and no other card's top is above the rows' bottom); and the middle of the gap between the first two cards of a row, where a click reaches the view (`tools/ui-chrome-layout-test.sh`, `app.ui-windows-chrome-layout`) |
 | `Export dialog: Web page (*.html) to <path>`, `Exported <path>: html, 1 body(ies), 123456 bytes` (the page's size; each texture image left out a warning, `Export: …`), `Export of <path> failed: <reason>` | Export › Web page (mitcad#423, [Web page](#web-page)) |
 | `Drawing dialog opened: format pdf, sheet A4, scale fit`, `Drawing dialog file\|format\|sheet\|scale\|OK at x,y` (in the dialog's own window), `Drawing dialog: format = svg`, `Drawing dialog: sheet = A3`, `Drawing dialog: svg A3 to <path>`, `Exported <path>: drawing, 3 views, 2 bodies, A3, 1:1`, `Export drawing: <warning>` | File › Export Drawing (mitcad#471, [Drawing](#drawing)) |
+| `Dialog folder import: <folder>`, `Dialog folder import remembered: <folder>` (`open`, `export`, `import`, `texture`, `program`) | where a file dialog of the group starts, and the folder it remembers when accepted ([File dialogs' folders](#file-dialogs-folders), mitcad#498) |
+| `Typed name kept in Open: deselected <folder>` | Qt's own file dialog had other entries selected than the typed name (a folder the typed path passed through); they are deselected so that Enter or Open takes the typed name (`framework/Dialogs.cpp`) |
 
 Test logs are switched on by environment variables
 (`framework/Diagnostics.hpp`): `MITCAD_LOG_PICKS`, `MITCAD_LOG_VOLUMES`

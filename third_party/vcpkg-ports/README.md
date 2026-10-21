@@ -275,6 +275,23 @@ ends over a narrow face that pokes through the ball's path, the contact
 never leaving its face, one blend holed by that face (a rounding of a
 torus's edge with a plane that a rod interrupts twice, mitcad#343).
 
+0940 rounds over a narrow face whose far edge is a concave crease on that
+face's surface unbounded, as 0531 chamfers: the face beyond cuts the blend's
+side on the narrow face from where the contact crosses the crease up to
+the other contact, and grows up to the cut; at the spine's ends a second
+face beyond takes over where the two faces' junction, run on along its own
+curve, meets the blend (a key's top edge rounded wider than the key's side
+is high where it runs out against a bore's wall, mitcad#343).
+
+0941 takes the crossings of a gap (0142) on a closed line of the other
+contact in the period that follows the piece before the gap, where the gap
+does not run across the spine's start (a boss's foot chamfered past a plate
+corner with a slanted side, the boss's seam just before the gap,
+mitcad#495). 0942 stops ShapeFix's repair of intersecting wires from
+intersecting the same two edges for ever where two arcs of one circle in
+two wires meet end to end (the repair of 0941's invalid result never
+ended, mitcad#495).
+
 - `0006-shapeupgrade-unifysamedomain-seam-search-by-vertex.patch`: the face
   merge after booleans (`ShapeUpgrade_UnifySameDomain`) looks up the edges
   it removed by vertex instead of going through all of them at each step of
@@ -3148,6 +3165,78 @@ round the rod's foot.
   its contours within 0.0033 mm³ of the file's change (7.5193 mm³); before,
   two corners failed.
 
+The patch 0940 comes from mitcad#343 (round 15): a key's top edge rounded
+with 2, the key's side B a strip between that edge and a bore's wall C (a
+torus) across a concave crease, 2.2 high in the middle and lower than the
+ball towards both ends, where B and C end at the key's end roundings of
+0.5 (C2).
+
+- `0940-chfi3d-rounding-over-a-narrow-face-cut-by-the-face-beyond-its-concave-edge.patch`:
+  past the crossing where the ball's contact on B reaches the crease, the
+  ball rolled on the crease (0011's obstacle), sticking out of the key's
+  side, and the corners at the ends (four edges each) failed. The file's
+  rounding is B's cylinder all along, cut where C's wall runs through it,
+  C grown over the strip up to the cut; at each end C2 cuts the blend from
+  where the junction of C and C2, run on along its circle, meets it, down
+  to the key's top. `ChamferOverNarrowFace` (0531) now takes a rounding
+  whose piece rolls on a concave crease of a face of its edges, or whose
+  contact ends on such a crease away from the spine's end vertices while
+  the other contact goes on (over a convex crease the ball still rolls on
+  the edge, 0620). `ChamferCutByFacesBeyond` takes a crossing where the
+  other contact lies outside C's material and the contact on B's surface
+  past it inside (roundings only): C cuts B's side from the crossing up to
+  where the other contact enters C's material, the piece ending in a point
+  there. At the spine's ends with two faces beyond B the junction runs on
+  along its own circle, line or ellipse where that lies on both faces;
+  where it meets the blend before that point, C2 cuts the blend from there;
+  where it meets the other face first it bounds the growth instead of the
+  edge's tangent line, and an edge of the other face and C2 through that
+  point is cut there. Curves of two faces that the intersection lines miss
+  at a vertex where the faces touch are found by points, and the cuts'
+  curves are moved into the periods of the faces beyond. On the design's
+  stored body: valid, every new face on the file's within 1e-3 mm (the
+  file's sliver of B of 0.0024 mm² at one end lies 0.017 mm off), the
+  change of volume -9.5996 against the file's -9.5954 mm³; before, two
+  corners failed.
+
+The patches 0941 and 0942 come from mitcad#495: a design's chamfer hung in
+the kernel. Four bosses of radius 7.5 under a plate, their feet chamfered
+by 13 (each boss 13 long, so its side goes with the chamfer); two of them
+stand under the plate's rounded corners (radius 20 about the boss's axis)
+whose one side is slanted, tangent to the corner's arc, so that the contact
+on the plate's underside (radius 20.5) runs 0.5 beyond the outline round
+the corner and along both sides (0142's gap, cut by the chain of the faces
+beyond). The bosses' seams lie just before the gap.
+
+- `0941-chfi3d-kpart-chain-crossings-in-the-period-after-the-gaps-start.patch`:
+  `ChFi3d_KPartEdgeCrossing` takes a crossing's parameter on the other
+  contact's line (the boss's circle) in the period around the middle of
+  the piece before the gap; a long gap ending towards the spine's end got
+  its last crossing a period early (-0.286 for 5.997), and the last piece
+  of the chain, from there to the next piece's start (6.218), ran more than
+  once round the circle: the boss's bottom face got edges covering more
+  than its rim, the cone's seam a tolerance of 58 mm, an invalid result.
+  `ChFi3d_KPartChainPieces` now takes each crossing's parameter in the
+  period that follows the end of the piece before the gap (or the chain's
+  given start) where the gap does not run across the spine's start; a gap
+  across the start keeps them as before (0145, 0146). On the design's
+  replayed body: valid, the change of volume +25112.5803 against the
+  file's +25112.5808 mm³; before, invalid (two of the four bosses +618 and
+  -733 mm³ off).
+- `0942-shapefix-intersecting-wires-cut-reported-only-where-cut.patch`:
+  the healing of that invalid result (`ShapeFix_Shape`, as the dressups'
+  `healed` does) never returned. `ShapeFix_IntersectionTool::FixIntersectingWires`
+  intersected an arc of one wire of the boss's bottom face with the next
+  arc of the same circle in another wire; the intersection was a segment
+  of no length at their common vertex, both edges were to be cut there and
+  the pair intersected again without counting a modification. `CutEdge`,
+  for an edge that is not same parameter with a trimmed curve as its
+  p-curve, cut only a trimmed line but answered that it had cut any
+  trimmed curve; now it answers so only where it cut (a line cut to the
+  range it has is no cut either), and the repair goes on to the next pair.
+  With 0941 alone the design's chamfer builds; with 0942 alone it fails at
+  once ("an invalid shape") instead of hanging.
+
 The patch 0540 goes on with the corners where a rounding ends (mitcad#236,
 eighth round): a rounding that runs on into an earlier rounding's tube.
 
@@ -3434,9 +3523,26 @@ by two caps that poke through its rounding of 0.5, posts of radius 1 and
 0.8, in `geometry/tests/test_fillet_pierced.cpp` (valid, the rounded post
 with the caps fused within 2e-5 mm³, both caps' lenses; invalid without
 the patch);
+for 0940, mitcad#343 and a key in a spherical hollow, its top edge rounded
+with 2 where the key's side runs out against the hollow's wall, in
+`geometry/tests/test_fillet_narrow_cut.cpp` (valid, the material taken off
+the corner outside the rounding's cylinder inside the hollow within 1e-6
+mm³; the key whose side runs out before its ends builds without the patch
+as well, the key cut off before that by end walls is invalid without it);
+for 0941, mitcad#495 and a boss under a plate corner with a slanted side,
+its foot chamfered past the corner, the boss's seam at 120, 150, 180 and
+300 degrees, 13 and 15 long, in `geometry/tests/test_chamfer_overflow.cpp`
+(valid, the boss with the chamfer's cone cut by the plate's outline
+within 1e-8 relative; invalid without the patch for the seams from 120 to
+180 degrees);
+for 0942, mitcad#495 and a planar face of two wires whose arcs of one
+circle meet end to end, in `geometry/tests/test_shapefix.cpp` (the repair
+of intersecting wires returns with nothing to repair; it never returns
+without the patch);
 each fails without its patch but 0931's (on that body OCCT's topological
 build closes the rod's face without it as well, so the test checks 0931's
-way only; the design's failure is verified on its replayed body), and 0802
+way only; the design's failure is verified on its replayed body) and
+0940's first two cases (the key with end walls fails without it), and 0802
 has no such test: its contact meets the
 spine's own edge only through the stored bodies' micrometre deviations at
 the walk's steps there, which no synthetic body reproduced; nor has 0910: its

@@ -1589,6 +1589,63 @@ void BrowserController::hideOccurrences(const Selection& items) {
   }
 }
 
+void BrowserController::deleteBodies(const Selection& items) {
+  const QStringList bodies = hideableBodies(items);
+  if (bodies.isEmpty() || !canChange()) {
+    return;
+  }
+  // A feature works on its own component's bodies: one remove_body in each.
+  QStringList components;
+  QHash<QString, QJsonArray> byComponent;
+  QStringList names;
+  for (const QString& uid : bodies) {
+    const auto body = m_snapshot.bodies.constFind(uid);
+    const QString component = body != m_snapshot.bodies.cend() ? body->component : QString();
+    if (!components.contains(component)) {
+      components << component;
+    }
+    byComponent[component].append(uid);
+    names << m_host.model().bodyName(uid);
+  }
+  QJsonArray commands;
+  for (const QString& component : components) {
+    const QJsonObject def{{QStringLiteral("type"), QStringLiteral("remove_body")},
+                          {QStringLiteral("bodies"), byComponent.value(component)}};
+    QJsonObject command = cmd("add_feature", {{QStringLiteral("def"), def}});
+    if (!component.isEmpty()) {
+      command.insert(QStringLiteral("component"), component);
+    }
+    commands.append(command);
+  }
+  if (m_host.runModelCommands(commands, bodies.size() == 1 ? tr("Delete %1").arg(names.first()) : tr("Delete Bodies"))) {
+    qDebug().noquote() << QStringLiteral("Deleted body %1").arg(names.join(QStringLiteral(", ")));
+  }
+}
+
+void BrowserController::deleteOccurrences(const Selection& items) {
+  const QStringList occurrences = hideableOccurrences(items);
+  if (occurrences.isEmpty() || !canChange()) {
+    return;
+  }
+  QJsonArray commands;
+  QStringList names;
+  for (const QString& path : occurrences) {
+    // One inside another selected goes with it.
+    if (std::any_of(occurrences.begin(), occurrences.end(), [&path](const QString& other) {
+          return path.startsWith(other + QLatin1Char('/'));
+        })) {
+      continue;
+    }
+    commands.append(cmd("delete_occurrence", {{QStringLiteral("occurrence"), path}}));
+    const DocumentSnapshot::Occurrence* found = occurrence(path);
+    names << (found != nullptr ? found->name : path);
+  }
+  if (m_host.runModelCommands(commands, occurrences.size() == 1 ? tr("Delete %1").arg(names.first())
+                                                                : tr("Delete Components"))) {
+    qDebug().noquote() << QStringLiteral("Deleted component %1").arg(names.join(QStringLiteral(", ")));
+  }
+}
+
 bool BrowserController::eventFilter(QObject* watched, QEvent* event) {
   if (watched == m_findButton &&
       (event->type() == QEvent::Show || event->type() == QEvent::Resize || event->type() == QEvent::Move)) {

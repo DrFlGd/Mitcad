@@ -7916,6 +7916,48 @@ fn an_item_whose_operation_changed_no_body_is_skipped_as_failed() {
 }
 
 #[test]
+fn an_item_whose_change_stays_within_the_tolerance_is_skipped() {
+    // mitcad#343: a cut across components that shaves micrometres off this
+    // component's body (its state after is the state before within the
+    // geometric tolerance) and that no definition reaches: the bodies as
+    // they are stand for its state, carrying what the items before them
+    // carried; skipped, no base feature.
+    let (mut items, mut geometry) = block_history(Vec::new());
+    let mut item = extrude(3, 0, "JoinFeatureOperation", "d2");
+    item["name"] = json!("Extrude3");
+    items.push(item);
+    let after = geometry.states[2].clone();
+    geometry.states.push(after);
+    geometry.items.insert(3, 3);
+    let mut doc = Document::new(TestKernel {
+        lists_new_faces: true,
+        ..TestKernel::default()
+    });
+    let report = import_design(
+        &mut doc,
+        &timeline_dump(items),
+        &mut geometry,
+        &Options::default(),
+    );
+    let item = &report.items[3];
+    assert_eq!(item.outcome, Outcome::Skipped, "{}", report.text());
+    assert!(
+        item.note
+            .as_deref()
+            .is_some_and(|n| n.contains("no change by it beyond the geometric tolerance")),
+        "{}",
+        report.text()
+    );
+    assert!(item.features.is_empty(), "{}", report.text());
+    assert!(
+        !doc.features().any(|f| matches!(f.def, FeatureDef::Base(_))),
+        "{}",
+        report.text()
+    );
+    assert_eq!(report.items[2].outcome, Outcome::Parametric);
+}
+
+#[test]
 fn an_item_naming_an_earlier_item_s_operation_is_skipped_as_failed() {
     // mitcad#343: a chamfer after a rounding names the rounding's operation
     // (both items have its result number), so the history holds none of its

@@ -87,6 +87,8 @@ qt_add_executable(mitcad
   framework/ShortcutDialog.hpp
   framework/Dialogs.cpp
   framework/Dialogs.hpp
+  framework/DialogFolders.cpp
+  framework/DialogFolders.hpp
   framework/Theme.cpp
   framework/Theme.hpp
   framework/TitleBar.cpp
@@ -327,6 +329,11 @@ target_sources(mitcad PRIVATE
   framework/SelectionFilterPanel.cpp
   framework/SelectionFilterPanel.hpp
   MainWindowSelection.cpp)
+
+# The view's context menu: the commands that fit the selection in Solid,
+# BUILD and Construct, those it completes first and the others under More;
+# Delete for whole things and Hide (mitcad#494, mitcad#347).
+target_sources(mitcad PRIVATE MainWindowContextMenu.cpp)
 
 # Parameter names picked from the view into a feature panel's value field:
 # the visible sketches' dimensions and the earlier features' values as
@@ -612,6 +619,8 @@ if(BUILD_TESTING)
   # The folders live MCP agents may save to and open from (mitcad#402):
   # plain Qt Core and Widgets.
   target_sources(test_app PRIVATE tests/agent_folders.cpp mcp/AgentFolders.cpp mcp/AgentFolders.hpp)
+  # The file dialogs' folders per group (mitcad#498): plain Qt Core.
+  target_sources(test_app PRIVATE tests/dialog_folders.cpp framework/DialogFolders.cpp framework/DialogFolders.hpp)
   target_link_libraries(test_app PRIVATE mitcad_geometry)
   target_include_directories(test_app PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
   target_link_libraries(test_app PRIVATE Qt6::Widgets Qt6::Svg mitcad_warnings)
@@ -962,6 +971,12 @@ target_sources(mitcad PRIVATE
 if(BUILD_TESTING)
   # The settings and the command they make: plain Qt Core.
   target_sources(test_app PRIVATE tests/drawing_settings.cpp files/DrawingSettings.cpp files/DrawingSettings.hpp)
+endif()
+if(BUILD_TESTING)
+  # The view's context menu (mitcad#494): which commands a selection
+  # completes (first) and which need further picks (More), from the command
+  # definitions.
+  target_sources(test_app PRIVATE tests/context_menu.cpp framework/Command.cpp framework/Command.hpp)
 endif()
 # Sketch text from font files: Preferences' Fonts page and the font
 # chooser of Edit Text (mitcad#473).

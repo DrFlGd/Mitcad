@@ -435,7 +435,10 @@ Handle(Geom_Surface) make_surface(Reader& in, int kind) {
       surface = new Geom_BSplineSurface(poles, uknots, vknots, umults, vmults, ud, vd);
     }
     // A face may cross the seam of a periodic surface (it then has an edge
-    // on the seam from one side only); make the parameter wrap.
+    // on the seam from one side only), also of one the file keeps closed
+    // but not periodic (mitcad#499: left unwrapped, its parameter curves
+    // past the seam put the face on the surface's extrapolation, of
+    // kilometres); make the parameter wrap.
     if (u_periodic && surface->IsUClosed()) {
       surface->SetUPeriodic();
     }

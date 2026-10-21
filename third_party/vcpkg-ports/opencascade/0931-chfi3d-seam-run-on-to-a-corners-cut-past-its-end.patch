@@ -1,0 +1,148 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: a corner whose cut crosses the line of the face at the end's seam
+past the seam's end at the corner's vertex runs the seam on to the cut
+(mitcad#343).
+
+The case: three roundings of radius 0.5 along the curves where three
+bores meet, each ending on a rod of radius 2.5 that stands in their
+middle; the rod's cylinder face runs all round, its seam from its bottom
+edge up to the vertex where two of the bores' curves on the rod meet, the
+end vertex of one rounding. At that end the face at the end grows up to
+the rounding: the corner's cut (the blend's intersection with the rod)
+lies beyond the face's old boundary and crosses the seam's line 0.31 past
+the seam's end. PerformOneCorner splits the cut where it crosses the seam
+only where the crossing lies on the seam's edge (or at one of its
+vertices); here the cut was left whole across the line, the seam ended at
+the vertex the rounding removes, and the rod's face came out with a wire
+not closed (its parameters jumping by the period).
+
+Where the seam ends at the corner's vertex and the cut's curve on the face
+crosses the seam's line beyond that end (on the face's surface, within the
+tolerances), the cut is now split there as on the seam, and the seam runs
+on along its line from the vertex to the crossing: a curve of the data
+structure on the face's iso-line through the seam (its surface's own
+parametrization, as the seam's curve, a B-spline here, cannot be
+prolonged), on both sides of the seam, each the way the seam runs there,
+from the vertex to the cut's point. The seam itself stays whole. On the
+design's replayed body the rod's face has the file's area (412.4848
+against 412.4839 mm2) and every new face lies within 6e-4 of the file's.
+
+Upstream: new.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
+index 2411e415..f0c08991 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
+@@ -4365,6 +4365,12 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
+   // the seam's end vertex where it is split at that vertex, see below.)
+   bool          seamOnFace = false;
+   TopoDS_Vertex seamVertex;
++  // (The cut crossing the seam's line past the seam's end at the corner's
++  // vertex: the seam runs on along its line from the vertex to the
++  // crossing, from coordinate seamExtFrom to seamExtTo along the line.)
++  bool   seamExt     = false;
++  bool   seamExtIsU  = true;
++  double seamExtFrom = 0., seamExtTo = 0.;
+ 
+   int Isurf = Fd->Surf();
+ 
+@@ -4698,6 +4704,39 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
+             indpt = DStr.AddPoint(TopOpeBRepDS_Point(aPc, std::max(Tol, aTolE)));
+           }
+         }
++        if (seamVertex.IsNull() && indpt == 0 && (Vtx.IsSame(aV1) || Vtx.IsSame(aV2)))
++        {
++          // The seam ends at the corner's vertex and the cut crosses its
++          // line past that end, the face at the end growing up to the cut
++          // there (a concave rounding between two faces ending on a
++          // cylinder whose seam runs into the vertex): the seam runs on
++          // along its line to the crossing (stored below). Not where the
++          // crossing lies off the face's surface.
++          TopoDS_Face FvF = Fv;
++          FvF.Orientation(TopAbs_FORWARD);
++          double                          f2 = 0., l2 = 0.;
++          const occ::handle<Geom2d_Curve> aSeam2d = BRep_Tool::CurveOnSurface(edgecouture, FvF, f2, l2);
++          if (!aSeam2d.IsNull())
++          {
++            const TopoDS_Vertex& aOther = Vtx.IsSame(aV1) ? aV2 : aV1;
++            const gp_Pnt2d       uvV = aSeam2d->Value(BRep_Tool::Parameter(Vtx, edgecouture, FvF));
++            const gp_Pnt2d       uvO = aSeam2d->Value(BRep_Tool::Parameter(aOther, edgecouture, FvF));
++            const bool           isU = std::abs(uvV.X() - uvO.X()) <= Precision::PConfusion();
++            const bool           isV = std::abs(uvV.Y() - uvO.Y()) <= Precision::PConfusion();
++            const double cV = isU ? uvV.Y() : uvV.X(), cO = isU ? uvO.Y() : uvO.X();
++            const double cX = isU ? uvCross.Y() : uvCross.X();
++            const gp_Pnt aOnLine = isU ? Bs.Value(uvV.X(), cX) : Bs.Value(cX, uvV.Y());
++            if (isU != isV && (cX - cV) * (cV - cO) > 0.
++                && aOnLine.Distance(aPc) <= std::max(10. * tolapp3d, tolreached))
++            {
++              seamExt     = true;
++              seamExtIsU  = isU;
++              seamExtFrom = cV;
++              seamExtTo   = cX;
++              indpt       = DStr.AddPoint(TopOpeBRepDS_Point(aOnLine, std::max(Tol, tolreached)));
++            }
++          }
++        }
+         if (!seamVertex.IsNull() || indpt != 0)
+         {
+           seamOnFace = true;
+@@ -5269,7 +5308,57 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
+     InterFv = ChFi3d_FilCurveInDS(Icurv2, Isurf, c2d2, Et);
+     DStr.ChangeSurfaceInterferences(Isurf).Append(InterFv);
+ 
+-    if (seamVertex.IsNull())
++    if (seamExt)
++    {
++      // The seam's line from the corner's vertex to the crossing: on the
++      // face at the end on both sides of the seam, each the way the seam
++      // runs there, which it continues. (The seam stays whole.)
++      TopoDS_Face FvF = Fv;
++      FvF.Orientation(TopAbs_FORWARD);
++      const occ::handle<Geom_Surface> aSurf = BRep_Tool::Surface(Fv);
++      double                          aConst = 0.;
++      {
++        double                          f2 = 0., l2 = 0.;
++        const occ::handle<Geom2d_Curve> aSeam2d = BRep_Tool::CurveOnSurface(edgecouture, FvF, f2, l2);
++        aConst = seamExtIsU ? aSeam2d->Value(f2).X() : aSeam2d->Value(f2).Y();
++      }
++      const occ::handle<Geom_Curve> aIso = seamExtIsU ? aSurf->UIso(aConst) : aSurf->VIso(aConst);
++      const double                  c1 = std::min(seamExtFrom, seamExtTo), c2 = std::max(seamExtFrom, seamExtTo);
++      const int                     IS = DStr.AddCurve(
++        TopOpeBRepDS_Curve(new Geom_TrimmedCurve(aIso, c1, c2), std::max(BRep_Tool::Tolerance(edgecouture), tolreached)));
++      for (ex.Init(FvF, TopAbs_EDGE); ex.More(); ex.Next())
++      {
++        if (!ex.Current().IsSame(edgecouture))
++        {
++          continue;
++        }
++        const TopoDS_Edge&              aUse = TopoDS::Edge(ex.Current());
++        double                          f2 = 0., l2 = 0.;
++        const occ::handle<Geom2d_Curve> aUse2d = BRep_Tool::CurveOnSurface(aUse, FvF, f2, l2);
++        if (aUse2d.IsNull())
++        {
++          continue;
++        }
++        const gp_Pnt2d a = aUse2d->Value(f2), b = aUse2d->Value(l2);
++        // (Which way the wire runs along the line on this side.)
++        const double aRun = (seamExtIsU ? b.Y() - a.Y() : b.X() - a.X())
++                            * (aUse.Orientation() == TopAbs_REVERSED ? -1. : 1.);
++        const double                    aSide = seamExtIsU ? a.X() : a.Y();
++        const occ::handle<Geom2d_Curve> aLine =
++          seamExtIsU ? new Geom2d_Line(gp_Pnt2d(aSide, 0.), gp_Dir2d(0., 1.))
++                     : new Geom2d_Line(gp_Pnt2d(0., aSide), gp_Dir2d(1., 0.));
++        DStr.ChangeShapeInterferences(IShape).Append(ChFi3d_FilCurveInDS(
++          IS, IShape, new Geom2d_TrimmedCurve(aLine, c1, c2), aRun > 0. ? TopAbs_FORWARD : TopAbs_REVERSED));
++      }
++      const int IVs = DStr.AddShape(Vtx);
++      DStr.ChangeCurveInterferences(IS).Append(
++        seamExtFrom < seamExtTo ? ChFi3d_FilVertexInDS(TopAbs_FORWARD, IS, IVs, c1)
++                                : ChFi3d_FilPointInDS(TopAbs_FORWARD, IS, indpt, c1));
++      DStr.ChangeCurveInterferences(IS).Append(
++        seamExtFrom < seamExtTo ? ChFi3d_FilPointInDS(TopAbs_REVERSED, IS, indpt, c2)
++                                : ChFi3d_FilVertexInDS(TopAbs_REVERSED, IS, IVs, c2));
++    }
++    else if (seamVertex.IsNull())
+     {
+       // limitation of the sewing edge
+       int                                              Iarc = DStr.AddShape(edgecouture);

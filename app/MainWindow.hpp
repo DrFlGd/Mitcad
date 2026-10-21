@@ -202,6 +202,7 @@ public:
   void pick(const Selection& items, Qt::KeyboardModifiers modifiers) override;
   void showError(const QString& message) override;
   bool sketchClickable(const SelectionItem& item, bool expanded) const override; // mitcad#217
+  void deliverPendingPicks() override;                                           // mitcad#488
 
   // DocumentHost (the browser, the timeline and the parameters dialog)
   const CommandContext& model() const override { return *this; }

@@ -3362,6 +3362,12 @@ void MainWindow::pick(const Selection& items, Qt::KeyboardModifiers modifiers) {
   onPicked(items, modifiers, false);
 }
 
+// The view's picks reach onPicked by a queued connection (above in the
+// constructor): the ones emitted already are delivered now.
+void MainWindow::deliverPendingPicks() {
+  QCoreApplication::sendPostedEvents(this, QEvent::MetaCall);
+}
+
 void MainWindow::onPicked(const Selection& items, Qt::KeyboardModifiers modifiers, bool window) {
   if (m_nativeUi && m_session) {
     // The session invalidates an in-flight preview before queuing picks.

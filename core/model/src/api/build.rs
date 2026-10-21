@@ -11,7 +11,7 @@ use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
 use super::ApiError;
-use crate::build::place::{LengthPlan, Plan, Spot, value_in};
+use crate::build::place::{LengthPlan, Plan, SourceUse, Spot, value_in};
 use crate::build::{
     BuildRole, ConnectInput, CutListOptions, EditInput, MitreCut, PanelInput, PartInput,
     PlaceInput, Placed,
@@ -19,7 +19,7 @@ use crate::build::{
 use crate::document::Document;
 use crate::expr::Unit;
 use crate::features::bound_length::BoundMode;
-use crate::features::derived_part::{EndCut, Ends, evaluate_source};
+use crate::features::derived_part::{EndCut, Ends, Evaluated, PartCut, evaluate_source};
 use crate::features::{FeatureDef, GeomRef, OccurrencePath, ValueInput};
 use crate::ids::{ComponentUid, OccurrenceUid};
 use crate::kernel::Kernel;
@@ -29,6 +29,22 @@ use crate::transform::Transform;
 /// What a placing's ray meets: the occurrence path, the face and the
 /// length to it.
 type RayHit = (Vec<OccurrenceUid>, GeomRef, f64);
+
+/// A preview's source evaluations by their values (mitcad#487): one
+/// request's parts share one source.
+type Evaluations<S> = Vec<(Vec<(String, f64)>, Evaluated<S>)>;
+
+/// What a preview cuts and moves of a source's bodies: `touch` the end
+/// that touches the target (end B when flipped), kept where the plan put
+/// it when the length differs from the plan's; `ends` the end cuts at the
+/// length; `rip` a box taken away, in the part's coordinates (a set's last
+/// board, mitcad#478).
+#[derive(Default)]
+struct PreviewCuts<'a> {
+    touch: Option<(&'a str, [f64; 3])>,
+    ends: Option<(&'a Ends<ValueInput>, f64)>,
+    rip: Option<&'a PartCut<ValueInput>>,
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case", deny_unknown_fields)]
@@ -651,37 +667,46 @@ impl<K: Kernel> Document<K> {
     }
 
     /// The preview's shapes (`analysis_shape` with `build_preview`): the
-    /// new part's bodies in the design's coordinates.
+    /// new part's bodies in the design's coordinates; a spacing set's every
+    /// member, the last one ripped when the set rips it (mitcad#487).
     pub(crate) fn build_preview_shape(
         &self,
         fields: Map<String, Value>,
     ) -> Result<Option<K::Shape>, ApiError> {
-        // The end that touches the target (end B when flipped), kept where
-        // the plan put it when the length differs from the plan's.
-        let mut ends = None;
-        let (source, values, mut placement, touch) = match self.preview_input(fields)? {
-            PreviewInput::Place(input) => {
-                let plan = self.preview_place(&input)?;
-                // A bound length (or none given) is the ray's, as the
-                // query says, not the source's default.
-                let mut values = plan.values.clone();
-                let mut touch = None;
-                if let (Some(meta), (_, Some(length))) = (
-                    &plan.source.meta.length,
-                    self.place_preview_length(&input, &plan),
-                ) {
-                    values.insert(meta.parameter.clone(), ValueInput::Number(length));
-                    let end = if input.flip { "end_b" } else { "end_a" };
-                    touch = plan.mounts.get(end).map(|t| (end, t.translation));
-                    // Its end cuts as the part will have them (mitres, a
-                    // tilt's foot, mitcad#443 and #444).
-                    ends = Some((plan.own_ends.clone(), length));
+        // The source evaluated once per set of values: a set's members
+        // share them but for their lengths.
+        let mut evaluations = Vec::new();
+        let mut shapes = match self.preview_input(fields)? {
+            PreviewInput::Place(input) => match &input.spacing {
+                Some(spacing) => {
+                    let set = self.plan_set(&input, spacing)?;
+                    let last = set.plans.len().saturating_sub(1);
+                    let mut shapes = Vec::new();
+                    for (i, plan) in set.plans.iter().enumerate() {
+                        let rip = if i == last { set.rip.as_ref() } else { None };
+                        shapes.extend(self.placing_preview_bodies(
+                            &input,
+                            plan,
+                            rip,
+                            &mut evaluations,
+                        )?);
+                    }
+                    shapes
                 }
-                (plan.source, values, plan.placement, touch)
-            }
+                None => {
+                    let plan = self.preview_place(&input)?;
+                    self.placing_preview_bodies(&input, &plan, None, &mut evaluations)?
+                }
+            },
             PreviewInput::Panel(input) => {
                 let plan = self.plan_panel(&input)?;
-                (plan.panel.source, plan.panel.values, plan.placement, None)
+                self.preview_bodies(
+                    &plan.panel.source,
+                    &plan.panel.values,
+                    plan.placement,
+                    PreviewCuts::default(),
+                    &mut evaluations,
+                )?
             }
             PreviewInput::Connect(input) => {
                 if input.joint.is_some() {
@@ -690,25 +715,99 @@ impl<K: Kernel> Document<K> {
                 if self.is_wood_connect(&input) {
                     let plan = self.plan_wood(&input)?;
                     match (plan.lead, plan.placement) {
-                        (Some(lead), Some(placement)) => {
-                            (lead.source, BTreeMap::new(), placement, None)
-                        }
+                        (Some(lead), Some(placement)) => self.preview_bodies(
+                            &lead.source,
+                            &BTreeMap::new(),
+                            placement,
+                            PreviewCuts::default(),
+                            &mut evaluations,
+                        )?,
                         _ => return Ok(None),
                     }
                 } else {
                     let plan = self.plan_connect(&input)?;
-                    (plan.connector.source, BTreeMap::new(), plan.placement, None)
+                    self.preview_bodies(
+                        &plan.connector.source,
+                        &BTreeMap::new(),
+                        plan.placement,
+                        PreviewCuts::default(),
+                        &mut evaluations,
+                    )?
                 }
             }
         };
+        Ok(match shapes.len() {
+            0 => None,
+            1 => shapes.pop(),
+            _ => Some(
+                self.kernel()
+                    .compound(&shapes)
+                    .map_err(|e| ApiError(e.to_string()))?,
+            ),
+        })
+    }
+
+    /// A placing's bodies in the design's coordinates, as the preview shows
+    /// them: a bound length (or none given) is the ray's, as the query
+    /// says, not the source's default; `rip` a set's last member's rip.
+    fn placing_preview_bodies(
+        &self,
+        input: &PlaceInput,
+        plan: &Plan,
+        rip: Option<&PartCut<ValueInput>>,
+        evaluations: &mut Evaluations<K::Shape>,
+    ) -> Result<Vec<K::Shape>, ApiError> {
+        let mut values = plan.values.clone();
+        let mut cuts = PreviewCuts {
+            rip,
+            ..PreviewCuts::default()
+        };
+        if let (Some(meta), (_, Some(length))) = (
+            &plan.source.meta.length,
+            self.place_preview_length(input, plan),
+        ) {
+            values.insert(meta.parameter.clone(), ValueInput::Number(length));
+            let end = if input.flip { "end_b" } else { "end_a" };
+            cuts.touch = plan.mounts.get(end).map(|t| (end, t.translation));
+            // Its end cuts as the part will have them (mitres, a tilt's
+            // foot, mitcad#443 and #444).
+            cuts.ends = Some((&plan.own_ends, length));
+        }
+        self.preview_bodies(&plan.source, &values, plan.placement, cuts, evaluations)
+    }
+
+    /// A source's bodies at `values`, placed by `placement` in the BUILD
+    /// host, with `cuts`; the source evaluated once per values in
+    /// `evaluations`.
+    fn preview_bodies(
+        &self,
+        source: &SourceUse,
+        values: &BTreeMap<String, ValueInput>,
+        mut placement: Transform,
+        cuts: PreviewCuts<'_>,
+        evaluations: &mut Evaluations<K::Shape>,
+    ) -> Result<Vec<K::Shape>, ApiError> {
+        let PreviewCuts { touch, ends, rip } = cuts;
         let mut numbers = Vec::new();
-        for (name, value) in &values {
+        for (name, value) in values {
             numbers.push((name.clone(), value_in(self, value, Unit::MM)?));
         }
-        let state =
-            crate::build::parts::source_state(&source.def, source.config.as_deref(), &numbers)
+        let known = evaluations.iter().position(|(n, _)| *n == numbers);
+        let index = match known {
+            Some(i) => i,
+            None => {
+                let state = crate::build::parts::source_state(
+                    &source.def,
+                    source.config.as_deref(),
+                    &numbers,
+                )
                 .map_err(ApiError)?;
-        let evaluated = evaluate_source(self.kernel(), &state).map_err(ApiError)?;
+                let evaluated = evaluate_source(self.kernel(), &state).map_err(ApiError)?;
+                evaluations.push((numbers, evaluated));
+                evaluations.len() - 1
+            }
+        };
+        let evaluated = &evaluations[index].1;
         if let Some((end, was)) = touch
             && let Some(now) = evaluated.mounts.get(end)
         {
@@ -719,6 +818,35 @@ impl<K: Kernel> Document<K> {
         let kernel = self.kernel();
         let failed = |e: crate::kernel::KernelError| ApiError(e.to_string());
         let section = crate::build::place::bounds_of(kernel, &evaluated.bodies);
+        // A set's last board ripped (mitcad#478): its box as the derived
+        // part cuts it.
+        let rip_tool = match rip {
+            Some(cut) => {
+                let mm = |v: &[ValueInput; 3]| -> Result<[f64; 3], ApiError> {
+                    Ok([
+                        value_in(self, &v[0], Unit::MM)?,
+                        value_in(self, &v[1], Unit::MM)?,
+                        value_in(self, &v[2], Unit::MM)?,
+                    ])
+                };
+                let size = mm(&cut.size)?;
+                let spec = crate::transform::PrimitiveSpec {
+                    feature: crate::ids::FeatureUid(0),
+                    frame: crate::profile::SketchFrame {
+                        origin: mm(&cut.origin)?,
+                        x_axis: cut.x,
+                        y_axis: cut.y,
+                    },
+                    shape: crate::transform::PrimitiveShape::Box {
+                        length: size[0],
+                        width: size[1],
+                        height: size[2],
+                    },
+                };
+                Some(kernel.primitive(&spec).map_err(failed)?)
+            }
+            None => None,
+        };
         let mut shapes = Vec::new();
         for body in &evaluated.bodies {
             let mut body = body.clone();
@@ -755,21 +883,21 @@ impl<K: Kernel> Document<K> {
                     }
                 }
             }
+            if let Some(tool) = &rip_tool {
+                let output = kernel
+                    .boolean(crate::kernel::BooleanOp::Cut, &[&body], tool)
+                    .map_err(failed)?;
+                if let Some(piece) = output.pieces.into_iter().find(|p| p.sources.contains(&0)) {
+                    body = piece.shape;
+                }
+            }
             shapes.push(
                 kernel
                     .transform_shape(&body, &world, None)
                     .map_err(failed)?,
             );
         }
-        Ok(match shapes.len() {
-            0 => None,
-            1 => shapes.pop(),
-            _ => Some(
-                kernel
-                    .compound(&shapes)
-                    .map_err(|e| ApiError(e.to_string()))?,
-            ),
-        })
+        Ok(shapes)
     }
 
     /// The `build_host` query (mitcad#394): the component BUILD places

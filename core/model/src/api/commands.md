@@ -960,7 +960,15 @@ numbers the positions from 0.
 A modelled thread's new faces (flanks, crests and roots) are
 `thread(<face>)`, the chamfers' cones `thread_chamfer_low(<face>)` and
 `thread_chamfer_high(<face>)` (the low and high end along the axis of
-the face's cylinder). The work is local: only the body's faces near the
+the face's cylinder). The thread's pieces, a crest, two flanks and a root
+a turn, and the threaded face's pieces are numbered by their place along
+the axis (their centres of mass along it, then from it, then their
+areas), the same on every platform; the numbers start at the pieces'
+count, `thread(<face>)#57` to `#113` for 57 pieces (mitcad#490). A piece
+also keeps the number it had before that, where that number was the same
+on every platform (pieces at the thread's ends); references saved to the
+pieces of whole turns before then no longer find a face and are
+reported, to be picked again. The work is local: only the body's faces near the
 thread take part, so a large body does not slow it down. Imported
 threads have no end chamfers: the thread properties the imports read
 (`core/import/SCHEMA.md`, `ThreadFeature`) include none; a chamfer in
@@ -8871,7 +8879,9 @@ fields gives the new part's bodies (a connector's, a panel's) in the
 design's coordinates, as other analysis shapes, for the view to show
 while a command is open. A profile's bodies are at the length the query
 says (`length.value`): a bound length or none given is what the ray
-meets, not the source's default.
+meets, not the source's default. With `spacing` (a set, *Spacing sets*)
+it gives every member's bodies, the last one ripped when the set rips it
+(mitcad#487).
 
 **How junctions are found.** From the derived parts' frames and boxes at
 the marker: two profiles meet when their boxes touch or overlap within
@@ -9110,7 +9120,8 @@ cladding (a board row: a gap).
     `build_edit`) goes back to the count from the span.
 - `build_preview` with `spacing` answers the first member as a placing does
   and adds `spacing`: `{count, frames, rip}` (each member's own axes at its
-  end A, and whether the last is ripped).
+  end A, and whether the last is ripped); `analysis_shape` with the same
+  fields gives every member's bodies (mitcad#487).
 - One member is placed when the span holds only one. A refusal of any
   member refuses the whole set.
 - The answer's `component` is the first member (the set's **lead**),

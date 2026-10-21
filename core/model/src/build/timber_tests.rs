@@ -185,6 +185,15 @@ fn a_member_by_two_points_lies_on_the_plane_flat_or_on_edge() {
     assert!(close(t.apply_vector([0.0, 0.0, 1.0]), [0.0, 0.0, 1.0]));
 }
 
+/// The bodies of a preview's shape.
+fn preview_bodies(
+    doc: &Document<MockKernel>,
+    shape: &crate::testing::MockShape,
+) -> Vec<crate::testing::MockShape> {
+    use crate::kernel::Kernel;
+    doc.kernel().solids(shape).unwrap()
+}
+
 /// Two beams along X, 2000 apart (centres), on edge.
 fn two_beams(doc: &mut Document<MockKernel>) -> (Value, Value) {
     let b1 = member(doc, "beam148", [0.0, 0.0, 0.0], [3000.0, 0.0, 0.0], "edge");
@@ -221,8 +230,18 @@ fn a_joist_set_at_400_between_two_beams_follows_its_distance() {
         "at": {"occurrence": b1["occurrence"], "geometry": mount(&doc, &b1, "face_yn")},
         "spacing": {"mode": "centre", "distance": 400}});
     preview["length"] = json!(1952);
+    let mut shape_request = preview.clone();
+    shape_request.as_object_mut().unwrap().remove("query");
+    shape_request["shape"] = json!("build_preview");
     let preview = query(&doc, preview);
     assert_eq!(preview["spacing"]["count"], 9, "{preview}");
+    // The preview's shape: every member's body, not the first one's only
+    // (mitcad#487).
+    let shape = doc
+        .analysis_shape(&shape_request.to_string())
+        .unwrap()
+        .expect("the set's bodies");
+    assert_eq!(preview_bodies(&doc, &shape).len(), 9, "{}", shape.history);
     let members: Vec<String> = set["set"]
         .as_array()
         .unwrap()
@@ -621,13 +640,27 @@ fn a_deck_board_row_with_a_gap_and_a_plywood_sheet_on_a_face() {
     let top = mount(&doc, &j1, "face_xp");
     // Deck boards 28 x 120 lying flat across them, gap 5, over 1990:
     // 16 boards, the last ripped to 115.
-    let deck = place(
-        &mut doc,
-        json!({"part": part("deck120"),
-               "at": {"occurrence": j1["occurrence"], "geometry": top, "point": [-24, 0, 74]},
-               "to": {"point": [2024, 0, 74]},
-               "spacing": {"mode": "gap", "distance": 5, "along": [0, 1, 0], "length": 1990}}),
+    let fields = json!({"part": part("deck120"),
+           "at": {"occurrence": j1["occurrence"], "geometry": top, "point": [-24, 0, 74]},
+           "to": {"point": [2024, 0, 74]},
+           "spacing": {"mode": "gap", "distance": 5, "along": [0, 1, 0], "length": 1990}});
+    // Previewed first (mitcad#487): every board, the last one ripped.
+    let mut shape_request = fields.clone();
+    shape_request["shape"] = json!("build_preview");
+    let shape = doc
+        .analysis_shape(&shape_request.to_string())
+        .unwrap()
+        .expect("the row's bodies");
+    let boards = preview_bodies(&doc, &shape);
+    assert_eq!(boards.len(), 16, "{}", shape.history);
+    let cuts = |b: &crate::testing::MockShape| b.history.matches("cut(").count();
+    assert!(
+        cuts(&boards[15]) == cuts(&boards[14]) + 1,
+        "{} / {}",
+        boards[14].history,
+        boards[15].history
     );
+    let deck = place(&mut doc, fields);
     all_ok(&doc);
     assert_eq!(deck["count"], 16, "{deck}");
     let set: Vec<String> = deck["set"]

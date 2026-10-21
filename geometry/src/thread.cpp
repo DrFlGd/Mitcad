@@ -2,10 +2,15 @@
 #include "mitcad/geometry/thread.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <cstddef>
+#include <cstdlib>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
+#include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -18,6 +23,7 @@
 #include <BRepBuilderAPI_MakePolygon.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepClass3d_SolidClassifier.hxx>
+#include <BRepGProp.hxx>
 #include <BRepLib.hxx>
 #include <BRepOffsetAPI_MakePipeShell.hxx>
 #include <BRepOffset_MakeOffset.hxx>
@@ -26,6 +32,7 @@
 #include <BRepTools.hxx>
 #include <BRepTools_ReShape.hxx>
 #include <BRep_Builder.hxx>
+#include <GProp_GProps.hxx>
 #include <Geom2dAPI_Interpolate.hxx>
 #include <Geom2dConvert.hxx>
 #include <Geom2d_BSplineCurve.hxx>
@@ -556,31 +563,111 @@ bool thread_named(const NameList& names, const std::vector<std::string>& threads
   return false;
 }
 
+// A name per_turn_names numbers, with the axis of its thread.
+struct TurnNamed {
+  std::string name;
+  gp_Pnt origin;
+  gp_Dir along;
+};
+
+// How far apart (mm, and mm^2 for areas) two pieces' places must lie to
+// tell the pieces apart: far above the nanometres by which the booleans
+// make equal turns differ between platforms (mitcad#490), far below the
+// distance between two pieces of a thread.
+constexpr double kPlaceTie = 1.0e-4;
+// How far apart (in shape_key's units of 1e-6 mm) two pieces' centres must
+// lie in X for the numbering used before mitcad#490 to order them alike on
+// every platform.
+constexpr long long kLegacyApart = 100;
+
+// A piece's place on its thread: its centre of mass along the axis, the
+// centre's distance from the axis and the piece's area, in that order.
+struct Place {
+  std::array<double, 3> key{};
+  detail::ShapeKey legacy{};
+  int face = 0;
+};
+
+// Orders `places` from `first` to `last` by their keys' components from
+// `component` on, each telling two pieces apart only by more than
+// kPlaceTie: sorted by the component, the pieces fall into runs whose
+// neighbours lie within kPlaceTie of each other, and each run is ordered
+// by the next component. No difference of rounding noise decides; pieces
+// alike in every component (a thread has none) keep shape_key's order.
+void order_places(std::vector<Place>& places, std::size_t first, std::size_t last, std::size_t component) {
+  if (last - first < 2) {
+    return;
+  }
+  const auto begin = places.begin() + static_cast<std::ptrdiff_t>(first);
+  const auto end = places.begin() + static_cast<std::ptrdiff_t>(last);
+  if (component == std::tuple_size<decltype(Place::key)>::value) {
+    std::sort(begin, end, [](const Place& a, const Place& b) { return a.legacy < b.legacy; });
+    return;
+  }
+  std::sort(begin, end, [component](const Place& a, const Place& b) { return a.key[component] < b.key[component]; });
+  std::size_t run = first;
+  for (std::size_t k = first + 1; k <= last; ++k) {
+    if (k == last || places[k].key[component] - places[k - 1].key[component] > kPlaceTie) {
+      order_places(places, run, k, component + 1);
+      run = k;
+    }
+  }
+}
+
 // The faces named after each thread (its grooves' faces, a turn each, its
-// crest's and its teeth's) numbered in the order of their keys, as
-// FaceNamer::finish numbers split names, before the pieces are put on
-// their screw surfaces (on_screw_surfaces, mitcad#343): their keys are
-// those of the pieces swept a turn at a time, so that references saved
-// before keep their faces.
-ShapePtr per_turn_names(const Shape& body, const std::vector<std::string>& threads) {
+// crest's and its teeth's) and the threaded faces' pieces, numbered by
+// their places along the thread's axis (order_places) before the pieces
+// are put on their screw surfaces (on_screw_surfaces, mitcad#343): the
+// same numbers on every platform (mitcad#490).
+// The numbers start at the pieces' count, so that no number of the order
+// used before names another piece now: that order (the centres of mass in
+// X, then Y and Z, rounded to 1e-6 mm) took the pieces of whole turns,
+// centred on the axis, in the order of their rounding noise, which differs
+// between platforms. A piece whose number of that order was the same on
+// every platform (its centre apart from all the others' in X) keeps that
+// name as well, so that references saved before still find it; references
+// to the other pieces find no face and are reported.
+ShapePtr per_turn_names(const Shape& body, const std::vector<TurnNamed>& threads) {
   std::vector<NameList> names(static_cast<std::size_t>(body.face_count()));
   for (int i = 0; i < body.face_count(); ++i) {
     names[static_cast<std::size_t>(i)] = body.face_names(i);
   }
-  for (const std::string& thread : threads) {
-    std::vector<std::pair<detail::ShapeKey, int>> keyed;
+  for (const TurnNamed& thread : threads) {
+    std::vector<Place> places;
     for (int i = 0; i < body.face_count(); ++i) {
       NameList& own = names[static_cast<std::size_t>(i)];
-      const auto found = std::find(own.begin(), own.end(), thread);
-      if (found != own.end()) {
-        own.erase(found);
-        keyed.emplace_back(detail::shape_key(body.face(i)), i);
+      const auto found = std::find(own.begin(), own.end(), thread.name);
+      if (found == own.end()) {
+        continue;
+      }
+      own.erase(found);
+      GProp_GProps properties;
+      BRepGProp::SurfaceProperties(body.face(i), properties);
+      const gp_Vec centre(thread.origin, properties.CentreOfMass());
+      const double along = centre.Dot(gp_Vec(thread.along));
+      const double off = (centre - gp_Vec(thread.along) * along).Magnitude();
+      places.push_back({{along, off, properties.Mass()}, detail::shape_key(body.face(i)), i});
+    }
+    if (places.size() == 1) {
+      names[static_cast<std::size_t>(places.front().face)].push_back(thread.name);
+      continue;
+    }
+    std::vector<Place> legacy = places;
+    std::sort(legacy.begin(), legacy.end(), [](const Place& a, const Place& b) { return a.legacy < b.legacy; });
+    for (std::size_t k = 0; k < legacy.size(); ++k) {
+      bool apart = true;
+      for (const Place& other : legacy) {
+        apart = apart && (other.face == legacy[k].face ||
+                          std::llabs(other.legacy[0] - legacy[k].legacy[0]) > kLegacyApart);
+      }
+      if (apart) {
+        names[static_cast<std::size_t>(legacy[k].face)].push_back(thread.name + '#' + std::to_string(k));
       }
     }
-    std::sort(keyed.begin(), keyed.end());
-    for (std::size_t k = 0; k < keyed.size(); ++k) {
-      names[static_cast<std::size_t>(keyed[k].second)].push_back(
-          keyed.size() == 1 ? thread : thread + '#' + std::to_string(k));
+    order_places(places, 0, places.size(), 0);
+    for (std::size_t k = 0; k < places.size(); ++k) {
+      names[static_cast<std::size_t>(places[k].face)].push_back(thread.name + '#' +
+                                                                std::to_string(places.size() + k));
     }
   }
   detail::FaceNamer namer(body.occt());
@@ -899,6 +986,8 @@ ShapePtr modeled_thread(const Shape& body, const ThreadSpec& spec) {
   return detail::run("thread", [&] {
     ShapePtr current = std::make_shared<Shape>(body);
     std::vector<std::string> threads;
+    // The threads' names and the threaded faces', numbered along their axes.
+    std::vector<TurnNamed> named;
     std::vector<occ::handle<Geom_Surface>> screws;
     for (std::size_t k = 0; k < spec.faces.size(); ++k) {
       const std::string& face = spec.faces[k];
@@ -952,20 +1041,18 @@ ShapePtr modeled_thread(const Shape& body, const ThreadSpec& spec) {
         std::vector<occ::handle<Geom_Surface>> own;
         current = thread_face(*current, face, thread, from, to, chamfers, threads.back(), own);
         screws.insert(screws.end(), own.begin(), own.end());
+        named.push_back({threads.back(), thread.origin, thread.along});
+        named.push_back({face, thread.origin, thread.along});
       } else {
         current = chamfer_face(*current, thread, from, to, chamfers, face);
       }
     }
     // The threads' faces and the threaded faces' pieces (a crest the face
-    // itself) numbered a turn each as their pieces are, then the grooves'
+    // itself) numbered a turn each along the axis, then the grooves'
     // pieces put on their screw surfaces: a rounding along the thread joins
     // the pieces of each into one face over all the turns, as the bodies
     // stored in files keep threads (fillet, detail::join_surface_pieces).
     if (!threads.empty()) {
-      std::vector<std::string> named = threads;
-      if (spec.groove) {
-        named.insert(named.end(), spec.faces.begin(), spec.faces.end());
-      }
       current = per_turn_names(*current, named);
       current = on_screw_surfaces(*current, threads, screws);
     }

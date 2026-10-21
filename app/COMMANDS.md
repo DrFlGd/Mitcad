@@ -1878,7 +1878,12 @@ profile`, `kind: timber`).
     of the faces along the members that carry them: deck boards, battens;
     Lie as above). Spacing: Centre distance (default 400 mm) or Gap (a
     board row, default 5 mm; Last Board: cut to what is left, or the gaps
-    spread). The panel counts the members as the model will. One
+    spread). The panel counts the members as the model will, and the
+    preview shows every member of the set, the last one ripped when it is
+    cut (`build_preview` with `spacing`, mitcad#487), after the click: the
+    hover between two members shows only the face a click picks (the
+    view's hover highlight; no set laid out and no inspection while the
+    mouse moves, mitcad#489: laying the set out on every move lagged). One
     `build_place` with `spacing`: one undo step for the set. Profiled
     boards that join (tongue and groove, shiplap, feather-edge, mitcad#477;
     `build::Part::joinedCover`) lying flat are laid edge to edge in a Gap
@@ -1966,8 +1971,12 @@ Timber: place grounded, length 3000.00 mm (typed), ...; along x, flat`,
 length typed: detached from the auto length`, `Cursor box Timber length:
 2451.0 mm at x,y`, `Inspect Timber: row over 3 face(s), span 2400.0 mm, 18
 member(s), gap 5 mm, the last board cut; ...`, Profile's `Inspect
-Timber: place side, ...` with `; set of 4, centre distance 400 mm` for a
-set, `Placed <part> as <name> (<occurrence>), length by two points, 742.5
+Timber: place side, ...` with `; set preview 4 member(s), 4 body(ies)`
+(the members laid out and the bodies drawn, mitcad#487; a row's too) and
+`; set of 4, centre distance 400 mm` for a
+set, `BUILD hover pick: face <face> of <body> in <occurrence>, no preview`
+(`BUILD hover pick: off the parts' faces`; Spacing's hover between two
+members, mitcad#489), `Placed <part> as <name> (<occurrence>), length by two points, 742.5
 mm` (`length typed`, `length bound, auto: through`; `; a set of <n>`), `Spacing set of <name>: <n> member(s), centre
 distance 600 mm`, `Connected half_lap at junction <id> (cross): 2 cut(s)`,
 `BUILD panel picker: sheets on a face`, `Cut list timber: <m> m, <v> m3,

@@ -411,6 +411,11 @@ if(BUILD_TESTING)
   add_executable(test_fillet_ride_against tests/test_fillet_ride_against.cpp)
   target_link_libraries(test_fillet_ride_against PRIVATE mitcad_geometry mitcad_warnings)
   add_test(NAME geometry.fillet_ride_against COMMAND test_fillet_ride_against)
+  # A rounding whose cut on the face at the end crosses that face's seam
+  # past the seam's end, with the port's patch 0931 (mitcad#343).
+  add_executable(test_fillet_seam_run_on tests/test_fillet_seam_run_on.cpp)
+  target_link_libraries(test_fillet_seam_run_on PRIVATE mitcad_geometry mitcad_warnings)
+  add_test(NAME geometry.fillet_seam_run_on COMMAND test_fillet_seam_run_on)
   # Boundary Fill: the cells tool bodies enclose (mitcad#457).
   add_executable(test_boundary_fill tests/test_boundary_fill.cpp)
   target_link_libraries(test_boundary_fill PRIVATE mitcad_geometry mitcad_warnings)

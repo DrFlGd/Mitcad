@@ -1774,6 +1774,13 @@ bool SketchController::viewerEvent(QEvent* event) {
     }
     // A text, a pattern's curve or an offset's curve the first click picked
     // opens its edit panel (P3, P4).
+    // The view picks a click with its next frame and hands the pick on by a
+    // queued call, so under load a click's pick can still be on its way
+    // when the double-click is here (mitcad#488). Deliver the ones queued
+    // already, before the selection is read: otherwise they reach the
+    // command that opens and, in its input that holds the item already,
+    // take the item out again (Edit QR Code then has no code to preview).
+    m_host.deliverPendingPicks();
     const Selection& selected = m_host.selection();
     if (selected.size() == 1 && selected.first().owner == m_uid &&
         (selected.first().kind == SelectKind::SketchCurve || selected.first().kind == SelectKind::SketchPoint)) {
@@ -1787,6 +1794,9 @@ bool SketchController::viewerEvent(QEvent* event) {
       if (command != nullptr) {
         m_pressed = false;
         m_dragEntity.clear();
+        // The picks of the clicks that the view has not handled yet are
+        // dropped for the same reason.
+        m_viewer.cancelPointerInteraction();
         qDebug().noquote() << QStringLiteral("Double-click on %1: %2").arg(id, QString::fromLatin1(command));
         m_host.trigger(QString::fromLatin1(command));
         return true;

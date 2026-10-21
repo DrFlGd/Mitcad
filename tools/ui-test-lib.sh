@@ -596,8 +596,11 @@ ui_double_click_logged() { xdotool mousemove $(ui_logged_at "$1") click --repeat
 
 # ui_double_click_expect "text" "logged line" description: a double-click at
 # the last "<text> at x,y" that the app answers with the line; when it does
-# not (under load xdotool can send the second click too late for a
-# double-click, and the app sees two clicks), once more, a moment later.
+# not, once more, a moment later. Under load xdotool can send the second
+# click too late for a double-click (the app sees two clicks), or the first
+# click's pick has not reached the selection when the double-click arrives
+# (the view picks with its next frame): then the double-click opens nothing,
+# and the selection is there for the second one (mitcad#488).
 ui_double_click_expect() {
   local attempt
   for attempt in 1 2; do

@@ -1,0 +1,188 @@
+{
+  "format": "mitcad",
+  "version": 2,
+  "units": {
+    "length": "mm",
+    "angle": "deg"
+  },
+  "parameters": [
+    {
+      "name": "d1",
+      "expression": "10 mm",
+      "unit": "mm",
+      "value": 10.0,
+      "comment": "Sketch1 diameter",
+      "owner": "F1"
+    },
+    {
+      "name": "d2",
+      "expression": "20 mm",
+      "unit": "mm",
+      "value": 20.0,
+      "comment": "Extrude1 distance",
+      "owner": "F2"
+    },
+    {
+      "name": "d3",
+      "expression": "9.85 mm",
+      "unit": "mm",
+      "value": 9.85,
+      "comment": "Thread1 major",
+      "owner": "F3"
+    },
+    {
+      "name": "d4",
+      "expression": "8.141 mm",
+      "unit": "mm",
+      "value": 8.141,
+      "comment": "Thread1 minor",
+      "owner": "F3"
+    },
+    {
+      "name": "d5",
+      "expression": "8.928 mm",
+      "unit": "mm",
+      "value": 8.928,
+      "comment": "Thread1 pitch",
+      "owner": "F3"
+    },
+    {
+      "name": "d6",
+      "expression": "0 mm",
+      "unit": "mm",
+      "value": 0.0,
+      "comment": "OffsetSurface1 distance",
+      "owner": "F4"
+    },
+    {
+      "name": "d7",
+      "expression": "0 mm",
+      "unit": "mm",
+      "value": 0.0,
+      "comment": "OffsetSurface2 distance",
+      "owner": "F5"
+    },
+    {
+      "name": "d8",
+      "expression": "0 mm",
+      "unit": "mm",
+      "value": 0.0,
+      "comment": "OffsetSurface3 distance",
+      "owner": "F6"
+    }
+  ],
+  "features": [
+    {
+      "uid": "F1",
+      "name": "Sketch1",
+      "type": "sketch",
+      "plane": "xy",
+      "entities": [
+        {
+          "id": "c1",
+          "type": "circle",
+          "center": "p2",
+          "radius": 5.0
+        },
+        {
+          "id": "p2",
+          "type": "point",
+          "at": [
+            0.0,
+            0.0
+          ],
+          "fixed": true
+        }
+      ],
+      "dimensions": [
+        {
+          "id": "k1",
+          "type": "diameter",
+          "curve": "c1",
+          "value": "d1"
+        }
+      ]
+    },
+    {
+      "uid": "F2",
+      "name": "Extrude1",
+      "type": "extrude",
+      "profiles": [
+        {
+          "sketch": "F1",
+          "region": "r{c1}"
+        }
+      ],
+      "extent": {
+        "type": "distance",
+        "distance": "d2"
+      },
+      "operation": "new_body"
+    },
+    {
+      "uid": "F3",
+      "name": "Thread1",
+      "type": "thread",
+      "faces": [
+        {
+          "body": "F2.b0",
+          "face": "F2:side(c1)"
+        }
+      ],
+      "thread": {
+        "designation": "M10x1.5",
+        "class": "6g"
+      },
+      "modeled": true,
+      "diameters": {
+        "major": "d3",
+        "minor": "d4",
+        "pitch": "d5"
+      }
+    },
+    {
+      "uid": "F4",
+      "name": "OffsetSurface1",
+      "type": "offset_surface",
+      "body": "F2.b0",
+      "faces": [
+        "F2:end(r{c1})"
+      ],
+      "distance": "d6"
+    },
+    {
+      "uid": "F5",
+      "name": "OffsetSurface2",
+      "type": "offset_surface",
+      "body": "F2.b0",
+      "faces": [
+        "F3:thread(F2:side(c1))#56"
+      ],
+      "distance": "d7"
+    },
+    {
+      "uid": "F6",
+      "name": "OffsetSurface3",
+      "type": "offset_surface",
+      "body": "F2.b0",
+      "faces": [
+        "F3:thread(F2:side(c1))#18"
+      ],
+      "distance": "d8"
+    }
+  ],
+  "bodies": [
+    {
+      "uid": "F2.b0",
+      "name": "Body1"
+    },
+    {
+      "uid": "F4.b0",
+      "name": "Body2"
+    },
+    {
+      "uid": "F5.b0",
+      "name": "Body3"
+    }
+  ]
+}

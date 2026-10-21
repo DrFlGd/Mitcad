@@ -200,6 +200,9 @@ vcpkg_from_github(
         0910-chfi3d-onsame-cap-from-the-contacts-point-on-the-prolonged-edge.patch
         0911-chfi3d-onsame-end-where-the-face-at-the-end-goes-on-tangentially.patch
         0930-chfi3d-rounding-riding-anothers-contact-line-against-it.patch
+        0931-chfi3d-seam-run-on-to-a-corners-cut-past-its-end.patch
+        0932-chfi3d-walk-cut-before-a-singular-section-ends-there.patch
+        0933-chfi3d-ends-joined-over-a-narrow-face-that-pokes-through-the-blend.patch
 )
 
 if (VCPKG_LIBRARY_LINKAGE STREQUAL "dynamic")

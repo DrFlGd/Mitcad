@@ -55,6 +55,10 @@ public:
   // dimensions and constraints, and its curves and points a press would
   // drag. `expanded`: Shift is held.
   virtual bool sketchClickable(const SelectionItem& /*item*/, bool /*expanded*/) const { return true; }
+  // Handles the picks of the view that were handed over by a queued call
+  // and not delivered yet, so that the selection and a command that starts
+  // next are in the order of the clicks (mitcad#488).
+  virtual void deliverPendingPicks() {}
 };
 
 namespace sketch {

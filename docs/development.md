@@ -359,6 +359,14 @@ signed manifest.
 
 ## Tests
 
+**Tolerance:** every geometric comparison in a test (lengths, positions,
+distances, areas and volumes by their length scale) allows at least
+0.000 001 mm (1e-6) unless the test says why it needs a tighter one. A
+deviation within that, on any platform, is fixed by relaxing the test to
+it; a larger one is a fault to fix or a case to agree on, not a reason to
+relax silently. UI tests are not relaxed for one platform: the interface
+differs by platform, and a failure there is a fault.
+
 Run in the isolated environments:
 
 - `ctest --preset dev`: geometry, bridge, model, solver, import,

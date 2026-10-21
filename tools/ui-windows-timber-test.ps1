@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-# check-all sources: app/build app/commands/BuildCommands.cpp app/framework app/library app/OcctViewer.cpp tools/cli core/model/src/build
+# check-all sources: app/build app/commands/BuildCommands.cpp app/framework app/library app/OcctViewer.cpp tools/cli core/model/src/build core/model/src/api/build.rs
 # Input-driven Windows UI test of the BUILD tab's Timber tool (mitcad#478,
 # mitcad#485) in the build VM (tools/ui-windows-lib.ps1 says how the input
 # is posted). A library of small synthetic parts made here (mitcad-cli; a
@@ -17,7 +17,11 @@
 #      member's side to a click on the post's side, nothing previewed
 #      towards the mouse between the clicks; Tab turns it on edge.
 #   4. Spacing: members at a centre distance along the second member's
-#      side, placed as one set; Spacing Set edits its distance.
+#      side; the hover names only the face a click picks, nothing previewed
+#      or inspected before the click (mitcad#489); every member previewed
+#      after the click and again when the
+#      distance changes their count (mitcad#487), placed as one set of as
+#      many; Spacing Set edits its distance.
 #   5. Connector at a timber junction: wood screws by default, sized from
 #      the members, one click.
 #   6. Profile again: the design's timber is not in its picker; Cut List:
@@ -274,6 +278,30 @@ function Place([string]$What) {
   Ui-ExpectNew "Placed $What as " "$What placed" 30
 }
 $side = ':part(F2:side('
+# Set-Previewed TEXT description: a spacing set's preview after the click
+# (mitcad#487) in an "Inspect Timber:" line since the mark with TEXT: as
+# many bodies drawn as the model lays out members, as many as the panel
+# counts, two or more; returns the count.
+function Set-Previewed([string]$Text, [string]$Description) {
+  $pattern = '; set preview (\d+) member\(s\), (\d+) body\(ies\).*; set of (\d+),'
+  $line = $null
+  for ($i = 0; $i -lt 50 -and -not $line; $i++) {
+    $line = Ui-LogLines | Select-Object -Skip $script:UiMark |
+      Where-Object { $_.StartsWith('Inspect Timber: ') -and $_.Contains($Text) -and $_ -match $pattern } |
+      Select-Object -Last 1
+    if (-not $line) { Start-Sleep -Milliseconds 200 }
+  }
+  if (-not $line) { Ui-Fail "${Description}: no set preview in an 'Inspect Timber:' line with '$Text' since the mark" }
+  $null = "$line" -match $pattern
+  $members = [int]$Matches[1]
+  $bodies = [int]$Matches[2]
+  $counted = [int]$Matches[3]
+  if ($members -lt 2 -or $bodies -ne $members -or $counted -ne $members) {
+    Ui-Fail "${Description}: the preview shows $bodies body(ies) of $members member(s), the panel counts ${counted}: $line"
+  }
+  Write-Host "ok   ${Description}: all $members members previewed"
+  return $members
+}
 
 # Refresh-At CMD: the view fitted to the parts and CMD's Place On picked
 # again: the places a click picks logged again.
@@ -486,15 +514,37 @@ Ui-Step '200 mm long'                    { Ui-TypeIn 'Panel Timber input length'
 Refresh-Picks 'at'
 $beamSides = @(Faces-Of $beam $side)
 if ($beamSides.Count -eq 0) { Ui-Fail "no side of the member ($beam) for the set" }
+# The hover shows only the face a click picks (mitcad#489): no set laid out
+# while the mouse moves, no inspection asked.
+$at = Pick-At $beam $beamSides[0]
+Ui-Sync
+Start-Sleep -Milliseconds 500
 Ui-Mark
-Ui-Step "the member's side"              { Pick-Face $beam $beamSides[0] }
+# MK_SHIFT keeps the move in session 0 (tools/ui-windows-build-test.ps1).
+Ui-Step "the mouse over the member's side" { [UiInput]::Move($script:UiWindow, $at[0], $at[1], 0x04) }
+Ui-ExpectNew "BUILD hover pick: face $($beamSides[0]) of $beam" 'the hover names the face a click picks'
+Ui-Step 'the mouse a little further'     { [UiInput]::Move($script:UiWindow, ($at[0] + 6), $at[1], 0x04) }
+Start-Sleep -Milliseconds 1500
+Ui-Sync
+$hovered = @(Ui-LogLines | Select-Object -Skip $script:UiMark |
+  Where-Object { $_.StartsWith('Inspect Timber: ') -or $_.Contains('; set preview ') -or $_.StartsWith('BUILD hover on ') })
+if ($hovered.Count -gt 0) { Ui-Fail "the hover previewed before the click: $($hovered[0])" }
+Write-Host 'ok   no set preview and no inspection while hovering'
+Ui-Mark
+Ui-Step "the member's side"              { Ui-Click $at[0] $at[1] }
 Ui-ExpectNew 'Inspect Timber: place side' 'on its side'
 Ui-ExpectNew '; set of ' 'the set counted'
 Ui-ExpectNew 'centre distance 400 mm' 'at 400 mm'
+$at400 = Set-Previewed 'centre distance 400 mm' 'at 400 mm'
+Ui-Mark
+Ui-Step 'a distance of 200'              { Ui-TypeIn 'Panel Timber input distance' '200' }
+$at200 = Set-Previewed 'centre distance 200' 'at 200'
+if ($at200 -le $at400) { Ui-Fail "200 mm previewed $at200 members, not more than the $at400 at 400 mm" }
 Place 'Timber 48x98 test'
 Ui-ExpectNew '; a set of ' 'placed as one set'
 $set = Ui-LastMatch '; a set of (\d+)'
-if ([int]"0$set" -lt 2) { Ui-Fail "the set has $set members, not two or more" }
+if ([int]"0$set" -ne $at200) { Ui-Fail "the set placed $set members, the preview showed $at200" }
+Write-Host "ok   placed the $set members previewed"
 $setBody = Placed-Body
 Ui-Step 'Close (Escape)'                 { Ui-Key 'Escape' }
 Ui-Mark

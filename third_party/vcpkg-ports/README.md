@@ -264,7 +264,16 @@ slot whose sides are tangent to the pin, mitcad#343).
 0930 lets a rounding roll on another's contact line (0016) where the two
 spines run opposite ways: its side on the line runs from the line's end to
 its start (both rims of a ring rounded, the rims' circles turning opposite
-ways, mitcad#343).
+ways, mitcad#343). 0931 runs the seam of the face at a corner's end on to
+the corner's cut where the cut crosses the seam's line past the seam's end
+at the corner's vertex (roundings of three bores' curves ending on a rod
+whose seam runs into one of their end vertices, mitcad#343).
+
+0932 ends a walk that 0077 cut before a singular section past its spine's
+end at the cut (it was taken up again from there). 0933 joins two stripe
+ends over a narrow face that pokes through the ball's path, the contact
+never leaving its face, one blend holed by that face (a rounding of a
+torus's edge with a plane that a rod interrupts twice, mitcad#343).
 
 - `0006-shapeupgrade-unifysamedomain-seam-search-by-vertex.patch`: the face
   merge after booleans (`ShapeUpgrade_UnifySameDomain`) looks up the edges
@@ -3063,8 +3072,8 @@ the pin.
   rounding: the file's change of volume within 2.4e-4 mm³ and every new
   face on the file's within 1e-5 mm.
 
-The patch 0930 comes from mitcad#343 (round 13): both rims of a ring
-rounded.
+The patches 0930 and 0931 come from mitcad#343 (round 13): both rims of a
+ring rounded, and three roundings ending on a rod.
 
 - `0930-chfi3d-rounding-riding-anothers-contact-line-against-it.patch`:
   0016 makes the later of two roundings of a face narrower than both roll
@@ -3086,6 +3095,58 @@ rounded.
   crossings. On the ring's replayed body the change of volume is the file's
   within 1.4e-7 of the stored state in either order of the rims; on the
   stored body, whose circles turn the same way, it is unchanged.
+- `0931-chfi3d-seam-run-on-to-a-corners-cut-past-its-end.patch`: three
+  roundings of radius 0.5 along the curves where three bores meet end on a
+  rod of radius 2.5 in their middle, whose cylinder face runs all round
+  with its seam from its bottom up to the vertex where two of the bores'
+  curves meet, one rounding's end vertex. The rounding takes material off
+  there, so the rod's face grows up to the corner's cut (the blend's
+  intersection with the rod), which crosses the seam's line 0.31 past the
+  seam's end. `PerformOneCorner` split the cut at the seam only where the
+  crossing lay on the seam's edge or at one of its vertices; the cut was
+  left whole across the line, the seam ended at the vertex the rounding
+  removes, and the rod's face came out with a wire not closed. Where the
+  seam ends at the corner's vertex and the cut's curve on the face crosses
+  the seam's line beyond that end (the point on the face's surface, within
+  the tolerances), the cut is now split there and the seam runs on along
+  its line from the vertex to the crossing: a curve on the face's iso-line
+  through the seam (the surface's own parametrization; the seam's curve, a
+  B-spline here, cannot be prolonged), on both sides of the seam, each the
+  way the seam runs there. The seam stays whole. On the replayed body the
+  rod's face has the file's area (412.4848 against 412.4839 mm²) and every
+  new face lies within 6e-4 mm of the file's.
+
+The patches 0932 and 0933 come from mitcad#343 (round 14): a rounding of
+radius 0.5 on three pieces of the edge between a large torus and a plane,
+interrupted twice by a rod's narrow strips (2.34 and 2.26 mm²), the pieces'
+contacts on the plane running past their ends onto a torus of radius 0.6
+round the rod's foot.
+
+- `0932-chfi3d-walk-cut-before-a-singular-section-ends-there.patch`: 0077's
+  `ChFi3d_CutSingularExtension` cuts a piece's walk past its end at
+  18.0021 (its spine 17.92 long), where the contact on that torus speeds
+  up from 1.25 to 20.5. The cut end lies on no arc, so `ComputeData` left
+  it open and the walk was taken up again from the cut into the same
+  sections; the corners there failed. The function now returns the ends it
+  cut and `ComputeData` closes them (`intl`/`intf` 1): the cut end is the
+  blend's end for the corner. The common points at the walk's end are kept
+  (resetting them breaks a corner the stored ones build: the arc of a
+  cylinder's top cut by two planes, test `fillet_kernel`).
+- `0933-chfi3d-ends-joined-over-a-narrow-face-that-pokes-through-the-blend.patch`:
+  in the file each pair of ends is one blend over the strip C between them;
+  over one strip the contact on the small torus N leaves it across C and
+  comes back (0700's cut), over the other it stays on N and C pokes
+  through the blend, a hole of 3.66 mm round a lens of the rod (0.888
+  mm²). `JoinOverNarrowFaces` took C from the arc an end's contact ends on;
+  ends cut short lie on none, and C is now also the face across an edge of
+  N that holds both vertices. Where the walked contact never leaves N, the
+  join is made when C cuts the walked blend in a closed curve and lies
+  wholly beyond the walk's start section (on it at the end's vertex): one
+  piece from the start to a section beyond C, the curve and the other
+  end, which `PierceBlends` holes. On the replayed body the rounding, as
+  the three pieces or with the rod's two edges, builds in every order of
+  its contours within 0.0033 mm³ of the file's change (7.5193 mm³); before,
+  two corners failed.
 
 The patch 0540 goes on with the corners where a rounding ends (mitcad#236,
 eighth round): a rounding that runs on into an earlier rounding's tube.
@@ -3364,14 +3425,29 @@ opposite ways, rounded with 1.5 on both rims in either order, in
 `geometry/tests/test_fillet_ride_against.cpp` (valid, the volume the
 section's revolution has within 1e-6; invalid, 1322 against 3035, without
 the patch);
-each fails without its patch (0802 has no such test: its contact meets the
+for 0931, mitcad#343 and a roof whose ridge runs into a rod standing on
+it, the rod's seam a B-spline along the line through the ridge's end, in
+`geometry/tests/test_fillet_seam_run_on.cpp` (valid, the material removed
+the blend's section along the ridge less the rod within 1e-6);
+for 0933, mitcad#343 and a post on a plate, the edge round its foot broken
+by two caps that poke through its rounding of 0.5, posts of radius 1 and
+0.8, in `geometry/tests/test_fillet_pierced.cpp` (valid, the rounded post
+with the caps fused within 2e-5 mm³, both caps' lenses; invalid without
+the patch);
+each fails without its patch but 0931's (on that body OCCT's topological
+build closes the rod's face without it as well, so the test checks 0931's
+way only; the design's failure is verified on its replayed body), and 0802
+has no such test: its contact meets the
 spine's own edge only through the stored bodies' micrometre deviations at
 the walk's steps there, which no synthetic body reproduced; nor has 0910: its
 cap crosses the edge only through the contact curve's approximation lying
 on the wrong side of the face at the end by 1.3e-6 mm, at a
 corner where the blend is nearly tangent to that face, verified on the
 design's replayed body; a bolt's thread cut by a chamfer cone and rounded
-there failed elsewhere first).
+there failed elsewhere first; nor has 0932: its cut needs a contact
+speeding up some twentyfold past the spine's end on a small torus, which
+the synthetic posts of 0933's test did not reach, verified on the design's
+replayed body, where the rounding with the rod's edges fails without it).
 Sending them upstream is the
 maintainers' step. When the
 baseline moves to a newer OCCT, check which of the changes OCCT has made;

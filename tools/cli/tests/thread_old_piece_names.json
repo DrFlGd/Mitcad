@@ -1,0 +1,16 @@
+[
+  {"comment": "SPDX-License-Identifier: MIT. A design saved before mitcad#490 numbered a modelled thread's pieces by their places along the axis (thread_old_piece_names.mitcad): a 10 mm rod 20 long (Extrude1 F2) with an M10x1.5 thread of the 6g diameters (Thread1 F3) and three surface copies (offset 0) of faces of the rod, saved with the names of that time: the end cap (OffsetSurface1 F4), the thread's piece #56 at its low end (OffsetSurface2 F5) and #18, a whole turn's flank (OffsetSurface3 F6), whose number the rounding noise of its centre on the axis decided."},
+  {"expect": {"feature": "Thread1", "status": "ok", "body": "Body1", "volume": 1264.964921282, "faces": 59,
+    "has_face": "F3:thread(F2:side(c1))#113"}},
+  {"comment": "The reference to a face that is not the thread's resolves as before."},
+  {"expect": {"feature": "OffsetSurface1", "status": "ok", "body": "Body2", "area": 63.248, "tolerance": 1e-3,
+    "center": [-0.391, -0.226, 20.0]}},
+  {"comment": "The thread's piece at its end, whose number was the same on every platform, keeps its old name beside its new one (#57): the same piece."},
+  {"expect": {"feature": "OffsetSurface2", "status": "ok", "body": "Body3", "area": 6.471, "tolerance": 1e-3,
+    "center": [2.707, 2.550, 0.203]}},
+  {"expect": {"body": "Body1", "has_face": "F3:thread(F2:side(c1))#56"}},
+  {"expect": {"body": "Body1", "has_face": "F3:thread(F2:side(c1))#57"}},
+  {"comment": "The whole turn's old name names no face: the reference is reported, not moved to another turn."},
+  {"expect": {"feature": "OffsetSurface3", "status": "error", "error_contains": "the body has no face F3:thread(F2:side(c1))#18"}},
+  {"expect": {"bodies": 3}}
+]

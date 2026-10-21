@@ -801,6 +801,13 @@ them through operations and derives edge names.
   A face a fillet or chamfer consumes, where the blend runs along the
   face's far edge (a face as wide as the blend or narrower, mitcad#121),
   gives its names to the blend's face, so its edges keep their names.
+- A modelled thread numbers its pieces (a crest, two flanks and a root a
+  turn) by their place along its axis, comparing centres and areas only
+  where they differ by more than 1e-4 mm, so that rounding noise, which
+  differs between platforms, decides no number (mitcad#490). The numbers
+  start at the pieces' count; the pieces whose number of the earlier
+  order (centres of mass in X, Y, Z) held on every platform keep that name
+  too, and the old names of the other pieces find no face.
 - **Edge:** `E{<face A>|<face B>}` (sorted), `#k` when the same faces meet
   more than once; a seam has the same face twice. **Vertex:** the set of
   faces meeting at it. Sorting is byte-wise in both languages.

@@ -60,8 +60,20 @@ inline void check_near(double a, double b, double relative, const char* expressi
 // MITCAD_TEST_ONLY set, only the tests whose names contain it run.
 template <class F>
 void guarded(const char* name, F&& f) {
-  const char* only = std::getenv("MITCAD_TEST_ONLY");
-  if (only != nullptr && *only != '\0' && std::string(name).find(only) == std::string::npos) {
+  std::string only;
+#ifdef _MSC_VER
+  char* value = nullptr;
+  std::size_t length = 0;
+  if (_dupenv_s(&value, &length, "MITCAD_TEST_ONLY") == 0 && value != nullptr) {
+    only = value;
+    std::free(value);
+  }
+#else
+  if (const char* value = std::getenv("MITCAD_TEST_ONLY")) {
+    only = value;
+  }
+#endif
+  if (!only.empty() && std::string(name).find(only) == std::string::npos) {
     return;
   }
   try {

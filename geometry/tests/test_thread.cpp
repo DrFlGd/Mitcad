@@ -8,6 +8,8 @@
 #include <cmath>
 #include <cstdio>
 #include <limits>
+#include <set>
+#include <string>
 #include <vector>
 
 #include <BRepAdaptor_Curve.hxx>
@@ -666,11 +668,10 @@ void test_large_body() {
               large->face_count(), large_ms);
   CHECK(large_ms < 4.0 * small_ms + 2000.0);
 }
-
-// A face's name the grooves gave while they were swept one turn at a time,
-// and a point on that face then.
-struct LegacyPiece {
-  const char* name;
+// A piece of a thread, by its number (`#k` after the thread's name), and a
+// point on it.
+struct NumberedPiece {
+  const char* number;
   double x;
   double y;
   double z;
@@ -688,88 +689,210 @@ double max_tolerance(const Shape& shape) {
   return tolerance;
 }
 
+// The 57 pieces of the M10x1.5 thread on the rod of
+// test_pieces_on_screw_surfaces_and_legacy_names, right-hand, by their
+// numbers along the axis (mitcad#490), with a point on each.
+const std::vector<NumberedPiece> kRightHandPieces = {
+    {"#57", 4.283936773, 1.370270339, 0.054420733},
+    {"#58", 3.876997309, -1.240105686, 0.399027853},
+    {"#59", -4.179411981, -2.605406013, 0.616920758},
+    {"#60", 1.016436963, -4.381393724, 0.448906333},
+    {"#61", 0.000000000, -4.497750051, 1.105514399},
+    {"#62", -0.000000000, -4.070500000, 1.500000000},
+    {"#63", -4.925000000, 0.000000000, 1.874999998},
+    {"#64", 0.000000000, -4.497750051, 1.894485601},
+    {"#65", 0.000000000, -4.497750051, 2.605514399},
+    {"#66", -0.000000000, -4.070500000, 3.000000000},
+    {"#67", -4.925000000, 0.000000000, 3.374999998},
+    {"#68", 0.000000000, -4.497750051, 3.394485601},
+    {"#69", -0.000000000, -4.497750051, 4.105514399},
+    {"#70", -0.000000000, -4.070500000, 4.500000000},
+    {"#71", -4.925000000, 0.000000000, 4.874999998},
+    {"#72", -0.000000000, -4.497750051, 4.894485601},
+    {"#73", 0.000000000, -4.497750051, 5.605514399},
+    {"#74", -0.000000000, -4.070500000, 6.000000000},
+    {"#75", -4.925000000, 0.000000000, 6.374999998},
+    {"#76", 0.000000000, -4.497750051, 6.394485601},
+    {"#77", -0.000000000, -4.497750051, 7.105514399},
+    {"#78", -0.000000000, -4.070500000, 7.500000000},
+    {"#79", -4.925000000, 0.000000000, 7.874999998},
+    {"#80", -0.000000000, -4.497750051, 7.894485601},
+    {"#81", 0.000000000, -4.497750051, 8.605514399},
+    {"#82", -0.000000000, -4.070500000, 9.000000000},
+    {"#83", -4.925000000, 0.000000000, 9.374999998},
+    {"#84", 0.000000000, -4.497750051, 9.394485601},
+    {"#85", 0.000000000, -4.497750051, 10.105514399},
+    {"#86", -0.000000000, -4.070500000, 10.500000000},
+    {"#87", -4.925000000, 0.000000000, 10.874999998},
+    {"#88", 0.000000000, -4.497750051, 10.894485601},
+    {"#89", -0.000000000, -4.497750051, 11.605514399},
+    {"#90", -0.000000000, -4.070500000, 12.000000000},
+    {"#91", -4.925000000, 0.000000000, 12.374999998},
+    {"#92", -0.000000000, -4.497750051, 12.394485601},
+    {"#93", 0.000000000, -4.497750051, 13.105514399},
+    {"#94", -0.000000000, -4.070500000, 13.500000000},
+    {"#95", -4.925000000, 0.000000000, 13.874999998},
+    {"#96", 0.000000000, -4.497750051, 13.894485601},
+    {"#97", 0.000000000, -4.497750051, 14.605514399},
+    {"#98", -0.000000000, -4.070500000, 15.000000000},
+    {"#99", -4.925000000, 0.000000000, 15.374999998},
+    {"#100", 0.000000000, -4.497750051, 15.394485601},
+    {"#101", -0.000000000, -4.497750051, 16.105514399},
+    {"#102", -0.000000000, -4.070500000, 16.500000000},
+    {"#103", -4.925000000, 0.000000000, 16.874999998},
+    {"#104", -0.000000000, -4.497750051, 16.894485601},
+    {"#105", -0.000000000, -4.497750051, 17.605514399},
+    {"#106", -0.000000000, -4.070500000, 18.000000000},
+    {"#107", -4.925000000, 0.000000000, 18.374999998},
+    {"#108", -0.000000000, -4.497750051, 18.394485601},
+    {"#109", -0.000000000, -4.497750051, 19.105514399},
+    {"#110", -0.864535662, -3.977630996, 19.301093665},
+    {"#111", -2.316774659, 4.346053403, 19.562737102},
+    {"#112", -3.328657291, -3.024862926, 19.695579269},
+    {"#113", -3.052319047, 3.423011597, 19.978268946},
+};
+
+// The same rod's left-hand thread.
+const std::vector<NumberedPiece> kLeftHandPieces = {
+    {"#57", -4.490574524, -0.931880037, 0.021731054},
+    {"#58", 0.955279491, -4.395133236, 0.304420732},
+    {"#59", -4.179412411, 2.605405323, 0.548374005},
+    {"#60", 3.012461658, -2.737525344, 0.698906335},
+    {"#61", 3.895165804, -2.248875026, 0.894485601},
+    {"#62", 3.895165805, -2.248875026, 1.605514398},
+    {"#63", -4.925000000, 0.000000000, 1.875000000},
+    {"#64", 3.525156406, -2.035250000, 2.000000000},
+    {"#65", 3.895165804, -2.248875026, 2.394485601},
+    {"#66", 3.895165805, -2.248875026, 3.105514398},
+    {"#67", -4.925000000, 0.000000000, 3.375000000},
+    {"#68", 3.525156406, -2.035250000, 3.500000000},
+    {"#69", 3.895165804, -2.248875026, 3.894485601},
+    {"#70", 3.895165805, -2.248875026, 4.605514398},
+    {"#71", -4.925000000, 0.000000000, 4.875000000},
+    {"#72", 3.525156406, -2.035250000, 5.000000000},
+    {"#73", 3.895165804, -2.248875026, 5.394485601},
+    {"#74", 3.895165805, -2.248875026, 6.105514398},
+    {"#75", -4.925000000, 0.000000000, 6.375000000},
+    {"#76", 3.525156406, -2.035250000, 6.500000000},
+    {"#77", 3.895165804, -2.248875026, 6.894485601},
+    {"#78", 3.895165805, -2.248875026, 7.605514398},
+    {"#79", -4.925000000, 0.000000000, 7.875000000},
+    {"#80", 3.525156406, -2.035250000, 8.000000000},
+    {"#81", 3.895165804, -2.248875026, 8.394485601},
+    {"#82", 3.895165805, -2.248875026, 9.105514398},
+    {"#83", -4.925000000, 0.000000000, 9.375000000},
+    {"#84", 3.525156406, -2.035250000, 9.500000000},
+    {"#85", 3.895165804, -2.248875026, 9.894485601},
+    {"#86", 3.895165805, -2.248875026, 10.605514398},
+    {"#87", -4.925000000, 0.000000000, 10.875000000},
+    {"#88", 3.525156406, -2.035250000, 11.000000000},
+    {"#89", 3.895165811, -2.248875030, 11.394485606},
+    {"#90", 3.895165805, -2.248875026, 12.105514398},
+    {"#91", -4.925000000, 0.000000000, 12.375000000},
+    {"#92", 3.525156406, -2.035250000, 12.500000000},
+    {"#93", 3.895165804, -2.248875026, 12.894485601},
+    {"#94", 3.895165805, -2.248875026, 13.605514398},
+    {"#95", -4.925000000, 0.000000000, 13.875000000},
+    {"#96", 3.525156406, -2.035250000, 14.000000000},
+    {"#97", 3.895165804, -2.248875026, 14.394485601},
+    {"#98", 3.895165805, -2.248875026, 15.105514398},
+    {"#99", -4.925000000, 0.000000000, 15.375000000},
+    {"#100", 3.525156406, -2.035250000, 15.500000000},
+    {"#101", 3.895165811, -2.248875030, 15.894485606},
+    {"#102", 3.895165805, -2.248875026, 16.605514398},
+    {"#103", -4.925000000, 0.000000000, 16.875000000},
+    {"#104", 3.525156406, -2.035250000, 17.000000000},
+    {"#105", 3.895165804, -2.248875026, 17.394485601},
+    {"#106", 3.895165805, -2.248875026, 18.105514398},
+    {"#107", -4.925000000, 0.000000000, 18.375000000},
+    {"#108", 3.525156406, -2.035250000, 18.500000000},
+    {"#109", 3.895165804, -2.248875026, 18.894485601},
+    {"#110", 4.302616752, -1.310436631, 19.551093667},
+    {"#111", -2.316773942, -4.346053785, 19.508079244},
+    {"#112", 3.012461682, 2.737525317, 19.600972147},
+    {"#113", 0.955279462, 4.395133243, 19.945579267},
+};
+
+// A name the pieces had before mitcad#490 (taken from a build of that
+// time, on Linux, with a point on the piece), and whether it still names
+// that piece: the pieces whose number was the same on every platform keep
+// it, the pieces of whole turns, whose numbers the rounding noise of their
+// centres on the axis decided, lose it.
+struct LegacyPiece {
+  const char* number;
+  double x;
+  double y;
+  double z;
+  bool kept;
+};
+
 void test_pieces_on_screw_surfaces_and_legacy_names() {
   // The thread's pieces, a crest, two flanks and a root a turn, are put on
   // the exact screw surfaces of the groove's section (mitcad#343), each
-  // flank's pieces on one surface, where they were sweeps of their own. The
-  // names those 57 pieces had (taken from a build of that time, with a point
-  // on each) still name the piece that holds the point, and only it, so
-  // that references saved then resolve.
+  // flank's pieces on one surface, where they were sweeps of their own.
+  // They are numbered by their places along the axis, from the pieces'
+  // count on, the same on every platform (mitcad#490): each number names
+  // the piece that holds its point (taken on Linux), and only it. The
+  // numbers of the order before that hold where they held on every
+  // platform; references to the others find no face, so that they are
+  // reported rather than moved to another turn.
   const ShapePtr rod = extrude("F2", {circle(1, 0, 0, 5)}, 0, 20);
   ThreadSpec spec = spec_of("F3", "F2:side(c1)", 1.5, k6g);
-  // The points were taken on Linux. The pieces of whole turns have their
-  // centres on the axis, so their numbers (FaceNamer's order of centres,
-  // rounded to 1e-6 mm) follow the nanometres by which the booleans'
-  // intersection curves make some turns differ from the others, and which
-  // turns those are differs between the platforms' maths libraries
-  // (0.16.1-rc1 on Windows: six names on other whole turns). Elsewhere such
-  // a name may name another whole turn's piece, with a note; the other
-  // pieces' names, and every name on Linux, hold exactly.
-#if !defined(__linux__)
-  const auto on_axis = [](const TopoDS_Shape& face) {
-    GProp_GProps properties;
-    BRepGProp::SurfaceProperties(face, properties);
-    const gp_Pnt centre = properties.CentreOfMass();
-    return std::hypot(centre.X(), centre.Y()) < 1e-4;
-  };
-#endif
-  const auto distance_to = [](const LegacyPiece& piece, const TopoDS_Shape& face) {
-    const TopoDS_Vertex at = BRepBuilderAPI_MakeVertex(gp_Pnt(piece.x, piece.y, piece.z));
+  const std::string thread = "F3:thread(F2:side(c1))";
+  const auto distance_to = [](double x, double y, double z, const TopoDS_Shape& face) {
+    const TopoDS_Vertex at = BRepBuilderAPI_MakeVertex(gp_Pnt(x, y, z));
     BRepExtrema_DistShapeShape between(at, face);
     return between.IsDone() ? between.Value() : 1.0;
   };
-  const auto check_pieces = [&](const Shape& threaded, const std::vector<LegacyPiece>& pieces) {
-    const std::vector<int> all = threaded.find_faces("F3:thread(F2:side(c1))");
-    CHECK(all.size() == 57);
-    for (const LegacyPiece& piece : pieces) {
-      const std::vector<int> faces = threaded.find_faces(piece.name);
-      CHECK(faces.size() == 1);
-      if (faces.size() != 1) {
-        std::printf("  %s names %zu faces\n", piece.name, faces.size());
-        continue;
+  // (Whether the name finds one face, the one with the point on it.)
+  const auto holds = [&](const Shape& threaded, const char* number, double x, double y, double z) {
+    const std::vector<int> faces = threaded.find_faces(thread + number);
+    if (faces.size() != 1) {
+      std::printf("  %s%s names %zu faces\n", thread.c_str(), number, faces.size());
+      return false;
+    }
+    const double distance = distance_to(x, y, z, threaded.face(faces.front()));
+    if (distance >= 2e-4) {
+      std::printf("  %s%s is %g from its point\n", thread.c_str(), number, distance);
+      return false;
+    }
+    return true;
+  };
+  const auto check_pieces = [&](const Shape& threaded, const std::vector<NumberedPiece>& pieces,
+                                const std::vector<LegacyPiece>& legacy) {
+    CHECK(threaded.find_faces(thread).size() == 57);
+    CHECK(pieces.size() == 57);
+    for (const NumberedPiece& piece : pieces) {
+      CHECK(holds(threaded, piece.number, piece.x, piece.y, piece.z));
+    }
+    for (const LegacyPiece& piece : legacy) {
+      if (piece.kept) {
+        CHECK(holds(threaded, piece.number, piece.x, piece.y, piece.z));
+      } else {
+        CHECK(threaded.find_faces(thread + piece.number).empty());
       }
-      const double distance = distance_to(piece, threaded.face(faces.front()));
-      if (distance < 2e-4) {
-        continue;
-      }
-#if !defined(__linux__)
-      bool whole_turns = on_axis(threaded.face(faces.front()));
-      bool held = false;
-      for (const int i : all) {
-        if (distance_to(piece, threaded.face(i)) < 2e-4) {
-          held = true;
-          whole_turns = whole_turns && on_axis(threaded.face(i));
-        }
-      }
-      if (held && whole_turns) {
-        std::printf("  note: %s names another whole turn's piece here (its point is %g from it)\n", piece.name,
-                    distance);
-        continue;
-      }
-#endif
-      CHECK(distance < 2e-4);
-      std::printf("  %s is %g from its point\n", piece.name, distance);
     }
   };
   const ShapePtr bolt = modeled_thread(*rod, spec);
-  check_pieces(*bolt, {
-                          {"F3:thread(F2:side(c1))#56", 4.006096174, 2.182098960, 0.062583800},
-                          {"F3:thread(F2:side(c1))#55", 4.068958467, -0.112013955, 0.346257715},
-                          {"F3:thread(F2:side(c1))#54", 2.735840279, -3.488917118, 0.516242316},
-                          {"F3:thread(F2:side(c1))#2", -4.854156205, -0.832341600, 0.370152455},
-                          {"F3:thread(F2:side(c1))#18", 2.071030938, -4.064627041, 1.181013414},
-                          {"F3:thread(F2:side(c1))#19", 1.847968323, -3.626842013, 1.590328100},
-                          {"F3:thread(F2:side(c1))#20", 2.012840691, -3.950422251, 1.969984694},
-                          {"F3:thread(F2:side(c1))#6", -4.388207132, 2.235903211, 1.789115846},
-                          {"F3:thread(F2:side(c1))#33", 2.071030938, -4.064627041, 8.681013414},
-                          {"F3:thread(F2:side(c1))#53", 2.012840691, -3.950422251, 18.469984694},
-                          {"F3:thread(F2:side(c1))#17", -4.388207132, 2.235903211, 18.289115846},
-                          {"F3:thread(F2:side(c1))#5", 2.071030938, -4.064627041, 19.181013414},
-                          {"F3:thread(F2:side(c1))#4", 0.908611370, -3.967794710, 19.531570384},
-                          {"F3:thread(F2:side(c1))#1", -2.074516276, -3.918385626, 19.741242409},
-                          {"F3:thread(F2:side(c1))#3", -0.884984551, 4.844835121, 19.581867354},
-                          {"F3:thread(F2:side(c1))#0", -3.750502502, 2.726913306, 19.999999926},
-                      });
+  check_pieces(*bolt, kRightHandPieces,
+               {
+                   {"#56", 4.006096174, 2.182098960, 0.062583800, true},
+                   {"#55", 4.068958467, -0.112013955, 0.346257715, true},
+                   {"#54", 2.735840279, -3.488917118, 0.516242316, true},
+                   {"#2", -4.854156205, -0.832341600, 0.370152455, true},
+                   {"#18", 2.071030938, -4.064627041, 1.181013414, false},
+                   {"#19", 1.847968323, -3.626842013, 1.590328100, false},
+                   {"#20", 2.012840691, -3.950422251, 1.969984694, false},
+                   {"#6", -4.388207132, 2.235903211, 1.789115846, false},
+                   {"#33", 2.071030938, -4.064627041, 8.681013414, false},
+                   {"#53", 2.012840691, -3.950422251, 18.469984694, false},
+                   {"#17", -4.388207132, 2.235903211, 18.289115846, false},
+                   {"#5", 2.071030938, -4.064627041, 19.181013414, true},
+                   {"#4", 0.908611370, -3.967794710, 19.531570384, true},
+                   {"#1", -2.074516276, -3.918385626, 19.741242409, true},
+                   {"#3", -0.884984551, 4.844835121, 19.581867354, true},
+                   {"#0", -3.750502502, 2.726913306, 19.999999926, true},
+               });
   // The faces put on the exact screw surfaces of the section's edges, the
   // per-turn pieces were approximations of: the shape valid, its tolerances
   // no larger, and its volume and area those of the per-turn thread (taken
@@ -794,23 +917,23 @@ void test_pieces_on_screw_surfaces_and_legacy_names() {
   chamfered.chamfer_ends = {{true, true}};
   as_before(*modeled_thread(*rod, chamfered), 1252.800363702, 1017.873373268);
   spec.right_handed = false;
-  check_pieces(*modeled_thread(*rod, spec),
+  check_pieces(*modeled_thread(*rod, spec), kLeftHandPieces,
                {
-                   {"F3:thread(F2:side(c1))#0", -4.361517055, 1.243916527, 0.107568637},
-                   {"F3:thread(F2:side(c1))#53", 4.427586400, -0.232039955, 0.744984711},
-                   {"F3:thread(F2:side(c1))#54", 3.890516701, -1.197016826, 0.424085815},
-                   {"F3:thread(F2:side(c1))#3", 2.424278895, -3.864354288, 0.184755699},
-                   {"F3:thread(F2:side(c1))#1", -2.884529314, 3.991881215, 0.555228680},
-                   {"F3:thread(F2:side(c1))#20", -4.388207132, 2.235903211, 2.003826227},
-                   {"F3:thread(F2:side(c1))#7", 4.427586400, -0.232039955, 2.244984711},
-                   {"F3:thread(F2:side(c1))#19", 4.555585836, -0.238748121, 1.456013361},
-                   {"F3:thread(F2:side(c1))#52", -4.388207132, 2.235903211, 5.003826227},
-                   {"F3:thread(F2:side(c1))#5", -4.388207132, 2.235903211, 11.003826227},
-                   {"F3:thread(F2:side(c1))#17", 4.427586496, -0.232039960, 11.244984767},
-                   {"F3:thread(F2:side(c1))#55", 4.516306830, 0.642912705, 19.409755738},
-                   {"F3:thread(F2:side(c1))#4", -3.528993778, -3.435378860, 19.581867357},
-                   {"F3:thread(F2:side(c1))#2", 0.110111675, 4.432295064, 19.863414325},
-                   {"F3:thread(F2:side(c1))#56", 2.131486164, 3.467814422, 19.609398484},
+                   {"#0", -4.361517055, 1.243916527, 0.107568637, true},
+                   {"#53", 4.427586400, -0.232039955, 0.744984711, true},
+                   {"#54", 3.890516701, -1.197016826, 0.424085815, true},
+                   {"#3", 2.424278895, -3.864354288, 0.184755699, true},
+                   {"#1", -2.884529314, 3.991881215, 0.555228680, true},
+                   {"#20", -4.388207132, 2.235903211, 2.003826227, false},
+                   {"#7", 4.427586400, -0.232039955, 2.244984711, false},
+                   {"#19", 4.555585836, -0.238748121, 1.456013361, false},
+                   {"#52", -4.388207132, 2.235903211, 5.003826227, false},
+                   {"#5", -4.388207132, 2.235903211, 11.003826227, false},
+                   {"#17", 4.427586496, -0.232039960, 11.244984767, false},
+                   {"#55", 4.516306830, 0.642912705, 19.409755738, true},
+                   {"#4", -3.528993778, -3.435378860, 19.581867357, true},
+                   {"#2", 0.110111675, 4.432295064, 19.863414325, true},
+                   {"#56", 2.131486164, 3.467814422, 19.609398484, true},
                });
 }
 
@@ -889,13 +1012,19 @@ void test_rounding_along_a_thread_keeps_its_pieces() {
       CHECK(rounded->find_faces(name).size() == 1);
     }
   }
-  // (No face over more than one piece of the thread.)
+  // (No face over more than one piece of the thread. A piece may carry two
+  // names, its number and the one it had before mitcad#490.)
+  const std::string thread = "F3:thread(F2:side(c1))";
   for (int i = 0; i < rounded->face_count(); ++i) {
-    int pieces = 0;
+    std::set<int> pieces;
     for (const std::string& name : rounded->face_names(i)) {
-      pieces += name.rfind("F3:thread(", 0) == 0 ? 1 : 0;
+      if (name.rfind(thread + '#', 0) == 0) {
+        for (const int piece : bolt->find_faces(name.substr(0, name.find('#', thread.size() + 1)))) {
+          pieces.insert(piece);
+        }
+      }
     }
-    CHECK(pieces <= 1);
+    CHECK(pieces.size() <= 1);
   }
   int roundings = 0;
   for (int i = 0; i < rounded->face_count(); ++i) {

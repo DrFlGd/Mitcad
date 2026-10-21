@@ -764,6 +764,8 @@ const Choices kEnds = {{QStringLiteral("a"), QStringLiteral("End A")}, {QStringL
 const QString kOffsetTyped = QStringLiteral("offset_typed");
 const QString kEndPick = QStringLiteral("end_pick");
 const QString kHover = QStringLiteral("hover_end");
+// The face a click would pick, where the hover shows only that (mitcad#489).
+const QString kHoverPick = QStringLiteral("hover_pick");
 // A hover that moved less than this many pixels shows the same.
 constexpr double kHoverStepPixels = 4.0;
 const QString kTyped = QStringLiteral("typed");
@@ -1274,6 +1276,19 @@ std::optional<CommandState> hoverState(const CommandState& state) {
   return shown;
 }
 
+// Whether the face under the mouse is one a click there places on: a side
+// or an end face (as Placement allows) of a part the new one goes on.
+bool hoverTakes(const Shared& shared, const QString& role, const SelectionItem& item, const CommandState& state) {
+  const QString place = state.choice(QStringLiteral("place"));
+  const QString wanted = isEndFace(item) ? QStringLiteral("end") : QStringLiteral("side");
+  if (!item.isValid() || item.kind != SelectKind::Face || !item.at ||
+      !(place.isEmpty() || place == kAuto || place == wanted) || !shared.hasTargets(role)) {
+    return false;
+  }
+  const std::optional<BuildPart> part = shared.partAt(item.occurrence);
+  return part && Shared::targets(role, part->role);
+}
+
 // The hover on a side or an end face of a part the new one goes on
 // (mitcad#417), kept with where the mouse is, so that the preview shows
 // what a click there places (on a side at its snap, on an end straight on
@@ -1282,15 +1297,7 @@ std::optional<CommandState> hoverState(const CommandState& state) {
 bool hoverFace(const Shared& shared, const QString& role, const SelectionItem& item, CommandState& state,
                const CommandContext& context) {
   const QJsonObject before = state.object(kHover);
-  const QString place = state.choice(QStringLiteral("place"));
-  const QString wanted = isEndFace(item) ? QStringLiteral("end") : QStringLiteral("side");
-  bool takes = item.isValid() && item.kind == SelectKind::Face && item.at &&
-               (place.isEmpty() || place == kAuto || place == wanted) && shared.hasTargets(role);
-  if (takes) {
-    const std::optional<BuildPart> part = shared.partAt(item.occurrence);
-    takes = part && Shared::targets(role, part->role);
-  }
-  QJsonObject record = takes ? build::pickRecord(item, context) : QJsonObject();
+  QJsonObject record = hoverTakes(shared, role, item, state) ? build::pickRecord(item, context) : QJsonObject();
   if (record.isEmpty()) {
     if (before.isEmpty()) {
       return false;
@@ -1315,6 +1322,26 @@ bool hoverFace(const Shared& shared, const QString& role, const SelectionItem& i
     qInfo().noquote() << QStringLiteral("BUILD hover on %1").arg(item.describe());
   }
   state.setObject(kHover, record);
+  return true;
+}
+
+// The face a click would pick, and nothing else (mitcad#489: Timber's
+// Spacing, whose preview lays out the whole set, too slow to follow the
+// mouse): the view's hover highlights the face, the log names it once as
+// the mouse comes onto it, and no preview is computed (always false). A
+// hover's preview left from before is dropped (true then).
+bool hoverPickOnly(const Shared& shared, const QString& role, const SelectionItem& item, CommandState& state) {
+  const QString shown = state.object(kHoverPick).value(QStringLiteral("item")).toString();
+  const QString now = hoverTakes(shared, role, item, state) ? item.describe() : QString();
+  if (now != shown) {
+    state.setObject(kHoverPick, now.isEmpty() ? QJsonObject() : QJsonObject{{QStringLiteral("item"), now}});
+    qInfo().noquote() << (now.isEmpty() ? QStringLiteral("BUILD hover pick: off the parts' faces")
+                                        : QStringLiteral("BUILD hover pick: %1, no preview").arg(now));
+  }
+  if (state.object(kHover).isEmpty()) {
+    return false;
+  }
+  state.setObject(kHover, {});
   return true;
 }
 
@@ -1383,6 +1410,25 @@ double extentAlong(const TopoDS_Shape& shape, const gp_Dir& axis) {
   return high >= low ? high - low : kNaN;
 }
 
+// How many bodies a preview's shape has: a spacing set's members
+// (mitcad#487), logged for the UI tests.
+int bodiesOf(const TopoDS_Shape& shape) {
+  int count = 0;
+  for (TopExp_Explorer it(shape, TopAbs_SOLID); it.More(); it.Next()) {
+    ++count;
+  }
+  return count;
+}
+
+// A spacing set's preview in the log: how many members the model lays out
+// and how many bodies the view shows (mitcad#487).
+QString setPreviewLog(const QJsonObject& answer, const TopoDS_Shape& shape) {
+  const QJsonObject spacing = answer.value(QStringLiteral("spacing")).toObject();
+  return QStringLiteral("; set preview %1 member(s), %2 body(ies)")
+      .arg(spacing.value(QStringLiteral("count")).toInt())
+      .arg(bodiesOf(shape));
+}
+
 // The auto length's target highlighted: its face, else (a frame of the part
 // in the way) the part.
 void highlightTarget(Inspection& result, const QJsonObject& target, const CommandContext& context) {
@@ -1401,9 +1447,10 @@ void highlightTarget(Inspection& result, const QJsonObject& target, const Comman
 // length's target highlighted, the length at the free end, the side's
 // snaps and an end face's zones, where the part goes ("Adds to") and the
 // first part's hint; with the mouse on a side or an end face, what a
-// click there places (mitcad#417).
+// click there places (mitcad#417). With `spacing` (Timber's set between
+// two members) the set's every member (mitcad#487).
 Inspection inspectPlacement(const SharedPtr& shared, const QString& role, const CommandState& picked,
-                            const CommandContext& context, bool profile) {
+                            const CommandContext& context, bool profile, const QJsonObject& spacing = QJsonObject()) {
   Inspection result;
   Part part;
   if (!chosenPart(*shared, picked, part)) {
@@ -1430,7 +1477,12 @@ Inspection inspectPlacement(const SharedPtr& shared, const QString& role, const 
     result.log = QStringLiteral("waiting: %1; adds to %2; part %3").arg(placed.problem, host.name, part.name);
     return result;
   }
-  QJsonObject request = placed.fields;
+  // A set: the model answers its first member and lays out the others.
+  QJsonObject fields = placed.fields;
+  if (!spacing.isEmpty()) {
+    fields.insert(QStringLiteral("spacing"), spacing);
+  }
+  QJsonObject request = fields;
   request.insert(QStringLiteral("query"), QStringLiteral("build_preview"));
   QJsonObject answer;
   try {
@@ -1445,8 +1497,9 @@ Inspection inspectPlacement(const SharedPtr& shared, const QString& role, const 
     length = state.value(QStringLiteral("length"));
   }
   shared->setPreview(frame, length, !placed.target.isEmpty());
-  // The model's shape of the new part, else its section along the axis.
-  QJsonObject shapeRequest = placed.fields;
+  // The model's shape of the new part (a set's every member), else its
+  // section along the axis.
+  QJsonObject shapeRequest = fields;
   shapeRequest.insert(QStringLiteral("shape"), QStringLiteral("build_preview"));
   result.shape = context.analysisShape(shapeRequest);
   const double bodyLength = result.shape.IsNull() || !frame.valid ? kNaN : extentAlong(result.shape, frame.z);
@@ -1595,6 +1648,9 @@ Inspection inspectPlacement(const SharedPtr& shared, const QString& role, const 
   }
   if (std::isfinite(bodyLength)) {
     result.log += QStringLiteral("; body %1 mm").arg(bodyLength, 0, 'f', 2);
+  }
+  if (!spacing.isEmpty()) {
+    result.log += setPreviewLog(answer, result.shape);
   }
   if (hovered) {
     result.log += QStringLiteral("; on the hover");
@@ -2389,7 +2445,8 @@ RowPlacement rowPlacement(const Shared& shared, const CommandState& state, const
   return result;
 }
 
-// The preview's shape and frame of build_place's fields without the set.
+// The preview's shape and frame of build_place's fields: a set's first
+// member's frame, the shape every member's (mitcad#487).
 struct Previewed {
   QJsonObject answer;
   TopoDS_Shape shape;
@@ -2398,7 +2455,6 @@ struct Previewed {
 
 Previewed previewOf(QJsonObject fields, const CommandContext& context) {
   Previewed result;
-  fields.remove(QStringLiteral("spacing"));
   QJsonObject request = fields;
   request.insert(QStringLiteral("query"), QStringLiteral("build_preview"));
   try {
@@ -2531,13 +2587,17 @@ Inspection inspectTimber(const SharedPtr& shared, const CommandState& state, con
   result.text = lines.join(QStringLiteral("<br>"));
   result.error = preview.error;
   result.log = QStringLiteral("%1; adds to %2; part %3").arg(logged, host.name, part.name);
+  if (row) {
+    result.log += setPreviewLog(preview.answer, result.shape);
+  }
   return result;
 }
 
-// Between two members: what Profile's placement previews, and the set's
-// count from the side it stands along.
+// Between two members: what Profile's placement previews with the set's
+// every member (mitcad#487), and the set's count from the side it stands
+// along.
 Inspection inspectSetOnSide(const SharedPtr& shared, const CommandState& state, const CommandContext& context) {
-  Inspection result = inspectPlacement(shared, kTimberRole, state, context, true);
+  Inspection result = inspectPlacement(shared, kTimberRole, state, context, true, spacingFields(state));
   Part part;
   if (!result.error.isEmpty() || !chosenPart(*shared, state, part)) {
     return result;
@@ -3151,6 +3211,7 @@ CommandDef timberCommand(const SharedPtr& shared, DocumentHost& host) {
                         .withOnChange([shared](CommandState& state, const CommandContext& context) {
                           shared->timberHow = howOf(state);
                           state.setObject(kHover, {});
+                          state.setObject(kHoverPick, {});
                           // A frame's wood screws (mitcad#479).
                           if (howOf(state) == kFrame) {
                             shared->catalog.refresh(kWoodRole, context);
@@ -3270,9 +3331,17 @@ CommandDef timberCommand(const SharedPtr& shared, DocumentHost& host) {
     return inspectTimber(shared, state, context);
   };
   def.previewMarkers = markersOf;
-  // Two points follow nothing of the mouse (mitcad#485).
+  // Two points follow nothing of the mouse (mitcad#485); a set between two
+  // members shows only the face a click picks, its preview after the click
+  // (mitcad#489).
   def.hoverPreview = [shared, role](const SelectionItem& item, CommandState& state, const CommandContext& context) {
-    return placesOnMember(state) && hoverFace(*shared, role, item, state, context);
+    if (!placesOnMember(state)) {
+      return false;
+    }
+    if (howOf(state) == kSpacing) {
+      return hoverPickOnly(*shared, role, item, state);
+    }
+    return hoverFace(*shared, role, item, state, context);
   };
   def.apply = [shared, &host, role](CommandState& state, const CommandContext& context) {
     Part part;

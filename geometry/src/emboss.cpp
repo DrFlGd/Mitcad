@@ -136,7 +136,7 @@ UvCurve uv_curve(const TopoDS_Edge& edge, double radius) {
   for (int i = 1; i <= spline->NbPoles(); ++i) {
     spline->SetPole(i, uv_of(spline->Pole(i), radius));
   }
-  return {spline, spline->FirstParameter(), spline->LastParameter()};
+  return {occ::handle<Geom2d_Curve>(spline), spline->FirstParameter(), spline->LastParameter()};
 }
 
 // The edge of a flat profile face wrapped onto a cone: its curve in the
@@ -179,7 +179,7 @@ UvCurve cone_uv_curve(const TopoDS_Edge& edge, const Wrap& wrap) {
       error = std::max(error, std::abs(a.X() - b.X()) * (radius + std::abs(a.Y())) + std::abs(a.Y() - b.Y()));
     }
     if (error <= 1.0e-8 || n == 4096) {
-      return {uv, first, last};
+      return {occ::handle<Geom2d_Curve>(uv), first, last};
     }
   }
   throw std::runtime_error("an edge of the profile could not be developed onto the cone");

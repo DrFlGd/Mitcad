@@ -1,0 +1,545 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: two stripe ends joined over a narrow face that pokes through the
+ball's path, the blend holed there (mitcad#343).
+
+The case: a rounding of radius 0.5 on three pieces of the edge between a
+large torus Fo and a plane, the edge interrupted twice by a rod of the
+solid, narrow strips of the rod's cylinder between the pieces (2.34 and
+2.26 mm2). Past the pieces' ends the contacts on the plane run onto a
+torus N of radius 0.6 that wraps the rod's foot, and patch 0932 ends the
+walks before singular sections there: the ends' contacts on N lie on no
+arc of the rod's strip C. In the file's body each pair of ends is one
+blend over C. Over one strip the contact on N leaves N across C's edge and
+comes back (the cut JoinOverNarrowFaces already makes); over the other it
+stays on N all the way, and C pokes through the blend: the file's face
+there has a hole bounded by a closed curve of 3.66 mm on the rod, the rod
+keeping a lens of 0.888 mm2 inside it.
+
+JoinOverNarrowFaces took C from the arc an end's contact on N ends on; where
+no such arc's face holds both ends' vertices, C is now the face across an
+edge of N that does (other than Fo, not tangent to N). Where the walked
+contact never leaves N, the join is made when C's surface cuts the walked
+blend in a closed curve and all of C lies beyond the walk's start section
+(on it at the end's vertex): the walked blend replaces A's end as one
+piece, from the start up to a section beyond C, the curve and B's end, cut
+back to B's end piece there; PierceBlends then holes it, C keeping its
+lens. Otherwise the stripes stay as they were.
+
+On the design's replayed body the rounding, as the three pieces or with
+the rod's two edges, builds in every order of its contours within 0.0033
+mm3 of the file's change (7.5193 mm3), the rod's lens the file's; before,
+two corners failed. Synthetic: a post on a plate, the edge round its foot
+broken by two caps whose feet stay inside the rounding's contacts and that
+poke through it, rounded with 0.5: the post's rounded foot with the caps
+fused, within 7e-6 mm3, for 15 of 20 sizes (posts of radius 0.8 to 3,
+caps 0.65 to 0.8; the other 5 fail as before); before, none of the 20
+was right (invalid, wrong or failed).
+
+Upstream: new.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.hxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.hxx
+index a0004ca1..33734a2a 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.hxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.hxx
+@@ -1189,8 +1189,14 @@ private:
+   //! meet as free ends. C cuts that blend along their intersection: the
+   //! walked blend is one face whose side, between the points where the
+   //! contact leaves N and comes back, is that cut (which may reach back
+-  //! along the blend beyond those points: a notch). Stripes whose edges lie
+-  //! between Fo and a narrow face under another stripe's ball are dropped.
++  //! along the blend beyond those points: a notch). Where the contact
++  //! stays on N all the way instead and C pokes through the walked blend
++  //! (a closed curve of their intersection, C wholly beyond the walk's
++  //! start), the walked blend is one face up to a section beyond C and the
++  //! other end, holed by PierceBlends. C is the face across the arc an
++  //! end's contact on N ends on or, where none is between the vertices,
++  //! across an edge of N, holding both. Stripes whose edges lie between Fo
++  //! and a narrow face under another stripe's ball are dropped.
+   //! Returns true when stripes were joined or dropped.
+   Standard_EXPORT bool JoinOverNarrowFaces();
+ 
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_Trim.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_Trim.cxx
+index aa3c9867..499edbb1 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_Trim.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_Trim.cxx
+@@ -826,7 +826,8 @@ double signedArea(const occ::handle<Geom2d_Curve>& C)
+ //            (its side on C), and from where the contact comes back up to
+ //            the meeting with the other end. ChFi3d_FilDS makes them one
+ //            face (one surface), its side the cut between the two points,
+-//            and C keeps its part beyond the cut.
++//            and C keeps its part beyond the cut. Pierced (the contact
++//            never leaving N), one piece, which PierceBlends holes.
+ //=======================================================================
+ 
+ bool ChFi3d_Builder::JoinOverNarrowFaces()
+@@ -1022,23 +1023,42 @@ bool ChFi3d_Builder::JoinOverNarrowFaces()
+                 }
+               }
+             }
+-            if (C.IsNull())
+-            {
+-              continue;
+-            }
+             // (C between the two ends' vertices: both its own.)
+-            {
++            const auto holdsBoth = [&Va, &Vb](const TopoDS_Shape& theF) {
+               bool aHasA = false, aHasB = false;
+-              for (TopExp_Explorer exV(C, TopAbs_VERTEX); exV.More(); exV.Next())
++              for (TopExp_Explorer exV(theF, TopAbs_VERTEX); exV.More(); exV.Next())
+               {
+                 aHasA = aHasA || exV.Current().IsSame(Va);
+                 aHasB = aHasB || exV.Current().IsSame(Vb);
+               }
+-              if (!aHasA || !aHasB)
++              return aHasA && aHasB;
++            };
++            if (!C.IsNull() && !holdsBoth(C))
++            {
++              C.Nullify();
++            }
++            if (C.IsNull())
++            {
++              // (Where no end's contact on N ends on such an arc, as an end
++              // cut short before a singular section does not, or its arc's
++              // face is not between the vertices: C is the face across an
++              // edge of N that holds both vertices, other than Fo and not
++              // tangent to N.)
++              for (TopExp_Explorer exE(N, TopAbs_EDGE); exE.More() && C.IsNull(); exE.Next())
+               {
+-                continue;
++                const TopoDS_Edge& aE  = TopoDS::Edge(exE.Current());
++                const TopoDS_Face  aCx = trimOtherFace(myEFMap, aE, N);
++                if (!aCx.IsNull() && !aCx.IsSame(N) && !aCx.IsSame(Fo) && holdsBoth(aCx)
++                    && !ChFi3d::IsTangentFaces(aE, N, aCx))
++                {
++                  C = aCx;
++                }
+               }
+             }
++            if (C.IsNull())
++            {
++              continue;
++            }
+             // (The two ends near each other.)
+             if (FdA->Vertex(aFirst, ons).Point().Distance(FdB->Vertex(bFirst, onsB).Point()) > 8. * R)
+             {
+@@ -1474,80 +1494,16 @@ bool ChFi3d_Builder::JoinOverNarrowFaceFrom(const occ::handle<ChFiDS_Stripe>& SA
+       tIn1 = t;
+     }
+   }
+-  if (!back)
++  // (Or the contact stays on N all the way: C then pokes through the
++  // blend, which PierceBlends holes, and the blend runs on in one piece.)
++  const bool pierced = !out;
++  if (!back && !pierced)
+   {
+     return false;
+   }
+-  for (int it = 0; it < 60; it++)
+-  {
+-    const double m = 0.5 * (tIn0 + tOut0);
+-    (stateAt(m) == TopAbs_OUT ? tOut0 : tIn0) = m;
+-    const double m2 = 0.5 * (tOut1 + tIn1);
+-    (stateAt(m2) == TopAbs_OUT ? tOut1 : tIn1) = m2;
+-  }
+-  const double tOut = 0.5 * (tIn0 + tOut0);
+-  const double tIn  = 0.5 * (tOut1 + tIn1);
+-  // The edges of N with C crossed there.
+-  const double aTolBack = std::max(100. * tolapp3d, 1.e-4);
+-  TopoDS_Face  CF       = C;
+-  CF.Orientation(TopAbs_FORWARD);
+-  const auto crossing = [&](const double t, TopoDS_Edge& Ec, double& wc, gp_Pnt& Pc) {
+-    const gp_Pnt P    = CN->Value(t);
+-    double       best = RealLast();
+-    for (TopExp_Explorer ex(CF, TopAbs_EDGE); ex.More(); ex.Next())
+-    {
+-      const TopoDS_Edge& E = TopoDS::Edge(ex.Current());
+-      if (BRep_Tool::Degenerated(E) || !trimOtherFace(myEFMap, E, C).IsSame(N))
+-      {
+-        continue;
+-      }
+-      double                        f = 0., l = 0.;
+-      const occ::handle<Geom_Curve> aC = BRep_Tool::Curve(E, f, l);
+-      if (aC.IsNull())
+-      {
+-        continue;
+-      }
+-      GeomAPI_ProjectPointOnCurve aPr(P, aC, f, l);
+-      if (aPr.NbPoints() > 0 && aPr.LowerDistance() < best)
+-      {
+-        best = aPr.LowerDistance();
+-        wc   = aPr.LowerDistanceParameter();
+-        Ec   = E;
+-        Pc   = aC->Value(wc);
+-      }
+-    }
+-    return !Ec.IsNull() && best <= aTolBack;
+-  };
+-  TopoDS_Edge E1, E2;
+-  double      w1 = 0., w2 = 0.;
+-  gp_Pnt      P1, P2;
+-  if (!crossing(tOut, E1, w1, P1) || !crossing(tIn, E2, w2, P2))
+-  {
+-    return false;
+-  }
+-  // The cut of the blend by C, from where the contact leaves N to where it
+-  // comes back.
+   const occ::handle<Geom_Surface>& SX = DStr.Surface(X->Surf()).Surface();
+-  occ::handle<Geom_Curve>          Cc;
+-  occ::handle<Geom2d_Curve>        Ps, Pc;
+-  double                           tolCut = tolapp3d;
+-  bool                             aCut   = false;
+-  try
+-  {
+-    OCC_CATCH_SIGNALS
+-    aCut = cutBetween(SX, C, P1, P2, tolapp3d, Cc, Ps, Pc, tolCut);
+-  }
+-  catch (Standard_Failure const&)
+-  {
+-    aCut = false;
+-  }
+-  if (!aCut)
+-  {
+-    return false;
+-  }
+-  // The cut's reach along the blend: the coordinate of the surface along
+-  // the spine (the other contact's p-curve runs along it), as the spine
+-  // parameter there.
++  // The coordinate of the blend's surface along the spine (the other
++  // contact's p-curve runs along it), as the spine parameter there.
+   const occ::handle<Geom2d_Curve>& aPO = FiO.PCurveOnSurf();
+   const gp_Pnt2d                   o1 = aPO->Value(Xlo), o2 = aPO->Value(Xhi);
+   const bool                       alongU = std::abs(o2.X() - o1.X()) >= std::abs(o2.Y() - o1.Y());
+@@ -1563,21 +1519,183 @@ bool ChFi3d_Builder::JoinOverNarrowFaceFrom(const occ::handle<ChFiDS_Stripe>& SA
+     }
+     return 0.5 * (lo + hi);
+   };
+-  double cutLo = RealLast(), cutHi = -RealLast();
+-  for (int i = 0; i <= 200; i++)
++  // The reach along the blend of a curve on its surface.
++  const auto reach = [&](const occ::handle<Geom2d_Curve>& aPs, double& theLo, double& theHi) {
++    theLo = RealLast();
++    theHi = -RealLast();
++    for (int i = 0; i <= 200; i++)
++    {
++      const double w = wAt(along(aPs->Value(aPs->FirstParameter() + (aPs->LastParameter() - aPs->FirstParameter()) * i / 200.)));
++      theLo          = std::min(theLo, w);
++      theHi          = std::max(theHi, w);
++    }
++  };
++  const double aMargin = 0.5 * R;
++  TopoDS_Face  CF      = C;
++  CF.Orientation(TopAbs_FORWARD);
++  double                    tOut = W0, tIn = W0, We = W0;
++  TopoDS_Edge               E1, E2;
++  double                    w1 = 0., w2 = 0.;
++  gp_Pnt                    P1, P2;
++  occ::handle<Geom_Curve>   Cc;
++  occ::handle<Geom2d_Curve> Ps, Pc;
++  double                    tolCut = tolapp3d;
++  if (pierced)
+   {
+-    const double w = wAt(along(Ps->Value(Ps->FirstParameter() + (Ps->LastParameter() - Ps->FirstParameter()) * i / 200.)));
+-    cutLo          = std::min(cutLo, w);
+-    cutHi          = std::max(cutHi, w);
++    // The hole: a closed cut of the blend by C within the walk, past its
++    // start.
++    NCollection_Sequence<ClosedCut> aLoops;
++    try
++    {
++      OCC_CATCH_SIGNALS
++      closedCuts(SX, C, tolapp3d, aLoops);
++    }
++    catch (Standard_Failure const&)
++    {
++      aLoops.Clear();
++    }
++    double holeLo = RealLast(), holeHi = -RealLast();
++    for (int il = 1; il <= aLoops.Length(); il++)
++    {
++      double lo = 0., hi = 0.;
++      reach(aLoops(il).PS, lo, hi);
++      if (lo > Xlo + tolesp && hi < Xhi - tolesp && (Forward ? lo > W0 + tolesp : hi < W0 - tolesp))
++      {
++        holeLo = std::min(holeLo, lo);
++        holeHi = std::max(holeHi, hi);
++      }
++    }
++    if (holeLo > holeHi)
++    {
++      return false;
++    }
++    // C under that one piece, all of it: its edges beyond the walk's start
++    // section (or on it, at A's vertex), up to the sections through their
++    // points' nearest points on the blend's surface.
++    gp_Pnt aPs0;
++    gp_Vec aTs0;
++    HG->D1(W0, aPs0, aTs0);
++    if (aTs0.Magnitude() <= gp::Resolution())
++    {
++      return false;
++    }
++    aTs0.Normalize();
++    if (!Forward)
++    {
++      aTs0.Reverse();
++    }
++    double cLo = RealLast(), cHi = -RealLast();
++    for (TopExp_Explorer exE(CF, TopAbs_EDGE); exE.More(); exE.Next())
++    {
++      const TopoDS_Edge& Ec = TopoDS::Edge(exE.Current());
++      double             f = 0., l = 0.;
++      const occ::handle<Geom_Curve> aCc = BRep_Tool::Curve(Ec, f, l);
++      for (int k = 0; k <= 8 && !aCc.IsNull(); k++)
++      {
++        const gp_Pnt Q = aCc->Value(f + (l - f) * k / 8.);
++        if (gp_Vec(aPs0, Q).Dot(aTs0) < -aTolMeet)
++        {
++          return false;
++        }
++        GeomAPI_ProjectPointOnSurf aPr(Q, SX);
++        if (aPr.NbPoints() == 0)
++        {
++          return false;
++        }
++        double u = 0., v = 0.;
++        aPr.LowerDistanceParameters(u, v);
++        const double w = wAt(along(gp_Pnt2d(u, v)));
++        cLo            = std::min(cLo, w);
++        cHi            = std::max(cHi, w);
++      }
++    }
++    if (cLo > cHi)
++    {
++      return false;
++    }
++    // The meeting with B: a section beyond C and B's end, of both blends.
++    double tB = 0., dB = 0.;
++    if (!lineParam(DStr, FiO, FdB->Vertex(bFirst, oppB).Point(), 0., tB, dB) || dB > aTolMeet)
++    {
++      return false;
++    }
++    We = Forward ? std::max(std::max(holeHi, cHi), tB) + aMargin : std::min(std::min(holeLo, cLo), tB) - aMargin;
++    if (Forward ? We > Xhi : We < Xlo)
++    {
++      return false;
++    }
+   }
+-  const double a  = std::min(tOut, tIn), b = std::max(tOut, tIn);
+-  // The meeting with B: a section beyond the cut, of both blends.
+-  const double aMargin = 0.5 * R;
+-  const double We      = Forward ? std::max(cutHi, b) + aMargin : std::min(cutLo, a) - aMargin;
+-  if ((Forward ? We > Xhi : We < Xlo) || (Forward ? cutLo < W0 + tolesp : cutHi > W0 - tolesp))
++  else
+   {
+-    return false;
++    for (int it = 0; it < 60; it++)
++    {
++      const double m = 0.5 * (tIn0 + tOut0);
++      (stateAt(m) == TopAbs_OUT ? tOut0 : tIn0) = m;
++      const double m2 = 0.5 * (tOut1 + tIn1);
++      (stateAt(m2) == TopAbs_OUT ? tOut1 : tIn1) = m2;
++    }
++    tOut = 0.5 * (tIn0 + tOut0);
++    tIn  = 0.5 * (tOut1 + tIn1);
++    // The edges of N with C crossed there.
++    const double aTolBack = std::max(100. * tolapp3d, 1.e-4);
++    const auto crossing = [&](const double t, TopoDS_Edge& Ec, double& wc, gp_Pnt& Pc) {
++      const gp_Pnt P    = CN->Value(t);
++      double       best = RealLast();
++      for (TopExp_Explorer ex(CF, TopAbs_EDGE); ex.More(); ex.Next())
++      {
++        const TopoDS_Edge& E = TopoDS::Edge(ex.Current());
++        if (BRep_Tool::Degenerated(E) || !trimOtherFace(myEFMap, E, C).IsSame(N))
++        {
++          continue;
++        }
++        double                        f = 0., l = 0.;
++        const occ::handle<Geom_Curve> aC = BRep_Tool::Curve(E, f, l);
++        if (aC.IsNull())
++        {
++          continue;
++        }
++        GeomAPI_ProjectPointOnCurve aPr(P, aC, f, l);
++        if (aPr.NbPoints() > 0 && aPr.LowerDistance() < best)
++        {
++          best = aPr.LowerDistance();
++          wc   = aPr.LowerDistanceParameter();
++          Ec   = E;
++          Pc   = aC->Value(wc);
++        }
++      }
++      return !Ec.IsNull() && best <= aTolBack;
++    };
++    if (!crossing(tOut, E1, w1, P1) || !crossing(tIn, E2, w2, P2))
++    {
++      return false;
++    }
++    // The cut of the blend by C, from where the contact leaves N to where it
++    // comes back.
++    bool aCut = false;
++    try
++    {
++      OCC_CATCH_SIGNALS
++      aCut = cutBetween(SX, C, P1, P2, tolapp3d, Cc, Ps, Pc, tolCut);
++    }
++    catch (Standard_Failure const&)
++    {
++      aCut = false;
++    }
++    if (!aCut)
++    {
++      return false;
++    }
++    // The cut's reach along the blend.
++    double cutLo = 0., cutHi = 0.;
++    reach(Ps, cutLo, cutHi);
++    // The meeting with B: a section beyond the cut, of both blends.
++    We = Forward ? std::max(cutHi, std::max(tOut, tIn)) + aMargin : std::min(cutLo, std::min(tOut, tIn)) - aMargin;
++    if ((Forward ? We > Xhi : We < Xlo) || (Forward ? cutLo < W0 + tolesp : cutHi > W0 - tolesp))
++    {
++      return false;
++    }
+   }
++  const double a = std::min(tOut, tIn), b = std::max(tOut, tIn);
+   const ChFiDS_CommonPoint aXeO = linePoint(DStr, FiO, We);
+   const ChFiDS_CommonPoint aXeN = linePoint(DStr, FiN, We);
+   double                   tbO = 0., tbN = 0., dO = 0., dN = 0.;
+@@ -1620,10 +1738,14 @@ bool ChFi3d_Builder::JoinOverNarrowFaceFrom(const occ::handle<ChFiDS_Stripe>& SA
+   const double       wa = tOut < tIn ? w1 : w2, wb = tOut < tIn ? w2 : w1;
+   const gp_Pnt&      Pa = tOut < tIn ? P1 : P2;
+   const gp_Pnt&      Pb = tOut < tIn ? P2 : P1;
+-  const ChFiDS_CommonPoint aCPa = arcPoint(a, Ea, wa, Pa, true);
+-  const ChFiDS_CommonPoint aCPb = arcPoint(b, Eb, wb, Pb, false);
++  ChFiDS_CommonPoint aCPa, aCPb;
++  if (!pierced)
++  {
++    aCPa = arcPoint(a, Ea, wa, Pa, true);
++    aCPb = arcPoint(b, Eb, wb, Pb, false);
++  }
+   // The cut from a to b.
+-  if (Cc->Value(Cc->FirstParameter()).Distance(Pa) > Cc->Value(Cc->FirstParameter()).Distance(Pb))
++  if (!pierced && Cc->Value(Cc->FirstParameter()).Distance(Pa) > Cc->Value(Cc->FirstParameter()).Distance(Pb))
+   {
+     // (Each a B-spline over the same range, which reversing keeps.)
+     Cc = Cc->Reversed();
+@@ -1672,40 +1794,55 @@ bool ChFi3d_Builder::JoinOverNarrowFaceFrom(const occ::handle<ChFiDS_Stripe>& SA
+     G->LastSpineParam(w2p);
+     return G;
+   };
+-  occ::handle<ChFiDS_SurfData> Q1 = piece(lo, a, false);
+-  occ::handle<ChFiDS_SurfData> Q2 = piece(a, b, true);
+-  occ::handle<ChFiDS_SurfData> Q3 = piece(b, hi, true);
++  // (Pierced, one piece: the hole is PierceBlends'.)
++  NCollection_Sequence<occ::handle<ChFiDS_SurfData>> aNew;
++  if (pierced)
++  {
++    aNew.Append(piece(lo, hi, false));
++  }
++  else
++  {
++    aNew.Append(piece(lo, a, false));
++    aNew.Append(piece(a, b, true));
++    aNew.Append(piece(b, hi, true));
++  }
+   // The start: FdA's points there; the far end: B's.
+   {
+-    occ::handle<ChFiDS_SurfData>& Qn = nearFirst ? Q1 : Q3;
+-    occ::handle<ChFiDS_SurfData>& Qf = nearFirst ? Q3 : Q1;
++    occ::handle<ChFiDS_SurfData>& Qn = nearFirst ? aNew.ChangeFirst() : aNew.ChangeLast();
++    occ::handle<ChFiDS_SurfData>& Qf = nearFirst ? aNew.ChangeLast() : aNew.ChangeFirst();
+     Qn->ChangeVertex(nearFirst, opp) = csO;
+     Qn->ChangeVertex(nearFirst, ons) = csN;
+     Qf->ChangeVertex(!nearFirst, ons) = FdB->Vertex(bFirst, onsB);
+     Qf->ChangeVertex(!nearFirst, opp) = FdB->Vertex(bFirst, oppB);
+   }
+-  Q1->ChangeVertex(false, ons) = aCPa;
+-  Q1->ChangeVertex(false, opp) = linePoint(DStr, Q1->Interference(opp), a);
+-  Q2->ChangeVertex(true, ons)  = aCPa;
+-  Q2->ChangeVertex(true, opp)  = Q1->Vertex(false, opp);
+-  Q2->ChangeVertex(false, ons) = aCPb;
+-  Q2->ChangeVertex(false, opp) = linePoint(DStr, Q2->Interference(opp), b);
+-  Q3->ChangeVertex(true, ons)  = aCPb;
+-  Q3->ChangeVertex(true, opp)  = Q2->Vertex(false, opp);
+-  // The cut piece's side on C.
+-  {
+-    const TopAbs_Orientation aTraC = TopAbs::Compose(FiN.Transition(), aTraOnC0);
+-    ChFiDS_FaceInterference& GI    = Q2->ChangeInterference(ons);
+-    GI.SetInterference(DStr.AddCurve(TopOpeBRepDS_Curve(Cc, tolCut)), aTraC, Pc, Ps);
+-    GI.SetFirstParameter(Cc->FirstParameter());
+-    GI.SetLastParameter(Cc->LastParameter());
+-    if (ons == 1)
+-    {
+-      Q2->ChangeIndexOfS1(DStr.AddShape(C));
+-    }
+-    else
+-    {
+-      Q2->ChangeIndexOfS2(DStr.AddShape(C));
++  if (!pierced)
++  {
++    occ::handle<ChFiDS_SurfData>& Q1 = aNew.ChangeValue(1);
++    occ::handle<ChFiDS_SurfData>& Q2 = aNew.ChangeValue(2);
++    occ::handle<ChFiDS_SurfData>& Q3 = aNew.ChangeValue(3);
++    Q1->ChangeVertex(false, ons) = aCPa;
++    Q1->ChangeVertex(false, opp) = linePoint(DStr, Q1->Interference(opp), a);
++    Q2->ChangeVertex(true, ons)  = aCPa;
++    Q2->ChangeVertex(true, opp)  = Q1->Vertex(false, opp);
++    Q2->ChangeVertex(false, ons) = aCPb;
++    Q2->ChangeVertex(false, opp) = linePoint(DStr, Q2->Interference(opp), b);
++    Q3->ChangeVertex(true, ons)  = aCPb;
++    Q3->ChangeVertex(true, opp)  = Q2->Vertex(false, opp);
++    // The cut piece's side on C.
++    {
++      const TopAbs_Orientation aTraC = TopAbs::Compose(FiN.Transition(), aTraOnC0);
++      ChFiDS_FaceInterference& GI    = Q2->ChangeInterference(ons);
++      GI.SetInterference(DStr.AddCurve(TopOpeBRepDS_Curve(Cc, tolCut)), aTraC, Pc, Ps);
++      GI.SetFirstParameter(Cc->FirstParameter());
++      GI.SetLastParameter(Cc->LastParameter());
++      if (ons == 1)
++      {
++        Q2->ChangeIndexOfS1(DStr.AddShape(C));
++      }
++      else
++      {
++        Q2->ChangeIndexOfS2(DStr.AddShape(C));
++      }
+     }
+   }
+   // Into A's stripe, for FdA or past FdA cut back to the start.
+@@ -1736,17 +1873,16 @@ bool ChFi3d_Builder::JoinOverNarrowFaceFrom(const occ::handle<ChFiDS_Stripe>& SA
+       FdA->LastSpineParam(W0);
+     }
+   }
+-  if (aFirst)
+-  {
+-    aSeqA.Prepend(Q3);
+-    aSeqA.Prepend(Q2);
+-    aSeqA.Prepend(Q1);
+-  }
+-  else
++  for (int i = 1; i <= aNew.Length(); i++)
+   {
+-    aSeqA.Append(Q1);
+-    aSeqA.Append(Q2);
+-    aSeqA.Append(Q3);
++    if (aFirst)
++    {
++      aSeqA.Prepend(aNew(aNew.Length() + 1 - i));
++    }
++    else
++    {
++      aSeqA.Append(aNew(i));
++    }
+   }
+   // The meeting section: its points, shared, and its edge.
+   const int Iopp = ChFi3d_IndexPointInDS(FdB->Vertex(bFirst, oppB), DStr);
+@@ -1756,7 +1892,7 @@ bool ChFi3d_Builder::JoinOverNarrowFaceFrom(const occ::handle<ChFiDS_Stripe>& SA
+   SA->SetIndexPoint(Iopp, aFirst, opp);
+   SA->SetIndexPoint(Ions, aFirst, ons);
+   {
+-    const occ::handle<ChFiDS_SurfData>& GA    = aFirst ? Q1 : Q3;
++    const occ::handle<ChFiDS_SurfData>& GA    = aFirst ? aNew.First() : aNew.Last();
+     const occ::handle<Geom_Surface>&    SurfB = DStr.Surface(FdB->Surf()).Surface();
+     const ChFiDS_FaceInterference&      B1    = FdB->Interference(1);
+     const ChFiDS_FaceInterference&      B2    = FdB->Interference(2);

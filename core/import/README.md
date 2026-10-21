@@ -9683,7 +9683,7 @@ the item through OCCT's fillet alone and the dressup.
   left are the input's own slivers, away from the rounding.
 
 Open, for round 14 (`6418ebb1`, `920a1cef` items 44 and 45, where the
-roundings end at the node rod):
+roundings end at the node rod; done in round 14, below):
 
 - Item 44 (Fillet6, radius 0.5 where the three bores' curves meet the
   rod) falls back. The rod's seam (a B-spline curve) ends at one rounding's
@@ -9775,6 +9775,46 @@ after; history states matching): `a9e82a9a` and `de7b8b9d` 183 → 184 of
 before). Unchanged: `5ef2dbd5` 83 of 98, `db73863f` 135 of 145 (its final
 body's deviation of 0.49 mm is the same with OCCT without 0930 and without
 the widening), `52ba7a15` 97 of 110, `61526c66` 14 of 14.
+
+### The roundings at the node rod (round 14 of mitcad#343)
+
+Items 44 and 45 of `6418ebb1` and `920a1cef`, which round 13 left open,
+with port patch 0931 back and the port's patches 0932 and 0933, traced on
+the replay's body before item 45 through OCCT's fillet alone:
+
+- **Item 45 (Fillet7): parametric, verified, inputs inferred** (2 of its 5
+  references are lost in the file; the 3 pieces of the torus's edge with
+  the plane match state 21 within 3.1e-6). The pieces' ends past their
+  vertices run onto item 43's torus round the rod's foot, where 0077 cuts
+  the walks before singular sections; the cut ends were taken up again
+  from the cut (0932 ends them there). Each pair of ends at one of the
+  rod's two strips is one blend in the file. Over one strip the contact
+  on item 43's torus leaves it and comes back (round 8's join, which found
+  no strip: the cut ends' contacts lie on no arc of it; 0933 finds it
+  across an edge of the torus). Over the other the contact stays on the
+  torus and the strip pokes through the blend: the file's face there has
+  a hole bounded by a closed curve of 3.66 mm on the rod, which keeps a
+  lens of 0.888 of its 2.26 mm². 0933 joins such ends as one piece over
+  the whole strip, which `PierceBlends` holes. On the replay's body the
+  rounding builds as the 3 pieces or with the strips' 2 edges, in every
+  order of the contours (8 orders of the 5, 4 of the 3), within 0.0033
+  mm³ of the file's change of 7.5193 mm³; before, two corners failed.
+  OCCT-only test `geometry` (`test_post_foot_rounded_over_two_caps`, two
+  sizes: a post's foot rounded over two caps that poke through it).
+- **Item 44 (Fillet6): parametric, verified, inputs read** (0931, round
+  13), now that item 45 builds on the replay after it.
+
+| Item | Achieved / target | Cause of the gap |
+|---|---|---|
+| `6418ebb1`, `920a1cef` 44, 45 | 4 / 4 parametric, verified (44 inputs read, 45 inferred: 2 references lost in the file) | |
+
+Designs, each imported alone (features parametric of all, before →
+after; history states matching): `6418ebb1` and `920a1cef` 42 → 43 of 50
+(18 → 19 of 25; the final body's volume within 4.1e-6 of the file's,
+5.3e-6 before; with 0931 alone item 45 ran on the replay and the final
+body lay 2.2 mm off). Unchanged: `a9e82a9a` and `de7b8b9d` 184 of 199 (120
+of 145 built), `5ef2dbd5` 83 of 98, `db73863f` 135 of 145 (its final body's
+deviation of 0.49 mm as before), `52ba7a15` 97 of 110, `61526c66` 14 of 14.
 
 ### Chamfers left after mitcad#240 (mitcad#263)
 

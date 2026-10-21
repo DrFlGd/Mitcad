@@ -1,0 +1,101 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: a walk cut before a singular section past its spine's end ends
+there (mitcad#343).
+
+The case: a rounding of radius 0.5 on three pieces of the edge between a
+large torus and a plane that a rod of the solid interrupts. Past a piece's
+end the contact on the plane runs onto a torus of radius 0.6 that wraps
+the rod's foot; there the contact speeds up from 1.25 to 20.5 along the
+guide, and patch 0077's ChFi3d_CutSingularExtension cuts the line at
+18.0021 (the spine 17.92 long), before the singular sections. The cut end
+lies on no arc, so ComputeData left the end open (intl 0) and the loop of
+PerformSetOfSurfOnElSpine, finding the line short of the guide's end, took
+the walk up again from the cut, into the same sections; the corners at the
+pieces' ends then failed.
+
+ChFi3d_CutSingularExtension now returns the ends it cut, and ComputeData
+closes such an end (intl or intf 1 where it was 0): the cut end is the
+blend's end for the corner, as where a contact reaches the edge of its
+face. The common points the data took at the walk's end are kept: a corner
+elsewhere (the rounding along an arc of a cylinder's top cut by two
+planes, its walk past the end cut there) builds from them. With patch 0933
+the design's replayed rounding, the three pieces and the edges of the rod
+between them, builds in every order of its contours within 0.0032 mm3 of
+the file's change (7.5193 mm3); before, a corner failed.
+
+Upstream: new.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_6.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_6.cxx
+index 7d73a18d..8d0f3b99 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_6.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_6.cxx
+@@ -721,14 +721,16 @@ static bool ChFi3d_RegularUpToArc(const occ::handle<BRepBlend_Line>& Lin,
+ //            tangency point). Where the walk ended there because a contact
+ //            reached its edge, the blend's end, the line is kept up to it
+ //            while its sections are regular (ChFi3d_RegularUpToArc).
++//            Returns the ends cut (1 the first, 2 the last).
+ //=======================================================================
+ 
+-static void ChFi3d_CutSingularExtension(occ::handle<BRepBlend_Line>&     Lin,
+-                                        const occ::handle<ChFiDS_Spine>& Spine)
++static int ChFi3d_CutSingularExtension(occ::handle<BRepBlend_Line>&     Lin,
++                                       const occ::handle<ChFiDS_Spine>& Spine)
+ {
++  int aCut = 0;
+   if (Lin.IsNull() || Spine.IsNull() || Spine->IsPeriodic() || Lin->NbPoints() < 4)
+   {
+-    return;
++    return aCut;
+   }
+   const double SpF = Spine->FirstParameter(1);
+   const double SpL = Spine->LastParameter(Spine->NbEdges());
+@@ -753,6 +755,7 @@ static void ChFi3d_CutSingularExtension(occ::handle<BRepBlend_Line>&     Lin,
+         {
+           Lin->Remove(i, nb);
+           UpdateLine(Lin, false);
++          aCut |= 2;
+         }
+         break;
+       }
+@@ -777,11 +780,13 @@ static void ChFi3d_CutSingularExtension(occ::handle<BRepBlend_Line>&     Lin,
+         {
+           Lin->Remove(1, i);
+           UpdateLine(Lin, true);
++          aCut |= 1;
+         }
+         break;
+       }
+     }
+   }
++  return aCut;
+ }
+ 
+ //=======================================================================
+@@ -3087,7 +3092,7 @@ bool ChFi3d_Builder::ComputeData(occ::handle<ChFiDS_SurfData>&           Data,
+       //  modified by eap Fri Feb  8 11:45:10 2002 ___END___
+     }
+   }
+-  ChFi3d_CutSingularExtension(Lin, Spine);
++  const int aCutEnds = ChFi3d_CutSingularExtension(Lin, Spine); // (the ends cut)
+   {
+     // (An end replaced at a vanishing end: no longer on the arcs found.)
+     const int aTidied = ChFi3d_EndBeforeVanishing(Lin, Spine, Data, Func, tolapp3d);
+@@ -3274,6 +3279,17 @@ bool ChFi3d_Builder::ComputeData(occ::handle<ChFiDS_SurfData>&           Data,
+       intl = 0;
+     }
+   }
++  // (A walk cut before a singular section past the spine's end ends there:
++  // its end is the blend's end for the corner, the walk past it not taken
++  // up again from the cut.)
++  if ((aCutEnds & 2) != 0 && Forward && intl == 0)
++  {
++    intl = 1;
++  }
++  if ((aCutEnds & 1) != 0 && reverse && intf == 0)
++  {
++    intf = 1;
++  }
+   return true;
+ }
+ 

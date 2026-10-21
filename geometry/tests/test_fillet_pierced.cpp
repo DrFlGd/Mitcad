@@ -5,7 +5,8 @@
 // a corner passes over a cap that stands out of the corner: the cap cuts the
 // rounding, a notch in its side where the ball's contact runs over the cap's
 // foot, a hole where the cap only pokes through it; of the cap the part
-// outside the rounding is left.
+// outside the rounding is left. Two stripes whose ends meet at a cap that
+// only pokes through the ball's path are one blend there (patch 0933).
 
 #include <cmath>
 #include <cstdio>
@@ -18,6 +19,7 @@
 #include <BRepFilletAPI_MakeFillet.hxx>
 #include <BRepGProp.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
+#include <BRepPrimAPI_MakeCylinder.hxx>
 #include <BRepPrimAPI_MakeSphere.hxx>
 #include <GProp_GProps.hxx>
 #include <Standard_ErrorHandler.hxx>
@@ -176,6 +178,78 @@ void test_rounding_pierced_by_a_cap() {
   check_rounded_over_a_cap(gp_Pnt(-0.25, 0.0, 0.45), 0.5, false, 1);
 }
 
+// A post of radius post_radius standing on a plate (its seam away from the
+// caps below), the edge round its foot broken by two caps, balls of radius
+// cap_radius on either side of the post whose centres lie 0.3 inside the
+// post and 0.3 below the plate.
+TopoDS_Shape post_with_caps(double post_radius, double cap_radius, TopoDS_Shape& caps) {
+  const TopoDS_Shape plate = BRepPrimAPI_MakeBox(gp_Pnt(-8, -8, -6), gp_Pnt(8, 8, 0)).Shape();
+  const TopoDS_Shape post =
+    BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(0, 0, -1), gp_Dir(0, 0, 1), gp_Dir(0, -1, 0)), post_radius, 7).Shape();
+  const double x = post_radius - 0.3;
+  caps           = BRepAlgoAPI_Fuse(cap_ball(gp_Pnt(x, 0, -0.3), cap_radius), cap_ball(gp_Pnt(-x, 0, -0.3), cap_radius))
+           .Shape();
+  return BRepAlgoAPI_Fuse(plate, post).Shape();
+}
+
+// The foot of the post rounded with 0.5, two stripes between the caps: the
+// caps' feet lie inside the rounding's contacts, which stay on the plate
+// and the post, and the caps poke through the rounding. Each pair of ends
+// at a cap is one blend walked over the cap (port patch 0933), holed where
+// the cap pokes through; the result is the post's rounded foot with the
+// caps fused to it. Before, the corners at the caps' vertices cut each
+// stripe's end by its cap and built an invalid solid.
+void check_post_foot_rounded_over_caps(double post_radius, double cap_radius) {
+  TopoDS_Shape       caps;
+  const TopoDS_Shape bare = post_with_caps(post_radius, cap_radius, caps);
+  const TopoDS_Shape body = BRepAlgoAPI_Fuse(bare, caps).Shape();
+  CHECK(BRepCheck_Analyzer(body).IsValid());
+  const auto foot = [post_radius](const gp_Pnt& m) {
+    return std::abs(std::hypot(m.X(), m.Y()) - post_radius) < 1e-7 && std::abs(m.Z()) < 1e-7;
+  };
+  BRepFilletAPI_MakeFillet plain_fillet(bare), fillet(body);
+  for (const TopoDS_Edge& e : edges_where(bare, foot)) {
+    plain_fillet.Add(0.5, e);
+  }
+  const std::vector<TopoDS_Edge> edges = edges_where(body, foot);
+  CHECK(edges.size() == 3); // (one arc split at the post's seam)
+  for (const TopoDS_Edge& e : edges) {
+    fillet.Add(0.5, e);
+  }
+  try {
+    OCC_CATCH_SIGNALS
+    plain_fillet.Build();
+    fillet.Build();
+  } catch (const Standard_Failure& failure) {
+    std::fprintf(stderr, "post foot rounding test: %s\n", failure.what());
+  }
+  CHECK(plain_fillet.IsDone());
+  CHECK(fillet.IsDone());
+  if (!plain_fillet.IsDone() || !fillet.IsDone()) {
+    return;
+  }
+  const TopoDS_Shape result   = fillet.Shape();
+  const TopoDS_Shape expected = BRepAlgoAPI_Fuse(plain_fillet.Shape(), caps).Shape();
+  CHECK(BRepCheck_Analyzer(result).IsValid());
+  CHECK_NEAR_TOL(volume_of(result), volume_of(expected), 2e-5);
+  int          n = 0, n_expected = 0;
+  const double a = sphere_area(result, n), a_expected = sphere_area(expected, n_expected);
+  CHECK(n == 2);
+  CHECK(n_expected == 2);
+  // (The holes' curves are approximated intersections.)
+  CHECK_NEAR_TOL(a, a_expected, 2e-4);
+}
+
+void test_post_foot_rounded_over_two_caps() {
+  check_post_foot_rounded_over_caps(1.0, 0.7);
+}
+
+// As above, a thinner post and larger caps: each cap reaches round the
+// post to the walks' start sections, at the stripes' vertices.
+void test_thin_post_foot_rounded_over_two_caps() {
+  check_post_foot_rounded_over_caps(0.8, 0.75);
+}
+
 } // namespace
 
 void fillet_pierced_tests() {
@@ -183,6 +257,8 @@ void fillet_pierced_tests() {
   guarded("test_rounding_over_a_cap_notched_by_it_with_the_caps_edges",
           test_rounding_over_a_cap_notched_by_it_with_the_caps_edges);
   guarded("test_rounding_pierced_by_a_cap", test_rounding_pierced_by_a_cap);
+  guarded("test_post_foot_rounded_over_two_caps", test_post_foot_rounded_over_two_caps);
+  guarded("test_thin_post_foot_rounded_over_two_caps", test_thin_post_foot_rounded_over_two_caps);
 }
 
 } // namespace test

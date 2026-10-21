@@ -13,7 +13,7 @@ endif()
 include(cmake/RenderDeps.cmake)
 
 project(Mitcad
-  VERSION 0.16.1
+  VERSION 0.16.2
   DESCRIPTION "Open source parametric desktop CAD"
   LANGUAGES CXX)
 

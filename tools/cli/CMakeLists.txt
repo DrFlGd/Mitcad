@@ -37,6 +37,11 @@ if(BUILD_TESTING)
   foreach(script f1_extrude f1_revolve f1_hole f1_thread f1_thread_chamfer f1_failures f1_tapped_hole_threads)
     add_test(NAME cli.${script} COMMAND mitcad-cli run "${scripts}/${script}.json")
   endforeach()
+  # A design saved before a modelled thread's pieces were numbered along
+  # its axis: its other references hold, an old name of a whole turn's
+  # piece is reported (mitcad#490).
+  add_test(NAME cli.thread_old_piece_names COMMAND mitcad-cli run "${scripts}/thread_old_piece_names.json"
+                                                   --open "${scripts}/thread_old_piece_names.mitcad")
   # Thin walls along open chains and closed loops of sketch curves (mitcad#463).
   add_test(NAME cli.f1_thin_curves COMMAND mitcad-cli run "${scripts}/f1_thin_curves.json")
   # Assembly cut scope preserves component-local geometry and split ownership.

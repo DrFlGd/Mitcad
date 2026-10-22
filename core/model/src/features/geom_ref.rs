@@ -1487,8 +1487,41 @@ fn vec3(v: &Vec3) -> Value {
     Value::from(v.to_vec())
 }
 
+thread_local! {
+    /// Reorient Design (mitcad#502, `reorient.rs`): while set, references
+    /// and paths serialize as they are after this turn of the design, so
+    /// that every reference a definition holds, wherever it is, turns once.
+    static TURNING: std::cell::Cell<Option<crate::reorient::Turn>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// The JSON form of `value` with every reference and path in it turned
+/// (see [`crate::reorient::Turn::reference`]).
+pub(crate) fn to_turned_value<T: Serialize>(
+    value: &T,
+    turn: crate::reorient::Turn,
+) -> serde_json::Result<Value> {
+    struct Reset(Option<crate::reorient::Turn>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TURNING.with(|t| t.set(self.0));
+        }
+    }
+    let _reset = Reset(TURNING.with(|t| t.replace(Some(turn))));
+    serde_json::to_value(value)
+}
+
 impl Serialize for GeomRef {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match TURNING.with(std::cell::Cell::get) {
+            Some(turn) => turn.reference(self).serialize_as_is(serializer),
+            None => self.serialize_as_is(serializer),
+        }
+    }
+}
+
+impl GeomRef {
+    fn serialize_as_is<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut map = Map::new();
         let mut put = |key: &str, value: Value| {
             map.insert(key.to_owned(), value);
@@ -1556,6 +1589,15 @@ impl<'de> Deserialize<'de> for GeomRef {
 
 impl Serialize for PathRef {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match TURNING.with(std::cell::Cell::get) {
+            Some(turn) => turn.path(self).serialize_as_is(serializer),
+            None => self.serialize_as_is(serializer),
+        }
+    }
+}
+
+impl PathRef {
+    fn serialize_as_is<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut map = Map::new();
         match self {
             Self::Edges { body, edges } => {

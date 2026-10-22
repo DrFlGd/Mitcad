@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Local and Cloud projects (mitcad#89): the window's current project, File
 // > New Project, Open Project, Open from Cloud, Open Read-Only, Project
-// Settings and Move to a Project, and the project indicator. The dialogs
+// Settings and Save to Project, and the project indicator. The dialogs
 // are files/ProjectDialogs.hpp and files/ProjectSettings.hpp; the core's
 // side is commands.md, "Projects".
 #include "../MainWindow.hpp"
@@ -111,12 +111,16 @@ void MainWindow::registerProjectCommands() {
                        QStringLiteral("url"),     QStringLiteral("disconnect"), QStringLiteral("author"),
                        QStringLiteral("lock"),    QStringLiteral("mqtt"),       QStringLiteral("github")};
   m_registry->add(settings);
-  CommandDef move = def("file.move_to_project", tr("Move to a Project..."), "new-project",
-                        tr("Moves a design into a project, so that its versions are kept"),
-                        [this] { moveToProject(); });
-  move.keywords = {QStringLiteral("start version history"), QStringLiteral("version history"),
-                   QStringLiteral("versions"), QStringLiteral("project"), QStringLiteral("git")};
-  m_registry->add(move);
+  // Save to Project (mitcad#503) replaces Move to a Project; saved shortcuts
+  // and scripts of the old command id keep working.
+  CommandDef save = def("file.save_to_project", tr("Save to Project..."), "new-project",
+                        tr("Saves the design in a project, so that its versions are kept"),
+                        [this] { saveToProject(); });
+  save.keywords = {QStringLiteral("start version history"), QStringLiteral("version history"),
+                   QStringLiteral("versions"), QStringLiteral("project"), QStringLiteral("git"),
+                   QStringLiteral("move to a project"), QStringLiteral("save as")};
+  m_registry->add(save);
+  m_registry->alias(QStringLiteral("file.move_to_project"), QStringLiteral("file.save_to_project"));
   // The Projects panel and File > New Design (mitcad#145).
   registerProjectsPanelCommands();
   // The project's web viewer (mitcad#423).
@@ -187,7 +191,7 @@ bool MainWindow::handleNewProject(const std::optional<NewProjectResult>& result,
   switch (result->kind) {
   case NewProjectResult::Kind::OpenProject:
     if (!moving.isEmpty()) {
-      return moveIntoProject(result->folder);
+      return saveIntoProject(result->folder);
     }
     openProjectFolder(result->folder, false);
     return true;
@@ -227,7 +231,7 @@ bool MainWindow::handleNewProject(const std::optional<NewProjectResult>& result,
   // The project in the Projects panel (mitcad#145).
   showProjectInPanel(root);
   if (!moving.isEmpty()) {
-    return moveIntoProject(root);
+    return saveIntoProject(root);
   }
   // The project is empty, or holds the designs its folder had: the one
   // there is opens, else the panel offers them and New Design.
@@ -462,12 +466,12 @@ void MainWindow::showProjectSettings() {
                                  .arg(m_project.name(), QDir::toNativeSeparators(m_project.outer))
                            : tr("%1 is in no project.").arg(documentName()),
                     QMessageBox::Close, this);
-    box.setInformativeText(tr("Move to a Project puts the design in a project that keeps its versions."));
-    QPushButton* move = box.addButton(tr("&Move to a Project..."), QMessageBox::AcceptRole);
+    box.setInformativeText(tr("Save to Project puts the design in a project that keeps its versions."));
+    QPushButton* save = box.addButton(tr("&Save to Project..."), QMessageBox::AcceptRole);
     prepareModal(&box);
     execDialog(&box);
-    if (box.clickedButton() == move) {
-      moveToProject();
+    if (box.clickedButton() == save) {
+      saveToProject();
     }
     return;
   }
@@ -507,15 +511,20 @@ void MainWindow::showProjectSettings() {
 }
 
 // ---------------------------------------------------------------------------
-// Move to a Project
+// Save to Project (mitcad#503; Move to a Project before)
 
-void MainWindow::moveToProject() {
-  const QString path = m_filePath;
-  if (m_project.hasHistory() && isInside(path, m_project.root)) {
-    sheetInformation(this, tr("Move to a Project"),
-                     tr("%1 is in the project %2 already: every save records a version.")
-                         .arg(documentName(), m_project.name()));
+void MainWindow::saveToProject() {
+  if (m_nativeUi && m_session) {
+    showHint(tr("Finish the current command before saving."));
     return;
+  }
+  const QString path = m_filePath;
+  // The project picker, as Save As has it (mitcad#176): the design's own
+  // project and folder, else the panel's selection. Its own file is no
+  // clash, unless the window is read-only (a copy).
+  std::pair<QString, QString> place = saveAsProjectPlace();
+  if (place.first.isEmpty()) {
+    place = panelProjectSelection();
   }
   const QString reason =
       m_project.kind == ProjectState::Kind::NoHistory
@@ -523,72 +532,67 @@ void MainWindow::moveToProject() {
                "only in a repository of the project's own.")
                 .arg(m_project.name(), QDir::toNativeSeparators(m_project.outer))
           : QString();
-  const std::optional<MoveTarget> target = askMoveToProject(this, documentName(), reason);
-  if (!target) {
+  ProjectPickerOptions options;
+  options.title = tr("Save to Project");
+  options.text = (reason.isEmpty() ? QString() : reason + QLatin1Char('\n')) +
+                 tr("The project and the folder for %1, and its name there:").arg(documentName());
+  options.acceptText = tr("&Save");
+  options.newProjectText = tr("New &Project...");
+  options.otherText = tr("&Another Folder...");
+  options.root = place.first;
+  options.folder = place.second;
+  options.name = path.isEmpty() ? documentName() : QFileInfo(path).completeBaseName();
+  options.ownFile = windowReadOnly() ? QString() : path;
+  const std::optional<ProjectPickerResult> picked = pickInProjects(this, options);
+  if (!picked) {
+    qInfo().noquote() << QStringLiteral("Save to Project cancelled");
     return;
   }
-  if (*target == MoveTarget::ExistingProject) {
-    // The projects the Projects panel lists, a folder in one and the name
-    // there (mitcad#174): no folder dialog for a project the list has.
-    const std::pair<QString, QString> selected = panelProjectSelection();
-    ProjectPickerOptions options;
-    options.title = tr("Choose a Project");
-    options.text = tr("The project and the folder %1 moves into, and its name there:").arg(documentName());
-    options.acceptText = tr("&Move");
-    options.otherText = tr("&Another Folder...");
-    options.root = selected.first;
-    options.folder = selected.second;
-    options.name = path.isEmpty() ? documentName() : QFileInfo(path).completeBaseName();
-    options.ownFile = path;
-    const std::optional<ProjectPickerResult> picked = pickInProjects(this, options);
-    if (!picked) {
-      qInfo().noquote() << QStringLiteral("Move to a Project cancelled");
-      return;
-    }
-    if (!picked->other) {
-      moveIntoProject(picked->root, picked->path);
-      return;
-    }
+  if (!picked->newProject && !picked->other) {
+    saveIntoProject(picked->root, picked->path);
+    return;
+  }
+  if (picked->other) {
     // Another Folder...: a project the list does not have.
     const QString folder = dialogDirectory(this, tr("Choose a Project Folder"), projectsDirectory());
     if (folder.isEmpty()) {
-      qInfo().noquote() << QStringLiteral("Move to a Project cancelled");
+      qInfo().noquote() << QStringLiteral("Save to Project cancelled");
       return;
     }
     const ProjectState project = projectOfInspection(inspectFolder(folder));
     if (!project.hasHistory()) {
-      qInfo().noquote() << QStringLiteral("Move to a Project: %1 is no project with versions").arg(folder);
-      sheetWarning(this, tr("Move to a Project"),
+      qInfo().noquote() << QStringLiteral("Save to Project: %1 is no project with versions").arg(folder);
+      sheetWarning(this, tr("Save to Project"),
                    tr("%1 is not a project that keeps versions: choose a project's folder, or a new project.")
                        .arg(QDir::toNativeSeparators(folder)));
       return;
     }
     // One of the known projects from now on.
     ProjectsSettings::remember(project.root);
-    moveIntoProject(project.root);
+    saveIntoProject(project.root);
     return;
   }
   // A new project: by default the design's own folder (it becomes the
   // project, its designs in the first version), unless that is inside a
   // repository or a project, then a new folder named after the design.
-  NewProjectOptions options;
-  options.title = tr("Move to a Project");
+  NewProjectOptions project;
+  project.title = tr("Save to Project");
   const QString base = path.isEmpty() ? documentName() : QFileInfo(path).completeBaseName();
-  options.folder = QDir(projectsDirectory()).filePath(base);
+  project.folder = QDir(projectsDirectory()).filePath(base);
   if (!path.isEmpty() && m_project.kind == ProjectState::Kind::None) {
     const QString folder = QFileInfo(path).absolutePath();
     const QJsonObject inspection = inspectFolder(folder);
     if (inspection.value(QStringLiteral("outer_repository")).isNull() &&
         inspection.value(QStringLiteral("git_root")).isNull()) {
-      options.folder = folder;
+      project.folder = folder;
     }
   }
-  qInfo().noquote() << QStringLiteral("Move to a Project: %1 into a new project").arg(path.isEmpty() ? documentName()
-                                                                                                    : path);
-  handleNewProject(askNewProject(this, options), path.isEmpty() ? documentName() : path);
+  qInfo().noquote() << QStringLiteral("Save to Project: %1 into a new project").arg(path.isEmpty() ? documentName()
+                                                                                                  : path);
+  handleNewProject(askNewProject(this, project), path.isEmpty() ? documentName() : path);
 }
 
-bool MainWindow::moveIntoProject(const QString& root, const QString& chosen) {
+bool MainWindow::saveIntoProject(const QString& root, const QString& chosen) {
   const QString from = m_filePath;
   QString project = root;
   QString target = chosen;
@@ -600,41 +604,33 @@ bool MainWindow::moveIntoProject(const QString& root, const QString& chosen) {
       // An untitled design's name, or another design of that name there: a
       // name of its own, asked in the project picker (mitcad#174).
       ProjectPickerOptions options;
-      options.title = from.isEmpty() ? tr("Save in a Project") : tr("Choose a Project");
+      options.title = tr("Save in a Project");
       options.text = from.isEmpty() ? tr("The name of %1 in the project, and its folder:").arg(documentName())
                                     : tr("%1 is in the project already: another name, or another folder.").arg(name);
-      options.acceptText = from.isEmpty() ? tr("&Save") : tr("&Move");
+      options.acceptText = tr("&Save");
       options.root = root;
       options.name = QFileInfo(name).completeBaseName();
       options.ownFile = from;
       const std::optional<ProjectPickerResult> picked = pickInProjects(this, options);
-      if (!picked || picked->other) {
-        qInfo().noquote() << QStringLiteral("Move to a Project cancelled");
+      if (!picked || picked->other || picked->newProject) {
+        qInfo().noquote() << QStringLiteral("Save to Project cancelled");
         return false;
       }
       project = picked->root;
       target = picked->path;
     }
   }
-  if (from.isEmpty()) {
-    qInfo().noquote() << QStringLiteral("Move to a Project: %1 saved in %2").arg(documentName(), project);
-  }
   const bool same = !from.isEmpty() && sameFolderPath(QFileInfo(target).absoluteFilePath(), from);
   if (!writeFile(target)) {
     return false;
   }
   const QString absolute = QFileInfo(target).absoluteFilePath();
-  if (!from.isEmpty() && !same) {
-    // The design is the project's now; the file it came from goes.
-    if (!QFile::remove(from)) {
-      showError(tr("Moved %1 into the project %2, but could not remove the file it came from.")
-                    .arg(QFileInfo(from).fileName(), QDir::toNativeSeparators(project)));
-      showDesignInPanel(absolute);
-      return true;
-    }
-    qInfo().noquote() << QStringLiteral("Moved %1 to %2").arg(from, absolute);
-  } else if (!from.isEmpty()) {
+  // As Save As: the design is that file now, and the file it came from
+  // stays where it was.
+  if (same) {
     qInfo().noquote() << QStringLiteral("Recorded %1 in the project %2").arg(absolute, project);
+  } else {
+    qInfo().noquote() << QStringLiteral("Save to Project: %1 saved in %2").arg(absolute, project);
   }
   showHint(tr("%1 is in the project %2 now: every save records a version.")
                .arg(QFileInfo(target).fileName(), QFileInfo(project).fileName()));

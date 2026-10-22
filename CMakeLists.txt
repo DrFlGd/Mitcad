@@ -13,7 +13,7 @@ endif()
 include(cmake/RenderDeps.cmake)
 
 project(Mitcad
-  VERSION 0.17.0
+  VERSION 0.18.0
   DESCRIPTION "Open source parametric desktop CAD"
   LANGUAGES CXX)
 
@@ -118,6 +118,8 @@ endif()
 add_subdirectory(tools/geomtool)
 include(cmake/MesaRuntime.cmake)
 include(cmake/MacUiTests.cmake)
+include(cmake/SelectionUiTests.cmake)
+include(cmake/TimberUiTests.cmake)
 include(cmake/Packaging.cmake)
 include(cmake/AppImage.cmake)
 

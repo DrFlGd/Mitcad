@@ -14,6 +14,7 @@
 #include <vector>
 
 #include <BRepAdaptor_Curve.hxx>
+#include <BRepAdaptor_Surface.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeVertex.hxx>
 #include <BRepCheck_Analyzer.hxx>
@@ -22,6 +23,7 @@
 #include <BRepFilletAPI_MakeChamfer.hxx>
 #include <BRepFilletAPI_MakeFillet.hxx>
 #include <BRepGProp.hxx>
+#include <BRepTools.hxx>
 #include <BRepTools_History.hxx>
 #include <BRep_Builder.hxx>
 #include <BRep_Tool.hxx>
@@ -30,6 +32,7 @@
 #include <GProp_GProps.hxx>
 #include <GeomAPI_IntSS.hxx>
 #include <GeomAPI_ProjectPointOnCurve.hxx>
+#include <GeomAPI_ProjectPointOnSurf.hxx>
 #include <Geom_Curve.hxx>
 #include <Law_BSpFunc.hxx>
 #include <Law_BSpline.hxx>
@@ -1884,12 +1887,61 @@ struct MergedEdges {
   std::map<int, std::vector<std::string>> names;
 };
 
+// Whether faces `a` and `b` lie on one surface: points inside `b` lie on
+// `a`'s surface (within the confusion tolerance) and their normals agree
+// there.
+bool on_one_surface(const TopoDS_Face& a, const TopoDS_Face& b) {
+  const occ::handle<Geom_Surface> sa = BRep_Tool::Surface(a);
+  if (sa.IsNull()) {
+    return false;
+  }
+  const BRepAdaptor_Surface sb(b);
+  if (sb.GetType() != BRepAdaptor_Surface(a).GetType()) {
+    return false;
+  }
+  double u0 = 0.0, u1 = 0.0, v0 = 0.0, v1 = 0.0;
+  BRepTools::UVBounds(b, u0, u1, v0, v1);
+  for (const double fu : {0.25, 0.5, 0.75}) {
+    for (const double fv : {0.25, 0.5, 0.75}) {
+      gp_Pnt p;
+      gp_Vec du, dv;
+      sb.D1(u0 + (u1 - u0) * fu, v0 + (v1 - v0) * fv, p, du, dv);
+      GeomAPI_ProjectPointOnSurf on(p, sa);
+      if (on.NbPoints() == 0 || on.LowerDistance() > Precision::Confusion()) {
+        return false;
+      }
+      double u = 0.0, v = 0.0;
+      on.LowerDistanceParameters(u, v);
+      gp_Pnt q;
+      gp_Vec da, db;
+      sa->D1(u, v, q, da, db);
+      gp_Vec nb = du.Crossed(dv), na = da.Crossed(db);
+      if (nb.Magnitude() <= gp::Resolution() || na.Magnitude() <= gp::Resolution()) {
+        continue;
+      }
+      if (b.Orientation() == TopAbs_REVERSED) {
+        nb.Reverse();
+      }
+      if (a.Orientation() == TopAbs_REVERSED) {
+        na.Reverse();
+      }
+      if (na.Angle(nb) > 1.0e-3) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
 // None when no selected edge merges with another, a merged edge holds
 // pieces of two sets, or it holds a piece no set selects where its set does
-// not follow tangent chains.
+// not follow tangent chains. With `faces`, the faces of one surface that
+// meet along an edge at a vertex of the selected edges are joined as well
+// (the edges between such faces elsewhere stay): none where there are no
+// such faces.
 template <class Set>
 std::optional<MergedEdges> merge_edge_pieces(const Shape& body, const std::vector<Set>& sets,
-                                             const std::vector<int>& owner) {
+                                             const std::vector<int>& owner, bool faces = false) {
   // First a quick look for a selected edge with an end where only one
   // other edge, between the same two faces, meets it.
   NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher> edges_of;
@@ -1897,17 +1949,57 @@ std::optional<MergedEdges> merge_edge_pieces(const Shape& body, const std::vecto
   // The faces of every edge mapped once (faces_at_edge maps the whole body
   // for each edge: seconds per rounding of many edges on a large body).
   const detail::EdgeFaces edge_faces(body);
-  bool pieces_meet = false;
+  // With `faces`: the edges, not selected themselves, along which a face at
+  // a selected edge's vertex meets another face of its surface.
+  ShapeMap joins;
+  if (faces) {
+    NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher> faces_of;
+    TopExp::MapShapesAndUniqueAncestors(body.occt(), TopAbs_VERTEX, TopAbs_FACE, faces_of);
+    ShapeMap seen;
+    for (int e = 0; e < body.edge_count(); ++e) {
+      if (owner[static_cast<std::size_t>(e)] < 0) {
+        continue;
+      }
+      for (const TopoDS_Shape& vertex : {TopExp::FirstVertex(body.edge(e)), TopExp::LastVertex(body.edge(e))}) {
+        const int index = faces_of.FindIndex(vertex);
+        if (index == 0) {
+          continue;
+        }
+        for (const TopoDS_Shape& face : faces_of(index)) {
+          if (seen.Contains(face)) {
+            continue;
+          }
+          seen.Add(face);
+          for (TopExp_Explorer ex(face, TopAbs_EDGE); ex.More(); ex.Next()) {
+            const int o = body.edge_index(ex.Current());
+            if (o < 0 || owner[static_cast<std::size_t>(o)] >= 0 || joins.Contains(ex.Current()) ||
+                BRep_Tool::Degenerated(TopoDS::Edge(ex.Current()))) {
+              continue;
+            }
+            const std::vector<int> two = edge_faces.at(o);
+            if (two.size() == 2 && two[0] != two[1] && on_one_surface(body.face(two[0]), body.face(two[1])) &&
+                on_one_surface(body.face(two[1]), body.face(two[0]))) {
+              joins.Add(ex.Current());
+            }
+          }
+        }
+      }
+    }
+  }
+  if (faces && joins.IsEmpty()) {
+    return std::nullopt;
+  }
+  bool pieces_meet = faces;
   for (int e = 0; e < body.edge_count() && !pieces_meet; ++e) {
     if (owner[static_cast<std::size_t>(e)] < 0) {
       continue;
     }
     const auto faces_of = [&](int edge) {
-      std::vector<int> faces = edge_faces.at(edge);
-      std::sort(faces.begin(), faces.end());
-      return faces;
+      std::vector<int> sorted = edge_faces.at(edge);
+      std::sort(sorted.begin(), sorted.end());
+      return sorted;
     };
-    const std::vector<int> faces = faces_of(e);
+    const std::vector<int> own = faces_of(e);
     for (const TopoDS_Shape& vertex : {TopExp::FirstVertex(body.edge(e)), TopExp::LastVertex(body.edge(e))}) {
       const int index = edges_of.FindIndex(vertex);
       if (index == 0 || edges_of(index).Extent() != 2) {
@@ -1915,14 +2007,22 @@ std::optional<MergedEdges> merge_edge_pieces(const Shape& body, const std::vecto
       }
       for (const TopoDS_Shape& other : edges_of(index)) {
         const int o = body.edge_index(other);
-        pieces_meet = pieces_meet || (o >= 0 && o != e && faces_of(o) == faces);
+        pieces_meet = pieces_meet || (o >= 0 && o != e && faces_of(o) == own);
       }
     }
   }
   if (!pieces_meet) {
     return std::nullopt;
   }
-  ShapeUpgrade_UnifySameDomain unify(body.occt(), true, false, false);
+  ShapeUpgrade_UnifySameDomain unify(body.occt(), true, faces, false);
+  if (faces) {
+    // (Only the faces along the joins: every other edge keeps its faces apart.)
+    for (int e = 0; e < body.edge_count(); ++e) {
+      if (!joins.Contains(body.edge(e))) {
+        unify.KeepShape(body.edge(e));
+      }
+    }
+  }
   unify.Build();
   const occ::handle<BRepTools_History>& history = unify.History();
   // The merged edge of each edge of the body (-1 for none).
@@ -1979,6 +2079,9 @@ std::optional<MergedEdges> merge_edge_pieces(const Shape& body, const std::vecto
         !sets[static_cast<std::size_t>(s)].tangent_chain) {
       return std::nullopt;
     }
+  }
+  if (faces) {
+    merges = m.face_count() < body.face_count();
   }
   if (!merges) {
     return std::nullopt;
@@ -2314,9 +2417,11 @@ ShapePtr with_piece_names(const ShapePtr& result, const MergedEdges& merged, con
 // input. When OCCT fails at the sizes as asked, it is built again by the
 // same algorithm on the input with the pieces of its edges merged
 // (merge_edge_pieces), then, with `tighten` (fillets), with OCCT's
-// tolerances tightened (kTight), on the input and on the merged one, and
-// last on the input with the strips narrower than the import's tolerance
-// at its vertices collapsed (collapse_strips).
+// tolerances tightened (kTight), on the input and on the merged one, then
+// on the input with the faces of one surface at its edges' vertices joined
+// as well (merge_edge_pieces with faces), and last on the input with the
+// strips narrower than the import's tolerance at its vertices collapsed
+// (collapse_strips).
 // Throws the first error when none builds.
 template <class Set, class Dressup>
 ShapePtr dress(const Shape& input, const std::vector<Set>& sets, const std::vector<int>& owner, double scale,
@@ -2388,6 +2493,22 @@ ShapePtr dress(const Shape& input, const std::vector<Set>& sets, const std::vect
       throw;
     } catch (...) {
     }
+  }
+  // Faces of one surface that meet along an edge at the selected edges'
+  // vertices joined, with the pieces of edges merged: OCCT's corner cuts a
+  // rounding's end by one face at the end, not by two pieces of one surface
+  // (a wall's end full-rounded in two halves, where the rounding of the
+  // window's floor beside it ends across both, mitcad#343).
+  try {
+    OCC_CATCH_SIGNALS
+    const ShapePtr copy = detail::working_copy(input);
+    const std::optional<MergedEdges> merged = merge_edge_pieces(*copy, sets, owner, true);
+    if (merged) {
+      return with_piece_names(dressup(*merged->body, merged->owner, scale, false), *merged, feature, role);
+    }
+  } catch (const Cancelled&) {
+    throw;
+  } catch (...) {
   }
   // Strips narrower than the import's tolerance at the selected edges'
   // vertices collapsed into the edges they are in the design (mitcad#299).

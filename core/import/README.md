@@ -10092,6 +10092,107 @@ geometry), gives an invalid result with and without 0941: the piece across
 the spine's start is split there, and its part after the start keeps its
 parameters on the boss's circle a period on.
 
+### Rounding ends at a pillar's halves, over a consumed sill and at a wall's step (round 17 of mitcad#343)
+
+Each item traced with the dressup dump and OCCT's fillet alone on the
+replayed body before it (a probe outside the repository):
+
+- **`a9e82a9a` item 29 (Fillet13, radius 1.5 on a window's floor and
+  ceiling in a ring wall 3 thick):** the pillars' full-rounded ends at
+  the rounding's ends are each two half cylinders of one surface, split
+  where the window's other edges end. OCCT's corner cuts a rounding's end
+  by one face at the end and fails across the two halves; the stored
+  bodies have each end as one face. The dressup's second tries now go on,
+  after the merged edge pieces, with the faces of one surface that meet
+  along an edge at the selected edges' vertices joined as well
+  (`merge_edge_pieces` with faces, `geometry/src/dressup.cpp`). Every new
+  face on the file's within 2e-6 mm, the change of volume -60.7576
+  against the file's -60.7451 mm³. Test (`geometry`):
+  `test_window_floor_rounded_up_to_pillar_ends_in_halves`.
+- **Item 31 (Fillet16, the same rounding on four windows of a circular
+  pattern, 48 edges):** a sill's two roundings, each half the wall's
+  thickness, take the sill away, their contacts on it along each other at
+  the wall's middle. OCCT took them for roundings too big for the face, or
+  left the sill as a sliver of no area, depending on the copy. Port patch
+  0950: valid, every face on the file's within 2e-6 mm, -243.0297 against
+  -243.0189 mm³. Test: `geometry.fillet_consumed_strip`.
+- **Item 33 (Fillet17):** before, 16 of its 48 edge references were lost
+  on the replayed body; on items 29's and 31's results its edges are
+  found against the history's state 187, and the item is parametric and
+  verified.
+- **`5ef2dbd5` item 92 (Fillet21):** round 16 found the file's 4.3 µm
+  step in the slot's wall. The stored bodies end the rounding at the
+  section through the step's vertex and close it with a quarter torus
+  (both radii 0.3): the ball turns on about its contact's end point until
+  it lies in the wall's plane, cut by the stepped-back wall. Port patch
+  0951 builds that end. On the body before the item: the file's 190
+  faces, every face on the stored body's (distance 0 both ways), -1.7315
+  against -1.7477 mm³; the item is parametric and verified. Test:
+  `geometry.fillet_step_end`.
+
+Left, each at its first deviation:
+
+- **`5ef2dbd5` item 91 (Fillet20, radius 0.3 round the bar's outline):**
+  the rounded edge's faces (the wall and item 30's blend) come tangent at
+  its end vertex, their normals 0.037 rad apart 0.04 mm before it and
+  0.0037 rad at it. The walk stops 0.04 mm short, where its contact on
+  the blend reaches the rounded edge itself (the section 0.011 wide). A
+  vanishing end is taken within 0.02 of the radius only (0.006 mm), so the
+  corner goes to the intersection at the end, whose plate fails
+  (`GeomPlate_BuildPlateSurface::ProjectCurve`). The file's blend ends in
+  a point at the vertex. Needed: the walk on to the vertex, or the end
+  taken as vanishing where a contact runs onto the rounded edge.
+- **Item 93 (Fillet22, radius 0.5):** the chain runs round two vertical
+  corners rounded with 0.3, less than 0.5; the walk round a corner's
+  cylinder fails in its approximation (`StoreData`), the ball's centre
+  having to turn about the corner's axis at a negative radius. The file
+  builds a torus and a vertex blend there. Needed: a set-back vertex
+  blend.
+- **Item 87 (Fillet27, radius 0.2 on the fin's top edges):** at the vertex
+  where both faces change at once (a cone and the cylinder of the fin's
+  top to a B-spline sliver and the extrusion surface of the top, the
+  chain kinked), the next piece's first section is not found
+  (`PerformFirstSection` reframed on both faces): the side contact there
+  still lies on the face before. In the file the sliver keeps a part, the
+  contact passing from the cone over it to the next cone.
+- **Item 30 (Fillet4, radius 3, concave, over B-spline faces):** the walk
+  stops before the piece's end without reaching an arc, twice
+  (`ComputeData`'s check that the walk got far enough); the same on the
+  stored body. Not traced further.
+- **Item 86 (Chamfer2):** OCCT's chamfer fails on the replayed and the
+  stored body; not traced further (round 16).
+- **`a9e82a9a` item 191 (Fillet44, radius 10):** the rounded edges lie at
+  the foot of a wall face only 0.86 high; the ball's contact on the wall's
+  plane lies above its top. The walk starts 5.28 past the chain's start
+  (the corner: "Corner OnSame : no point on arc") and ends on arcs 1.2 and
+  2.0 from the end vertex ("OneCorner : bouchon non ecrit"). The file's
+  blend is cut by the top face and the end faces.
+- **Item 137 (Fillet34, radius 9):** at the edge's end vertex, where more
+  than three edges meet among small step faces, the walk ran past the
+  vertex to the top face's edge 2 beyond it; the intersection at the end
+  does not find the face it looks for and stops at its limit of 15 faces
+  ("the max number of faces reached").
+- **Item 99 (Chamfer7, two distances):** OCCT's chamfer fails on the
+  closed chain over a narrow face; not traced further.
+- **`6418ebb1` item 37 (Fillet1):** the stored bodies before and after
+  the item are themselves invalid (slivers away from the item), so the
+  item cannot be checked against them; the rounding of three blends over
+  a consumed triangle fails in OCCT. Not fixed.
+
+The designs of mitcad#343, each imported alone once with port patches
+0950 and 0951 and the face join (parametric / fallback / skipped of all
+items; before: round 16's, on main 904963b8):
+
+| Design | Before | After | Final bodies |
+|---|---|---|---|
+| `5ef2dbd5` | 85 / 6 / 7 of 98 | 86 / 5 / 7, item 92 parametric and verified | as before (8.0e-7) |
+| `a9e82a9a`, `de7b8b9d` | 184 / 8 / 7 of 199 | 187 / 5 / 7, items 29, 31 and 33 parametric and verified | as before (1.1e-6) |
+| `6418ebb1`, `920a1cef` | 43 / 5 / 1 (+1 partial) of 50 | same | as before (4.1e-6) |
+| `db73863f` | 135 / 2 / 8 of 145 | same | as before (4.5e-4) |
+| `52ba7a15` (with its reference designs) | 97 / 1 / 12 of 110 | same | as before (2.2e-5) |
+| `61526c66` | 14 of 14 | same | as before (1.6e-5) |
+| `4d3c4d1b` | 33 / 2 of 35 | same | as before (3.8e-7) |
+
 ### Chamfers left after mitcad#240 (mitcad#263)
 
 The import chamfers item 4 of mitcad#263 left after port patches 0380 and

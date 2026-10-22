@@ -1799,6 +1799,8 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
             &mut self.report.components,
             &mut self.report.warnings,
         );
+        // The components' part numbers and descriptions (mitcad#496).
+        components::import_properties(self.doc, self.dump, &self.components);
         self.captures = captures::read(self.dump, &self.components, self.doc.assembly());
         self.report.components.positions_inside = self.captures.inside.clone();
         let captures = &self.captures;

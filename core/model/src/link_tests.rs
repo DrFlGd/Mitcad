@@ -1028,3 +1028,131 @@ fn a_linked_plane_after_a_captured_position_is_where_it_moved_the_occurrence() {
     let z = datum["origin"][2].as_f64().unwrap();
     assert!((z - 13.0).abs() < 1e-9, "{datum}");
 }
+
+/// A sketch on a face of a component turned and moved (mitcad#505): its
+/// frame is the face in the coordinates of the sketch's component, so the
+/// sketch's occurrence placement, applied once, puts it on the face where
+/// A's occurrence shows it, and an extrude of a rectangle at the face's
+/// middle starts on the face. With A active (the face is its own: no
+/// link), with the root active, and with B active, itself turned.
+#[test]
+fn a_sketch_on_a_face_of_a_turned_occurrence_lies_on_the_face_in_the_design() {
+    let quarter = std::f64::consts::FRAC_PI_2;
+    // A:1 (O1): turned 90 degrees about X, then moved; its block's top face
+    // (z = 5 in A, the middle at (5, 5, 5)) faces -Y in the design, at
+    // y = -5, its middle at (105, -5, 55).
+    let a_placement = shift(100.0, 0.0, 50.0)
+        .after(&Transform::rotation([0.0; 3], [1.0, 0.0, 0.0], quarter).unwrap());
+    // B:1 (O2): turned 90 degrees about Z, then moved.
+    let b_placement = shift(0.0, 50.0, -3.0)
+        .after(&Transform::rotation([0.0; 3], [0.0, 0.0, 1.0], quarter).unwrap());
+    let mut doc = Document::new(MockKernel::default());
+    let (a, _) = doc.create_component(Some("A"), a_placement, true).unwrap();
+    let (_, body, face) = block(&mut doc);
+    doc.activate_component(ComponentUid::ROOT).unwrap();
+    let (b, _) = doc.create_component(Some("B"), b_placement, true).unwrap();
+    allow_attachments(&mut doc);
+    let middle_in_a = [5.0, 5.0, 5.0];
+    let face_middle = [105.0, -5.0, 55.0];
+    let face_normal = [0.0, -1.0, 0.0];
+    let close = |a: [f64; 3], b: [f64; 3]| a.iter().zip(&b).all(|(x, y)| (x - y).abs() < 1e-6);
+    let corners = |min: [f64; 3], max: [f64; 3]| -> Vec<[f64; 3]> {
+        let mut all = Vec::new();
+        for x in [min[0], max[0]] {
+            for y in [min[1], max[1]] {
+                for z in [min[2], max[2]] {
+                    all.push([x, y, z]);
+                }
+            }
+        }
+        all
+    };
+
+    for (active, placement, link) in [
+        (a, a_placement, Value::Null),
+        (
+            ComponentUid::ROOT,
+            Transform::IDENTITY,
+            json!({"source": "O1"}),
+        ),
+        (b, b_placement, json!({"source": "O1", "target": "O2"})),
+    ] {
+        doc.activate_component(active).unwrap();
+        // Picked where A:1 shows the face.
+        let created = command(
+            &mut doc,
+            json!({"cmd": "sketch.create", "plane": {"face": face, "body": body},
+                   "occurrence": "O1"}),
+        );
+        let uid: FeatureUid = created["uid"].as_str().unwrap().parse().unwrap();
+        assert!(doc.status(uid).unwrap().is_ok(), "{:?}", doc.status(uid));
+        assert_eq!(doc.feature(uid).unwrap().component, active);
+        let s = query(&doc, json!({"query": "sketch", "uid": created["uid"]}));
+        assert_eq!(s["plane_link"], link, "{active:?}");
+        let vector = |v: &Value| -> [f64; 3] { std::array::from_fn(|i| v[i].as_f64().unwrap()) };
+        let frame = crate::profile::SketchFrame {
+            origin: vector(&s["frame"]["origin"]),
+            x_axis: vector(&s["frame"]["x_axis"]),
+            y_axis: vector(&s["frame"]["y_axis"]),
+        };
+        // The frame in the design: the sketch's occurrence placement once.
+        let world = placement.apply_frame(&frame);
+        let normal = crate::profile::cross(world.x_axis, world.y_axis);
+        assert!(close(normal, face_normal), "{active:?}: normal {normal:?}");
+        let off_face = crate::profile::dot(
+            std::array::from_fn(|i| world.origin[i] - face_middle[i]),
+            face_normal,
+        );
+        assert!(
+            off_face.abs() < 1e-6,
+            "{active:?}: origin {:?}",
+            world.origin
+        );
+
+        // A 4 x 4 rectangle around the face's middle, extruded 3.
+        let middle =
+            crate::assembly::inverse(&placement).apply_point(a_placement.apply_point(middle_in_a));
+        let d: [f64; 3] = std::array::from_fn(|i| middle[i] - frame.origin[i]);
+        let at = [
+            crate::profile::dot(d, frame.x_axis),
+            crate::profile::dot(d, frame.y_axis),
+        ];
+        let region = doc
+            .add_rectangle(uid, [at[0] - 2.0, at[1] - 2.0], &num(4.0), &num(4.0))
+            .unwrap()
+            .region;
+        let extruded = doc
+            .add_feature(&extrude(uid, &[&region], 3.0, "new_body", &[]), None)
+            .unwrap()
+            .uid;
+        assert!(doc.status(extruded).unwrap().is_ok());
+        let bounds = doc
+            .body_shape(BodyUid::new(extruded, 0))
+            .unwrap()
+            .bounds
+            .unwrap();
+        let placed: Vec<[f64; 3]> = corners(bounds.min, bounds.max)
+            .into_iter()
+            .map(|c| placement.apply_point(c))
+            .collect();
+        // In the design it starts on the face (y = -5) and goes 3 out of it
+        // (-Y), around the face's middle.
+        let along = |c: &[f64; 3]| crate::profile::dot(*c, face_normal) - 5.0;
+        let nearest = placed.iter().map(along).fold(f64::INFINITY, f64::min);
+        let farthest = placed.iter().map(along).fold(f64::NEG_INFINITY, f64::max);
+        assert!(
+            nearest.abs() < 1e-6,
+            "{active:?}: starts {nearest} off the face"
+        );
+        assert!(
+            (farthest - 3.0).abs() < 1e-6,
+            "{active:?}: ends at {farthest}"
+        );
+        for c in &placed {
+            assert!(
+                (c[0] - 105.0).hypot(c[2] - 55.0) <= 2.0 * std::f64::consts::SQRT_2 + 1e-6,
+                "{active:?}: {c:?} is not around the face's middle"
+            );
+        }
+    }
+}

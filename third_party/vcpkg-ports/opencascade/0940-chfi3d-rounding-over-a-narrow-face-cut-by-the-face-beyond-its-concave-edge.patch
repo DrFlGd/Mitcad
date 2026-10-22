@@ -227,7 +227,7 @@ diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx b/src/M
 +  {
 +    return false;
 +  }
-+  const occ::handle<Geom_Curve> aC = anApp.Curve();
++  const occ::handle<Geom_Curve> aC(anApp.Curve());
 +  G.C     = aC;
 +  G.First = aC->FirstParameter();
 +  G.Last  = aC->LastParameter();

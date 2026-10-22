@@ -29,6 +29,15 @@ NameMatcher::NameMatcher(const QString& text) : m_text(text.trimmed()) {
                                               QRegularExpression::DotMatchesEverythingOption);
 }
 
+bool isPropertySearch(const QString& text) {
+  for (const QChar c : text) {
+    if (c == QLatin1Char('=') || c == QLatin1Char('<') || c == QLatin1Char('>') || c == QLatin1Char('~')) {
+      return true;
+    }
+  }
+  return false;
+}
+
 bool NameMatcher::matches(const QString& name) const {
   if (m_text.isEmpty()) {
     return true;
@@ -55,7 +64,8 @@ QVector<FindResult> findInDesign(const DocumentSnapshot& snapshot, const FindOpt
       const DocumentSnapshot::Body body = snapshot.bodies.value(uid);
       const QString name = body.name.isEmpty() ? uid : body.name;
       const bool visible = shown && body.visible;
-      if (!wanted(visible) || !matcher.matches(name)) {
+      const bool matches = options.propertyOwners ? options.propertyOwners->contains(uid) : matcher.matches(name);
+      if (!wanted(visible) || !matches) {
         continue;
       }
       FindResult result;
@@ -70,6 +80,16 @@ QVector<FindResult> findInDesign(const DocumentSnapshot& snapshot, const FindOpt
     }
   };
 
+  // An occurrence by its name, or by its properties: its own and those it
+  // takes from its component, as the model's search lists it.
+  const auto occurrenceMatches = [&](const DocumentSnapshot::Occurrence& occurrence) {
+    if (!options.propertyOwners) {
+      return matcher.matches(occurrence.name);
+    }
+    const QString own = occurrence.path.section(QLatin1Char('/'), -1);
+    return options.propertyOwners->contains(own);
+  };
+
   const QString root = snapshot.components.isEmpty() ? QStringLiteral("C0") : snapshot.components.first().uid;
   bodiesOf(root, QString(), rootName, true);
 
@@ -77,7 +97,7 @@ QVector<FindResult> findInDesign(const DocumentSnapshot& snapshot, const FindOpt
       [&](const QVector<DocumentSnapshot::Occurrence>& level, const QString& where, bool parentShown) {
         for (const DocumentSnapshot::Occurrence& occurrence : level) {
           const bool shown = parentShown && occurrence.visible;
-          if (options.components && wanted(shown) && matcher.matches(occurrence.name)) {
+          if (options.components && wanted(shown) && occurrenceMatches(occurrence)) {
             FindResult result;
             result.kind = FindResult::Kind::Component;
             result.name = occurrence.name;

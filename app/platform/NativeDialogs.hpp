@@ -38,6 +38,8 @@ bool nativeDialogsActive();
 bool nativeDialogModalActive();
 void waitNativeUntil(const std::function<bool()>& completed);
 std::unique_ptr<NativeWidgetView> createNativeWidgetView(QWidget* widget);
+// In-process regression instrumentation; counts only changed properties.
+quint64 nativeWidgetPropertyWrites();
 int execNativeDialog(QDialog* dialog);
 int execNativeFileDialog(QFileDialog* dialog);
 // Borrowed NSSavePanel/NSOpenPanel, valid only during native file-dialog exec.

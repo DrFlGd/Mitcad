@@ -486,15 +486,57 @@ ui_browser_reveal() {
   return 0
 }
 
+# ui_panel_reveal "Panel <command> input <id>": a long panel scrolled, by
+# wheel notches over its scroll bar, until the input's logged place is in
+# its view (the Linux counterpart of Ui-PanelReveal in ui-windows-lib.ps1).
+# A panel can be higher than its page (Timber's frame with its Corner and
+# its fasteners), and a click on a place scrolled away hits whatever is
+# there instead. The panel logs its view with its places ("Panel <command>
+# view y A to B, scrolled S of M, bar at x,y"; the bar only while it
+# scrolls) and logs them again when it scrolls (MainWindow). Nothing for a
+# panel that does not scroll or a hidden input.
+ui_panel_reveal() {
+  [[ $1 =~ ^Panel\ (.+)\ input\ [^\ ]+$ ]] || return 0
+  local view="Panel ${BASH_REMATCH[1]} view y " line place top bottom bx by y count synced=0 margin=12 i j
+  for i in $(seq 1 30); do
+    line=$(grep -F -- "$view" "$UI_LOG" | tail -1)
+    [[ $line =~ \ view\ y\ (-?[0-9]+)\ to\ (-?[0-9]+),\ scrolled\ [0-9]+\ of\ [0-9]+,\ bar\ at\ ([0-9]+),([0-9]+)$ ]] ||
+      return 0
+    top=${BASH_REMATCH[1]} bottom=${BASH_REMATCH[2]} bx=${BASH_REMATCH[3]} by=${BASH_REMATCH[4]}
+    if [ $synced = 0 ]; then
+      # The places and the view of one layout, logged whole.
+      ui_sync >&2
+      synced=1
+      continue
+    fi
+    place=$(grep -F -- "$1 at " "$UI_LOG" | tail -1)
+    [[ $place =~ \ at\ ([0-9]+),([0-9]+) ]] && [[ $place != *"(hidden)" ]] || return 0
+    y=${BASH_REMATCH[2]}
+    [ "$y" -ge $((top + margin)) ] && [ "$y" -le $((bottom - margin)) ] && return 0
+    count=$(wc -l < "$UI_LOG")
+    # Button 5 scrolls the panel down (a place below the view), 4 up.
+    xdotool mousemove $((X + bx * UI_SCALE)) $((Y + by * UI_SCALE)) sleep 0.08 \
+      click "$([ "$y" -gt $((bottom - margin)) ] && echo 5 || echo 4)"
+    for j in $(seq 1 30); do
+      tail -n +$((count + 1)) "$UI_LOG" | grep -qF -- "$view" && break
+      sleep 0.1
+    done
+    ui_sync >&2
+  done
+  ui_fail "the panel did not scroll '$1' into its view"
+}
+
 # ui_logged_at "text": screen position of the last "<text> at x,y" line. A
 # row of the browser that is not in sight is scrolled into sight first
-# (ui_browser_reveal); the place of anything else that "<text> out of sight"
+# (ui_browser_reveal), and so is an input of a long panel scrolled away
+# (ui_panel_reveal); the place of anything else that "<text> out of sight"
 # says has gone is not given: the test fails instead of clicking where it
 # was.
 ui_logged_at() {
   local last at px py
   case $1 in
     "Browser "*) ui_browser_reveal "$1" ;;
+    "Panel "*" input "*) ui_panel_reveal "$1" ;;
   esac
   last=$(grep -F -e "$1 at " -e "$1 out of sight" "$UI_LOG" | tail -1)
   [[ $last != *" out of sight" ]] || ui_fail "'$1' is out of sight (scrolled away, folded or gone)"

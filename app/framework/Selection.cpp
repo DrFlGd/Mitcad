@@ -9,7 +9,38 @@
 #include <QMap>
 #include <QStringList>
 
+#include "../browser/DocumentSnapshot.hpp"
+
 namespace mitcad {
+
+QString selectionOwnerText(const SelectionItem& item, const DocumentSnapshot& snapshot) {
+  if (item.kind != SelectKind::Face && item.kind != SelectKind::Edge &&
+      item.kind != SelectKind::Vertex && item.kind != SelectKind::Body) {
+    return {};
+  }
+  QStringList lines;
+  if (!item.occurrence.isEmpty()) {
+    QStringList names;
+    const QVector<DocumentSnapshot::Occurrence>* level = &snapshot.occurrences;
+    for (const QString& uid : item.occurrence.split(QLatin1Char('/'))) {
+      const auto found = std::find_if(level->cbegin(), level->cend(), [&](const auto& occurrence) {
+        return occurrence.uid == uid;
+      });
+      if (found == level->cend()) {
+        names << uid;
+        break;
+      }
+      names << (found->name.isEmpty() ? found->uid : found->name);
+      level = &found->children;
+    }
+    lines << QCoreApplication::translate("Selection", "Component: %1")
+                 .arg(names.join(QStringLiteral(" › ")).toHtmlEscaped());
+  }
+  const auto body = snapshot.bodies.constFind(item.owner);
+  const QString name = body == snapshot.bodies.cend() || body->name.isEmpty() ? item.owner : body->name;
+  lines << QCoreApplication::translate("Selection", "Body: %1").arg(name.toHtmlEscaped());
+  return lines.join(QStringLiteral("<br>"));
+}
 
 QString selectionMeasurementText(const QJsonObject& measured) {
   QStringList lines;

@@ -102,6 +102,11 @@ struct Linear {
   const Curve2* lineB = nullptr;
 };
 
+// The line a dimension's extension line starts on: none for the line that
+// stands for a sketch axis (mitcad#500), which is drawn across the view, so
+// that the extension starts at the foot on it.
+const Curve2* lineOf(const CurveData& line) { return line.axis.isEmpty() ? &line.curve : nullptr; }
+
 std::optional<Linear> linearOf(const DimensionData& d, const SketchModel& model, const V2& text) {
   const Resolver r{model};
   const QString& t = d.type;
@@ -136,7 +141,7 @@ std::optional<Linear> linearOf(const DimensionData& d, const SketchModel& model,
     const V2 dir = unit(line->curve.b - line->curve.a);
     const V2 foot = line->curve.a + dir * dot(*p - line->curve.a, dir);
     const V2 u = dist(foot, *p) > 1e-9 ? unit(foot - *p) : perp(dir);
-    return Linear{*p, foot, u, &line->curve};
+    return Linear{*p, foot, u, lineOf(*line)};
   }
   if (t == QStringLiteral("line_distance")) {
     const CurveData* a = r.curve(d.json, "a");
@@ -148,7 +153,7 @@ std::optional<Linear> linearOf(const DimensionData& d, const SketchModel& model,
     const V2 dir = unit(b->curve.b - b->curve.a);
     const V2 foot = b->curve.a + dir * dot(p - b->curve.a, dir);
     const V2 u = dist(foot, p) > 1e-9 ? unit(foot - p) : perp(dir);
-    return Linear{p, foot, u, &b->curve};
+    return Linear{p, foot, u, lineOf(*b)};
   }
   if (t == QStringLiteral("tangent_distance")) {
     const CurveData* circle = r.curve(d.json, "circle");
@@ -161,7 +166,7 @@ std::optional<Linear> linearOf(const DimensionData& d, const SketchModel& model,
     const V2 centre = circle->curve.center;
     const V2 foot = line->curve.a + dir * dot(centre - line->curve.a, dir);
     const V2 towards = dist(foot, centre) > 1e-9 ? unit(foot - centre) : perp(dir);
-    return Linear{centre + towards * circle->curve.radius, foot, towards, &line->curve};
+    return Linear{centre + towards * circle->curve.radius, foot, towards, lineOf(*line)};
   }
   if (t == QStringLiteral("concentric_distance")) {
     // Between the rims along the radius toward the value (mitcad#445).
@@ -443,7 +448,7 @@ DimensionShape dimensionShape(const DimensionData& d, const SketchModel& model,
     const CurveData* b = r.curve(d.json, "b");
     for (const auto& [line, dir] : {std::pair{a, rays->da}, std::pair{b, rays->db}}) {
       const V2 end = rays->corner + dir * radius;
-      if (line->curve.distanceTo(end) > 2.0 * px) {
+      if (line->axis.isEmpty() && line->curve.distanceTo(end) > 2.0 * px) {
         shape.lines.emplace_back(S(line->curve.nearest(end)), S(end + dir * (4.0 * px)));
       }
     }
@@ -646,12 +651,12 @@ std::vector<SketchOverlay::Glyph> SketchOverlay::glyphs() const {
   }
   const QString origin = model.originPoint();
   for (const PointData& p : model.points) {
-    if (p.fixed && !p.reference && p.id != origin) {
+    if (p.fixed && !p.reference && p.id != origin && p.axis.isEmpty()) {
       add(QString(), p.id, QStringLiteral("fix"));
     }
   }
   for (const CurveData& c : model.curves) {
-    if (c.fixed && !c.reference) {
+    if (c.fixed && !c.reference && c.axis.isEmpty()) {
       add(QString(), c.id, QStringLiteral("fix"));
     }
   }
@@ -673,7 +678,10 @@ std::vector<SketchOverlay::Glyph> SketchOverlay::glyphs() const {
       if (c->curve.isClosed()) {
         t = 3.0 * kPi / 4.0;
       }
-      const V2 anchor = c->curve.at(t);
+      // An axis's line (mitcad#500): beside the axis near the origin, where
+      // the axis is drawn.
+      const V2 anchor =
+          c->axis.isEmpty() ? c->curve.at(t) : unit(c->curve.b - c->curve.a) * (60.0 * m_c.pixel());
       const QPointF a = m_c.toScreen(anchor);
       QPointF along = unitOf(m_c.toScreen(anchor + unit(c->curve.tangent(t))) - a);
       if (along.x() < 0) {
@@ -886,6 +894,24 @@ void SketchOverlay::paintEntityHighlight(QPainter& painter, const QString& entit
   const bool onBody = BodyGeometry::isBodyId(entity);
   painter.setPen(QPen(color, 4.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
   painter.setBrush(Qt::NoBrush);
+  // The sketch's origin and axes as picks (mitcad#500): the origin before
+  // it has a point, an axis across the view.
+  if (entity == originPick()) {
+    painter.setBrush(color);
+    painter.drawEllipse(m_c.toScreen(V2{}), 4.5, 4.5);
+    return;
+  }
+  if (const QString axis = onBody ? QString() : model.axisOf(entity); !axis.isEmpty()) {
+    const QPointF origin = m_c.toScreen(V2{});
+    const double step = 100.0 * m_c.pixel();
+    const QPointF along = m_c.toScreen(axis == QStringLiteral("x") ? V2{step, 0.0} : V2{0.0, step}) - origin;
+    if (std::hypot(along.x(), along.y()) >= 1.0) {
+      if (const std::optional<QLineF> line = lineAcross(origin, along, rect())) {
+        painter.drawLine(*line);
+      }
+    }
+    return;
+  }
   if (const auto p = onBody ? body.pointAt(entity) : model.pointAt(entity)) {
     painter.setBrush(color);
     painter.drawEllipse(m_c.toScreen(*p), 4.5, 4.5);

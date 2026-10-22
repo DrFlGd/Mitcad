@@ -177,6 +177,40 @@ pub(crate) fn mitcad_material(name: &str) -> Option<&'static str> {
         .map(|m| m.id)
 }
 
+/// A part's properties (mitcad#496) as a component's (the root's for the
+/// imported part), with the source `ipt`: text, numbers, yes/no, dates.
+pub(crate) fn part_properties(
+    info: &mitcad_ipt::DocumentInfo,
+    component: mitcad_model::ComponentUid,
+) -> Vec<(
+    mitcad_model::properties::PropertyOwner,
+    String,
+    mitcad_model::properties::Property,
+)> {
+    use mitcad_ipt::props::{Value as IptValue, filetime_date};
+    use mitcad_model::properties::{
+        BaseType, Property, PropertyOwner, PropertyValue, Source, key_of,
+    };
+    info.properties
+        .iter()
+        .filter_map(|(set, key, value)| {
+            let (base, value) = match value {
+                IptValue::Text(t) => (BaseType::Text, PropertyValue::Text(t.clone())),
+                IptValue::Int(i) => (BaseType::Integer, PropertyValue::Integer(*i)),
+                IptValue::Real(r) => (BaseType::Number, PropertyValue::Number(*r)),
+                IptValue::Bool(b) => (BaseType::Boolean, PropertyValue::Boolean(*b)),
+                IptValue::FileTime(t) => (BaseType::Date, PropertyValue::Text(filetime_date(*t)?)),
+                IptValue::Clsid(_) | IptValue::Other(_) => return None,
+            };
+            Some((
+                PropertyOwner::Component(component),
+                set.clone(),
+                Property::new(&key_of(key), base, value, Source::Ipt),
+            ))
+        })
+        .collect()
+}
+
 impl Document {
     fn import_ipt_report(&mut self, path: &str, options: &Options) -> Result<Value, ApiError> {
         let file = file_name(path);
@@ -331,6 +365,11 @@ impl Document {
             self.0.add_base_features(&label, inputs)?
         };
         let units = self.apply_part_units(&info, empty, &mut warnings)?;
+        // The part's properties on the design's root (mitcad#496).
+        let properties = self.0.import_properties(
+            &label,
+            part_properties(&info, mitcad_model::ComponentUid::ROOT),
+        );
         let material = info.material.as_deref().and_then(mitcad_material);
         if let Some(id) = material {
             for body in imported.iter().flat_map(|f| &f.bodies) {
@@ -363,6 +402,8 @@ impl Document {
             "material": info.material,
             "mitcad_material": material,
             "release": info.release,
+            // The part's properties added to the root (mitcad#496).
+            "properties": properties,
             "units": units,
             "unit_code": info.length_unit_code,
             "records": record_reports,
@@ -711,6 +752,11 @@ impl Document {
         if !mesh_inputs.is_empty() {
             self.0.add_base_features(&label, mesh_inputs)?;
         }
+        // The part's properties on the design's root (mitcad#496).
+        self.0.import_properties(
+            &label,
+            part_properties(info, mitcad_model::ComponentUid::ROOT),
+        );
         let material = info.material.as_deref().and_then(mitcad_material);
         if let Some(id) = material {
             let bodies: Vec<BodyUid> = self.0.bodies().iter().map(|b| b.uid).collect();
@@ -768,6 +814,9 @@ impl Document {
             "file": file,
             "format": "ipt",
             "history": true,
+            // False when a hang outside the items brought the stored
+            // bodies in without the timeline (mitcad#507).
+            "replayed": !attempt.bodies_only,
             "part_number": info.part_number,
             "material": info.material,
             "mitcad_material": material,

@@ -18,7 +18,7 @@
 namespace mitcad {
 
 // The window's current project: set by New Project, Open Project, Open from
-// Cloud, Open..., Open Recent and Move to a Project, and kept while an
+// Cloud, Open..., Open Recent and Save to Project, and kept while an
 // untitled design is open. Remote work, the indicator and Project Settings
 // use its root, never the design's path.
 struct ProjectState {

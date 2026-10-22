@@ -31,9 +31,14 @@ qt_add_executable(mitcad
   browser/FindInDesign.hpp
   browser/ParametersDialog.cpp
   browser/ParametersDialog.hpp
+  # Property sets of components, occurrences and bodies (mitcad#496).
+  browser/PropertySetsDialog.cpp
+  browser/PropertySetsDialog.hpp
   # Design policy of components (mitcad#220).
   browser/PolicyDialog.cpp
   browser/PolicyDialog.hpp
+  browser/ReorientDialog.cpp
+  browser/ReorientDialog.hpp
   browser/ComponentColors.hpp
   browser/TimelineWidget.cpp
   browser/TimelineWidget.hpp
@@ -159,6 +164,9 @@ qt_add_executable(mitcad
   files/FileFormats.hpp
   files/F3dImport.cpp
   files/F3dImport.hpp
+  # An .iam assembly's parts with their design history (mitcad#507).
+  files/IamImport.cpp
+  files/IamImport.hpp
   files/ImportDeviations.cpp
   files/ImportDeviations.hpp
   files/MainWindowFiles.cpp
@@ -535,6 +543,15 @@ if(WIN32)
   add_dependencies(mitcad mitcad-updater)
 endif()
 
+if(APPLE)
+  # The helper is copied out of the signed bundle before that bundle is replaced.
+  add_executable(mitcad-updater update/UpdaterMacos.cpp)
+  target_link_libraries(mitcad-updater PRIVATE mitcad_warnings)
+  set_target_properties(mitcad-updater PROPERTIES RUNTIME_OUTPUT_DIRECTORY "$<TARGET_FILE_DIR:mitcad>")
+  add_dependencies(mitcad mitcad-updater)
+  qt_add_resources(mitcad macos_updater PREFIX /update BASE update FILES update/UpdaterMacos.sh)
+endif()
+
 if(BUILD_TESTING)
   # Unit tests of the application's own helpers, on Qt's offscreen platform
   # (no window); Qt's DLLs are not next to the test on Windows.
@@ -621,6 +638,12 @@ if(BUILD_TESTING)
   target_sources(test_app PRIVATE tests/agent_folders.cpp mcp/AgentFolders.cpp mcp/AgentFolders.hpp)
   # The file dialogs' folders per group (mitcad#498): plain Qt Core.
   target_sources(test_app PRIVATE tests/dialog_folders.cpp framework/DialogFolders.cpp framework/DialogFolders.hpp)
+  # An .iam assembly's import choice, progress lines and parts' outcomes
+  # (mitcad#507): plain Qt Core.
+  target_sources(test_app PRIVATE tests/iam_import.cpp files/IamImport.cpp files/IamImport.hpp)
+  # A renamed command's former id and saved shortcut (mitcad#503): the
+  # registry with the command definitions it keeps.
+  target_sources(test_app PRIVATE tests/command_alias.cpp framework/CommandRegistry.cpp framework/Command.cpp)
   target_link_libraries(test_app PRIVATE mitcad_geometry)
   target_include_directories(test_app PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
   target_link_libraries(test_app PRIVATE Qt6::Widgets Qt6::Svg mitcad_warnings)
@@ -983,3 +1006,11 @@ endif()
 target_sources(mitcad PRIVATE
   sketch/FontFiles.cpp
   sketch/FontFiles.hpp)
+# The sketch's origin and its x and y axes as picks for constraints and
+# dimensions (mitcad#500).
+target_sources(mitcad PRIVATE sketch/SketchAxes.cpp)
+if(BUILD_TESTING)
+  # Their picks on the sketch model's data: plain Qt Core and the sketch
+  # geometry.
+  target_sources(test_app PRIVATE tests/sketch_axes.cpp sketch/SketchAxes.cpp)
+endif()

@@ -53,6 +53,9 @@ pub mod stale;
 pub mod points;
 // Projected geometry into ordinary sketch geometry (mitcad#257).
 pub mod convert;
+// The sketch's own axes as entities for constraints and dimensions
+// (mitcad#500).
+pub mod axes;
 
 #[cfg(test)]
 mod tests;
@@ -399,6 +402,24 @@ impl EntityKind {
     }
 }
 
+/// One of the sketch's own axes (mitcad#500): `"x"` or `"y"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SketchAxis {
+    X,
+    Y,
+}
+
+impl SketchAxis {
+    /// The axis's unit direction in the sketch plane.
+    pub fn direction(self) -> [f64; 2] {
+        match self {
+            Self::X => [1.0, 0.0],
+            Self::Y => [0.0, 1.0],
+        }
+    }
+}
+
 /// A sketch entity.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Entity {
@@ -410,6 +431,11 @@ pub struct Entity {
     pub fixed: bool,
     /// Projected or included model geometry.
     pub reference: bool,
+    /// The sketch's own x or y axis (mitcad#500): the fixed construction
+    /// line along it that constraints and dimensions refer to, and that
+    /// line's far end point (see [`axes`]). The app draws the axis across
+    /// the view instead of the line.
+    pub axis: Option<SketchAxis>,
 }
 
 impl Entity {
@@ -420,6 +446,7 @@ impl Entity {
             construction: false,
             fixed: false,
             reference: false,
+            axis: None,
         }
     }
 
@@ -454,6 +481,8 @@ struct EntityOut<'a> {
     fixed: bool,
     #[serde(skip_serializing_if = "is_false")]
     reference: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    axis: Option<SketchAxis>,
 }
 
 impl Serialize for Entity {
@@ -464,6 +493,7 @@ impl Serialize for Entity {
             construction: self.construction,
             fixed: self.fixed,
             reference: self.reference,
+            axis: self.axis,
         }
         .serialize(serializer)
     }
@@ -493,6 +523,13 @@ impl<'de> Deserialize<'de> for Entity {
         let construction = take_flag(&mut map, "construction")?;
         let fixed = take_flag(&mut map, "fixed")?;
         let reference = take_flag(&mut map, "reference")?;
+        let axis: Option<SketchAxis> = match take_field(&mut map, "axis") {
+            None => None,
+            Some(value) => Some(
+                serde_json::from_value::<SketchAxis>(value)
+                    .map_err(|_| D::Error::custom("\"axis\" must be \"x\" or \"y\""))?,
+            ),
+        };
         let kind: EntityKind =
             serde_json::from_value(Value::Object(map)).map_err(D::Error::custom)?;
         if id.is_point() != kind.is_point() {
@@ -509,6 +546,7 @@ impl<'de> Deserialize<'de> for Entity {
             construction,
             fixed,
             reference,
+            axis,
         })
     }
 }

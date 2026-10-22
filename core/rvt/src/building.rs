@@ -49,6 +49,7 @@ use std::collections::BTreeMap;
 
 use serde::Serialize;
 
+use crate::params::{self, ParamDef};
 use crate::schema::Schema;
 use crate::walk::{Object, Record, Value};
 
@@ -423,13 +424,18 @@ pub struct Instance {
     pub cut_by: Vec<i64>,
 }
 
-/// A parameter of a type.
+/// A parameter of a type (`NamedParam`): its number (`m_value`, in the
+/// file's internal units), text (`m_str`), element (`m_elemId`) and
+/// integer (`m_int`: a yes or no, an integer parameter's value); which of
+/// them holds the value follows from the parameter's kind
+/// ([`crate::params`], mitcad#501).
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Param {
     pub id: i64,
     pub value: f64,
     pub text: String,
     pub element: Option<i64>,
+    pub int: i64,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -745,7 +751,7 @@ pub(crate) enum Raw {
         name: String,
         path: Option<String>,
     },
-    ParamName(String),
+    ParamDef(ParamDef),
     Opening(Box<Opening>),
     StairRun(Box<StairRun>),
     RunType(bool, f64, StairParts),
@@ -795,8 +801,9 @@ pub struct Building {
     pub paths3d_unread: BTreeMap<i64, Vec<String>>,
     /// Types' profiles (`m_profileId`: a profile family's type).
     pub profile_types: BTreeMap<i64, i64>,
-    /// Family parameters' names.
-    pub param_names: BTreeMap<i64, String>,
+    /// Project, shared and family parameters' definitions: their names
+    /// and kinds (mitcad#501).
+    pub param_defs: BTreeMap<i64, ParamDef>,
     /// Elements of these kinds whose parameters did not read, and why.
     pub unread: BTreeMap<i64, String>,
     /// Reference planes (walls attach to them, mitcad#348).
@@ -857,8 +864,8 @@ impl Building {
             Raw::Grid(g) => self.grids.push(g),
             Raw::LinkInstance(l) => self.links.push(l),
             Raw::LinkSymbol { .. } => {}
-            Raw::ParamName(n) => {
-                self.param_names.insert(id, n);
+            Raw::ParamDef(d) => {
+                self.param_defs.insert(id, d);
             }
             Raw::RunType(m, d, p) => {
                 self.run_types.insert(id, (m, d));
@@ -927,9 +934,9 @@ impl Building {
             .find(|p| ids.contains(&p.id))
             .or_else(|| {
                 s.params.iter().find(|p| {
-                    self.param_names
+                    self.param_defs
                         .get(&p.id)
-                        .is_some_and(|n| names.iter().any(|w| n.eq_ignore_ascii_case(w)))
+                        .is_some_and(|d| names.iter().any(|w| d.name.eq_ignore_ascii_case(w)))
                 })
             })
             .map(|p| p.value)
@@ -977,6 +984,11 @@ impl<'a> Reader<'a> {
 
     fn u64(&self, o: &Object, name: &str) -> Option<u64> {
         self.get(o, name).and_then(Value::as_u64)
+    }
+
+    /// A four-byte integer, read as signed.
+    fn int(&self, o: &Object, name: &str) -> Option<i64> {
+        self.u64(o, name).map(|v| i64::from(v as u32 as i32))
     }
 
     fn bool(&self, o: &Object, name: &str) -> Option<bool> {
@@ -1525,6 +1537,26 @@ impl<'a> Reader<'a> {
         inst
     }
 
+    /// A parameter element's definition (`m_pParamDef`): its name
+    /// (`m_caption`) and the kind its class and spec give (mitcad#501).
+    fn param_def(&self, root: &'a Object) -> Option<ParamDef> {
+        let def = self.obj(root, "m_pParamDef")?;
+        let name = self
+            .get(def, "m_caption")
+            .and_then(Value::as_text)
+            .unwrap_or_default()
+            .to_string();
+        let spec = self
+            .get(def, "m_specTypeId")
+            .and_then(Value::as_object)
+            .and_then(|s| self.get(s, "m_typeId"))
+            .and_then(Value::as_text)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        let kind = params::kind_of_def(|c| self.schema.is_a(def.class, c), spec.as_deref());
+        Some(ParamDef { name, kind, spec })
+    }
+
     fn symbol(&self, id: i64, root: &'a Object) -> Symbol {
         let mut s = Symbol {
             id,
@@ -1545,6 +1577,7 @@ impl<'a> Reader<'a> {
                         .unwrap_or_default()
                         .to_string(),
                     element: self.id(p, "m_elemId"),
+                    int: self.int(p, "m_int").unwrap_or(0),
                 });
             }
         }
@@ -2222,12 +2255,7 @@ pub(crate) fn read(schema: &Schema, record: &Record, id: i64) -> Option<Raw> {
         _ => {}
     }
     if class.starts_with("ParamElem") {
-        let caption = r
-            .obj(root, "m_pParamDef")
-            .and_then(|d| r.get(d, "m_caption"))
-            .and_then(Value::as_text)
-            .filter(|t| !t.is_empty())?;
-        return Some(Raw::ParamName(caption.to_string()));
+        return r.param_def(root).map(Raw::ParamDef);
     }
     None
 }

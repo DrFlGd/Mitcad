@@ -336,3 +336,31 @@ file(WRITE "${WORK}/joist-123.json"
 cli(ok library candidates --junction "${WORK}/joist-123.json")
 expect("not mitcad-parts/test-hanger  Test joist hanger 48x148: it fits 48 x 148, the member is 123 x 48"
        "the hanger greyed for a 48 x 123 joist")
+
+# 5. The production generator's real geometry seated in a frame (mitcad#512),
+#    independently of its metadata: countersunk screw top z=0, tip L=50;
+#    flat nail top z=-1.5, tip L=40, driven 1.5 deeper. No board machining.
+set(members "")
+foreach(i RANGE 1 5)
+  list(APPEND members "{\"kind\": \"timber\", \"cuts\": [], \"machining\": []}")
+endforeach()
+string(JOIN "," members ${members})
+foreach(spec IN ITEMS "test-screw|50" "test-nail|41.5")
+  string(REPLACE "|" ";" fields "${spec}")
+  list(GET fields 0 id)
+  list(GET fields 1 tip)
+  set(seats "")
+  foreach(i RANGE 1 12)
+    list(APPEND seats "{\"role\": \"fastener\", \"seating\": {\"head_top_distance\": 0, \"tip_distance\": ${tip}}}")
+  endforeach()
+  string(JOIN "," seats ${seats})
+  file(WRITE "${WORK}/seat-${id}.json" "[
+    {\"cmd\": \"build_frame\", \"kind\": \"wall\",
+     \"part\": {\"library\": \"mitcad-parts\", \"url\": \"${library}\", \"rev\": \"HEAD\", \"component\": \"test-board\"},
+     \"start\": [0, 0, 0], \"end\": [1200, 0, 0], \"height\": 600, \"spacing\": 600,
+     \"fastener\": {\"library\": \"mitcad-parts\", \"url\": \"${library}\", \"rev\": \"HEAD\", \"component\": \"${id}\"}},
+    {\"expect\": {\"query\": {\"query\": \"build_parts\"}, \"tolerance\": 1e-6,
+                 \"result\": {\"parts\": [${members},${seats}]}}}
+  ]")
+  cli(ok run "${WORK}/seat-${id}.json")
+endforeach()

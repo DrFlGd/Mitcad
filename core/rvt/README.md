@@ -37,6 +37,7 @@ further.
 | `brep` | The elements' geometry as the file keeps it: bodies (winged-edge B-reps in their faces' parameters) and placed types (mitcad#333). |
 | `building` | The building elements' parameters: walls, floors, roofs, family instances and types, stair runs, grids, links (mitcad#275). |
 | `categories` | Built-in categories' names and which are building elements; system families by type kind. |
+| `params` | Parameters' kinds and names (mitcad#501): the kind a parameter definition's class and spec give, the specs of lengths, areas, volumes, angles and masses, the common built-in parameters' names and kinds. |
 | `testfile` | A small project and family written by the writers (the tests', the CLI's and the UI test's), and a building project with a link (and its house variant: a gable roof over a wall attached to it, mitcad#348, with a door in it and a window whose type cannot cut, mitcad#345). |
 | `bin/mitcad-rvt-inspect` | `list`, `info [--json]`, `stream <path> [--raw]`, `schema [<class>] [--json]`, `table`, `elements [--json\|--csv] [--all]`, `levels`, `materials`, `record <id> [--all]`, `records <class>[,…]`, `building`, `classes [<class>]`, `documents`, `geometry [<id>] [--points]`, `preview`, `write-test`. |
 
@@ -345,8 +346,9 @@ in feet:
   `FamilyLevelRef`: `m_elemId`, `m_offset`: a column's base and top), a
   beam's location curve and setbacks (`FamInstCurveDriver`: `m_pCrv`,
   `m_setbacks`); a type's parameters (`m_pParams` → `NamedParam`:
-  `m_paramId`, `m_value`; a family parameter's name is its element's
-  `m_pParamDef` → `m_caption`; the structural sections' built-in ids
+  `m_paramId`, `m_value`, `m_str`, `m_elemId`, `m_int`; a family
+  parameter's name and kind are its element's `m_pParamDef`'s, see
+  [Parameters' kinds](#parameters-kinds-mitcad501); the structural sections' built-in ids
   -1005502 width, -1005503 height, -1005504 diameter, -1005505/-1005506
   wall thickness, -1005524 flange and -1005525 web thickness, -1005529
   and -1005530 the hollow sections' corner radii *(verified: the steel
@@ -967,6 +969,45 @@ The other releases' element records walk with the same schema-driven
 reader; their views are not compared (the reference reader reads only
 metadata there).
 
+## Parameters' kinds (mitcad#501)
+
+A parameter's numbers are in the file's internal units (feet, square and
+cubic feet, radians, kilograms); its definition tells what they are
+(`params`):
+
+- A project, shared or family parameter (a positive id) is an element of a
+  `ParamElem` class (`ParamElemFamily`, `ParamElemExternal`,
+  `ParamElemProject`, `ParamElemGlobal`, ...) whose `m_pParamDef` names it
+  (`m_caption`). The definition's class gives the kind: `ParamDefValue`
+  and its classes by their spec (`m_specTypeId` → `m_typeId`, an
+  identifier `<namespace>.spec.<name>-<version>`: `aec:length`,
+  `aec:area`, `aec:volume`, `aec:angle`, `aec:number`,
+  `aec.piping:pipeSize`, `aec.hvac:ductSize`,
+  `aec.electrical:conduitSize`, `aec.electrical:current`, ...; versions 1
+  and 2 of a spec alike), `ParamDefYesNo` a yes or no, `ParamDefInt` (and
+  `ParamDefNoOfPoles`) an integer, `ParamDefString` and its browsers
+  (`ParamDefURL`) text, `ParamDefMaterialBrowse`, `ParamDefFamType` an
+  element *(seen: the parameter definitions of the 2024 and 2025 projects
+  `c805df44`, `bb62c161`, `33271010` and `037165e5`; verified: lengths,
+  areas and angles against the types' names and the sections' published
+  areas, in `core/import/tests/rvt_corpus.rs`)*. Before 2021 the
+  definition has a `m_unitType` number instead of the spec *(seen)*; it
+  is not read.
+- The values: an element's own in its parameter sets
+  (`m_pParamValueSetDouble`, `…Int`, `…AString`, `…ElementId`); a type's
+  in its `NamedParam`s, a number in `m_value`, a text in `m_str`, an
+  element in `m_elemId`, a yes or no and an integer in `m_int` *(seen:
+  `m_value` is 0 for these)*.
+- A built-in parameter (a negative id) is not defined in the file. The
+  reader's table names the common ones as the corpus's schedules head
+  their columns (`ScheduleField`: `m_paramElemId`, `m_columnHeading`) and
+  gives their kinds: -1001300 height, -1001301 width and -1001302
+  thickness of door and window types *(verified: types named `3 x 8`,
+  `800 x 2100`)*, -1001101 a wall's height *(verified against its faces)*
+  and -1001105 its unconnected height *(equal to it on the walls whose
+  top is not attached to a level)*, the offsets, marks and comments
+  *(seen)*. A wall type keeps no width: it is its layers' total.
+
 ## Tests
 
 `cargo test -p mitcad-rvt` (`core.rvt` in ctest): the written project and
@@ -975,6 +1016,8 @@ element views, saved meshes) and `tests/corpus.rs` on the corpus (skipped
 without `MITCAD_RVT_CORPUS`). The import: `core/import/src/rvt.rs` (mock
 kernel), `core/import/tests/rvt_mullion_trims.rs` (the trimmed mullions' rule
 against their stored ends on three projects),
+`core/import/tests/rvt_corpus.rs` (mitcad#501: parameters in their
+units against the types' names on `c805df44` and `bb62c161`),
 `core/import/tests/rvt_rails.rs` (mitcad#391: the multistory stairs' copies
 where the file places them, the helix corner on its stored Hermite
 faces; mitcad#395: the landings with their run's treads against their

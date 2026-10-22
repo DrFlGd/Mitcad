@@ -15,6 +15,23 @@
 #      at each junction; the wall's members in the design.
 #   4. Cut List: the frame's members with the other timber, grouped by size
 #      (the five studs and the two king studs one row).
+#   5. Two points from a stud's side to the next stud's (mitcad#509): the
+#      sides are not one plane, so the member is free between the points,
+#      as long as the studs' distance, its end cut back to the end stud's
+#      face (not its end moved onto the start's plane, a member a few
+#      millimetres long).
+#   6. In a new design, Corner Butt, the default (mitcad#510): a wall, then
+#      a wall started by a click on its side near its end A butts from the
+#      side there; one by a click on its end B's face (the view from the
+#      right) starts from that end, a butt corner.
+#   7. In a new design, Corner Lapped plates: a wall started near the
+#      first one's end B makes an L corner (mitcad#493); the next Timber
+#      start remembers Lapped plates.
+#   8. On a member (mitcad#508): the hover over a member's side names only
+#      the face a click picks, nothing previewed before the click; once
+#      picked, the mouse along the side, off the parts and back previews
+#      and inspects nothing, the preview's end A unchanged; a click on
+#      another member's side moves it once. Closed without placing.
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
 # Usage: tools/ui-timber-frame-test.sh
@@ -121,6 +138,103 @@ expect_inspect() {
   done
   ui_fail "$description: no 'Inspect Timber:' line since the mark with: ${*:1:$#-1}"
 }
+# off_view: the mouse out of the view, over the ribbon above its middle
+# (window coordinates of the view: "View area x y w h").
+off_view() {
+  local area vx vy vw vh
+  area=$(grep -o "View area [0-9]* [0-9]* [0-9]* [0-9]*" "$UI_LOG" | tail -1)
+  [ -n "$area" ] || ui_fail "the app did not log its view area"
+  read -r _ _ vx vy vw vh <<< "$area"
+  xdotool mousemove $((X + (vx + vw / 2) * UI_SCALE)) $((Y + vy / 2 * UI_SCALE))
+}
+# no_inspect DESCRIPTION: a moment after the mouse moved, no "Inspect
+# Timber:" line since the mark: the hover runs no placement and no
+# inspection (mitcad#508).
+no_inspect() {
+  sleep 1.5
+  ui_sync
+  ! tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -q "^Inspect Timber: " ||
+    ui_fail "$1: $(tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep "^Inspect Timber: " | head -1)"
+  echo "ok   $1"
+}
+# last_end_a: where the last "Inspect Timber:" line puts the preview's end
+# A ("; end A at x, y, z").
+last_end_a() { grep "^Inspect Timber: " "$UI_LOG" | tail -1 | sed -n 's/.*; end A at \([^;]*\);.*/\1/p'; }
+# end_a_since: the places of the preview's end A in the "Inspect Timber:"
+# lines since the mark, each once.
+end_a_since() {
+  tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep "^Inspect Timber: " | sed -n 's/.*; end A at \([^;]*\);.*/\1/p' | sort -u
+}
+# moved_once WAS DESCRIPTION: after a click, the "Inspect Timber:" lines
+# since the mark put the preview's end A elsewhere than WAS, all at one
+# place: the preview moved once, to the click (mitcad#508).
+moved_once() {
+  local places=""
+  for _ in $(seq 1 30); do
+    places=$(end_a_since)
+    [ -n "$places" ] && break
+    sleep 0.2
+  done
+  # A moment more: a preview still following the mouse would add places.
+  sleep 1
+  ui_sync
+  places=$(end_a_since)
+  [ -n "$places" ] || ui_fail "$2: no 'Inspect Timber:' line with end A since the mark"
+  [ "$(printf '%s\n' "$places" | wc -l)" -eq 1 ] || ui_fail "$2: end A at more than one place: $(tr '\n' ' ' <<< "$places")"
+  [ "$places" != "$1" ] || ui_fail "$2: end A still at $1"
+  echo "ok   $2: end A at $places"
+}
+
+# new_bodies: the bodies made since the mark, separated by spaces.
+new_bodies() {
+  tail -n +$((UI_MARK + 1)) "$UI_LOG" | sed -n 's/^New body .* (\(F[0-9]*\.b[0-9]*\)): volume.*/\1/p' |
+    sort -u | tr '\n' ' '
+}
+
+# wall_faces TEXT: "x y" of each face of Wall 1's bodies ($WALL1) whose
+# name has TEXT that a click on Start picks now (after the last "Pick
+# places:"), sorted left to right.
+wall_faces() {
+  local start line
+  start=$(grep -n "Pick places:" "$UI_LOG" | tail -1 | cut -d: -f1)
+  tail -n +"${start:-1}" "$UI_LOG" | while IFS= read -r line; do
+    if [[ $line =~ ^Pick\ face\ (F[0-9]+\.b[0-9]+)/(.*)\ at\ ([0-9]+),([0-9]+)$ ]] &&
+      [[ " $WALL1 " == *" ${BASH_REMATCH[1]} "* && ${BASH_REMATCH[2]} == *"$1"* ]]; then
+      echo "${BASH_REMATCH[3]} ${BASH_REMATCH[4]}"
+    fi
+  done | sort -n
+}
+
+# start_picks: the view fitted, the places a click on Start picks logged.
+start_picks() {
+  ui_step "fit the view (F6)"              ui_key F6
+  ui_step "Timber's Start"                 ui_click_logged "Panel Timber input start"
+}
+
+# click_place "X Y": a click where a pick place was logged.
+click_place() {
+  local px py
+  read -r px py <<< "$1"
+  [ -n "$py" ] || ui_fail "no place to click"
+  xdotool mousemove $((X + px * UI_SCALE)) $((Y + py * UI_SCALE)) click 1
+}
+
+# wall_from NAME "X Y" LENGTH TEXT CORNER: a wall started by a click at a
+# place on Wall 1, LENGTH mm long (typed): the panel names where it starts
+# (TEXT) and the Corner (CORNER), and the wall is placed so.
+wall_from() {
+  ui_mark
+  ui_step "the start on Wall 1"            click_place "$2"
+  ui_expect_new "View hint Timber: Click where the wall ends, or press Enter: Length square to the wall clicked" \
+    "the end next, else Length square to the wall"
+  ui_mark
+  ui_step "$3 mm long"                     ui_type_in "Panel Timber input frame_length" "$3"
+  expect_inspect "frame wall $1, wall $3 x 2400 mm" "; $1: $4" "; corner $5" "$1 previewed: $4, corner $5"
+  ui_mark
+  ui_step "Place (Enter)"                  ui_key Return
+  ui_expect_new "Placed frame $1 (wall, lead C" "$1 placed" 60
+  ui_expect_new "Frame junction: $1: $4" "$1 placed: $4"
+}
 
 ui_start_display
 # A new design (mitcad#394): Part1 active.
@@ -156,6 +270,7 @@ line=$(tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep "^Placed frame Wall 1 " | tail
 fastened=$(sed -n 's/.*member(s), \([0-9]*\) junction(s) fastened$/\1/p' <<< "$line")
 [ "${fastened:-0}" -gt 0 ] || ui_fail "no junction fastened: $line"
 echo "ok   16 members, $fastened junction(s) with two screws each"
+WALL1=$(new_bodies)
 ui_step "close Timber (Escape)"            ui_key Escape
 
 echo "--- 4. Cut List"
@@ -170,5 +285,167 @@ rows=$(tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -E "^Cut list row: 7 x Timber 
 echo "ok   the studs and king studs one row of seven, by size"
 ui_step "close the lists (Escape)"         ui_key Escape
 ui_focus_main
+
+echo "--- 5. Two points from one stud's side to the next one's (mitcad#509)"
+ui_mark
+ui_step "Timber (command search)"          ui_command "Timber"
+ui_expect_new "Command Timber started" "Timber again"
+ui_mark
+ui_step "Mode: Two points"                 ui_click_logged "Panel Timber input how=points"
+ui_expect_new "View hint Timber: Click where the member starts" "the view's hint for the start"
+ui_step "fit (F6)"                         ui_key F6
+ui_step "the start pick"                   ui_click_logged "Panel Timber input start"
+# The studs and king studs (2304 mm, 98 x 48: 10838016 mm3) and, of each,
+# its +X side: of its sides in sight, the one furthest right (the view from
+# the front right: +X and +Y to the right).
+studs=" $(sed -n -E 's/^New body .* \((F[0-9]+\.b[0-9]+)\): volume ([0-9.]+) mm3$/\2 \1/p' "$UI_LOG" |
+  awk '$1 > 10838015 && $1 < 10838017 { print $2 }' | tr '\n' ' ')"
+start=$(grep -n "Pick places:" "$UI_LOG" | tail -1 | cut -d: -f1)
+sides=$(tail -n +"${start:-1}" "$UI_LOG" |
+  sed -n -E 's/^Pick face (F[0-9]+\.b[0-9]+)\/[^ ]*:part\(F2:side\([^ ]* at ([0-9]+),([0-9]+)$/\1 \2 \3/p' |
+  awk -v studs="$studs" 'index(studs, " " $1 " ") && (!($1 in x) || $2 > x[$1]) { x[$1] = $2; y[$1] = $3 }
+    END { for (b in x) print x[b], y[b] }' | sort -n)
+[ "$(wc -l <<< "$sides")" -ge 2 ] || ui_fail "fewer than two studs' sides in sight: $sides"
+# The two rightmost: the stud at 3000 and the end stud. Their +X sides are
+# not one plane. Before mitcad#509 the end was moved onto the start's
+# plane, beside the start: a member a few millimetres long, refused.
+read -r ax ay <<< "$(tail -2 <<< "$sides" | head -1)"
+read -r bx by <<< "$(tail -1 <<< "$sides")"
+ui_mark
+ui_step "the start on a stud's side"       xdotool mousemove $((X + ax * UI_SCALE)) $((Y + ay * UI_SCALE)) click 1
+ui_expect_new "View hint Timber: Click where it ends; Shift+click places at once" "the end next"
+ui_mark
+ui_step "the end on the next stud's side"  xdotool mousemove $((X + bx * UI_SCALE)) $((Y + by * UI_SCALE)) click 1
+expect_inspect "points, length " "; free" "the member free between the studs' sides"
+line=$(tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep "^Inspect Timber: points, length " | tail -1)
+length=$(sed -n 's/^Inspect Timber: points, length \([0-9.]*\) mm.*/\1/p' <<< "$line")
+awk -v l="${length:-0}" 'BEGIN { exit !(l > 450 && l < 700) }' ||
+  ui_fail "the member between two studs 576 apart is ${length:-no} mm: $line"
+cut_end=', end on [^;]* cut;'
+[[ $line =~ $cut_end ]] || ui_fail "its end not cut back to the stud's face: $line"
+echo "ok   $length mm between the studs, its end on the end stud's face"
+ui_mark
+ui_step "Place (Enter)"                    ui_key Return
+ui_expect_new "Placed Timber 48x98 test as " "the member placed" 30
+ui_expect_new "length by two points, " "a member by two points"
+ui_step "close Timber (Escape)"            ui_key Escape
+
+echo "--- 6. Butting walls (mitcad#510): from Wall 1's side near its end A, from its end B's face"
+# A new design, the orientation cube's places logged (the view from the
+# right for the end face).
+ui_stop_app
+export MITCAD_LOG_ORIENTATION_CUBE=1
+ui_start_app --no-native-dialogs
+ui_mark
+ui_step "the BUILD tab"                    ui_click_logged "Ribbon tab BUILD"
+ui_expect_new "Ribbon BUILD/PROFILE at" "its PROFILE group"
+ui_mark
+ui_step "Timber (command search)"          ui_command "Timber"
+ui_expect_new "Command Timber started" "Timber started"
+ui_mark
+ui_step "Mode: Frame"                      ui_click_logged "Panel Timber input how=frame"
+expect_inspect "frame wall Wall 1, wall 3600 x 2400 mm" "; corner butt" "a wall, Corner Butt by default"
+ui_mark
+ui_step "Place (Enter)"                    ui_key Return
+ui_expect_new "Placed frame Wall 1 (wall, lead C" "the wall frame placed" 60
+WALL1=$(new_bodies)
+start_picks
+# Its leftmost side face is near its end A (+X to the right in the view).
+side=$(wall_faces ":part(F2:side(" | head -1)
+wall_from "Wall 2" "$side" 3000 "from Wall 1's side at " butt
+at=$(tail -n +$((UI_MARK + 1)) "$UI_LOG" |
+  sed -n "s/^Frame junction: Wall 2: from Wall 1's side at \([0-9]*\) mm (butt)$/\1/p" | tail -1)
+[ -n "$at" ] || ui_fail "Wall 2 placed without its butt from the side"
+[ "$at" -le 600 ] || ui_fail "Wall 2 starts $at mm along Wall 1, not near its end A"
+echo "ok   Wall 2 butts on Wall 1's side $at mm from its end A"
+# Seen from the right (+X), only Wall 1's end B shows of it: the plates'
+# ends (too small to pick from the front right) first, else the end stud.
+ui_step "the view from the right"          ui_click_logged "Orientation cube right"
+start_picks
+end=$( { wall_faces ":end_b"; wall_faces ""; } | head -1)
+wall_from "Wall 3" "$end" 2000 "from Wall 1's end B (butt corner)" butt
+ui_step "close Timber (Escape)"            ui_key Escape
+
+echo "--- 7. Lapped plates (mitcad#493, mitcad#510): an L corner near Wall 1's end B, remembered"
+ui_stop_app
+unset MITCAD_LOG_ORIENTATION_CUBE
+ui_start_app --no-native-dialogs
+ui_mark
+ui_step "the BUILD tab"                    ui_click_logged "Ribbon tab BUILD"
+ui_expect_new "Ribbon BUILD/PROFILE at" "its PROFILE group"
+ui_mark
+ui_step "Timber (command search)"          ui_command "Timber"
+ui_expect_new "Command Timber started" "Timber started"
+ui_mark
+ui_step "Mode: Frame"                      ui_click_logged "Panel Timber input how=frame"
+expect_inspect "frame wall Wall 1, wall 3600 x 2400 mm" "; corner butt" "a wall, Corner Butt the first time"
+ui_mark
+ui_step "Corner: Lapped plates"            ui_choose "Panel Timber input frame_corner" 1
+expect_inspect "frame wall Wall 1, wall 3600 x 2400 mm" "; corner lapped" "Corner Lapped plates"
+ui_mark
+ui_step "Place (Enter)"                    ui_key Return
+ui_expect_new "Placed frame Wall 1 (wall, lead C" "the wall frame placed" 60
+WALL1=$(new_bodies)
+start_picks
+# Its rightmost side face is near its end B.
+side=$(wall_faces ":part(F2:side(" | tail -1)
+wall_from "Wall 2" "$side" 3000 "an L corner at Wall 1's end B (lapped plates)" lapped
+ui_step "close Timber (Escape)"            ui_key Escape
+ui_mark
+ui_step "Timber (command search)"          ui_command "Timber"
+ui_expect_new "Command Timber started" "Timber started again"
+expect_inspect "frame wall Wall 3, " "; corner lapped" "the next start remembers Lapped plates"
+ui_step "close Timber (Escape)"            ui_key Escape
+
+echo "--- 8. On a member: the preview stays where the click put it"
+ui_mark
+ui_step "Timber (command search)"          ui_command "Timber"
+ui_expect_new "Command Timber started" "Timber again"
+ui_step "Mode: On a member"                ui_click_logged "Panel Timber input how=member"
+ui_step "fit the view (F6)"                ui_key F6
+ui_mark
+ui_step "Timber's Place On"                ui_click_logged "Panel Timber input at"
+ui_expect_new "Pick places:" "the places a click picks"
+# Two sides of the wall's members a click can reach, of two members.
+start=$(grep -n "Pick places:" "$UI_LOG" | tail -1 | cut -d: -f1)
+sides=$(tail -n +"${start:-1}" "$UI_LOG" | grep -F "Pick face " | grep -F ":part(F2:side(" |
+  sed -n 's/^Pick face \(.*\) at [0-9]*,[0-9]*$/\1/p')
+PICK1=$(printf '%s\n' "$sides" | sed -n 1p)
+[ -n "$PICK1" ] || ui_fail "no side of the wall's members to pick"
+BODY1=${PICK1%%/*}
+FACE1=${PICK1#*/}
+PICK2=$(printf '%s\n' "$sides" | grep -vF -- "$BODY1/" | head -1)
+[ -n "$PICK2" ] || PICK2=$(printf '%s\n' "$sides" | grep -vxF -- "$PICK1" | head -1)
+[ -n "$PICK2" ] || ui_fail "no second side of the wall's members to pick"
+AT1=$(ui_pick_at "$PICK1 at")
+# Before the click the hover names the face a click picks and previews
+# nothing (mitcad#508).
+ui_sync
+ui_mark
+ui_step "the mouse over a member's side"   xdotool mousemove $AT1
+ui_expect_new "BUILD hover pick: face $FACE1 of $BODY1" "the hover names the face a click picks"
+ui_step "the mouse a little further"       xdotool mousemove_relative -- 6 0
+no_inspect "no preview and no inspection while hovering before the click"
+ui_mark
+ui_step "a click on the side"              xdotool mousemove $AT1 click 1
+expect_inspect "place side" "; end A at " "the member on the side picked"
+# Once picked the preview stays there: the mouse along the side, off the
+# parts and back runs no placement and no inspection, its end A unchanged;
+# a click on another member's side moves it once (mitcad#508).
+ui_sync
+END_A1=$(last_end_a)
+[ -n "$END_A1" ] || ui_fail "no end A in the side pick's inspection"
+ui_mark
+ui_step "the mouse along the side"         xdotool mousemove_relative -- 12 0
+ui_step "the mouse off the parts"          off_view
+ui_expect_new "BUILD hover pick: off the parts' faces" "the hover off the parts"
+ui_step "the mouse on the side again"      xdotool mousemove $AT1
+no_inspect "no preview and no inspection while the mouse moves after the click"
+[ "$(last_end_a)" = "$END_A1" ] || ui_fail "the preview's end A moved from $END_A1"
+echo "ok   the preview's end A still at $END_A1"
+ui_mark
+ui_step "a click on another member's side" ui_click_pick "$PICK2 at"
+moved_once "$END_A1" "a click on another member's side moves the preview once"
+ui_step "close Timber (Escape)"            ui_key Escape
 
 ui_finish "UI timber frame test"

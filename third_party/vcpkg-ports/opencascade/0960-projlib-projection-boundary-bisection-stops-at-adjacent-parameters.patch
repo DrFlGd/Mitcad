@@ -1,0 +1,35 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+ProjLib: stop the projection boundary's bisection when no parameter lies
+between its two endpoints (mitcad#504).
+
+DichExactBound brackets the end of a continuous normal projection between
+a parameter that projects and one that does not. Its parameter tolerance
+is obtained from the surface's UV tolerance divided by the projected
+curve's derivative. The tolerance can be smaller than the spacing of the
+curve's floating-point parameters. Once the bracket's endpoints are two
+adjacent representable values, its midpoint rounds to one of them, so the
+same point is projected again and the bracket never contracts.
+
+Stop when the midpoint is an endpoint, keeping the last successfully
+projected point: there is no closer parameter to test. The usual tolerance
+test and the projection's success criteria are unchanged.
+
+Upstream: new.
+diff --git a/src/ModelingData/TKGeomBase/ProjLib/ProjLib_CompProjectedCurve.cxx b/src/ModelingData/TKGeomBase/ProjLib/ProjLib_CompProjectedCurve.cxx
+--- a/src/ModelingData/TKGeomBase/ProjLib/ProjLib_CompProjectedCurve.cxx
++++ b/src/ModelingData/TKGeomBase/ProjLib/ProjLib_CompProjectedCurve.cxx
+@@ -443,6 +443,12 @@ static void DichExactBound(gp_Pnt&                               Sol,
+   while (fabs(Sol.X() - aNotSol) > Tol)
+   {
+     t = (Sol.X() + aNotSol) / 2;
++    // The UV-derived tolerance can be below the spacing of curve parameters.
++    // No representable point remains inside this bracket; keep its solution.
++    if (t == Sol.X() || t == aNotSol)
++    {
++      break;
++    }
+     aPrjPS.Perform(t,
+                    U0,
+                    V0,

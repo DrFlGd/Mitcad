@@ -49,6 +49,19 @@ bool onBody(const SelectionItem& item) {
          item.kind == SelectKind::Body;
 }
 
+// What Property Sets shows for a picked item (mitcad#496): a body (also of
+// a face, edge or vertex) with its occurrence, or a component with its
+// occurrence; nothing for other items.
+PropertyTarget propertyTarget(const SelectionItem& item) {
+  if (onBody(item)) {
+    return {item.owner, item.occurrence, QString()};
+  }
+  if (item.kind == SelectKind::Component) {
+    return {QString(), item.occurrence, item.occurrence.isEmpty() ? item.owner : QString()};
+  }
+  return {};
+}
+
 // A plane to sketch on: a datum plane or a planar face.
 bool isSketchPlane(const SelectionItem& item) {
   return item.kind == SelectKind::Plane ||
@@ -196,6 +209,12 @@ void MainWindow::fillModelContextMenu(QMenu& menu, QStringList& entries) {
   // Appearances of the bodies selected or picked on (mitcad#46).
   if (const Selection targets = appearanceTargets(); !targets.isEmpty()) {
     addCall(QStringLiteral("appearance"), tr("Appearance..."), [this, targets] { m_controller->openAppearances(targets); });
+  }
+  // The properties of the first item's body, occurrence and component
+  // (mitcad#496).
+  if (const PropertyTarget target = propertyTarget(first); !target.isEmpty()) {
+    addCall(QStringLiteral("parameters"), tr("Property Sets..."),
+            [this, target] { m_controller->openPropertySets(target); });
   }
 
   // Delete: whole things, each shown when the selection has it, each one

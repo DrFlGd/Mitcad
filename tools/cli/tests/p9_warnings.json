@@ -1,5 +1,5 @@
 [
-  {"comment": "Model warnings (P9): a rib 2 mm wide, 40 long and 20 high (F2.b0). Rounding both long top edges by 1 mm (a full round) or bevelling them by 1 mm takes the top face away, which OCCT cannot build: the geometry builds them 0.1 % smaller, and the feature succeeds with a warning (yellow in the timeline)."},
+  {"comment": "Model warnings (P9): a rib 2 mm wide, 40 long and 20 high (F2.b0). Rounding all four top edges by 1 mm (a full round, the rib's ends rounded too) or bevelling them by 1 mm takes the top face away, which OCCT cannot build at the rib's ends: the geometry builds them 0.1 % smaller, and the feature succeeds with a warning (yellow in the timeline). (The two long top edges alone build exactly since the OCCT port's patch 0950.)"},
   {"cmd": "sketch.create"},
   {"cmd": "sketch.add_rectangle", "sketch": "F1", "corner": [0, 0], "width": 2, "height": 40},
   {"cmd": "add_feature", "def": {"type": "extrude",
@@ -8,11 +8,13 @@
   {"expect": {"feature": "Extrude1", "status": "ok", "body": "Body1", "volume": 1600}},
 
   {"cmd": "add_feature", "def": {"type": "fillet", "body": "F2.b0",
-    "edges": ["E{F2:end(r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]})|F2:side(c2[c1,c3])}",
+    "edges": ["E{F2:end(r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]})|F2:side(c1[c4,c2])}",
+              "E{F2:end(r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]})|F2:side(c2[c1,c3])}",
+              "E{F2:end(r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]})|F2:side(c3[c2,c4])}",
               "E{F2:end(r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]})|F2:side(c4[c3,c1])}"], "radius": 1}},
-  {"comment": "A full round: two quarter circles of r = 1 take 2 (1 - pi/4) x 40 mm3."},
+  {"comment": "The end edges' roundings meet the long ones where their cylinders cross: the top 1 mm at height t a rectangle 2 s by 38 + 2 s, s = sqrt(1 - t^2), so 19 pi + 8/3 of the slab's 80 mm3 kept (built 0.1 % smaller: 0.035 mm3 more)."},
   {"expect": {"feature": "Fillet1", "status": "warning", "error_contains": "0.1 % smaller",
-    "body": "Body1", "volume": 1582.831853072, "tolerance": 1e-4}},
+    "body": "Body1", "volume": 1582.356927077, "tolerance": 1e-4}},
 
   {"comment": "Half the radius builds exactly: no warning."},
   {"cmd": "set_parameter", "name": "d4", "value": 0.5},
@@ -20,12 +22,21 @@
   {"cmd": "undo"},
   {"expect": {"feature": "Fillet1", "status": "warning"}},
 
-  {"comment": "A chamfer as wide as the rib: also a warning."},
+  {"comment": "A chamfer as wide as the rib on all four top edges: also a warning. The top 1 mm at height t a rectangle (2 - 2t) by (40 - 2t): 80 - 42 + 4/3 mm3 kept."},
   {"cmd": "suppress_feature", "uid": "F3", "suppressed": true},
   {"cmd": "add_feature", "def": {"type": "chamfer", "body": "F2.b0",
-    "edges": ["E{F2:end(r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]})|F2:side(c2[c1,c3])}",
+    "edges": ["E{F2:end(r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]})|F2:side(c1[c4,c2])}",
+              "E{F2:end(r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]})|F2:side(c2[c1,c3])}",
+              "E{F2:end(r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]})|F2:side(c3[c2,c4])}",
               "E{F2:end(r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]})|F2:side(c4[c3,c1])}"],
     "size": {"type": "equal_distance", "distance": 1}}},
   {"expect": {"feature": "Chamfer1", "status": "warning", "error_contains": "the chamfer is built 0.1 % smaller",
-    "body": "Body1", "volume": 1560, "tolerance": 1e-4}}
+    "body": "Body1", "volume": 1559.333333333, "tolerance": 1e-4}},
+
+  {"comment": "The two long top edges alone: the full round and the bevel build at their size (port patch 0950), no warning."},
+  {"cmd": "suppress_feature", "uid": "F4", "suppressed": true},
+  {"cmd": "add_feature", "def": {"type": "fillet", "body": "F2.b0",
+    "edges": ["E{F2:end(r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]})|F2:side(c2[c1,c3])}",
+              "E{F2:end(r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]})|F2:side(c4[c3,c1])}"], "radius": 1}},
+  {"expect": {"feature": "Fillet2", "status": "ok", "body": "Body1", "volume": 1582.831853072, "tolerance": 1e-6}}
 ]

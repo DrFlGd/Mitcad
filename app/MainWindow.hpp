@@ -397,8 +397,16 @@ private:
   // Where an occurrence path places what is in it; null for the root.
   TopLoc_Location placementOf(const QString& occurrence) const;
   // The occurrence that places a sketch or datum of a component (its
-  // component's first), or empty: the root's, and the sketch being edited.
+  // component's first; the sketch being edited, sketch mode's), or empty:
+  // the root's.
   QString placingOccurrence(const QString& feature) const;
+  // The occurrence sketch mode shows a sketch at (mitcad#505): its plane
+  // link's target (the frame of another component's plane is found in the
+  // coordinates seen there), else `picked` when that is an occurrence of
+  // the sketch's component (where its face was picked), else the
+  // component's first occurrence; empty for the root.
+  QString sketchEditOccurrence(const QString& uid, const QString& picked) const;
+  gp_Trsf sketchPlacement(const QString& uid) const override;
 
   // Dragging components the joints move (mitcad#55, MainWindowJoints.cpp):
   // the `joint_drag` query per pointer move shows where the occurrences go,
@@ -480,7 +488,8 @@ private:
   QStringList m_sketchDeniedOwners;
   // A feature's error at the marker; empty when it did not fail.
   QString featureError(const QString& uid) const;
-  void enterSketch(const QString& uid, bool existing);
+  // `picked`: the occurrence path a new sketch's plane was picked at.
+  void enterSketch(const QString& uid, bool existing, const QString& picked = QString());
   void editSketch(const QString& uid);
   // False when sketch mode stays: the timeline's roll-forward after an
   // edit was cancelled (P7).
@@ -589,7 +598,7 @@ private:
   // panel (mitcad#145).
   void newProject();
   // What New Project chose: a project made (shown in the Projects panel, a
-  // design it took from its folder opened, or the design `moving` moved
+  // design it took from its folder opened, or the design `moving` saved
   // into it), Open It or Open It Instead. True when a project is the
   // current one now.
   bool handleNewProject(const std::optional<NewProjectResult>& result, const QString& moving);
@@ -609,14 +618,15 @@ private:
   void openReadOnly();
   // File > Project Settings.
   void showProjectSettings();
-  // Move to a Project: a loose design into a new or an existing project
-  // (an existing one chosen in the project picker, mitcad#174).
-  void moveToProject();
-  // The design moved (or an untitled design saved) into the project at
-  // `root`: to `target` (the picker's place), else under its name in the
-  // project's top, its name asked in the picker when another design has it
-  // there (an untitled design's always).
-  bool moveIntoProject(const QString& root, const QString& target = QString());
+  // File > Save to Project (mitcad#503): the design saved, as Save As does,
+  // in a project chosen in the project picker (mitcad#174) or a new one
+  // (the picker's New Project...); the window shows that file and the one
+  // the design came from stays where it was.
+  void saveToProject();
+  // The design saved into the project at `root`: as `target` (the picker's
+  // place), else under its name in the project's top, its name asked in the
+  // picker when another design has it there (an untitled design's always).
+  bool saveIntoProject(const QString& root, const QString& target = QString());
   // The project picker in the window (mitcad#174, mitcad#176): the project
   // with versions and its folder (relative) selected in the Projects
   // panel, none ("", "") else.
@@ -814,7 +824,12 @@ private:
   void insertComponent(const QString& path = QString());
   // `rerun`: the options of an .f3d import run again with the items whose
   // deviating results the user keeps (mitcad#379); empty for a new import.
-  void startF3dImport(const QString& path, const QJsonObject& rerun = QJsonObject());
+  // `ask`: the import asks its choices (File > Open and Import: an .iam
+  // assembly's Parts with their design history, mitcad#507), else takes
+  // the ones chosen last (--open, MCP).
+  void startF3dImport(const QString& path, const QJsonObject& rerun = QJsonObject(), bool ask = false);
+  // While openPath opens a file: its import asks its choices.
+  bool m_askImportChoices = false;
   // The items of an imported .f3d design whose results deviate from the
   // file's (mitcad#379): asked which to keep parametric, and the import run
   // again with them (`options`: those it ran with).
@@ -1042,6 +1057,9 @@ private:
   bool& m_sketchExisting = m_documentSession->state().sketchExisting;
   int& m_sketchEnterDepth = m_documentSession->state().sketchEnterDepth;
   int& m_sketchRestoreMarker = m_documentSession->state().sketchRestoreMarker;
+  // The occurrence path sketch mode shows the sketch at (mitcad#505;
+  // empty: the root): its frame and curves are placed by it once.
+  QString& m_sketchOccurrence = m_documentSession->state().sketchOccurrence;
 
   // Sketch selection filters (mitcad#217, MainWindowSelection.cpp): the
   // three-state filter of sketch mode, Project's context while it runs, the

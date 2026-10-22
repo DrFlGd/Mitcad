@@ -148,7 +148,7 @@ void ProjectIndicator::refresh() {
   case ProjectState::Kind::None:
     shown << tr("Not in a project");
     logged << QStringLiteral("not in a project");
-    tip << tr("The design is in no project: its versions are not kept. Click for Move to a Project.");
+    tip << tr("The design is in no project: its versions are not kept. Click for Save to Project.");
     break;
   case ProjectState::Kind::NoHistory:
     if (m_project.outer.isEmpty()) {
@@ -333,7 +333,7 @@ void ProjectIndicator::fillMenu() {
     break;
   case ProjectState::Kind::None:
   case ProjectState::Kind::NoHistory:
-    add(tr("&Move to a Project..."), "file.move_to_project");
+    add(tr("&Save to Project..."), "file.save_to_project");
     break;
   }
   bool separated = false;

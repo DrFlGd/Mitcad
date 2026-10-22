@@ -50,8 +50,10 @@ fn signs_a_release_the_application_accepts() {
     let seed = test_seed();
     let installer = dir.join("mitcad-0.2.0-windows-x64.exe");
     let appimage = dir.join("Mitcad-0.2.0-x86_64.AppImage");
+    let dmg = dir.join("Mitcad-0.2.0-macos-arm64.dmg");
     fs::write(&installer, b"an installer for the test").unwrap();
     fs::write(&appimage, b"an AppImage for the test").unwrap();
+    fs::write(&dmg, b"a macOS disk image for the test").unwrap();
 
     let output = tool()
         .arg("public-key")
@@ -81,6 +83,9 @@ fn signs_a_release_the_application_accepts() {
         .args(["--asset", "linux-x64"])
         .arg(&appimage)
         .arg("https://example.invalid/v0.2.0/Mitcad-0.2.0-x86_64.AppImage")
+        .args(["--asset", "macos-arm64"])
+        .arg(&dmg)
+        .arg("https://example.invalid/v0.2.0/Mitcad-0.2.0-macos-arm64.dmg")
         .arg("--out")
         .arg(&manifest)
         .env("MITCAD_RELEASE_KEY_FILE", &key_file)
@@ -92,9 +97,32 @@ fn signs_a_release_the_application_accepts() {
     let read = Manifest::read(&data, &TrustedKeys::parse(&public).unwrap()).unwrap();
     assert_eq!(read.version, "0.2.0");
     assert_eq!(read.date.len(), 10);
-    assert_eq!(read.assets.len(), 2);
+    assert_eq!(read.assets.len(), 3);
     verify_download(&data, &public, "windows-x64", &installer).unwrap();
     verify_download(&data, &public, "linux-x64", &appimage).unwrap();
+    verify_download(&data, &public, "macos-arm64", &dmg).unwrap();
+    assert!(verify_download(&data, &public, "macos-arm64", &appimage).is_err());
+    let offer: serde_json::Value = serde_json::from_str(
+        &check(&data, &public, "0.1.0", "macos-arm64", Channel::Stable, "").unwrap(),
+    )
+    .unwrap();
+    assert_eq!(offer["status"], "available");
+    assert_eq!(offer["asset"]["url"], read.assets["macos-arm64"].url);
+    // An asset's signature is bound to its platform, even in a valid manifest.
+    let mut wrong_platform = read.clone();
+    wrong_platform
+        .assets
+        .insert("macos-arm64".into(), read.assets["linux-x64"].clone());
+    let seed_key = mitcad_update::signing_key(&seed).unwrap();
+    assert!(
+        verify_download(
+            wrong_platform.signed(&seed_key).as_bytes(),
+            &public,
+            "macos-arm64",
+            &appimage
+        )
+        .is_err()
+    );
     assert!(verify_download(&data, &public, "linux-x64", &installer).is_err());
     assert!(
         check(&data, &public, "0.1.0", "linux-x64", Channel::Stable, "")

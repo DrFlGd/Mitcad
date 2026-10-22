@@ -30,6 +30,12 @@ if(APPLE AND BUILD_TESTING AND MITCAD_MACOS_UI_TESTS AND TARGET mitcad)
   endif()
   find_program(BASH_EXECUTABLE bash)
   if(BASH_EXECUTABLE)
+    if(TARGET mitcad-release AND Python3_Interpreter_FOUND)
+      add_test(NAME app.ui-macos-update
+        COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-update-test.sh"
+                "$<TARGET_FILE:mitcad>" "$<TARGET_FILE:mitcad-release>" "${CMAKE_BINARY_DIR}/ui-macos-update")
+      set_tests_properties(app.ui-macos-update PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+    endif()
     if(TARGET mitcad-cli AND MITCAD_MACOS_NATIVE_UI)
       add_test(NAME app.ui-macos-section
         COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-section-test.sh"

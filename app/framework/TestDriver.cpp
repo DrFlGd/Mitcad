@@ -112,6 +112,7 @@ const StepSpec kSpecs[] = {
     {"native-type", 2, 2, kInputOfTarget},
     {"native-choice", 2, 2, kInputOfTarget},
     {"expect-native-duplicate-choices", 0, 0, kIdle},
+    {"expect-native-application-delegate", 0, 0, kIdle},
     {"native-toolbar-item", 2, 2, kInputOfMain},
     {"expect-native-toolbar-item", 2, 2, kIdle},
     {"expect-native-form-controls", 0, 0, kIdle},
@@ -122,10 +123,12 @@ const StepSpec kSpecs[] = {
     {"native-expand", 1, 1, kInputOfTarget},
     {"native-click-now", 1, 1, kPlain},
     {"native-click-on-job", 2, 2, kIdle},
+    {"native-history-drag-on-job", 2, 2, kIdle},
     {"fail-next-recovery-command", 1, 1, kIdle},
     {"expect-picking-on-job", 1, 1, kIdle},
     {"native-type-now", 2, 2, kPlain},
     {"native-key-now", 1, -1, kPlain},
+    {"native-key-event", 1, -1, kInputOfTarget},
     {"native-file-name", 1, 1, kInputOfTarget},
     {"native-file-directory", 1, 1, kInputOfTarget},
     {"native-file-cancel", 0, 0, kInputOfTarget},
@@ -732,6 +735,8 @@ void TestDriver::leave(int code) {
   m_jobPickLabel.clear();
   QObject::disconnect(m_nativeJobClickConnection);
   m_nativeJobClickLabel.clear();
+  QObject::disconnect(m_nativeJobHistoryDragConnection);
+  m_nativeJobHistoryDragLabel.clear();
   m_finished = true;
   if (m_timer != nullptr) {
     m_timer->stop();
@@ -748,6 +753,11 @@ void TestDriver::finish() {
   }
   if (!m_nativeJobClickLabel.isEmpty()) {
     fail(m_nativeJobClickLine, QStringLiteral("the armed native click's job '%1' never started").arg(m_nativeJobClickLabel));
+    return;
+  }
+  if (!m_nativeJobHistoryDragLabel.isEmpty()) {
+    fail(m_nativeJobHistoryDragLine,
+         QStringLiteral("the armed native history drag's job '%1' never started").arg(m_nativeJobHistoryDragLabel));
     return;
   }
   if (auto* window = qobject_cast<MainWindow*>(m_main.data())) {
@@ -1260,6 +1270,40 @@ void TestDriver::run(const Step& step) {
           if (!mac::test::clickImmediately(identifier, error)) { fail(line, error); return; }
           qInfo().noquote() << QStringLiteral("Native test: clicked %1 during %2 (busy)").arg(identifier, label);
         });
+  } else if (name == QLatin1String("native-history-drag-on-job")) {
+    if (!mac::test::active()) { fail(line, QStringLiteral("native-history-drag-on-job requires the native macOS UI")); return; }
+    auto* window = qobject_cast<MainWindow*>(mainWindow);
+    auto* session = window ? window->findChild<DocumentSession*>() : nullptr;
+    double index = -1;
+    if (!session || window->modelBusy() || a.at(0).isEmpty() || !m_nativeJobHistoryDragLabel.isEmpty() ||
+        !toNumber(a.at(1), index) || index < 0 || index != std::floor(index)) {
+      fail(line, QStringLiteral("native-history-drag-on-job requires an idle document, a final index and no armed drag"));
+      return;
+    }
+    m_nativeJobHistoryDragLabel = a.at(0);
+    m_nativeJobHistoryDragLine = line;
+    const QString label = a.at(0);
+    const QPointer<MainWindow> guard(window);
+    m_nativeJobHistoryDragConnection = QObject::connect(session, &DocumentSession::jobStarted, this,
+        [this, guard, label, index, line](const QString& started, const QString&) {
+          if (started != label) return;
+          QObject::disconnect(m_nativeJobHistoryDragConnection);
+          m_nativeJobHistoryDragLabel.clear();
+          for (const QString& phase : {QStringLiteral("to"), QStringLiteral("end")}) {
+            if (!guard || !guard->modelBusy()) {
+              fail(line, QStringLiteral("the armed history drag did not observe busy '%1' before %2").arg(label, phase));
+              return;
+            }
+            QString error;
+            if (!mac::test::historyMarkerEvent(phase, int(index), error)) { fail(line, error); return; }
+            if (!guard || !guard->modelBusy()) {
+              fail(line, QStringLiteral("the armed history drag did not observe busy '%1' after %2").arg(label, phase));
+              return;
+            }
+          }
+          qInfo().noquote() << QStringLiteral("Native test: history marker moved to %1 and released during %2 (busy before/after both inputs)")
+              .arg(int(index)).arg(label);
+        });
   } else if (name == QLatin1String("fail-next-recovery-command")) {
     auto* window = qobject_cast<MainWindow*>(mainWindow);
     auto* session = window ? window->findChild<DocumentSession*>() : nullptr;
@@ -1424,8 +1468,12 @@ void TestDriver::run(const Step& step) {
       document.setHtml(label->text());
       const QString text = document.toPlainText();
       m_waitDetail = QStringLiteral("selection info: %1; card height %2").arg(text).arg(card ? card->height() : -1);
-      return expected.match(text).hasMatch() &&
-             (maxHeight == 0 || (card && card->height() <= maxHeight));
+      const bool matches = (text.isEmpty() || label->isVisible()) && expected.match(text).hasMatch() &&
+                           (maxHeight == 0 || (card && card->height() <= maxHeight));
+      if (matches) {
+        qDebug().noquote() << QStringLiteral("TestDriver: selection info: %1").arg(text);
+      }
+      return matches;
     }, 6, QStringLiteral("selection measurements"));
   } else if (name == QLatin1String("expect-selection")) {
     double total = 0;
@@ -1682,6 +1730,11 @@ void TestDriver::run(const Step& step) {
     if (!window || !mac::test::active() || !mac::test::formControls(*window, error)) {
       fail(line, error.isEmpty() ? QStringLiteral("form controls require an idle native window") : error);
     }
+  } else if (name == QLatin1String("expect-native-application-delegate")) {
+    QString error;
+    if (!mac::test::applicationDelegate(error)) {
+      fail(line, error.isEmpty() ? QStringLiteral("application delegate check requires the native UI") : error);
+    }
   } else if (name == QLatin1String("expect-native-duplicate-choices")) {
     auto* window = qobject_cast<MainWindow*>(m_main.data());
     QString error;
@@ -1728,7 +1781,8 @@ void TestDriver::run(const Step& step) {
       }, 6, QStringLiteral("native control '%1' was not %2=%3")
                 .arg(id, presence ? QStringLiteral("present") : visibility ? QStringLiteral("visible") : QStringLiteral("enabled"), value));
     }
-  } else if (name.startsWith(QLatin1String("native-")) && name != QLatin1String("native-key-now")) {
+  } else if (name.startsWith(QLatin1String("native-")) && name != QLatin1String("native-key-now") &&
+             name != QLatin1String("native-key-event")) {
     if (!mac::test::active()) {
       fail(line, QStringLiteral("'%1' requires the native macOS UI").arg(name));
       return;
@@ -1758,9 +1812,10 @@ void TestDriver::run(const Step& step) {
     if (name == QLatin1String("native-action")) queue(perform);
     else whenReady([identifier] { return mac::test::controlExists(identifier); }, 6,
                    QStringLiteral("no native control '%1'").arg(identifier), [this, perform] { queue(perform); });
-  } else if (name == QLatin1String("key") || name == QLatin1String("native-key-now")) {
-    if (name == QLatin1String("native-key-now") && !mac::test::active()) {
-      fail(line, QStringLiteral("native-key-now requires the native macOS UI"));
+  } else if (name == QLatin1String("key") || name == QLatin1String("native-key-now") ||
+             name == QLatin1String("native-key-event")) {
+    if (name != QLatin1String("key") && !mac::test::active()) {
+      fail(line, QStringLiteral("%1 requires the native macOS UI").arg(name));
       return;
     }
     std::vector<KeyPress> presses;
@@ -1774,7 +1829,15 @@ void TestDriver::run(const Step& step) {
       presses.push_back(press);
     }
     for (const KeyPress& press : presses) {
-      queue([this, press] { sendKey(press); });
+      queue([this, press, name, line] {
+        if (name == QLatin1String("native-key-event")) {
+          if (!mac::test::sendKeyEvent(press.key, press.modifiers, press.text)) {
+            fail(line, QStringLiteral("native application key event could not dispatch"));
+          }
+        } else {
+          sendKey(press);
+        }
+      });
     }
   } else if (name == QLatin1String("type")) {
     const QString text = a.join(QLatin1Char(' '));

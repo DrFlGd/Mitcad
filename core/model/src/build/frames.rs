@@ -95,6 +95,45 @@ pub struct FrameJoins {
     pub start: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub end: Option<String>,
+    /// Where its start meets the wall `start` names (mitcad#510): on its
+    /// side (left out), or `end`: that wall's end face butts against this
+    /// wall's side at its start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_on: Option<JoinOn>,
+}
+
+/// Where a wall's start meets the wall it joins (mitcad#510).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JoinOn {
+    /// Its start butts against that wall's side.
+    Side,
+    /// That wall's end face butts against its side.
+    End,
+}
+
+/// How a wall's ends meet the walls they join (mitcad#510).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WallCorner {
+    /// Its end studs and plates butt square against the other wall's side
+    /// face; the other wall is neither run on, lapped nor notched, only
+    /// given a backing stud each side of it where they fit.
+    Butt,
+    /// Near the other wall's end an L corner, the other wall run on to its
+    /// outer face and the plates lapped; elsewhere a T, a stud each side of
+    /// it in the other wall (mitcad#493). Left out: this, as walls saved
+    /// before mitcad#510 keep their corners.
+    Lapped,
+}
+
+impl WallCorner {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Butt => "butt",
+            Self::Lapped => "lapped",
+        }
+    }
 }
 
 /// Where an opening is: along a wall from its start, or a floor's
@@ -178,10 +217,14 @@ pub struct FrameInput {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub joins: Option<FrameJoins>,
     /// `build_frame`'s and its preview's only (mitcad#493): `start` is a
-    /// point on the side of the wall `joins.start` names, and the wall
-    /// starts square to that wall, an L corner at its end or a T; not kept.
+    /// point on the side (or an end) of the wall `joins.start` names, and
+    /// the wall starts square to that wall as `corner` has it; not kept.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub square: Option<bool>,
+    /// How its ends meet the walls they join (mitcad#510; left out
+    /// `lapped`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub corner: Option<WallCorner>,
     // A floor.
     /// The closed outline the floor fills (its first point's height).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -236,6 +279,7 @@ impl FrameInput {
             openings: pick!(openings),
             joins: pick!(joins),
             square: None,
+            corner: pick!(corner),
             outline: pick!(outline),
             direction: pick!(direction),
             blocking: pick!(blocking),
@@ -282,16 +326,21 @@ pub struct Framed {
 /// meets that wall.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StartJunction {
-    /// `L` (a corner at one of the wall's ends) or `T`.
+    /// With lapped corners `L` (a corner at one of the wall's ends) or
+    /// `T`; butting (mitcad#510) `side` (from its side at the click) or
+    /// `end` (a corner at its end face).
     pub kind: &'static str,
+    /// `butt` or `lapped` (mitcad#510).
+    pub corner: &'static str,
     /// The wall's name and lead.
     pub wall: String,
     pub frame: ComponentUid,
-    /// An L's end of that wall: `a` (its start) or `b`.
+    /// An L's or an end's end of that wall: `a` (its start) or `b`.
     pub end: Option<&'static str>,
     /// Along that wall from its start to the new wall's centre line, mm.
     pub at: f64,
-    /// The new wall's length from that wall's centre line, mm.
+    /// The new wall's length: from that wall's centre line, mm; from its
+    /// far side at an `end`.
     pub length: f64,
 }
 
@@ -299,6 +348,7 @@ impl StartJunction {
     pub fn to_json(&self) -> Value {
         json!({
             "kind": self.kind,
+            "corner": self.corner,
             "wall": self.wall,
             "frame": self.frame,
             "end": self.end,
@@ -478,6 +528,12 @@ struct WallGeo {
     header: FramePart,
     openings: Vec<Opening>,
     joins: [Option<ComponentUid>; 2],
+    /// Its ends butt square against the walls they join, which get only
+    /// backing studs (`corner: butt`, mitcad#510).
+    butt: bool,
+    /// The wall its start joins butts its end face against its side
+    /// (`joins.start_on: end`, mitcad#510).
+    start_on_end: bool,
     warnings: Vec<String>,
 }
 
@@ -550,6 +606,18 @@ fn wall_span(w: &WallGeo, walls: &[WallGeo]) -> WallSpan {
             ));
             continue;
         }
+        if k == 0 && w.start_on_end {
+            // That wall's end face against its side at its start
+            // (mitcad#510): it runs on from its own start, a backing stud
+            // each side of that wall where they fit.
+            if let Some(tj) = line_param(w.start, w.u, x.start, x.u) {
+                let (dx, ts) = (x.depth(), w.stud.thick());
+                let key = format!("junction.{}.0", x.name.replace(' ', "_"));
+                span.extra.push((tj - dx / 2.0 - ts, format!("{key}.a")));
+                span.extra.push((tj + dx / 2.0, format!("{key}.b")));
+            }
+            continue;
+        }
         let middle = w.at(w.length / 2.0, 0.0, 0.0);
         let side = if dot(sub(middle, x.start), x.n) >= 0.0 {
             1.0
@@ -564,8 +632,9 @@ fn wall_span(w: &WallGeo, walls: &[WallGeo]) -> WallSpan {
         }
         // At a corner (its centre line meets the other's within its depth of
         // an end, as the other wall finds it) its plates lap over the other's,
-        // to that wall's outer face.
-        if let Some(tx) = line_param(x.start, x.u, w.start, w.u)
+        // to that wall's outer face; butting, they stop at its face.
+        if !w.butt
+            && let Some(tx) = line_param(x.start, x.u, w.start, w.u)
             && (tx < w.depth() || tx > x.length - w.depth())
         {
             span.laps[k] = Some(Lap {
@@ -587,12 +656,23 @@ fn wall_span(w: &WallGeo, walls: &[WallGeo]) -> WallSpan {
             if *end != Some(me) {
                 continue;
             }
+            // Its end face against a wall started from it: nothing of it
+            // changes (mitcad#510).
+            if k == 0 && b.start_on_end {
+                continue;
+            }
             let Some(tj) = line_param(w.start, w.u, b.start, b.u) else {
                 continue;
             };
             let db = b.depth();
             let key = format!("junction.{}.{k}", b.name.replace(' ', "_"));
-            if tj < db {
+            if b.butt {
+                // A wall that butts against it (mitcad#510): neither run on
+                // nor lapped, a backing stud each side of it where they fit
+                // (as at a T).
+                span.extra.push((tj - db / 2.0 - ts, format!("{key}.a")));
+                span.extra.push((tj + db / 2.0, format!("{key}.b")));
+            } else if tj < db {
                 // A corner at its start: it runs to the other's outer face,
                 // its plates lapped under the other's.
                 span.t0 = span.t0.min(tj - db / 2.0);
@@ -1741,6 +1821,11 @@ impl<K: Kernel> Document<K> {
             header,
             openings: def.openings.clone().unwrap_or_default(),
             joins,
+            butt: def.corner == Some(WallCorner::Butt),
+            start_on_end: def
+                .joins
+                .as_ref()
+                .is_some_and(|j| j.start_on == Some(JoinOn::End)),
             warnings,
             name,
         })
@@ -2103,12 +2188,19 @@ impl<K: Kernel> Document<K> {
     }
 
     /// A wall started on another wall's side (`square`, mitcad#493): its
-    /// start and end made square to that wall. The start clicked near one
-    /// of that wall's ends (within half its stud spacing, at least its
+    /// start and end made square to that wall, as its `corner` has it.
+    /// Butting (mitcad#510): a start on that wall's side starts it there,
+    /// its centre line at the point's place along the wall, kept off its
+    /// ends by half its own depth (`side`); a start on one of its end faces
+    /// starts it beyond that end, its side against the end face and its
+    /// start flush with that wall's far side, still joined to it (`end`,
+    /// `joins.start_on: end`). Lapped (left out, mitcad#493): a start near
+    /// one of that wall's ends (within half its stud spacing, at least its
     /// depth) starts it at that end's corner, an L, else at the click, a T;
-    /// both on that wall's centre line at its base. It runs to the side
-    /// clicked (the end's side when the click is on the centre line), as
-    /// far as `end` is along it, else `length`.
+    /// both on that wall's centre line. At that wall's base, it runs to the side
+    /// clicked (the end's side when the click is on the centre line; at an
+    /// end face the end's side first), as far as `end` is along it, else
+    /// `length`.
     fn square_start(
         &self,
         def: &mut FrameInput,
@@ -2136,36 +2228,81 @@ impl<K: Kernel> Document<K> {
             .find(|k| k.lead == Some(lead) && k.def.kind() == FrameKind::Wall)
             .ok_or_else(|| refuse(format!("{text} is no wall frame")))?;
         let x = self.wall_geo(known)?;
+        // Where its plates end now (after its own corners): its end faces.
+        let ends = {
+            let span = wall_span(&x, &self.walls_of(world));
+            [span.t0, span.t1]
+        };
         let click = def
             .start
             .ok_or_else(|| refuse(format!("{name} needs its start")))?;
         let rel = sub(click, x.start);
         let (t, a) = (dot(rel, x.u), dot(rel, x.n));
-        if t < -x.depth() || t > x.length + x.depth() {
+        if t < ends[0] - x.depth() || t > ends[1] + x.depth() {
             return Err(refuse(format!(
                 "{name}'s start is not on {}'s side: {} mm along it, beyond its ends",
                 x.name,
                 round(t)
             )));
         }
-        let side = if a.abs() > EPS {
-            a.signum()
+        let end_side = def
+            .end
+            .map(|e| dot(sub(e, x.start), x.n))
+            .filter(|b| b.abs() > EPS)
+            .map(f64::signum);
+        let click_side = (a.abs() > EPS).then_some(a.signum());
+        let butt = def.corner == Some(WallCorner::Butt);
+        // A butting start on an end face: within half a millimetre of it and
+        // inside the wall's depth, or beyond the end.
+        const ON: f64 = 0.5;
+        let inside = a.abs() < x.depth() / 2.0 - ON;
+        let on_end = if !butt {
+            None
+        } else if t < ends[0] + ON && (inside || t < ends[0] - ON) {
+            Some(0)
+        } else if t > ends[1] - ON && (inside || t > ends[1] + ON) {
+            Some(1)
         } else {
-            match def.end.map(|e| dot(sub(e, x.start), x.n)) {
-                Some(b) if b.abs() > EPS => b.signum(),
-                _ => 1.0,
+            None
+        };
+        let side = match on_end {
+            Some(_) => end_side.or(click_side),
+            None => click_side.or(end_side),
+        }
+        .unwrap_or(1.0);
+        let d = scale(x.n, side);
+        // Its own depth (butting).
+        let depth = match (&def.part, butt) {
+            (Some(part), true) => self.frame_part(part)?.depth(),
+            (None, true) => return Err(refuse(format!("{name} needs its timber (part)"))),
+            (_, false) => 0.0,
+        };
+        // The junction, the wall's start and how far it must run at least.
+        let (kind, end, at, start, least) = match on_end {
+            Some(k) => {
+                // Its side against the end face, from the far side.
+                let out = if k == 0 { -1.0 } else { 1.0 };
+                let at = ends[k] + out * depth / 2.0;
+                let start = x.at(at, 0.0, -side * x.depth() / 2.0);
+                ("end", Some(["a", "b"][k]), at, start, x.depth())
+            }
+            None if butt => {
+                // Its faces within that wall's end faces: no overhang.
+                let at = t.min(ends[1] - depth / 2.0).max(ends[0] + depth / 2.0);
+                ("side", None, at, x.at(at, 0.0, 0.0), x.depth() / 2.0)
+            }
+            None => {
+                let near = (x.spacing / 2.0).max(x.depth()).min(x.length / 2.0);
+                let (kind, end, at) = if t <= near {
+                    ("L", Some("a"), 0.0)
+                } else if t >= x.length - near {
+                    ("L", Some("b"), x.length)
+                } else {
+                    ("T", None, t)
+                };
+                (kind, end, at, x.at(at, 0.0, 0.0), x.depth() / 2.0)
             }
         };
-        let d = scale(x.n, side);
-        let near = (x.spacing / 2.0).max(x.depth()).min(x.length / 2.0);
-        let (kind, end, at) = if t <= near {
-            ("L", Some("a"), 0.0)
-        } else if t >= x.length - near {
-            ("L", Some("b"), x.length)
-        } else {
-            ("T", None, t)
-        };
-        let start = x.at(at, 0.0, 0.0);
         let length = match (def.end, &def.length) {
             (Some(e), _) => dot(sub(e, start), d),
             (None, Some(l)) => value_in(self, l, Unit::MM)?,
@@ -2173,18 +2310,32 @@ impl<K: Kernel> Document<K> {
                 return Err(refuse(format!("{name} needs its end or its length")));
             }
         };
-        if length <= x.depth() / 2.0 + EPS {
-            return Err(refuse(format!(
-                "{name} would end {} mm from {}'s centre line, not beyond its side",
-                round(length),
-                x.name
-            )));
+        if length <= least + EPS {
+            return Err(refuse(if on_end.is_some() {
+                format!(
+                    "{name} would be {} mm long from {}'s far side, not beyond its other side",
+                    round(length),
+                    x.name
+                )
+            } else {
+                format!(
+                    "{name} would end {} mm from {}'s centre line, not beyond its side",
+                    round(length),
+                    x.name
+                )
+            }));
         }
         def.start = Some(start);
         def.end = Some(add(start, scale(d, length)));
         def.length = None;
+        // At an end it stays joined to that wall, whose end face butts
+        // against its side (laid out again with it).
+        if let Some(joins) = &mut def.joins {
+            joins.start_on = on_end.map(|_| JoinOn::End);
+        }
         Ok(Some(StartJunction {
             kind,
+            corner: def.corner.unwrap_or(WallCorner::Lapped).as_str(),
             wall: x.name.clone(),
             frame: lead,
             end,

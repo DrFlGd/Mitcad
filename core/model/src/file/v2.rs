@@ -96,6 +96,11 @@ struct FileOut<'a> {
     motion_studies: &'a [MotionStudy],
     #[serde(skip_serializing_if = "<[ContactSet]>::is_empty")]
     contact_sets: &'a [ContactSet],
+    // Own property types and properties (mitcad#496), when there are any.
+    #[serde(skip_serializing_if = "<[crate::properties::PropertyType]>::is_empty")]
+    property_types: &'a [crate::properties::PropertyType],
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    properties: Vec<crate::properties::OwnerProperties>,
 }
 
 /// A Flat Pattern: its body and settings.
@@ -341,6 +346,12 @@ pub(super) fn save(state: &DocState) -> String {
             .collect(),
         motion_studies: &state.motion_studies,
         contact_sets: &state.contact_sets,
+        property_types: &state.properties.types,
+        // Only the owners the design has (computed values are never
+        // stored).
+        properties: state
+            .properties
+            .file_owners(|owner| state.property_owner_kept(owner)),
     };
     let mut json =
         serde_json::to_string_pretty(&file).expect("the design file schema always serializes");
@@ -569,7 +580,7 @@ struct FeatureIn {
     shapes: Option<Value>,
 }
 
-const TOP_FIELDS: [&str; 26] = [
+const TOP_FIELDS: [&str; 28] = [
     "format",
     "version",
     "units",
@@ -604,6 +615,9 @@ const TOP_FIELDS: [&str; 26] = [
     // Motion studies and contact sets (mitcad#454).
     "motion_studies",
     "contact_sets",
+    // Own property types and properties (mitcad#496).
+    "property_types",
+    "properties",
 ];
 
 fn schema(message: impl Into<String>) -> FileError {
@@ -935,6 +949,25 @@ pub(super) fn load(value: Value) -> Result<(DocState, Vec<String>), FileError> {
             Ok(set)
         })
         .collect::<Result<Vec<_>, FileError>>()?;
+    // Own property types and properties (mitcad#496).
+    let property_types = array(&mut top, "property_types", false)?
+        .into_iter()
+        .enumerate()
+        .map(|(i, t)| {
+            serde_json::from_value::<crate::properties::PropertyType>(t)
+                .map_err(|e| schema(format!("property_types[{i}]: {e}")))
+        })
+        .collect::<Result<Vec<_>, FileError>>()?;
+    let property_owners = array(&mut top, "properties", false)?
+        .into_iter()
+        .enumerate()
+        .map(|(i, p)| {
+            serde_json::from_value::<crate::properties::OwnerProperties>(p)
+                .map_err(|e| schema(format!("properties[{i}]: {e}")))
+        })
+        .collect::<Result<Vec<_>, FileError>>()?;
+    let properties = crate::properties::PropertyStore::from_file(property_types, property_owners)
+        .map_err(invalid)?;
     let marker = match top.remove("marker") {
         None => None,
         Some(value) => Some(
@@ -1198,6 +1231,7 @@ pub(super) fn load(value: Value) -> Result<(DocState, Vec<String>), FileError> {
     }
     state.motion_studies = motion_studies;
     state.contact_sets = contact_sets;
+    state.properties = properties;
     // Appearances (mitcad#46): ids of their own, not the library's.
     for (i, appearance) in appearances.iter().enumerate() {
         let id = &appearance.id;

@@ -138,3 +138,61 @@ fn corpus_files_decode() {
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
+
+/// The files whose property sets are read (mitcad#496): an IFC2X3 community
+/// sample with property sets, quantities and type styles (the MIT-licensed
+/// project's slim export, bfdf36ff, has no property sets).
+const PROPERTY_FILES: [&str; 1] = ["b347a2c8"];
+
+/// Property sets and quantities of a few corpus files by content id: the
+/// import keeps their entities, elements have their own sets, type objects
+/// theirs, and the sets decode into named values.
+#[test]
+fn property_sets_of_corpus_files() {
+    let Some(corpus) = std::env::var_os("MITCAD_IFC_CORPUS") else {
+        eprintln!("ifc property sets: skipped (MITCAD_IFC_CORPUS is not set)");
+        return;
+    };
+    let corpus = Path::new(&corpus);
+    let rows = index(corpus);
+    for wanted in PROPERTY_FILES {
+        let Some((path, _, _)) = rows.iter().find(|(_, id, _)| id == wanted) else {
+            eprintln!("ifc property sets: {wanted} is not in the corpus: skipped");
+            continue;
+        };
+        let file = IfcFile::open_with(&corpus.join(path), &ReadOptions::import()).expect("opens");
+        let model = Model::read(&file);
+        let with_sets: Vec<_> = model
+            .products
+            .values()
+            .filter(|p| !p.property_sets.is_empty())
+            .collect();
+        assert!(
+            !with_sets.is_empty(),
+            "{wanted}: no element has a property set"
+        );
+        let mut values = 0;
+        let mut quantities = 0;
+        for p in &with_sets {
+            for id in &p.property_sets {
+                let set = mitcad_ifc::properties::property_set(&file, &model.units, *id)
+                    .unwrap_or_else(|| panic!("{wanted}: #{id} does not decode"));
+                values += set.properties.len();
+                quantities += usize::from(set.quantities);
+            }
+        }
+        assert!(values > 0, "{wanted}: the sets hold no values");
+        let typed: usize = model
+            .type_property_sets
+            .values()
+            .flatten()
+            .filter_map(|id| mitcad_ifc::properties::property_set(&file, &model.units, *id))
+            .map(|s| s.properties.len())
+            .sum();
+        eprintln!(
+            "ifc property sets: {wanted}: {} elements with sets, {values} values, \
+             {quantities} quantity sets, {typed} type values",
+            with_sets.len()
+        );
+    }
+}

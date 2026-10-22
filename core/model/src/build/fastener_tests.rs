@@ -360,3 +360,153 @@ fn a_size_too_short_warns() {
     assert_eq!(auto["sizes"][0]["config"], "3.1x90", "{auto}");
     all_ok(&doc);
 }
+
+/// Check actual body extents against the member's original entry face,
+/// independently of the seat metadata and requested joint override.
+fn check_seats(doc: &Document<MockKernel>, wanted_top: f64, wanted_tip: f64) {
+    use super::geometry::{dot, sub};
+    let mut count = 0;
+    for f in fasteners(doc) {
+        let c: ComponentUid = f["component"].as_str().unwrap().parse().unwrap();
+        let info = doc.part_info(c).unwrap();
+        let entry = doc.entry_point(info.record.joint.unwrap()).unwrap();
+        let member = doc.member(c).unwrap();
+        let axis = member.placement.apply_vector([0.0, 0.0, 1.0]);
+        let (top, tip) = member
+            .bounds
+            .corners()
+            .map(|p| dot(sub(member.placement.apply_point(p), entry), axis))
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), v| {
+                (lo.min(v), hi.max(v))
+            });
+        assert!(
+            (top - wanted_top).abs() <= 1e-6,
+            "{f}: top {top}, expected {wanted_top}"
+        );
+        assert!(
+            (tip - wanted_tip).abs() <= 1e-6,
+            "{f}: tip {tip}, expected {wanted_tip}"
+        );
+        let queried = f["seating"]["head_top_distance"].as_f64().unwrap();
+        assert!((queried - top).abs() <= 1e-6, "{f}");
+        count += 1;
+    }
+    assert!(count > 0);
+}
+
+#[test]
+fn generated_frame_fasteners_seat_their_own_head_kind_without_cutting_members() {
+    for (part_id, top, tip) in [
+        ("proud-screw", 0.0, 63.0),
+        ("proud-nail", 0.0, 61.5),
+        ("pan-screw", -3.0, 60.0),
+        ("hex-bolt", -4.0, 60.0),
+        ("named-seat", 0.0, 63.0),
+        ("bearing-seat", -3.0, 60.0),
+    ] {
+        let mut doc = design();
+        wall(&mut doc, 1200.0, json!({"fastener": part(part_id)}));
+        all_ok(&doc);
+        check_seats(&doc, top, tip);
+        let boards: Vec<Value> = parts_of(&doc)
+            .into_iter()
+            .filter(|p| p["kind"] == "timber")
+            .collect();
+        assert!(
+            boards
+                .iter()
+                .all(|b| b["cuts"].as_array().unwrap().is_empty()
+                    && b["machining"].as_array().unwrap().is_empty()),
+            "{boards:?}"
+        );
+        let before = doc.to_json();
+        let mut reopened = Document::from_json(&before, MockKernel::default()).unwrap();
+        // Deserialization restores definitions only, including embedded
+        // library sources. Rebuild the geometry before measuring it.
+        reopened.recompute();
+        all_ok(&reopened);
+        assert_eq!(reopened.to_json(), before);
+        check_seats(&reopened, top, tip);
+    }
+}
+
+#[test]
+fn swap_fastener_reseats_the_new_kind_and_keeps_member_entry_frames() {
+    let mut doc = design();
+    wall(&mut doc, 1200.0, json!({"fastener": part("proud-screw")}));
+    let initial = fasteners(&doc);
+    let ids: Vec<Value> = initial.iter().map(|f| f["component"].clone()).collect();
+    let entries: Vec<_> = initial
+        .iter()
+        .map(|f| {
+            let c = f["component"].as_str().unwrap().parse().unwrap();
+            let joint = doc.part_info(c).unwrap().record.joint.unwrap();
+            (joint, doc.entry_point(joint).unwrap())
+        })
+        .collect();
+    for (part_id, top, tip) in [
+        ("proud-nail", 0.0, 61.5),
+        ("pan-screw", -3.0, 60.0),
+        ("hex-bolt", -4.0, 60.0),
+        ("proud-screw", 0.0, 63.0),
+    ] {
+        command(
+            &mut doc,
+            json!({"cmd": "build_swap_fasteners", "fasteners": ids, "part": part(part_id)}),
+        )
+        .unwrap();
+        all_ok(&doc);
+        check_seats(&doc, top, tip);
+        for (joint, entry) in &entries {
+            assert!(super::test_library::close(
+                doc.entry_point(*joint).unwrap(),
+                *entry
+            ));
+        }
+    }
+    doc.undo();
+    check_seats(&doc, -4.0, 60.0);
+    doc.redo();
+    check_seats(&doc, 0.0, 63.0);
+}
+
+#[test]
+fn near_axis_shafts_need_an_explicit_parallel_seat_and_no_box_measurement() {
+    let doc = design();
+    let source = |id| {
+        doc.source_use(&serde_json::from_value(part(id)).unwrap())
+            .unwrap()
+    };
+    let refused = doc
+        .wood_seat(&source("oblique-implicit"))
+        .unwrap_err()
+        .to_string();
+    assert!(refused.contains("oblique shaft"), "{refused}");
+    let refused = doc
+        .wood_seat(&source("misaligned-seat"))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        refused.contains("does not point along its shaft"),
+        "{refused}"
+    );
+    assert_eq!(doc.wood_seat(&source("oblique-seat")).unwrap().0, "drive");
+    for i in 0..3 {
+        for sign in [-1.0, 1.0] {
+            let mut z = [0.0; 3];
+            z[i] = sign;
+            assert!(super::wood::shaft_axis_is_aligned(z));
+            z[(i + 1) % 3] = 1e-5;
+            assert!(!super::wood::shaft_axis_is_aligned(z));
+        }
+    }
+    let mut doc = design();
+    wall(&mut doc, 1200.0, json!({"fastener": part("oblique-seat")}));
+    all_ok(&doc);
+    let fasteners = fasteners(&doc);
+    assert!(!fasteners.is_empty());
+    assert!(
+        fasteners.iter().all(|part| part["seating"].is_null()),
+        "{fasteners:?}"
+    );
+}

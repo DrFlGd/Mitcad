@@ -27,6 +27,7 @@
 #include <QString>
 #include <QTemporaryDir>
 
+#include "browser/DocumentSnapshot.hpp"
 #include "browser/TimelineSearch.hpp"
 #include "files/CloudAddress.hpp"
 #include "files/Print3d.hpp"
@@ -1651,6 +1652,36 @@ void autoConstraintTests() {
 
 // Selection inputs keep a region once, and a click toggles it (mitcad#199).
 void selectionEntryTests() {
+  {
+    using namespace mitcad;
+    DocumentSnapshot snapshot;
+    DocumentSnapshot::Occurrence bench;
+    bench.uid = QStringLiteral("O1");
+    bench.name = QStringLiteral("Bench:1");
+    DocumentSnapshot::Occurrence screw;
+    screw.uid = QStringLiteral("O4");
+    screw.name = QStringLiteral("Screw <M8>:3");
+    bench.children.append(screw);
+    snapshot.occurrences.append(bench);
+    DocumentSnapshot::Body body;
+    body.uid = QStringLiteral("F2.b0");
+    body.name = QStringLiteral("Screw & washer");
+    snapshot.bodies.insert(body.uid, body);
+    SelectionItem item{SelectKind::Edge, body.uid, QStringLiteral("edge"), QString()};
+    CHECK(selectionOwnerText(item, snapshot) == QStringLiteral("Body: Screw &amp; washer"));
+    item.occurrence = QStringLiteral("O1/O4");
+    const QString expected = QStringLiteral("Component: Bench:1 › Screw &lt;M8&gt;:3<br>Body: Screw &amp; washer");
+    for (const SelectKind kind : {SelectKind::Face, SelectKind::Edge, SelectKind::Vertex, SelectKind::Body}) {
+      item.kind = kind;
+      CHECK(selectionOwnerText(item, snapshot) == expected);
+    }
+    item.kind = SelectKind::Sketch;
+    CHECK(selectionOwnerText(item, snapshot).isEmpty());
+    item.kind = SelectKind::Body;
+    item.owner = QStringLiteral("F9.b0");
+    item.occurrence.clear();
+    CHECK(selectionOwnerText(item, snapshot) == QStringLiteral("Body: F9.b0"));
+  }
   const QString line = mitcad::selectionMeasurementText(QJsonObject{{QStringLiteral("length"), 12.5}});
   CHECK(line.contains(QStringLiteral("12.5 mm")));
   CHECK(!line.contains(QStringLiteral("Radius")));
@@ -1949,6 +1980,9 @@ int projectWebTests();
 int drawingSettingsTests();
 int contextMenuTests();
 int dialogFolderTests();
+int sketchAxesTests();
+int iamImportTests();
+int commandAliasTests();
 
 int main(int argc, char* argv[]) {
   QApplication app(argc, argv);
@@ -2001,6 +2035,9 @@ int main(int argc, char* argv[]) {
     failures += drawingSettingsTests();
     failures += contextMenuTests();
     failures += dialogFolderTests();
+    failures += sketchAxesTests();
+    failures += iamImportTests();
+    failures += commandAliasTests();
   }
   if (failures != 0) {
     std::fprintf(stderr, "%d check(s) failed\n", failures);

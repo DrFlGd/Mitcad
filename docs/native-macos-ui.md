@@ -28,6 +28,12 @@ the frontend is selected by default. `--ui=native` selects it explicitly;
   order; grouped menus expose additional commands. Narrow windows collapse
   trailing icons into those menus while keeping Finish Sketch visible.
   Group menus use the same workspace membership as the shared Qt ribbon.
+  Repeated action snapshots reuse native artwork and preserve menu objects
+  while only availability or checked states change. Artwork is cached by its
+  Qt icon key, symbol, palette, template mode and logical size; palette changes
+  discard the cached images. Shortcut bindings are parsed with each changed
+  action structure rather than on every key event. Overlay layout requests
+  repaint the viewport only when its size or backing scale changes.
   Settings, view controls and project utilities keep their intended menu-bar
   locations; search-only settings pages stay available in command search.
 - The OCCT viewport spans the full document window width below the ribbon.
@@ -127,6 +133,11 @@ uses AppKit target/action and the field editor without external
 Accessibility permission. The retained Qt workflow tests still run with
 `--ui=qt`.
 
+The native workflow also dispatches activation and deactivation through the
+installed application delegate, checking Qt's state signals and deactivate
+events. Dock reopen must restore the active state without another activation
+notification, and secure state restoration remains provided by Qt's delegate.
+
 The same workflow checks that the viewport keeps the full content width
 below the CAD ribbon when the model and inspector cards are shown or
 hidden. It checks a compact 900 × 640 point window and the normal 1280 ×
@@ -204,6 +215,9 @@ pending preview, cancellation during commit, preservation of a prior redo
 step and subsequent command startup. Commit cancellation dispatches the
 actual native Cancel button at the matching document job-start signal,
 with the model busy, before a progress sheet blocks the command form.
+The history drag test similarly submits its final target and mouse release
+at job start, checking busy before and after each input. It then verifies
+the final marker, body set and single undo step after the queued jobs finish.
 The secondary-window test edits parameters and previews a local feedback
 report through native controls. The sketch test checks invalid expressions,
 decimal commas, Tab/Shift+Tab, Return/Escape and a 20,250 mm³ extrusion.

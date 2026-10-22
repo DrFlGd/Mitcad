@@ -2,8 +2,8 @@
 # The workflow test's third script (see workflow.mitcad-ui), the counterpart
 # of the end of tools/ui-windows-workflow-test.ps1; the application is started
 # with the saved design opened and d3 changed (--open ... --set d3=25):
-#   8. Version history (P12d, mitcad#89): Move to a Project makes the
-#      design's folder a Local project (New Project with the folder offered;
+#   8. Version history (P12d, mitcad#89): Save to Project (mitcad#503; the
+#      picker's New Project...) makes the design's folder a Local project (New Project with the folder offered;
 #      the author typed there, as git's configuration is the test's own,
 #      without a user): the design as saved is the first version, the open
 #      one the second; Ctrl+S records a third.
@@ -22,12 +22,12 @@ expect-ever 'Version status: none'
 
 # --- The folder made a project, three versions
 mark
-command file.move_to_project
-expect-log 'Move to a Project dialog: block\.mitcad'
-focus-dialog '^Move to a Project$|Move block\.mitcad into a project'
-key Return
+command file.save_to_project
+expect-log 'Project picker Save to Project: a place, reading the projects'
+focus-dialog '^Save to Project$'
+button '^New Project'
 expect-log 'New Project dialog: folder ${MITCAD_TEST_WORK:re}: designs'
-focus-dialog '^Move to a Project$'
+focus-dialog '^Save to Project$'
 type 'macOS Tester'
 key Tab
 type 'macos@example.invalid'

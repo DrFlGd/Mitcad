@@ -70,6 +70,12 @@ std::optional<double> askMeshUnit(QWidget* parent, const QString& file);
 // Insert Component: linked (true) or a copy (false).
 std::optional<bool> askLinked(QWidget* parent, const QString& file);
 
+// File > Open or Import of an .iam assembly (mitcad#507): Parts with
+// their design history (true, the default) or the parts' stored bodies
+// only (false); the choice is remembered (iamPartsHistory). Nothing when
+// cancelled.
+std::optional<bool> askIamImport(QWidget* parent, const QString& file);
+
 // The report of an .f3d import: what came in with its history, what as
 // the file's bodies, and the bodies compared with the file's.
 void showImportReport(QWidget* parent, const QString& file, const QJsonObject& result, int bodies);

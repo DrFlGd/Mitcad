@@ -192,12 +192,19 @@ impl<K: Kernel> Document<K> {
 
     /// The `parts_list` query (a bill of materials).
     pub(crate) fn parts_list_json(&self) -> Value {
+        self.parts_list_with(&[])
+    }
+
+    /// The `parts_list` query with columns of property values (mitcad#496):
+    /// each row's `properties` has the text of each key (`Key` or
+    /// `Set/Key`) the component has, stored, from its library or computed.
+    pub(crate) fn parts_list_with(&self, keys: &[String]) -> Value {
         let rows: Vec<Value> = self
             .parts_list()
             .into_iter()
             .map(|row| {
                 let library = row.library.as_ref();
-                json!({
+                let mut value = json!({
                     "component": row.component,
                     "name": row.name,
                     "designation": row.designation,
@@ -212,7 +219,16 @@ impl<K: Kernel> Document<K> {
                     "supplier": row.supplier,
                     "part_number": row.part_number,
                     "supplier_url": row.supplier_url,
-                })
+                });
+                if !keys.is_empty() {
+                    let mut properties = serde_json::Map::new();
+                    for key in keys {
+                        let text = self.component_property_text(row.component, &row, key);
+                        properties.insert(key.clone(), json!(text));
+                    }
+                    value["properties"] = Value::Object(properties);
+                }
+                value
             })
             .collect();
         json!({"rows": rows})

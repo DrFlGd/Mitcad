@@ -17,6 +17,7 @@
 #include <cstring>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <thread>
 #include <utility>
@@ -38,6 +39,7 @@
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QSaveFile>
+#include <QSettings>
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QtLogging>
@@ -49,6 +51,8 @@
 #include "mitcad_bridge/lib.h"
 
 #include "../framework/Dialogs.hpp"
+#include "FileDialogs.hpp"
+#include "IamImport.hpp"
 
 namespace mitcad {
 namespace {
@@ -239,6 +243,11 @@ bool isIptFile(const QString& path) {
          suffix.compare(QStringLiteral("iam"), Qt::CaseInsensitive) == 0;
 }
 
+// An .iam assembly (mitcad#507: its parts with their design history or not).
+bool isIamFile(const QString& path) {
+  return QFileInfo(path).suffix().compare(QStringLiteral("iam"), Qt::CaseInsensitive) == 0;
+}
+
 // An IFC file or archive (mitcad#273), by import_ifc.
 bool isIfcFile(const QString& path) {
   const QString suffix = QFileInfo(path).suffix();
@@ -380,6 +389,11 @@ int runImportWorker(int argc, char* argv[]) {
       command.insert(it.key(), it.value());
     }
   }
+  // An .iam assembly's parts with their design history or their stored
+  // bodies only (mitcad#507).
+  if (isIamFile(QString::fromUtf8(path)) && moreOptions.contains(QStringLiteral("history"))) {
+    command.insert(QStringLiteral("history"), moreOptions.value(QStringLiteral("history")).toBool());
+  }
   // For tests: an .f3d design's timeline from a dump (import_f3d's `dump`)
   // instead of its own streams, as a synthetic design has none
   // (tools/ui-import-deviations-test.sh, mitcad#379).
@@ -478,6 +492,21 @@ void F3dImport::start() {
     m_options.insert(QStringLiteral("retry_bodies"), QStringLiteral("ask"));
   } else if (isRvtFile(m_path)) {
     m_options = askRvtLinks();
+  } else if (isIamFile(m_path)) {
+    // Parts with their design history (mitcad#507): asked by File > Open
+    // and Import, else as chosen last.
+    bool history = iamPartsHistory(QSettings());
+    if (m_ask) {
+      const std::optional<bool> chosen = askIamImport(m_window, m_path);
+      if (!chosen) {
+        done(false, QString());
+        return;
+      }
+      history = *chosen;
+    }
+    m_options.insert(QStringLiteral("history"), history);
+    qInfo().noquote() << QStringLiteral("Import of %1: parts with their design history %2")
+                             .arg(name, history ? QStringLiteral("on") : QStringLiteral("off"));
   }
   m_dialog = new ImportProgress(
       m_window, [this] { stop(); }, [this] { cancel(); });
@@ -662,6 +691,28 @@ void F3dImport::readProgress() {
                                .arg(name);
       continue;
     }
+    // An .iam assembly's part (mitcad#507): its import started or done.
+    if (const std::optional<IamPartProgress> part = parseIamPartProgress(line)) {
+      m_parts = part->parts;
+      m_part = part->part;
+      m_partName = part->file;
+      if (part->outcome.isEmpty()) {
+        // A new part's timeline, if it has one.
+        m_current.clear();
+        m_position = 0;
+        qInfo().noquote()
+            << QStringLiteral("Import of %1: part %2 of %3: %4").arg(name).arg(m_part).arg(m_parts).arg(m_partName);
+      } else {
+        m_partsDone = std::max(m_partsDone, m_part);
+        qInfo().noquote() << QStringLiteral("Import of %1: part %2 of %3: %4: %5 in %6 s")
+                                 .arg(name)
+                                 .arg(m_part)
+                                 .arg(m_parts)
+                                 .arg(m_partName, part->outcome)
+                                 .arg(part->seconds, 0, 'f', 2);
+      }
+      continue;
+    }
     const QRegularExpressionMatch start = kItemStart.match(line);
     if (start.hasMatch()) {
       m_position = start.captured(1).toInt();
@@ -724,14 +775,26 @@ void F3dImport::tick() {
   }
   const qint64 seconds = m_clock.elapsed() / 1000;
   QString item;
-  if (m_items > 0) {
+  if (m_parts > 0) {
+    // An .iam assembly's part being imported, and its timeline item when it
+    // is replayed (mitcad#507).
+    const int part = std::clamp(m_part, 1, m_parts);
+    item = m_current.isEmpty() ? tr("Part %1 of %2: %3").arg(part).arg(m_parts).arg(m_partName)
+                               : tr("Part %1 of %2: %3, timeline item %4: %5")
+                                     .arg(part)
+                                     .arg(m_parts)
+                                     .arg(m_partName)
+                                     .arg(std::max(m_position, 1))
+                                     .arg(m_current);
+  } else if (m_items > 0) {
     const int position = std::clamp(m_position, 1, m_items);
     item = m_current.isEmpty() ? tr("Timeline item %1 of %2").arg(position).arg(m_items)
                                : tr("Timeline item %1 of %2: %3").arg(position).arg(m_items).arg(m_current);
   }
   const QString time = m_stopping ? tr("Stopping: the remaining items come in as the file's bodies (%1 s)").arg(seconds)
                                   : tr("%1 s elapsed").arg(seconds);
-  m_dialog->showProgress(tr("Importing %1").arg(QFileInfo(m_path).fileName()), item, m_done, m_items, time);
+  m_dialog->showProgress(tr("Importing %1").arg(QFileInfo(m_path).fileName()), item,
+                         m_parts > 0 ? m_partsDone : m_done, m_parts > 0 ? m_parts : m_items, time);
 }
 
 void F3dImport::stop() {

@@ -189,6 +189,12 @@ std::optional<ProjectPickerResult> pickInProjects(QWidget* parent, const Project
   }
   auto* buttonsRow = new QHBoxLayout;
   QPushButton* other = nullptr;
+  QPushButton* newProject = nullptr;
+  if (mode == Mode::Place && !options.newProjectText.isEmpty()) {
+    newProject = new QPushButton(options.newProjectText);
+    newProject->setAutoDefault(false);
+    buttonsRow->addWidget(newProject);
+  }
   if (!options.otherText.isEmpty()) {
     other = new QPushButton(options.otherText);
     other->setAutoDefault(false);
@@ -243,7 +249,7 @@ std::optional<ProjectPickerResult> pickInProjects(QWidget* parent, const Project
       if (name != nullptr) {
         lines << QStringLiteral("Project picker name at %1").arg(at(name, name->rect().center()));
       }
-      for (const QPushButton* button : {other, ok, cancel}) {
+      for (const QPushButton* button : {newProject, other, ok, cancel}) {
         if (button != nullptr) {
           lines << QStringLiteral("Project picker button %1 at %2")
                        .arg(buttonName(button), at(button, button->rect().center()));
@@ -497,6 +503,13 @@ std::optional<ProjectPickerResult> pickInProjects(QWidget* parent, const Project
   }
   QObject::connect(ok, &QPushButton::clicked, &dialog, [&] { take(); });
   QObject::connect(cancel, &QPushButton::clicked, &dialog, [&] { dialog.reject(); });
+  if (newProject != nullptr) {
+    QObject::connect(newProject, &QPushButton::clicked, &dialog, [&] {
+      ProjectPickerResult result;
+      result.newProject = true;
+      finish(result, QStringLiteral("new project"));
+    });
+  }
   if (other != nullptr) {
     QObject::connect(other, &QPushButton::clicked, &dialog, [&] {
       ProjectPickerResult result;

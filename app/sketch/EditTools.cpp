@@ -244,22 +244,26 @@ public:
 private:
   enum class State { Pick, Pick2, Place, Edit };
 
-  // The point or curve under the cursor: the sketch's, or a body edge or
-  // vertex in the sketch plane (mitcad#256), read again after the document
-  // changed.
+  // The point or curve under the cursor: the sketch's, a body edge or vertex
+  // in the sketch plane (mitcad#256), read again after the document changed,
+  // or the sketch's origin or an axis (mitcad#500).
   QString entityAt(const QPointF& screen) {
     m_c.bodyGeometry();
-    return m_c.entityAt(screen, PickAll | PickBody);
+    return m_c.entityAt(screen, PickAll | PickBody | PickAxes);
   }
 
   // The sketch with the body edges and vertices as the fixed entities they
-  // project to, so that a body pick makes the dimensions a sketch line,
+  // project to, and the axes and origin as the ones the model makes for
+  // them, so that a body or an axis pick makes the dimensions a sketch line,
   // circle, arc or point would.
   const SketchModel& view() const {
     const std::pair<int, int> key{m_c.modelRevision(), m_c.bodyGeometryShown().revision()};
     if (key != m_viewKey) {
       m_view = m_c.model();
       m_c.bodyGeometryShown().addTo(m_view);
+      // The sketch's axes and origin as the fixed line and point the model
+      // makes for them (mitcad#500).
+      m_view.addAxisPicks();
       m_viewKey = key;
     }
     return m_view;
@@ -332,7 +336,7 @@ private:
     switch (m_state) {
     case State::Pick:
       m_c.hint(QObject::tr("Sketch Dimension: pick a line, circle, arc or point, of the sketch or a body edge or "
-                           "vertex in its plane."));
+                           "vertex in its plane, or a sketch axis or the origin."));
       break;
     case State::Pick2:
       m_c.hint(QObject::tr("Sketch Dimension: pick another point or curve."));
@@ -400,6 +404,9 @@ private:
       if (c == nullptr) {
         return std::nullopt;
       }
+      if (!c->axis.isEmpty()) {
+        return std::nullopt; // an axis alone has nothing to measure (mitcad#500)
+      }
       if (c->isLine()) {
         const V2 a = c->curve.a;
         const V2 b = c->curve.b;
@@ -426,6 +433,11 @@ private:
         return std::nullopt;
       }
     } else if (picks.size() == 2) {
+      // The origin and the axes are fixed: nothing between them to dimension
+      // (mitcad#500).
+      if (model.isAxisOrOrigin(picks[0]) && model.isAxisOrOrigin(picks[1])) {
+        return std::nullopt;
+      }
       QString a = picks[0];
       QString b = picks[1];
       const CurveData* ca = model.curve(a);
@@ -459,7 +471,7 @@ private:
         const V2 da = unit(ca->curve.b - ca->curve.a);
         const V2 db = unit(cb->curve.b - cb->curve.a);
         if (std::abs(cross(da, db)) < 1e-9) {
-          if (ca->centerline || cb->centerline) {
+          if ((ca->centerline || cb->centerline) && ca->axis.isEmpty() && cb->axis.isEmpty()) {
             const CurveData* axis = ca->centerline ? ca : cb;
             const CurveData* other = ca->centerline ? cb : ca;
             set(QStringLiteral("linear_diameter"), {{"axis", axis->id}, {"entity", other->id}});
@@ -530,6 +542,22 @@ private:
     SketchOp op(m_c);
     // Body picks are projected now, in the same undo step (mitcad#256).
     QJsonObject dimension = definition;
+    // So are the axes and the origin a pick stands for (mitcad#500).
+    for (const QString& key : dimension.keys()) {
+      const QString pick = dimension.value(key).toString();
+      if (!isAxisPick(pick)) {
+        continue;
+      }
+      const QString made = op.axisInput(pick);
+      if (made.isEmpty()) {
+        const QString reason = op.error();
+        op.rollback();
+        m_c.error(QObject::tr("Dimension not added: %1").arg(reason));
+        reset();
+        return;
+      }
+      dimension.insert(key, made);
+    }
     if (!projectPicks(op, dimension)) {
       const QString reason =
           op.error().isEmpty() ? QObject::tr("the body geometry could not be projected") : op.error();
@@ -643,6 +671,21 @@ bool acceptable(const QString& type, const QStringList& picks, const QString& en
   const auto pickedPoints = [&] {
     return std::count_if(picks.begin(), picks.end(), [&](const QString& p) { return isPoint(model, p); });
   };
+  // The sketch's origin and axes (mitcad#500): fixed, so at most one in a
+  // constraint. An axis is a line to put a point on, to be parallel,
+  // perpendicular, collinear or tangent to, or to mirror about; the origin a
+  // point like any other.
+  if (type != QStringLiteral("fix") && model.isAxisOrOrigin(entity)) {
+    if (std::any_of(picks.begin(), picks.end(), [&](const QString& p) { return model.isAxisOrOrigin(p); })) {
+      return false;
+    }
+    if (!model.axisOf(entity).isEmpty() && type != QStringLiteral("coincident") &&
+        type != QStringLiteral("parallel") && type != QStringLiteral("perpendicular") &&
+        type != QStringLiteral("collinear") && type != QStringLiteral("tangent") &&
+        !(type == QStringLiteral("symmetric") && index == 2)) {
+      return false;
+    }
+  }
   if (type == QStringLiteral("fix")) {
     return true;
   }
@@ -743,6 +786,11 @@ bool applyEach(SketchController& c, const QString& type, const QVector<QStringLi
   for (QStringList picks : sets) {
     for (QString& pick : picks) {
       pick = current(pick);
+    }
+    // The axes and the origin a pick stands for, made now (mitcad#500).
+    if (!op.axisInputs(picks)) {
+      reason = op.error();
+      continue;
     }
     const QJsonObject constraint = build(type, picks, op.model());
     QJsonObject cmd = op.command(QStringLiteral("sketch.add_constraint"));
@@ -887,17 +935,17 @@ public:
   void start() override { prompt(); }
 
   void move(const Snap& snap) override {
-    const QString entity = m_c.entityAt(snap.screen);
-    m_c.setHover(acceptable(m_type, m_picks, entity, m_c.model()) ? entity : QString());
+    const QString entity = entityAt(snap.screen);
+    m_c.setHover(acceptable(m_type, m_picks, entity, view()) ? entity : QString());
   }
 
   void press(const Snap& snap) override {
-    const QString entity = m_c.entityAt(snap.screen);
-    if (!acceptable(m_type, m_picks, entity, m_c.model())) {
+    const QString entity = entityAt(snap.screen);
+    if (!acceptable(m_type, m_picks, entity, view())) {
       return;
     }
     m_picks << entity;
-    if (static_cast<int>(m_picks.size()) >= needed(m_type, m_picks, m_c.model())) {
+    if (static_cast<int>(m_picks.size()) >= needed(m_type, m_picks, view())) {
       apply(m_c, m_type, m_picks);
       m_picks.clear();
     }
@@ -917,6 +965,24 @@ public:
   }
 
 private:
+  // The point or curve under the cursor, or the sketch's origin or an axis
+  // (mitcad#500); Fix/Unfix takes only the sketch's entities.
+  QString entityAt(const QPointF& screen) const {
+    const unsigned filter = m_type == QStringLiteral("fix") ? unsigned(PickAll) : unsigned(PickAll | PickAxes);
+    return m_c.entityAt(screen, filter);
+  }
+
+  // The sketch with its axes and origin as the fixed line and point the
+  // model makes for them, as long as it has not changed.
+  const SketchModel& view() const {
+    if (m_c.modelRevision() != m_viewRevision) {
+      m_view = m_c.model();
+      m_view.addAxisPicks();
+      m_viewRevision = m_c.modelRevision();
+    }
+    return m_view;
+  }
+
   void prompt() const {
     const QString what = m_type == QStringLiteral("coincident")
                              ? QObject::tr("a point and a point or curve; two curve ends become one point")
@@ -934,6 +1000,8 @@ private:
 
   QString m_type;
   QStringList m_picks;
+  mutable SketchModel m_view;
+  mutable int m_viewRevision = -1;
 };
 
 } // namespace

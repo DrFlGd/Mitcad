@@ -1,8 +1,12 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
+#include <functional>
+#include <optional>
+
 #include <QByteArray>
 #include <QDialog>
+#include <QSet>
 #include <QString>
 #include <QVector>
 
@@ -27,6 +31,9 @@ class FindModel;
 // `*` and `?` as wildcards; Components, Bodies and Visible / Hidden narrow
 // it. The results follow the text as it is typed (after a short pause, so
 // that large designs stay responsive) and the model as it changes.
+// A text with a comparison searches property values instead of names
+// (`FireRating = EI60`, `Pset_WallCommon/FireRating = EI60`, `Mass > 10
+// kg`; mitcad#496): the model finds them.
 // Selecting rows selects them in the view and the browser (selectionPicked);
 // the buttons act on the selected rows, or on all when none is selected:
 // Show, Hide, Appearance..., Select. What they do is the
@@ -50,6 +57,11 @@ public:
   void setText(const QString& text);
   // Focuses the search field.
   void focusSearch();
+  // How a property search (`FireRating = EI60`, mitcad#496) asks the model:
+  // the uids of the components, occurrences and bodies that match, or none
+  // and why.
+  using PropertySearch = std::function<std::optional<QSet<QString>>(const QString& text, QString* error)>;
+  void setPropertySearch(PropertySearch search);
 
 signals:
   void showRequested();
@@ -92,6 +104,7 @@ private:
   bool m_haveSnapshot = false;
   bool m_updating = false;
   QString m_logged;
+  PropertySearch m_propertySearch;
 };
 
 } // namespace mitcad

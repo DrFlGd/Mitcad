@@ -27,6 +27,8 @@
 pub mod geometry;
 pub mod math;
 pub mod model;
+// Property sets and element quantities (mitcad#496).
+pub mod properties;
 pub mod schema;
 pub mod step;
 pub mod units;
@@ -473,11 +475,11 @@ mod tests {
     #[test]
     fn options_leave_attributes_out() {
         let text = "ISO-10303-21;HEADER;FILE_SCHEMA(('IFC2X3'));ENDSEC;DATA;\n\
-                    #1=IFCPROPERTYSINGLEVALUE('A',$,IFCLABEL('x'),$);\n\
+                    #1=IFCPROPERTYBOUNDEDVALUE('A',$,IFCREAL(2.),IFCREAL(1.),$,$);\n\
                     #2=IFCWALL('0123456789012345678901',$,$,$,$,$,$,$);ENDSEC;END-ISO-10303-21;";
         let file = IfcFile::read(text.as_bytes(), &ReadOptions::import()).expect("reads");
         assert_eq!(file.schema, Schema::Ifc2x3);
-        assert_eq!(file.kind(1), Some("IFCPROPERTYSINGLEVALUE"));
+        assert_eq!(file.kind(1), Some("IFCPROPERTYBOUNDEDVALUE"));
         assert!(file.get(1).expect("kept").args.is_empty());
         assert_eq!(file.get(2).expect("kept").args.len(), 8);
         assert_eq!(file.left_out, 1);

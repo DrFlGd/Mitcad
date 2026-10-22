@@ -15,7 +15,8 @@
 #   - A design (mitcad-cli) whose component's sketch, placed by its
 #     occurrence, has a fully constrained rectangle and a free line: the
 #     rectangle in the constrained colour, the line blue, in the main mode
-#     and in its edit alike (mitcad#286).
+#     and in its edit alike (mitcad#286), placed by the occurrence in both
+#     (mitcad#505).
 #   - A design (mitcad-cli) with a block and a sketch on its top face: a
 #     fully constrained circle and a centre line on the face, a circle
 #     beside the block. In the dark theme the lines on the face are light
@@ -201,7 +202,9 @@ ui_expect_log "Timeline Sketch1 at" "the timeline is laid out"
 ui_double_click_expect "Timeline Sketch1" "Editing sketch F1 (Sketch1)" "the component's sketch is edited"
 ui_wait_idle
 ui_sync
-expect_colours F1 "c == ${PLACED% *} && u == ${PLACED#* }" "in its edit the same colours"
+# Edited where Part:1 places it too (mitcad#505), not at Part's own
+# coordinates.
+expect_colours "F1 in O1" "c == ${PLACED% *} && u == ${PLACED#* }" "in its edit placed by Part:1, the same colours"
 ui_mark
 ui_step "finish sketch (Ctrl+Enter)"     ui_key ctrl+Return
 ui_expect_new "Sketch finished" "sketch finished"

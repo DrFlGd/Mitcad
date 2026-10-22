@@ -858,23 +858,22 @@ void test_angle_chamfer_measures_one_face_along_a_chain() {
 
 void test_dressups_that_take_a_face_away() {
   // A rib 2 mm wide: rounding both top edges by 1 mm (a full round) or
-  // bevelling them by 1 mm leaves no top face, which OCCT cannot build;
-  // the sizes are retried 1e-3 smaller, leaving a strip that narrow.
+  // bevelling them by 1 mm leaves no top face. OCCT builds both at their
+  // size since the port's patch 0950 (the two contacts along each other on
+  // the top meet there), with no note of a size 0.1 % smaller.
   const std::vector<std::string> top = {edge(end_cap("F2", 1), side("F2", 1, 1)),
                                         edge(end_cap("F2", 1), side("F2", 1, 3))};
   const ShapePtr round = fillet("F5", *block(2), top, 1);
-  CHECK(near(volume(*round), 2.0 * 40 * 20 - 2 * fillet_loss(1) * 40, 1e-4));
+  CHECK(near(volume(*round), 2.0 * 40 * 20 - 2 * fillet_loss(1) * 40, 1e-6));
   CHECK(faces_named(*round, "F5:fillet(" + top[0] + ")") == 1);
-  // The result says so, for the model's warning (P9).
-  CHECK(round->notes().size() == 1);
-  CHECK(round->notes().front().find("0.1 % smaller") != std::string::npos);
+  CHECK(round->notes().empty());
   CHECK(fillet("F5", *block(2), top, 0.5)->notes().empty());
   ChamferSet bevel;
   bevel.edges = top;
   bevel.spec.distance = 1;
   const ShapePtr bevelled = chamfer("F5", *block(2), {bevel});
-  CHECK(near(volume(*bevelled), 2.0 * 40 * 20 - 2 * 0.5 * 40, 1e-4));
-  CHECK(bevelled->notes().size() == 1);
+  CHECK(near(volume(*bevelled), 2.0 * 40 * 20 - 2 * 0.5 * 40, 1e-6));
+  CHECK(bevelled->notes().empty());
 }
 
 // Faces named `name` or one of its split pieces.
@@ -1341,6 +1340,118 @@ void test_convex_and_concave_roundings_overlapping_on_a_step() {
   CHECK_NEAR_TOL(accurate_volume(*rounded), 48000.0 + 60 * 20 * h + change * 60, 1e-6);
 }
 
+// A ring wall between radii 112 and 115 with a window from z = -20 to -5
+// between two pillars whose ends are full rounds (half cylinders of radius
+// 1.5 round the wall's middle, tangent to both walls); with `halves`, each
+// end is two faces of that cylinder meeting at its tip. The faces are named
+// W<k>.
+ShapePtr window_wall(bool halves) {
+  const double r1 = 112, r2 = 115, rm = 113.5, rc = 1.5;
+  const double phi = std::atan2(16.5, std::sqrt(rm * rm - 16.5 * 16.5));
+  const gp_Ax2 axis(gp_Pnt(0, 0, -30), gp_Dir(0, 0, 1));
+  TopoDS_Shape ring = BRepAlgoAPI_Cut(BRepPrimAPI_MakeCylinder(axis, r2, 30).Shape(),
+                                      BRepPrimAPI_MakeCylinder(axis, r1, 30).Shape())
+                          .Shape();
+  const gp_Ax2 at(gp_Pnt(0, 0, -20), gp_Dir(0, 0, 1), gp_Dir(std::sin(phi), std::cos(phi), 0));
+  TopoDS_Shape window = BRepAlgoAPI_Cut(BRepPrimAPI_MakeCylinder(at, r2 + 1, 15, 2 * phi).Shape(),
+                                        BRepPrimAPI_MakeCylinder(at, r1 - 1, 15, 2 * phi).Shape())
+                            .Shape();
+  for (const int s : {-1, 1}) {
+    const gp_Pnt centre(rm * std::sin(s * phi), rm * std::cos(phi), -20);
+    const gp_Dir towards(-s, 0, 0);
+    if (!halves) {
+      // (Its seam inside the pillar.)
+      const gp_Ax2 whole(centre, gp_Dir(0, 0, 1), towards.Reversed());
+      window = BRepAlgoAPI_Cut(window, BRepPrimAPI_MakeCylinder(whole, rc, 15).Shape()).Shape();
+      continue;
+    }
+    for (const gp_Dir& start : {towards, towards.Reversed()}) {
+      const gp_Ax2 half(centre, gp_Dir(0, 0, 1), start);
+      window = BRepAlgoAPI_Cut(window, BRepPrimAPI_MakeCylinder(half, rc, 15, kPi).Shape()).Shape();
+    }
+  }
+  // With halves, the window cut in three pieces at x = +-15, which leaves
+  // the floor's and the ceiling's edges with the walls in three pieces, as
+  // in the stored design (with them whole, OCCT builds the rounding since
+  // the port's patch 0950).
+  TopoDS_Shape cut = ring;
+  if (halves) {
+    const TopoDS_Shape middle = BRepPrimAPI_MakeBox(gp_Pnt(-15, 0, -40), gp_Pnt(15, 200, 10)).Shape();
+    cut = BRepAlgoAPI_Cut(cut, BRepAlgoAPI_Common(window, middle).Shape()).Shape();
+    cut = BRepAlgoAPI_Cut(cut, BRepAlgoAPI_Cut(window, middle).Shape()).Shape();
+  } else {
+    cut = BRepAlgoAPI_Cut(ring, window).Shape();
+  }
+  // The cut's faces of one surface joined, the halves and the walls kept
+  // apart at x = +-15.
+  ShapeUpgrade_UnifySameDomain keep(cut, true, true, true);
+  for (TopExp_Explorer ex(cut, TopAbs_EDGE); ex.More(); ex.Next()) {
+    BRepAdaptor_Curve c(TopoDS::Edge(ex.Current()));
+    const gp_Pnt a = c.Value(c.FirstParameter()), b = c.Value(c.LastParameter());
+    if (c.GetType() == GeomAbs_Line && std::abs(a.X() - b.X()) < 1e-9 && std::abs(a.Y() - b.Y()) < 1e-9 &&
+        std::abs(std::abs(a.X()) - 15.0) < 1e-6) {
+      keep.KeepShape(ex.Current());
+    }
+  }
+  keep.Build();
+  std::vector<Shape::NamedFace> faces;
+  int k = 0;
+  for (TopExp_Explorer ex(keep.Shape(), TopAbs_FACE); ex.More(); ex.Next(), ++k) {
+    faces.push_back({ex.Current(), {"W" + std::to_string(k)}});
+  }
+  return std::make_shared<Shape>(keep.Shape(), faces);
+}
+
+// The edges of the window's floor and ceiling with the walls.
+std::vector<std::string> window_edges(const Shape& wall) {
+  std::vector<std::string> names;
+  for (int e = 0; e < wall.edge_count(); ++e) {
+    BRepAdaptor_Curve c(wall.edge(e));
+    const gp_Pnt m = c.Value(0.5 * (c.FirstParameter() + c.LastParameter()));
+    const double r = std::hypot(m.X(), m.Y());
+    const bool sill = std::abs(m.Z() + 20) < 1e-6 || std::abs(m.Z() + 5) < 1e-6;
+    if (sill && c.GetType() == GeomAbs_Circle && m.Y() > 100 &&
+        (std::abs(r - 112) < 1e-6 || std::abs(r - 115) < 1e-6)) {
+      names.push_back(wall.edge_name(e));
+    }
+  }
+  return names;
+}
+
+void test_window_floor_rounded_up_to_pillar_ends_in_halves() {
+  // mitcad#343: the floor of a window in a ring wall 3 thick rounded with
+  // 1.5 on both edges, a torus that takes the floor away, ending at the
+  // pillars' full-rounded ends. Where each end is two faces of its cylinder,
+  // OCCT's corner cuts the rounding's end by one of them only and fails; the
+  // faces of one surface at the rounded edges' vertices are joined first, as
+  // the bodies stored in the files have them, and the rounding is the one
+  // made where each end is one face.
+  const ShapePtr whole = window_wall(false);
+  const ShapePtr halved = window_wall(true);
+  CHECK(halved->face_count() == whole->face_count() + 2);
+  const std::vector<std::string> whole_edges = window_edges(*whole);
+  const std::vector<std::string> halved_edges = window_edges(*halved);
+  CHECK(whole_edges.size() == 4);
+  CHECK(halved_edges.size() == 4);
+  const ShapePtr expected = fillet("F9", *whole, whole_edges, 1.5);
+  CHECK(mitcad::geometry::detail::is_valid(expected->occt()));
+  const double expected_change = accurate_volume(*expected) - accurate_volume(*whole);
+  {
+    const ShapePtr copy = mitcad::geometry::detail::working_copy(*halved);
+    BRepFilletAPI_MakeFillet plain(copy->occt());
+    for (const std::string& name : halved_edges) {
+      plain.Add(1.5, copy->edge(copy->find_edges(name).at(0)));
+    }
+    plain.Build();
+    // (Why the halves are joined; if OCCT learns it, this check can go.)
+    CHECK(!plain.IsDone() || !mitcad::geometry::detail::is_valid(plain.Shape()));
+  }
+  const ShapePtr rounded = fillet("F9", *halved, halved_edges, 1.5);
+  CHECK(mitcad::geometry::detail::is_valid(rounded->occt()));
+  CHECK_NEAR_TOL(accurate_volume(*rounded) - accurate_volume(*halved), expected_change, 1e-4);
+  CHECK(rounded->face_count() == expected->face_count());
+}
+
 } // namespace
 
 void dressup_tests() {
@@ -1371,6 +1482,8 @@ void dressup_tests() {
   guarded("test_fillets_at_strips_within_the_tolerance", test_fillets_at_strips_within_the_tolerance);
   guarded("test_convex_and_concave_roundings_overlapping_on_a_step",
           test_convex_and_concave_roundings_overlapping_on_a_step);
+  guarded("test_window_floor_rounded_up_to_pillar_ends_in_halves",
+          test_window_floor_rounded_up_to_pillar_ends_in_halves);
 }
 
 } // namespace test

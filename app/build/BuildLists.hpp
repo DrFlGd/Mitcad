@@ -13,6 +13,8 @@
 #include <QVector>
 
 class QDoubleSpinBox;
+class QLineEdit;
+class QShowEvent;
 class QTabWidget;
 class QTableWidget;
 
@@ -45,8 +47,14 @@ bool writeListPdf(const QString& path, const QString& title, const QString& subt
 // are as before.
 QVector<ListTable> cutListTables(const QJsonObject& answer);
 // The parts list's table from `parts_list`'s rows; with timber in the cut
-// list (`cut`), the timber parts' material and grade.
-QVector<ListTable> partsListTables(const QJsonObject& answer, const QJsonObject& cut = QJsonObject());
+// list (`cut`), the timber parts' material and grade; then a column per
+// property key (`keys`, mitcad#496: `Key` or `Set/Key`) with the rows'
+// `properties` (the `parts_list` query's `properties`).
+QVector<ListTable> partsListTables(const QJsonObject& answer, const QJsonObject& cut = QJsonObject(),
+                                   const QStringList& keys = QStringList());
+// Property keys as a user types them: separated by commas, trimmed, empty
+// ones left out (mitcad#496).
+QStringList propertyKeys(const QString& text);
 
 class BuildListsDialog : public QDialog {
   Q_OBJECT
@@ -57,11 +65,16 @@ public:
   // `design` is the design's name for the PDF.
   BuildListsDialog(const CommandContext& model, const QString& design, Page page, QWidget* parent = nullptr);
 
+protected:
+  void showEvent(QShowEvent* event) override;
+
 private:
   void load();
   void copyCsv();
   void savePdf();
   QVector<ListTable> shownTables() const;
+  // Logs where the property columns field is, for UI tests.
+  void logLayout();
 
   const CommandContext& m_model;
   QString m_design;
@@ -69,6 +82,9 @@ private:
   QDoubleSpinBox* m_kerf = nullptr;
   QVector<QTableWidget*> m_cutTables; // rows, stock, other
   QTableWidget* m_partsTable = nullptr;
+  // The keys of the parts list's property columns (mitcad#496).
+  QLineEdit* m_columns = nullptr;
+  QString m_logged;
   QVector<ListTable> m_cut;
   QVector<ListTable> m_parts;
 };

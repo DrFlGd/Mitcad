@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
+#include <optional>
+
 #include <QRegularExpression>
+#include <QSet>
 #include <QString>
 #include <QVector>
 
@@ -43,7 +46,16 @@ struct FindOptions {
   bool bodies = true;
   enum class Visibility { Any, Visible, Hidden };
   Visibility visibility = Visibility::Any;
+  // A property search (mitcad#496, `FireRating = EI60`): only the owners
+  // the model's `property_search` found (components, occurrences and bodies
+  // by uid) match, whatever their names; unset, the names do.
+  std::optional<QSet<QString>> propertyOwners;
 };
+
+// Whether a search text asks for property values (`FireRating = EI60`,
+// `Mass > 10 kg`, `Name ~ wall`: it has a comparison) rather than names
+// (mitcad#496).
+bool isPropertySearch(const QString& text);
 
 // A name filter: the text as a case-insensitive substring, with `*` (any
 // characters) and `?` (one character) as wildcards.

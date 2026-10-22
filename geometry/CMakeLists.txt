@@ -455,6 +455,22 @@ if(BUILD_TESTING)
   add_executable(test_drawing tests/test_drawing.cpp)
   target_link_libraries(test_drawing PRIVATE mitcad_geometry mitcad_warnings)
   add_test(NAME geometry.drawing COMMAND test_drawing)
+  # A face taken away by the roundings of both its edges, their contacts
+  # along each other, with the port's patch 0950 (mitcad#343).
+  add_executable(test_fillet_consumed_strip tests/test_fillet_consumed_strip.cpp)
+  target_link_libraries(test_fillet_consumed_strip PRIVATE mitcad_geometry mitcad_warnings)
+  add_test(NAME geometry.fillet_consumed_strip COMMAND test_fillet_consumed_strip)
+  # A rounding ending where its wall steps back by much less than the
+  # radius, with the port's patch 0951 (mitcad#343).
+  add_executable(test_fillet_step_end tests/test_fillet_step_end.cpp)
+  target_link_libraries(test_fillet_step_end PRIVATE mitcad_geometry mitcad_warnings)
+  add_test(NAME geometry.fillet_step_end COMMAND test_fillet_step_end)
+  # Projection bounds whose parameter tolerance is below floating-point
+  # spacing, with the port's patch 0960 (mitcad#504).
+  add_executable(test_projection_boundary tests/test_projection_boundary.cpp)
+  target_link_libraries(test_projection_boundary PRIVATE mitcad_geometry mitcad_warnings)
+  add_test(NAME geometry.projection_boundary COMMAND test_projection_boundary)
+  set_tests_properties(geometry.projection_boundary PROPERTIES TIMEOUT 30)
 endif()
 
 # Data exchange and analysis services, separate libraries on top of OCCT.

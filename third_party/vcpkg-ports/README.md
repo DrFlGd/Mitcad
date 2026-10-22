@@ -292,6 +292,19 @@ intersecting the same two edges for ever where two arcs of one circle in
 two wires meet end to end (the repair of 0941's invalid result never
 ended, mitcad#495).
 
+0950 lets the roundings of both edges of a face exactly as wide as the two
+take the face away: their contacts along each other on it do not clash,
+the points their corners make at the contacts' ends are one, and the two
+contacts are one edge (window sills in a ring wall rounded with half the
+wall's thickness on both edges, mitcad#343).
+
+0951 ends a rounding where its wall steps back into the material by much
+less than the radius (a narrow strip, square to the rounding, at the end):
+the blend ends at the section through the vertex and a quarter torus, its
+ball turning on about its contact's end, closes it, cut by the
+stepped-back wall (a rim's wall stepping back by 4.3 micrometres,
+mitcad#343).
+
 - `0006-shapeupgrade-unifysamedomain-seam-search-by-vertex.patch`: the face
   merge after booleans (`ShapeUpgrade_UnifySameDomain`) looks up the edges
   it removed by vertex instead of going through all of them at each step of
@@ -3237,6 +3250,104 @@ beyond). The bosses' seams lie just before the gap.
   With 0941 alone the design's chamfer builds; with 0942 alone it fails at
   once ("an invalid shape") instead of hanging.
 
+The patch 0950 comes from mitcad#343 (round 17): the floors and ceilings
+of windows in a ring wall 3 thick (radii 112 and 115), rounded with 1.5
+on both edges, ending at the pillars' full-rounded ends, the windows the
+copies of a circular pattern. The two roundings of a sill are halves of
+one torus (113.5, 1.5); their contacts on the sill lie along each other at
+the wall's middle.
+
+- `0950-chfi3d-roundings-consuming-the-face-between-them-meet-on-one-contact-edge.patch`:
+  `ChFi3d_StripeEdgeInter` took the two contacts, which overlap all along,
+  for roundings too big for the face; such a pair (one segment covering
+  both ranges) now meets along the contacts. After the stripes are in the
+  data structure (`joinEndsAlongContacts`), the points two such stripes'
+  corners made where the contacts end on an edge of the face are one, the
+  edge leaves the face on both sides of them, and where both ends are one
+  the second contact edge is replaced by the first (its curve on the second
+  blend projected anew, its transition turned where the two run opposite
+  ways), the face holding that edge on both sides. Before, the sill came
+  out as a sliver of no area, or with the arc's pieces left on it and on
+  the pillar's end, depending on the window's copy. On the design's body
+  before the item (48 edges, four windows): valid, every face on the stored
+  body's within 1e-6 mm both ways, the change of volume -243.0297 against
+  the file's -243.0189 mm³; before, two of the four windows failed.
+
+The patch 0951 comes from mitcad#343 (round 17) as well: a rim's edge
+rounded with 0.3 up to a vertex where the rim's wall steps back by 4.3
+micrometres. The wall's face at the edge ends on a strip that narrow (the
+step's face, square to the rounding); the stored bodies end the rounding
+at the section through the vertex and close it with a quarter torus.
+
+- `0951-chfi3d-rounding-ending-at-a-step-back-of-its-wall-closes-with-a-torus.patch`:
+  OCCT found no face for the rounding's end and left an invalid shape.
+  `PerformPivotAtStepEnd`, tried first for the end of a lone stripe, takes
+  an end where the contact on a plane ends on its edge with a plane strip
+  narrower than a tenth of the radius, the face beyond the strip parallel
+  to the first and the strip's width into the material, and the other face
+  a plane square to both: the stripe ends at the section through the
+  vertex, and a corner stripe of one piece closes it, the torus the ball
+  sweeps turning on about its contact's end point until it lies in the
+  wall's plane (both radii the rounding's), cut by the stepped-back face.
+  The section becomes two edges, the one over the strip bounding it. On
+  the design's body before the item (14 edges): valid, every face on the
+  stored body's (distance 0 both ways), the change of volume -1.7315
+  against the file's -1.7477 mm³; before, the result was invalid.
+
+The patch 0960 comes from mitcad#504: a rounding's corner of more than
+three edges hung while its boundary curve was projected onto the initial
+surface of a plate. A stack sample of the import of `eecf90bd` stopped in
+`DichExactBound` inside `ProjLib_CompProjectedCurve`.
+
+On the replayed body before item 50 (Fillet7, radius 1 on ten edges),
+OCCT's four fillet contours reach that projection with a boundary made
+from a straight 2D line on a B-spline blend surface. The boundary extends
+far beyond the surface's native parameter bounds, so evaluating it
+extrapolates the surface and produces plane coordinates of order 1e11
+and a projection derivative of order 1e10. The boundary search's last
+accepted parameter is 102.90382719900337, the failed one
+102.90382719900339: adjacent doubles, 1.4210854715202004e-14 apart. Its
+UV-derived stopping tolerance is 1.1242033789204225e-14, smaller than that
+gap, and their midpoint rounds to the failed endpoint. A second projection
+onto a bounded initial plane reaches the same condition with a tolerance
+of 1.1343993885480033e-15.
+
+The replayed input has 98 faces. On the file's stored input (84 faces),
+the same ten edges match within 1.1e-14 mm and the same four contours fail
+promptly, before and after 0960. On the replayed input, 0960 makes the
+boundary search return too; the projection cannot cover the whole corner
+curve, and `ProjLib_CompProjectedCurve::D0` rejects a parameter outside its
+continuous parts. The OCCT-only probe then reports that the corner failed
+instead of hanging. It uses OCCT's normal signal-to-exception support,
+as the import already does.
+
+In the diagnostic and final production macOS builds, importing `eecf90bd`
+without `--hang-limit` returns: item 50 fails promptly and takes the stored state through the
+existing import error handling. Its final report names a zero-length
+curve where the rounding's last pieces lie on different faces. All 120
+item outcomes stay as before (101 parametric, 7 fallback, 12 skipped),
+all other item notes are unchanged, and the five final bodies' volume
+differences are identical to the baseline. The watchdog warning is gone.
+
+- `0960-projlib-projection-boundary-bisection-stops-at-adjacent-parameters.patch`:
+  the boundary search bisects between a curve parameter that projects and
+  one that does not. Its stopping tolerance is the UV tolerance divided
+  by the projected curve's derivative; it can be smaller than the spacing
+  of the parameters' floating-point values. Once the bracket's endpoints
+  are adjacent values, their midpoint is one of the endpoints and the same
+  projection is tried for ever. Stop then, retaining the last successfully
+  projected point. The projection's tolerances and success criteria stay
+  as they were; no failed point is accepted and no iteration limit cuts a
+  search short while it can still make progress.
+  The OCCT-only test `geometry.projection_boundary` projects a straight
+  B-spline segment with knots from 1e6 to 1e6 + 1e-6 onto a bounded plane,
+  where its crossings have no representable parameters. Without 0960 the
+  constructor hangs in `DichExactBound`. The test checks that the boundary
+  points project correctly to 1e-6 mm and that their adjacent parameters
+  lie outside the plane's bounds, instead of demanding a curve point at an
+  unrepresentable parameter. A segment with the same knot span near 1 is
+  the control.
+
 The patch 0540 goes on with the corners where a rounding ends (mitcad#236,
 eighth round): a rounding that runs on into an earlier rounding's tube.
 
@@ -3539,6 +3650,16 @@ for 0942, mitcad#495 and a planar face of two wires whose arcs of one
 circle meet end to end, in `geometry/tests/test_shapefix.cpp` (the repair
 of intersecting wires returns with nothing to repair; it never returns
 without the patch);
+for 0950, mitcad#343 and five windows in a ring wall 3 thick, the pillars'
+full-rounded ends in two halves each, both edges of every sill rounded
+with 1.5, in `geometry/tests/test_fillet_consumed_strip.cpp` (valid, no
+face of no area, the material taken within 2e-3 mm³ of the integral over
+the sills' outlines; the fillet fails without the patch);
+for 0951, mitcad#343 and a block's edge rounded with 0.3 up to where its
+wall steps back by 0.0043, the step below and above the edge, one rim and
+both, as built and mirrored, in `geometry/tests/test_fillet_step_end.cpp`
+(valid, a quarter torus at each end, the material taken within 2e-6 mm³
+of the integral; invalid without the patch);
 each fails without its patch but 0931's (on that body OCCT's topological
 build closes the rod's face without it as well, so the test checks 0931's
 way only; the design's failure is verified on its replayed body) and

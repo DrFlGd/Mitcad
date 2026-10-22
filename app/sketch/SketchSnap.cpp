@@ -71,7 +71,7 @@ Snap snap(const SnapSettings& settings, const V2& raw, const QPointF& screen) {
   // Points: line ends, centres, free points.
   bool originPoint = false;
   for (const PointData& p : model.points) {
-    if (settings.skipPoints.contains(p.id)) {
+    if (settings.skipPoints.contains(p.id) || !p.axis.isEmpty()) {
       continue;
     }
     if (p.fixed && norm(p.at) < 1e-9) {
@@ -106,7 +106,7 @@ Snap snap(const SnapSettings& settings, const V2& raw, const QPointF& screen) {
   // Midpoints, quadrants, curves near the cursor.
   std::vector<const CurveData*> nearby;
   for (const CurveData& c : model.curves) {
-    if (settings.skipCurves.contains(c.id)) {
+    if (settings.skipCurves.contains(c.id) || !c.axis.isEmpty()) {
       continue;
     }
     const V2 onCurve = c.curve.nearest(raw);

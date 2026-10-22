@@ -128,6 +128,12 @@
 //! `[[step, value], …]`) and `contact_sets` (`name`, `occurrences` as paths
 //! from the root, `"suppressed": true`), see [`crate::motion`].
 //!
+//! Properties (mitcad#496), when there are any: `property_types` (`name`,
+//! `base`, `values`, `unit`, `default`, `description`) and `properties`
+//! (`owner`: `C2`, `O3` or `F7.b0`, `sets`: `name`, `properties`: `key`,
+//! `type`, `value`, `source` unless `user`, `imported`, `unit`), see
+//! [`crate::properties`]. Computed values are never written.
+//!
 //! Appearances of the document (mitcad#46), when there are any:
 //! `appearances` (`id`, `name`, `base_color`, `metalness`, `roughness`,
 //! `specular`, `transmission`, `ior`, `coat`, `coat_roughness`, `emission`,

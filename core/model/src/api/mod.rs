@@ -40,6 +40,10 @@ mod motion;
 mod drawing;
 // Gears (mitcad#472).
 mod gears;
+// Typed property sets (mitcad#496).
+mod properties;
+// Reorient Design (mitcad#502).
+mod reorient;
 
 use std::fmt;
 
@@ -488,7 +492,11 @@ enum Query {
     // Configuration tables and library parts (mitcad#64).
     Configurations,
     LibraryParts,
-    PartsList,
+    PartsList {
+        /// Columns of property values: `Key` or `Set/Key` (mitcad#496).
+        #[serde(default)]
+        properties: Vec<String>,
+    },
     // A row of assembly constraints before it is added: its references' kinds,
     // the types they fit and what they measure (mitcad#148).
     ConstraintRow(Box<joints::ConstraintRowQuery>),
@@ -577,6 +585,10 @@ enum Query {
     SvgInfo {
         path: String,
     },
+    // Typed property sets (mitcad#496, `properties.rs`).
+    PropertySets(properties::PropertySetsQuery),
+    PropertyTypes,
+    PropertySearch(properties::PropertySearchQuery),
 }
 
 fn names(names: &[String]) -> Value {
@@ -658,6 +670,16 @@ impl<K: Kernel> Document<K> {
             .get("cmd")
             .and_then(Value::as_str)
             .is_some_and(|cmd| gears::COMMANDS.contains(&cmd));
+        // Typed property sets (mitcad#496).
+        let is_property = value
+            .get("cmd")
+            .and_then(Value::as_str)
+            .is_some_and(|cmd| properties::COMMANDS.contains(&cmd));
+        // Reorient Design (mitcad#502).
+        let is_reorient = value
+            .get("cmd")
+            .and_then(Value::as_str)
+            .is_some_and(|cmd| reorient::COMMANDS.contains(&cmd));
         let mut result = if let Some(rules) = inline_face_rules(&value) {
             self.add_face_with_rules_command(rules, &value)?
         } else if is_gear_link {
@@ -680,6 +702,10 @@ impl<K: Kernel> Document<K> {
             self.run_build_command(parse(value, "command")?)?
         } else if is_motion {
             self.run_motion_command(parse(value, "command")?)?
+        } else if is_property {
+            self.run_property_command(parse(value, "command")?)?
+        } else if is_reorient {
+            self.run_reorient_command(parse(value, "command")?)?
         } else {
             self.run_document_command(parse(value, "command")?)?
         };
@@ -1347,7 +1373,7 @@ impl<K: Kernel> Document<K> {
             // Configuration tables and library parts (mitcad#64).
             Query::Configurations => self.configurations_json(),
             Query::LibraryParts => self.library_parts_json(),
-            Query::PartsList => self.parts_list_json(),
+            Query::PartsList { properties } => self.parts_list_with(&properties),
             // Assembly constraints (mitcad#148).
             Query::ConstraintRow(query) => self.constraint_row_json(&query)?,
             // Move Features into a Component (mitcad#171).
@@ -1413,6 +1439,10 @@ impl<K: Kernel> Document<K> {
             Query::GearLink(query) => self.gear_link_json(&query),
             // An SVG drawing (mitcad#473).
             Query::SvgInfo { path } => sketch::svg_info_json(&path)?,
+            // Typed property sets (mitcad#496).
+            Query::PropertySets(query) => self.property_sets_json(&query)?,
+            Query::PropertyTypes => self.property_types_json(),
+            Query::PropertySearch(query) => self.property_search_query_json(&query)?,
         };
         Ok(result.to_string())
     }
@@ -1771,6 +1801,9 @@ mod insert_feature_tests;
 // QR codes (mitcad#473).
 #[cfg(test)]
 mod sketch_text_473_tests;
+// The sketch's own axes and origin as entities (mitcad#500).
+#[cfg(test)]
+mod sketch_axes_tests;
 
 /// The feature a command edits by name (mitcad#401): `edit_feature`,
 /// `suppress_feature` and `reorder_feature` its `uid`, a sketch command

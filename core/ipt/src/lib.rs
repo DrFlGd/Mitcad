@@ -71,6 +71,53 @@ pub const PID_PART_NUMBER: u32 = 5;
 pub const PID_MATERIAL: u32 = 20;
 pub const PID_RELEASE: u32 = 67;
 
+/// The standard property sets of compound files (MS-OLEPS): the summary
+/// and the document summary, whose second section holds the user's own
+/// properties with their names (mitcad#496).
+pub const SUMMARY_INFORMATION: &str = "f29f85e0-4ff9-1068-ab91-08002b27b3d9";
+pub const DOCUMENT_SUMMARY: &str = "d5cdd502-2e9c-101b-9397-08002b2cf9ae";
+
+/// A property set's format id, the set's name in Mitcad, and its standard
+/// property ids with their names.
+type KnownSet = (&'static str, &'static str, &'static [(u32, &'static str)]);
+
+/// The properties a part brings (mitcad#496).
+const PART_PROPERTIES: [KnownSet; 3] = [
+    (
+        SUMMARY_INFORMATION,
+        "Summary",
+        &[
+            (2, "Title"),
+            (3, "Subject"),
+            (4, "Author"),
+            (5, "Keywords"),
+            (6, "Comments"),
+            (8, "Last Saved By"),
+        ],
+    ),
+    (
+        DOCUMENT_SUMMARY,
+        "Document Summary",
+        &[(2, "Category"), (14, "Manager"), (15, "Company")],
+    ),
+    (
+        TRACKING_PROPERTIES,
+        "Design Tracking",
+        &[
+            (PID_PART_NUMBER, "Part Number"),
+            (PID_MATERIAL, "Material"),
+            (PID_RELEASE, "Release"),
+        ],
+    ),
+];
+
+/// The set of the properties named in a set's dictionary (the user's
+/// own).
+pub const USER_PROPERTIES: &str = "User Defined";
+
+/// A property of the part (mitcad#496): its set, its name and its value.
+pub type PartProperty = (String, String, props::Value);
+
 /// The property set with the model's settings; property 8 is the length
 /// unit (see [`length_unit`]).
 pub const MODEL_SETTINGS: &str = "bb586990-af3e-11d3-95a9-00a0c9b6e37a";
@@ -184,6 +231,11 @@ pub struct DocumentInfo {
     /// The range boxes (cm: min, max) of the bodies the file keeps hidden
     /// ([`result`]: the result list's hidden entries).
     pub hidden_bodies: Vec<[[f64; 3]; 2]>,
+    /// The part's properties (mitcad#496): the summary's, the document
+    /// summary's and the tracking set's known ones, and every property a
+    /// set names in its dictionary ([`USER_PROPERTIES`]); empty text left
+    /// out.
+    pub properties: Vec<PartProperty>,
 }
 
 /// An opened `.ipt` file.
@@ -288,7 +340,54 @@ impl IptFile {
             length_unit_code: code,
             length_unit: code.and_then(length_unit),
             hidden_bodies: self.hidden_ranges().unwrap_or_default(),
+            properties: self.part_properties(),
         }
+    }
+
+    /// The part's properties ([`DocumentInfo::properties`]).
+    pub fn part_properties(&self) -> Vec<PartProperty> {
+        let useful = |value: &props::Value| match value {
+            props::Value::Text(t) => !t.trim().is_empty(),
+            props::Value::Int(_)
+            | props::Value::Real(_)
+            | props::Value::Bool(_)
+            | props::Value::FileTime(_) => true,
+            props::Value::Clsid(_) | props::Value::Other(_) => false,
+        };
+        let trimmed = |value: &props::Value| match value {
+            props::Value::Text(t) => props::Value::Text(t.trim().to_owned()),
+            other => other.clone(),
+        };
+        let mut out = Vec::new();
+        for (fmtid, set, names) in PART_PROPERTIES {
+            let Some(found) = self.property_set(fmtid) else {
+                continue;
+            };
+            for (id, name) in names {
+                if let Some(value) = found.values.get(id).filter(|v| useful(v)) {
+                    out.push((set.to_owned(), (*name).to_owned(), trimmed(value)));
+                }
+            }
+        }
+        // The properties a dictionary names (ids 0 and 1 are the
+        // dictionary and the code page).
+        for (_, sets) in &self.properties {
+            for found in sets {
+                for (id, name) in &found.names {
+                    if *id < 2 || name.trim().is_empty() {
+                        continue;
+                    }
+                    if let Some(value) = found.values.get(id).filter(|v| useful(v)) {
+                        out.push((
+                            USER_PROPERTIES.to_owned(),
+                            name.trim().to_owned(),
+                            trimmed(value),
+                        ));
+                    }
+                }
+            }
+        }
+        out
     }
 
     /// A segment's records. Tables that cannot be read leave the tables
@@ -465,6 +564,57 @@ pub fn deleted_bodies(
 mod tests {
     use super::*;
 
+    /// A tracking property of a part (mitcad#496).
+    fn tracking(name: &str, text: &str) -> PartProperty {
+        (
+            "Design Tracking".to_owned(),
+            name.to_owned(),
+            props::Value::Text(text.to_owned()),
+        )
+    }
+
+    #[test]
+    fn reads_the_parts_summary_properties() {
+        let summary = props::write(
+            crate::cfb::guid_bytes(SUMMARY_INFORMATION).expect("format id"),
+            &[
+                (2, props::Value::Text("Bracket ".into())),
+                (4, props::Value::Text("A designer".into())),
+                (6, props::Value::Text(String::new())),
+            ],
+        );
+        let file = testdata::part_file_with_streams(
+            &testdata::TestPart {
+                bodies: vec![mitcad_f3d::testdata::cube_blob()],
+                part_number: "P-7",
+                material: "Steel",
+                length_unit: 11269,
+                design: None,
+            },
+            &[("\u{5}SummaryInformation", summary)],
+        );
+        let f = IptFile::parse(file).unwrap();
+        let properties = f.document().properties;
+        let summary = |name: &str, text: &str| {
+            (
+                "Summary".to_owned(),
+                name.to_owned(),
+                props::Value::Text(text.to_owned()),
+            )
+        };
+        // Trimmed; empty text left out; the standard sets first.
+        assert_eq!(
+            properties,
+            vec![
+                summary("Title", "Bracket"),
+                summary("Author", "A designer"),
+                tracking("Part Number", "P-7"),
+                tracking("Material", "Steel"),
+                tracking("Release", "Mitcad test writer"),
+            ]
+        );
+    }
+
     #[test]
     fn reads_the_test_part() {
         let f = IptFile::parse(testdata::test_part()).unwrap();
@@ -481,6 +631,11 @@ mod tests {
                 length_unit_code: Some(11272),
                 length_unit: Some("in"),
                 hidden_bodies: Vec::new(),
+                properties: vec![
+                    tracking("Part Number", "MITCAD-TEST-1"),
+                    tracking("Material", "Aluminum"),
+                    tracking("Release", "Mitcad test writer"),
+                ],
             }
         );
         let records = f.brep_records().unwrap();

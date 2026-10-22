@@ -231,6 +231,9 @@ impl DocState {
             set_flags(self.assembly.occurrence_mut(target).expect("placed"), o);
             occurrences.insert(o.uid, target);
         }
+        // Their properties, and the bodies' of the copied features
+        // (mitcad#496): another design's root gives its own to `into`.
+        self.copy_properties(source, &components, &occurrences, &uids);
         let prefix = crate::links::first_path(&self.assembly, into, None).map_err(invalid)?;
 
         // The features, in timeline order, checked only after all their

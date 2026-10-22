@@ -12,7 +12,9 @@
 /// a tetrahedron (1000 mm legs) as a red triangulated face set; on the
 /// first floor the window type's second instance, turned 90 degrees, a
 /// space, a grid of two axes and a chair without a shape. The wall states
-/// its net volume, 2.8 m³; the slab's material is grey concrete.
+/// its net volume, 2.8 m³, and its property set (Pset_WallCommon), the
+/// window type its own (Pset_WindowCommon); the slab's material is grey
+/// concrete.
 pub const BUILDING: &str = r"ISO-10303-21;
 HEADER;
 FILE_DESCRIPTION(('ViewDefinition [ReferenceView_V1.2]'),'2;1');
@@ -80,6 +82,17 @@ DATA;
 #160=IFCELEMENTQUANTITY('2QTY000000000000000000',$,'Qto_WallBaseQuantities',$,$,(#161));
 #161=IFCQUANTITYVOLUME('NetVolume',$,$,2.8,$);
 #162=IFCRELDEFINESBYPROPERTIES('3QTY000000000000000000',$,$,$,(#100),#160);
+#1001=IFCPROPERTYSINGLEVALUE('FireRating',$,IFCLABEL('EI60'),$);
+#1002=IFCPROPERTYSINGLEVALUE('IsExternal',$,IFCBOOLEAN(.T.),$);
+#1003=IFCPROPERTYSINGLEVALUE('Reference',$,IFCIDENTIFIER('W-12'),$);
+#1004=IFCPROPERTYSINGLEVALUE('Width',$,IFCPOSITIVELENGTHMEASURE(200.),$);
+#1005=IFCPROPERTYSINGLEVALUE('ThermalTransmittance',$,IFCTHERMALTRANSMITTANCEMEASURE(0.24),$);
+#1006=IFCPROPERTYENUMERATEDVALUE('Status',$,(IFCLABEL('NEW'),IFCLABEL('EXISTING')),$);
+#1007=IFCPROPERTYSET('2PSET00000000000000000',$,'Pset_WallCommon',$,(#1001,#1002,#1003,#1004,#1005,#1006));
+#1008=IFCRELDEFINESBYPROPERTIES('3PSET00000000000000000',$,$,$,(#100),#1007);
+#1009=IFCPROPERTYSINGLEVALUE('GlazingAreaFraction',$,IFCPOSITIVERATIOMEASURE(0.7),$);
+#1010=IFCPROPERTYSINGLEVALUE('Manufactured',$,IFCDATE('2026-03-01'),$);
+#1011=IFCPROPERTYSET('2WPSET0000000000000000',$,'Pset_WindowCommon',$,(#1009,#1010));
 /* a window type's block and its instance in the opening */
 #130=IFCWINDOW('1WIN000000000000000000',$,'Window 1',$,$,#131,#134,$,1000.,1000.,$,$,$);
 #131=IFCLOCALPLACEMENT(#101,#132);
@@ -90,7 +103,7 @@ DATA;
 #136=IFCMAPPEDITEM(#140,#145);
 #137=IFCRELFILLSELEMENT('3FILL00000000000000000',$,$,$,#110,#130);
 #138=IFCRELDEFINESBYTYPE('3TYPE00000000000000000',$,$,$,(#130,#830),#139);
-#139=IFCWINDOWTYPE('1WTYP00000000000000000',$,'Window type',$,$,$,(#140),$,$,.WINDOW.,.SINGLE_PANEL.,.F.,$);
+#139=IFCWINDOWTYPE('1WTYP00000000000000000',$,'Window type',$,$,(#1011),(#140),$,$,.WINDOW.,.SINGLE_PANEL.,.F.,$);
 #140=IFCREPRESENTATIONMAP(#30,#141);
 #141=IFCSHAPEREPRESENTATION(#21,'Body','SweptSolid',(#142));
 #142=IFCEXTRUDEDAREASOLID(#143,#30,#32,1000.);

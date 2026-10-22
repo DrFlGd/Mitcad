@@ -51,7 +51,7 @@ std::optional<Curve2> arcThrough(const V2& a, const V2& m, const V2& b) {
 
 std::optional<V2> leavingDirection(const SketchModel& model, const QString& point, QString* curve) {
   for (const CurveData& c : model.curves) {
-    if (!c.curve.isOpen()) {
+    if (!c.curve.isOpen() || !c.axis.isEmpty()) {
       continue;
     }
     if (c.end == point) {
@@ -485,6 +485,14 @@ private:
     qDebug().noquote() << QStringLiteral("Added line %1 from %2 to %3%4")
                               .arg(line, text(from), text(to),
                                    inferred.isEmpty() ? QString() : QStringLiteral(" (%1)").arg(inferred));
+    // Where its ends lie in the design (mitcad#505: on the sketch's face
+    // where the view shows it).
+    const auto designText = [this](const V2& p) {
+      const gp_Pnt at = toModel(m_c.model().frame, p);
+      return QStringLiteral("(%1, %2, %3)")
+          .arg(QString::number(at.X(), 'f', 6), QString::number(at.Y(), 'f', 6), QString::number(at.Z(), 'f', 6));
+    };
+    qDebug().noquote() << QStringLiteral("Line %1 in the design from %2 to %3").arg(line, designText(from), designText(to));
     m_previous = line;
     m_prevArc = false;
     m_start = to;

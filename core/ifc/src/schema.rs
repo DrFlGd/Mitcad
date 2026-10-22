@@ -85,18 +85,25 @@ impl ProductKind {
 }
 
 /// Whether the import keeps an entity type's attributes: everything but
-/// property sets with their values and templates, and the space
-/// boundaries with their connection geometry (`ReadOptions::import`).
-/// Element quantities and their relationships are kept: they check the
-/// volumes.
+/// the property values it does not read (bounded, list, table, reference
+/// and complex values, templates, dependencies), and the space boundaries
+/// with their connection geometry (`ReadOptions::import`). Element
+/// quantities and their relationships are kept: they check the volumes;
+/// property sets with their single and enumerated values become the
+/// elements' properties (mitcad#496).
 pub fn used_by_import(kind: &str) -> bool {
-    !(kind.starts_with("IFCPROPERTY")
-        || kind.starts_with("IFCRELSPACEBOUNDARY")
-        || kind.starts_with("IFCCONNECTION")
-        || kind.starts_with("IFCSIMPLEPROPERTYTEMPLATE")
-        || kind == "IFCRELCONNECTSPATHELEMENTS"
-        || kind == "IFCCOMPLEXPROPERTY"
-        || kind == "IFCCLASSIFICATIONREFERENCE")
+    let read_property = matches!(
+        kind,
+        "IFCPROPERTYSET" | "IFCPROPERTYSINGLEVALUE" | "IFCPROPERTYENUMERATEDVALUE"
+    );
+    read_property
+        || !(kind.starts_with("IFCPROPERTY")
+            || kind.starts_with("IFCRELSPACEBOUNDARY")
+            || kind.starts_with("IFCCONNECTION")
+            || kind.starts_with("IFCSIMPLEPROPERTYTEMPLATE")
+            || kind == "IFCRELCONNECTSPATHELEMENTS"
+            || kind == "IFCCOMPLEXPROPERTY"
+            || kind == "IFCCLASSIFICATIONREFERENCE")
 }
 
 /// Shape representations whose items are a body, in the order the import
@@ -142,7 +149,10 @@ mod tests {
             ProductKind::of("IFCSTRUCTURALCURVEMEMBER"),
             ProductKind::Structural
         );
-        assert!(!used_by_import("IFCPROPERTYSINGLEVALUE"));
+        assert!(used_by_import("IFCPROPERTYSINGLEVALUE"));
+        assert!(used_by_import("IFCPROPERTYSET"));
+        assert!(!used_by_import("IFCPROPERTYBOUNDEDVALUE"));
+        assert!(!used_by_import("IFCPROPERTYSETTEMPLATE"));
         assert!(used_by_import("IFCELEMENTQUANTITY"));
         assert!(used_by_import("IFCRELDEFINESBYPROPERTIES"));
         assert!(is_body_identifier("Body"));

@@ -434,6 +434,10 @@ echo "--- .iam assembly (mitcad#60, stage 4)"
 "$TEST_EXCHANGE" --write-iam "$WORK/iam" || ui_fail "cannot write the test assemblies"
 ui_mark
 ui_step "open the assembly (Ctrl+O)"       open_fcstd "$WORK/iam/top.iam"
+ui_expect_new "Import Assembly dialog opened: top.iam, parts with their design history on" \
+  "asked how the parts come in, with their history by default (mitcad#507)"
+ui_focus_dialog '^Import Assembly$'
+ui_step "import (Enter)"                   ui_key Return
 ui_expect_new "Import of top.iam started" "the import runs in its own process"
 ui_expect_new "Import report: top.iam: 7 occurrences placed, 1 suppressed, 3 part files imported, 1 missing, 0 failed" \
   "the occurrences placed, the parts imported, the missing one reported" 120

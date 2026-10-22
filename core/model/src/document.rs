@@ -84,6 +84,12 @@ mod motion_links;
 // Bodies moved into another component on the timeline (mitcad#465).
 mod body_transfer;
 pub use body_transfer::TransferDestination;
+// Typed property sets (mitcad#496).
+mod properties;
+pub use properties::PropertyTypeChange;
+// Reorient Design (mitcad#502).
+mod reorient;
+pub use reorient::ReorientReport;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
@@ -242,6 +248,9 @@ pub struct DocState {
     pub(crate) motion_studies: Vec<crate::motion::MotionStudy>,
     /// Contact sets (mitcad#454), in the order they were added.
     pub(crate) contact_sets: Vec<crate::motion::ContactSet>,
+    /// Own property types and the properties of components, occurrences
+    /// and bodies (mitcad#496).
+    pub(crate) properties: crate::properties::PropertyStore,
 }
 
 impl Default for DocState {
@@ -271,6 +280,7 @@ impl Default for DocState {
             split_pieces: BTreeMap::new(),
             motion_studies: Vec::new(),
             contact_sets: Vec::new(),
+            properties: Default::default(),
         }
     }
 }

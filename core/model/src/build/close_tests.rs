@@ -692,7 +692,7 @@ fn a_typed_length_that_ends_on_a_member_s_end_closes_the_corner() {
 }
 
 #[test]
-fn a_member_by_two_points_ending_at_a_member_s_end_butts_square_or_is_warned() {
+fn a_member_by_two_points_ending_at_a_member_s_end_butts_square() {
     // The posts' half width along X.
     for (post, half) in [("rows98", 49.0), ("p30", 15.0)] {
         let mut doc = design();
@@ -721,15 +721,29 @@ fn a_member_by_two_points_ending_at_a_member_s_end_butts_square_or_is_warned() {
             "{post}: {face}"
         );
         assert_eq!(face["warnings"], json!([]), "{post}: {face}");
-        // Into it or through it: it would overlap, a warning says so.
+        // Into it (its centre line) or through it (its outer side): cut
+        // back to its face, the same square butt (mitcad#509; before it, a
+        // warning of the overlap).
         for to_x in [1500.0, 1500.0 + half] {
             let inside = preview(&doc, &points(to_x));
-            assert!(inside["closing"].is_null(), "{post} {to_x}: {inside}");
+            assert_eq!(
+                inside["closing"]["mitre"], "none",
+                "{post} {to_x}: {inside}"
+            );
+            assert_eq!(
+                inside["closing"]["component"], p2["component"],
+                "{post} {to_x}: {inside}"
+            );
+            assert_eq!(inside["warnings"], json!([]), "{post} {to_x}: {inside}");
+            assert_eq!(
+                inside["points"]["end"]["cut"], true,
+                "{post} {to_x}: {inside}"
+            );
             assert!(
-                inside["warnings"][0]
-                    .as_str()
-                    .unwrap()
-                    .contains("ends inside"),
+                near(
+                    inside["length"]["value"].as_f64().unwrap(),
+                    1500.0 - 2.0 * half
+                ),
                 "{post} {to_x}: {inside}"
             );
         }

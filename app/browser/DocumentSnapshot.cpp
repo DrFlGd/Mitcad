@@ -203,6 +203,21 @@ bool DocumentSnapshot::isOccurrenceShown(const QString& path) const {
   return true;
 }
 
+QString DocumentSnapshot::occurrenceComponent(const QString& path) const {
+  QString reached = kRoot;
+  const QVector<Occurrence>* level = &occurrences;
+  for (const QString& uid : path.split(QLatin1Char('/'), Qt::SkipEmptyParts)) {
+    const auto found = std::find_if(level->begin(), level->end(),
+                                    [&uid](const Occurrence& occurrence) { return occurrence.uid == uid; });
+    if (found == level->end()) {
+      return QString();
+    }
+    reached = found->component;
+    level = &found->children;
+  }
+  return reached;
+}
+
 QVector<const DocumentSnapshot::Feature*> DocumentSnapshot::failures() const {
   QVector<const Feature*> failed;
   for (const Feature& feature : features) {

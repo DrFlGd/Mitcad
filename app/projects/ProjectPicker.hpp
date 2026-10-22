@@ -11,8 +11,8 @@
 // outside the listed projects.
 //
 //   Place:   a project and a folder in it, and a design's name typed in
-//            the dialog (a clash with a file there shown inline): Move to
-//            a Project, Save As, Version History's Save Copy As.
+//            the dialog (a clash with a file there shown inline): Save to
+//            Project, Save As, Version History's Save Copy As.
 //   Design:  a design of a project (Insert Component).
 //   Project: a project (Open Project).
 //
@@ -29,7 +29,7 @@
 // "Project picker name at x,y", "Project picker button <text> at x,y"
 // (main window coordinates); "Project picker selected <key>"; "Project
 // picker target <key>/<path>: free" ("exists", "invalid"); "Project
-// picker <title>: chose <path>" ("another folder", "another file",
+// picker <title>: chose <path>" ("another folder", "another file", "new project",
 // "cancelled").
 
 #include <optional>
@@ -47,6 +47,9 @@ struct ProjectPickerOptions {
   QString text;       // what the dialog asks, above the list
   QString acceptText; // the accept button's text ("&Move", "&Save", "&Insert", "&Open")
   QString otherText;  // the secondary button ("&Another Folder...", "&Another File..."; "" none)
+  // Place: a button for a project that does not exist yet ("&New Project...";
+  // "" none), left of the secondary button (mitcad#503: Save to Project).
+  QString newProjectText;
   // The project selected at first ("" the first listed), listed first; and
   // (Place) the folder in it, relative to it ("" its top). Design: the
   // project is listed first and expanded.
@@ -61,6 +64,7 @@ struct ProjectPickerOptions {
 
 struct ProjectPickerResult {
   bool other = false; // the secondary button: the caller asks with its file or folder dialog
+  bool newProject = false; // the new project button: the caller makes a project (New Project)
   QString root;       // the project chosen
   QString folder;     // Place: the folder in it (relative, "" its top)
   // Place: the new design's file; Design: the design chosen; Project: the

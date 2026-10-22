@@ -14,7 +14,7 @@
 #   workflow-recovery.mitcad-ui  the killed session is offered and restored;
 #                                Save As, New, Open, Export, Import, undo
 #   workflow-versions.mitcad-ui  the saved design opened with a change:
-#                                Move to a Project makes its folder a Local
+#                                Save to Project makes its folder a Local
 #                                project, three versions, one restored
 # This script checks what lies outside the application between and after the
 # runs: the autosave files the killed session left (their metadata, the

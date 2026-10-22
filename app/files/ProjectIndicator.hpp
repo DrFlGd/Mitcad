@@ -14,8 +14,8 @@
 //
 // A click opens its menu: Sync Now, Check for Newer Versions, Version
 // History..., Project Settings..., Open in Browser, New Design... (mitcad#145,
-// in the Projects panel's selected folder); for a loose file Move to
-// a Project.... The lock controller (a later change) adds the lock's text,
+// in the Projects panel's selected folder); for a loose file Save to
+// Project.... The lock controller (a later change) adds the lock's text,
 // the live updates' state and its own entries through the hooks below.
 
 #include <functional>

@@ -31,7 +31,13 @@ public:
   // Adds a command; its action is made by createActions().
   void add(const CommandDef& def);
   const std::vector<std::unique_ptr<CommandDef>>& commands() const { return m_commands; }
+  // A command by its id, or by an id it replaced (alias()).
   const CommandDef* find(const QString& id) const;
+  // `oldId` is a former id of the command `id` (mitcad#503: Move to a
+  // Project became Save to Project): find() and action() accept it, and
+  // a shortcut saved under it moves to `id` (kept when `id` has one of its
+  // own).
+  void alias(const QString& oldId, const QString& id);
   // The feature command that can edit a definition (the `feature` query's
   // def), or null.
   const CommandDef* editorOf(const QJsonObject& def) const;
@@ -39,7 +45,7 @@ public:
   // Makes an action per command, with window-wide shortcuts on `owner`;
   // triggering one calls `trigger` with the command's id.
   void createActions(QWidget* owner, const std::function<void(const QString&)>& trigger);
-  QAction* action(const QString& id) const { return m_actions.value(id); }
+  QAction* action(const QString& id) const { return m_actions.value(m_aliases.value(id, id)); }
 
   QKeySequence shortcut(const QString& id) const;
   QKeySequence defaultShortcut(const QString& id) const;
@@ -65,6 +71,7 @@ private:
 
   std::vector<std::unique_ptr<CommandDef>> m_commands;
   QHash<QString, QAction*> m_actions;
+  QHash<QString, QString> m_aliases; // former id -> id
   QSet<QString> m_disabledShortcuts;
   QStringList m_shortcutWarnings;
 };

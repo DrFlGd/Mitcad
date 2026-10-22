@@ -231,6 +231,8 @@ pub struct WoodMeta {
     pub diameter: Option<MetaValue>,
     pub length: Option<MetaValue>,
     pub head: Option<MetaValue>,
+    /// `head_top`, `head_underside`, or the name of a seat mount frame.
+    pub seat: Option<String>,
 }
 
 impl WoodMeta {

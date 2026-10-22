@@ -27,12 +27,29 @@ void CommandRegistry::add(const CommandDef& def) {
 }
 
 const CommandDef* CommandRegistry::find(const QString& id) const {
+  const QString current = m_aliases.value(id, id);
   for (const auto& def : m_commands) {
-    if (def->id == id) {
+    if (def->id == current) {
       return def.get();
     }
   }
   return nullptr;
+}
+
+void CommandRegistry::alias(const QString& oldId, const QString& id) {
+  if (oldId == id) {
+    return;
+  }
+  m_aliases.insert(oldId, id);
+  // A shortcut saved under the former id (a custom one only: the default
+  // is the command's own) is the new command's, unless that has one.
+  QSettings settings;
+  if (settings.contains(settingsKey(oldId))) {
+    if (!settings.contains(settingsKey(id))) {
+      settings.setValue(settingsKey(id), settings.value(settingsKey(oldId)));
+    }
+    settings.remove(settingsKey(oldId));
+  }
 }
 
 const CommandDef* CommandRegistry::editorOf(const QJsonObject& feature) const {

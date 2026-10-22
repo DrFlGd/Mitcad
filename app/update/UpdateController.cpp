@@ -30,6 +30,10 @@ namespace {
 constexpr int kStartDelayMs = 3000;
 constexpr qint64 kDaySeconds = 24 * 60 * 60;
 
+bool checkedRecently(const UpdateSettings& settings, const QDateTime& now) {
+  return settings.lastCheck.isValid() && settings.lastCheck <= now && settings.lastCheck.secsTo(now) < kDaySeconds;
+}
+
 } // namespace
 
 UpdateController::UpdateController(QMainWindow& window, Host host, QObject* parent)
@@ -124,11 +128,20 @@ void UpdateController::startUp() {
     return;
   }
   const QDateTime now = QDateTime::currentDateTimeUtc();
-  if (settings.lastCheck.isValid() && settings.lastCheck <= now && settings.lastCheck.secsTo(now) < kDaySeconds) {
+  if (checkedRecently(settings, now)) {
     qInfo().noquote() << "Update check: the last was at" << settings.lastCheck.toString(Qt::ISODate);
     return;
   }
-  QTimer::singleShot(kStartDelayMs, this, [this] { check(false); });
+  QTimer::singleShot(kStartDelayMs, this, [this] {
+    // A manual check can finish before this timer fires. Do not start a
+    // second silent check while the user is choosing Install in its offer.
+    const UpdateSettings current = UpdateSettings::load();
+    if (!current.automatic || updatesDisabledByAdministrator() ||
+        checkedRecently(current, QDateTime::currentDateTimeUtc())) {
+      return;
+    }
+    check(false);
+  });
 }
 
 void UpdateController::checkNow() {

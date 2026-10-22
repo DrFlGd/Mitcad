@@ -11,6 +11,7 @@
 #include "BrowserPanel.hpp"
 #include "DocumentSnapshot.hpp"
 #include "FindInDesign.hpp"
+#include "PropertySetsDialog.hpp"
 
 class QEvent;
 class QToolButton;
@@ -66,6 +67,12 @@ public:
   // Design Policy (mitcad#220) of a component (C0 the root): its seven
   // settings, presets and violations; OK sets it as one undo step.
   void openPolicy(const QString& component);
+  // Property Sets (mitcad#496) of a body, an occurrence and its component
+  // (the window follows the model; another target replaces the shown one).
+  void openPropertySets(const PropertyTarget& target);
+  // Reorient Design (mitcad#502): the whole design turned by quarter turns,
+  // previewed while its dialog is open; OK keeps it as one undo step.
+  void openReorient();
   // Find in Browser for an item picked in the view (a face finds its body).
   void findInBrowser(const SelectionItem& item);
   // The view's context menu Hide submenu (mitcad#347): the bodies (uids) and
@@ -185,6 +192,7 @@ private:
   QToolButton* m_warnings = nullptr;
   QPointer<ParametersDialog> m_parameters;
   QPointer<AppearanceDialog> m_appearances;
+  QPointer<PropertySetsDialog> m_propertySets;
   QPointer<FindDialog> m_find;
   QToolButton* m_findButton = nullptr;
   QString m_loggedFindButton;

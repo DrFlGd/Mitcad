@@ -86,6 +86,8 @@ bool MainWindow::readOnlyCommand(const CommandDef& def) {
       QStringLiteral("tools.library_parts"),  QStringLiteral("tools.publish_library"),
       // Another design of the project (mitcad#145).
       QStringLiteral("file.new_design"),
+      // A copy in a project, as Save As writes one (mitcad#503).
+      QStringLiteral("file.save_to_project"),
   };
   return allowed.contains(def.id) || def.id.startsWith(QLatin1String("view.")) ||
          def.id.startsWith(QLatin1String("inspect.")) || def.id.startsWith(QLatin1String("help."));

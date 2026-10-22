@@ -13,6 +13,8 @@
 
 namespace mitcad {
 
+struct DocumentSnapshot;
+
 // What can be picked in the 3D view; the selection filters.
 enum class SelectKind : unsigned {
   None = 0,
@@ -125,5 +127,9 @@ QString summarize(const Selection& items);
 // Compact rich text for one item returned by the model's measure query.
 // Missing properties are omitted; circular edges include radius and diameter.
 QString selectionMeasurementText(const QJsonObject& measured);
+
+// Rich-text owner lines for a body or one of its faces, edges and vertices.
+// Occurrence names include their full assembly path; root bodies omit it.
+QString selectionOwnerText(const SelectionItem& item, const DocumentSnapshot& snapshot);
 
 } // namespace mitcad

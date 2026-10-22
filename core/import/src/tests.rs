@@ -10575,3 +10575,6 @@ fn an_emboss_comes_in_on_its_face() {
     );
     assert!(def.is_none());
 }
+
+// Components' part numbers and descriptions as properties (mitcad#496).
+mod property_tests;

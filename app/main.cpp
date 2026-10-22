@@ -87,8 +87,9 @@ int main(int argc, char* argv[]) {
 
 #ifdef MITCAD_MACOS_NATIVE_UI
   bool nativeUiRequested = true;
-  // The Cocoa integration must know who owns the menus before the
-  // QApplication exists. The full parser below validates these options.
+  // Keep Qt's application delegate and activation handling while the shell
+  // owns the menu bar. Plugin mode would suppress that delegate entirely.
+  // The full parser below validates these options.
   for (int index = 1; index < argc; ++index) {
     const QString argument = QString::fromLocal8Bit(argv[index]);
     if (argument.startsWith(QStringLiteral("--ui="))) {
@@ -99,7 +100,7 @@ int main(int argc, char* argv[]) {
       nativeUiRequested = false;
     }
   }
-  QCoreApplication::setAttribute(Qt::AA_PluginApplication, nativeUiRequested);
+  QCoreApplication::setAttribute(Qt::AA_DontUseNativeMenuBar, nativeUiRequested);
 #else
   bool nativeUiRequested = false;
 #endif

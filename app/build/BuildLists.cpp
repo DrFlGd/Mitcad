@@ -22,6 +22,7 @@
 #include <QHeaderView>
 #include <QJsonArray>
 #include <QLabel>
+#include <QLineEdit>
 #include <QPageLayout>
 #include <QPageSize>
 #include <QPainter>
@@ -30,6 +31,7 @@
 #include <QStandardPaths>
 #include <QTabWidget>
 #include <QTableWidget>
+#include <QTimer>
 #include <QVBoxLayout>
 #include <QtLogging>
 
@@ -42,6 +44,13 @@
 
 namespace mitcad::build {
 namespace {
+
+// The parts list's property columns as last typed (mitcad#496), for the
+// next time the list opens in this session.
+QString& lastPropertyColumns() {
+  static QString columns;
+  return columns;
+}
 
 constexpr double kPi = 3.14159265358979323846;
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
@@ -351,7 +360,17 @@ QVector<ListTable> cutListTables(const QJsonObject& answer) {
   return {rows, stock, other};
 }
 
-QVector<ListTable> partsListTables(const QJsonObject& answer, const QJsonObject& cut) {
+QStringList propertyKeys(const QString& typed) {
+  QStringList keys;
+  for (const QString& key : typed.split(QLatin1Char(','), Qt::SkipEmptyParts)) {
+    if (!key.trimmed().isEmpty()) {
+      keys << key.trimmed();
+    }
+  }
+  return keys;
+}
+
+QVector<ListTable> partsListTables(const QJsonObject& answer, const QJsonObject& cut, const QStringList& keys) {
   ListTable parts{QObject::tr("Parts list"),
                   {QObject::tr("Quantity"), QObject::tr("Part"), QObject::tr("Supplier"), QObject::tr("Part number"),
                    QObject::tr("Library"), QObject::tr("Version"), QObject::tr("Licence")},
@@ -372,6 +391,7 @@ QVector<ListTable> partsListTables(const QJsonObject& answer, const QJsonObject&
       }
     }
   }
+  parts.columns << keys;
   for (const QJsonValue& value : answer.value(QStringLiteral("rows")).toArray()) {
     const QJsonObject row = value.toObject();
     QStringList cells{countText(row.value(QStringLiteral("quantity"))),
@@ -381,6 +401,11 @@ QVector<ListTable> partsListTables(const QJsonObject& answer, const QJsonObject&
     if (timber) {
       const QJsonObject own = material.value(text(row, "component"));
       cells << text(own, "species") << text(own, "grade");
+    }
+    // The chosen property keys (mitcad#496): empty where the part has none.
+    const QJsonObject properties = row.value(QStringLiteral("properties")).toObject();
+    for (const QString& key : keys) {
+      cells << properties.value(key).toString();
     }
     parts.rows.append(cells);
   }
@@ -513,6 +538,14 @@ BuildListsDialog::BuildListsDialog(const CommandContext& model, const QString& d
 
   auto* partsPage = new QWidget;
   auto* parts = new QVBoxLayout(partsPage);
+  // Columns of property values (mitcad#496): the keys typed here.
+  auto* columns = new QFormLayout;
+  m_columns = new QLineEdit(lastPropertyColumns());
+  m_columns->setObjectName(QStringLiteral("buildPartsColumns"));
+  m_columns->setPlaceholderText(tr("Property keys, separated by commas: Mark, Pset_WallCommon/FireRating, Mass"));
+  m_columns->setToolTip(tr("A column per key with each part's value: its own, its library's or computed"));
+  columns->addRow(tr("Property co&lumns:"), m_columns);
+  parts->addLayout(columns);
   m_partsTable = newTable(QStringLiteral("buildPartsList"));
   parts->addWidget(m_partsTable, 1);
   m_tabs->addTab(partsPage, tr("Parts List"));
@@ -533,13 +566,21 @@ BuildListsDialog::BuildListsDialog(const CommandContext& model, const QString& d
   connect(pdf, &QPushButton::clicked, this, &BuildListsDialog::savePdf);
   connect(close, &QDialogButtonBox::rejected, this, &QDialog::reject);
   connect(m_kerf, &QDoubleSpinBox::valueChanged, this, [this] { load(); });
+  connect(m_columns, &QLineEdit::editingFinished, this, [this] {
+    if (propertyKeys(m_columns->text()) != propertyKeys(lastPropertyColumns())) {
+      lastPropertyColumns() = m_columns->text();
+      load();
+    }
+  });
   connect(m_tabs, &QTabWidget::currentChanged, this, [this](int index) {
     qInfo().noquote() << QStringLiteral("Build lists tab: %1").arg(m_tabs->tabText(index).remove(QLatin1Char('&')));
+    QTimer::singleShot(0, this, &BuildListsDialog::logLayout);
   });
   load();
 }
 
 void BuildListsDialog::load() {
+  const QStringList keys = propertyKeys(m_columns->text());
   QJsonObject cut;
   QJsonObject parts;
   try {
@@ -549,12 +590,16 @@ void BuildListsDialog::load() {
     qWarning().noquote() << QStringLiteral("Cut list not read: %1").arg(errorText(error));
   }
   try {
-    parts = m_model.queryObject({{QStringLiteral("query"), QStringLiteral("parts_list")}});
+    QJsonObject query{{QStringLiteral("query"), QStringLiteral("parts_list")}};
+    if (!keys.isEmpty()) {
+      query.insert(QStringLiteral("properties"), QJsonArray::fromStringList(keys));
+    }
+    parts = m_model.queryObject(query);
   } catch (const std::exception& error) {
     qWarning().noquote() << QStringLiteral("Parts list not read: %1").arg(errorText(error));
   }
   m_cut = cutListTables(cut);
-  m_parts = partsListTables(parts, cut);
+  m_parts = partsListTables(parts, cut, keys);
   for (int i = 0; i < m_cut.size() && i < m_cutTables.size(); ++i) {
     fill(m_cutTables[i], m_cut[i]);
   }
@@ -611,6 +656,35 @@ void BuildListsDialog::load() {
                            .arg(m_cut[2].rows.size())
                            .arg(m_kerf->value());
   qInfo().noquote() << QStringLiteral("Build parts list: %1 row(s)").arg(m_parts.first().rows.size());
+  // The property columns (mitcad#496): the keys and each row's values.
+  if (!keys.isEmpty()) {
+    qInfo().noquote() << QStringLiteral("Build parts list columns: %1").arg(keys.join(QStringLiteral(", ")));
+    const int first = static_cast<int>(m_parts.first().columns.size() - keys.size());
+    for (const QStringList& row : std::as_const(m_parts.first().rows)) {
+      qInfo().noquote() << QStringLiteral("Build parts list row: %1: %2")
+                               .arg(row.value(1), row.mid(first).join(QStringLiteral(" | ")));
+    }
+  }
+  QTimer::singleShot(0, this, &BuildListsDialog::logLayout);
+}
+
+void BuildListsDialog::showEvent(QShowEvent* event) {
+  QDialog::showEvent(event);
+  QTimer::singleShot(0, this, &BuildListsDialog::logLayout);
+}
+
+void BuildListsDialog::logLayout() {
+  if (!isVisible() || parentWidget() == nullptr || !m_columns->isVisible()) {
+    return;
+  }
+  // In the main window's coordinates, as the other logged places.
+  const QPoint origin = parentWidget()->window()->mapToGlobal(QPoint(0, 0));
+  const QPoint at = m_columns->mapToGlobal(m_columns->rect().center()) - origin;
+  const QString line = QStringLiteral("Parts list columns at %1,%2").arg(at.x()).arg(at.y());
+  if (line != m_logged) {
+    m_logged = line;
+    qInfo().noquote() << line;
+  }
 }
 
 QVector<ListTable> BuildListsDialog::shownTables() const { return m_tabs->currentIndex() == 0 ? m_cut : m_parts; }

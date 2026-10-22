@@ -156,6 +156,7 @@ bool SketchModel::load(const QJsonObject& sketch) {
       p.reference = flag(e, "reference");
       p.constrained = flag(e, "fully_constrained");
       p.derived = flag(e, "derived");
+      p.axis = e.value(QStringLiteral("axis")).toString();
       points.push_back(p);
       continue;
     }
@@ -190,6 +191,7 @@ bool SketchModel::load(const QJsonObject& sketch) {
     c.fixed = flag(e, "fixed");
     c.reference = flag(e, "reference");
     c.constrained = flag(e, "fully_constrained");
+    c.axis = e.value(QStringLiteral("axis")).toString();
     curves.push_back(c);
   }
   // A derived offset's spline (P4): only its ends are points to snap to and
@@ -396,15 +398,6 @@ std::optional<V2> SketchModel::pointAt(const QString& id) const {
     return p->at;
   }
   return std::nullopt;
-}
-
-QString SketchModel::originPoint() const {
-  for (const PointData& p : points) {
-    if (p.fixed && norm(p.at) < 1e-9) {
-      return p.id;
-    }
-  }
-  return QString();
 }
 
 QStringList SketchModel::curvesAt(const QString& point, bool centers) const {

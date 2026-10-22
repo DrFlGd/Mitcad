@@ -241,6 +241,48 @@ pub(crate) fn transform(m: &Mat4) -> Option<Transform> {
 }
 
 /// Makes the dump's components and occurrences in the document.
+/// The part numbers and descriptions the file gives its components, as
+/// the components' properties with the source `f3d` (mitcad#496), in one
+/// step (the import's own when it merges its steps). The count added.
+pub(crate) fn import_properties<K: Kernel>(
+    doc: &mut Document<K>,
+    dump: &Dump,
+    components: &Components,
+) -> usize {
+    use mitcad_model::properties::{BaseType, Property, PropertyOwner, PropertyValue, Source};
+    let mut items = Vec::new();
+    for c in dump.components.iter().flatten() {
+        let object = c.f3d.as_ref().and_then(|f| f.object_id);
+        let Some(uid) = object
+            .and_then(|o| components.of_object(o))
+            .or_else(|| (c.is_root == Some(true)).then_some(ComponentUid::ROOT))
+        else {
+            continue;
+        };
+        for (key, value) in [
+            ("Part Number", &c.part_number),
+            ("Description", &c.description),
+        ] {
+            if let Some(text) = value.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+                items.push((
+                    PropertyOwner::Component(uid),
+                    "Component".to_owned(),
+                    Property::new(
+                        key,
+                        BaseType::Text,
+                        PropertyValue::Text(text.to_owned()),
+                        Source::F3d,
+                    ),
+                ));
+            }
+        }
+    }
+    if items.is_empty() {
+        return 0;
+    }
+    doc.import_properties("Component properties", items)
+}
+
 pub(crate) fn import_components<K: Kernel>(
     doc: &mut Document<K>,
     dump: &Dump,

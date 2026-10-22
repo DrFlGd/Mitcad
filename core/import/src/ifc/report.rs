@@ -141,6 +141,9 @@ pub struct IfcReport {
     pub features: usize,
     pub bodies: usize,
     pub quantities: QuantityCheck,
+    /// The properties the elements brought (identity, property sets,
+    /// quantities, their types' sets; mitcad#496).
+    pub properties: usize,
     /// The volume of every body made (mm³): the elements', and each map's
     /// times its occurrences (closed meshes included).
     pub total_volume: f64,

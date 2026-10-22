@@ -113,7 +113,9 @@ result as a `.mitcad` design. More in [.f3d import](#f3d-import).
   `.f3d` designs, `.ipt` parts and SolidCraft designs open as new documents
   with their history ([FreeCAD import](#freecad-import), [.f3d
   import](#f3d-import), [.ipt import](#ipt-import), [SolidCraft
-  import](#solidcraft-import)), IFC building models and `.rvt` projects as
+  import](#solidcraft-import)), `.iam` assemblies as new documents of
+  their parts' components, with the parts' history or their bodies ([.iam
+  import](#iam-import)), IFC building models and `.rvt` projects as
   new documents of their storeys and elements ([IFC import](#ifc-import),
   [.rvt import](#rvt-import)), `.dwg` drawings as new documents of their
   3D solids, meshes and blocks ([DWG import](#dwg-import)). The
@@ -188,6 +190,7 @@ for one run.
 | New Project, Open Project, Open from Cloud, Project Settings | | File › Project: a Local or Cloud project: make, open, clone, set up ([Versions](#versions)) |
 | Projects | | Show or hide the Projects panel ([Versions](#versions)) |
 | Save, Save As | Ctrl+S, Ctrl+Shift+S | Save a `.mitcad` design (in a project also a version) |
+| Save to Project | | Save the design in a project, as Save As does ([Versions](#versions)) |
 | Save with Description | Ctrl+Alt+S | Save and record a version with a description you write |
 | Version History | Ctrl+Shift+H | The design's versions: compare, open, restore or save a copy of one |
 | Sync | Ctrl+Alt+Y | Take the remote's newer versions and send yours (a Cloud project) |
@@ -199,7 +202,7 @@ for one run.
 | Line | L | Lines one after another; drag from the last point for a tangent arc |
 | 2-Point Rectangle | R | Also 3-Point and Center Rectangle |
 | Center Diameter Circle | C | Also 2- and 3-Point, 2- and 3-Tangent |
-| Sketch Dimension | D | Length, distance (horizontal, vertical, aligned; horizontal and vertical also signed), angle (the one on the side where the value is placed), radius, diameter; also to body edges and corners in the sketch plane |
+| Sketch Dimension | D | Length, distance (horizontal, vertical, aligned; horizontal and vertical also signed), angle (the one on the side where the value is placed), radius, diameter; also to body edges and corners in the sketch plane, the sketch's axes and origin |
 | Trim | T | Remove the part of a curve between intersections (also Extend) |
 | Offset, Project, Move/Copy | O, P, M | In a sketch: offset curve, projection (also in the context menu of a face, edge or vertex), move |
 | Construction | X | Selected curves to construction geometry and back |
@@ -746,6 +749,20 @@ stays on for the next sketch.
   is fixed: a dimension to sketch geometry moves that geometry, one
   between two projected edges is driven. Edges that are not in the plane
   still need Project (P).
+- **The sketch's axes and origin:** Sketch Dimension (D) and the
+  constraint tools also pick the sketch's x and y axes, anywhere along the
+  lines drawn across the view, and its origin, also when nothing has been
+  drawn there; any sketch or body geometry under the pointer wins. A point
+  and an axis give the point's distance from the axis (its y or x
+  coordinate), a line and an axis the angle between them, the origin and a
+  point a horizontal, vertical or aligned distance as between two points.
+  Coincident puts a point on an axis or at the origin; Parallel,
+  Perpendicular, Collinear and Tangent take an axis as a line, Symmetry
+  mirrors about one, Horizontal/Vertical and Midpoint take the origin as a
+  point. The axis or origin is added to the sketch as fixed construction
+  geometry the first time something refers to it, in the same undo step,
+  and is reused afterwards; it never bounds a profile and is not drawn
+  apart from the axes themselves.
 - A double-click on a dimension edits its value; a dimension's text can
   be dragged. A dimension that would over-constrain the sketch is added
   as driven (in parentheses); an over-constraining constraint is refused
@@ -1018,6 +1035,23 @@ sketch.
   warnings, an import's fallbacks, partial items and placeholders among
   them, and leads to them the same way. (In the Mac layout both are in
   the Browser's header.)
+- **Reorient Design...** (the root's menu, or the command search) turns
+  the whole design by 90, 180 or 270 degrees about the origin's X, Y or Z
+  axis, or so that the XZ or YZ plane becomes XY: for a part started on
+  the wrong origin plane. It is not a move of the bodies: sketches,
+  construction planes, axes and points and every feature turn with the
+  design, because their references to the origin planes and axes are
+  rewritten to the turned ones (a sketch on XY turned 90 degrees about X
+  lies on XZ, facing the other way, with its geometry turned, not
+  mirrored). Imported bodies get a Move after their base feature,
+  components keep their places relative to the turned design, and named
+  views, section analyses and the lights placed in the design turn too.
+  The design shows turned while the dialog is open; OK keeps it as one
+  undo step, Cancel takes it back. Names of faces and edges stay, so
+  everything built on them still finds them. When a feature would fail or
+  a body would not land exactly where the turn takes it (a rule of the
+  model axes, such as the direction a cylinder's axis is taken in, that a
+  feature cannot carry), the dialog names it and OK stays off.
 
 ### Components
 
@@ -1118,6 +1152,59 @@ each body of a component), the body belongs to the root component, a
 command is open, or the design is read-only. In a design with
 components, a window selection starts from empty space or with Shift
 held.
+
+### Properties
+
+Components, their occurrences and bodies carry typed properties in named
+sets, such as `Identity / Mark = W-12` or `Pset_WallCommon / FireRating =
+EI60`. **Property Sets...** (in the browser's menu of a body or a
+component, in the view's menu of a picked body or face, or from the
+command search for the selection) shows them in a window, one part per
+level: the body's own, the occurrence's and the component's (the
+definition shared by every occurrence). An occurrence shows its
+component's values as *inherited*; a value set on the occurrence overrides
+the component's for that occurrence only. Each set can be folded.
+
+Each value has a type and a source. The types are text, integer, number,
+length, area, volume, mass, angle, yes/no and date, and the design's own
+types: Types... defines one with a name, a base type, its allowed values
+(for example FireRating: EI30, EI60, EI90), a unit and a description. The
+source says where the value came from: you, an import (`rvt`, `ifc`,
+`ipt`, `f3d`), a library part or the model (`computed`). Double-click a
+value (or press F2) to change it in place: lengths and other quantities
+are read in the design's units unless you type a unit (`1.2 m`, `500 g`),
+and a value of an own type with allowed values, or a yes/no, is picked
+from a list. An imported value you change keeps the value its source
+gave, and the source column says *edited* (the tooltip shows the
+original). Add... adds a property to one of the levels and Remove removes
+one (a value as in the table, a date as `YYYY-MM-DD`); each change is one
+undo step.
+
+The model works out some values when they are shown: a body's volume,
+area, mass and material, a component's volume and mass, a BUILD member's
+length (set *Computed*), and a library part's designation, supplier, part
+number and material (set *Library*). They are never saved in the design
+file, so they always follow the model; computed values cannot be changed.
+
+**Searching by property:** in Find in Design, a search with a comparison
+finds by property values instead of names: `FireRating = EI60`,
+`Pset_WallCommon/FireRating = EI60`, `Mark != W-12`, `Mass > 10 kg`,
+`Name ~ wall` (contains). **Parts List columns:** the BUILD tab's Parts
+List takes property keys as columns (Property columns, separated by
+commas: `Mark, FireRating, Mass`), also in its CSV and PDF.
+
+Imports bring the properties their files hold: an `.rvt` element's
+identity, instance parameters and type parameters on its bodies (lengths,
+areas, volumes, angles and masses as those quantities, shown in the
+design's units: a wall's width of 200 mm shows as 200 mm, not as the
+file's 0.656 feet; a number whose kind the file does not tell is marked
+`internal units`, as the file keeps it; built-in parameters by their
+common names, others as `Parameter <id>`); an IFC
+element's property sets and quantities on its bodies and occurrences and
+its type's sets on the component of the type; an `.ipt` or `.iam` file's
+part number, description fields, author and user-defined properties on
+the design (an assembly's parts on their components); an `.f3d` dump's
+part numbers and descriptions on its components.
 
 ### Motion studies and contact sets
 
@@ -1857,9 +1944,23 @@ row): `Robot arm · Local · v14`, `Robot arm · Cloud · ✓` (with `↑2` to
 send, `↓1` newer, `Offline, ↑2 waiting`), or `Not in a project`. A click
 opens its menu: Sync Now, Check for Newer Versions, Version History,
 Project Settings, Open in Browser and New Design; for a design in no
-project **Move to a Project…** (also in File › Project), which moves the
-design into a new project (its own folder by default) or one you have,
-and records it.
+project **Save to Project…** (also in the File menu, right after Save
+As).
+
+**File › Save to Project…** saves the design in a project, as Save As
+does: the window then shows the file in the project, and the file the
+design came from stays where it was (a new, untitled design is saved there
+the first time). A dialog lists your projects (Local and Cloud, with their
+folders): choose a project and a folder in it, and type the design's name;
+a name that the folder has already is shown and waits for another. **New
+Project…** in the dialog makes a project first (by default in the design's
+own folder, when that is no project's or repository's, else in a new
+folder named after the design), and **Another Folder…** takes a project
+that the list does not have. Every save of the design in a project records
+a version. Save with Description and Version History offer Save to Project
+for a design in no project, and so does Project Settings. (Older versions
+of Mitcad had File › Project › Move to a Project…, which moved the design
+out of its folder; a shortcut you gave it now starts Save to Project.)
 
 **File › Project › Project Settings…** has the project's display name,
 its folder, its storage (Local or Cloud), and on this computer its
@@ -2733,6 +2834,40 @@ each a base feature. Files of older releases whose bodies are not stored in
 the ASM format are not read. The timeline shows the fallbacks, partial
 items and suppressed features as an `.f3d` import does ([Reading an
 imported timeline](#reading-an-imported-timeline)).
+The part's properties (part number, material, title, author, the user's
+own) come in as the design's ([Properties](#properties)).
+
+### .iam import
+
+An `.iam` assembly file opens as a new document (File › Open or Import,
+or `mitcad-cli import-iam`): each part file it places becomes a component
+and each of its placements an occurrence of it, where the file places it;
+sub-assemblies become components of their own. Referenced files are found
+where the assembly saved them, relative to it, or by name in its folder
+tree; a missing one leaves an empty component with its occurrences
+placed.
+
+Before the import starts, the **Import Assembly** dialog asks how the
+parts come in. **Parts with their design history** (on by default) brings
+each part in as the [.ipt import](#ipt-import) does: its parameters,
+sketches and features replayed into its component, so the part's timeline
+and parameters are there when the component is activated or opened for
+edit. Off, each part comes in as the bodies stored in its file, one base
+feature per part: much faster for large assemblies. The choice is
+remembered for the next assembly; `--open` and other ways that do not ask
+take the choice made last.
+
+With the history, the progress dialog shows the part being imported (part
+3 of 7) and the timeline item being replayed. A part whose replay fails,
+or hangs in the geometry kernel however often the import tries again,
+comes in as its stored bodies, and so does a part without a design
+history; a single feature that hangs takes the file's bodies within the
+part's replay. The import report lists every file: how it was found, and
+for each part whether it was replayed (its items, how they came in, how
+many were checked against the file's history, its parameters) or came in
+as its stored bodies, and why. It also checks each placement against the
+one the file displays and each part's bodies against the range box the
+file stores.
 
 ### IFC import
 
@@ -2756,6 +2891,8 @@ against the volumes the file states for its elements. What did not
 build stays on the timeline as a note ([Reading an imported
 timeline](#reading-an-imported-timeline)). The import runs in a process
 of its own; Cancel Import ends it.
+Each element's property sets and quantities, and its type's, come in as
+its properties ([Properties](#properties)).
 
 ### .rvt import
 
@@ -2784,6 +2921,9 @@ bodies per level and category, says for each box why, and names the
 release that saved the file. An `.rfa` family file opens with its metadata
 only (its forms come later). The timeline's yellow badge notes how many
 bodies are meshes and boxes.
+Each element's bodies carry its identity (element id, GlobalId,
+category, family, type, level), its instance parameters and its type's
+parameters as properties ([Properties](#properties)).
 
 ### SolidCraft import
 
@@ -2940,6 +3080,11 @@ and options.
   of an `.ipt` part; `--reference` compares its solids with a STEP file of
   the same part (volume and area, 1e-6 relative by default; exit code 1
   when they differ).
+- `import-iam assembly.iam --save assembly.mitcad [--report report.json]
+  [--history] [--search <folder>]...`: an `.iam` assembly, its parts'
+  stored bodies, or with `--history` each part's design replayed (the
+  report says per part whether it was replayed or came in as its stored
+  bodies, and why).
 - `import-ifc building.ifc --save building.mitcad [--report report.json]
   [--no-openings] [--no-occurrences]`: an IFC building model; the report
   has a line for every product of the file.

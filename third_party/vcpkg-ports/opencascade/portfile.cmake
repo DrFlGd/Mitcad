@@ -206,6 +206,9 @@ vcpkg_from_github(
         0940-chfi3d-rounding-over-a-narrow-face-cut-by-the-face-beyond-its-concave-edge.patch
         0941-chfi3d-kpart-chain-crossings-in-the-period-after-the-gaps-start.patch
         0942-shapefix-intersecting-wires-cut-reported-only-where-cut.patch
+        0950-chfi3d-roundings-consuming-the-face-between-them-meet-on-one-contact-edge.patch
+        0951-chfi3d-rounding-ending-at-a-step-back-of-its-wall-closes-with-a-torus.patch
+        0960-projlib-projection-boundary-bisection-stops-at-adjacent-parameters.patch
 )
 
 if (VCPKG_LIBRARY_LINKAGE STREQUAL "dynamic")

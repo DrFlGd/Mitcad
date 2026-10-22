@@ -64,6 +64,7 @@ public:
     bool sketchExisting = false;
     int sketchEnterDepth = 0;
     int sketchRestoreMarker = -1;
+    QString sketchOccurrence; // where sketch mode shows the sketch's component (mitcad#505)
   };
 
   struct Snapshot {

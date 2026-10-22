@@ -264,6 +264,11 @@ void MainWindow::createNativeWindow() {
     m_nativeSnapshotKey.clear();
     refreshNativeWindow();
   }, Qt::QueuedConnection);
+  // Search navigation changes the shared selection without a model snapshot.
+  // Refresh after BrowserController's queued pick has updated the browser too.
+  connect(m_controller->timeline(), &TimelineWidget::featuresClicked, this, [this] {
+    refreshNativeWindow();
+  }, Qt::QueuedConnection);
   connect(m_controller->timeline(), &TimelineWidget::searchChanged, this, [this] {
     auto* timeline = m_controller->timeline();
     QList<mac::NativeMacHistoryItem> results;
@@ -625,7 +630,6 @@ void MainWindow::refreshNativeInspector() {
   if (m_nativeIdlePage != page || !m_nativeIdleForm) {
     m_nativeIdleForm = createNativeWidgetView(page);
     m_nativeIdlePage = page;
-    m_nativeWindow->setInspectorView(m_nativeIdleForm ? m_nativeIdleForm->nativeView() : nullptr);
   } else {
     m_nativeIdleForm->refresh();
   }

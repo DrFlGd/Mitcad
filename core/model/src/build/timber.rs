@@ -6,11 +6,13 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::PlaceInput;
 use super::geometry::{V3, Z, add, cross, dot, inverse, scale, sub, unit, z_axis};
-use super::place::{JointPlan, RayPlan, SourceUse, Spot, refuse};
+use super::place::{JointPlan, LengthPlan, Plan, RayPlan, SourceUse, Spot, refuse};
 use crate::document::{Document, ModelError};
 use crate::features::bound_length::RayDirection;
 use crate::features::{FrameOverride, JointOrigin, OccurrencePath};
+use crate::ids::ComponentUid;
 use crate::joints::{JointKind, SlideAxis};
 use crate::kernel::{BoundingBox, Kernel};
 use crate::transform::Transform;
@@ -187,6 +189,213 @@ impl<K: Kernel> Document<K> {
             }
         };
         Ok(PointsPlan { spot })
+    }
+}
+
+/// How near a point must be to a member's box to be on it, mm.
+const ON: f64 = 1e-3;
+
+/// What the two points of a member by two points are on (mitcad#509).
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Between {
+    /// The member the start (`at.point`) and the end (`to.point`) are on
+    /// or in: its component and name.
+    pub on: [Option<(ComponentUid, String)>; 2],
+    /// Whether the new member's end at the start, at the end, was cut back
+    /// to the member it was in.
+    pub cut: [bool; 2],
+    /// Whether it lies on a plane (`at.geometry`); else it is free.
+    pub plane: bool,
+}
+
+/// A member of the design a point may be on: its box in its coordinates
+/// and where it is in the BUILD host.
+struct Near {
+    component: ComponentUid,
+    name: String,
+    placement: Transform,
+    bounds: BoundingBox,
+}
+
+impl Near {
+    /// Whether `point` (in the host) is in its box or on it.
+    fn holds(&self, point: V3) -> bool {
+        let p = inverse(&self.placement).apply_point(point);
+        (0..3).all(|i| p[i] >= self.bounds.min[i] - ON && p[i] <= self.bounds.max[i] + ON)
+    }
+
+    /// Whether `point` (in the host) is inside its box, not on its faces.
+    fn inside(&self, point: V3) -> bool {
+        let p = inverse(&self.placement).apply_point(point);
+        (0..3).all(|i| p[i] > self.bounds.min[i] + ON && p[i] < self.bounds.max[i] - ON)
+    }
+
+    /// Where a ray from `start` along `along` (in the host) runs through
+    /// its box: the distances along it where it enters and leaves, when it
+    /// runs through the inside between them (not along one of its faces).
+    fn through(&self, start: V3, along: V3, until: f64) -> Option<(f64, f64)> {
+        let to_local = inverse(&self.placement);
+        let o = to_local.apply_point(start);
+        let v = to_local.apply_vector(along);
+        let (mut enter, mut leave) = (f64::NEG_INFINITY, f64::INFINITY);
+        for i in 0..3 {
+            if v[i].abs() < 1e-12 {
+                if o[i] < self.bounds.min[i] || o[i] > self.bounds.max[i] {
+                    return None;
+                }
+                continue;
+            }
+            let a = (self.bounds.min[i] - o[i]) / v[i];
+            let b = (self.bounds.max[i] - o[i]) / v[i];
+            enter = enter.max(a.min(b));
+            leave = leave.min(a.max(b));
+        }
+        if enter > leave {
+            return None;
+        }
+        let middle = add(o, scale(v, (enter + leave.min(until)) / 2.0));
+        (0..3)
+            .all(|i| middle[i] > self.bounds.min[i] + ON && middle[i] < self.bounds.max[i] - ON)
+            .then_some((enter, leave))
+    }
+}
+
+impl<K: Kernel> Document<K> {
+    /// The members cut to length placed in the BUILD host, but `except`.
+    fn members_near(&self, except: Option<ComponentUid>) -> Vec<Near> {
+        self.build_parts_info()
+            .into_iter()
+            .filter(|info| info.is_cut_to_length() && Some(info.component) != except)
+            .filter_map(|info| {
+                let path = self.placed_in_host(info.component)?;
+                let bounds = self.part_bounds(info.component)?;
+                Some(Near {
+                    component: info.component,
+                    placement: self.path_transform(&path),
+                    name: info.name,
+                    bounds,
+                })
+            })
+            .collect()
+    }
+
+    /// Plans a placing as `build_place` makes it ([`Self::plan_place`]).
+    /// A member by two points without a `length` (mitcad#509) runs between
+    /// the members its points are in: an end whose point is inside another
+    /// member (not `except`, the member placed anew), while the other point
+    /// is not on it, is cut back to where its axis enters that member, a
+    /// square butt on its face (or the corner it closes, mitcad#492), so
+    /// that a member clicked between two members fits between them, not
+    /// into them. A free member (no plane) is cut so too where its point is
+    /// on a member's face and its axis runs through that member (a click
+    /// on its far side); on the near face it ends there already. Its
+    /// `points` stay the points given, to be placed anew from them.
+    pub(crate) fn plan_place_between(
+        &self,
+        input: &PlaceInput,
+        except: Option<ComponentUid>,
+    ) -> Result<Plan, ModelError> {
+        let mut plan = self.plan_place(input)?;
+        let (Some(to), None, None) = (&input.to, &input.length, &input.spacing) else {
+            return Ok(plan);
+        };
+        let Some(start) = input.at.as_ref().and_then(|a| a.point) else {
+            return Ok(plan);
+        };
+        let length = match &plan.length {
+            LengthPlan::Value(_, length) => Some(*length),
+            _ => None,
+        };
+        let Some(length) = length.filter(|_| plan.place == "points") else {
+            return Ok(plan);
+        };
+        let near = self.members_near(except);
+        let points = [start, to.point];
+        let mut between = Between {
+            on: points.map(|p| {
+                near.iter()
+                    .find(|m| m.holds(p))
+                    .map(|m| (m.component, m.name.clone()))
+            }),
+            cut: [false, false],
+            plane: input.at.as_ref().is_some_and(|a| a.geometry.is_some()),
+        };
+        // Its axis from end A (at the first point as `flip` orders them).
+        let end_a = plan.mounts.get("end_a").map_or([0.0; 3], |t| t.translation);
+        let a0 = plan.placement.apply_point(end_a);
+        let d = plan.placement.apply_vector(Z);
+        let a1 = add(a0, scale(d, length));
+        let back = scale(d, -1.0);
+        // The points given at end A and end B.
+        let flip = input.flip;
+        let (pa, pb) = if flip {
+            (points[1], points[0])
+        } else {
+            (points[0], points[1])
+        };
+        // How far end A moves along the axis, and where end B ends: an end
+        // whose point is inside a member (a centre line snapped to), or on
+        // its face with the axis running into it when the member is free
+        // (its axis through the points), while the other one is not on it.
+        // On its near face it ends there already. A member lying on a
+        // plane has its axis off the points: only a point inside counts
+        // (members lapped over each other on a plane stay so).
+        let free = !between.plane;
+        let at_member = |m: &Near, p: V3| m.inside(p) || (free && m.holds(p));
+        let (mut from, mut until) = (0.0_f64, length);
+        let mut cut = [false, false];
+        for m in &near {
+            if at_member(m, pa)
+                && !m.holds(pb)
+                && let Some((enter, _)) = m.through(a1, back, length)
+                && length - enter > from.max(1e-6)
+            {
+                from = length - enter;
+                cut[0] = true;
+            }
+            if at_member(m, pb)
+                && !m.holds(pa)
+                && let Some((enter, _)) = m.through(a0, d, length)
+                && enter < until.min(length - 1e-6)
+            {
+                until = enter;
+                cut[1] = true;
+            }
+        }
+        between.cut = if flip { [cut[1], cut[0]] } else { cut };
+        if !cut[0] && !cut[1] {
+            plan.between = Some(between);
+            return Ok(plan);
+        }
+        if until - from < 1.0 {
+            return Err(refuse(
+                "the members its points are in meet: nothing is left between them",
+            ));
+        }
+        // The points moved along the axis (it runs parallel to them).
+        let moved = [add(pa, scale(d, from)), add(pa, scale(d, until))];
+        let (start, end) = if flip {
+            (moved[1], moved[0])
+        } else {
+            (moved[0], moved[1])
+        };
+        let mut trimmed = input.clone();
+        let mut at = trimmed.at.clone().unwrap_or_default();
+        at.point = Some(start);
+        trimmed.at = Some(at);
+        trimmed.to = Some(PointTo { point: end });
+        let given = plan.points.take();
+        let mut again = self.plan_place(&trimmed)?;
+        again.points = given;
+        if cut[1] {
+            // Its far end is on the member's face now, however its axis
+            // crosses it.
+            again
+                .warnings
+                .retain(|w| !w.starts_with("its far end ends inside"));
+        }
+        again.between = Some(between);
+        Ok(again)
     }
 }
 
@@ -379,6 +588,7 @@ impl<K: Kernel> Document<K> {
                 kind: JointKind::Rigid,
                 slide: SlideAxis::Z,
                 own: None,
+                own_override: None,
                 b: b_origin,
                 flip: false,
                 angle: 0.0,
@@ -436,7 +646,7 @@ impl<K: Kernel> Document<K> {
         if let Some(config) = &input.config {
             base.part.config = Some(config.clone());
         }
-        let plan = self.plan_place(&base)?;
+        let plan = self.plan_place_between(&base, Some(component))?;
         let active = self.build_host();
         self.state().editable(active)?;
         let label = format!("Edit {}", info.name);

@@ -24,8 +24,103 @@ const PROJECT: &str = "c805df44";
 /// openings of several kinds (mitcad#345, mitcad#348).
 const SAMPLE: &str = "33271010";
 
+/// The 2024 basic architectural sample: walls named by their widths, a
+/// door type named by its width and height, structural angle sections and
+/// light fixtures with area and angle parameters (mitcad#501).
+const BASIC: &str = "bb62c161";
+
 fn project() -> Option<(PathBuf, String)> {
     corpus_file(PROJECT)
+}
+
+/// A property that is a length of `mm` millimetres.
+fn length_is(p: Option<&mitcad_model::properties::Property>, mm: f64, what: &str) {
+    quantity_is(p, "length", mm, what);
+}
+
+/// A property of a quantity type with a value in canonical units.
+fn quantity_is(p: Option<&mitcad_model::properties::Property>, ty: &str, value: f64, what: &str) {
+    use mitcad_model::properties::PropertyValue;
+    let p = p.unwrap_or_else(|| panic!("{what}: no {ty}"));
+    assert_eq!(p.ty, ty, "{what}: {p:?}");
+    let PropertyValue::Number(n) = p.value else {
+        panic!("{what}: {p:?}");
+    };
+    assert!(
+        (n - value).abs() <= 1e-6_f64.max(value.abs() * 1e-9),
+        "{what}: {n} is not {value}"
+    );
+}
+
+#[test]
+fn the_basic_sample_s_parameters_come_in_with_their_units() {
+    // mitcad#501: lengths, areas and angles as those quantities in mm, mm²
+    // and radians, checked against what the types' names say.
+    use mitcad_import::rvt::properties::{SetProperty, TYPE_SET, element_properties};
+    let Some((dir, path)) = corpus_file(BASIC) else {
+        eprintln!("MITCAD_RVT_CORPUS has no {BASIC}: skipped");
+        return;
+    };
+    let file = RvtFile::open(&dir.join(&path)).unwrap();
+    let schema = file.schema().unwrap();
+    let model = Model::read(&file, &schema).unwrap();
+    let get = |props: &[SetProperty], key: &str| {
+        props
+            .iter()
+            .find(|(set, p)| set == TYPE_SET && p.key == key)
+            .map(|(_, p)| p.clone())
+    };
+    let of_type = |name: &str| {
+        model
+            .elements
+            .iter()
+            .find(|e| !e.is_type && e.type_name.as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("no element of type {name}"))
+    };
+    // A door type `800 x 2100`: 800 mm wide, 2100 mm high.
+    let door = of_type("800 x 2100");
+    let props = element_properties(&model, door, None, None);
+    length_is(get(&props, "Width").as_ref(), 800.0, "door width");
+    length_is(get(&props, "Height").as_ref(), 2100.0, "door height");
+    // Walls of 300 mm and 120 mm.
+    for (name, mm) in [
+        ("Retaining - 300mm Concrete", 300.0),
+        ("Interior - Partition", 120.0),
+    ] {
+        let wall = of_type(name);
+        let props = element_properties(&model, wall, None, None);
+        length_is(get(&props, "Width").as_ref(), mm, name);
+    }
+    // A structural angle's section area (a family parameter of the area
+    // spec) of its type `L127X127X9.5`: 2350 mm², the metric tables' round
+    // value (0.0253 square feet as the file keeps it).
+    let column = model.element(708_715).unwrap();
+    let props = element_properties(&model, column, None, None);
+    quantity_is(
+        get(&props, "A").as_ref(),
+        "area",
+        2350.0,
+        "angle section area",
+    );
+    // A light fixture's rotation (a family parameter of the angle spec):
+    // 45°, a photovoltaic panel's angle 10°.
+    let fixture = model.element(757_198).unwrap();
+    let props = element_properties(&model, fixture, None, None);
+    let quarter = std::f64::consts::FRAC_PI_4;
+    quantity_is(
+        get(&props, "Rotation").as_ref(),
+        "angle",
+        quarter,
+        "rotation",
+    );
+    let panel = model.element(778_316).unwrap();
+    let props = element_properties(&model, panel, None, None);
+    quantity_is(
+        get(&props, "Solar Panel Angle").as_ref(),
+        "angle",
+        10f64.to_radians(),
+        "panel angle",
+    );
 }
 
 /// A corpus file by its content id: the corpus folder and its path there.
@@ -227,6 +322,73 @@ fn the_mit_project_by_level() {
         compared += 1;
     }
     assert_eq!(compared, 854);
+
+    // Every body has its element's identity, with the source rvt; family
+    // instances their instance and their type's parameters (mitcad#496).
+    use mitcad_model::properties::{PropertyOwner, PropertyValue, Source};
+    let store = document.property_store();
+    let mut instance = 0;
+    let mut typed = 0;
+    for body in document.bodies() {
+        let owner = PropertyOwner::Body(body.uid);
+        let id = store
+            .get(owner, "Identity", "ElementId")
+            .unwrap_or_else(|| panic!("{} has no ElementId", body.name));
+        assert_eq!(id.source, Source::Rvt);
+        let PropertyValue::Integer(id) = id.value else {
+            panic!("{}: ElementId {:?}", body.name, id.value);
+        };
+        assert!(body.name.contains(&id.to_string()), "{}: {id}", body.name);
+        assert!(
+            store.get(owner, "Identity", "Category").is_some(),
+            "{}",
+            body.name
+        );
+        let sets = store.sets(owner);
+        instance += usize::from(sets.iter().any(|s| s.name == "Instance Parameters"));
+        typed += usize::from(sets.iter().any(|s| s.name == "Type Parameters"));
+    }
+    assert!(instance > 0, "no element brought instance parameters");
+    assert!(typed > 0, "no element brought its type's parameters");
+    assert!(report.properties > 0);
+
+    // In their units (mitcad#501): the `3 x 8` doors' type is 8 ft high
+    // and 3 ft wide, the `6" Interior Partition` walls' type 6 in wide;
+    // a built-in parameter of an unknown kind stays a number in the
+    // file's internal units, marked so.
+    use mitcad_import::rvt::properties::{INSTANCE_SET, INTERNAL_UNITS, TYPE_SET};
+    let text_of = |owner, key: &str| match store.get(owner, "Identity", key).map(|p| &p.value) {
+        Some(PropertyValue::Text(t)) => t.clone(),
+        _ => String::new(),
+    };
+    let (mut doors, mut walls, mut unknown) = (0, 0, 0);
+    for body in document.bodies() {
+        let owner = PropertyOwner::Body(body.uid);
+        let ty = text_of(owner, "Type");
+        if ty == "3 x 8" && text_of(owner, "Category") == "OST_Doors" {
+            length_is(store.get(owner, TYPE_SET, "Height"), 2438.4, &body.name);
+            length_is(store.get(owner, TYPE_SET, "Width"), 914.4, &body.name);
+            doors += 1;
+        }
+        if ty == "6\" Interior Partition" {
+            length_is(store.get(owner, TYPE_SET, "Width"), 152.4, &body.name);
+            length_is(
+                store.get(owner, INSTANCE_SET, "Base Offset"),
+                0.0,
+                &body.name,
+            );
+            walls += 1;
+        }
+        if let Some(p) = store.get(owner, INSTANCE_SET, "Parameter -1012828") {
+            assert_eq!(p.ty, "number", "{}", body.name);
+            assert_eq!(p.unit.as_deref(), Some(INTERNAL_UNITS), "{}", body.name);
+            unknown += 1;
+        }
+    }
+    assert!(
+        doors > 0 && walls > 0 && unknown > 0,
+        "{doors} {walls} {unknown}"
+    );
 
     // The family elements come in with their geometry, not as boxes
     // (mitcad#333): doors, windows, curtain panels and mullions, furniture

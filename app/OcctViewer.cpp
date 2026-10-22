@@ -3639,6 +3639,8 @@ std::vector<gp_Pnt> OcctViewer::planePickCandidates(const gp_Pnt& origin, const 
 
 gp_Dir OcctViewer::viewUp() const { return m_view->Camera()->Up(); }
 
+gp_Dir OcctViewer::viewDirection() const { return m_view->Camera()->Direction(); }
+
 std::optional<SelectionItem> OcctViewer::itemAt(const QPointF& position) {
   if (m_view->Window().IsNull() || !QRectF(rect()).contains(position)) {
     return std::nullopt;

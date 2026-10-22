@@ -323,6 +323,47 @@ ProjectedItem SketchOp::projectBody(const BodyItem& item) {
   return out;
 }
 
+QString SketchOp::axisInput(const QString& pick) {
+  const QString name = axisPickName(pick);
+  if (name.isEmpty()) {
+    return pick;
+  }
+  // Made by an earlier pick of the same action, or there already.
+  const SketchModel& now = model();
+  const QString existing = name == QStringLiteral("origin") ? now.originPoint() : now.axisLine(name);
+  if (!existing.isEmpty()) {
+    return existing;
+  }
+  QJsonObject cmd = command(QStringLiteral("sketch.axis"));
+  cmd.insert(QStringLiteral("axis"), name);
+  // The action's undo step is named after what it makes, as with a
+  // projection made first.
+  const bool first = m_label.isEmpty();
+  QJsonObject result;
+  if (!run(cmd, &result)) {
+    return QString();
+  }
+  if (first) {
+    m_label.clear();
+  }
+  const QString made = result.value(QStringLiteral("entity")).toString();
+  // For UI tests: the axis or origin a pick made.
+  qDebug().noquote() << QStringLiteral("Made the sketch %1 for a pick: %2")
+                            .arg(name == QStringLiteral("origin") ? name : name + QStringLiteral(" axis"), made);
+  return made;
+}
+
+bool SketchOp::axisInputs(QStringList& picks) {
+  for (QString& pick : picks) {
+    const QString made = axisInput(pick);
+    if (made.isEmpty()) {
+      return false;
+    }
+    pick = made;
+  }
+  return true;
+}
+
 const SketchModel& SketchOp::model() {
   if (m_stale) {
     m_c.reload();
@@ -481,8 +522,15 @@ void SketchController::reload() {
     return;
   }
   try {
-    m_model.load(m_host.queryObject(
-        {{QStringLiteral("query"), QStringLiteral("sketch")}, {QStringLiteral("uid"), m_uid}}));
+    if (m_model.load(m_host.queryObject(
+            {{QStringLiteral("query"), QStringLiteral("sketch")}, {QStringLiteral("uid"), m_uid}}))) {
+      // The frame in the design, where the view shows the component
+      // (mitcad#505); the sketch coordinates stay the same.
+      const gp_Trsf placement = m_host.sketchPlacement(m_uid);
+      m_model.frame.origin.Transform(placement);
+      m_model.frame.x_axis.Transform(placement);
+      m_model.frame.y_axis.Transform(placement);
+    }
     const QJsonObject document = m_host.queryObject({{QStringLiteral("query"), QStringLiteral("document")}});
     const QJsonObject units = document.value(QStringLiteral("units")).toObject();
     // The same revision means the same definition (the body geometry read
@@ -1372,9 +1420,17 @@ QString SketchController::entityAt(const QPointF& screen, unsigned filter) const
   // Body geometry in the plane (mitcad#256) counts as this much further
   // than it is: the sketch's own entity at the same place wins.
   constexpr double kBodyTiePixels = 1.0;
+  // The sketch's origin and axes (mitcad#500) count as further still: any
+  // entity at the same place wins.
+  constexpr double kAxisTiePixels = 2.0;
   const bool body = (filter & PickBody) != 0;
+  const bool axes = (filter & PickAxes) != 0;
   if (filter & PickPoints) {
     for (const PointData& p : m_model.points) {
+      // An axis line's far end is not shown (mitcad#500).
+      if (!p.axis.isEmpty()) {
+        continue;
+      }
       const double d = screenDistance(toScreen(p.at), screen);
       if (d <= kPointPixels && d < bestDistance) {
         best = p.id;
@@ -1388,6 +1444,14 @@ QString SketchController::entityAt(const QPointF& screen, unsigned filter) const
         bestDistance = d + kBodyTiePixels;
       }
     }
+    if (axes && m_model.originPoint().isEmpty()) {
+      // The origin before anything made its point.
+      const double d = screenDistance(toScreen(V2{}), screen);
+      if (d <= kPointPixels && d + kAxisTiePixels < bestDistance) {
+        best = originPick();
+        bestDistance = d + kAxisTiePixels;
+      }
+    }
     if (!best.isEmpty()) {
       return best;
     }
@@ -1399,6 +1463,10 @@ QString SketchController::entityAt(const QPointF& screen, unsigned filter) const
     }
     const double px = pixel();
     for (const CurveData& c : m_model.curves) {
+      // An axis's line is the axis across the view, below.
+      if (!c.axis.isEmpty()) {
+        continue;
+      }
       const double d = c.curve.distanceTo(*raw) / px;
       if (d <= kCurvePixels && d < bestDistance) {
         best = c.id;
@@ -1414,6 +1482,26 @@ QString SketchController::entityAt(const QPointF& screen, unsigned filter) const
       if (d <= kCurvePixels && d + kBodyTiePixels < bestDistance) {
         best = BodyGeometry::itemId(i);
         bestDistance = d + kBodyTiePixels;
+      }
+    }
+    if (axes) {
+      // The axes across the view: the distance from the infinite line, in
+      // the view.
+      const QPointF origin = toScreen(V2{});
+      for (const QString& axis : {QStringLiteral("x"), QStringLiteral("y")}) {
+        const V2 step = axis == QStringLiteral("x") ? V2{100.0 * px, 0.0} : V2{0.0, 100.0 * px};
+        const QPointF along = toScreen(step) - origin;
+        const double length = std::hypot(along.x(), along.y());
+        if (length < 1.0) {
+          continue; // the sketch plane seen edge on
+        }
+        const QPointF off = screen - origin;
+        const double d = std::abs(along.x() * off.y() - along.y() * off.x()) / length;
+        if (d <= kCurvePixels && d + kAxisTiePixels < bestDistance) {
+          const QString line = m_model.axisLine(axis);
+          best = line.isEmpty() ? axisPick(axis) : line;
+          bestDistance = d + kAxisTiePixels;
+        }
       }
     }
   }

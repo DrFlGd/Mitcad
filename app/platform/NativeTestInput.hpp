@@ -21,6 +21,7 @@ namespace mitcad::mac::test {
 #if defined(Q_OS_MACOS) && defined(MITCAD_MACOS_NATIVE_UI)
 bool active();
 bool nativeFocused();
+bool applicationDelegate(QString& error);
 bool controlExists(const QString& identifier);
 bool click(const QString& identifier, QString& error);
 bool hover(const QString& identifier, bool enter, QString& error);
@@ -61,11 +62,13 @@ bool setFileDirectory(const QString& directory, QString& error);
 bool cancelFilePanel(QString& error);
 void focusMain();
 bool sendKey(int key, Qt::KeyboardModifiers modifiers, const QString& text);
+bool sendKeyEvent(int key, Qt::KeyboardModifiers modifiers, const QString& text);
 bool sendText(const QString& text);
 bool screenshot(const QString& path, QOpenGLWidget* viewport = nullptr);
 #else
 inline bool active() { return false; }
 inline bool nativeFocused() { return false; }
+inline bool applicationDelegate(QString&) { return false; }
 inline bool controlExists(const QString&) { return false; }
 inline bool click(const QString&, QString&) { return false; }
 inline bool hover(const QString&, bool, QString&) { return false; }
@@ -105,6 +108,7 @@ inline bool setFileDirectory(const QString&, QString&) { return false; }
 inline bool cancelFilePanel(QString&) { return false; }
 inline void focusMain() {}
 inline bool sendKey(int, Qt::KeyboardModifiers, const QString&) { return false; }
+inline bool sendKeyEvent(int, Qt::KeyboardModifiers, const QString&) { return false; }
 inline bool sendText(const QString&) { return false; }
 inline bool screenshot(const QString&, QOpenGLWidget* = nullptr) { return false; }
 #endif

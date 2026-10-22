@@ -391,6 +391,18 @@ kg/m³ (a number, or text with the unit `kg/m3`), a `moisture` in %.
   the head's bearing surface, z along the shank towards the tip, which is
   at z = `length`. A countersunk head lies under that surface (z > 0), the
   others on it (z < 0).
+  Timber's generated fasteners seat by `wood.seat`: `head_top` (wood
+  screws and nails by default), `head_underside` (pan, hex, washer, button
+  and socket heads by default), or a named mount frame whose z points
+  along the shaft. A `head_top` frame, when present, is exact even for an
+  oblique source; an older axis-aligned source needs no new frame, as the
+  body bounds supply its head top. `head_underside` uses the existing axis
+  bearing frame unless the source lists a frame with that name. Selecting
+  a row can override `seat`. A head behind the axis drives the tip deeper
+  by its height; nominal length still refers to the axis-to-tip distance.
+  Metal connector hole frames retain bearing placement. Generic non-wood
+  bolts and washers use their existing connector frames unchanged.
+
 - **A bracket, joist hanger or post base** (`role: "connector"`):
   `connector.placement: "outer"` (on the members' outer faces; `space`
   `outer`), `junctions` as other connectors (`L`, `T`; a post base

@@ -118,6 +118,9 @@ struct NativeMacWindowCallbacks {
 
 struct NativeMacWindowState;
 
+// In-process native input acceptance check; called by NativeTestInput.
+bool nativeWindowRefreshContract(void* window, QString& error);
+
 // Owns an AppKit window and its controls, but not the supplied Qt viewport.
 // The viewport must be a standalone QWidget containing only the CAD canvas
 // and CAD-specific overlays. Its public QWindow handle is embedded in a

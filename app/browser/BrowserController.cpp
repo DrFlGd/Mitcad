@@ -2,17 +2,23 @@
 #include "BrowserController.hpp"
 
 #include <algorithm>
+#include <cmath>
+#include <exception>
 #include <functional>
+#include <optional>
 #include <tuple>
 #include <utility>
 
 #include <QEvent>
 #include <QInputDialog>
 #include <QJsonArray>
+#include <QJsonObject>
+#include <QJsonValue>
 #include <QLineEdit>
 #include <QMenu>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QSet>
 #include <QToolButton>
 #include <QWidget>
 #include <QtLogging>
@@ -28,6 +34,7 @@
 #include "FindDialog.hpp"
 #include "ParametersDialog.hpp"
 #include "PolicyDialog.hpp"
+#include "ReorientDialog.hpp"
 #include "TimelineWidget.hpp"
 
 namespace mitcad {
@@ -182,6 +189,9 @@ void BrowserController::refresh(const DocumentSnapshot& snapshot) {
   }
   if (m_appearances && m_appearances->isVisible()) {
     m_appearances->refresh();
+  }
+  if (m_propertySets && m_propertySets->isVisible()) {
+    m_propertySets->refresh();
   }
   if (m_find) {
     m_find->setSnapshot(m_snapshot);
@@ -924,6 +934,14 @@ void BrowserController::browserMenu(const BrowserNode& node, const QPoint& at) {
     // Last, so that the entries above keep their places (mitcad#220).
     menu.separator();
     menu.add(QStringLiteral("component"), tr("Design Policy..."), [this, node] { openPolicy(node.uid); });
+    // The component's and the occurrence's properties (mitcad#496).
+    menu.add(QStringLiteral("parameters"), tr("Property Sets..."), [this, node] {
+      openPropertySets({QString(), node.occurrence, node.occurrence.isEmpty() ? node.uid : QString()});
+    });
+    // The whole design turned by quarter turns (mitcad#502).
+    if (root) {
+      menu.add(QStringLiteral("orientation-cube"), tr("Reorient Design..."), [this] { openReorient(); });
+    }
     break;
   }
   case BrowserNode::Type::Body: {
@@ -945,6 +963,9 @@ void BrowserController::browserMenu(const BrowserNode& node, const QPoint& at) {
     menu.add(QStringLiteral("appearance"), tr("Appearance..."), [this, node] {
       openAppearances({SelectionItem{SelectKind::Body, node.uid, QString(), QString()}});
     });
+    // Its properties, its occurrence's and its component's (mitcad#496).
+    menu.add(QStringLiteral("parameters"), tr("Property Sets..."),
+             [this, node] { openPropertySets({node.uid, node.occurrence, QString()}); });
     // A sheet-metal body (mitcad#210): its rules and Flat Pattern.
     if (const QJsonObject sheet = m_snapshot.sheet(node.uid); !sheet.isEmpty()) {
       const QString rules = sheet.value(QStringLiteral("rules")).toString();
@@ -1688,6 +1709,22 @@ void BrowserController::openFind() {
     connect(m_find, &FindDialog::selectRequested, this, later(&BrowserController::findSelect), Qt::QueuedConnection);
     connect(m_find, &FindDialog::selectionPicked, this, later(&BrowserController::findPicked), Qt::QueuedConnection);
     connect(m_find, &FindDialog::revealRequested, this, later(&BrowserController::findReveal), Qt::QueuedConnection);
+    // Property values (mitcad#496): the model's search.
+    m_find->setPropertySearch([this](const QString& text, QString* error) -> std::optional<QSet<QString>> {
+      try {
+        const QJsonObject answer =
+            m_host.model().queryObject({{QStringLiteral("query"), QStringLiteral("property_search")},
+                                        {QStringLiteral("text"), text}});
+        QSet<QString> owners;
+        for (const QJsonValue& match : answer.value(QStringLiteral("matches")).toArray()) {
+          owners.insert(match.toObject().value(QStringLiteral("owner")).toString());
+        }
+        return owners;
+      } catch (const std::exception& e) {
+        *error = QString::fromUtf8(e.what());
+        return std::nullopt;
+      }
+    });
   }
   m_find->setSnapshot(m_snapshot);
   showDialog(m_find);
@@ -1846,6 +1883,25 @@ void BrowserController::openAppearances(const Selection& targets) {
   m_appearances->setTargets(targets);
 }
 
+void BrowserController::openPropertySets(const PropertyTarget& target) {
+  if (!m_propertySets) {
+    m_propertySets = new PropertySetsDialog(m_host, m_window);
+  }
+  showDialog(m_propertySets);
+  if (!m_propertySets->testAttribute(Qt::WA_DontShowOnScreen)) {
+    m_propertySets->raise();
+    m_propertySets->activateWindow();
+  }
+  QStringList what;
+  for (const QString& part : {target.body, target.occurrence, target.component}) {
+    if (!part.isEmpty()) {
+      what << part;
+    }
+  }
+  qDebug().noquote() << QStringLiteral("Property Sets opened for %1").arg(what.join(QStringLiteral(", ")));
+  m_propertySets->setTarget(target);
+}
+
 void BrowserController::openPolicy(const QString& component) {
   if (!canChange()) {
     return;
@@ -1867,6 +1923,50 @@ void BrowserController::openPolicy(const QString& component) {
     qDebug().noquote() << QStringLiteral("Policy of %1 set: %2")
                               .arg(m_snapshot.componentName(component),
                                    preset.isEmpty() ? QStringLiteral("custom") : preset);
+  }
+}
+
+void BrowserController::openReorient() {
+  if (!canChange()) {
+    return;
+  }
+  ReorientDialog dialog([this](const QJsonObject& command,
+                               QJsonObject* result) { return m_host.runModelCommand(command, result); },
+                        [this] { return m_host.lastError(); }, m_window);
+  prepareModal(&dialog);
+  if (execDialog(&dialog) != QDialog::Accepted) {
+    return;
+  }
+  const QJsonObject result = dialog.result();
+  qDebug().noquote() << QStringLiteral("Reorient Design: %1").arg(result.value(QStringLiteral("turn")).toString());
+  // Where each body is now, for the log (UI tests read it).
+  const auto number = [](double v) {
+    const double rounded = std::round(v * 1e6) / 1e6;
+    return QString::number(rounded == 0.0 ? 0.0 : rounded, 'g', 12);
+  };
+  const auto point = [&number](const QJsonValue& value) {
+    const QJsonArray p = value.toArray();
+    return QStringLiteral("(%1, %2, %3)").arg(number(p.at(0).toDouble()), number(p.at(1).toDouble()),
+                                              number(p.at(2).toDouble()));
+  };
+  QJsonArray instances;
+  try {
+    instances = m_host.model()
+                    .query({{QStringLiteral("query"), QStringLiteral("instances")},
+                            {QStringLiteral("properties"), true}})
+                    .toArray();
+  } catch (const std::exception& e) {
+    qWarning().noquote() << QStringLiteral("Reorient Design: %1").arg(QString::fromUtf8(e.what()));
+  }
+  for (const QJsonValue& value : instances) {
+    const QJsonObject instance = value.toObject();
+    const QJsonObject box = instance.value(QStringLiteral("bbox")).toObject();
+    if (box.isEmpty()) {
+      continue;
+    }
+    qDebug().noquote() << QStringLiteral("Reorient Design body %1: box %2 - %3")
+                              .arg(instance.value(QStringLiteral("name")).toString(),
+                                   point(box.value(QStringLiteral("min"))), point(box.value(QStringLiteral("max"))));
   }
 }
 

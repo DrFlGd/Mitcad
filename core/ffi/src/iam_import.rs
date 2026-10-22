@@ -28,6 +28,14 @@
 //!   range box is compared too, for information: the file does not always
 //!   keep it up to date.
 //!
+//! - With `history` (mitcad#507), a part whose replay fails comes in as its
+//!   stored bodies (not with `no_fallback`), and so does a part without a
+//!   design history; each part's outcome (`replayed` or `bodies`, why) is in
+//!   the report. The referenced files are resolved before any part is
+//!   imported, so that the parts are counted: with `MITCAD_IMPORT_TRACE`
+//!   each part's import is traced as `part <n> of <m>: <file>` (the
+//!   application's progress).
+//!
 //! The `import_iam` document command (also `import_ipt` with an `.iam`
 //! file), `mitcad-cli import-iam`.
 
@@ -205,6 +213,11 @@ struct Import<'a> {
     stale: Checks,
     /// The occurrences (nested ones by path), for the report.
     list: Vec<Value>,
+    /// The part files found (counted before any is imported) and how many
+    /// have been imported so far, for the progress (mitcad#507).
+    parts_found: usize,
+    parts_started: usize,
+    started: std::time::Instant,
 }
 
 #[derive(Default)]
@@ -275,6 +288,54 @@ impl Import<'_> {
             self.occurrence(path, &assembly, occurrence, parent, prefix, depth);
         }
         self.stack.pop();
+    }
+
+    /// Resolves the files the assembly at `path` refers to as `place`
+    /// will (the same occurrences, each sub-assembly once), before any part
+    /// is imported, so that the parts can be counted for the progress
+    /// (mitcad#507). Says nothing: `place` warns of what it cannot read.
+    fn survey(&mut self, path: &Path, depth: usize, visited: &mut Vec<PathBuf>) {
+        if depth > MAX_DEPTH || visited.iter().any(|p| p == path) {
+            return;
+        }
+        visited.push(path.to_path_buf());
+        let Ok(file) = mitcad_ipt::IptFile::open(path) else {
+            return;
+        };
+        let Ok(assembly) = mitcad_ipt::assembly::read(&file) else {
+            return;
+        };
+        for o in &assembly.occurrences {
+            if o.suppressed() || o.transform.is_none() {
+                continue;
+            }
+            let Some(reference) = o.reference.and_then(|id| assembly.reference(id)) else {
+                continue;
+            };
+            let index = self.file(path, &assembly, reference, o);
+            if self.files[index].assembly
+                && let Some(sub) = self.files[index].path.clone()
+            {
+                self.survey(&sub, depth + 1, visited);
+            }
+        }
+    }
+
+    /// Traces a part's import (`MITCAD_IMPORT_TRACE`): `part <n> of <m>:
+    /// <file>` when it starts, `part <n> of <m>: <file>: <outcome> in <s> s`
+    /// when it is done (`outcome` None).
+    fn trace_part(&self, path: &Path, outcome: Option<(&str, f64)>) {
+        if std::env::var_os("MITCAD_IMPORT_TRACE").is_none() {
+            return;
+        }
+        let at = self.started.elapsed().as_secs_f64();
+        let (n, m, name) = (self.parts_started, self.parts_found, file_name(path));
+        match outcome {
+            None => eprintln!("import: [{at:.2}] part {n} of {m}: {name}"),
+            Some((outcome, seconds)) => {
+                eprintln!("import: [{at:.2}] part {n} of {m}: {name}: {outcome} in {seconds:.2} s")
+            }
+        }
     }
 
     fn occurrence(
@@ -397,7 +458,9 @@ impl Import<'_> {
             }
             (Some(path), false) => match self.part(path) {
                 Ok((part, summary)) => {
-                    let made = if self.options.history {
+                    // A replayed design is copied; stored bodies (a part
+                    // without a history, a replay that failed) are shared.
+                    let made = if summary["outcome"] == "replayed" {
                         self.doc
                             .0
                             .add_component_copy(&part.0, Some(&stem), parent, transform)
@@ -468,6 +531,26 @@ impl Import<'_> {
             .0
             .add_component(Some(stem), parent, transform)
             .map_err(|e| e.to_string())?;
+        // The part's properties (its root's) on its component (mitcad#496).
+        let root = mitcad_model::properties::PropertyOwner::Component(ComponentUid::ROOT);
+        let properties: Vec<_> = part
+            .0
+            .property_store()
+            .sets(root)
+            .iter()
+            .flat_map(|set| {
+                set.properties.iter().map(move |p| {
+                    (
+                        mitcad_model::properties::PropertyOwner::Component(made.0),
+                        set.name.clone(),
+                        p.clone(),
+                    )
+                })
+            })
+            .collect();
+        self.doc
+            .0
+            .import_properties(&format!("Import {stem}"), properties);
         if bodies.is_empty() {
             return Ok(made);
         }
@@ -501,11 +584,86 @@ impl Import<'_> {
     }
 
     /// Imports a part into a document of its own: the document and the
-    /// report's summary.
+    /// report's summary. With `history` the part's design is replayed; a
+    /// part whose replay fails comes in as its stored bodies (unless
+    /// `no_fallback`), and the summary says why (mitcad#507).
     fn part(&mut self, path: &Path) -> Result<(Document, Value), String> {
+        self.parts_started += 1;
+        self.trace_part(path, None);
+        let clock = std::time::Instant::now();
         let o = self.options;
+        let (part, report, reason) = if !o.history {
+            let (part, report) = self.import_part(path, true)?;
+            (part, report, Some("the stored bodies chosen".to_owned()))
+        } else {
+            match self.import_part(path, false) {
+                Ok((part, report)) => {
+                    let reason = if report["history"] != true {
+                        Some("the part has no design history".to_owned())
+                    } else if report["replayed"] == false {
+                        // A hang outside the items: the stored bodies came
+                        // in without the timeline.
+                        Some(format!("the replay hung: {}", hangs(&report).join("; ")))
+                    } else {
+                        None
+                    };
+                    (part, report, reason)
+                }
+                Err(e) if !o.no_fallback => {
+                    let (part, report) = self
+                        .import_part(path, true)
+                        .map_err(|b| format!("{e}; its stored bodies: {b}"))?;
+                    (part, report, Some(format!("the replay failed: {e}")))
+                }
+                Err(e) => return Err(e),
+            }
+        };
+        let imported = report["imported"].as_array().map_or(&[][..], Vec::as_slice);
+        let items = report["design"]["items"]
+            .as_array()
+            .map_or(&[][..], Vec::as_slice);
+        let outcome = if reason.is_none() {
+            "replayed"
+        } else {
+            "bodies"
+        };
+        let seconds = clock.elapsed().as_secs_f64();
+        let summary = json!({
+            "bodies": imported.len(),
+            "solids": imported.iter().filter(|b| b["solid"] == true).count(),
+            "valid": imported.iter().filter(|b| b["valid"] == true).count(),
+            "not_built": report["skipped"].as_array().map_or(0, Vec::len),
+            "history": report["history"] == true,
+            "outcome": outcome,
+            "reason": reason,
+            "items": items.len(),
+            "verified": items.iter().filter(|i| i["verified"] == true).count(),
+            "parameters": report["design"]["parameters"]["imported"],
+            "counts": report["counts"],
+            "features": report["features"],
+            "hangs": hangs(&report),
+            "warnings": report["warnings"].as_array().map_or(0, Vec::len),
+            "units": report["units"],
+            "material": report["material"],
+            "seconds": seconds,
+        });
+        self.trace_part(path, Some((outcome, seconds)));
+        Ok((part, summary))
+    }
+
+    /// The `.ipt` import of a part into a new document: the document and
+    /// the import's report. A test can make a part's replay fail
+    /// (`MITCAD_TEST_IAM_REPLAY_FAIL`, its file name).
+    fn import_part(&self, path: &Path, bodies_only: bool) -> Result<(Document, Value), String> {
+        let o = self.options;
+        if !bodies_only
+            && std::env::var("MITCAD_TEST_IAM_REPLAY_FAIL")
+                .is_ok_and(|name| name.eq_ignore_ascii_case(&file_name(path)))
+        {
+            return Err("MITCAD_TEST_IAM_REPLAY_FAIL names it".to_owned());
+        }
         let options = json!({
-            "bodies_only": !o.history, "no_verify": o.no_verify,
+            "bodies_only": bodies_only, "no_verify": o.no_verify,
             "no_fallback": o.no_fallback, "no_compare": o.no_compare,
             "time_limit": o.time_limit, "hang_limit": o.hang_limit,
         });
@@ -514,20 +672,7 @@ impl Import<'_> {
             .import_ipt(&path.to_string_lossy(), &options.to_string())
             .map_err(|e| e.0)?;
         let report: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
-        let imported = report["imported"].as_array().map_or(&[][..], Vec::as_slice);
-        let summary = json!({
-            "bodies": imported.len(),
-            "solids": imported.iter().filter(|b| b["solid"] == true).count(),
-            "valid": imported.iter().filter(|b| b["valid"] == true).count(),
-            "not_built": report["skipped"].as_array().map_or(0, Vec::len),
-            "history": report["history"] == true,
-            "counts": report["counts"],
-            "features": report["features"],
-            "warnings": report["warnings"].as_array().map_or(0, Vec::len),
-            "units": report["units"],
-            "material": report["material"],
-        });
-        Ok((part, summary))
+        Ok((part, report))
     }
 
     /// The file an occurrence refers to (found once per path).
@@ -846,6 +991,12 @@ impl Document {
         let label = format!("Import {name}");
         let mut warnings = Vec::new();
         let units = self.apply_part_units(&info, empty, &mut warnings)?;
+        // The assembly's properties on the design's root (mitcad#496); a
+        // part's come with its component.
+        self.0.import_properties(
+            &label,
+            crate::ipt_import::part_properties(&info, ComponentUid::ROOT),
+        );
         let here = top.parent().map(Path::to_path_buf).unwrap_or_default();
         let mut roots = vec![here];
         roots.extend(options.search.iter().map(PathBuf::from));
@@ -864,7 +1015,17 @@ impl Document {
             display: Checks::default(),
             stale: Checks::default(),
             list: Vec::new(),
+            parts_found: 0,
+            parts_started: 0,
+            started,
         };
+        // The files resolved first, so that the parts are counted.
+        import.survey(&top, 0, &mut Vec::new());
+        import.parts_found = import
+            .files
+            .iter()
+            .filter(|f| !f.assembly && f.path.is_some())
+            .count();
         import.place(&top, ComponentUid::ROOT, "", 0);
         let Import {
             files,
@@ -885,6 +1046,11 @@ impl Document {
         }
         let parts =
             |pred: &dyn Fn(&File) -> bool| files.iter().filter(|f| !f.assembly && pred(f)).count();
+        let came_in = |f: &File, outcome: &str| {
+            f.part
+                .as_ref()
+                .is_some_and(|p| p["outcome"].as_str() == Some(outcome))
+        };
         let file_values: Vec<Value> = files
             .iter()
             .map(|f| {
@@ -915,7 +1081,11 @@ impl Document {
                 "failed": parts(&|f| f.status.starts_with("failed")),
                 "identity_confirmed": parts(&|f| f.identity == Some(true)),
                 "identity_differs": parts(&|f| f.identity == Some(false)),
+                // How the imported parts came in (mitcad#507).
+                "replayed": parts(&|f| came_in(f, "replayed")),
+                "as_bodies": parts(&|f| came_in(f, "bodies")),
             },
+            "history": options.history,
             "assemblies": files.iter().filter(|f| f.assembly).count(),
             "resolution": resolution,
             "files": file_values,
@@ -973,6 +1143,19 @@ impl Document {
     }
 }
 
+/// The watchdog's notes in a part's import report: the geometry kernel
+/// calls that did not return (mitcad#507).
+fn hangs(report: &Value) -> Vec<String> {
+    report["warnings"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter(|w| w.contains("the geometry kernel did not return"))
+        .map(str::to_owned)
+        .collect()
+}
+
 /// The import report as text.
 fn summary(report: &Value) -> String {
     let n = |v: &Value| v.as_u64().unwrap_or(0);
@@ -1003,6 +1186,13 @@ fn summary(report: &Value) -> String {
         .map(|(k, v)| format!("{v} {k}"))
         .collect();
     text += &format!("  files found: {}\n", resolution.join(", "));
+    if report["history"] == true {
+        text += &format!(
+            "  parts with their design history: {} replayed, {} as their stored bodies\n",
+            n(&p["replayed"]),
+            n(&p["as_bodies"])
+        );
+    }
     for (key, what) in [
         ("display", "placements agree with the displayed ones"),
         ("boxes", "parts' bodies lie within their stored range boxes"),
@@ -1047,8 +1237,23 @@ fn summary(report: &Value) -> String {
                 .flatten()
                 .map(|(k, v)| format!("{v} {k}"))
                 .collect();
+            // With the history: replayed, or the stored bodies and why
+            // (mitcad#507).
+            let outcome = match (report["history"] == true, part["outcome"].as_str()) {
+                (true, Some("replayed")) => format!(
+                    "; replayed: {} items, {} verified, {} parameters",
+                    n(&part["items"]),
+                    n(&part["verified"]),
+                    n(&part["parameters"])
+                ),
+                (true, Some(_)) => format!(
+                    "; bodies only: {}",
+                    part["reason"].as_str().unwrap_or_default()
+                ),
+                _ => String::new(),
+            };
             format!(
-                ": {} bodies ({} valid, {} not built){}",
+                ": {} bodies ({} valid, {} not built){}{}",
                 n(&part["bodies"]),
                 n(&part["valid"]),
                 n(&part["not_built"]),
@@ -1056,7 +1261,8 @@ fn summary(report: &Value) -> String {
                     String::new()
                 } else {
                     format!("; features {}", counts.join(", "))
-                }
+                },
+                outcome
             )
         } else {
             String::new()

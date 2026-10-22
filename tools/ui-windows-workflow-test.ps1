@@ -19,7 +19,7 @@
 #      one .html file with the design's data, its size in the log); New;
 #      Import the STEP file: a base feature of the same volume; undo (Ctrl+Z).
 #   8. Version history (P12d, mitcad#89): the saved design opened with a
-#      change, Move to a Project makes its folder a Local project (New
+#      change, Save to Project makes its folder a Local project (the picker's New
 #      Project with the folder offered; the author typed there, as git's
 #      configuration is the test's own, without a user): the design as
 #      saved is the first version, the open one the second; Ctrl+S records
@@ -73,7 +73,7 @@ param(
 
 Ui-Init $App $Out $QtBin @{
   'sketch.create' = 'F7'; 'inspect.properties' = 'F8'; 'file.export' = 'F9'; 'file.import' = 'F11'
-  'file.move_to_project' = 'F12'; 'make.print3d' = 'Shift+F9'; 'file.project_settings' = 'Shift+F11'
+  'file.save_to_project' = 'F12'; 'make.print3d' = 'Shift+F9'; 'file.project_settings' = 'Shift+F11'
   'solid.helix' = 'Shift+F7' }
 $work = Join-Path $script:UiOut 'files'
 Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
@@ -262,14 +262,14 @@ Ui-ExpectLog "Opened $workLogged/block.mitcad" 'the saved design opened, changed
 Ui-ExpectLog 'Version status: none' 'outside projects: no version history'
 Ui-ExpectLog 'Project indicator: not in a project' 'the indicator says so'
 Ui-Mark
-Ui-Step 'move to a project (F12)'        { Ui-Key 'F12' }
-Ui-ExpectNew 'Move to a Project dialog: block.mitcad' 'asked where'
-Ui-Step 'a new project (Enter)'          { Ui-FocusDialog '^Move to a Project$'; Ui-Key 'Return' }
+Ui-Step 'save to project (F12)'          { Ui-Key 'F12' }
+Ui-ExpectNew 'Project picker Save to Project: a place, reading the projects' 'the project picker'
+Ui-Step 'a new project (Alt+P)'          { Ui-FocusDialog '^Save to Project$'; Ui-Key 'alt+p' }
 Ui-ExpectNew "New Project dialog: $workLogged" "the design's own folder offered"
 Ui-ExpectNew "New Project dialog: folder ${workLogged}: designs" 'a folder of designs'
 # git has no user and Mitcad no default author: the author's fields are
 # empty, and the name has the focus.
-Ui-FocusDialog '^Move to a Project$'
+Ui-FocusDialog '^Save to Project$'
 Ui-Step 'type the name'                  { Ui-Type 'Windows Tester' }
 Ui-Step 'the email (Tab)'                { Ui-Key 'Tab' }
 Ui-Step 'type the email'                 { Ui-Type 'windows@example.invalid' }

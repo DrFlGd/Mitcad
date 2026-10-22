@@ -6,6 +6,12 @@ expect-ever 'Native UI: AppKit shell with embedded OCCT viewport'
 expect-ever 'View area'
 sleep 800
 
+# AppKit keeps Qt's application lifecycle and secure restoration delegate.
+# Reopen must update Qt even when AppKit sends no separate activation event.
+mark
+expect-native-application-delegate
+expect-log 'Native application delegate: activation, deactivation, reopen and secure state passed'
+
 # Same-labelled command and secondary-dialog options retain their distinct
 # feature UIDs and native menu items across unchanged refreshes.
 expect-native-duplicate-choices
@@ -34,6 +40,12 @@ menu 'View/Hide Inspector'
 expect-native-visible native.inspectorCard false
 expect-native-layout
 
+# The expanded ribbon includes Surface. Keep compact/default layout checks
+# above, then give pinned Construct buttons room before testing their clicks.
+expect-native-visible native.ribbon.group.construct true
+native-resize 1600 820
+expect-native-layout
+
 # The ribbon preserves existing pinned membership and availability. Extrude
 # stays disabled until the document has profiles; Offset Plane can start on
 # an empty document. Box remains available through the native command menu.
@@ -51,6 +63,8 @@ expect-native-visible native.inspectorCard true
 expect-native-layout
 native-click commandCancel
 expect-log 'Command Offset Plane cancelled' 30
+native-resize 1280 820
+expect-native-layout
 
 # Create a box through the native menu and form, including input validation.
 mark
@@ -105,11 +119,14 @@ expect-log 'Edited F1' 30
 capture edited 'Body \S+ \(F1\.b0\): volume 20000\.000 -> ([0-9.]+) mm3' 30
 expect-near ${edited} 10000
 
-# Undo and redo from the native menu must restore the persisted field value.
+# Whole AppKit key events must run Undo and Redo exactly once, without the
+# test bridge offering key equivalents directly to the document window.
 focus-main
+capture-undo-depth beforeShortcutUndo
 mark
-native-action edit.undo
+native-key-event Ctrl+z
 expect-log 'Undo:' 30
+expect-undo-depth ${beforeShortcutUndo} -1
 native-activate native.history.F1
 expect-log 'Editing F1 with Box'
 expect-native-text input_height '^20(?:\.0*)?(?: mm)?$'
@@ -117,8 +134,9 @@ native-click commandCancel
 expect-log 'Command Box cancelled' 30
 focus-main
 mark
-native-action edit.redo
+native-key-event Ctrl+Shift+z
 expect-log 'Redo:' 30
+expect-undo-depth ${beforeShortcutUndo} 0
 native-activate native.history.F1
 expect-log 'Editing F1 with Box'
 expect-native-text input_height '^10(?:\.0*)?(?: mm)?$'
@@ -227,4 +245,4 @@ button '^Close$'
 focus-main
 screenshot '${MITCAD_TEST_WORK}/native-macos.png'
 expect-file '${MITCAD_TEST_WORK}/native-macos.png'
-expect-never 'Native Mac canvas:|OCCT view event failed|TestDriver: FAIL'
+expect-never 'Native Mac canvas:|OCCT view event failed|TestDriver: FAIL|Secure coding is automatically enabled for restorable state'

@@ -92,7 +92,9 @@ lume get mitcad-mac                      # the guest's IP address
 ```
 
 No shared folders or clipboard; turn on Remote Login and install the Xcode
-Command Line Tools, including the Metal SDK headers and frameworks. The
+Command Line Tools with the macOS 27 SDK or newer, including the Metal SDK
+headers and frameworks. The deployment target remains macOS 14.4; newer
+AppKit APIs use runtime availability checks. The
 CPU and Metal dependency builds use those tools. Open Image Denoise's
 Metal device additionally needs Apple's offline `metal` and `metallib`
 tools, supplied by Xcode or a separately installed Metal toolchain. Check

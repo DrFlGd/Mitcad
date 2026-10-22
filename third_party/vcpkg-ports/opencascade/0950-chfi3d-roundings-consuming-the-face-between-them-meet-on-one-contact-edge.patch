@@ -1,0 +1,310 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: the roundings of both edges of a face exactly as wide as the two,
+which take the face away, their contacts along each other (mitcad#343).
+
+The case: windows in a ring wall 3 thick (radii 112 and 115), each
+window's floor and ceiling rounded with 1.5 on both edges, ending at the
+pillars' full-rounded ends; the windows are a circular pattern's copies.
+Both roundings are halves of one torus (113.5, 1.5), and their contacts on
+the floor lie along each other at the wall's middle, ending at one point
+on the floor's arc with the pillar's end. The bodies stored in the files
+have the torus and no floor.
+
+- ChFi3d_StripeEdgeInter: two stripes whose contacts on a common face
+  overlap all along their ranges (one segment covering both, within a
+  hundredth of each range) do not clash: they meet along their contacts.
+  Before, OCCT took them for roundings too big for the face and failed
+  ("fillets have too big radiuses").
+- ChFi3d_Builder::Compute (joinEndsAlongContacts, after the stripes are in
+  the data structure): for two stripes of one piece each whose contacts on
+  a face lie along each other within ten times the approximation tolerance,
+  the points their corners made where the contacts end on an edge of that
+  face are made one, and that edge leaves the face on both sides of them
+  (EXTERNAL); where both ends are joined, the second stripe's contact edge
+  is replaced by the first's (its curve on the second blend projected
+  anew, its transition turned where the curves run opposite ways), and the
+  face has that edge on both sides. Before, each corner made its own point
+  and each stripe its own contact edge: the face came out as a sliver of no
+  area between them, or with the arc's pieces left on it and on the face
+  at the end (an invalid result), depending on the copy of the window.
+
+On the design's body before the item, the rounding of the four windows'
+floors and ceilings (48 edges): valid, every face on the stored body's
+within 1e-6 mm both ways, the change of volume -243.0297 against the
+file's -243.0189 mm3; before, two of the four windows failed. Synthetic:
+five windows with pillar ends in halves, both sills rounded with OCCT's
+fillet alone: valid, the material taken within 2e-3 mm3 of the integral
+over the sills' outlines; before, the fillet failed.
+
+Upstream: new.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.cxx
+index 2104b967..bdcfd871 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.cxx
+@@ -28,6 +28,7 @@
+ #include <Geom2d_TrimmedCurve.hxx>
+ #include <GeomAPI_ProjectPointOnSurf.hxx>
+ #include <GeomProjLib.hxx>
++#include <TopOpeBRepDS_SurfaceCurveInterference.hxx>
+ #include <BRep_Tool.hxx>
+ #include <BRepTopAdaptor_TopolTool.hxx>
+ #include <GeomAPI_ProjectPointOnCurve.hxx>
+@@ -1277,6 +1278,204 @@ static void redirectPoint(TopOpeBRepDS_DataStructure& DStr, const int theOld, co
+   }
+ }
+ 
++// Whether the contact of SurfData A on its side onA lies along the contact
++// of SurfData B on its side onB, within Tol at points all along A's.
++static bool contactAlong(const TopOpeBRepDS_DataStructure&   DStr,
++                         const occ::handle<ChFiDS_SurfData>& A,
++                         const int                           onA,
++                         const occ::handle<ChFiDS_SurfData>& B,
++                         const int                           onB,
++                         const double                        Tol)
++{
++  const ChFiDS_FaceInterference& IA = A->Interference(onA);
++  const ChFiDS_FaceInterference& IB = B->Interference(onB);
++  if (IA.LineIndex() <= 0 || IB.LineIndex() <= 0)
++  {
++    return false;
++  }
++  const occ::handle<Geom_Curve>& CA = DStr.Curve(IA.LineIndex()).Curve();
++  const occ::handle<Geom_Curve>& CB = DStr.Curve(IB.LineIndex()).Curve();
++  if (CA.IsNull() || CB.IsNull())
++  {
++    return false;
++  }
++  const double ub1 = std::min(IB.FirstParameter(), IB.LastParameter());
++  const double ub2 = std::max(IB.FirstParameter(), IB.LastParameter());
++  for (int i = 0; i <= 4; i++)
++  {
++    const gp_Pnt Pa = CA->Value(IA.FirstParameter() + (IA.LastParameter() - IA.FirstParameter()) * i / 4.);
++    GeomAPI_ProjectPointOnCurve aProj(Pa, CB, ub1, ub2);
++    if (aProj.NbPoints() == 0 || aProj.LowerDistance() > Tol)
++    {
++      return false;
++    }
++  }
++  return true;
++}
++
++// Two stripes of one piece each whose contacts on a face lie along each other
++// all the way (two roundings that consume the face between them, a strip as
++// wide as both): each stripe's corner made its own point where the contacts
++// end on an edge of that face, each cutting the edge for its own side, and
++// each its own contact edge: the face came out as a sliver of no area
++// between them, or with that edge's pieces left. The points are made one,
++// the edge leaves the face on both sides of them, and where both ends meet
++// the contacts are one edge, A's, bounding both blends and leaving the face
++// on both sides: the face is gone.
++static void joinEndsAlongContacts(TopOpeBRepDS_DataStructure&                         DStr,
++                                  const NCollection_List<occ::handle<ChFiDS_Stripe>>& theStripes,
++                                  const double                                        Tol)
++{
++  for (NCollection_List<occ::handle<ChFiDS_Stripe>>::Iterator itA(theStripes); itA.More(); itA.Next())
++  {
++    const occ::handle<ChFiDS_Stripe>& A = itA.Value();
++    if (A->SetOfSurfData().IsNull() || A->SetOfSurfData()->Length() != 1)
++    {
++      continue;
++    }
++    NCollection_List<occ::handle<ChFiDS_Stripe>>::Iterator itB = itA;
++    for (itB.Next(); itB.More(); itB.Next())
++    {
++      const occ::handle<ChFiDS_Stripe>& B = itB.Value();
++      if (B->SetOfSurfData().IsNull() || B->SetOfSurfData()->Length() != 1)
++      {
++        continue;
++      }
++      const occ::handle<ChFiDS_SurfData>& a = A->SetOfSurfData()->Value(1);
++      const occ::handle<ChFiDS_SurfData>& b = B->SetOfSurfData()->Value(1);
++      for (int ka = 1; ka <= 2; ka++)
++      {
++        for (int kb = 1; kb <= 2; kb++)
++        {
++          if (a->Index(ka) <= 0 || a->Index(ka) != b->Index(kb) || a->IsOnCurve(ka) || b->IsOnCurve(kb)
++              || !contactAlong(DStr, a, ka, b, kb, Tol) || !contactAlong(DStr, b, kb, a, ka, Tol))
++          {
++            continue;
++          }
++          int aJoined = 0;
++          for (const bool fa : {true, false})
++          {
++            for (const bool fb : {true, false})
++            {
++              const ChFiDS_CommonPoint& Pa = a->Vertex(fa, ka);
++              const ChFiDS_CommonPoint& Pb = b->Vertex(fb, kb);
++              const int                 ia = A->IndexPoint(fa, ka);
++              const int                 ib = B->IndexPoint(fb, kb);
++              if (Pa.IsVertex() || Pb.IsVertex() || !Pa.IsOnArc() || !Pb.IsOnArc() || !Pa.Arc().IsSame(Pb.Arc())
++                  || ia <= 0 || ib <= 0 || ia > DStr.NbPoints() || ib > DStr.NbPoints()
++                  || DStr.Point(ia).Point().Distance(DStr.Point(ib).Point()) > Tol)
++              {
++                continue;
++              }
++              if (ia != ib)
++              {
++                redirectPoint(DStr, ib, ia);
++                B->SetIndexPoint(ia, fb, kb);
++              }
++              aJoined++;
++              // (The edge leaves the face on both sides of the point.)
++              if (!DStr.HasShape(Pa.Arc()))
++              {
++                continue;
++              }
++              for (NCollection_List<occ::handle<TopOpeBRepDS_Interference>>::Iterator it(
++                     DStr.ChangeShapeInterferences(Pa.Arc()));
++                   it.More();
++                   it.Next())
++              {
++                if (it.Value()->GeometryType() == TopOpeBRepDS_POINT && it.Value()->Geometry() == ia)
++                {
++                  it.ChangeValue()->ChangeTransition() = TopOpeBRepDS_Transition(TopAbs_EXTERNAL);
++                }
++              }
++            }
++          }
++          if (aJoined < 2)
++          {
++            continue;
++          }
++          // Both ends one: the two contacts are one edge, A's, which bounds
++          // both blends and leaves the face on both sides (the face is gone).
++          const int ca = a->Interference(ka).LineIndex(), cb = b->Interference(kb).LineIndex();
++          const occ::handle<Geom_Curve>& Ca = DStr.Curve(ca).Curve();
++          const occ::handle<Geom_Curve>& Cb = DStr.Curve(cb).Curve();
++          const occ::handle<Geom_Surface>& Sb = DStr.Surface(b->Surf()).Surface();
++          if (ca == cb || Ca.IsNull() || Cb.IsNull() || Sb.IsNull())
++          {
++            continue;
++          }
++          const double fA = a->Interference(ka).FirstParameter(), lA = a->Interference(ka).LastParameter();
++          const double fB = b->Interference(kb).FirstParameter(), lB = b->Interference(kb).LastParameter();
++          // (Whether they run the same way.)
++          gp_Pnt pA, pB;
++          gp_Vec tA, tB;
++          Ca->D1(0.5 * (fA + lA), pA, tA);
++          GeomAPI_ProjectPointOnCurve onB(pA, Cb, std::min(fB, lB), std::max(fB, lB));
++          if (onB.NbPoints() == 0)
++          {
++            continue;
++          }
++          Cb->D1(onB.LowerDistanceParameter(), pB, tB);
++          const bool aSame = tA.Dot(tB) > 0.;
++          occ::handle<Geom2d_Curve> aPC;
++          try
++          {
++            OCC_CATCH_SIGNALS
++            aPC = GeomProjLib::Curve2d(Ca, fA, lA, Sb);
++          }
++          catch (Standard_Failure const&)
++          {
++            aPC.Nullify();
++          }
++          if (aPC.IsNull())
++          {
++            continue;
++          }
++          for (NCollection_List<occ::handle<TopOpeBRepDS_Interference>>::Iterator it(
++                 DStr.ChangeSurfaceInterferences(b->Surf()));
++               it.More();
++               it.Next())
++          {
++            if (it.Value()->GeometryType() != TopOpeBRepDS_CURVE || it.Value()->Geometry() != cb)
++            {
++              continue;
++            }
++            it.ChangeValue()->Geometry(ca);
++            occ::handle<TopOpeBRepDS_SurfaceCurveInterference> aSCI =
++              occ::down_cast<TopOpeBRepDS_SurfaceCurveInterference>(it.Value());
++            if (!aSCI.IsNull())
++            {
++              aSCI->PCurve(aPC);
++            }
++            if (!aSame)
++            {
++              const TopAbs_Orientation anO = it.Value()->Transition().Orientation(TopAbs_IN);
++              it.ChangeValue()->ChangeTransition() = TopOpeBRepDS_Transition(TopAbs::Reverse(anO));
++            }
++          }
++          // (The face: A's curve on both sides, B's gone.)
++          NCollection_List<occ::handle<TopOpeBRepDS_Interference>>& aOnFace =
++            DStr.ChangeShapeInterferences(a->Index(ka));
++          for (NCollection_List<occ::handle<TopOpeBRepDS_Interference>>::Iterator it(aOnFace); it.More();)
++          {
++            if (it.Value()->GeometryType() == TopOpeBRepDS_CURVE && it.Value()->Geometry() == cb)
++            {
++              aOnFace.Remove(it);
++              continue;
++            }
++            if (it.Value()->GeometryType() == TopOpeBRepDS_CURVE && it.Value()->Geometry() == ca)
++            {
++              it.ChangeValue()->ChangeTransition() = TopOpeBRepDS_Transition(TopAbs_EXTERNAL);
++            }
++            it.Next();
++          }
++          DStr.ChangeCurveInterferences(cb).Clear();
++        }
++      }
++    }
++  }
++}
++
+ // The part of SurfData Fd after the section through parameter t of its line
+ // on side ons (inserted after Fd by the caller); Fd keeps the part before.
+ // Both are on Fd's surface, so that they make one face with no section
+@@ -2804,6 +3003,9 @@ void ChFi3d_Builder::Compute()
+     if (done)
+     {
+       turnRidesAgainst(DStr, myRideStripes);
++      // (Roundings that consume the face between them meet where their
++      // contacts end.)
++      joinEndsAlongContacts(DStr, myListStripe, 10. * tolapp3d);
+     }
+     if (done)
+     {
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
+index 9927b376..1647e27b 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
+@@ -14,6 +14,8 @@
+ // Alternatively, this file may be used under the terms of Open CASCADE
+ // commercial license or contractual agreement.
+ 
++#include <IntRes2d_IntersectionSegment.hxx>
++
+ //  modified by ofv - Thu Feb 26 11:18:16 2004 OCC5246
+ //  Modified by skv - Fri Oct 24 14:24:47 2003 OCC4077
+ //  Modified by skv - Mon Jun 16 15:50:44 2003 OCC615
+@@ -5250,6 +5252,28 @@ void ChFi3d_StripeEdgeInter(const occ::handle<ChFiDS_Stripe>& theStripe1,
+                                    aFI2.FirstParameter(),
+                                    aFI2.LastParameter());
+       anIntersector.Perform(aPCurve1, aPCurve2, tol2d, Precision::PConfusion());
++      // (Two roundings that consume the face between them meet along their
++      // contacts, which lie along each other all the way (a strip as wide
++      // as the two roundings, rounded on both edges): no clash.)
++      if (anIntersector.NbPoints() == 0 && anIntersector.NbSegments() == 1)
++      {
++        const IntRes2d_IntersectionSegment& aSeg = anIntersector.Segment(1);
++        if (aSeg.HasFirstPoint() && aSeg.HasLastPoint())
++        {
++          const double aT1a = std::min(aSeg.FirstPoint().ParamOnFirst(), aSeg.LastPoint().ParamOnFirst());
++          const double aT1b = std::max(aSeg.FirstPoint().ParamOnFirst(), aSeg.LastPoint().ParamOnFirst());
++          const double aT2a = std::min(aSeg.FirstPoint().ParamOnSecond(), aSeg.LastPoint().ParamOnSecond());
++          const double aT2b = std::max(aSeg.FirstPoint().ParamOnSecond(), aSeg.LastPoint().ParamOnSecond());
++          // (The whole of both: within a hundredth of each range.)
++          const double aL1 = aFI1.LastParameter() - aFI1.FirstParameter();
++          const double aL2 = aFI2.LastParameter() - aFI2.FirstParameter();
++          if (aT1a - aFI1.FirstParameter() <= 0.01 * aL1 && aFI1.LastParameter() - aT1b <= 0.01 * aL1
++              && aT2a - aFI2.FirstParameter() <= 0.01 * aL2 && aFI2.LastParameter() - aT2b <= 0.01 * aL2)
++          {
++            continue;
++          }
++        }
++      }
+       if (anIntersector.NbSegments() > 0 || anIntersector.NbPoints() > 0)
+       {
+         throw StdFail_NotDone("StripeEdgeInter : fillets have too big radiuses");

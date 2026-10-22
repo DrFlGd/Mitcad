@@ -22,6 +22,7 @@
 #include <QOpenGLWidget>
 #include <QPointingDevice>
 #include <QPointer>
+#include <QPalette>
 #include <QSet>
 #include <QWidget>
 #include <QWindow>
@@ -92,6 +93,7 @@ struct NativeMacWindowState;
   BOOL pressed;
 }
 @property(nonatomic, copy) NSString* featureKey;
+@property(nonatomic, copy) NSString* statusKey;
 - (void)selectHistoryFeature;
 - (void)activateHistoryFeature;
 - (void)reorderHistoryFeatureToIndex:(NSInteger)index;
@@ -182,7 +184,7 @@ NSImage* symbol(const QString& name, NSString* description = nil) {
   return image;
 }
 
-NSImage* actionImage(const NativeMacAction& action) {
+NSImage* renderActionImage(const NativeMacAction& action) {
   if (!action.symbol.isEmpty()) {
     NSImage* image = [NSImage imageWithSystemSymbolName:ns(action.symbol) accessibilityDescription:ns(action.label)];
     if (image) { [image setTemplate:YES]; return image; }
@@ -292,7 +294,6 @@ MITCADFloatingCard* floatingCard(NSString* identifier) {
   card.layer.shadowOffset = CGSizeMake(0, -3);
   NSView* body = [[MITCADInspectorDocumentView alloc] initWithFrame:NSZeroRect];
   card.body = body;
-#if __MAC_OS_X_VERSION_MAX_ALLOWED >= 260000
   if (@available(macOS 26.0, *)) {
     NSGlassEffectView* glass = [[NSGlassEffectView alloc] initWithFrame:NSZeroRect];
     glass.style = NSGlassEffectViewStyleRegular;
@@ -301,7 +302,6 @@ MITCADFloatingCard* floatingCard(NSString* identifier) {
     fill(glass, card);
     return card;
   }
-#endif
   NSVisualEffectView* material = [[NSVisualEffectView alloc] initWithFrame:NSZeroRect];
   material.material = NSVisualEffectMaterialPopover;
   material.blendingMode = NSVisualEffectBlendingModeWithinWindow;
@@ -356,7 +356,11 @@ struct NativeMacWindowState {
   NativeMacWindowCallbacks callbacks;
   QString error;
   QList<NativeMacAction> actions;
+  QList<QList<QKeySequence>> actionShortcuts;
   QHash<QString, int> actionIndex;
+  quint64 shortcutDispatchCount = 0;
+  NSCache<NSString*, NSImage*>* __strong actionImages = [[NSCache alloc] init];
+  qint64 imagePaletteKey = 0;
   QList<NativeMacTreeItem> treeItems;
   QHash<QString, int> treeIndex;
   QList<NativeMacHistoryItem> historyItems;
@@ -380,9 +384,21 @@ struct NativeMacWindowState {
   bool closing = false;
   bool frameInitialized = false;
   bool layingOut = false;
+  QSize viewportSize;
+  CGFloat viewportScale = 0;
+  bool historyAppearanceValid = false;
+  bool historyAppearanceCanChange = false;
+  bool historyAppearanceBlocked = false;
+  bool historyAppearanceDragging = false;
+  int historyAppearanceMarker = -1;
+  QStringList historyAppearanceSelection;
+  QSet<QString> historyAppearanceMatches;
+  qint64 historyAppearancePaletteKey = 0;
   QPointer<QWidget> gestureReceiver;
   unsigned gestureKinds = 0;
 
+  NSEvent* __strong lastShortcutEvent = nil;
+  bool lastShortcutHandled = false;
   NSWindow* __strong window = nil;
   MITCADNativeWindowDelegate* __strong delegate = nil;
   MITCADViewportHost* __strong viewportHost = nil;
@@ -428,6 +444,7 @@ struct NativeMacWindowState {
 
   explicit NativeMacWindowState(QWidget* widget, NativeMacWindowCallbacks calls)
       : viewport(widget), callbacks(std::move(calls)) {
+    actionImages.countLimit = 1024;
     delegate = [[MITCADNativeWindowDelegate alloc] init];
     delegate->state = this;
     previousAppDelegate = NSApp.delegate;
@@ -487,6 +504,28 @@ struct NativeMacWindowState {
     return found == actionIndex.cend() ? nullptr : &actions[*found];
   }
 
+  NSImage* actionImage(const NativeMacAction& item, int size = 24) {
+    const qint64 paletteKey = QApplication::palette().cacheKey();
+    if (imagePaletteKey != paletteKey) {
+      [actionImages removeAllObjects];
+      imagePaletteKey = paletteKey;
+    }
+    // Each cached image has one immutable logical size: ribbon and history
+    // controls must not resize artwork shared with a menu or toolbar item.
+    NSString* key = ns(QStringLiteral("%1/%2/%3/%4/%5/%6")
+                          .arg(item.icon.cacheKey()).arg(paletteKey).arg(item.iconTemplate)
+                          .arg(size).arg(item.symbol.size()).arg(item.symbol));
+    NSImage* image = [actionImages objectForKey:key];
+    if (!image) {
+      image = [renderActionImage(item) copy];
+      image.size = NSMakeSize(size, size);
+      // Labels belong to the controls; one artwork may serve many commands.
+      image.accessibilityDescription = nil;
+      [actionImages setObject:image forKey:key];
+    }
+    return image;
+  }
+
   const NativeMacTreeItem* treeItem(NSString* key) const {
     const auto found = treeIndex.constFind(qt(key));
     return found == treeIndex.cend() ? nullptr : &treeItems[*found];
@@ -529,7 +568,19 @@ struct NativeMacWindowState {
     return false;
   }
 
+  bool dispatchShortcutOnce(NSEvent* event) {
+    if (event.type != NSEventTypeKeyDown) return false;
+    // AppKit can offer one event as a key equivalent and through sendEvent:.
+    // Keep both entry points for plain keys, but inspect each event once.
+    if (event == lastShortcutEvent) return lastShortcutHandled;
+    const bool handled = dispatchShortcut(event);
+    lastShortcutEvent = event;
+    lastShortcutHandled = handled;
+    return handled;
+  }
+
   bool dispatchShortcut(NSEvent* event) {
+    ++shortcutDispatchCount;
     if (event.type != NSEventTypeKeyDown || event.window != window ||
         closing || nativeModalBlocked() || QApplication::activeModalWidget() || textEditing()) return false;
     const QKeySequence pressed = keySequence(event);
@@ -571,10 +622,11 @@ struct NativeMacWindowState {
       }
     }
     const NativeMacAction* match = nullptr;
-    for (const auto& candidate : actions) {
+    for (int index = 0; index < actions.size(); ++index) {
+      const auto& candidate = actions[index];
       if (!candidate.enabled || candidate.id == QStringLiteral("file.close")) continue;
-      for (const QString& shortcut : candidate.shortcuts) {
-        if (QKeySequence(shortcut, QKeySequence::PortableText) != pressed) continue;
+      for (const QKeySequence& shortcut : actionShortcuts[index]) {
+        if (shortcut != pressed) continue;
         if (match && match->id != candidate.id) return false;
         match = &candidate;
       }
@@ -657,10 +709,24 @@ struct NativeMacWindowState {
 
   void updateHistoryAppearance() {
     const bool canChange = historyCanChange();
+    const bool blocked = nativeModalBlocked();
+    const qint64 paletteKey = QApplication::palette().cacheKey();
+    if (historyAppearanceValid && historyAppearanceCanChange == canChange &&
+        historyAppearanceBlocked == blocked && historyAppearanceDragging == historyMarkerDragging &&
+        historyAppearanceMarker == historyMarker && historyAppearanceSelection == selectedHistory &&
+        historyAppearanceMatches == timelineMatches && historyAppearancePaletteKey == paletteKey) return;
+    historyAppearanceValid = true;
+    historyAppearanceCanChange = canChange;
+    historyAppearanceBlocked = blocked;
+    historyAppearanceDragging = historyMarkerDragging;
+    historyAppearanceMarker = historyMarker;
+    historyAppearanceSelection = selectedHistory;
+    historyAppearanceMatches = timelineMatches;
+    historyAppearancePaletteKey = paletteKey;
     for (int index = 0; index < historyItems.size(); ++index) {
       const auto& item = historyItems[index];
       MITCADHistoryFeatureButton* button = historyButtons[ns(item.id)];
-      button.enabled = item.enabled && !item.filtered && !nativeModalBlocked();
+      button.enabled = item.enabled && !item.filtered && !blocked;
       button.state = selectedHistory.contains(item.id) ? NSControlStateValueOn : NSControlStateValueOff;
       button.wantsLayer = YES;
       button.layer.cornerRadius = 5;
@@ -682,7 +748,7 @@ struct NativeMacWindowState {
     historyMarkerButton.toolTip = ns(QStringLiteral("History marker: %1 of %2\nDrag to roll back or forward%3")
                                       .arg(historyMarker).arg(historyItems.size())
                                       .arg(hiddenAfter > 0 ? QStringLiteral("\n%1 hidden feature(s) after the marker").arg(hiddenAfter) : QString()));
-    historyFilterButton.enabled = !nativeModalBlocked() && !historyMarkerDragging;
+    historyFilterButton.enabled = !blocked && !historyMarkerDragging;
     for (NSButton* button in historySteps) {
       const bool beginning = button.tag < 2;
       button.enabled = canChange && !historyMarkerDragging &&
@@ -811,6 +877,15 @@ struct NativeMacWindowState {
   }
 
   void rebuildHistory(const QList<NativeMacHistoryItem>& items, int marker) {
+    if (items.size() != historyItems.size()) historyAppearanceValid = false;
+    else for (int index = 0; index < items.size(); ++index) {
+      const auto& a = items[index]; const auto& b = historyItems[index];
+      if (a.id != b.id || a.title != b.title || a.status != b.status ||
+          a.suppressed != b.suppressed || a.enabled != b.enabled || a.filtered != b.filtered) {
+        historyAppearanceValid = false;
+        break;
+      }
+    }
     historyItems = items;
     historyMarker = historyMarkerDragging ? std::clamp(historyDragPosition, 0, int(items.size())) :
                     marker < 0 ? int(items.size()) : std::clamp(marker, 0, int(items.size()));
@@ -839,21 +914,24 @@ struct NativeMacWindowState {
       artwork.label = item.title;
       artwork.icon = item.icon;
       if (item.icon.isNull()) artwork.symbol = item.symbol;
-      button.image = actionImage(artwork);
-      button.image.size = NSMakeSize(22, 22);
-      button.toolTip = ns(item.detail);
+      NSImage* image = actionImage(artwork, 22);
+      if (button.image != image) button.image = image;
+      if (qt(button.toolTip) != item.detail) button.toolTip = ns(item.detail);
       // A native system badge communicates failure/warning without replacing
       // or tinting the shared coloured CAD artwork.
-      for (NSView* badge in button.subviews.copy) {
-        if ([badge.identifier isEqualToString:@"historyStatusBadge"]) [badge removeFromSuperview];
-      }
-      if (item.status == QStringLiteral("error") || item.status == QStringLiteral("warning")) {
-        NSImageView* badge = [[NSImageView alloc] initWithFrame:NSMakeRect(20, 0, 10, 10)];
-        badge.image = symbol(item.status == QStringLiteral("error") ? QStringLiteral("xmark.circle.fill") : QStringLiteral("exclamationmark.triangle.fill"));
-        badge.contentTintColor = item.status == QStringLiteral("error") ? NSColor.systemRedColor : NSColor.systemOrangeColor;
-        badge.identifier = @"historyStatusBadge";
-        badge.accessibilityElement = NO;
-        [button addSubview:badge];
+      if (qt(button.statusKey) != item.status) {
+        button.statusKey = ns(item.status);
+        for (NSView* badge in button.subviews.copy) {
+          if ([badge.identifier isEqualToString:@"historyStatusBadge"]) [badge removeFromSuperview];
+        }
+        if (item.status == QStringLiteral("error") || item.status == QStringLiteral("warning")) {
+          NSImageView* badge = [[NSImageView alloc] initWithFrame:NSMakeRect(20, 0, 10, 10)];
+          badge.image = symbol(item.status == QStringLiteral("error") ? QStringLiteral("xmark.circle.fill") : QStringLiteral("exclamationmark.triangle.fill"));
+          badge.contentTintColor = item.status == QStringLiteral("error") ? NSColor.systemRedColor : NSColor.systemOrangeColor;
+          badge.identifier = @"historyStatusBadge";
+          badge.accessibilityElement = NO;
+          [button addSubview:badge];
+        }
       }
     }
     for (NSString* key in historyButtons.allKeys) {
@@ -1180,8 +1258,15 @@ struct NativeMacWindowState {
     const NSSize size = viewportHost.bounds.size;
     const int width = std::max(1, int(std::lround(size.width)));
     const int height = std::max(1, int(std::lround(size.height)));
-    viewport->resize(width, height);
-    viewport->windowHandle()->setGeometry(0, 0, width, height);
+    const QSize dimensions(width, height);
+    const CGFloat scale = viewportHost.window.backingScaleFactor;
+    if (viewportSize == dimensions && viewportScale == scale) return;
+    if (viewportSize != dimensions) {
+      viewport->resize(width, height);
+      viewport->windowHandle()->setGeometry(0, 0, width, height);
+      viewportSize = dimensions;
+    }
+    viewportScale = scale;
     viewport->update();
   }
 
@@ -1477,8 +1562,7 @@ struct NativeMacWindowState {
             NSMakeRect(start + index++ * (ribbonButtonWidth + ribbonButtonGap), 8, ribbonButtonWidth, ribbonButtonHeight)];
         button.bezelStyle = NSBezelStyleRounded;
         [button setButtonType:NSButtonTypeMomentaryPushIn];
-        button.image = actionImage(*item);
-        button.image.size = NSMakeSize(18, 18);
+        button.image = actionImage(*item, 18);
         button.imagePosition = NSImageOnly;
         button.imageScaling = NSImageScaleProportionallyDown;
         button.representedObject = ns(item->id);
@@ -1547,14 +1631,18 @@ struct NativeMacWindowState {
     ribbonGroups.frame = NSMakeRect(0, 0, std::max(availableWidth, x - ribbonGroupGap + ribbonInset), 72);
   }
 
-  void updateToolbar() {
+  void updateToolbar(bool structureChanged = false) {
     for (const auto& command : actions) {
       MITCADCommandButton* button = ribbonButtons[ns(command.id)];
       if (!button) continue;
-      button.enabled = command.enabled;
-      button.state = command.checked ? NSControlStateValueOn : NSControlStateValueOff;
-      button.image = actionImage(command);
-      button.image.size = NSMakeSize(18, 18);
+      if (button.enabled != command.enabled) button.enabled = command.enabled;
+      const NSControlStateValue state = command.checked ? NSControlStateValueOn : NSControlStateValueOff;
+      if (button.state != state) button.state = state;
+      NSImage* image = actionImage(command, 18);
+      if (button.image != image) button.image = image;
+      if (qt(button.accessibilityLabel) != command.label) button.accessibilityLabel = ns(command.label);
+      const QString tooltip = command.tooltip.isEmpty() ? command.label : command.tooltip;
+      if (qt(button.toolTip) != tooltip) button.toolTip = ns(tooltip);
     }
     // Menu validation reads the latest command snapshot. Replacing popup
     // menus while a user is tracking one would interrupt that interaction.
@@ -1562,11 +1650,14 @@ struct NativeMacWindowState {
       const QString identifier = qt(item.itemIdentifier);
       if (identifier.startsWith(QStringLiteral("command."))) {
         if (const auto* command = action(identifier.mid(8))) {
-          item.enabled = command->enabled;
-          item.label = ns(command->label);
-          item.toolTip = ns(command->tooltip);
+          if (item.enabled != command->enabled) item.enabled = command->enabled;
+          if (qt(item.label) != command->label) item.label = ns(command->label);
+          const QString tooltip = command->tooltip.isEmpty() ? command->label : command->tooltip;
+          if (qt(item.toolTip) != tooltip) item.toolTip = ns(tooltip);
+          NSImage* image = actionImage(*command);
+          if (item.image != image) item.image = image;
         }
-      } else if ([item isKindOfClass:NSMenuToolbarItem.class]) {
+      } else if (structureChanged && [item isKindOfClass:NSMenuToolbarItem.class]) {
         NSString* group = [item.itemIdentifier isEqualToString:modifyID] ? @"MODIFY" :
                           ([item.itemIdentifier isEqualToString:constraintsID] ? @"CONSTRAINTS" : @"CREATE");
         ((NSMenuToolbarItem*)item).menu = groupMenu(qt(group));
@@ -1728,6 +1819,61 @@ struct NativeMacWindowState {
     ]];
   }
 
+  void updateMenuState(NSMenu* menu) {
+    bool commandItems = false;
+    for (NSMenuItem* item in menu.itemArray) {
+      if (item.target == delegate && item.action == @selector(performAction:)) commandItems = true;
+      if (item.submenu) updateMenuState(item.submenu);
+    }
+    if (commandItems) [menu update];
+  }
+
+  void setActions(const QList<NativeMacAction>& snapshot) {
+    // Availability changes do not recreate the menu bar while a user has a
+    // menu or an editable control open. Validation reads the latest snapshot.
+    bool structureChanged = snapshot.size() != actions.size();
+    bool menuStateChanged = false;
+    if (!structureChanged) {
+      for (int index = 0; index < snapshot.size(); ++index) {
+        const auto& a = snapshot[index]; const auto& b = actions[index];
+        if (a.id != b.id || a.label != b.label || a.menu != b.menu || a.group != b.group ||
+            a.workspace != b.workspace || a.shortcut != b.shortcut || a.shortcuts != b.shortcuts || a.submenu != b.submenu ||
+            a.separator != b.separator || a.toolbarPinned != b.toolbarPinned || a.toolbarOnly != b.toolbarOnly || a.toolbarOrder != b.toolbarOrder) {
+          structureChanged = true;
+          break;
+        }
+        if (a.enabled != b.enabled || a.checked != b.checked || a.tooltip != b.tooltip) menuStateChanged = true;
+      }
+    }
+    actions = snapshot;
+    if (structureChanged) {
+      actionIndex.clear();
+      for (int index = 0; index < snapshot.size(); ++index) actionIndex.insert(snapshot[index].id, index);
+      actionShortcuts.clear();
+      for (const auto& item : snapshot) {
+        QList<QKeySequence> parsed;
+        for (const QString& shortcut : item.shortcuts) parsed.append(QKeySequence(shortcut, QKeySequence::PortableText));
+        actionShortcuts.append(parsed);
+      }
+    }
+    if (structureChanged) rebuildMenus();
+    if (!window.toolbar) installToolbar();
+    else if (structureChanged) buildRibbon();
+    updateToolbar(structureChanged);
+    // Async model changes can enable a key equivalent before AppKit next
+    // validates its menu. Refresh retained menus without replacing them.
+    if (menuStateChanged || structureChanged) {
+      updateMenuState(mainMenu);
+      for (NSPopUpButton* popup in ribbonMenus.allValues) updateMenuState(popup.menu);
+      for (NSToolbarItem* item in window.toolbar.items) {
+        if ([item isKindOfClass:NSMenuToolbarItem.class]) updateMenuState(((NSMenuToolbarItem*)item).menu);
+      }
+    }
+    if (historyMarkerDragging && nativeModalBlocked()) finishHistoryMarkerDrag();
+    updateHistoryAppearance();
+    if (searchPopover.shown) fillSearch();
+  }
+
   void fillSearch() {
     if (timelineSearch) {
       if (callbacks.timelineSearchChanged) callbacks.timelineSearchChanged(qt(searchField.stringValue));
@@ -1815,32 +1961,7 @@ void NativeMacWindow::focusViewport() {
     [m_state->window makeFirstResponder:native];
   }
 }
-void NativeMacWindow::setActions(const QList<NativeMacAction>& actions) {
-  // Availability changes do not recreate the menu bar while a user has a
-  // menu or an editable control open. Validation reads the latest snapshot.
-  bool structureChanged = actions.size() != m_state->actions.size();
-  if (!structureChanged) {
-    for (int index = 0; index < actions.size(); ++index) {
-      const auto& a = actions[index]; const auto& b = m_state->actions[index];
-      if (a.id != b.id || a.label != b.label || a.menu != b.menu || a.group != b.group ||
-          a.workspace != b.workspace || a.shortcut != b.shortcut || a.shortcuts != b.shortcuts || a.submenu != b.submenu ||
-          a.toolbarPinned != b.toolbarPinned || a.toolbarOnly != b.toolbarOnly || a.toolbarOrder != b.toolbarOrder) {
-        structureChanged = true;
-        break;
-      }
-    }
-  }
-  m_state->actions = actions;
-  m_state->actionIndex.clear();
-  for (int index = 0; index < actions.size(); ++index) m_state->actionIndex.insert(actions[index].id, index);
-  if (structureChanged) m_state->rebuildMenus();
-  if (!m_state->window.toolbar) m_state->installToolbar();
-  else if (structureChanged) m_state->buildRibbon();
-  m_state->updateToolbar();
-  if (m_state->historyMarkerDragging && m_state->nativeModalBlocked()) m_state->finishHistoryMarkerDrag();
-  m_state->updateHistoryAppearance();
-  if (m_state->searchPopover.shown) m_state->fillSearch();
-}
+void NativeMacWindow::setActions(const QList<NativeMacAction>& actions) { m_state->setActions(actions); }
 void NativeMacWindow::setModelItems(const QList<NativeMacTreeItem>& items) {
   m_state->rebuildTree(items);
   m_state->layoutOverlays();
@@ -1878,6 +1999,7 @@ void NativeMacWindow::setSketchMode(bool sketching) {
   if (m_state->sketching == sketching) return;
   m_state->sketching = sketching;
   m_state->buildRibbon();
+  m_state->updateToolbar(true);
 }
 void NativeMacWindow::setStatus(const QString& message, bool error) {
   m_state->status.stringValue = ns(message);
@@ -1940,17 +2062,115 @@ void NativeMacWindow::restoreTimelineSearchScroll() {
 void* NativeMacWindow::nativeWindow() const { return (__bridge void*)m_state->window; }
 void* NativeMacWindow::nativeInspectorHost() const { return (__bridge void*)m_state->inspectorHost; }
 
+bool nativeWindowRefreshContract(void* nativeWindow, QString& error) {
+  MITCADDocumentWindow* window = (__bridge MITCADDocumentWindow*)nativeWindow;
+  if (![window isKindOfClass:MITCADDocumentWindow.class] || !window->state) {
+    error = QStringLiteral("Native refresh contract requires a document window");
+    return false;
+  }
+  auto& state = *window->state;
+  const QList<NativeMacAction> snapshot = state.actions;
+  state.setActions(snapshot);
+  MITCADCommandButton* button = state.ribbonButtons.allValues.firstObject;
+  if (!button || !button.image) {
+    error = QStringLiteral("Native refresh contract requires a ribbon image");
+    return false;
+  }
+  NSImage* image = button.image;
+  NSView* ribbon = state.ribbonGroups;
+  NSMenu* mainMenu = state.mainMenu;
+  NSMutableArray<NSMenu*>* toolbarMenus = [NSMutableArray array];
+  for (NSToolbarItem* item in window.toolbar.items) {
+    if ([item isKindOfClass:NSMenuToolbarItem.class]) [toolbarMenus addObject:((NSMenuToolbarItem*)item).menu];
+  }
+  state.setActions(snapshot);
+  if (button.image != image || state.ribbonGroups != ribbon || state.mainMenu != mainMenu) {
+    error = QStringLiteral("Identical native actions replaced ribbon artwork or menus");
+    return false;
+  }
+  NSUInteger index = 0;
+  for (NSToolbarItem* item in window.toolbar.items) {
+    if (![item isKindOfClass:NSMenuToolbarItem.class]) continue;
+    if (index >= toolbarMenus.count || ((NSMenuToolbarItem*)item).menu != toolbarMenus[index++]) {
+      error = QStringLiteral("Identical native actions replaced a toolbar popup menu");
+      return false;
+    }
+  }
+  QList<NativeMacAction> changed = snapshot;
+  const int commandIndex = state.actionIndex.value(qt(button.representedObject), -1);
+  if (commandIndex < 0) {
+    error = QStringLiteral("Native refresh contract ribbon command is missing");
+    return false;
+  }
+  auto& command = changed[commandIndex];
+  command.enabled = !command.enabled;
+  command.checked = !command.checked;
+  command.tooltip = QStringLiteral("Native refresh contract tooltip");
+  state.setActions(changed);
+  const bool updated = button.image == image && state.ribbonGroups == ribbon &&
+                       button.enabled == command.enabled &&
+                       button.state == (command.checked ? NSControlStateValueOn : NSControlStateValueOff) &&
+                       qt(button.toolTip) == command.tooltip;
+  state.setActions(snapshot);
+  if (!updated) {
+    error = QStringLiteral("Native refresh did not update command state while retaining its image");
+    return false;
+  }
+  NSMenuItem* redoItem = nil;
+  for (NSMenuItem* top in state.mainMenu.itemArray) {
+    if (![top.title isEqualToString:@"Edit"]) continue;
+    for (NSMenuItem* item in top.submenu.itemArray) {
+      if ([item.representedObject isEqual:@"edit.redo"]) redoItem = item;
+    }
+  }
+  const int redoIndex = state.actionIndex.value(QStringLiteral("edit.redo"), -1);
+  if (!redoItem || redoIndex < 0) {
+    error = QStringLiteral("Native refresh contract requires the retained Redo menu item");
+    return false;
+  }
+  changed = snapshot;
+  for (bool enabled : {true, false}) {
+    changed[redoIndex].enabled = enabled;
+    state.setActions(changed);
+    // Read the stored state before any test-side validation or key event.
+    const bool menuUpdated = redoItem.enabled == enabled && state.mainMenu == mainMenu;
+    if (!menuUpdated) {
+      state.setActions(snapshot);
+      error = QStringLiteral("Native refresh left the retained Redo key equivalent in a stale enabled state");
+      return false;
+    }
+  }
+  state.setActions(snapshot);
+  // Offer the same unmatched key through both AppKit entry points. Count
+  // dispatch attempts, including rejected keys, rather than action effects.
+  NSString* characters = [NSString stringWithFormat:@"%C", unichar(NSF35FunctionKey)];
+  NSEvent* event = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint
+                             modifierFlags:NSEventModifierFlagCommand | NSEventModifierFlagControl |
+                                           NSEventModifierFlagOption | NSEventModifierFlagShift
+                                 timestamp:NSProcessInfo.processInfo.systemUptime
+                              windowNumber:window.windowNumber context:nil characters:characters
+               charactersIgnoringModifiers:characters isARepeat:NO keyCode:0];
+  const quint64 before = state.shortcutDispatchCount;
+  [window sendEvent:event];
+  [window performKeyEquivalent:event];
+  if (state.shortcutDispatchCount != before + 1) {
+    error = QStringLiteral("One native key event reached shortcut dispatch more than once");
+    return false;
+  }
+  return true;
+}
+
 } // namespace mitcad::mac
 
 using namespace mitcad::mac;
 
 @implementation MITCADDocumentWindow
 - (BOOL)performKeyEquivalent:(NSEvent*)event {
-  if (state && state->dispatchShortcut(event)) return YES;
+  if (state && state->dispatchShortcutOnce(event)) return YES;
   return [super performKeyEquivalent:event];
 }
 - (void)sendEvent:(NSEvent*)event {
-  if (state && (state->dispatchGesture(event) || state->dispatchShortcut(event))) return;
+  if (state && (state->dispatchGesture(event) || state->dispatchShortcutOnce(event))) return;
   [super sendEvent:event];
 }
 - (BOOL)dispatchConfirmation {
@@ -2011,14 +2231,6 @@ using namespace mitcad::mac;
 
 @implementation MITCADModelOutlineView
 - (void)keyDown:(NSEvent*)event {
-  const NSEventModifierFlags modifiers = event.modifierFlags &
-      (NSEventModifierFlagCommand | NSEventModifierFlagControl | NSEventModifierFlagOption | NSEventModifierFlagShift);
-  const unichar key = event.charactersIgnoringModifiers.length ? [event.charactersIgnoringModifiers characterAtIndex:0] : 0;
-  if (modifiers == 0 && (key == NSCarriageReturnCharacter || key == NSEnterCharacter) && state) {
-    // Keyboard activation follows the selection, independent of an earlier
-    // mouse click or context menu, and precedes document confirmation.
-    if (state->activateBrowserSelection()) return;
-  }
   if (self.editedRow < 0 && [(MITCADDocumentWindow*)self.window dispatchKeyboardEvent:event]) return;
   [super keyDown:event];
 }
@@ -2236,6 +2448,16 @@ using namespace mitcad::mac;
 @end
 
 @implementation MITCADNativeWindowDelegate
+- (BOOL)respondsToSelector:(SEL)selector {
+  return [super respondsToSelector:selector] ||
+      (state && [state->previousAppDelegate respondsToSelector:selector]);
+}
+- (id)forwardingTargetForSelector:(SEL)selector {
+  // Qt still owns activation, hover updates and secure state restoration.
+  // Keep every delegate method the shell does not override in that chain.
+  if (state && [state->previousAppDelegate respondsToSelector:selector]) return state->previousAppDelegate;
+  return [super forwardingTargetForSelector:selector];
+}
 - (void)application:(NSApplication*)application openFiles:(NSArray<NSString*>*)files {
   bool handled = state && bool(state->callbacks.openFile);
   if (handled) for (NSString* file in files) state->callbacks.openFile(qt(file));
@@ -2247,7 +2469,10 @@ using namespace mitcad::mac;
   for (NSURL* url in urls) if (url.fileURL) state->callbacks.openFile(qt(url.path));
 }
 - (BOOL)applicationShouldHandleReopen:(NSApplication*)application hasVisibleWindows:(BOOL)visible {
-  (void)application; (void)visible;
+  // Qt updates its application state here even without an activation event.
+  if (state && [state->previousAppDelegate respondsToSelector:_cmd]) {
+    [state->previousAppDelegate applicationShouldHandleReopen:application hasVisibleWindows:visible];
+  }
   if (!state || state->closing) return NO;
   if (state->window.miniaturized) [state->window deminiaturize:nil];
   [state->window makeKeyAndOrderFront:nil];
@@ -2393,7 +2618,13 @@ using namespace mitcad::mac;
   if (item.action == @selector(performAction:)) {
     const auto* action = state->action(qt(item.representedObject));
     if (!action) return NO;
-    item.state = action->checked ? NSControlStateValueOn : NSControlStateValueOff;
+    const NSControlStateValue value = action->checked ? NSControlStateValueOn : NSControlStateValueOff;
+    if (item.state != value) item.state = value;
+    if (qt(item.toolTip) != action->tooltip) item.toolTip = ns(action->tooltip);
+    if (item.image) {
+      NSImage* image = state->actionImage(*action);
+      if (item.image != image) item.image = image;
+    }
     // Plain CAD tool keys must leave the native field editor free to type.
     const bool textEditor = [NSApp.keyWindow.firstResponder isKindOfClass:NSTextView.class];
     if (textEditor && action->id == QStringLiteral("edit.undo")) return NSApp.keyWindow.firstResponder.undoManager.canUndo;
@@ -2487,7 +2718,7 @@ using namespace mitcad::mac;
     item.label = ns(action->label);
     item.paletteLabel = item.label;
     item.toolTip = ns(action->tooltip.isEmpty() ? action->label : action->tooltip);
-    item.image = actionImage(*action);
+    item.image = state->actionImage(*action);
     item.target = self;
     item.action = @selector(performAction:);
     item.enabled = action->enabled;

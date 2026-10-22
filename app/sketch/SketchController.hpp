@@ -24,6 +24,7 @@
 #include <QStringList>
 #include <QTimer>
 #include <QVector>
+#include <gp_Trsf.hxx>
 
 #include "../framework/CommandSession.hpp"
 #include "AutoConstraint.hpp"
@@ -59,6 +60,11 @@ public:
   // and not delivered yet, so that the selection and a command that starts
   // next are in the order of the clicks (mitcad#488).
   virtual void deliverPendingPicks() {}
+  // Where the view shows the sketch's component (mitcad#505): the
+  // placement of the occurrence sketch mode edits the sketch at. The
+  // `sketch` query's frame is in the component's coordinates, the view's
+  // in the design's; sketch mode applies this once to the frame.
+  virtual gp_Trsf sketchPlacement(const QString& /*uid*/) const { return gp_Trsf(); }
 };
 
 namespace sketch {
@@ -82,6 +88,10 @@ enum EntityFilter : unsigned {
   // Also the body edges and vertices in the sketch plane (mitcad#256), by
   // their BodyGeometry ids; the sketch's own entities win ties.
   PickBody = 1u << 2,
+  // Also the sketch's origin and its x and y axes (mitcad#500): the origin
+  // point or an axis line where the sketch has it, else its pick id
+  // (originPick(), axisPick()); everything else wins ties.
+  PickAxes = 1u << 3,
 };
 
 class SketchController;
@@ -120,6 +130,13 @@ public:
   // it, and within one action the projection made before (mitcad#256,
   // mitcad#258). Empty when the model refused the projection (error()).
   ProjectedItem projectBody(const BodyItem& item);
+  // The entity of a pick of the sketch's origin or an axis (mitcad#500),
+  // made now when the sketch lacks it (`sketch.axis`); any other id as it
+  // is. Empty when the model refused (error()).
+  QString axisInput(const QString& pick);
+  // The picks with those of the axes and origin made (axisInput); false
+  // when one was refused.
+  bool axisInputs(QStringList& picks);
   // The sketch after the commands so far.
   const SketchModel& model();
   const QString& error() const { return m_error; }

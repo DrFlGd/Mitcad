@@ -2,8 +2,8 @@
 #pragma once
 
 // The dialogs of Local and Cloud projects (mitcad#89): New Project, Open
-// from Cloud, Move to a Project's question, and Project Settings' Change...
-// of the address. Each runs its network work on a thread of its own
+// from Cloud, and Project Settings' Change... of the address. Each runs
+// its network work on a thread of its own
 // (RemoteTask) with its progress and Cancel in the dialog; a cancel or a
 // failure leaves the folder as it was. New Project and Create Project Here
 // make an empty project (or one of the designs its folder has); the
@@ -20,7 +20,7 @@ class QWidget;
 namespace mitcad {
 
 // File > New Project (also Open Project of a folder that is no project yet,
-// and Move to a Project's new project).
+// and Save to Project's new project).
 struct NewProjectOptions {
   QString title;          // empty: "New Project"
   QString folder;         // suggested; empty: Documents/Mitcad/Project<n>
@@ -61,10 +61,6 @@ struct OpenFromCloudResult {
 };
 
 std::optional<OpenFromCloudResult> askOpenFromCloud(QWidget* parent, const OpenFromCloudOptions& options);
-
-// Move to a Project: a new project (through New Project) or an existing one.
-enum class MoveTarget { NewProject, ExistingProject };
-std::optional<MoveTarget> askMoveToProject(QWidget* parent, const QString& design, const QString& reason);
 
 // Project Settings' Change...: a new address of the project's repository
 // (moved or renamed), accepted only when it shares the project's history

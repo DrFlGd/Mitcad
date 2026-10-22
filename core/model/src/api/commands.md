@@ -289,7 +289,10 @@ millimetres, angles radians. Build sketches with the
   `elliptical_arc` (also `start`, `end`), `spline` (`degree`, `control`
   points, optional `weights` and `knots`; default clamped uniform on
   [0, 1]) and `fitted_spline` (`points`: a cubic through them). Flags:
-  `construction` (not in profiles), `fixed`, `reference` (projected).
+  `construction` (not in profiles), `fixed`, `reference` (projected),
+  `axis` (`"x"` or `"y"`: the line that stands for a sketch axis and its
+  far end, see [The sketch's axes and origin as
+  entities](#the-sketchs-axes-and-origin-as-entities)).
   Positions and radii are the last solved ones and the start of the next
   solve; a new definition may give any reasonable positions.
 - `constraints` (`k<n>`, shared with dimensions): `coincident` (`point`,
@@ -1102,7 +1105,10 @@ form lists edge sets:
   pieces of its edges merged (a whole circle in two arcs, a line in
   pieces between the same two faces; the new faces carry the names of
   every piece), then with tighter tolerances of OCCT's fillet (knife
-  edges, where the faces' normals are opposite). A result OCCT's checker
+  edges, where the faces' normals are opposite), then with the faces of
+  one surface that meet along an edge at the selected edges' vertices
+  joined as well (a rounding's end cut by one face, not by the two halves
+  of a pillar's full-rounded end, mitcad#343). A result OCCT's checker
   rejects only where the input body already was invalid, on faces the
   rounding neither changed nor touches, is taken as it is (stored bodies
   of imported designs are at times invalid in places); other invalid
@@ -4734,7 +4740,9 @@ or `Document::import_ipt(path, json)` for the report alone) imports an
   state), `features_with_states` (of them, those whose state the history
   has), `counts` (items per outcome), `design` (the importer's report:
   `items`, `parameters`, `history`, `bodies`, `warnings`, as for
-  `import_f3d`), `design_text` (its text) and `seconds` {`read`,
+  `import_f3d`), `design_text` (its text), `replayed` (false when the
+  hang watchdog gave up on the replay outside its items, so that the stored
+  bodies came in without the timeline; mitcad#507) and `seconds` {`read`,
   `import`}; `imported` lists the document's bodies after the replay
   (`feature` is the feature that made the body). Sheet-metal faces,
   flanges on one edge and cuts through the sheet replay as `sheet_rules`
@@ -4837,6 +4845,23 @@ json)` for the report alone) imports an `.iam` assembly (mitcad#60, stage
   placed range box is compared too, for information only: the file does
   not always keep it up to date.
 
+- With `history` (mitcad#507): a part whose replay fails (the `.ipt`
+  import's error, also a replay the hang watchdog gave up on in every try)
+  comes in as its stored bodies instead, as without `history` (not with
+  `no_fallback`, where it fails); a part without a design history (no
+  features or parameters) and one whose replay came in without its
+  timeline (`replayed` false) come in as their stored bodies too. An item
+  the watchdog gave up on takes the file's bodies within the part's
+  replay, as in the `.ipt` import (`hangs`). Each part's outcome is in
+  its file's `part`.
+- Progress: every referenced file is resolved before the first part is
+  imported, so that the parts are counted. With `MITCAD_IMPORT_TRACE` set
+  each part file is traced on standard error, `import: [<s>] part <n> of
+  <m>: <file>` when its import starts and `import: [<s>] part <n> of <m>:
+  <file>: replayed in <s> s` (or `bodies`) when it is done; `<m>` counts
+  the part files found. A part's replay traces its items as the `.ipt`
+  import does, between those lines.
+
 The document's length unit becomes the assembly's when the document has no
 features yet. One undo step (`Import assembly.iam`); a job does not cancel
 it.
@@ -4854,11 +4879,20 @@ The command's result: `file`, `occurrences` (placed) and `report`:
 `placed`, `suppressed`, `hidden`, `of_missing_files`, `not_placed`,
 `without_file`, `without_placement`, `not_rigid`); `parts` (part files:
 `files`, `imported`, `missing`, `failed`, `identity_confirmed`,
-`identity_differs`); `assemblies` (sub-assembly files); `resolution`
+`identity_differs`, `replayed`, `as_bodies`); `history` (the option);
+`assemblies` (sub-assembly files); `resolution`
 (files per way they were found); `files` (each: `saved`, `path`, `found`,
 `kind`, `status`, `identity`, `occurrences`, `component`, and for parts
 `part`: the part import's `bodies`, `solids`, `valid`, `not_built`,
-`history`, `counts`, `features`, `warnings`, `units`, `material`);
+`history` (the part's design was read), `outcome` (`replayed`: its
+design replayed and copied into the component; `bodies`: its stored
+bodies), `reason` (why `bodies`: `the stored bodies chosen` without
+`history`, `the part has no design history`, `the replay failed: <error>`,
+`the replay hung: <notes>`; null when replayed), `items` (the replay's
+timeline items), `verified` (of them, those checked against the part's
+history), `parameters` (made), `counts` (items per outcome), `features`,
+`hangs` (the watchdog's notes), `warnings` (how many), `units`,
+`material`, `seconds`);
 `display`, `boxes`, `centers` (each `compared`, `agree`, `worst` in mm,
 `failures`); `pass` (every display and range box check agrees);
 `occurrence_list` (each placed or suppressed occurrence with its path
@@ -4870,7 +4904,10 @@ Tests: `core/ipt` (`core.ipt`: the reader on assemblies made by
 `cli.iam_files`, `cli.import_iam`, `cli.info_iam`, `cli.import_ipt_iam`
 (a test project of those assemblies: a sub-assembly, parts found relative
 to the assembly and by name, a missing one; hidden, grounded and
-suppressed occurrences), and `iam.corpus`
+suppressed occurrences), `cli.import_iam_history_parts` and
+`cli.import_iam_history_fallback` (with `history`: the parts' outcomes
+and progress lines; `MITCAD_TEST_IAM_REPLAY_FAIL=<file name>` makes that
+part's replay fail, for tests), and `iam.corpus`
 ([tools/cli/iam-corpus.cmake](../../../../tools/cli/iam-corpus.cmake),
 every `.iam` under `MITCAD_IPT_CORPUS`).
 
@@ -6539,7 +6576,7 @@ designation unless `name` is given; the undo step is `Insert <name>`.
 | Query | Result |
 |---|---|
 | `library_parts` | `parts`: `component`, `name`, `linked`, `occurrences`, `library` (as recorded), `version` (`v1.0.0 (3f9a2c1)`) |
-| `parts_list` | `rows`, one per component other than the root in the order they were made: `component`, `name`, `designation` (a library part's, else the name), `quantity` (how many times the design places it, through every occurrence of the components it is in), `linked`, `library`, `version`, `config`, `license`, `authors`, `url` |
+| `parts_list` | `rows`, one per component other than the root in the order they were made: `component`, `name`, `designation` (a library part's, else the name), `quantity` (how many times the design places it, through every occurrence of the components it is in), `linked`, `library`, `version`, `config`, `license`, `authors`, `url` (with `properties`, a list of keys `Key` or `Set/Key`: each row's `properties`, the text of each key's value or null; [Properties](#properties)) |
 
 ### Library commands
 
@@ -9073,6 +9110,26 @@ bound lengths) treat it as one, with these differences:
 - `build_edit` of a member by two points takes `to` (`{"point"}`), `at`
   (`{"point"}`) and `lie` again: it is placed anew from them (the same
   component, derived part and junctions).
+- **Between members** (mitcad#509): without `length` (and without
+  `spacing`), an end whose point is inside another member cut to length
+  (a timber member or a profile; its box), while the other point is not
+  on that member, is cut back to where the member's axis meets that
+  member's face: a square butt there, so that a member clicked between two
+  studs (on their centre lines, as the app's snaps give them) fits between
+  them, not into them. A free member (no `at.geometry`: its axis through
+  the points) is cut so too where its point is on a member's face and its
+  axis runs through that member (a click on its far side); on the near
+  face it ends there already. A member lying on a plane has its axis off
+  the points: only a point inside a member counts (members lapped on a
+  plane stay so). The far end so cut that meets a member end to end closes
+  the corner (*Frames of members*: a square butt, `closing`). Ends that
+  would meet leave nothing between them: refused (`nothing is left between
+  them`). The member keeps the points given (`build_edit` places it anew
+  from them, cut again). `build_preview` answers `points`: `{"start":
+  {"on", "name", "cut"}, "end": {...}, "lies": "plane" | "free"}`, the
+  member each point is on or in (its component and name, or null), whether
+  that end was cut back, and whether the member lies on `at.geometry` or
+  is free; its `length.value` is the length after the cuts.
 
 ### Spacing sets
 
@@ -9169,6 +9226,26 @@ cladding (a board row: a gap).
   diameter); the length the shortest of that diameter at least the
   thickness gone through + 8 × the diameter (else the longest).
   `build_junctions` gives the numbers for a picker (`wood` below).
+- **Seating** (mitcad#512). A wood screw or nail is driven until its head
+  top lies on the unchanged entry face. `build.wood.seat` can name a mount
+  frame or use `head_top` / `head_underside`. A named frame has z along the
+  shaft. Without one, `head_top` is the least body coordinate along the
+  source's axis-aligned shaft; oblique library parts must supply a frame.
+  Pan, hex, washer, button and socket heads default to `head_underside`
+  (the existing axis bearing frame); other wood screws and nails default
+  to `head_top`. A non-wood bolt keeps its existing bearing placement.
+  Nominal `wood.length` and row selection are unchanged: a head K mm
+  behind the axis is driven K mm deeper, with tip and embedment increased
+  by K. A countersunk source already starting at its axis needs no shift,
+  and keeps its tip at L. No head holes are cut; intentional head/shank
+  overlap with wood is not an error of the frame's fastening checks.
+  Fasteners on a metal connector keep their hole's bearing placement.
+  Swap Fastener recomputes seating from the new source and selected row
+  while keeping the member's entry frame, component and joint.
+  `build_parts.parts[].seating` gives the measured `head_top_distance`
+  from the entry face (negative stands proud, positive is sunk) and
+  `tip_distance`, in millimetres; both come from the placed body's bounds
+  for an axis-aligned source (otherwise `seating` is null).
 - **Warnings, not refusals** (in `warnings`, `d` the diameter):
   - the embedment (the length less the thickness gone through) under
     6 × `d`: `screw 1 embeds 22 mm in Beam1: at least 30 mm` (the
@@ -9472,6 +9549,9 @@ Four more rules (code `build/place.rs`, `build/spacing.rs`; tests
   (`place` `points`, whose start is square) with the points' distance or
   a typed length gets the same: a square butt where it ends on the
   member's face, else the warning; a bound length keeps the mode given.
+  With the points' distance, an end in the member (or, free, on its outer
+  side) is cut back to its face first (mitcad#509, *Members by two
+  points*): the square butt, no warning.
 - **A set on a side starts at the typed offset.** In a spacing set on a
   side whose base placement has `at.offset` (the app's Offset and From)
   and no `spacing.from` or `spacing.to`: from end A (or the middle) the
@@ -10849,8 +10929,13 @@ refused at is left as it is.
   (1 or 2 each, default 1); `plate` and `header` (parts, default `part`);
   `openings` `[{offset, width, height, sill}]` (`offset` from the start
   along the wall to the rough opening's near side, `sill` its underside's
-  height above the base; 0 or left out: a door); `joins` `{start, end}`:
-  the wall frames (any member of each) its ends butt against.
+  height above the base; 0 or left out: a door); `joins` `{start, end,
+  start_on}`: the wall frames (any member of each) its ends butt against,
+  `start_on: end` (mitcad#510) when instead that wall's end face butts
+  against this wall's side at its start (left out: `side`); `corner`
+  (mitcad#510): how they meet those walls, `butt` or `lapped` (left out:
+  `lapped`, as walls saved before it keep their corners), kept in the
+  definition and changed with `build_edit`.
   - The plates lie flat, the studs stand with the larger section size
     across the wall: the wall's depth is the stud's larger size. The end
     studs stand flush with its ends; the others at `k × spacing` from its
@@ -10865,9 +10950,23 @@ refused at is left as it is.
     an opening that does not fit between the end studs, openings whose
     studs overlap, a header above the top plate, a sill below the bottom
     plate.
-  - **Corners and T-junctions:** a wall's end in `joins` stops at the face
-    of the wall it names (on the side the wall is on); that wall gets a
-    stud for each wall that joins it: where the joining wall's centre line
+  - **Butting** (`corner: butt`, mitcad#510): a wall's end in `joins`
+    stops at the face of the wall it names (on the side the wall is on),
+    its end stud and plates square against it, neither lapped nor notched.
+    That wall is neither run on, lapped nor notched; it gets a backing
+    stud on each side of the joining wall (its keys as at a T,
+    `junction.<wall>.<end>.a` and `.b`), one that would take its end
+    stud's place left out, so the sheathing of both walls has a stud
+    behind its edges at the junction. With `joins.start_on: end` that
+    wall's end face butts against this wall's side: that wall is not
+    changed at all, this one runs from its own start and gets the backing
+    studs on each side of that wall's centre line where they fit
+    (`junction.<that wall>.0.a`, `.b`). Either way the walls stay joined:
+    editing one lays the other out again.
+  - **Corners and T-junctions** (`corner: lapped`, left out): a wall's end
+    in `joins` stops at the face of the wall it names (on the side the
+    wall is on); that wall gets a stud for each wall that joins it: where
+    the joining wall's centre line
     meets it within that wall's depth of its end, a corner (it runs on to
     the joining wall's outer face, the stud just inside the corner), else
     a T (a stud on each side of the joining wall). A wall that joins
@@ -10885,7 +10984,23 @@ refused at is left as it is.
     true` and `joins.start`, `start` is a point on that wall's side (a
     click; within its depth of its ends) and the wall starts square to it,
     at its base, towards the side the point is on (the end's side when the
-    point is on its centre line, else its left):
+    point is on its centre line, else its left). With `corner: butt`
+    (mitcad#510):
+    - **from the side** (`side`): its centre line starts at the point's
+      place along the wall, also right next to an end, but at least half
+      its own depth from the wall's end faces (it never hangs past an end:
+      its outer face at most flush with the end face); it butts against
+      that wall's side, which gets the backing studs;
+    - **from an end** (`end`): a point on one of the wall's end faces
+      (within 0.5 mm of the face and inside its depth, or beyond the end;
+      the faces where its plates end now) starts it beyond that end, its
+      side against the end face: its centre line half its own depth past
+      the face, its start flush with the wall's side away from the side it
+      runs to (the end's side first here, then the point's). It stays
+      joined to the wall (`joins.start_on: end`): that wall is not changed,
+      the new wall gets the backing studs where it meets it.
+
+    With `corner: lapped` (or left out):
     - an **L corner** when the point is near one of its ends (within half
       its stud spacing, at least its depth, at most half its length): the
       new wall's centre line starts at that end of the wall's centre line;
@@ -10894,12 +11009,13 @@ refused at is left as it is.
 
     Its length runs from there: as far as `end` is along it (a second
     click, anywhere), else `length` (refused without either, and when it
-    would not reach beyond the wall's side). The definition keeps the
-    `start` and `end` worked out (not `square`). The answer, and
-    `build_preview`'s with `frame`, add `junction`: `{kind ("L" or "T"),
-    wall (its name), frame (its lead), end ("a" or "b" for an L, else
-    null), at (mm along the wall from its start), length (mm)}`; null
-    without `square`.
+    would not reach beyond the wall's side; from an end, beyond its other
+    side). The definition keeps the `start` and `end` worked out (not
+    `square`). The answer, and `build_preview`'s with `frame`, add
+    `junction`: `{kind ("side", "end", "L" or "T"), corner ("butt" or
+    "lapped"), wall (its name), frame (its lead), end ("a" or "b" for an
+    end or an L, else null), at (mm along the wall from its start to the
+    new centre line), length (mm)}`; null without `square`.
 - **A floor or ceiling** (`kind: floor`): `outline` (a closed outline,
   three points at least, at its first point's height: the joists'
   underside), `spacing` (default 400), `direction` (the joists'; default
@@ -11056,3 +11172,249 @@ nail 3.1x90`.
 - The answer: `swapped` (the components), `count`, `designation`,
   `sizes` (`[{component, config, diameter, length}]`, the diameter and
   length a wood fastener's) and `warnings`.
+
+## Properties
+
+Typed property sets (mitcad#496; `core/model/src/properties.rs` the types,
+values and the store, `document/properties.rs` the commands, what the
+document works out and the answers, `api/properties.rs` the JSON). A
+property is a key in a named set with a typed value and its source:
+`Identity / Mark = W-12`, `Pset_WallCommon / FireRating = EI60`, as IFC
+groups them, so that an export can map them directly. Properties are on
+three levels:
+
+- a **component** (`C2`, `C0` the root): the definition's, shared by its
+  occurrences;
+- an **occurrence** (`O3`): its own values; it shows its component's as
+  inherited, and its own value of a set and key overrides the
+  component's for it only;
+- a **body** (`F7.b0`).
+
+An owner is given by its id or by its name (a component's, an
+occurrence's `Wall:2` or path from the root `O1/O4`, a body's at the
+marker). Set names and keys compare without regard to case; a key has no
+`/` (it separates a set from a key in searches; an import writes one as
+`∕`).
+
+**Types.** The standard types are `text`, `integer`, `number` (a plain
+number, optionally with a `unit` label of its own that is shown and not
+converted, `W/(m²·K)`), `length` (kept in mm), `area` (mm²), `volume`
+(mm³), `mass` (kg), `angle` (radians), `boolean` (yes/no; `yes/no` and
+`bool` name it too) and `date` (`YYYY-MM-DD`). An **own type** is defined
+in the design: a `name` (not a standard type's), a `base` standard type,
+optional allowed `values` (a property of the type is then edited as a
+choice and refuses any other value), an optional `unit` (a quantity's
+shown unit, `m`, `deg`, `g`; a number's label) and `default`, and a
+`description`.
+
+**Values in commands.** A JSON number of a quantity is canonical (mm,
+mm², mm³, kg, radians); text is read in the type's unit, else the
+design's (`set_units`: a bare `1.2` in a metre design is 1.2 m), unless
+it names its own (`1.2 m`, `2 m^2`, `500 g`, `30 deg`; a decimal comma
+works). `yes`/`no`, `true`/`false`, `1`/`0` for yes/no; integers and
+numbers as text too. A value of another dimension or kind is refused.
+
+**Sources.** Every value records where it came from: `user`, `rvt`,
+`ifc`, `ipt`, `f3d` (the imports), `library` (a library or BUILD part's
+data) or `computed`. A user's value set over an imported one keeps its
+source and the value the source gave (`imported` in the file), so the
+property shows that it differs (`edited`, `source_value`); set back to the
+source's value it is no longer edited.
+
+**Worked out, never stored.** `computed` values (the set `Computed`) and
+`library` values (the set `Library`) are worked out when asked for and
+never written to the design file, so a recompute leaves the file as it
+was:
+
+| Level | Computed (only with `computed`) | Library |
+|---|---|---|
+| body | `Volume`, `Area`, `Mass` (its material's density), `Material` | |
+| component | `Volume`, `Mass` (its own bodies), `Length` (a BUILD member's) | `Designation`, `Supplier`, `Part number`, `Library`, `Version`; a BUILD part's `Material`, `Grade`, `Finish` |
+| occurrence | its component's, inherited | its component's, inherited |
+
+A stored value of the same set and key as a library value overrides it
+(and shows the library's as its source value); the `Computed` set cannot
+hold stored values.
+
+| Command | Fields | Result |
+|---|---|---|
+| `set_property` | `owner`, `set`, `key`, `value` (optional with a type that has a default, or for an existing property), `type` (a standard or own type; the property's, else what the value is: text, integer, number, yes/no), `unit` (a quantity's: the unit a number or bare text is in; a number's label), `source` (default `user`; never `computed`) | `owner`, `set`, `key`, `type`, `value` (as stored), `edited`. One undo step, nothing recomputed |
+| `remove_property` | `owner`, `set`, `key` | `{}`; an occurrence's component value shows again. Refused when there is none |
+| `define_property_type` | `name`, `base`, `values`, `unit`, `default`, `description` | `name`. Refused for a standard type's name, a name taken, a unit of another dimension, values not of the base, a default not among the values |
+| `edit_property_type` | `name`, and what changes: `new_name` (its properties follow), `base` (only while no property uses it), `values` (each property's value must stay allowed), `unit` and `default` (`null` removes them), `description` | `name` |
+| `remove_property_type` | `name` | `converted`: how many properties keep their values under its base type |
+
+| Query | Fields | Result |
+|---|---|---|
+| `property_sets` | `body`, `occurrence`, `component` (at least one; the component follows from the occurrence or the body), `computed` (also the computed values) | `levels`, the given ones most specific first: `level` (`body`, `occurrence`, `component`), `owner`, `name`, an occurrence's `component`, `sets`: `name`, `properties`: `set`, `key`, `type`, `base`, `value` (as stored), `text` (in the shown unit, `1.2 m`), `unit`, `source`, `read_only` (computed), `inherited`, `overrides`, `edited`, `source_value` (the source's value as text, where it differs), `choices` (an own type's values as text) |
+| `property_types` | | `standard` (the standard types' names), `types`: `name`, `base`, `values` (`value`, `text`), `unit`, `default`, `description`, `uses` |
+| `property_search` | `text`: `Key` or `Set/Key`, with a comparison `=`, `!=`, `<`, `<=`, `>`, `>=` (numbers and dates in order, quantities in units: `Mass > 10 kg`) or `~` (contains), or without one (the key is there) | `matches`: every component, occurrence (with its inherited values) and body at the marker with a matching property, in that order: `level`, `owner`, `name`, `component`, `set`, `key`, `text`, `inherited`. Computed values only when the search names one |
+
+The `properties` query of this API is a different one: the bodies'
+physical properties ([Analysis queries](#analysis-queries)).
+
+The design file keeps the own types as `property_types` and the stored
+properties as `properties`, one entry per owner (`owner`, `sets`: `name`,
+`properties`: `key`, `type`, `value`, `source` unless `user`, `imported`,
+`unit`), only for owners the design has (a deleted component's are left
+out). Copies of components, and a design placed as a component, bring
+their components', occurrences' and bodies' properties (another design's
+root's become the new component's) with the own types they use.
+
+**Imports.** Each import gives the values its file holds with its source;
+values Mitcad does not otherwise use come in as well:
+
+- `.rvt`: each element's bodies get `Identity` (`ElementId`, `GlobalId`,
+  `Category`, `Class`, `Family`, `Type`, `TypeId`, `Level`), `Instance
+  Parameters` (the record's text, number and element id parameters) and
+  `Type Parameters` (its family type's; a wall's type its `Width`, the
+  total of its layers). Parameters are named and typed by their
+  definitions (mitcad#501): a project, shared or family parameter by its
+  definition in the file (name, and spec or class), a built-in one by the
+  reader's table of the common ones (`Height`, `Width`, `Thickness`,
+  `Base Offset`, `Mark`, `Type Mark`, ...), else `Parameter <id>`.
+  Lengths, areas, volumes, angles and masses come in as `length`, `area`,
+  `volume`, `angle` and `mass` in the model's units (mm, mm², mm³,
+  radians, kg, converted from the file's feet, square and cubic feet,
+  radians and kilograms), so they show in the design's units; yes/no
+  parameters as `boolean`, integer ones as `integer`, numbers, counts and
+  currencies as `number`. A number of a kind not known or not converted
+  (electrical, mechanical and structural quantities, built-in parameters
+  not in the table, files before the 2021 release, which keep no spec)
+  stays in the file's internal units as a `number` with the unit label
+  `internal units`. An element comes in as bodies of its level's
+  component, with no component of its type, so its type's values are on
+  its bodies too; were the import to make a component per element type,
+  they would go on it.
+- IFC: an element's `Identity` (`GlobalId`, `Class`, `Name`,
+  `ObjectType`), its property sets (single and enumerated values) and
+  element quantities (lengths, areas, volumes, counts, weights, times) in
+  Mitcad's units, on its bodies and the occurrences of its type's shape;
+  its type object's property sets (and `Identity / Type`) on the
+  component its type's shape became, and on its own bodies.
+- `.ipt` and `.iam`: the summary's (`Title`, `Subject`, `Author`,
+  `Keywords`, `Comments`, `Last Saved By`), the document summary's
+  (`Category`, `Manager`, `Company`), the design tracking set's (`Part
+  Number`, `Material`, `Release`) and the user's own named properties
+  (`User Defined`) on the root; an assembly's parts' on their components.
+- `.f3d` dumps that give them: a component's `Part Number` and
+  `Description` (set `Component`).
+
+Tests: `core/model/src/properties_tests.rs`, `core/ifc/src/properties.rs`,
+`core/import/src/ifc/tests.rs` (`property_sets_land_on_their_levels`),
+`core/import/src/rvt/mod.rs` (`elements_bring_their_identity_and_parameters`),
+`core/import/src/tests/property_tests.rs`, `core/ipt/src/lib.rs`,
+`core/import/tests/rvt_corpus.rs` and `core/ifc/tests/corpus.rs` (corpus
+files by content id), `tools/ui-property-sets-test.sh`,
+`tools/ui-windows-property-sets-test.ps1`.
+
+## The sketch's axes and origin as entities
+
+Constraints and dimensions refer to the sketch's own x and y axes and its
+origin through entities that stand for them (mitcad#500), made on demand
+the first time something refers to them:
+
+```json
+{"cmd": "sketch.axis", "sketch": "F1", "axis": "x"}
+→ {"entity": "c4", "new": true, "entities": ["p5", "c4"], ...}
+{"cmd": "sketch.axis", "sketch": "F1", "axis": "x"}
+→ {"entity": "c4", "new": false, ...}
+```
+
+- `axis`: `"x"`, `"y"` or `"origin"` (anything else is refused:
+  `unknown axis 'z' (x, y or origin)`).
+- **The origin** is the sketch's fixed point stored at [0, 0] (the one
+  drawing makes when it snaps to the origin, mitcad#355): the first such
+  point that is not projected. Without one, `sketch.axis` makes it.
+- **An axis** is a fixed construction line from the origin point (made
+  first when there is none) to a fixed point 100 mm along the axis. The
+  line and that far end carry `"axis": "x"` (or `"y"`) in the sketch
+  definition and the `sketch` query; the origin point does not. Only the
+  line's direction counts: constraints and dimensions take it as the
+  infinite axis (`coincident` puts a point on it, `point_line_distance`
+  is a point's distance from it, `angle` a line's angle to it, `symmetric`
+  mirrors about it), and as construction geometry it bounds no profile.
+  The app draws the axis across the view instead of the line and does not
+  show its far end (`app/COMMANDS.md`, Sketch Dimension and the
+  constraint tools).
+- **One of each.** An entity that is there is returned with `"new":
+  false`, and nothing changes: no undo step. A new one is one undo step
+  `Axis in Sketch1`, and the result has the editing commands' fields
+  (`entities`, `status`, …) besides `entity` and `"new": true`. The app
+  runs it inside the action that needs it and merges the steps
+  (`merge_undo`), so undo takes the axis back with the constraint or
+  dimension.
+- Sketches saved before have no `axis` flags and read and save as they
+  were. Copies (move, mirror, patterns) do not copy the flag. The DXF
+  export (`export_sketch`) leaves the axes' lines out.
+
+Code: `core/model/src/sketch/axes.rs`. Tests:
+`core/model/src/api/sketch_axes_tests.rs`.
+
+## Reorient Design
+
+The whole design turned by 90, 180 or 270 degrees about the origin's X, Y
+or Z axis (mitcad#502), for a design started on the wrong origin plane.
+One undo step, `Reorient Design`:
+
+```json
+{"cmd": "reorient_design", "axis": "x", "degrees": 90}
+{"cmd": "reorient_design", "plane": "xz"}
+→ {"turn": "90 degrees about X", "matrix": [[1, 0, 0], [0, 0, -1], [0, 1, 0]],
+   "features": ["Sketch1", "Plane1", "Sketch3"], "moves": ["Move1"],
+   "occurrences": [], "views": 1, "analyses": 0, "lights": 0}
+```
+
+- `axis` (`x`, `y`, `z`) with `degrees` (90, 180, 270; -90 is 270),
+  counter-clockwise looking against the axis; or `plane` (`xz`, `yz`):
+  the turn that takes that origin plane's frame onto XY's (XZ: 90 about
+  X, YZ: 270 about Y). `xy` and other turns of nothing are refused.
+- **A rewrite, not a move.** Every component that is not linked from
+  another file turns in its own coordinates, so that its origin planes
+  are where the turned design wants them:
+  - references to the origin's planes and axes become their turned
+    counterparts: the origin datum the turn takes them onto, frame and
+    sense included (XZ turned 90 about X is XY), else the fixed plane or
+    axis there (XY turned 90 about X faces -Y: `{"origin": [0, 0, 0],
+    "normal": [0, -1, 0], "x_axis": [1, 0, 0]}`; the Z axis runs along
+    -Y). Fixed planes, axes, points and paths turn, and so do the
+    positions and directions definitions keep (a hole's points, a split's
+    direction, picks of surface features, a Move's matrix, construction
+    geometry given by coordinates, joint frame overrides);
+  - a Move's or a Move Component's x, y and z go with their axes; a
+    value of an axis the turn reverses is negated (its own dimension
+    parameter; one that other values or features use refuses the
+    command);
+  - a sketch on an origin plane goes onto the origin plane the turn takes
+    its plane onto, with its own frame (`frame`) set so that its geometry
+    turns with the design, not mirrored. A sketch on a face or a
+    construction plane keeps its plane; where the plane's frame follows
+    the model axes (a face's x axis is the model's X projected) its own
+    frame is set from the turned design's evaluation so that it stays
+    turned with the design;
+  - an imported body (a base feature) gets a Move right after it that
+    turns its bodies about the origin (a base feature that joins, cuts or
+    intersects is refused);
+  - occurrences' placements turn in both coordinates they join
+    (`R · T · R⁻¹`; an occurrence of a linked component `R · T`), so a
+    component placed at the identity stays there; joints, constraints and
+    links between components follow from them;
+  - named views, section analyses' planes and the lights placed in the
+    design (not those that follow the camera) turn; what split features
+    remember of their pieces turns with them.
+- Faces, edges and bodies keep their names; nothing else is renamed.
+- **Checked before it is taken:** the command computes the turned design
+  and refuses it, naming them, when a feature that built would fail, or a
+  body (its bounding box and centre of mass) or an occurrence would not be
+  where the turn takes it; the document is then as it was. Rules of the
+  model axes that a definition cannot carry (a cylinder's axis pointing
+  along its largest component, a joint frame's default x axis) can make a
+  design refuse a turn so.
+- The application previews it on a command checkpoint (`begin_command`,
+  `restore_command` for each choice, `discard_command` on OK) and logs
+  the bodies' boxes afterwards (`app/COMMANDS.md`, "Reorient Design").
+
+Code: `core/model/src/reorient.rs` (the turn and the rewrite of
+definitions), `core/model/src/document/reorient.rs` (the command and its
+checks). Tests: `core/model/src/reorient_tests.rs` (mock kernel),
+`cli.reorient_design` (`tools/cli/tests/reorient_design.json`, OCCT).

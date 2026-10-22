@@ -191,6 +191,24 @@ pub struct Element {
     pub is_type: bool,
     /// Why its records did not walk, if they did not.
     pub error: Option<String>,
+    /// Its instance parameters as its record keeps them (mitcad#496), by
+    /// parameter id: a built-in parameter's is negative, a project or
+    /// shared parameter's names its `ParamElem`, whose definition gives its
+    /// name and kind ([`crate::building::Building::param_defs`],
+    /// mitcad#501).
+    pub params: Vec<(i64, ParamValue)>,
+}
+
+/// An instance parameter's value (mitcad#496): text, a number in the
+/// file's internal units (feet, radians, ...; its parameter's kind says
+/// which, [`crate::params`]), an integer (a yes or no, a count, a choice)
+/// or an element id.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub enum ParamValue {
+    Text(String),
+    Number(f64),
+    Integer(i64),
+    Element(i64),
 }
 
 impl Element {
@@ -590,6 +608,27 @@ impl Model {
                 element.host = f.host;
                 element.symbol = f.symbol;
                 element.transform = f.transform;
+                // Its instance parameters (mitcad#496).
+                element.params = f
+                    .text_params
+                    .iter()
+                    .map(|(p, v)| (*p, ParamValue::Text(v.clone())))
+                    .chain(
+                        f.double_params
+                            .iter()
+                            .map(|(p, v)| (*p, ParamValue::Number(*v))),
+                    )
+                    .chain(
+                        f.int_params
+                            .iter()
+                            .map(|(p, v)| (*p, ParamValue::Integer(*v))),
+                    )
+                    .chain(
+                        f.id_params
+                            .iter()
+                            .map(|(p, v)| (*p, ParamValue::Element(*v))),
+                    )
+                    .collect();
             }
             model.elements.push(element);
         }
@@ -819,6 +858,10 @@ struct Facts {
     id_params: Vec<(i64, i64)>,
     /// Its text parameters: (parameter, value).
     text_params: Vec<(i64, String)>,
+    /// Its number parameters: (parameter, value) (mitcad#496).
+    double_params: Vec<(i64, f64)>,
+    /// Its integer parameters: (parameter, value) (mitcad#501).
+    int_params: Vec<(i64, i64)>,
     /// Every element id the record names (its own fields first, then the
     /// objects behind its pointers), in order, without repeats.
     deep_ids: Vec<i64>,
@@ -877,6 +920,8 @@ impl Facts {
             material: None,
             id_params: Vec::new(),
             text_params: Vec::new(),
+            double_params: Vec::new(),
+            int_params: Vec::new(),
             deep_ids: Vec::new(),
             monolithic: root
                 .get(schema, "m_hasMonolithicSupport")
@@ -962,6 +1007,14 @@ impl Facts {
         facts.text_params = params("m_pParamValueSetAString")
             .into_iter()
             .filter_map(|(p, v)| Some((p, v.as_text()?.to_string())))
+            .collect();
+        facts.double_params = params("m_pParamValueSetDouble")
+            .into_iter()
+            .filter_map(|(p, v)| Some((p, v.as_f64()?)))
+            .collect();
+        facts.int_params = params("m_pParamValueSetInt")
+            .into_iter()
+            .filter_map(|(p, v)| Some((p, i64::from(v.as_u64()? as u32 as i32))))
             .collect();
         if let Some(info) = root
             .get(schema, "m_pInstanceInfo")

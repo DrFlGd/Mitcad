@@ -604,10 +604,26 @@ impl<K: Kernel> Document<K> {
             }),
             None => Value::Null,
         };
+        // A member by two points (mitcad#509): what each point is on, the
+        // ends cut back to a member, and whether it lies on a plane.
+        let points = match &plan.between {
+            Some(b) => {
+                let point = |i: usize| match &b.on[i] {
+                    Some((component, name)) => {
+                        json!({"on": component, "name": name, "cut": b.cut[i]})
+                    }
+                    None => json!({"on": null, "name": null, "cut": b.cut[i]}),
+                };
+                json!({"start": point(0), "end": point(1),
+                       "lies": if b.plane { "plane" } else { "free" }})
+            }
+            None => Value::Null,
+        };
         json!({
             "frame": frame_json(&frame),
             "place": plan.place,
             "closing": closing,
+            "points": points,
             "length": {
                 "value": length_value,
                 "default": default,
@@ -954,6 +970,41 @@ impl<K: Kernel> Document<K> {
         })
     }
 
+    /// Physical head-top distance from a wood fastener's unchanged entry
+    /// face. Positive is sunk into the member; negative stands proud.
+    fn wood_seating_json(&self, info: &crate::build::parts::PartInfo) -> Option<Value> {
+        info.meta.wood.as_ref()?;
+        info.record.junction.as_ref()?;
+        let joint = info.record.joint?;
+        let entry = self.entry_point(joint)?;
+        let member = self.member(info.component)?;
+        let axis = info
+            .mounts
+            .iter()
+            .find(|(name, _)| {
+                *name == "axis" || info.meta.frame(name).is_some_and(|f| f.kind == "shaft")
+            })?
+            .1;
+        let local_z = crate::build::z_axis(axis);
+        // A box gives an exact axial extent only for an axis-aligned
+        // source. Oblique sources can seat by a named frame, but need a
+        // directional kernel extent query for this physical measurement.
+        if !crate::build::wood::shaft_axis_is_aligned(local_z) {
+            return None;
+        }
+        let z = member.placement.apply_vector(local_z);
+        let (distance, tip) = member
+            .bounds
+            .corners()
+            .map(|p| {
+                crate::build::dot(crate::build::sub(member.placement.apply_point(p), entry), z)
+            })
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), v| {
+                (lo.min(v), hi.max(v))
+            });
+        Some(json!({"head_top_distance": distance, "tip_distance": tip}))
+    }
+
     /// The `build_parts` query.
     pub(crate) fn build_parts_json(&self) -> Value {
         let params = self.parameters();
@@ -1031,6 +1082,7 @@ impl<K: Kernel> Document<K> {
                     "junction": info.record.junction,
                     "from": info.record.from.map(|f| f.as_str()),
                     "machining": machining,
+                    "seating": self.wood_seating_json(&info),
                     // Timber construction (mitcad#478).
                     "kind": info.is_timber().then_some("timber"),
                     "grade": info.record.grade.clone().or_else(|| {

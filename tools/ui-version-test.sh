@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 # check-all sources: app/files app/projects
 # Saving versions (P12d) through the real UI, checked with the system's git:
-#   1. Move to a Project of an untitled design: New Project (the folder
+#   1. Save to Project of an untitled design: New Project (the folder
 #      typed, the author git's settings give), its name typed in the
 #      project picker (mitcad#174); the first version has the undo steps'
 #      names as its message, git's author and Mitcad's trailers, and git
@@ -21,9 +21,9 @@
 #      (the project's repository's) instead of git's.
 #   5. A file renamed outside Mitcad: opened, its display state follows,
 #      and Save records the rename as a version of its own, then the change.
-#   6. Move to a Project of a file outside projects (saved there through
+#   6. Save to Project of a file outside projects (saved there through
 #      the project picker's Another Folder..., mitcad#176): its folder made
-#      a project; another one moved into a new project.
+#      a project; another one saved into a new project (its file stays).
 #   7. Without git's user.name and user.email: an older project without
 #      versions opened asks for the author; cancelled, nothing is added to
 #      its folder; given, Preferences keep it as the default author. New
@@ -163,7 +163,7 @@ expect_exit() {
 
 ui_start_display
 
-echo "--- Move to a Project of an untitled design: a new project"
+echo "--- Save to Project of an untitled design: a new project"
 ui_start_app --demo --no-native-dialogs
 ui_step "fit (F6)"                       ui_key F6
 ui_step "fillet (F)"                     ui_key f
@@ -171,12 +171,14 @@ ui_step "pick a face of the body"        ui_view_click 50 50
 ui_step "confirm (Enter)"                ui_key Return
 ui_expect_log "Added fillet on 4 edge(s)" "a fillet: a change to save"
 ui_mark
-ui_step "move to a project (search)"     ui_command "Move to a Project"
-ui_expect_new "Move to a Project dialog: Untitled" "asked where"
-ui_focus_dialog '^Move to a Project$'
-ui_step "a new project (Enter)"          ui_key Return
+ui_step "save to project (search)"       ui_command "Save to Project"
+ui_expect_new "Project picker Save to Project: a place, reading the projects" "the project picker (mitcad#503)"
+ui_expect_new "Project picker Save to Project: 0 projects: " "no project known yet"
+ui_focus_dialog '^Save to Project$'
+ui_step "a new project (Alt+P)"          ui_key alt+p
+ui_expect_new "Project picker Save to Project: new project" "New Project... chosen in the picker"
 ui_expect_new "New Project dialog: $DOCUMENTS/Untitled" "a new project, by default in Documents/Mitcad"
-ui_focus_dialog '^Move to a Project$'
+ui_focus_dialog '^Save to Project$'
 ui_step "the folder (Alt+F)"             ui_key alt+f
 ui_step "name it bracket"                type_text "$PROJECT"
 ui_expect_new "New Project dialog: folder $PROJECT: missing" "a new folder"
@@ -368,7 +370,7 @@ expect_git "$PROJECT" "log --follow --format=%s -- plate.mitcad" "$(in_git "$PRO
   "git follows the rename back to the first version"
 expect_clean "$PROJECT" "git status is clean"
 
-echo "--- Move to a Project of a file outside projects: its folder"
+echo "--- Save to Project of a file outside projects: its folder"
 SINGLE=$WORK/single
 mkdir -p "$SINGLE"
 ui_mark
@@ -378,12 +380,13 @@ ui_expect_new "Version status: none" "no version history there"
 ui_expect_new "Project indicator: not in a project" "the indicator says so"
 no_new_since "Version recorded" "and no version"
 ui_mark
-ui_step "move to a project (search)"     ui_command "Move to a Project"
-ui_expect_new "Move to a Project dialog: part.mitcad" "the dialog"
-ui_focus_dialog '^Move to a Project$'
-ui_step "a new project (Enter)"          ui_key Return
+ui_step "save to project (search)"       ui_command "Save to Project"
+ui_expect_new "Project picker Save to Project: a place, reading the projects" "the project picker"
+ui_focus_dialog '^Save to Project$'
+ui_step "a new project (Alt+P)"          ui_key alt+p
+ui_expect_new "Project picker Save to Project: new project" "New Project... chosen in the picker"
 ui_expect_new "New Project dialog: $SINGLE" "the design's own folder offered"
-ui_focus_dialog '^Move to a Project$'
+ui_focus_dialog '^Save to Project$'
 ui_expect_new "New Project dialog: folder $SINGLE: designs" "a folder of designs"
 ui_step "create (Enter)"                 ui_key Return
 ui_expect_new "New Project: created $SINGLE: version " "the folder is a project"
@@ -395,24 +398,27 @@ echo "ok   the folder's first version"
 expect_git "$SINGLE" "ls-files -- part.mitcad" "part.mitcad" "the design is in it"
 expect_clean "$SINGLE" "git status is clean"
 
-echo "--- Move to a Project: into a new project"
+echo "--- Save to Project: into a new project, the file it came from stays"
 OTHER=$WORK/other
 mkdir -p "$OTHER"
 ui_mark
 save_as_elsewhere "$OTHER/gear.mitcad"
 ui_expect_new "Saved $OTHER/gear.mitcad" "saved"
 ui_mark
-ui_step "move to a project (search)"     ui_command "Move to a Project"
-ui_focus_dialog '^Move to a Project$'
-ui_step "a new project (Enter)"          ui_key Return
-ui_focus_dialog '^Move to a Project$'
+ui_step "save to project (search)"       ui_command "Save to Project"
+ui_expect_new "Project picker Save to Project: a place, reading the projects" "the project picker"
+ui_focus_dialog '^Save to Project$'
+ui_step "a new project (Alt+P)"          ui_key alt+p
+ui_expect_new "Project picker Save to Project: new project" "New Project... chosen in the picker"
+ui_focus_dialog '^Save to Project$'
 ui_step "the folder (Alt+F)"             ui_key alt+f
 ui_step "a new one, named after it"      type_text "$DOCUMENTS/gear"
 ui_expect_new "New Project dialog: folder $DOCUMENTS/gear: missing" "a new folder"
 ui_step "create (Enter)"                 ui_key Return
-ui_expect_new "Moved $OTHER/gear.mitcad to $DOCUMENTS/gear/gear.mitcad" "moved"
+ui_expect_new "Save to Project: $DOCUMENTS/gear/gear.mitcad saved in $DOCUMENTS/gear" "saved in the new project"
 ui_focus_main
-[ ! -e "$OTHER/gear.mitcad" ] || ui_fail "the file it came from is still there"
+[ -e "$OTHER/gear.mitcad" ] || ui_fail "the file it came from is gone"
+echo "ok   the file it came from stays"
 expect_git "$DOCUMENTS/gear" "log --format=%s" "Save gear.mitcad
 Create project gear" "the new project's versions"
 expect_clean "$DOCUMENTS/gear" "git status is clean"

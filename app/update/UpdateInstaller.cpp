@@ -10,8 +10,15 @@
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QSettings>
+#include <QStandardPaths>
 #include <QStringList>
+#include <QTemporaryDir>
 #include <QtLogging>
+
+#ifdef __APPLE__
+#include <sys/mount.h>
+#include <sys/xattr.h>
+#endif
 
 #include "UpdateSettings.hpp"
 
@@ -40,6 +47,20 @@ std::optional<Staged>& staged() {
   return update;
 }
 
+#ifdef __APPLE__
+QString macDownloadDirectory(bool create = true) {
+  // A private, unpredictable folder: both the verified image and the
+  // helper survive this process and are never shared with another run.
+  static QString path;
+  if (create && !QFileInfo(path).isDir()) {
+    QTemporaryDir folder(QDir::temp().filePath(QStringLiteral("mitcad-update-XXXXXX")));
+    folder.setAutoRemove(false);
+    path = folder.path();
+  }
+  return path;
+}
+#endif
+
 // From QCoreApplication's destructor (qAddPostRoutine): the window, its
 // document and the session's autosave are gone by then.
 void launchStaged() {
@@ -66,7 +87,7 @@ void launchStaged() {
   // The tests' version is this process's only; the AppImage's runtime sets
   // its variables for the new one again.
   QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
-  for (const char* variable : {kTestVersionVariable, "APPIMAGE", "APPDIR", "ARGV0", "OWD"}) {
+  for (const char* variable : {kTestVersionVariable, "MITCAD_TEST_INPUT", "APPIMAGE", "APPDIR", "ARGV0", "OWD"}) {
     environment.remove(QString::fromLatin1(variable));
   }
   process.setProcessEnvironment(environment);
@@ -105,9 +126,38 @@ Installation Installation::detect() {
     installation.reason = QStringLiteral("not installed by the installer (the portable .zip or a development build)");
   }
 #elif defined(__APPLE__)
-  // A new version comes as a disk image the user installs from; the
-  // application bundle is not replaced in place.
-  installation.reason = QStringLiteral("a macOS application bundle (updates come as disk images)");
+  const QDir bin(QCoreApplication::applicationDirPath());
+  const QFileInfo bundle(QDir::cleanPath(bin.absoluteFilePath(QStringLiteral("../.."))));
+  const QString path = bundle.canonicalFilePath();
+  // statfs follows APFS firmlinks to their actual volume. A mount-list
+  // prefix match can mistake writable /Users paths for the sealed system
+  // volume mounted at /, instead of the Data volume backing those paths.
+  struct statfs volume {};
+  const bool haveVolume = !path.isEmpty() && statfs(QFile::encodeName(path).constData(), &volume) == 0;
+  const QString downloadsLocation = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
+  const QString downloads = downloadsLocation.isEmpty() ? QString() : QDir(downloadsLocation).canonicalPath();
+  const bool quarantined = !path.isEmpty() &&
+                           getxattr(QFile::encodeName(path).constData(), "com.apple.quarantine", nullptr, 0, 0, 0) >= 0;
+  if (bin.dirName() != QStringLiteral("MacOS") ||
+      QFileInfo(QDir::cleanPath(bin.absoluteFilePath(QStringLiteral("..")))).fileName() != QStringLiteral("Contents") ||
+      !bundle.fileName().endsWith(QStringLiteral(".app"), Qt::CaseInsensitive) ||
+      !QFileInfo::exists(QDir(path).filePath(QStringLiteral("Contents/Info.plist")))) {
+    installation.reason = QStringLiteral("not a macOS application bundle (a development build)");
+  } else if (path.contains(QStringLiteral("/AppTranslocation/")) ||
+             bundle.absoluteFilePath().contains(QStringLiteral("/AppTranslocation/"))) {
+    installation.reason = QStringLiteral("the application is running from App Translocation; move it to Applications first");
+  } else if (quarantined && !downloads.isEmpty() && path.startsWith(downloads + QLatin1Char('/'))) {
+    installation.reason = QStringLiteral("the quarantined application is in Downloads; move it to Applications first");
+  } else if (!haveVolume) {
+    installation.reason = QStringLiteral("the application bundle's volume cannot be determined");
+  } else if ((volume.f_flags & MNT_RDONLY) != 0) {
+    installation.reason = QStringLiteral("the application bundle is on a read-only volume; copy it to Applications first");
+  } else if (bundle.isSymLink() || !bundle.isWritable() || !QFileInfo(bundle.absolutePath()).isWritable()) {
+    installation.reason = QStringLiteral("the user cannot replace the application bundle or write to its folder");
+  } else {
+    installation.kind = Kind::MacBundle;
+    installation.location = path;
+  }
 #else
   const QString appImage = qEnvironmentVariable("APPIMAGE");
   const QFileInfo file(appImage);
@@ -133,6 +183,8 @@ QString Installation::describe() const {
              allUsers ? QStringLiteral("for all users") : QStringLiteral("for the current user"));
   case Kind::AppImage:
     return QStringLiteral("the AppImage %1").arg(location);
+  case Kind::MacBundle:
+    return QStringLiteral("the macOS application bundle %1").arg(location);
   case Kind::NotifyOnly:
     break;
   }
@@ -140,6 +192,12 @@ QString Installation::describe() const {
 }
 
 QString Installation::downloadPath(const QString& version) const {
+#ifdef __APPLE__
+  if (kind == Kind::MacBundle) {
+    const QString folder = macDownloadDirectory();
+    return folder.isEmpty() ? QString() : QDir(folder).filePath(QStringLiteral("Mitcad-%1-macos-arm64.dmg").arg(version));
+  }
+#endif
   if (kind == Kind::AppImage) {
     const QFileInfo file(location);
     return file.absoluteDir().filePath(QStringLiteral(".%1.update").arg(file.fileName()));
@@ -150,6 +208,15 @@ QString Installation::downloadPath(const QString& version) const {
 }
 
 void Installation::removeLeftovers() const {
+#ifdef __APPLE__
+  if (kind == Kind::MacBundle) {
+    const QString folder = macDownloadDirectory(false);
+    if (!folder.isEmpty()) {
+      QDir(folder).removeRecursively();
+    }
+    return;
+  }
+#endif
   if (kind == Kind::AppImage) {
     QFile::remove(downloadPath(QString()));
   } else if (kind == Kind::WindowsInstaller) {
@@ -202,6 +269,31 @@ bool stageUpdate(const Installation& installation, const QString& file, const QS
     update.workingDirectory = QFileInfo(installation.location).absolutePath();
     update.download = file;
     update.target = installation.location;
+#ifdef __APPLE__
+  } else if (installation.kind == Installation::Kind::MacBundle) {
+    // Recheck after the download: permissions or location may have changed.
+    const Installation current = Installation::detect();
+    if (current.kind != Installation::Kind::MacBundle || current.location != installation.location) {
+      error = QCoreApplication::translate("Update", "The application bundle can no longer be replaced: %1.")
+                  .arg(current.reason);
+      return false;
+    }
+    const QDir folder = QFileInfo(file).absoluteDir();
+    const QString helper = folder.filePath(QStringLiteral("updater.sh"));
+    const QString swapper = folder.filePath(QStringLiteral("mitcad-updater"));
+    QFile::remove(helper);
+    QFile::remove(swapper);
+    if (!QFile::copy(QStringLiteral(":/update/UpdaterMacos.sh"), helper) ||
+        !QFile::copy(QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("mitcad-updater")), swapper) ||
+        !QFile(swapper).setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner)) {
+      error = QCoreApplication::translate("Update", "Cannot prepare the macOS update helper.");
+      return false;
+    }
+    log = folder.filePath(QStringLiteral("updater.log"));
+    update.program = QStringLiteral("/bin/bash");
+    update.workingDirectory = folder.absolutePath();
+    update.arguments = {helper, QString::number(QCoreApplication::applicationPid()), file, installation.location, to, log};
+#endif
   } else {
     error = QCoreApplication::translate("Update", "This installation cannot update itself.");
     return false;

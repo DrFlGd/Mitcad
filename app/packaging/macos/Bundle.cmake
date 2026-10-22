@@ -104,6 +104,7 @@ endif()
 # --- Install: the bundle, its libraries, the licence texts ----------------------
 install(TARGETS mitcad BUNDLE DESTINATION .)
 install(TARGETS mitcad-render RUNTIME DESTINATION "${MITCAD_BUNDLE_DIR}/Contents/MacOS")
+install(TARGETS mitcad-updater RUNTIME DESTINATION "${MITCAD_BUNDLE_DIR}/Contents/MacOS")
 install(DIRECTORY "${MITCAD_CYCLES_RUNTIME}/"
         DESTINATION "${MITCAD_BUNDLE_DIR}/Contents/Resources/cycles")
 # The CLI target is declared after this directory. Its generated path is

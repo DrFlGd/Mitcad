@@ -15,8 +15,8 @@
 #      profiles' faces are picked and the planes are hidden; a click on its
 #      side places one flush with an end and fills Offset and From (no
 #      check box); a click in the middle of its end face continues it
-#      straight (Mitre: cut the new part), the hover near an edge shows
-#      the part turned before the click, the click there turns it (a
+#      straight (Mitre: cut the new part), the hover near an edge previews
+#      nothing (mitcad#508), the click there turns it (a
 #      corner on the end face with square ends, its mitre Auto: none;
 #      Shared chosen mitres it at offset 0) and places it (mitcad#417,
 #      #427); a brace on its side by Tilt (its foot cut by the tilt,
@@ -26,8 +26,12 @@
 #      a part is there, mitcad#427; a Shift + click on a side places the
 #      next one at once, mitcad#451).
 #   3. Profile on a design with only its root: the first profile on the
-#      XY plane (typed length); the mouse on its side previews a part
-#      there before the click (mitcad#431); two on its side flush with its ends by
+#      XY plane (typed length); the mouse on its side names only the face
+#      a click picks, nothing previewed before the click, and once a side
+#      is picked the preview stays there while the mouse moves along it,
+#      off the parts and back (no inspection, its end A unchanged), a click
+#      on another face moves it once (mitcad#508); the click's body as
+#      long as its length (mitcad#431); two on its side flush with its ends by
 #      clicks at the flush snaps (From End A and End B, Offset 0; for the
 #      one at end B a typed offset stays from end B and From changed keeps
 #      the part in place, mitcad#417); the fourth on the side of the
@@ -39,7 +43,8 @@
 #   5. Panel in the frame from an inner face.
 #   6. Linear Part: a rail on the first profile, a carriage on the rail,
 #      a slider on two sides of a profile, each on the side
-#      picked (its hover previewed there; mitcad#448) (each chosen in the
+#      picked (mitcad#448; its hover names the side and previews nothing,
+#      mitcad#508) (each chosen in the
 #      part picker from the Part tile);
 #      Ends: an end of the third profile mitred and bored (end machining).
 #   7. Save, reopen: the parts are there (their sources in the design);
@@ -286,20 +291,15 @@ marker_at() {
   echo $((X + px * UI_SCALE)) $((Y + py * UI_SCALE))
 }
 # pick_markers X Y: the mouse moved out of the view to window point X, Y
-# (above it, over the ribbon), and the pick's markers logged again: with
-# the mouse on a part's side or end the preview shows what a click there
-# places, with that place's markers (mitcad#431), as its "Inspect
-# Profile:" line says ("; on the hover").
+# (above it, over the ribbon), and the pick's markers logged (the hover
+# previews nothing, mitcad#508: the markers are the pick's wherever the
+# mouse is).
 pick_markers() {
-  local inspect="" line
+  local inspect
   xdotool mousemove $((X + $1 * UI_SCALE)) $((Y + $2 * UI_SCALE))
-  for _ in $(seq 1 50); do
-    ui_sync >&2
-    line=$(grep -n "^Inspect Profile: " "$UI_LOG" | tail -1)
-    [[ $line == *"; on the hover"* ]] || { inspect=${line%%:*}; inspect=${inspect:-1}; break; }
-    sleep 0.1
-  done
-  [ -n "$inspect" ] || ui_fail "the hover's preview stayed with the mouse out of the view"
+  ui_sync >&2
+  inspect=$(grep -n "^Inspect Profile: " "$UI_LOG" | tail -1 | cut -d: -f1)
+  inspect=${inspect:-1}
   # The markers come after the inspection's line.
   for _ in $(seq 1 25); do
     tail -n +"$inspect" "$UI_LOG" | grep -q "^Preview marker Profile " && return
@@ -371,6 +371,54 @@ expect_body_length() {
   body=$(sed -n 's/.*; body \([0-9.]*\) mm.*/\1/p' <<< "$line")
   [ -n "$length" ] && [ "$length" = "$body" ] || ui_fail "$1: length ${length:-?} mm, body ${body:-?} mm ($line)"
   echo "ok   $1: $body mm"
+}
+# off_view: the mouse out of the view, over the ribbon above its middle
+# (window coordinates of the view: "View area x y w h").
+off_view() {
+  local area vx vy vw vh
+  area=$(grep -o "View area [0-9]* [0-9]* [0-9]* [0-9]*" "$UI_LOG" | tail -1)
+  [ -n "$area" ] || ui_fail "the app did not log its view area"
+  read -r _ _ vx vy vw vh <<< "$area"
+  xdotool mousemove $((X + (vx + vw / 2) * UI_SCALE)) $((Y + vy / 2 * UI_SCALE))
+}
+# no_inspect COMMAND DESCRIPTION: a moment after the mouse moved, no
+# "Inspect COMMAND:" line since the mark: the hover runs no placement and
+# no inspection (mitcad#508).
+no_inspect() {
+  sleep 1.5
+  ui_sync
+  ! tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -q "^Inspect $1: " ||
+    ui_fail "$2: $(tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep "^Inspect $1: " | head -1)"
+  echo "ok   $2"
+}
+# last_end_a COMMAND: where the last "Inspect COMMAND:" line puts the
+# preview's end A ("; end A at x, y, z").
+last_end_a() {
+  grep "^Inspect $1: " "$UI_LOG" | tail -1 | sed -n 's/.*; end A at \([^;]*\);.*/\1/p'
+}
+# end_a_since COMMAND: the places of the preview's end A in the "Inspect
+# COMMAND:" lines since the mark, each once.
+end_a_since() {
+  tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep "^Inspect $1: " | sed -n 's/.*; end A at \([^;]*\);.*/\1/p' | sort -u
+}
+# moved_once COMMAND WAS DESCRIPTION: after a click, the "Inspect COMMAND:"
+# lines since the mark put the preview's end A elsewhere than WAS, all at
+# one place: the preview moved once, to the click (mitcad#508).
+moved_once() {
+  local places=""
+  for _ in $(seq 1 30); do
+    places=$(end_a_since "$1")
+    [ -n "$places" ] && break
+    sleep 0.2
+  done
+  # A moment more: a preview still following the mouse would add places.
+  sleep 1
+  ui_sync
+  places=$(end_a_since "$1")
+  [ -n "$places" ] || ui_fail "$3: no 'Inspect $1:' line with end A since the mark"
+  [ "$(printf '%s\n' "$places" | wc -l)" -eq 1 ] || ui_fail "$3: end A at more than one place: $(tr '\n' ' ' <<< "$places")"
+  [ "$places" != "$2" ] || ui_fail "$3: end A still at $2"
+  echo "ok   $3: end A at $places"
 }
 # shot NAME: with UI_BUILD_SHOTS set, a screenshot of the test display
 # there as NAME.png.
@@ -489,14 +537,15 @@ ui_expect_new "ends A 45 deg" "the new part's end mitred"
 ui_mark
 ui_step "the mitre Auto again"             ui_choose "Panel Profile input mitre" -3
 expect_inspect "; end straight towards " "mitre none" "Auto: no mitre straight on"
-# Near an edge of the end face (its zone's marker): the hover shows the
-# turned part before the click, the click turns it, a corner (mitcad#417).
+# Near an edge of the end face (its zone's marker): the hover previews
+# nothing, the part stays straight on (mitcad#508); the click there turns
+# it, a corner (mitcad#417).
 TURN=$(marker_at "turn .*")
 [ -n "$TURN" ] || ui_fail "no zone of the end face marked"
+ui_sync
 ui_mark
 ui_step "the mouse near an edge of the end" xdotool mousemove $TURN
-ui_expect_new "BUILD hover on " "the hover on the end face"
-expect_inspect "; end edge towards " "; on the hover" "the hover previews the turned part before the click"
+no_inspect "Profile" "the hover near the edge previews and inspects nothing"
 ui_mark
 ui_step "a click there"                    xdotool click 1
 ui_expect_new "BUILD end click: edge towards " "a click near an edge turns the part"
@@ -590,19 +639,49 @@ refresh_picks "Profile"
 # The two on a side of the first one that a click can reach.
 SIDE1=$(faces_of "$B1" "$SIDE" | head -1)
 [ -n "$SIDE1" ] || ui_fail "no side of the first profile ($B1) to pick"
-# The mouse on the side before a click shows what a click there places
-# (mitcad#431), the body as long as the length it shows.
+# The mouse on the side before a click names only the face a click picks:
+# nothing previewed or inspected while it moves (mitcad#508).
+ui_sync
 ui_mark
 ui_step "the mouse on the first profile's side" xdotool mousemove $(ui_pick_at "$B1/$SIDE1 at")
-ui_expect_new "BUILD hover on " "the hover on the side"
-expect_inspect "Inspect Profile: place side, " "; on the hover" "the hover previews the part on the side before the click"
-expect_body_length "the hover's body as long as its length"
+ui_expect_new "BUILD hover pick: face $SIDE1 of $B1" "the hover names the face a click picks"
+ui_step "the mouse a little further"       xdotool mousemove_relative -- 6 0
+no_inspect "Profile" "no preview and no inspection while hovering before the click"
 # A click fills Offset and From (mitcad#417): a click at the flush-A snap
-# (its marker) gives From End A, Offset 0.
+# (its marker) gives From End A, Offset 0. The preview's body as long as
+# the length it shows (mitcad#431).
 ui_mark
 ui_step "the first profile's side"         pick_face "$B1" "$SIDE1"
 ui_expect_new "Inspect Profile: place side" "on the side"
 ui_expect_new "BUILD side click: From " "the click fills From and Offset"
+expect_body_length "the click's body as long as its length"
+# Once the place is picked the preview stays there (mitcad#508): the mouse
+# along the side, off the parts and back runs no placement and no
+# inspection, the preview's end A where the click put it; a click on
+# another side moves it there once, a click on the first place back again.
+ui_sync
+END_A1=$(last_end_a "Profile")
+[ -n "$END_A1" ] || ui_fail "no end A in the side pick's inspection"
+ui_mark
+ui_step "the mouse along the side"         xdotool mousemove_relative -- 12 0
+ui_step "the mouse off the parts"          off_view
+ui_expect_new "BUILD hover pick: off the parts' faces" "the hover off the parts"
+ui_step "the mouse on the side again"      xdotool mousemove $(ui_pick_at "$B1/$SIDE1 at")
+no_inspect "Profile" "no preview and no inspection while the mouse moves after the click"
+[ "$(last_end_a "Profile")" = "$END_A1" ] || ui_fail "the preview's end A moved from $END_A1"
+echo "ok   the preview's end A still at $END_A1"
+OTHER1=$(faces_of "$B1" "$SIDE" | grep -vxF -- "$SIDE1" | head -1)
+[ -n "$OTHER1" ] || OTHER1=$(faces_of "$B1" ":end_b" | head -1)
+[ -n "$OTHER1" ] || ui_fail "no other face of the first profile ($B1) to click"
+ui_mark
+ui_step "a click on another face"          pick_face "$B1" "$OTHER1"
+moved_once "Profile" "$END_A1" "a click on $OTHER1 moves the preview once"
+ui_mark
+ui_step "the first profile's side again"   pick_face "$B1" "$SIDE1"
+ui_expect_new "BUILD side click: From " "the click on the side again"
+ui_sync
+[ "$(last_end_a "Profile")" = "$END_A1" ] || ui_fail "the click on the side again: end A not at $END_A1"
+echo "ok   the click on the side again: end A at $END_A1"
 expect_row offset shown "Offset for a side pick (no check box)"
 expect_row from shown "From for a side pick"
 ui_step "length 300"                       ui_type_in "Panel Profile input length" "300"
@@ -785,10 +864,11 @@ done
 [ -n "$BSLIDER" ] || ui_fail "no profile ($B1, $B2, $B3, $B4) with two sides to pick"
 SLIDE1=$(printf '%s\n' "$SLIDERFACES" | sed -n 1p)
 SLIDE2=$(printf '%s\n' "$SLIDERFACES" | sed -n 2p)
+ui_sync
 ui_mark
 ui_step "the mouse on $BSLIDER's $SLIDE1"  xdotool mousemove $(ui_pick_at "$BSLIDER/$SLIDE1 at")
-ui_expect_new "BUILD hover on " "the hover on the side"
-ui_expect_new "Inspect Linear Part: place side" "the hover previews the slider on the side"
+ui_expect_new "BUILD hover pick: face $SLIDE1 of $BSLIDER" "the hover names the side a click picks"
+no_inspect "Linear Part" "the hover previews no slider (mitcad#508)"
 ui_mark
 ui_step "$BSLIDER's $SLIDE1"               pick_face "$BSLIDER" "$SLIDE1"
 ui_expect_new "Inspect Linear Part: place side" "the slider on the side picked (On the side)"

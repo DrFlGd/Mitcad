@@ -373,6 +373,99 @@ impl<K: Kernel> Document<K> {
         })
     }
 
+    /// The frame seated on the member's unchanged entry face, and the
+    /// extra penetration relative to the library's axis frame. Older
+    /// libraries need no new frame: the head's top is the body's least
+    /// coordinate along the shaft. A named frame avoids this inference.
+    pub(crate) fn wood_seat(
+        &self,
+        source: &SourceUse,
+    ) -> Result<(String, Option<FrameOverride>, f64), ModelError> {
+        let meta = source
+            .def
+            .build
+            .as_ref()
+            .map(|b| BuildMeta::read_row(b, source.config.as_deref()))
+            .transpose()
+            .map_err(refuse)?
+            .unwrap_or_default();
+        let Some(wood) = meta.wood else {
+            return Ok((axis_frame(source), None, 0.0));
+        };
+        let head = match &wood.head {
+            Some(super::MetaValue::Text(t)) => t.to_ascii_lowercase(),
+            _ => String::new(),
+        };
+        let sunk = wood.kind.eq_ignore_ascii_case("nail")
+            || head.contains("countersunk")
+            || head.contains("bugle");
+        let underside = !sunk
+            && (wood.kind.eq_ignore_ascii_case("bolt")
+                || ["pan", "hex", "washer", "button", "socket", "round"]
+                    .iter()
+                    .any(|h| head.contains(h)));
+        let seat = wood.seat.as_deref().unwrap_or(if underside {
+            "head_underside"
+        } else {
+            "head_top"
+        });
+        let axis_name = axis_frame(source);
+        if seat == "head_underside" {
+            // A library's axis is at the bearing face. Explicit seat
+            // frames may put that bearing face elsewhere.
+            if !meta.frames.iter().any(|f| f.name == seat) {
+                return Ok((axis_name, None, 0.0));
+            }
+        }
+        let (mounts, bounds) = evaluated_frames(self, source)?;
+        let axis = mounts.get(&axis_name).ok_or_else(|| {
+            refuse(format!(
+                "{} has no shaft frame {axis_name}",
+                source.def.label()
+            ))
+        })?;
+        let z = z_axis(axis);
+        if let Some(frame) = mounts.get(seat) {
+            if super::geometry::norm(sub(z_axis(frame), z)) > 1e-12 {
+                return Err(refuse(format!(
+                    "{} seat {seat} does not point along its shaft",
+                    source.def.label()
+                )));
+            }
+            let sink = -dot(sub(frame.translation, axis.translation), z);
+            return Ok((seat.to_owned(), None, sink));
+        }
+        if seat != "head_top" {
+            return Err(refuse(format!(
+                "{} has no seat frame {seat}",
+                source.def.label()
+            )));
+        }
+        // An axis-aligned library part has an exact head-top plane in its
+        // box. Oblique parts must supply a seat frame rather than use an
+        // axis-aligned box as a geometric support-plane approximation.
+        if !shaft_axis_is_aligned(z) {
+            return Err(refuse(format!(
+                "{} needs a head_top seat frame for its oblique shaft",
+                source.def.label()
+            )));
+        }
+        let bounds =
+            bounds.ok_or_else(|| refuse(format!("{} has no fastener body", source.def.label())))?;
+        let top = bounds
+            .corners()
+            .map(|p| dot(sub(p, axis.translation), z))
+            .fold(f64::INFINITY, f64::min);
+        Ok((
+            axis_name,
+            (top.abs() > 1e-9).then_some(FrameOverride {
+                shift: Some([0.0, 0.0, top]),
+                ..FrameOverride::default()
+            }),
+            -top,
+        ))
+    }
+
     /// The warnings of a fastener `i` (from 1) at `point` on the contact
     /// plane: its embedment, its distance to the contact's edges and to an
     /// end of the member it goes through.
@@ -497,9 +590,12 @@ impl<K: Kernel> Document<K> {
         };
         let mut pieces = Vec::new();
         let mut frames = Vec::new();
+        let (own, own_override, sink) = self.wood_seat(&source)?;
+        let mut driven = size.clone();
+        driven.length += sink;
         let back = scale(fastening.axis, -1.0);
         for (i, p) in fastening.points(count).into_iter().enumerate() {
-            self.fastener_warnings(&fastening, &size, i + 1, p, &kind, &mut warnings);
+            self.fastener_warnings(&fastening, &driven, i + 1, p, &kind, &mut warnings);
             // At the entry: on the face the fastener goes in from.
             let entry = add(
                 p,
@@ -517,7 +613,8 @@ impl<K: Kernel> Document<K> {
                 name: name.clone(),
                 kind: JointKind::Rigid,
                 slide: SlideAxis::Z,
-                own: Some(axis_frame(&source)),
+                own: Some(own.clone()),
+                own_override,
                 b,
                 flip: true,
                 angle: 0.0,
@@ -740,6 +837,7 @@ impl<K: Kernel> Document<K> {
             kind: JointKind::Rigid,
             slide: SlideAxis::Z,
             own: Some(mount.clone()),
+            own_override: None,
             b,
             flip: true,
             angle: 0.0,
@@ -805,6 +903,7 @@ impl<K: Kernel> Document<K> {
                         kind: JointKind::Rigid,
                         slide: SlideAxis::Z,
                         own: Some(axis_frame(&used)),
+                        own_override: None,
                         b: JointOrigin {
                             occurrence: OccurrencePath::default(),
                             geometry: GeomRef::Mount {
@@ -908,6 +1007,14 @@ impl<K: Kernel> Document<K> {
             ))
         })
     }
+}
+
+/// A bounding box's support plane is exact only along a model axis.
+/// Checking the off-axis components avoids accepting a small angular
+/// error merely because its cosine rounds close to one.
+pub(crate) fn shaft_axis_is_aligned(z: V3) -> bool {
+    (0..3)
+        .any(|i| (z[i].abs() - 1.0).abs() <= 1e-12 && (0..3).all(|j| i == j || z[j].abs() <= 1e-12))
 }
 
 /// A fastener's frame that goes on the hole: its `axis` frame (kind

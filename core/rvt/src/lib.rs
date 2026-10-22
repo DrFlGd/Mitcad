@@ -16,7 +16,8 @@
 //!   (levels, categories, families and types, materials, transforms,
 //!   bounding boxes);
 //! - [`brep`]: the elements' geometry as the file keeps it (B-reps in
-//!   their faces' parameters, types placed by transforms).
+//!   their faces' parameters, types placed by transforms);
+//! - [`params`]: parameters' kinds and names (their numbers' units).
 //!
 //! The import builds bodies from these through the model's geometry
 //! kernel.
@@ -27,6 +28,7 @@ pub mod categories;
 pub mod elements;
 pub mod gzip;
 pub mod info;
+pub mod params;
 pub mod partition;
 pub mod schema;
 #[doc(hidden)]

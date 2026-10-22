@@ -96,7 +96,7 @@ expect-native-history
 native-select native.history.F3
 key F6
 expect-model-bodies 3 6000
-key Ctrl+f
+native-key-event Ctrl+f
 expect-native-visible native.timelineSearch true
 native-type native.timelineSearch 'box in:Root'
 expect-log 'Timeline search "box in:Root": 3 matches'
@@ -109,7 +109,7 @@ expect-native-history F1
 key Escape
 expect-native-history F3
 native-select native.history.F2
-key F2
+native-key-event F2
 focus-dialog '^Rename Feature$'
 key Ctrl+a
 type 'KeyboardBox'
@@ -120,20 +120,28 @@ button '^OK$'
 expect-log 'Renamed .* to KeyboardBox' 30
 focus-main
 native-select native.history.F3
-key Backspace
+capture-undo-depth beforeShortcutDelete
+native-key-event Backspace
 expect-model-bodies 2 3000
-key Ctrl+z
+expect-undo-depth ${beforeShortcutDelete} 1
+native-key-event Ctrl+z
 expect-model-bodies 3 6000
+expect-undo-depth ${beforeShortcutDelete} 0
 native-select native.history.F3
-key Delete
+native-key-event Delete
 expect-model-bodies 2 3000
-key Ctrl+z
+expect-undo-depth ${beforeShortcutDelete} 1
+native-key-event Ctrl+z
 expect-model-bodies 3 6000
+expect-undo-depth ${beforeShortcutDelete} 0
+native-expand native.modelTree
 native-select native.model.body:F3.b0@
-key Delete
+native-key-event Delete
 expect-model-bodies 2 3000
-key Ctrl+z
+expect-undo-depth ${beforeShortcutDelete} 1
+native-key-event Ctrl+z
 expect-model-bodies 3 6000
+expect-undo-depth ${beforeShortcutDelete} 0
 
 # Native playback buttons step the real document marker. The in-row marker
 # must sit between icons, and icons after it must visibly dim.
@@ -226,18 +234,15 @@ expect-log 'Diagnostics: cleared memory:' 30
 button '^Close$'
 focus-main
 capture-undo-depth before_busy_drag
+native-history-drag-on-job set_marker 3
 native-history-drag begin
 mark
 native-history-drag-now to 1
-wait-log 'Computing set_marker started' 30
-expect-model-busy true
-# Send a new target and mouseUp during that actual worker job. Their
-# callbacks must retain order, finish after recomputes, and merge both
-# changes into one undo step even though the pointer is already released.
-native-history-drag-now to 3
-expect-model-busy true
-native-history-drag-now end
-expect-model-busy true
+# The armed callback sends the new target and mouseUp during the actual
+# worker job, checking busy before/after each input before a progress sheet
+# can interrupt the gesture. Queued callbacks must retain order and merge
+# both changes into one undo step after the pointer is already released.
+wait-log 'Native test: history marker moved to 3 and released during set_marker \(busy before/after both inputs\)' 30
 expect-log 'Marker at 3 of 3' 30
 expect-model-bodies 3 6000
 expect-undo-depth ${before_busy_drag} 1
@@ -262,7 +267,7 @@ native-type input_name 'EmptyTimeline'
 native-click commandOk
 # The root has modelled bodies: asked first (mitcad#171).
 expect-log 'Hybrid assembly question: Root has' 30
-focus-dialog '^Hybrid Assembly$'
+focus-dialog '^Root has modelled bodies \('
 button '^Continue as Is$'
 focus-main
 expect-log 'New component EmptyTimeline' 30

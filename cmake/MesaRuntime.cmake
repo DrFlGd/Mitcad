@@ -283,6 +283,16 @@ if(MITCAD_MESA_DIR)
               -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-web-viewer"
               -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
     set_tests_properties(app.ui-windows-web-viewer PROPERTIES TIMEOUT 600)
+    # File > Save to Project (mitcad#503): after Save As, no Move to a
+    # Project in the menu; the old command id's saved shortcut still starts
+    # it; a loose design saved in a project under a typed name (the
+    # original stays); Save with Description's question opens the picker.
+    add_test(NAME app.ui-windows-save-to-project
+      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+              -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-save-to-project-test.ps1"
+              -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-save-to-project"
+              -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
+    set_tests_properties(app.ui-windows-save-to-project PROPERTIES TIMEOUT 300)
     # A design as it opens (mitcad#426): the root active whatever the file
     # had active, unmodified; a tree longer than the browser folded below
     # the root, a small one expanded; Collapse All keeps the root open.
@@ -317,6 +327,52 @@ if(MITCAD_MESA_DIR)
               -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-dialog-folders"
               -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
     set_tests_properties(app.ui-windows-dialog-folders PROPERTIES TIMEOUT 300)
+    # Property Sets (mitcad#496): an occurrence's and its component's
+    # levels, a value edited in place, an own type's value as a choice,
+    # Find in Design by property and the Parts List's property columns.
+    add_test(NAME app.ui-windows-property-sets
+      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+              -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-property-sets-test.ps1"
+              -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-property-sets"
+              -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
+    set_tests_properties(app.ui-windows-property-sets PROPERTIES TIMEOUT 300)
+    # The sketch's axes and origin as picks of Sketch Dimension and the
+    # constraint tools (mitcad#500): a distance from the x axis, an angle to
+    # it and a point on the y axis in a sketch with nothing at the origin.
+    add_test(NAME app.ui-windows-sketch-axes
+      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+              -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-sketch-axes-test.ps1"
+              -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-sketch-axes"
+              -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
+    set_tests_properties(app.ui-windows-sketch-axes PROPERTIES TIMEOUT 300)
+    # An .iam assembly's Parts with their design history (mitcad#507): the
+    # test project imported with and without, the parts' progress and
+    # outcomes, the volumes both ways, the choice remembered; with
+    # MITCAD_IAM_UI_ASSEMBLY or MITCAD_IPT_CORPUS the test files' seven-part
+    # assembly too (skipped without).
+    add_test(NAME app.ui-windows-iam-history
+      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+              -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-iam-history-test.ps1"
+              -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-iam-history"
+              -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
+    set_tests_properties(app.ui-windows-iam-history PROPERTIES TIMEOUT 3000)
+    # A sketch on a face of an occurrence turned and moved (mitcad#505):
+    # its frame in the design on the face, Look At normal to it and a drawn
+    # line on the face, with the component active and with the root.
+    add_test(NAME app.ui-windows-occurrence-face-sketch
+      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+              -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-occurrence-face-sketch-test.ps1"
+              -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-occurrence-face-sketch"
+              -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
+    set_tests_properties(app.ui-windows-occurrence-face-sketch PROPERTIES TIMEOUT 300)
+    # Reorient Design (mitcad#502): the whole design turned 90 degrees about
+    # X, previewed in its dialog, kept by OK and taken back by Undo.
+    add_test(NAME app.ui-windows-reorient-design
+      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+              -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-reorient-design-test.ps1"
+              -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-reorient-design"
+              -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
+    set_tests_properties(app.ui-windows-reorient-design PROPERTIES TIMEOUT 300)
   endif()
 elseif(WIN32 AND CMAKE_RUNTIME_OUTPUT_DIRECTORY)
   # Turned off again: remove earlier copies, or they would stay in use.

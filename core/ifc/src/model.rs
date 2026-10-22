@@ -65,6 +65,10 @@ pub struct Product {
     pub materials: Vec<u64>,
     /// The volumes its element quantities state (name, mm³).
     pub volumes: Vec<(String, f64)>,
+    /// Its own property sets and element quantities
+    /// (IfcRelDefinesByProperties; `properties::property_set` reads them,
+    /// mitcad#496).
+    pub property_sets: Vec<u64>,
     /// A storey's elevation (mm).
     pub elevation: Option<f64>,
 }
@@ -133,6 +137,9 @@ pub struct Model {
     pub material_names: HashMap<u64, String>,
     /// Representation maps by the type objects that hold them.
     pub map_types: HashMap<u64, u64>,
+    /// The property sets of type objects (HasPropertySets), by type object
+    /// (mitcad#496).
+    pub type_property_sets: HashMap<u64, Vec<u64>>,
     /// What could not be read of the structure.
     pub notes: Vec<String>,
 }
@@ -151,6 +158,7 @@ impl Model {
             material_styles: HashMap::new(),
             material_names: HashMap::new(),
             map_types: HashMap::new(),
+            type_property_sets: HashMap::new(),
             notes: Vec::new(),
         };
         let projects = file.of_kind("IFCPROJECT");
@@ -191,6 +199,7 @@ impl Model {
                         type_object: None,
                         materials: Vec::new(),
                         volumes: Vec::new(),
+                        property_sets: Vec::new(),
                         elevation: None,
                     },
                 );
@@ -287,6 +296,23 @@ impl Model {
                 }
                 // (..., RelatedObjects, RelatingPropertyDefinition)
                 "IFCRELDEFINESBYPROPERTIES" => {
+                    // Property sets and quantities, one or (IFC4) a set of
+                    // them (mitcad#496).
+                    let sets: Vec<u64> = match e.arg(5).as_ref() {
+                        Some(set) => vec![set],
+                        None => e.arg(5).refs(),
+                    };
+                    let sets: Vec<u64> = sets
+                        .into_iter()
+                        .filter(|s| crate::properties::is_property_set(file, *s))
+                        .collect();
+                    if !sets.is_empty() {
+                        for c in e.arg(4).refs() {
+                            if let Some(p) = self.products.get_mut(&c) {
+                                p.property_sets.extend(sets.iter().copied());
+                            }
+                        }
+                    }
                     let Some(definition) = file.deref(e.arg(5)) else {
                         continue;
                     };
@@ -307,6 +333,16 @@ impl Model {
                     // Type objects' representation maps: (..., HasPropertySets,
                     // RepresentationMaps, ...) at 5, 6.
                     if e.kind.ends_with("TYPE") || e.kind.ends_with("STYLE") {
+                        // Its property sets (mitcad#496).
+                        let sets: Vec<u64> = e
+                            .arg(5)
+                            .refs()
+                            .into_iter()
+                            .filter(|s| crate::properties::is_property_set(file, *s))
+                            .collect();
+                        if !sets.is_empty() {
+                            self.type_property_sets.insert(e.id, sets);
+                        }
                         for map in e.arg(6).refs() {
                             if file.kind(map) == Some("IFCREPRESENTATIONMAP") {
                                 self.map_types.insert(map, e.id);

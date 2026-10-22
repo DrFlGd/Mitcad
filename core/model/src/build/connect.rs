@@ -117,6 +117,7 @@ pub(crate) struct Piece {
     pub kind: JointKind,
     pub slide: SlideAxis,
     pub own: Option<String>,
+    pub own_override: Option<FrameOverride>,
     pub b: JointOrigin,
     pub flip: bool,
     pub angle: f64,
@@ -277,7 +278,7 @@ pub(crate) fn make_piece(
             a: JointOrigin {
                 occurrence: OccurrencePath(vec![occurrence]),
                 geometry: own,
-                frame_override: None,
+                frame_override: piece.own_override,
             },
             b: piece.b.clone(),
             offset: None,
@@ -512,6 +513,7 @@ impl<K: Kernel> Document<K> {
             kind: JointKind::Slider,
             slide: SlideAxis::X,
             own: Some(mate_a.frame.clone()),
+            own_override: None,
             b: origin_of(&a_path, a_part, &a_frame_name),
             flip: true,
             angle,
@@ -567,6 +569,7 @@ impl<K: Kernel> Document<K> {
                         kind: JointKind::Rigid,
                         slide: SlideAxis::Z,
                         own,
+                        own_override: None,
                         // On the connector, once it exists (its occurrence
                         // and part fill in when it is made).
                         b: JointOrigin {
@@ -1073,6 +1076,7 @@ impl<K: Kernel> Document<K> {
                             kind: JointKind::Slider,
                             slide: SlideAxis::X,
                             own: own.clone(),
+                            own_override: None,
                             b: origin_of(&path, target.part()?, &slot),
                             flip: true,
                             angle: 0.0,
@@ -1092,6 +1096,7 @@ impl<K: Kernel> Document<K> {
                 kind: JointKind::Rigid,
                 slide: SlideAxis::Z,
                 own: None,
+                own_override: None,
                 b,
                 flip: false,
                 angle: 0.0,

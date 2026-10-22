@@ -5,15 +5,26 @@
 
 #include <QApplication>
 #include <QComboBox>
+#include <QCheckBox>
 #include <QDialog>
 #include <QElapsedTimer>
+#include <QEvent>
 #include <QEventLoop>
 #include <QAction>
 #include <QMenu>
+#include <QLabel>
+#include <QLineEdit>
+#include <QProgressBar>
+#include <QPushButton>
+#include <QSpinBox>
+#include <QStandardItemModel>
+#include <QTableView>
+#include <QTreeView>
 #include <QRegularExpression>
 #include <QImage>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QItemSelectionModel>
 #include <QOpenGLWidget>
 #include <QPainter>
 #include <QPalette>
@@ -31,6 +42,7 @@
 #include "platform/MacChrome.hpp"
 #include "platform/NativeDialogs.hpp"
 #include "platform/NativeForms.hpp"
+#include "platform/NativeMacWindow.hpp"
 #include "browser/DocumentSnapshot.hpp"
 #include "framework/CommandSession.hpp"
 #include "framework/CommandRegistry.hpp"
@@ -485,11 +497,14 @@ NSString* characters(int key, const QString& text) {
 
 unsigned short virtualKey(int key) {
   switch (key) {
+  case Qt::Key_Z: return 6;
   case Qt::Key_Return: return 36;
   case Qt::Key_Enter: return 76;
   case Qt::Key_Tab: case Qt::Key_Backtab: return 48;
   case Qt::Key_Space: return 49;
   case Qt::Key_Backspace: return 51;
+  case Qt::Key_Delete: return 117;
+  case Qt::Key_F2: return 120;
   case Qt::Key_Escape: return 53;
   case Qt::Key_Left: return 123;
   case Qt::Key_Right: return 124;
@@ -505,6 +520,86 @@ bool active() { return nativeDialogsActive() && documentWindow() != nil; }
 
 bool nativeFocused() {
   return active() && targetWindow() && !isQtResponder(targetWindow().firstResponder);
+}
+
+bool applicationDelegate(QString& error) {
+  id<NSApplicationDelegate> delegate = NSApp.delegate;
+  const bool native = active();
+  const bool resign = [delegate respondsToSelector:@selector(applicationDidResignActive:)];
+  const bool become = [delegate respondsToSelector:@selector(applicationDidBecomeActive:)];
+  const bool reopen = [delegate respondsToSelector:@selector(applicationShouldHandleReopen:hasVisibleWindows:)];
+  const bool secureSelector = [delegate respondsToSelector:@selector(applicationSupportsSecureRestorableState:)];
+  const bool secure = secureSelector && [delegate applicationSupportsSecureRestorableState:NSApp];
+  const auto identity = [](id object) {
+    return object ? QStringLiteral("%1@%2").arg(qt(NSStringFromClass([object class])))
+                       .arg(quintptr((__bridge void*)object), 0, 16) : QStringLiteral("nil");
+  };
+  const QString details = QStringLiteral("native=%1 delegate=%2 resign=%3 become=%4 reopen=%5 secureSelector=%6 secure=%7 "
+                                         "forwardResign=%8 forwardSecure=%9 qtState=%10 appActive=%11")
+      .arg(native).arg(identity(delegate)).arg(resign).arg(become).arg(reopen).arg(secureSelector).arg(secure)
+      .arg(identity([(NSObject*)delegate forwardingTargetForSelector:@selector(applicationDidResignActive:)]))
+      .arg(identity([(NSObject*)delegate forwardingTargetForSelector:@selector(applicationSupportsSecureRestorableState:)]))
+      .arg(int(qApp->applicationState())).arg(bool(NSApp.active));
+  qInfo().noquote() << QStringLiteral("Native application delegate diagnostic: %1").arg(details);
+  if (!native || !resign || !become || !reopen || !secureSelector || !secure) {
+    error = QStringLiteral("native application delegate lost Qt activation or secure state restoration: %1").arg(details);
+    return false;
+  }
+  QList<Qt::ApplicationState> changes;
+  class ActivationEvents : public QObject {
+  public:
+    int deactivations = 0;
+    bool eventFilter(QObject*, QEvent* event) override {
+      if (event->type() == QEvent::ApplicationDeactivate) ++deactivations;
+      return false;
+    }
+  } events;
+  qApp->installEventFilter(&events);
+  QObject::connect(qApp, &QGuiApplication::applicationStateChanged, &events,
+                   [&changes](Qt::ApplicationState state) { changes.append(state); });
+  const auto settle = [](Qt::ApplicationState expected) {
+    QElapsedTimer deadline;
+    deadline.start();
+    while (qApp->applicationState() != expected && deadline.elapsed() < 2000) {
+      QCoreApplication::processEvents(QEventLoop::AllEvents, 25);
+    }
+    return qApp->applicationState() == expected;
+  };
+  const auto notification = [](NSNotificationName name) {
+    return [NSNotification notificationWithName:name object:NSApp];
+  };
+  [delegate applicationDidBecomeActive:notification(NSApplicationDidBecomeActiveNotification)];
+  if (!settle(Qt::ApplicationActive)) {
+    error = QStringLiteral("native application activation did not reach Qt");
+    return false;
+  }
+  changes.clear();
+  events.deactivations = 0;
+  [delegate applicationDidResignActive:notification(NSApplicationDidResignActiveNotification)];
+  if (!settle(Qt::ApplicationInactive)) {
+    error = QStringLiteral("native application deactivation did not reach Qt");
+    return false;
+  }
+  [delegate applicationDidBecomeActive:notification(NSApplicationDidBecomeActiveNotification)];
+  if (!settle(Qt::ApplicationActive)) {
+    error = QStringLiteral("native application reactivation did not reach Qt");
+    return false;
+  }
+  [delegate applicationDidResignActive:notification(NSApplicationDidResignActiveNotification)];
+  if (!settle(Qt::ApplicationInactive) ||
+      ![delegate applicationShouldHandleReopen:NSApp hasVisibleWindows:YES] ||
+      !settle(Qt::ApplicationActive)) {
+    error = QStringLiteral("native Dock reopen did not restore Qt's active application state");
+    return false;
+  }
+  const QList<Qt::ApplicationState> expected = {
+      Qt::ApplicationInactive, Qt::ApplicationActive, Qt::ApplicationInactive, Qt::ApplicationActive};
+  if (changes != expected || events.deactivations != 2) {
+    error = QStringLiteral("native application delegate lost or duplicated Qt state signals or deactivate events");
+    return false;
+  }
+  qInfo() << "Native application delegate: activation, deactivation, reopen and secure state passed";
+  return true;
 }
 
 bool controlExists(const QString& identifier) { return active() && findControl(identifier) != nil; }
@@ -1263,7 +1358,132 @@ bool disclosureLayout(QString& error) {
   return true;
 }
 
+bool widgetRefreshContract(QString& error) {
+  QWidget presenter;
+  presenter.setAttribute(Qt::WA_DontShowOnScreen);
+  auto* layout = new QVBoxLayout(&presenter);
+  const auto named = [layout](QWidget* widget, const QString& name) {
+    widget->setObjectName(name);
+    layout->addWidget(widget);
+  };
+  auto* caption = new QLabel(QStringLiteral("<b>Initial label</b>"));
+  auto* button = new QPushButton(QStringLiteral("&Initial button"));
+  auto* check = new QCheckBox(QStringLiteral("Check"));
+  auto* edit = new QLineEdit(QStringLiteral("Initial value"));
+  auto* spin = new QSpinBox;
+  auto* progress = new QProgressBar;
+  auto* combo = new QComboBox;
+  auto* table = new QTableView;
+  auto* tree = new QTreeView;
+  named(caption, QStringLiteral("refresh.caption"));
+  named(button, QStringLiteral("refresh.button"));
+  named(check, QStringLiteral("refresh.check"));
+  named(edit, QStringLiteral("refresh.edit"));
+  named(spin, QStringLiteral("refresh.spin"));
+  named(progress, QStringLiteral("refresh.progress"));
+  named(combo, QStringLiteral("refresh.combo"));
+  named(table, QStringLiteral("refresh.table"));
+  named(tree, QStringLiteral("refresh.tree"));
+  combo->addItems({QStringLiteral("First"), QStringLiteral("Second")});
+  QStandardItemModel model(2, 1), replacement(1, 1);
+  model.setData(model.index(0, 0), QStringLiteral("Row one"));
+  model.setData(model.index(1, 0), QStringLiteral("Row two"));
+  replacement.setData(replacement.index(0, 0), QStringLiteral("Replacement"));
+  table->setModel(&model);
+  tree->setModel(&model);
+  auto view = createNativeWidgetView(&presenter);
+  view->refresh();
+  NSView* root = (__bridge NSView*)view->nativeView();
+  const auto control = [&root](const QString& name) { return identifiedView(root, name); };
+  const auto fail = [&error](const QString& message) { error = message; return false; };
+  const auto unchanged = [&view, &fail]() {
+    const quint64 before = nativeWidgetPropertyWrites();
+    for (int i = 0; i < 3; ++i) { view->refresh(); }
+    return nativeWidgetPropertyWrites() == before || fail(QStringLiteral("unchanged widget refresh assigned AppKit properties"));
+  };
+  if (!unchanged()) { return false; }
+
+  // All of these signals/events must arrive before the slow fallback.
+  caption->setText(QStringLiteral("<b>Changed label</b>"));
+  button->setText(QStringLiteral("&Changed button"));
+  button->setToolTip(QStringLiteral("Changed button tooltip"));
+  edit->setText(QStringLiteral("Changed value"));
+  edit->setToolTip(QStringLiteral("Changed tooltip"));
+  edit->setEnabled(false);
+  check->setChecked(true);
+  spin->setValue(17);
+  combo->setCurrentIndex(1);
+  table->selectionModel()->select(model.index(1, 0), QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+  QCoreApplication::processEvents(QEventLoop::AllEvents);
+  root = (__bridge NSView*)view->nativeView();
+  NSTextField* field = (NSTextField*)control(QStringLiteral("refresh.edit"));
+  NSButton* nativeCheck = (NSButton*)control(QStringLiteral("refresh.check"));
+  NSPopUpButton* popup = (NSPopUpButton*)control(QStringLiteral("refresh.combo"));
+  NSTextField* nativeCaption = (NSTextField*)control(QStringLiteral("refresh.caption"));
+  NSButton* nativeButton = (NSButton*)control(QStringLiteral("refresh.button"));
+  if (qt(field.stringValue) != edit->text() || field.enabled || qt(field.toolTip) != edit->toolTip() ||
+      nativeCheck.state != NSControlStateValueOn || popup.indexOfSelectedItem != 1 ||
+      qt(nativeCaption.stringValue) != QStringLiteral("Changed label") ||
+      qt(nativeButton.title) != QStringLiteral("Changed button") || qt(nativeButton.toolTip) != button->toolTip()) {
+    return fail(QStringLiteral("presenter signals/events did not refresh native controls"));
+  }
+  const auto tableIn = [](NSView* parent, const auto& self) -> NSTableView* {
+    if ([parent isKindOfClass:NSTableView.class]) { return (NSTableView*)parent; }
+    for (NSView* child in parent.subviews) { if (NSTableView* found = self(child, self)) { return found; } }
+    return nil;
+  };
+  NSTableView* nativeTable = tableIn(control(QStringLiteral("refresh.table")), tableIn);
+  if (nativeTable.numberOfRows != 2 || nativeTable.selectedRow != 1) {
+    return fail(QStringLiteral("model selection signal did not refresh native rows"));
+  }
+  model.setData(model.index(0, 0), QStringLiteral("Changed row"));
+  model.insertRow(2);
+  QCoreApplication::processEvents(QEventLoop::AllEvents);
+  if (nativeTable.numberOfRows != 3) { return fail(QStringLiteral("model insertion did not refresh native rows")); }
+  if (!unchanged()) { return false; }
+  table->setRowHidden(0, true);
+  view->refresh();
+  if (nativeTable.numberOfRows != 2) { return fail(QStringLiteral("silent row hiding was not reflected by an explicit refresh")); }
+  table->setRowHidden(0, false);
+  view->refresh();
+
+  auto* selection = new QItemSelectionModel(&model, table);
+  table->setSelectionModel(selection);
+  view->refresh();
+  selection->select(model.index(0, 0), QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+  QCoreApplication::processEvents(QEventLoop::AllEvents);
+  if (nativeTable.selectedRow != 0) { return fail(QStringLiteral("replacement selection model was not observed")); }
+
+  // A model and selection-model swap must rebind safely. Updates from the
+  // previous model cannot keep dirtying the new table or stale binding IDs.
+  table->setModel(&replacement);
+  view->refresh();
+  replacement.insertRow(1);
+  QCoreApplication::processEvents(QEventLoop::AllEvents);
+  root = (__bridge NSView*)view->nativeView();
+  nativeTable = tableIn(control(QStringLiteral("refresh.table")), tableIn);
+  if (nativeTable.numberOfRows != 2) { return fail(QStringLiteral("replacement model signals were not rebound")); }
+  auto* embedded = new QLineEdit(QStringLiteral("Cell value"));
+  embedded->setObjectName(QStringLiteral("refresh.cell"));
+  table->setIndexWidget(replacement.index(0, 0), embedded);
+  view->refresh();
+  root = (__bridge NSView*)view->nativeView();
+  nativeTable = tableIn(control(QStringLiteral("refresh.table")), tableIn);
+  [nativeTable reloadData];
+  NSView* cell = [nativeTable viewAtColumn:0 row:0 makeIfNecessary:YES];
+  if (identifiedView(cell, QStringLiteral("refresh.cell")) == nil) {
+    return fail(QStringLiteral("index widget was lost after a presenter-tree change"));
+  }
+  if (!unchanged()) { return false; }
+  delete embedded;
+  QCoreApplication::processEvents(QEventLoop::AllEvents);
+  if (!unchanged()) { return false; }
+  qDebug() << "Native widget refresh: unchanged properties, event updates, model replacement and index widgets verified";
+  return true;
+}
+
 bool duplicateChoices(CommandHost& host, QString& error) {
+  if (!mac::nativeWindowRefreshContract((__bridge void*)documentWindow(), error) || !widgetRefreshContract(error)) { return false; }
   // Exercise the real presenters with synthetic feature UIDs, independently
   // of the geometry needed to produce two identically named features.
   const auto popupIn = [](NSView* root, const auto& self) -> NSPopUpButton* {
@@ -1647,34 +1867,58 @@ void focusMain() {
   if (canvas) [window makeFirstResponder:canvas];
 }
 
-bool sendKey(int key, Qt::KeyboardModifiers modifiers, const QString& text) {
-  if (!nativeFocused()) return false;
+namespace {
+bool sendNativeKey(int key, Qt::KeyboardModifiers modifiers, const QString& text, bool applicationEvent) {
+  if (applicationEvent ? !active() : !nativeFocused()) return false;
   NSWindow* window = targetWindow();
   // Menu equivalents route to NSApp.keyWindow. Synchronize that public
   // AppKit focus with the script's native target after a child sheet closes.
   [NSApp activate];
   [window makeKeyWindow];
+  if (applicationEvent) {
+    qInfo().noquote() << QStringLiteral("Native application key event: key=%1 target=%2 keyWindow=%3 active=%4 responder=%5")
+        .arg(key).arg(qlonglong(window.windowNumber)).arg(qlonglong(NSApp.keyWindow.windowNumber))
+        .arg(bool(NSApp.active)).arg(qt(NSStringFromClass(window.firstResponder.class)));
+  }
   NSEventModifierFlags flags = 0;
   if (modifiers.testFlag(Qt::ControlModifier)) flags |= NSEventModifierFlagCommand;
   if (modifiers.testFlag(Qt::MetaModifier)) flags |= NSEventModifierFlagControl;
   if (modifiers.testFlag(Qt::AltModifier)) flags |= NSEventModifierFlagOption;
   if (modifiers.testFlag(Qt::ShiftModifier) || key == Qt::Key_Backtab) flags |= NSEventModifierFlagShift;
-  NSString* string = characters(key, text);
+  // AppKit ignores Command/Control/Option here, but preserves Shift. A
+  // lowercase Command-Shift-Z event can match Undo instead of Redo.
+  NSString* ignoringModifiers = characters(key, QString());
+  if ((flags & NSEventModifierFlagShift) && key >= Qt::Key_A && key <= Qt::Key_Z) {
+    ignoringModifiers = ignoringModifiers.uppercaseString;
+  }
+  NSString* string = text.isEmpty() ? ignoringModifiers : characters(key, text);
   NSEvent* down = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:flags
         timestamp:NSProcessInfo.processInfo.systemUptime windowNumber:window.windowNumber context:nil
-        characters:string charactersIgnoringModifiers:characters(key, QString()) isARepeat:NO keyCode:virtualKey(key)];
-  // Offer the native target its equivalents before the application's menu.
+        characters:string charactersIgnoringModifiers:ignoringModifiers isARepeat:NO keyCode:virtualKey(key)];
+  // The full-event regression leaves all equivalent/responder routing to
+  // NSApplication. Ordinary script keys offer the target its equivalents.
   // A secondary window owns Command-W even when an asynchronous sheet close
   // has temporarily restored NSApp.keyWindow to the document.
-  if ([window performKeyEquivalent:down]) return true;
+  if (!applicationEvent && [window performKeyEquivalent:down]) return true;
   // The shell's validation keeps plain CAD keys out of text field editors.
-  if ([NSApp.mainMenu performKeyEquivalent:down]) return true;
-  [window sendEvent:down];
+  if (!applicationEvent && [NSApp.mainMenu performKeyEquivalent:down]) return true;
+  // Let the real event loop dequeue these keys and establish currentEvent.
+  // Native field delegates and Qt's key mapper read its modifier flags.
+  [NSApp postEvent:down atStart:NO];
   NSEvent* up = [NSEvent keyEventWithType:NSEventTypeKeyUp location:NSZeroPoint modifierFlags:flags
         timestamp:NSProcessInfo.processInfo.systemUptime windowNumber:window.windowNumber context:nil
-        characters:string charactersIgnoringModifiers:characters(key, QString()) isARepeat:NO keyCode:virtualKey(key)];
-  [window sendEvent:up];
+        characters:string charactersIgnoringModifiers:ignoringModifiers isARepeat:NO keyCode:virtualKey(key)];
+  [NSApp postEvent:up atStart:NO];
   return true;
+}
+} // namespace
+
+bool sendKey(int key, Qt::KeyboardModifiers modifiers, const QString& text) {
+  return sendNativeKey(key, modifiers, text, false);
+}
+
+bool sendKeyEvent(int key, Qt::KeyboardModifiers modifiers, const QString& text) {
+  return sendNativeKey(key, modifiers, text, true);
 }
 
 bool sendText(const QString& text) {

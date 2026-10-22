@@ -83,6 +83,15 @@ ids:
 
 No cached volume or area was found in the property sets of the test files.
 
+The part's properties (`IptFile::part_properties`, mitcad#496) are read
+from the summary (`{f29f85e0-4ff9-1068-ab91-08002b27b3d9}`: 2 title, 3
+subject, 4 author, 5 keywords, 6 comments, 8 last saved by, the standard
+ids of the format), the document summary
+(`{d5cdd502-2e9c-101b-9397-08002b2cf9ae}`: 2 category, 14 manager, 15
+company), the tracking properties above, and every property a set's
+dictionary names (the user's own); the import gives them to the design's
+root.
+
 ## The segment database
 
 Every segment is a pair of streams with the same `<id>`:

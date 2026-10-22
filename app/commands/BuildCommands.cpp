@@ -129,6 +129,8 @@ struct Shared {
     QString fastenerCount = QStringLiteral("2");
     bool frameFasteners = true;
     bool setFasteners = false;
+    // A wall's Corner (mitcad#510): "butt" or "lapped".
+    QString frameCorner = QStringLiteral("butt");
   };
   TimberMemory timber;
   // The configuration rows of a source's component (Fasteners' sizes).
@@ -778,11 +780,9 @@ const Choices kEnds = {{QStringLiteral("a"), QStringLiteral("End A")}, {QStringL
 // direction, turns and mitre), and the side or end face under the mouse.
 const QString kOffsetTyped = QStringLiteral("offset_typed");
 const QString kEndPick = QStringLiteral("end_pick");
-const QString kHover = QStringLiteral("hover_end");
-// The face a click would pick, where the hover shows only that (mitcad#489).
+// The face a click would pick: the hover shows only that (mitcad#489,
+// mitcad#508).
 const QString kHoverPick = QStringLiteral("hover_pick");
-// A hover that moved less than this many pixels shows the same.
-constexpr double kHoverStepPixels = 4.0;
 const QString kTyped = QStringLiteral("typed");
 const Choices kLengthModes = {{QStringLiteral("face"), QStringLiteral("Auto: to the face")},
                               {QStringLiteral("centre"), QStringLiteral("Auto: to the centre")},
@@ -1268,29 +1268,6 @@ Shared::Side sideOf(const QJsonObject& answer, double targetLength) {
   return shown;
 }
 
-// The state a click at the hover would make (mitcad#417): the side or end
-// face under the mouse picked there, its Direction Auto and the side's
-// Offset left to the click. None without a hover.
-std::optional<CommandState> hoverState(const CommandState& state) {
-  const QJsonObject hover = state.object(kHover);
-  if (hover.isEmpty()) {
-    return std::nullopt;
-  }
-  CommandState shown = state;
-  const SelectionItem item{SelectKind::Face, str(hover, "owner"), str(hover, "name"), str(hover, "geometry"),
-                           str(hover, "occurrence")};
-  shown.setItems(kAt, {item});
-  QJsonObject pick{{QStringLiteral("item"), item.describe()}, {QStringLiteral("point"), hover.value(QStringLiteral("point"))}};
-  if (hover.contains(QStringLiteral("snap"))) {
-    pick.insert(QStringLiteral("snap"), hover.value(QStringLiteral("snap")));
-  }
-  shown.setObject(kAt + QStringLiteral("_pick"), pick);
-  shown.setChoice(QStringLiteral("direction"), kAuto);
-  shown.setObject(kEndPick, {});
-  shown.setChecked(kOffsetTyped, false);
-  return shown;
-}
-
 // Whether the face under the mouse is one a click there places on: a side
 // or an end face (as Placement allows) of a part the new one goes on.
 bool hoverTakes(const Shared& shared, const QString& role, const SelectionItem& item, const CommandState& state) {
@@ -1304,48 +1281,13 @@ bool hoverTakes(const Shared& shared, const QString& role, const SelectionItem& 
   return part && Shared::targets(role, part->role);
 }
 
-// The hover on a side or an end face of a part the new one goes on
-// (mitcad#417), kept with where the mouse is, so that the preview shows
-// what a click there places (on a side at its snap, on an end straight on
-// or turned) before the click. True when the hover changed; a move of a
-// few pixels shows the same.
-bool hoverFace(const Shared& shared, const QString& role, const SelectionItem& item, CommandState& state,
-               const CommandContext& context) {
-  const QJsonObject before = state.object(kHover);
-  QJsonObject record = hoverTakes(shared, role, item, state) ? build::pickRecord(item, context) : QJsonObject();
-  if (record.isEmpty()) {
-    if (before.isEmpty()) {
-      return false;
-    }
-    state.setObject(kHover, {});
-    qInfo().noquote() << QStringLiteral("BUILD hover off the parts' faces");
-    return true;
-  }
-  if (str(before, "item") == str(record, "item") && str(before, "occurrence") == item.occurrence) {
-    const std::optional<gp_Pnt> was = pointOf(before.value(QStringLiteral("point")));
-    const std::optional<gp_Pnt> now = pointOf(record.value(QStringLiteral("point")));
-    const double step = record.value(QStringLiteral("snap")).toDouble(0.0) * kHoverStepPixels / build::kSnapPixels;
-    if (was && now && was->Distance(*now) < step) {
-      return false;
-    }
-  }
-  record.insert(QStringLiteral("owner"), item.owner);
-  record.insert(QStringLiteral("name"), item.name);
-  record.insert(QStringLiteral("geometry"), item.geometry);
-  record.insert(QStringLiteral("occurrence"), item.occurrence);
-  if (before.isEmpty() || str(before, "item") != str(record, "item")) {
-    qInfo().noquote() << QStringLiteral("BUILD hover on %1").arg(item.describe());
-  }
-  state.setObject(kHover, record);
-  return true;
-}
-
-// The face a click would pick, and nothing else (mitcad#489: Timber's
-// Spacing, whose preview lays out the whole set, too slow to follow the
-// mouse): the view's hover highlights the face, the log names it once as
-// the mouse comes onto it, and no preview is computed (always false). A
-// hover's preview left from before is dropped (true then).
-bool hoverPickOnly(const Shared& shared, const QString& role, const SelectionItem& item, CommandState& state) {
+// The face a click would pick, and nothing else (mitcad#489, mitcad#508: a
+// preview that followed the mouse ran the placement and the inspection on
+// every move and lagged): the view's hover highlights the face, the log
+// names it once as the mouse comes onto it, and the preview stays where
+// the click and the panel's inputs put it, before the first click too.
+// Profile, Linear Part and Timber's modes that place on a member's face.
+void hoverPickOnly(const Shared& shared, const QString& role, const SelectionItem& item, CommandState& state) {
   const QString shown = state.object(kHoverPick).value(QStringLiteral("item")).toString();
   const QString now = hoverTakes(shared, role, item, state) ? item.describe() : QString();
   if (now != shown) {
@@ -1353,11 +1295,6 @@ bool hoverPickOnly(const Shared& shared, const QString& role, const SelectionIte
     qInfo().noquote() << (now.isEmpty() ? QStringLiteral("BUILD hover pick: off the parts' faces")
                                         : QStringLiteral("BUILD hover pick: %1, no preview").arg(now));
   }
-  if (state.object(kHover).isEmpty()) {
-    return false;
-  }
-  state.setObject(kHover, {});
-  return true;
 }
 
 // The end face's zones as markers (mitcad#417): "straight" in its middle,
@@ -1461,21 +1398,17 @@ void highlightTarget(Inspection& result, const QJsonObject& target, const Comman
 // shape (the model's, else its section along the frame), the auto
 // length's target highlighted, the length at the free end, the side's
 // snaps and an end face's zones, where the part goes ("Adds to") and the
-// first part's hint; with the mouse on a side or an end face, what a
-// click there places (mitcad#417). With `spacing` (Timber's set between
+// first part's hint: where the click and the panel's inputs put it, never
+// where the mouse is (mitcad#508). With `spacing` (Timber's set between
 // two members) the set's every member (mitcad#487).
-Inspection inspectPlacement(const SharedPtr& shared, const QString& role, const CommandState& picked,
+Inspection inspectPlacement(const SharedPtr& shared, const QString& role, const CommandState& state,
                             const CommandContext& context, bool profile, const QJsonObject& spacing = QJsonObject()) {
   Inspection result;
   Part part;
-  if (!chosenPart(*shared, picked, part)) {
+  if (!chosenPart(*shared, state, part)) {
     result.error = noPartsText(*shared, role);
     return result;
   }
-  // A side or end face under the mouse shows what a click there places
-  // (mitcad#417); else the pick.
-  const std::optional<CommandState> hovered = hoverState(picked);
-  const CommandState& state = hovered ? *hovered : picked;
   const build::Host host = build::buildHost(context);
   const QString addsTo = QObject::tr("Adds to: %1").arg(host.name);
   const Placement placed = placement(*shared, role, state, context, part, profile);
@@ -1552,9 +1485,7 @@ Inspection inspectPlacement(const SharedPtr& shared, const QString& role, const 
     shown.setCount = spacing.isEmpty()
                          ? -1
                          : answer.value(QStringLiteral("spacing")).toObject().value(QStringLiteral("count")).toInt(-1);
-    if (!hovered) {
-      shared->setSide(shown);
-    }
+    shared->setSide(shown);
     const QString kind = str(side, "kind");
     const QString from = fromText(shown.from);
     lines << (kind.isEmpty() ? QObject::tr("%1 mm from %2").arg(shown.offset, 0, 'f', 1).arg(from)
@@ -1571,21 +1502,19 @@ Inspection inspectPlacement(const SharedPtr& shared, const QString& role, const 
                    .arg(tilt > 0.0 ? QStringLiteral("B") : QStringLiteral("A"));
       sideLog += QStringLiteral("; tilt %1 deg").arg(tilt, 0, 'f', 2);
     }
-    if (!hovered) {
-      Shared::Foot foot;
-      const std::optional<gp_Pnt> point = pointOf(side.value(QStringLiteral("foot")));
-      const QJsonArray normal = side.value(QStringLiteral("normal")).toArray();
-      const QJsonArray along = side.value(QStringLiteral("along")).toArray();
-      if (point && normal.size() >= 3 && along.size() >= 3) {
-        const gp_Vec n(normal[0].toDouble(), normal[1].toDouble(), normal[2].toDouble());
-        const gp_Vec a(along[0].toDouble(), along[1].toDouble(), along[2].toDouble());
-        if (n.Magnitude() > 1e-9 && a.Magnitude() > 1e-9) {
-          foot = Shared::Foot{true, *point, gp_Dir(n), gp_Dir(a)};
-        }
+    Shared::Foot foot;
+    const std::optional<gp_Pnt> point = pointOf(side.value(QStringLiteral("foot")));
+    const QJsonArray normal = side.value(QStringLiteral("normal")).toArray();
+    const QJsonArray along = side.value(QStringLiteral("along")).toArray();
+    if (point && normal.size() >= 3 && along.size() >= 3) {
+      const gp_Vec n(normal[0].toDouble(), normal[1].toDouble(), normal[2].toDouble());
+      const gp_Vec a(along[0].toDouble(), along[1].toDouble(), along[2].toDouble());
+      if (n.Magnitude() > 1e-9 && a.Magnitude() > 1e-9) {
+        foot = Shared::Foot{true, *point, gp_Dir(n), gp_Dir(a)};
       }
-      shared->setFoot(foot);
     }
-  } else if (!hovered) {
+    shared->setFoot(foot);
+  } else {
     shared->setFoot({});
   }
   // On an end (mitcad#417): straight on or turned, a corner's offset and
@@ -1618,9 +1547,6 @@ Inspection inspectPlacement(const SharedPtr& shared, const QString& role, const 
     }
     lines << shown;
     lines << endsText(ends);
-  }
-  if (hovered) {
-    lines << QObject::tr("<i>Where the mouse is: click to place it there</i>");
   }
   result.text = lines.join(QStringLiteral("<br>"));
   result.error = problemsOf(answer);
@@ -1665,8 +1591,7 @@ Inspection inspectPlacement(const SharedPtr& shared, const QString& role, const 
     const QString name = build::componentName(str(closing, "component"), context);
     const QString atEnd = str(closing, "end").toUpper();
     const bool mitred = str(closing, "mitre") == QStringLiteral("shared");
-    lines.insert(lines.size() - (hovered ? 1 : 0),
-                 mitred ? QObject::tr("Closes the corner at end %1 of %2: a shared mitre").arg(atEnd, name.toHtmlEscaped())
+    lines.append(mitred ? QObject::tr("Closes the corner at end %1 of %2: a shared mitre").arg(atEnd, name.toHtmlEscaped())
                         : QObject::tr("Closes the corner at end %1 of %2: a square butt").arg(atEnd, name.toHtmlEscaped()));
     result.text = lines.join(QStringLiteral("<br>"));
     result.log += QStringLiteral("; closes the corner at end %1 of %2, %3")
@@ -1677,9 +1602,6 @@ Inspection inspectPlacement(const SharedPtr& shared, const QString& role, const 
   }
   if (!spacing.isEmpty()) {
     result.log += setPreviewLog(answer, result.shape);
-  }
-  if (hovered) {
-    result.log += QStringLiteral("; on the hover");
   }
   // The part previewed (mitcad#418: a part chosen in the picker).
   result.log += QStringLiteral("; part %1").arg(part.name);
@@ -1835,7 +1757,6 @@ QVector<InputDef> placementInputs(const SharedPtr& shared, const QString& role, 
             // picked already places it again there (near the other end, on
             // another zone of the end face) rather than taking it out.
             build::recordPick(kAt, item, state, context);
-            state.setObject(kHover, {});
             state.setChecked(kOffsetTyped, false);
             fillFromClick(*shared, role, profile, state, context);
           },
@@ -2017,7 +1938,7 @@ bool placeNow(Shared& shared, DocumentHost& host, const QString& role, const Par
   // The next one: picked again; the part stays.
   state.setItems(kAt, {});
   state.setObject(QStringLiteral("at_pick"), {});
-  state.setObject(kHover, {});
+  state.setObject(kHoverPick, {});
   state.setObject(kEndPick, {});
   state.setChecked(kOffsetTyped, false);
   shared.lastPart.insert(role, part.key);
@@ -2070,10 +1991,11 @@ CommandDef placeCommand(const SharedPtr& shared, DocumentHost& host, const QStri
     return inspectPlacement(shared, role, state, context, profile);
   };
   def.previewMarkers = markersOf;
-  // The mouse on a side or an end face shows what a click there places
-  // (mitcad#417).
-  def.hoverPreview = [shared, role](const SelectionItem& item, CommandState& state, const CommandContext& context) {
-    return hoverFace(*shared, role, item, state, context);
+  // The mouse on a side or an end face shows only the face a click picks;
+  // the preview stays the click's (mitcad#508: following the mouse lagged).
+  def.hoverPreview = [shared, role](const SelectionItem& item, CommandState& state, const CommandContext&) {
+    hoverPickOnly(*shared, role, item, state);
+    return false;
   };
   def.apply = [shared, &host, role, profile](CommandState& state, const CommandContext& context) {
     Part part;
@@ -2326,7 +2248,9 @@ double widthAcross(const Part& part, const QString& lie) {
 // A member by two points (mitcad#485): build_place's fields (`at`, `to`,
 // `lie`; the points give the length), the points in the design with the
 // snaps they took. Nothing until the end is clicked: no direction follows
-// the mouse.
+// the mouse. It runs between the points in 3D (mitcad#509): it lies on the
+// start's plane or face only when the end is on that plane too
+// (`onPlane`), else it is free between them.
 struct PointsPlacement {
   QJsonObject fields;
   QString problem;
@@ -2334,13 +2258,36 @@ struct PointsPlacement {
   gp_Pnt end;
   QString startSnap;
   QString endSnap;
+  bool onPlane = false;
 };
 
+// How near the end's plane or point must be to the start's plane for the
+// member to lie on it (mitcad#509), mm.
+constexpr double kCoplanar = 0.01;
+
+// Whether the end clicked is on the start's plane (mitcad#509): the end's
+// plane or face is that plane (parallel, through it), or, when the end was
+// clicked on no plane, its point is on it.
+bool endOnPlane(const cmd::PlaneFrame& plane, const SelectionItem* endItem, const gp_Pnt& end,
+                const CommandContext& context) {
+  const gp_Vec normal(plane.normal);
+  const auto onIt = [&](const gp_Pnt& point) {
+    return std::abs(gp_Vec(plane.origin, point).Dot(normal)) <= kCoplanar;
+  };
+  if (endItem) {
+    if (const std::optional<cmd::PlaneFrame> other = planeOfItem(*endItem, context)) {
+      return std::abs(gp_Vec(other->normal).Dot(normal)) >= 1.0 - 1e-9 && onIt(other->origin);
+    }
+  }
+  return onIt(end);
+}
+
 // `at` for the start's item: the plane or face it lies on (its occurrence
-// from the host), or only the point.
-QJsonObject startAt(const SelectionItem& item, const gp_Pnt& start, const CommandContext& context) {
+// from the host) when `onPlane`, or only the point (free between the
+// points, mitcad#509).
+QJsonObject startAt(const SelectionItem& item, const gp_Pnt& start, bool onPlane, const CommandContext& context) {
   QJsonObject at{{QStringLiteral("point"), build::pointJson(build::inHost(start, context))}};
-  if (item.kind != SelectKind::Plane && item.kind != SelectKind::Face) {
+  if (!onPlane || (item.kind != SelectKind::Plane && item.kind != SelectKind::Face)) {
     return at; // a point: grounded through the two points
   }
   const std::optional<QString> path = build::pathFromHost(item, context);
@@ -2383,16 +2330,24 @@ PointsPlacement pointsPlacement(const Shared& shared, const CommandState& state,
   const Snapped last = snapToMembers(members, *end, build::pickSnap(kEndPoint, state).value_or(kDefaultSnap));
   result.end = last.point;
   result.endSnap = last.kind;
-  // On the start's plane: the end is moved onto it.
+  // On the start's plane only when the end is on it too (mitcad#509): then
+  // the end, as snapped, is moved onto the plane through the start, as
+  // before. Else the member is free between the points in 3D: the end is
+  // not moved (a click on another member's side gave a member a few
+  // millimetres long, its end moved beside the start).
+  const Selection& ends = state.items(kEndPoint);
   if (const std::optional<cmd::PlaneFrame> plane = planeOfItem(starts.first(), context)) {
-    const gp_Vec normal(plane->normal);
-    result.end.Translate(normal * -gp_Vec(result.start, result.end).Dot(normal));
+    result.onPlane = endOnPlane(*plane, ends.isEmpty() ? nullptr : &ends.first(), *end, context);
+    if (result.onPlane) {
+      const gp_Vec normal(plane->normal);
+      result.end.Translate(normal * -gp_Vec(result.start, result.end).Dot(normal));
+    }
   }
   if (result.start.Distance(result.end) < 1.0) {
     result.problem = QObject::tr("The end is where the member starts: click where it ends.");
     return result;
   }
-  QJsonObject at = startAt(starts.first(), result.start, context);
+  QJsonObject at = startAt(starts.first(), result.start, result.onPlane, context);
   if (const std::optional<double> snap = build::pickSnap(kStart, state)) {
     at.insert(QStringLiteral("snap"), *snap);
   }
@@ -2472,7 +2427,7 @@ RowPlacement rowPlacement(const Shared& shared, const CommandState& state, const
   const double first = lowAlong + (std::isfinite(result.width) ? result.width / 2.0 : 0.0);
   const gp_Pnt start = at(first, lowAcross);
   const gp_Pnt end = at(first, highAcross);
-  QJsonObject firstAt = startAt(faces.first(), start, context);
+  QJsonObject firstAt = startAt(faces.first(), start, true, context);
   QJsonObject spacing = spacingFields(state);
   spacing.insert(QStringLiteral("along"), vectorJson(vectorInHost(along, context)));
   spacing.insert(QStringLiteral("length"), result.span);
@@ -2603,10 +2558,34 @@ Inspection inspectTimber(const SharedPtr& shared, const CommandState& state, con
     lines << (std::isfinite(length) ? QObject::tr("Length %1 mm (by two points)").arg(length, 0, 'f', 1)
                                     : QObject::tr("Length"));
     lines << QObject::tr("%1 (Tab: flat or on edge)").arg(cmd::label(kLies, lie));
-    const auto snapLine = [](const QString& what, const QString& kind) {
-      return kind.isEmpty() ? QObject::tr("%1: where clicked").arg(what) : QObject::tr("%1: on a member's %2").arg(what, kind);
+    // What each point is on, as the model found it, its end cut back to
+    // the member it is in, and the plane it lies on or none (mitcad#509).
+    const QJsonObject between = preview.answer.value(QStringLiteral("points")).toObject();
+    const auto pointLine = [](const QString& what, const QString& kind, const QJsonObject& point) {
+      const QString name = str(point, "name");
+      QString line = !name.isEmpty()   ? QObject::tr("%1: on %2").arg(what, name.toHtmlEscaped())
+                     : kind.isEmpty() ? QObject::tr("%1: where clicked").arg(what)
+                                      : QObject::tr("%1: on a member").arg(what);
+      if (!kind.isEmpty()) {
+        line += QObject::tr(", its %1").arg(kind);
+      }
+      if (point.value(QStringLiteral("cut")).toBool()) {
+        line += QObject::tr("; cut back to its face");
+      }
+      return line;
     };
-    lines << snapLine(QObject::tr("Start"), points.startSnap) << snapLine(QObject::tr("End"), points.endSnap);
+    const QJsonObject startOn = between.value(QStringLiteral("start")).toObject();
+    const QJsonObject endOn = between.value(QStringLiteral("end")).toObject();
+    lines << pointLine(QObject::tr("Start"), points.startSnap, startOn)
+          << pointLine(QObject::tr("End"), points.endSnap, endOn);
+    lines << (points.onPlane ? QObject::tr("Lies on the start's plane: the end is on it too")
+                             : QObject::tr("Free between the points: turned by Lie about its axis, up along +Z"));
+    // The log's "<name>[ cut]" or "none" of a point.
+    const auto onLog = [](const QJsonObject& point) {
+      const QString name = str(point, "name");
+      return (name.isEmpty() ? QStringLiteral("none") : name) +
+             (point.value(QStringLiteral("cut")).toBool() ? QStringLiteral(" cut") : QString());
+    };
     markers.append(marker(points.startSnap.isEmpty() ? QObject::tr("start") : QStringLiteral("> ") + points.startSnap,
                           points.start));
     markers.append(marker(points.endSnap.isEmpty() ? QObject::tr("end") : QStringLiteral("> ") + points.endSnap,
@@ -2614,10 +2593,12 @@ Inspection inspectTimber(const SharedPtr& shared, const CommandState& state, con
     markers.append(marker(QStringLiteral("%1 mm").arg(length, 0, 'f', 1),
                           points.start.Translated(gp_Vec(points.start, points.end) * 0.5)));
     result.report.insert(QStringLiteral("markers"), markers);
-    logged = QStringLiteral("points, length %1 mm, %2; start snap %3, end snap %4; length by two points")
+    logged = QStringLiteral("points, length %1 mm, %2; start snap %3, end snap %4; length by two points; "
+                            "start on %5, end on %6; %7")
                  .arg(length, 0, 'f', 2)
                  .arg(lie, points.startSnap.isEmpty() ? QStringLiteral("none") : points.startSnap,
-                      points.endSnap.isEmpty() ? QStringLiteral("none") : points.endSnap);
+                      points.endSnap.isEmpty() ? QStringLiteral("none") : points.endSnap, onLog(startOn), onLog(endOn),
+                      points.onPlane ? QStringLiteral("on the start's plane") : QStringLiteral("free"));
   }
   shared->setPreview(frame, length, false);
   if (result.shape.IsNull() && part.sectionWidth() > 0.0 && std::isfinite(length)) {
@@ -2699,6 +2680,11 @@ const QString kFramePitch = QStringLiteral("frame_pitch");
 const QString kFramePitchAuto = QStringLiteral("frame_pitch_auto");
 const QString kFrameOverhang = QStringLiteral("frame_overhang");
 const QString kFrameFasteners = QStringLiteral("frame_fasteners");
+// How a wall meets the walls it starts or ends on (mitcad#510).
+const QString kFrameCorner = QStringLiteral("frame_corner");
+const QString kButt = QStringLiteral("butt");
+const QString kLapped = QStringLiteral("lapped");
+const Choices kFrameCorners = {{kButt, QStringLiteral("Butt")}, {kLapped, QStringLiteral("Lapped plates")}};
 const QString kWoodRole = QStringLiteral("wood");
 
 QString frameKindOf(const CommandState& state) {
@@ -3058,19 +3044,35 @@ QString wallWhat(double length, double height) {
   return QObject::tr("wall %1 x %2 mm").arg(length, 0, 'f', 0).arg(height, 0, 'f', 0);
 }
 
+// A wall's Corner (mitcad#510): Butt unless Lapped plates is chosen.
+QString frameCornerOf(const CommandState& state) {
+  return state.choice(kFrameCorner) == kLapped ? kLapped : kButt;
+}
+
 // Where a wall started on another wall's side meets it (the answer's
-// `junction`, mitcad#493): "Wall 2: an L corner at Wall 1's end B", "Wall
-// 2: a T on Wall 1 at 2000 mm"; empty without one.
+// `junction`, mitcad#493, mitcad#510): butting "Wall 2: from Wall 1's side
+// at 1200 mm (butt)", "Wall 2: from Wall 1's end A (butt corner)"; lapped
+// "Wall 2: an L corner at Wall 1's end B (lapped plates)", "Wall 2: a T on
+// Wall 1 at 2000 mm"; empty without one.
 QString junctionText(const QJsonValue& value, const QString& name) {
   const QJsonObject junction = value.toObject();
   if (junction.isEmpty()) {
     return {};
   }
   const QString wall = str(junction, "wall");
-  if (str(junction, "kind") == QStringLiteral("L")) {
-    return QObject::tr("%1: an L corner at %2's end %3").arg(name, wall, str(junction, "end").toUpper());
+  const QString kind = str(junction, "kind");
+  const QString end = str(junction, "end").toUpper();
+  const double at = junction.value(QStringLiteral("at")).toDouble();
+  if (kind == QStringLiteral("side")) {
+    return QObject::tr("%1: from %2's side at %3 mm (butt)").arg(name, wall).arg(at, 0, 'f', 0);
   }
-  return QObject::tr("%1: a T on %2 at %3 mm").arg(name, wall).arg(junction.value(QStringLiteral("at")).toDouble(), 0, 'f', 0);
+  if (kind == QStringLiteral("end")) {
+    return QObject::tr("%1: from %2's end %3 (butt corner)").arg(name, wall, end);
+  }
+  if (kind == QStringLiteral("L")) {
+    return QObject::tr("%1: an L corner at %2's end %3 (lapped plates)").arg(name, wall, end);
+  }
+  return QObject::tr("%1: a T on %2 at %3 mm").arg(name, wall).arg(at, 0, 'f', 0);
 }
 
 FramePlacement framePlacement(const Shared& shared, const CommandState& state, const CommandContext& context,
@@ -3183,10 +3185,13 @@ FramePlacement framePlacement(const Shared& shared, const CommandState& state, c
     }
     const QString height = expressionOr(state, kFrameHeight, QStringLiteral("2400 mm"));
     const QJsonObject plates{{QStringLiteral("top"), state.choice(kFrameTop) == QStringLiteral("2") ? 2 : 1}};
+    // How it meets the walls it starts or ends on (mitcad#510).
+    fields.insert(QStringLiteral("corner"), frameCornerOf(state));
     if (startWall) {
-      // A start on another wall's side (mitcad#493): square to it, an L
-      // corner near one of its ends or a T elsewhere, as the model works it
-      // out; as far as the end clicked is along it, else Length.
+      // A start on another wall's side or end face (mitcad#493, mitcad#510):
+      // square to it, from the side or the end butting, else an L corner
+      // near one of its ends or a T, as the model works it out; as far as
+      // the end clicked is along it, else Length.
       fields.insert(QStringLiteral("joins"), joins);
       fields.insert(QStringLiteral("square"), true);
       fields.insert(QStringLiteral("start"), build::pointJson(start));
@@ -3347,10 +3352,31 @@ Inspection inspectFrame(const SharedPtr& shared, const CommandState& state, cons
   if (!joined.isEmpty()) {
     result.log += QStringLiteral("; %1").arg(joined);
   }
+  if (kind == kWall) {
+    result.log += QStringLiteral("; corner %1").arg(frameCornerOf(state)); // mitcad#510
+  }
   if (fastened) {
     result.log += QStringLiteral("; fastener %1").arg(fastening); // mitcad#497
   }
   return result;
+}
+
+// Log measured geometry after the model has placed it, so UI acceptance
+// checks seating rather than the requested metadata or preview alone.
+void logTimberSeating(const CommandContext& context) {
+  const QJsonArray parts = context.queryObject({{QStringLiteral("query"), QStringLiteral("build_parts")}})
+                               .value(QStringLiteral("parts")).toArray();
+  for (const QJsonValue& value : parts) {
+    const QJsonObject part = value.toObject();
+    const QJsonObject seat = part.value(QStringLiteral("seating")).toObject();
+    if (seat.isEmpty()) {
+      continue;
+    }
+    const double distance = seat.value(QStringLiteral("head_top_distance")).toDouble();
+    qInfo().noquote() << QStringLiteral("Timber fastener %1: head top %2 mm from entry face")
+                             .arg(str(part, "component"))
+                             .arg(std::abs(distance) <= 1e-6 ? 0.0 : distance, 0, 'g', 12);
+  }
 }
 
 // Places the frame the Frame mode shows.
@@ -3378,6 +3404,7 @@ bool applyFrame(Shared& shared, DocumentHost& host, CommandState& state, const C
   for (const QJsonValue& warning : result.value(QStringLiteral("warnings")).toArray()) {
     qInfo().noquote() << QStringLiteral("Frame warning: %1").arg(warning.toString());
   }
+  logTimberSeating(context);
   shared.refreshDesign(context);
   state.setItems(kStart, {});
   state.setItems(kEndPoint, {});
@@ -3440,6 +3467,11 @@ std::vector<InputDef> frameInputs(const SharedPtr& shared) {
                        .withTooltip(QObject::tr("The studs', joists' or rafters' centre distance, from the start")));
   inputs.push_back(choiceInput(kFrameTop, QObject::tr("Top Plates"), kFrameTops, QStringLiteral("1"))
                        .withVisible(kindIs(kWall)));
+  // Butting square, or the lapped L corner of mitcad#493 (mitcad#510).
+  inputs.push_back(choiceInput(kFrameCorner, QObject::tr("Corner"), kFrameCorners, kButt)
+                       .withVisible(kindIs(kWall))
+                       .withTooltip(QObject::tr("How the wall meets a wall it starts or ends on: butting square, or "
+                                                "an L corner with lapped plates")));
   inputs.push_back(textInput(kFrameOpenings, QObject::tr("Openings"))
                        .withVisible([](const CommandState& state) {
                          return howOf(state) == kFrame && frameKindOf(state) != kRoof;
@@ -3504,7 +3536,6 @@ CommandDef timberCommand(const SharedPtr& shared, DocumentHost& host) {
                         .withChoiceIcons(kHowIcons)
                         .withOnChange([shared](CommandState& state, const CommandContext& context) {
                           shared->timberHow = howOf(state);
-                          state.setObject(kHover, {});
                           state.setObject(kHoverPick, {});
                           // A frame's and a set's fastener (mitcad#479,
                           // mitcad#497).
@@ -3609,6 +3640,8 @@ CommandDef timberCommand(const SharedPtr& shared, DocumentHost& host) {
       state.setChecked(kSetFasteners, memory.setFasteners);
       state.setText(kWoodCount, memory.fastenerCount);
       state.setValue(kWoodCount, kNaN);
+      // A wall's Corner as chosen last (mitcad#510).
+      state.setChoice(kFrameCorner, memory.frameCorner);
     }
     if (howOf(state) == kFrame || howOf(state) == kSpacing) {
       startFasteners(*shared, state, context);
@@ -3660,17 +3693,15 @@ CommandDef timberCommand(const SharedPtr& shared, DocumentHost& host) {
     return result;
   };
   def.previewMarkers = markersOf;
-  // Two points follow nothing of the mouse (mitcad#485); a set between two
-  // members shows only the face a click picks, its preview after the click
-  // (mitcad#489).
-  def.hoverPreview = [shared, role](const SelectionItem& item, CommandState& state, const CommandContext& context) {
-    if (!placesOnMember(state)) {
-      return false;
+  // No mode's preview follows the mouse (mitcad#485, mitcad#489,
+  // mitcad#508): Two points, Frame and a row over faces show nothing for
+  // it; on a member and a set between two members only the face a click
+  // picks, the preview staying where the click put it.
+  def.hoverPreview = [shared, role](const SelectionItem& item, CommandState& state, const CommandContext&) {
+    if (placesOnMember(state)) {
+      hoverPickOnly(*shared, role, item, state);
     }
-    if (howOf(state) == kSpacing) {
-      return hoverPickOnly(*shared, role, item, state);
-    }
-    return hoverFace(*shared, role, item, state, context);
+    return false;
   };
   def.apply = [shared, &host, role](CommandState& state, const CommandContext& context) {
     Part part;
@@ -3694,6 +3725,10 @@ CommandDef timberCommand(const SharedPtr& shared, DocumentHost& host) {
     // with what, in which size and how many.
     if (howOf(state) == kFrame) {
       shared->timber.frameFasteners = state.checked(kFrameFasteners);
+    }
+    // A wall's Corner (mitcad#510).
+    if (howOf(state) == kFrame && frameKindOf(state) == kWall) {
+      shared->timber.frameCorner = frameCornerOf(state);
     }
     if (howOf(state) == kSpacing) {
       shared->timber.setFasteners = state.checked(kSetFasteners);
@@ -3753,7 +3788,20 @@ CommandDef timberCommand(const SharedPtr& shared, DocumentHost& host) {
       host.showStatus(placed.problem, true);
       return false;
     }
-    const QString note = QObject::tr("by two points, %1 mm").arg(placed.start.Distance(placed.end), 0, 'f', 1);
+    // Its length as the model places it: the points' distance less the ends
+    // cut back to the members they are in (mitcad#509).
+    double length = placed.start.Distance(placed.end);
+    try {
+      QJsonObject request = placed.fields;
+      request.insert(QStringLiteral("query"), QStringLiteral("build_preview"));
+      const double shown = build::lengthOf(context.queryObject(request).value(QStringLiteral("length")));
+      if (std::isfinite(shown)) {
+        length = shown;
+      }
+    } catch (const std::exception&) {
+      // build_place says why.
+    }
+    const QString note = QObject::tr("by two points, %1 mm").arg(length, 0, 'f', 1);
     if (!placeNow(*shared, host, role, part, placed.fields, note, state, context)) {
       return false;
     }
@@ -4005,6 +4053,7 @@ QJsonObject frameEditFields(const BuildPart& lead, const CommandState& state, QS
     frame.insert(QStringLiteral("height"), expressionOr(state, kFrameHeight, QStringLiteral("2400 mm")));
     frame.insert(QStringLiteral("plates"),
                  QJsonObject{{QStringLiteral("top"), state.choice(kFrameTop) == QStringLiteral("2") ? 2 : 1}});
+    frame.insert(QStringLiteral("corner"), frameCornerOf(state)); // mitcad#510
     return frame;
   }
   frame.insert(QStringLiteral("blocking"), state.checked(kFrameBlocking) ? 1 : 0);
@@ -4080,6 +4129,8 @@ CommandDef frameCommand(const SharedPtr& shared, DocumentHost& host, const Comma
               set(kFrameHeight, valueText(definition.value(QStringLiteral("height")), QStringLiteral("2400 mm"), false, model));
               const int top = definition.value(QStringLiteral("plates")).toObject().value(QStringLiteral("top")).toInt(1);
               state.setChoice(kFrameTop, QString::number(top));
+              // Left out: lapped, as saved before mitcad#510.
+              state.setChoice(kFrameCorner, str(definition, "corner") == kButt ? kButt : kLapped);
             } else if (kind == kFloor) {
               const QJsonArray outline = definition.value(QStringLiteral("outline")).toArray();
               const bool rectangle = isRectangle(outline);
@@ -4114,6 +4165,9 @@ CommandDef frameCommand(const SharedPtr& shared, DocumentHost& host, const Comma
       valueInput(kFrameSpacing, QObject::tr("Spacing"), ValueKind::Length, QStringLiteral("600 mm"))
           .withVisible([](const CommandState& state) { return !state.choice(kFrameKind).isEmpty(); }),
       choiceInput(kFrameTop, QObject::tr("Top Plates"), kFrameTops, QStringLiteral("1")).withVisible(kindIs(kWall)),
+      choiceInput(kFrameCorner, QObject::tr("Corner"), kFrameCorners, kButt)
+          .withVisible(kindIs(kWall))
+          .withTooltip(QObject::tr("How the wall meets the walls it joins: butting square, or lapped plates")),
       textInput(kFrameOpenings, QObject::tr("Openings"))
           .withVisible([](const CommandState& state) {
             return state.choice(kFrameKind) == kWall || state.choice(kFrameKind) == kFloor;
@@ -5470,6 +5524,7 @@ CommandDef swapFastenerCommand(const SharedPtr& shared, DocumentHost& host, cons
     if (!warnings.isEmpty()) {
       host.showStatus(warnings.join(QLatin1Char(' ')), false);
     }
+    logTimberSeating(model);
     shared->refreshDesign(model);
     shared->catalog.refresh(kWoodRole, model);
     return true;

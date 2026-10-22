@@ -83,6 +83,8 @@ mod test_library;
 mod tilt_tests;
 #[cfg(test)]
 mod timber_tests;
+#[cfg(test)]
+mod two_points_tests;
 
 use std::fmt;
 use std::str::FromStr;

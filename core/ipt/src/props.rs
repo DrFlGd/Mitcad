@@ -353,9 +353,41 @@ pub fn write(fmtid: [u8; 16], values: &[(u32, Value)]) -> Vec<u8> {
     out
 }
 
+/// The date (UTC, `YYYY-MM-DD`) of a [`Value::FileTime`]; None for 0,
+/// which a set writes for a time it does not have (mitcad#496).
+pub fn filetime_date(time: u64) -> Option<String> {
+    if time == 0 {
+        return None;
+    }
+    // Days since 1970-01-01: 100 ns intervals from 1601-01-01, which is
+    // 134 774 days earlier.
+    let days = (time / 864_000_000_000) as i64 - 134_774;
+    // The civil date of a day number (proleptic Gregorian calendar).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    Some(format!("{year:04}-{month:02}-{day:02}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_times_as_dates() {
+        assert_eq!(filetime_date(0), None);
+        // 1970-01-01 and 2026-10-21, at noon.
+        let at = |days: u64| (134_774 + days) * 864_000_000_000 + 432_000_000_000;
+        assert_eq!(filetime_date(at(0)).as_deref(), Some("1970-01-01"));
+        assert_eq!(filetime_date(at(20_747)).as_deref(), Some("2026-10-21"));
+        assert_eq!(filetime_date(at(11_016)).as_deref(), Some("2000-02-29"));
+    }
 
     #[test]
     fn reads_what_it_writes() {

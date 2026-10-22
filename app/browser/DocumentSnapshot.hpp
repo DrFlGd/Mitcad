@@ -133,6 +133,9 @@ struct DocumentSnapshot {
   QString firstOccurrence(const QString& component) const;
   // Whether an occurrence path and every occurrence above it are shown.
   bool isOccurrenceShown(const QString& path) const;
+  // The component an occurrence path leads to (the root's for ""), or
+  // empty when the path leads nowhere.
+  QString occurrenceComponent(const QString& path) const;
   bool isShown(const QString& feature) const { return featureShown.value(feature, false); }
   // Failed features before the marker.
   QVector<const Feature*> failures() const;

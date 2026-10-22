@@ -4,8 +4,7 @@ Mitcad checks for newer releases and, where it can replace itself,
 installs one with the user's consent. Code: [core/update](../core/update/src/lib.rs)
 (manifest, verification, versions, `mitcad-release`; `ed25519-dalek`,
 `sha2`, `semver`), the bridge `core/ffi/src/update.rs`, and `app/update/`
-(requests with Qt Network, so TLS is Qt's backend: Schannel on Windows,
-the system's OpenSSL on Linux).
+(requests with Qt Network, so TLS is Qt's platform backend).
 
 ## Behaviour
 
@@ -34,12 +33,50 @@ the system's OpenSSL on Linux).
 - **Install, AppImage in a writable folder:** downloaded next to the
   running file as a hidden `.<name>.update`, verified, made executable,
   and after quit renamed atomically over the old file and started.
-- **Announce only:** the portable `.zip`, development builds, system
-  packages and read-only installations.
+- **Install, macOS application bundle in a writable folder:** the
+  `macos-arm64` disk image is downloaded to a private temporary folder and
+  verified. After the window closes (asking to save) and the process has
+  quit, a helper mounts it with `hdiutil attach -readonly -nobrowse
+  -noautoopen`, checks the new app's identifier, version and code signature,
+  and copies `Mitcad.app` beside the running installation with `ditto`.
+  The native helper uses `renamex_np(..., RENAME_SWAP)` to exchange the
+  installed and staged bundles atomically on the same filesystem. The old
+  bundle stays in the staging folder until the image is detached and
+  Launch Services (`open`) accepts the relaunch. A failure rolls the
+  exchange back and restarts the old version; if rollback itself fails,
+  the log gives the retained old bundle's path. A filesystem without
+  atomic exchange support fails without moving the installed bundle.
+- **Announce only:** the portable `.zip`, unbundled development builds, system
+  packages and read-only installations. On macOS this also includes an
+  app running from a read-only disk image, an App Translocation path or
+  a quarantined bundle in Downloads. The startup log gives the reason;
+  copy the app to a writable Applications folder first. No elevation is
+  requested to replace a bundle the current user cannot write.
 - A download whose signature, SHA-256 or size does not match is deleted
   and reported, never run; a manifest with a bad signature is refused.
 - After an update the new Mitcad reports the result (from the settings
   below).
+
+An older production macOS version that predates the bundle updater can
+announce a new release when its manifest lists `macos-arm64`, but it still
+requires the user to download and install that release manually. Adding
+the asset to the manifest cannot add installation code to the older
+application. Once a version containing the bundle updater is installed,
+it can install subsequent releases automatically with the user's consent.
+The local UI test's simulated earlier version uses the corrected binary;
+it does not prove an update from an older production binary.
+
+The macOS updater preserves the bundle's code signature, resource forks
+and extended attributes. It adds no quarantine attribute, strips none,
+does not re-sign the release and does not change Gatekeeper policy. A
+present but invalid code signature is refused before replacing the old
+bundle. The Ed25519 release signature authenticates the disk image;
+macOS code signing and Gatekeeper still apply independently. An ad-hoc
+signature (as used by development builds) does not establish a notarized
+developer identity. Unsigned local bundles may be verified as downloads,
+but can still be refused by macOS at launch. The updater cannot turn an
+unsigned or ad-hoc build into a notarized application or grant it a new
+Gatekeeper exception.
 
 ## Settings and turning checks off
 
@@ -61,7 +98,7 @@ managed installations; Mitcad then makes no request at all, *Check for
 Updates* neither, and Preferences shows the switch off and why:
 
 - the environment variable `MITCAD_NO_UPDATE_CHECK` (any value but empty
-  or `0`), on Windows and Linux, for example in `/etc/environment` or the
+  or `0`), on every platform, for example in `/etc/environment` or the
   system's environment variables;
 - on Windows, the registry value `DisableUpdateCheck` (DWORD, not 0) under
   `HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Mitcad\Mitcad`:
@@ -91,6 +128,7 @@ as assets:
 | `mitcad-<version>-windows-x64.exe` | the NSIS installer (`package`) |
 | `mitcad-<version>-windows-x64.zip` | the portable `.zip` (`package`; announce only) |
 | `Mitcad-<version>-x86_64.AppImage` | the Linux AppImage (`appimage`) |
+| `Mitcad-<version>-macos-arm64.dmg` | the macOS application disk image (`dmg`) |
 | `update-manifest.json` | the signed manifest (`update-manifest`) |
 
 The tag is `v<version>`; the version is a semantic version
@@ -138,7 +176,8 @@ downgrades); build metadata (`+...`) does not count.
   it). It is checked before anything else of the manifest is read.
 - `version`, `date` (`YYYY-MM-DD`), `notes` (the release page, HTTPS).
 - `assets`: per platform (`windows-x64`: the installer, `linux-x64`: the
-  AppImage) the download's HTTPS address, size, SHA-256 and the Ed25519
+  AppImage, `macos-arm64`: the disk image) the download's HTTPS address,
+  size, SHA-256 and the Ed25519
   signature of its statement:
 
   ```text
@@ -149,9 +188,7 @@ downgrades); build metadata (`+...`) does not count.
   sha256 <64 hex digits>
   ```
 
-  A platform without an asset gets the notice without *Install*; so does
-  macOS (`macos-arm64`), whose new version is installed from its disk
-  image.
+  A platform without an asset gets the notice without *Install*.
 - Keys, signatures and digests are lowercase hex. `format` is 1; a
   manifest of another format is refused.
 
@@ -198,6 +235,8 @@ half is built into Mitcad.
              https://github.com/mitcad/Mitcad/releases/download/v0.2.0/mitcad-0.2.0-windows-x64.exe \
      --asset linux-x64 Mitcad-0.2.0-x86_64.AppImage \
              https://github.com/mitcad/Mitcad/releases/download/v0.2.0/Mitcad-0.2.0-x86_64.AppImage \
+     --asset macos-arm64 Mitcad-0.2.0-macos-arm64.dmg \
+             https://github.com/mitcad/Mitcad/releases/download/v0.2.0/Mitcad-0.2.0-macos-arm64.dmg \
      --out update-manifest.json
    mitcad-release verify --manifest update-manifest.json --key <public key> \
      --asset windows-x64 mitcad-0.2.0-windows-x64.exe
@@ -223,6 +262,18 @@ No test contacts any host but the machine itself.
   manifests and downloads, the wrong key, no release key, older and equal
   versions, pre-releases on the stable channel, skipped versions, invalid
   manifests, GitHub's list of releases, and the release tool.
+- `app.ui-macos-update` (`tools/ui-macos-update-test.sh`, macOS guest):
+  a local HTTPS manifest and test-owned, ad-hoc signed application bundles
+  in a real disk image. Checks atomic exchange and rollback, announce only
+  on the mounted read-only image and on a synthetic App Translocation path,
+  rejection of a changed download and broken code signature, rollback on a
+  Launch Services refusal, then offer/download/verification/install on
+  quit/relaunch with the build's real version. Only the initial process's
+  version is overridden to simulate an earlier installation. The path
+  fixture checks the translocation policy; it does not claim that the OS
+  translocated the fixture. Real OS translocation and a production signed
+  release manifest offered to an installed previous release are separate
+  release acceptance checks.
 - `tools/ui-update-test.sh` (Linux, `check-all.sh` runs it): against a
   local HTTPS server (`tools/update-test-server.py`, a certificate made
   for the run) with a release key made for the run; checks off (the

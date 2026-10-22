@@ -32,6 +32,7 @@
 #include <QUrl>
 #include <QtLogging>
 
+#include "../browser/DocumentSnapshot.hpp"
 #include "../framework/Dialogs.hpp"
 #include "../framework/CommandRegistry.hpp"
 #include "../framework/Json.hpp"
@@ -237,14 +238,16 @@ void MainWindow::createFileMenu() {
   add(tr("&Save"), QKeySequence::Save, &MainWindow::save);
   // QKeySequence::SaveAs has no key on Windows.
   add(tr("Save &As..."), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_S), &MainWindow::saveAs);
+  // Save As into a project, a new one too (mitcad#503; File > Project >
+  // Move to a Project before).
+  command(file, "file.save_to_project", tr("Save to Pro&ject..."));
   // Versions (P12d): Save records one in a project; Save with Description
   // one with a description written; Version History (P12e) lists them.
   command(file, "file.save_version", tr("Save &with Description..."));
   command(file, "file.version_history", tr("Version &History..."));
   file->addSeparator();
   // Local and Cloud projects (P12d, P12 remote, mitcad#89): made or opened;
-  // the current one's versions shared; a loose design moved into one; its
-  // settings.
+  // the current one's versions shared; its settings.
   QMenu* project = file->addMenu(tr("&Project"));
   project->setObjectName(QStringLiteral("fileProjectMenu"));
   command(project, "file.new_project", tr("&New Project..."));
@@ -255,7 +258,6 @@ void MainWindow::createFileMenu() {
   command(project, "file.check_remote", tr("&Check for Newer Versions"));
   command(project, "file.remote_browser", tr("Open in &Browser"));
   project->addSeparator();
-  command(project, "file.move_to_project", tr("&Move to a Project..."));
   command(project, "file.project_settings", tr("Project Se&ttings..."));
   // The project's web viewer (mitcad#423).
   project->addSeparator();
@@ -340,8 +342,10 @@ bool MainWindow::openFile(const QString& path, QString& error) {
   case FileKind::Rvt:
   case FileKind::Solidcraft:
   case FileKind::Dwg:
-    // After the window shows: the import has a progress dialog.
-    QTimer::singleShot(0, this, [this, path] { startF3dImport(path); });
+    // After the window shows: the import has a progress dialog. (Opened by
+    // openPath, it asks its choices, mitcad#507.)
+    QTimer::singleShot(0, this,
+                       [this, path, ask = m_askImportChoices] { startF3dImport(path, QJsonObject(), ask); });
     return true;
   case FileKind::Cad:
   case FileKind::Mesh:
@@ -367,7 +371,10 @@ void MainWindow::openPath(const QString& path) {
     return;
   }
   QString error;
-  if (!openFile(path, error) && !error.isEmpty()) { // empty: cancelled
+  m_askImportChoices = true;
+  const bool opened = openFile(path, error);
+  m_askImportChoices = false;
+  if (!opened && !error.isEmpty()) { // empty: cancelled
     const QString message = tr("Could not open %1:\n%2").arg(QDir::toNativeSeparators(path), error);
     qWarning().noquote() << message;
     sheetWarning(this, tr("Mitcad"), message);
@@ -544,7 +551,7 @@ bool MainWindow::importPath(const QString& path, bool interactive, QString* erro
     if (interactive && !maybeSave()) {
       return false;
     }
-    startF3dImport(path);
+    startF3dImport(path, QJsonObject(), interactive);
     return true;
   case FileKind::Design:
     insertComponent(path);
@@ -844,7 +851,7 @@ void MainWindow::insertComponent(const QString& given) {
   }
 }
 
-void MainWindow::startF3dImport(const QString& path, const QJsonObject& rerun) {
+void MainWindow::startF3dImport(const QString& path, const QJsonObject& rerun, bool ask) {
   if (m_import) {
     showError(tr("An import is running."));
     return;
@@ -862,6 +869,7 @@ void MainWindow::startF3dImport(const QString& path, const QJsonObject& rerun) {
   if (!rerun.isEmpty()) {
     m_import->setOptions(rerun);
   }
+  m_import->setAskChoices(ask);
   connect(m_import, &F3dImport::finished, this,
           [this, path](bool ok, const QByteArray& project, const QJsonObject& result, const QString& error) {
             const QString name = QFileInfo(path).fileName();
@@ -931,6 +939,26 @@ void MainWindow::startF3dImport(const QString& path, const QJsonObject& rerun) {
               }
               qInfo().noquote() << QStringLiteral("Imported %1: components %2")
                                        .arg(name, made.join(QStringLiteral(", ")));
+            }
+            // An assembly's components (mitcad#507): each one's features
+            // (a part's replayed timeline, or its stored bodies' base
+            // feature) and bodies, with MITCAD_LOG_VOLUMES their volume.
+            if (QFileInfo(path).suffix().compare(QStringLiteral("iam"), Qt::CaseInsensitive) == 0) {
+              const QJsonObject volumes = bodyVolumes(*this);
+              for (qsizetype i = 1; i < components.size(); ++i) {
+                const QJsonObject c = components.at(i).toObject();
+                const QJsonArray uids = c.value(QStringLiteral("bodies")).toArray();
+                double volume = 0.0;
+                for (const QJsonValue& uid : uids) {
+                  volume += volumes.value(uid.toString()).toObject().value(QStringLiteral("volume")).toDouble();
+                }
+                qInfo().noquote() << QStringLiteral("Imported %1: component %2: %3 features, %4 bodies%5")
+                                         .arg(name, c.value(QStringLiteral("name")).toString())
+                                         .arg(c.value(QStringLiteral("features")).toArray().size())
+                                         .arg(uids.size())
+                                         .arg(volumes.isEmpty() ? QString()
+                                                                : QStringLiteral(", volume %1 mm3").arg(volume, 0, 'f', 6));
+              }
             }
             // The documents the design refers to (mitcad#196).
             const QJsonArray references = result.value(QStringLiteral("report"))

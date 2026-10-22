@@ -805,6 +805,29 @@ void MainWindow::registerCommands() {
   findInDesign.duringCommands = true;
   findInDesign.enabled = [this] { return m_controller != nullptr; };
   m_registry->add(findInDesign);
+  // Property Sets (mitcad#496): the typed properties of the selected body
+  // or component with its occurrence's and its definition's; the design's
+  // (the root's) when nothing is selected. Also in the browser's and the
+  // view's context menus.
+  CommandDef propertySets =
+      action("view.property_sets", tr("Property Sets..."), "parameters", CommandDef::Mode::Model, [this] {
+        PropertyTarget target{QString(), QString(), QStringLiteral("C0")};
+        if (!m_selection.isEmpty()) {
+          const SelectionItem& first = m_selection.first();
+          if (first.kind == SelectKind::Component) {
+            target = {QString(), first.occurrence, first.occurrence.isEmpty() ? first.owner : QString()};
+          } else if (first.kind == SelectKind::Body || first.kind == SelectKind::Face ||
+                     first.kind == SelectKind::Edge || first.kind == SelectKind::Vertex) {
+            target = {first.owner, first.occurrence, QString()};
+          }
+        }
+        m_controller->openPropertySets(target);
+      });
+  propertySets.tooltip = tr("Typed properties of the selected body or component and its definition");
+  propertySets.keywords = {QStringLiteral("properties"), QStringLiteral("property set"), QStringLiteral("metadata"),
+                           QStringLiteral("attributes"), QStringLiteral("part number"), QStringLiteral("bim")};
+  propertySets.enabled = [this] { return m_controller != nullptr; };
+  m_registry->add(propertySets);
 
   CommandDef shortcuts = action("tools.shortcuts", tr("Keyboard Shortcuts..."), "keyboard",
                                 CommandDef::Mode::Any, [this] { editShortcuts(); });
@@ -828,6 +851,13 @@ void MainWindow::registerCommands() {
   policy.keywords = {QStringLiteral("policy"), QStringLiteral("permissions"), QStringLiteral("assembly"),
                      QStringLiteral("part"), QStringLiteral("attach"), QStringLiteral("hybrid")};
   m_registry->add(policy);
+  // Reorient Design (mitcad#502): also in the root's context menu.
+  CommandDef reorient = action("assembly.reorient_design", tr("Reorient Design..."), "orientation-cube",
+                               CommandDef::Mode::Model, [this] { m_controller->openReorient(); });
+  reorient.tooltip = tr("Turns the whole design by 90, 180 or 270 degrees about an origin axis");
+  reorient.keywords = {QStringLiteral("rotate"), QStringLiteral("turn"), QStringLiteral("orientation"),
+                       QStringLiteral("origin plane"), QStringLiteral("up axis"), QStringLiteral("wrong plane")};
+  m_registry->add(reorient);
   // Appearances with their physically based parameters (mitcad#46).
   CommandDef appearances = action("solid.appearances", tr("Edit Appearances..."), "appearance",
                                   CommandDef::Mode::Model, [this] { m_controller->openAppearances(appearanceTargets()); });
@@ -2770,10 +2800,40 @@ void MainWindow::refreshAutoselect() {
 
 QString MainWindow::placingOccurrence(const QString& feature) const {
   if (m_sketch->isActive() && feature == m_sketch->uid()) {
-    return QString(); // sketch mode works in the sketch's own coordinates
+    return m_sketchOccurrence; // where sketch mode shows it (mitcad#505)
   }
   const DocumentSnapshot::Feature* entry = m_snapshot.feature(feature);
   return entry != nullptr ? m_snapshot.firstOccurrence(entry->component) : QString();
+}
+
+QString MainWindow::sketchEditOccurrence(const QString& uid, const QString& picked) const {
+  // A new sketch is not in the snapshot yet: it went into the active
+  // component.
+  const DocumentSnapshot::Feature* entry = m_snapshot.feature(uid);
+  const QString component = entry != nullptr ? entry->component : m_snapshot.activeComponent;
+  const QString first = m_snapshot.firstOccurrence(component);
+  if (first.isEmpty()) {
+    return QString(); // the root's sketch
+  }
+  try {
+    const QJsonObject sketch = queryObject({{QStringLiteral("query"), QStringLiteral("sketch")},
+                                            {QStringLiteral("uid"), uid}});
+    const QString target =
+        sketch.value(QStringLiteral("plane_link")).toObject().value(QStringLiteral("target")).toString();
+    if (!target.isEmpty() && m_snapshot.occurrenceComponent(target) == component) {
+      return target;
+    }
+  } catch (const std::exception&) {
+    // A sketch just taken back: its component's first occurrence.
+  }
+  if (!picked.isEmpty() && m_snapshot.occurrenceComponent(picked) == component) {
+    return picked;
+  }
+  return first;
+}
+
+gp_Trsf MainWindow::sketchPlacement(const QString& uid) const {
+  return placementOf(placingOccurrence(uid)).Transformation();
 }
 
 QString MainWindow::bodyOccurrence(const QString& body) const {
@@ -3539,7 +3599,14 @@ void MainWindow::updateIdleView() {
         }
         measurements = m_idleMeasurements.value(key);
       }
-      if (measurements.isEmpty()) {
+      const QString owners = selectionOwnerText(item, m_snapshot);
+      if (!owners.isEmpty()) {
+        QString block = QStringLiteral("<b>%1</b><br>%2").arg(label.toHtmlEscaped(), owners);
+        if (!measurements.isEmpty()) {
+          block += QStringLiteral("<br>%1").arg(measurements);
+        }
+        lines << block;
+      } else if (measurements.isEmpty()) {
         lines << item.describe().toHtmlEscaped();
       } else {
         lines << QStringLiteral("<b>%1</b><br>%2").arg(label.toHtmlEscaped(), measurements);
@@ -3811,7 +3878,7 @@ void MainWindow::createSketch(const QJsonObject& fields) {
     return;
   }
   m_mode = Mode::Idle;
-  enterSketch(uid, false);
+  enterSketch(uid, false, fields.value(QStringLiteral("occurrence")).toString());
   const gp_Pnt origin = m_sketch->model().frame.origin;
   const QJsonValue plane = fields.value(QStringLiteral("plane"));
   const QString on = plane.isString()
@@ -3846,13 +3913,16 @@ QString MainWindow::featureError(const QString& uid) const {
   return QString();
 }
 
-void MainWindow::enterSketch(const QString& uid, bool existing) {
+void MainWindow::enterSketch(const QString& uid, bool existing, const QString& picked) {
   m_sketchExisting = existing;
   m_mcpSketchEdited = false;
   m_mode = Mode::Sketch;
   updateModeBanner(); // no plane is waited for (mitcad#474)
   m_selection.clear();
   inputActivated(SelectFilter()); // hides the origin planes
+  // A component's sketch where its occurrence shows it (mitcad#505): the
+  // sketch's frame, curves and profiles are placed by it once.
+  m_sketchOccurrence = sketchEditOccurrence(uid, picked);
   m_sketch->enter(uid);
   // Every sketch edit starts with the filter's defaults (mitcad#217).
   m_sketchScope.reset();
@@ -3860,6 +3930,25 @@ void MainWindow::enterSketch(const QString& uid, bool existing) {
   m_sketchEnterDepth = undoDepth();
   m_viewer->lookAtSketchPlane();
   m_viewer->setGridPlane(toAx3(m_sketch->model().frame)); // the grid on the sketch plane
+  {
+    // For UI tests: the sketch's frame in the design and the direction the
+    // view looks along (against the frame's normal).
+    const geometry::Frame& frame = m_sketch->model().frame;
+    const gp_Dir normal = frame.normal();
+    const gp_Dir along = m_viewer->viewDirection();
+    const auto xyz = [](double x, double y, double z) {
+      const auto number = [](double value) {
+        return QString::number(std::abs(value) < 5e-7 ? 0.0 : value, 'f', 6);
+      };
+      return QStringLiteral("(%1, %2, %3)").arg(number(x), number(y), number(z));
+    };
+    qDebug().noquote() << QStringLiteral("Sketch frame in the design%1: origin %2, normal %3, x axis %4")
+                              .arg(m_sketchOccurrence.isEmpty() ? QString() : QStringLiteral(" (at ") + m_sketchOccurrence + QLatin1Char(')'),
+                                   xyz(frame.origin.X(), frame.origin.Y(), frame.origin.Z()),
+                                   xyz(normal.X(), normal.Y(), normal.Z()),
+                                   xyz(frame.x_axis.X(), frame.x_axis.Y(), frame.x_axis.Z()));
+    qDebug().noquote() << QStringLiteral("Sketch view along %1").arg(xyz(along.X(), along.Y(), along.Z()));
+  }
   m_ribbon->setSketchMode(true);
   m_commandPages->setCurrentWidget(m_palettePage);
   refreshScene();
@@ -3915,6 +4004,7 @@ bool MainWindow::sketchExists(const QString& uid) const {
 
 void MainWindow::leaveSketchMode() {
   m_sketch->leave();
+  m_sketchOccurrence.clear();
   m_mode = Mode::Idle;
   m_viewer->restoreCamera();
   m_viewer->setGridPlane(gp_Ax3()); // back on XY
@@ -4116,7 +4206,11 @@ void MainWindow::openDocument() {
   }
   rememberDialogFolder(DialogGroup::Open, path);
   QString error;
-  if (!openFile(path, error) && !error.isEmpty()) {
+  // The import of the file chosen asks its choices (mitcad#507).
+  m_askImportChoices = true;
+  const bool opened = openFile(path, error);
+  m_askImportChoices = false;
+  if (!opened && !error.isEmpty()) {
     const QString message = tr("Could not open %1:\n%2").arg(QDir::toNativeSeparators(path), error);
     qWarning().noquote() << message;
     sheetWarning(this, tr("Mitcad"), message);

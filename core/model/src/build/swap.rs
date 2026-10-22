@@ -17,7 +17,7 @@ use super::place::{PartInput, SourceUse, edit_part, own_frame, refuse};
 use super::wood::{Fastening, WoodSize, axis_frame};
 use super::{BuildRole, SourceId};
 use crate::document::{DocState, Document, ModelError};
-use crate::features::{FeatureDef, GeomRef};
+use crate::features::{FeatureDef, FrameOverride, GeomRef};
 use crate::ids::{ComponentUid, FeatureUid};
 use crate::kernel::Kernel;
 
@@ -55,6 +55,7 @@ struct Swap {
     config: Option<String>,
     size: Option<WoodSize>,
     own: Option<String>,
+    own_override: Option<FrameOverride>,
     name: String,
 }
 
@@ -178,11 +179,23 @@ impl<K: Kernel> Document<K> {
                     && let Some(point) = self.entry_point(joint)
                 {
                     let i = self.place_in_junction(component, id);
-                    self.fastener_warnings(fastening, size, i, point, kind, &mut warnings);
+                    let mut used = source.clone();
+                    used.config = size.config.clone();
+                    let mut driven = size.clone();
+                    driven.length += self.wood_seat(&used)?.2;
+                    self.fastener_warnings(fastening, &driven, i, point, kind, &mut warnings);
                 }
                 (size.config.clone(), Some(size))
             } else {
                 (input.part.config.clone(), None)
+            };
+            let (seat, own_override) = if wood && info.record.junction.is_some() {
+                let mut used = source.clone();
+                used.config = config.clone();
+                let (seat, override_frame, _) = self.wood_seat(&used)?;
+                (Some(seat), override_frame)
+            } else {
+                (own.clone(), None)
             };
             let shown = designation(&source.def, config.as_deref(), &BTreeMap::new());
             swaps.push(Swap {
@@ -191,7 +204,8 @@ impl<K: Kernel> Document<K> {
                 joint,
                 config,
                 size,
-                own: own.clone(),
+                own: seat,
+                own_override,
                 name: if shown.is_empty() {
                     label.clone()
                 } else {
@@ -232,7 +246,13 @@ impl<K: Kernel> Document<K> {
                     def.parameters.clear();
                 })?;
                 inherit_appearance(state, swap.part, &source.def);
-                hold_by(state, swap.joint, swap.part, swap.own.as_deref())?;
+                hold_by(
+                    state,
+                    swap.joint,
+                    swap.part,
+                    swap.own.as_deref(),
+                    swap.own_override,
+                )?;
                 if let Some(c) = state.assembly.component_mut(swap.component)
                     && let Some(record) = c.build.as_mut()
                 {
@@ -272,7 +292,7 @@ impl<K: Kernel> Document<K> {
     /// Where a wood fastener enters the member it is driven from, in the
     /// BUILD host: its joint's frame on that member (`build_connect`'s
     /// `frame_override`).
-    fn entry_point(&self, joint: FeatureUid) -> Option<super::V3> {
+    pub(crate) fn entry_point(&self, joint: FeatureUid) -> Option<super::V3> {
         let entry = self.feature(joint)?;
         let FeatureDef::Joint(j) = &entry.def else {
             return None;
@@ -326,6 +346,7 @@ fn hold_by(
     joint: FeatureUid,
     part: FeatureUid,
     own: Option<&str>,
+    own_override: Option<FrameOverride>,
 ) -> Result<(), ModelError> {
     let entry = state
         .entry(joint)
@@ -341,10 +362,11 @@ fn hold_by(
         },
         None => GeomRef::Origin(crate::datum::OriginDatum::Xy),
     };
-    if def.a.geometry == geometry {
+    if def.a.geometry == geometry && def.a.frame_override == own_override {
         return Ok(());
     }
     def.a.geometry = geometry;
+    def.a.frame_override = own_override;
     state.edit_feature(joint, &FeatureDef::Joint(def))?;
     Ok(())
 }

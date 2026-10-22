@@ -135,6 +135,9 @@
 //   native-type-now <id> <text> native edit without waiting for idleness;
 //                           these exercise preview cancellation and races
 //   native-key-now <key>... key input without waiting for model idleness
+//   native-key-event <key>... send key down/up through NSApp's event dispatch
+//   expect-native-application-delegate check Qt activation signals, deactivate
+//                           events, Dock reopen and secure state restoration
 //   native-file-name <name> edit the real native save filename value
 //   native-file-directory <path> navigate AppKit chooser to existing folder
 //   native-file-cancel      cancel the focused AppKit open/save panel
@@ -369,6 +372,9 @@ private:
   QMetaObject::Connection m_nativeJobClickConnection;
   QString m_nativeJobClickLabel;
   int m_nativeJobClickLine = 0;
+  QMetaObject::Connection m_nativeJobHistoryDragConnection;
+  QString m_nativeJobHistoryDragLabel;
+  int m_nativeJobHistoryDragLine = 0;
   QMetaObject::Connection m_jobPickConnection;
   QString m_jobPickLabel;
   int m_jobPickLine = 0;

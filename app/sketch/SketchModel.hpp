@@ -25,6 +25,7 @@ struct PointData {
   bool reference = false;   // projected
   bool constrained = false; // fully constrained
   bool derived = false;     // computed by a derived offset (P4)
+  QString axis;             // "x" or "y": the far end of an axis line (mitcad#500)
 };
 
 struct CurveData {
@@ -38,6 +39,9 @@ struct CurveData {
   bool fixed = false;
   bool reference = false;
   bool constrained = false;
+  // "x" or "y": the line that stands for a sketch axis (mitcad#500), which
+  // the overlay draws across the view instead.
+  QString axis;
 
   bool isLine() const { return type == QStringLiteral("line"); }
   bool isCircle() const { return type == QStringLiteral("circle"); }
@@ -147,6 +151,9 @@ public:
 
   QString uid;
   QString name;
+  // As the query gives it, in the sketch's component's coordinates; sketch
+  // mode's model has it in the design's, placed where the view shows the
+  // component (SketchHost::sketchPlacement, mitcad#505).
   geometry::Frame frame;
   bool solved = false;
   QString error;
@@ -184,6 +191,19 @@ public:
   std::optional<V2> pointAt(const QString& id) const;
   // A fixed point at the sketch origin, which stands for the origin.
   QString originPoint() const;
+  // The sketch's axes and origin as picks (mitcad#500). The line that
+  // stands for axis "x" or "y", when the sketch has it.
+  QString axisLine(const QString& axis) const;
+  // "x" or "y" for an axis line or an axis pick, else empty.
+  QString axisOf(const QString& id) const;
+  // An axis line, an axis pick, the origin point or the origin pick: what
+  // the sketch fixes in place, so that a constraint or dimension takes at
+  // most one of them.
+  bool isAxisOrOrigin(const QString& id) const;
+  // Adds the picks of the axes and origin the sketch lacks (axisPick ids)
+  // as the fixed entities the model would make, so that the tools decide
+  // with them as with any line and point; SketchOp::axisInput makes them.
+  void addAxisPicks();
   // Curves with a point as an end (or their centre, with `centers`).
   QStringList curvesAt(const QString& point, bool centers = false) const;
   // Whether everything is constrained (and there is something).
@@ -196,6 +216,16 @@ public:
   const ConstraintData* equalSpacingOf(const QString& entity) const;
   const DimensionData* spacingDimension(const QString& constraint) const;
 };
+
+// The ids that stand for the sketch's origin and axes in the picking tools
+// until a step makes them (mitcad#500): "origin", "x_axis", "y_axis".
+QString originPick();
+QString axisPick(const QString& axis);
+bool isAxisPick(const QString& id);
+// What `sketch.axis` takes for a pick ("origin", "x", "y"), or empty.
+QString axisPickName(const QString& id);
+// How long the model makes an axis line (core/model/src/sketch/axes.rs).
+constexpr double kAxisLineLength = 100.0;
 
 // The sketch point of a 3D frame point and back.
 V2 toSketch(const geometry::Frame& frame, const gp_Pnt& point);

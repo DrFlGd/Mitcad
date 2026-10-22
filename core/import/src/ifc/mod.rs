@@ -32,6 +32,8 @@
 
 pub mod brep;
 pub(crate) mod build;
+// Elements' properties (mitcad#496).
+pub mod properties;
 pub mod report;
 pub mod sketch;
 pub mod transform;
@@ -45,7 +47,8 @@ use mitcad_ifc::geometry::{Decoder, Item};
 use mitcad_ifc::math::{self, Matrix};
 use mitcad_ifc::model::{Model, Product, Style};
 use mitcad_ifc::schema::ProductKind;
-use mitcad_model::{BodyKind, BodyUid, ComponentUid, Document, FeatureUid, Kernel};
+use mitcad_model::properties::{Property, PropertyOwner};
+use mitcad_model::{BodyKind, BodyUid, ComponentUid, Document, FeatureUid, Kernel, OccurrenceUid};
 use serde_json::json;
 
 use build::{Builder, Node, Op};
@@ -129,6 +132,10 @@ struct Importer<'a, K: Kernel> {
     /// not keep a state per element.
     depth: usize,
     label: String,
+    /// The elements' properties, added at the end (mitcad#496).
+    properties: Vec<(PropertyOwner, String, Property)>,
+    /// The components that have their type's properties.
+    typed: HashSet<ComponentUid>,
 }
 
 /// Imports an IFC file into the document (one undo step); `name` is the
@@ -183,6 +190,8 @@ pub fn import_ifc<K: Kernel>(
         stopped: None,
         depth,
         label: format!("Import {name}"),
+        properties: Vec::new(),
+        typed: HashSet::new(),
     };
     importer.structure();
     importer.levels_and_grids();
@@ -932,6 +941,7 @@ impl<K: Kernel> Importer<'_, K> {
     }
 
     fn finish_element(&mut self, p: &Product, mut line: ProductLine, made: Made) {
+        self.element_properties(p, &line, &made);
         line.features = made.features.len();
         line.bodies = made.bodies.iter().map(ToString::to_string).collect();
         line.parametric = made.parametric.iter().map(|s| (*s).to_owned()).collect();
@@ -1046,7 +1056,52 @@ impl<K: Kernel> Importer<'_, K> {
         }
     }
 
+    /// An element's properties (mitcad#496): its identity and own sets on
+    /// its bodies and occurrences; its type's sets on the component its
+    /// type's shape became (once), and on its own bodies, which have no
+    /// component of their type.
+    fn element_properties(&mut self, p: &Product, line: &ProductLine, made: &Made) {
+        if made.bodies.is_empty() && line.occurrences.is_empty() {
+            return;
+        }
+        let own = properties::instance_properties(self.file, self.model, p);
+        let typed = properties::type_properties(self.file, self.model, p);
+        for body in &made.bodies {
+            let owner = PropertyOwner::Body(*body);
+            for (set, property) in typed.iter().chain(&own) {
+                self.properties.push((owner, set.clone(), property.clone()));
+            }
+        }
+        for occurrence in &line.occurrences {
+            let Ok(uid) = occurrence.parse::<OccurrenceUid>() else {
+                continue;
+            };
+            for (set, property) in &own {
+                self.properties.push((
+                    PropertyOwner::Occurrence(uid),
+                    set.clone(),
+                    property.clone(),
+                ));
+            }
+            let Some(component) = self.doc.assembly().occurrence(uid).map(|o| o.component) else {
+                continue;
+            };
+            if self.typed.insert(component) {
+                for (set, property) in &typed {
+                    self.properties.push((
+                        PropertyOwner::Component(component),
+                        set.clone(),
+                        property.clone(),
+                    ));
+                }
+            }
+        }
+    }
+
     fn finish(mut self) -> IfcReport {
+        // The elements' properties (mitcad#496).
+        let properties = std::mem::take(&mut self.properties);
+        self.report.properties = self.doc.import_properties(&self.label, properties);
         if !self.notes.is_empty()
             && let Err(e) = self.doc.set_import_notes(&self.notes)
         {

@@ -26,6 +26,7 @@
 #include <QPushButton>
 #include <QRadioButton>
 #include <QRectF>
+#include <QSettings>
 #include <QTextDocumentFragment>
 #include <QTreeWidget>
 #include <QVBoxLayout>
@@ -35,6 +36,7 @@
 #include "../framework/Numbers.hpp"
 #include "../framework/TestSync.hpp"
 #include "../framework/Theme.hpp"
+#include "IamImport.hpp"
 
 namespace mitcad {
 namespace {
@@ -612,6 +614,52 @@ std::optional<bool> askLinked(QWidget* parent, const QString& file) {
   return std::nullopt;
 }
 
+std::optional<bool> askIamImport(QWidget* parent, const QString& file) {
+  QDialog dialog(parent);
+  dialog.setObjectName(QStringLiteral("importAssembly"));
+  dialog.setWindowTitle(QObject::tr("Import Assembly"));
+  auto* layout = new QVBoxLayout(&dialog);
+  auto* text = new QLabel(QObject::tr("Import %1 with its parts as components.").arg(QFileInfo(file).fileName()));
+  text->setWordWrap(true);
+  layout->addWidget(text);
+  auto* history = new QCheckBox(QObject::tr("&Parts with their design history"));
+  history->setObjectName(QStringLiteral("iamPartsHistory"));
+  history->setToolTip(QObject::tr("Each part's parameters and features replayed; off: its stored bodies only"));
+  QSettings settings;
+  history->setChecked(iamPartsHistory(settings));
+  layout->addWidget(history);
+  // (In the dialog before Import is made its default: a button not yet in
+  // a dialog keeps the flag without telling the dialog, which then makes
+  // its first button, Cancel, the default too, and Enter cancelled.)
+  auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+  QPushButton* importButton = buttons->button(QDialogButtonBox::Ok);
+  importButton->setText(QObject::tr("&Import"));
+  importButton->setToolTip(QObject::tr("Import the assembly with this choice, which is remembered"));
+  buttons->button(QDialogButtonBox::Cancel)->setAutoDefault(false);
+  importButton->setDefault(true);
+  QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+  QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+  QObject::connect(history, &QCheckBox::toggled, &dialog, [](bool on) {
+    qDebug().noquote() << QStringLiteral("Import Assembly: parts with their design history %1")
+                              .arg(on ? QStringLiteral("on") : QStringLiteral("off"));
+  });
+  layout->addWidget(buttons);
+  history->setFocus();
+  qDebug().noquote() << QStringLiteral("Import Assembly dialog opened: %1, parts with their design history %2")
+                            .arg(QFileInfo(file).fileName(),
+                                 history->isChecked() ? QStringLiteral("on") : QStringLiteral("off"));
+  prepareModal(&dialog);
+  if (execDialog(&dialog) != QDialog::Accepted) {
+    qDebug().noquote() << QStringLiteral("Import Assembly cancelled");
+    return std::nullopt;
+  }
+  const bool chosen = history->isChecked();
+  rememberIamPartsHistory(settings, chosen);
+  qDebug().noquote() << QStringLiteral("Import Assembly: %1, parts with their design history %2")
+                            .arg(QFileInfo(file).fileName(), chosen ? QStringLiteral("on") : QStringLiteral("off"));
+  return chosen;
+}
+
 namespace {
 
 // An import_fcstd result (a FreeCAD document) rather than import_f3d's.
@@ -1093,6 +1141,15 @@ void showImportReport(QWidget* parent, const QString& file, const QJsonObject& r
   if (!parameters.isEmpty()) {
     summary += QStringLiteral("<br>") + parameters.toHtmlEscaped();
   }
+  // An assembly's parts with their design history (mitcad#507).
+  if (isIamImport(result)) {
+    const QJsonObject parts = design.value(QStringLiteral("parts")).toObject();
+    summary += design.value(QStringLiteral("history")).toBool()
+                   ? QObject::tr("<br>Parts with their design history: %1 replayed, %2 as their stored bodies.")
+                         .arg(parts.value(QStringLiteral("replayed")).toInt())
+                         .arg(parts.value(QStringLiteral("as_bodies")).toInt())
+                   : QObject::tr("<br>The parts' stored bodies only (their design history not replayed).");
+  }
   // Stopped by the user (T1e).
   const QString stop = importStop(result);
   const QJsonObject stopped = design.value(QStringLiteral("stopped")).toObject();
@@ -1175,13 +1232,20 @@ void showImportReport(QWidget* parent, const QString& file, const QJsonObject& r
     const QJsonObject f = value.toObject();
     const QString path = f.value(QStringLiteral("path")).isString() ? f.value(QStringLiteral("path")).toString()
                                                                     : f.value(QStringLiteral("saved")).toString();
+    // A part's design replayed or its stored bodies, and why (mitcad#507).
+    const QString outcome = iamPartOutcome(f.value(QStringLiteral("part")).toObject());
     const QString note = QObject::tr("%1 occurrences, found %2: %3")
                              .arg(f.value(QStringLiteral("occurrences")).toInt())
                              .arg(f.value(QStringLiteral("found")).toString(), path);
-    auto* row = new QTreeWidgetItem(items, {QString::number(++fileIndex), QFileInfo(path).fileName(),
-                                            f.value(QStringLiteral("kind")).toString(),
-                                            f.value(QStringLiteral("status")).toString(), note});
+    const QString status = f.value(QStringLiteral("status")).toString();
+    auto* row = new QTreeWidgetItem(
+        items, {QString::number(++fileIndex), QFileInfo(path).fileName(), f.value(QStringLiteral("kind")).toString(),
+                outcome.isEmpty() ? status : QStringLiteral("%1, %2").arg(status, outcome), note});
+    row->setToolTip(3, outcome.isEmpty() ? status : outcome);
     row->setToolTip(4, note);
+    if (!outcome.isEmpty()) {
+      qDebug().noquote() << QStringLiteral("Import report part: %1: %2").arg(QFileInfo(path).fileName(), outcome);
+    }
   }
   for (const QJsonValue& value : (iptHistory ? replay : design).value(QStringLiteral("items")).toArray()) {
     const QJsonObject item = value.toObject();

@@ -21,6 +21,7 @@
 #include <QPalette>
 #include <QPixmap>
 #include <QSize>
+#include <QVariant>
 #include <QWidget>
 
 namespace mitcad::mac {
@@ -192,6 +193,8 @@ void showMenuImages(QMenu* menu) {
   }
   if (@available(macOS 27.0, *)) {
     applyImageVisibility(menu->toNSMenu());
+    if (menu->property("mitcad.showMenuImagesConnected").toBool()) return;
+    menu->setProperty("mitcad.showMenuImagesConnected", true);
     // The native items are made (or made again) as the menu is shown.
     QObject::connect(menu, &QMenu::aboutToShow, menu, [menu] { applyImageVisibility(menu->toNSMenu()); });
   }
@@ -220,6 +223,8 @@ void hideMenuImages(QMenu* menu) {
   menus.prepend(menu);
   for (QMenu* each : menus) {
     applyImageHiding(each->toNSMenu());
+    if (each->property("mitcad.hideMenuImagesConnected").toBool()) continue;
+    each->setProperty("mitcad.hideMenuImagesConnected", true);
     QObject::connect(each, &QMenu::aboutToShow, each, [each] { applyImageHiding(each->toNSMenu()); });
   }
 }

@@ -503,6 +503,8 @@ public:
                                           double size) const;
   // The camera's up direction (manipulators measure the zoom along it).
   gp_Dir viewUp() const;
+  // The direction the camera looks along, from the eye to the model.
+  gp_Dir viewDirection() const;
   // What a click at a widget position would pick now, if anything.
   std::optional<SelectionItem> itemAt(const QPointF& position);
   // Everything under a widget position that the filter takes, the item a

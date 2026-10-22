@@ -479,6 +479,18 @@ if(BUILD_TESTING)
   add_test(NAME cli.import_iam_history COMMAND mitcad-cli import-iam "${exchange}/iam/top.iam" --history)
   set_tests_properties(cli.import_iam_history PROPERTIES FIXTURES_REQUIRED cli_iam PASS_REGULAR_EXPRESSION
     "part [^\n]*cube\\.ipt [^\n]*imported: 1 bodies \\(1 valid, 0 not built\\); features 2 parametric")
+  # The parts' outcomes with --history (mitcad#507): the three part files
+  # counted before the first is imported and traced (part n of 3), the cube
+  # replayed, the pair (twice) as its stored bodies, having no design; and
+  # with the cube's replay made to fail, the cube as its stored bodies too.
+  add_test(NAME cli.import_iam_history_parts COMMAND mitcad-cli import-iam "${exchange}/iam/top.iam" --history)
+  set_tests_properties(cli.import_iam_history_parts PROPERTIES FIXTURES_REQUIRED cli_iam
+    ENVIRONMENT "MITCAD_IMPORT_TRACE=1" PASS_REGULAR_EXPRESSION
+    "part [123] of 3: cube\\.ipt: replayed in [0-9.]+ s.*parts with their design history: 1 replayed, 2 as their stored bodies.*cube\\.ipt [^\n]*features 2 parametric; replayed: 2 items, [0-9]+ verified")
+  add_test(NAME cli.import_iam_history_fallback COMMAND mitcad-cli import-iam "${exchange}/iam/top.iam" --history)
+  set_tests_properties(cli.import_iam_history_fallback PROPERTIES FIXTURES_REQUIRED cli_iam
+    ENVIRONMENT "MITCAD_IMPORT_TRACE=1;MITCAD_TEST_IAM_REPLAY_FAIL=cube.ipt" PASS_REGULAR_EXPRESSION
+    "part [123] of 3: cube\\.ipt: bodies in [0-9.]+ s.*parts with their design history: 0 replayed, 3 as their stored bodies.*cube\\.ipt [^\n]*imported: 1 bodies \\(1 valid, 0 not built\\); bodies only: the replay failed: MITCAD_TEST_IAM_REPLAY_FAIL names it")
   add_test(NAME cli.import_ipt_iam COMMAND mitcad-cli import-ipt "${exchange}/iam/sub/sub.iam")
   set_tests_properties(cli.import_ipt_iam PROPERTIES FIXTURES_REQUIRED cli_iam PASS_REGULAR_EXPRESSION
     "Imported assembly sub\\.iam: 2 occurrences placed.*1 part files \\(1 imported, 0 missing.*check: 2 of 2 placements agree.*check: 2 of 2 parts. bodies lie within their stored range boxes")
@@ -1105,6 +1117,22 @@ if(BUILD_TESTING)
   set_tests_properties(cli.export_drawing PROPERTIES FIXTURES_REQUIRED cli_drawing)
   if(WIN32)
     set_property(TEST cli.drawing_design cli.export_drawing APPEND PROPERTY ENVIRONMENT_MODIFICATION
+      "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+  endif()
+endif()
+
+# Reorient Design (mitcad#502): a design with a sketch on XY, a plane offset
+# from XZ, a fillet, a hole and an imported body turned by quarter turns
+# about each axis and back by undo (the imported body's file is written to
+# the working directory).
+if(BUILD_TESTING)
+  set(reorient "${CMAKE_CURRENT_BINARY_DIR}/reorient")
+  file(MAKE_DIRECTORY "${reorient}")
+  add_test(NAME cli.reorient_design COMMAND mitcad-cli run "${CMAKE_CURRENT_SOURCE_DIR}/tests/reorient_design.json")
+  set_tests_properties(cli.reorient_design PROPERTIES WORKING_DIRECTORY "${reorient}")
+  if(WIN32)
+    # Added after the block that gives every earlier cli test Qt's DLLs.
+    set_property(TEST cli.reorient_design APPEND PROPERTY ENVIRONMENT_MODIFICATION
       "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
   endif()
 endif()

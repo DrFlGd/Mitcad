@@ -11,7 +11,7 @@
 #   - Rename in place, edit by double-click, a click selecting the
 #     feature's body, Find in Browser, Delete with its dependents (the
 #     dialog: Cancel, then Delete All), undo.
-#   - A warning (P9): a full round built 0.1 % smaller is yellow, its
+#   - A warning (P9): a rib's full round built 0.1 % smaller is yellow, its
 #     tooltip and its panel's preview say why.
 #   - Timeline groups (P9): a Shift+click run grouped, folded into one
 #     cell and opened again, renamed, saved.
@@ -258,9 +258,9 @@ ui_expect_new "Undo: Rename Group1 to Body" "the rename is an undo step"
 ui_stop_app
 
 echo "--- A warning (P9)"
-# A rib 2 mm wide with a full round on top: OCCT cannot take the top face
-# away, so the fillet is built 0.1 % smaller and succeeds with a warning
-# (tools/cli/tests/p9_warnings.json).
+# A rib 2 mm wide with a full round on all four top edges: OCCT cannot take
+# the top face away at the rib's ends, so the fillet is built 0.1 % smaller
+# and succeeds with a warning (tools/cli/tests/p9_warnings.json).
 cat > "$WORK/rib.json" << 'EOF'
 [
   {"cmd": "sketch.create"},
@@ -269,7 +269,9 @@ cat > "$WORK/rib.json" << 'EOF'
     "profiles": [{"sketch": "F1", "region": "r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]}"}],
     "extent": {"type": "distance", "distance": 20}, "operation": "new_body"}},
   {"cmd": "add_feature", "def": {"type": "fillet", "body": "F2.b0",
-    "edges": ["E{F2:end(r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]})|F2:side(c2[c1,c3])}",
+    "edges": ["E{F2:end(r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]})|F2:side(c1[c4,c2])}",
+              "E{F2:end(r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]})|F2:side(c2[c1,c3])}",
+              "E{F2:end(r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]})|F2:side(c3[c2,c4])}",
               "E{F2:end(r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]})|F2:side(c4[c3,c1])}"], "radius": 1}}
 ]
 EOF

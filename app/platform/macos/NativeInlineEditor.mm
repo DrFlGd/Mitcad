@@ -123,12 +123,32 @@ public:
     if (m_viewport) m_viewport->installEventFilter(this);
     connect(source, &QLineEdit::textChanged, this, [this] { refresh(true); });
     connect(source, &QLineEdit::selectionChanged, this, [this] { syncSelection(); });
-    // A native host move, backing-scale change or a viewport-only resize
-    // does not always move the hidden presenter; keep child geometry tied
-    // to its public mapToGlobal rectangle as the window is manipulated.
-    m_timer.setInterval(50);
+    // The hidden presenter does not move for every native window move or
+    // backing-scale change. Observe those changes on its actual host too.
+    m_timer.setSingleShot(true);
     connect(&m_timer, &QTimer::timeout, this, [this] { refresh(false); });
-    m_timer.start();
+    // QLineEdit has no placeholderTextChanged signal, and updating a
+    // hidden presenter need not produce an update event. Check just that
+    // property; geometry itself follows the events/notifications below.
+    m_propertyTimer.setInterval(500);
+    connect(&m_propertyTimer, &QTimer::timeout, this, [this] {
+      if (m_source && m_placeholder != m_source->placeholderText()) { scheduleRefresh(); }
+    });
+    m_propertyTimer.start();
+    NSNotificationCenter* center = NSNotificationCenter.defaultCenter;
+    for (NSNotificationName name in @[NSWindowDidMoveNotification, NSWindowDidResizeNotification,
+                                     NSWindowDidChangeBackingPropertiesNotification,
+                                     NSWindowDidChangeScreenNotification]) {
+      id observer = [center addObserverForName:name object:m_host queue:nil usingBlock:^(NSNotification* notification) {
+        (void)notification;
+        scheduleRefresh();
+      }];
+      [m_observers addObject:observer];
+    }
+    for (QWidget* parent = source->parentWidget(); parent != nullptr; parent = parent->parentWidget()) {
+      m_geometrySources.push_back(parent);
+      parent->installEventFilter(this);
+    }
     editorOrder.push_back(this);
     editors.insert(source, this);
     refresh(false);
@@ -144,6 +164,9 @@ public:
     if (m_retired) return;
     m_retired = true;
     m_timer.stop();
+    m_propertyTimer.stop();
+    for (id observer in m_observers) { [NSNotificationCenter.defaultCenter removeObserver:observer]; }
+    [m_observers removeAllObjects];
     editors.remove(m_key);
     editorOrder.erase(std::remove(editorOrder.begin(), editorOrder.end(), this), editorOrder.end());
     m_target->owner = nullptr;
@@ -152,7 +175,8 @@ public:
       m_source->removeEventFilter(this);
       disconnect(m_source, nullptr, this, nullptr);
     }
-    if (m_viewport) m_viewport->removeEventFilter(this);
+    for (const auto& source : m_geometrySources) { if (source) { source->removeEventFilter(this); } }
+    m_geometrySources.clear();
     const bool wasKey = m_panel.keyWindow;
     [m_host removeChildWindow:m_panel];
     [m_panel orderOut:nil];
@@ -242,13 +266,18 @@ protected:
     if (watched == m_source && event->type() == QEvent::Hide) {
       [m_panel orderOut:nil];
     } else if (event->type() == QEvent::Move || event->type() == QEvent::Resize ||
-               event->type() == QEvent::ToolTipChange || event->type() == QEvent::DynamicPropertyChange) {
-      refresh(false);
+               event->type() == QEvent::ToolTipChange || event->type() == QEvent::DynamicPropertyChange ||
+               event->type() == QEvent::EnabledChange || event->type() == QEvent::LayoutRequest ||
+               event->type() == QEvent::StyleChange || event->type() == QEvent::FontChange) {
+      scheduleRefresh();
     }
     return false;
   }
 
 private:
+  void scheduleRefresh() {
+    if (!m_retired && !m_timer.isActive()) { m_timer.start(0); }
+  }
   void refresh(bool liveText) {
     if (!m_source || m_refreshing) return;
     m_refreshing = true;
@@ -257,13 +286,18 @@ private:
       m_field.stringValue = text.toNSString();
       if (liveText && focused()) [m_field selectText:nil];
     }
-    m_field.placeholderString = m_source->placeholderText().toNSString();
-    if (m_label != nil) {
-      m_label.stringValue = m_source->property("nativeInlineName").toString().toNSString();
+    if (m_placeholder != m_source->placeholderText()) {
+      m_placeholder = m_source->placeholderText();
+      m_field.placeholderString = m_placeholder.toNSString();
     }
-    m_field.toolTip = m_source->toolTip().toNSString();
-    m_field.enabled = m_source->isEnabled();
-    m_field.textColor = m_source->property("nativeInlineInvalid").toBool() ? NSColor.systemRedColor : NSColor.labelColor;
+    if (m_label != nil) {
+      const QString name = m_source->property("nativeInlineName").toString();
+      if (QString::fromNSString(m_label.stringValue) != name) { m_label.stringValue = name.toNSString(); }
+    }
+    if (QString::fromNSString(m_field.toolTip) != m_source->toolTip()) { m_field.toolTip = m_source->toolTip().toNSString(); }
+    if (bool(m_field.enabled) != m_source->isEnabled()) { m_field.enabled = m_source->isEnabled(); }
+    NSColor* color = m_source->property("nativeInlineInvalid").toBool() ? NSColor.systemRedColor : NSColor.labelColor;
+    if (![m_field.textColor isEqual:color]) { m_field.textColor = color; }
     const QPoint at = m_source->mapToGlobal(QPoint());
     const CGFloat top = NSScreen.screens.firstObject.frame.origin.y + NSScreen.screens.firstObject.frame.size.height;
     const CGFloat width = std::max(60, m_source->width());
@@ -284,7 +318,11 @@ private:
   QPointer<QLineEdit> m_source;
   const QLineEdit* m_key;
   QPointer<QWidget> m_viewport;
+  std::vector<QPointer<QWidget>> m_geometrySources;
+  NSMutableArray* m_observers = [NSMutableArray new];
   QTimer m_timer;
+  QTimer m_propertyTimer;
+  QString m_placeholder;
   bool m_refreshing = false;
   bool m_retired = false;
   MITCADInlineEditorTarget* __strong m_target = nil;

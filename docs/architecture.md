@@ -442,6 +442,14 @@ design in a project.
   `build_connect` and merges it all into one undo step (`merge_undo`)
   ([commands.md](../core/model/src/api/commands.md), "BUILD: timber
   frames").
+- **Timber fastener seating** (mitcad#512, `build/wood.rs`): the library's
+  `wood.seat` selects a head-top or bearing frame. Legacy axis-aligned
+  wood screws and nails infer the head-top plane from evaluated body
+  bounds; pan/hex/washer heads keep the bearing frame. A joint override
+  moves only the fastener's own frame, leaving the member's entry frame
+  fixed. Swap recomputes it from the replacement's row. Boards are not
+  machined for the intentional overlap; `build_parts.seating` reports
+  physical head-top and tip distances for inspection and UI acceptance.
 - **Boundary Fill** (mitcad#457, `features/boundary_fill.rs`): a
   `boundary_fill` feature fills the cells its tool bodies enclose, each
   picked by a point inside it (a cell: inside every tool that holds the
@@ -468,6 +476,34 @@ design in a project.
   Free edges (of one face only) have no names: features take them as
   openings of the body, narrowed by faces and points
   (`features/sheet_edges.rs`).
+- **Properties** (mitcad#496, `core/model/src/properties.rs`,
+  `document/properties.rs`): typed key/value properties in named sets on
+  components (the definition's), occurrences (their own values over their
+  component's) and bodies, with the design's own types (allowed values,
+  unit, default). The `PropertyStore` is part of the definition state
+  (each owner's sets shared between undo steps until changed) and the
+  design file (`property_types`, `properties`); its commands are undo
+  steps that recompute nothing. Values keep canonical units and their
+  source (`user`, an import, `library`, `computed`); computed values
+  (volume, area, mass, a BUILD member's length) and a library part's data
+  are worked out at query time and never stored, so a recompute never
+  changes the file. Importers add theirs with `Document::import_properties`
+  (one step, merged into the import's); copies of components take theirs
+  along ([commands.md](../core/model/src/api/commands.md), "Properties").
+- **Reorient Design** (mitcad#502, `core/model/src/reorient.rs`,
+  `document/reorient.rs`): the whole design turned by quarter turns as a
+  rewrite of its definition, every component but linked ones in its own
+  coordinates. A turn is a signed permutation of the axes, so nothing is
+  rounded. References and paths turn wherever a definition holds them
+  through their JSON form (`geom_ref::to_turned_value`: an origin datum
+  becomes the one the turn takes it onto, else the fixed plane or axis
+  there), positions and directions outside references per feature type,
+  sketches on origin planes get their own frame, sketches whose plane's
+  frame follows the model axes get one from the turned design's
+  evaluation, base features a Move, occurrences `R · T · R⁻¹`. The
+  command computes the result and refuses it unless every body and
+  occurrence is where the turn takes it
+  ([commands.md](../core/model/src/api/commands.md), "Reorient Design").
 
 ### Units
 
@@ -980,7 +1016,15 @@ not recompute.
   Point tool snaps to, come from the model's `plane_geometry` query (the
   coplanarity test is the model's, on the kernel's curves); they are
   projected, linked, only by the action that makes something from them
-  (mitcad#256, mitcad#258).
+  (mitcad#256, mitcad#258). A component's sketch is edited where one of
+  its occurrences shows it (mitcad#505): the `sketch` query's frame is in
+  the component's coordinates, and sketch mode places it in the design by
+  that occurrence once (`SketchHost::sketchPlacement`): the plane link's
+  target for a plane of another component, else the occurrence its face
+  was picked at, else the component's first. The view's sketch plane, Look
+  At, the grid, Hide Above Sketch and the sketch's curves and profiles all
+  use that one placement; outside sketch mode a component's sketch is
+  shown at its component's first occurrence.
 - **Browser, timeline, view** (`app/browser/`, `app/view/`): the model is
   read once per change; the view keeps AIS objects that did not change.
   Visibility is the model's: an unset sketch light bulb follows "hidden
@@ -1280,10 +1324,16 @@ live-update and edit-lock status and opens the shared project menu.
 Saved toolbars receive the Project item once when upgrading an older layout;
 later status changes and application restarts preserve its explicit removal.
 The menu bar, application delegate, Finder open requests, document edited
-indicator, Services, text editing and window actions are AppKit's. The saved
-document frame restores both its origin and size; only a window without a
-saved frame starts centred with the default content size. System controls,
-semantic colours, fonts and sidebar material follow the running
+indicator, Services, text editing and window actions are AppKit's. The
+application delegate forwards methods it does not override to Qt's previous
+delegate, preserving application-state signals, activation hover updates and
+secure state restoration. Startup disables Qt's native menu bar rather than
+using plugin mode, so the Cocoa integration still installs Qt's delegate.
+Dock reopen runs Qt's handler before presenting the
+native document; termination and file-open requests keep the shell's policy.
+The saved document frame restores both its origin and size; only a window
+without a saved frame starts centred with the default content size. System
+controls, semantic colours, fonts and sidebar material follow the running
 macOS version and accessibility settings. The toolbar changes in sketch
 mode; command definitions and saved shortcuts remain shared.
 
@@ -1303,6 +1353,14 @@ from controls. `NativeForms` builds real AppKit inputs from `InputDef`;
 a command. Secondary dialogs and Settings use `NativeDialogs`, which binds
 the existing hidden Qt presenter models and signals to AppKit controls.
 Those widgets initialize their existing workflows but are never drawn.
+Presenter-tree events and control/model/selection signals coalesce into one
+queued native refresh; unchanged AppKit properties are left alone. A 500 ms
+safety net covers Qt properties without notify signals, including model
+replacement, row hiding and index-widget changes. Its model check hashes
+visibility and widget identities without reading model data or allocating
+description strings; nodes and selection are rebuilt only when dirty.
+Sketch inline editors follow presenter/ancestor geometry events and their
+host's move, resize, screen and backing-property notifications.
 File and colour panels use explicit AppKit sheet hosts. File presenters
 select widget-backed storage before setting their initial file and filter,
 so AppKit can read them without showing a Qt chooser. Native alerts and
@@ -1651,7 +1709,7 @@ commands ([commands.md](../core/model/src/api/commands.md), "Projects").
 In the app (`app/files/MainWindowProjects.cpp`) the window keeps the
 **current project** (`ProjectState`: kind, root, remote; `files/Projects`)
 as state of its own, independent of the open design's file. New Project,
-Open Project, Open from Cloud, Move to a Project and opening or saving a
+Open Project, Open from Cloud, Save to Project and opening or saving a
 design set it (`setCurrentProject`, `followFileProject`); an untitled
 design keeps it. `RemoteController`, the indicator and Project Settings
 use its root, never the design's path (before mitcad#89 the remote looked
@@ -1659,8 +1717,10 @@ for the project through the design's file and could not find a project
 just made).
 
 - Dialogs (`files/ProjectDialogs`, `files/ProjectSettings`): New Project,
-  Open from Cloud, Move to a Project's question, Change Address and
-  Project Settings. New Project and Create Project Here make an empty
+  Open from Cloud, Change Address and Project Settings. Save to Project
+  (mitcad#503, File menu after Save As) uses the project picker
+  (`projects/ProjectPicker`) with its New Project... button, and saves
+  as Save As does. New Project and Create Project Here make an empty
   project (`create_project` without a design; mitcad#145), and Open
   Project opens the design opened last (`last_design`), else the newest,
   none for an empty project. The first two and Change Address
@@ -2065,6 +2125,18 @@ as base features (`bodies_only`). The triangles of mesh features (kept in
 the graphics segment, not the B-rep record) come in as mesh bodies, base
 features after the replay; a part without bodies opens empty, with a
 warning.
+
+`.iam` assemblies (`core/ffi/src/iam_import.rs`; the `import_iam`
+command, also `import_ipt` with an assembly) import each distinct part
+file once into a document of its own with the `.ipt` import, and place it
+as a component: its stored bodies shared as one base feature, or with
+`history` its replayed design copied in (`Document::add_component_copy`).
+With `history`, a part whose replay fails comes in as its stored bodies,
+and the report gives each part's outcome; the referenced files are
+resolved before the first part is imported, so that the worker's trace
+counts the parts (`part <n> of <m>`) for the application's progress
+(mitcad#507). File › Open and Import ask for the history (**Parts with
+their design history**, remembered; `app/files/IamImport.*`).
 
 IFC building models (mitcad#273) come in through `core/ifc` (the reader:
 no geometry) and `mitcad-import`'s `ifc` module on the `Kernel` trait

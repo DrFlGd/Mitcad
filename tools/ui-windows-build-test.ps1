@@ -11,14 +11,19 @@
 #      then (undone) by Enter at the origin; then only profiles' faces,
 #      the planes hidden; a side click flush with an end fills Offset and
 #      From (no check box); an end click in the middle straight on (Mitre),
-#      the hover near an edge turned, the click there a square corner on
+#      the hover near an edge previewing nothing (mitcad#508), the click
+#      there a square corner on
 #      the end face (mitre Auto: none, mitcad#427; Shared chosen mitres it
 #      at offset 0; mitcad#417); a brace on its side by Tilt (its foot cut
 #      by the tilt, mitcad#444; the Tilt row only on a side); Close shows
 #      the planes again.
 #   3. Profile on a design with only its root: a frame of four (the mouse
-#      on the first's side previews a part there before the click,
-#      mitcad#431; two flush with the first's ends by clicks at the flush
+#      on the first's side names only the face a click picks, nothing
+#      previewed before the click; once picked, the preview stays while the
+#      mouse moves along the side, off the parts and back, no inspection,
+#      its end A unchanged, and a click on another face moves it once,
+#      mitcad#508; the click's body as long as its length, mitcad#431; two
+#      flush with the first's ends by clicks at the flush
 #      snaps, From End A and End B; a typed offset stays from end B, From
 #      changed keeps the part in place; the fourth's length bound to the
 #      third; Tab steps the auto length, the preview's body as long as the
@@ -26,8 +31,9 @@
 #   4. Connector at a junction (shown on the hover), previewed in place.
 #   5. Panel from an inner face.
 #   6. Linear Part: a rail, a carriage on it, a slider on two sides of
-#      a profile, each on the side picked (its hover previewed
-#      there; mitcad#448) (each chosen in the part picker from the Part
+#      a profile, each on the side picked (mitcad#448; its hover names
+#      the side and previews nothing, mitcad#508) (each chosen in the part
+#      picker from the Part
 #      tile); Ends: a mitred, bored end.
 #   7. Save, reopen; Cut List: rows, Copy as CSV, Save as PDF.
 #   8. The part picker (mitcad#418), with a 30 profile of another system in
@@ -265,10 +271,10 @@ function Marker-At([string]$Label) {
 # centre until then: fitted to the parts, a profile's end can come under
 # the orientation cube in the view's corner (session 0's window is small),
 # where a click turns the view instead of picking. The zoom rests the mouse
-# at the view's centre, which can be on a side, where the preview and its
-# markers are the hover's (mitcad#431): the mouse goes off the parts (to a
-# corner of the view, Pick-Markers) and the pick's markers are read again
-# before each look.
+# at the view's centre, which can be on a side (the hover previews nothing
+# there, mitcad#508): the mouse goes off the parts (to a corner of the
+# view, Pick-Markers) and the pick's markers are read again before each
+# look.
 function Marker-InMiddle([string]$Label) {
   $area = @((Ui-LastMatch 'View area (\d+ \d+ \d+ \d+)') -split ' ' | ForEach-Object { [int]$_ })
   if ($area.Count -lt 4) { Ui-Fail 'the app did not log its view area' }
@@ -320,35 +326,70 @@ function Expect-BodyLength([string]$Description) {
   if ($length -eq '?' -or $length -ne $body) { Ui-Fail "${Description}: length $length mm, body $body mm ($line)" }
   Write-Host "ok   ${Description}: $body mm"
 }
-# Pick-Markers AREA: the mouse moved off the parts and the pick's markers
-# logged again: with the mouse on a part's side or end the preview shows
-# what a click there places, with that place's markers (mitcad#431), as
-# its "Inspect Profile:" line says ("; on the hover"). The Linux test moves
-# the mouse out of the view; in session 0 the view gets its Leave right
-# after each posted move, before the frame that finds the hover, and none
-# when the mouse then goes elsewhere: the mouse goes to a corner of the
-# view instead (AREA: x y width height of the view), where nothing is
-# found, the next corner while the preview stays the hover's (not the top
-# right one, under the orientation cube).
-function Pick-Markers([int[]]$Area) {
-  $inset = 6
-  $corners = @(@(($Area[0] + $inset), ($Area[1] + $inset)),
-               @(($Area[0] + $inset), ($Area[1] + $Area[3] - $inset)),
-               @(($Area[0] + $Area[2] - $inset), ($Area[1] + $Area[3] - $inset)))
-  $inspect = -1
-  foreach ($corner in $corners) {
-    [UiInput]::Move($script:UiWindow, $corner[0], $corner[1], 0x04)
-    for ($i = 0; $i -lt 20 -and $inspect -lt 0; $i++) {
-      Ui-Sync
-      $lines = @(Ui-LogLines)
-      $lastLine = -1
-      for ($j = $lines.Count - 1; $j -ge 0; $j--) { if ($lines[$j].StartsWith('Inspect Profile: ')) { $lastLine = $j; break } }
-      if ($lastLine -lt 0 -or -not $lines[$lastLine].Contains('; on the hover')) { $inspect = [Math]::Max($lastLine, 0) }
-      else { Start-Sleep -Milliseconds 100 }
-    }
-    if ($inspect -ge 0) { break }
+# No-Inspect CMD description: a moment after the mouse moved, no "Inspect
+# CMD:" line since the mark: the hover runs no placement and no inspection
+# (mitcad#508).
+function No-Inspect([string]$Cmd, [string]$Description) {
+  Start-Sleep -Milliseconds 1500
+  Ui-Sync
+  $found = @(Ui-LogLines | Select-Object -Skip $script:UiMark | Where-Object { $_.StartsWith("Inspect ${Cmd}: ") })
+  if ($found.Count -gt 0) { Ui-Fail "${Description}: $($found[0])" }
+  Write-Host "ok   $Description"
+}
+# Last-EndA CMD: where the last "Inspect CMD:" line puts the preview's end
+# A ("; end A at x, y, z").
+function Last-EndA([string]$Cmd) {
+  $line = Ui-LogLines | Where-Object { $_.StartsWith("Inspect ${Cmd}: ") } | Select-Object -Last 1
+  if ("$line" -match '; end A at ([^;]*);') { return $Matches[1] }
+  return $null
+}
+# EndA-Since CMD: the places of the preview's end A in the "Inspect CMD:"
+# lines since the mark, each once.
+function EndA-Since([string]$Cmd) {
+  return @(Ui-LogLines | Select-Object -Skip $script:UiMark | Where-Object { $_.StartsWith("Inspect ${Cmd}: ") } |
+    ForEach-Object { if ($_ -match '; end A at ([^;]*);') { $Matches[1] } } | Select-Object -Unique)
+}
+# Moved-Once CMD WAS description: after a click, the "Inspect CMD:" lines
+# since the mark put the preview's end A elsewhere than WAS, all at one
+# place: the preview moved once, to the click (mitcad#508).
+function Moved-Once([string]$Cmd, [string]$Was, [string]$Description) {
+  $places = @()
+  for ($i = 0; $i -lt 30 -and $places.Count -eq 0; $i++) {
+    $places = @(EndA-Since $Cmd)
+    if ($places.Count -eq 0) { Start-Sleep -Milliseconds 200 }
   }
-  if ($inspect -lt 0) { Ui-Fail "the hover's preview stayed with the mouse in the view's corners" }
+  # A moment more: a preview still following the mouse would add places.
+  Start-Sleep -Milliseconds 1000
+  Ui-Sync
+  $places = @(EndA-Since $Cmd)
+  if ($places.Count -eq 0) { Ui-Fail "${Description}: no 'Inspect ${Cmd}:' line with end A since the mark" }
+  if ($places.Count -gt 1) { Ui-Fail "${Description}: end A at more than one place: $($places -join ' / ')" }
+  if ($places[0] -eq $Was) { Ui-Fail "${Description}: end A still at $Was" }
+  Write-Host "ok   ${Description}: end A at $($places[0])"
+}
+# Off-Parts AREA: the mouse off the parts. The Linux test moves it out of
+# the view; in session 0 the view gets its Leave right after each posted
+# move, before the frame that finds the hover, and none when the mouse
+# then goes elsewhere: the mouse goes to the view's top left corner
+# instead (AREA: x y width height of the view; not the top right one,
+# under the orientation cube), where nothing is found.
+function Off-Parts([int[]]$Area) {
+  [UiInput]::Move($script:UiWindow, ($Area[0] + 6), ($Area[1] + 6), 0x04)
+}
+function View-Area {
+  $area = @((Ui-LastMatch 'View area (\d+ \d+ \d+ \d+)') -split ' ' | ForEach-Object { [int]$_ })
+  if ($area.Count -lt 4) { Ui-Fail 'the app did not log its view area' }
+  return , $area
+}
+# Pick-Markers AREA: the mouse moved off the parts (Off-Parts) and the
+# pick's markers logged (the hover previews nothing, mitcad#508: they are
+# the pick's wherever the mouse is).
+function Pick-Markers([int[]]$Area) {
+  Off-Parts $Area
+  Ui-Sync
+  $lines = @(Ui-LogLines)
+  $inspect = 0
+  for ($j = $lines.Count - 1; $j -ge 0; $j--) { if ($lines[$j].StartsWith('Inspect Profile: ')) { $inspect = $j; break } }
   # The markers come after the inspection's line.
   for ($i = 0; $i -lt 25; $i++) {
     if (Ui-LogLines | Select-Object -Skip $inspect | Where-Object { $_.StartsWith('Preview marker Profile ') }) { return }
@@ -523,14 +564,15 @@ Ui-ExpectNew 'ends A 45 deg' "the new part's end mitred"
 Ui-Mark
 Ui-Step 'the mitre Auto again'           { Wheel-Choice 'mitre' -3 }
 Expect-Inspect @('; end straight towards ', 'mitre none') 'Auto: no mitre straight on'
-# Near an edge of the end face (its zone's marker): the hover shows the
-# turned part before the click, the click turns it: a corner.
+# Near an edge of the end face (its zone's marker): the hover previews
+# nothing, the part stays straight on (mitcad#508); the click there turns
+# it: a corner.
 $turn = Marker-At 'turn .*'
+Ui-Sync
 Ui-Mark
 # MK_SHIFT keeps the move in session 0 (see the Connector's hover below).
 Ui-Step 'the mouse near an edge of the end' { [UiInput]::Move($script:UiWindow, $turn[0], $turn[1], 0x04) }
-Ui-ExpectNew 'BUILD hover on ' 'the hover on the end face'
-Expect-Inspect @('; end edge towards ', '; on the hover') 'the hover previews the turned part before the click'
+No-Inspect 'Profile' 'the hover near the edge previews and inspects nothing'
 Ui-Mark
 Ui-Step 'a click there'                  { Ui-Click $turn[0] $turn[1] }
 Ui-ExpectNew 'BUILD end click: edge towards ' 'a click near an edge turns the part'
@@ -593,18 +635,47 @@ Refresh-Picks 'Profile'
 $sides1 = @(Faces-Of $b1 $side)
 if ($sides1.Count -eq 0) { Ui-Fail "no side of the first profile ($b1) to pick" }
 $side1 = $sides1[0]
-# The mouse on the side before a click shows what a click there places
-# (mitcad#431), the body as long as the length it shows.
+# The mouse on the side before a click names only the face a click picks:
+# nothing previewed or inspected while it moves (mitcad#508).
 $hover = Ui-PickAt "$b1/$side1 at"
+Ui-Sync
 Ui-Mark
 Ui-Step "the mouse on the first profile's side" { [UiInput]::Move($script:UiWindow, $hover[0], $hover[1], 0x04) }
-Ui-ExpectNew 'BUILD hover on ' 'the hover on the side'
-Expect-Inspect @('Inspect Profile: place side, ', '; on the hover') 'the hover previews the part on the side before the click'
-Expect-BodyLength "the hover's body as long as its length"
+Ui-ExpectNew "BUILD hover pick: face $side1 of $b1" 'the hover names the face a click picks'
+Ui-Step 'the mouse a little further'     { [UiInput]::Move($script:UiWindow, ($hover[0] + 6), $hover[1], 0x04) }
+No-Inspect 'Profile' 'no preview and no inspection while hovering before the click'
+# The click's body as long as the length it shows (mitcad#431).
 Ui-Mark
 Ui-Step "the first profile's side"       { Pick-Face $b1 $side1 }
 Ui-ExpectNew 'Inspect Profile: place side' 'on the side'
 Ui-ExpectNew 'BUILD side click: From ' 'the click fills From and Offset'
+Expect-BodyLength "the click's body as long as its length"
+# Once the place is picked the preview stays there (mitcad#508): the mouse
+# along the side, off the parts and back runs no placement and no
+# inspection, the preview's end A where the click put it; a click on
+# another face moves it there once, a click on the first place back again.
+Ui-Sync
+$endA1 = Last-EndA 'Profile'
+if (-not $endA1) { Ui-Fail "no end A in the side pick's inspection" }
+Ui-Mark
+Ui-Step 'the mouse along the side'       { [UiInput]::Move($script:UiWindow, ($hover[0] + 12), $hover[1], 0x04) }
+Ui-Step 'the mouse off the parts'        { Off-Parts (View-Area) }
+Ui-ExpectNew "BUILD hover pick: off the parts' faces" 'the hover off the parts'
+Ui-Step 'the mouse on the side again'    { [UiInput]::Move($script:UiWindow, $hover[0], $hover[1], 0x04) }
+No-Inspect 'Profile' 'no preview and no inspection while the mouse moves after the click'
+if ((Last-EndA 'Profile') -ne $endA1) { Ui-Fail "the preview's end A moved from $endA1" }
+Write-Host "ok   the preview's end A still at $endA1"
+$other1 = @($sides1 | Where-Object { $_ -ne $side1 }) + @(Faces-Of $b1 ':end_b') | Select-Object -First 1
+if (-not $other1) { Ui-Fail "no other face of the first profile ($b1) to click" }
+Ui-Mark
+Ui-Step 'a click on another face'        { Pick-Face $b1 $other1 }
+Moved-Once 'Profile' $endA1 "a click on $other1 moves the preview once"
+Ui-Mark
+Ui-Step "the first profile's side again" { Pick-Face $b1 $side1 }
+Ui-ExpectNew 'BUILD side click: From ' 'the click on the side again'
+Ui-Sync
+if ((Last-EndA 'Profile') -ne $endA1) { Ui-Fail "the click on the side again: end A not at $endA1" }
+Write-Host "ok   the click on the side again: end A at $endA1"
 Expect-Row 'offset' 'shown' 'Offset for a side pick (no check box)'
 Expect-Row 'from' 'shown' 'From for a side pick'
 Ui-Step 'length 300'                     { Ui-TypeIn 'Panel Profile input length' '300' }
@@ -778,10 +849,11 @@ if (-not $bSlider) { Ui-Fail "no profile ($b1, $b2, $b3, $b4) with two sides to 
 $slide1 = $sliderFaces[0]
 $slide2 = $sliderFaces[1]
 $hover = Ui-PickAt "$bSlider/$slide1 at"
+Ui-Sync
 Ui-Mark
 Ui-Step "the mouse on $bSlider's $slide1" { [UiInput]::Move($script:UiWindow, $hover[0], $hover[1], 0x04) }
-Ui-ExpectNew 'BUILD hover on ' 'the hover on the side'
-Ui-ExpectNew 'Inspect Linear Part: place side' 'the hover previews the slider on the side'
+Ui-ExpectNew "BUILD hover pick: face $slide1 of $bSlider" 'the hover names the side a click picks'
+No-Inspect 'Linear Part' 'the hover previews no slider (mitcad#508)'
 Ui-Mark
 Ui-Step "$bSlider's $slide1"             { Pick-Face $bSlider $slide1 }
 Ui-ExpectNew 'Inspect Linear Part: place side' 'the slider on the side picked (On the side)'

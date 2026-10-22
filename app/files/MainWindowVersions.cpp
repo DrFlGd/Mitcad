@@ -107,7 +107,7 @@ void MainWindow::registerVersionCommands() {
     d.run = std::move(run);
     return d;
   };
-  // New Project, Open Project, Open from Cloud, Project Settings, Move to a
+  // New Project, Open Project, Open from Cloud, Project Settings, Save to
   // Project (mitcad#89).
   registerProjectCommands();
   // Save with Description (mitcad#175, Save Version before: Save records a
@@ -195,14 +195,14 @@ bool MainWindow::saveVersion() {
     qInfo().noquote() << QStringLiteral("Save with Description: no version history for %1").arg(documentName());
     QMessageBox box(QMessageBox::Question, tr("Save with Description"),
                     tr("%1 has no version history.").arg(documentName()), QMessageBox::Cancel, this);
-    box.setInformativeText(tr("Versions are kept for the designs of projects: Move to a Project puts it in "
+    box.setInformativeText(tr("Versions are kept for the designs of projects: Save to Project puts it in "
                               "one."));
-    QPushButton* move = box.addButton(tr("&Move to a Project..."), QMessageBox::AcceptRole);
-    box.setDefaultButton(move);
+    QPushButton* save = box.addButton(tr("&Save to Project..."), QMessageBox::AcceptRole);
+    box.setDefaultButton(save);
     prepareModal(&box);
     execDialog(&box);
-    if (box.clickedButton() == move) {
-      moveToProject();
+    if (box.clickedButton() == save) {
+      saveToProject();
     }
     return false;
   }
@@ -473,15 +473,15 @@ void MainWindow::showVersionHistory() {
     if (m_filePath.isEmpty() && m_project.hasHistory()) {
       box.setInformativeText(tr("Save it in the project to keep its versions."));
     } else {
-      box.setInformativeText(tr("Versions are kept for the designs of projects: Move to a Project puts it in "
+      box.setInformativeText(tr("Versions are kept for the designs of projects: Save to Project puts it in "
                                 "one."));
-      QPushButton* move = box.addButton(tr("&Move to a Project..."), QMessageBox::AcceptRole);
-      box.setDefaultButton(move);
+      QPushButton* save = box.addButton(tr("&Save to Project..."), QMessageBox::AcceptRole);
+      box.setDefaultButton(save);
     }
     prepareModal(&box);
     execDialog(&box);
     if (box.clickedButton() != nullptr && box.buttonRole(box.clickedButton()) == QMessageBox::AcceptRole) {
-      moveToProject();
+      saveToProject();
     }
     return;
   }

@@ -187,6 +187,11 @@ fastened=$(sed -n 's/.*member(s), \([0-9]*\) junction(s) fastened$/\1/p' <<< "$l
 screws=$(fastener_bodies | wc -l)
 [ "$screws" -eq $((3 * fastened)) ] || ui_fail "$screws screw(s) at $fastened junction(s), not three each"
 echo "ok   $fastened junction(s), three screws each"
+seats=$(tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep '^Timber fastener .*: head top ')
+[ "$(printf '%s\n' "$seats" | grep -c 'head top 0 mm from entry face$')" -eq "$screws" ] ||
+  ui_fail "the physical screw heads are not flush within 1e-6 mm: $seats"
+echo "ok   every frame screw head is flush within 1e-6 mm"
+
 SCREWS=$(fastener_bodies)
 ui_step "close Timber (Escape)"            ui_key Escape
 ui_mark
@@ -225,6 +230,11 @@ expect_inspect "Swap Fastener" "for Ring nail test 3.1x90" "they become 3.1x90 r
 ui_mark
 ui_step "Swap (Enter)"                     ui_key Return
 ui_expect_new "Swapped 2 fastener(s) for Ring nail test 3.1x90 (3.1x90)" "the two screws are ring nails" 30
+ui_expect_new "head top 0 mm from entry face" "the swapped nails are seated flush"
+seats=$(tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep '^Timber fastener .*: head top ')
+[ -n "$seats" ] && ! printf '%s\n' "$seats" | grep -v 'head top 0 mm from entry face$' ||
+  ui_fail "a swapped fastener stands proud: $seats"
+
 ui_step "close the panel (Escape)"         ui_key Escape
 ui_mark
 ui_step "undo"                             ui_key ctrl+z

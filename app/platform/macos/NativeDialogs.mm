@@ -190,6 +190,7 @@ class NativeMenuPopup;
   NSPoint from;
   NSPoint to;
   BOOL dragging;
+  QRect drawnCrop;
 }
 - (void)refresh;
 @end
@@ -199,6 +200,7 @@ namespace {
 
 __weak NSWindow* g_documentWindow = nil;
 std::vector<NSWindow*> g_modalWindows;
+quint64 g_widgetPropertyWrites = 0;
 
 NSString* ns(const QString& text) {
   const QByteArray utf8 = text.toUtf8();
@@ -206,6 +208,23 @@ NSString* ns(const QString& text) {
                                encoding:NSUTF8StringEncoding];
 }
 QString qt(NSString* text) { return text == nil ? QString() : QString::fromUtf8(text.UTF8String); }
+// Compare UTF-16 in place. Converting an unchanged QString to NSString on
+// every safety-net pass would keep allocating even with guarded setters.
+bool sameText(NSString* current, const QString& value) {
+  if (current.length != static_cast<NSUInteger>(value.size())) { return false; }
+  for (qsizetype i = 0; i < value.size(); ++i) {
+    if ([current characterAtIndex:static_cast<NSUInteger>(i)] != value.at(i).unicode()) { return false; }
+  }
+  return true;
+}
+#define NATIVE_SET(object, property, value) do { \
+  const auto desired = (value); \
+  if ((object).property != desired) { (object).property = desired; ++g_widgetPropertyWrites; } \
+} while (false)
+#define NATIVE_STRING(object, property, value) do { \
+  const QString desiredText = (value); \
+  if (!sameText((object).property, desiredText)) { (object).property = ns(desiredText); ++g_widgetPropertyWrites; } \
+} while (false)
 QString title(QString text) {
   text.replace(QStringLiteral("&&"), QStringLiteral("\x01"));
   text.remove(QLatin1Char('&'));
@@ -304,11 +323,11 @@ void updateButtonPresentation(NSButton* native, QAbstractButton* button) {
   const auto style = tool == nullptr ? Qt::ToolButtonTextBesideIcon : tool->toolButtonStyle();
   const bool iconOnly = style == Qt::ToolButtonIconOnly && !button->icon().isNull();
   const bool textOnly = style == Qt::ToolButtonTextOnly;
-  native.title = iconOnly ? @"" : ns(title(button->text()));
-  native.imagePosition = textOnly ? NSNoImage : iconOnly || button->text().isEmpty() ? NSImageOnly
-                                            : style == Qt::ToolButtonTextUnderIcon ? NSImageAbove : NSImageLeading;
-  native.accessibilityLabel = ns(plain(title(button->text().isEmpty() ? button->toolTip() : button->text())));
-  native.toolTip = ns(plain(button->toolTip().isEmpty() ? button->text() : button->toolTip()));
+  NATIVE_STRING(native, title, iconOnly ? QString() : title(button->text()));
+  NATIVE_SET(native, imagePosition, textOnly ? NSNoImage : iconOnly || button->text().isEmpty() ? NSImageOnly
+                                            : style == Qt::ToolButtonTextUnderIcon ? NSImageAbove : NSImageLeading);
+  NATIVE_STRING(native, accessibilityLabel, plain(title(button->text().isEmpty() ? button->toolTip() : button->text())));
+  NATIVE_STRING(native, toolTip, plain(button->toolTip().isEmpty() ? button->text() : button->toolTip()));
 }
 
 } // namespace
@@ -322,19 +341,28 @@ public:
     m_root.edgeInsets = NSEdgeInsetsMake(16, 16, 16, 16);
     m_root.accessibilityIdentifier = ns(source->objectName());
     connect(source, &QObject::destroyed, this, [this] { m_root.hidden = YES; });
+    m_refreshTimer.setSingleShot(true);
+    connect(&m_refreshTimer, &QTimer::timeout, this, [this] { refreshPresenters(); });
     rebuild();
-    m_timer.setInterval(100);
-    connect(&m_timer, &QTimer::timeout, this, [this] { refresh(); });
+    // Qt has no notify signal for several presenter properties (label and
+    // button text, spin ranges, read-only state, model replacement, row
+    // hiding and index widgets). Only those gaps need a slow safety net.
+    m_timer.setInterval(500);
+    connect(&m_timer, &QTimer::timeout, this, [this] { checkModelPresentation(); refreshPresenters(); });
     m_timer.start();
   }
   ~AppKitWidgetView() override {
     m_timer.stop();
+    m_refreshTimer.stop();
     m_target->owner = nullptr;
     for (MitcadNativeModelCell* cell in m_cells) { cell->owner = nullptr; }
     detachBindings();
   }
   void detachBindings() {
     for (Binding& binding : m_bindings) {
+      for (const auto& connection : binding.connections) { disconnect(connection); }
+      for (const auto& connection : binding.modelConnections) { disconnect(connection); }
+      for (const auto& connection : binding.selectionConnections) { disconnect(connection); }
       if ([binding.control isKindOfClass:MitcadNativeHoverButton.class]) {
         ((MitcadNativeHoverButton*)binding.control)->presenter.clear();
       }
@@ -367,18 +395,24 @@ public:
   }
 
   void refresh() override {
+    // Explicit caller refreshes also honour silent row/index-widget changes.
+    checkModelPresentation();
+    refreshPresenters();
+  }
+  void refreshPresenters() {
     if (m_source == nullptr || m_refreshing) {
       return;
     }
+    m_refreshTimer.stop();
     m_refreshing = true;
-    const auto widgets = m_source->findChildren<QWidget*>();
-    QByteArray structure;
-    for (QWidget* widget : widgets) {
-      structure += QByteArray::number(reinterpret_cast<quintptr>(widget));
-      structure += ':';
-    }
-    if (structure != m_widgetStructure) {
-      rebuild();
+    if (m_structureDirty) {
+      const auto widgets = m_source->findChildren<QWidget*>();
+      bool changed = widgets.size() != static_cast<qsizetype>(m_widgetTree.size());
+      for (qsizetype i = 0; !changed && i < widgets.size(); ++i) {
+        changed = widgets[i] != m_widgetTree[static_cast<std::size_t>(i)];
+      }
+      m_structureDirty = false;
+      if (changed) { rebuild(); }
     }
     // Actions may replace/delete controls or models. All presenter access
     // uses QPointer; retained AppKit views never keep raw QWidget pointers.
@@ -386,46 +420,59 @@ public:
       Binding& binding = m_bindings[i];
       QWidget* widget = binding.widget;
       if (widget == nullptr) {
-        binding.view.hidden = YES;
+        NATIVE_SET(binding.view, hidden, YES);
         continue;
       }
-      binding.view.hidden = widget != m_source && widget->isHidden();
-      binding.view.toolTip = ns(widget->toolTip());
+      NATIVE_SET(binding.view, hidden, widget != m_source && widget->isHidden());
+      if (qobject_cast<QAbstractButton*>(widget) == nullptr) { NATIVE_STRING(binding.view, toolTip, widget->toolTip()); }
       if (binding.control != nil) {
-        binding.control.enabled = widget->isEnabled();
+        NATIVE_SET(binding.control, enabled, widget->isEnabled());
       }
       if (qobject_cast<report::ScreenshotView*>(widget) != nullptr) {
         [(MitcadNativeScreenshot*)binding.view refresh];
       } else if (auto* edit = qobject_cast<QLineEdit*>(widget)) {
         NSTextField* field = (NSTextField*)binding.control;
-        field.editable = !edit->isReadOnly();
-        field.selectable = YES;
-        field.placeholderString = ns(edit->placeholderText());
-        if (field.currentEditor == nil && qt(field.stringValue) != edit->text()) {
-          field.stringValue = ns(edit->text());
-        }
+        NATIVE_SET(field, editable, !edit->isReadOnly());
+        NATIVE_SET(field, selectable, YES);
+        NATIVE_STRING(field, placeholderString, edit->placeholderText());
+        if (field.currentEditor == nil) { NATIVE_STRING(field, stringValue, edit->text()); }
       } else if (auto* button = qobject_cast<QAbstractButton*>(widget)) {
         NSButton* native = (NSButton*)binding.control;
-        updateButtonPresentation(native, button);
-        native.state = button->isChecked() ? NSControlStateValueOn : NSControlStateValueOff;
+        const auto* tool = qobject_cast<QToolButton*>(button);
+        const int style = tool == nullptr ? int(Qt::ToolButtonTextBesideIcon) : int(tool->toolButtonStyle());
+        if (!binding.presentationInitialized || binding.labelText != button->text() ||
+            binding.buttonTip != button->toolTip() || binding.buttonStyle != style ||
+            binding.iconKey != button->icon().cacheKey()) {
+          updateButtonPresentation(native, button);
+          binding.labelText = button->text();
+          binding.buttonTip = button->toolTip();
+          binding.buttonStyle = style;
+          binding.presentationInitialized = true;
+        }
+        auto state = button->isChecked() ? NSControlStateValueOn : NSControlStateValueOff;
         if (binding.iconKey != button->icon().cacheKey()) {
           native.image = button->icon().isNull() ? nil : image(button->icon().pixmap(18, 18));
+          ++g_widgetPropertyWrites;
           binding.iconKey = button->icon().cacheKey();
         }
         if (auto* check = qobject_cast<QCheckBox*>(widget)) {
-          native.allowsMixedState = check->isTristate();
+          NATIVE_SET(native, allowsMixedState, check->isTristate());
           if (check->checkState() == Qt::PartiallyChecked) {
-            native.state = NSControlStateValueMixed;
+            state = NSControlStateValueMixed;
           }
         }
+        NATIVE_SET(native, state, state);
         if (auto* push = qobject_cast<QPushButton*>(widget)) {
-          if (push->isDefault()) { native.keyEquivalent = @"\r"; }
-          else if ([native.keyEquivalent isEqualToString:@"\r"]) { native.keyEquivalent = @""; }
+          if (push->isDefault()) { NATIVE_STRING(native, keyEquivalent, QStringLiteral("\r")); }
+          else if ([native.keyEquivalent isEqualToString:@"\r"]) { NATIVE_STRING(native, keyEquivalent, QString()); }
         }
       } else if (auto* combo = qobject_cast<QComboBox*>(widget)) {
-        QStringList items;
-        for (int j = 0; j < combo->count(); ++j) {
-          items.append(combo->itemText(j));
+        observeModel(binding, combo->model(), static_cast<int>(i));
+        const bool choicesDirty = binding.dirty || binding.items.size() != combo->count();
+        QStringList items = binding.items;
+        if (choicesDirty) {
+          items.clear();
+          for (int j = 0; j < combo->count(); ++j) { items.append(combo->itemText(j)); }
         }
         if (combo->isEditable()) {
           NSComboBox* native = (NSComboBox*)binding.control;
@@ -434,14 +481,14 @@ public:
             for (const QString& item : items) { [native addItemWithObjectValue:ns(item)]; }
             binding.items = items;
           }
-          if (native.currentEditor == nil) { native.stringValue = ns(combo->currentText()); }
+          if (native.currentEditor == nil) { NATIVE_STRING(native, stringValue, combo->currentText()); }
         } else {
           NSPopUpButton* native = (NSPopUpButton*)binding.control;
           bool same = native.numberOfItems == combo->count();
           for (int j = 0; same && j < combo->count(); ++j) {
             NSMenuItem* item = [native itemAtIndex:j];
             MitcadNativeComboItem* value = item.representedObject;
-            same = qt(item.title) == items[j] && value != nil &&
+            same = sameText(item.title, items[j]) && value != nil &&
                    value->index == combo->model()->index(j, combo->modelColumn(), combo->rootModelIndex());
           }
           if (!same) {
@@ -454,81 +501,109 @@ public:
               [native.menu addItem:item];
             }
           }
-          if (combo->currentIndex() >= 0 && combo->currentIndex() < native.numberOfItems) {
+          if (combo->currentIndex() >= 0 && combo->currentIndex() < native.numberOfItems &&
+              native.indexOfSelectedItem != combo->currentIndex()) {
             [native selectItemAtIndex:combo->currentIndex()];
-          } else { [native selectItem:nil]; }
+            ++g_widgetPropertyWrites;
+          } else if (combo->currentIndex() < 0 && native.selectedItem != nil) {
+            [native selectItem:nil];
+            ++g_widgetPropertyWrites;
+          }
         }
+        binding.items = items;
+        binding.dirty = false;
       } else if (auto* text = qobject_cast<QLabel*>(widget)) {
         const QPixmap pixmap = text->pixmap();
-        binding.image.hidden = pixmap.isNull();
-        binding.control.hidden = binding.linkText != nil || !pixmap.isNull();
+        NATIVE_SET(binding.image, hidden, pixmap.isNull());
+        NATIVE_SET(binding.control, hidden, binding.linkText != nil || !pixmap.isNull());
         if (binding.pixmapKey != pixmap.cacheKey()) {
           binding.image.image = image(pixmap);
+          ++g_widgetPropertyWrites;
           binding.pixmapKey = pixmap.cacheKey();
         }
-        if (binding.linkText != nil) {
-          if (binding.labelText != text->text()) {
-            binding.labelText = text->text();
+        if (!binding.presentationInitialized || binding.labelText != text->text()) {
+          binding.labelText = text->text();
+          binding.presentationInitialized = true;
+          if (binding.linkText != nil) {
             [binding.linkText.textStorage setAttributedString:richLabel(text->text())];
-          }
-          binding.linkText.hidden = !pixmap.isNull();
-        } else { ((NSTextField*)binding.control).stringValue = ns(plain(title(text->text()))); }
+            ++g_widgetPropertyWrites;
+          } else { NATIVE_STRING(((NSTextField*)binding.control), stringValue, plain(title(text->text()))); }
+        }
+        if (binding.linkText != nil) { NATIVE_SET(binding.linkText, hidden, !pixmap.isNull()); }
       } else if (auto* group = qobject_cast<QGroupBox*>(widget)) {
         if (group->isCheckable() && binding.control != nil) {
-          ((NSButton*)binding.control).title = ns(title(group->title()));
-          ((NSButton*)binding.control).state = group->isChecked() ? NSControlStateValueOn : NSControlStateValueOff;
+          if (!binding.presentationInitialized || binding.labelText != group->title()) {
+            binding.labelText = group->title();
+            binding.presentationInitialized = true;
+            NATIVE_STRING(((NSButton*)binding.control), title, title(group->title()));
+          }
+          NATIVE_SET(((NSButton*)binding.control), state, group->isChecked() ? NSControlStateValueOn : NSControlStateValueOff);
         }
       } else if (auto* spin = qobject_cast<QSpinBox*>(widget)) {
-        binding.stepper.minValue = spin->minimum();
-        binding.stepper.maxValue = spin->maximum();
-        binding.stepper.increment = spin->singleStep();
-        binding.stepper.doubleValue = spin->value();
-        binding.stepper.enabled = spin->isEnabled() && !spin->isReadOnly();
+        NATIVE_SET(binding.stepper, minValue, spin->minimum());
+        NATIVE_SET(binding.stepper, maxValue, spin->maximum());
+        NATIVE_SET(binding.stepper, increment, spin->singleStep());
+        NATIVE_SET(binding.stepper, doubleValue, spin->value());
+        NATIVE_SET(binding.stepper, enabled, spin->isEnabled() && !spin->isReadOnly());
         NSTextField* field = (NSTextField*)binding.control;
-        field.editable = !spin->isReadOnly();
-        if (field.currentEditor == nil) { field.stringValue = ns(spin->text()); }
+        NATIVE_SET(field, editable, !spin->isReadOnly());
+        if (field.currentEditor == nil) { NATIVE_STRING(field, stringValue, spin->text()); }
       } else if (auto* spin = qobject_cast<QDoubleSpinBox*>(widget)) {
-        binding.stepper.minValue = spin->minimum();
-        binding.stepper.maxValue = spin->maximum();
-        binding.stepper.increment = spin->singleStep();
-        binding.stepper.doubleValue = spin->value();
-        binding.stepper.enabled = spin->isEnabled() && !spin->isReadOnly();
+        NATIVE_SET(binding.stepper, minValue, spin->minimum());
+        NATIVE_SET(binding.stepper, maxValue, spin->maximum());
+        NATIVE_SET(binding.stepper, increment, spin->singleStep());
+        NATIVE_SET(binding.stepper, doubleValue, spin->value());
+        NATIVE_SET(binding.stepper, enabled, spin->isEnabled() && !spin->isReadOnly());
         NSTextField* field = (NSTextField*)binding.control;
-        field.editable = !spin->isReadOnly();
-        if (field.currentEditor == nil) { field.stringValue = ns(spin->text()); }
+        NATIVE_SET(field, editable, !spin->isReadOnly());
+        if (field.currentEditor == nil) { NATIVE_STRING(field, stringValue, spin->text()); }
       } else if (auto* slider = qobject_cast<QSlider*>(widget)) {
         NSSlider* native = (NSSlider*)binding.control;
-        native.minValue = slider->minimum();
-        native.maxValue = slider->maximum();
-        native.integerValue = slider->value();
+        NATIVE_SET(native, minValue, slider->minimum());
+        NATIVE_SET(native, maxValue, slider->maximum());
+        NATIVE_SET(native, integerValue, slider->value());
       } else if (auto* progress = qobject_cast<QProgressBar*>(widget)) {
-        binding.progress.indeterminate = progress->minimum() == progress->maximum();
-        binding.progress.minValue = progress->minimum();
-        binding.progress.maxValue = progress->maximum();
-        binding.progress.doubleValue = progress->value();
-        if (binding.progress.indeterminate) { [binding.progress startAnimation:nil]; }
-        else { [binding.progress stopAnimation:nil]; }
+        const bool indeterminate = progress->minimum() == progress->maximum();
+        const bool modeChanged = !binding.presentationInitialized || bool(binding.progress.indeterminate) != indeterminate;
+        NATIVE_SET(binding.progress, indeterminate, indeterminate);
+        NATIVE_SET(binding.progress, minValue, progress->minimum());
+        NATIVE_SET(binding.progress, maxValue, progress->maximum());
+        NATIVE_SET(binding.progress, doubleValue, std::clamp<double>(progress->value(), progress->minimum(), progress->maximum()));
+        if (modeChanged && indeterminate) { [binding.progress startAnimation:nil]; ++g_widgetPropertyWrites; }
+        else if (modeChanged) { [binding.progress stopAnimation:nil]; ++g_widgetPropertyWrites; }
+        binding.presentationInitialized = true;
       } else if (auto* tabs = qobject_cast<QTabWidget*>(widget)) {
         if ([binding.tabs indexOfTabViewItem:binding.tabs.selectedTabViewItem] != tabs->currentIndex()) {
           [binding.tabs selectTabViewItemAtIndex:tabs->currentIndex()];
+          ++g_widgetPropertyWrites;
         }
       } else if (auto* pages = qobject_cast<QStackedWidget*>(widget)) {
         if (binding.tabs != nil && [binding.tabs indexOfTabViewItem:binding.tabs.selectedTabViewItem] != pages->currentIndex()) {
           [binding.tabs selectTabViewItemAtIndex:pages->currentIndex()];
+          ++g_widgetPropertyWrites;
         }
       } else if (auto* edit = qobject_cast<QKeySequenceEdit*>(widget)) {
-        if (((NSTextField*)binding.control).currentEditor == nil) {
-          ((NSTextField*)binding.control).stringValue = ns(edit->keySequence().toString(QKeySequence::NativeText));
+        if (((NSTextField*)binding.control).currentEditor == nil &&
+            (!binding.presentationInitialized || binding.keySequence != edit->keySequence())) {
+          binding.keySequence = edit->keySequence();
+          binding.presentationInitialized = true;
+          NATIVE_STRING(((NSTextField*)binding.control), stringValue, binding.keySequence.toString(QKeySequence::NativeText));
         }
       } else if (auto* text = qobject_cast<QPlainTextEdit*>(widget)) {
-        binding.text.editable = !text->isReadOnly();
-        if (binding.text.window.firstResponder != binding.text && qt(binding.text.string) != text->toPlainText()) {
-          binding.text.string = ns(text->toPlainText());
+        NATIVE_SET(binding.text, editable, !text->isReadOnly());
+        if (binding.text.window.firstResponder != binding.text &&
+            (binding.document != text->document() || binding.textRevision != text->document()->revision())) {
+          NATIVE_STRING(binding.text, string, text->toPlainText());
+          binding.document = text->document();
+          binding.textRevision = text->document()->revision();
         }
       } else if (auto* text = qobject_cast<QTextEdit*>(widget)) {
-        binding.text.editable = !text->isReadOnly();
-        if (binding.text.window.firstResponder != binding.text && qt(binding.text.string) != text->toPlainText()) {
-          binding.text.string = ns(text->toPlainText());
+        NATIVE_SET(binding.text, editable, !text->isReadOnly());
+        if (binding.text.window.firstResponder != binding.text &&
+            (binding.document != text->document() || binding.textRevision != text->document()->revision())) {
+          NATIVE_STRING(binding.text, string, text->toPlainText());
+          binding.document = text->document();
+          binding.textRevision = text->document()->revision();
         }
       } else if (auto* view = qobject_cast<QAbstractItemView*>(widget)) {
         refreshModel(binding, view, static_cast<int>(i));
@@ -865,6 +940,35 @@ public:
     }
   }
 
+protected:
+  bool eventFilter(QObject* watched, QEvent* event) override {
+    switch (event->type()) {
+    case QEvent::ChildAdded:
+    case QEvent::ChildRemoved:
+    case QEvent::ChildPolished:
+      m_structureDirty = true;
+      scheduleRefresh();
+      break;
+    case QEvent::Show:
+    case QEvent::Hide:
+    case QEvent::EnabledChange:
+    case QEvent::ToolTipChange:
+    case QEvent::DynamicPropertyChange:
+    case QEvent::LayoutRequest:
+    case QEvent::StyleChange:
+    case QEvent::FontChange:
+    case QEvent::ReadOnlyChange:
+    case QEvent::UpdateRequest:
+      // A view's row visibility and index widgets have no notify signal.
+      // Its update/layout events provide an early check before the fallback.
+      if (qobject_cast<QAbstractItemView*>(watched) != nullptr) { checkModelPresentation(); }
+      scheduleRefresh();
+      break;
+    default: break;
+    }
+    return false;
+  }
+
 private:
   struct Binding {
     QPointer<QWidget> widget;
@@ -879,13 +983,108 @@ private:
     NSTableView* table = nil;
     NSMutableArray<MitcadNativeModelNode*>* nodes = nil;
     QPointer<QAbstractItemModel> model;
+    QPointer<QItemSelectionModel> selection;
+    QPointer<QTextDocument> document;
+    QPersistentModelIndex rootIndex;
+    std::vector<QMetaObject::Connection> connections;
+    std::vector<QMetaObject::Connection> modelConnections;
+    std::vector<QMetaObject::Connection> selectionConnections;
     QStringList items;
     QString labelText;
-    QByteArray structure;
+    QString buttonTip;
+    QKeySequence keySequence;
+    int buttonStyle = -1;
+    int textRevision = -1;
+    quint64 presentation = 0;
     qint64 pixmapKey = 0;
     qint64 iconKey = 0;
+    bool presentationInitialized = false;
     bool dirty = true;
+    bool selectionDirty = true;
   };
+  void scheduleRefresh() {
+    if (m_source != nullptr && !m_refreshTimer.isActive()) { m_refreshTimer.start(0); }
+  }
+  void observeModel(Binding& binding, QAbstractItemModel* model, int id) {
+    if (binding.model == model) { return; }
+    for (const auto& connection : binding.modelConnections) { disconnect(connection); }
+    binding.modelConnections.clear();
+    binding.model = model;
+    binding.dirty = true;
+    binding.selectionDirty = true;
+    if (model == nullptr) { return; }
+    const auto generation = m_generation;
+    auto dirty = [this, id, generation, observed = QPointer<QAbstractItemModel>(model)] {
+      if (generation != m_generation || static_cast<std::size_t>(id) >= m_bindings.size()) { return; }
+      if (m_bindings[static_cast<std::size_t>(id)].model != observed) { return; }
+      m_bindings[static_cast<std::size_t>(id)].dirty = true;
+      m_bindings[static_cast<std::size_t>(id)].selectionDirty = true;
+      scheduleRefresh();
+    };
+    auto& c = binding.modelConnections;
+    c.push_back(connect(model, &QAbstractItemModel::dataChanged, this, dirty));
+    c.push_back(connect(model, &QAbstractItemModel::headerDataChanged, this, dirty));
+    c.push_back(connect(model, &QAbstractItemModel::modelReset, this, dirty));
+    c.push_back(connect(model, &QAbstractItemModel::rowsInserted, this, dirty));
+    c.push_back(connect(model, &QAbstractItemModel::rowsRemoved, this, dirty));
+    c.push_back(connect(model, &QAbstractItemModel::rowsMoved, this, dirty));
+    c.push_back(connect(model, &QAbstractItemModel::columnsInserted, this, dirty));
+    c.push_back(connect(model, &QAbstractItemModel::columnsRemoved, this, dirty));
+    c.push_back(connect(model, &QAbstractItemModel::columnsMoved, this, dirty));
+    c.push_back(connect(model, &QAbstractItemModel::layoutChanged, this, dirty));
+    c.push_back(connect(model, &QObject::destroyed, this, dirty));
+  }
+  void observeSelection(Binding& binding, QAbstractItemView* view, int id) {
+    if (binding.selection == view->selectionModel()) { return; }
+    for (const auto& connection : binding.selectionConnections) { disconnect(connection); }
+    binding.selectionConnections.clear();
+    binding.selection = view->selectionModel();
+    binding.selectionDirty = true;
+    if (!binding.selection) { return; }
+    const auto generation = m_generation;
+    auto changed = [this, id, generation, observed = binding.selection] {
+      if (generation != m_generation || static_cast<std::size_t>(id) >= m_bindings.size()) { return; }
+      if (m_bindings[static_cast<std::size_t>(id)].selection != observed) { return; }
+      m_bindings[static_cast<std::size_t>(id)].selectionDirty = true;
+      scheduleRefresh();
+    };
+    binding.selectionConnections.push_back(connect(binding.selection, &QItemSelectionModel::selectionChanged, this, changed));
+    binding.selectionConnections.push_back(connect(binding.selection, &QItemSelectionModel::currentChanged, this, changed));
+  }
+  quint64 modelPresentation(QAbstractItemView* view) const {
+    // No model data, strings, node allocation or AppKit messages. The
+    // fallback only checks otherwise silent row hiding/index-widget swaps.
+    quint64 value = 1469598103934665603ULL;
+    const auto mix = [&value](quint64 part) { value = (value ^ part) * 1099511628211ULL; };
+    mix(view->isEnabled());
+    const auto describe = [&](auto&& self, const QModelIndex& parent) -> void {
+      const int count = view->model()->rowCount(parent);
+      mix(static_cast<quint64>(count));
+      for (int row = 0; row < count; ++row) {
+        const QModelIndex index = view->model()->index(row, 0, parent);
+        if (auto* tree = qobject_cast<QTreeView*>(view)) {
+          mix(tree->isRowHidden(row, parent));
+          mix(tree->isExpanded(index));
+        }
+        if (auto* table = qobject_cast<QTableView*>(view)) { mix(table->isRowHidden(row)); }
+        if (auto* list = qobject_cast<QListView*>(view)) { mix(list->isRowHidden(row)); }
+        for (int col = 0; col < view->model()->columnCount(parent); ++col) {
+          mix(reinterpret_cast<quintptr>(view->indexWidget(index.siblingAtColumn(col))));
+        }
+        self(self, index);
+      }
+    };
+    if (view->model() != nullptr) { describe(describe, view->rootIndex()); }
+    return value;
+  }
+  void checkModelPresentation() {
+    for (auto& binding : m_bindings) {
+      auto* view = qobject_cast<QAbstractItemView*>(binding.widget.data());
+      if (view == nullptr) { continue; }
+      const quint64 value = modelPresentation(view);
+      if (binding.presentation != value) { binding.dirty = true; binding.presentation = value; }
+    }
+  }
   int bind(QWidget* widget, NSView* view, NSControl* control = nil) {
     Binding binding;
     binding.widget = widget;
@@ -893,6 +1092,34 @@ private:
     binding.control = control;
     const int id = static_cast<int>(m_bindings.size());
     m_bindings.push_back(std::move(binding));
+    auto changed = [this] { scheduleRefresh(); };
+    auto& c = m_bindings.back().connections;
+    if (auto* button = qobject_cast<QAbstractButton*>(widget)) { c.push_back(connect(button, &QAbstractButton::toggled, this, changed)); }
+    if (auto* edit = qobject_cast<QLineEdit*>(widget)) { c.push_back(connect(edit, &QLineEdit::textChanged, this, changed)); }
+    if (auto* combo = qobject_cast<QComboBox*>(widget)) {
+      c.push_back(connect(combo, &QComboBox::currentIndexChanged, this, changed));
+      c.push_back(connect(combo, &QComboBox::editTextChanged, this, changed));
+    }
+    if (auto* group = qobject_cast<QGroupBox*>(widget)) { c.push_back(connect(group, &QGroupBox::toggled, this, changed)); }
+    if (auto* spin = qobject_cast<QSpinBox*>(widget)) { c.push_back(connect(spin, &QSpinBox::valueChanged, this, changed)); }
+    if (auto* spin = qobject_cast<QDoubleSpinBox*>(widget)) { c.push_back(connect(spin, &QDoubleSpinBox::valueChanged, this, changed)); }
+    if (auto* slider = qobject_cast<QSlider*>(widget)) { c.push_back(connect(slider, &QSlider::valueChanged, this, changed)); }
+    if (auto* progress = qobject_cast<QProgressBar*>(widget)) { c.push_back(connect(progress, &QProgressBar::valueChanged, this, changed)); }
+    if (auto* tabs = qobject_cast<QTabWidget*>(widget)) { c.push_back(connect(tabs, &QTabWidget::currentChanged, this, changed)); }
+    if (auto* pages = qobject_cast<QStackedWidget*>(widget)) { c.push_back(connect(pages, &QStackedWidget::currentChanged, this, changed)); }
+    if (auto* edit = qobject_cast<QKeySequenceEdit*>(widget)) { c.push_back(connect(edit, &QKeySequenceEdit::keySequenceChanged, this, changed)); }
+    if (auto* edit = qobject_cast<QPlainTextEdit*>(widget)) { c.push_back(connect(edit, &QPlainTextEdit::textChanged, this, changed)); }
+    if (auto* edit = qobject_cast<QTextEdit*>(widget)) { c.push_back(connect(edit, &QTextEdit::textChanged, this, changed)); }
+    if (auto* tree = qobject_cast<QTreeView*>(widget)) {
+      const auto generation = m_generation;
+      auto expanded = [this, id, generation] {
+        if (generation != m_generation || static_cast<std::size_t>(id) >= m_bindings.size()) { return; }
+        m_bindings[static_cast<std::size_t>(id)].dirty = true;
+        scheduleRefresh();
+      };
+      c.push_back(connect(tree, &QTreeView::expanded, this, expanded));
+      c.push_back(connect(tree, &QTreeView::collapsed, this, expanded));
+    }
     if (control == nil || control == view) { view.accessibilityIdentifier = ns(widget->objectName()); }
     else { control.accessibilityIdentifier = ns(widget->objectName()); }
     view.toolTip = ns(widget->toolTip());
@@ -970,8 +1197,9 @@ private:
       view->presenter = screenshot;
       [view.heightAnchor constraintGreaterThanOrEqualToConstant:240].active = YES;
       view.accessibilityLabel = ns(tr("Screenshot. Drag to choose the area to include."));
-      bind(widget, view);
-      connect(screenshot, &report::ScreenshotView::cropped, this, [view] { [view refresh]; });
+      const int id = bind(widget, view);
+      m_bindings[static_cast<std::size_t>(id)].connections.push_back(
+        connect(screenshot, &report::ScreenshotView::cropped, this, [view] { [view refresh]; }));
       [view refresh];
       return view;
     }
@@ -1263,45 +1491,26 @@ private:
     return nodes;
   }
   void refreshModel(Binding& binding, QAbstractItemView* view, int id) {
-    if (view->model() != binding.model) {
-      binding.model = view->model();
+    observeModel(binding, view->model(), id);
+    observeSelection(binding, view, id);
+    if (binding.rootIndex != view->rootIndex()) {
+      binding.rootIndex = view->rootIndex();
       binding.dirty = true;
-      if (binding.model != nullptr) {
-        auto dirty = [this, id] { if (id >= 0 && static_cast<std::size_t>(id) < m_bindings.size()) { m_bindings[static_cast<std::size_t>(id)].dirty = true; } };
-        connect(binding.model, &QAbstractItemModel::dataChanged, this, dirty);
-        connect(binding.model, &QAbstractItemModel::modelReset, this, dirty);
-        connect(binding.model, &QAbstractItemModel::rowsInserted, this, dirty);
-        connect(binding.model, &QAbstractItemModel::rowsRemoved, this, dirty);
-        connect(binding.model, &QAbstractItemModel::layoutChanged, this, dirty);
-      }
     }
-    if (view->model() == nullptr) { return; }
-    // Filter/expanded state can change without a model signal. Preserve
-    // native first responder and in-progress cell edits between changes.
-    QByteArray structure = view->isEnabled() ? QByteArrayLiteral("enabled") : QByteArrayLiteral("disabled");
-    auto describe = [&](auto&& self, const QModelIndex& parent) -> void {
-      for (int row = 0; row < view->model()->rowCount(parent); ++row) {
-        const QModelIndex index = view->model()->index(row, 0, parent);
-        structure += QByteArray::number(index.internalId());
-        structure += ':';
-        structure += QByteArray::number(row);
-        if (auto* tree = qobject_cast<QTreeView*>(view)) {
-          structure += tree->isRowHidden(row, parent) ? 'h' : 'v';
-          structure += tree->isExpanded(index) ? 'e' : 'c';
-        }
-        if (auto* table = qobject_cast<QTableView*>(view)) { structure += table->isRowHidden(row) ? 'h' : 'v'; }
-        if (auto* list = qobject_cast<QListView*>(view)) { structure += list->isRowHidden(row) ? 'h' : 'v'; }
-        structure += '{';
-        self(self, index);
-        structure += '}';
+    if (binding.dirty) {
+      binding.selectionDirty = true;
+      if (view->model() == nullptr) {
+        binding.nodes = nil;
+        binding.dirty = false;
+        [binding.table reloadData];
+        ++g_widgetPropertyWrites;
+        return;
       }
-    };
-    describe(describe, view->rootIndex());
-    if (binding.dirty || structure != binding.structure) {
-      binding.structure = structure;
+      binding.presentation = modelPresentation(view);
       binding.nodes = modelNodes(view, view->rootIndex());
       binding.dirty = false;
       [binding.table reloadData];
+      ++g_widgetPropertyWrites;
       if ([binding.table isKindOfClass:NSOutlineView.class]) {
         NSOutlineView* outline = (NSOutlineView*)binding.table;
         auto expand = [&](auto&& self, NSArray<MitcadNativeModelNode*>* nodes) -> void {
@@ -1314,7 +1523,8 @@ private:
         expand(expand, binding.nodes);
       }
     }
-    if (view->selectionModel() != nullptr) {
+    if (binding.selectionDirty && view->selectionModel() != nullptr) {
+      binding.selectionDirty = false;
       NSMutableIndexSet* selected = [NSMutableIndexSet new];
       for (NSInteger row = 0; row < binding.table.numberOfRows; ++row) {
         MitcadNativeModelNode* node = nodeAt(binding.table, row);
@@ -1324,6 +1534,7 @@ private:
       }
       if (![selected isEqualToIndexSet:binding.table.selectedRowIndexes]) {
         [binding.table selectRowIndexes:selected byExtendingSelection:NO];
+        ++g_widgetPropertyWrites;
       }
     }
   }
@@ -1333,23 +1544,39 @@ private:
     m_cellViews.clear();
     for (NSView* child in [m_root.arrangedSubviews copy]) { [m_root removeArrangedSubview:child]; [child removeFromSuperview]; }
     m_bindings.clear();
-    m_widgetStructure.clear();
-    for (QWidget* widget : m_source->findChildren<QWidget*>()) {
-      m_widgetStructure += QByteArray::number(reinterpret_cast<quintptr>(widget));
-      m_widgetStructure += ':';
-    }
+    ++m_generation;
+    m_structureDirty = false;
+    for (const auto& object : m_observed) { if (object) { object->removeEventFilter(this); } }
+    m_observed.clear();
     add(m_root, renderWidget(m_source));
+    m_widgetTree.clear();
+    for (QWidget* widget : m_source->findChildren<QWidget*>()) { m_widgetTree.emplace_back(widget); }
+    // ChildAdded arrives before QWidget construction finishes. Observe the
+    // completed tree in this coalesced rebuild, never cast that child early.
+    m_observed.push_back(m_source.data());
+    const auto objects = m_source->findChildren<QObject*>();
+    for (QObject* object : objects) { m_observed.push_back(object); }
+    for (const auto& object : m_observed) { if (object) { object->installEventFilter(this); } }
   }
   QPointer<QWidget> m_source;
   QTimer m_timer;
+  QTimer m_refreshTimer;
   MitcadNativeWidgetTarget* m_target = nil;
   NSStackView* m_root = nil;
   std::vector<Binding> m_bindings;
   std::vector<std::pair<QPointer<QWidget>, std::unique_ptr<AppKitWidgetView>>> m_cellViews;
   NSHashTable<MitcadNativeModelCell*>* m_cells = [NSHashTable weakObjectsHashTable];
-  QByteArray m_widgetStructure;
+  std::vector<QPointer<QObject>> m_observed;
+  std::vector<QPointer<QWidget>> m_widgetTree;
+  quint64 m_generation = 0;
+  bool m_structureDirty = false;
   bool m_refreshing = false;
 };
+
+#undef NATIVE_SET
+#undef NATIVE_STRING
+
+quint64 nativeWidgetPropertyWrites() { return g_widgetPropertyWrites; }
 
 class NativeDialogController final : public QObject {
 public:
@@ -2251,13 +2478,22 @@ QAction* execNativeMenu(QMenu* menu, const QPoint& point) {
                     size.width, size.height);
 }
 - (void)refresh {
-  if (presenter == nullptr) { bitmap = nil; self.needsDisplay = YES; return; }
+  if (presenter == nullptr) {
+    if (bitmap != nil) { bitmap = nil; self.needsDisplay = YES; ++mitcad::g_widgetPropertyWrites; }
+    return;
+  }
   const QImage& source = presenter->sourceImage();
+  bool changed = false;
   if (imageKey != source.cacheKey()) {
     imageKey = source.cacheKey();
     bitmap = mitcad::image(QPixmap::fromImage(source));
+    changed = true;
   }
-  self.needsDisplay = YES;
+  if (drawnCrop != presenter->cropRect()) {
+    drawnCrop = presenter->cropRect();
+    changed = true;
+  }
+  if (changed) { self.needsDisplay = YES; ++mitcad::g_widgetPropertyWrites; }
 }
 - (void)drawRect:(NSRect)dirty {
   (void)dirty;

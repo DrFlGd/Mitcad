@@ -599,6 +599,10 @@ pub(super) enum SketchCommand {
         #[serde(default)]
         ecc: Option<crate::sketch::CodeEcc>,
     },
+    // The sketch's own axes and origin as entities (mitcad#500): the one there
+    // is, or a new one.
+    #[serde(rename = "sketch.axis")]
+    Axis { sketch: FeatureUid, axis: String },
 }
 
 fn one() -> f64 {
@@ -1007,6 +1011,7 @@ impl<K: Kernel> Document<K> {
                 at,
                 stroke_outline,
             } => self.import_svg(sketch, &path, scale, at, stroke_outline)?,
+            SketchCommand::Axis { sketch, axis } => self.sketch_axis(sketch, &axis)?,
             command => self.edit_command(command)?,
         })
     }
@@ -1120,7 +1125,8 @@ impl<K: Kernel> Document<K> {
             | C::CleanUpProjections { .. }
             | C::CleanUpStaleProjections { .. }
             | C::ConvertProjected { .. }
-            | C::ImportSvg { .. } => {
+            | C::ImportSvg { .. }
+            | C::Axis { .. } => {
                 unreachable!("handled above")
             }
         };
@@ -1867,7 +1873,8 @@ impl<K: Kernel> Document<K> {
                 | C::CleanUpProjections { .. }
                 | C::CleanUpStaleProjections { .. }
                 | C::ConvertProjected { .. }
-                | C::ImportSvg { .. } => {
+                | C::ImportSvg { .. }
+                | C::Axis { .. } => {
                     unreachable!("handled above")
                 }
             }
@@ -2061,6 +2068,34 @@ impl<K: Kernel> Document<K> {
             "preview": {"removed": removed_geometry, "cut": cut},
         });
         value["warnings"] = json!(warnings);
+        Ok(value)
+    }
+
+    /// `sketch.axis` (mitcad#500): the entity that stands for the sketch's
+    /// origin or one of its axes, made when the sketch has none (one undo
+    /// step `Axis in Sketch1`); the one there is changes nothing. The result
+    /// has `entity` and `new`, and the editing commands' fields when it
+    /// made one.
+    fn sketch_axis(&mut self, sketch: FeatureUid, axis: &str) -> Result<Value, ApiError> {
+        use crate::sketch::axes::{AxisPick, existing};
+        let pick = AxisPick::parse(axis).map_err(ApiError)?;
+        let def = self
+            .sketch_def(sketch)
+            .ok_or_else(|| ApiError(format!("{sketch} is not a sketch")))?;
+        if let Some(id) = existing(def, pick) {
+            let entity = def.entity(id).expect("found").as_ref();
+            return Ok(json!({"entity": entity, "new": false}));
+        }
+        let (id, report) =
+            self.edit_sketch(sketch, "Axis in {sketch}", |edit| Ok(edit.axis_pick(pick)))?;
+        let entity = self
+            .sketch_def(sketch)
+            .and_then(|def| def.entity(id))
+            .map(|e| e.as_ref().to_string())
+            .unwrap_or_default();
+        let mut value = report_json(&report, self.sketch_def(sketch));
+        value["entity"] = json!(entity);
+        value["new"] = json!(true);
         Ok(value)
     }
 

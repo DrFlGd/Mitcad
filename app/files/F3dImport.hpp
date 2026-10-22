@@ -50,6 +50,10 @@ public:
   // (an .f3d design run again with items whose deviating results the user
   // keeps, mitcad#379) instead of asking for the documents it refers to.
   void setOptions(const QJsonObject& options);
+  // Whether start() asks the import's choices (File > Open and Import):
+  // an .iam assembly's Parts with their design history (mitcad#507). Not
+  // asked (--open, MCP), the choice remembered last is taken.
+  void setAskChoices(bool ask) { m_ask = ask; }
   // The options the import ran with (the documents chosen, ...).
   const QJsonObject& options() const { return m_options; }
   // The store the worker hands the import's evaluation over in (every
@@ -105,6 +109,13 @@ private:
   int m_done = 0;      // items replayed
   int m_position = 0;  // the item being replayed (from 1)
   QString m_current;   // its name
+  // An .iam assembly's part files (mitcad#507): how many the worker
+  // counted, the one being imported (from 1), how many are done, its name.
+  int m_parts = 0;
+  int m_part = 0;
+  int m_partsDone = 0;
+  QString m_partName;
+  bool m_ask = false;  // setAskChoices
   QString m_lastLine;  // the worker's last message
   bool m_stopping = false;
   bool m_finished = false;

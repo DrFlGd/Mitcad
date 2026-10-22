@@ -242,6 +242,11 @@ std::vector<SketchEntityDisplay> sketchEntities(const QJsonObject& sketch) {
   }
   for (const QJsonValue& value : sketch.value(QStringLiteral("entities")).toArray()) {
     const QJsonObject entity = value.toObject();
+    // The line that stands for a sketch axis and its far end (mitcad#500):
+    // sketch mode draws the axis across the view instead.
+    if (entity.contains(QStringLiteral("axis"))) {
+      continue;
+    }
     SketchEntityDisplay display;
     display.sketch = uid;
     display.id = text(entity, "id");

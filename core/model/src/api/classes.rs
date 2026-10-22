@@ -209,6 +209,16 @@ const COMMANDS: &[(&str, ApiClass)] = &[
     ("sketch.import_svg", FileIo),
     ("sketch.add_code", Model),
     ("sketch.edit_code", Model),
+    // Typed property sets (mitcad#496).
+    ("set_property", Model),
+    ("remove_property", Model),
+    ("define_property_type", Model),
+    ("edit_property_type", Model),
+    ("remove_property_type", Model),
+    // The sketch's own axes and origin as entities (mitcad#500).
+    ("sketch.axis", Model),
+    // Reorient Design (mitcad#502).
+    ("reorient_design", Model),
 ];
 
 /// Every query (its `query`) with its class. A `cache` query with `disk`
@@ -300,6 +310,10 @@ const QUERIES: &[(&str, ApiClass)] = &[
     ("gear_link", Model),
     // An SVG drawing for Insert SVG (mitcad#473).
     ("svg_info", FileIo),
+    // Typed property sets (mitcad#496).
+    ("property_sets", Model),
+    ("property_types", Model),
+    ("property_search", Model),
 ];
 
 fn class_in(table: &[(&str, ApiClass)], name: &str) -> Option<ApiClass> {
@@ -498,6 +512,10 @@ mod tests {
             &crate::api::motion::COMMANDS[..],
             // Gears (mitcad#472).
             &crate::api::gears::COMMANDS[..],
+            // Typed property sets (mitcad#496).
+            &crate::api::properties::COMMANDS[..],
+            // Reorient Design (mitcad#502).
+            &crate::api::reorient::COMMANDS[..],
         ] {
             names.extend(list.iter().map(|name| (*name).to_owned()));
         }

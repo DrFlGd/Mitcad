@@ -676,6 +676,9 @@ pub(crate) struct Plan {
     pub points: Option<serde_json::Value>,
     /// The corner its bound length closes (mitcad#485).
     pub closing: Option<Closing>,
+    /// A member by two points: what its points are on, its ends cut back
+    /// to the members they are in (mitcad#509).
+    pub between: Option<super::timber::Between>,
 }
 
 /// A corner a bound length closes (mitcad#485): the far end of a part
@@ -1340,6 +1343,7 @@ impl<K: Kernel> Document<K> {
             grade: input.grade.clone().filter(|g| !g.trim().is_empty()),
             points,
             closing,
+            between: None,
         })
     }
 
@@ -2439,7 +2443,7 @@ impl<K: Kernel> Document<K> {
         if input.spacing.is_some() {
             return self.build_place_set(input);
         }
-        let plan = self.plan_place(input)?;
+        let plan = self.plan_place_between(input, None)?;
         // In the BUILD host: the active component, or the nearest one up
         // that takes components (mitcad#394).
         let active = self.build_host();
@@ -2461,7 +2465,7 @@ impl<K: Kernel> Document<K> {
     /// The `build_preview` of a placing: what `build_place` would do, the
     /// document left as it is.
     pub(crate) fn preview_place(&self, input: &PlaceInput) -> Result<Plan, ModelError> {
-        self.plan_place(input)
+        self.plan_place_between(input, None)
     }
 }
 

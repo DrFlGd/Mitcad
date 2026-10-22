@@ -16,7 +16,8 @@
 #   6. A design (mitcad-cli) whose component's sketch, placed by its
 #      occurrence, has a fully constrained rectangle and a free line: the
 #      rectangle in the constrained colour, the line blue, in the main mode
-#      and in its edit alike (mitcad#286).
+#      and in its edit alike (mitcad#286), placed by the occurrence in both
+#      (mitcad#505).
 #
 # Usage: powershell -ExecutionPolicy Bypass -File tools\ui-windows-sketch-view-test.ps1 [-App build\dev\mitcad.exe] [-Out dir] [-QtBin dir]
 param(
@@ -196,8 +197,10 @@ Ui-Mark
 Ui-Step 'edit Sketch1 (double-click)'    { Ui-DoubleClickLogged 'Timeline Sketch1' }
 Ui-ExpectNew 'Editing sketch F1 (Sketch1)' "the component's sketch is edited" 30
 Ui-WaitIdle
-Expect-Colours 'F1' { param($c, $u) $c -eq $placed[0] -and $u -eq $placed[1] } `
-  'in its edit the same colours' | Out-Null
+# Edited where Part:1 places it too (mitcad#505), not at Part's own
+# coordinates.
+Expect-Colours 'F1 in O1' { param($c, $u) $c -eq $placed[0] -and $u -eq $placed[1] } `
+  'in its edit placed by Part:1, the same colours' | Out-Null
 Ui-Mark
 Ui-Step 'finish sketch (Ctrl+Enter)'     { Ui-Key 'ctrl+Return' }
 Ui-ExpectNew 'Sketch finished' 'sketch finished'

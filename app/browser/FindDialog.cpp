@@ -205,6 +205,8 @@ void FindDialog::setText(const QString& text) {
   search();
 }
 
+void FindDialog::setPropertySearch(PropertySearch search) { m_propertySearch = std::move(search); }
+
 void FindDialog::focusSearch() {
   m_text->setFocus();
   m_text->selectAll();
@@ -220,6 +222,16 @@ void FindDialog::search() {
   options.components = m_components->isChecked();
   options.bodies = m_bodies->isChecked();
   options.visibility = static_cast<FindOptions::Visibility>(m_visibility->currentData().toInt());
+  // Property values (mitcad#496): what the model finds; nothing when it
+  // cannot read the search.
+  if (m_propertySearch && isPropertySearch(options.text)) {
+    QString error;
+    std::optional<QSet<QString>> owners = m_propertySearch(options.text.trimmed(), &error);
+    options.propertyOwners = owners ? *owners : QSet<QString>();
+    if (!owners) {
+      qDebug().noquote() << QStringLiteral("Find in Design property search: %1").arg(error);
+    }
+  }
   QVector<FindResult> found = findInDesign(m_snapshot, options);
 
   // The selection stays on the results that are still there.

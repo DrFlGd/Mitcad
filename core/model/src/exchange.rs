@@ -932,10 +932,12 @@ impl<K: Kernel> Document<K> {
             .sketch_output(sketch)
             .ok_or_else(|| invalid(format!("{} has no result to export", entry.name)))?;
         // Every curve of the sketch once, in its solved geometry;
-        // construction geometry on its own layer.
+        // construction geometry on its own layer; the lines that stand for
+        // the sketch's axes (mitcad#500) are not drawn.
         let curves: Vec<(&str, String, SegmentGeometry)> = def
             .entities
             .iter()
+            .filter(|e| e.axis.is_none())
             .filter_map(|e| {
                 let curve = output.solved.curves.get(&e.id)?;
                 let layer = if e.construction { "construction" } else { "0" };

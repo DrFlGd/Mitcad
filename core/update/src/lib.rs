@@ -33,9 +33,10 @@
 //! of JSON is needed; an asset's `signature` signs its [`file_statement`]:
 //! the version, the platform, and the size and SHA-256 of the file. Keys,
 //! signatures and digests are lowercase hex; a private key is the 32-byte
-//! Ed25519 seed. The platforms are `windows-x64` (the NSIS installer) and
-//! `linux-x64` (the AppImage); a manifest may list any or none, and a
-//! version without a download for the platform is only announced.
+//! Ed25519 seed. Platforms include `windows-x64` (the NSIS installer),
+//! `linux-x64` (the AppImage) and `macos-arm64` (the disk image); a manifest
+//! may list any or none, and a version without a download for the platform
+//! is only announced.
 
 use std::cmp::Ordering;
 use std::collections::BTreeMap;

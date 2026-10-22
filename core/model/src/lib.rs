@@ -261,3 +261,13 @@ mod body_transfer_tests;
 pub mod drawing;
 // Gears: spur, helical, herringbone, ring, rack and bevel (mitcad#472).
 pub use kernel::{GearConeSpec, GearStep, GearSweepSpec};
+// Typed property sets on components, occurrences and bodies (mitcad#496).
+pub mod properties;
+pub use document::PropertyTypeChange;
+#[cfg(test)]
+mod properties_tests;
+// Reorient Design: the whole design turned by quarter turns (mitcad#502).
+pub mod reorient;
+pub use document::ReorientReport;
+#[cfg(test)]
+mod reorient_tests;

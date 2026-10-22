@@ -1080,31 +1080,6 @@ std::optional<OpenFromCloudResult> askOpenFromCloud(QWidget* parent, const OpenF
 }
 
 // ---------------------------------------------------------------------------
-// Move to a Project
-
-std::optional<MoveTarget> askMoveToProject(QWidget* parent, const QString& design, const QString& reason) {
-  QMessageBox box(QMessageBox::Question, tr("Move to a Project"),
-                  tr("Move %1 into a project?").arg(design), QMessageBox::Cancel, parent);
-  box.setInformativeText(reason.isEmpty() ? tr("A project keeps the versions of its designs: every save records "
-                                               "one. The design moves into a new project or one you have.")
-                                          : reason);
-  QPushButton* newProject = box.addButton(tr("&New Project..."), QMessageBox::AcceptRole);
-  QPushButton* existing = box.addButton(tr("&Existing Project..."), QMessageBox::AcceptRole);
-  box.setDefaultButton(newProject);
-  qInfo().noquote() << QStringLiteral("Move to a Project dialog: %1").arg(design);
-  prepareModal(&box);
-  execDialog(&box);
-  if (box.clickedButton() == newProject) {
-    return MoveTarget::NewProject;
-  }
-  if (box.clickedButton() == existing) {
-    return MoveTarget::ExistingProject;
-  }
-  qInfo().noquote() << QStringLiteral("Move to a Project cancelled");
-  return std::nullopt;
-}
-
-// ---------------------------------------------------------------------------
 // Change... of the address
 
 std::optional<QString> askChangeAddress(QWidget* parent, const QString& root, const QString& current) {

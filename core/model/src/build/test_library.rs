@@ -512,6 +512,31 @@ impl TestLibrary {
             board("Dimensioned 48x98", 98.0, 48.0, &["spruce", "pine"]),
         );
         add("wood-screw", V1, wood_screw());
+        add(
+            "proud-screw",
+            V1,
+            seated_fastener("screw", "countersunk", None, 3.0),
+        );
+        add("proud-nail", V1, seated_fastener("nail", "flat", None, 1.5));
+        add("pan-screw", V1, seated_fastener("screw", "pan", None, 3.0));
+        add("hex-bolt", V1, seated_fastener("screw", "hex", None, 4.0));
+        add(
+            "named-seat",
+            V1,
+            seated_fastener("screw", "pan", Some("drive"), 3.0),
+        );
+        add(
+            "bearing-seat",
+            V1,
+            seated_fastener("screw", "countersunk", Some("head_underside"), 3.0),
+        );
+        add("oblique-implicit", V1, oblique_fastener(None, true));
+        add("oblique-seat", V1, oblique_fastener(Some("drive"), true));
+        add(
+            "misaligned-seat",
+            V1,
+            oblique_fastener(Some("drive"), false),
+        );
         add("hanger148", V1, hanger(148.0, 48.0));
         add("postbase98", V1, post_base());
         add("plywood", V1, plywood());
@@ -684,6 +709,58 @@ fn wood_screw() -> Part {
         part_number: String::new(),
         name: "Wood screw".to_owned(),
         designation: "Wood screw {config}".to_owned(),
+    }
+}
+
+/// A synthetic fastener whose head stands behind its shaft's bearing
+/// frame: body z = 0..60+K, axis at K, tip 60 mm beyond the axis.
+fn seated_fastener(kind: &str, head: &str, seat: Option<&str>, k: f64) -> Part {
+    Part {
+        text: block_design(
+            [10.0, 10.0, 60.0 + k],
+            [-5.0, -5.0],
+            &[
+                ("axis", [0.0, 0.0, k], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]),
+                ("drive", [0.0; 3], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]),
+            ],
+        ),
+        build: Some(json!({
+            "role": "fastener", "wood": {"kind": kind, "head": head,
+                "diameter": 5, "length": 60, "seat": seat},
+            "frames": [{"name": "axis", "kind": "shaft"}, {"name": "drive", "kind": "seat"}],
+        })),
+        part_number: String::new(),
+        name: format!("{head} {kind}"),
+        designation: format!("{head} {kind}"),
+    }
+}
+
+/// A shaft just 1e-5 radians from +Z: its cosine alone looks aligned at
+/// 1e-9 precision, while a 10 mm head's support plane differs by 5e-5 mm.
+fn oblique_fastener(seat: Option<&str>, matching_seat: bool) -> Part {
+    let z = [1e-5, 0.0, (1.0_f64 - 1e-10).sqrt()];
+    Part {
+        text: block_design(
+            [10.0, 10.0, 63.0],
+            [-5.0, -5.0],
+            &[
+                ("axis", [0.0, 0.0, 3.0], z, [0.0, 1.0, 0.0]),
+                (
+                    "drive",
+                    [0.0; 3],
+                    if matching_seat { z } else { [0.0, 0.0, 1.0] },
+                    [0.0, 1.0, 0.0],
+                ),
+            ],
+        ),
+        build: Some(json!({
+            "role": "fastener", "wood": {"kind": "screw", "head": "countersunk",
+                "diameter": 5, "length": 60, "seat": seat},
+            "frames": [{"name": "axis", "kind": "shaft"}, {"name": "drive", "kind": "seat"}],
+        })),
+        part_number: String::new(),
+        name: "Oblique screw".to_owned(),
+        designation: "Oblique screw".to_owned(),
     }
 }
 

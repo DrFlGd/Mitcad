@@ -92,8 +92,8 @@ expect_title "Untitled - Mitcad"
 # New and New Design are one entry; 3D Print, Insert Component and Render
 # Image are on the ribbon only; the project commands in a submenu.
 project_menu="New Project | Open Project | Open from Cloud | - | Sync | Check for Newer Versions | Open in Browser"
-project_menu="$project_menu | - | Move to a Project | Project Settings | - | Web Viewer | Update Web Viewer"
-file_menu="New Design | Open | Open Recent > | Open Read-Only | Close | - | Save | Save As | Save with Description"
+project_menu="$project_menu | - | Project Settings | - | Web Viewer | Update Web Viewer"
+file_menu="New Design | Open | Open Recent > | Open Read-Only | Close | - | Save | Save As | Save to Project | Save with Description"
 file_menu="$file_menu | Version History | - | Project > [$project_menu] | - | Import | Export | Export Drawing | - | Recover Documents"
 file_menu="$file_menu | - | Exit"
 ui_mark

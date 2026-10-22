@@ -48,12 +48,15 @@
 pub mod footprint;
 pub mod geometry;
 pub mod plan;
+// Elements' properties (mitcad#496).
+pub mod properties;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde::Serialize;
 use serde_json::json;
 
+use mitcad_model::properties::{Property, PropertyOwner};
 use mitcad_model::{
     BaseInput, ComponentUid, Document, FeatureUid, ImportBody, Kernel, ModelError, PrimitiveShape,
     PrimitiveSpec, SketchFrame, Transform,
@@ -180,6 +183,9 @@ pub struct Report {
     /// transform, boxes in model coordinates (and of these the boxes
     /// hidden).
     pub bodies: usize,
+    /// The properties the elements brought: identity, instance and type
+    /// parameters (mitcad#496).
+    pub properties: usize,
     pub geometry_meshes: usize,
     /// Their triangles.
     pub geometry_triangles: usize,
@@ -691,6 +697,9 @@ struct LevelGroup<S> {
     /// Its bodies (indices) hidden: boxes of elements that are not
     /// structural.
     hidden: Vec<usize>,
+    /// The element of each of its bodies, in their order (mitcad#496:
+    /// their properties).
+    body_elements: Vec<i64>,
 }
 
 /// The volume and box (mm, the component's coordinates) of the bodies of
@@ -939,9 +948,61 @@ struct Importer<'r, 'o, K: Kernel> {
     /// The model's inserts without their openings (mitcad#345): insert,
     /// wall, why; noted on the inserts' lines at the end.
     missing: Vec<(i64, i64, String)>,
+    /// The elements' properties, added at the end (mitcad#496).
+    properties: Vec<(PropertyOwner, String, Property)>,
+    /// The model's GlobalIds and its elements' places in its list, for
+    /// their properties (the model in hand: the project, then each link).
+    global_ids: HashMap<i64, String>,
+    element_index: HashMap<i64, usize>,
+}
+
+/// The bodies features made, by their ids (as [`measure`] finds them).
+fn feature_bodies<K: Kernel>(
+    document: &Document<K>,
+    features: &[FeatureUid],
+) -> Vec<mitcad_model::BodyUid> {
+    let mut bodies = Vec::new();
+    for f in features {
+        let mut misses = 0;
+        for i in 0u32.. {
+            let uid = mitcad_model::BodyUid::new(*f, i);
+            if document.body_shape(uid).is_some() {
+                bodies.push(uid);
+                misses = 0;
+            } else {
+                misses += 1;
+                if misses >= 8 {
+                    break;
+                }
+            }
+        }
+    }
+    bodies
 }
 
 impl<K: Kernel> Importer<'_, '_, K> {
+    /// An element's properties on its bodies (mitcad#496), added at the
+    /// end of the import.
+    fn element_properties(
+        &mut self,
+        model: &Model,
+        e: &Element,
+        level: &str,
+        bodies: &[mitcad_model::BodyUid],
+    ) {
+        if bodies.is_empty() {
+            return;
+        }
+        let global_id = self.global_ids.get(&e.id).map(String::as_str);
+        let items = properties::element_properties(model, e, global_id, Some(level));
+        for body in bodies {
+            for (set, property) in &items {
+                self.properties
+                    .push((PropertyOwner::Body(*body), set.clone(), property.clone()));
+            }
+        }
+    }
+
     fn memory_low(&mut self) -> bool {
         if !self.stopped && self.options.progress.is_some_and(Progress::is_memory_low) {
             self.stopped = true;
@@ -1364,6 +1425,11 @@ impl<K: Kernel> Importer<'_, '_, K> {
                     *self.report.built.entry(p.kind.to_string()).or_default() += 1;
                     levels[p.slot].entry.features += 1;
                     levels[p.slot].entry.elements.push(p.e.id);
+                    // Its properties on the bodies its features made
+                    // (mitcad#496).
+                    let bodies = feature_bodies(self.document, &features);
+                    let level = levels[p.slot].entry.name.clone();
+                    self.element_properties(model, p.e, &level, &bodies);
                     self.report.elements.push(line);
                 }
                 Err(why) => {
@@ -1658,6 +1724,7 @@ impl<K: Kernel> Importer<'_, '_, K> {
     ) {
         line.bodies = 1;
         group.entry.elements.push(e.id);
+        group.body_elements.push(e.id);
         let name = self.unique_body(&line.name.clone());
         group.bodies.push(ImportBody {
             name: Some(name),
@@ -2126,12 +2193,21 @@ impl<K: Kernel> Importer<'_, '_, K> {
                 component,
                 bodies: Vec::new(),
                 hidden: Vec::new(),
+                body_elements: Vec::new(),
             });
         }
         self.levels_and_grids(model, parent, &levels);
         self.document.merge_undo(self.depth, &self.label);
 
         let global_ids = model.global_ids();
+        // For the elements' properties (mitcad#496).
+        self.global_ids = global_ids.clone();
+        self.element_index = model
+            .elements
+            .iter()
+            .enumerate()
+            .map(|(i, e)| (e.id, i))
+            .collect();
         let mut count = 0;
         let mut pending: Vec<Pending<'_>> = Vec::new();
         for (own_slot, level) in order.iter().enumerate() {
@@ -2326,6 +2402,7 @@ impl<K: Kernel> Importer<'_, '_, K> {
                     levels[slot].entry.meshes += 1;
                     line.bodies = 1;
                     levels[slot].entry.elements.push(e.id);
+                    levels[slot].body_elements.push(e.id);
                     let name = self.unique_body(&line.name);
                     levels[slot].bodies.push(ImportBody {
                         name: Some(name),
@@ -2348,6 +2425,8 @@ impl<K: Kernel> Importer<'_, '_, K> {
         let mut inputs: Vec<BaseInput<K::Shape>> = Vec::new();
         let mut notes_of: Vec<(usize, String)> = Vec::new();
         let mut hidden_of: Vec<(usize, Vec<usize>)> = Vec::new();
+        // The element of each body (mitcad#496).
+        let mut elements_of: Vec<Vec<i64>> = Vec::new();
         for (slot, group) in levels.iter_mut().enumerate() {
             if group.bodies.is_empty() {
                 continue;
@@ -2375,6 +2454,7 @@ impl<K: Kernel> Importer<'_, '_, K> {
                 ),
             ));
             hidden_of.push((slot, std::mem::take(&mut group.hidden)));
+            elements_of.push(std::mem::take(&mut group.body_elements));
             inputs.push(BaseInput {
                 name: Some(feature_name),
                 source: Some(format!("{file}: {}", entry.name)),
@@ -2384,10 +2464,22 @@ impl<K: Kernel> Importer<'_, '_, K> {
         }
         if !inputs.is_empty() {
             let imported = self.document.add_base_features(&self.label, inputs)?;
-            for ((imported, (slot, note)), (_, hidden)) in
-                imported.iter().zip(notes_of).zip(hidden_of)
+            for (((imported, (slot, note)), (_, hidden)), elements) in imported
+                .iter()
+                .zip(notes_of)
+                .zip(hidden_of)
+                .zip(elements_of)
             {
                 levels[slot].entry.feature = Some(imported.feature.uid.to_string());
+                // Each element's properties on its body (mitcad#496).
+                let level = levels[slot].entry.name.clone();
+                for (index, id) in elements.into_iter().enumerate() {
+                    let Some(e) = self.element_index.get(&id).map(|i| &model.elements[*i]) else {
+                        continue;
+                    };
+                    let body = mitcad_model::BodyUid::new(imported.feature.uid, index as u32);
+                    self.element_properties(model, e, &level, &[body]);
+                }
                 self.notes.push((imported.feature.uid, note));
                 // The boxes of elements that are not structural, hidden.
                 for index in hidden {
@@ -2472,6 +2564,9 @@ pub fn import_rvt<K: Kernel>(
         rail_symbols: HashSet::new(),
         own_elements: HashSet::new(),
         missing: Vec::new(),
+        properties: Vec::new(),
+        global_ids: HashMap::new(),
+        element_index: HashMap::new(),
     };
     importer.import_model(0, file, model, ComponentUid::ROOT, None)?;
 
@@ -2574,6 +2669,10 @@ pub fn import_rvt<K: Kernel>(
             "the process ran low on memory: {n} elements were left out"
         ));
     }
+    // The elements' properties, one step merged into the import's
+    // (mitcad#496).
+    let properties = std::mem::take(&mut importer.properties);
+    importer.report.properties = importer.document.import_properties(&label, properties);
     if !importer.notes.is_empty()
         && let Err(e) = importer.document.set_import_notes(&importer.notes)
     {
@@ -2677,6 +2776,66 @@ mod tests {
         // One undo step, and the timeline's notes.
         assert_eq!(document.undo_depth(), 1);
         assert_eq!(document.import_notes().count(), 2);
+    }
+
+    #[test]
+    fn elements_bring_their_identity_and_parameters() {
+        use mitcad_model::properties::{PropertyOwner, PropertyValue, Source};
+        let file = RvtFile::parse(testfile::project()).unwrap();
+        let schema = file.schema().unwrap();
+        let model = Model::read(&file, &schema).unwrap();
+        let mut document = Document::new(MockKernel::default());
+        let report =
+            import_rvt(&mut document, "project.rvt", &model, &RvtOptions::default()).unwrap();
+        assert!(report.properties > 0, "{report:?}");
+        // Still one undo step.
+        assert_eq!(document.undo_depth(), 1);
+        let body = |name: String| {
+            document
+                .bodies()
+                .iter()
+                .find(|b| b.name == name)
+                .map(|b| PropertyOwner::Body(b.uid))
+                .unwrap_or_else(|| panic!("no body {name}"))
+        };
+        let store = document.property_store();
+        let value = |owner, key: &str| {
+            let p = store
+                .get(owner, properties::IDENTITY_SET, key)
+                .unwrap_or_else(|| panic!("no {key}"));
+            assert_eq!(p.source, Source::Rvt);
+            p.value.clone()
+        };
+        let wall = body(format!("Basic Wall:Generic 8:{}", testfile::WALL));
+        assert_eq!(
+            value(wall, "ElementId"),
+            PropertyValue::Integer(testfile::WALL)
+        );
+        assert_eq!(
+            value(wall, "Family"),
+            PropertyValue::Text("Basic Wall".into())
+        );
+        assert_eq!(value(wall, "Type"), PropertyValue::Text("Generic 8".into()));
+        assert!(matches!(value(wall, "Level"), PropertyValue::Text(_)));
+        let column = body(format!("Square Column:24 x 24:{}", testfile::COLUMN));
+        assert_eq!(
+            value(column, "ElementId"),
+            PropertyValue::Integer(testfile::COLUMN)
+        );
+        assert_eq!(value(column, "Type"), PropertyValue::Text("24 x 24".into()));
+        // The wall's record's number parameters, as its instance's.
+        let element = model.element(testfile::WALL).unwrap();
+        let numbers = element
+            .params
+            .iter()
+            .filter(|(_, v)| matches!(v, mitcad_rvt::elements::ParamValue::Number(_)))
+            .count();
+        let instance = store
+            .sets(wall)
+            .iter()
+            .find(|s| s.name == properties::INSTANCE_SET)
+            .map_or(0, |s| s.properties.len());
+        assert!(instance >= numbers.min(1), "{:?}", element.params);
     }
 
     #[test]

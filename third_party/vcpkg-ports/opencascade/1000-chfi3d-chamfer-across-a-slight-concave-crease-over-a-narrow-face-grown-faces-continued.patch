@@ -1,0 +1,294 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Chamfers: a chamfer over a narrow face whose chain runs on across a slight
+concave crease of its other face, and the faces beyond a narrow face grown
+past the bounds of their B-spline surfaces (mitcad#343).
+
+The case: a fin 1 mm thick whose top edges, an arc and a profile's spline
+stretch in turn, meet at vertices where the top faces kink by 1.4 and 2.2
+degrees (concave creases); both top chains are chamfered by 0.263 at 45
+degrees, and the strips of the fin's sides between the top edges and the
+root's chamfer (a walked B-spline: a plane and a torus) are narrower than
+the chamfer along the spline stretches (patch 0531's case). The chamfer
+failed with an exception before any part of it was made.
+
+- Patch 0980's crease turn (StartSol: a face taken for tangent that meets
+  the face before at a concave crease of more than the angular tolerance
+  is no continuation; the ball turns about the crease's edge, rolling on
+  it) took the chamfer's piece after the arc's analytic one for a blend
+  rolling on the crease's edge, which chamfers do not have ("PerformSurf
+  Not Implemented"); no piece of the chamfer was left for
+  ChamferOverNarrowFace to find the narrow face by. A chamfer's contact,
+  at its distance along the face, passes such a crease onto the next face:
+  the crease turn is now a rounding's only.
+- With the walk through, ChamferOverNarrowFace computes the chamfer again
+  over the narrow face's surface unbounded; patch 0671's
+  ChFi3d_KPartCutChainToEnd then asked whether the arc's analytic piece
+  takes material off by the spine's edge with its faces, one of them the
+  unbounded face that does not hold the edge, and OCCT threw
+  (BRepTools::OriEdgeInFace). It now looks only at faces of the spine's
+  edge (ChFi3d_EdgeOfFaces); the narrow-face computation cuts the chamfer
+  by the faces beyond itself.
+- The root's chamfer, a B-spline, grows up to the tip chamfer along its
+  sections continued straight past its bounds (0531's ChFi3d_WideSurface),
+  but the face kept its surface, so the face ran past its surface's
+  parameter bounds (by 17 of 82 there): its geometry right where OCCT
+  evaluates the B-spline past its bounds, but tools that keep to the
+  bounds (ShapeAnalysis_Surface's projections) found its points nowhere
+  on it. ChFi3d_Builder::Compute now gives each face of the result that
+  runs past its non-rational B-spline surface's bounds in a direction of
+  degree 1 that surface continued linearly up to the face's bounds
+  (ChFi3d_ContinueGrownFaces): its end row of poles moved along the end
+  span's lines, the knot moved with it, the parameters as they were, and
+  each edge's curve on the face stored again with the continued surface
+  (an edge's curve on a face is kept with the face's surface).
+
+On the design's body before the item, replayed and stored: valid, the
+file's faces (124 on the stored body; the replayed one has a face more
+elsewhere) every one within 3e-4 mm of the result's and the result's on
+the file's within 1e-3 mm; before, the chamfer failed.
+
+Upstream: new.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.cxx
+index fb9c80f2..0783eee1 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.cxx
+@@ -21,6 +21,10 @@
+ #include <BRepLib_MakeEdge.hxx>
+ #include <BRepLib_MakeFace.hxx>
+ #include <BRep_Builder.hxx>
++#include <BRepTools.hxx>
++#include <TopLoc_Location.hxx>
++#include <TopTools_ShapeMapHasher.hxx>
++#include <vector>
+ #include <Geom_Surface.hxx>
+ #include <Geom_TrimmedCurve.hxx>
+ #include <Geom_BSplineCurve.hxx>
+@@ -2240,6 +2244,153 @@ void ChFi3d_Builder::ApplyRides()
+   }
+ }
+ 
++//=======================================================================
++// function : ChFi3d_ContinueGrownFaces
++// purpose  : A face of the result that runs past the bounds of its B-spline
++//            surface, where the faces beyond a narrow face grew down to a
++//            chamfer along their sections continued straight
++//            (ChFi3d_WideSurface, ChamferCutByFacesBeyond): its surface
++//            continued so, its parameters kept, up to the face's bounds.
++//            Its curves and its points are where they were; the face's
++//            parameters then lie inside its surface's.
++//=======================================================================
++
++static void ChFi3d_ContinueGrownFaces(const TopoDS_Shape& S)
++{
++  BRep_Builder                                           B;
++  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aDone;
++  for (TopExp_Explorer ex(S, TopAbs_FACE); ex.More(); ex.Next())
++  {
++    const TopoDS_Face& F = TopoDS::Face(ex.Current());
++    if (!aDone.Add(F))
++    {
++      continue;
++    }
++    TopLoc_Location                        L;
++    const occ::handle<Geom_Surface>&       SF = BRep_Tool::Surface(F, L);
++    const occ::handle<Geom_BSplineSurface> BS = occ::down_cast<Geom_BSplineSurface>(SF);
++    if (BS.IsNull() || BS->IsURational() || BS->IsVRational())
++    {
++      continue;
++    }
++    double u0 = 0., u1 = 0., v0 = 0., v1 = 0.;
++    try
++    {
++      OCC_CATCH_SIGNALS
++      BRepTools::UVBounds(F, u0, u1, v0, v1);
++    }
++    catch (Standard_Failure const&)
++    {
++      continue;
++    }
++    occ::handle<Geom_BSplineSurface> W;
++    for (const bool inU : {true, false})
++    {
++      if ((inU ? BS->UDegree() : BS->VDegree()) != 1 || (inU ? BS->IsUPeriodic() : BS->IsVPeriodic()))
++      {
++        continue;
++      }
++      const double lo = inU ? u0 : v0, hi = inU ? u1 : v1;
++      for (const bool atFirst : {true, false})
++      {
++        const occ::handle<Geom_BSplineSurface>& C  = W.IsNull() ? BS : W;
++        const int                               nk = inU ? C->NbUKnots() : C->NbVKnots();
++        const int                               np = inU ? C->NbUPoles() : C->NbVPoles();
++        const int                               no = inU ? C->NbVPoles() : C->NbUPoles();
++        const int                               k0 = atFirst ? 1 : nk, k1 = atFirst ? 2 : nk - 1;
++        const double ku0 = inU ? C->UKnot(k0) : C->VKnot(k0), ku1 = inU ? C->UKnot(k1) : C->VKnot(k1);
++        const double aTo = atFirst ? lo : hi;
++        if (atFirst ? aTo >= ku0 - Precision::PConfusion() : aTo <= ku0 + Precision::PConfusion())
++        {
++          continue;
++        }
++        if (W.IsNull())
++        {
++          W = occ::down_cast<Geom_BSplineSurface>(BS->Copy());
++        }
++        // (The end row moved along the span's lines, linearly in the
++        // parameter, to the face's bound.)
++        const double t  = (aTo - ku0) / (ku0 - ku1);
++        const int    i0 = atFirst ? 1 : np, i1 = atFirst ? 2 : np - 1;
++        for (int j = 1; j <= no; j++)
++        {
++          const gp_Pnt P0 = inU ? W->Pole(i0, j) : W->Pole(j, i0);
++          const gp_Pnt P1 = inU ? W->Pole(i1, j) : W->Pole(j, i1);
++          const gp_Pnt Pn = P0.Translated(gp_Vec(P1, P0) * t);
++          if (inU)
++          {
++            W->SetPole(i0, j, Pn);
++          }
++          else
++          {
++            W->SetPole(j, i0, Pn);
++          }
++        }
++        if (inU)
++        {
++          W->SetUKnot(k0, aTo);
++        }
++        else
++        {
++          W->SetVKnot(k0, aTo);
++        }
++      }
++    }
++    if (W.IsNull())
++    {
++      continue;
++    }
++    // (The edges' curves on the face, kept on the surface as continued: an
++    // edge's curve on a face is stored with the face's surface.)
++    struct OnFace
++    {
++      TopoDS_Edge               E;
++      occ::handle<Geom2d_Curve> C1, C2;
++      double                    First = 0., Last = 0., Tol = 0.;
++    };
++    std::vector<OnFace> anOnFace;
++    NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> anEdges;
++    bool aComplete = true;
++    for (TopExp_Explorer exE(F, TopAbs_EDGE); exE.More() && aComplete; exE.Next())
++    {
++      TopoDS_Edge E = TopoDS::Edge(exE.Current());
++      if (!anEdges.Add(E))
++      {
++        continue;
++      }
++      OnFace o;
++      E.Orientation(TopAbs_FORWARD);
++      o.E   = E;
++      o.Tol = BRep_Tool::Tolerance(E);
++      o.C1  = BRep_Tool::CurveOnSurface(E, F, o.First, o.Last);
++      if (BRep_Tool::IsClosed(E, F))
++      {
++        double f2 = 0., l2 = 0.;
++        o.C2 = BRep_Tool::CurveOnSurface(TopoDS::Edge(E.Reversed()), F, f2, l2);
++      }
++      aComplete = !o.C1.IsNull() && (o.C2.IsNull() == !BRep_Tool::IsClosed(E, F));
++      anOnFace.push_back(o);
++    }
++    if (!aComplete)
++    {
++      continue;
++    }
++    B.UpdateFace(F, W, L, BRep_Tool::Tolerance(F));
++    for (const OnFace& o : anOnFace)
++    {
++      if (o.C2.IsNull())
++      {
++        B.UpdateEdge(o.E, o.C1, F, o.Tol);
++      }
++      else
++      {
++        B.UpdateEdge(o.E, o.C1, o.C2, F, o.Tol);
++      }
++      B.Range(o.E, F, o.First, o.Last);
++    }
++  }
++}
++
+ //=================================================================================================
+ 
+ void ChFi3d_Builder::Compute()
+@@ -3240,6 +3391,12 @@ void ChFi3d_Builder::Compute()
+       ChFi3d_InitChron(cl_setregul);
+ #endif
+ 
++      // (Faces grown past their surfaces' bounds get them continued.)
++      if (!hasresult)
++      {
++        ChFi3d_ContinueGrownFaces(myShapeResult);
++      }
++
+       // Regularities are coded after cutting.
+       SetRegul();
+ 
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+index 2104a91c..c8128c02 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+@@ -3158,10 +3158,13 @@ bool ChFi3d_Builder::StartSol(
+     // a concave crease of more than the angular tolerance is no
+     // continuation for the ball: its contact cannot pass onto that face
+     // across the crease, the ball turns about the crease's edge until it
+-    // touches that face (rolling on the edge, as at a sharp one).
++    // touches that face (rolling on the edge, as at a sharp one). A
++    // chamfer's contact, at its distance along the face, passes the crease
++    // onto that face (a chamfer has no blend rolling on an edge).
+     bool aTangentNext = SearchFace(Spine, aCommonPoint, F, Fv);
+     bool aCreaseTurn  = false;
+     if (aTangentNext && !aCommonPoint.IsVertex() && !Fv.IsNull() && !Fv.IsSame(F)
++        && occ::down_cast<ChFiDS_ChamfSpine>(Spine).IsNull()
+         && ChFi3d_ConcaveCreaseBeyond(anArcEdge, F, Fv, angular))
+     {
+       aTangentNext = false;
+@@ -10777,6 +10780,26 @@ static bool ChFi3d_IsolineOfEdge(const TopoDS_Edge&       E,
+   return false;
+ }
+ 
++// Whether edge E bounds both faces F1 and F2 (as the map of the edges to
++// their faces holds them).
++static bool ChFi3d_EdgeOfFaces(const ChFiDS_Map&  EFMap,
++                               const TopoDS_Edge& E,
++                               const TopoDS_Face& F1,
++                               const TopoDS_Face& F2)
++{
++  if (E.IsNull() || F1.IsNull() || F2.IsNull() || !EFMap.Contains(E))
++  {
++    return false;
++  }
++  bool on1 = false, on2 = false;
++  for (NCollection_List<TopoDS_Shape>::Iterator it(EFMap(E)); it.More(); it.Next())
++  {
++    on1 = on1 || it.Value().IsSame(F1);
++    on2 = on2 || it.Value().IsSame(F2);
++  }
++  return on1 && on2;
++}
++
+ //=======================================================================
+ // function : ChFi3d_KPartCutChainToEnd
+ // purpose  : As ChFi3d_KPartCutToEnd where the contact of an analytic blend
+@@ -10882,6 +10905,13 @@ static bool ChFi3d_KPartCutChainToEnd(
+   const TopoDS_Face              Fo  = TopoDS::Face(DStr.Shape(P->Index(opp)));
+   const TopoDS_Face              B0  = otherFace(EFMap, E, N);
+   double                         tP = 0., tEnd = 0.;
++  // (Faces of the spine's edge only: not while a narrow face is taken with
++  // its surface unbounded, ChamferOverNarrowFace, which cuts the chamfer by
++  // the faces beyond it itself.)
++  if (!ChFi3d_EdgeOfFaces(EFMap, Spine->Edges(eEnd), Fo, N))
++  {
++    return false;
++  }
+   // (A chamfer that takes material off: the faces beyond grow up to it.)
+   if (ChFi3d::DefineConnectType(Spine->Edges(eEnd), Fo, N, 1.e-5, false) != ChFiDS_Convex)
+   {

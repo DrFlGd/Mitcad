@@ -1877,6 +1877,40 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                 c.input_provenance = InputProvenance::Read;
                 Ok(vec![c])
             }
+            // Faces moved by a rigid motion, their neighbours following
+            // (mitcad#343): Mitcad's move_face per body, the motion the
+            // decoded matrix (its translation in cm) as a free move's.
+            "MoveFaceFeature" => {
+                let faces = references(get("faces"));
+                let mut by_body: Vec<(BodyUid, Vec<String>)> = Vec::new();
+                for r in &faces {
+                    let Reference::Face(fp) = r else { continue };
+                    let (b, f) = self.face_input(fp).ok_or("a moved face was not found")?;
+                    match by_body.iter_mut().find(|(x, _)| *x == b) {
+                        Some((_, list)) => list.push(f.to_string()),
+                        None => by_body.push((b, vec![f.to_string()])),
+                    }
+                }
+                if by_body.is_empty() {
+                    return Err("its faces were not decoded".to_owned());
+                }
+                let m: [[f64; 4]; 4] = get("transform")
+                    .and_then(|t| serde_json::from_value(t.clone()).ok())
+                    .ok_or("the faces' motion was not decoded")?;
+                let matrix: Vec<[f64; 4]> = (0..3)
+                    .map(|r| [m[r][0], m[r][1], m[r][2], mm(m[r][3])])
+                    .collect();
+                let mut c = Candidate::new(Value::Null);
+                c.defs = by_body
+                    .into_iter()
+                    .map(|(b, faces)| {
+                        json!({"type": "move_face", "body": b.to_string(), "faces": faces,
+                               "transform": {"type": "free", "matrix": matrix}})
+                    })
+                    .collect();
+                c.input_provenance = InputProvenance::Read;
+                Ok(vec![c])
+            }
             // A copy of bodies in their own component is a move that
             // copies and does not move. A cut and paste moves the bodies
             // into another component or keeps cached geometry where its

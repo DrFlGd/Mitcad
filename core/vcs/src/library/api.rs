@@ -209,7 +209,9 @@ fn component_json(
         "id": component.id,
         "name": component.name,
         "path": component.path,
-        "category": component.category,
+        "category": component.home_category(),
+        "categories": component.category_ids(),
+        "groups": manifest.component_groups(component),
         "standard": component.standard,
         "description": component.description,
         "keywords": component.keywords,
@@ -221,6 +223,8 @@ fn component_json(
         "part_number": component.part_number,
         "supplier_url": component.supplier_url,
         "build": component.build,
+        // Mount frames of any part (mitcad#525).
+        "mounts": component.mounts,
     });
     if tables
         && let Some(design) = component_design(repo, commit, &component.path)
@@ -353,19 +357,19 @@ fn picker_fields(command: &Value) -> Result<Picker<'_>, VcsError> {
 }
 
 /// The texts a component's search words match: its name, id, standard,
-/// description, category, supplier, part number, keywords and library.
+/// description, categories, supplier, part number, keywords and library.
 fn component_texts<'a>(manifest: &'a Manifest, c: &'a ManifestComponent) -> Vec<&'a str> {
     let mut texts = vec![
         c.name.as_str(),
         c.id.as_str(),
         c.standard.as_str(),
         c.description.as_str(),
-        c.category.as_str(),
         c.supplier.as_str(),
         c.part_number.as_str(),
         manifest.name.as_str(),
         manifest.id.as_str(),
     ];
+    texts.extend(c.category_ids());
     texts.extend(c.keywords.iter().map(String::as_str));
     texts
 }
@@ -453,7 +457,7 @@ fn search(cache: &LibraryCache, command: &Value) -> Result<Value, VcsError> {
                 }
                 for c in &manifest.components {
                     let license = manifest.license_of(c);
-                    if category.is_some_and(|wanted| wanted != c.category) {
+                    if category.is_some_and(|wanted| !c.in_category(wanted)) {
                         continue;
                     }
                     if build_only && !matches!(build::fit_picker(c, &picker), Fit::Fits(_)) {

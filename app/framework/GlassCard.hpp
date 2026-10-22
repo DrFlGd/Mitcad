@@ -18,6 +18,7 @@ class QVBoxLayout;
 namespace mitcad {
 
 class CardShadow;
+class CardWidthGrip;
 
 // A tool button without the style's bezel: transparent, with a rounded
 // highlight on hover and press (the buttons in a card).
@@ -155,6 +156,16 @@ public:
   // a header).
   QRect headerBox() const;
 
+  // A width the user drags (mitcad#529, the Projects card): a grip along
+  // the card's right edge, with the resize cursor; while it is dragged
+  // widthDragged gives the width asked for (at least `minimum`), and
+  // widthChosen once it is released. The layout sets the width
+  // (FloatingLayout::setCardWidth).
+  void setWidthAdjustable(int minimum);
+  bool isWidthAdjustable() const { return m_grip != nullptr; }
+  // The grip's middle in the card's coordinates.
+  QPoint widthGripCenter() const;
+
   // The height of the header alone.
   int headerHeight() const;
   // The height that fits `contentHeight` of content (header and margins
@@ -164,6 +175,9 @@ public:
 signals:
   // The collapsed state or the header changed: the layout may re-anchor.
   void collapsedChanged(bool collapsed);
+  // The width grip (setWidthAdjustable) dragged, and released.
+  void widthDragged(int width);
+  void widthChosen(int width);
 
 protected:
   // The material inside `rect` (the card's rounded rectangle).
@@ -182,6 +196,10 @@ protected:
 
 private:
   friend class CardShadow;
+  friend class CardWidthGrip;
+
+  // The grip along the right edge, below the header's corner.
+  void placeGrip();
 
   // Bare: the mask that leaves the mouse to what is under the card except
   // in the header's box and the content's region.
@@ -221,6 +239,8 @@ private:
   quint64 m_shadowKey = 0;
   QPointer<CardShadow> m_shadow;
   QGraphicsOpacityEffect* m_effect = nullptr;
+  QWidget* m_grip = nullptr; // setWidthAdjustable
+  int m_minimumWidth = 0;
 };
 
 } // namespace mitcad

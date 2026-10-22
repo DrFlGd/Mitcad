@@ -49,6 +49,7 @@
 #include "framework/Selection.hpp"
 #include "framework/SelectionScope.hpp"
 #include "mitcad/geometry/shape.hpp"
+#include "view/FirstBodiesFit.hpp"
 #include "view/ViewMatch.hpp"
 #include "view/ViewNavigation.hpp"
 
@@ -149,6 +150,11 @@ struct HighlightDisplay {
   SelectionItem item;
   TopoDS_Shape shape;
   QColor color;
+  // The joint highlight's (mitcad#523): a highlight that takes no clicks
+  // (a click goes to what lies under it), and a light one, a faint tint
+  // of a whole occurrence drawn under the others.
+  bool pickable = true;
+  bool light = false;
 };
 
 // How bodies are drawn (U5).
@@ -326,6 +332,10 @@ public:
 
   // Replaces the bodies, keyed by their uids (F2.b0).
   void setBodies(const std::vector<BodyDisplay>& bodies);
+  // A design is installed: the first design bodies setBodies() brings into
+  // an empty view are fitted, once (mitcad#467; view/FirstBodiesFit.hpp),
+  // not the bodies shown again after the user hid every one.
+  void expectFirstBodies() { m_firstFit.arm(); }
   // The bodies shown (setBodies), without command previews; bodies that
   // setGhosts() draws as ghosts are among them, as given.
   std::vector<BodyDisplay> shownBodies() const;
@@ -840,6 +850,7 @@ private:
   QString m_sketchToolIcon;
   bool m_sketchSnapping = false;
   bool m_fitPending = false;
+  FirstBodiesFit m_firstFit; // the design's first bodies fitted once (expectFirstBodies)
   bool m_directFrameQueued = false; // requestFrame() in an unexposed window
   bool m_painting = false;          // in paintGL()
   QString m_glVersion;              // GL_VERSION (glVersion())

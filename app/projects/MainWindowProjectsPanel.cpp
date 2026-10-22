@@ -8,6 +8,7 @@
 // Folder and Remove from List. The panel itself is projects/ProjectsPanel.
 #include "../MainWindow.hpp"
 
+#include <algorithm>
 #include <utility>
 #include <vector>
 
@@ -197,6 +198,17 @@ void MainWindow::dockProjectsPanel(QDockWidget* browserDock) {
     action->setChecked(shown);
   }
   dock->setVisible(shown);
+  // Its width as the user left it (mitcad#529): remembered when a drag of
+  // its edge rests, restored once the window is laid out.
+  connect(m_projectsPanel, &ProjectsPanel::dockWidthChosen, this, [](int width) {
+    ProjectsSettings settings = ProjectsSettings::load();
+    if (settings.dockWidth != width) {
+      settings.dockWidth = width;
+      settings.save();
+      qInfo().noquote() << QStringLiteral("Projects panel: dock width %1 remembered").arg(width);
+    }
+  });
+  TestSync::singleShot(100, this, [this] { restoreProjectsDockWidth(); });
   // Closed with the dock's own button: as View > Projects.
   // Not while the window closes or goes (its docks hide with it).
   connect(dock->toggleViewAction(), &QAction::toggled, this, [this](bool on) {
@@ -220,10 +232,24 @@ void MainWindow::addProjectsCard() {
   card->setTitle(tr("Projects"));
   card->setCollapsible(true);
   card->setContent(m_projectsPanel, QMargins(6, 0, 6, 8));
+  // Its width dragged by its right edge and remembered (mitcad#529).
+  card->setWidthAdjustable(ProjectsPanel::kMinimumCardWidth);
+  const int remembered = ProjectsSettings::load().cardWidth;
+  if (remembered > 0) {
+    qInfo().noquote() << QStringLiteral("Projects panel: card width %1 (remembered)").arg(remembered);
+  }
+  connect(card, &GlassCard::widthChosen, this, [card] {
+    // As the layout placed it (within the view).
+    ProjectsSettings settings = ProjectsSettings::load();
+    settings.cardWidth = card->slot().width();
+    settings.save();
+    qInfo().noquote() << QStringLiteral("Projects panel: card width %1 remembered").arg(settings.cardWidth);
+  });
   const bool shown = projectsPanelShownAtStart();
   // Above the browser's card (FloatingLayout stacks the upper left cards).
   m_floating->addCard(card, FloatingLayout::Anchor::TopLeft,
-                      {260, [panel = m_projectsPanel] { return panel->contentHeight(); }, 0.4, shown});
+                      {remembered > 0 ? std::max(remembered, ProjectsPanel::kMinimumCardWidth) : 260,
+                       [panel = m_projectsPanel] { return panel->contentHeight(); }, 0.4, shown});
   connect(m_projectsPanel, &ProjectsPanel::contentHeightChanged, m_floating, &FloatingLayout::requestLayout);
   m_projectsContainer = card;
   m_projectsPanel->watchContainer(card);
@@ -288,6 +314,7 @@ void MainWindow::setProjectsPanelShown(bool shown, bool remember) {
         QTimer::singleShot(0, this, [this, dock, browser] {
           const int total = dock->height() + browser->height();
           resizeDocks({dock, browser}, {total / 3, total - total / 3}, Qt::Vertical);
+          restoreProjectsDockWidth();
         });
       }
     }
@@ -299,6 +326,17 @@ void MainWindow::setProjectsPanelShown(bool shown, bool remember) {
       m_controller->browser()->logLayout();
     }
   });
+}
+
+void MainWindow::restoreProjectsDockWidth() {
+  auto* dock = qobject_cast<QDockWidget*>(m_projectsContainer);
+  const int width = ProjectsSettings::load().dockWidth;
+  if (dock == nullptr || width <= 0 || dock->isHidden() || dock->isFloating()) {
+    return;
+  }
+  // The column it shares with the browser's dock takes the width.
+  resizeDocks({dock}, {std::max(width, ProjectsPanel::kMinimumCardWidth)}, Qt::Horizontal);
+  qInfo().noquote() << QStringLiteral("Projects panel: dock width %1 restored").arg(width);
 }
 
 void MainWindow::showProjectInPanel(const QString& root) {

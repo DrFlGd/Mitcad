@@ -147,6 +147,9 @@ BrowserController::BrowserController(DocumentHost& host, QWidget* window)
   // The timeline's search (mitcad#179): Ctrl+F in the browser opens it; the
   // selection from before it comes back when it is cleared.
   connect(m_browser, &BrowserPanel::searchRequested, m_timeline, &TimelineWidget::openSearch);
+  // The pointer over a joint's row previews its highlight (mitcad#523).
+  connect(m_browser, &BrowserPanel::jointHovered, this,
+          [this](const QString& uid, const QString& occurrence) { m_host.previewJoint(uid, occurrence); });
   connect(m_timeline, &TimelineWidget::searchStarted, this, [this] {
     m_searchItems = m_shownItems;
     m_searchFeatures = m_shownFeatures;

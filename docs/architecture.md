@@ -441,7 +441,15 @@ design in a project.
   and removes the others in one `apply`, drives the fasteners through
   `build_connect` and merges it all into one undo step (`merge_undo`)
   ([commands.md](../core/model/src/api/commands.md), "BUILD: timber
-  frames").
+  frames"). Since mitcad#522 each frame is a component of its own in the
+  BUILD host (`framing.component`), its definition in that component's
+  coordinates: its members are made there, and its fasteners are driven
+  with that component as the BUILD host (`Document::set_build_host_override`)
+  so their joints are inside it; frames saved before stay flat. The
+  junction search reads a timber member's material as its box clipped by
+  its end cuts (mitcad#521, `build/junctions.rs`), so cut ends meet sides
+  by their cut faces and boxes overlapping where no material is make no
+  junction.
 - **Timber fastener seating** (mitcad#512, `build/wood.rs`): the library's
   `wood.seat` selects a head-top or bearing frame. Legacy axis-aligned
   wood screws and nails infer the head-top plane from evaluated body
@@ -1720,7 +1728,11 @@ just made).
   Open from Cloud, Change Address and Project Settings. Save to Project
   (mitcad#503, File menu after Save As) uses the project picker
   (`projects/ProjectPicker`) with its New Project... button, and saves
-  as Save As does. New Project and Create Project Here make an empty
+  as Save As does. Open from Project (mitcad#530, File menu after Open)
+  is a file-dialog-like window on the same data (`projects/ProjectBrowser`;
+  its listing and search `projects/ProjectBrowserData`): folders left,
+  contents right, a path bar, a search across the projects, Read-only;
+  only what `project_tree` lists, never the raw folders. New Project and Create Project Here make an empty
   project (`create_project` without a design; mitcad#145), and Open
   Project opens the design opened last (`last_design`), else the newest,
   none for an empty project. The first two and Change Address
@@ -1780,7 +1792,12 @@ just made).
   In the Docked layout it is a dock split above the browser's (the view
   keeps its width); in the Floating one a card, which `FloatingLayout`
   stacks above the browser's card (upper left cards stack in the order
-  added). The AppKit frontend has no panel: File › New Design in a project
+  added). The rows give the names the width (mitcad#529): the state as
+  compact marks (`projects/ProjectRowText`), a name that does not fit
+  elided in the middle by the rows' delegate, and the width dragged by the
+  panel's edge and remembered (the card's grip,
+  `GlassCard::setWidthAdjustable` with `FloatingLayout::setCardWidth`; the
+  dock's edge). The AppKit frontend has no panel: File › New Design in a project
   asks for a name in a dialog there. Shown or hidden at the start (mitcad#151): the
   user's last choice (`ProjectsSettings::panelShown`, written only by a
   show or hide), else shown when `anyProjectConfigured` finds a project
@@ -2023,6 +2040,15 @@ expressions). Formats: [libraries.md](libraries.md).
   found (`build_junctions`) and parts to a picker's role and system. The
   model never reads a library for this: the app asks the library side for
   candidates and passes the chosen part to the BUILD commands.
+- **Mount frames** (mitcad#525, `core/model/src/document/mounts.rs`,
+  `core/vcs/src/library/mounts.rs`): any part's joint origins with a
+  `mount` (face, shaft, hole, grid, foot; the joint a placement makes).
+  The design is what counts: an insert keeps them as joint origins of the
+  new component (a linked part's on fixed planes, read again with its
+  bodies), and `insert_component`'s `mount` places the part by one with
+  its joint, grids by their cells; the manifest's `mounts`, which
+  `library_add` writes from the design and `library check` holds against
+  it, tells the app which parts have frames before it reads a design.
 
 In the app (`app/files/MainWindowLibraries.cpp`, `LibraryDialogs.cpp`)
 fetches run as `RemoteTask`s on their own thread with Cancel; the other
@@ -2032,7 +2058,13 @@ are model commands (jobs on the model worker). The part picker
 Insert from Library and the part-choosing commands: previews are read a
 few at a time while the UI is idle, only for tiles in sight; the user's
 favourites are app settings, not design data; the design's library parts
-come from the model's `library_usage` query.
+come from the model's `library_usage` query. Its groups are a tree
+(mitcad#527): the libraries' answers give each component its groups'
+names from the top (`groups`, from the categories' `parent` and path
+names), and the app merges groups of the same names across libraries
+(`PartGroupTree`). A part with mount frames is placed by Place Part
+(`app/commands/MountCommands.cpp`), a panel of the framework whose
+preview is the model's `mount_preview`.
 
 ### Autosave
 

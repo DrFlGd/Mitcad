@@ -871,6 +871,13 @@ impl<K: Kernel> Document<K> {
         {
             return self.build_preview_shape(fields);
         }
+        // A part placed by a mount frame before it is (mitcad#525).
+        if value.get("shape").and_then(Value::as_str) == Some("mount_preview")
+            && let Value::Object(mut fields) = value
+        {
+            fields.remove("shape");
+            return self.mount_preview_shape(fields);
+        }
         let request: ShapeRequest = parse(value, "shape request")?;
         let kernel = self.kernel();
         match request {

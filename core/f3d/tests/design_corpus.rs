@@ -551,6 +551,9 @@ const DECODER_ONLY: &[&str] = &[
     ".timeline.items[].detail.source",
     ".timeline.items[].detail.placements",
     ".timeline.items[].detail.entities",
+    // The faces a move face moves (mitcad#343), which the reference decoder
+    // did not read; the import finds them by their face inputs.
+    ".timeline.items[].detail.faces",
 ];
 
 /// Fields this decoder fills where the reference decoder has an empty

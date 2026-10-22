@@ -814,6 +814,17 @@ if(BUILD_TESTING)
               "-DGROUPS=${CMAKE_CURRENT_SOURCE_DIR}/tests/timber-groups"
               "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/timber-library"
               -P "${CMAKE_CURRENT_SOURCE_DIR}/timber-library-test.cmake")
+    # The fasteners' rendered previews (mitcad#526): a socket screw and a
+    # wood screw in the generators' studio, their size, coverage and
+    # finish's colours; kept when unchanged; drawn without a render worker.
+    # Skipped where the worker cannot render.
+    add_test(NAME cli.library-previews
+      COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/library-previews-test.py"
+              --cli "$<TARGET_FILE:mitcad-cli>" --worker "$<TARGET_FILE:mitcad-render>"
+              --libraries "${PROJECT_SOURCE_DIR}/tools/libraries"
+              --work "${CMAKE_CURRENT_BINARY_DIR}/library-previews")
+    set_tests_properties(cli.library-previews PROPERTIES TIMEOUT 600
+      SKIP_REGULAR_EXPRESSION "library previews: skipped")
   endif()
   # BUILD on the generated profile library (mitcad#376, mitcad#377): one
   # profile of each system and slot width with its frames and mass per

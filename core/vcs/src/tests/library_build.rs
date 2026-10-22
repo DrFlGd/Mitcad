@@ -882,3 +882,118 @@ fn profiled_boards_are_checked() {
         assert!(has(expected), "{expected}\n{errors:#?}");
     }
 }
+
+// ---------------------------------------------------------------------
+// The default framing fastener (mitcad#516).
+
+/// A library's `wood.default` marks the wood fastener Timber's frames and
+/// spacing sets start with: `library check` takes only true or false, and
+/// the wood picker lists the marked one first, before a pan-head connector
+/// screw whose name comes first.
+#[test]
+fn the_default_wood_fastener_comes_first() {
+    let scratch = Scratch::new("library-build-wood-default");
+    let cache = LibraryCache::new(scratch.join("cache"));
+    // The wood screw of the timber parts, marked; the connector screw.
+    let mut screw = timber_components()
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == "wood-screw")
+        .expect("the wood screw")
+        .clone();
+    screw["build"]["wood"]["seat"] = json!("head_top");
+    screw["build"]["wood"]["default"] = json!(true);
+    let mut all = json!([screw]);
+    all.as_array_mut().unwrap().push(json!(
+        {"id": "connector-screw", "path": "wood/connector-screw.mitcad", "name": "Connector screw",
+         "category": "connectors",
+         "build": {"role": "fastener",
+            "wood": {"kind": "screw", "head": "pan", "seat": "head_underside",
+                     "diameter": "5 mm", "length": "40 mm"},
+            "frames": [{"name": "axis", "kind": "shaft"}]}}
+    ));
+    let mut files: Vec<(&str, String)> = timber_designs()
+        .into_iter()
+        .filter(|(path, _)| *path == "wood/wood-screw.mitcad")
+        .collect();
+    files.push((
+        "wood/connector-screw.mitcad",
+        timber_design(&[("D", "5 mm"), ("K", "40 mm")], &["axis"], &[]),
+    ));
+    let good = scratch.join("good");
+    write_library(&good, all.clone(), &files);
+    let (errors, _) = check(&cache, &good);
+    assert_eq!(errors, Vec::<String>::new());
+
+    let mut broken = all.clone();
+    broken.as_array_mut().unwrap()[0]["build"]["wood"]["default"] = json!("yes");
+    let bad = scratch.join("bad");
+    write_library(&bad, broken, &files);
+    let (errors, _) = check(&cache, &bad);
+    assert!(
+        errors
+            .iter()
+            .any(|e| e == "wood-screw: build.wood.default \"yes\" is neither true nor false"),
+        "{errors:#?}"
+    );
+
+    let Some(cli) = system_git() else {
+        return;
+    };
+    git(&good, &["init", "-q"]).unwrap();
+    git(&good, &["add", "-A"]).unwrap();
+    git(&good, &["commit", "-q", "-m", "Parts 1.0"]).unwrap();
+    git(&good, &["tag", "v1.0.0"]).unwrap();
+    let fetched = library_command(
+        &cache,
+        Some(&cli),
+        json!({"cmd": "library_fetch", "url": slashes(&good)}),
+    );
+    assert_eq!(fetched["error"], Value::Null, "{fetched}");
+    let answer = library_command(
+        &cache,
+        None,
+        json!({"cmd": "library_build_candidates", "role": "fastener", "kind": "wood"}),
+    );
+    let ids: Vec<&str> = answer["components"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, ["wood-screw", "connector-screw"], "{answer}");
+    assert_eq!(
+        answer["components"][0]["build"]["wood"]["default"], true,
+        "{answer}"
+    );
+}
+
+/// Mitcad's own wood fastener library (its group file, mitcad#516) marks
+/// exactly one default: the countersunk wood screw, seated by its head's
+/// top (flush, mitcad#512), not the pan-head connector screw.
+#[test]
+fn the_shipped_timber_fasteners_default_to_the_countersunk_wood_screw() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tools/libraries/profiles/timber-fasteners.json");
+    let group: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    let parts = group["parts"].as_array().unwrap();
+    let defaults: Vec<&Value> = parts
+        .iter()
+        .filter(|p| p["build"]["wood"]["default"] == true)
+        .collect();
+    assert_eq!(defaults.len(), 1, "{defaults:#?}");
+    let default = defaults[0];
+    assert_eq!(default["id"], "wood-screw");
+    assert_eq!(default["name"], "Wood screw, countersunk");
+    assert_eq!(
+        default["build"]["wood"],
+        json!({"kind": "screw", "head": "countersunk", "seat": "head_top", "default": true})
+    );
+    let connector = parts
+        .iter()
+        .find(|p| p["id"] == "connector-screw")
+        .expect("the connector screw");
+    assert_eq!(connector["build"]["wood"]["seat"], "head_underside");
+    assert!(connector["build"]["wood"].get("default").is_none());
+}

@@ -1983,6 +1983,13 @@ int dialogFolderTests();
 int sketchAxesTests();
 int iamImportTests();
 int commandAliasTests();
+int mountFramesTests();
+int timberOpeningsTests();
+int jointHighlightTests();
+int moveFaceTextTests();
+int projectRowTests();
+int projectBrowserTests();
+int firstBodiesFitTests();
 
 int main(int argc, char* argv[]) {
   QApplication app(argc, argv);
@@ -2038,6 +2045,13 @@ int main(int argc, char* argv[]) {
     failures += sketchAxesTests();
     failures += iamImportTests();
     failures += commandAliasTests();
+    failures += mountFramesTests();
+    failures += timberOpeningsTests();
+    failures += jointHighlightTests();
+    failures += moveFaceTextTests();
+    failures += projectRowTests();
+    failures += projectBrowserTests();
+    failures += firstBodiesFitTests();
   }
   if (failures != 0) {
     std::fprintf(stderr, "%d check(s) failed\n", failures);

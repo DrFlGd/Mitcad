@@ -151,7 +151,7 @@ void MainWindow::fillModelContextMenu(QMenu& menu, QStringList& entries) {
     const InputDef* input = def->primarySelection();
     if (def->kind != CommandDef::Kind::Feature || input == nullptr || !isAvailable(*def) ||
         !std::all_of(selection.begin(), selection.end(),
-                     [input](const SelectionItem& s) { return input->accepts(s); }) ||
+                     [input](const SelectionItem& s) { return input->takes(s); }) ||
         (def->surfaceBodiesOnly && !surfaces) || (def->offeredFor && !def->offeredFor(selection))) {
       continue;
     }

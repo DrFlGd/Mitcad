@@ -285,9 +285,21 @@ tab](#build-tab). Other commands of the SOLID tab, in menu order:
   and the flank angle. Clearances on both mating parts add up; the other
   part is not changed.
 - **MODIFY:** Press Pull, Fillet, Chamfer, Shell, Draft, Scale, Combine,
-  Offset Face, Replace Face, Split Face, Split Body, Move/Copy, Align,
-  Delete Face, Physical Material, Appearance, Edit Appearances, Change
-  Parameters. **Press Pull** acts on what is selected: a face is offset,
+  Offset Face, Replace Face, Split Face, Split Body, Move/Copy, Move Face,
+  Align, Delete Face, Physical Material, Appearance, Edit Appearances,
+  Change Parameters. **Move Face** moves faces of one body together by a
+  rigid motion, chosen as in Move/Copy (Free Move with its handles,
+  Translate, Translate Along an axis or edge, Rotate about an axis or
+  edge, Point to Point, Point to Position): each face keeps its surface,
+  moved, and the faces around it extend or shorten along their own
+  surfaces up to it, so an end face pushed out lengthens the block and a
+  top turned about one of its edges tilts it. A motion the faces around
+  cannot follow (a face would vanish, split or stop meeting its
+  neighbour) is refused, and the panel says why. The panel's note and the
+  selection card of its timeline item say what it moves, for example
+  "MoveFace1: 2 faces of Body1, translate (-1.856, 0, -0.361) mm";
+  double-clicking the item edits it, also one the `.f3d` import made for
+  a file's moved faces. **Press Pull** acts on what is selected: a face is offset,
   an edge rounded, a profile extruded; a face of a fillet opens that
   fillet. **Fillet** rounds edges in sets (a face picked rounds all its
   edges), each set with its own Radius Type: Constant; Chord Length (the
@@ -1153,6 +1165,23 @@ command is open, or the design is read-only. In a design with
 components, a window selection starts from empty space or with Shift
 held.
 
+**What a joint connects:** selecting a joint (its row in a Joints
+folder, or its cell in the timeline) highlights what its two sides are
+built on, where the components are: the faces, edges, vertices, sketch
+geometry, planes, axes, points or joint origins of side A in orange and
+of side B in green, each side's frame as a small triad (x red, y green,
+z in the side's colour), and the two components it joins in a faint tint.
+A side whose frame is given directly (a frame override that moves or
+turns it) or that lies on a fixed plane, axis or point shows its frame
+only; a BUILD part's mount frame shows the frame and the part. The
+selection card names the joint, its kind and each side, for example
+"Joint1: revolute, a = Pin:1, face … of Body2, b = Plate:1, face … of
+Body1". An as-built joint shows its two components and its motion
+origin; a constraint set each row's references. With the pointer over a
+joint's row the view previews the same highlight in lighter colours.
+Selecting something else replaces it, and clearing the selection clears
+it.
+
 ### Properties
 
 Components, their occurrences and bodies carry typed properties in named
@@ -1325,7 +1354,10 @@ active and holds components. The panel says where (*Adds to: Part1*).
   Enter*. Click one of the origin's planes, a construction plane or a face,
   or press Enter to place it at the origin. The X, Y and Z buttons choose
   the axis it runs along (Z: standing). Drag the handle at its free end, or
-  type a length, which also shows in a box at the cursor.
+  type a length, which also shows in a box at the cursor. After **Place**
+  nothing is previewed until your next click: placing **On a plane**
+  again, the next one waits for a click on a plane or a face rather than
+  appearing at the origin on top of the one placed there.
 - **The next profiles** go on a profile you click; only the profiles'
   faces highlight, and the planes are hidden until you close the panel.
   - **On a side** (a click near an end on its side) it goes along that
@@ -1430,10 +1462,15 @@ active and holds components. The panel says where (*Adds to: Part1*).
 - **Parts List:** every part with its quantity, supplier and part number,
   also as CSV and PDF.
 
-**Timber**
+**TIMBER**
 
-The **Timber** tool (PROFILE) places members of the timber chosen in its
-Part tile. Its **Mode** buttons choose how:
+The **TIMBER** group has three tools, split by what they build: **Timber**
+for loose members, **Wall** for wall frames and **Floor / Roof** for
+floors, ceilings and roofs. Each places members of the timber chosen in
+its Part tile; the part and the fastener you chose last carry over from
+one tool to the next, and each tool keeps its own other choices.
+
+The **Timber** tool's **Mode** buttons choose how it places a member:
 
 - **On a member** (the default): on a member's side or end, or on a
   plane, as Profile places a profile, with the length you typed last.
@@ -1445,7 +1482,6 @@ Part tile. Its **Mode** buttons choose how:
   joists, rafters; 400 mm) or a gap between boards (a deck, a fence,
   cladding; 5 mm); with a gap, **Last Board** is cut to what is left or
   the gaps are spread evenly.
-- **Frame:** a wall, floor or roof frame (below).
 - **Two points:** **Start** is a plane or a face the member lies on, or
   another member (its ends, sides and centre lines snap); **End** is
   where it ends, moved onto the start's plane (Shift+click places).
@@ -1458,37 +1494,73 @@ members' size, and the members are laid out again.
 
 **Timber frames**
 
-The **Timber** tool's **Frame** mode (its fourth Mode button) makes a
-whole frame of the timber chosen in its Part tile, in one step:
+**Wall** and **Floor / Roof** make a whole frame of the timber chosen in
+their Part tile, in one step. Each shows only the inputs of what it
+builds; Floor / Roof chooses between a floor and a roof with its **Kind**
+buttons at the top, and starts with the kind you used last.
 
-- **Wall:** click where the wall's centre line starts and ends (or press
-  Enter: from the origin, **Length** along **Direction**), give its
+- **Wall:** click where the wall's centre line starts and ends (or, for
+  the first wall, press Enter: from the origin, **Length** along
+  **Direction**; after **Place** the panel keeps its values but shows no
+  wall until you click where the next one starts), give its
   **Height** and the studs' **Spacing** (600 mm). It gets a bottom and a
   top plate (two top plates if you choose), studs at the spacing from its
-  start and one at each end. **Openings** are typed as `offset
-  widthxheight sill`, separated by `;`: `600 900x1200 900` is a window
-  900 wide and 1200 high, 600 mm from the wall's start, its sill 900 mm
-  above the floor; without a sill it is a door. Each opening gets king and
-  trimmer studs, a header, a sill and cripple studs. A wall whose start
+  start and one at each end. **Openings** opens the Openings window
+  beside the panel (below). Each opening gets king studs, a header, a
+  window's sill and cripple studs. A wall whose start
   or end you click on a member of another wall frame makes a corner (at
   that wall's end) or a T-junction (along it) with it: the other wall runs
-  through and gets the extra studs, and this one stops at its face.
-- **Floor or ceiling:** click two opposite corners (or give Length and
-  Width): rim joists all round, joists at the spacing (400 mm), a row of
-  **Blocking** if you want it, and stair **Openings** (`a b
-  widthxlength`) framed with doubled trimmers and headers.
-- **Roof:** click a member of each of two parallel wall frames, choose
-  **Gable** or **Mono-pitch**, the **Pitch** and the **Overhang**: rafters
-  at the spacing, plumb cut at their ends and notched with a birdsmouth
-  over each wall's top plate, and a gable roof's ridge board.
+  through and gets the extra studs, and this one stops at its face. A wall
+  you start by clicking another wall's side runs square to it. A click
+  near that wall's end snaps it flush with the end, a clean corner; near
+  the middle it is centred. **From** (End A, End B or Middle) and
+  **Offset** show where it went, and typing them moves it: Offset 0 is
+  flush with that end, or centred. Without an End click, **Length**
+  *Auto: to the wall it meets* ends the wall at the first wall frame its
+  run reaches, butting against its side (an End you click wins; typing a
+  Length switches to *Typed length*).
+- **Floor / Roof**, Kind **Floor or ceiling:** click two opposite corners
+  (or give Length and Width): rim joists all round, joists at the spacing
+  (400 mm), a row of **Blocking** if you want it, and stair **Openings**
+  (in the Openings window) framed with doubled trimmers and headers.
+- **Floor / Roof**, Kind **Roof:** click a member of each of two parallel
+  wall frames, choose **Gable** or **Mono-pitch**, the **Pitch** and the
+  **Overhang**: rafters at the spacing (600 mm), plumb cut at their ends
+  and notched with a birdsmouth over each wall's top plate, and a gable
+  roof's ridge board.
+
+The **Openings** window lists a wall's windows and doors as rows: each
+row's **Kind** (Window or Door), **From** (End A, the wall's start, or End
+B, its end), **Offset** (to the opening's near side), **Width**,
+**Height** and a window's **Sill** (its height above the wall's base); a
+floor's openings have **Offset Along**, **Offset Across** (from the
+floor's first corner), **Width** and **Length**. **Add Window** and **Add
+Door** add one after the last opening, **Remove** takes the selected one
+away. The preview follows each change (Enter or Tab commits a field), the
+selected opening is marked in the view, and a row that cannot be framed
+(outside the wall, overlapping another one, too near the wall's end
+studs, its header above the top plate) says why on the row. At the top,
+**Non-load-bearing (partition)**, the default for a new wall, frames each
+opening with one header lying flat between its king studs and no trimmer
+studs; **Load-bearing** adds trimmer studs beside the king studs carrying
+a header on edge. A wall made before this choice existed stays
+load-bearing. Timber Frame (MODIFY) opens the same window for a wall or a
+floor already placed.
+
+The view's right-click menu offers them under **BUILD**: on a member's
+face Timber (the member goes on that face) and Wall (the wall starts
+there); with members of two wall frames selected, Floor / Roof first,
+which starts as a roof on those walls.
 
 With **Fasteners** checked, wood screws or nails go into each junction of
 the frame: **Fastener** (its picture opens the part picker with the
 library's wood screws, ring nails and structural screws), **Size** (*Auto*
 sizes them from the members, or choose a size such as 5.0x90 or a nail's
 3.1x90) and **Count** at each junction (2). The first time it is two of
-the library's first wood screw, sized from the members; the tool
-remembers your choice. **Spacing** has the same **Fasteners** row, off at
+the library's countersunk wood screw, sized from the members and driven
+flush with the wood (the pan-head connector screw is for fixing metal
+connectors); the TIMBER tools remember your choice. Timber's **Spacing**
+has the same **Fasteners** row, off at
 first: on, each member of the row is fastened to the members it stands
 on, reaches or crosses. **Swap Fastener** (BUILD, CONNECT; in the view's
 right-click menu under BUILD when fasteners are selected) makes the
@@ -1501,7 +1573,8 @@ members and counts them, with any warning (a ridge board too shallow, a
 birdsmouth too deep). Every member is an ordinary BUILD part: it shows in
 the cut list with the other timber, grouped by size. **Timber Frame**
 (MODIFY) changes a frame afterwards: pick one of its members and change
-its length, height, spacing, openings or the members' size; the frame is
+what Wall or Floor / Roof showed for it (its length, height, spacing,
+openings, a roof's pitch) or the members' size; the frame is
 laid out again in one step (an undo takes it back), and a roof on a wall
 follows the wall.
 
@@ -1871,13 +1944,15 @@ leaves the folder as it was.
 on a Mac a card above it) lists your projects, their folders and designs:
 
 ```
-github.com/acme/gripper        Cloud · ↑2
-  finger                       v4 · Locked: Alex
-Robot arm                      Local
+github.com/acme/gripper     (cloud) ↑2
+  finger                     v4 (lock)
+Robot arm
   parts
-    bracket                    v3 · Changed
-  base                         v12
+    bracket                  v3*
+  base                       v12
 ```
+
+(`(cloud)` and `(lock)` stand for small icons.)
 
 The panel starts shown when you have a project (made, opened or cloned
 here, or in the projects folder) and hidden when you have none, until you
@@ -1893,13 +1968,20 @@ choice.
   gave it in Project Settings; without one, a Cloud project shows its
   repository's address (`github.com/acme/gripper`,
   `gitlab.com/group/sub/part`, a shared folder's path) and a Local one its
-  folder's name. The icon and the tooltip tell Local from Cloud. A
-  project shows its sync state as the project indicator shows it (`✓`,
-  `↑2` to send, `↓1` newer, `Offline`). A design shows its latest
-  version, **Changed** when it differs from that version, and its edit
-  lock (`Editing`, `Locked: Alex`); the open design is in bold. The panel
-  reads the projects again after a save or a sync and when Mitcad gets
-  the focus back (changes made with other programs show then).
+  folder's name. The icon and the tooltip tell Local from Cloud. The
+  names get the width; the state beside them is in short marks, and the
+  tooltip says it in full. A Cloud project shows its sync state as a
+  cloud icon (with a check when it is in sync, crossed out when the
+  remote cannot be reached), `↑2` to send and `↓1` newer. A design shows
+  its latest version (`v3`), a `*` when it differs from that version
+  (`v3*`; `new` before its first version), and a lock icon when someone
+  edits it, you elsewhere included (a pencil when you edit it here); the
+  open design is in bold. A name too long for the panel is shortened in
+  the middle (`mounting-br…rev-b`), keeping its start and end; its
+  tooltip has the whole name and the path. Drag the panel's right edge
+  to make it wider: Mitcad remembers the width (in both layouts). The
+  panel reads the projects again after a save or a sync and when Mitcad
+  gets the focus back (changes made with other programs show then).
 - **Open** a design with a double-click (or Enter); unsaved changes are
   asked about as with Open.
 - **New Design** (the toolbar, the context menu, or **File › New
@@ -1937,6 +2019,25 @@ Project with the folder filled in. A project inside another git repository
 opens without versions. **Open…** and **Open Recent** (designs listed with
 their project, `bracket.mitcad — Robot arm`) recognise the project of a
 design the same way.
+
+**File › Open from Project…** (right after Open) opens a design by
+browsing your projects as you would folders, in a window like a file
+dialog:
+
+- On the left, the projects the Projects panel lists (Local and Cloud,
+  with their icons) and their folders; on the right, the folder's
+  sub-folders first, then its designs with their version, edit lock, last
+  change and who made it. A double-click (or Enter) goes into a folder or
+  opens a design; Backspace goes up a folder. The path bar above
+  (`Robot arm › parts › brackets`) takes you back to any folder on the
+  way.
+- **Search** finds designs by part of their name as you type, in all
+  projects or only in the project shown (**In**), with their project and
+  folder; Enter opens the first one found.
+- **Read-only** opens the design as **Open Read-Only…** does (without its
+  edit lock); **Another File…** opens the system's file dialog instead.
+- Only designs are listed: a project's own settings (`.mitcad/`) and other
+  files are left out. The window starts where you left it last time.
 
 **The project indicator** shows the current project where the version was
 in the status bar (on a Mac beside the document's name in the title bar
@@ -2284,8 +2385,18 @@ grid of pictures, each with its name and main sizes.
 
 - **Groups** on the left: **Favourites**, **In this design** (the
   library parts the open design already uses, each with how many times,
-  `×4`; shown while there are any), **All parts**, then the library's
-  categories (profiles, connectors, screws, nuts, ...). Above the grid:
+  `×4`; shown while there are any; a part with several sizes shows each
+  size's own count, only on the sizes the design uses), **All parts**,
+  then the libraries' groups as a tree: Mitcad's library has **Wood**
+  (timber, boards, sheets, wood fasteners, timber connectors), **Slot
+  profile** (profiles, connectors, panels, caps, accessories and the
+  nuts and screws made for the slot), **Motion**, **General fasteners**
+  (the ISO screws, nuts and washers), **Hardware** and **Workshop**, each
+  with its subgroups. A click on a group shows its subgroups' parts too;
+  a part may be in several groups, and is the same part (one star, one
+  count) in each. Fold a group with its arrow (or Left and Right on the
+  keyboard); the picker remembers it. Libraries of others put their
+  groups beside these, or into the same ones by their names. Above the grid:
   **Search** (name, standard, size, supplier, part number), **System**
   (the slot system of BUILD parts) and **Tiles**, the size of the
   pictures. Rest the mouse on a tile to see a larger picture with the
@@ -2293,7 +2404,13 @@ grid of pictures, each with its name and main sizes.
 - **Favourites**: click the star in a tile's corner (or **Star**,
   Ctrl+D) to mark a part. Starred parts come first in every group and
   are all in Favourites. Click a group's star (Ctrl+Shift+D) to put the
-  group first; inside Favourites its parts come first. Stars belong to
+  group and its subgroups first; inside Favourites their parts come
+  first. A click on a
+  star changes only the star: the tiles and the groups stay where they
+  are while you look at that list, so that you can star several sizes in
+  a row; the starred ones move to the front the next time the list is
+  made again (the picker opens, or the group, the search or the system
+  changes). Stars belong to
   you on this computer, not to the design, and survive library updates;
   a part no longer in the library just drops out of Favourites. Search
   and the system filter work inside Favourites too.

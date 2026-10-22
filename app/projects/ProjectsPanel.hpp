@@ -6,12 +6,12 @@
 // repository's root; nothing groups the projects, and below a project are
 // only the folders and designs it holds:
 //
-//   github.com/acme/gripper        Cloud · ↑2
-//     finger                       v4 · Locked: Alex
-//   Robot arm                      Local
+//   github.com/acme/gripper     (cloud) ↑2
+//     finger                     v4 (lock)
+//   Robot arm
 //     parts
-//       bracket                    v3 · Changed
-//     base                         v12
+//       bracket                  v3*
+//     base                       v12
 //
 // A project row has its name (a display name set in Project Settings, else
 // a Cloud project's repository address without the scheme, else the
@@ -31,6 +31,14 @@
 // projects/MainWindowProjectsPanel.cpp), which runs the core's commands
 // and calls refresh(). New Design, New Folder and Rename are named in place;
 // a drag moves designs and folders within their project.
+//
+// The names get the width (mitcad#529): the state column holds compact
+// marks (ProjectRowText.hpp: "v2*", a lock, a cloud with a check) with the
+// full text in the tooltip, a name that does not fit is elided in the
+// middle (its start and end kept; the tooltip has the full name and path),
+// and the panel's width follows a drag of its edge: the card's grip in the
+// Floating layout (GlassCard::setWidthAdjustable), the dock's edge in the
+// Docked one (dockWidthChosen); the window remembers it.
 
 #include <functional>
 
@@ -46,6 +54,7 @@
 #include "ProjectsTree.hpp"
 
 class QAction;
+class QTimer;
 class QToolBar;
 class QTreeWidgetItem;
 
@@ -72,6 +81,9 @@ public:
 
   // The kinds of rows.
   enum class RowType { Project = 1, Folder, Design, NewItem };
+
+  // The narrowest the Floating card can be dragged to (mitcad#529).
+  static constexpr int kMinimumCardWidth = 180;
 
   explicit ProjectsPanel(Host host, QWidget* parent = nullptr);
   ~ProjectsPanel() override;
@@ -112,7 +124,12 @@ public:
   QSize sizeHint() const override;
   // Logs where the rows and the toolbar's buttons are, for UI tests (when
   // it changed); the dock or card the panel is in moving logs them again.
+  // With them (mitcad#529): "Projects width <w>", "Projects edge at x,y"
+  // (the card's grip, the dock's edge), and per row, when it changed,
+  // "Projects text <key>: "<the name as shown>" <marks>; tooltip: <the
+  // tooltip's lines joined by " / ">".
   void logLayout();
+  // The dock or card the panel is in.
   void watchContainer(QWidget* container);
 
 signals:
@@ -135,6 +152,9 @@ signals:
   // A message for the status bar (a name refused).
   void statusMessage(const QString& message, bool error);
   void contentHeightChanged();
+  // The Docked panel's dock was resized by a drag of its edge (the left
+  // button held), and the drag rests: its width (mitcad#529).
+  void dockWidthChosen(int width);
 
 protected:
   void showEvent(QShowEvent* event) override;
@@ -239,7 +259,10 @@ private:
   QString m_loggedTopRows;
   QString m_loggedLayout;
   QString m_loggedSelection;
+  QHash<QString, QString> m_loggedTexts; // "Projects text" lines by row key
   bool m_layoutLogPending = false;
+  QPointer<QWidget> m_container; // the dock or card
+  QTimer* m_widthTimer = nullptr; // a drag of the dock's edge rests
   // A design to select once it is listed (revealDesign).
   QString m_revealDesignRoot;
   QString m_revealDesignPath;

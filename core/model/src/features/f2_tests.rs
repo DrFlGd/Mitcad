@@ -531,3 +531,47 @@ fn split_body_by_several_tools_divides_the_pieces_each_reaches() {
     };
     assert_eq!(def.more_tools.len(), 1);
 }
+
+#[test]
+fn move_face_moves_faces_by_a_rigid_motion() {
+    let mut b = block();
+    let moved = add!(
+        b,
+        json!({"type": "move_face", "body": b.body, "faces": [side(b.extrude, 1, 1)],
+               "transform": {"type": "translate_xyz", "x": 3.0, "y": 0.0, "z": 0.0}}),
+    )
+    .unwrap();
+    assert_eq!(status(&b, moved), FeatureStatus::Ok);
+    assert_eq!(
+        history(&b, b.body),
+        "move_faces(prism(F2:0..20),1 faces,3,0,0)"
+    );
+    // A free move's matrix (rows of a rotation and a translation).
+    let free = add!(
+        b,
+        json!({"type": "move_face", "body": b.body, "faces": [top(&b)],
+               "transform": {"type": "free", "matrix": [[1.0, 0.0, 0.0, 0.0],
+                                                        [0.0, 1.0, 0.0, -2.0],
+                                                        [0.0, 0.0, 1.0, 1.5]]}}),
+    )
+    .unwrap();
+    assert_eq!(status(&b, free), FeatureStatus::Ok);
+    assert!(history(&b, b.body).ends_with("1 faces,0,-2,1.5)"));
+    // A motion that moves nothing, a face the body lacks.
+    let still = add!(
+        b,
+        json!({"type": "move_face", "body": b.body, "faces": [top(&b)],
+               "transform": {"type": "translate_xyz", "x": 0.0, "y": 0.0, "z": 0.0}}),
+    )
+    .unwrap();
+    assert!(matches!(status(&b, still),
+        FeatureStatus::Failed(m) if m == "the faces' motion moves nothing"));
+    let scaled = add!(
+        b,
+        json!({"type": "move_face", "body": b.body, "faces": [top(&b)],
+               "transform": {"type": "free", "matrix": [[2.0, 0.0, 0.0, 0.0],
+                                                        [0.0, 1.0, 0.0, 0.0],
+                                                        [0.0, 0.0, 1.0, 0.0]]}}),
+    );
+    assert!(scaled.is_err() || matches!(status(&b, scaled.unwrap()), FeatureStatus::Failed(_)));
+}

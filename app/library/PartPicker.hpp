@@ -6,8 +6,10 @@
 // preview (`library_preview`, read as tiles come into sight), its name
 // and main sizes, a star for the user's favourites and, for the parts the
 // open design uses, how many times. On the left the groups: Favourites,
-// In this design (when it has parts), All parts, then the library's
-// categories (starred groups first); above the grid a search, the slot
+// In this design (when it has parts), All parts, then the libraries'
+// categories as a tree of groups (mitcad#527: a click on a group shows its
+// subgroups' parts too; folding is remembered; starred groups first on
+// each level; PartGroups.hpp); above the grid a search, the slot
 // system (BUILD parts) and the tiles' size. Hovering a tile shows a larger
 // picture with the supplier, the part number, the library and the licence.
 //
@@ -33,6 +35,7 @@
 #include <QList>
 #include <QPixmap>
 #include <QPointer>
+#include <QRect>
 #include <QSet>
 #include <QString>
 #include <QStringList>
@@ -40,6 +43,7 @@
 #include <QVector>
 #include <QWidget>
 
+#include "PartGroups.hpp"
 #include "UsedParts.hpp"
 
 class QComboBox;
@@ -47,8 +51,8 @@ class QFrame;
 class QLabel;
 class QLineEdit;
 class QListView;
-class QListWidget;
-class QListWidgetItem;
+class QTreeWidget;
+class QTreeWidgetItem;
 class QSlider;
 class QToolButton;
 
@@ -69,7 +73,9 @@ struct PickerPart {
   QString component;    // the component's id in the library
   QString config;       // a configuration row, empty for none
   QString name;
-  QString category;     // the library's category: the group
+  QString category;     // the library's category: its home group
+  QStringList categories; // every category it is in, its home first (mitcad#527)
+  QList<PartGroupPath> groups; // the groups of its categories: names from the top
   QString standard;
   QString description;
   QString designation;
@@ -117,7 +123,11 @@ public:
 
   explicit PartGridModel(QObject* parent = nullptr);
 
+  // `counts`: the design's uses of each shown tile by its key (mitcad#518:
+  // per size, a tile of one configuration row counts that row's uses).
   void setShown(const QList<PickerPart>& shownParts, const QHash<QString, int>& counts);
+  // The stars changed: the tiles are painted again, in the same places.
+  void refreshStars();
   const PickerPart* part(int row) const;
   int rowOf(const QString& key) const;
   int rowCount(const QModelIndex& parent = QModelIndex()) const override;
@@ -131,7 +141,7 @@ private:
   void loadSome();
 
   QList<PickerPart> m_shown;
-  QHash<QString, int> m_counts;
+  QHash<QString, int> m_counts;  // tile key -> uses
   // The parts whose pictures are wanted, in the order the view asked.
   mutable QStringList m_wanted;
   mutable QHash<QString, PickerPart> m_waiting;
@@ -161,7 +171,9 @@ public:
   // search or a filter that empties the group keeps it).
   void setOtherParts(const QList<PickerPart>& parts);
   const QList<PickerPart>& allParts() const { return m_parts; }
-  // The design's library parts (In this design, the tiles' xN).
+  // The design's library parts (In this design, the tiles' xN): a tile of
+  // one configuration row counts the uses of that row (mitcad#518), a tile
+  // without a row its component's.
   void setUsedParts(const QList<UsedPart>& used);
   // The tile of `key` current (empty: none); `notify`: currentChanged.
   void setCurrent(const QString& key, bool notify = false);
@@ -174,7 +186,8 @@ public:
   QString currentKey() const { return m_current; }
   const PickerPart* currentPart() const;
   // The group shown (kFavourites, kInDesign, kAll, kLibraries, kOther or a
-  // category id); an unknown one shows All parts.
+  // group's key, groupKey: "wood/dimensioned timber"); an unknown one
+  // shows All parts.
   void showGroup(const QString& group);
   QString groupShown() const { return m_group; }
   void setSystem(const QString& system);
@@ -188,19 +201,28 @@ public:
   QListView* view() const { return m_view; }
   // The keys of the tiles shown, in order.
   QStringList shownKeys() const;
-  // Stars the current part, or turns its star off.
+  // Stars the current part, or turns its star off. Only the star changes
+  // (mitcad#517): the tiles and the groups stay where they are, the
+  // starred-first order applies the next time the list is made again.
   void toggleStar();
-  // Stars the current group (a category), or turns its star off.
+  // Stars the current group (a library's group) and its subgroups, or
+  // turns their stars off; the groups stay where they are as well.
   void toggleGroupStar();
   // Logs where the search, Star, the groups and the tiles in sight are,
   // for UI tests: "Part picker place search at <at(widget, point)>",
-  // "Part picker group row <group> at ...", "Part picker tile
+  // "Part picker group row <group> at ...", "Part picker place group fold
+  // <group> at ..." (a group with subgroups), "Part picker tile
   // <library>/<component> at ..." (PartPicker gives `at`).
   void logPlaces(const std::function<QString(const QWidget*, const QPoint&)>& at) const;
 
 signals:
-  // The tiles were made again (a group, a search, the system, a star).
+  // The tiles were made again (a group, a search, the system, the parts).
   void tilesChanged();
+  // A star was turned on or off: the tiles and the groups stay as they are
+  // (mitcad#517).
+  void starsChanged();
+  // A group was folded or unfolded: the groups' rows moved (mitcad#527).
+  void placesChanged();
   void searchChanged(const QString& text);
   // Another tile became current (a click, the arrow keys).
   void currentChanged(const QString& key);
@@ -220,26 +242,51 @@ private:
   // The current part stays when it is still shown; else, with `notify`,
   // the first tile becomes current (currentChanged), without it none.
   void refill(bool notify);
+  // The stars changed (any grid's): the tiles' and the groups' stars are
+  // painted again without moving anything (mitcad#517).
+  void refreshStars();
+  // "Part picker tiles[ kept]: <tile> [xN], ..." for UI tests: the tiles in
+  // their order (the first 24) with their use counts.
+  void logTiles(bool kept) const;
+  // The groups in the order shown, by name, for the log; a folded one with
+  // " (folded)", its subgroups left out.
+  QString groupsText() const;
   void star(const QString& key);
   void starGroup(const QString& group);
+  // A library's group starred: by its key, or (kept before mitcad#527) by
+  // the id of a category that is the group.
+  bool groupStarred(const QString& group) const;
+  // The group's row (any level), null when it has none.
+  QTreeWidgetItem* groupItem(const QString& group) const;
+  // Whether the part is in the group shown (or one of its subgroups).
+  bool inShownGroup(const PickerPart& part) const;
+  // A group folded or unfolded by the user: kept in the settings.
+  void groupFolded(QTreeWidgetItem* item, bool folded);
   void step(int by);
   void setTileSize(int size);
   void showHover(const QModelIndex& index, const QPoint& global);
   void hideHover();
   QString groupName(const QString& group) const;
   bool passes(const PickerPart& part) const;
-  QString countKey(const PickerPart& part) const;
+  // The design's uses of the part: of its configuration row for a tile of
+  // one (mitcad#518; the default row's include the uses placed without a
+  // row), else of its component.
+  int countOf(const PickerPart& part) const;
 
   QList<PickerPart> m_parts;
-  QHash<QString, int> m_counts;  // "<library>|<component>" -> uses
+  UsedCounts m_used;
   QString m_group;
+  // The shown group's names and order, so that it stays while a search
+  // empties it (mitcad#527).
+  PartGroupPath m_groupPath;
+  PartGroupTree m_tree;
   QString m_current;
   bool m_externalSearch = false;
   bool m_filling = false;
   // A click on a tile's star: not a click on the tile.
   bool m_starHit = false;
   int m_tile = 96;
-  QListWidget* m_groups = nullptr;
+  QTreeWidget* m_groups = nullptr;
   QLineEdit* m_search = nullptr;
   QComboBox* m_system = nullptr;
   QLabel* m_systemLabel = nullptr;
@@ -315,6 +362,9 @@ private:
   // places, and in the picker's own after "; in the picker".
   void logPlacesLater();
   void logPlaces() const;
+  // The window's place and size in the main window, where its places are
+  // logged (mitcad#528: logged again when it moved).
+  QRect placesGeometry() const;
 
   PartGrid* m_grid = nullptr;
   QToolButton* m_pin = nullptr;
@@ -324,6 +374,9 @@ private:
   bool m_restored = false;
   QTimer m_saveTimer;
   QTimer m_placesTimer;
+  // The check after a move or a resize, and where the places were logged.
+  QTimer m_movedTimer;
+  mutable QRect m_loggedGeometry;
 };
 
 } // namespace mitcad

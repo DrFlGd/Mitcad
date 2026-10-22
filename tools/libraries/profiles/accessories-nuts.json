@@ -2,7 +2,7 @@
   {
     "id": "tnut-b8-heavy",
     "name": "Slotted block heavy B-type slot 8",
-    "category": "nuts",
+    "category": "slot-nuts",
     "source": "slot-profile-accessories/Slotted-block-B-type-slot-8-M6/Motedis-S8BHESNM6/Motedis_S8BHESNM6.stp",
     "make": "solid",
     "supplier": "Motedis",
@@ -27,7 +27,7 @@
   {
     "id": "snut-b10-spring",
     "name": "Slotted block with spring B-type slot 10",
-    "category": "nuts",
+    "category": "slot-nuts",
     "source": "slot-profile-accessories/Slotted-block-with-spring-B-type-slot-10-M6/Motedis-S10BSSNM6/Motedis_S10BSSNM6.stp",
     "make": "solid",
     "supplier": "Motedis",
@@ -52,7 +52,7 @@
   {
     "id": "snut-b8-spring",
     "name": "Slotted block with spring B-type slot 8",
-    "category": "nuts",
+    "category": "slot-nuts",
     "source": "slot-profile-accessories/Slotted-block-with-spring-B-type-slot-8-M6/Motedis-S8BSSNM6/Motedis_S8BSSNM6.stp",
     "make": "solid",
     "supplier": "Motedis",
@@ -78,7 +78,7 @@
   {
     "id": "threaded-plate-b6",
     "name": "Threaded plate B-type slot 6",
-    "category": "nuts",
+    "category": "slot-nuts",
     "source": "slot-profile-accessories/Threaded-Plate-B-Type-slot-6-M4/Motedis_Threaded_Plate_B-Type_slot6.STEP",
     "make": "solid",
     "supplier": "Motedis",
@@ -100,7 +100,7 @@
   {
     "id": "t-block-b10",
     "name": "T-block B-type slot 10 for plastic joints",
-    "category": "nuts",
+    "category": "slot-nuts",
     "source": "slot-profile-accessories/T-Block-slot-10-B-Type/Motedis-T-BLOCK-SLOT-10-B-TYPE/Motedis_T-BLOCK SLOT 10 B-TYPE.stp",
     "make": "solid",
     "supplier": "Motedis",
@@ -120,7 +120,7 @@
   {
     "id": "t-block-i8",
     "name": "T-block I-type slot 8 for plastic joints",
-    "category": "nuts",
+    "category": "slot-nuts",
     "source": "slot-profile-accessories/T-Block-slot-8-I-Type/Motedis-T-BLOCK-SLOT-8-I-TYPE/Motedis_T-BLOCK SLOT 8 I-TYPE.stp",
     "make": "solid",
     "supplier": "Motedis",
@@ -140,7 +140,7 @@
   {
     "id": "square-nut-o",
     "name": "Square nut type O",
-    "category": "nuts",
+    "category": "slot-nuts",
     "source": "slot-profile-accessories/Square-nut-type-O-M6/Motedis-SLOTONM6/Motedis_SLOTONM6.stp",
     "make": "solid",
     "supplier": "Motedis",
@@ -156,7 +156,7 @@
   {
     "id": "square-nut-o-spring",
     "name": "Square nut with spring type O",
-    "category": "nuts",
+    "category": "slot-nuts",
     "source": "slot-profile-accessories/Square-nut-with-spring-type-O-M6/Motedis-SLOTSWBM6/Motedis_SLOTSWBM6.stp",
     "make": "solid",
     "supplier": "Motedis",
@@ -171,7 +171,7 @@
   {
     "id": "flange-nut-din6923",
     "name": "Flange nut DIN 6923",
-    "category": "nuts",
+    "category": "slot-nuts",
     "source": "slot-profile-accessories/Flange-nut-M8/Motedis-FNM8/Motedis_FNM8.stp",
     "make": "solid",
     "supplier": "Motedis",
@@ -187,7 +187,7 @@
   {
     "id": "hammer-screw-b10-m8x20",
     "name": "Hammer head screw B-type slot 10 M8x20",
-    "category": "screws",
+    "category": "slot-screws",
     "source": "slot-profile-accessories/Hammer-Head-Screw-B-Type-slot-10-M8x20/Motedis-THBM8X20/Motedis_THBM8X20.stp",
     "make": "solid",
     "supplier": "Motedis",
@@ -207,7 +207,7 @@
   {
     "id": "hammer-screw-b10-m8x25",
     "name": "Hammer head screw B-type slot 10 M8x25",
-    "category": "screws",
+    "category": "slot-screws",
     "source": "slot-profile-accessories/Hammer-Head-Screw-B-Type-slot-10-M8x25/Motedis-THBM8X25/Motedis_THBM8X25.stp",
     "make": "solid",
     "supplier": "Motedis",
@@ -230,7 +230,7 @@
   {
     "id": "hammer-screw-b10-m8x30",
     "name": "Hammer head screw B-type slot 10 M8x30",
-    "category": "screws",
+    "category": "slot-screws",
     "source": "slot-profile-accessories/Hammer-Head-Screw-B-Type-slot-10-M8x30/Motedis-THBM8X30/Motedis_THBM8X30.stp",
     "make": "solid",
     "supplier": "Motedis",
@@ -250,7 +250,7 @@
   {
     "id": "central-screw-m12x30-sw8-b10",
     "name": "Central screw M12x30 SW8 for 45 B-type slot 10",
-    "category": "screws",
+    "category": "slot-screws",
     "source": "slot-profile-accessories/Central-Screw-M12x30-SW8-P45-B-type-slot-10/Motedis-S10BCSTAT12x30SW8/Motedis_S10BCSTAT12x30SW8.stp",
     "make": "solid",
     "supplier": "Motedis",
@@ -266,7 +266,7 @@
   {
     "id": "central-screw-m12x30-t50-b10",
     "name": "Central screw M12x30 T50 for 45 B-type slot 10",
-    "category": "screws",
+    "category": "slot-screws",
     "source": "slot-profile-accessories/Central-Screw-M12x30-T50-P45-B-type-slot-10/Motedis-S10BCSTAT12x30/Motedis_S10BCSTAT12x30.stp",
     "make": "solid",
     "supplier": "Motedis",
@@ -282,7 +282,7 @@
   {
     "id": "self-forming-screw-s12x30-b10",
     "name": "Self-forming screw S12x30 T50 for 45 B-type slot 10",
-    "category": "screws",
+    "category": "slot-screws",
     "source": "slot-profile-accessories/Self-Forming-Screw-S12x30-T50-P45-B-type-slot-10/Motedis-S10BCS12x30/Motedis_S10BCS12x30.stp",
     "make": "solid",
     "supplier": "Motedis",
@@ -298,7 +298,7 @@
   {
     "id": "self-forming-screw-s7x25-i8",
     "name": "Self-forming screw S7x25 T40 I-type slot 8",
-    "category": "screws",
+    "category": "slot-screws",
     "source": "slot-profile-accessories/Self-Forming-Screw-S7x25-T40-I-Type-slot-8/Motedis-S8ISS725-1/Motedis_S8ISS725.stp",
     "make": "solid",
     "supplier": "Motedis",
@@ -314,7 +314,7 @@
   {
     "id": "auto-connector-screw-m4x30-i5",
     "name": "Special screw for automatic connector DIN 912 M4x30, I-type slot 5",
-    "category": "screws",
+    "category": "slot-screws",
     "source": "slot-profile-accessories/Special-screw-automatic-connector-DIN-912-M4x30-N5-I-Type/Motedis-S5ICP1912430/Motedis_S5ICP1912430.stp",
     "make": "solid",
     "supplier": "Motedis",
@@ -330,7 +330,7 @@
   {
     "id": "auto-connector-screw-m4x35-i5",
     "name": "Special screw for automatic connector DIN 912 M4x35, I-type slot 5",
-    "category": "screws",
+    "category": "slot-screws",
     "source": "slot-profile-accessories/Special-screw-automatic-connector-DIN-912-M4x35-N5-I-Type/Motedis-S5ICP1912435/Motedis_S5ICP1912435.stp",
     "make": "solid",
     "supplier": "Motedis",
@@ -346,7 +346,7 @@
   {
     "id": "shut-off-connector-screw-m4x40-i5",
     "name": "Special screw for shut-off connector 180° DIN 912 M4x40, I-type slot 5",
-    "category": "screws",
+    "category": "slot-screws",
     "source": "slot-profile-accessories/Special-screw-Shut-off-connector-180-G-DIN-912-M4x40-N5-I-Type/Motedis-4854/Motedis_4854.stp",
     "make": "solid",
     "supplier": "Motedis",

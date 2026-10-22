@@ -265,7 +265,16 @@ QVector<ListTable> cutListTables(const QJsonObject& answer) {
   if (profiled) {
     rows.columns << QObject::tr("Profile") << QObject::tr("Cover width (mm)") << QObject::tr("Area covered (m²)");
   }
-  for (const QJsonValue& value : answer.value(QStringLiteral("rows")).toArray()) {
+  // The timber frames' members by frame (mitcad#522): the last column, only
+  // when the design has frames.
+  const QJsonArray answerRows = answer.value(QStringLiteral("rows")).toArray();
+  const bool frames = std::any_of(answerRows.begin(), answerRows.end(), [](const QJsonValue& value) {
+    return !value.toObject().value(QStringLiteral("frame")).toString().isEmpty();
+  });
+  if (frames) {
+    rows.columns << QObject::tr("Frame");
+  }
+  for (const QJsonValue& value : answerRows) {
     const QJsonObject row = value.toObject();
     const QJsonObject ends = row.value(QStringLiteral("ends")).toObject();
     QStringList cells{countText(row.value(QStringLiteral("quantity"))), text(row, "designation"),
@@ -279,6 +288,9 @@ QVector<ListTable> cutListTables(const QJsonObject& answer) {
     }
     if (profiled) {
       cells << boardCells(row);
+    }
+    if (frames) {
+      cells << text(row, "frame");
     }
     rows.rows.append(cells);
   }
@@ -604,14 +616,17 @@ void BuildListsDialog::load() {
     fill(m_cutTables[i], m_cut[i]);
   }
   fill(m_partsTable, m_parts.first());
-  // For UI tests: what the lists hold.
+  // For UI tests: what the lists hold; a frame's members with their frame
+  // (mitcad#522, the last column).
+  const bool byFrame = !m_cut[0].columns.isEmpty() && m_cut[0].columns.last() == QObject::tr("Frame");
   for (const QStringList& row : std::as_const(m_cut[0].rows)) {
     if (row[0].isEmpty()) {
       continue; // the timber's totals (mitcad#478)
     }
-    qInfo().noquote() << QStringLiteral("Cut list row: %1 x %2, %3 mm, A %4, B %5%6")
+    const QString frame = byFrame && !row.last().isEmpty() ? QStringLiteral(", frame ") + row.last() : QString();
+    qInfo().noquote() << QStringLiteral("Cut list row: %1 x %2, %3 mm, A %4, B %5%6%7")
                              .arg(row[0], row[1], row[2], row[3], row[4],
-                                  row[5].isEmpty() ? QString() : QStringLiteral(", machining ") + row[5]);
+                                  row[5].isEmpty() ? QString() : QStringLiteral(", machining ") + row[5], frame);
   }
   for (const QStringList& row : std::as_const(m_cut[1].rows)) {
     qInfo().noquote() << QStringLiteral("Cut list stock: %1, %2 mm stock x %3, pieces %4, offcut %5")

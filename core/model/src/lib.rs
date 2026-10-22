@@ -271,3 +271,10 @@ pub mod reorient;
 pub use document::ReorientReport;
 #[cfg(test)]
 mod reorient_tests;
+// Mount frames of any part and placing a part by one (mitcad#525).
+pub use document::{
+    GridPlace, Inserted, MountAt, MountFrame, MountInput, MountPlan, MountPreview, MountSource,
+};
+pub use features::joint::{MountKind, MountSpec};
+#[cfg(test)]
+mod mount_tests;

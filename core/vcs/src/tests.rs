@@ -28,6 +28,10 @@ mod locks;
 mod folders;
 // BUILD parts of component libraries (mitcad#375).
 mod library_build;
+// Library groups as a tree (mitcad#527).
+mod library_groups;
+// Mount frames of library parts (mitcad#525).
+mod library_mounts;
 
 /// A fresh folder in the temporary directory, removed afterwards.
 struct Scratch(PathBuf);

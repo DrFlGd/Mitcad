@@ -88,4 +88,7 @@ CommandDef plasticCommand(const CommandContext& context);
 // GearCommands.cpp (mitcad#472): `host` links the joints of meshed gears.
 CommandDef gearCommand(const CommandContext& context, DocumentHost& host);
 
+// MoveCommands.cpp (mitcad#531): Move Face, faces of a body moved rigidly.
+CommandDef moveFaceCommand(const CommandContext& context);
+
 } // namespace mitcad::cmd

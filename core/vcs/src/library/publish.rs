@@ -16,6 +16,7 @@ use super::manifest::{
     ENTRY_FORMAT, IndexComponent, IndexEntry, LIBRARY_FORMAT, LIBRARY_MANIFEST, MAX_COMPONENT,
     MAX_PREVIEW, Manifest, ManifestComponent, Problems, read_json, valid_id, valid_path,
 };
+use super::mounts;
 use super::{LibraryCache, LibraryRepo, read_file};
 use crate::api::{optional, text};
 use crate::transaction::FileTransaction;
@@ -113,11 +114,16 @@ pub fn check_folder(dir: &Path, manifest: &Manifest, cache: Option<&LibraryCache
                         if let Err(e) = mitcad_model::diff::read_design(&text) {
                             out.errors.push(format!("{}: {}: {e}", c.id, c.path));
                         }
-                        if c.build.is_some()
-                            && let Ok(design) =
-                                serde_json::from_str::<Value>(text.trim_start_matches('\u{feff}'))
+                        if let Ok(design) =
+                            serde_json::from_str::<Value>(text.trim_start_matches('\u{feff}'))
                         {
-                            build::check_design(c, &c.id, &design, &mut out);
+                            if c.build.is_some() {
+                                build::check_design(c, &c.id, &design, &mut out);
+                            }
+                            // Mount frames of any part (mitcad#525).
+                            if c.build.is_none() || c.mounts.is_some() {
+                                mounts::check_design(c, &c.id, &design, &mut out);
+                            }
                         }
                         if has_links(&text) {
                             out.errors.push(format!(
@@ -339,10 +345,17 @@ pub(super) fn add_command(command: &Value) -> Result<Value, VcsError> {
              (insert them as copies)",
         ));
     }
-    let category = optional(command, "category")
-        .unwrap_or("")
-        .trim()
-        .to_owned();
+    // One category or a list of them (mitcad#527), the first its home.
+    let mut category_ids: Vec<String> = match optional(command, "category") {
+        Some(one) if !one.trim().is_empty() => vec![one.trim().to_owned()],
+        _ => strings(command, "category"),
+    };
+    for more in strings(command, "categories") {
+        if !category_ids.contains(&more) {
+            category_ids.push(more);
+        }
+    }
+    let category = category_ids.first().cloned().unwrap_or_default();
     let folder_name = if category.is_empty() {
         "parts"
     } else {
@@ -370,12 +383,25 @@ pub(super) fn add_command(command: &Value) -> Result<Value, VcsError> {
     } else {
         None
     };
-    if !category.is_empty() && !manifest.categories.iter().any(|c| c.id == category) {
+    // A new category is listed: the home one with `category_name` (a path
+    // of names, `Wood/Boards`) and `category_parent` (a category's id),
+    // the others by their ids.
+    for (i, id) in category_ids.iter().enumerate() {
+        if manifest.categories.iter().any(|c| &c.id == id) {
+            continue;
+        }
+        let (name, parent) = if i == 0 {
+            (
+                optional(command, "category_name").unwrap_or(id),
+                optional(command, "category_parent").unwrap_or(""),
+            )
+        } else {
+            (id.as_str(), "")
+        };
         manifest.categories.push(super::manifest::Category {
-            id: category.clone(),
-            name: optional(command, "category_name")
-                .unwrap_or(&category)
-                .to_owned(),
+            id: id.clone(),
+            name: name.trim().to_owned(),
+            parent: parent.trim().to_owned(),
         });
     }
     // The supplier and BUILD fields (mitcad#375): the command's, else those
@@ -386,10 +412,28 @@ pub(super) fn add_command(command: &Value) -> Result<Value, VcsError> {
             .map(|v| v.trim().to_owned())
             .unwrap_or(old)
     };
+    let build = command
+        .get("build")
+        .filter(|b| !b.is_null())
+        .cloned()
+        .or(old.build);
+    // The mount frames of a part that is no BUILD part (mitcad#525): the
+    // command's, else the design's (a BUILD part lists its own in
+    // build.frames).
+    let mount_frames = match command.get("mounts").filter(|m| !m.is_null()) {
+        Some(given) => Some(given.clone()),
+        None if build.is_none() => {
+            serde_json::from_str::<Value>(design.trim_start_matches('\u{feff}'))
+                .ok()
+                .and_then(|value| mounts::manifest_mounts(&value))
+        }
+        None => None,
+    };
     let component = ManifestComponent {
         id: id.clone(),
         path,
-        category,
+        category: super::manifest::CategoryIds(category_ids),
+        categories: Vec::new(),
         name: optional(command, "name").unwrap_or(&id).trim().to_owned(),
         standard: optional(command, "standard").unwrap_or("").to_owned(),
         description: optional(command, "description").unwrap_or("").to_owned(),
@@ -402,11 +446,8 @@ pub(super) fn add_command(command: &Value) -> Result<Value, VcsError> {
         supplier_url: kept("supplier_url", old.supplier_url),
         // A new design: the rows' pictures of the old one may not match it.
         row_previews: Default::default(),
-        build: command
-            .get("build")
-            .filter(|b| !b.is_null())
-            .cloned()
-            .or(old.build),
+        build,
+        mounts: mount_frames,
     };
     match manifest.components.iter_mut().find(|c| c.id == id) {
         Some(old) => *old = component.clone(),

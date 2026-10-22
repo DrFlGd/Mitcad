@@ -2,7 +2,7 @@
   {
     "id": "tnut-b6",
     "name": "T-nut B-type slot 6",
-    "category": "nuts",
+    "category": "slot-nuts",
     "source": "slot-profile-accessories/T-nut-B-type-slot-6-M5/Motedis-S6BHASNM5/Motedis_S6BHASNM5.stp",
     "make": "solid",
     "supplier": "Motedis",
@@ -20,7 +20,7 @@
   {
     "id": "tnut-b6-heavy",
     "name": "T-nut heavy duty steel B-type slot 6",
-    "category": "nuts",
+    "category": "slot-nuts",
     "source": "slot-profile-accessories/T-nut-heavy-duty-steel-B-Type-slot-6-M5/Motedis-S6BHESNM5/Motedis_S6BHESNM5.stp",
     "make": "solid",
     "supplier": "Motedis",
@@ -38,7 +38,7 @@
   {
     "id": "tnut-b8",
     "name": "T-nut B-type slot 8",
-    "category": "nuts",
+    "category": "slot-nuts",
     "source": "slot-profile-accessories/T-nut-B-type-slot-8-M6/Motedis-S8BHASNM6-1/Motedis_S8BHASNM6.stp",
     "make": "solid",
     "supplier": "Motedis",
@@ -56,7 +56,7 @@
   {
     "id": "tnut-i8",
     "name": "T-nut I-type slot 8",
-    "category": "nuts",
+    "category": "slot-nuts",
     "source": "slot-profile-accessories/T-nut-I-type-slot-8-M6/Motedis-S8IHASNM6/Motedis_S8IHASNM6.stp",
     "make": "solid",
     "supplier": "Motedis",
@@ -74,7 +74,7 @@
   {
     "id": "tnut-i8-guided",
     "name": "T-nut guided I-type slot 8",
-    "category": "nuts",
+    "category": "slot-nuts",
     "source": "slot-profile-accessories/T-nut-guided-I-type-slot-8-M6/Motedis-S8ISMONM6/Motedis_S8ISMONM6.stp",
     "make": "solid",
     "supplier": "Motedis",
@@ -93,7 +93,7 @@
   {
     "id": "tnut-i5-spring",
     "name": "T-nut with spring ball I-type slot 5",
-    "category": "nuts",
+    "category": "slot-nuts",
     "source": "slot-profile-accessories/T-Nut-with-spring-ball-without-guidance-I-Type-slot-5-M4/Motedis-S5ISMONM4-1/Motedis_S5ISMONM4.stp",
     "make": "solid",
     "supplier": "Motedis",
@@ -111,7 +111,7 @@
   {
     "id": "tnut-i5-spring-guided",
     "name": "T-nut with spring ball, guided, I-type slot 5",
-    "category": "nuts",
+    "category": "slot-nuts",
     "source": "slot-profile-accessories/T-nut-with-spring-ball-with-guidance-I-Type-slot-5-M4/Motedis-S5ISMONM4G-1/Motedis_S5ISMONM4G.stp",
     "make": "solid",
     "supplier": "Motedis",
@@ -129,7 +129,7 @@
   {
     "id": "tnut-i6-spring-guided",
     "name": "T-nut with spring ball, guided, I-type slot 6",
-    "category": "nuts",
+    "category": "slot-nuts",
     "source": "slot-profile-accessories/T-nut-with-spring-ball-with-guidance-I-Type-slot-6-M5/Motedis-S6ISMONM5G/Motedis_S6ISMONM5G.stp",
     "make": "solid",
     "supplier": "Motedis",
@@ -148,7 +148,7 @@
   {
     "id": "tnut-b10",
     "name": "T-nut B-type slot 10",
-    "category": "nuts",
+    "category": "slot-nuts",
     "source": "slot-profile-accessories/T-nut-B-Type-slot-10-M6/Motedis-S10BHASNM6/Motedis_S10BHASNM6.stp",
     "make": "solid",
     "supplier": "Motedis",
@@ -167,7 +167,7 @@
   {
     "id": "tnut-b10-heavy",
     "name": "Heavy slot nut B-type slot 10",
-    "category": "nuts",
+    "category": "slot-nuts",
     "source": "slot-profile-accessories/Heavy-Slot-Nut-B-Type-Slot-10-M6/Motedis-S10BHESNM6/Motedis_S10BHESNM6.stp",
     "make": "solid",
     "supplier": "Motedis",
@@ -186,7 +186,7 @@
   {
     "id": "snut-b10",
     "name": "Square nut B-type slot 10",
-    "category": "nuts",
+    "category": "slot-nuts",
     "source": "slot-profile-accessories/Square-Nut-Channel-10mm-M5/Motedis_4544.stp",
     "make": "solid",
     "supplier": "Motedis",

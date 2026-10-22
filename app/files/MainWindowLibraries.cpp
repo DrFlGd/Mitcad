@@ -9,9 +9,11 @@
 #include <QMenu>
 #include <QtLogging>
 
+#include "../commands/MountCommands.hpp"
 #include "../framework/CommandRegistry.hpp"
 #include "../framework/Dialogs.hpp"
 #include "../framework/AppSettings.hpp"
+#include "../library/MountFrames.hpp"
 #include "../library/UsedParts.hpp"
 #include "Libraries.hpp"
 #include "LibraryDialogs.hpp"
@@ -20,6 +22,9 @@ namespace mitcad {
 
 void MainWindow::registerLibraryCommands() {
   configureLibraries();
+  // Place Part (mitcad#525): a part with mount frames placed by one.
+  m_mountPart = std::make_shared<MountPart>();
+  registerMountCommands(*m_registry, *this, m_mountPart);
   const auto def = [](const char* id, const QString& name, const char* icon, const QString& tooltip,
                       std::function<void()> run) {
     CommandDef d;
@@ -104,6 +109,20 @@ void MainWindow::insertFromLibrary(bool community) {
                       {QStringLiteral("component"), choice.component}};
   if (!choice.config.isEmpty()) {
     library.insert(QStringLiteral("config"), choice.config);
+  }
+  // A part with mount frames (mitcad#525): Place Part, where a click snaps a
+  // frame to a face, a hole or a grid and Enter drops it in as below.
+  const QVector<MountFrameInfo> frames = mountFramesOf(choice.mounts);
+  if (!frames.isEmpty()) {
+    *m_mountPart = MountPart{library, choice.name, choice.version, choice.license, choice.link, choice.mounts};
+    QStringList names;
+    for (const MountFrameInfo& frame : frames) {
+      names << mountFrameLabel(frame);
+    }
+    qInfo().noquote() << QStringLiteral("Insert from Library: %1/%2 has mount frames %3: Place Part")
+                             .arg(choice.library, choice.component, names.join(QStringLiteral(", ")));
+    startCommand(QString::fromLatin1(kMountPartCommand), {}, nullptr);
+    return;
   }
   QJsonObject result;
   const QJsonObject command{{QStringLiteral("cmd"), QStringLiteral("insert_component")},

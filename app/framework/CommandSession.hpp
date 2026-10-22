@@ -205,8 +205,9 @@ public:
   // Puts the keyboard into a value input (by its key) of the panel.
   bool focusValue(const QString& key);
   // A choice made outside the panel (mitcad#418: BUILD's part picker), as
-  // if chosen in it: its onChange runs and the preview follows. False when
-  // the command has no choice input `key` or has ended.
+  // if chosen in it: its onChange runs and the preview follows; or the
+  // text of a text input (mitcad#519: BUILD's Openings window), as if
+  // typed. False when the command has no such input `key` or has ended.
   bool choose(const QString& key, const QString& value);
   // A light bulb of the browser while the panel is open (mitcad#295;
   // CommandSessionVisibility.cpp): runs the visibility commands as one undo

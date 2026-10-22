@@ -49,6 +49,8 @@ void FloatingLayout::adopt(GlassCard* card) {
 void FloatingLayout::addCard(GlassCard* card, Anchor anchor, const Sizing& sizing) {
   adopt(card);
   connect(card, &GlassCard::collapsedChanged, this, &FloatingLayout::requestLayout);
+  // A width the user drags (mitcad#529).
+  connect(card, &GlassCard::widthDragged, this, [this, card](int width) { setCardWidth(card, width); });
   m_entries.push_back({card, anchor, sizing, -1});
   card->setVisible(sizing.shown);
   if (!m_windowed) {
@@ -88,6 +90,17 @@ int FloatingLayout::maximumContentHeight(const QWidget* content) const {
     }
   }
   return -1;
+}
+
+void FloatingLayout::setCardWidth(GlassCard* card, int width) {
+  const int most = std::max(1, (m_viewer->width() - 2 * kMargin) * 2 / 3);
+  for (Entry& entry : m_entries) {
+    if (entry.card == card) {
+      entry.sizing.width = std::clamp(width, 1, std::max(1, most));
+      layoutCards();
+      return;
+    }
+  }
 }
 
 void FloatingLayout::requestLayout() {
@@ -349,7 +362,10 @@ void FloatingLayout::layoutCards() {
     }
     const int limit = std::min(static_cast<int>((view.height() - 2 * kMargin) * entry.sizing.maxHeightShare),
                                cardsBottom - leftTop);
-    const QSize size = sized(entry, entry.sizing.width > 0 ? entry.sizing.width : 260, limit);
+    // A width the user chose (mitcad#529) within the view.
+    const int width = std::min(entry.sizing.width > 0 ? entry.sizing.width : 260,
+                               std::max(1, view.width() - 2 * kMargin));
+    const QSize size = sized(entry, width, limit);
     entry.card->setSlot(QRect(view.left() + kMargin, leftTop, size.width(), size.height()));
     entry.maxContent = std::max(0, limit - entry.card->heightForContent(0));
     leftTop = entry.card->slot().bottom() + 1 + kGap;

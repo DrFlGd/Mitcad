@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use super::components::{design_digest, file_label};
 use super::copy::CopySource;
+use super::mounts::{Inserted, SourceMount};
 use super::{DocState, Document, ModelError, invalid};
 use crate::assembly::ExternalLink;
 use crate::configurations::{ConfigurationRow, Configurations, apply_values};
@@ -61,8 +62,14 @@ pub struct PartsListRow {
 }
 
 /// New bodies of a linked component: the component, its link, the new
-/// digest and the bodies.
-pub(super) type LinkUpdate = (ComponentUid, ExternalLink, String, Vec<BaseBody>);
+/// digest, the bodies and the mount frames (mitcad#525).
+pub(super) type LinkUpdate = (
+    ComponentUid,
+    ExternalLink,
+    String,
+    Vec<BaseBody>,
+    Vec<SourceMount>,
+);
 
 /// A library component's design in a row: the row applied to a copy of
 /// its parameters.
@@ -105,19 +112,43 @@ impl<K: Kernel> Document<K> {
         Ok(Configured { state, row })
     }
 
+    /// A library component's design in its row and the name its component
+    /// takes (mitcad#525: a mount placement's preview).
+    pub(super) fn library_design(
+        &self,
+        part: &LibraryPart,
+    ) -> Result<(DocState, String), ModelError> {
+        let request = LibraryRequest {
+            library: part.library.clone(),
+            url: part.url.clone(),
+            rev: part.rev.clone(),
+            component: part.component.clone(),
+        };
+        let source = self.library_source(&request).map_err(invalid)?;
+        let configured = Self::configured(&source, part.config.as_deref())?;
+        let designation = designation(&source, configured.row.as_ref());
+        let name = if designation.is_empty() {
+            source.name.clone()
+        } else {
+            designation
+        };
+        Ok((configured.state, name))
+    }
+
     /// The bodies of a configured library component, named after its
-    /// designation when it has one body.
+    /// designation when it has one body, and its mount frames
+    /// (mitcad#525).
     fn library_bodies(
         &self,
         configured: &Configured,
         designation: &str,
         path: &str,
-    ) -> Result<Vec<BaseBody>, ModelError> {
-        let mut bodies = self.design_bodies(&configured.state, path)?;
+    ) -> Result<(Vec<BaseBody>, Vec<SourceMount>), ModelError> {
+        let (mut bodies, mounts) = self.design_parts(&configured.state, path)?;
         if bodies.len() == 1 && !designation.is_empty() {
             bodies[0].name = Some(designation.to_owned());
         }
-        Ok(bodies)
+        Ok((bodies, mounts))
     }
 
     /// Inserts a library's component (Insert Component from a library):
@@ -130,6 +161,18 @@ impl<K: Kernel> Document<K> {
         part: &LibraryPart,
         options: &super::InsertOptions,
     ) -> Result<(ComponentUid, OccurrenceUid), ModelError> {
+        self.insert_library(part, options)
+            .map(|inserted| (inserted.component, inserted.occurrence))
+    }
+
+    /// [`Document::insert_library_component`], with the mount frames the
+    /// new component has and the joint a mount placement made
+    /// (mitcad#525).
+    pub fn insert_library(
+        &mut self,
+        part: &LibraryPart,
+        options: &super::InsertOptions,
+    ) -> Result<Inserted, ModelError> {
         super::components::check_transform(&options.transform)?;
         let parent = self.state.assembly.active;
         self.state.editable(parent)?;
@@ -158,11 +201,22 @@ impl<K: Kernel> Document<K> {
                 designation.clone()
             }
         });
-        let bodies = if options.link {
-            Some(self.library_bodies(&configured, &designation, &source.path)?)
+        // Its mount frames (mitcad#525): a linked part's are joint origins
+        // of its own where the design has them; a copy has the design's.
+        let (bodies, mounts) = if options.link {
+            let (bodies, mounts) = self.library_bodies(&configured, &designation, &source.path)?;
+            (Some(bodies), mounts)
+        } else if options.mount.is_some() {
+            (None, self.design_mounts(&configured.state)?)
         } else {
-            None
+            (None, Vec::new())
         };
+        let listed = super::mounts::listed_mounts(&configured.state);
+        let plan = match &options.mount {
+            Some(mount) => Some(self.plan_mount(&mounts, mount, &wanted)?),
+            None => None,
+        };
+        let transform = plan.as_ref().map_or(options.transform, |p| p.placement);
         let digest = part_digest(&source, configured.row.as_ref());
         let label = format!("Insert {wanted}");
         self.apply(|state| {
@@ -174,8 +228,8 @@ impl<K: Kernel> Document<K> {
                 None => state.free_component_name(&wanted),
             };
             let made = state.assembly.create(Some(&name), None);
-            let occurrence = state.assembly.place(made, parent, options.transform);
-            match bodies {
+            let occurrence = state.assembly.place(made, parent, transform);
+            let frames = match bodies {
                 Some(bodies) => {
                     let base = BaseDef {
                         source: Some(format!("{} {}", source.library, file_label(&source.path))),
@@ -190,15 +244,17 @@ impl<K: Kernel> Document<K> {
                             .body_names
                             .insert(crate::ids::BodyUid::new(added.uid, 0), name);
                     }
+                    let frames = super::mounts::add_linked_mounts(state, made, &mounts)?;
                     let component = state.assembly.component_mut(made).expect("made");
                     component.link = Some(ExternalLink {
                         path: source.path.clone(),
                         digest,
                         feature: added.uid,
                     });
+                    frames
                 }
                 None => {
-                    state.copy_component(
+                    let (_, copy) = state.copy_component_mapped(
                         &configured.state,
                         &[],
                         made,
@@ -208,10 +264,24 @@ impl<K: Kernel> Document<K> {
                             request: &texture_request,
                         },
                     )?;
+                    super::mounts::copied_mounts(state, made, &listed, &copy)
                 }
-            }
+            };
             state.assembly.component_mut(made).expect("made").library = Some(reference);
-            Ok((label, (made, occurrence)))
+            let joint = match &plan {
+                Some(plan) => Some(super::mounts::attach_mount(
+                    state, parent, occurrence, &frames, plan,
+                )?),
+                None => None,
+            };
+            let inserted = Inserted {
+                component: made,
+                occurrence,
+                joint,
+                frames,
+                plan,
+            };
+            Ok((label, inserted))
         })
     }
 
@@ -258,7 +328,7 @@ impl<K: Kernel> Document<K> {
                 .map_err(|e| invalid(format!("{}: {e}", component.name)))?;
             let designation = designation(&source, configured.row.as_ref());
             let reference = library_ref(&source, configured.row.as_ref(), &designation);
-            let bodies = self.library_bodies(&configured, &designation, &source.path)?;
+            let (bodies, mounts) = self.library_bodies(&configured, &designation, &source.path)?;
             let digest = part_digest(&source, configured.row.as_ref());
             let rename = !old.designation.is_empty()
                 && component.name == old.designation
@@ -289,6 +359,7 @@ impl<K: Kernel> Document<K> {
                 digest,
                 rename,
                 text,
+                mounts,
             ));
         }
         let label = match planned.as_slice() {
@@ -300,7 +371,9 @@ impl<K: Kernel> Document<K> {
         };
         let lines: Vec<String> = planned.iter().map(|p| p.6.clone()).collect();
         self.apply(|state| {
-            for (uid, link, reference, bodies, digest, rename, _) in planned {
+            for (uid, link, reference, bodies, digest, rename, _, mounts) in planned {
+                // Its mount frames follow the version and row (mitcad#525).
+                super::mounts::update_linked_mounts(state, uid, &mounts)?;
                 let position = state.require(link.feature)?;
                 let mut entry = (*state.features[position]).clone();
                 if let FeatureDef::Base(base) = &mut entry.def {
@@ -385,13 +458,13 @@ impl<K: Kernel> Document<K> {
                 continue;
             }
             match self.library_bodies(&configured, &library.designation, &source.path) {
-                Ok(bodies) => {
+                Ok((bodies, mounts)) => {
                     messages.push(format!(
                         "{name} is updated from {} {}",
                         library.library,
                         library.version_text()
                     ));
-                    updates.push((uid, link, digest, bodies));
+                    updates.push((uid, link, digest, bodies, mounts));
                 }
                 Err(ModelError::Cancelled) => return Err(ModelError::Cancelled),
                 Err(e) => messages.push(format!(

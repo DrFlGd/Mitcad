@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #include "PartFavourites.hpp"
 
+#include <algorithm>
 #include <array>
 
 #include <QJsonArray>
@@ -118,6 +119,25 @@ void PartFavourites::setGroupStarred(const QString& group, bool on) {
   emit changed();
 }
 
+void PartFavourites::setGroupsStarred(const QStringList& groups, bool on) {
+  bool changes = false;
+  for (const QString& group : groups) {
+    if (group.isEmpty() || m_groups.contains(group) == on) {
+      continue;
+    }
+    if (on) {
+      m_groups.append(group);
+    } else {
+      m_groups.removeAll(group);
+    }
+    changes = true;
+  }
+  if (changes) {
+    save();
+    emit changed();
+  }
+}
+
 QList<PartStar> PartFavourites::starredParts() const { return m_parts; }
 
 void PartFavourites::save() const {
@@ -135,6 +155,10 @@ void PartFavourites::save() const {
 }
 
 QList<int> pickerOrder(const QList<OrderedPart>& parts, bool inFavourites) {
+  return pickerOrder(parts, inFavourites, {});
+}
+
+QList<int> pickerOrder(const QList<OrderedPart>& parts, bool inFavourites, const QList<QStringList>& groups) {
   const PartFavourites& favourites = PartFavourites::instance();
   // Classes in the order shown: starred parts of starred groups (in
   // Favourites only), the other starred parts, the rest.
@@ -143,7 +167,12 @@ QList<int> pickerOrder(const QList<OrderedPart>& parts, bool inFavourites) {
     const OrderedPart& part = parts.at(i);
     int rank = 2;
     if (favourites.starred(part.library, part.component, part.row, part.defaultRow)) {
-      rank = inFavourites && favourites.groupStarred(part.group) ? 0 : 1;
+      const QStringList others = i < groups.size() ? groups.at(i) : QStringList();
+      const bool starredGroup =
+          favourites.groupStarred(part.group) ||
+          std::any_of(others.begin(), others.end(),
+                      [&favourites](const QString& group) { return favourites.groupStarred(group); });
+      rank = inFavourites && starredGroup ? 0 : 1;
     }
     classes[static_cast<size_t>(rank)].append(i);
   }

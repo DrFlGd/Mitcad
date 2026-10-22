@@ -337,7 +337,7 @@ bool CommandSession::start(const Selection& preselection, QString& error) {
     for (const SelectionItem& picked : preselection) {
       for (const Slot& slot : all) {
         const InputDef& input = *slot.def;
-        if (input.type != InputDef::Type::Selection || !input.acceptsIn(picked, scopeOf(slot)) ||
+        if (input.type != InputDef::Type::Selection || !input.takesIn(picked, scopeOf(slot)) ||
             !isReferable(picked)) {
           continue;
         }
@@ -3114,11 +3114,17 @@ void CommandSession::discard() {
 bool CommandSession::focusValue(const QString& key) { return m_presenter != nullptr && m_presenter->focusValue(key); }
 
 bool CommandSession::choose(const QString& key, const QString& value) {
-  if (m_done || m_presenter == nullptr || !m_presenter->actions().choiceChanged) {
+  if (m_done || m_presenter == nullptr) {
     return false;
   }
   const auto slot = slotOf(key);
-  if (!slot || slot->def->type != InputDef::Type::Choice) {
+  if (slot && slot->def->type == InputDef::Type::Text && m_presenter->actions().textEdited) {
+    // A text written by a window beside the panel (mitcad#519: BUILD's
+    // Openings window), as if typed; the panel shows it at its refresh.
+    m_presenter->actions().textEdited(key, value);
+    return true;
+  }
+  if (!m_presenter->actions().choiceChanged || !slot || slot->def->type != InputDef::Type::Choice) {
     return false;
   }
   // As the panel's drop-down does: queued while the model computes.

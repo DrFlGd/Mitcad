@@ -373,6 +373,57 @@ if(MITCAD_MESA_DIR)
               -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-reorient-design"
               -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
     set_tests_properties(app.ui-windows-reorient-design PROPERTIES TIMEOUT 300)
+    # Mount frames of any part and Place Part (mitcad#525): synthetic
+    # Gridfinity bins on a baseplate's cells (a taken cell refused), a lamp
+    # free on a face, an own screw's frame made, published and placed into a
+    # hole, a drop-in joined by its frame; a library in a local git
+    # repository.
+    add_test(NAME app.ui-windows-mount
+      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+              -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-mount-test.ps1"
+              -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-mount"
+              -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
+    set_tests_properties(app.ui-windows-mount PROPERTIES TIMEOUT 900)
+    # The joint highlight (mitcad#523): a face-to-face joint and a circular
+    # edge's joint selected in the browser and the timeline, each side's
+    # geometry, frames and occurrences logged, another joint replacing it,
+    # a click on nothing clearing it, a row's hover previewing it; a BUILD
+    # joint's mount frames with their parts.
+    add_test(NAME app.ui-windows-joint-highlight
+      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+              -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-joint-highlight-test.ps1"
+              -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-joint-highlight"
+              -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
+    set_tests_properties(app.ui-windows-joint-highlight PROPERTIES TIMEOUT 300)
+    # MODIFY > Move Face (mitcad#531): a block's end face pushed out, its
+    # timeline cell's card and edit, its top tilted about an edge, a motion
+    # the neighbouring faces cannot follow refused on the panel.
+    add_test(NAME app.ui-windows-move-face
+      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+              -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-move-face-test.ps1"
+              -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-move-face"
+              -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
+    set_tests_properties(app.ui-windows-move-face PROPERTIES TIMEOUT 300)
+    # The Projects panel's rows (mitcad#529): a 55-character design name
+    # elided in the middle in the Floating card, its lock (Editing
+    # elsewhere) as a mark, the full name in the tooltip; the card widened by
+    # its edge shows the whole name and keeps its width after a restart.
+    add_test(NAME app.ui-windows-projects-rows
+      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+              -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-projects-rows-test.ps1"
+              -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-projects-rows"
+              -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
+    set_tests_properties(app.ui-windows-projects-rows PROPERTIES TIMEOUT 300)
+    # File > Open from Project (mitcad#530): in the File menu after Open;
+    # two projects listed, a folder and its sub-folder gone into and back,
+    # the search finding the other project's design, Open and Open
+    # Read-Only, the place shown last after a restart.
+    add_test(NAME app.ui-windows-open-from-project
+      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+              -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-open-from-project-test.ps1"
+              -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-open-from-project"
+              -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
+    set_tests_properties(app.ui-windows-open-from-project PROPERTIES TIMEOUT 300)
   endif()
 elseif(WIN32 AND CMAKE_RUNTIME_OUTPUT_DIRECTORY)
   # Turned off again: remove earlier copies, or they would stay in use.

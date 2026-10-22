@@ -236,13 +236,23 @@ impl<K: Kernel> Document<K> {
 }
 
 impl<K: Kernel> Document<K> {
-    /// The `library_usage` query (mitcad#418): the library parts the
-    /// design uses, BUILD sources and inserted library components alike,
-    /// one entry per library and component (whatever its version or row)
+    /// The `library_usage` query (mitcad#418, mitcad#518): the library parts
+    /// the design uses, BUILD sources and inserted library components
+    /// alike, one entry per library and component (whatever its version)
     /// with how many times the design places it, in the order the parts
-    /// list has them. Parts placed nowhere are left out.
+    /// list has them, and `rows`: the same count per configuration row
+    /// (the row each use was placed in, in the order they first appear).
+    /// Uses placed without a row (the default row) are in `count` only.
+    /// Parts placed nowhere are left out.
     pub(crate) fn library_usage_json(&self) -> Value {
-        let mut parts: Vec<(String, String, String, usize)> = Vec::new();
+        struct Usage {
+            library: String,
+            url: String,
+            component: String,
+            count: usize,
+            rows: Vec<(String, usize)>,
+        }
+        let mut parts: Vec<Usage> = Vec::new();
         for row in self.parts_list() {
             let Some(library) = row.library.as_ref() else {
                 continue;
@@ -250,23 +260,41 @@ impl<K: Kernel> Document<K> {
             if row.quantity == 0 {
                 continue;
             }
-            match parts
-                .iter_mut()
-                .find(|p| p.0 == library.library && p.2 == library.component)
+            let at = match parts
+                .iter()
+                .position(|p| p.library == library.library && p.component == library.component)
             {
-                Some(part) => part.3 += row.quantity,
-                None => parts.push((
-                    library.library.clone(),
-                    crate::library::shown_url(&library.url),
-                    library.component.clone(),
-                    row.quantity,
-                )),
+                Some(at) => at,
+                None => {
+                    parts.push(Usage {
+                        library: library.library.clone(),
+                        url: crate::library::shown_url(&library.url),
+                        component: library.component.clone(),
+                        count: 0,
+                        rows: Vec::new(),
+                    });
+                    parts.len() - 1
+                }
+            };
+            let part = &mut parts[at];
+            part.count += row.quantity;
+            if let Some(config) = library.config.as_ref().filter(|c| !c.is_empty()) {
+                match part.rows.iter_mut().find(|r| &r.0 == config) {
+                    Some(counted) => counted.1 += row.quantity,
+                    None => part.rows.push((config.clone(), row.quantity)),
+                }
             }
         }
         let parts: Vec<Value> = parts
             .into_iter()
-            .map(|(library, url, component, count)| {
-                json!({"library": library, "url": url, "component": component, "count": count})
+            .map(|part| {
+                let rows: Vec<Value> = part
+                    .rows
+                    .into_iter()
+                    .map(|(config, count)| json!({"config": config, "count": count}))
+                    .collect();
+                json!({"library": part.library, "url": part.url, "component": part.component,
+                       "count": part.count, "rows": rows})
             })
             .collect();
         json!({ "parts": parts })

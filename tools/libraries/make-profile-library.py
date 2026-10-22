@@ -10,7 +10,12 @@ tagged.
 
     python3 make-profile-library.py --cli build/dev/tools/cli/mitcad-cli \\
         --source <folder of the supplier's files> --out ../libraries/mitcad-parts \\
-        [--groups tools/libraries/profiles] [--only id,id] [--version 1.0.0] [--merge] [--commit]
+        [--groups tools/libraries/profiles] [--only id,id] [--version 1.0.0] [--merge] [--commit] \\
+        [--render-worker build/dev/app/mitcad-render] [--no-render] [--rerender]
+
+The fasteners (nuts, screws, wood fasteners) get a finish as their
+appearance and a preview rendered in the studio of library_previews.py
+(mitcad#526), kept when their design did not change.
 
 The parts are listed in group files (tools/libraries/profiles/*.json; the
 format is in docs/libraries.md, "Mitcad's parts library"). Each part is
@@ -46,12 +51,16 @@ import json
 import math
 import os
 import random
+import re
 import shutil
 import struct
 import subprocess
 import sys
 import tempfile
 import zlib
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import library_previews as previews  # noqa: E402
 
 LIBRARY_ID = "mitcad-parts"
 LIBRARY_NAME = "Mitcad parts"
@@ -990,10 +999,100 @@ def make_solid(ctx, mcp, entry, build):
         length = (build.get("length") or {}).get("parameter")
         add_frames(mcp, document, frames, length)
         set_frames(entry, build, frames, build.get("frames") or [])
+        # The source's colours are not Mitcad's appearances; a fastener's
+        # finish (mitcad#526) is.
+        solid_screw_thread(mcp, document, entry)
+        set_appearance(mcp, document, entry)
         finish_design(mcp, document, entry)
         return save(ctx, mcp, document, entry), {"kind": "solid"}
     finally:
         mcp.close(document)
+
+
+# ---------------------------------------------------------------------
+# Screws' threads and heads (mitcad#526): a cosmetic thread on the shank,
+# which the `threads` query lists and the preview models, and a wood
+# screw's head edge rounded. A feature that cannot be made is left out
+# with a warning; the part is made without it.
+
+def try_feature(mcp, document, entry, command):
+    """Adds a feature; its uid, or None (and no feature) when it fails."""
+    try:
+        uid = mcp.add(document, command)
+    except PartError as e:
+        uid, error = None, str(e)
+    else:
+        error = None
+    features = mcp.query(document, {"query": "timeline"}).get("features") or []
+    mine = [f for f in features if f.get("uid") == uid] if uid else \
+        [f for f in features[-1:] if f.get("name") == command.get("name")]
+    failed = [f for f in mine if f.get("status") == "error"]
+    if failed or error:
+        for feature in mine:
+            mcp.command(document, {"cmd": "delete_feature", "uid": feature["uid"]})
+        reason = error or failed[0].get("error")
+        previews.warn(f"{entry['id']}: no {command.get('name', 'feature').lower()} ({reason})")
+        return None
+    return uid
+
+
+def keep_thread(entry, command):
+    """Records a cosmetic thread for the preview to model."""
+    entry.setdefault("_threads", []).append(command)
+
+
+def wood_screw_dress(mcp, document, entry, shank, head_uid, head, dk, length, d, diameter):
+    """A wood screw's head edge rounded (the head's outer face's edge: the
+    head cylinder's base, at z = 0 for a countersunk head and at -K for
+    the others) and a cosmetic thread: the nearest forming screw thread
+    (ISO 1478), a stand-in for the wood screw's own, over 60 % of the
+    length from the tip (a pan head's connector screw to the head),
+    chamfered at the tip."""
+    body = mcp.query(document, {"query": "bodies"})[0]["uid"]
+    try_feature(mcp, document, entry, {"cmd": "add_feature", "name": "Head rounding", "def": {
+        "type": "fillet", "body": body, "edges": [f"E{{{head_uid}:bottom|{head_uid}:side0}}"],
+        "radius": f"0.08 * {dk}"}})
+    # The tip's chamfer follows a row's diameter (the thread's designation
+    # is the default row's): about a forming thread's minor diameter.
+    command = previews.thread_command([{"body": body, "face": f"{shank}:side0"}], previews.forming_thread(diameter),
+                                      None if head == "pan" else f"0.6 * {length}",
+                                      chamfer_diameter=f"0.58 * {d}")
+    if try_feature(mcp, document, entry, command):
+        keep_thread(entry, command)
+
+
+def solid_screw_thread(mcp, document, entry):
+    """A screw made from the supplier's solid (a hammer head screw, a
+    central or self-forming screw): a cosmetic ISO metric thread of the
+    size its name gives (`M8x20`; a self-forming `S12x30` the metric
+    coarse thread of its diameter as a stand-in) on its cylindrical faces
+    of that diameter."""
+    category = str(entry.get("category") or "").lower()
+    if "screw" not in category and "screw" not in entry["name"].lower():
+        return
+    found = re.search(r"\b[MS](\d+(?:\.\d+)?)x\d", entry["name"])
+    if not found:
+        return
+    diameter = float(found.group(1))
+    faces = []
+    for body in mcp.query(document, {"query": "bodies"}):
+        for face in mcp.query(document, {"query": "faces", "body": body["uid"]}) or []:
+            names = face.get("names") or []
+            if face.get("surface") != "cylinder" or not names:
+                continue
+            try:
+                measured = mcp.query(document, {"query": "measure", "a": {"body": body["uid"], "face": names[0]}})
+            except PartError:
+                continue
+            radius = ((measured or {}).get("a") or {}).get("circle", {}).get("radius")
+            if radius is not None and abs(2 * radius - diameter) < 0.3:
+                faces.append({"body": body["uid"], "face": names[0]})
+    if not faces:
+        previews.warn(f"{entry['id']}: no shank of {diameter:g} mm for its thread")
+        return
+    command = previews.thread_command(faces, previews.metric_thread(diameter))
+    if try_feature(mcp, document, entry, command):
+        keep_thread(entry, command)
 
 
 # ---------------------------------------------------------------------
@@ -1532,7 +1631,8 @@ def set_appearance(mcp, document, entry, caps=()):
     body's coordinates so that a board's grain runs along its length (Z).
     A board's `caps` (the faces of its ends) with a grain get its end
     grain, `<id>-end`."""
-    look = entry.get("appearance")
+    # A finish by name (`zinc_plated`, `stainless`, …; library_previews).
+    look = previews.finish(entry.get("appearance"))
     if not look:
         return
     if isinstance(look, str):
@@ -1631,6 +1731,7 @@ def make_model(ctx, mcp, entry, build):
     if thread is not None and (shape != "rod" or not isinstance(thread, dict) or not thread.get("designation")):
         fail(f"{entry['id']}: dimensions.thread is a rod's thread size with a designation")
     document = mcp.create()
+    dress = None
     try:
         names = set()
         for name, value in parameters.items():
@@ -1758,14 +1859,17 @@ def make_model(ctx, mcp, entry, build):
             head = dimensions.get("head", "countersunk")
             if head not in ("countersunk", "flat", "pan", "washer"):
                 fail(f"{entry['id']}: dimensions.head '{head}' is none of countersunk, flat, pan, washer")
-            mcp.add(document, {"cmd": "add_feature", "name": "Shank", "def": {
+            shank = mcp.add(document, {"cmd": "add_feature", "name": "Shank", "def": {
                 "type": "cylinder", "plane": "xy", "center": [0, 0], "diameter": d, "height": length,
                 "operation": "new_body"}})
             # A countersunk head lies in the material below the surface (z
             # > 0), the others on it (z < 0).
-            mcp.add(document, {"cmd": "add_feature", "name": "Head", "def": {
+            head_uid = mcp.add(document, {"cmd": "add_feature", "name": "Head", "def": {
                 "type": "cylinder", "plane": "xy", "center": [0, 0], "diameter": dk,
                 "height": k if head == "countersunk" else f"-{k}", "operation": "join"}})
+            if ((entry.get("build") or {}).get("wood") or {}).get("kind") == "screw":
+                # After the frames, whose uids stay those of a plain part.
+                dress = (shank, head_uid, head, dk, length, d, value_of(dimensions["diameter"], parameters))
             default_frames = [{"name": "axis", "kind": "shaft", "origin": [0, 0, 0], "z": [0, 0, 1], "x": [1, 0, 0]}]
         elif shape == "sheet":
             w = size(dimensions["width"], "W")
@@ -1804,6 +1908,8 @@ def make_model(ctx, mcp, entry, build):
         add_frames(mcp, document, frames, length)
         set_frames(entry, build, frames, build.get("frames") or [])
         fill_fasteners(entry, build)
+        if dress:
+            wood_screw_dress(mcp, document, entry, *dress)
         set_appearance(mcp, document, entry, caps)
         finish_design(mcp, document, entry)
         return save(ctx, mcp, document, entry), {"kind": "model"}
@@ -1994,7 +2100,8 @@ def preview(ctx, design, made, mcp_bounds):
     if ctx.render:
         target = design + ".png"
         result = run([ctx.cli, "render", design, "-o", target, "--view", "iso", "--size", f"{SIZE}x{SIZE}",
-                      "--samples", "16", "--time-limit", "30"], check=False)
+                      "--samples", "16", "--time-limit", "30"] + previews.worker_arguments(ctx.worker),
+                     check=False)
         if result.returncode == 0 and os.path.isfile(target) and os.path.getsize(target) <= 512 << 10:
             with open(target, "rb") as f:
                 return f.read()
@@ -2051,7 +2158,8 @@ def row_previews(ctx, mcp, design, entry):
             mcp.close(document)
         target = os.path.join(ctx.scratch, name + ".png")
         result = run([ctx.cli, "render", os.path.join(ctx.scratch, name), "-o", target, "--view", "End",
-                      "--size", f"{SIZE}x{SIZE}", "--samples", "16", "--time-limit", "30"], check=False)
+                      "--size", f"{SIZE}x{SIZE}", "--samples", "16", "--time-limit", "30"]
+                     + previews.worker_arguments(ctx.worker), check=False)
         if result.returncode != 0 or not os.path.isfile(target) or os.path.getsize(target) > 512 << 10:
             raise PartError(f"row {row['name']}'s preview was not rendered: "
                             f"{(result.stdout + result.stderr).strip()[-300:]}")
@@ -2250,6 +2358,42 @@ def category_name(category, categories):
     return categories.get(category) or category.replace("-", " ").replace("_", " ").capitalize()
 
 
+# The main groups of the library's categories (mitcad#527): the tree of
+# groups the part pickers show, the main groups in this order. A category
+# not named here stays a group at the top; a name with a slash is placed
+# already.
+MAIN_GROUPS = [
+    ("Wood", ["sawn-timber", "planed-timber", "dimensioned-timber", "tongue-and-groove", "cladding", "decking",
+              "sheets", "wood-fasteners", "timber-connectors"]),
+    ("Slot profile", ["profiles", "connectors", "plates", "panels", "caps", "covers", "tubes", "accessories",
+                      "slot-nuts", "slot-screws"]),
+    ("Motion", ["linear", "bearings", "motors"]),
+    ("General fasteners", ["screws", "nuts", "washers"]),
+    ("Hardware", ["handles", "feet", "castors"]),
+    ("Workshop", ["workshop"]),
+]
+
+
+def grouped_categories(categories):
+    """The manifest's categories with their main groups as path names
+    (`Wood/Dimensioned timber`; a main group of its own name is that
+    group), in the main groups' order, as the pickers show the groups in
+    the manifest's order; the others after them as they were."""
+    place = {}
+    for rank, (main, ids) in enumerate(MAIN_GROUPS):
+        for at, cid in enumerate(ids):
+            place[cid] = (rank, at, main)
+    out = []
+    for category in categories:
+        category = dict(category)
+        rank, at, main = place.get(category["id"], (len(MAIN_GROUPS), 0, None))
+        name = category.get("name") or category["id"]
+        if main and "/" not in name and not category.get("parent") and name != main:
+            category["name"] = f"{main}/{name}"
+        out.append((rank, at, category))
+    return [category for _, _, category in sorted(out, key=lambda item: (item[0], item[1]))]
+
+
 MIT_TEXT = """MIT License
 
 Copyright (c) 2026 Mitcad contributors
@@ -2330,7 +2474,47 @@ class Context:
     pass
 
 
+FASTENER_WORDS = ("nut", "screw", "bolt", "washer", "nail", "fastener", "rivet")
+
+
+def is_fastener(entry):
+    """A fastener (mitcad#526: rendered in the studio, with its finish): a
+    BUILD fastener, or a part of a category of nuts, screws, washers and
+    the like."""
+    build = entry.get("build") if isinstance(entry.get("build"), dict) else {}
+    category = str(entry.get("category") or "").lower().replace("_", "-")
+    return build.get("role") == "fastener" or any(
+        word in part for part in category.replace("/", "-").split("-") for word in FASTENER_WORDS)
+
+
+def studio_preview(ctx, design, entry):
+    """A fastener's picture rendered in the studio (library_previews), the
+    library's picture kept when its design did not change; None when it
+    cannot be rendered (the caller draws one)."""
+    if not ctx.studio:
+        return None
+    old = previews.read_old(os.path.join(ctx.out, "previews", f"{entry['id']}.png"))
+    # `preview.up`: the part's direction that is up in the picture, where
+    # its mass does not tell its head (library_previews.part_axis).
+    setup = entry.get("preview")
+    up = setup.get("up") if isinstance(setup, dict) else None
+    try:
+        image, how = previews.render_preview(ctx.cli, design, ctx.scratch, ctx.worker, up=up, old=old,
+                                             force=ctx.rerender, threads=entry.get("_threads"))
+    except previews.PreviewError as e:
+        previews.warn(f"{entry['id']}: the preview was not rendered ({e}); drawn instead")
+        return None
+    print(f"preview {entry['id']}: {how} ({entry.get('appearance')})")
+    if how.startswith("rendered without"):
+        previews.PROBLEMS.append(f"{entry['id']}: {how}")
+    return image
+
+
 def make_part(ctx, mcp, entry):
+    if is_fastener(entry) and not entry.get("appearance"):
+        # A fastener without a finish gets one by what its name says
+        # (stainless, brass), else zinc plated steel.
+        entry["appearance"] = previews.default_finish(entry.get("name"), entry.get("part_number"), entry["id"])
     build = copy.deepcopy(entry.get("build") or {})
     # The rows' own build blocks (a timber size's section, species and
     # availability): the manifest's build.rows, merged over the part's by
@@ -2359,9 +2543,12 @@ def make_part(ctx, mcp, entry):
     # A timber board's rows each from its end (mitcad#484); the part's
     # picture its default row's.
     by_row = row_previews(ctx, mcp, design, entry)
+    # A fastener in the studio (mitcad#526): one picture per part, its rows
+    # differing in size only.
+    image = studio_preview(ctx, design, entry) if is_fastener(entry) and not by_row else None
     if by_row:
         image = by_row.get(entry.get("default") or entry["rows"][0]["name"])
-    else:
+    elif image is None:
         image = preview(ctx, design, made, design_bounds(mcp, ctx, design) if made["kind"] != "section" else None)
     preview_path = f"previews/{entry['id']}.png"
     with open(os.path.join(ctx.out, preview_path), "wb") as f:
@@ -2440,6 +2627,13 @@ def main():
                         help="draw the previews of solids from their bounds instead of rendering them")
     parser.add_argument("--merge", action="store_true",
                         help="keep the library's other parts of the manifest in --out (the fastener generator's)")
+    parser.add_argument("--render-worker",
+                        help="mitcad-render for the previews (default: MITCAD_RENDER_WORKER, else next to --cli)")
+    parser.add_argument("--rerender", action="store_true",
+                        help="render every fastener's preview, also those whose design did not change")
+    parser.add_argument("--strict", action="store_true",
+                        help="fail (after making the library) when a fastener's preview was drawn instead of "
+                             "rendered, rendered without its thread, or a screw's thread or rounding was left out")
     args = parser.parse_args()
 
     only = {s.strip() for s in args.only.split(",") if s.strip()}
@@ -2451,6 +2645,15 @@ def main():
     ctx.source = os.path.abspath(args.source)
     ctx.out = os.path.abspath(args.out)
     ctx.render = not args.no_render
+    ctx.worker = os.path.abspath(args.render_worker) if args.render_worker else None
+    ctx.rerender = args.rerender
+    # The fasteners' studio (mitcad#526) when a render worker is there.
+    ctx.studio = False
+    if ctx.render and any(is_fastener(entry) for entry in entries):
+        ctx.studio, reason = previews.renderer_available(ctx.cli, ctx.worker)
+        if not ctx.studio:
+            print(f"warning: no render worker ({reason}); the fasteners' previews are drawn")
+            previews.PROBLEMS.append(f"no render worker ({reason})")
     # The files the group files name and do not make: a note on one that
     # is not in --source (moved or renamed by the supplier).
     for entry in entries:
@@ -2502,6 +2705,7 @@ def main():
     if args.merge:
         # The library's other parts (the fasteners) stay.
         components, library_categories, sources = merged(ctx.out, components, library_categories, sources)
+    library_categories = grouped_categories(library_categories)
     manifest = {
         "format": "mitcad-library", "version": 1, "id": LIBRARY_ID, "name": LIBRARY_NAME,
         "description": LIBRARY_DESCRIPTION,
@@ -2537,6 +2741,7 @@ def main():
     print(f"{LIBRARY_ID} {args.version}: {len(made)} components in {ctx.out}")
     if left_out:
         print(f"left out: {len(left_out)} ({', '.join(i for i, _ in left_out)})")
+    previews.strict_exit(args.strict, "make-profile-library")
 
 
 if __name__ == "__main__":

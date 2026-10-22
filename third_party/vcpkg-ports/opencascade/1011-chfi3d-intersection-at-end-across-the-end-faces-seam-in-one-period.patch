@@ -1,0 +1,90 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: the intersection at the end of a rounding with a periodic face at
+the end whose parametric seam lies at the end vertex, taken in one period
+(mitcad#343).
+
+The case: a bore's top rim of radius 82 is rounded with 0.5 where a pocket
+of radius 25.5 cuts into it; the rim, an arc from one side of the pocket
+round to the other, starts at one of the pocket's sides, and so does its
+torus' parametric seam. The pocket's top rim is then rounded with 1 up to
+that torus. At the seam end the rounding's contact on the top runs past
+the torus' edge, where the torus grows up to the cut: its point on the
+torus, from the top's edge with the torus prolonged, came out at u = 6.263,
+a period beyond the face's domain [-0.005, 5.692], while the other end,
+on the bore's side, lay at u = -0.002 in it. PerformIntersectionAtEnd
+walked the intersection of the blend with the torus between the two the
+long way round: a curve of 3.3e6 mm whose edge had a tolerance of 2.5e6
+and a body of 1e12 mm3 that the checker took for valid. The rim's other
+end, away from the seam, was built (its ends in one period).
+
+- ChFi3d_Builder::PerformIntersectionAtEnd: on a periodic face at the end,
+  an end of the intersection that lies outside the face's domain, more
+  than half a period from the other end, which lies in it, is taken in the
+  period next to that other end (in u and in v), before the intersection
+  is computed.
+
+On the design's replayed body before the item and on the stored body:
+valid, the material taken -7.525 and -7.615 mm3 at the seam end (the other
+end's rounding of the same edge -7.618 and -7.512), every face of the
+three roundings taken one after the other on the stored body after the
+item within 9e-4 mm both ways; before, the result at the seam end was the
+1e12 mm3 body. No synthetic body reproduced the end past the face's edge
+at the seam.
+
+Upstream: new.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
+index bb5ada97..324d9a03 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
+@@ -10226,6 +10226,49 @@ void ChFi3d_Builder::PerformIntersectionAtEnd(const int Index)
+         }
+       }
+     }
++    if (Bs.IsUPeriodic() || Bs.IsVPeriodic())
++    {
++      // On a periodic face, an end that lies outside the face's domain
++      // (where the blend's contact runs past the face's edge, which grows
++      // up to the cut) can come in the period beyond the face's parametric
++      // seam, more than half a period from the other end, which lies in
++      // the domain: the intersection would be walked the long way round. It
++      // is taken in the period next to the other end (a rounding ending on
++      // an earlier rounding's torus, whose seam lies at the end vertex).
++      double aUMin, aUMax, aVMin, aVMax;
++      BRepTools::UVBounds(Face[nb - 1], aUMin, aUMax, aVMin, aVMax);
++      const double aTol = Precision::PConfusion();
++      const auto   aNear = [aTol](gp_Pnt2d& aP, const gp_Pnt2d& aOther, const bool isU, const double aPer,
++                                const double aMin, const double aMax) {
++        const double aC = isU ? aP.X() : aP.Y();
++        const double aO = isU ? aOther.X() : aOther.Y();
++        const bool   aIn  = aC >= aMin - aTol && aC <= aMax + aTol;
++        const bool   aOIn = aO >= aMin - aTol && aO <= aMax + aTol;
++        if (aIn || !aOIn || std::abs(aC - aO) <= 0.5 * aPer)
++        {
++          return;
++        }
++        const double aX = ElCLib::InPeriod(aC, aO - 0.5 * aPer, aO + 0.5 * aPer);
++        if (isU)
++        {
++          aP.SetX(aX);
++        }
++        else
++        {
++          aP.SetY(aX);
++        }
++      };
++      if (Bs.IsUPeriodic())
++      {
++        aNear(pfac1, pfac2, true, Bs.UPeriod(), aUMin, aUMax);
++        aNear(pfac2, pfac1, true, Bs.UPeriod(), aUMin, aUMax);
++      }
++      if (Bs.IsVPeriodic())
++      {
++        aNear(pfac1, pfac2, false, Bs.VPeriod(), aVMin, aVMax);
++        aNear(pfac2, pfac1, false, Bs.VPeriod(), aVMin, aVMax);
++      }
++    }
+     if (isSeamOnEndFace && facecouture.IsSame(Face[nb - 1]))
+     {
+       // On the face whose seam runs from the vertex, the ends of the

@@ -105,7 +105,12 @@ cli(ok library list --json)
 expect("\"id\":\"mitcad-parts\"" "the list of libraries")
 
 # Parts inserted at v1.0.0: a screw M5x16 and a washer M6 linked, a nut M5
-# copied.
+# copied. The screws' volumes are those of the head, shank and socket less
+# the head's top edge rounded (radius 0.06 dk: 2 pi (dk/2 - 0.2234 r)
+# r^2 (1 - pi/4)) and the thread's tip chamfer (45 degrees from the
+# diameter d - 1.182532 P: the ring a cone takes off the shank's end):
+# M5x16 563.2433 - 1.4506 - 1.6464; at v1.1.0 (dk 8.7 mm) 576.7522 -
+# 1.5554 - 1.6464; M6x20 971.7737 - 2.3620 - 3.0784 (mitcad#526).
 file(TO_CMAKE_PATH "${library}" url)
 set(part "\"id\": \"mitcad-parts\", \"url\": \"${url}\", \"rev\": \"v1.0.0\"")
 file(WRITE "${WORK}/insert.json" "[
@@ -114,7 +119,7 @@ file(WRITE "${WORK}/insert.json" "[
    \"link\": false, \"transform\": {\"translation\": [0, 0, -12]}},
   {\"cmd\": \"insert_component\", \"library\": {${part}, \"component\": \"iso7089\", \"config\": \"M6\"},
    \"transform\": {\"translation\": [30, 0, 0]}},
-  {\"expect\": {\"body\": \"ISO 4762 M5x16\", \"volume\": 563.2433357349299, \"tolerance\": 1e-6}},
+  {\"expect\": {\"body\": \"ISO 4762 M5x16\", \"volume\": 560.1463214427537, \"tolerance\": 1e-6}},
   {\"expect\": {\"bodies\": 3}}
 ]")
 cli(ok run "${WORK}/insert.json" --save "${WORK}/assembly.mitcad")
@@ -130,14 +135,14 @@ expect("iso7089 M6: no changes" "the comparison of an unchanged part")
 
 # Opened again, the screw stays at v1.0.0.
 cli(ok info "${WORK}/assembly.mitcad")
-expect("volume 563\\.243 mm3" "the screw at its recorded version")
+expect("volume 560\\.146 mm3" "the screw at its recorded version")
 
 # Updated to v1.1.0, then to another size.
 file(WRITE "${WORK}/update.json" "[
   {\"cmd\": \"update_library_parts\", \"changes\": [{\"component\": \"ISO 4762 M5x16\", \"rev\": \"v1.1.0\"}]},
-  {\"expect\": {\"body\": \"ISO 4762 M5x16\", \"volume\": 576.752184145366, \"tolerance\": 1e-6}},
+  {\"expect\": {\"body\": \"ISO 4762 M5x16\", \"volume\": 573.55034687, \"tolerance\": 1e-6}},
   {\"cmd\": \"update_library_parts\", \"changes\": [{\"component\": \"ISO 4762 M5x16\", \"config\": \"M6x20\"}]},
-  {\"expect\": {\"body\": \"ISO 4762 M6x20\", \"volume\": 971.7736704007988, \"tolerance\": 1e-6}}
+  {\"expect\": {\"body\": \"ISO 4762 M6x20\", \"volume\": 966.3332369294, \"tolerance\": 1e-6}}
 ]")
 cli(ok run "${WORK}/update.json" --open "${WORK}/assembly.mitcad" --save "${WORK}/updated.mitcad")
 cli(ok parts "${WORK}/updated.mitcad")

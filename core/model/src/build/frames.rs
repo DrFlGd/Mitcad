@@ -21,7 +21,8 @@ use serde_json::{Value, json};
 use super::connect::{RemovePlan, apply_remove};
 use super::geometry::{V3, Z, add, cross, dot, inverse, norm, scale, sub, unit};
 use super::place::{
-    PartInput, PlaceAt, PlaceInput, Plan, SourceUse, Spot, edit_part, make_part, refuse, value_in,
+    PartInput, PlaceAt, PlaceInput, Plan, SideFrom, SourceUse, Spot, edit_part, make_part, refuse,
+    value_in,
 };
 use super::spacing::replace_member;
 use super::timber::PointTo;
@@ -30,8 +31,9 @@ use crate::document::{DocState, Document, ModelError};
 use crate::expr::Unit;
 use crate::features::ValueInput;
 use crate::features::derived_part::{EndCut, Ends, PartCut, Tilt};
-use crate::ids::ComponentUid;
-use crate::kernel::Kernel;
+use crate::ids::{BodyUid, ComponentUid};
+use crate::kernel::{BoundingBox, Kernel};
+use crate::topo::FaceName;
 use crate::transform::Transform;
 
 /// Lengths within this are the same, mm.
@@ -125,6 +127,10 @@ pub enum WallCorner {
     /// it in the other wall (mitcad#493). Left out: this, as walls saved
     /// before mitcad#510 keep their corners.
     Lapped,
+    /// A start on an end face continues the wall clicked in line, its end
+    /// against that end face (mitcad#524); its ends otherwise butt as with
+    /// `butt`.
+    Straight,
 }
 
 impl WallCorner {
@@ -132,8 +138,21 @@ impl WallCorner {
         match self {
             Self::Butt => "butt",
             Self::Lapped => "lapped",
+            Self::Straight => "straight",
         }
     }
+}
+
+/// A body's face a wall starts on (mitcad#524): the body (its uid), the
+/// face (its name) and the occurrence that places it (its path from the
+/// root, `O1/O4`; left out: the body's first placement).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StartFace {
+    pub body: String,
+    pub face: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub occurrence: Option<String>,
 }
 
 /// Where an opening is: along a wall from its start, or a floor's
@@ -250,6 +269,36 @@ pub struct FrameInput {
     /// The rafters' run beyond the walls' outer faces, horizontally.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub overhang: Option<ValueInput>,
+    // A wall started on another wall's side (`square`): `build_frame`'s
+    // and its preview's only, not kept.
+    /// Where along that wall it starts (mitcad#514): `offset` from `from`
+    /// (end A, end B or the middle of that wall's end faces; as a side
+    /// placement's, mitcad#417); either given, both are typed (end A and 0
+    /// when left out), else the click decides, snapped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<SideFrom>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset: Option<ValueInput>,
+    /// The app's least snap distance, mm (as `at.snap`, mitcad#417).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snap: Option<f64>,
+    /// Without `end` (mitcad#515): it ends at the first wall frame its run
+    /// meets, butting against its side (true or left out), or runs
+    /// `length` (false).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_end: Option<bool>,
+    /// With `square` and no `joins.start` (mitcad#524): the face of another
+    /// body (an imported wall, a solid, a loose member) the wall starts
+    /// square from, `start` the click on it; not kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub face: Option<StartFace>,
+    /// How a wall's openings are framed (mitcad#519): as in a load-bearing
+    /// wall (true or left out, as walls saved before keep: a header of
+    /// plies on edge over trimmer studs beside the king studs) or as in a
+    /// partition (false: one header lying flat between the king studs, no
+    /// trimmer studs; the king studs are the opening's sides).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub load_bearing: Option<bool>,
 }
 
 impl FrameInput {
@@ -288,6 +337,12 @@ impl FrameInput {
             walls: pick!(walls),
             pitch: pick!(pitch),
             overhang: pick!(overhang),
+            from: None,
+            offset: None,
+            snap: None,
+            auto_end: None,
+            face: None,
+            load_bearing: pick!(load_bearing),
         }
     }
 
@@ -301,6 +356,12 @@ impl FrameInput {
 pub(crate) struct FrameDef {
     pub frame: FrameInput,
     pub count: usize,
+    /// The frame's own component in the BUILD host (mitcad#522), which
+    /// holds its members, their fasteners and joints; the definition's
+    /// points are in its coordinates. None: a frame saved before, its
+    /// members flat in the host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub component: Option<ComponentUid>,
 }
 
 /// What `build_frame` and a frame's `build_edit` did.
@@ -320,41 +381,119 @@ pub struct Framed {
     pub changed: Vec<String>,
     /// A wall started square on another wall's side: where it meets it.
     pub junction: Option<StartJunction>,
+    /// The frame's own component in the host (mitcad#522); None for a
+    /// flat frame saved before.
+    pub component: Option<ComponentUid>,
 }
 
-/// Where a wall started on another wall's side (`square`, mitcad#493)
-/// meets that wall.
+/// A frame made in a step: its lead, its members (component and place) and
+/// its own component (mitcad#522; None for a flat frame saved before).
+#[derive(Debug, Clone)]
+struct MadeFrame {
+    lead: ComponentUid,
+    members: Vec<(ComponentUid, String)>,
+    component: Option<ComponentUid>,
+}
+
+/// Where a wall started square on another wall's side (`square`,
+/// mitcad#493) or on any other body's face (mitcad#524) meets it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StartJunction {
-    /// With lapped corners `L` (a corner at one of the wall's ends) or
-    /// `T`; butting (mitcad#510) `side` (from its side at the click) or
-    /// `end` (a corner at its end face).
+    /// On a timber wall frame: with lapped corners `L` (a corner at one of
+    /// the wall's ends) or `T`; butting (mitcad#510) `side` (from its side
+    /// at the click) or `end` (a corner at its end face); `straight`
+    /// (mitcad#524: in line beyond its end face). On another body's face
+    /// (mitcad#524): `face` (square from it), `face_end` (its side against
+    /// a thin end face, a corner) or `face_straight` (in line beyond it).
     pub kind: &'static str,
-    /// `butt` or `lapped` (mitcad#510).
+    /// `butt`, `lapped` or `straight` (mitcad#510, mitcad#524).
     pub corner: &'static str,
-    /// The wall's name and lead.
+    /// The wall's name and lead; another body's name and no lead.
     pub wall: String,
-    pub frame: ComponentUid,
+    pub frame: Option<ComponentUid>,
     /// An L's or an end's end of that wall: `a` (its start) or `b`.
     pub end: Option<&'static str>,
-    /// Along that wall from its start to the new wall's centre line, mm.
+    /// Along that wall from its start to the new wall's centre line, mm;
+    /// along a body's face from its end A.
     pub at: f64,
     /// The new wall's length: from that wall's centre line, mm; from its
-    /// far side at an `end`.
+    /// far side at an `end`; from the face.
     pub length: f64,
+    /// On the side (mitcad#514): what `offset` is from and the offset, mm
+    /// (an L's end and 0); None at an `end`.
+    pub from: Option<SideFrom>,
+    pub offset: f64,
+    /// The wall or face its end butts against (mitcad#515, mitcad#524).
+    pub to: Option<EndMet>,
+    /// The new wall between the faces it butts against (from that wall's
+    /// near side, at an `end` from its far side, to its end), mm.
+    pub run: f64,
+    /// On another body's face (mitcad#524): where its base is.
+    pub base: Option<WallBase>,
+    /// A typed offset that would hang past an end, made flush with it.
+    pub warnings: Vec<String>,
+}
+
+/// What a wall's end butts against (mitcad#515, mitcad#524): a wall
+/// frame's side (its name and lead) or another body's face (its name), and
+/// whether its run met it (`auto_end`) rather than an end clicked on it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EndMet {
+    pub name: String,
+    pub frame: Option<ComponentUid>,
+    pub auto: bool,
+}
+
+/// What a wall's run met (mitcad#515, mitcad#524): how far from its start
+/// the near face is, its name, and the wall frame's lead (None: another
+/// body's face).
+#[derive(Debug, Clone)]
+struct RunMet {
+    at: f64,
+    name: String,
+    wall: Option<ComponentUid>,
+}
+
+/// Where a wall started on a body's face stands (mitcad#524): the height
+/// of its bottom plate's underside, and what decided it: `floor` (the top
+/// of the body under the click, named), `face` (the clicked face's bottom
+/// edge) or `origin` (the host's z = 0).
+#[derive(Debug, Clone, PartialEq)]
+pub struct WallBase {
+    pub z: f64,
+    pub on: &'static str,
+    pub body: Option<String>,
 }
 
 impl StartJunction {
     pub fn to_json(&self) -> Value {
-        json!({
+        let mm = |v: f64| (v * 1e6).round() / 1e6;
+        let mut out = json!({
             "kind": self.kind,
             "corner": self.corner,
             "wall": self.wall,
             "frame": self.frame,
             "end": self.end,
-            "at": (self.at * 1e6).round() / 1e6,
-            "length": (self.length * 1e6).round() / 1e6,
-        })
+            "at": mm(self.at),
+            "length": mm(self.length),
+            "from": self.from.map(SideFrom::as_str),
+            "offset": self.from.map(|_| mm(self.offset)),
+            "to": self.to.as_ref().map(|to| {
+                let mut met = json!({"wall": to.name, "frame": to.frame, "auto": to.auto});
+                // Another body's face (mitcad#524); a wall's as before.
+                if to.frame.is_none() {
+                    met["face"] = json!(true);
+                }
+                met
+            }),
+            "run": mm(self.run),
+        });
+        // A start on another body's face (mitcad#524): where its base is;
+        // on a wall frame left out, as before.
+        if let Some(b) = &self.base {
+            out["base"] = json!({"z": mm(b.z), "on": b.on, "body": b.body});
+        }
+        out
     }
 }
 
@@ -435,6 +574,36 @@ impl FramePart {
 struct Known {
     lead: Option<ComponentUid>,
     def: FrameInput,
+    /// Its own component (mitcad#522; None for a flat frame saved before,
+    /// and for the one being made until it is made).
+    component: Option<ComponentUid>,
+    /// Its definition's coordinates in the BUILD host's: its component's
+    /// placement there (the identity for a flat frame, and until the frame
+    /// is moved as one).
+    place: Transform,
+}
+
+impl Known {
+    /// A frame being made: in the host's coordinates, its component made
+    /// with it.
+    fn new(def: FrameInput) -> Self {
+        Self {
+            lead: None,
+            def,
+            component: None,
+            place: Transform::IDENTITY,
+        }
+    }
+
+    /// A point of its definition in the host.
+    fn point(&self, p: V3) -> V3 {
+        self.place.apply_point(p)
+    }
+
+    /// A direction of its definition in the host.
+    fn vector(&self, v: V3) -> V3 {
+        self.place.apply_vector(v)
+    }
 }
 
 /// A frame's members laid out.
@@ -479,6 +648,11 @@ struct PlannedMember {
 #[derive(Debug, Clone)]
 struct FramePlan {
     lead: Option<ComponentUid>,
+    /// Its own component (mitcad#522): None for a new frame (made with it)
+    /// and for a flat frame saved before (laid out in the host as it was).
+    component: Option<ComponentUid>,
+    /// A flat frame saved before (mitcad#522): it stays in the host.
+    flat: bool,
     name: String,
     kind: FrameKind,
     def: FrameInput,
@@ -535,6 +709,9 @@ struct WallGeo {
     /// (`joins.start_on: end`, mitcad#510).
     start_on_end: bool,
     warnings: Vec<String>,
+    /// Its openings framed as a load-bearing wall's (`load_bearing`,
+    /// mitcad#519; left out: true).
+    load_bearing: bool,
 }
 
 impl WallGeo {
@@ -703,14 +880,14 @@ fn wall_span(w: &WallGeo, walls: &[WallGeo]) -> WallSpan {
 struct WallZone {
     /// Its number (from 1), where its studs start and end along the wall,
     /// its offset and width, its sill (0 for a door) and its header's
-    /// underside.
+    /// top, where the cripple studs above it start.
     number: usize,
     lo: f64,
     hi: f64,
     offset: f64,
     width: f64,
     sill: f64,
-    head: f64,
+    top: f64,
 }
 
 /// A wall's members: its plates, studs at the centre distance from its
@@ -773,14 +950,23 @@ fn wall_layout(w: &WallGeo, span: &WallSpan) -> Result<Layout, ModelError> {
         let sill = op.sill.unwrap_or(0.0).max(0.0);
         let door = sill <= EPS;
         let head = sill + height;
+        // A load-bearing wall's opening has a trimmer stud each side inside
+        // its king studs and a header of plies on edge; a partition's
+        // (mitcad#519) its king studs as its sides and one header lying
+        // flat between them.
+        let (side, header_depth) = if w.load_bearing {
+            (2.0 * ts, hd)
+        } else {
+            (ts, w.header.thick())
+        };
         let zone = WallZone {
             number: n,
-            lo: o - 2.0 * ts,
-            hi: o + width + 2.0 * ts,
+            lo: o - side,
+            hi: o + width + side,
             offset: o,
             width,
             sill: if door { 0.0 } else { sill },
-            head,
+            top: head + header_depth,
         };
         if zone.lo < t0 + ts - EPS || zone.hi > t1 - ts + EPS {
             return Err(refuse(format!(
@@ -799,10 +985,10 @@ fn wall_layout(w: &WallGeo, span: &WallSpan) -> Result<Layout, ModelError> {
                 j + 1
             )));
         }
-        if head + hd > zt + EPS {
+        if zone.top > zt + EPS {
             return Err(refuse(format!(
                 "opening {n}: its header reaches {} mm, above the top plate at {} mm",
-                round(head + hd),
+                round(zone.top),
                 round(zt)
             )));
         }
@@ -819,26 +1005,44 @@ fn wall_layout(w: &WallGeo, span: &WallSpan) -> Result<Layout, ModelError> {
             )));
         }
         let p = format!("opening.{n}");
-        studs.push((format!("{p}.king.a"), "king stud", o - 2.0 * ts, zb, zt));
-        studs.push((format!("{p}.king.b"), "king stud", o + width + ts, zb, zt));
-        studs.push((format!("{p}.trimmer.a"), "trimmer stud", o - ts, zb, head));
+        studs.push((format!("{p}.king.a"), "king stud", o - side, zb, zt));
         studs.push((
-            format!("{p}.trimmer.b"),
-            "trimmer stud",
-            o + width,
+            format!("{p}.king.b"),
+            "king stud",
+            o + width + side - ts,
             zb,
-            head,
+            zt,
         ));
-        let plies = ((w.depth() + 1.0) / w.header.thick()).floor().max(1.0) as usize;
-        for k in 0..plies {
-            let a = (k as f64 - (plies - 1) as f64 / 2.0) * w.header.thick();
-            let z = head + hd / 2.0;
+        if w.load_bearing {
+            studs.push((format!("{p}.trimmer.a"), "trimmer stud", o - ts, zb, head));
+            studs.push((
+                format!("{p}.trimmer.b"),
+                "trimmer stud",
+                o + width,
+                zb,
+                head,
+            ));
+            let plies = ((w.depth() + 1.0) / w.header.thick()).floor().max(1.0) as usize;
+            for k in 0..plies {
+                let a = (k as f64 - (plies - 1) as f64 / 2.0) * w.header.thick();
+                let z = head + hd / 2.0;
+                framing.add(
+                    format!("{p}.header.{k}"),
+                    "header",
+                    Which::Header,
+                    [w.at(o - ts, z, a), w.at(o + width + ts, z, a)],
+                    Z,
+                );
+            }
+        } else {
+            // Its wide face down, as a plate, from king stud to king stud.
+            let z = head + header_depth / 2.0;
             framing.add(
-                format!("{p}.header.{k}"),
-                "header",
+                format!("{p}.header"),
+                "flat header",
                 Which::Header,
-                [w.at(o - ts, z, a), w.at(o + width + ts, z, a)],
-                Z,
+                [w.at(o, z, 0.0), w.at(o + width, z, 0.0)],
+                across,
             );
         }
         if door {
@@ -989,13 +1193,13 @@ fn wall_layout(w: &WallGeo, span: &WallSpan) -> Result<Layout, ModelError> {
             None => studs.push((format!("stud.{k}"), "stud", near, zb, zt)),
             Some(z) if near >= z.offset - EPS && near + ts <= z.offset + z.width + EPS => {
                 // Cripple studs above the header and below the sill.
-                let (n, sill, head) = (z.number, z.sill, z.head);
-                if zt - (head + hd) > 1.0 {
+                let (n, sill, top) = (z.number, z.sill, z.top);
+                if zt - top > 1.0 {
                     studs.push((
                         format!("opening.{n}.cripple.top.{k}"),
                         "cripple stud",
                         near,
-                        head + hd,
+                        top,
                         zt,
                     ));
                 }
@@ -1689,9 +1893,47 @@ impl<K: Kernel> Document<K> {
         })
     }
 
-    /// The lead of the frame a component is a member of.
+    /// The lead of the frame a component is a member of, or whose own
+    /// component it is (mitcad#522).
     pub(crate) fn frame_lead(&self, component: ComponentUid) -> Option<ComponentUid> {
-        self.assembly().component(component)?.build.as_ref()?.frame
+        let a = self.assembly();
+        if let Some(lead) = a.component(component)?.build.as_ref().and_then(|b| b.frame) {
+            return Some(lead);
+        }
+        a.components
+            .iter()
+            .find(|c| self.frame_component(c.uid) == Some(component))
+            .map(|c| c.uid)
+    }
+
+    /// The own component of the frame a lead leads (mitcad#522); None for a
+    /// flat frame saved before, or one whose component is gone.
+    pub(crate) fn frame_component(&self, lead: ComponentUid) -> Option<ComponentUid> {
+        let a = self.assembly();
+        let framing = a.component(lead)?.build.as_ref()?.framing.as_ref()?;
+        let c: ComponentUid = serde_json::from_value(framing.get("component")?.clone()).ok()?;
+        a.component(c).is_some().then_some(c)
+    }
+
+    /// The name of the frame a component is a member of (mitcad#522: the
+    /// cut list's rows by frame).
+    pub(crate) fn frame_name_of(&self, component: ComponentUid) -> Option<String> {
+        let a = self.assembly();
+        let lead = a.component(component)?.build.as_ref()?.frame?;
+        let framing = a.component(lead)?.build.as_ref()?.framing.as_ref()?;
+        framing
+            .get("frame")?
+            .get("name")?
+            .as_str()
+            .map(str::to_owned)
+    }
+
+    /// Where a frame's definition is in the BUILD host (mitcad#522): its
+    /// component's placement there; the identity for a flat frame.
+    fn frame_place(&self, component: Option<ComponentUid>) -> Transform {
+        component
+            .and_then(|c| self.placed_in_host(c))
+            .map_or(Transform::IDENTITY, |path| self.path_transform(&path))
     }
 
     /// A frame's members in the order they were made.
@@ -1737,9 +1979,14 @@ impl<K: Kernel> Document<K> {
             .filter_map(|c| {
                 let record = c.build.as_ref()?;
                 let def: FrameDef = serde_json::from_value(record.framing.clone()?).ok()?;
+                let component = def
+                    .component
+                    .filter(|f| self.assembly().component(*f).is_some());
                 Some(Known {
                     lead: Some(c.uid),
                     def: def.frame,
+                    component,
+                    place: self.frame_place(component),
                 })
             })
             .collect()
@@ -1762,12 +2009,15 @@ impl<K: Kernel> Document<K> {
     fn wall_geo(&self, known: &Known) -> Result<WallGeo, ModelError> {
         let def = &known.def;
         let name = def.name.clone().unwrap_or_else(|| "Wall".to_owned());
-        let start = def
-            .start
-            .ok_or_else(|| refuse(format!("{name} needs its start")))?;
-        let end = def
-            .end
-            .ok_or_else(|| refuse(format!("{name} needs its end")))?;
+        // In the host: its component's placement there (mitcad#522).
+        let start = known.point(
+            def.start
+                .ok_or_else(|| refuse(format!("{name} needs its start")))?,
+        );
+        let end = known.point(
+            def.end
+                .ok_or_else(|| refuse(format!("{name} needs its end")))?,
+        );
         let u = level(sub(end, start))
             .ok_or_else(|| refuse(format!("{name}: its start and end are one point")))?;
         let mut length = dot(sub(end, start), u);
@@ -1821,13 +2071,14 @@ impl<K: Kernel> Document<K> {
             header,
             openings: def.openings.clone().unwrap_or_default(),
             joins,
-            butt: def.corner == Some(WallCorner::Butt),
+            butt: matches!(def.corner, Some(WallCorner::Butt | WallCorner::Straight)),
             start_on_end: def
                 .joins
                 .as_ref()
                 .is_some_and(|j| j.start_on == Some(JoinOn::End)),
             warnings,
             name,
+            load_bearing: def.load_bearing.unwrap_or(true),
         })
     }
 
@@ -1844,11 +2095,14 @@ impl<K: Kernel> Document<K> {
     fn floor_geo(&self, known: &Known) -> Result<FloorGeo, ModelError> {
         let def = &known.def;
         let name = def.name.clone().unwrap_or_else(|| "Floor".to_owned());
-        let outline = def
+        let outline: Vec<V3> = def
             .outline
             .clone()
             .filter(|o| o.len() >= 3)
-            .ok_or_else(|| refuse(format!("{name} needs its outline (three points at least)")))?;
+            .ok_or_else(|| refuse(format!("{name} needs its outline (three points at least)")))?
+            .into_iter()
+            .map(|p| known.point(p))
+            .collect();
         let part = def
             .part
             .as_ref()
@@ -1860,7 +2114,7 @@ impl<K: Kernel> Document<K> {
         };
         let first = level(sub(outline[1], outline[0]))
             .ok_or_else(|| refuse(format!("{name}: its outline's first side has no length")))?;
-        let v = match def.direction.and_then(level) {
+        let v = match def.direction.map(|d| known.vector(d)).and_then(level) {
             Some(v) => v,
             None => {
                 // Square to the first side, into the outline.
@@ -1976,6 +2230,8 @@ impl<K: Kernel> Document<K> {
         };
         let mut warnings = layout.warnings;
         let mut members = Vec::new();
+        // From the host into the frame's own component.
+        let to_frame = inverse(&target.place);
         for spec in layout.members {
             let part = &parts[&spec.which];
             let length = norm(sub(spec.end, spec.start));
@@ -2012,7 +2268,9 @@ impl<K: Kernel> Document<K> {
             let end_a = plan.mounts.get("end_a").map_or([0.0; 3], |t| t.translation);
             let placement = super::geometry::frame(spec.start, x, d)
                 .after(&Transform::translation(scale(end_a, -1.0)));
-            plan.spot = Spot::Grounded(placement);
+            // Its occurrence in the frame's own component (mitcad#522), the
+            // plan's placement in the host.
+            plan.spot = Spot::Grounded(to_frame.after(&placement));
             plan.placement = placement;
             plan.points = None;
             let to_part = inverse(&placement);
@@ -2072,6 +2330,8 @@ impl<K: Kernel> Document<K> {
         }
         Ok(FramePlan {
             lead: target.lead,
+            component: target.component,
+            flat: target.lead.is_some() && target.component.is_none(),
             name,
             kind,
             def: target.def.clone(),
@@ -2179,10 +2439,13 @@ impl<K: Kernel> Document<K> {
                 *j = self.lead_of_ref(j)?.to_string();
             }
         }
-        world.push(Known { lead: None, def });
+        world.push(Known::new(def));
         let target = world.len() - 1;
         let affected = self.affected(target, None, &world);
         let mut framed = self.lay_out(&world, &affected, None, Vec::new())?;
+        if let Some(j) = &junction {
+            framed.warnings.extend(j.warnings.iter().cloned());
+        }
         framed.junction = junction;
         Ok(framed)
     }
@@ -2197,15 +2460,23 @@ impl<K: Kernel> Document<K> {
     /// `joins.start_on: end`). Lapped (left out, mitcad#493): a start near
     /// one of that wall's ends (within half its stud spacing, at least its
     /// depth) starts it at that end's corner, an L, else at the click, a T;
-    /// both on that wall's centre line. At that wall's base, it runs to the side
-    /// clicked (the end's side when the click is on the centre line; at an
-    /// end face the end's side first), as far as `end` is along it, else
-    /// `length`.
+    /// both on that wall's centre line. On the side its place along that
+    /// wall is `offset` from `from` when either is given, else the click's,
+    /// snapped (mitcad#514): flush with an end near it (butting within its
+    /// own depth; lapped the L's reach), centred near the middle. At that
+    /// wall's base, it runs to the side clicked (the end's side when the
+    /// click is on the centre line; at an end face the end's side first),
+    /// as far as `end` is along it, else to the first wall its run meets
+    /// (mitcad#515, unless `auto_end` is false), else `length`.
     fn square_start(
         &self,
         def: &mut FrameInput,
         world: &[Known],
     ) -> Result<Option<StartJunction>, ModelError> {
+        // Not kept: only how it starts (mitcad#514, mitcad#515).
+        let (typed_from, typed_offset) = (def.from.take(), def.offset.take());
+        let (snap, auto_end) = (def.snap.take(), def.auto_end.take());
+        let face = def.face.take();
         if def.square.take() != Some(true) {
             return Ok(None);
         }
@@ -2213,15 +2484,20 @@ impl<K: Kernel> Document<K> {
         if def.kind() != FrameKind::Wall {
             return Err(refuse("only a wall starts square on another wall (square)"));
         }
-        let text = def
-            .joins
-            .as_ref()
-            .and_then(|j| j.start.clone())
-            .ok_or_else(|| {
-                refuse(format!(
-                    "{name}: square needs the wall it starts on (joins.start)"
-                ))
-            })?;
+        // A timber wall frame's member first (case A, as before); another
+        // body's face otherwise (case B, mitcad#524).
+        let started_on = def.joins.as_ref().and_then(|j| j.start.clone());
+        if let (None, Some(face)) = (&started_on, face) {
+            let typed = (typed_from, typed_offset);
+            return self
+                .face_start(def, &face, typed, snap, auto_end, world)
+                .map(Some);
+        }
+        let text = started_on.ok_or_else(|| {
+            refuse(format!(
+                "{name}: square needs the wall it starts on (joins.start) or a face (face)"
+            ))
+        })?;
         let lead = self.lead_of_ref(&text)?;
         let known = world
             .iter()
@@ -2251,12 +2527,18 @@ impl<K: Kernel> Document<K> {
             .filter(|b| b.abs() > EPS)
             .map(f64::signum);
         let click_side = (a.abs() > EPS).then_some(a.signum());
-        let butt = def.corner == Some(WallCorner::Butt);
+        // Straight (mitcad#524) starts on an end face in line with it, else
+        // butts.
+        let straight = def.corner == Some(WallCorner::Straight);
+        let butt = straight || def.corner == Some(WallCorner::Butt);
+        // Where along it as typed (mitcad#514), else the click.
+        let typed = typed_from.is_some() || typed_offset.is_some();
         // A butting start on an end face: within half a millimetre of it and
-        // inside the wall's depth, or beyond the end.
+        // inside the wall's depth, or beyond the end (not with From and
+        // Offset typed: they place it on the side).
         const ON: f64 = 0.5;
         let inside = a.abs() < x.depth() / 2.0 - ON;
-        let on_end = if !butt {
+        let on_end = if !butt || typed {
             None
         } else if t < ends[0] + ON && (inside || t < ends[0] - ON) {
             Some(0)
@@ -2270,48 +2552,143 @@ impl<K: Kernel> Document<K> {
             None => click_side.or(end_side),
         }
         .unwrap_or(1.0);
-        let d = scale(x.n, side);
-        // Its own depth (butting).
-        let depth = match (&def.part, butt) {
-            (Some(part), true) => self.frame_part(part)?.depth(),
-            (None, true) => return Err(refuse(format!("{name} needs its timber (part)"))),
-            (_, false) => 0.0,
+        let mut d = scale(x.n, side);
+        // Its own depth.
+        let depth = match &def.part {
+            Some(part) => self.frame_part(part)?.depth(),
+            None => return Err(refuse(format!("{name} needs its timber (part)"))),
         };
-        // The junction, the wall's start and how far it must run at least.
-        let (kind, end, at, start, least) = match on_end {
+        let half = depth / 2.0;
+        let mut warnings = Vec::new();
+        // The junction, the wall's start, how far it must run at least, and
+        // what its place along that wall is from (mitcad#514).
+        let (kind, end, at, start, least, from, offset) = match on_end {
+            Some(k) if straight => {
+                // In line beyond the end face (mitcad#524): its centre line
+                // that wall's, its start on the end face.
+                d = scale(x.u, if k == 0 { -1.0 } else { 1.0 });
+                let start = x.at(ends[k], 0.0, 0.0);
+                (
+                    "straight",
+                    Some(["a", "b"][k]),
+                    ends[k],
+                    start,
+                    0.0,
+                    None,
+                    0.0,
+                )
+            }
             Some(k) => {
                 // Its side against the end face, from the far side.
                 let out = if k == 0 { -1.0 } else { 1.0 };
-                let at = ends[k] + out * depth / 2.0;
+                let at = ends[k] + out * half;
                 let start = x.at(at, 0.0, -side * x.depth() / 2.0);
-                ("end", Some(["a", "b"][k]), at, start, x.depth())
-            }
-            None if butt => {
-                // Its faces within that wall's end faces: no overhang.
-                let at = t.min(ends[1] - depth / 2.0).max(ends[0] + depth / 2.0);
-                ("side", None, at, x.at(at, 0.0, 0.0), x.depth() / 2.0)
+                ("end", Some(["a", "b"][k]), at, start, x.depth(), None, 0.0)
             }
             None => {
-                let near = (x.spacing / 2.0).max(x.depth()).min(x.length / 2.0);
-                let (kind, end, at) = if t <= near {
-                    ("L", Some("a"), 0.0)
-                } else if t >= x.length - near {
-                    ("L", Some("b"), x.length)
-                } else {
-                    ("T", None, t)
+                // Offsets as a side placement's (mitcad#417): from end A to
+                // its near face, from end B to its far face, from the middle
+                // (of that wall's end faces) to its centre line.
+                let middle = (ends[0] + ends[1]) / 2.0;
+                let at_of = |from: SideFrom, offset: f64| match from {
+                    SideFrom::A => ends[0] + offset + half,
+                    SideFrom::B => ends[1] - offset - half,
+                    SideFrom::Middle => middle + offset,
                 };
-                (kind, end, at, x.at(at, 0.0, 0.0), x.depth() / 2.0)
+                let (mut from, mut offset) = if typed {
+                    (typed_from.unwrap_or_default(), self.mm(&typed_offset, 0.0)?)
+                } else {
+                    // The click, snapped as a side placement's: flush with
+                    // an end within its depth of it (lapped: within the L
+                    // corner's reach of that wall's centre line's end, half
+                    // its stud spacing, at least its depth), centred within
+                    // a quarter of its depth of the middle, else measured
+                    // from the nearer end.
+                    let least = snap.filter(|s| s.is_finite() && *s > 0.0).unwrap_or(0.0);
+                    let (to_a, to_b) = (t - half - ends[0], ends[1] - t - half);
+                    let (near_a, near_b) = if butt {
+                        let reach = depth.max(least);
+                        (to_a < reach, to_b < reach)
+                    } else {
+                        let reach = (x.spacing / 2.0).max(x.depth()).min(x.length / 2.0);
+                        (t <= reach, t >= x.length - reach)
+                    };
+                    if near_a {
+                        (SideFrom::A, 0.0)
+                    } else if near_b {
+                        (SideFrom::B, 0.0)
+                    } else if (t - middle).abs() < (depth / 4.0).max(least) {
+                        (SideFrom::Middle, 0.0)
+                    } else {
+                        let (from, offset) = if to_b < to_a {
+                            (SideFrom::B, to_b)
+                        } else {
+                            (SideFrom::A, to_a)
+                        };
+                        // A click is no finer than a thousandth of a mm.
+                        (from, (offset * 1000.0).round() / 1000.0)
+                    }
+                };
+                // Never past an end: its faces within that wall's end faces,
+                // else flush with that end.
+                let mut at = at_of(from, offset);
+                let (lo, hi) = (ends[0] + half, ends[1] - half);
+                let kept = if lo > hi { middle } else { at.min(hi).max(lo) };
+                if (kept - at).abs() > 1e-9 {
+                    let flush = if kept <= middle {
+                        SideFrom::A
+                    } else {
+                        SideFrom::B
+                    };
+                    if typed {
+                        warnings.push(format!(
+                            "{name}: flush with {}'s end {} instead",
+                            x.name,
+                            if flush == SideFrom::A { "A" } else { "B" }
+                        ));
+                    }
+                    (from, offset, at) = (flush, 0.0, kept);
+                }
+                let least = x.depth() / 2.0;
+                if butt {
+                    // Its faces within that wall's end faces: no overhang.
+                    let start = x.at(at, 0.0, 0.0);
+                    ("side", None, at, start, least, Some(from), offset)
+                } else if from != SideFrom::Middle && offset.abs() <= 1e-9 {
+                    // Flush with an end: the L corner there.
+                    let (end, at) = if from == SideFrom::A {
+                        ("a", 0.0)
+                    } else {
+                        ("b", x.length)
+                    };
+                    let start = x.at(at, 0.0, 0.0);
+                    ("L", Some(end), at, start, least, Some(from), 0.0)
+                } else {
+                    let start = x.at(at, 0.0, 0.0);
+                    ("T", None, at, start, least, Some(from), offset)
+                }
             }
         };
-        let length = match (def.end, &def.length) {
-            (Some(e), _) => dot(sub(e, start), d),
-            (None, Some(l)) => value_in(self, l, Unit::MM)?,
-            (None, None) => {
+        // Without an end, the first wall its run meets ends it (mitcad#515),
+        // or another body's face nearer (mitcad#524).
+        let height = self.mm(&def.height, 2400.0)?;
+        let met = if def.end.is_none() && auto_end != Some(false) {
+            self.run_met(start, d, least, height, Some(lead), None, world)
+        } else {
+            None
+        };
+        let length = match (&met, def.end, &def.length) {
+            (Some(m), _, _) => m.at,
+            (None, Some(e), _) => dot(sub(e, start), d),
+            (None, None, Some(l)) => value_in(self, l, Unit::MM)?,
+            (None, None, None) => {
                 return Err(refuse(format!("{name} needs its end or its length")));
             }
         };
         if length <= least + EPS {
-            return Err(refuse(if on_end.is_some() {
+            return Err(refuse(if kind == "straight" {
+                format!("{name} would be {} mm long", round(length))
+            } else if on_end.is_some() {
                 format!(
                     "{name} would be {} mm long from {}'s far side, not beyond its other side",
                     round(length),
@@ -2329,19 +2706,476 @@ impl<K: Kernel> Document<K> {
         def.end = Some(add(start, scale(d, length)));
         def.length = None;
         // At an end it stays joined to that wall, whose end face butts
-        // against its side (laid out again with it).
+        // against its side (laid out again with it); its end joins the wall
+        // its run met.
         if let Some(joins) = &mut def.joins {
             joins.start_on = on_end.map(|_| JoinOn::End);
+            if kind == "straight" {
+                // In line, its end on that wall's end face: neither is
+                // changed for the other (mitcad#524).
+                joins.start = None;
+                joins.start_on = None;
+            }
+            if let Some(m) = &met {
+                joins.end = m.wall.map(|l| l.to_string());
+            }
         }
+        let to = self.end_met(&met, def, world);
+        let run = length - if on_end.is_some() { 0.0 } else { least };
         Ok(Some(StartJunction {
             kind,
             corner: def.corner.unwrap_or(WallCorner::Lapped).as_str(),
             wall: x.name.clone(),
-            frame: lead,
+            frame: Some(lead),
             end,
             at,
             length,
+            from,
+            offset,
+            to,
+            run,
+            base: None,
+            warnings,
         }))
+    }
+
+    /// A wall started on another body's face (case B, mitcad#524): the
+    /// clicked body is not changed and not linked; everything comes from
+    /// the geometry. On the face's outward side, square from it (its
+    /// horizontal normal) for a vertical face, else refused; its base on
+    /// the floor under the click (the first body below it that the line
+    /// down enters: a slab's top), else at the face's bottom edge; along
+    /// the face at the click, or `offset` from `from` (the face's end A,
+    /// its left end seen from in front, end B or its middle), snapped as on
+    /// a timber wall's side (mitcad#514). A thin end face (narrower than the
+    /// body is deep behind it) makes a corner (Butt, or Lapped plates, which
+    /// has nothing to lap: its side against the face, running to the click's
+    /// side, its start flush with the body's far side) or, with Straight, a
+    /// wall in line beyond it. Its length as a start on a wall frame's:
+    /// `end`, else the first wall frame or body face its run meets, else
+    /// `length`.
+    fn face_start(
+        &self,
+        def: &mut FrameInput,
+        face: &StartFace,
+        (typed_from, typed_offset): (Option<SideFrom>, Option<ValueInput>),
+        snap: Option<f64>,
+        auto_end: Option<bool>,
+        world: &[Known],
+    ) -> Result<StartJunction, ModelError> {
+        const FAR: f64 = 1e5;
+        let name = def.name.clone().unwrap_or_else(|| "The wall".to_owned());
+        let body: BodyUid = face
+            .body
+            .parse()
+            .map_err(|_| refuse(format!("{name}: {} is no body", face.body)))?;
+        let instances = self.instances();
+        let path_of = |i: &crate::document::InstanceView| {
+            i.path
+                .iter()
+                .map(|o| o.to_string())
+                .collect::<Vec<_>>()
+                .join("/")
+        };
+        let instance = instances
+            .iter()
+            .filter(|i| i.body == body)
+            .find(|i| face.occurrence.as_deref().is_none_or(|o| path_of(i) == o))
+            .ok_or_else(|| refuse(format!("{name}: no body {} in the design", face.body)))?;
+        let label = instance.name.clone();
+        let shape = self
+            .body_shape(body)
+            .ok_or_else(|| refuse(format!("{name}: {label} has no shape here")))?;
+        let face_name: FaceName = face
+            .face
+            .parse()
+            .map_err(|_| refuse(format!("{name}: {} is no face name", face.face)))?;
+        let host = inverse(&self.host_placement());
+        let to_host = host.after(&instance.transform);
+        let kernel = self.kernel();
+        let plane = kernel
+            .face_plane(shape, &face_name)
+            .map_err(|e| refuse(format!("{name}: the face of {label}: {e}")))?;
+        let n3 = unit(to_host.apply_vector(plane.normal))
+            .ok_or_else(|| refuse(format!("{name}: the face of {label} has no normal")))?;
+        if n3[2].abs() > 1e-3 {
+            return Err(refuse(format!(
+                "{name} starts from a vertical face: the face of {label} clicked is not vertical"
+            )));
+        }
+        let n = level(n3).expect("a vertical face's normal is horizontal");
+        let t = cross(Z, n);
+        let o = to_host.apply_point(plane.origin);
+        // The face's extent along it and its bottom edge: its box, else the
+        // body's.
+        let index = kernel
+            .faces(shape)
+            .ok()
+            .and_then(|faces| faces.iter().position(|f| f.names.contains(&face.face)));
+        let face_box = index.and_then(|i| kernel.face_boxes(shape).ok()?.get(i).copied());
+        let body_box = kernel.bounding_box(shape).ok().flatten();
+        let corners: Vec<V3> = match (face_box, body_box) {
+            (Some([min, max]), _) => BoundingBox { min, max }.corners().collect(),
+            (None, Some(b)) => b.corners().collect(),
+            (None, None) => Vec::new(),
+        }
+        .into_iter()
+        .map(|c| to_host.apply_point(c))
+        .collect();
+        if corners.is_empty() {
+            return Err(refuse(format!("{name}: the face of {label} has no extent")));
+        }
+        let along = |p: V3| dot(p, t);
+        let (t0, t1) = corners
+            .iter()
+            .map(|c| along(*c))
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), v| {
+                (a.min(v), b.max(v))
+            });
+        let bottom = corners.iter().map(|c| c[2]).fold(f64::INFINITY, f64::min);
+        // How deep the body is behind the face: an end face is narrower.
+        let behind = body_box.map_or(0.0, |b| {
+            b.corners()
+                .map(|c| dot(sub(o, to_host.apply_point(c)), n))
+                .fold(0.0, f64::max)
+        });
+        let width = t1 - t0;
+        let end_face = width < behind - EPS;
+        let click = def
+            .start
+            .ok_or_else(|| refuse(format!("{name} needs its start")))?;
+        let c = along(click);
+        let depth = match &def.part {
+            Some(part) => self.frame_part(part)?.depth(),
+            None => return Err(refuse(format!("{name} needs its timber (part)"))),
+        };
+        if c < t0 - depth || c > t1 + depth {
+            return Err(refuse(format!(
+                "{name}'s start is not on the face of {label}: beyond its ends"
+            )));
+        }
+        let half = depth / 2.0;
+        let middle = (t0 + t1) / 2.0;
+        let straight = def.corner == Some(WallCorner::Straight);
+        // On the face at `a` along it.
+        let on_face = |a: f64| add(o, scale(t, a - along(o)));
+        let mut warnings = Vec::new();
+        let (kind, d, at, start, least, from, offset) = if end_face && !straight {
+            // A corner: its side against the end face, towards the side
+            // the end (else the click) is on, from the body's far side.
+            let end_side = def
+                .end
+                .map(|e| along(e) - middle)
+                .filter(|b| b.abs() > EPS)
+                .map(f64::signum);
+            let click_side = ((c - middle).abs() > EPS).then_some((c - middle).signum());
+            let side = end_side.or(click_side).unwrap_or(1.0);
+            let first = if side > 0.0 { t0 } else { t1 };
+            let start = add(on_face(first), scale(n, half));
+            let d = scale(t, side);
+            ("face_end", d, first, start, width, None, 0.0)
+        } else if end_face {
+            // In line beyond it: its centre line the face's middle.
+            ("face_straight", n, middle, on_face(middle), 0.0, None, 0.0)
+        } else {
+            // Square from the face (mitcad#514's places): from end A to its
+            // near face, from end B to its far face, from the middle to its
+            // centre line.
+            let typed = typed_from.is_some() || typed_offset.is_some();
+            let at_of = |from: SideFrom, offset: f64| match from {
+                SideFrom::A => t0 + offset + half,
+                SideFrom::B => t1 - offset - half,
+                SideFrom::Middle => middle + offset,
+            };
+            let (mut from, mut offset) = if typed {
+                (typed_from.unwrap_or_default(), self.mm(&typed_offset, 0.0)?)
+            } else {
+                let least = snap.filter(|s| s.is_finite() && *s > 0.0).unwrap_or(0.0);
+                let (to_a, to_b) = (c - half - t0, t1 - c - half);
+                let reach = depth.max(least);
+                if to_a < reach {
+                    (SideFrom::A, 0.0)
+                } else if to_b < reach {
+                    (SideFrom::B, 0.0)
+                } else if (c - middle).abs() < (depth / 4.0).max(least) {
+                    (SideFrom::Middle, 0.0)
+                } else if to_b < to_a {
+                    (SideFrom::B, (to_b * 1000.0).round() / 1000.0)
+                } else {
+                    (SideFrom::A, (to_a * 1000.0).round() / 1000.0)
+                }
+            };
+            let mut at = at_of(from, offset);
+            let (lo, hi) = (t0 + half, t1 - half);
+            let kept = if lo > hi { middle } else { at.min(hi).max(lo) };
+            if (kept - at).abs() > 1e-9 {
+                let flush = if kept <= middle {
+                    SideFrom::A
+                } else {
+                    SideFrom::B
+                };
+                if typed {
+                    warnings.push(format!(
+                        "{name}: flush with the end {} of the face of {label} instead",
+                        if flush == SideFrom::A { "A" } else { "B" }
+                    ));
+                }
+                (from, offset, at) = (flush, 0.0, kept);
+            }
+            ("face", n, at, on_face(at), 0.0, Some(from), offset)
+        };
+        // Its base: the floor under the click, else the face's bottom edge.
+        let probe = add(on_face(c), scale(n, 1.0));
+        let probe = [probe[0], probe[1], click[2]];
+        let mut floor: Option<(f64, String)> = None;
+        for i in instances.iter().filter(|i| i.visible) {
+            let Some(s) = self.body_shape(i.body) else {
+                continue;
+            };
+            let to_body = inverse(&host.after(&i.transform));
+            let Ok(crossings) = kernel.segment_crossings(
+                s,
+                to_body.apply_point(probe),
+                to_body.apply_point(sub(probe, scale(Z, FAR))),
+            ) else {
+                continue;
+            };
+            if let Some((f, _)) = crossings.into_iter().find(|(_, enters)| *enters) {
+                let z = probe[2] - f * FAR;
+                if floor.as_ref().is_none_or(|(b, _)| z > *b) {
+                    floor = Some((z, i.name.clone()));
+                }
+            }
+        }
+        let base = match floor {
+            Some((z, body)) => WallBase {
+                z,
+                on: "floor",
+                body: Some(body),
+            },
+            None if bottom.is_finite() => WallBase {
+                z: bottom,
+                on: "face",
+                body: Some(label.clone()),
+            },
+            None => WallBase {
+                z: 0.0,
+                on: "origin",
+                body: None,
+            },
+        };
+        let start = [start[0], start[1], base.z];
+        // Its length: the end clicked, else what its run meets, else typed.
+        let height = self.mm(&def.height, 2400.0)?;
+        let met = if def.end.is_none() && auto_end != Some(false) {
+            self.run_met(start, d, least, height, None, Some(body), world)
+        } else {
+            None
+        };
+        let length = match (&met, def.end, &def.length) {
+            (Some(m), _, _) => m.at,
+            (None, Some(e), _) => dot(sub(e, start), d),
+            (None, None, Some(l)) => value_in(self, l, Unit::MM)?,
+            (None, None, None) => {
+                return Err(refuse(format!("{name} needs its end or its length")));
+            }
+        };
+        if length <= least + EPS {
+            return Err(refuse(if kind == "face_end" {
+                format!(
+                    "{name} would be {} mm long from the far side of {label}, not beyond its other side",
+                    round(length)
+                )
+            } else {
+                format!(
+                    "{name} would be {} mm long from the face of {label}",
+                    round(length)
+                )
+            }));
+        }
+        def.start = Some(start);
+        def.end = Some(add(start, scale(d, length)));
+        def.length = None;
+        if let Some(lead) = met.as_ref().and_then(|m| m.wall) {
+            def.joins.get_or_insert_with(FrameJoins::default).end = Some(lead.to_string());
+        }
+        let to = self.end_met(&met, def, world);
+        Ok(StartJunction {
+            kind,
+            corner: if straight { "straight" } else { "butt" },
+            wall: label,
+            frame: None,
+            end: None,
+            at: at - t0,
+            length,
+            from,
+            offset,
+            to,
+            run: length,
+            base: Some(base),
+            warnings,
+        })
+    }
+
+    /// What a wall's end butts against (mitcad#515, mitcad#524): what its
+    /// run met, else the wall an end clicked on names.
+    fn end_met(&self, met: &Option<RunMet>, def: &FrameInput, world: &[Known]) -> Option<EndMet> {
+        match met {
+            Some(m) => Some(EndMet {
+                name: m.name.clone(),
+                frame: m.wall,
+                auto: true,
+            }),
+            None => def
+                .joins
+                .as_ref()
+                .and_then(|j| j.end.as_deref())
+                .and_then(|text| self.lead_of_ref(text).ok())
+                .and_then(|l| {
+                    let k = world.iter().find(|k| k.lead == Some(l))?;
+                    let name = k.def.name.clone().unwrap_or_else(|| "Wall".to_owned());
+                    Some(EndMet {
+                        name,
+                        frame: Some(l),
+                        auto: false,
+                    })
+                }),
+        }
+    }
+
+    /// The nearest a wall's run from `start` along `d` meets (mitcad#515,
+    /// mitcad#524): a wall frame (`wall_met`), or another body's face
+    /// (`face_met`) nearer than it; `skip` the wall it starts on, `skip_body`
+    /// the body it starts on.
+    #[allow(clippy::too_many_arguments)]
+    fn run_met(
+        &self,
+        start: V3,
+        d: V3,
+        least: f64,
+        height: f64,
+        skip: Option<ComponentUid>,
+        skip_body: Option<BodyUid>,
+        world: &[Known],
+    ) -> Option<RunMet> {
+        let wall = self
+            .wall_met(start, d, least, height, skip, world)
+            .map(|(w, s)| RunMet {
+                at: s,
+                name: w.name.clone(),
+                wall: w.lead,
+            });
+        let face = self.face_met(start, d, least, height, skip_body);
+        match (wall, face) {
+            (Some(w), Some(f)) if f.at < w.at - EPS => Some(f),
+            (Some(w), _) => Some(w),
+            (None, f) => f,
+        }
+    }
+
+    /// The nearest face of another body a wall's run meets (mitcad#524): the
+    /// bodies shown in the design other than timber frames' members (their
+    /// walls are `wall_met`'s) and `skip`, met along three lines of the run
+    /// (a quarter, half and three quarters of its height up) beyond `least`
+    /// from its start, where a line enters the body.
+    fn face_met(
+        &self,
+        start: V3,
+        d: V3,
+        least: f64,
+        height: f64,
+        skip: Option<BodyUid>,
+    ) -> Option<RunMet> {
+        const FAR: f64 = 1e5;
+        let to_host = inverse(&self.host_placement());
+        let mut best: Option<RunMet> = None;
+        for instance in self.instances() {
+            if !instance.visible || Some(instance.body) == skip {
+                continue;
+            }
+            let framed = self
+                .assembly()
+                .component(instance.component)
+                .and_then(|c| c.build.as_ref())
+                .is_some_and(|b| b.frame.is_some());
+            if framed {
+                continue;
+            }
+            let Some(shape) = self.body_shape(instance.body) else {
+                continue;
+            };
+            let to_body = inverse(&to_host.after(&instance.transform));
+            for k in [0.25, 0.5, 0.75] {
+                let from = add(add(start, scale(Z, k * height)), scale(d, least + EPS));
+                let to = add(from, scale(d, FAR));
+                let Ok(crossings) = self.kernel().segment_crossings(
+                    shape,
+                    to_body.apply_point(from),
+                    to_body.apply_point(to),
+                ) else {
+                    continue;
+                };
+                let Some((f, _)) = crossings.into_iter().find(|(_, enters)| *enters) else {
+                    continue;
+                };
+                let at = least + EPS + f * FAR;
+                if best.as_ref().is_none_or(|b| at < b.at) {
+                    best = Some(RunMet {
+                        at,
+                        name: instance.name.clone(),
+                        wall: None,
+                    });
+                }
+            }
+        }
+        best
+    }
+
+    /// The nearest wall frame a wall's run from `start` along `d` meets
+    /// (mitcad#515) and the distance to its near face: one it crosses (not
+    /// running along it), its centre line between that wall's end faces
+    /// (not merely touching it at a corner), beyond `least`, their heights
+    /// overlapping (`height` the new wall's); `skip` the wall it starts on.
+    fn wall_met(
+        &self,
+        start: V3,
+        d: V3,
+        least: f64,
+        height: f64,
+        skip: Option<ComponentUid>,
+        world: &[Known],
+    ) -> Option<(WallGeo, f64)> {
+        let walls = self.walls_of(world);
+        let mut best: Option<(WallGeo, f64)> = None;
+        for o in &walls {
+            if o.lead.is_none_or(|l| Some(l) == skip) {
+                continue;
+            }
+            let along = dot(d, o.n);
+            if along.abs() < 0.1 {
+                continue;
+            }
+            // Its face on the start's side.
+            let rel = dot(sub(start, o.start), o.n);
+            let half = o.depth() / 2.0;
+            if rel.abs() < half + EPS {
+                continue;
+            }
+            let s = (rel.signum() * half - rel) / along;
+            if s <= least + EPS || best.as_ref().is_some_and(|(_, b)| *b <= s) {
+                continue;
+            }
+            let span = wall_span(o, &walls);
+            let tj = dot(sub(add(start, scale(d, s)), o.start), o.u);
+            if tj <= span.t0 + EPS || tj >= span.t1 - EPS {
+                continue;
+            }
+            if o.start[2] >= start[2] + height - EPS || o.top_z() <= start[2] + EPS {
+                continue;
+            }
+            best = Some((o.clone(), s));
+        }
+        best
     }
 
     /// A frame's `build_edit`: its definition with the edit's fields over
@@ -2435,7 +3269,7 @@ impl<K: Kernel> Document<K> {
                 if def.name.is_none() {
                     def.name = Some(self.free_frame_name(def.kind(), &world));
                 }
-                world.push(Known { lead: None, def });
+                world.push(Known::new(def));
                 world.len() - 1
             }
         };
@@ -2445,6 +3279,10 @@ impl<K: Kernel> Document<K> {
             *roles.entry(m.spec.role).or_default() += 1;
         }
         let host = self.host_placement();
+        let mut warnings = plan.warnings.clone();
+        if let Some(j) = &junction {
+            warnings.extend(j.warnings.iter().cloned());
+        }
         Ok(json!({
             "place": "frame",
             "kind": plan.kind.as_str(),
@@ -2461,7 +3299,7 @@ impl<K: Kernel> Document<K> {
                 "x": host.apply_vector(m.plan.placement.apply_vector(super::geometry::X)),
                 "section": [plan.parts[&m.spec.which].w, plan.parts[&m.spec.which].t],
             })).collect::<Vec<_>>(),
-            "warnings": plan.warnings,
+            "warnings": warnings,
             "problems": [],
             "junction": junction.as_ref().map(StartJunction::to_json),
         }))
@@ -2516,24 +3354,28 @@ impl<K: Kernel> Document<K> {
             for removal in &removals {
                 apply_remove(state, removal)?;
             }
-            let mut made: Vec<(ComponentUid, Vec<(ComponentUid, String)>)> = Vec::new();
+            let mut made: Vec<MadeFrame> = Vec::new();
             for plan in &plans {
-                let first = made.first().map(|(lead, _)| *lead);
+                let first = made.first().map(|m| m.lead);
                 made.push(apply_frame(state, plan, active, first)?);
             }
             Ok((label.clone(), made))
         })?;
-        // The fasteners, each frame's anew.
+        // The fasteners, each frame's anew, in its own component
+        // (mitcad#522): their joints with its members there.
         let mut warnings: Vec<String> = plans.iter().flat_map(|p| p.warnings.clone()).collect();
         warnings.extend(kept_back);
         let mut fasteners = 0;
-        for (plan, (lead, _)) in plans.iter().zip(&made) {
+        for (plan, m) in plans.iter().zip(&made) {
             if let Some(part) = &plan.def.fastener {
-                fasteners += self.fasten_frame(*lead, part, plan.def.fastener_count, &mut warnings);
+                let before = self.set_build_host_override(m.component);
+                fasteners +=
+                    self.fasten_frame(m.lead, part, plan.def.fastener_count, &mut warnings);
+                self.set_build_host_override(before);
             }
         }
         self.merge_undo(depth, &label);
-        let (lead, members) = made[0].clone();
+        let (lead, members, component) = (made[0].lead, made[0].members.clone(), made[0].component);
         let mut seen = BTreeSet::new();
         warnings.retain(|w| seen.insert(w.clone()));
         Ok(Framed {
@@ -2547,9 +3389,10 @@ impl<K: Kernel> Document<K> {
                 0
             },
             warnings,
-            relaid: made[1..].iter().map(|(l, _)| *l).collect(),
+            relaid: made[1..].iter().map(|m| m.lead).collect(),
             changed,
             junction: None,
+            component,
         })
     }
 
@@ -2622,16 +3465,44 @@ fn frame_cut<P>(c: &PartCut<P>) -> bool {
     c.kind == "birdsmouth" || (c.kind == "half_lap" && c.junction.is_none())
 }
 
-/// Makes a planned frame in `state`: the sources it adds, its members kept
-/// (placed anew), made or notched, its definition on its lead. Returns the
-/// lead and the members. `made_first`: the lead of the frame made first in
-/// the step, for the cuts with the frame being made.
+/// Makes a planned frame in `state`: the sources it adds, its own component
+/// (a new frame's, named after it, in the BUILD host `active`; mitcad#522),
+/// its members kept (placed anew), made or notched in that component (a
+/// flat frame saved before: in the host), its definition on its lead.
+/// Returns the lead, the members and the component. `made_first`: the lead
+/// of the frame made first in the step, for the cuts with the frame being
+/// made.
 fn apply_frame(
     state: &mut DocState,
     plan: &FramePlan,
     active: ComponentUid,
     made_first: Option<ComponentUid>,
-) -> Result<(ComponentUid, Vec<(ComponentUid, String)>), ModelError> {
+) -> Result<MadeFrame, ModelError> {
+    // Where its members go: its own component, made with a new frame.
+    let component = match plan.component.filter(|c| state.assembly.exists(*c)) {
+        _ if plan.flat => None,
+        Some(c) => {
+            // Renamed with the frame, when that name is free.
+            let named = state
+                .assembly
+                .component(c)
+                .is_some_and(|d| d.name == plan.name);
+            if !named
+                && state.check_component_name(&plan.name, c).is_ok()
+                && let Some(d) = state.assembly.component_mut(c)
+            {
+                d.name = plan.name.clone();
+            }
+            Some(c)
+        }
+        None => {
+            let name = state.free_component_name(&plan.name);
+            let c = state.assembly.create(Some(&name), None);
+            state.assembly.place(c, active, Transform::IDENTITY);
+            Some(c)
+        }
+    };
+    let container = component.unwrap_or(active);
     // The sources, each once.
     let mut ids: BTreeMap<Which, SourceId> = BTreeMap::new();
     for (which, part) in &plan.parts {
@@ -2684,12 +3555,12 @@ fn apply_frame(
             .filter(|c| state.assembly.exists(*c));
         let c = match kept {
             Some(c) => {
-                replace_member(state, &p, active, c)?;
+                replace_member(state, &p, container, c)?;
                 c
             }
             None => {
                 p.name = Some(state.free_component_name(&format!("{} {}", plan.name, m.spec.role)));
-                make_part(state, &p, active)?
+                make_part(state, &p, container)?
                     .component
                     .expect("a member is made")
             }
@@ -2730,6 +3601,7 @@ fn apply_frame(
     let value = serde_json::to_value(FrameDef {
         frame: def,
         count: made.len(),
+        component,
     })
     .map_err(|e| refuse(e.to_string()))?;
     for (c, key) in &made {
@@ -2745,7 +3617,11 @@ fn apply_frame(
             record.spacing = None;
         }
     }
-    Ok((lead, made))
+    Ok(MadeFrame {
+        lead,
+        members: made,
+        component,
+    })
 }
 
 /// When a frame's lead goes alone, the next member that stays takes the

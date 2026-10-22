@@ -211,5 +211,7 @@ void section_curve_tests();
 // Roundings cut by a face of the solid they pass through, with the port's
 // patch 0700 (mitcad#343).
 void fillet_pierced_tests();
+// Faces moved by a rigid motion, their neighbours following (mitcad#343).
+void move_faces_tests();
 
 } // namespace test

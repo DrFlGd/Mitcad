@@ -1163,3 +1163,101 @@ fn joint_frame_gives_an_origin_s_frame_in_the_design() {
     );
     assert_near(json_vec(&frame["origin"]), [5.0, 5.0, 5.0]);
 }
+
+#[test]
+fn the_joints_query_says_what_each_side_is_on() {
+    // mitcad#523: the application highlights the geometry of each side
+    // from the `joints` query alone.
+    let mut rig = rig();
+    rig.ground(rig.o1, true);
+    let pin_bottom = rig.face(rig.pin_body, "start");
+    let pin_top = rig.face(rig.pin_body, "end");
+    let plate_top = rig.face(rig.plate_body, "end");
+    let uid = rig.joint("rigid", json!({"flip": true}));
+    let joint = rig.joint_json(uid);
+    let a = &joint["a"];
+    assert_eq!(a["on"], "face", "{joint}");
+    assert_eq!(a["occurrence"], "Pin:1");
+    assert_eq!(a["path"], json!(["O2"]));
+    assert_eq!(
+        a["geometry"],
+        json!({"body": rig.pin_body.to_string(), "face": pin_bottom})
+    );
+    assert_eq!(a["component"], rig.pin.to_string());
+    assert_eq!(a.get("frame_override"), None);
+    let b = &joint["b"];
+    assert_eq!(b["on"], "face");
+    assert_eq!(
+        b["geometry"],
+        json!({"body": rig.plate_body.to_string(), "face": plate_top})
+    );
+    assert_eq!(b["component"], rig.plate.to_string());
+
+    // A joint origin of the pin on a fixed point of the root with an
+    // override: the side's override is given as the definition has it.
+    rig.doc.activate_component(rig.pin).unwrap();
+    let added = rig.run(json!({"cmd": "add_feature", "def": {"type": "joint_origin",
+               "geometry": {"body": rig.pin_body, "face": pin_top}}}));
+    let pin_origin = added["uid"].as_str().unwrap().to_owned();
+    rig.doc.activate_component(ComponentUid::ROOT).unwrap();
+    let result = rig.run(json!({"cmd": "add_joint", "kind": "revolute",
+               "a": {"occurrence": "Pin:1", "geometry": pin_origin},
+               "b": {"geometry": {"point": [0, 0, 50]}, "frame_override": {"z_axis": [1, 0, 0]}}}));
+    let joint = rig.joint_json(result["uid"].as_str().unwrap().parse().unwrap());
+    assert_eq!(joint["a"]["on"], "joint_origin", "{joint}");
+    assert_eq!(joint["a"]["geometry"], json!(pin_origin));
+    assert_eq!(joint["b"]["on"], "fixed");
+    assert_eq!(joint["b"]["path"], json!([]));
+    assert_eq!(joint["b"]["component"], ComponentUid::ROOT.to_string());
+    assert_eq!(
+        joint["b"]["frame_override"],
+        json!({"z_axis": [1.0, 0.0, 0.0]})
+    );
+
+    // An origin plane of the pin and an edge of the plate.
+    let shape = rig.doc.body_shape(rig.plate_body).unwrap().clone();
+    let (e0, e1) = &shape.edges[1];
+    let edge = format!("E{{{e0}|{e1}}}")
+        .parse::<EdgeName>()
+        .unwrap()
+        .to_string();
+    let result = rig.run(json!({"cmd": "add_joint", "kind": "slider",
+               "a": {"occurrence": "Pin:1", "geometry": "xy"},
+               "b": {"occurrence": "Plate:1", "geometry": {"body": rig.plate_body, "edge": edge}}}));
+    let joint = rig.joint_json(result["uid"].as_str().unwrap().parse().unwrap());
+    assert_eq!(joint["a"]["on"], "origin", "{joint}");
+    assert_eq!(joint["a"]["geometry"], "xy");
+    assert_eq!(joint["b"]["on"], "edge");
+    assert_eq!(joint["b"]["geometry"]["edge"], json!(edge));
+
+    // An as-built joint: its sides are the occurrences, its motion origin
+    // a side of its own.
+    let result = rig.run(json!({"cmd": "add_as_built_joint", "kind": "revolute",
+               "a": "Pin:1", "b": "Plate:1",
+               "origin": {"occurrence": "Pin:1", "geometry": {"body": rig.pin_body, "face": pin_top}}}));
+    let joint = rig.joint_json(result["uid"].as_str().unwrap().parse().unwrap());
+    assert_eq!(joint["a"]["on"], "occurrence", "{joint}");
+    assert_eq!(joint["a"]["component"], rig.pin.to_string());
+    assert_eq!(joint["b"]["on"], "occurrence");
+    assert_eq!(joint["origin"]["on"], "face");
+    assert_eq!(joint["origin"]["path"], json!(["O2"]));
+    assert_eq!(joint["origin"]["geometry"]["face"], json!(pin_top));
+
+    // A constraint set's rows say the same of their references.
+    let result = rig.run(json!({"cmd": "add_feature", "def": {"type": "constraint_set", "rows": [
+               {"type": "align",
+                "a": {"occurrence": "O2", "geometry": {"body": rig.pin_body, "face": pin_bottom}},
+                "b": {"occurrence": "O1", "geometry": {"body": rig.plate_body, "face": plate_top}}}]}}));
+    let set = result["uid"].as_str().unwrap().to_owned();
+    let joints = query(&rig.doc, json!({"query": "joints"}));
+    let row = &joints["constraints"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["uid"] == set)
+        .unwrap()["rows"][0];
+    assert_eq!(row["a"]["on"], "face", "{row}");
+    assert_eq!(row["a"]["occurrence"], "Pin:1");
+    assert_eq!(row["b"]["geometry"]["face"], json!(plate_top));
+    assert_eq!(row["b"]["component"], rig.plate.to_string());
+}

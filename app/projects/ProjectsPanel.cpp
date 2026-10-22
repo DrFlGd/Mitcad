@@ -10,14 +10,21 @@
 #include <QApplication>
 #include <QDateTime>
 #include <QDir>
+#include <QDockWidget>
 #include <QEvent>
 #include <QFileInfo>
 #include <QFont>
+#include <QGuiApplication>
 #include <QHeaderView>
 #include <QKeyEvent>
+#include <QMainWindow>
 #include <QMenu>
 #include <QMouseEvent>
+#include <QPainter>
 #include <QScrollBar>
+#include <QStyle>
+#include <QStyleOptionViewItem>
+#include <QTimer>
 #include <QToolBar>
 #include <QToolButton>
 #include <QTreeWidget>
@@ -34,6 +41,7 @@
 #include "../framework/PanelTree.hpp"
 #include "../framework/TestSync.hpp"
 #include "../framework/WindowStyle.hpp"
+#include "ProjectRowText.hpp"
 
 namespace mitcad {
 namespace {
@@ -44,11 +52,11 @@ constexpr int kTypeRole = Qt::UserRole;
 constexpr int kRootRole = Qt::UserRole + 1;
 constexpr int kPathRole = Qt::UserRole + 2;
 constexpr int kKeyRole = Qt::UserRole + 3;
+constexpr int kTipRole = Qt::UserRole + 4;   // a project row's tooltip lines without its state
+constexpr int kMarksRole = Qt::UserRole + 5; // the row's marks as the log shows them (RowMarks::logged)
 constexpr int kDefaultWidth = 240;
 
 const QString kSuffix = QStringLiteral(".mitcad");
-
-QString dot() { return QStringLiteral(" ") + QChar(0x00B7) + QStringLiteral(" "); }
 
 QString joinPath(const QString& folder, const QString& name) {
   return folder.isEmpty() ? name : QStringLiteral("%1/%2").arg(folder, name);
@@ -62,10 +70,7 @@ QString dirOf(const QString& path) {
 QString lastPart(const QString& path) { return path.mid(path.lastIndexOf(QLatin1Char('/')) + 1); }
 
 // A design's name as the panel shows it: its file's name without .mitcad.
-QString designName(const QString& path) {
-  const QString file = lastPart(path);
-  return file.endsWith(kSuffix, Qt::CaseInsensitive) ? file.left(file.size() - kSuffix.size()) : file;
-}
+QString designName(const QString& path) { return designDisplayName(path); }
 
 // Delete deletes; on macOS the delete key of the keyboard (Backspace) too.
 bool isDeleteKey(int key) {
@@ -76,31 +81,10 @@ bool isDeleteKey(int key) {
 #endif
 }
 
-// What a row shows in its second column, and what the log says.
-struct StateText {
-  QString shown;
-  QString logged;
-};
-
-StateText projectState(const ProjectRow& row, const ProjectIndicator::Remote* remote) {
-  switch (row.kind) {
-  case ProjectRow::Kind::Missing:
-    return {ProjectsPanel::tr("Missing"), QStringLiteral("missing")};
-  case ProjectRow::Kind::Unreadable:
-    return {ProjectsPanel::tr("Cannot be read"), QStringLiteral("unreadable")};
-  case ProjectRow::Kind::NoHistory:
-    return {ProjectsPanel::tr("No versions"), QStringLiteral("no versions")};
-  case ProjectRow::Kind::Local:
-    if (row.noRemoteChosen) {
-      return {ProjectsPanel::tr("Cloud") + dot() + ProjectsPanel::tr("No remote chosen"),
-              QStringLiteral("cloud, no remote chosen")};
-    }
-    return {ProjectsPanel::tr("Local"), QStringLiteral("local")};
-  case ProjectRow::Kind::Cloud:
-    break;
-  }
-  // As the project indicator shows it: the current project's remote as
-  // the remote work knows it, others' from their local refs.
+// A project row's marks (mitcad#529): as the project indicator shows its
+// state, the current project's remote as the remote work knows it, others'
+// from their local refs.
+RowMarks projectState(const ProjectRow& row, const ProjectIndicator::Remote* remote) {
   int ahead = row.ahead;
   int behind = row.behind;
   QString problem;
@@ -111,70 +95,17 @@ StateText projectState(const ProjectRow& row, const ProjectIndicator::Remote* re
     problem = remote->problem;
     conflict = remote->conflict;
   }
-  const QString up = QString(QChar(0x2191));
-  const QString down = QString(QChar(0x2193));
-  QStringList shown{ProjectsPanel::tr("Cloud")};
-  QStringList logged{QStringLiteral("cloud")};
-  if (conflict) {
-    shown << ProjectsPanel::tr("Conflict");
-    logged << QStringLiteral("conflict");
-  } else if (problem == QLatin1String("network") || problem == QLatin1String("timed_out")) {
-    shown << (ahead > 0 ? ProjectsPanel::tr("Offline, %1%2 waiting").arg(up).arg(ahead) : ProjectsPanel::tr("Offline"));
-    logged << QStringLiteral("offline");
-  } else if (problem == QLatin1String("auth_failed") || problem == QLatin1String("host_key_unknown")) {
-    shown << ProjectsPanel::tr("Sign-in needed");
-    logged << QStringLiteral("sign-in needed");
-  } else {
-    if (ahead > 0) {
-      shown << up + QString::number(ahead);
-      logged << QStringLiteral("ahead %1").arg(ahead);
-    }
-    if (behind > 0) {
-      shown << down + QString::number(behind);
-      logged << QStringLiteral("behind %1").arg(behind);
-    }
-    if (ahead == 0 && behind == 0) {
-      shown << QString(QChar(0x2713));
-      logged << QStringLiteral("synced");
-    } else if (ahead <= 0 && behind <= 0) {
-      shown << ProjectsPanel::tr("Not synced yet");
-      logged << QStringLiteral("not synced");
-    }
-  }
-  return {shown.join(dot()), logged.join(QStringLiteral(", "))};
+  return projectMarks(row, ahead, behind, problem, conflict);
 }
 
-StateText designState(const ProjectDesignRow& design) {
-  QStringList shown;
-  QStringList logged;
-  if (design.version > 0) {
-    shown << ProjectsPanel::tr("v%1").arg(design.version);
-    logged << QStringLiteral("v%1").arg(design.version);
-  } else {
-    shown << ProjectsPanel::tr("Not recorded");
-    logged << QStringLiteral("not recorded");
-  }
-  if (design.recorded && design.changed) {
-    shown << ProjectsPanel::tr("Changed");
-    logged << QStringLiteral("changed");
-  }
-  if (design.locked) {
-    if (design.lockMine) {
-      shown << ProjectsPanel::tr("Editing");
-      logged << QStringLiteral("editing");
-    } else if (design.lockSameOwner) {
-      shown << ProjectsPanel::tr("Editing elsewhere");
-      logged << QStringLiteral("editing elsewhere");
-    } else {
-      shown << ProjectsPanel::tr("Locked: %1").arg(design.lockOwner);
-      logged << QStringLiteral("locked by %1").arg(design.lockOwner);
-    }
-  }
-  return {shown.join(dot()), logged.join(QStringLiteral(", "))};
-}
+RowMarks designState(const ProjectDesignRow& design) { return designMarks(design); }
 
+// A design row's tooltip: its full name and path first (its name may be
+// elided in the row, mitcad#529), its state in full words, then its
+// version, changes and edit lock.
 QString designTip(const QString& root, const ProjectDesignRow& design) {
-  QStringList tip{QDir::toNativeSeparators(QDir(root).filePath(design.path))};
+  QStringList tip{designName(design.path), QDir::toNativeSeparators(QDir(root).filePath(design.path)),
+                  designMarks(design).full};
   if (design.version > 0) {
     const QDateTime when = QDateTime::fromSecsSinceEpoch(design.versionTime).toLocalTime();
     tip << ProjectsPanel::tr("Version %1 (%2), saved %3 by %4")
@@ -222,6 +153,60 @@ private:
   QStringList m_entries;
 };
 
+// The rows' cells (mitcad#529): a name that does not fit is elided in the
+// middle, keeping its start and end (a rename's editor still gets the whole
+// name); in the Docked panel the rows with their band (PanelRowDelegate).
+class ProjectsRowDelegate : public PanelRowDelegate {
+public:
+  ProjectsRowDelegate(bool bands, QObject* parent) : PanelRowDelegate(parent), m_bands(bands) {}
+
+  // The text a cell shows in `option` (its rectangle, the view's options),
+  // as paint() draws it.
+  QString shownText(const QStyleOptionViewItem& option, const QModelIndex& index) const {
+    QStyleOptionViewItem cell = option;
+    initStyleOption(&cell, index);
+    return index.column() == kName ? elided(cell) : cell.text;
+  }
+
+  void paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override {
+    if (m_bands) {
+      paintPanelRowBand(painter, option, index);
+    }
+    QStyleOptionViewItem cell = m_bands ? panelRowOption(option) : option;
+    initStyleOption(&cell, index);
+    if (index.column() == kName) {
+      cell.text = elided(cell);
+    }
+    cell.textElideMode = Qt::ElideMiddle;
+    const QWidget* widget = cell.widget;
+    const QStyle* style = widget != nullptr ? widget->style() : QApplication::style();
+    style->drawControl(QStyle::CE_ItemViewItem, &cell, painter, widget);
+  }
+
+  QSize sizeHint(const QStyleOptionViewItem& option, const QModelIndex& index) const override {
+    return m_bands ? PanelRowDelegate::sizeHint(option, index) : QStyledItemDelegate::sizeHint(option, index);
+  }
+
+  QWidget* createEditor(QWidget* parent, const QStyleOptionViewItem& option,
+                        const QModelIndex& index) const override {
+    return m_bands ? PanelRowDelegate::createEditor(parent, option, index)
+                   : QStyledItemDelegate::createEditor(parent, option, index);
+  }
+
+private:
+  // The cell's text elided in the middle to the room the style gives it
+  // (its text rectangle less the margins it draws the text within).
+  static QString elided(const QStyleOptionViewItem& cell) {
+    const QWidget* widget = cell.widget;
+    const QStyle* style = widget != nullptr ? widget->style() : QApplication::style();
+    const QRect room = style->subElementRect(QStyle::SE_ItemViewItemText, &cell, widget);
+    const int margin = style->pixelMetric(QStyle::PM_FocusFrameHMargin, nullptr, widget) + 1;
+    return elideMiddle(cell.text, cell.fontMetrics, room.width() - 2 * margin);
+  }
+
+  bool m_bands;
+};
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -233,6 +218,23 @@ public:
 
   bool editing() const { return state() == QAbstractItemView::EditingState; }
   bool dragging() const { return m_dragging; }
+
+  // The text a row's cell shows as it is painted (a name elided in the
+  // middle, mitcad#529); "" for a row in a folded folder.
+  QString shownText(QTreeWidgetItem* item, int column) const {
+    const QModelIndex index = indexFromItem(item, column);
+    const QRect rect = visualRect(index);
+    if (!rect.isValid()) {
+      return {};
+    }
+    QStyleOptionViewItem option;
+    initViewItemOption(&option);
+    option.rect = rect;
+    if (const auto* delegate = dynamic_cast<const ProjectsRowDelegate*>(itemDelegate())) {
+      return delegate->shownText(option, index);
+    }
+    return item->text(column);
+  }
 
   bool cancelEdit() {
     if (!editing()) {
@@ -409,9 +411,16 @@ ProjectsPanel::ProjectsPanel(Host host, QWidget* parent) : QWidget(parent), m_ho
   // Only a click gives the tree the keyboard, so that the view keeps the
   // single-letter shortcuts.
   m_tree->setFocusPolicy(Qt::ClickFocus);
+  // The names get the width (mitcad#529): one line per row, a name that
+  // does not fit elided in the middle (the delegate), the state as compact
+  // marks; no horizontal scrolling, also for deep trees, whose levels
+  // indent little (mitcad#393): the panel's width is dragged instead.
+  m_tree->setTextElideMode(Qt::ElideMiddle);
+  m_tree->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
   setMinimumWidth(160);
   if (chromeStyle() == ChromeStyle::Floating) {
     // Inside a card: the card's material shows through.
+    m_tree->setItemDelegate(new ProjectsRowDelegate(false, m_tree));
     m_tree->setFrameShape(QFrame::NoFrame);
     m_tree->setAttribute(Qt::WA_MacShowFocusRect, false);
     QPalette palette = m_tree->palette();
@@ -423,9 +432,18 @@ ProjectsPanel::ProjectsPanel(Host host, QWidget* parent) : QWidget(parent), m_ho
   } else {
     // On the Docked panel's surface, rows with the panels' height and
     // highlight (mitcad#251); before the editor's signal is connected below.
-    m_tree->setItemDelegate(new PanelRowDelegate(m_tree));
+    m_tree->setItemDelegate(new ProjectsRowDelegate(true, m_tree));
     stylePanelTree(m_tree);
   }
+  // A drag of the Docked panel's edge rests: its width is remembered.
+  m_widthTimer = new QTimer(this);
+  m_widthTimer->setSingleShot(true);
+  m_widthTimer->setInterval(400);
+  connect(m_widthTimer, &QTimer::timeout, this, [this] {
+    if (m_container != nullptr) {
+      emit dockWidthChosen(m_container->width());
+    }
+  });
 
   const auto action = [this](const char* icon, const QString& text, const QString& tip, auto run) {
     QAction* made = m_toolbar->addAction(themeIcon(QString::fromLatin1(icon)), text);
@@ -576,10 +594,18 @@ bool ProjectsPanel::eventFilter(QObject* watched, QEvent* event) {
   if (event->type() == QEvent::Move || event->type() == QEvent::Resize || event->type() == QEvent::Show) {
     scheduleLayoutLog();
   }
+  // The dock resized while the left button is held: a drag of its edge
+  // (the window's own layout resizes it without), remembered once it rests.
+  if (event->type() == QEvent::Resize && watched == m_container.data() &&
+      qobject_cast<QDockWidget*>(m_container.data()) != nullptr && m_container->isVisible() &&
+      (QGuiApplication::mouseButtons() & Qt::LeftButton) != 0) {
+    m_widthTimer->start();
+  }
   return QWidget::eventFilter(watched, event);
 }
 
 void ProjectsPanel::watchContainer(QWidget* container) {
+  m_container = container;
   if (container != nullptr) {
     container->installEventFilter(this);
   }
@@ -740,7 +766,9 @@ QTreeWidgetItem* ProjectsPanel::addProjectRow(const ProjectRow& row, const QStri
   top->setData(kName, kPathRole, QString());
   top->setData(kName, kKeyRole, projectKey);
   top->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
-  QStringList tip;
+  // Its full name first (elided in the row when it does not fit); its state
+  // in full words follows it (applyMarks).
+  QStringList tip{row.name};
   if (row.kind == ProjectRow::Kind::Cloud) {
     tip << tr("Cloud project: its versions are also in a remote repository");
   } else if (row.noRemoteChosen) {
@@ -764,6 +792,7 @@ QTreeWidgetItem* ProjectsPanel::addProjectRow(const ProjectRow& row, const QStri
   if (row.truncated) {
     tip << tr("Only the first designs and folders are listed");
   }
+  top->setData(kName, kTipRole, tip);
   top->setToolTip(kName, tip.join(QLatin1Char('\n')));
   top->setToolTip(kState, tip.join(QLatin1Char('\n')));
   QHash<QString, QTreeWidgetItem*> folders;
@@ -781,7 +810,8 @@ QTreeWidgetItem* ProjectsPanel::addProjectRow(const ProjectRow& row, const QStri
     folder->setData(kName, kPathRole, path);
     folder->setData(kName, kKeyRole, QStringLiteral("%1/%2/").arg(projectKey, path));
     folder->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsEditable);
-    folder->setToolTip(kName, QDir::toNativeSeparators(QDir(row.root).filePath(path)));
+    folder->setToolTip(kName, QStringLiteral("%1\n%2").arg(lastPart(path),
+                                                           QDir::toNativeSeparators(QDir(row.root).filePath(path))));
     folders.insert(path, folder);
     return folder;
   };
@@ -824,14 +854,26 @@ void ProjectsPanel::applyMarks() {
     if (type == RowType::Project) {
       if (const ProjectRow* row = project(rootOf(item))) {
         const bool isCurrent = !current.isEmpty() && sameRoot(row->root, current);
-        item->setText(kState, projectState(*row, isCurrent ? &remote : nullptr).shown);
+        // Compact marks (mitcad#529), the full words in the tooltip after
+        // the name.
+        const RowMarks marks = projectState(*row, isCurrent ? &remote : nullptr);
+        item->setData(kName, kMarksRole, marks.logged());
+        item->setText(kState, marks.text);
+        item->setIcon(kState, marks.icon.isEmpty() ? QIcon() : themeIcon(marks.icon));
+        QStringList tip = item->data(kName, kTipRole).toStringList();
+        tip.insert(std::min<qsizetype>(1, tip.size()), marks.full);
+        item->setToolTip(kName, tip.join(QLatin1Char('\n')));
+        item->setToolTip(kState, tip.join(QLatin1Char('\n')));
         QFont font = item->font(kName);
         font.setBold(isCurrent);
         item->setFont(kName, font);
       }
     } else if (type == RowType::Design) {
       if (const ProjectDesignRow* design = designOf(item)) {
-        item->setText(kState, designState(*design).shown);
+        const RowMarks marks = designState(*design);
+        item->setData(kName, kMarksRole, marks.logged());
+        item->setText(kState, marks.text);
+        item->setIcon(kState, marks.icon.isEmpty() ? QIcon() : themeIcon(marks.icon));
         const bool isOpen = !open.isEmpty() && sameRoot(QDir(rootOf(item)).filePath(design->path), open);
         QFont font = item->font(kName);
         font.setBold(isOpen);
@@ -841,6 +883,8 @@ void ProjectsPanel::applyMarks() {
     }
   }
   logTree();
+  // The names as shown again (a bold name is wider).
+  scheduleLayoutLog();
 }
 
 void ProjectsPanel::logTree() {
@@ -869,7 +913,7 @@ void ProjectsPanel::logTree() {
       entries << folder + QLatin1Char('/');
     }
     for (const ProjectDesignRow& design : row->designs) {
-      QString entry = QStringLiteral("%1 %2").arg(design.path, designState(design).logged);
+      QString entry = QStringLiteral("%1 %2").arg(design.path, designState(design).words);
       if (!open.isEmpty() && sameRoot(QDir(row->root).filePath(design.path), open)) {
         entry += QStringLiteral(", open");
       }
@@ -879,7 +923,7 @@ void ProjectsPanel::logTree() {
       entries << QStringLiteral("no designs");
     }
     lines.insert(key, QStringLiteral("Projects tree: %1 (%2%3): %4")
-                          .arg(key, projectState(*row, isCurrent ? &remote : nullptr).logged,
+                          .arg(key, projectState(*row, isCurrent ? &remote : nullptr).words,
                                isCurrent ? QStringLiteral(", current") : QString(),
                                entries.join(QStringLiteral(" | "))));
   }
@@ -954,11 +998,49 @@ void ProjectsPanel::logLayout() {
     const QPoint point = GlassCard::mapToHost(button, button->rect().center());
     lines << QStringLiteral("Projects button %1 at %2,%3").arg(action->text()).arg(point.x()).arg(point.y());
   }
+  // The width and where its edge is dragged (mitcad#529): the card's grip,
+  // or the window's separator right of the dock.
+  lines << QStringLiteral("Projects width %1").arg(m_container != nullptr ? m_container->width() : width());
+  if (auto* card = qobject_cast<GlassCard*>(m_container.data())) {
+    if (card->isWidthAdjustable()) {
+      const QPoint point = GlassCard::mapToHost(card, card->widthGripCenter());
+      lines << QStringLiteral("Projects edge at %1,%2").arg(point.x()).arg(point.y());
+    }
+  } else if (auto* dock = qobject_cast<QDockWidget*>(m_container.data())) {
+    auto* window = qobject_cast<QMainWindow*>(dock->parentWidget());
+    if (window != nullptr && window->centralWidget() != nullptr && !dock->isFloating()) {
+      const QRect docked = dock->geometry();
+      const QRect central = window->centralWidget()->geometry();
+      const int x = central.left() > docked.right() + 1 ? (docked.right() + 1 + central.left()) / 2 : docked.right() + 1;
+      const QPoint point = GlassCard::mapToHost(window, QPoint(x, docked.center().y()));
+      lines << QStringLiteral("Projects edge at %1,%2").arg(point.x()).arg(point.y());
+    }
+  }
   const QString logged = lines.join(QLatin1Char('\n'));
   if (logged != m_loggedLayout) {
     m_loggedLayout = logged;
     for (const QString& line : std::as_const(lines)) {
       qDebug().noquote() << line;
+    }
+  }
+  // Each row's name as shown, its marks and its tooltip (mitcad#529), when
+  // they changed: a name elided in the middle keeps its start and end.
+  for (QTreeWidgetItemIterator it(m_tree); *it != nullptr; ++it) {
+    QTreeWidgetItem* item = *it;
+    if (typeOf(item) == RowType::NewItem) {
+      continue;
+    }
+    const QString shown = m_tree->shownText(item, kName);
+    if (shown.isEmpty()) {
+      continue; // in a folded folder
+    }
+    const QString marks = item->data(kName, kMarksRole).toString();
+    const QString line = QStringLiteral("Projects text %1: \"%2\" %3; tooltip: %4")
+                             .arg(keyOf(item), shown, marks.isEmpty() ? QStringLiteral("none") : marks,
+                                  item->toolTip(kName).split(QLatin1Char('\n')).join(QStringLiteral(" / ")));
+    if (m_loggedTexts.value(keyOf(item)) != line) {
+      m_loggedTexts.insert(keyOf(item), line);
+      qInfo().noquote() << line;
     }
   }
 }
@@ -1022,7 +1104,7 @@ QString ProjectsPanel::stateText(const QString& root) const {
   const QString current = m_host.currentRoot ? m_host.currentRoot() : QString();
   const bool isCurrent = !current.isEmpty() && sameRoot(row->root, current);
   const ProjectIndicator::Remote remote = m_host.currentRemote ? m_host.currentRemote() : ProjectIndicator::Remote();
-  return projectState(*row, isCurrent ? &remote : nullptr).shown;
+  return projectState(*row, isCurrent ? &remote : nullptr).full;
 }
 
 // ---------------------------------------------------------------------------

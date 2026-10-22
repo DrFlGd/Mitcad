@@ -40,7 +40,7 @@ pub fn depends_on_bodies(item: &TimelineItem) -> bool {
     match item.object_type() {
         Some(
             "FilletFeature" | "ChamferFeature" | "CombineFeature" | "ReplaceFaceFeature"
-            | "DeleteFaceFeature",
+            | "DeleteFaceFeature" | "MoveFaceFeature",
         ) => true,
         // Paths, rails or sections of edges (mitcad#34).
         Some("SweepFeature" | "PipeFeature" | "LoftFeature") => crate::sweeps::uses_edges(item),
@@ -119,7 +119,6 @@ fn not_translated(object_type: &str) -> Option<&'static str> {
     Some(match object_type {
         "FlangeFeature" => "a sheet metal flange: not translated (Mitcad has no sheet metal)",
         "PCBFeature" => "an electronics board: not translated",
-        "MoveFaceFeature" => "moved faces: not translated (its faces and motion are not decoded)",
         "DraftFeature" => "a draft: not translated (its faces and plane are not decoded)",
         "MirrorComponent" => {
             "mirrors a component into a new one: not translated (the stored bodies stand in)"
@@ -1785,7 +1784,8 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                 | "ReplaceFaceFeature"
                 | "RemoveFeature"
                 | "DeleteFaceFeature"
-                | "CopyPasteBodies"),
+                | "CopyPasteBodies"
+                | "MoveFaceFeature"),
             ) => self.translate_op(t, item),
             (None, t) => Err(format!("{t}: no details decoded")),
             (_, t) => Err(format!("{t} is not supported yet")),

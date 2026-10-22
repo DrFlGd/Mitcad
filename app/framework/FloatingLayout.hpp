@@ -112,6 +112,11 @@ public:
   // Places the cards again (queued: many changes make one layout).
   void requestLayout();
 
+  // A card's width as the user dragged it (GlassCard::setWidthAdjustable,
+  // mitcad#529), placed at once: at most two thirds of the view less the
+  // margins. A card added with a width wider than the view gets the view's.
+  void setCardWidth(GlassCard* card, int width);
+
   OcctViewer* viewer() const { return m_viewer; }
 
 protected:

@@ -379,7 +379,9 @@ Run in the isolated environments:
   `tools/libraries/make-fastener-library.py` in the build tree (needs git
   and Python 3; skipped without them); `cli.profile-library` likewise one
   of BUILD parts with `tools/libraries/make-profile-library.py` from
-  sections it makes.
+  sections it makes; `cli.library-previews` renders two fasteners'
+  previews with both generators and the render worker (skipped where it
+  cannot render).
 - The crates' tests (`core.model`, `core.vcs.*`, ...): the fixtures
   `core.cargo_build` and `core.cargo_build_release` build every crate's
   test binaries in one cargo run (`cargo test --no-run`, one lock on the

@@ -779,7 +779,10 @@ function Ui-PickAt([string]$Text) {
   for ($i = $lines.Count - 1; $i -ge 0; $i--) { if ($lines[$i].Contains('Pick places:')) { $start = $i; break } }
   $line = $lines[$start..($lines.Count - 1)] | Where-Object { $_.Contains('Pick ') -and $_.Contains($Text) } |
     Select-Object -Last 1
-  if ($line -notmatch ' at (\d+),(\d+)$') { Ui-Fail "no pick place logged for '$Text'" }
+  # "$line": with no line, $line is an empty result, and -notmatch on it
+  # gave an empty (false) result, not true; $Matches was then null and the
+  # error ended the script with the app left running (mitcad#525).
+  if ("$line" -notmatch ' at (\d+),(\d+)$') { Ui-Fail "no pick place logged for '$Text'" }
   return @([int]$Matches[1], [int]$Matches[2])
 }
 

@@ -1235,9 +1235,13 @@ impl<K: Kernel> Document<K> {
         let mut targets = vec![component];
         // A timber frame goes whole, with its fasteners (mitcad#479).
         let frame = self.frame_lead(component).filter(|_| set);
+        // Its own component goes with it when nothing else is left in it
+        // (mitcad#522).
+        let mut frame_component = None;
         if let Some(lead) = frame {
             targets = self.frame_fasteners(lead);
             targets.extend(self.frame_members(lead));
+            frame_component = self.frame_component(lead);
         } else if set {
             let lead = self
                 .part_info(component)
@@ -1266,6 +1270,15 @@ impl<K: Kernel> Document<K> {
                 out.components.extend(removed.components);
                 out.features.extend(removed.features);
                 out.detached.extend(removed.detached);
+            }
+            if let Some(c) = frame_component.filter(|c| {
+                state.assembly.exists(*c)
+                    && state.assembly.children(*c).next().is_none()
+                    && !state.features.iter().any(|f| f.component == *c)
+            }) {
+                out.features
+                    .extend(state.delete_components(BTreeSet::from([c])));
+                // Not listed in `components`: those are the BUILD parts removed.
             }
             Ok((label, out))
         })

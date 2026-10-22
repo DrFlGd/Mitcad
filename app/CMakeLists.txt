@@ -914,18 +914,23 @@ target_sources(mitcad PRIVATE
   build/BuildModel.hpp
   commands/BuildCommands.cpp)
 # The part picker's data (mitcad#418, app/library): the user's favourite
-# parts and groups in the settings, the picker's order, and the library
-# parts the design uses (the model's `library_usage` query).
+# parts and groups in the settings, the picker's order, the library parts
+# the design uses (the model's `library_usage` query) and the groups' tree
+# (mitcad#527).
 target_sources(mitcad PRIVATE
   library/PartFavourites.cpp
   library/PartFavourites.hpp
+  library/PartGroups.cpp
+  library/PartGroups.hpp
   library/UsedParts.cpp
   library/UsedParts.hpp)
 if(BUILD_TESTING)
-  # The order with stars, the stars' settings and the used parts read from a
-  # model's answer: plain Qt Core and the command context's interface.
+  # The order with stars, the stars' settings, the used parts read from a
+  # model's answer and the groups' tree: plain Qt Core and the command
+  # context's interface.
   target_sources(test_app PRIVATE tests/part_picker_data.cpp
                  library/PartFavourites.cpp library/PartFavourites.hpp
+                 library/PartGroups.cpp library/PartGroups.hpp
                  library/UsedParts.cpp library/UsedParts.hpp)
 endif()
 # The part picker (mitcad#418, app/library): the library's parts as a grid
@@ -1013,4 +1018,79 @@ if(BUILD_TESTING)
   # Their picks on the sketch model's data: plain Qt Core and the sketch
   # geometry.
   target_sources(test_app PRIVATE tests/sketch_axes.cpp sketch/SketchAxes.cpp)
+endif()
+# Mount frames of any part and Place Part (mitcad#525, app/COMMANDS.md
+# "Component libraries"): a library part placed by its frame on a face, a
+# hole or a grid; the frames a manifest lists.
+target_sources(mitcad PRIVATE
+  commands/MountCommands.cpp
+  commands/MountCommands.hpp
+  library/MountFrames.cpp
+  library/MountFrames.hpp)
+if(BUILD_TESTING)
+  # The frames of a manifest's block and their texts: plain Qt Core.
+  target_sources(test_app PRIVATE tests/mount_frames.cpp library/MountFrames.cpp library/MountFrames.hpp)
+endif()
+# A timber frame's openings (mitcad#519, app/COMMANDS.md "Timber"): their
+# rows, text form and checks, and the Openings window that edits them
+# beside Wall's, Floor / Roof's and Timber Frame's panels.
+target_sources(mitcad PRIVATE
+  build/OpeningsWindow.cpp
+  build/OpeningsWindow.hpp
+  build/TimberOpenings.cpp
+  build/TimberOpenings.hpp)
+if(BUILD_TESTING)
+  # Text to rows and back, the model's openings, the rows' checks: plain Qt
+  # Core.
+  target_sources(test_app PRIVATE tests/timber_openings.cpp build/TimberOpenings.cpp build/TimberOpenings.hpp)
+endif()
+# The joint highlight (mitcad#523): a selected joint's sides, frames and
+# occurrences in the view, from the `joints` query.
+target_sources(mitcad PRIVATE
+  MainWindowJointHighlight.cpp
+  framework/JointHighlight.cpp
+  framework/JointHighlight.hpp)
+if(BUILD_TESTING)
+  # What each side shows, its log lines and the card's text: plain Qt Core.
+  target_sources(test_app PRIVATE tests/joint_highlight.cpp framework/JointHighlight.cpp
+                 framework/JointHighlight.hpp)
+endif()
+# Move Face (mitcad#531): its summary line ("MoveFace1: 2 faces of Body1,
+# translate (...) mm"), for the panel, the log and the selection card.
+target_sources(mitcad PRIVATE
+  commands/MoveFaceText.cpp
+  commands/MoveFaceText.hpp
+  MainWindowMoveFace.cpp)
+if(BUILD_TESTING)
+  # Its motions in words: plain Qt Core.
+  target_sources(test_app PRIVATE tests/move_face_text.cpp commands/MoveFaceText.cpp commands/MoveFaceText.hpp)
+endif()
+# The Projects panel's rows (mitcad#529): compact marks for their state, a
+# name elided in the middle.
+target_sources(mitcad PRIVATE
+  projects/ProjectRowText.cpp
+  projects/ProjectRowText.hpp)
+if(BUILD_TESTING)
+  # The marks and the elision: plain Qt Core and Gui.
+  target_sources(test_app PRIVATE tests/project_rows.cpp projects/ProjectRowText.cpp projects/ProjectRowText.hpp)
+endif()
+# File > Open from Project (mitcad#530): the projects browsed as folders,
+# their designs searched by name.
+target_sources(mitcad PRIVATE
+  projects/ProjectBrowser.cpp
+  projects/ProjectBrowser.hpp
+  projects/ProjectBrowserData.cpp
+  projects/ProjectBrowserData.hpp)
+if(BUILD_TESTING)
+  # A place's contents and the search over a fixture project tree: plain Qt
+  # Core (the marks' words from ProjectRowText).
+  target_sources(test_app PRIVATE tests/project_browser.cpp projects/ProjectBrowserData.cpp
+                 projects/ProjectBrowserData.hpp)
+endif()
+# The view's fit of a design's first bodies, once per design (mitcad#467;
+# not again after every body was hidden and one shown).
+target_sources(mitcad PRIVATE view/FirstBodiesFit.hpp)
+if(BUILD_TESTING)
+  # The decision: plain C++.
+  target_sources(test_app PRIVATE tests/first_bodies_fit.cpp view/FirstBodiesFit.hpp)
 endif()

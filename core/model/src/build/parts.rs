@@ -191,6 +191,14 @@ impl<K: Kernel> Document<K> {
     /// design (Part1 active) that is the root. The active component when
     /// none up takes components.
     pub(crate) fn build_host(&self) -> ComponentUid {
+        // A timber frame's own component while it drives its fasteners
+        // (mitcad#522).
+        if let Some(host) = self
+            .build_host_override()
+            .filter(|c| self.assembly().exists(*c))
+        {
+            return host;
+        }
         let a = self.assembly();
         let active = a.active;
         if a.policy(active).components {

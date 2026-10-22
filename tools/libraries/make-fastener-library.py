@@ -2,8 +2,10 @@
 """Builds the metric fasteners of Mitcad's parts library (mitcad-parts;
 mitcad#64; the fastener library mitcad-fasteners until 2.0.0) from the
 standards' dimension tables: one Mitcad design per standard, made with
-mitcad-cli from commands, with a configuration table of its sizes; preview
-images; the library's manifest, licence note, sources and README. The
+mitcad-cli from commands, with a configuration table of its sizes and its
+surface finish as an appearance; preview images rendered with `mitcad-cli
+render` in one studio setup (library_previews.py; mitcad#526); the
+library's manifest, licence note, sources and README. The
 fasteners are CC0-1.0 (each component's own licence), the library MIT.
 With --merge the library's other parts already in the manifest (the
 profile generator's; tools/libraries/make-parts-library.py runs both) stay.
@@ -12,11 +14,19 @@ and tagged.
 
     python3 make-fastener-library.py --cli build/dev/tools/cli/mitcad-cli \
         --out ../libraries/mitcad-parts [--sizes M3,M5] \
-        [--standards iso4762,iso4032] [--version 1.0.0] [--merge] [--commit]
+        [--standards iso4762,iso4032] [--version 1.0.0] [--merge] [--commit] \
+        [--render-worker build/dev/app/mitcad-render] [--no-render] [--rerender]
 
 The geometry is simplified for assemblies: heads, shanks, sockets and hex
-flats at their nominal sizes, no threads, chamfers or fillets. Lengths are
-measured as the standards do (ISO 10642 includes the head).
+flats at their nominal sizes; a screw's head has its top edge rounded or
+chamfered and its shank a cosmetic thread chamfered at the tip (DRESS),
+no other chamfers or fillets. Lengths are measured as the standards do
+(ISO 10642 includes the head).
+
+A preview is rendered only when its design or the studio setup changed
+since the picture in --out was made (--rerender renders them all);
+without a render worker (--no-render, or none found) each is drawn from
+the dimensions instead.
 """
 
 import argparse
@@ -28,6 +38,9 @@ import subprocess
 import sys
 import tempfile
 import zlib
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import library_previews as previews  # noqa: E402
 
 LIBRARY_ID = "mitcad-parts"
 LIBRARY_NAME = "Mitcad parts"
@@ -105,6 +118,12 @@ ISO7089 = {
 }
 
 HEXAGON = "r{c1[c6,c2],c2[c1,c3],c3[c2,c4],c4[c3,c5],c5[c4,c6],c6[c5,c1]}"
+
+# Each standard's surface (library_previews.FINISHES): the socket screws
+# black oxide, the usual finish of their property classes; the others zinc
+# plated steel.
+FINISH = {"iso4762": "black_oxide", "iso10642": "black_oxide", "iso4017": "zinc_plated",
+          "iso4032": "zinc_plated", "iso7089": "zinc_plated"}
 
 
 def mm(value):
@@ -291,8 +310,9 @@ def standards(sizes):
     return out
 
 
-# Preview images: the part's outline from the side, drawn from its
-# dimensions (no rendering needed), 256 x 256 pixels.
+# Preview images: rendered in the studio of library_previews.py (mitcad#526);
+# without a render worker, the part's outline from the side, drawn from its
+# dimensions, 256 x 256 pixels.
 
 def png(width, height, pixels):
     raw = b"".join(b"\x00" + bytes(row) for row in pixels)
@@ -377,6 +397,78 @@ def preview(item):
     return png(size, size, pixels)
 
 
+# The screws' dress-up and threads (mitcad#526), added to the made design
+# and kept only when they are made: the head's top edge rounded (ISO 4762,
+# ISO 10642) or chamfered (ISO 4017's hexagon), and a cosmetic ISO metric
+# thread on the shank, over the standard's thread length b (2d + 12 mm
+# for these lengths, the whole shank when it is shorter; ISO 4017 is
+# threaded to the head), whose cone chamfers the tip. The thread's size is
+# the default row's: a configuration row changes parameters only, so the
+# other rows keep its designation (their shank follows their size).
+DRESS = {
+    # The edge of the head's top face (a circle of the head's diameter),
+    # rounded.
+    "socket": {"curve": "circle", "length": lambda v: math.pi * v["dk"], "name": ":top", "fillet": "0.06 * dk"},
+    "countersunk": {"curve": "circle", "length": lambda v: math.pi * v["dk"], "name": "", "fillet": "0.03 * dk"},
+    # The six edges of the hexagon's top face, chamfered.
+    "hex": {"curve": "line", "length": lambda v: v["s"] / math.sqrt(3), "name": ":end(", "chamfer": "0.06 * s"},
+}
+THREAD_LENGTH = {"socket": "min(L, 2 * d + 12 mm)", "countersunk": "min(L - k, 2 * d + 12 mm)", "hex": None}
+
+
+def feature_uid(commands, name):
+    """The uid the named feature gets: features are numbered F1, F2, …
+    in the order the commands add them (sketches too)."""
+    number = 0
+    for command in commands:
+        if command.get("cmd") in ("add_feature", "sketch.create"):
+            number += 1
+            if command.get("name") == name:
+                return f"F{number}"
+    return None
+
+
+def dress_screw(cli, item, commands, target, scratch):
+    """The screw's head edge and thread (DRESS); the cosmetic threads made,
+    for its preview to model."""
+    kind = item["profile"]
+    if kind not in DRESS:
+        return []
+    body = previews.design_bodies(cli, target)[0]["uid"]
+    dress = DRESS[kind]
+    want = dress["length"](item["first"])
+    edges = [e["name"] for e in previews.design_edges(cli, target).get(body, [])
+             if e.get("curve") == dress["curve"] and dress["name"] in e.get("name", "")
+             and abs(float(e.get("length") or 0) - want) < 1e-3 * want]
+    if not edges:
+        previews.warn(f"{item['id']}: no edge of the head's top to round")
+    else:
+        if "fillet" in dress:
+            definition = {"type": "fillet", "body": body, "edges": edges, "radius": dress["fillet"]}
+            name = "Head rounding"
+        else:
+            definition = {"type": "chamfer", "body": body, "edges": edges,
+                          "size": {"type": "equal_distance", "distance": dress["chamfer"]}}
+            name = "Head chamfer"
+        failed = previews.apply_checked(cli, target, [{"cmd": "add_feature", "name": name, "def": definition}],
+                                        scratch)
+        if failed:
+            previews.warn(f"{item['id']}: the head's edge was left sharp ({failed})")
+    shank = feature_uid(commands, "Shank")
+    # The tip's chamfer from the row's own size: its minor diameter (ISO
+    # 68-1, d - 1.082532 P) less a tenth of a pitch, as the thread's
+    # default for its designation (the default row's) would be.
+    thread = previews.thread_command([{"body": body, "face": f"{shank}:side0"}],
+                                     previews.metric_thread(item["first"]["d"]), THREAD_LENGTH[kind],
+                                     None if THREAD_LENGTH[kind] is None else "low_end",
+                                     chamfer_diameter="d - 1.182532 * P")
+    failed = previews.apply_checked(cli, target, [thread], scratch)
+    if failed:
+        previews.warn(f"{item['id']}: no thread on the shank ({failed})")
+        return []
+    return [thread]
+
+
 def run(command, cwd=None):
     result = subprocess.run(command, cwd=cwd, capture_output=True, text=True)
     if result.returncode != 0:
@@ -410,7 +502,9 @@ copied):
   diameter (maximum), thickness (nominal).
 - ISO 261 and ISO 724: the coarse thread pitches (parameter P).
 
-The geometry is simplified for assemblies: no threads, chamfers, fillets
+The geometry is simplified for assemblies: the screws' threads are
+cosmetic (a thread feature without geometry but the chamfer at the tip),
+their heads' top edges rounded or chamfered, no other chamfers, fillets
 or under-head radii. Check critical dimensions against the standard you
 work to.
 
@@ -485,6 +579,15 @@ def main():
     parser.add_argument("--work", help="folder for intermediate files (default: next to --out)")
     parser.add_argument("--merge", action="store_true",
                         help="keep the library's other parts of the manifest in --out (the profile generator's)")
+    parser.add_argument("--render-worker",
+                        help="mitcad-render for the previews (default: MITCAD_RENDER_WORKER, else next to --cli)")
+    parser.add_argument("--no-render", action="store_true",
+                        help="draw the previews from the dimensions instead of rendering them")
+    parser.add_argument("--rerender", action="store_true",
+                        help="render every preview, also those whose design did not change")
+    parser.add_argument("--strict", action="store_true",
+                        help="fail (after making the library) when a preview was drawn instead of rendered, "
+                             "rendered without its thread, or a screw's thread or head rounding was left out")
     args = parser.parse_args()
 
     sizes = [s.strip() for s in args.sizes.split(",") if s.strip()]
@@ -501,6 +604,13 @@ def main():
         run([args.cli, "project", "init", out, "--no-history"])
     work = os.path.abspath(args.work or os.path.dirname(out))
     os.makedirs(work, exist_ok=True)
+    worker = os.path.abspath(args.render_worker) if args.render_worker else None
+    render = not args.no_render
+    if render:
+        render, reason = previews.renderer_available(args.cli, worker)
+        if not render:
+            print(f"warning: no render worker ({reason}); the previews are drawn from the dimensions")
+            previews.PROBLEMS.append(f"no render worker ({reason})")
     components = []
     with tempfile.TemporaryDirectory(prefix=".fastener-work-", dir=work) as scratch:
         for item in items:
@@ -515,10 +625,30 @@ def main():
             target = os.path.join(out, item["path"])
             os.makedirs(os.path.dirname(target), exist_ok=True)
             run([args.cli, "run", script, "--save", target])
+            look = FINISH.get(item["id"], "zinc_plated")
+            try:
+                threads = dress_screw(args.cli, item, commands, target, scratch)
+                previews.apply_appearance(args.cli, target, look, scratch, item["name"])
+            except previews.PreviewError as e:
+                sys.exit(f"{item['id']}: {e}")
             preview_path = f"previews/{item['id']}.png"
             os.makedirs(os.path.join(out, "previews"), exist_ok=True)
+            image, how = None, "drawn"
+            if render:
+                try:
+                    image, how = previews.render_preview(
+                        args.cli, target, scratch, worker, up=[0, 0, 1],
+                        old=previews.read_old(os.path.join(out, preview_path)), force=args.rerender,
+                        threads=threads)
+                except previews.PreviewError as e:
+                    previews.warn(f"{item['id']}: the preview was not rendered ({e}); drawn instead")
+            if image is None:
+                image = preview(item)
             with open(os.path.join(out, preview_path), "wb") as f:
-                f.write(preview(item))
+                f.write(image)
+            print(f"preview {item['id']}: {how} ({look})")
+            if how.startswith("rendered without"):
+                previews.PROBLEMS.append(f"{item['id']}: {how}")
             components.append({
                 "id": item["id"], "path": item["path"], "category": item["category"], "name": item["name"],
                 "standard": item["standard"], "keywords": item["keywords"], "preview": preview_path,
@@ -526,8 +656,10 @@ def main():
                 "description": f"{len(item['rows'])} sizes, {item['rows'][0]['name']} to {item['rows'][-1]['name']}.",
             })
     made = len(components)
-    categories = [c for c in [{"id": "screws", "name": "Screws"}, {"id": "nuts", "name": "Nuts"},
-                              {"id": "washers", "name": "Washers"}]
+    # Under the main group General fasteners (mitcad#527: the groups' tree).
+    categories = [c for c in [{"id": "screws", "name": "General fasteners/Screws"},
+                              {"id": "nuts", "name": "General fasteners/Nuts"},
+                              {"id": "washers", "name": "General fasteners/Washers"}]
                   if any(item["category"] == c["id"] for item in components)]
     sources = ["ISO 4762", "ISO 4017", "ISO 10642", "ISO 4032", "ISO 7089", "ISO 261", "ISO 724",
                "Tabulated for this library; see SOURCES.md"]
@@ -562,6 +694,7 @@ def main():
         run(["git", "-C", out] + identity + ["tag", "-a", "-f", f"v{args.version}", "-m",
                                               f"{LIBRARY_NAME} {args.version}"])
     print(f"{LIBRARY_ID} {args.version}: {made} components in {out}")
+    previews.strict_exit(args.strict, "make-fastener-library")
 
 
 if __name__ == "__main__":

@@ -205,14 +205,21 @@ ui_step "Enter"                          ui_key Return
 ui_expect_log "= 50 mm (d1)" "the dimension changed"
 ui_step "finish sketch (Ctrl+Enter)"     ui_key ctrl+Return
 ui_expect_log "Body Body1 (F2.b0): volume 18750.000 mm3" "the body follows: 50 x 30 x 12.5"
+# The view fitted to the block for the samples of the second sketch (below).
+# Asked for: the block shown again after the edit is not fitted any more
+# (a design's first bodies are fitted once, mitcad#467), and the view left
+# as it was puts the slot's second end on the orientation cube.
+ui_step "fit (F6)"                       ui_key F6
 ui_step "undo (Ctrl+Z)"                  ui_key ctrl+z
 ui_expect_log "Undo: Edit Sketch1" "the sketch edit is one undo step"
 
 
 echo "--- Each tool on a sample, in a second sketch"
-# The view was fitted to the block: zoom out until the samples are in it.
+# The view was fitted to the block (above): zoom out until the samples are
+# in it. The block in the middle keeps them off the view's upper right
+# corner, where the orientation cube is (a click on it turns the view).
 # Sample points are on a 10 mm grid, so grid snapping keeps them at any
-# zoom; the lower left of the view, where the orientation cube is, stays empty.
+# zoom.
 ui_step "create sketch on XY"            ui_create_sketch xy
 ui_step "zoom out"                       zoom_to_show -110 -95 115 95
 ui_step "circle tool (C)"                ui_key c

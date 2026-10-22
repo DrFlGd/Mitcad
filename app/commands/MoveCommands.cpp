@@ -19,6 +19,7 @@
 #include "../framework/Appearances.hpp"
 #include "CommandFactories.hpp"
 #include "CommandSupport.hpp"
+#include "MoveFaceText.hpp"
 
 namespace mitcad::cmd {
 namespace {
@@ -40,8 +41,11 @@ constexpr SelectFilter kMovePointKinds = kPointKinds | SelectKind::Edge;
 bool isMovePoint(const SelectionItem& item) { return item.kind != SelectKind::Edge || isCircular(item); }
 
 // What moves: bodies, or occurrences of components (picked in the browser,
-// or through a body they place).
-QString movedKey(const CommandState& state) { return state.choice(QStringLiteral("move_type")); }
+// or through a body they place); Move Face's faces (it has no Move Object).
+QString movedKey(const CommandState& state) {
+  const QString key = state.choice(QStringLiteral("move_type"));
+  return key.isEmpty() ? QStringLiteral("faces") : key;
+}
 
 // The middle the free move turns about: kept from an edit, else the middle
 // of what moves.
@@ -153,6 +157,12 @@ QJsonObject transformOf(const CommandState& state, const CommandContext& context
             {QStringLiteral("y"), state.expression(QStringLiteral("y"))},
             {QStringLiteral("z"), state.expression(QStringLiteral("z"))}};
   }
+  if (type == QStringLiteral("along")) {
+    // Move Face's Translate Along (mitcad#531).
+    return {{QStringLiteral("type"), QStringLiteral("translate_along")},
+            {QStringLiteral("axis"), state.items(QStringLiteral("along_axis")).first().reference()},
+            {QStringLiteral("distance"), state.expression(QStringLiteral("distance"))}};
+  }
   if (type == QStringLiteral("rotate")) {
     return {{QStringLiteral("type"), type},
             {QStringLiteral("axis"), state.items(QStringLiteral("axis")).first().reference()},
@@ -225,13 +235,25 @@ bool loadTransform(const QJsonObject& transform, CommandState& state, const QJso
     loadValue(state, QStringLiteral("pz"), transform.value(QStringLiteral("z")), feature, context);
     return true;
   }
-  return false; // translate_along has no inputs in the panel
+  if (type == QStringLiteral("translate_along")) {
+    // Move Face's Translate Along (Move/Copy has no inputs for it).
+    state.setChoice(QStringLiteral("type"), QStringLiteral("along"));
+    state.setItems(QStringLiteral("along_axis"), {itemOf(transform.value(QStringLiteral("axis")), context)});
+    loadValue(state, QStringLiteral("distance"), transform.value(QStringLiteral("distance")), feature, context);
+    return true;
+  }
+  return false;
 }
 
-bool transformEditable(const QJsonObject& transform, const CommandContext& context) {
+// Whether the panel can hold the motion; `along`: it has Translate Along
+// (Move Face, not Move/Copy).
+bool transformEditable(const QJsonObject& transform, const CommandContext& context, bool along = false) {
   const QString type = str(transform, "type");
   if (type == QStringLiteral("free") || type == QStringLiteral("translate_xyz")) {
     return true;
+  }
+  if (type == QStringLiteral("translate_along")) {
+    return along && isShowable(transform.value(QStringLiteral("axis")), context);
   }
   if (type == QStringLiteral("rotate")) {
     return isShowable(transform.value(QStringLiteral("axis")), context);
@@ -261,6 +283,113 @@ SelectionItem alignItem(const QJsonObject& ref, const CommandContext& context) {
   return itemOf(ref.value(str(ref, "type")), context);
 }
 
+// The motion's inputs, Move/Copy's and Move Face's (mitcad#531): Move Type
+// of `types` and each type's inputs; `along` adds Translate Along's
+// Direction and Distance (Move Face).
+QVector<InputDef> motionInputs(const Choices& types, bool along) {
+  const auto type = [](const char* kind) { return choiceIs(QStringLiteral("type"), QString::fromLatin1(kind)); };
+  QVector<InputDef> inputs;
+  inputs << choiceInput(QStringLiteral("type"), QObject::tr("Move Type"), types, QStringLiteral("free"))
+         // Free Move
+         << valueInput(QStringLiteral("tx"), QObject::tr("X Distance"), ValueKind::Length, QStringLiteral("0 mm"))
+                .withVisible(type("free"))
+                .withManipulator(freeHandle(0, false))
+         << valueInput(QStringLiteral("ty"), QObject::tr("Y Distance"), ValueKind::Length, QStringLiteral("0 mm"))
+                .withVisible(type("free"))
+                .withManipulator(freeHandle(1, false))
+         << valueInput(QStringLiteral("tz"), QObject::tr("Z Distance"), ValueKind::Length, QStringLiteral("0 mm"))
+                .withVisible(type("free"))
+                .withManipulator(freeHandle(2, false))
+         << valueInput(QStringLiteral("rx"), QObject::tr("X Angle"), ValueKind::Angle, QStringLiteral("0 deg"))
+                .withVisible(type("free"))
+                .withManipulator(freeHandle(0, true))
+         << valueInput(QStringLiteral("ry"), QObject::tr("Y Angle"), ValueKind::Angle, QStringLiteral("0 deg"))
+                .withVisible(type("free"))
+                .withManipulator(freeHandle(1, true))
+         << valueInput(QStringLiteral("rz"), QObject::tr("Z Angle"), ValueKind::Angle, QStringLiteral("0 deg"))
+                .withVisible(type("free"))
+                .withManipulator(freeHandle(2, true))
+         // Translate
+         << valueInput(QStringLiteral("x"), QObject::tr("X Distance"), ValueKind::Length, QStringLiteral("0 mm"))
+                .withVisible(type("translate"))
+                .withManipulator(translateHandle(0))
+         << valueInput(QStringLiteral("y"), QObject::tr("Y Distance"), ValueKind::Length, QStringLiteral("0 mm"))
+                .withVisible(type("translate"))
+                .withManipulator(translateHandle(1))
+         << valueInput(QStringLiteral("z"), QObject::tr("Z Distance"), ValueKind::Length, QStringLiteral("0 mm"))
+                .withVisible(type("translate"))
+                .withManipulator(translateHandle(2));
+  if (along) {
+    // Translate Along: a distance along an axis, an edge or a face's axis.
+    inputs << selectionInput(QStringLiteral("along_axis"), QObject::tr("Direction"), kAxisKinds, 1, 1)
+                  .withAccepts(isAxial)
+                  .withVisible(type("along"))
+           << valueInput(QStringLiteral("distance"), QObject::tr("Distance"), ValueKind::Length, QStringLiteral("1 mm"))
+                  .withVisible(type("along"))
+                  .withManipulator([](const CommandState& state, const CommandContext& model) -> std::optional<Manipulator> {
+                    const Selection& axis = state.items(QStringLiteral("along_axis"));
+                    const auto center = centerOf(state.items(movedKey(state)), model);
+                    if (axis.isEmpty() || !center) {
+                      return std::nullopt;
+                    }
+                    const auto line = axisOf(axis.first(), model);
+                    if (!line) {
+                      return std::nullopt;
+                    }
+                    return arrow(*center, line->second);
+                  });
+  }
+  // Rotate, Point to Point, Point to Position
+  inputs
+      << selectionInput(QStringLiteral("axis"), QObject::tr("Axis"), kAxisKinds, 1, 1)
+             .withAccepts(isAxial)
+             .withVisible(type("rotate"))
+      << valueInput(QStringLiteral("angle"), QObject::tr("Angle"), ValueKind::Angle, QStringLiteral("90 deg"))
+             .withTooltip(QObject::tr("Right-handed about the axis"))
+             .withVisible(type("rotate"))
+             .withManipulator([](const CommandState& state, const CommandContext& model) -> std::optional<Manipulator> {
+               const Selection& axis = state.items(QStringLiteral("axis"));
+               const auto center = centerOf(state.items(movedKey(state)), model);
+               if (axis.isEmpty() || !center) {
+                 return std::nullopt;
+               }
+               const auto line = axisOf(axis.first(), model);
+               if (!line) {
+                 return std::nullopt;
+               }
+               const gp_Vec along(line->second);
+               const gp_Pnt foot = line->first.Translated(along * gp_Vec(line->first, *center).Dot(along));
+               Manipulator m = ring(foot, line->second);
+               if (foot.Distance(*center) > 1e-9) {
+                 m.reference = gp_Dir(gp_Vec(foot, *center));
+               }
+               return m;
+             })
+      // Point to Point
+      << selectionInput(QStringLiteral("from"), QObject::tr("Origin Point"), kMovePointKinds, 1, 1)
+             .withAccepts(isMovePoint)
+             .withVisible(type("point_to_point"))
+      << selectionInput(QStringLiteral("to"), QObject::tr("Target Point"), kMovePointKinds, 1, 1)
+             .withAccepts(isMovePoint)
+             .withVisible(type("point_to_point"))
+      // Point to Position
+      << selectionInput(QStringLiteral("point"), QObject::tr("Point"), kMovePointKinds, 1, 1)
+             .withAccepts(isMovePoint)
+             .withVisible(type("point_to_position"))
+      << valueInput(QStringLiteral("px"), QObject::tr("X"), ValueKind::Length, QStringLiteral("0 mm"))
+             .withVisible(type("point_to_position"))
+      << valueInput(QStringLiteral("py"), QObject::tr("Y"), ValueKind::Length, QStringLiteral("0 mm"))
+             .withVisible(type("point_to_position"))
+      << valueInput(QStringLiteral("pz"), QObject::tr("Z"), ValueKind::Length, QStringLiteral("0 mm"))
+             .withVisible(type("point_to_position"));
+  return inputs;
+}
+
+// The hidden pivot of a free move (kept from an edit).
+InputDef pivotInput() {
+  return textInput(QStringLiteral("pivot"), QObject::tr("Pivot")).withVisible([](const CommandState&) { return false; });
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -279,7 +408,6 @@ CommandDef moveCommand(const CommandContext& context) {
                   QStringLiteral("transform")};
   def.featureType = QStringLiteral("move");
   def.editsAlso = {QStringLiteral("move_occurrence")};
-  const auto type = [](const char* kind) { return choiceIs(QStringLiteral("type"), QString::fromLatin1(kind)); };
   const auto bodies = choiceIs(QStringLiteral("move_type"), QStringLiteral("bodies"));
   def.inputs = {
       choiceInput(QStringLiteral("move_type"), QObject::tr("Move Object"),
@@ -300,83 +428,13 @@ CommandDef moveCommand(const CommandContext& context) {
             return occurrence;
           })
           .withVisible(choiceIs(QStringLiteral("move_type"), QStringLiteral("components"))),
-      choiceInput(QStringLiteral("type"), QObject::tr("Move Type"), kMoveTypes, QStringLiteral("free")),
-      // Free Move
-      valueInput(QStringLiteral("tx"), QObject::tr("X Distance"), ValueKind::Length, QStringLiteral("0 mm"))
-          .withVisible(type("free"))
-          .withManipulator(freeHandle(0, false)),
-      valueInput(QStringLiteral("ty"), QObject::tr("Y Distance"), ValueKind::Length, QStringLiteral("0 mm"))
-          .withVisible(type("free"))
-          .withManipulator(freeHandle(1, false)),
-      valueInput(QStringLiteral("tz"), QObject::tr("Z Distance"), ValueKind::Length, QStringLiteral("0 mm"))
-          .withVisible(type("free"))
-          .withManipulator(freeHandle(2, false)),
-      valueInput(QStringLiteral("rx"), QObject::tr("X Angle"), ValueKind::Angle, QStringLiteral("0 deg"))
-          .withVisible(type("free"))
-          .withManipulator(freeHandle(0, true)),
-      valueInput(QStringLiteral("ry"), QObject::tr("Y Angle"), ValueKind::Angle, QStringLiteral("0 deg"))
-          .withVisible(type("free"))
-          .withManipulator(freeHandle(1, true)),
-      valueInput(QStringLiteral("rz"), QObject::tr("Z Angle"), ValueKind::Angle, QStringLiteral("0 deg"))
-          .withVisible(type("free"))
-          .withManipulator(freeHandle(2, true)),
-      // Translate
-      valueInput(QStringLiteral("x"), QObject::tr("X Distance"), ValueKind::Length, QStringLiteral("0 mm"))
-          .withVisible(type("translate"))
-          .withManipulator(translateHandle(0)),
-      valueInput(QStringLiteral("y"), QObject::tr("Y Distance"), ValueKind::Length, QStringLiteral("0 mm"))
-          .withVisible(type("translate"))
-          .withManipulator(translateHandle(1)),
-      valueInput(QStringLiteral("z"), QObject::tr("Z Distance"), ValueKind::Length, QStringLiteral("0 mm"))
-          .withVisible(type("translate"))
-          .withManipulator(translateHandle(2)),
-      // Rotate
-      selectionInput(QStringLiteral("axis"), QObject::tr("Axis"), kAxisKinds, 1, 1)
-          .withAccepts(isAxial)
-          .withVisible(type("rotate")),
-      valueInput(QStringLiteral("angle"), QObject::tr("Angle"), ValueKind::Angle, QStringLiteral("90 deg"))
-          .withTooltip(QObject::tr("Right-handed about the axis"))
-          .withVisible(type("rotate"))
-          .withManipulator([](const CommandState& state, const CommandContext& model) -> std::optional<Manipulator> {
-            const Selection& axis = state.items(QStringLiteral("axis"));
-            const auto center = centerOf(state.items(movedKey(state)), model);
-            if (axis.isEmpty() || !center) {
-              return std::nullopt;
-            }
-            const auto line = axisOf(axis.first(), model);
-            if (!line) {
-              return std::nullopt;
-            }
-            const gp_Vec along(line->second);
-            const gp_Pnt foot = line->first.Translated(along * gp_Vec(line->first, *center).Dot(along));
-            Manipulator m = ring(foot, line->second);
-            if (foot.Distance(*center) > 1e-9) {
-              m.reference = gp_Dir(gp_Vec(foot, *center));
-            }
-            return m;
-          }),
-      // Point to Point
-      selectionInput(QStringLiteral("from"), QObject::tr("Origin Point"), kMovePointKinds, 1, 1)
-          .withAccepts(isMovePoint)
-          .withVisible(type("point_to_point")),
-      selectionInput(QStringLiteral("to"), QObject::tr("Target Point"), kMovePointKinds, 1, 1)
-          .withAccepts(isMovePoint)
-          .withVisible(type("point_to_point")),
-      // Point to Position
-      selectionInput(QStringLiteral("point"), QObject::tr("Point"), kMovePointKinds, 1, 1)
-          .withAccepts(isMovePoint)
-          .withVisible(type("point_to_position")),
-      valueInput(QStringLiteral("px"), QObject::tr("X"), ValueKind::Length, QStringLiteral("0 mm"))
-          .withVisible(type("point_to_position")),
-      valueInput(QStringLiteral("py"), QObject::tr("Y"), ValueKind::Length, QStringLiteral("0 mm"))
-          .withVisible(type("point_to_position")),
-      valueInput(QStringLiteral("pz"), QObject::tr("Z"), ValueKind::Length, QStringLiteral("0 mm"))
-          .withVisible(type("point_to_position")),
-      checkInput(QStringLiteral("copy"), QObject::tr("Create Copy"), false)
-          .withTooltip(QObject::tr("Move copies of the bodies; the originals stay"))
-          .withVisible(bodies),
-      textInput(QStringLiteral("pivot"), QObject::tr("Pivot")).withVisible([](const CommandState&) { return false; }),
   };
+  // The motion, as Move Face's (mitcad#531).
+  def.inputs << motionInputs(kMoveTypes, false);
+  def.inputs << checkInput(QStringLiteral("copy"), QObject::tr("Create Copy"), false)
+                    .withTooltip(QObject::tr("Move copies of the bodies; the originals stay"))
+                    .withVisible(bodies)
+             << pivotInput();
   def.enabled = [&context] { return hasBodies(context); };
   // Components selected before (a pasted copy, P9) move as components.
   def.init = [](CommandState& state, const CommandContext&) {
@@ -436,6 +494,122 @@ CommandDef moveCommand(const CommandContext& context) {
         .arg(state.checked(QStringLiteral("copy")) ? QStringLiteral("Copied") : QStringLiteral("Moved"))
         .arg(state.items(movedKey(state)).size())
         .arg(state.choice(QStringLiteral("move_type")), label(kMoveTypes, state.choice(QStringLiteral("type"))));
+  };
+  return def;
+}
+
+// ---------------------------------------------------------------------------
+// Move Face (mitcad#531; commands.md, "Move face")
+
+namespace {
+
+const Choices kMoveFaceTypes = {{QStringLiteral("free"), QStringLiteral("Free Move")},
+                                {QStringLiteral("translate"), QStringLiteral("Translate")},
+                                {QStringLiteral("along"), QStringLiteral("Translate Along")},
+                                {QStringLiteral("rotate"), QStringLiteral("Rotate")},
+                                {QStringLiteral("point_to_point"), QStringLiteral("Point to Point")},
+                                {QStringLiteral("point_to_position"), QStringLiteral("Point to Position")}};
+
+// A definition's faces as items of its body.
+Selection movedFacesOf(const QJsonObject& feature, const CommandContext& context) {
+  Selection items;
+  for (const QJsonValue& face : feature.value(QStringLiteral("faces")).toArray()) {
+    items.append(itemOf(QJsonObject{{QStringLiteral("body"), feature.value(QStringLiteral("body"))},
+                                    {QStringLiteral("face"), face}},
+                        context));
+  }
+  return items;
+}
+
+// The motion as the panel has it, its values as numbers (mm, radians),
+// for the summary; empty while it is not complete.
+QJsonObject shownMotion(const CommandState& state, const CommandContext& context) {
+  Built error;
+  QJsonObject transform = transformOf(state, context, error);
+  if (!error.error.isEmpty()) {
+    return QJsonObject();
+  }
+  const QString type = str(transform, "type");
+  const auto set = [&transform, &state](const char* slot, const char* input) {
+    transform.insert(QLatin1String(slot), state.value(QLatin1String(input)));
+  };
+  if (type == QStringLiteral("translate_xyz")) {
+    set("x", "x");
+    set("y", "y");
+    set("z", "z");
+  } else if (type == QStringLiteral("translate_along")) {
+    set("distance", "distance");
+  } else if (type == QStringLiteral("rotate")) {
+    set("angle", "angle");
+  } else if (type == QStringLiteral("point_to_position")) {
+    set("x", "px");
+    set("y", "py");
+    set("z", "pz");
+  }
+  return transform;
+}
+
+QString shownSummary(const CommandState& state, const CommandContext& context) {
+  const Selection& faces = state.items(QStringLiteral("faces"));
+  const QJsonObject motion = shownMotion(state, context);
+  if (faces.isEmpty() || motion.isEmpty()) {
+    return QString();
+  }
+  const QString body = context.bodyName(faces.first().owner);
+  return moveFaceSummary(QObject::tr("Move Face"), static_cast<int>(faces.size()),
+                         body.isEmpty() ? faces.first().owner : body, motion);
+}
+
+} // namespace
+
+CommandDef moveFaceCommand(const CommandContext& context) {
+  CommandDef def;
+  def.id = QStringLiteral("solid.move_face");
+  def.name = QObject::tr("Move Face");
+  def.icon = QStringLiteral("move-face");
+  def.tooltip = QObject::tr("Moves faces of a body rigidly; the faces around extend or shorten to follow");
+  def.group = QStringLiteral("MODIFY");
+  def.keywords = {QStringLiteral("move face"), QStringLiteral("tilt face"), QStringLiteral("rotate face"),
+                  QStringLiteral("push"), QStringLiteral("translate"), QStringLiteral("modify")};
+  def.featureType = QStringLiteral("move_face");
+  def.inputs = {
+      selectionInput(QStringLiteral("faces"), QObject::tr("Faces"), SelectKind::Face, 1, 0)
+          .withoutMeshes()
+          .withTooltip(QObject::tr("Faces of one body; they move together")),
+  };
+  // The motion, as Move/Copy's, with Translate Along.
+  def.inputs << motionInputs(kMoveFaceTypes, true) << pivotInput();
+  def.enabled = [&context] { return hasBodies(context); };
+  def.build = [](const CommandState& state, const CommandContext& context) {
+    Built result;
+    const Selection& faces = state.items(QStringLiteral("faces"));
+    const QString body = oneBody(faces, result, QStringLiteral("faces"));
+    if (body.isEmpty()) {
+      return result;
+    }
+    const QJsonObject transform = transformOf(state, context, result);
+    if (!result.error.isEmpty()) {
+      return result;
+    }
+    result.def = {{QStringLiteral("type"), QStringLiteral("move_face")},
+                  {QStringLiteral("body"), body},
+                  {QStringLiteral("faces"), names(faces, SelectKind::Face)},
+                  {QStringLiteral("transform"), transform}};
+    return result;
+  };
+  // An edit (made here or by the .f3d import) opens with its faces first:
+  // a free move turns about their middle.
+  def.load = [](const QJsonObject& feature, CommandState& state, const CommandContext& context) {
+    state.setItems(QStringLiteral("faces"), movedFacesOf(feature, context));
+    loadTransform(feature.value(QStringLiteral("transform")).toObject(), state, feature, context);
+  };
+  def.canEdit = [&context](const QJsonObject& feature) {
+    return transformEditable(feature.value(QStringLiteral("transform")).toObject(), context, true);
+  };
+  // Under the inputs after a preview: what moves and how.
+  def.note = [](const CommandState& state, const CommandContext& context) { return shownSummary(state, context); };
+  def.describe = [](const CommandState& state, const CommandContext& context) {
+    return QStringLiteral("Moved faces: %1").arg(shownSummary(state, context));
   };
   return def;
 }

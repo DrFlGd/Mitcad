@@ -55,6 +55,9 @@ public:
                   bool on);
   bool groupStarred(const QString& group) const;
   void setGroupStarred(const QString& group, bool on);
+  // Several groups at once (a group and its subgroups, mitcad#527): one
+  // `changed` when any star changed.
+  void setGroupsStarred(const QStringList& groups, bool on);
   // Every star, in the order they were starred.
   QList<PartStar> starredParts() const;
 
@@ -85,6 +88,9 @@ struct OrderedPart {
 // starred parts first, then the rest. With inFavourites, the parts of
 // starred groups come first among the starred ones.
 QList<int> pickerOrder(const QList<OrderedPart>& parts, bool inFavourites);
+// As above, a part in several groups (mitcad#527): `groups[i]` the keys of
+// the groups part i is in besides its `group`.
+QList<int> pickerOrder(const QList<OrderedPart>& parts, bool inFavourites, const QList<QStringList>& groups);
 // Groups in the order shown: starred groups first, then the rest, each in
 // the given order.
 QStringList groupOrder(const QStringList& groups);

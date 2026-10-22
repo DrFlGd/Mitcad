@@ -708,18 +708,48 @@ impl<K: Kernel> Document<K> {
         };
         let side =
             |path: &OccurrencePath| json!({"occurrence": a.path_name(&path.0), "path": path.0});
+        // What each side is on (mitcad#523): a joint's origins with their
+        // geometry, an as-built joint's occurrences and its motion origin.
+        let (a_side, b_side, origin_side) = match &entry.def {
+            FeatureDef::Joint(j) => (
+                self.origin_side_json(entry.component, &j.a),
+                self.origin_side_json(entry.component, &j.b),
+                None,
+            ),
+            FeatureDef::AsBuiltJoint(j) => {
+                let occurrence_side = |path: &OccurrencePath| {
+                    let mut value = side(path);
+                    value["on"] = json!("occurrence");
+                    if let Ok(end) = path_component(a, entry.component, &path.0) {
+                        value["component"] = json!(end);
+                    }
+                    value
+                };
+                (
+                    occurrence_side(a_path),
+                    occurrence_side(b_path),
+                    j.origin
+                        .as_ref()
+                        .map(|o| self.origin_side_json(entry.component, o)),
+                )
+            }
+            _ => unreachable!("joints only"),
+        };
         let mut value = json!({
             "uid": uid,
             "name": entry.name,
             "type": entry.def.type_name(),
             "kind": kind.as_str(),
             "component": entry.component,
-            "a": side(a_path),
-            "b": side(b_path),
+            "a": a_side,
+            "b": b_side,
             "motions": motions_json(&kind.motions(slide)),
             "status": status_text(status, warnings),
             "error": status_message(status, warnings),
         });
+        if let Some(origin) = origin_side {
+            value["origin"] = origin;
+        }
         if kind == JointKind::Slider {
             value["slide_axis"] = json!(slide);
         }
@@ -770,6 +800,55 @@ impl<K: Kernel> Document<K> {
             }
         }
         value
+    }
+
+    /// One side of a joint or constraint row in the `joints` query
+    /// (mitcad#523): `occurrence` (the path's names) and `path` (uids) from
+    /// the feature's component, `geometry` (the reference as the
+    /// definition stores it), `on` (what it is: [`Self::geometry_on`]),
+    /// `frame_override` when it has one, and `component`, the one the path
+    /// ends in (left out when the path leads nowhere).
+    fn origin_side_json(&self, component: ComponentUid, origin: &JointOrigin) -> Value {
+        let a = self.assembly();
+        let mut value = json!({
+            "occurrence": a.path_name(&origin.occurrence.0),
+            "path": origin.occurrence.0,
+            "geometry": origin.geometry,
+            "on": self.geometry_on(&origin.geometry),
+        });
+        if let Some(o) = &origin.frame_override {
+            value["frame_override"] = json!(o);
+        }
+        if let Ok(end) = path_component(a, component, &origin.occurrence.0) {
+            value["component"] = json!(end);
+        }
+        value
+    }
+
+    /// What a side's reference is, for the application's joint highlight:
+    /// `face`, `edge`, `vertex`, `body`, `sketch_curve`, `sketch_point`,
+    /// `origin` (an origin plane, axis or the origin), `construction` (a
+    /// construction plane, axis or point), `joint_origin`, `fixed` (a
+    /// fixed plane, axis or point, in no geometry) or `mount` (a derived
+    /// part's mount frame).
+    fn geometry_on(&self, geometry: &GeomRef) -> &'static str {
+        match geometry {
+            GeomRef::Origin(_) => "origin",
+            GeomRef::Datum(uid) => match self.feature(*uid).map(|f| &f.def) {
+                Some(FeatureDef::JointOrigin(_)) => "joint_origin",
+                _ => "construction",
+            },
+            GeomRef::Face { .. } => "face",
+            GeomRef::Edge { .. } => "edge",
+            GeomRef::Vertex { .. } => "vertex",
+            GeomRef::Body(_) => "body",
+            GeomRef::SketchCurves { .. } => "sketch_curve",
+            GeomRef::SketchPoint { .. } => "sketch_point",
+            GeomRef::FixedPlane { .. } | GeomRef::FixedAxis { .. } | GeomRef::FixedPoint(_) => {
+                "fixed"
+            }
+            GeomRef::Mount { .. } => "mount",
+        }
     }
 
     /// A reference of a constraint row at the marker, its frame placed by
@@ -828,7 +907,6 @@ impl<K: Kernel> Document<K> {
     }
 
     fn constraint_json(&self, uid: FeatureUid) -> Value {
-        let a = self.assembly();
         let entry = self.feature(uid).expect("a feature of the document");
         let FeatureDef::ConstraintSet(set) = &entry.def else {
             unreachable!("constraint sets only")
@@ -836,8 +914,6 @@ impl<K: Kernel> Document<K> {
         let status = self.status(uid);
         let warnings = self.warnings(uid);
         let result = self.constraint_result(uid);
-        let side =
-            |path: &OccurrencePath| json!({"occurrence": a.path_name(&path.0), "path": path.0});
         let rows: Vec<Value> = set
             .rows
             .iter()
@@ -846,9 +922,14 @@ impl<K: Kernel> Document<K> {
                 let mut value = json!({
                     "row": i + 1,
                     "type": row.kind.as_str(),
-                    "a": side(&row.a.occurrence),
-                    "b": side(&row.b.occurrence),
+                    "a": self.origin_side_json(entry.component, &row.a),
+                    "b": self.origin_side_json(entry.component, &row.b),
                 });
+                for (key, second) in [("a2", &row.a2), ("b2", &row.b2)] {
+                    if let Some(o) = second {
+                        value[key] = self.origin_side_json(entry.component, o);
+                    }
+                }
                 if let Some(r) = result.and_then(|r| r.rows.get(i)) {
                     value["holds"] = json!(r.holds);
                     if let Some(v) = r.value {

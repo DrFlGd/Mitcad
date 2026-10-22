@@ -818,8 +818,10 @@ BrowserPanel::BrowserPanel(QWidget* parent) : QWidget(parent), m_tree(new Browse
   connect(model, &QAbstractItemModel::modelReset, this, rowsMoved);
   connect(model, &QAbstractItemModel::layoutChanged, this, rowsMoved);
   connect(model, &QAbstractItemModel::dataChanged, this, rowsMoved);
-  // Its size, a rename editor opened and closed, and the pointer's row.
+  // Its size, a rename editor opened and closed, and the pointer's row
+  // (followed without a button: the joint rows' preview, mitcad#523).
   m_tree->viewport()->installEventFilter(this);
+  m_tree->viewport()->setMouseTracking(true);
 }
 
 void BrowserPanel::setRowsBackground(bool rows) {
@@ -888,13 +890,17 @@ bool BrowserPanel::eventFilter(QObject* watched, QEvent* event) {
     case QEvent::ChildRemoved:
       queueRowsRegion();
       break;
-    case QEvent::MouseMove:
+    case QEvent::MouseMove: {
+      const QPoint at = static_cast<QMouseEvent*>(event)->position().toPoint();
       if (m_rows) {
-        m_tree->setHover(m_tree->indexAt(static_cast<QMouseEvent*>(event)->position().toPoint()));
+        m_tree->setHover(m_tree->indexAt(at));
       }
+      hoverJoint(m_tree->itemAt(at));
       break;
+    }
     case QEvent::Leave:
       m_tree->setHover(QModelIndex());
+      hoverJoint(nullptr);
       break;
     default:
       break;
@@ -909,6 +915,27 @@ QSize BrowserPanel::sizeHint() const { return QSize(kDefaultWidth, QWidget::size
 
 BrowserNode BrowserPanel::nodeOf(const QTreeWidgetItem* item) const {
   return m_nodes.value(const_cast<QTreeWidgetItem*>(item));
+}
+
+void BrowserPanel::hoverJoint(const QTreeWidgetItem* item) {
+  QString uid;
+  QString occurrence;
+  if (item != nullptr) {
+    const BrowserNode node = nodeOf(item);
+    // Joints, as-built joints and constraint sets: what the view highlights.
+    if (node.type == BrowserNode::Type::Joint &&
+        (node.featureType == QStringLiteral("joint") || node.featureType == QStringLiteral("as_built_joint") ||
+         node.featureType == QStringLiteral("constraint_set"))) {
+      uid = node.uid;
+      occurrence = node.occurrence;
+    }
+  }
+  const QString key = uid.isEmpty() ? QString() : uid + QLatin1Char('@') + occurrence;
+  if (key == m_hoveredJoint) {
+    return;
+  }
+  m_hoveredJoint = key;
+  emit jointHovered(uid, occurrence);
 }
 
 QVector<BrowserPanel::PresentationRow> BrowserPanel::presentationRows() const {

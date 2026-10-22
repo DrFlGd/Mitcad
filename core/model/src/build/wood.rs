@@ -208,6 +208,12 @@ impl<K: Kernel> Document<K> {
         let end_of_a = matches!(junction.a.at.as_str(), "end_a" | "end_b");
         if end_of_a {
             let end = host.after(&junction.a.frame);
+            // A cut end on b's side (mitcad#521: a rafter's plumb cut on the
+            // ridge board): into a square to its cut face, the contact that
+            // face.
+            if let Some(fastening) = self.fastening_on_cut(&junction.a.at, &end, &a, &b) {
+                return Some(fastening);
+            }
             // Into a along its axis from its end; through b from its far
             // face.
             let axis = scale(z_axis(&end), -1.0);
@@ -288,6 +294,79 @@ impl<K: Kernel> Document<K> {
             ],
             through: a,
             into: b,
+        })
+    }
+
+    /// How fasteners go through `b` into a cut end of `a` that stands on
+    /// b's side (mitcad#521: a rafter's plumb cut on a ridge board): square
+    /// to the cut face (the junction's frame `end`, in the host), entering
+    /// b's far face, the contact the cut face within b. None for a square
+    /// end, or a junction found at the end's frame (on its axis).
+    fn fastening_on_cut(
+        &self,
+        at: &str,
+        end: &Transform,
+        a: &Member,
+        b: &Member,
+    ) -> Option<Fastening> {
+        let length = a
+            .info
+            .length
+            .map_or(a.bounds.max[2] - a.bounds.min[2], |(_, l)| l);
+        let (point, normal) = self.cut_planes(&a.info, length)[usize::from(at == "end_b")]?;
+        let out = a.placement.apply_vector(normal);
+        if dot(out, z_axis(end)) < 1.0 - 1e-6 || normal[2].abs() < 1e-9 {
+            return None;
+        }
+        let axis = scale(out, -1.0);
+        let contact = dot(end.translation, axis);
+        let (b_lo, _) = b.extent(axis);
+        let (_, a_hi) = a.extent(axis);
+        // The cut face's corners: where the section's long edges meet the
+        // cut plane.
+        let [w, t] = a.info.meta.section_size()?;
+        let face: Vec<V3> = [
+            (-w / 2.0, -t / 2.0),
+            (w / 2.0, -t / 2.0),
+            (-w / 2.0, t / 2.0),
+            (w / 2.0, t / 2.0),
+        ]
+        .iter()
+        .map(|(x, y)| {
+            let z =
+                point[2] - ((x - point[0]) * normal[0] + (y - point[1]) * normal[1]) / normal[2];
+            a.placement.apply_point([*x, *y, z])
+        })
+        .collect();
+        // The contact plane's axes: a's section's x made square to the
+        // axis, and across.
+        let x = a.placement.apply_vector(super::geometry::X);
+        let u = unit(sub(x, scale(axis, dot(x, axis))))?;
+        let v = unit(cross(axis, u))?;
+        let b_corners = b.corners();
+        let (au, bu) = (range(&face, u), range(&b_corners, u));
+        let (av, bv) = (range(&face, v), range(&b_corners, v));
+        let (lo_u, hi_u) = (au.0.max(bu.0), au.1.min(bu.1));
+        let (lo_v, hi_v) = (av.0.max(bv.0), av.1.min(bv.1));
+        let p = end.translation;
+        let centre = add(
+            add(p, scale(u, (lo_u + hi_u) / 2.0 - dot(p, u))),
+            scale(v, (lo_v + hi_v) / 2.0 - dot(p, v)),
+        );
+        Some(Fastening {
+            axis,
+            head: b_lo,
+            thickness: (contact - b_lo).max(0.0),
+            depth: a_hi - contact,
+            centre,
+            u,
+            v,
+            half: [
+                ((hi_u - lo_u) / 2.0).max(0.0),
+                ((hi_v - lo_v) / 2.0).max(0.0),
+            ],
+            through: b.clone(),
+            into: a.clone(),
         })
     }
 

@@ -132,6 +132,9 @@ pub(crate) enum ComponentCommand {
         name: Option<String>,
         #[serde(default)]
         base: Option<String>,
+        /// Placed by a mount frame (mitcad#525).
+        #[serde(default)]
+        mount: Option<Box<crate::document::MountInput>>,
     },
     UpdateLinks {
         #[serde(default)]
@@ -358,26 +361,27 @@ impl<K: Kernel> Document<K> {
                 transform,
                 name,
                 base,
+                mount,
             } => {
                 let options = InsertOptions {
                     link,
                     transform: optional(transform.as_ref())?.unwrap_or(Transform::IDENTITY),
                     name,
                     base: base.map(PathBuf::from),
+                    mount: mount.map(|m| *m),
                 };
-                let (component, occurrence) = match (path, library) {
-                    (Some(path), None) => self.insert_component(&path, &options)?,
-                    (None, Some(library)) => {
-                        self.insert_library_component(&library.part(), &options)?
-                    }
+                // With its mount frames and the joint a mount placement made
+                // (mitcad#525).
+                let inserted = match (path, library) {
+                    (Some(path), None) => self.insert_file(&path, &options)?,
+                    (None, Some(library)) => self.insert_library(&library.part(), &options)?,
                     _ => {
                         return Err(ApiError(
                             "insert_component needs a path or a library part, not both".to_owned(),
                         ));
                     }
                 };
-                json!({"component": component, "occurrence": occurrence,
-                       "name": self.assembly().name(component)})
+                super::mounts::inserted_json(self, &inserted)
             }
             ComponentCommand::UpdateLinks { base } => {
                 let base = base.map(PathBuf::from);

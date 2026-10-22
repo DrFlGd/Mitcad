@@ -72,12 +72,76 @@ pub fn license_note(license: &str) -> Option<&'static str> {
         .map(|(_, note)| *note)
 }
 
-/// A category of a library's components.
+/// A category of a library's components. Categories make a tree of groups
+/// (mitcad#527): `parent` names another category of the library by its
+/// id, and `name` may be a path of names (`Wood/Dimensioned timber`); a
+/// category with neither is a group at the top. Libraries share a group
+/// by its names.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Category {
     pub id: String,
     #[serde(default)]
     pub name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub parent: String,
+}
+
+/// A component's `category`: one category's id or a list of them
+/// (mitcad#527), the first its home (its folder, the group a one-group
+/// view shows it in).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CategoryIds(pub Vec<String>);
+
+impl CategoryIds {
+    pub fn one(id: impl Into<String>) -> Self {
+        let id = id.into();
+        if id.is_empty() {
+            Self::default()
+        } else {
+            Self(vec![id])
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.iter().all(|id| id.trim().is_empty())
+    }
+}
+
+impl Serialize for CategoryIds {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self.0.as_slice() {
+            [] => serializer.serialize_str(""),
+            [one] => serializer.serialize_str(one),
+            many => many.serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for CategoryIds {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Written {
+            One(String),
+            Many(Vec<String>),
+        }
+        Ok(match Written::deserialize(deserializer)? {
+            Written::One(id) => Self::one(id),
+            Written::Many(ids) => Self(ids),
+        })
+    }
+}
+
+/// The group a category stands for (mitcad#527): its names from the top
+/// group down and, for each name, the place in the manifest's list of the
+/// category that names it (the groups' order; one the list does not have
+/// comes after all).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct GroupPath {
+    pub category: String,
+    #[serde(rename = "path")]
+    pub names: Vec<String>,
+    pub order: Vec<usize>,
 }
 
 /// A component of a library.
@@ -86,8 +150,12 @@ pub struct ManifestComponent {
     pub id: String,
     /// The design in the repository (`bolts/iso4762.mitcad`).
     pub path: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub category: String,
+    /// Its category, or a list of them, the first its home (mitcad#527).
+    #[serde(default, skip_serializing_if = "CategoryIds::is_empty")]
+    pub category: CategoryIds,
+    /// More categories it is listed in, after those of `category`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub categories: Vec<String>,
     pub name: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub standard: String,
@@ -126,6 +194,45 @@ pub struct ManifestComponent {
     /// with [`super::build::BuildPart`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build: Option<serde_json::Value>,
+    /// The mount frames of a part that is no BUILD part (mitcad#525,
+    /// `docs/libraries.md`, *Mount frames*), kept as written; read with
+    /// [`super::mounts`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mounts: Option<serde_json::Value>,
+}
+
+impl ManifestComponent {
+    /// The ids of its categories, its home first, each once.
+    pub fn category_ids(&self) -> Vec<&str> {
+        let mut ids: Vec<&str> = Vec::new();
+        for id in self.category.0.iter().chain(&self.categories) {
+            let id = id.trim();
+            if !id.is_empty() && !ids.contains(&id) {
+                ids.push(id);
+            }
+        }
+        ids
+    }
+
+    /// Its home category's id (the first), empty for none.
+    pub fn home_category(&self) -> &str {
+        self.category_ids().first().copied().unwrap_or("")
+    }
+
+    /// Whether `id` is one of its categories.
+    pub fn in_category(&self, id: &str) -> bool {
+        self.category_ids().contains(&id.trim())
+    }
+}
+
+/// The names of a category's own path (`Wood/Dimensioned timber`): its
+/// parts between the slashes, trimmed, the empty ones left out.
+fn path_names(text: &str) -> Vec<String> {
+    text.split('/')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+        .collect()
 }
 
 /// `mitcad-library.json`.
@@ -299,6 +406,102 @@ impl Manifest {
             .filter(|l| !l.trim().is_empty())
     }
 
+    /// The group of the category `id` (mitcad#527): its parents' names,
+    /// then its own (its `name`, a path of names, else its id). A category
+    /// the list does not have is a group of its id at the top; an unknown
+    /// parent, or one that would close a cycle, ends the path there.
+    pub fn group_path(&self, id: &str) -> GroupPath {
+        let mut path = GroupPath {
+            category: id.to_owned(),
+            ..GroupPath::default()
+        };
+        let mut seen = Vec::new();
+        self.add_group_names(id, &mut seen, &mut path);
+        path
+    }
+
+    fn add_group_names<'a>(&'a self, id: &'a str, seen: &mut Vec<&'a str>, path: &mut GroupPath) {
+        let Some((at, category)) = self.categories.iter().enumerate().find(|(_, c)| c.id == id)
+        else {
+            path.names.push(id.to_owned());
+            path.order.push(self.categories.len());
+            return;
+        };
+        seen.push(id);
+        let parent = category.parent.trim();
+        if !parent.is_empty()
+            && !seen.contains(&parent)
+            && self.categories.iter().any(|c| c.id == parent)
+        {
+            self.add_group_names(parent, seen, path);
+        }
+        let mut own = path_names(&category.name);
+        if own.is_empty() {
+            own.push(id.to_owned());
+        }
+        for name in own {
+            path.names.push(name);
+            path.order.push(at);
+        }
+    }
+
+    /// The groups of a component: one per category, its home first.
+    pub fn component_groups(&self, component: &ManifestComponent) -> Vec<GroupPath> {
+        component
+            .category_ids()
+            .into_iter()
+            .map(|id| self.group_path(id))
+            .collect()
+    }
+
+    /// The categories' tree's problems (mitcad#527): a parent that is no
+    /// category of the library, and categories that are each other's
+    /// parents. Warnings: such a group is shown at the top, or where the
+    /// cycle is cut.
+    fn group_problems(&self, out: &mut Problems) {
+        let by_id: BTreeMap<&str, &Category> =
+            self.categories.iter().map(|c| (c.id.as_str(), c)).collect();
+        let mut cycles: BTreeSet<Vec<&str>> = BTreeSet::new();
+        for category in &self.categories {
+            let parent = category.parent.trim();
+            if parent.is_empty() {
+                continue;
+            }
+            if !by_id.contains_key(parent) {
+                out.warn(format!(
+                    "the category {}: its parent {parent} is not one of the library's \
+                     categories; the group is shown at the top",
+                    category.id
+                ));
+                continue;
+            }
+            // Up its parents: back to itself is a cycle.
+            let mut chain = vec![category.id.as_str()];
+            let mut at = category;
+            while let Some(&up) = by_id.get(at.parent.trim()) {
+                if up.id == category.id {
+                    let mut members = chain.clone();
+                    members.sort_unstable();
+                    if cycles.insert(members) {
+                        out.warn(format!(
+                            "the categories {} -> {} are each other's parents (a cycle); the \
+                             groups are cut where the cycle closes",
+                            chain.join(" -> "),
+                            category.id
+                        ));
+                    }
+                    break;
+                }
+                if chain.contains(&up.id.as_str()) {
+                    // A cycle further up, not through this category.
+                    break;
+                }
+                chain.push(up.id.as_str());
+                at = up;
+            }
+        }
+    }
+
     /// What is wrong with the manifest itself (files are checked where
     /// they are read).
     pub fn problems(&self) -> Problems {
@@ -345,6 +548,7 @@ impl Manifest {
             ));
         }
         let categories: BTreeSet<&str> = self.categories.iter().map(|c| c.id.as_str()).collect();
+        self.group_problems(&mut out);
         let mut ids = BTreeSet::new();
         let mut paths = BTreeSet::new();
         for (i, c) in self.components.iter().enumerate() {
@@ -373,11 +577,12 @@ impl Manifest {
             if c.name.trim().is_empty() {
                 out.error(format!("{label}: no name"));
             }
-            if !c.category.is_empty() && !categories.contains(c.category.as_str()) {
-                out.warn(format!(
-                    "{label}: the category {} is not in the library's categories",
-                    c.category
-                ));
+            for category in c.category_ids() {
+                if !categories.contains(category) {
+                    out.warn(format!(
+                        "{label}: the category {category} is not in the library's categories"
+                    ));
+                }
             }
             if !c.preview.is_empty() && (!valid_path(&c.preview) || !c.preview.ends_with(".png")) {
                 out.error(format!(
@@ -412,6 +617,8 @@ impl Manifest {
                 ));
             }
             super::build::check_component(self, c, &label, &mut out);
+            // Mount frames of any part (mitcad#525).
+            super::mounts::check_component(c, &label, &mut out);
         }
         out
     }

@@ -38,11 +38,14 @@
 #   7. Save, reopen; Cut List: rows, Copy as CSV, Save as PDF.
 #   8. The part picker (mitcad#418), with a 30 profile of another system in
 #      the library's next version: opened from Profile's Part tile
-#      (mitcad#427), a group, a click choosing the 30 profile that the
+#      (mitcad#427), the groups as a tree (mitcad#527: Slot profile with
+#      its Profiles, listing them, folded and unfolded), a group, a click
+#      choosing the 30 profile that the
 #      preview then uses, a star (first in its group), pinned it follows
 #      Connector (a click chooses the bracket); Profile again starts with
 #      the 30 profile and opens it filtered to its system, Favourites, In
-#      this design after the placement. Its clicks are posted to the
+#      this design after the placement (on a plane; after Place nothing
+#      previewed at the origin on top of it, mitcad#513). Its clicks are posted to the
 #      picker's own window.
 #   9. The part a command starts with (mitcad#452), with a second 30
 #      profile of the same system in the library's next version, starred
@@ -162,8 +165,9 @@ Set-Content -Encoding ascii (Join-Path $library 'mitcad-library.json') @'
   "format": "mitcad-library", "version": 1, "id": "test-profiles", "name": "Test profiles",
   "description": "Synthetic BUILD parts of the UI test.", "library_version": "1.0.0", "license": "MIT",
   "authors": ["Mitcad UI test"], "units": "mm",
-  "categories": [{"id": "profiles", "name": "Profiles"}, {"id": "connectors", "name": "Connectors"},
-                 {"id": "panels", "name": "Panels"}, {"id": "linear", "name": "Linear parts"}],
+  "categories": [{"id": "slot", "name": "Slot profile"}, {"id": "profiles", "name": "Profiles", "parent": "slot"},
+                 {"id": "connectors", "name": "Connectors", "parent": "slot"},
+                 {"id": "panels", "name": "Slot profile/Panels"}, {"id": "linear", "name": "Motion/Linear parts"}],
   "components": [
     {"id": "p20-test", "path": "profiles/p20-test.mitcad", "name": "Profile 20 test", "category": "profiles",
      "supplier": "Test supplier", "part_number": "P20-T", "designation": "Profile 20 test L={L}",
@@ -968,18 +972,72 @@ Ui-ExpectNew 'Part picker opened: 2 parts for build.profile' 'the picker opened 
 Ui-ExpectNew 'Part picker in this design: ' "the design's library parts read"
 Ui-ExpectNew 'test-profiles/p20-test x' 'the placed 20 profiles in this design, with their count'
 Ui-ExpectNew 'Part picker tile test-profiles/p30-test at ' "the tiles' places"
+# The groups as a tree (mitcad#527): Slot profile (a category the others
+# name as their parent) with its Profiles; a click on it lists its
+# subgroups' parts; folded, its subgroup's row has no place, and unfolded
+# it has one again.
+$groupsTree = Ui-LastMatch '^Part picker groups: (.*)$'
+if ("$groupsTree" -notlike '*All parts, Slot profile, Slot profile/Profiles') {
+  Ui-Fail "the groups are '$groupsTree', not Slot profile with its Profiles"
+}
+Write-Host "ok   the groups as a tree: $groupsTree"
+Ui-ExpectNew 'Part picker place group fold Slot profile at ' "the fold's place"
 Ui-Mark
-Ui-Step 'the group Profiles'             { Picker-Click 'Part picker group row Profiles' }
-Ui-ExpectNew 'Part picker group Profiles: 2 parts' 'the group of profiles'
+Ui-Step 'the group Slot profile'         { Picker-Click 'Part picker group row Slot profile' }
+Ui-ExpectNew 'Part picker group Slot profile: 2 parts' "the main group lists its subgroup's profiles"
+Ui-Mark
+Ui-Step 'fold Slot profile (its arrow)'  { Picker-Click 'Part picker place group fold Slot profile' }
+Ui-ExpectNew 'Part picker group Slot profile folded' 'folded'
+Ui-Mark
+Ui-Step 'unfold it (its arrow)'          { Picker-Click 'Part picker place group fold Slot profile' }
+Ui-ExpectNew 'Part picker group Slot profile unfolded' 'unfolded'
+Ui-ExpectNew 'Part picker group row Slot profile/Profiles at ' "its subgroup's row again"
+Ui-Mark
+Ui-Step 'the group Profiles'             { Picker-Click 'Part picker group row Slot profile/Profiles' }
+Ui-ExpectNew 'Part picker group Slot profile/Profiles: 2 parts' 'the group of profiles'
 Ui-ExpectNew 'Part picker tile test-profiles/p30-test at ' "the tiles' places in the group"
 Ui-Mark
 Ui-Step 'a click on the 30 profile'      { Picker-Click 'Part picker tile test-profiles/p30-test' }
 Ui-ExpectNew 'Part picker chose test-profiles/p30-test' 'chosen in the picker'
 Expect-Inspect @('place grounded', '; part Profile 30 test') 'the preview uses the chosen profile at once'
+# A star changes only the star (mitcad#517): the tiles and the groups stay
+# where they are and the selection stays on the starred tile; the order
+# applies when the list is made again.
+$tilesBefore = $null
+$groupsBefore = $null
+for ($i = 0; $i -lt 30 -and -not $tilesBefore; $i++) {
+  $tilesBefore = Ui-LastMatch '^Part picker tiles: (.*)$'
+  if (-not $tilesBefore) { Start-Sleep -Milliseconds 200 }
+}
+$groupsBefore = Ui-LastMatch '^Part picker groups: (.*)$'
+# The 20 profile (with its uses in the design) then the 30 profile.
+if ("$tilesBefore" -notmatch '^test-profiles/p20-test.*, test-profiles/p30-test$') {
+  Ui-Fail "the tiles before the star are '$tilesBefore', not the 20 profile then the 30 profile"
+}
 Ui-Mark
 Ui-Step 'star it (Star)'                 { Picker-Click 'Part picker place star' }
 Ui-ExpectNew 'Part picker star p30-test on' 'the 30 profile starred'
-Ui-ExpectNew 'Part picker group Profiles: 2 parts, first test-profiles/p30-test' 'the starred profile first'
+Ui-ExpectNew "Part picker tiles kept: $tilesBefore; current test-profiles/p30-test" 'the tiles stay in their places, the selection on the starred tile'
+Ui-ExpectNew "Part picker groups kept: $groupsBefore" 'the groups stay in their places'
+if (Ui-LogLines | Select-Object -Skip $script:UiMark | Where-Object { $_.StartsWith('Part picker group Slot profile/Profiles: ') }) {
+  Ui-Fail 'a star made the tiles again'
+}
+Ui-Mark
+Ui-Step 'All parts (the group row)'      { Picker-Click 'Part picker group row All parts' }
+Ui-ExpectNew 'Part picker group All parts: ' 'another group'
+Ui-Mark
+Ui-Step 'Profiles again (the group row)' { Picker-Click 'Part picker group row Slot profile/Profiles' }
+Ui-ExpectNew 'Part picker group Slot profile/Profiles: 2 parts, first test-profiles/p30-test' 'the starred profile first now'
+# A group's star changes only the star too: its row stays where it is.
+$groupsBefore = Ui-LastMatch '^Part picker groups: (.*)$'
+Ui-Mark
+Ui-Step 'star the group (its star)'      { Picker-Click 'Part picker place group star Slot profile/Profiles' }
+Ui-ExpectNew 'Part picker group star slot profile/profiles on' 'the group Profiles starred'
+Ui-ExpectNew "Part picker groups kept: $groupsBefore" 'the groups stay in their places'
+Ui-Mark
+Ui-Step 'its star off again'             { Picker-Click 'Part picker place group star Slot profile/Profiles' }
+Ui-ExpectNew 'Part picker group star slot profile/profiles off' "the group's star off"
+Ui-ExpectNew "Part picker groups kept: $groupsBefore" 'the groups stay in their places'
 Ui-Mark
 Ui-Step 'pin the picker'                 { Picker-Click 'Part picker place pin' }
 Ui-ExpectNew 'Part picker pinned on' 'pinned'
@@ -1016,6 +1074,16 @@ Ui-Mark
 Ui-Step 'Favourites'                     { Picker-Click 'Part picker group row Favourites' }
 Ui-ExpectNew 'Part picker group Favourites: 1 parts, first test-profiles/p30-test' 'Favourites has the starred profile'
 Place 'Profile 30 test'
+# After Place no ghost (mitcad#513): Placement stays On a plane, but the
+# next one is not previewed at the origin on top of the one placed there;
+# the panel waits for a click.
+Expect-Inspect @('failed: Click a plane or a face where the next one goes.') 'after Place the panel waits for a click'
+Ui-ExpectNew 'View hint Profile: Click a plane or a face for the next one' 'the view asks for the next one''s plane'
+Start-Sleep -Milliseconds 1500
+Ui-Sync
+$ghost = @(Ui-LogLines | Select-Object -Skip $script:UiMark | Where-Object { $_.StartsWith('Inspect Profile: place grounded') })
+if ($ghost.Count -gt 0) { Ui-Fail "a profile previewed at the origin after Place: $($ghost[0])" }
+Write-Host 'ok   no profile previewed at the origin on top of the one placed'
 Ui-ExpectNew 'test-profiles/p30-test x1' 'In this design has it after the placement'
 Ui-ExpectNew 'Part picker group row In this design at ' "the groups' places again"
 Ui-Mark
@@ -1063,19 +1131,29 @@ Ui-ExpectNew 'Part picker tile test-profiles/p30h-test at ' "the heavy profile's
 Ui-Mark
 Ui-Step 'the heavy profile'              { Picker-Click 'Part picker tile test-profiles/p30h-test' }
 Ui-ExpectNew 'Part picker chose test-profiles/p30h-test' 'chosen in the picker'
+$tilesBefore = Ui-LastMatch '^Part picker tiles: (.*)$'
 Ui-Mark
 Ui-Step 'star it (Star)'                 { Picker-Click 'Part picker place star' }
 Ui-ExpectNew 'Part picker star p30h-test on' 'a second favourite'
-Ui-ExpectNew 'Part picker group All parts: 3 parts, first test-profiles/p30' 'the favourites first'
+# The star changes only the star (mitcad#517): the tiles stay in their
+# places, the selection on the starred one; the favourites come first once
+# the list is made again (Favourites, then All parts).
+Ui-ExpectNew "Part picker tiles kept: $tilesBefore; current test-profiles/p30h-test" 'the tiles stay where they are, the selection on the starred tile'
+Ui-Mark
+Ui-Step 'Favourites (the group row)'     { Picker-Click 'Part picker group row Favourites' }
+Ui-ExpectNew 'Part picker group Favourites: 2 parts, first test-profiles/p30' 'the two favourites'
 # The first favourite in the picker's order (the catalog's among the
 # starred), from the group's line since the star, and the other one.
 $first = $null
 for ($i = 0; $i -lt 30 -and -not $first; $i++) {
   $first = Ui-LogLines | Select-Object -Skip $script:UiMark |
-    ForEach-Object { if ($_ -match '^Part picker group All parts: 3 parts, first test-profiles/(p30[a-z]*-test)$') { $Matches[1] } } |
+    ForEach-Object { if ($_ -match '^Part picker group Favourites: 2 parts, first test-profiles/(p30[a-z]*-test)$') { $Matches[1] } } |
     Select-Object -Last 1
   if (-not $first) { Start-Sleep -Milliseconds 200 }
 }
+Ui-Mark
+Ui-Step 'All parts (the group row)'      { Picker-Click 'Part picker group row All parts' }
+Ui-ExpectNew "Part picker group All parts: 3 parts, first test-profiles/$first" 'the favourites first'
 switch ("$first") {
   'p30-test' { $second = 'p30h-test' }
   'p30h-test' { $second = 'p30-test' }

@@ -23,6 +23,9 @@
 #    frames, and the pickers.
 # 6. Profiled boards placed: a floorboard on another's tongue, a shiplap
 #    row stepping by its cover, the cut list's area.
+# 7. The default framing fastener (mitcad#516): the countersunk wood screw
+#    marked wood.default, the wood picker's first; a frame with it seated
+#    flush.
 #
 # cmake -DCLI=<mitcad-cli> -DWORK=<folder> -P build-timber-test.cmake
 
@@ -389,5 +392,42 @@ cli(run "${WORK}/profiled-placed.json")
 if(NOT out MATCHES "Placed bodies: 10\n")
   message(FATAL_ERROR "the shiplap row is not of eight boards:\n${out}")
 endif()
+
+# 7. The default framing fastener (mitcad#516): the library marks the
+#    countersunk wood screw (wood.default), seated by its head's top, not
+#    the pan-head connector screw; the wood picker lists it first. A frame
+#    with it, as Timber sends it before the user chooses a fastener (sized
+#    from the members), has every screw's head top flush with the wood.
+# string(JSON ... GET) gives a JSON true as ON: compared as a CMake boolean.
+build_field(wood-screw marked wood default)
+if(NOT marked MATCHES "^(ON|TRUE|true|1)$")
+  message(FATAL_ERROR "wood-screw: build.wood;default: '${marked}', not true")
+endif()
+expect_field(wood-screw "head_top" wood seat)
+expect_field(connector-screw "(none)" wood default)
+expect_field(connector-screw "head_underside" wood seat)
+cli(library candidates --role fastener --kind wood)
+string(REGEX MATCH "mitcad-parts/[a-z0-9-]+ " first "${out}")
+same("${first}" "mitcad-parts/wood-screw " "the wood picker's first fastener")
+set(members "")
+foreach(i RANGE 1 5)
+  list(APPEND members "{\"kind\": \"timber\"}")
+endforeach()
+set(seats "")
+foreach(i RANGE 1 12)
+  list(APPEND seats "{\"role\": \"fastener\", \"seating\": {\"head_top_distance\": 0}}")
+endforeach()
+string(JOIN "," members ${members})
+string(JOIN "," seats ${seats})
+file(WRITE "${WORK}/default-fastener.json" "[
+  {\"cmd\": \"build_frame\", \"kind\": \"wall\",
+   \"part\": {\"library\": \"mitcad-parts\", \"url\": \"${url}\", \"rev\": \"HEAD\", \"component\": \"timber-dimensioned\", \"config\": \"48x98\"},
+   \"start\": [0, 0, 0], \"end\": [1200, 0, 0], \"height\": 600, \"spacing\": 600,
+   \"fastener\": {\"library\": \"mitcad-parts\", \"url\": \"${url}\", \"rev\": \"HEAD\", \"component\": \"wood-screw\"}},
+  {\"expect\": {\"query\": {\"query\": \"build_parts\"}, \"tolerance\": 1e-6,
+               \"result\": {\"parts\": [${members},${seats}]}}}
+]")
+cli(run "${WORK}/default-fastener.json")
+message("the default framing fastener: wood-screw first, a frame's 12 screws flush")
 
 message("the timber parts: their sizes, designs, fasteners, connectors, sheets, profiled boards and pickers")

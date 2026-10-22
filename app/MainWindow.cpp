@@ -2153,6 +2153,20 @@ double MainWindow::pixelSize(const gp_Pnt& point) const {
   return pixels > 1e-9 ? 1.0 / pixels : std::numeric_limits<double>::quiet_NaN();
 }
 
+std::optional<gp_Dir> MainWindow::towardViewer(const gp_Pnt& point) const {
+  // Towards the eye (a perspective view), else against the view direction.
+  const auto& camera = m_viewer->viewCamera();
+  if (camera.IsNull()) {
+    return std::nullopt;
+  }
+  const gp_Dir back = camera->Direction().Reversed();
+  if (camera->IsOrthographic()) {
+    return back;
+  }
+  const gp_Vec toEye(point, camera->Eye());
+  return toEye.Magnitude() > 1e-9 ? gp_Dir(toEye) : back;
+}
+
 bool MainWindow::takesFeatures() const {
   return m_session && m_session->activeTakes(SelectKind::Feature);
 }
@@ -2294,6 +2308,10 @@ TopoDS_Shape MainWindow::itemShape(const SelectionItem& item) const {
     case SelectKind::Body:
       return occtShape(bodyShape(item.owner));
     case SelectKind::Feature: {
+      // A Move Face's moved faces, which keep their names (mitcad#531).
+      if (const TopoDS_Shape moved = movedFacesShape(item.owner); !moved.IsNull()) {
+        return moved;
+      }
       // The faces the feature made, on the bodies at the marker.
       TopoDS_Compound compound;
       BRep_Builder builder;
@@ -2468,6 +2486,11 @@ bool MainWindow::keepSelected(const SelectionItem& item) const {
     return model.constraint(item.name) != nullptr;
   }
   if (item.kind == SelectKind::Feature) {
+    // A joint, as-built joint or constraint set while the model has it: its
+    // highlight shows its sides (mitcad#523).
+    if (!jointEntry(item.owner).isEmpty()) {
+      return true;
+    }
     // A feature selected on the timeline (mitcad#28) while it has faces on
     // the bodies at the marker.
     return TopExp_Explorer(itemShape(item), TopAbs_FACE).More();
@@ -3551,6 +3574,9 @@ void MainWindow::updateIdleView() {
   std::vector<HighlightDisplay> highlights;
   QStringList featureFaces; // "F4 1": a selected feature's faces (mitcad#28)
   for (const SelectionItem& item : m_selection) {
+    if (item.kind == SelectKind::Feature && !jointEntry(item.owner).isEmpty()) {
+      continue; // a joint makes no faces: its sides are shown (addJointHighlights)
+    }
     if (item.kind != SelectKind::SketchConstraint && item.kind != SelectKind::SketchDimension) {
       const TopoDS_Shape shape = itemShape(item);
       if (item.kind == SelectKind::Feature) {
@@ -3566,6 +3592,9 @@ void MainWindow::updateIdleView() {
       highlights.push_back({item, itemShape(item), QColor(0x2f, 0x9b, 0xff)});
     }
   }
+  // The selected joints' sides and frames, and the hovered joint row's
+  // (mitcad#523).
+  addJointHighlights(highlights);
   m_viewer->setHighlights(highlights);
   const QString logged = featureFaces.isEmpty() ? QStringLiteral("none") : featureFaces.join(QStringLiteral(", "));
   if (logged != m_loggedFeatureFaces) {
@@ -3575,12 +3604,19 @@ void MainWindow::updateIdleView() {
 
   QString text = tr("<b>No command</b><br>Press S to search for a command, or right-click the "
                     "selection for the commands that fit it.");
+  QStringList jointCards; // the selected joints' lines of the card (mitcad#523)
   if (!m_selection.isEmpty()) {
     text += tr("<br><br>Selected: %1").arg(summarize(m_selection));
     QStringList lines;
     QStringList details;
     for (const SelectionItem& item : m_selection.mid(0, 8)) {
       details << item.describe();
+      // A joint: its kind and what each side is on (mitcad#523).
+      if (const QString joint = jointCardBlock(item); !joint.isEmpty()) {
+        lines << joint;
+        jointCards << joint;
+        continue;
+      }
       QString label = SelectionItem::kindName(item.kind);
       if (!label.isEmpty()) {
         label[0] = label[0].toUpper();
@@ -3606,6 +3642,8 @@ void MainWindow::updateIdleView() {
           block += QStringLiteral("<br>%1").arg(measurements);
         }
         lines << block;
+      } else if (const QString moved = moveFaceCard(item); !moved.isEmpty()) {
+        lines << moved; // a Move Face's timeline cell (mitcad#531)
       } else if (measurements.isEmpty()) {
         lines << item.describe().toHtmlEscaped();
       } else {
@@ -3626,6 +3664,16 @@ void MainWindow::updateIdleView() {
   }
   m_idleInfo->setText(text);
   m_idleInfo->setVisible(!text.isEmpty());
+  // What the card says of the selected joints, for UI tests.
+  const QString cards = jointCards.join(QStringLiteral("; "))
+                            .remove(QStringLiteral("<b>"))
+                            .remove(QStringLiteral("</b>"));
+  if (cards != m_loggedJointCard) {
+    m_loggedJointCard = cards;
+    if (!cards.isEmpty()) {
+      qDebug().noquote() << QStringLiteral("Joint card: %1").arg(cards);
+    }
+  }
   updateCommandCard();
 #ifdef MITCAD_MACOS_NATIVE_UI
   refreshNativeInspector();
@@ -3660,7 +3708,7 @@ void MainWindow::showContextMenu(const QPoint& globalPosition, const SelectionIt
         continue;
       }
       if (std::all_of(m_selection.begin(), m_selection.end(),
-                      [input](const SelectionItem& s) { return input->accepts(s); })) {
+                      [input](const SelectionItem& s) { return input->takes(s); })) {
         add(m_registry->action(def->id));
       }
     }
@@ -4691,6 +4739,9 @@ bool MainWindow::installDocument(const QString& label, const QString& path, cons
   if (m_controller != nullptr) {
     m_controller->designOpened();
   }
+  // Its first bodies are fitted into the view once (mitcad#467): a new
+  // design's first body, not bodies shown again after all were hidden.
+  m_viewer->expectFirstBodies();
   refreshScene();
   if (!m_keepView) {
     m_viewer->fitAll();

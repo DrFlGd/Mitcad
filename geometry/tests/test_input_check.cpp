@@ -6,13 +6,18 @@
 #include <exception>
 
 #include <BRep_Builder.hxx>
+#include <BRep_Tool.hxx>
+#include <Geom2d_Curve.hxx>
 #include <Geom2d_Line.hxx>
 #include <Geom_Plane.hxx>
+#include <Geom_Surface.hxx>
 #include <TopExp_Explorer.hxx>
 #include <TopLoc_Location.hxx>
+#include <TopoDS.hxx>
 #include <gp_Dir2d.hxx>
 #include <gp_Pln.hxx>
 #include <gp_Pnt2d.hxx>
+#include <gp_Vec2d.hxx>
 
 #include "../src/history.hpp"
 #include "check.hpp"
@@ -157,6 +162,53 @@ void test_input_copy() {
   }
   CHECK(shared);
   CHECK(!both.shape(1).IsSame(lower->face(0)));
+}
+
+// A copy given p-curves of its own (detail::own_pcurves) can have them
+// moved in place, as shape healing moves a wire on a periodic surface by
+// whole periods, without moving its source's: the input check compares
+// handles, not the curves' values, and before mitcad#343 a fillet's failed
+// try, healed on its copy, left a later fillet's input body with a torus
+// whose p-curves lay periods apart (an invalid face).
+void test_own_pcurves() {
+  const ShapePtr rod = extrude("F2", {circle(1, 0, 0, 10)}, 0, 20);
+  int side = -1;
+  for (int i = 0; i < rod->face_count() && side < 0; ++i) {
+    if (BRep_Tool::Surface(rod->face(i))->IsUPeriodic()) {
+      side = i;
+    }
+  }
+  CHECK(side >= 0);
+  if (side < 0) {
+    return;
+  }
+  const auto starts = [](const TopoDS_Face& face) {
+    std::vector<gp_Pnt2d> points;
+    for (TopExp_Explorer e(face, TopAbs_EDGE); e.More(); e.Next()) {
+      double f = 0.0, l = 0.0;
+      const occ::handle<Geom2d_Curve> c = BRep_Tool::CurveOnSurface(TopoDS::Edge(e.Current()), face, f, l);
+      points.push_back(c.IsNull() ? gp_Pnt2d(1e9, 1e9) : c->Value(f));
+    }
+    return points;
+  };
+  const std::vector<gp_Pnt2d> before = starts(rod->face(side));
+  const ShapePtr copy = detail::working_copy(*rod);
+  detail::own_pcurves(copy->occt());
+  const TopoDS_Face copied = copy->face(side);
+  for (TopExp_Explorer e(copied, TopAbs_EDGE); e.More(); e.Next()) {
+    double f = 0.0, l = 0.0;
+    const occ::handle<Geom2d_Curve> c = BRep_Tool::CurveOnSurface(TopoDS::Edge(e.Current()), copied, f, l);
+    if (!c.IsNull()) {
+      c->Translate(gp_Vec2d(2.0 * kPi, 0.0));
+    }
+  }
+  const std::vector<gp_Pnt2d> after = starts(rod->face(side));
+  const std::vector<gp_Pnt2d> moved = starts(copied);
+  CHECK(after.size() == before.size() && moved.size() == before.size());
+  for (std::size_t i = 0; i < before.size() && i < after.size() && i < moved.size(); ++i) {
+    CHECK(after[i].Distance(before[i]) < 1e-12);
+    CHECK(std::abs(moved[i].X() - before[i].X() - 2.0 * kPi) < 1e-9);
+  }
 }
 
 // The check mode: test_main turns it on for the whole run and wants no
@@ -355,6 +407,7 @@ void input_check_self_tests() {
 
 void input_check_tests() {
   guarded("test_input_copy", test_input_copy);
+  guarded("test_own_pcurves", test_own_pcurves);
   guarded("test_joins_leave_inputs", test_joins_leave_inputs);
   guarded("test_sections_leave_inputs", test_sections_leave_inputs);
   guarded("test_dressups_leave_inputs", test_dressups_leave_inputs);

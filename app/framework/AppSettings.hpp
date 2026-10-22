@@ -100,6 +100,16 @@ struct ProjectsSettings {
   // The user's last show or hide of the panel; none before the first
   // (mitcad#151: the panel then shows when a project is configured).
   std::optional<bool> panelShown;
+  // The panel's width as the user dragged it (mitcad#529; the settings
+  // projects/cardWidth and projects/dockWidth): the Floating card's and
+  // the Docked panel's; 0 none (the default width).
+  int cardWidth = 0;
+  int dockWidth = 0;
+  // The place File > Open from Project showed last (mitcad#530; the
+  // settings projects/browseRoot and projects/browseFolder): a project's
+  // folder and a folder in it ("" its top); "" none.
+  QString browseRoot;
+  QString browseFolder;
 
   static ProjectsSettings load();
   void save() const;

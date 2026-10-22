@@ -209,6 +209,16 @@ vcpkg_from_github(
         0950-chfi3d-roundings-consuming-the-face-between-them-meet-on-one-contact-edge.patch
         0951-chfi3d-rounding-ending-at-a-step-back-of-its-wall-closes-with-a-torus.patch
         0960-projlib-projection-boundary-bisection-stops-at-adjacent-parameters.patch
+        0961-chfi3d-rounding-vanishing-where-its-walk-stopped-on-its-own-edge.patch
+        0962-chfi3d-step-end-torus-cut-on-its-direct-frame-and-only-at-a-recess.patch
+        0970-chfi3d-chain-past-a-wall-corner-tighter-than-the-ball-vertex-blend-and-torus.patch
+        0980-chfi3d-rounding-across-slight-creases-of-its-faces-at-one-section.patch
+        0990-chfi3d-rolled-end-cut-by-the-faces-at-the-end-past-the-balls-tangency.patch
+        1000-chfi3d-chamfer-across-a-slight-concave-crease-over-a-narrow-face-grown-faces-continued.patch
+        1001-chfi3d-guide-stretch-only-where-the-spine-turns-at-the-vertex.patch
+        1010-chfi3d-kpart-closed-rim-gap-round-to-its-own-first-edge.patch
+        1011-chfi3d-intersection-at-end-across-the-end-faces-seam-in-one-period.patch
+        1020-chfi3d-kink-into-a-face-going-on-smoothly-into-the-end-face-also-at-a-pieces-start.patch
 )
 
 if (VCPKG_LIBRARY_LINKAGE STREQUAL "dynamic")

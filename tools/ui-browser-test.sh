@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# check-all sources: app/browser app/framework/HybridAssembly.cpp
+# check-all sources: app/browser app/framework/HybridAssembly.cpp app/view/FirstBodiesFit.hpp
 # check-all sources: core/model/src/document/components.rs core/model/src/api/components.rs
 # The browser (U3) through the real UI, on a part with a component placed
 # 40 mm along X:
@@ -11,7 +11,8 @@
 #     the project file keeps them, undo takes them back.
 #   - Five light bulbs clicked quickly, faster than the double-click interval,
 #     the mouse moving a little during each press (mitcad#344): each row
-#     toggles once and the selection does not change.
+#     toggles once and the selection does not change; every body hidden and
+#     shown again leaves the view where it was (no fit of one body alone).
 #   - Rename in place (double-click, the context menu; a component's only,
 #     default-named body is renamed with it, mitcad#291), activate a
 #     component with its radio button.
@@ -155,6 +156,13 @@ quick_eyes() {
   xdotool "${cmd[@]}"
 }
 selected_before=$(grep "^Browser selected: " "$UI_LOG" | tail -1)
+# Where the bodies are in the view now: every body hidden and shown again
+# leaves the view as it is (the fit of a design's first bodies, mitcad#467,
+# is once per design; it fitted Body1 alone and left the placed body out of
+# the window).
+body_places() { printf '%s | %s' "$(grep "^Body F2.b0 at " "$UI_LOG" | tail -1)" \
+  "$(grep "^Body F3.b0 in O1 at " "$UI_LOG" | tail -1)"; }
+places_before=$(body_places)
 ui_mark
 ui_step "click five light bulbs quickly"  quick_eyes
 ui_wait_idle
@@ -178,6 +186,11 @@ selected_after=$(grep "^Browser selected: " "$UI_LOG" | tail -1)
 [ "$selected_after" = "$selected_before" ] || ui_fail "the selection changed in the second round"
 echo "ok   a second round toggles them back, the selection still unchanged"
 ui_expect_log "Bodies shown: F2.b0, F3.b0 in O1" "both bodies shown again"
+ui_sync
+places_after=$(body_places)
+[ "$places_after" = "$places_before" ] ||
+  ui_fail "the view moved when the bodies were shown again: '$places_before' -> '$places_after'"
+echo "ok   the bodies are where they were in the view ($places_after)"
 
 echo "--- Rename and activate"
 ui_mark

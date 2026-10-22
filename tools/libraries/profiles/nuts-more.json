@@ -2,7 +2,7 @@
   {
     "id": "tnut-b8-m6-a2",
     "name": "T-nut B-type slot 8 M6, stainless steel",
-    "category": "nuts",
+    "category": "slot-nuts",
     "source": "solar/T-nut-B-type-slot-8-M6-stainless-steel/Motedis-S8BHASNM6/Motedis_S8BHASNM6.stp",
     "make": "solid",
     "supplier": "Motedis",
@@ -16,7 +16,7 @@
   {
     "id": "square-nut-spring-s8-m5",
     "name": "Square nut with spring, type O, slot 8, M5",
-    "category": "nuts",
+    "category": "slot-nuts",
     "source": "uncategorized/Square-nut-with-spring-type-O-M5/Motedis-SLOTSWBM5/Motedis_SLOTSWBM5.stp",
     "make": "solid",
     "supplier": "Motedis",

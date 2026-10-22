@@ -67,6 +67,10 @@ pub struct InsertOptions {
     pub name: Option<String>,
     /// The directory a relative path is relative to (the project's).
     pub base: Option<PathBuf>,
+    /// Placed by one of its mount frames on a face, a hole or a grid, with
+    /// the joint the frame asks for (mitcad#525); `transform` is then not
+    /// used. None: dropped in at `transform`.
+    pub mount: Option<super::mounts::MountInput>,
 }
 
 impl Default for InsertOptions {
@@ -76,6 +80,7 @@ impl Default for InsertOptions {
             transform: Transform::IDENTITY,
             name: None,
             base: None,
+            mount: None,
         }
     }
 }
@@ -1062,6 +1067,17 @@ impl<K: Kernel> Document<K> {
         path: &str,
         options: &InsertOptions,
     ) -> Result<(ComponentUid, OccurrenceUid), ModelError> {
+        self.insert_file(path, options)
+            .map(|inserted| (inserted.component, inserted.occurrence))
+    }
+
+    /// [`Document::insert_component`], with the mount frames the new
+    /// component has and the joint a mount placement made (mitcad#525).
+    pub fn insert_file(
+        &mut self,
+        path: &str,
+        options: &InsertOptions,
+    ) -> Result<super::mounts::Inserted, ModelError> {
         check_transform(&options.transform)?;
         let parent = self.state.assembly.active;
         self.state.editable(parent)?;
@@ -1078,11 +1094,22 @@ impl<K: Kernel> Document<K> {
             .unwrap_or("Inserted")
             .to_owned();
         let wanted = options.name.clone().unwrap_or(stem);
-        let bodies = if options.link {
-            Some(self.design_bodies(&source, path)?)
+        // Its mount frames (mitcad#525): a linked part's are joint origins
+        // of its own where the design has them; a copy has the design's.
+        let (bodies, mounts) = if options.link {
+            let (bodies, mounts) = self.design_parts(&source, path)?;
+            (Some(bodies), mounts)
+        } else if options.mount.is_some() {
+            (None, self.design_mounts(&source)?)
         } else {
-            None
+            (None, Vec::new())
         };
+        let listed = super::mounts::listed_mounts(&source);
+        let plan = match &options.mount {
+            Some(mount) => Some(self.plan_mount(&mounts, mount, &wanted)?),
+            None => None,
+        };
+        let transform = plan.as_ref().map_or(options.transform, |p| p.placement);
         let label = format!("Insert {}", file_label(path));
         self.apply(|state| {
             let name = match &options.name {
@@ -1095,31 +1122,47 @@ impl<K: Kernel> Document<K> {
             let made = state.assembly.create(Some(&name), None);
             // The design's root policy comes with it (mitcad#220).
             state.assembly.set_policy(made, source.assembly.root_policy);
-            let occurrence = state.assembly.place(made, parent, options.transform);
-            match bodies {
+            let occurrence = state.assembly.place(made, parent, transform);
+            let frames = match bodies {
                 Some(bodies) => {
                     let base = BaseDef {
                         source: Some(file_label(path)),
                         ..BaseDef::new(bodies)
                     };
                     let added = state.add_feature_in(&FeatureDef::Base(base), None, made)?;
+                    let frames = super::mounts::add_linked_mounts(state, made, &mounts)?;
                     state.assembly.component_mut(made).expect("made").link = Some(ExternalLink {
                         path: path.to_owned(),
                         digest: digest(&text),
                         feature: added.uid,
                     });
+                    frames
                 }
                 None => {
-                    state.copy_component(
+                    let (_, copy) = state.copy_component_mapped(
                         &source,
                         &[],
                         made,
                         None,
                         CopySource::Document(resolved.parent()),
                     )?;
+                    super::mounts::copied_mounts(state, made, &listed, &copy)
                 }
-            }
-            Ok((label, (made, occurrence)))
+            };
+            let joint = match &plan {
+                Some(plan) => Some(super::mounts::attach_mount(
+                    state, parent, occurrence, &frames, plan,
+                )?),
+                None => None,
+            };
+            let inserted = super::mounts::Inserted {
+                component: made,
+                occurrence,
+                joint,
+                frames,
+                plan,
+            };
+            Ok((label, inserted))
         })
     }
 
@@ -1205,16 +1248,35 @@ impl<K: Kernel> Document<K> {
     }
 
     /// The visible bodies of another design, placed in its coordinates,
-    /// as base-feature bodies.
-    pub(super) fn design_bodies(
+    /// as base-feature bodies, with the design's mount frames
+    /// (mitcad#525), from one evaluation.
+    pub(super) fn design_parts(
         &self,
         source: &DocState,
         path: &str,
-    ) -> Result<Vec<crate::features::BaseBody>, ModelError> {
+    ) -> Result<
+        (
+            Vec<crate::features::BaseBody>,
+            Vec<super::mounts::SourceMount>,
+        ),
+        ModelError,
+    > {
+        let (bodies, mounts) = self.design_shapes(source, path)?;
+        Ok((self.base_bodies(&bodies)?, mounts))
+    }
+
+    /// The visible bodies of another design as shapes placed in its
+    /// coordinates, and its mount frames (mitcad#525).
+    pub(super) fn design_shapes(
+        &self,
+        source: &DocState,
+        path: &str,
+    ) -> Result<DesignShapes<K::Shape>, ModelError> {
         let kernel = &self.kernel;
         // A cancel (P7) stops this too.
         let monitor = self.monitor.as_ref();
         let result = recompute(kernel, source, &mut Cache::default(), monitor)?;
+        let mounts = super::mounts::evaluated_mounts(source, &result);
         let names = super::display_names(source, &result);
         let a = source.assembly.at_placements(&result.placements);
         let placement = |o: OccurrenceUid| {
@@ -1260,7 +1322,29 @@ impl<K: Kernel> Document<K> {
         if bodies.is_empty() {
             return Err(invalid(format!("{path} has no bodies to show")));
         }
-        self.base_bodies(&bodies)
+        Ok((bodies, mounts))
+    }
+
+    /// The design of a file to insert and the name its component takes
+    /// (mitcad#525: a mount placement's preview).
+    pub(super) fn file_design(
+        &self,
+        path: &str,
+        base: Option<&Path>,
+    ) -> Result<(DocState, String), ModelError> {
+        let resolved = std::path::absolute(resolve_path(path, base))
+            .map_err(|e| invalid(format!("cannot resolve {path}: {e}")))?;
+        let text = std::fs::read_to_string(&resolved)
+            .map_err(|e| invalid(format!("cannot read {path}: {e}")))?;
+        let (source, _) = crate::file::load_state_at(&text, &resolved)
+            .map_err(|e| invalid(format!("{path}: {e}")))?;
+        let stem = Path::new(path)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or("Inserted")
+            .to_owned();
+        Ok((source, stem))
     }
 
     /// Reads linked components' files again and takes their bodies when a
@@ -1297,14 +1381,14 @@ impl<K: Kernel> Document<K> {
             if new_digest == link.digest {
                 continue;
             }
-            let bodies = match crate::file::load_state_at(&text, &resolved) {
-                Ok((source, _)) => self.design_bodies(&source, &link.path),
+            let parts = match crate::file::load_state_at(&text, &resolved) {
+                Ok((source, _)) => self.design_parts(&source, &link.path),
                 Err(e) => Err(invalid(e.to_string())),
             };
-            match bodies {
-                Ok(bodies) => {
+            match parts {
+                Ok((bodies, mounts)) => {
                     messages.push(format!("{name} is updated from {}", link.path));
-                    updates.push((component, link, new_digest, bodies));
+                    updates.push((component, link, new_digest, bodies, mounts));
                 }
                 // Cancelled (P7): the document stays as it was.
                 Err(ModelError::Cancelled) => return Err(ModelError::Cancelled),
@@ -1317,7 +1401,9 @@ impl<K: Kernel> Document<K> {
         // new state is computed before it is taken.
         if !updates.is_empty() {
             let mut state = self.state.clone();
-            for (component, link, digest, bodies) in updates {
+            for (component, link, digest, bodies, mounts) in updates {
+                // Its mount frames follow the file (mitcad#525).
+                super::mounts::update_linked_mounts(&mut state, component, &mounts)?;
                 let position = state.require(link.feature)?;
                 let mut entry = (*state.features[position]).clone();
                 if let FeatureDef::Base(base) = &mut entry.def {
@@ -1388,3 +1474,7 @@ fn is_default_body_name(name: &str) -> bool {
     name.strip_prefix("Body")
         .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
 }
+
+/// The visible bodies of another design as shapes in its coordinates, and its
+/// mount frames (`design_shapes`, mitcad#525).
+type DesignShapes<S> = (Vec<ImportBody<S>>, Vec<super::mounts::SourceMount>);

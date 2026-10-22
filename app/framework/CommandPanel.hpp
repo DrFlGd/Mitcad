@@ -8,6 +8,7 @@
 #include <QHash>
 #include <QPair>
 #include <QString>
+#include <QStringList>
 #include <QWidget>
 
 #include "CommandPresenter.hpp"
@@ -92,8 +93,10 @@ signals:
 protected:
   // The accent-coloured controls follow the palette.
   void changeEvent(QEvent* event) override;
-  // A value field taking the keyboard or losing it (mitcad#250).
+  // A value field taking the keyboard or losing it (mitcad#250); the
+  // panel, its fields or a widget it is in moving (mitcad#528).
   bool eventFilter(QObject* watched, QEvent* event) override;
+  void showEvent(QShowEvent* event) override;
 
 private:
   void applyControlStyles();
@@ -131,6 +134,12 @@ private:
                  const CommandState& state, const QString& list, int index);
   void refreshRows(const CommandState& state);
   void scheduleLogLayout();
+  // The lines logLayout logs: every input's place, OK's, the panel's width
+  // and what its page shows of it.
+  QStringList layoutLines() const;
+  // Logs the places again, a moment after the panel or what it is in moved,
+  // when they are not those logged last (mitcad#528).
+  void scheduleMovedCheck();
   // Logs the message's size and the panel's width once laid out, after the
   // message or a note changed, for UI tests (mitcad#198).
   void scheduleLogFit();
@@ -158,6 +167,9 @@ private:
   // The message's height when the rows' places were last logged: a message
   // that grows or shrinks moves them (UI tests click where they are logged).
   mutable int m_loggedMessageHeight = -1;
+  // The places logged last (mitcad#528) and the check after a move.
+  mutable QStringList m_loggedLines;
+  QTimer* m_movedTimer = nullptr;
 };
 
 } // namespace mitcad

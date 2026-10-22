@@ -72,6 +72,8 @@ pub mod drawing;
 // Gears: toothed profiles swept along their axis or ruled to an apex
 // (mitcad#472).
 pub mod gear;
+// Faces moved by a rigid motion (mitcad#343).
+pub mod move_faces;
 
 use std::sync::Arc;
 
@@ -2305,6 +2307,28 @@ impl Kernel for OcctKernel {
             half_angle: cone.half_angle,
             internal: cone.internal,
         })
+    }
+
+    // Faces moved by a rigid motion (mitcad#343; move_faces.rs).
+
+    fn move_faces(
+        &self,
+        feature: FeatureUid,
+        body: &Self::Shape,
+        faces: &[FaceName],
+        motion: &Transform,
+    ) -> Result<Self::Shape, KernelError> {
+        let affine = transform::ffi::Affine {
+            linear: std::array::from_fn(|i| motion.linear[i / 3][i % 3]),
+            translation: motion.translation,
+        };
+        move_faces::ffi::move_faces(
+            &feature.to_string(),
+            occt(body)?,
+            &face_names(faces),
+            &affine,
+        )
+        .map_err(failed)
     }
 }
 

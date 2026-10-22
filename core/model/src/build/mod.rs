@@ -64,7 +64,11 @@ mod cut_list_tests;
 #[cfg(test)]
 mod easy_tests;
 #[cfg(test)]
+mod face_start_tests;
+#[cfg(test)]
 mod fastener_tests;
+#[cfg(test)]
+mod frame_component_tests;
 #[cfg(test)]
 mod frame_tests;
 #[cfg(test)]
@@ -73,6 +77,8 @@ mod junction_tests;
 mod place_tests;
 #[cfg(test)]
 mod profiled_tests;
+#[cfg(test)]
+mod roof_fastener_tests;
 #[cfg(test)]
 mod side_end_tests;
 #[cfg(test)]
@@ -85,6 +91,8 @@ mod tilt_tests;
 mod timber_tests;
 #[cfg(test)]
 mod two_points_tests;
+#[cfg(test)]
+mod wall_bearing_tests;
 
 use std::fmt;
 use std::str::FromStr;

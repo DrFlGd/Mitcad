@@ -8,9 +8,12 @@
 #include <utility>
 
 #include <BRep_Builder.hxx>
+#include <BRep_CurveOnClosedSurface.hxx>
+#include <BRep_CurveOnSurface.hxx>
 #include <BRep_PointOnCurve.hxx>
 #include <BRep_PointOnCurveOnSurface.hxx>
 #include <BRep_PointOnSurface.hxx>
+#include <BRep_TEdge.hxx>
 #include <BRep_TVertex.hxx>
 #include <BRepGProp.hxx>
 #include <BRep_Tool.hxx>
@@ -18,8 +21,10 @@
 #include <Geom_Curve.hxx>
 #include <GProp_GProps.hxx>
 #include <Geom_Surface.hxx>
+#include <NCollection_IndexedMap.hxx>
 #include <NCollection_List.hxx>
 #include <TopLoc_Location.hxx>
+#include <TopTools_ShapeMapHasher.hxx>
 #include <TopoDS.hxx>
 #include <TopoDS_Iterator.hxx>
 #include <TopExp.hxx>
@@ -136,6 +141,27 @@ ShapePtr working_copy(const Shape& shape) {
     result->add_note(note);
   }
   return result;
+}
+
+void own_pcurves(const TopoDS_Shape& copy) {
+  NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> edges;
+  TopExp::MapShapes(copy, TopAbs_EDGE, edges);
+  for (int i = 1; i <= edges.Extent(); ++i) {
+    auto* edge = static_cast<BRep_TEdge*>(edges(i).TShape().get());
+    for (const occ::handle<BRep_CurveRepresentation>& curve : edge->ChangeCurves()) {
+      if (!curve->IsCurveOnSurface()) {
+        continue;
+      }
+      const auto on = occ::down_cast<BRep_CurveOnSurface>(curve);
+      if (!on.IsNull() && !on->PCurve().IsNull()) {
+        on->PCurve(occ::down_cast<Geom2d_Curve>(on->PCurve()->Copy()));
+      }
+      const auto closed = occ::down_cast<BRep_CurveOnClosedSurface>(curve);
+      if (!closed.IsNull() && !closed->PCurve2().IsNull()) {
+        closed->PCurve2(occ::down_cast<Geom2d_Curve>(closed->PCurve2()->Copy()));
+      }
+    }
+  }
 }
 
 FaceNamer::FaceNamer(TopoDS_Shape result) : m_result(std::move(result)) {

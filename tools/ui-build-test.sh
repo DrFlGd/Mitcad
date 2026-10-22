@@ -52,12 +52,15 @@
 #      PDF.
 #   8. The part picker (mitcad#418), with a 30 profile of another system
 #      in the library's next version: opened from Profile's Part tile
-#      (mitcad#427), a group, a search, a click choosing the 30 profile that
+#      (mitcad#427), the groups as a tree (mitcad#527: Slot profile with its
+#      Profiles, listing them, folded and unfolded by its arrow), a group,
+#      a search, a click choosing the 30 profile that
 #      the preview then uses, a star (first in its group), pinned it follows
 #      Connector, where a click chooses the bracket; Profile again starts
 #      with the 30 profile and opens the picker filtered to its system,
 #      Favourites has the starred profile, In this design lists it after
-#      its placement.
+#      its placement (on a plane; after Place nothing is previewed at the
+#      origin on top of it, the panel waits for a click, mitcad#513).
 #   9. The part a command starts with (mitcad#452), with a second 30
 #      profile of the same system in the library's next version, starred
 #      too: a new design starts with the first favourite (the picker's
@@ -161,8 +164,9 @@ cat > "$LIB/mitcad-library.json" <<EOF
   "format": "mitcad-library", "version": 1, "id": "test-profiles", "name": "Test profiles",
   "description": "Synthetic BUILD parts of the UI test.", "library_version": "1.0.0", "license": "MIT",
   "authors": ["Mitcad UI test"], "units": "mm",
-  "categories": [{"id": "profiles", "name": "Profiles"}, {"id": "connectors", "name": "Connectors"},
-                 {"id": "panels", "name": "Panels"}, {"id": "linear", "name": "Linear parts"}],
+  "categories": [{"id": "slot", "name": "Slot profile"}, {"id": "profiles", "name": "Profiles", "parent": "slot"},
+                 {"id": "connectors", "name": "Connectors", "parent": "slot"},
+                 {"id": "panels", "name": "Slot profile/Panels"}, {"id": "linear", "name": "Motion/Linear parts"}],
   "components": [
     {"id": "p20-test", "path": "profiles/p20-test.mitcad", "name": "Profile 20 test", "category": "profiles",
      "supplier": "Test supplier", "part_number": "P20-T", "designation": "Profile 20 test L={L}",
@@ -989,9 +993,32 @@ ui_expect_new "Part picker in this design: " "the design's library parts read"
 ui_expect_new "test-profiles/p20-test x" "the placed 20 profiles in this design, with their count"
 expect_picker_place "Part picker tile test-profiles/p30-test" "the tiles' places"
 ui_focus_dialog '^Part Picker - Profile$'
+# The groups as a tree (mitcad#527): Slot profile (a category the others
+# name as their parent) with its Profiles; a click on it lists its
+# subgroups' parts; folded, its subgroup's row has no place, and unfolded
+# it has one again.
+ui_expect_new "Part picker groups: " "the groups logged"
+GROUPS_TREE=$(grep "^Part picker groups: " "$UI_LOG" | tail -1)
+[[ $GROUPS_TREE == *"All parts, Slot profile, Slot profile/Profiles" ]] ||
+  ui_fail "the groups are '$GROUPS_TREE', not Slot profile with its Profiles"
+expect_picker_place "Part picker place group fold Slot profile" "the fold's place"
 ui_mark
-ui_step "the group Profiles"               ui_click_logged "Part picker group row Profiles"
-ui_expect_new "Part picker group Profiles: 2 parts" "the group of profiles"
+ui_step "the group Slot profile"           ui_click_logged "Part picker group row Slot profile"
+ui_expect_new "Part picker group Slot profile: 2 parts" "the main group lists its subgroup's profiles"
+ui_mark
+ui_step "fold Slot profile (its arrow)"    ui_click_logged "Part picker place group fold Slot profile"
+ui_expect_new "Part picker group Slot profile folded" "folded"
+ui_mark
+# The same place as the click before: apart from it (ui_apart), or Qt makes
+# the two a double-click, which the tree takes as no click on the arrow.
+ui_step "unfold it (its arrow)" \
+  eval 'ui_apart $(ui_logged_at "Part picker place group fold Slot profile");
+        ui_click_logged "Part picker place group fold Slot profile"'
+ui_expect_new "Part picker group Slot profile unfolded" "unfolded"
+expect_picker_place "Part picker group row Slot profile/Profiles" "its subgroup's row again"
+ui_mark
+ui_step "the group Profiles"               ui_click_logged "Part picker group row Slot profile/Profiles"
+ui_expect_new "Part picker group Slot profile/Profiles: 2 parts" "the group of profiles"
 # The first tile's place, where the 30 profile is to be once the search
 # leaves only it. The picker logs its places 150 ms after the tiles change,
 # after the sync key's answer (PartPicker::logPlacesLater): a line of the
@@ -1003,7 +1030,7 @@ FIRST_TILE=$(grep -F "Part picker tile test-profiles/p20-test at " "$UI_LOG" | t
 ui_mark
 ui_step "search p30 (Alt+S)"               eval 'ui_key alt+s; ui_sync; xdotool type --delay 40 "p30"'
 ui_expect_new "Part picker search 'p30'" "the picker's search"
-ui_expect_new "Part picker group Profiles: 1 parts, first test-profiles/p30-test" "only the 30 profile"
+ui_expect_new "Part picker group Slot profile/Profiles: 1 parts, first test-profiles/p30-test" "only the 30 profile"
 ui_expect_new "Part picker tile test-profiles/p30-test at $FIRST_TILE;" "its tile's place, the first"
 ui_mark
 ui_step "a click on the 30 profile"        ui_click_logged "Part picker tile test-profiles/p30-test"
@@ -1011,11 +1038,40 @@ ui_expect_new "Part picker chose test-profiles/p30-test" "chosen in the picker"
 expect_inspect "place grounded" "; part Profile 30 test" "the preview uses the chosen profile at once"
 ui_mark
 ui_step "clear the picker's search"        eval 'ui_key alt+s; ui_key ctrl+a; ui_key BackSpace'
-ui_expect_new "Part picker group Profiles: 2 parts" "both profiles again"
+ui_expect_new "Part picker group Slot profile/Profiles: 2 parts" "both profiles again"
+# A star changes only the star (mitcad#517): the tiles and the groups stay
+# where they are and the selection stays on the starred tile; the order
+# applies when the list is made again.
+ui_expect_new "Part picker tiles: " "the tiles' order logged"
+TILES_BEFORE=$(grep "^Part picker tiles: " "$UI_LOG" | tail -1 | sed 's/^Part picker tiles: //')
+GROUPS_BEFORE=$(grep "^Part picker groups: " "$UI_LOG" | tail -1 | sed 's/^Part picker groups: //')
+# The 20 profile (with its uses in the design) then the 30 profile.
+[[ $TILES_BEFORE == "test-profiles/p20-test"*", test-profiles/p30-test" ]] ||
+  ui_fail "the tiles before the star are '$TILES_BEFORE', not the 20 profile then the 30 profile"
 ui_mark
 ui_step "star it (Star)"                   ui_click_logged "Part picker place star"
 ui_expect_new "Part picker star p30-test on" "the 30 profile starred"
-ui_expect_new "Part picker group Profiles: 2 parts, first test-profiles/p30-test" "the starred profile first"
+ui_expect_new "Part picker tiles kept: $TILES_BEFORE; current test-profiles/p30-test" \
+  "the tiles stay in their places, the selection on the starred tile"
+ui_expect_new "Part picker groups kept: $GROUPS_BEFORE" "the groups stay in their places"
+tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -q "^Part picker group Slot profile/Profiles: " &&
+  ui_fail "a star made the tiles again"
+ui_mark
+ui_step "All parts (the group row)"        ui_click_logged "Part picker group row All parts"
+ui_expect_new "Part picker group All parts: " "another group"
+ui_mark
+ui_step "Profiles again (the group row)"   ui_click_logged "Part picker group row Slot profile/Profiles"
+ui_expect_new "Part picker group Slot profile/Profiles: 2 parts, first test-profiles/p30-test" "the starred profile first now"
+# A group's star changes only the star too: its row stays where it is.
+GROUPS_BEFORE=$(grep "^Part picker groups: " "$UI_LOG" | tail -1 | sed 's/^Part picker groups: //')
+ui_mark
+ui_step "star the group (its star)"        ui_click_logged "Part picker place group star Slot profile/Profiles"
+ui_expect_new "Part picker group star slot profile/profiles on" "the group Profiles starred"
+ui_expect_new "Part picker groups kept: $GROUPS_BEFORE" "the groups stay in their places"
+ui_mark
+ui_step "its star off again"               ui_click_logged "Part picker place group star Slot profile/Profiles"
+ui_expect_new "Part picker group star slot profile/profiles off" "the group's star off"
+ui_expect_new "Part picker groups kept: $GROUPS_BEFORE" "the groups stay in their places"
 ui_mark
 ui_step "pin the picker"                   ui_click_logged "Part picker place pin"
 ui_expect_new "Part picker pinned on" "pinned"
@@ -1063,6 +1119,17 @@ ui_focus_main
 ui_mark
 ui_step "Place (Enter)"                    ui_key Return
 ui_expect_new "Placed Profile 30 test as " "the 30 profile placed" 30
+# After Place no ghost (mitcad#513): Placement stays On a plane, but the
+# next one is not previewed at the origin on top of the one placed there;
+# the panel waits for a click.
+expect_inspect "failed: Click a plane or a face where the next one goes." "after Place the panel waits for a click"
+ui_expect_new "View hint Profile: Click a plane or a face for the next one" "the view asks for the next one's plane"
+sleep 1.5
+ui_sync
+! tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -q "^Inspect Profile: place grounded" ||
+  ui_fail "a profile previewed at the origin after Place: $(tail -n +$((UI_MARK + 1)) "$UI_LOG" |
+    grep "^Inspect Profile: place grounded" | head -1)"
+echo "ok   no profile previewed at the origin on top of the one placed"
 ui_expect_new "test-profiles/p30-test x1" "In this design has it after the placement"
 expect_picker_place "Part picker group row In this design" "the groups' places again"
 ui_focus_dialog '^Part Picker - Profile$'
@@ -1117,14 +1184,25 @@ ui_focus_dialog '^Part Picker - Profile$'
 ui_mark
 ui_step "the heavy profile"                ui_click_logged "Part picker tile test-profiles/p30h-test"
 ui_expect_new "Part picker chose test-profiles/p30h-test" "chosen in the picker"
+TILES_BEFORE=$(grep "^Part picker tiles: " "$UI_LOG" | tail -1 | sed 's/^Part picker tiles: //')
 ui_mark
 ui_step "star it (Star)"                   ui_click_logged "Part picker place star"
 ui_expect_new "Part picker star p30h-test on" "a second favourite"
-ui_expect_new "Part picker group All parts: 3 parts, first test-profiles/p30" "the favourites first"
+# The star changes only the star (mitcad#517): the tiles stay in their
+# places, the selection on the starred one; the favourites come first once
+# the list is made again (Favourites, then All parts).
+ui_expect_new "Part picker tiles kept: $TILES_BEFORE; current test-profiles/p30h-test" \
+  "the tiles stay where they are, the selection on the starred tile"
+ui_mark
+ui_step "Favourites (the group row)"       ui_click_logged "Part picker group row Favourites"
+ui_expect_new "Part picker group Favourites: 2 parts, first test-profiles/p30" "the two favourites"
 # The first favourite in the picker's order (the catalog's among the
 # starred), and the other one.
 FIRST=$(tail -n +$((UI_MARK + 1)) "$UI_LOG" |
-  sed -n 's/^Part picker group All parts: 3 parts, first test-profiles\/\(p30[a-z]*-test\)$/\1/p' | tail -1)
+  sed -n 's/^Part picker group Favourites: 2 parts, first test-profiles\/\(p30[a-z]*-test\)$/\1/p' | tail -1)
+ui_mark
+ui_step "All parts (the group row)"        ui_click_logged "Part picker group row All parts"
+ui_expect_new "Part picker group All parts: 3 parts, first test-profiles/$FIRST" "the favourites first"
 case $FIRST in
   p30-test) SECOND=p30h-test ;;
   p30h-test) SECOND=p30-test ;;

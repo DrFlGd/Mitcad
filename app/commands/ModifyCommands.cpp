@@ -22,6 +22,7 @@ void registerModifyCommands(CommandRegistry& registry, const CommandContext& con
   registry.add(splitFaceCommand(context));
   registry.add(splitBodyCommand(context));
   registry.add(moveCommand(context));
+  registry.add(moveFaceCommand(context)); // mitcad#531
   registry.add(alignCommand(context));
   registry.add(deleteFaceCommand(context));
   registry.add(materialCommand(context));

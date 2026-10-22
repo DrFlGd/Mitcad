@@ -60,6 +60,13 @@ private:
 // face, edge and vertex numbers.
 ShapePtr working_copy(const Shape& shape);
 
+// Gives the edges of a copy (InputCopy) curves on surfaces of their own.
+// The copy shares its source's p-curves, and shape healing moves p-curves
+// in place (a wire on a periodic surface by whole periods, ShapeFix_Face's
+// missing seam), which would move the source's too: an operation that
+// heals a copy calls this on it first (mitcad#343).
+void own_pcurves(const TopoDS_Shape& copy);
+
 class FaceNamer {
 public:
   explicit FaceNamer(TopoDS_Shape result);

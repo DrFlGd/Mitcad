@@ -1,0 +1,350 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: a rounding that vanishes at its spine's end vertex, where its
+faces come tangent, ends in a point there where its walk stopped short of
+the vertex on the spine's own edge (mitcad#343).
+
+The case: a bar's outline rounded with 0.3 along an edge between the bar's
+side plane and an earlier concave rounding; at the edge's end vertex V the
+earlier rounding goes on tangentially into a corner rounding tangent to the
+side plane, so that the edge's two faces come tangent at V and the blend
+vanishes there (V a tangency extremity of the spine). The stored faces
+meet only within the edge's tolerance (1.5e-3): a gap g between faces at
+an angle a moves the line where they meet sideways by g / a, and the ball's
+contacts, R a / 2 from that line, reach the edge itself where
+a^2 = 2 g / R. There the walk's contact on the earlier rounding met the
+spine's own edge 0.04 short of V (the section 0.011 wide) and the walk
+ended; the end was not taken as vanishing (that takes contacts within a
+hundredth of the radius of V), so the corner went to the intersection at
+the end, whose plate failed. The bodies stored in the files end the blend
+in a point at V.
+
+- ChFi3d_ContactOnOwnEdgeAtEnd (new): the end of a stripe whose contact
+  lies on the spine's own edge E into V (an edge of the spine between the
+  blend's two faces), its section no wider than sqrt(2 R tol(E)), both
+  contacts within the radius of V.
+- PerformFilletOnVertex: for a lone stripe ending at a tangency extremity
+  where that holds, ChFi3d_ShrinkVanishingEnd puts the end at V without
+  comparing the faces' normals (they are tangent at V; the walk only could
+  not get nearer). The blend left between the stop and V is narrower than
+  the last section, however long.
+- ChFi3d_ShrinkVanishingEnd, theBendSurface (new, for those ends): the
+  blend's B-spline surface is cut by a full knot at the same parameter as
+  its contact curves (their boundary isos) and its end row of poles put at
+  V, so that the surface ends in V with the curves; the curves' and the
+  end's tolerances are their sampled deviation from the surface and from
+  their faces, not the distance the end moved (which a check of the
+  vertices' tolerances took for a corner left open).
+
+On the design's stored body before the item (22 edges, four such ends):
+valid, the file's 174 faces, every face on the stored body's after the item
+within 0.004 mm both ways; before, one corner failed and each tangent chain
+alone gave an invalid shape. Synthetic: a tower's corner (radius 0.4) and
+foot (radius 3) rounded on a slab flush with its side; the side's edge with
+the foot's torus rounded with 0.3 up to the vertex where all three are
+tangent, the torus moved 0.0002 to 0.001 off the side within its edges'
+tolerance: valid, the blend ending in a point there, the material taken
+within 0.5 % of the exact body's; before, the fillet failed.
+
+Upstream: new.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.cxx
+index 03047af2..b80eff12 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.cxx
+@@ -24,6 +24,7 @@
+ #include <Geom_Surface.hxx>
+ #include <Geom_TrimmedCurve.hxx>
+ #include <Geom_BSplineCurve.hxx>
++#include <Geom_BSplineSurface.hxx>
+ #include <Geom2d_BSplineCurve.hxx>
+ #include <Geom2d_TrimmedCurve.hxx>
+ #include <GeomAPI_ProjectPointOnSurf.hxx>
+@@ -3480,6 +3481,82 @@ static bool ChFi3d_RolledIntoEndVertex(const TopOpeBRepDS_DataStructure&   DStr,
+   return false;
+ }
+ 
++//=======================================================================
++// function : ChFi3d_ContactOnOwnEdgeAtEnd
++// purpose  : Whether the walk of Fd stopped, at its end (its start with
++//           isfirst) short of the spine's end vertex Vtx, where a contact
++//           reached the spine's own edge E there (an edge of the spine
++//           between Fd's two faces, holding Vtx), its section no wider
++//           than theWidth and both contacts within theReach of Vtx. In an
++//           exact geometry a contact never reaches the edge between its
++//           two faces; it does where the faces come tangent, their gap
++//           within E's tolerance moving the line where they meet sideways
++//           by that gap over their angle: the blend between the stop and
++//           Vtx, narrower than its last section, vanishes at Vtx.
++//=======================================================================
++
++static bool ChFi3d_ContactOnOwnEdgeAtEnd(const TopOpeBRepDS_DataStructure&   DStr,
++                                         const occ::handle<ChFiDS_SurfData>& Fd,
++                                         const bool                          isfirst,
++                                         const TopoDS_Vertex&                Vtx,
++                                         const occ::handle<ChFiDS_Spine>&    Spine,
++                                         const ChFiDS_Map&                   EFMap,
++                                         const double                        theRadius,
++                                         const double                        theReach)
++{
++  if (Spine.IsNull() || Fd->Index(1) <= 0 || Fd->Index(2) <= 0)
++  {
++    return false;
++  }
++  const TopoDS_Shape& aS1 = DStr.Shape(Fd->Index(1));
++  const TopoDS_Shape& aS2 = DStr.Shape(Fd->Index(2));
++  if (aS1.IsNull() || aS2.IsNull() || aS1.ShapeType() != TopAbs_FACE || aS2.ShapeType() != TopAbs_FACE)
++  {
++    return false;
++  }
++  const gp_Pnt PV = BRep_Tool::Pnt(Vtx);
++  const gp_Pnt P1 = Fd->Vertex(isfirst, 1).Point();
++  const gp_Pnt P2 = Fd->Vertex(isfirst, 2).Point();
++  if (P1.Distance(PV) > theReach || P2.Distance(PV) > theReach)
++  {
++    return false;
++  }
++  for (int k = 1; k <= 2; k++)
++  {
++    const ChFiDS_CommonPoint& CP = Fd->Vertex(isfirst, k);
++    if (!CP.IsOnArc() || CP.IsVertex() || !EFMap.Contains(CP.Arc()))
++    {
++      continue;
++    }
++    const TopoDS_Edge& E = CP.Arc();
++    bool               isSpine = false;
++    for (int i = 1; i <= Spine->NbEdges() && !isSpine; i++)
++    {
++      isSpine = Spine->Edges(i).IsSame(E);
++    }
++    bool hasV = false;
++    for (TopExp_Explorer ex(E, TopAbs_VERTEX); ex.More() && !hasV; ex.Next())
++    {
++      hasV = ex.Current().IsSame(Vtx);
++    }
++    bool on1 = false, on2 = false;
++    for (const TopoDS_Shape& aFace : EFMap.FindFromKey(E))
++    {
++      on1 = on1 || aFace.IsSame(aS1);
++      on2 = on2 || aFace.IsSame(aS2);
++    }
++    // (The section's width where a gap of E's tolerance between faces at
++    // an angle a moves their meeting line by tol / a, which the contacts,
++    // R a / 2 from it, reach: a^2 = 2 tol / R, the width R a.)
++    const double aWidth = std::sqrt(2. * theRadius * BRep_Tool::Tolerance(E));
++    if (isSpine && hasV && on1 && on2 && P1.Distance(P2) <= aWidth)
++    {
++      return true;
++    }
++  }
++  return false;
++}
++
+ //=======================================================================
+ // function : ChFi3d_ShrinkVanishingEnd
+ // purpose  : A blend between two faces that come tangent at the vertex
+@@ -3503,6 +3580,12 @@ static bool ChFi3d_RolledIntoEndVertex(const TopOpeBRepDS_DataStructure&   DStr,
+ //           there narrower than a hundredth of the radius) the normals are
+ //           not compared: the faces are tangent at the vertex, the walk
+ //           only could not get nearer.
++//           With theBendSurface (an end left where a contact reached the
++//           spine's own edge, ChFi3d_ContactOnOwnEdgeAtEnd, up to the
++//           radius short of the vertex) the blend's surface is bent
++//           to the vertex as well, over the same last piece: its end section
++//           becomes the point at the vertex, so that the contact curves stay
++//           on it within their own deviation, not within the end's distance.
+ //=======================================================================
+ 
+ static bool ChFi3d_ShrinkVanishingEnd(TopOpeBRepDS_DataStructure&         DStr,
+@@ -3511,7 +3594,8 @@ static bool ChFi3d_ShrinkVanishingEnd(TopOpeBRepDS_DataStructure&         DStr,
+                                       const TopoDS_Vertex&                Vtx,
+                                       const double                        theMaxDist,
+                                       const bool                          theApply          = true,
+-                                      const bool                          theTangentFaceEnd = false)
++                                      const bool                          theTangentFaceEnd = false,
++                                      const bool                          theBendSurface    = false)
+ {
+   ChFiDS_CommonPoint& CV1 = Fd->ChangeVertex(isfirst, 1);
+   ChFiDS_CommonPoint& CV2 = Fd->ChangeVertex(isfirst, 2);
+@@ -3562,7 +3646,7 @@ static bool ChFi3d_ShrinkVanishingEnd(TopOpeBRepDS_DataStructure&         DStr,
+   {
+     return false;
+   }
+-  const double aTol = std::max(CV1.Point().Distance(PV), CV2.Point().Distance(PV));
++  double aTol = std::max(CV1.Point().Distance(PV), CV2.Point().Distance(PV));
+   // (The contact curves of a walked blend are B-splines.)
+   occ::handle<Geom_BSplineCurve>   aC3d[2];
+   int                              aPole3d[2] = {0, 0}, aPole2d[2] = {0, 0};
+@@ -3584,45 +3668,114 @@ static bool ChFi3d_ShrinkVanishingEnd(TopOpeBRepDS_DataStructure&         DStr,
+       return false;
+     }
+   }
++  // (The curves first cut, by full knots, a little before the end, where
++  // they are twice the end's distance from the vertex: the moved end pole
++  // bends only that last piece, not a whole span of the approximation,
++  // which on a face degenerate at the vertex, its parameters there those
++  // of the vertex on another edge, swept the p-curve across the face.)
++  double aCuts[2] = {0., 0.};
++  bool   aHasCut[2] = {false, false};
++  for (int k = 0; k < 2; k++)
++  {
++    const ChFiDS_FaceInterference& aFi = Fd->Interference(k + 1);
++    const double                   P   = aFi.Parameter(isfirst);
++    const double                   P0  = aFi.Parameter(!isfirst);
++    const gp_Pnt                   CE  = aC3d[k]->Value(P);
++    double                         lo = P, hi = P0;
++    if (aC3d[k]->Value(hi).Distance(CE) > 2. * aTol)
++    {
++      for (int it = 0; it < 60; it++)
++      {
++        const double m = 0.5 * (lo + hi);
++        (aC3d[k]->Value(m).Distance(CE) > 2. * aTol ? hi : lo) = m;
++      }
++      aCuts[k]   = 0.5 * (lo + hi);
++      aHasCut[k] = std::abs(aCuts[k] - P) > 10. * Precision::PConfusion();
++    }
++  }
++  // (Bent with the surface: the contact curves are the blend surface's
++  // boundary isos, in its parameter along the spine; all three are cut at
++  // the one of the two cuts farther from the end and end at the vertex.)
++  occ::handle<Geom_BSplineSurface> aSurf;
++  double                           aVEnd = 0.;
++  if (theBendSurface)
++  {
++    if (Fd->Surf() > 0)
++    {
++      aSurf = occ::down_cast<Geom_BSplineSurface>(DStr.Surface(Fd->Surf()).Surface());
++    }
++    if (aSurf.IsNull() || !aHasCut[0] || !aHasCut[1])
++    {
++      return false;
++    }
++    double aU0, aU1, aV0, aV1;
++    aSurf->Bounds(aU0, aU1, aV0, aV1);
++    aVEnd = isfirst ? aV0 : aV1;
++    for (int k = 0; k < 2; k++)
++    {
++      if (std::abs(Fd->Interference(k + 1).Parameter(isfirst) - aVEnd) > 10. * Precision::PConfusion())
++      {
++        return false;
++      }
++    }
++    if (!theApply)
++    {
++      return true;
++    }
++    const double aCut = isfirst ? std::max(aCuts[0], aCuts[1]) : std::min(aCuts[0], aCuts[1]);
++    aCuts[0] = aCuts[1] = aCut;
++    aSurf->InsertVKnot(aCut, aSurf->VDegree(), Precision::PConfusion(), true);
++    const int aRow = isfirst ? 1 : aSurf->NbVPoles();
++    for (int i = 1; i <= aSurf->NbUPoles(); i++)
++    {
++      aSurf->SetPole(i, aRow, PV);
++    }
++  }
+   if (!theApply)
+   {
+     return true;
+   }
++  double aDev = 0.;
+   for (int k = 0; k < 2; k++)
+   {
+     ChFiDS_FaceInterference& aFi   = Fd->ChangeInterference(k + 1);
+     const TopoDS_Face&       aFace = TopoDS::Face(DStr.Shape(Fd->Index(k + 1)));
+-    // (The curves first cut, by full knots, a little before the end, where
+-    // they are twice the end's distance from the vertex: the moved end pole
+-    // bends only that last piece, not a whole span of the approximation,
+-    // which on a face degenerate at the vertex, its parameters there those
+-    // of the vertex on another edge, swept the p-curve across the face.)
++    if (aHasCut[k])
+     {
+-      const double P  = aFi.Parameter(isfirst);
+-      const double P0 = aFi.Parameter(!isfirst);
+-      const gp_Pnt CE = aC3d[k]->Value(P);
+-      double       lo = P, hi = P0;
+-      if (aC3d[k]->Value(hi).Distance(CE) > 2. * aTol)
+-      {
+-        for (int it = 0; it < 60; it++)
+-        {
+-          const double m = 0.5 * (lo + hi);
+-          (aC3d[k]->Value(m).Distance(CE) > 2. * aTol ? hi : lo) = m;
+-        }
+-        const double aCut = 0.5 * (lo + hi);
+-        if (std::abs(aCut - P) > 10. * Precision::PConfusion())
+-        {
+-          aC3d[k]->InsertKnot(aCut, aC3d[k]->Degree());
+-          aC2d[k]->InsertKnot(aCut, aC2d[k]->Degree());
+-          aPole3d[k] = aPole3d[k] == 1 ? 1 : aC3d[k]->NbPoles();
+-          aPole2d[k] = aPole2d[k] == 1 ? 1 : aC2d[k]->NbPoles();
+-        }
+-      }
++      aC3d[k]->InsertKnot(aCuts[k], aC3d[k]->Degree());
++      aC2d[k]->InsertKnot(aCuts[k], aC2d[k]->Degree());
++      aPole3d[k] = aPole3d[k] == 1 ? 1 : aC3d[k]->NbPoles();
++      aPole2d[k] = aPole2d[k] == 1 ? 1 : aC2d[k]->NbPoles();
+     }
+     aC3d[k]->SetPole(aPole3d[k], PV);
+     aC2d[k]->SetPole(aPole2d[k], BRep_Tool::Parameters(Vtx, aFace));
+     TopOpeBRepDS_Curve& aCurve = DStr.ChangeCurve(aFi.LineIndex());
+-    aCurve.Tolerance(std::max(aCurve.Tolerance(), 1.01 * aTol));
++    if (aSurf.IsNull())
++    {
++      aCurve.Tolerance(std::max(aCurve.Tolerance(), 1.01 * aTol));
++      continue;
++    }
++    // The bent piece's deviation from the blend's boundary iso and from
++    // the face through the contact's p-curve on it.
++    BRepAdaptor_Surface aFS(aFace);
++    double              aU0, aU1, aV0, aV1;
++    aSurf->Bounds(aU0, aU1, aV0, aV1);
++    double aD = 0.;
++    for (int i = 0; i <= 20; i++)
++    {
++      const double   v  = aCuts[k] + (aVEnd - aCuts[k]) * i / 20.;
++      const gp_Pnt   C  = aC3d[k]->Value(v);
++      const gp_Pnt2d uv = aC2d[k]->Value(v);
++      aD                = std::max(aD,
++                    std::min(C.Distance(aSurf->Value(aU0, v)), C.Distance(aSurf->Value(aU1, v))));
++      aD                = std::max(aD, C.Distance(aFS.Value(uv.X(), uv.Y())));
++    }
++    aDev = std::max(aDev, aD);
++    aCurve.Tolerance(std::max(aCurve.Tolerance(), 1.01 * aD));
++  }
++  if (!aSurf.IsNull())
++  {
++    aTol = std::max(1.01 * aDev, Precision::Confusion());
+   }
+   for (ChFiDS_CommonPoint* aCV : {&CV1, &CV2})
+   {
+@@ -3712,13 +3865,29 @@ void ChFi3d_Builder::PerformFilletOnVertex(const int Index)
+                                                    0.02 * fsp->Radius(),
+                                                    0.01 * fsp->Radius()))
+             || ChFi3d_RolledIntoEndVertex(myDS->DS(), Fd, isfirst, Vtx, tolesp, 0.01 * fsp->Radius()));
++      // (Or within the radius where the walk stopped as a contact reached
++      // the spine's own edge into the vertex, the faces tangent there, the
++      // section no wider than their gap within that edge's tolerance
++      // explains: ChFi3d_ContactOnOwnEdgeAtEnd. The blend left between the
++      // stop and the vertex is narrower than that section, however long.)
++      const bool aOwnEdgeEnd = !aTangentFaceEnd && myVDataMap(Index).Extent() == 1
++                               && sp->IsTangencyExtremity(isfirst)
++                               && ChFi3d_ContactOnOwnEdgeAtEnd(myDS->DS(),
++                                                               Fd,
++                                                               isfirst,
++                                                               Vtx,
++                                                               sp,
++                                                               myEFMap,
++                                                               fsp->Radius(),
++                                                               fsp->Radius());
+       ChFi3d_ShrinkVanishingEnd(myDS->ChangeDS(),
+                                 Fd,
+                                 isfirst,
+                                 Vtx,
+-                                (aTangentFaceEnd ? 0.02 : 0.01) * fsp->Radius(),
++                                (aOwnEdgeEnd ? 1. : aTangentFaceEnd ? 0.02 : 0.01) * fsp->Radius(),
+                                 true,
+-                                aTangentFaceEnd);
++                                aTangentFaceEnd || aOwnEdgeEnd,
++                                aOwnEdgeEnd);
+     }
+     const ChFiDS_CommonPoint& CV1 = Fd->Vertex(isfirst, 1);
+     const ChFiDS_CommonPoint& CV2 = Fd->Vertex(isfirst, 2);

@@ -35,8 +35,14 @@ public:
   static void installIfRequested();
 
   // A timer whose timeout logs something UI tests read next: the sync waits
-  // while it runs.
+  // while it runs. Also kept while the in-process test driver runs
+  // (MITCAD_TEST_INPUT, macOS's ui-macos tests), for `settling`.
   static void watch(QTimer* timer);
+  // Whether a watched timer runs now: what it logs (a panel's places that
+  // moved, mitcad#528) is not logged yet. The in-process test driver waits
+  // for it before it clicks a logged place, as the Linux and Windows steps
+  // wait for the sync.
+  static bool settling();
 
   // As QTimer::singleShot(milliseconds, context, function), watched.
   template <typename Function>

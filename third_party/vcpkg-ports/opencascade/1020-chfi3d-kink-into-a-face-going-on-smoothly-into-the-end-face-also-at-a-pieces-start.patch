@@ -1,0 +1,319 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: a kink of a contact into a face that goes on smoothly into the
+face at the spine's end makes that face a face at the end, also where the
+next piece starts from the arc (mitcad#343).
+
+The case: a square peg hangs from a plate, its sides drafted by 3 degrees;
+4 below the plate it runs into a block whose walls go on straight down
+from the peg's sides there (concave creases of 3 degrees) and whose
+vertical corners an earlier rounding made cylinders of radius 0.4. The
+peg's sharp corners poke out of those cylinders down to 6.2355 below the
+plate, where the corner edges end on them. The four corner edges are
+rounded with 0.5. In the stored result the rounding ends at the creases:
+the block's walls and corner cylinders grow up to where they meet it (to
+3.841 and 3.447 below the plate), and the corner below goes. Before 0980
+the walls were taken for the sides continued (their normals within a
+tenth of a radian) and the ball rolled on down the block's corners, which
+it rounded with 0.5: the material taken 1.127 against the stored 0.932
+mm3. With 0980 both contacts reach their creases at one section and the
+ball turned about both creases' edges at once, and the fillet failed.
+
+The walls are faces at the end as KinkIntoEndFace has them (patch 0750: a
+contact's kink into a face at the spine's end, which cuts the blend), but
+they hold no vertex of the spine: they go on smoothly into the corner's
+cylinder, which holds the corner edge's end vertex.
+
+- KinkIntoEndFace: the face beyond the kink is a face at the end also
+  where it goes on smoothly (ChFi3d_SmoothIntoFace: the normals within the
+  angular tolerance all along an edge of both) into a face other than the
+  face before that holds the end vertex.
+- ChFi3d_KinkIntoEndFaceOfSpine: KinkIntoEndFace with 0980's rule that a
+  face of an edge of the spine is no face at the end, as ComputeData took
+  it where a walk ends on the arc. StartSol now takes its second kind as
+  well (the face beyond going on smoothly into a face at the end vertex,
+  holding no such vertex itself), where the next piece starts from the arc
+  of the piece before: the corner's analytic piece, a cylinder between the
+  planar sides, ends at the creases, and the walk from there to a corner
+  edge's first vertex started over them. The side returns as at an end
+  before a face at an angle, and the end is built as where a walk ends on
+  the arc. A face beyond that holds the end vertex itself is left to the
+  walk there, which runs on it up to the vertex: taken for a face at the
+  end in StartSol, a fin's top chain rounded over slight creases into its
+  end (0980's case) failed at its corner.
+
+On the design's replayed body before the item: valid, the material taken
+0.931662 against the stored 0.932227 mm3, every face of the result within
+1.4e-4 mm of the stored body after the item and the stored body's within
+8.2e-5 mm of the result. Synthetic: the peg on its plate and block, drafts
+of 3, 4 and 5 degrees, the corner edges either way along the corners:
+valid, the block's corner cylinders from its foot up past the creases, the
+material taken within 1e-3 mm3 of the peg rounded alone with the block
+carried on up into it; before, the fillet failed (with 0980) or rounded the
+block's corners (before 0980).
+
+Upstream: new.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+index 7ea438ae..d71cd1cd 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+@@ -135,6 +135,18 @@ static bool ChFi3d_ConcaveCreaseBeyond(const TopoDS_Edge& E,
+                                        const TopoDS_Face& F2,
+                                        const double       Ang);
+ 
++// (ChFi3d_Builder_6.cxx: a contact's kink across its arc into a face at the
++// spine's first or last end that cuts the blend.)
++bool ChFi3d_KinkIntoEndFaceOfSpine(const ChFiDS_CommonPoint&        CP,
++                                   const TopoDS_Face&               F,
++                                   const TopoDS_Face&               Fnext,
++                                   const occ::handle<ChFiDS_Spine>& Spine,
++                                   const bool                       isFirst,
++                                   const ChFiDS_Map&                VFMap,
++                                   const ChFiDS_Map&                EFMap,
++                                   const double                     Ang,
++                                   const bool                       SmoothOnly);
++
+ namespace
+ {
+ 
+@@ -3162,6 +3174,22 @@ bool ChFi3d_Builder::StartSol(
+     // chamfer's contact, at its distance along the face, passes the crease
+     // onto that face (a chamfer has no blend rolling on an edge).
+     bool aTangentNext = SearchFace(Spine, aCommonPoint, F, Fv);
++    // A face taken for tangent across a kink that goes on smoothly into a
++    // face at the end the walk goes to, holding neither the spine's vertex
++    // there nor an edge of the spine (ChFi3d_KinkIntoEndFaceOfSpine): the
++    // walk goes on as at an end before a face at an angle, and the faces
++    // there cut the blend (a drafted peg's corner rounded down from its
++    // analytic piece to the walls of a block whose rounded corner holds the
++    // vertex where the corner edge ends), as where a walk ends on the arc
++    // (ComputeData). A face beyond that holds the vertex itself is left to
++    // the walk, which runs on it up to the vertex (a fin's top chain rounded
++    // over slight creases into its end, 0980's case).
++    if (aTangentNext && !Fv.IsNull() && !Spine->IsPeriodic()
++        && ChFi3d_KinkIntoEndFaceOfSpine(aCommonPoint, F, Fv, Spine, isfirst, myVFMap, myEFMap, angular, true))
++    {
++      prepareDefaultReturn();
++      return false;
++    }
+     bool aCreaseTurn  = false;
+     if (aTangentNext && !aCommonPoint.IsVertex() && !Fv.IsNull() && !Fv.IsSame(F)
+         && occ::down_cast<ChFiDS_ChamfSpine>(Spine).IsNull()
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_6.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_6.cxx
+index e4ea0edd..90131633 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_6.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_6.cxx
+@@ -81,6 +81,9 @@
+ #include <TopOpeBRepDS_HDataStructure.hxx>
+ #include <TopOpeBRepDS_Surface.hxx>
+ #include <NCollection_List.hxx>
++#include <NCollection_IndexedMap.hxx>
++#include <TopExp_Explorer.hxx>
++#include <TopTools_ShapeMapHasher.hxx>
+ 
+ #include <cstdio>
+ 
+@@ -196,16 +199,81 @@ static bool IsVois(const TopoDS_Edge&                                      E,
+   return false;
+ }
+ 
++//=======================================================================
++// function : ChFi3d_SmoothIntoFace
++// purpose  : Whether face F goes on smoothly into face G across an edge of
++//            both: their normals (as the faces' orientations take them)
++//            within the angular tolerance Ang all along it.
++//=======================================================================
++
++static bool ChFi3d_SmoothIntoFace(const TopoDS_Face& F, const TopoDS_Face& G, const double Ang)
++{
++  NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> anEdgesOfG;
++  TopExp::MapShapes(G, TopAbs_EDGE, anEdgesOfG);
++  for (TopExp_Explorer ex(F, TopAbs_EDGE); ex.More(); ex.Next())
++  {
++    const TopoDS_Edge& E = TopoDS::Edge(ex.Current());
++    if (BRep_Tool::Degenerated(E) || !anEdgesOfG.Contains(E))
++    {
++      continue;
++    }
++    double                          aFirst = 0., aLast = 0.;
++    const occ::handle<Geom2d_Curve> aC1 = BRep_Tool::CurveOnSurface(E, F, aFirst, aLast);
++    const occ::handle<Geom2d_Curve> aC2 = BRep_Tool::CurveOnSurface(E, G, aFirst, aLast);
++    if (aC1.IsNull() || aC2.IsNull())
++    {
++      continue;
++    }
++    BRepAdaptor_Surface aS1(F, false), aS2(G, false);
++    bool                aSmooth = true;
++    for (int i = 0; i < 5 && aSmooth; i++)
++    {
++      const double   aT  = aFirst + (aLast - aFirst) * (i + 0.5) / 5.;
++      const gp_Pnt2d aP1 = aC1->Value(aT), aP2 = aC2->Value(aT);
++      gp_Pnt         aP;
++      gp_Vec         aDU, aDV;
++      aS1.D1(aP1.X(), aP1.Y(), aP, aDU, aDV);
++      gp_Vec aN1 = aDU.Crossed(aDV);
++      aS2.D1(aP2.X(), aP2.Y(), aP, aDU, aDV);
++      gp_Vec aN2 = aDU.Crossed(aDV);
++      if (aN1.SquareMagnitude() < 1.e-24 || aN2.SquareMagnitude() < 1.e-24)
++      {
++        aSmooth = false;
++        break;
++      }
++      if (F.Orientation() == TopAbs_REVERSED)
++      {
++        aN1.Reverse();
++      }
++      if (G.Orientation() == TopAbs_REVERSED)
++      {
++        aN2.Reverse();
++      }
++      aSmooth = aN1.Angle(aN2) <= Ang;
++    }
++    if (aSmooth)
++    {
++      return true;
++    }
++  }
++  return false;
++}
++
+ //=======================================================================
+ // function : KinkIntoEndFace
+ // purpose  : A contact that left face F across the arc of CP onto face
+ //            Fnext, which SearchFace takes for F continued (their normals
+ //            within its tangency check's tenth of a radian): Fnext holds
+-//            the vertex Vend at that end of the spine, and their normals
+-//            along the arc are nowhere within the angular tolerance Ang (a
+-//            kink of a degree, a thread's flank running into the chamfer
+-//            cone at its end). Fnext is then the face at the end, which cuts
+-//            the blend, not a face the ball rolls on.
++//            the vertex Vend at that end of the spine, or goes on smoothly
++//            (ChFi3d_SmoothIntoFace) into a face other than F that holds
++//            it, and their normals along the arc are nowhere within the
++//            angular tolerance Ang (a kink of a degree, a thread's flank
++//            running into the chamfer cone at its end; a peg's drafted
++//            side running into the wall of a block below, whose rounded
++//            corner holds the vertex where the peg's corner edge ends).
++//            Fnext is then a face at the end, which cuts the blend (with
++//            the faces it goes on into), not a face the ball rolls on.
++//            SmoothOnly: only the second kind, Fnext holding no Vend.
+ //=======================================================================
+ 
+ static bool KinkIntoEndFace(const ChFiDS_CommonPoint& CP,
+@@ -213,7 +281,8 @@ static bool KinkIntoEndFace(const ChFiDS_CommonPoint& CP,
+                             const TopoDS_Face&        Fnext,
+                             const TopoDS_Vertex&      Vend,
+                             const ChFiDS_Map&         VFMap,
+-                            const double              Ang)
++                            const double              Ang,
++                            const bool                SmoothOnly = false)
+ {
+   if (!CP.IsOnArc() || CP.IsVertex() || F.IsNull() || Fnext.IsNull() || Fnext.IsSame(F) || Vend.IsNull()
+       || !VFMap.Contains(Vend))
+@@ -225,6 +294,15 @@ static bool KinkIntoEndFace(const ChFiDS_CommonPoint& CP,
+   {
+     atEnd = atEnd || aFace.IsSame(Fnext);
+   }
++  if (SmoothOnly && atEnd)
++  {
++    return false;
++  }
++  for (NCollection_List<TopoDS_Shape>::Iterator it(VFMap.FindFromKey(Vend)); it.More() && !atEnd; it.Next())
++  {
++    const TopoDS_Face& aFace = TopoDS::Face(it.Value());
++    atEnd = !aFace.IsSame(F) && ChFi3d_SmoothIntoFace(Fnext, aFace, Ang);
++  }
+   if (!atEnd)
+   {
+     return false;
+@@ -268,6 +346,55 @@ static bool KinkIntoEndFace(const ChFiDS_CommonPoint& CP,
+   return true;
+ }
+ 
++//=======================================================================
++// function : ChFi3d_KinkIntoEndFaceOfSpine
++// purpose  : KinkIntoEndFace at the spine's first end (isFirst) or its
++//            last, Fnext no face of an edge of the spine (else the blend
++//            goes on along it, the spine's end vertex lying on it further
++//            on, past more of its edges). Used where a walk ends on the arc
++//            (ComputeData) and, SmoothOnly, where the next piece starts
++//            from it (StartSol, at the end of the piece before).
++//=======================================================================
++
++bool ChFi3d_KinkIntoEndFaceOfSpine(const ChFiDS_CommonPoint&        CP,
++                                   const TopoDS_Face&               F,
++                                   const TopoDS_Face&               Fnext,
++                                   const occ::handle<ChFiDS_Spine>& Spine,
++                                   const bool                       isFirst,
++                                   const ChFiDS_Map&                VFMap,
++                                   const ChFiDS_Map&                EFMap,
++                                   const double                     Ang,
++                                   const bool                       SmoothOnly)
++{
++  if (Spine.IsNull()
++      || !KinkIntoEndFace(CP,
++                          F,
++                          Fnext,
++                          isFirst ? Spine->FirstVertex() : Spine->LastVertex(),
++                          VFMap,
++                          Ang,
++                          SmoothOnly))
++  {
++    return false;
++  }
++  for (int i = 1; i <= Spine->NbEdges(); i++)
++  {
++    const TopoDS_Edge& E = Spine->Edges(i);
++    if (!EFMap.Contains(E))
++    {
++      continue;
++    }
++    for (const TopoDS_Shape& aFace : EFMap.FindFromKey(E))
++    {
++      if (aFace.IsSame(Fnext))
++      {
++        return false;
++      }
++    }
++  }
++  return true;
++}
++
+ //=======================================================================
+ // function : ChFi3d_OwnEdgeNearVertex
+ // purpose  : A contact on face F that ends on the spine's own edge E (an
+@@ -2329,32 +2456,7 @@ bool ChFi3d_Builder::ComputeData(occ::handle<ChFiDS_SurfData>&           Data,
+   // spine's end vertex lying on it further on, past more of its edges.)
+   const auto aKinkIntoEndFace =
+     [&](const ChFiDS_CommonPoint& CP, const TopoDS_Face& F, const TopoDS_Face& Fnext, const bool isFirst) {
+-      if (Spine.IsNull()
+-          || !KinkIntoEndFace(CP,
+-                              F,
+-                              Fnext,
+-                              isFirst ? Spine->FirstVertex() : Spine->LastVertex(),
+-                              myVFMap,
+-                              angular))
+-      {
+-        return false;
+-      }
+-      for (int i = 1; i <= Spine->NbEdges(); i++)
+-      {
+-        const TopoDS_Edge& E = Spine->Edges(i);
+-        if (!myEFMap.Contains(E))
+-        {
+-          continue;
+-        }
+-        for (const TopoDS_Shape& aFace : myEFMap.FindFromKey(E))
+-        {
+-          if (aFace.IsSame(Fnext))
+-          {
+-            return false;
+-          }
+-        }
+-      }
+-      return true;
++      return ChFi3d_KinkIntoEndFaceOfSpine(CP, F, Fnext, Spine, isFirst, myVFMap, myEFMap, angular, false);
+     };
+   // Get offset guide if exists
+   occ::handle<ChFiDS_ElSpine> OffsetHGuide;

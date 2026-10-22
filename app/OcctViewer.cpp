@@ -461,6 +461,8 @@ constexpr float kWholeTransparency = 0.55f;
 // A plane picked as a reference: light, so that the plane a construction
 // feature makes stands out over it (mitcad#446).
 constexpr float kPickedPlaneTransparency = 0.8f;
+// The occurrences a selected joint joins (mitcad#523): a faint tint.
+constexpr float kLightTransparency = 0.82f;
 constexpr float kDatumPreviewTransparency = 0.2f;
 // OCCT's own selection highlight; the selections shown are setHighlights'.
 const Quantity_Color kSelectedColor(0x1f / 255.0, 0x7a / 255.0, 0xff / 255.0, Quantity_TOC_sRGB);
@@ -1223,10 +1225,13 @@ void OcctViewer::setBodies(const std::vector<BodyDisplay>& bodies) {
   // Bodies kept as they are drawn whose other parameters changed (what the
   // rendered view shows, mitcad#46).
   int restyled = 0;
-  // Bodies coming into an empty view are fitted into it (a design opened),
-  // but not the new bodies a command previews: the view would move under
-  // the items still to be picked (mitcad#467). The body the command then
-  // makes replaces its preview, so the view stays as the user had it.
+  // A design's first bodies coming into an empty view are fitted into it
+  // (a design opened, a new design's first body), but not the new bodies a
+  // command previews: the view would move under the items still to be
+  // picked (mitcad#467). The body the command then makes replaces its
+  // preview, so the view stays as the user had it. Once per design
+  // (FirstBodiesFit): bodies shown again after the user hid every one stay
+  // where the view has them.
   const auto designBodies = [](const std::map<std::string, BodyEntry>& entries) {
     return std::any_of(entries.begin(), entries.end(),
                        [](const auto& entry) { return entry.second.style != BodyDisplay::Style::New; });
@@ -1296,7 +1301,7 @@ void OcctViewer::setBodies(const std::vector<BodyDisplay>& bodies) {
   }
   const bool changed = shown > 0 || restyled > 0 || !m_bodies.empty();
   m_bodies = std::move(kept);
-  if (wasEmpty && designBodies(m_bodies)) {
+  if (m_firstFit.shown(wasEmpty, designBodies(m_bodies))) {
     m_fitPending = true;
   }
   logInactiveGhosts();
@@ -2061,14 +2066,15 @@ void OcctViewer::setHighlights(const std::vector<HighlightDisplay>& highlights) 
       object->SetMaterial(flatMaterial(0.0f));
       const bool whole =
           highlight.item.kind == SelectKind::Body || highlight.item.kind == SelectKind::Component;
-      object->SetTransparency(whole ? kWholeTransparency
+      object->SetTransparency(highlight.light ? kLightTransparency
+                              : whole         ? kWholeTransparency
                               : highlight.item.kind == SelectKind::Plane ? kPickedPlaneTransparency
                                                                          : kSelectedTransparency);
       // Drawn just in front of the face it covers.
       object->Attributes()->ShadingAspect()->Aspect()->SetPolygonOffsets(Aspect_POM_Fill, -1.0f,
                                                                          -4.0f);
       const occ::handle<Prs3d_Drawer>& drawer = object->Attributes();
-      drawer->SetFaceBoundaryDraw(true);
+      drawer->SetFaceBoundaryDraw(!highlight.light);
       drawer->SetFaceBoundaryAspect(new Prs3d_LineAspect(color, Aspect_TOL_SOLID, 2.0));
       mode = AIS_Shaded;
       break;
@@ -2085,8 +2091,9 @@ void OcctViewer::setHighlights(const std::vector<HighlightDisplay>& highlights) 
     PickInfo info;
     info.item = highlight.item;
     info.highlight = true;
-    display(object, mode, std::move(info), true);
-    m_context->SetZLayer(object, Graphic3d_ZLayerId_Top);
+    display(object, mode, std::move(info), highlight.pickable);
+    // A light tint stays with the bodies, under the highlights on top.
+    m_context->SetZLayer(object, highlight.light ? Graphic3d_ZLayerId_Default : Graphic3d_ZLayerId_Top);
     m_highlights.push_back(object);
   }
   const QString logged = bodies.isEmpty() ? QStringLiteral("none") : bodies.join(QStringLiteral(", "));

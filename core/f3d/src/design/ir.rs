@@ -501,6 +501,8 @@ pub enum Detail {
     ConstructionAxis(Box<ConstructionAxisDetail>),
     // Emboss (mitcad#458).
     Emboss(Box<EmbossDetail>),
+    // Moved faces (mitcad#343).
+    MoveFace(Box<MoveFaceDetail>),
     /// Any other type (or an unknown one): the JSON object as is.
     Other(Map<String, Value>),
 }
@@ -543,6 +545,7 @@ impl Detail {
                 Detail::ConstructionAxis(Box::new(ConstructionAxisDetail::from_map(map)))
             }
             Some("EmbossFeature") => Detail::Emboss(Box::new(EmbossDetail::from_map(map))),
+            Some("MoveFaceFeature") => Detail::MoveFace(Box::new(MoveFaceDetail::from_map(map))),
             _ => Detail::Other(map),
         }
     }
@@ -1732,5 +1735,14 @@ record! {
         "horizontalDistance" => horizontal_distance: Reference,
         "verticalDistance" => vertical_distance: Reference,
         "rotationAngle" => rotation_angle: Reference,
+    }
+}
+
+record! {
+    /// `MoveFaceFeature` detail (mitcad#343): the moved faces; the motion,
+    /// a rigid 4x4 matrix (row-major, cm) as a move's `transform`, stays in
+    /// `other` under `transform`.
+    pub struct MoveFaceDetail {
+        "faces" => faces: Vec<Reference>,
     }
 }

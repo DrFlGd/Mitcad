@@ -398,12 +398,14 @@ pub(crate) fn evaluate_source<K: Kernel>(
     }
     let mut mounts = BTreeMap::new();
     for entry in &state.features {
-        let Some(name) = entry.name.strip_prefix("mount:") else {
+        // Named `mount:<name>`, or with a mount of its own (mitcad#525).
+        let FeatureDef::JointOrigin(def) = &entry.def else {
             continue;
         };
-        if !matches!(entry.def, FeatureDef::JointOrigin(_)) {
+        let Some(spec) = super::joint::mount_of(&entry.name, def) else {
             continue;
-        }
+        };
+        let name = spec.name.as_str();
         let Some(Datum::Plane(plane)) = result.datums.get(&entry.uid).map(|d| d.value) else {
             continue;
         };

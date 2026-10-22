@@ -27,6 +27,12 @@
 #      design lists the screw, a group (Screws), a search inside it, a star
 #      (the nut first in All parts), Favourites, a part inserted from
 #      there, and In this design after the placement.
+#   8. The groups as a tree (mitcad#527): two more libraries, one's Wood
+#      (a parent by id) and the other's Wood/Sheets one group listing both
+#      libraries' parts, a screw in two groups (Slot profile/Screws and
+#      General fasteners/Screws, beside the ISO screw) and once in
+#      Favourites, Wood folded and still folded when the browser opens
+#      again, then unfolded.
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
 # Usage: tools/ui-library-test.sh
@@ -155,7 +161,7 @@ ui_expect_new "Library browser selected mitcad-parts/iso4762: version v1.0.0 (" 
 ui_step "Insert (Alt+I)"                   ui_key alt+i
 ui_focus_main
 ui_expect_new "Inserted component ISO 4762 M5x16 (linked) from mitcad-parts v1.0.0 (" "the screw inserted, linked"
-ui_expect_volume "New body ISO 4762 M5x16 ([^)]*): volume \([0-9.]*\) mm3" 563.2433357349299 "the screw at v1.0.0"
+ui_expect_volume "New body ISO 4762 M5x16 ([^)]*): volume \([0-9.]*\) mm3" 560.1463214427537 "the screw at v1.0.0"
 ui_mark
 ui_step "Insert from Library again"        ui_command "Insert from Library"
 ui_focus_dialog '^Insert from Library$'
@@ -181,7 +187,7 @@ ui_expect_new "M5x16: dk 8.5 mm -> 8.7 mm" "the wider head"
 ui_step "Update (Alt+U)"                   ui_key alt+u
 ui_focus_main
 ui_expect_new "Updated library parts: ISO 4762 M5x16: version v1.0.0 (" "updated"
-ui_expect_volume "Body ISO 4762 M5x16 ([^)]*): volume 563.243 -> \([0-9.]*\) mm3" 576.752184145366 "the screw at v1.1.0"
+ui_expect_volume "Body ISO 4762 M5x16 ([^)]*): volume 560.146 -> \([0-9.]*\) mm3" 573.55034687 "the screw at v1.1.0"
 ui_mark
 ui_step "Library Parts again"              ui_command "Library Parts"
 ui_focus_dialog '^Library Parts$'
@@ -191,7 +197,7 @@ ui_expect_new "Library size M6x20" "the size chosen"
 ui_step "Update (Alt+U)"                   ui_key alt+u
 ui_focus_main
 ui_expect_new "Updated library parts: ISO 4762 M5x16: size M5x16 -> M6x20" "another size"
-ui_expect_volume "ISO 4762 M6x20 ([^)]*): volume [0-9.]* -> \([0-9.]*\) mm3" 971.7736704007988 "the M6x20 screw"
+ui_expect_volume "ISO 4762 M6x20 ([^)]*): volume [0-9.]* -> \([0-9.]*\) mm3" 966.3332369294 "the M6x20 screw"
 ui_mark
 ui_step "Library Parts: the parts list"    ui_command "Library Parts"
 ui_focus_dialog '^Library Parts$'
@@ -268,27 +274,29 @@ ui_expect_new "Part picker opened: " "the results as the picker's grid"
 ui_expect_new "Part picker in this design: " "the design's library parts read"
 ui_expect_new "mitcad-parts/iso4762 x1" "the inserted screw in this design, once"
 ui_mark
-ui_step "the group Screws (Alt+O, S)"      eval 'ui_key alt+o; ui_sync; xdotool type --delay 40 "S"'
-ui_expect_new "Part picker group Screws: 1 parts, first mitcad-parts/iso4762" "only the screws"
+ui_step "the group Screws (Alt+O, S)"      eval 'ui_key alt+o; ui_sync; ui_type_ahead "S"'
+ui_expect_new "Part picker group General fasteners/Screws: 1 parts, first mitcad-parts/iso4762" "only the screws"
 ui_mark
 ui_step "search 4032 in Screws"            eval 'ui_key alt+s; ui_sync; xdotool type --delay 40 "4032"'
 ui_expect_new "Library search '4032': 1 components" "the search"
-ui_expect_new "Part picker group Screws: 0 parts, first -" "the nut is not a screw"
+ui_expect_new "Part picker group General fasteners/Screws: 0 parts, first -" "the nut is not a screw"
 ui_step "clear the search"                 eval 'ui_key ctrl+a; ui_key BackSpace'
 ui_mark
-ui_step "All parts (Alt+O, A)"             eval 'ui_key alt+o; ui_sync; xdotool type --delay 40 "A"'
+ui_step "All parts (Alt+O, A)"             eval 'ui_key alt+o; ui_sync; ui_type_ahead "A"'
 ui_expect_new "Part picker group All parts: " "every part"
 ui_step "search hexagon nut"               eval 'ui_key alt+s; ui_sync; xdotool type --delay 40 "hexagon nut"'
 ui_expect_new "Library browser selected mitcad-parts/iso4032: version " "the nut chosen in the grid"
 ui_mark
 ui_step "star it (Ctrl+D)"                 ui_key ctrl+d
 ui_expect_new "Part picker star iso4032 on" "the nut starred"
+ui_expect_new "Part picker tiles kept: " "a star changes only the star: the tiles stay (mitcad#517)"
+ui_expect_new "; current mitcad-parts/iso4032" "the selection stays on the starred nut"
 ui_mark
 ui_step "clear the search"                 eval 'ui_key ctrl+a; ui_key BackSpace'
 ui_expect_new "Library search '': " "every part again"
 ui_expect_new "first mitcad-parts/iso4032" "the starred nut first"
 ui_mark
-ui_step "Favourites (Alt+O, F)"            eval 'ui_key alt+o; ui_sync; xdotool type --delay 40 "F"'
+ui_step "Favourites (Alt+O, F)"            eval 'ui_key alt+o; ui_sync; ui_type_ahead "F"'
 ui_expect_new "Part picker group Favourites: 1 parts, first mitcad-parts/iso4032" "Favourites has the nut"
 ui_step "Insert (Alt+I)"                   ui_key alt+i
 ui_focus_main
@@ -300,8 +308,117 @@ ui_step "Insert from Library again"        ui_command "Insert from Library"
 ui_focus_dialog '^Insert from Library$'
 ui_expect_new "mitcad-parts/iso4032 x2" "the nut in this design after the placement: the copy and this one"
 ui_mark
-ui_step "In this design (Alt+O, I)"        eval 'ui_key alt+o; ui_sync; xdotool type --delay 40 "I"'
+ui_step "In this design (Alt+O, I)"        eval 'ui_key alt+o; ui_sync; ui_type_ahead "I"'
 ui_expect_new "Part picker group In this design: " "the design's parts as a group"
+ui_step "close (Escape)"                   ui_key Escape
+ui_focus_main
+
+echo "--- 8. The groups as a tree (mitcad#527)"
+# Two libraries more: Wood (a parent by id) with its Beams, and a screw
+# made for the slot in two groups, Slot profile/Screws and General
+# fasteners/Screws (the parts library's group of that name); the other's
+# Wood/Sheets in the same Wood.
+WOOD=$WORK/wood
+SHEETS=$WORK/sheets
+mkdir -p "$WOOD/beams" "$WOOD/slot-screws" "$SHEETS/sheets"
+cp "$ROOT/tools/cli/tests/v1_boss.mitcad" "$WOOD/beams/beam.mitcad"
+cp "$ROOT/tools/cli/tests/v1_boss.mitcad" "$WOOD/slot-screws/slot-screw.mitcad"
+cp "$ROOT/tools/cli/tests/v1_boss.mitcad" "$SHEETS/sheets/plywood.mitcad"
+cat > "$WOOD/mitcad-library.json" <<'EOF'
+{"format": "mitcad-library", "version": 1, "id": "test-wood", "name": "Test wood", "license": "MIT",
+ "categories": [{"id": "wood", "name": "Wood"}, {"id": "beams", "name": "Beams", "parent": "wood"},
+                {"id": "slot-screws", "name": "Slot profile/Screws"},
+                {"id": "general-screws", "name": "General fasteners/Screws"}],
+ "components": [
+   {"id": "beam", "path": "beams/beam.mitcad", "name": "Beam test", "category": "beams"},
+   {"id": "slot-screw", "path": "slot-screws/slot-screw.mitcad", "name": "Slot screw test",
+    "category": ["slot-screws", "general-screws"]}]}
+EOF
+cat > "$SHEETS/mitcad-library.json" <<'EOF'
+{"format": "mitcad-library", "version": 1, "id": "test-sheets", "name": "Test sheets", "license": "MIT",
+ "categories": [{"id": "sheets", "name": "Wood/Sheets"}],
+ "components": [{"id": "plywood", "path": "sheets/plywood.mitcad", "name": "Plywood test", "category": "sheets"}]}
+EOF
+for TREE_LIB in "$WOOD" "$SHEETS"; do
+  printf 'MIT\n' > "$TREE_LIB/LICENSE"
+  "$CLI" library check "$TREE_LIB" > /dev/null || ui_fail "the library $TREE_LIB has errors"
+  g "$TREE_LIB" init -q
+  g "$TREE_LIB" add -A
+  g "$TREE_LIB" commit -q -m "Parts"
+done
+ui_mark
+ui_step "Libraries (command search)"       ui_command "Libraries..."
+ui_focus_dialog '^Libraries$'
+for url in "$WOOD" "$SHEETS"; do
+  ui_step "Add URL (Alt+A)"                ui_key alt+a
+  ui_focus_dialog '^Add Library$'
+  ui_step "the URL"                        eval 'ui_type_text "$url"; ui_key Return'
+  ui_focus_dialog '^Libraries$'
+done
+ui_expect_new "Library source added: $SHEETS" "the two sources added"
+ui_step "close (Alt+C)"                    ui_key alt+c
+ui_focus_main
+ui_mark
+ui_step "Insert from Library (command search)" ui_command "Insert from Library"
+ui_focus_dialog '^Insert from Library$'
+ui_mark
+ui_step "Update (Alt+U)"                   ui_key alt+u
+ui_expect_new "Library fetched: library Test wood (test-wood) from $WOOD" "the wood library fetched" 30
+ui_expect_new "Library fetched: library Test sheets (test-sheets) from $SHEETS" "the sheets fetched" 30
+ui_expect_new "source(s): 1 failed" "only the broken source fails" 30
+ui_focus_dialog '^Fetch Libraries$'
+ui_step "close the warning (Return)"       ui_key Return
+ui_focus_dialog '^Insert from Library$'
+ui_expect_new ", Wood/Sheets" "the groups as a tree, the other library's Sheets in the same Wood"
+GROUPS_TREE=$(grep "^Part picker groups: " "$UI_LOG" | tail -1 | sed 's/^Part picker groups: //')
+for group in "Wood" "Wood/Beams" "Wood/Sheets" "Slot profile" "Slot profile/Screws" "General fasteners" \
+             "General fasteners/Screws" "General fasteners/Nuts"; do
+  [[ ", $GROUPS_TREE, " == *", $group, "* ]] || ui_fail "no group $group in '$GROUPS_TREE'"
+done
+echo "ok   the groups as a tree: $GROUPS_TREE"
+ui_mark
+ui_step "the group Wood (Alt+O, W)"        eval 'ui_key alt+o; ui_sync; ui_type_ahead "W"'
+ui_expect_new "Part picker group Wood: 2 parts" "Wood lists its subgroups' parts, of both libraries"
+ui_mark
+# Typed apart from the W above (ui_type_ahead): Qt would look for "WSlot".
+ui_step "Slot profile's Screws (Alt+O, Slot, Down)" \
+  eval 'ui_key alt+o; ui_sync; ui_type_ahead "Slot"; ui_sync; ui_key Down'
+ui_expect_new "Part picker group Slot profile/Screws: 1 parts, first test-wood/slot-screw" \
+  "the slot screw in Slot profile"
+ui_mark
+ui_step "General fasteners' Screws (Alt+O, General, Down)" \
+  eval 'ui_key alt+o; ui_sync; ui_type_ahead "General"; ui_sync; ui_key Down'
+ui_expect_new "Part picker group General fasteners/Screws: 2 parts" "the slot screw there too, beside the ISO screw"
+ui_mark
+ui_step "search slot screw"                eval 'ui_key alt+s; ui_sync; xdotool type --delay 40 "slot screw"'
+# Only the slot screw is left, current (the browser logs a selection only
+# when it changes: it may be current already); the star names it.
+ui_expect_new "Part picker group General fasteners/Screws: 1 parts, first test-wood/slot-screw" "the slot screw found"
+ui_mark
+ui_step "star it (Ctrl+D)"                 ui_key ctrl+d
+ui_expect_new "Part picker star slot-screw on" "the slot screw starred"
+ui_step "clear the search"                 eval 'ui_key ctrl+a; ui_key BackSpace'
+ui_mark
+ui_step "Favourites (Alt+O, F)"            eval 'ui_key alt+o; ui_sync; ui_type_ahead "F"'
+ui_expect_new "Part picker group Favourites: 2 parts" "the nut and the slot screw"
+TILES=$(grep "^Part picker tiles: " "$UI_LOG" | tail -1)
+[ "$(grep -o 'test-wood/slot-screw' <<< "$TILES" | wc -l)" -eq 1 ] ||
+  ui_fail "the slot screw is not in Favourites once: '$TILES'"
+echo "ok   a part in two groups is one tile in Favourites"
+ui_mark
+ui_step "fold Wood (Alt+O, W, Left)"       eval 'ui_key alt+o; ui_sync; ui_type_ahead "W"; ui_sync; ui_key Left'
+ui_expect_new "Part picker group Wood folded" "Wood folded"
+ui_step "close (Escape)"                   ui_key Escape
+ui_focus_main
+ui_mark
+ui_step "Insert from Library again"        ui_command "Insert from Library"
+ui_focus_dialog '^Insert from Library$'
+ui_expect_new "Wood (folded)" "the fold remembered"
+GROUPS_TREE=$(grep "^Part picker groups: " "$UI_LOG" | tail -1)
+[[ $GROUPS_TREE != *"Wood/Beams"* ]] || ui_fail "a folded group's subgroups are shown: '$GROUPS_TREE'"
+ui_mark
+ui_step "unfold it (Alt+O, W, Right)"      eval 'ui_key alt+o; ui_sync; ui_type_ahead "W"; ui_sync; ui_key Right'
+ui_expect_new "Part picker group Wood unfolded" "Wood unfolded"
 ui_step "close (Escape)"                   ui_key Escape
 ui_focus_main
 

@@ -552,6 +552,10 @@ pub struct JointOriginDef<P = ParamId> {
     /// Turns the frame over (half a turn about its x axis).
     #[serde(default, skip_serializing_if = "is_false")]
     pub flip: bool,
+    /// The frame is a mount frame of the part (mitcad#525): where it
+    /// mounts on another part, or where others mount on it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mount: Option<MountSpec>,
 }
 
 impl<P> JointOriginDef<P> {
@@ -568,8 +572,177 @@ impl<P> JointOriginDef<P> {
             offset: map_option("offset", &self.offset, f)?,
             angle: map_option("angle", &self.angle, f)?,
             flip: self.flip,
+            mount: self.mount.clone(),
         })
     }
+}
+
+// Mount frames (mitcad#525).
+
+/// The prefix of a mount frame's joint origin named after it, as BUILD's
+/// parts name theirs (`mount:slot_x+_1`, mitcad#375).
+pub const MOUNT_PREFIX: &str = "mount:";
+
+/// What a mount frame is for (`docs/libraries.md`, *Mount frames*).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MountKind {
+    /// The part lies on a planar face: z out of the part, towards the face.
+    #[default]
+    Face,
+    /// The part's hole goes onto a shaft or a pin: on its axis, z along it.
+    Hole,
+    /// The part (a screw, a pin) goes into a hole: on its axis at the face
+    /// that bears on the hole's rim, z along the shank towards its tip.
+    Shaft,
+    /// Other parts stand on its cells (a baseplate): `pitch` and `cells`,
+    /// the cells along +x and +y from the origin, z out of the part.
+    Grid,
+    /// The part stands on a grid's cells (a bin): `footprint` in cells, the
+    /// origin in the middle of the footprint, z out of the part.
+    Foot,
+}
+
+impl MountKind {
+    pub const ALL: [Self; 5] = [Self::Face, Self::Hole, Self::Shaft, Self::Grid, Self::Foot];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Face => "face",
+            Self::Hole => "hole",
+            Self::Shaft => "shaft",
+            Self::Grid => "grid",
+            Self::Foot => "foot",
+        }
+    }
+
+    /// The joint kinds a frame of this kind may ask for: how the part may
+    /// move once placed.
+    pub fn joints(self) -> &'static [JointKind] {
+        match self {
+            Self::Face => &[JointKind::Rigid, JointKind::Planar, JointKind::Revolute],
+            Self::Hole | Self::Shaft => &[
+                JointKind::Rigid,
+                JointKind::Revolute,
+                JointKind::Cylindrical,
+                JointKind::Slider,
+            ],
+            Self::Grid | Self::Foot => &[JointKind::Rigid],
+        }
+    }
+}
+
+fn rigid() -> JointKind {
+    JointKind::Rigid
+}
+
+fn is_rigid(kind: &JointKind) -> bool {
+    *kind == JointKind::Rigid
+}
+
+/// A joint origin's mount frame: its name, its kind, the joint a placement
+/// on it makes and, for grids and feet, their cells.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MountSpec {
+    /// Letters, digits, `_`, `-`, `+` and `.` (as BUILD's frames).
+    pub name: String,
+    #[serde(default)]
+    pub kind: MountKind,
+    /// How the placed part may move: `rigid` (fixed), `planar` (free on the
+    /// face), `revolute` (turns), ...
+    #[serde(default = "rigid", skip_serializing_if = "is_rigid")]
+    pub joint: JointKind,
+    /// A grid's (or a foot's) cell size along the frame's x and y, mm.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pitch: Option<[f64; 2]>,
+    /// A grid's number of cells along x and y.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cells: Option<[u32; 2]>,
+    /// A foot's size in cells along its x and y.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub footprint: Option<[u32; 2]>,
+}
+
+/// Whether `name` can name a mount frame: 1 to 64 of letters, digits, `_`,
+/// `-`, `+` and `.`.
+pub fn valid_mount_name(name: &str) -> bool {
+    (1..=64).contains(&name.len())
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'+' | b'.'))
+}
+
+impl MountSpec {
+    /// A frame of `kind` named `name`, fixed once placed.
+    pub fn new(name: &str, kind: MountKind) -> Self {
+        Self {
+            name: name.to_owned(),
+            kind,
+            joint: JointKind::Rigid,
+            pitch: None,
+            cells: None,
+            footprint: None,
+        }
+    }
+
+    /// What is wrong with it, by itself.
+    pub fn check(&self) -> Result<(), String> {
+        if !valid_mount_name(&self.name) {
+            return Err(format!(
+                "'{}' is no mount frame name (1 to 64 of letters, digits, _ - + .)",
+                self.name
+            ));
+        }
+        let kind = self.kind.as_str();
+        if !self.kind.joints().contains(&self.joint) {
+            let allowed: Vec<&str> = self.kind.joints().iter().map(|j| j.as_str()).collect();
+            return Err(format!(
+                "a {kind} frame's joint is {}, not {}",
+                allowed.join(", "),
+                self.joint
+            ));
+        }
+        if let Some(pitch) = self.pitch {
+            if !matches!(self.kind, MountKind::Grid | MountKind::Foot) {
+                return Err(format!(
+                    "a {kind} frame has no pitch (a grid's or a foot's)"
+                ));
+            }
+            if !pitch.iter().all(|p| p.is_finite() && *p > 0.0) {
+                return Err("the pitch is two lengths above 0".to_owned());
+            }
+        }
+        match (self.kind, self.cells) {
+            (MountKind::Grid, Some(cells)) if cells.contains(&0) => {
+                return Err("a grid has at least one cell each way".to_owned());
+            }
+            (MountKind::Grid, None) => return Err("a grid gives its cells".to_owned()),
+            (MountKind::Grid, Some(_)) | (_, None) => {}
+            (_, Some(_)) => return Err(format!("a {kind} frame has no cells (a grid's)")),
+        }
+        if self.kind == MountKind::Grid && self.pitch.is_none() {
+            return Err("a grid gives its pitch".to_owned());
+        }
+        match (self.kind, self.footprint) {
+            (MountKind::Foot, Some(footprint)) if footprint.contains(&0) => {
+                Err("a foot covers at least one cell each way".to_owned())
+            }
+            (MountKind::Foot, None) => Err("a foot gives its footprint in cells".to_owned()),
+            (MountKind::Foot, Some(_)) | (_, None) => Ok(()),
+            (_, Some(_)) => Err(format!("a {kind} frame has no footprint (a foot's)")),
+        }
+    }
+}
+
+/// The mount frame a joint origin is: its own `mount`, else, when it is
+/// named `mount:<name>` (BUILD's parts), a face frame of that name.
+pub fn mount_of<P>(feature_name: &str, def: &JointOriginDef<P>) -> Option<MountSpec> {
+    if let Some(spec) = &def.mount {
+        return Some(spec.clone());
+    }
+    let name = feature_name.strip_prefix(MOUNT_PREFIX)?;
+    valid_mount_name(name).then(|| MountSpec::new(name, MountKind::Face))
 }
 
 impl FeatureInfo for JointOriginDef {
@@ -583,6 +756,9 @@ impl FeatureInfo for JointOriginDef {
         check_geometry(ctx, &self.geometry)?;
         if let Some(o) = &self.frame_override {
             o.check()?;
+        }
+        if let Some(mount) = &self.mount {
+            mount.check().map_err(|e| format!("mount: {e}"))?;
         }
         Ok(())
     }

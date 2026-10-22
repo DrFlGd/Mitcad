@@ -848,6 +848,16 @@ impl Kernel for TestKernel {
         self.mock.offset_faces(feature, body, faces, distance)
     }
 
+    fn move_faces(
+        &self,
+        feature: FeatureUid,
+        body: &MockShape,
+        faces: &[mitcad_model::FaceName],
+        motion: &mitcad_model::Transform,
+    ) -> Result<MockShape, KernelError> {
+        self.mock.move_faces(feature, body, faces, motion)
+    }
+
     fn face_cylinder(
         &self,
         shape: &MockShape,
@@ -10578,3 +10588,87 @@ fn an_emboss_comes_in_on_its_face() {
 
 // Components' part numbers and descriptions as properties (mitcad#496).
 mod property_tests;
+
+#[test]
+fn moved_faces_come_in_as_a_move_face() {
+    let kernel = || TestKernel {
+        face_listing: true,
+        ..TestKernel::default()
+    };
+    let base = vec![
+        rectangle_sketch(0),
+        extrude(1, 0, "NewBodyFeatureOperation", "d2"),
+    ];
+    let mut reference = Document::new(kernel());
+    import_design(
+        &mut reference,
+        &timeline_dump(base.clone()),
+        &mut NoGeometry,
+        &Options::default(),
+    );
+    let top = reference.bodies()[0]
+        .shape
+        .faces
+        .iter()
+        .find(|f| f.role == "end")
+        .cloned()
+        .expect("a top face");
+    let point = face_point(&top).map(|x| x / 10.0);
+    // The top moved up 0.5 cm, as the decoder gives it (the matrix in cm).
+    let moved = |transform: Value| {
+        let mut detail = json!({"faces": [{"kind": "face", "objectType": "BRepFace",
+            "geometry": {"type": "Plane"}, "point_on_face": point,
+            "_f3d": {"recipe": "bounded_face"}}]});
+        if !transform.is_null() {
+            detail["transform"] = transform;
+        }
+        json!({"index": 2, "name": "MoveFace1", "objectType": "MoveFaceFeature",
+               "detail": detail})
+    };
+    let run = |transform: Value| {
+        let mut items = base.clone();
+        items.push(moved(transform));
+        let mut doc = Document::new(kernel());
+        let report = import_design(
+            &mut doc,
+            &timeline_dump(items),
+            &mut NoGeometry,
+            &Options::default(),
+        );
+        let query = json!({"query": "feature", "uid": "F3"}).to_string();
+        let def = doc
+            .query(&query)
+            .ok()
+            .and_then(|a| serde_json::from_str::<Value>(&a).ok())
+            .map(|a| a["def"].clone())
+            .filter(|d| d["type"] == "move_face");
+        (report, def)
+    };
+    let (report, def) = run(json!([
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.5],
+        [0.0, 0.0, 0.0, 1.0]
+    ]));
+    let item = report.items.iter().find(|i| i.name == "MoveFace1").unwrap();
+    assert_eq!(item.outcome, Outcome::Parametric, "{}", report.text());
+    assert_eq!(item.input_provenance, Some(InputProvenance::Read));
+    let def = def.expect("a move face");
+    assert_eq!(def["body"], "F2.b0", "{def}");
+    assert_eq!(def["faces"], json!([top.to_string()]));
+    assert_eq!(def["transform"]["type"], "free");
+    assert_eq!(def["transform"]["matrix"][2][3], json!(5.0));
+
+    // Its motion not decoded: not translated.
+    let (report, def) = run(Value::Null);
+    let item = report.items.iter().find(|i| i.name == "MoveFace1").unwrap();
+    assert_ne!(item.outcome, Outcome::Parametric, "{}", report.text());
+    assert!(
+        item.note
+            .as_deref()
+            .is_some_and(|n| n.contains("motion was not decoded")),
+        "{}",
+        report.text()
+    );
+    assert!(def.is_none());
+}

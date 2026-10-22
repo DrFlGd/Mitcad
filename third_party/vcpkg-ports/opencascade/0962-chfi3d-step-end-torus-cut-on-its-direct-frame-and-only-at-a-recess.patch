@@ -1,0 +1,143 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: the quarter torus of patch 0951 at a rounding's end where its
+wall steps back, whichever of the blend's sides holds the wall, and only
+where the recess beyond the step ends in a strip back to the wall
+(mitcad#343).
+
+- PerformPivotAtStepEnd: the torus is reversed in u where the blend's
+  normal asks for it (the wall on the blend's first side, its surface's
+  direction across the section the other way). Its cut by the stepped-back
+  face was computed on that reversed torus, whose frame is indirect, and
+  the intersection failed: the end was left to the other corners and the
+  result was invalid (a side plane's wire broken, area -642 mm2 on the
+  design). The cut is now computed on the torus as built, its end points'
+  u negated, and its p-curve mirrored in u onto the reversed torus. The
+  rim rounded after an earlier rounding of the outline (patch 0961) had
+  its faces in that order.
+- The pivot only where the stepped-back face's edge with the other face
+  ends, at its far end, on a strip back to the wall's plane (a recess, as
+  in 0951's case). Where another face ends it first (a rounding of the
+  wall's edge beyond the recess, made earlier), the bodies stored in the
+  files run the blend on across the step, cutting the recess's few
+  micrometres, until that rounding cuts it, which OCCT builds without the
+  pivot.
+
+On the design: the rim's rounding (14 edges) on the outline's rounded body
+valid, every face on the stored body's after it within 0.004 mm; the later
+rounding of the walls' edges below the step (radius 0.2) has the file's 229
+faces, every face of its result on the file's within 4.3e-4 mm, both its
+ends at the step run on (with the u fix alone, the pivot at both ends:
+faces 0.04 off). Synthetic (geometry.fillet_step_end): 0951's cases with
+the body's faces in the reverse order (the shape invalid or the fillet
+failing before), and the second rounding below the step after the first
+above it, its cylinder run on to the first's torus with no torus of its
+own.
+
+Upstream: new.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
+index a06cce0e..0ffaca3c 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
+@@ -81,7 +81,9 @@
+ #include <GeomLib.hxx>
+ #include <GeomProjLib.hxx>
+ #include <gp_Pnt.hxx>
++#include <gp_Ax2d.hxx>
+ #include <gp_Pnt2d.hxx>
++#include <gp_Trsf2d.hxx>
+ #include <gp_Vec2d.hxx>
+ #include <IntCurveSurface_HInter.hxx>
+ #include <IntCurveSurface_IntersectionPoint.hxx>
+@@ -3565,6 +3567,33 @@ bool ChFi3d_Builder::PerformPivotAtStepEnd(const int Index)
+     {
+       continue;
+     }
++    // Fb a recess: Eb's far end is on a strip back to Fs's plane, parallel
++    // to Fv. Where another face ends Fb along Fop first (an earlier
++    // rounding at the recess's far end), the blend runs on across the step,
++    // cut by that face, as OCCT builds it without the pivot.
++    {
++      TopoDS_Vertex vb1, vb2;
++      TopExp::Vertices(Eb, vb1, vb2);
++      const TopoDS_Vertex& Vfar =
++        BRep_Tool::Pnt(vb1).Distance(P) > BRep_Tool::Pnt(vb2).Distance(P) ? vb1 : vb2;
++      bool farStrip = false;
++      if (myVFMap.Contains(Vfar))
++      {
++        for (NCollection_List<TopoDS_Shape>::Iterator itF(myVFMap.FindFromKey(Vfar)); itF.More() && !farStrip;
++             itF.Next())
++        {
++          gp_Pln PlN;
++          gp_Dir nN;
++          farStrip = !itF.Value().IsSame(Fb) && !itF.Value().IsSame(Fop) && !itF.Value().IsSame(Fv)
++                     && ChFi3d_PlaneOf(TopoDS::Face(itF.Value()), PlN, nN)
++                     && std::abs(std::abs(nN.Dot(nV)) - 1.) <= angTol;
++        }
++      }
++      if (!farStrip)
++      {
++        continue;
++      }
++    }
+     // The ball at the end, its contacts P (on Ee) and C2 (on Fop), and the
+     // direction past the end (dp).
+     const gp_Pnt C0(P.XYZ() - R * nS.XYZ());
+@@ -3604,6 +3633,10 @@ bool ChFi3d_Builder::PerformPivotAtStepEnd(const int Index)
+     const gp_Dir Xt(gp_Vec(P, C0));
+     const gp_Dir Zt = Xt.Crossed(dp);
+     occ::handle<Geom_Surface> aTor = new Geom_ToroidalSurface(gp_Ax3(P, Zt, Xt), R, R);
++    // (The torus as built, before its u is reversed below: the cut by Fb is
++    // computed on it, its own frame direct, u running the other way.)
++    const occ::handle<Geom_Surface> aTorDirect   = aTor;
++    bool                            aTorReversed = false;
+     // Q2: the contact on Fop meets Fb's plane: the tube's angle t2 with
+     // R cos(t2) = w (the ball's centre w from Fs's plane, away from Fs).
+     const double  t2  = std::acos(w / R);
+@@ -3642,7 +3675,8 @@ bool ChFi3d_Builder::PerformPivotAtStepEnd(const int Index)
+       const gp_Vec nb = bu.Crossed(bv);
+       if (n.Dot(nb) < 0.)
+       {
+-        aTor = aTor->UReversed();
++        aTor         = aTor->UReversed();
++        aTorReversed = true;
+       }
+     }
+     // The blend cut at the section: side 3 - s's contact up to C2.
+@@ -3719,7 +3753,7 @@ bool ChFi3d_Builder::PerformPivotAtStepEnd(const int Index)
+     const occ::handle<Geom2d_Curve> Pc2t = ChFi3d_PCurveNear(C2c, a2, b2, aTor, s == 1 ? tQ1 : tC2uv);
+     // The cut by Fb, in the stripe's direction (from the section to Q2 at
+     // its last end, from Q2 to the section at its first).
+-    occ::handle<GeomAdaptor_Surface> HTor = new GeomAdaptor_Surface(aTor);
++    occ::handle<GeomAdaptor_Surface> HTor = new GeomAdaptor_Surface(aTorDirect);
+     occ::handle<BRepAdaptor_Surface> HB   = new BRepAdaptor_Surface(Fb, false);
+     gp_Pnt2d                         bQ1, bQ2;
+     {
+@@ -3750,6 +3784,12 @@ bool ChFi3d_Builder::PerformPivotAtStepEnd(const int Index)
+     Pf(2) = f1.Y();
+     Pf(3) = f2.X();
+     Pf(4) = f2.Y();
++    if (aTorReversed)
++    {
++      // (On the direct torus: its u at a point is minus the reversed one's.)
++      Pd(1) = -Pd(1);
++      Pf(1) = -Pf(1);
++    }
+     occ::handle<Geom_Curve>   Cb;
+     occ::handle<Geom2d_Curve> PcbT, PcbB;
+     double                    tolb = tolapp3d;
+@@ -3769,6 +3809,13 @@ bool ChFi3d_Builder::PerformPivotAtStepEnd(const int Index)
+     {
+       continue;
+     }
++    if (aTorReversed)
++    {
++      // The cut's p-curve on the reversed torus: u mirrored.
++      gp_Trsf2d aMirror;
++      aMirror.SetMirror(gp_Ax2d(gp_Pnt2d(0., 0.), gp_Dir2d(0., 1.)));
++      PcbT = occ::down_cast<Geom2d_Curve>(PcbT->Transformed(aMirror));
++    }
+     // The contact with Fop: a circle about P's foot on Fop, C2 to Q2.
+     const gp_Pnt Pop(P.XYZ() + R * nOp.XYZ());
+     const gp_Dir xk(gp_Vec(Pop, C2)), yk(gp_Vec(Pop, Q2));

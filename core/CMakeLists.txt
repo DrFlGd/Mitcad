@@ -83,7 +83,9 @@ corrosion_add_cxxbridge(mitcad_bridge CRATE mitcad_ffi FILES
   # Gears: toothed profiles swept along their axis or ruled to an apex (mitcad#472).
   kernel/gear.rs
   # Surface modelling: Blend, Boundary, Match and Fair Surface (mitcad#455).
-  kernel/surface_fills.rs)
+  kernel/surface_fills.rs
+  # Faces moved by a rigid motion (mitcad#343).
+  kernel/move_faces.rs)
 target_sources(mitcad_bridge PRIVATE
   cpp/bridge/boolean.cpp
   cpp/bridge/boolean.hpp
@@ -215,6 +217,11 @@ target_sources(mitcad_bridge PRIVATE
 target_sources(mitcad_bridge PRIVATE
   cpp/bridge/surface_fills.cpp
   cpp/bridge/surface_fills.hpp)
+
+# Faces moved by a rigid motion (mitcad#343).
+target_sources(mitcad_bridge PRIVATE
+  cpp/bridge/move_faces.cpp
+  cpp/bridge/move_faces.hpp)
 target_include_directories(mitcad_bridge PUBLIC cpp)
 target_link_libraries(mitcad_bridge PUBLIC mitcad_geometry)
 # The bridge and the Rust library call each other, and a single-pass

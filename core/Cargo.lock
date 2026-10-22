@@ -1492,7 +1492,7 @@ dependencies = [
 
 [[package]]
 name = "mitcad-3mf"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "mitcad-zip",
  "roxmltree",
@@ -1500,11 +1500,11 @@ dependencies = [
 
 [[package]]
 name = "mitcad-cfb"
-version = "0.18.0"
+version = "0.19.0"
 
 [[package]]
 name = "mitcad-dwg"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "mitcad-dxf",
  "mitcad-f3d",
@@ -1514,11 +1514,11 @@ dependencies = [
 
 [[package]]
 name = "mitcad-dxf"
-version = "0.18.0"
+version = "0.19.0"
 
 [[package]]
 name = "mitcad-f3d"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "mitcad-model",
  "mitcad-zip",
@@ -1528,7 +1528,7 @@ dependencies = [
 
 [[package]]
 name = "mitcad-ffi"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "cxx",
  "mitcad-dwg",
@@ -1547,7 +1547,7 @@ dependencies = [
 
 [[package]]
 name = "mitcad-freecad"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "mitcad-zip",
  "roxmltree",
@@ -1557,7 +1557,7 @@ dependencies = [
 
 [[package]]
 name = "mitcad-ifc"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "mitcad-zip",
  "serde",
@@ -1566,7 +1566,7 @@ dependencies = [
 
 [[package]]
 name = "mitcad-import"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "mitcad-f3d",
  "mitcad-freecad",
@@ -1581,7 +1581,7 @@ dependencies = [
 
 [[package]]
 name = "mitcad-ipt"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "miniz_oxide 0.8.9",
  "mitcad-cfb",
@@ -1595,14 +1595,14 @@ dependencies = [
 
 [[package]]
 name = "mitcad-mcp"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "mitcad-model"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "harfrust",
  "miniz_oxide 0.8.9",
@@ -1623,7 +1623,7 @@ dependencies = [
 
 [[package]]
 name = "mitcad-rvt"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "miniz_oxide 0.8.9",
  "mitcad-cfb",
@@ -1633,7 +1633,7 @@ dependencies = [
 
 [[package]]
 name = "mitcad-solidcraft"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "mitcad-zip",
  "serde",
@@ -1642,11 +1642,11 @@ dependencies = [
 
 [[package]]
 name = "mitcad-solver"
-version = "0.18.0"
+version = "0.19.0"
 
 [[package]]
 name = "mitcad-update"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "ed25519-dalek",
  "semver",
@@ -1657,14 +1657,14 @@ dependencies = [
 
 [[package]]
 name = "mitcad-usdz"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "mitcad-zip",
 ]
 
 [[package]]
 name = "mitcad-vcs"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "gix",
  "libc",
@@ -1677,7 +1677,7 @@ dependencies = [
 
 [[package]]
 name = "mitcad-zip"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "miniz_oxide 0.8.9",
  "ruzstd",

@@ -236,6 +236,11 @@ target_sources(mitcad_geometry PRIVATE
 target_sources(mitcad_geometry PRIVATE
   src/face_join.cpp
   src/face_join.hpp)
+# Faces of a body moved by a rigid motion, their neighbours following
+# (mitcad#343).
+target_sources(mitcad_geometry PRIVATE
+  src/move_faces.cpp
+  include/mitcad/geometry/move_faces.hpp)
 target_include_directories(mitcad_geometry PUBLIC include)
 # Volumes and areas come from the analysis library's integrals, so that
 # every reported volume agrees (query.cpp, brep_import.cpp).
@@ -328,6 +333,8 @@ if(BUILD_TESTING)
   # Roundings cut by a face of the solid they pass through, with the port's
   # patch 0700 (mitcad#343).
   target_sources(test_geometry PRIVATE tests/test_fillet_pierced.cpp)
+  # Faces moved by a rigid motion, their neighbours following (mitcad#343).
+  target_sources(test_geometry PRIVATE tests/test_move_faces.cpp)
   target_link_libraries(test_geometry PRIVATE mitcad_geometry_analysis)
   target_link_libraries(test_geometry PRIVATE mitcad_geometry mitcad_warnings)
   add_test(NAME geometry COMMAND test_geometry)
@@ -465,12 +472,52 @@ if(BUILD_TESTING)
   add_executable(test_fillet_step_end tests/test_fillet_step_end.cpp)
   target_link_libraries(test_fillet_step_end PRIVATE mitcad_geometry mitcad_warnings)
   add_test(NAME geometry.fillet_step_end COMMAND test_fillet_step_end)
+  # A rounding vanishing where its faces come tangent, its walk stopped on
+  # its own edge short of the vertex, with the port's patch 0961
+  # (mitcad#343).
+  add_executable(test_fillet_vanishing_own_edge tests/test_fillet_vanishing_own_edge.cpp)
+  target_link_libraries(test_fillet_vanishing_own_edge PRIVATE mitcad_geometry mitcad_warnings)
+  add_test(NAME geometry.fillet_vanishing_own_edge COMMAND test_fillet_vanishing_own_edge)
   # Projection bounds whose parameter tolerance is below floating-point
   # spacing, with the port's patch 0960 (mitcad#504).
   add_executable(test_projection_boundary tests/test_projection_boundary.cpp)
   target_link_libraries(test_projection_boundary PRIVATE mitcad_geometry mitcad_warnings)
   add_test(NAME geometry.projection_boundary COMMAND test_projection_boundary)
   set_tests_properties(geometry.projection_boundary PROPERTIES TIMEOUT 30)
+  # A bottom outline rounded past wall corners rounded with less than its
+  # radius, with the port's patch 0970 (mitcad#343).
+  add_executable(test_fillet_tight_corner tests/test_fillet_tight_corner.cpp)
+  target_link_libraries(test_fillet_tight_corner PRIVATE mitcad_geometry mitcad_warnings)
+  add_test(NAME geometry.fillet_tight_corner COMMAND test_fillet_tight_corner)
+  # A rounding whose contact crosses a concave crease of a few degrees on
+  # its side, with the port's patch 0980 (mitcad#343).
+  add_executable(test_fillet_concave_crease tests/test_fillet_concave_crease.cpp)
+  target_link_libraries(test_fillet_concave_crease PRIVATE mitcad_geometry mitcad_warnings)
+  add_test(NAME geometry.fillet_concave_crease COMMAND test_fillet_concave_crease)
+  # A rounding rolling on an edge, its ends cut by the faces at the ends past
+  # where its ball comes tangent to that edge's face, with the port's patch
+  # 0990 (mitcad#343).
+  add_executable(test_fillet_rolled_end_cut tests/test_fillet_rolled_end_cut.cpp)
+  target_link_libraries(test_fillet_rolled_end_cut PRIVATE mitcad_geometry mitcad_warnings)
+  add_test(NAME geometry.fillet_rolled_end_cut COMMAND test_fillet_rolled_end_cut)
+  # A chamfer across a slight concave crease of the tip's faces, over a side
+  # strip narrower than the chamfer whose foot face is a B-spline, with the
+  # port's patch 1000 (mitcad#343).
+  add_executable(test_chamfer_crease_strip tests/test_chamfer_crease_strip.cpp)
+  target_link_libraries(test_chamfer_crease_strip PRIVATE mitcad_geometry mitcad_warnings)
+  add_test(NAME geometry.chamfer_crease_strip COMMAND test_chamfer_crease_strip)
+  # A closed rim chamfered past a pocket under it, the chamfer cut lengthwise
+  # by the pocket's ceiling, with the port's patch 1010 (mitcad#343).
+  add_executable(test_chamfer_rim_cutout tests/test_chamfer_rim_cutout.cpp)
+  target_link_libraries(test_chamfer_rim_cutout PRIVATE mitcad_geometry mitcad_warnings)
+  add_test(NAME geometry.chamfer_rim_cutout COMMAND test_chamfer_rim_cutout)
+  # A drafted peg's corners rounded down to a block whose walls go on from
+  # the peg's sides at slight concave creases and whose corners are rounded
+  # with less, the walls and those corners cutting the rounding, with the
+  # port's patch 1020 (mitcad#343).
+  add_executable(test_fillet_crease_into_end_walls tests/test_fillet_crease_into_end_walls.cpp)
+  target_link_libraries(test_fillet_crease_into_end_walls PRIVATE mitcad_geometry mitcad_warnings)
+  add_test(NAME geometry.fillet_crease_into_end_walls COMMAND test_fillet_crease_into_end_walls)
 endif()
 
 # Data exchange and analysis services, separate libraries on top of OCCT.

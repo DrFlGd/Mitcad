@@ -37,6 +37,8 @@
 pub mod api;
 pub mod build;
 pub mod manifest;
+// Mount frames of any part (mitcad#525).
+pub mod mounts;
 mod publish;
 
 use std::fs;

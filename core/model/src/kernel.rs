@@ -1531,6 +1531,22 @@ pub trait Kernel {
     fn face_cone(&self, _shape: &Self::Shape, _face: &FaceName) -> Result<ConeFace, KernelError> {
         Err(KernelError::Unsupported("face cones"))
     }
+
+    // Faces moved by a rigid motion (mitcad#343).
+
+    /// Moves the faces by the rigid `motion`, each keeping its surface,
+    /// moved; their neighbours stay on their surfaces and extend or shorten
+    /// up to them. Every face keeps its names; a motion that would change
+    /// the body's faces is an error.
+    fn move_faces(
+        &self,
+        _feature: FeatureUid,
+        _body: &Self::Shape,
+        _faces: &[FaceName],
+        _motion: &Transform,
+    ) -> Result<Self::Shape, KernelError> {
+        Err(KernelError::Unsupported("move faces"))
+    }
 }
 
 /// A conical face ([`Kernel::face_cone`], mitcad#473).

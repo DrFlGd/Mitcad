@@ -162,6 +162,65 @@ private:
   GlassCard* m_card;
 };
 
+// The grip of a card whose width the user drags (mitcad#529): a strip along
+// its right edge with the resize cursor, painted by nothing (the card's
+// border is the edge). It takes the mouse there, above the card's content.
+class CardWidthGrip : public QWidget {
+public:
+  static constexpr int kWidth = 6;
+
+  explicit CardWidthGrip(GlassCard* card) : QWidget(card), m_card(card) {
+    setObjectName(QStringLiteral("cardWidthGrip"));
+    setAttribute(Qt::WA_NoSystemBackground);
+    setFocusPolicy(Qt::NoFocus);
+    setCursor(Qt::SizeHorCursor);
+  }
+
+protected:
+  void mousePressEvent(QMouseEvent* event) override {
+    if (event->button() != Qt::LeftButton) {
+      event->ignore();
+      return;
+    }
+    m_dragging = true;
+    m_startX = event->globalPosition().x();
+    m_startWidth = m_card->width();
+    m_width = m_startWidth;
+    event->accept();
+  }
+
+  void mouseMoveEvent(QMouseEvent* event) override {
+    if (!m_dragging) {
+      event->ignore();
+      return;
+    }
+    const int width = std::max(m_card->m_minimumWidth,
+                               m_startWidth + static_cast<int>(std::lround(event->globalPosition().x() - m_startX)));
+    if (width != m_width) {
+      m_width = width;
+      emit m_card->widthDragged(width);
+    }
+    event->accept();
+  }
+
+  void mouseReleaseEvent(QMouseEvent* event) override {
+    if (!m_dragging) {
+      event->ignore();
+      return;
+    }
+    m_dragging = false;
+    emit m_card->widthChosen(m_width);
+    event->accept();
+  }
+
+private:
+  GlassCard* m_card;
+  bool m_dragging = false;
+  qreal m_startX = 0;
+  int m_startWidth = 0;
+  int m_width = 0;
+};
+
 GlassCard::GlassCard(QWidget* parent) : QWidget(parent) {
   // Painted entirely by the card; what is under it (the 3D view) shows
   // through the translucent fill.
@@ -460,6 +519,28 @@ void GlassCard::setOpacityLevel(qreal opacity) {
   }
 }
 
+void GlassCard::setWidthAdjustable(int minimum) {
+  m_minimumWidth = std::max(0, minimum);
+  if (m_grip == nullptr) {
+    m_grip = new CardWidthGrip(this);
+  }
+  placeGrip();
+  m_grip->show();
+}
+
+void GlassCard::placeGrip() {
+  if (m_grip == nullptr) {
+    return;
+  }
+  // Below the header's corner, above the bottom corner: the content's side.
+  const int top = std::min(height(), std::max(headerHeight(), kRadius));
+  const int bottom = std::max(top, height() - kRadius);
+  m_grip->setGeometry(width() - CardWidthGrip::kWidth, top, CardWidthGrip::kWidth, bottom - top);
+  m_grip->raise();
+}
+
+QPoint GlassCard::widthGripCenter() const { return m_grip != nullptr ? m_grip->geometry().center() : QPoint(); }
+
 int GlassCard::headerHeight() const { return m_header->isHidden() && !headerWanted() ? 0 : kHeaderHeight; }
 
 int GlassCard::heightForContent(int contentHeight) const {
@@ -651,6 +732,7 @@ bool GlassCard::event(QEvent* event) {
     }
     if (event->type() == QEvent::Resize) {
       updateBareMask();
+      placeGrip();
     }
     break;
   case QEvent::Show:

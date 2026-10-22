@@ -814,6 +814,14 @@ void CommandPanel::rebuildList(Row& list, const CommandState& state) {
 
 void CommandPanel::refresh(const CommandState& state) {
   refreshRows(state);
+  // A row that moves (one above it grew: a tile's picture, a note) logs
+  // the places again (mitcad#528; eventFilter). Once per field.
+  for (const auto& row : m_rows) {
+    if (row->field != nullptr && !row->field->property("mitcadPlaceWatched").toBool()) {
+      row->field->setProperty("mitcadPlaceWatched", true);
+      row->field->installEventFilter(this);
+    }
+  }
   // Rows a choice showed or hid move the others: where they are now, for
   // UI tests.
   QStringList shown;
@@ -942,10 +950,12 @@ void CommandPanel::refreshRow(Row& row, const CommandState& scope, const Command
       break;
     }
     if (row.combo == nullptr) {
-      // Icon buttons: the chosen one pressed.
+      // Icon buttons: the chosen one pressed; those not offered hidden
+      // (InputDef::choiceOffered, mitcad#524).
       for (auto it = row.choiceButtons.cbegin(); it != row.choiceButtons.cend(); ++it) {
         const QSignalBlocker blockButton(it.value());
         it.value()->setChecked(it.key() == scope.choice(id));
+        it.value()->setVisible(!input.choiceOffered || input.choiceOffered(scope, it.key()));
       }
       break;
     }
@@ -1073,6 +1083,11 @@ void CommandPanel::setMessage(const QString& message, bool error) {
     return;
   }
   m_message->setMessage(message);
+  // What the panel says in red, for UI tests (mitcad#531: the model's
+  // refusal of a preview shown on the panel).
+  if (error && !message.isEmpty()) {
+    qDebug().noquote() << QStringLiteral("Panel %1 error: %2").arg(m_def.name, message);
+  }
   scheduleLogFit();
 }
 
@@ -1180,9 +1195,47 @@ bool CommandPanel::focusValue(const QString& key) {
 }
 
 void CommandPanel::logLayout() const {
+  const QStringList lines = layoutLines();
+  m_loggedMessageHeight = m_message->isHidden() ? 0 : m_message->height();
+  m_loggedLines = lines;
+  for (const QString& line : lines) {
+    qDebug().noquote() << line;
+  }
+}
+
+void CommandPanel::scheduleMovedCheck() {
+  if (m_movedTimer == nullptr) {
+    m_movedTimer = new QTimer(this);
+    m_movedTimer->setSingleShot(true);
+    m_movedTimer->setInterval(50);
+    // Where the inputs are now, when it is not what was logged last
+    // (mitcad#528): a place logged before the layout settled (a tile's
+    // picture read, the dock or the window laid out again) would else stay
+    // the last one, and a test would click where the input was.
+    connect(m_movedTimer, &QTimer::timeout, this, [this] {
+      if (!m_loggedLines.isEmpty() && isVisible() && layoutLines() != m_loggedLines) {
+        logLayout();
+      }
+    });
+    TestSync::watch(m_movedTimer);
+  }
+  m_movedTimer->start();
+}
+
+void CommandPanel::showEvent(QShowEvent* event) {
+  QWidget::showEvent(event);
+  // The panel and every widget it is in, up to the window: a move or a
+  // resize of any of them moves the inputs (mitcad#528).
+  for (QWidget* widget = this; widget != nullptr; widget = widget->parentWidget()) {
+    widget->installEventFilter(this);
+  }
+  scheduleMovedCheck();
+}
+
+QStringList CommandPanel::layoutLines() const {
+  QStringList lines;
   // Rows made or shown just now are placed first.
   QCoreApplication::sendPostedEvents(nullptr, QEvent::LayoutRequest);
-  m_loggedMessageHeight = m_message->isHidden() ? 0 : m_message->height();
   const auto position = [](const QWidget* widget) {
     const QPoint center = GlassCard::mapToHost(widget, widget->rect().center());
     return QStringLiteral("%1,%2").arg(center.x()).arg(center.y());
@@ -1195,25 +1248,28 @@ void CommandPanel::logLayout() const {
                             : row->add != nullptr   ? static_cast<QWidget*>(row->add)
                                                     : row->field;
     const bool hidden = !row->field->isVisibleTo(this);
-    qDebug().noquote() << QStringLiteral("Panel %1 input %2 at %3%4")
+    lines << QStringLiteral("Panel %1 input %2 at %3%4")
                               .arg(m_def.name, row->key, position(widget),
                                    hidden ? QStringLiteral(" (hidden)") : QString());
     if (!hidden) {
       // Each icon button of a choice (InputDef::choiceIcons).
       for (auto it = row->choiceButtons.cbegin(); it != row->choiceButtons.cend(); ++it) {
-        qDebug().noquote() << QStringLiteral("Panel %1 input %2=%3 at %4")
+        if (!it.value()->isVisibleTo(this)) {
+          continue; // not offered now (InputDef::choiceOffered)
+        }
+        lines << QStringLiteral("Panel %1 input %2=%3 at %4")
                                   .arg(m_def.name, row->key, it.key(), position(it.value()));
       }
       if (row->button != nullptr) {
         // The button beside a choice (InputDef::onButton).
-        qDebug().noquote() << QStringLiteral("Panel %1 button_%2 at %3")
+        lines << QStringLiteral("Panel %1 button_%2 at %3")
                                   .arg(m_def.name, row->key, position(row->button));
       }
     }
     if (row->order != nullptr && !hidden) {
       for (const char* button : {"up_", "down_"}) {
         if (const auto* move = findChild<QToolButton*>(QString::fromLatin1(button) + row->key)) {
-          qDebug().noquote() << QStringLiteral("Panel %1 %2%3 at %4")
+          lines << QStringLiteral("Panel %1 %2%3 at %4")
                                     .arg(m_def.name, QString::fromLatin1(button), row->key,
                                          position(move));
         }
@@ -1221,21 +1277,21 @@ void CommandPanel::logLayout() const {
     }
     if (row->rowsLayout != nullptr && !hidden) {
       if (row->add != nullptr) {
-        qDebug().noquote() << QStringLiteral("Panel %1 add %2 at %3")
+        lines << QStringLiteral("Panel %1 add %2 at %3")
                                   .arg(m_def.name, row->key, position(row->add));
       }
       for (std::size_t i = 0; i < row->removes.size(); ++i) {
-        qDebug().noquote() << QStringLiteral("Panel %1 remove %2.%3 at %4")
+        lines << QStringLiteral("Panel %1 remove %2.%3 at %4")
                                   .arg(m_def.name, row->key)
                                   .arg(i)
                                   .arg(position(row->removes[i]));
       }
     }
   }
-  qDebug().noquote() << QStringLiteral("Panel %1 OK at %2").arg(m_def.name, position(m_ok));
+  lines << QStringLiteral("Panel %1 OK at %2").arg(m_def.name, position(m_ok));
   // Wider than the page would cut its right side off (mitcad#198).
   const QWidget* page = parentWidget() != nullptr ? parentWidget() : this;
-  qDebug().noquote() << QStringLiteral("Panel %1 width %2 of %3").arg(m_def.name).arg(width()).arg(page->width());
+  lines << QStringLiteral("Panel %1 width %2 of %3").arg(m_def.name).arg(width()).arg(page->width());
   // What a long panel's page shows of it: a place outside the view is
   // scrolled away, and a wheel over the bar scrolls it (UI tests in a low
   // window; MainWindow logs the places again when it scrolls).
@@ -1254,11 +1310,26 @@ void CommandPanel::logLayout() const {
     if (bar->isVisible()) {
       line += QStringLiteral(", bar at %1").arg(position(bar));
     }
-    qDebug().noquote() << line;
+    lines << line;
   }
+  return lines;
 }
 
 bool CommandPanel::eventFilter(QObject* watched, QEvent* event) {
+  switch (event->type()) {
+  case QEvent::Move:
+  case QEvent::Resize:
+  case QEvent::Show:
+  case QEvent::Hide:
+    // The panel, a row's field or a widget the panel is in moved: its
+    // inputs' places again once it settles, when they changed (mitcad#528).
+    if (watched->isWidgetType()) {
+      scheduleMovedCheck();
+    }
+    break;
+  default:
+    break;
+  }
   if (event->type() == QEvent::FocusIn || event->type() == QEvent::FocusOut) {
     for (const auto& row : m_rows) {
       if (row->edit == watched && row->input->type == InputDef::Type::Value) {

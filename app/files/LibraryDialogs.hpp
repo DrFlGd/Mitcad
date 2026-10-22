@@ -102,6 +102,9 @@ struct LibraryChoice {
   QString config;
   QString license;
   bool link = true;
+  // The manifest's mount frames of the part (mitcad#525): with any, Insert
+  // from Library places it by one (Place Part).
+  QJsonArray mounts;
 };
 
 class LibraryBrowser : public QDialog {

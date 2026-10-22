@@ -206,6 +206,10 @@ signals:
   void contextMenuRequested(const mitcad::BrowserNode& node, const QPoint& globalPosition);
   // Ctrl+F (Cmd+F on macOS) in the rows: the timeline's search (mitcad#179).
   void searchRequested();
+  // The pointer came over a joint's, as-built joint's or constraint set's
+  // row (mitcad#523), placed by `occurrence`; an empty uid when it left
+  // the joint rows.
+  void jointHovered(const QString& uid, const QString& occurrence);
 
 protected:
   bool eventFilter(QObject* watched, QEvent* event) override;
@@ -272,6 +276,10 @@ private:
   bool m_fitPending = false; // designOpened, until the panel showed with its size
   bool m_fitQueued = false;
   std::function<int()> m_availableHeight; // setAvailableHeight
+  // The joint row under the pointer (mitcad#523): jointHovered when it
+  // changes ("uid@occurrence", empty: none).
+  void hoverJoint(const QTreeWidgetItem* item);
+  QString m_hoveredJoint;
 };
 
 } // namespace mitcad

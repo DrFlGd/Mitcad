@@ -44,6 +44,7 @@
 #include "../MainWindow.hpp"
 #include "../browser/TimelineWidget.hpp"
 #include "GlassCard.hpp"
+#include "TestSync.hpp"
 #include "Dialogs.hpp"
 #include "mitcad/geometry/geometry.hpp"
 
@@ -70,6 +71,9 @@ const QChar kLiteralDollar(0xE000);
 constexpr qint64 kBusyLimitMs = 60000;
 constexpr qint64 kBlockedLimitMs = 60000;
 constexpr qint64 kNoMainLimitMs = 60000;
+// How long a logged place waits for the watched timers (TestSync::settling),
+// as long as the sync does.
+constexpr qint64 kSettleLimitMs = 5000;
 constexpr int kDragSteps = 8;
 
 // How a step gives input: kIdle waits for the model, the others also for the
@@ -1965,8 +1969,17 @@ void TestDriver::run(const Step& step) {
     }
     const int clicks = name == QLatin1String("dblclick-logged") ? 2 : 1;
     const auto at = std::make_shared<QPoint>();
+    // Places are read once what is about to be logged is (mitcad#528: a
+    // panel logs its places again 50 ms after they moved, on a watched
+    // timer), as the Linux and Windows steps wait for the sync; at most as
+    // long as the sync waits for them.
+    const auto settle = std::make_shared<QElapsedTimer>();
+    settle->start();
     whenReady(
-        [this, re, pick, at] {
+        [this, re, pick, at, settle] {
+          if (TestSync::settling() && settle->elapsed() < kSettleLimitMs) {
+            return false;
+          }
           int from = 0;
           if (pick) {
             // The places of the newest "Pick places:" only; older ones may

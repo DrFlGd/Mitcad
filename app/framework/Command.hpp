@@ -71,6 +71,9 @@ public:
   // snap distances that keep their size on the screen (BUILD's `at.snap`,
   // mitcad#417). NaN without a view (an inspection on the model's worker).
   virtual double pixelSize(const gp_Pnt& /*point*/) const { return std::numeric_limits<double>::quiet_NaN(); }
+  // The way from a point of the design towards the viewer (Place Part's
+  // hole end, mitcad#525); none without a view.
+  virtual std::optional<gp_Dir> towardViewer(const gp_Pnt& /*point*/) const { return std::nullopt; }
 };
 
 enum class ValueKind { Length, Angle, Unitless };
@@ -136,6 +139,12 @@ struct InputDef {
   // Selection: what the input accepts and how many (max 0: any number).
   SelectFilter filter;
   std::function<bool(const SelectionItem&)> test; // beyond the filter
+  // Selection: kinds taken from what was selected before the command (and
+  // offered so by the view's context menu) beyond `filter`, in the form
+  // `convert` gives them, which `filter` takes; the view still picks only
+  // `filter`'s kinds (a member's edge selected before names the member,
+  // as its body, while clicks pick its faces, mitcad#522).
+  SelectFilter alsoTakes;
   // Mesh bodies and their faces (item.geometry "mesh": triangles without
   // surfaces) are not taken: the operation needs surfaces (mitcad#399).
   bool refusesMeshes = false;
@@ -227,6 +236,10 @@ struct InputDef {
   // drop-down (BUILD's X / Y / Z direction, mitcad#394). A frontend that
   // has no such row shows the drop-down.
   QHash<QString, QString> choiceIcons;
+  // Choice shown as icon buttons: whether an option's button is offered in
+  // a state (unset: every one; a Wall started on another body's face has
+  // no Lapped plates, mitcad#524). A frontend without it offers them all.
+  std::function<bool(const CommandState&, const QString&)> choiceOffered;
   // Choice: a button beside the drop-down (`buttonText`, `buttonTooltip`)
   // that calls `onButton` with the input's state and the model (BUILD's
   // part picker, mitcad#418). It changes nothing itself; what it opens may
@@ -304,6 +317,10 @@ struct InputDef {
     convert = std::move(form);
     return *this;
   }
+  InputDef& withAlsoTakes(SelectFilter kinds) {
+    alsoTakes = kinds;
+    return *this;
+  }
   InputDef& withOnPick(
       std::function<void(const SelectionItem&, CommandState&, const CommandContext&)> call,
       bool keep = true) {
@@ -369,6 +386,10 @@ struct InputDef {
     choiceIcons = icons;
     return *this;
   }
+  InputDef& withChoiceOffered(std::function<bool(const CommandState&, const QString&)> offered) {
+    choiceOffered = std::move(offered);
+    return *this;
+  }
   InputDef& withDisclosure() {
     disclosure = true;
     return *this;
@@ -393,6 +414,11 @@ struct InputDef {
   // What a selection input takes in a state (filterNow, testNow).
   SelectFilter filterIn(const CommandState& state) const;
   bool acceptsIn(const SelectionItem& item, const CommandState& state) const;
+  // Whether an item selected before the command goes to the input: taken
+  // as it is, or one of `alsoTakes` in `convert`'s form (taken()).
+  bool takes(const SelectionItem& item) const;
+  bool takesIn(const SelectionItem& item, const CommandState& state) const;
+  SelectionItem taken(const SelectionItem& item) const { return convert ? convert(item) : item; }
   bool isRequired() const { return type == Type::Selection && min > 0; }
 };
 

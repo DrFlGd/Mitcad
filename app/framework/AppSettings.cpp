@@ -145,6 +145,10 @@ ProjectsSettings ProjectsSettings::load() {
   if (settings.contains(QStringLiteral("projects/panel"))) {
     projects.panelShown = settings.value(QStringLiteral("projects/panel")).toBool();
   }
+  projects.cardWidth = std::max(0, settings.value(QStringLiteral("projects/cardWidth")).toInt());
+  projects.dockWidth = std::max(0, settings.value(QStringLiteral("projects/dockWidth")).toInt());
+  projects.browseRoot = settings.value(QStringLiteral("projects/browseRoot")).toString();
+  projects.browseFolder = settings.value(QStringLiteral("projects/browseFolder")).toString();
   return projects;
 }
 
@@ -155,6 +159,18 @@ void ProjectsSettings::save() const {
   // Never written before a choice: the default follows the projects.
   if (panelShown) {
     settings.setValue(QStringLiteral("projects/panel"), *panelShown);
+  }
+  // Written once dragged (mitcad#529).
+  if (cardWidth > 0) {
+    settings.setValue(QStringLiteral("projects/cardWidth"), cardWidth);
+  }
+  if (dockWidth > 0) {
+    settings.setValue(QStringLiteral("projects/dockWidth"), dockWidth);
+  }
+  // Written once Open from Project showed a place (mitcad#530).
+  if (!browseRoot.isEmpty()) {
+    settings.setValue(QStringLiteral("projects/browseRoot"), browseRoot);
+    settings.setValue(QStringLiteral("projects/browseFolder"), browseFolder);
   }
 }
 

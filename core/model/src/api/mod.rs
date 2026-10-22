@@ -44,6 +44,8 @@ mod gears;
 mod properties;
 // Reorient Design (mitcad#502).
 mod reorient;
+// Mount frames of any part and placing a part by one (mitcad#525).
+mod mounts;
 
 use std::fmt;
 
@@ -589,6 +591,9 @@ enum Query {
     PropertySets(properties::PropertySetsQuery),
     PropertyTypes,
     PropertySearch(properties::PropertySearchQuery),
+    // Mount frames and placing a part by one (mitcad#525, `mounts.rs`).
+    MountFrames(mounts::MountFramesQuery),
+    MountPreview(Box<mounts::MountPreviewQuery>),
 }
 
 fn names(names: &[String]) -> Value {
@@ -1443,6 +1448,9 @@ impl<K: Kernel> Document<K> {
             Query::PropertySets(query) => self.property_sets_json(&query)?,
             Query::PropertyTypes => self.property_types_json(),
             Query::PropertySearch(query) => self.property_search_query_json(&query)?,
+            // Mount frames (mitcad#525).
+            Query::MountFrames(query) => self.mount_frames_json(&query)?,
+            Query::MountPreview(query) => self.mount_preview_json(*query)?,
         };
         Ok(result.to_string())
     }

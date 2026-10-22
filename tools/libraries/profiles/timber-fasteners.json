@@ -2,6 +2,7 @@
   "notes": [
     "Wood fasteners (mitcad#478): Mitcad's own parts, no supplier, in common sizes (diameter x length in mm), simplified for assemblies: a shank and a cylindrical head, no thread or point.",
     "The axis frame is the nominal length reference: countersunk heads have their top at z = 0, other heads extend into z < 0, with the tip at z = L. Timber seats wood screws and nails by their head top, and pan/washer heads by their underside; wood.seat records the rule.",
+    "Timber's frames and spacing sets start with the countersunk wood screw, driven flush (mitcad#516): wood.default marks it. The connector screw's pan head bears on a metal connector's plate, not on bare wood.",
     "Steel, zinc plated: 7850 kg/m3."
   ],
   "categories": [{"id": "wood-fasteners", "name": "Wood fasteners"}],
@@ -24,8 +25,8 @@
         {"diameter": 5.0, "head": [10, 3], "lengths": [40, 50, 60, 70, 80, 90, 100]},
         {"diameter": 6.0, "head": [12, 3.6], "lengths": [60, 70, 80, 90, 100, 120, 140, 160]}
       ]},
-      "appearance": "steel_satin",
-      "build": {"role": "fastener", "wood": {"kind": "screw", "head": "countersunk", "seat": "head_top"},
+      "appearance": "zinc_plated",
+      "build": {"role": "fastener", "wood": {"kind": "screw", "head": "countersunk", "seat": "head_top", "default": true},
                 "material": {"product": "steel, zinc plated", "density": 7850}}
     },
     {
@@ -43,7 +44,7 @@
       "sizes": {"rows": [
         {"diameter": 5.0, "head": [8, 3], "lengths": [25, 35, 40, 50, 60]}
       ]},
-      "appearance": "steel_satin",
+      "appearance": "zinc_plated",
       "build": {"role": "fastener", "wood": {"kind": "screw", "head": "pan", "seat": "head_underside"},
                 "material": {"product": "steel, zinc plated", "density": 7850}}
     },
@@ -64,7 +65,7 @@
         {"diameter": 3.1, "head": [7, 1.3], "lengths": [75, 90]},
         {"diameter": 4.0, "head": [8, 1.5], "lengths": [40, 50, 60]}
       ]},
-      "appearance": "steel_satin",
+      "appearance": "zinc_plated",
       "build": {"role": "fastener", "wood": {"kind": "nail", "head": "flat", "seat": "head_top"},
                 "material": {"product": "steel, zinc plated", "density": 7850}}
     },
@@ -84,7 +85,7 @@
         {"diameter": 6.0, "head": [15, 4], "lengths": [80, 100, 120, 140, 160, 180, 200, 220, 240, 260, 280, 300]},
         {"diameter": 8.0, "head": [20, 5], "lengths": [100, 120, 140, 160, 180, 200, 220, 240, 260, 280, 300, 350, 400]}
       ]},
-      "appearance": "steel_satin",
+      "appearance": "zinc_plated",
       "build": {"role": "fastener", "wood": {"kind": "screw", "head": "washer", "seat": "head_underside"},
                 "material": {"product": "steel, zinc plated", "density": 7850}}
     }

@@ -42,7 +42,8 @@ are refused, and paths stay inside the repository.
   "homepage": "",
   "sources": ["ISO 4762", "ISO 4032", "Tabulated for this library; see SOURCES.md"],
   "units": "mm",
-  "categories": [{"id": "screws", "name": "Screws"}, {"id": "nuts", "name": "Nuts"}],
+  "categories": [{"id": "screws", "name": "General fasteners/Screws"},
+                 {"id": "nuts", "name": "General fasteners/Nuts"}],
   "components": [
     {"id": "iso4762", "path": "screws/iso4762.mitcad", "category": "screws",
      "name": "Hexagon socket head cap screw", "standard": "ISO 4762",
@@ -62,8 +63,8 @@ are refused, and paths stay inside the repository.
 | `license` | an SPDX licence expression for every component without its own |
 | `authors`, `homepage`, `sources` | for the attribution and the data's origin |
 | `units` | `mm` |
-| `categories` | `id` and `name` of the groups components belong to |
-| `components` | `id`, `path` (a `.mitcad` file), `name` (required); `category`, `standard`, `description`, `keywords` (or `tags`), `preview` (a PNG), `row_previews`, `license` (instead of the library's), `designation`, `supplier`, `part_number`, `supplier_url`, `build` |
+| `categories` | `id` and `name` of the groups components belong to, and optionally `parent` ([Groups](#groups)) |
+| `components` | `id`, `path` (a `.mitcad` file), `name` (required); `category` (one id or a list, [Groups](#groups)), `categories`, `standard`, `description`, `keywords` (or `tags`), `preview` (a PNG), `row_previews`, `license` (instead of the library's), `designation`, `supplier`, `part_number`, `supplier_url`, `build`, `mounts` ([Mount frames](#mount-frames)) |
 
 `supplier` (who sells the part, `Motedis`), `part_number` (the
 supplier's article number) and `supplier_url` (the product page, https
@@ -88,6 +89,53 @@ replaced; without it `{standard} {config}`. A configuration row's own
 
 Unknown fields are ignored, so newer libraries stay readable.
 
+### Groups
+
+The categories make the tree of groups that Insert from Library and the
+BUILD tab's part picker show (mitcad#527):
+
+```json
+"categories": [
+  {"id": "wood", "name": "Wood"},
+  {"id": "dimensioned-timber", "name": "Dimensioned timber", "parent": "wood"},
+  {"id": "sheets", "name": "Wood/Sheets"},
+  {"id": "slot-screws", "name": "Slot profile/Screws"},
+  {"id": "general-screws", "name": "General fasteners/Screws"}],
+"components": [
+  {"id": "hammer-screw-b8", "path": "slot-screws/hammer-screw-b8.mitcad", "name": "Hammer-head screw B8",
+   "category": ["slot-screws", "general-screws"]}]
+```
+
+- A category's `parent` is another category's `id` in the same library;
+  its `name` may be a path of names, `Wood/Sheets` (the names between the
+  slashes, trimmed). Both together put the path under the parent. A
+  category with neither is a group at the top, so libraries made before
+  the tree, and those of one's own, show as they did.
+- Groups are known by their names: the `Wood` of two libraries is one
+  group, whether one names it by a parent and the other by a path, and
+  in any case (the first spelling shows). A group lists its own parts and
+  those of its subgroups.
+- A component's `category` is one id or a list of them (or `category`
+  and a list `categories`): the first is its home, the folder `library
+  add` puts it in and the group a view of one group shows it in; it is
+  listed in each of the others too. It stays one part: one tile with one
+  star and one count of uses, once in Favourites and In this design.
+- The groups show in the order of the libraries' `categories` (a group
+  at the place of the first category that names it), then by name; a
+  category the list lacks is a group of its id at the top, after them.
+- `library check` warns of a `parent` that is no category of the
+  library (the group is shown at the top) and of categories that are each
+  other's parents, a cycle (the path is cut where it closes), and of a
+  component's category the list lacks. These are warnings: the library
+  stays usable.
+- `library_show` and `library_search` give each component its
+  `category` (the home), `categories` (every one, the home first) and
+  `groups`: per category `{"category", "path": [names from the top],
+  "order": [each name's place]}`. `library_search`'s `category` finds a
+  component by any of its categories. `library_add` takes `category` as
+  one id or a list, and for a new home category `category_name` (a path
+  name) and `category_parent`.
+
 ### Configuration tables
 
 A design's top-level `configurations` (the `set_configurations` command
@@ -110,6 +158,70 @@ design, usually user parameters that its features use). Selectors are the
 cascaded choices the application shows (Size, then Length); each row's
 combination is unique. Applying a row only changes parameter
 expressions, as Change Parameters does.
+
+### Mount frames
+
+Any component may say where it mounts (mitcad#525): a light fitting on a
+ceiling or a wall, a screw in a hole, a bin on the cells of a baseplate.
+Its design marks a Joint Origin as a **mount frame** (Joint Origin's
+Mount Frame check, [app/COMMANDS.md](../app/COMMANDS.md#joints); the
+`mount` of a `joint_origin`,
+[commands.md](../core/model/src/api/commands.md#mount-frames)): the
+frame's name, what it mounts on and how the part may move once placed.
+A joint origin named `mount:<name>`, as BUILD's parts name theirs
+([below](#build-parts)), is a face frame of that name, fixed.
+
+| `kind` | The frame | Placed on | `joint` (how it moves) |
+|---|---|---|---|
+| `face` | on the face the part lies with, z out of the part | a flat face or a plane, where clicked, face to face | `rigid` (fixed), `planar` (free on the face: slides and turns), `revolute` (turns) |
+| `shaft` | on a screw's or pin's axis at the face that bears on the hole's rim (under a head), z along the shank towards the tip | a hole: its round face or rim, at the end towards the viewer, coaxial | `rigid`, `revolute`, `cylindrical` (turns and slides), `slider` (slides along the axis) |
+| `hole` | on the axis of the part's hole, z out of the face that goes on | a shaft: its round face or end rim | as `shaft` |
+| `grid` | at a corner of a grid of cells on the part's face, x and y along the cells, z out of the part; `pitch` (two lengths) and `cells` (two counts) | (other parts stand on it) | `rigid` |
+| `foot` | in the middle of the face a part stands on a grid with, z out of the part; `footprint` (the cells it covers along its x and y) and optionally `pitch` (the grid it fits) | a grid's cells: those under the click, its footprint turned in quarter turns | `rigid` |
+
+**Publishing writes them.** `library_add` (Publish to Library, `mitcad-cli
+library add`) writes the design's mount frames into the component's
+`mounts` (unless the command gives them, and not for a BUILD part, whose
+frames are `build.frames`); the design stays what counts, the block tells
+the application before it reads the design:
+
+```json
+{"id": "bin1x1", "path": "bins/bin1x1.mitcad", "name": "Bin 1x1",
+ "mounts": [{"name": "foot", "kind": "foot", "joint": "rigid", "footprint": [1, 1], "pitch": [42, 42]}]}
+{"id": "baseplate", "path": "baseplates/baseplate.mitcad", "name": "Baseplate 3x2",
+ "mounts": [{"name": "grid", "kind": "grid", "joint": "rigid", "pitch": [42, 42], "cells": [3, 2]}]}
+{"id": "lamp", "path": "lamps/lamp.mitcad", "name": "Ceiling lamp",
+ "mounts": [{"name": "ceiling", "kind": "face", "joint": "planar"},
+            {"name": "wall", "kind": "face", "joint": "rigid"}]}
+```
+
+A length is a number in mm or text with a unit, as in BUILD's blocks.
+`library check` checks the block: names (letters, digits, `_`, `-`, `+`,
+`.`) each once, a known kind, a joint the kind takes, a grid's pitch and
+cells and a foot's footprint (counts of 1 or more), no cells or footprint
+on other kinds; and the design: every listed frame is a mount frame of
+the design that says the same (kind, joint, cells, footprint, pitch),
+every mount of the design is a sound one, and a mount frame of the design
+the block leaves out is a warning.
+
+**Placing a part.** Insert from Library drops a part in as it always did
+(at the origin, to be joined later with Joint); a part's mount frames
+then are joint origins of its component, ready for Joint. A part with
+mount frames opens Place Part instead, where a click on a face, a hole or
+a grid snaps the chosen frame to it and makes the joint the frame asks for
+(Enter without a click still drops it in;
+[app/COMMANDS.md](../app/COMMANDS.md#component-libraries)). On a grid the
+foot goes on the cells under the click, its footprint turned with Rotate
+in quarter turns; a cell another part stands on is refused, with that
+part's name.
+
+**Gridfinity** (an open system of bins on baseplates, 42 mm cells and
+7 mm height units) is made this way: a baseplate's top with a `grid`
+frame at the corner of its first cell (`pitch` [42, 42], `cells` its
+size), each bin's bottom with a `foot` frame in its middle (`footprint` its
+size in cells, `pitch` [42, 42]). The tests use synthetic parts of those
+sizes; ready-made Gridfinity models are third-party files and stay out of
+Mitcad's repositories.
 
 ### BUILD parts
 
@@ -158,7 +270,8 @@ A value is a number (mm, kg) or text with a unit: `"9 mm"`, `"6 m"`,
   opening, inner width, used to size panels and fit nuts), and
   `mass_per_metre`.
 - `frames` names the design's **mount frames**: each is a `joint_origin`
-  feature of the design named `mount:<name>` (`mount:slot_x+_1`). A frame
+  feature of the design named `mount:<name>` (`mount:slot_x+_1`), or one
+  with a `mount` of that name ([Mount frames](#mount-frames)). A frame
   is where another part mates; its x axis runs along the slot or rail,
   its z axis as below. `name`: letters, digits, `_`, `-`, `+` and
   `.`; `kind`: `end`, `slot`, `bore`, `face`, `rail`, `shaft`, `hole`,
@@ -402,6 +515,17 @@ kg/m³ (a number, or text with the unit `kg/m3`), a `moisture` in %.
   by its height; nominal length still refers to the axis-to-tip distance.
   Metal connector hole frames retain bearing placement. Generic non-wood
   bolts and washers use their existing connector frames unchanged.
+  `wood.default: true` (mitcad#516; `library check`: true or false) marks
+  the fastener Timber's frames and spacing sets, and a timber junction's
+  Connector, start with where the user has not chosen one: the wood
+  picker (`library_build_candidates` with `kind: wood`) lists it first.
+  Mitcad's library marks **Wood screw, countersunk** (driven flush,
+  `seat: head_top`), not the pan-head **Connector screw**, which bears on
+  a metal connector's plate and would stand proud of bare wood. Without
+  a mark the tools take the first screw driven flush (`seat: head_top`,
+  or a countersunk or bugle head without a seat), then the first screw,
+  then the first wood fastener, in the picker's order; a choice the user
+  made stays the tool's while the application runs.
 
 - **A bracket, joist hanger or post base** (`role: "connector"`):
   `connector.placement: "outer"` (on the members' outer faces; `space`
@@ -532,7 +656,8 @@ Mitcad offers, kept in a repository of its own
 
 - the metric fasteners: ISO 4762, ISO 4017 and ISO 10642 screws, ISO 4032
   nuts and ISO 7089 washers, M3 to M12 in their preferred lengths,
-  simplified for assemblies (no threads, chamfers or fillets). Each names
+  simplified for assemblies (cosmetic threads, the heads' top edges
+  rounded or chamfered, no other chamfers or fillets; [Previews](#previews)). Each names
   CC0-1.0 as its own licence;
 - the BUILD tab's slot profiles, connectors, nuts, caps, panels and
   linear parts (mitcad#375), made parametric from the supplier's CAD
@@ -556,8 +681,20 @@ Mitcad offers, kept in a repository of its own
   (`cladding`), and deck boards with rounded edges, smooth or grooved
   (`decking`); each one part with its sizes as rows.
 
-Its categories are those of both (screws, nuts, washers, profiles,
-connectors, caps, panels, linear, …). `LICENSE` says which licence
+Its categories are those of both, in six main groups ([Groups](#groups),
+mitcad#527), in this order: **Wood** (sawn, planed and dimensioned
+timber, tongue and groove, cladding and deck boards, sheets, wood
+fasteners, timber connectors), **Slot profile** (profiles, connectors,
+mounting plates, panels, caps, covers, tubes and spacers, accessories,
+and the nuts and screws made for the slot: `slot-nuts`, `slot-screws`),
+**Motion** (the linear parts: rails, carriages, shafts, lead screws and
+threaded rods, belts, gears; ball bearings, motors), **General
+fasteners** (the ISO screws, nuts and washers: `screws`, `nuts`,
+`washers`), **Hardware** (handles and knobs, feet and base plates,
+castors and wheels) and **Workshop**. `make-profile-library.py` names
+each category under its main group (`MAIN_GROUPS`: `Wood/Dimensioned
+timber`) and lists them in that order; `make-fastener-library.py` names
+its own `General fasteners/…`. `LICENSE` says which licence
 applies to what, `SOURCES.md` where both kinds of part come from.
 
 **The fastener library before it.** Up to 1.0.0 the repository was the
@@ -574,13 +711,15 @@ Three generators make it with `mitcad-cli`:
 ```
 tools/libraries/make-parts-library.py --cli <mitcad-cli> --source <folder of the supplier's files>
     --out <clone of the parts repository> [--groups <folder>] [--version 2.3.0] [--work <folder>]
-    [--no-render] [--commit]
+    [--render-worker <mitcad-render>] [--no-render] [--rerender] [--commit]
 tools/libraries/make-fastener-library.py --cli <mitcad-cli> --out <folder> [--sizes M3,M5]
-    [--standards iso4762,iso4032] [--version 1.0.0] [--merge] [--commit]
+    [--standards iso4762,iso4032] [--version 1.0.0] [--render-worker <mitcad-render>] [--no-render]
+    [--rerender] [--merge] [--commit]
 tools/libraries/make-profile-library.py --cli <mitcad-cli> --source <folder of the supplier's files>
     --out <folder> [--groups <folder>] [--only id,id] [--version 1.0.0] [--work <folder>]
-    [--no-render] [--merge] [--commit]
+    [--render-worker <mitcad-render>] [--no-render] [--rerender] [--merge] [--commit]
 tools/libraries/profiles/*.json       the BUILD parts, one file per group
+tools/libraries/library_previews.py   the fasteners' studio and finishes (both generators use it)
 ```
 
 - `make-parts-library.py` makes the library: the fasteners, then the
@@ -589,11 +728,115 @@ tools/libraries/profiles/*.json       the BUILD parts, one file per group
   of the parts repository, so that its versions stay: `--commit` records
   the result on top of them and tags it (`v2.3.0` by default, the next version to publish).
 - `make-fastener-library.py` builds the fasteners from the standards'
-  dimension tables, with preview images drawn from the dimensions;
+  dimension tables, each with its finish as its appearance and a
+  rendered preview ([Previews](#previews));
   `make-profile-library.py` the BUILD parts (below). Each makes a library
   `mitcad-parts` of its own parts on its own (their tests do);
   with `--merge` each keeps the other's parts in the manifest at
   `--out`.
+
+### Previews
+
+How the library's pictures are made (mitcad#526):
+
+- **Fasteners** (the ISO screws, nuts and washers; the BUILD parts whose
+  `build.role` is `fastener` or whose category is one of nuts, screws,
+  washers, bolts, nails or fasteners, such as `nuts`, `screws` and
+  `wood-fasteners`) are rendered with `mitcad-cli render`
+  ([rendering.md](rendering.md#final-render)) in one studio setup,
+  `STUDIO` in `tools/libraries/library_previews.py`: a copy of the design
+  is turned so that the part's axis is Z with its head up (the axis along
+  a long part's longest extent, across a flat one's thinnest, its head on
+  the side its mass lies on; a group file's `"preview": {"up": [x, y,
+  z]}` names it instead), and seen in perspective from three times its
+  size away, from the front right and above (25 degrees for a long part,
+  35 for a compact one, 50 for a nut or washer), a part at least 2.2
+  times longer than wide lying across the tile. The render settings are
+  the `studio` environment at twice its strength, three softboxes (area
+  lights in the part's frame, sized by the part and powered so that each
+  gives the same light on every part, each placed where the camera sees
+  it mirrored: a broad key streak along the left of a shank and a head's
+  side and a narrow rim streak near their right edge, from lights below
+  the part, as a cylinder seen from above mirrors, and a small softbox
+  mirrored in part of a head's top), no ground, the `neutral` view
+  transform a quarter stop brighter, 64 samples denoised with Cycles'
+  fixed seed and no time limit, 512 x 512 pixels with a transparent
+  background; the generator lays the render over the tiles' background
+  (sRGB 246, 247, 249, that of the drawn pictures), crops it to the part
+  with 6 % around it and averages it down to 256 x 256 (an RGB PNG of a
+  few tens of KB).
+- **Finishes.** A fastener's surface is its `appearance`: the ISO socket
+  screws (ISO 4762, ISO 10642) black oxide, the other ISO parts zinc
+  plated steel; a BUILD fastener without an `appearance` gets one by what
+  its name, part number or id says (`stainless`, `A2`, `A4`: stainless
+  steel; `brass`; `black`, `oxide`: black oxide), else zinc plated steel.
+  An `appearance` may name a finish: `zinc_plated` (the design's
+  `zinc_plated`, a light silver, roughness 0.27), `stainless` (the
+  design's `stainless_steel`, 0.22), `black_oxide` (the design's
+  `black_oxide`, a dark grey metal, 0.22), `brass` (`brass_polished`);
+  the designs keep it, so a placed part shows it too.
+- **Threads and heads.** Every screw's design has a cosmetic thread
+  feature on its shank (`modeled: false`: the `threads` query lists it,
+  the view shows it, no geometry), whose cone chamfers the tip (the
+  thread's `chamfer`, at the free end only: about the thread's depth at
+  45 degrees), and its head's top edge rounded or chamfered, one feature
+  each, so that assemblies stay light:
+
+  | Screw | Thread | Head |
+  |---|---|---|
+  | ISO 4762 | ISO metric coarse, over b = 2d + 12 mm from the tip (the whole shank when shorter) | the top edge rounded, radius 0.06 dk |
+  | ISO 10642 | ISO metric coarse, over b = 2d + 12 mm, at most the shank under the head | the top edge rounded, radius 0.03 dk |
+  | ISO 4017 | ISO metric coarse, to the head | the hexagon's six top edges chamfered 0.06 s |
+  | Wood screws, connector and structural screws | the nearest ISO 1478 forming screw thread (`ST4.8` for a 5 mm screw), a stand-in for the wood screw's own thread, which the thread feature has no profile of; over 60 % of the length from the tip (the connector screw to the head) | the head's outer edge rounded, radius 0.08 of its diameter |
+  | The slot systems' screws (made from the supplier's solids) | ISO metric coarse of the size in the name (`M8x20`), on the solid's cylindrical faces of that diameter; a self-forming screw (`S12x30`) the metric coarse thread of its diameter as a stand-in | the supplier's |
+
+  A design's thread has its default row's size: a configuration row sets
+  parameters only, so another row's shank follows its size but keeps
+  that designation. A feature that cannot be made (an edge or face not
+  found) is left out with a warning; the part stays as it was. The tip's
+  chamfer diameter is an expression of the row's own size (ISO: `d -
+  1.182532 * P`, the minor diameter less a tenth of a pitch; wood screws
+  `0.58 * D`), so that it follows the rows the designation does not. Nails,
+  nuts and washers have none. The **previews** make the part's cosmetic
+  thread modelled (`edit_feature` with `modeled: true`: the same faces,
+  size, length and chamfer) on the rendered copy only, so that the
+  picture shows the thread's profile; the generator prints `rendered
+  without its thread (why)` when the copy cannot model it. With
+  `--strict` (all three generators) a generator fails, after making the
+  library, when a fastener's preview was drawn, rendered without its
+  thread, or a thread or rounding was left out; the render-step test
+  runs with it.
+- **Only what changed is rendered.** A rendered PNG carries a `tEXt`
+  chunk `Mitcad preview` with the key it was made from (a digest of the
+  studio setup and the design file); a generator keeps the picture in
+  `--out` whose key matches and renders the others. `--rerender` renders
+  them all.
+- **Without a render worker** (`--no-render`, or none found: `mitcad-cli
+  render --list-devices` fails) the generators say so once and draw the
+  pictures as before: an ISO fastener's outline from the side, drawn
+  from its dimensions; a BUILD fastener's bounds as a box. A render that
+  fails draws that part's picture with a warning naming it.
+- **Other parts**: a section part's picture is its section seen from end
+  B, drawn from its curves; a `board`'s rows are rendered from their ends
+  (`row_previews`, below); the other BUILD parts are rendered from the
+  iso view with the design's own render settings. Fasteners have no
+  `row_previews`: their rows differ in size only.
+
+The render worker is `--render-worker`, else `MITCAD_RENDER_WORKER`, else
+`mitcad-render` next to `mitcad-cli` (a package); in a build folder it is
+`app/mitcad-render` beside `tools/cli/mitcad-cli`. To rebuild the library
+with rendered previews, from a build folder and a clone of the parts
+repository (Windows; elsewhere the same without `.exe`):
+
+```
+python tools\libraries\make-parts-library.py --cli build\dev\tools\cli\mitcad-cli.exe
+    --render-worker build\dev\app\mitcad-render.exe --source <folder of the supplier's files>
+    --out <clone of the parts repository> --work <folder outside it>
+```
+
+It prints `preview <id>: rendered|kept|drawn (<finish>)` for every
+fastener and ends with the library check; `--commit` records and tags
+the result (publishing a version is the maintainers' step).
 
 ### The BUILD parts
 
@@ -604,7 +847,9 @@ The supplier's files are not part of Mitcad; `--source` points at a copy
 of them, and only the designs made from them go into the library. A
 group file is a JSON array of parts (the generator also reads
 `{"categories": [{"id", "name"}], "parts": [...], "left_out": [...]}`,
-which names the categories for the manifest and the supplier's files the
+which names the categories for the manifest (under their main group,
+[above](#mitcads-parts-library); a name with a slash is kept as it is)
+and the supplier's files the
 group makes no part of, each `{"source", "reason"}`: an assembly, a copy
 of another part's file, a file that holds another product); the files are
 read in the order of their names. Every supplier file is the `source` of
@@ -748,7 +993,9 @@ library component:
   - `density` (a part's or the group file's, kg/m³): a section's mass per
     metre is its volume per length times it (aluminium, 2.7 g/cm³, when
     neither names one); a part's `build.material.density` defaults to it.
-  - `appearance`: a library appearance's id (`steel_satin`), or one of the
+  - `appearance`: a library appearance's id (`steel_satin`), a finish's
+    name (`zinc_plated`, `stainless`, `black_oxide`, `brass`;
+    [Previews](#previews); a fastener without one gets one), or one of the
     design's own `{"id", "name", "based_on", "base_color", "roughness",
     "texture", "size"}` whose texture the generator draws and embeds:
     `grain` (wood, the grain along the image's height), `strands` (OSB),
@@ -815,7 +1062,8 @@ library component:
   answers to: the end face, the section's curves, its regions) in a
   temporary folder in `--work` (default the folder above `--out`; not in
   a Mitcad project). It draws a section's preview (the section seen from
-  end B) and renders the others with `mitcad-cli render` (`--no-render`,
+  end B), renders a fastener's in the studio ([Previews](#previews)) and
+  the others with `mitcad-cli render` (`--no-render`,
   or a render that fails: their bounds drawn as a box); a `board`'s rows
   each from beyond its end B, a piece 1.2 times its larger side long, so
   that the tiles show the sections (`row_previews`; the part's picture its
@@ -860,7 +1108,17 @@ library component:
   marking, sections, densities and masses of rows of each family, the
   fasteners' and connectors' frames, and the profiled boards' rows,
   covers, areas (the designs' volumes) and frames, a floorboard placed
-  on another's tongue and a shiplap row stepping by its cover.
+  on another's tongue and a shiplap row stepping by its cover. ctest
+  `cli.library-previews` (`tools/cli/library-previews-test.py`, mitcad#526)
+  renders an ISO 4762 screw (black oxide, the fastener generator) and the
+  countersunk wood screw of `timber-fasteners.json` (zinc plated, the
+  profile generator) in the studio: each a 256 x 256 PNG within 512 KB,
+  not blank, reading as metal: the zinc plated screw a light silvery grey
+  with near-white highlights, the black oxide one a dark grey (only its
+  thread grooves in deep shadow may be black) with visible highlights, neither flat (the
+  lumas inside their edges); `library check` passes; a second run keeps the picture;
+  without a worker the generator draws it. It is skipped where the render
+  worker cannot render.
 
 ## Where libraries are kept
 

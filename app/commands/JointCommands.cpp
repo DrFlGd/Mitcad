@@ -13,12 +13,14 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <initializer_list>
 #include <limits>
 #include <optional>
 
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QKeySequence>
+#include <QRegularExpression>
 #include <QStringList>
 
 #include <gp_Trsf.hxx>
@@ -813,7 +815,94 @@ CommandDef asBuiltJointCommand(const CommandContext& context) {
 }
 
 // ---------------------------------------------------------------------------
-// Joint Origin: a frame on geometry of the active component.
+// Joint Origin: a frame on geometry of the active component, optionally a
+// mount frame of the part (mitcad#525; commands.md, "Mount frames").
+
+namespace {
+
+const Choices kMountKinds ={{QStringLiteral("face"), QStringLiteral("On a face")},
+                             {QStringLiteral("shaft"), QStringLiteral("Into a hole (its shaft)")},
+                             {QStringLiteral("hole"), QStringLiteral("Onto a shaft (its hole)")},
+                             {QStringLiteral("grid"), QStringLiteral("Grid of cells")},
+                             {QStringLiteral("foot"), QStringLiteral("Foot on a grid")}};
+
+// How a part placed by a frame of a kind may move (the joint it gets).
+Choices mountJoints(const QString& kind) {
+  if (kind == QStringLiteral("grid") || kind == QStringLiteral("foot")) {
+    return {{QStringLiteral("rigid"), QObject::tr("Fixed")}};
+  }
+  if (kind == QStringLiteral("hole") || kind == QStringLiteral("shaft")) {
+    return {{QStringLiteral("rigid"), QObject::tr("Fixed")},
+            {QStringLiteral("revolute"), QObject::tr("Turns")},
+            {QStringLiteral("cylindrical"), QObject::tr("Turns and slides")},
+            {QStringLiteral("slider"), QObject::tr("Slides")}};
+  }
+  return {{QStringLiteral("rigid"), QObject::tr("Fixed")},
+          {QStringLiteral("planar"), QObject::tr("Free on the face")},
+          {QStringLiteral("revolute"), QObject::tr("Turns")}};
+}
+
+bool mountOn(const CommandState& state) { return state.checked(QStringLiteral("mount")); }
+
+bool mountKindIs(const CommandState& state, std::initializer_list<const char*> kinds) {
+  const QString kind = state.choice(QStringLiteral("mount_kind"));
+  return mountOn(state) && std::any_of(kinds.begin(), kinds.end(), [&kind](const char* k) {
+           return kind == QLatin1String(k);
+         });
+}
+
+// The mount's two counts (cells, a footprint): whole numbers of 1 or more.
+std::optional<QJsonArray> countsOf(const CommandState& state, const QString& x, const QString& y) {
+  QJsonArray counts;
+  for (const QString& id : {x, y}) {
+    const double value = state.value(id);
+    if (!std::isfinite(value) || value < 1.0 || std::abs(value - std::round(value)) > 1e-9) {
+      return std::nullopt;
+    }
+    counts.append(static_cast<int>(std::lround(value)));
+  }
+  return counts;
+}
+
+// The `mount` of a joint origin from the panel's inputs; an error when a
+// value is not one.
+std::optional<QJsonObject> mountOf(const CommandState& state, QString& error) {
+  const QString name = state.text(QStringLiteral("mount_name")).trimmed();
+  static const QRegularExpression valid(QStringLiteral("^[A-Za-z0-9_+.-]{1,64}$"));
+  if (!valid.match(name).hasMatch()) {
+    error = QObject::tr("A mount frame's name is letters, digits, _ - + and . (1 to 64).");
+    return std::nullopt;
+  }
+  const QString kind = state.choice(QStringLiteral("mount_kind"));
+  QJsonObject mount{{QStringLiteral("name"), name}, {QStringLiteral("kind"), kind}};
+  const Choices joints = mountJoints(kind);
+  QString joint = state.choice(QStringLiteral("mount_joint"));
+  if (std::none_of(joints.begin(), joints.end(), [&joint](const auto& j) { return j.first == joint; })) {
+    joint = joints.first().first;
+  }
+  mount.insert(QStringLiteral("joint"), joint);
+  if (kind == QStringLiteral("grid") || kind == QStringLiteral("foot")) {
+    const double px = state.value(QStringLiteral("pitch_x"));
+    const double py = state.value(QStringLiteral("pitch_y"));
+    if (!(std::isfinite(px) && px > 0.0 && std::isfinite(py) && py > 0.0)) {
+      error = QObject::tr("The pitch is two lengths above 0.");
+      return std::nullopt;
+    }
+    mount.insert(QStringLiteral("pitch"), QJsonArray{px, py});
+    const bool grid = kind == QStringLiteral("grid");
+    const auto counts = grid ? countsOf(state, QStringLiteral("cells_x"), QStringLiteral("cells_y"))
+                             : countsOf(state, QStringLiteral("footprint_x"), QStringLiteral("footprint_y"));
+    if (!counts) {
+      error = grid ? QObject::tr("A grid has 1 or more cells each way.")
+                   : QObject::tr("A foot covers 1 or more cells each way.");
+      return std::nullopt;
+    }
+    mount.insert(grid ? QStringLiteral("cells") : QStringLiteral("footprint"), *counts);
+  }
+  return mount;
+}
+
+} // namespace
 
 CommandDef jointOriginCommand(const CommandContext& context) {
   CommandDef def;
@@ -834,6 +923,39 @@ CommandDef jointOriginCommand(const CommandContext& context) {
           .withTooltip(QObject::tr("About the frame's Z axis"))
           .withManipulator(angleHandle({QStringLiteral("geometry")})),
       flipInput(QStringLiteral("flip"), QObject::tr("Flip")).withTooltip(QObject::tr("Turns the frame over")),
+      // A mount frame of the part (mitcad#525): where it mounts when placed
+      // from a library, and how it may move there.
+      checkInput(QStringLiteral("mount"), QObject::tr("Mount Frame"))
+          .withTooltip(QObject::tr("Where the part mounts when it is placed from a library: a face, a hole, a grid")),
+      textInput(QStringLiteral("mount_name"), QObject::tr("Name"), QStringLiteral("base"))
+          .withTooltip(QObject::tr("The frame's name in the library: letters, digits, _ - + ."))
+          .withVisible(mountOn),
+      choiceInput(QStringLiteral("mount_kind"), QObject::tr("Mounts"), kMountKinds, QStringLiteral("face"))
+          .withTooltip(QObject::tr("What the frame mounts on: z points out of the part towards it"))
+          .withVisible(mountOn),
+      choiceInput(QStringLiteral("mount_joint"), QObject::tr("Moves"), mountJoints(QStringLiteral("face")),
+                  QStringLiteral("rigid"))
+          .withChoices([](const CommandState& state) { return mountJoints(state.choice(QStringLiteral("mount_kind"))); })
+          .withTooltip(QObject::tr("How the placed part may move: the joint its placement makes"))
+          .withVisible([](const CommandState& state) { return mountOn(state) && !mountKindIs(state, {"grid", "foot"}); }),
+      valueInput(QStringLiteral("pitch_x"), QObject::tr("Pitch X"), ValueKind::Length, QStringLiteral("42 mm"))
+          .withTooltip(QObject::tr("A cell's size along the frame's X"))
+          .withVisible([](const CommandState& state) { return mountKindIs(state, {"grid", "foot"}); }),
+      valueInput(QStringLiteral("pitch_y"), QObject::tr("Pitch Y"), ValueKind::Length, QStringLiteral("42 mm"))
+          .withTooltip(QObject::tr("A cell's size along the frame's Y"))
+          .withVisible([](const CommandState& state) { return mountKindIs(state, {"grid", "foot"}); }),
+      valueInput(QStringLiteral("cells_x"), QObject::tr("Cells X"), ValueKind::Unitless, QStringLiteral("3"))
+          .withTooltip(QObject::tr("The grid's cells along X, from the frame's origin"))
+          .withVisible([](const CommandState& state) { return mountKindIs(state, {"grid"}); }),
+      valueInput(QStringLiteral("cells_y"), QObject::tr("Cells Y"), ValueKind::Unitless, QStringLiteral("2"))
+          .withTooltip(QObject::tr("The grid's cells along Y, from the frame's origin"))
+          .withVisible([](const CommandState& state) { return mountKindIs(state, {"grid"}); }),
+      valueInput(QStringLiteral("footprint_x"), QObject::tr("Footprint X"), ValueKind::Unitless, QStringLiteral("1"))
+          .withTooltip(QObject::tr("The cells the foot covers along X; the frame in their middle"))
+          .withVisible([](const CommandState& state) { return mountKindIs(state, {"foot"}); }),
+      valueInput(QStringLiteral("footprint_y"), QObject::tr("Footprint Y"), ValueKind::Unitless, QStringLiteral("1"))
+          .withTooltip(QObject::tr("The cells the foot covers along Y"))
+          .withVisible([](const CommandState& state) { return mountKindIs(state, {"foot"}); }),
       hidden(QStringLiteral("component")),
       hidden(QStringLiteral("override")),
   };
@@ -862,6 +984,14 @@ CommandDef jointOriginCommand(const CommandContext& context) {
     if (!frameOverride.isEmpty()) {
       origin.insert(QStringLiteral("frame_override"), frameOverride);
     }
+    if (mountOn(state)) {
+      QString error;
+      const std::optional<QJsonObject> mount = mountOf(state, error);
+      if (!mount) {
+        return Built::failure(error, QStringLiteral("mount_name"));
+      }
+      origin.insert(QStringLiteral("mount"), *mount);
+    }
     return Built::of(origin);
   };
 
@@ -878,6 +1008,28 @@ CommandDef jointOriginCommand(const CommandContext& context) {
     if (!frameOverride.isEmpty()) {
       state.setText(QStringLiteral("override"),
                     QString::fromUtf8(QJsonDocument(frameOverride).toJson(QJsonDocument::Compact)));
+    }
+    // A mount frame (mitcad#525).
+    const QJsonObject mount = feature.value(QStringLiteral("mount")).toObject();
+    state.setChecked(QStringLiteral("mount"), !mount.isEmpty());
+    if (!mount.isEmpty()) {
+      state.setText(QStringLiteral("mount_name"), str(mount, "name"));
+      state.setChoice(QStringLiteral("mount_kind"), str(mount, "kind").isEmpty() ? QStringLiteral("face") : str(mount, "kind"));
+      state.setChoice(QStringLiteral("mount_joint"), str(mount, "joint").isEmpty() ? QStringLiteral("rigid") : str(mount, "joint"));
+      const auto pair = [&state, &context](const QJsonValue& value, const QString& x, const QString& y, bool length) {
+        const QJsonArray numbers = value.toArray();
+        if (numbers.size() != 2) {
+          return;
+        }
+        const QString ids[2] = {x, y};
+        for (int i = 0; i < 2; ++i) {
+          const double v = numbers[i].toDouble();
+          state.setText(ids[i], length ? lengthText(v, context) : number(v));
+        }
+      };
+      pair(mount.value(QStringLiteral("pitch")), QStringLiteral("pitch_x"), QStringLiteral("pitch_y"), true);
+      pair(mount.value(QStringLiteral("cells")), QStringLiteral("cells_x"), QStringLiteral("cells_y"), false);
+      pair(mount.value(QStringLiteral("footprint")), QStringLiteral("footprint_x"), QStringLiteral("footprint_y"), false);
     }
   };
 
@@ -909,7 +1061,25 @@ CommandDef jointOriginCommand(const CommandContext& context) {
       }
       return QStringLiteral("(%1)").arg(parts.join(QStringLiteral(", ")));
     };
-    return QStringLiteral("Added joint origin %1: origin %2, normal %3").arg(str(made, "name"), xyz("origin"), xyz("normal"));
+    QString text =
+        QStringLiteral("Added joint origin %1: origin %2, normal %3").arg(str(made, "name"), xyz("origin"), xyz("normal"));
+    // A mount frame (mitcad#525): "mount foot (foot, rigid)".
+    QJsonObject mount;
+    try {
+      mount = context.queryObject({{QStringLiteral("query"), QStringLiteral("feature")}, {QStringLiteral("uid"), str(made, "uid")}})
+                  .value(QStringLiteral("def"))
+                  .toObject()
+                  .value(QStringLiteral("mount"))
+                  .toObject();
+    } catch (const std::exception&) {
+      // No mount then.
+    }
+    if (!mount.isEmpty()) {
+      text += QStringLiteral(", mount %1 (%2, %3)")
+                  .arg(str(mount, "name"), str(mount, "kind"),
+                       str(mount, "joint").isEmpty() ? QStringLiteral("rigid") : str(mount, "joint"));
+    }
+    return text;
   };
   return def;
 }

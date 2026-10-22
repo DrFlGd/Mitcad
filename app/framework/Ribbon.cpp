@@ -507,9 +507,10 @@ const QStringList& Ribbon::groups(const QString& tab) {
                                      QStringLiteral("CONSTRAINTS"),  QStringLiteral("INSPECT"),
                                      QStringLiteral("INSERT"),       QStringLiteral("SELECT"),
                                      QStringLiteral("FINISH SKETCH")};
-  // mitcad#375: placing parts, connecting them, changing them, the lists.
-  static const QStringList build = {QStringLiteral("PROFILE"), QStringLiteral("CONNECT"), QStringLiteral("MODIFY"),
-                                    QStringLiteral("OUTPUT")};
+  // mitcad#375: placing parts, connecting them, changing them, the lists;
+  // TIMBER's loose members, walls, floors and roofs (mitcad#520).
+  static const QStringList build = {QStringLiteral("PROFILE"), QStringLiteral("TIMBER"), QStringLiteral("CONNECT"),
+                                    QStringLiteral("MODIFY"), QStringLiteral("OUTPUT")};
   if (tab == kBuild) {
     return build;
   }

@@ -20,7 +20,9 @@
 #include "../framework/CommandRegistry.hpp"
 #include "../framework/Dialogs.hpp"
 #include "../framework/Json.hpp"
+#include "../projects/ProjectBrowser.hpp"
 #include "../projects/ProjectsPanel.hpp"
+#include "Autosave.hpp"
 #include "LiveController.hpp"
 #include "LockController.hpp"
 #include "ProjectDialogs.hpp"
@@ -96,6 +98,14 @@ void MainWindow::registerProjectCommands() {
                             [this] { openReadOnly(); });
   readOnly.keywords = {QStringLiteral("view"), QStringLiteral("lock"), QStringLiteral("read only")};
   m_registry->add(readOnly);
+  // A design of a project, browsed or searched (mitcad#530).
+  CommandDef browse = def("file.open_from_project", tr("Open from Project..."), "folder",
+                          tr("Opens a design of a project: its folders browsed, or its name searched"),
+                          [this] { openFromProject(); });
+  browse.keywords = {QStringLiteral("project"), QStringLiteral("browse"), QStringLiteral("folder"),
+                     QStringLiteral("design"),  QStringLiteral("find"),   QStringLiteral("search"),
+                     QStringLiteral("files"),   QStringLiteral("read only")};
+  m_registry->add(browse);
   CommandDef cloud = def("file.open_remote", tr("Open from Cloud..."), "remote-open",
                          tr("Opens a Cloud project from its git repository into a new folder"),
                          [this] { openFromCloud(); });
@@ -441,6 +451,10 @@ void MainWindow::openReadOnly() {
     return;
   }
   rememberDialogFolder(DialogGroup::Open, path);
+  openReadOnlyFile(path);
+}
+
+void MainWindow::openReadOnlyFile(const QString& path) {
   // The lock controller reads it while the design opens: no edit lock is
   // taken, and the window is read-only (files/LockController.hpp).
   m_openingReadOnly = true;
@@ -451,6 +465,47 @@ void MainWindow::openReadOnly() {
   if (!opened && !error.isEmpty()) {
     sheetWarning(this, tr("Mitcad"), tr("Could not open %1:\n%2").arg(QDir::toNativeSeparators(path), error));
   }
+}
+
+void MainWindow::openFromProject() {
+  if (deferForNativeCommand([this] { openFromProject(); })) {
+    return;
+  }
+  // The projects browsed as folders (mitcad#530); unsaved changes are asked
+  // about once a design is chosen, as Open Recent asks.
+  ProjectBrowserOptions options;
+  options.title = tr("Open from Project");
+  options.acceptText = tr("&Open");
+  options.otherText = tr("A&nother File...");
+  options.readOnlyText = tr("&Read-only");
+  // Where it starts without a remembered place: the Projects panel's
+  // selection, else the current project.
+  const std::pair<QString, QString> selected = panelProjectSelection();
+  options.root = !selected.first.isEmpty() ? selected.first : projectRootWithHistory();
+  options.folder = !selected.first.isEmpty() ? selected.second : QString();
+  options.session = m_autosave != nullptr ? m_autosave->session() : QString();
+  const std::optional<ProjectBrowserResult> chosen = browseProjects(this, options);
+  if (!chosen) {
+    return;
+  }
+  if (chosen->other) {
+    // The system's file dialog, as Open (or Open Read-Only) has it.
+    if (chosen->readOnly) {
+      openReadOnly();
+    } else {
+      openDocument();
+    }
+    return;
+  }
+  if (chosen->readOnly) {
+    if (!maybeSave()) {
+      return;
+    }
+    openReadOnlyFile(chosen->path);
+    return;
+  }
+  // The open design stays as it is; another one opens as Open Recent's.
+  openPanelDesign(chosen->path);
 }
 
 // ---------------------------------------------------------------------------

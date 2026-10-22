@@ -403,6 +403,16 @@ ui_apart() {
 # a Ctrl shortcut.
 ui_key() { xdotool key --delay 50 "$@"; }
 
+# ui_type_ahead "text": types an item view's type-ahead search (a list's or
+# a tree's row by its first letters). Qt joins the keys typed within its
+# keyboard input interval (400 ms) into one search, also across steps: a
+# search typed right after another ("W", then "Slot") would look for
+# "WSlot" and find nothing. It waits that long first.
+ui_type_ahead() {
+  sleep 0.5
+  xdotool type --delay 40 "$1"
+}
+
 # ui_drag button from-x% from-y% to-x% to-y% [modifier]
 ui_drag() {
   local button=$1 modifier=${6:-}

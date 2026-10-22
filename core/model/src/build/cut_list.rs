@@ -98,6 +98,9 @@ pub struct CutRow {
     pub components: Vec<ComponentUid>,
     /// A timber member's columns.
     pub timber: Option<TimberColumns>,
+    /// The timber frame its parts are members of (mitcad#522): the rows go
+    /// by frame, each frame's members apart from another's.
+    pub frame: Option<String>,
 }
 
 /// The stock pieces one source (in one row) is cut from.
@@ -277,8 +280,12 @@ impl<K: Kernel> Document<K> {
                 .clone()
                 .or_else(|| info.meta.material.as_ref().map(|m| m.grade.clone()))
                 .unwrap_or_default();
+            // A timber frame's members by frame (mitcad#522), after the
+            // parts of no frame.
+            let frame = self.frame_name_of(info.component);
             let mut key = format!(
-                "{}|{:?}|{:.6}|{:?}|{:?}|{:?}",
+                "{}|{}|{:?}|{:.6}|{:?}|{:?}|{:?}",
+                frame.as_deref().unwrap_or_default(),
                 source.id,
                 config,
                 length,
@@ -349,6 +356,7 @@ impl<K: Kernel> Document<K> {
                         },
                     ),
                 }),
+                frame: frame.clone(),
             });
             row.quantity += quantity;
             row.components.push(info.component);

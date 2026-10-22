@@ -660,6 +660,43 @@ fn rows_give_the_species_the_mass_and_the_less_common_mark_and_stock_per_row() {
 }
 
 #[test]
+fn the_library_usage_counts_build_parts_per_row() {
+    // The picker's use count is per size (mitcad#518): rows the design
+    // does not use are not listed, a part placed without a row is the
+    // default row's and is in the component's total only.
+    let mut doc = design();
+    let mut pine_part = part("rows98");
+    pine_part["config"] = json!("pine");
+    let mut spruce_part = part("rows98");
+    spruce_part["config"] = json!("spruce");
+    for i in 0..3 {
+        place(
+            &mut doc,
+            json!({"part": spruce_part, "at": {"point": [0, 200 * i, 0]}, "length": 500}),
+        );
+    }
+    place(
+        &mut doc,
+        json!({"part": part("rows98"), "at": {"point": [0, 800, 0]}, "length": 500}),
+    );
+    for i in 0..2 {
+        place(
+            &mut doc,
+            json!({"part": pine_part, "at": {"point": [500, 200 * i, 0]}, "length": 500}),
+        );
+    }
+    let usage = query(&doc, json!({"query": "library_usage"}));
+    let parts = usage["parts"].as_array().unwrap();
+    assert_eq!(parts.len(), 1, "{usage}");
+    assert_eq!(parts[0]["component"], "rows98");
+    assert_eq!(parts[0]["count"], 6);
+    assert_eq!(
+        parts[0]["rows"],
+        json!([{"config": "spruce", "count": 3}, {"config": "pine", "count": 2}])
+    );
+}
+
+#[test]
 fn a_profile_only_cut_list_has_no_timber_columns() {
     let mut doc = design();
     super::test_library::first(&mut doc, "p30", [0.0, 0.0, 0.0], 500.0);

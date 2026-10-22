@@ -59,8 +59,9 @@ public:
   virtual QString activeCommandName() const { return {}; }
   // A choice of the running command made outside its panel (mitcad#418:
   // BUILD's part picker): option `value` of its choice input `input`, as if
-  // chosen in the panel, while the command `command` ("build.profile") is
-  // the one running; false otherwise.
+  // chosen in the panel, or `value` as the text of its text input `input`
+  // (mitcad#519: the Openings window), while the command `command`
+  // ("build.profile") is the one running; false otherwise.
   virtual bool chooseInCommand(const QString& /*command*/, const QString& /*input*/, const QString& /*value*/) {
     return false;
   }
@@ -107,6 +108,10 @@ public:
   // Shows a joint's first free motion through its range in the view, then
   // the design as it is (mitcad#55: previews, nothing changes).
   virtual void animateJoint(const QString& uid) = 0;
+  // The pointer over a joint's row in the browser (mitcad#523): the view
+  // previews the joint's highlight lightly, its component placed by
+  // `occurrence`; an empty uid when the pointer left the joint rows.
+  virtual void previewJoint(const QString& /*uid*/, const QString& /*occurrence*/) {}
   // Motion studies and contact sets (mitcad#454): a study in the Motion
   // Study panel (a new one when `name` is empty), a contact set in its
   // command's panel.

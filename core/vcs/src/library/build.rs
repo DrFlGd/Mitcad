@@ -1199,6 +1199,14 @@ fn check_timber_block(block: &Value, role: &str, path: &str, label: &str, out: &
         for key in ["diameter", "length"] {
             length_field(wood, key, &format!("{path}wood."), false, label, out);
         }
+        // The fastener Timber's frames and sets start with (mitcad#516).
+        if let Some(default) = wood.get("default").filter(|d| !d.is_null())
+            && !default.is_boolean()
+        {
+            out.error(format!(
+                "{label}: build.{path}wood.default {default} is neither true nor false"
+            ));
+        }
     }
     let Some(connector) = block.get("connector").filter(|c| c.is_object()) else {
         return;
@@ -1381,12 +1389,19 @@ fn feature<'a>(design: &'a Value, uid: &str) -> Option<&'a Value> {
 }
 
 /// The design's mount frames: the `joint_origin` features named
-/// `mount:<name>`, by name.
+/// `mount:<name>`, or with a `mount` of that name (mitcad#525), by name.
 pub fn mount_frames(design: &Value) -> BTreeMap<&str, &Value> {
     features(design)
         .filter(|f| f.get("type").and_then(Value::as_str) == Some("joint_origin"))
         .filter_map(|f| {
-            let name = f.get("name")?.as_str()?.strip_prefix(MOUNT_PREFIX)?;
+            let own = f
+                .get("mount")
+                .and_then(|m| m.get("name"))
+                .and_then(Value::as_str);
+            let name = match own {
+                Some(name) => name,
+                None => f.get("name")?.as_str()?.strip_prefix(MOUNT_PREFIX)?,
+            };
             Some((name, f))
         })
         .collect()
@@ -2012,6 +2027,17 @@ pub fn fit_picker(component: &ManifestComponent, picker: &Picker<'_>) -> Fit {
     }
     let mut reasons = Vec::new();
     let mut score = 0;
+    // The wood fastener a library marks as the framing default
+    // (`wood.default`, mitcad#516) comes first in the wood picker.
+    if picker.kind == Some("wood")
+        && part
+            .block("wood")
+            .and_then(|w| w.get("default"))
+            .and_then(Value::as_bool)
+            == Some(true)
+    {
+        score += 1;
+    }
     if let Some(wanted) = &picker.system {
         let made_for = part.systems();
         if !made_for.is_empty() {

@@ -5,7 +5,7 @@
 Run only in the approved macOS VM:
   python3 ui-timber-seating-test.py <app> <cli> <output>
 The production library generator makes synthetic screw/nail/board parts.
-The public Timber and Swap Fastener UI commands place them; measurements
+The public Wall and Swap Fastener UI commands place them; measurements
 come from the placed bodies, not the requested seat metadata. No external
 library, CAD file, server or desktop automation permission is needed.
 """
@@ -93,16 +93,16 @@ def run(app, cli, out):
                     request["id"] = identifier
                 return bridge.tool("ui_command", request)
 
-            # Inputs are supplied in stages, as a user changes Mode, then
-            # chooses a part, then the now-visible Fasteners fields.
-            ui({"how": "frame"}, "build.timber")
-            ui({"part": "mitcad-parts|test-board|22x100"})
+            # Inputs are supplied in stages, as a user starts Wall (the
+            # TIMBER group's, mitcad#520), chooses a part, then the
+            # Fasteners fields.
+            ui({"part": "mitcad-parts|test-board|22x100"}, "build.wall")
             ui({"frame_fasteners": True})
             ui({"fastener": "mitcad-parts|test-screw"})
             made = ui({"fastener_size": "5.0x50", "fastener_count": "2",
                        "frame_length": "1200 mm", "frame_height": "600 mm", "frame_spacing": "600 mm"},
                       finish="ok")
-            MCP.check(made.get("committed") is True, "Timber did not commit through its UI: " + repr(made))
+            MCP.check(made.get("committed") is True, "Wall did not commit through its UI: " + repr(made))
 
             def inspect(label, tip, expected_config):
                 parts = query({"query": "build_parts"})["parts"]
@@ -135,7 +135,7 @@ def run(app, cli, out):
                              if line["text"].startswith("Timber fastener ")]
             MCP.check(len(seating_lines) == 12 and all(
                 text.endswith("head top 0 mm from entry face") for text in seating_lines),
-                "The actual Frame UI did not log twelve flush placements: " + repr(seating_lines))
+                "The actual Wall UI did not log twelve flush placements: " + repr(seating_lines))
 
             def paths(nodes, prefix=""):
                 found = {}

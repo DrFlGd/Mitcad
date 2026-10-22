@@ -14,6 +14,11 @@
 #   4. The part picker's grid (mitcad#418): the group Blocks, a search
 #      inside it, a star, Favourites, the block inserted from there and In
 #      this design with it.
+#   5. The groups as a tree (mitcad#527): two more libraries, one's Wood (a
+#      parent by id) and the other's Wood/Sheets one group listing both
+#      libraries' parts, a screw in two groups (Slot profile/Screws and
+#      General fasteners/Screws) and once in Favourites, Wood folded and
+#      still folded when the browser opens again, then unfolded.
 #
 # Usage: powershell -ExecutionPolicy Bypass -File tools\ui-windows-library-test.ps1 [-App build\dev\mitcad.exe] [-Out dir] [-QtBin dir]
 param(
@@ -151,6 +156,8 @@ Ui-ExpectNew 'Library browser selected test-blocks/block: version ' 'the block c
 Ui-Mark
 Ui-Step 'star it (Ctrl+D)'               { Ui-Key 'ctrl+d' }
 Ui-ExpectNew 'Part picker star block on' 'the block starred'
+Ui-ExpectNew 'Part picker tiles kept: ' 'a star changes only the star: the tiles stay (mitcad#517)'
+Ui-ExpectNew '; current test-blocks/block' 'the selection stays on the starred block'
 Ui-Mark
 Ui-Step 'Favourites (Alt+O, F)'          { Ui-Key 'alt+o'; Ui-Type 'F' }
 Ui-ExpectNew 'Part picker group Favourites: 1 parts, first test-blocks/block' 'Favourites has the block'
@@ -163,6 +170,106 @@ Ui-Step 'Insert from Library (F9)'       { Ui-Key 'F9' }
 Ui-FocusDialog '^Insert from Library$'
 Ui-ExpectNew 'Part picker in this design: 1 parts: test-blocks/block x1' 'the block in this design'
 Ui-ExpectNew 'Part picker group All parts: 1 parts, first test-blocks/block' 'All parts again'
+Ui-Step 'close (Escape)'                 { Ui-Key 'Escape' }
+Ui-FocusMain
+
+Write-Host '--- 5. The groups as a tree (mitcad#527)'
+# Two libraries more: Wood (a parent by id) with its Beams, and a screw
+# made for the slot in two groups, Slot profile/Screws and General
+# fasteners/Screws; the other's Wood/Sheets in the same Wood.
+$wood = Join-Path $work 'wood'
+$sheets = Join-Path $work 'sheets'
+foreach ($folder in @((Join-Path $wood 'beams'), (Join-Path $wood 'slot-screws'), (Join-Path $sheets 'sheets'))) {
+  New-Item -ItemType Directory -Force $folder | Out-Null
+}
+Copy-Item $block (Join-Path $wood 'beams\beam.mitcad')
+Copy-Item $block (Join-Path $wood 'slot-screws\slot-screw.mitcad')
+Copy-Item $block (Join-Path $sheets 'sheets\plywood.mitcad')
+Set-Content -Encoding ascii (Join-Path $wood 'mitcad-library.json') @'
+{"format": "mitcad-library", "version": 1, "id": "test-wood", "name": "Test wood", "license": "MIT",
+ "categories": [{"id": "wood", "name": "Wood"}, {"id": "beams", "name": "Beams", "parent": "wood"},
+                {"id": "slot-screws", "name": "Slot profile/Screws"},
+                {"id": "general-screws", "name": "General fasteners/Screws"}],
+ "components": [
+   {"id": "beam", "path": "beams/beam.mitcad", "name": "Beam test", "category": "beams"},
+   {"id": "slot-screw", "path": "slot-screws/slot-screw.mitcad", "name": "Slot screw test",
+    "category": ["slot-screws", "general-screws"]}]}
+'@
+Set-Content -Encoding ascii (Join-Path $sheets 'mitcad-library.json') @'
+{"format": "mitcad-library", "version": 1, "id": "test-sheets", "name": "Test sheets", "license": "MIT",
+ "categories": [{"id": "sheets", "name": "Wood/Sheets"}],
+ "components": [{"id": "plywood", "path": "sheets/plywood.mitcad", "name": "Plywood test", "category": "sheets"}]}
+'@
+foreach ($folder in @($wood, $sheets)) {
+  Set-Content -Encoding ascii (Join-Path $folder 'LICENSE') 'MIT'
+  $output = & $cli library check $folder
+  if ($LASTEXITCODE -ne 0) { Ui-Fail "mitcad-cli library check ${folder}: $($output -join ' / ')" }
+  foreach ($arguments in @(@('init', '-q'), @('add', '-A'), @('commit', '-q', '-m', 'Parts'))) {
+    $output = & $git.Source -C $folder -c user.name=T -c user.email=t@example.invalid @arguments 2>&1
+    if ($LASTEXITCODE -ne 0) { Ui-Fail "git $($arguments -join ' '): $($output -join ' / ')" }
+  }
+}
+Ui-Mark
+Ui-Step 'Libraries (F8)'                 { Ui-Key 'F8' }
+Ui-FocusDialog '^Libraries$'
+Add-Source $wood
+Add-Source $sheets
+Ui-Step 'close (Alt+C)'                  { Ui-Key 'alt+c' }
+Ui-FocusMain
+Ui-Mark
+Ui-Step 'Insert from Library (F9)'       { Ui-Key 'F9' }
+Ui-FocusDialog '^Insert from Library$'
+Ui-Mark
+Ui-Step 'Update (Alt+U)'                 { Ui-Key 'alt+u' }
+Ui-ExpectNew "Library fetched: library Test wood (test-wood) from $wood" 'the wood library fetched' 30
+Ui-ExpectNew "Library fetched: library Test sheets (test-sheets) from $sheets" 'the sheets fetched' 30
+Ui-ExpectNew 'Library fetch of 4 source(s): 1 failed' 'only the broken source fails' 30
+Ui-FocusDialog '^Fetch Libraries$'
+Ui-Step 'close the warning (Return)'     { Ui-Key 'Return' }
+Ui-FocusDialog '^Insert from Library$'
+Ui-ExpectNew ', Wood/Sheets' "the groups as a tree, the other library's Sheets in the same Wood"
+$groupsTree = Ui-LastMatch '^Part picker groups: (.*)$'
+foreach ($group in @('Wood', 'Wood/Beams', 'Wood/Sheets', 'Slot profile', 'Slot profile/Screws',
+                     'General fasteners', 'General fasteners/Screws', 'Blocks')) {
+  if (", $groupsTree, " -notlike "*, $group, *") { Ui-Fail "no group $group in '$groupsTree'" }
+}
+Write-Host "ok   the groups as a tree: $groupsTree"
+Ui-Mark
+Ui-Step 'the group Wood (Alt+O, W)'      { Ui-Key 'alt+o'; Ui-Type 'W' }
+Ui-ExpectNew 'Part picker group Wood: 2 parts' "Wood lists its subgroups' parts, of both libraries"
+Ui-Mark
+Ui-Step "Slot profile's Screws (Alt+O, Slot, Down)" { Ui-Key 'alt+o'; Ui-Type 'Slot'; Ui-Key 'Down' }
+Ui-ExpectNew 'Part picker group Slot profile/Screws: 1 parts, first test-wood/slot-screw' 'the slot screw in Slot profile'
+Ui-Mark
+Ui-Step "General fasteners' Screws (Alt+O, General, Down)" { Ui-Key 'alt+o'; Ui-Type 'General'; Ui-Key 'Down' }
+Ui-ExpectNew 'Part picker group General fasteners/Screws: 1 parts, first test-wood/slot-screw' 'the same screw in General fasteners'
+# The slot screw stays the current tile (chosen in Slot profile/Screws: the
+# browser logs no new selection); the star names it.
+Ui-Mark
+Ui-Step 'star it (Ctrl+D)'               { Ui-Key 'ctrl+d' }
+Ui-ExpectNew 'Part picker star slot-screw on' 'the slot screw starred'
+Ui-Mark
+Ui-Step 'Favourites (Alt+O, F)'          { Ui-Key 'alt+o'; Ui-Type 'F' }
+Ui-ExpectNew 'Part picker group Favourites: 2 parts' 'the block and the slot screw'
+$tiles = Ui-LastMatch '^Part picker tiles: (.*)$'
+if (([regex]::Matches("$tiles", 'test-wood/slot-screw')).Count -ne 1) {
+  Ui-Fail "the slot screw is not in Favourites once: '$tiles'"
+}
+Write-Host 'ok   a part in two groups is one tile in Favourites'
+Ui-Mark
+Ui-Step 'fold Wood (Alt+O, W, Left)'     { Ui-Key 'alt+o'; Ui-Type 'W'; Ui-Key 'Left' }
+Ui-ExpectNew 'Part picker group Wood folded' 'Wood folded'
+Ui-Step 'close (Escape)'                 { Ui-Key 'Escape' }
+Ui-FocusMain
+Ui-Mark
+Ui-Step 'Insert from Library (F9)'       { Ui-Key 'F9' }
+Ui-FocusDialog '^Insert from Library$'
+Ui-ExpectNew 'Wood (folded)' 'the fold remembered'
+$groupsTree = Ui-LastMatch '^Part picker groups: (.*)$'
+if ("$groupsTree" -like '*Wood/Beams*') { Ui-Fail "a folded group's subgroups are shown: '$groupsTree'" }
+Ui-Mark
+Ui-Step 'unfold it (Alt+O, W, Right)'    { Ui-Key 'alt+o'; Ui-Type 'W'; Ui-Key 'Right' }
+Ui-ExpectNew 'Part picker group Wood unfolded' 'Wood unfolded'
 Ui-Step 'close (Escape)'                 { Ui-Key 'Escape' }
 Ui-FocusMain
 

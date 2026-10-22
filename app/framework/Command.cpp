@@ -146,6 +146,20 @@ bool InputDef::acceptsIn(const SelectionItem& item, const CommandState& state) c
   return accepts(item) && filterIn(state).testFlag(item.kind) && (!testNow || testNow(item, state));
 }
 
+bool InputDef::takes(const SelectionItem& item) const {
+  if (accepts(item)) {
+    return true;
+  }
+  return alsoTakes.testFlag(item.kind) && convert && accepts(convert(item));
+}
+
+bool InputDef::takesIn(const SelectionItem& item, const CommandState& state) const {
+  if (acceptsIn(item, state)) {
+    return true;
+  }
+  return alsoTakes.testFlag(item.kind) && convert && acceptsIn(convert(item), state);
+}
+
 InputDef selectionInput(const QString& id, const QString& label, SelectFilter filter, int min,
                         int max) {
   InputDef input;
@@ -349,7 +363,7 @@ bool CommandDef::completedBy(const Selection& selection) const {
   const int count = static_cast<int>(selection.size());
   if (first == nullptr || count == 0 || count < first->min || (first->max > 0 && count > first->max) ||
       !std::all_of(selection.begin(), selection.end(),
-                   [first](const SelectionItem& item) { return first->accepts(item); })) {
+                   [first](const SelectionItem& item) { return first->takes(item); })) {
     return false;
   }
   // Any other selection input it needs at the start is a further pick.

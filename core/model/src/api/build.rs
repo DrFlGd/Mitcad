@@ -82,6 +82,8 @@ fn framed_json(framed: &crate::build::frames::Framed) -> Value {
     json!({
         "component": framed.lead,
         "frame": framed.lead,
+        // Its own component in the host (mitcad#522).
+        "frame_component": framed.component,
         "name": framed.name,
         "kind": framed.kind,
         "members": framed.members.iter()
@@ -1002,7 +1004,11 @@ impl<K: Kernel> Document<K> {
             .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), v| {
                 (lo.min(v), hi.max(v))
             });
-        Some(json!({"head_top_distance": distance, "tip_distance": tip}))
+        // The junction's members its shaft passes through (mitcad#521).
+        let junction = info.record.junction.as_deref().unwrap_or_default();
+        let (met, of) = self.shaft_members(junction, entry, z, distance, tip);
+        Some(json!({"head_top_distance": distance, "tip_distance": tip,
+                    "members": met, "of": of}))
     }
 
     /// The `build_parts` query.
@@ -1102,6 +1108,8 @@ impl<K: Kernel> Document<K> {
                     })),
                     // Timber frames (mitcad#479).
                     "frame": info.record.frame,
+                    // The frame's own component (mitcad#522).
+                    "frame_component": info.record.frame.and_then(|l| self.frame_component(l)),
                     "member": info.record.member,
                     "framing": info.record.framing.as_ref().map(|f| json!({
                         "definition": f["frame"], "count": f["count"]})),
@@ -1213,6 +1221,8 @@ impl<K: Kernel> Document<K> {
                     "quantity": r.quantity,
                     "mass": r.mass,
                     "components": r.components,
+                    // A timber frame's members by frame (mitcad#522).
+                    "frame": r.frame,
                 });
                 // The timber columns, only in a design with timber.
                 if has_timber {

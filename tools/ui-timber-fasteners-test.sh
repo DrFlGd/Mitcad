@@ -2,21 +2,27 @@
 # SPDX-License-Identifier: MIT
 # check-all sources: app/build app/commands/BuildCommands.cpp app/framework app/library app/OcctViewer.cpp
 # check-all sources: app/MainWindowContextMenu.cpp core/model/src/build core/model/src/api core/vcs/src/library tools/cli
-# The fasteners of the Timber tool's frames and spacing sets, and Swap
+# The fasteners of the TIMBER group's walls and spacing sets, and Swap
 # Fastener (mitcad#497), through the real UI, with a small library of
 # synthetic parts made here (mitcad-cli: a 48 x 98 timber member, a wood
-# screw and a ring nail in two sizes each, their heads large boxes outside
-# the members to click on; no supplier's files), fetched from a local git
-# repository:
-#   1. Timber, Mode Frame: Fastener, Size and Count under Fasteners; the
+# screw, a ring nail and a pan-head connector screw in two sizes each,
+# their heads large boxes outside the members to click on; no supplier's
+# files), fetched from a local git repository:
+#   1. Wall (mitcad#520): Fastener, Size and Count under Fasteners; the
+#      first time the countersunk wood screw the library marks as the
+#      default (`wood.default`, mitcad#516), not the connector screw whose
+#      name comes first; the
 #      wood screw chosen in the part picker, its row 5.0x90, three at each
-#      junction; a wall 1200 x 600 placed with them. The next start
+#      junction; a wall 1200 x 600 placed with them. The next Wall start
 #      remembers them.
 #   2. Two of the wall's screws selected in the view: the context menu's
 #      BUILD has Swap Fastener; it starts with them, the ring nail chosen
-#      in its picker, 3.1x90; Swap makes them nails in one undo step.
-#   3. Another design: a member on the ground, then Spacing on its side
-#      with Fasteners on: every member of the set fastened to it.
+#      in its picker, 3.1x90; Swap makes them nails in one undo step. The
+#      picker's design parts count the screws in their size only
+#      (mitcad#518).
+#   3. Another design: a member on the ground (after Place nothing is
+#      previewed at the origin on top of it, mitcad#513), then Spacing on
+#      its side with Fasteners on: every member of the set fastened to it.
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
 # Usage: tools/ui-timber-fasteners-test.sh
@@ -74,6 +80,7 @@ fastener() {
   printf '  {"expect": {"bodies": 1}}\n]\n'; } | design "$LIB/dimensioned-timber/timber-48-test.mitcad"
 fastener 30 5.0x70 5.0x90 | design "$LIB/fasteners/wood-screw-test.mitcad"
 fastener 20 2.8x50 3.1x90 | design "$LIB/fasteners/ring-nail-test.mitcad"
+fastener 24 5.0x40 5.0x60 | design "$LIB/fasteners/connector-screw-test.mitcad"
 
 cat > "$LIB/mitcad-library.json" <<'EOF'
 {
@@ -93,9 +100,18 @@ cat > "$LIB/mitcad-library.json" <<'EOF'
        "frames": [{"name": "end_a", "kind": "end"}, {"name": "end_b", "kind": "end"},
                   {"name": "face_xp", "kind": "face"}, {"name": "face_xn", "kind": "face"},
                   {"name": "face_yp", "kind": "face"}, {"name": "face_yn", "kind": "face"}]}},
+    {"id": "connector-screw-test", "path": "fasteners/connector-screw-test.mitcad", "name": "Connector screw test",
+     "category": "fasteners", "designation": "Connector screw test {config}",
+     "build": {"role": "fastener", "wood": {"kind": "screw", "head": "pan", "seat": "head_underside",
+                                            "diameter": "5 mm", "length": "40 mm"},
+       "material": {"product": "steel", "density": 7850},
+       "frames": [{"name": "axis", "kind": "shaft"}],
+       "rows": {"5.0x40": {"wood": {"diameter": "5 mm", "length": "40 mm"}},
+                "5.0x60": {"wood": {"diameter": "5 mm", "length": "60 mm"}}}}},
     {"id": "wood-screw-test", "path": "fasteners/wood-screw-test.mitcad", "name": "Wood screw test",
      "category": "fasteners", "designation": "Wood screw test {config}",
-     "build": {"role": "fastener", "wood": {"kind": "screw", "head": "countersunk", "diameter": "5 mm", "length": "70 mm"},
+     "build": {"role": "fastener", "wood": {"kind": "screw", "head": "countersunk", "seat": "head_top", "default": true,
+                                            "diameter": "5 mm", "length": "70 mm"},
        "material": {"product": "steel", "density": 7850},
        "frames": [{"name": "axis", "kind": "shaft"}],
        "rows": {"5.0x70": {"wood": {"diameter": "5 mm", "length": "70 mm"}},
@@ -132,12 +148,16 @@ expect_inspect() {
   done
   ui_fail "$description: no 'Inspect $cmd:' line since the mark with: ${*:1:$#-1}"
 }
-# choose_in_picker CMD INPUT PART: the input's tile opens the part picker,
-# a click on the part's tile there chooses it, Escape closes the picker.
+# choose_in_picker CMD INPUT PART [USED]: the input's tile opens the part
+# picker, a click on the part's tile there chooses it, Escape closes the
+# picker. With USED, the picker's "In this design" line has that text.
 choose_in_picker() {
   ui_mark
   ui_step "the $2 tile"                    ui_click_logged "Panel $1 input $2"
   ui_expect_new "Part picker opened: " "the part picker for $1's $2"
+  if [ -n "${4:-}" ]; then
+    ui_expect_new "$4" "the picker's design parts: $4"
+  fi
   ui_expect_new "Part picker tile $3 at " "$3's tile in the picker"
   ui_focus_dialog "^Part Picker - "
   ui_mark
@@ -155,28 +175,26 @@ fastener_bodies() {
 ui_start_display
 ui_start_app --no-native-dialogs
 
-echo "--- 1. Frame: the fastener, its size and count"
+echo "--- 1. Wall: the fastener, its size and count"
 ui_mark
 ui_step "the BUILD tab"                    ui_click_logged "Ribbon tab BUILD"
-ui_expect_new "Ribbon BUILD/PROFILE at" "its PROFILE group"
+ui_expect_new "Ribbon BUILD/TIMBER at" "its TIMBER group (mitcad#520)"
 ui_mark
-ui_step "Timber (command search)"          ui_command "Timber"
-ui_expect_new "Command Timber started" "Timber started"
-ui_mark
-ui_step "Mode: Frame"                      ui_click_logged "Panel Timber input how=frame"
+ui_step "Wall (command search)"            ui_command "Wall"
+ui_expect_new "Command Wall started" "Wall started"
 ui_expect_new "BUILD parts wood: " "the library's wood fasteners"
-expect_inspect Timber "frame wall Wall 1" "fasteners yes" \
+expect_inspect Wall "frame wall Wall 1" "fasteners yes" \
   "fastener 2 x Wood screw test at each junction, sized from the members" \
-  "the first time: two of the wood screw at each junction, sized from the members"
-ui_expect_log "Panel Timber input fastener_size at" "Size under Fasteners"
-ui_expect_log "Panel Timber input fastener_count at" "Count under Fasteners"
-choose_in_picker Timber fastener test-timber/wood-screw-test
+  "the first time (fresh settings): two of the countersunk wood screw the library marks as the default, not the pan-head connector screw (mitcad#516)"
+ui_expect_log "Panel Wall input fastener_size at" "Size under Fasteners"
+ui_expect_log "Panel Wall input fastener_count at" "Count under Fasteners"
+choose_in_picker Wall fastener test-timber/wood-screw-test
 ui_mark
-ui_step "Size 5.0x90"                      ui_choose "Panel Timber input fastener_size" 2
-ui_step "three at each junction"           ui_type_in "Panel Timber input fastener_count" "3"
-ui_step "1200 mm long"                     ui_type_in "Panel Timber input frame_length" "1200 mm"
-ui_step "600 mm high"                      ui_type_in "Panel Timber input frame_height" "600 mm"
-expect_inspect Timber "frame wall Wall 1, wall 1200 x 600 mm" \
+ui_step "Size 5.0x90"                      ui_choose "Panel Wall input fastener_size" 2
+ui_step "three at each junction"           ui_type_in "Panel Wall input fastener_count" "3"
+ui_step "1200 mm long"                     ui_type_in "Panel Wall input frame_length" "1200 mm"
+ui_step "600 mm high"                      ui_type_in "Panel Wall input frame_height" "600 mm"
+expect_inspect Wall "frame wall Wall 1, wall 1200 x 600 mm" \
   "fastener 3 x Wood screw test 5.0x90 at each junction" "the wall with three 5.0x90 screws at each junction"
 ui_mark
 ui_step "Place (Enter)"                    ui_key Return
@@ -193,12 +211,12 @@ seats=$(tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep '^Timber fastener .*: head to
 echo "ok   every frame screw head is flush within 1e-6 mm"
 
 SCREWS=$(fastener_bodies)
-ui_step "close Timber (Escape)"            ui_key Escape
+ui_step "close Wall (Escape)"              ui_key Escape
 ui_mark
-ui_step "Timber again (command search)"    ui_command "Timber"
-ui_expect_new "BUILD timber fasteners: frame on, set off; 3 x Wood screw test 5.0x90 at each junction" \
+ui_step "Wall again (command search)"      ui_command "Wall"
+ui_expect_new "BUILD wall adds to Part1; fasteners on; 3 x Wood screw test 5.0x90 at each junction" \
   "the next start remembers the fastener, its size and count"
-ui_step "close Timber (Escape)"            ui_key Escape
+ui_step "close Wall (Escape)"              ui_key Escape
 
 echo "--- 2. Swap Fastener from the context menu"
 ui_step "fit (F6)"                         ui_key F6
@@ -223,7 +241,10 @@ ui_expect_new "BUILD swap fastener starts with 2 fastener(s), test-timber|wood-s
   "with the two screws selected, their own part"
 expect_inspect "Swap Fastener" "swap 2 fastener(s) (wood, 2 x Wood screw test 5.0x90)" \
   "the two 5.0x90 screws to swap"
-choose_in_picker "Swap Fastener" part test-timber/ring-nail-test
+# The use count is per size (mitcad#518): the screws are all 5.0x90, the
+# wood screw's other size 5.0x70 is not listed in the design's parts.
+choose_in_picker "Swap Fastener" part test-timber/ring-nail-test \
+  "test-timber/wood-screw-test x$screws [5.0x90 x$screws]"
 ui_mark
 ui_step "Size 3.1x90"                      ui_choose "Panel Swap Fastener input fastener_size" 2
 expect_inspect "Swap Fastener" "for Ring nail test 3.1x90" "they become 3.1x90 ring nails"
@@ -253,6 +274,18 @@ ui_step "a member on the ground (Enter)"   ui_key Return
 ui_expect_new "Placed Timber 48x98 test as " "a member on the ground" 30
 beam=$(tail -n +$((UI_MARK + 1)) "$UI_LOG" | sed -n 's/^New body .* (\(F[0-9]*\.b[0-9]*\)): volume.*/\1/p' | tail -1)
 [ -n "$beam" ] || ui_fail "no body of the member"
+# After Place no ghost (mitcad#513): nothing previewed at the origin on top
+# of the member; the next waits for a click on a member's side or end. The
+# lines after "Placed" only: the member's own preview before Enter (the
+# length typed) is no ghost.
+UI_MARK=$(grep -n "^Placed Timber 48x98 test as " "$UI_LOG" | tail -1 | cut -d: -f1)
+expect_inspect Timber "failed: Click a member's side or end." "after Place the panel waits for a click on a member"
+sleep 1.5
+ui_sync
+! tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -q "^Inspect Timber: place grounded" ||
+  ui_fail "a member previewed at the origin after Place: $(tail -n +$((UI_MARK + 1)) "$UI_LOG" |
+    grep "^Inspect Timber: place grounded" | head -1)"
+echo "ok   no member previewed at the origin on top of the one placed"
 ui_mark
 ui_step "Mode: Spacing"                    ui_click_logged "Panel Timber input how=spacing"
 ui_expect_new "BUILD parts wood: " "the wood fasteners read"

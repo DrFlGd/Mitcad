@@ -666,7 +666,8 @@ fn the_library_usage_counts_each_library_component_once() {
     assert_eq!(
         query(&doc, json!({"query": "library_usage"})),
         json!({"parts": [{"library": "test-pins", "url": "https://example.org/pins.git",
-                          "component": "pin", "count": 5}]})
+                          "component": "pin", "count": 5,
+                          "rows": [{"config": "M4x16", "count": 4}, {"config": "M10x20", "count": 1}]}]})
     );
     // It follows the design as parts are removed.
     command(
@@ -691,5 +692,46 @@ fn the_library_usage_counts_each_library_component_once() {
     assert_eq!(
         query(&doc, json!({"query": "library_usage"})),
         json!({"parts": []})
+    );
+}
+
+#[test]
+fn the_library_usage_counts_each_configuration_row_of_a_component() {
+    // 35 uses of one row and 2 of another (mitcad#518): the per-row counts
+    // add up to the component's, and the rows the design does not use are
+    // not listed.
+    let library = Library::new();
+    let mut doc = Document::new(MockKernel::default());
+    doc.set_link_resolver(Some(library));
+    let insert = |doc: &mut Document<MockKernel>, config: &str| {
+        command(
+            doc,
+            json!({"cmd": "insert_component", "library": {"id": "test-pins",
+                   "url": "https://example.org/pins.git", "rev": V1, "component": "pin",
+                   "config": config}, "link": false}),
+        )
+        .unwrap()
+    };
+    let long = insert(&mut doc, "M4x16");
+    for _ in 0..34 {
+        command(
+            &mut doc,
+            json!({"cmd": "copy_occurrence", "occurrence": long["occurrence"]}),
+        )
+        .unwrap();
+    }
+    let top = insert(&mut doc, "M10x20");
+    command(
+        &mut doc,
+        json!({"cmd": "copy_occurrence", "occurrence": top["occurrence"]}),
+    )
+    .unwrap();
+    let usage = query(&doc, json!({"query": "library_usage"}));
+    let parts = usage["parts"].as_array().unwrap();
+    assert_eq!(parts.len(), 1, "{usage}");
+    assert_eq!(parts[0]["count"], 37);
+    assert_eq!(
+        parts[0]["rows"],
+        json!([{"config": "M4x16", "count": 35}, {"config": "M10x20", "count": 2}])
     );
 }

@@ -314,6 +314,10 @@ const QUERIES: &[(&str, ApiClass)] = &[
     ("property_sets", Model),
     ("property_types", Model),
     ("property_search", Model),
+    // Mount frames (mitcad#525); a preview reads its part as
+    // insert_component does: from a library or a file.
+    ("mount_frames", Model),
+    ("mount_preview", FileIo),
 ];
 
 fn class_in(table: &[(&str, ApiClass)], name: &str) -> Option<ApiClass> {

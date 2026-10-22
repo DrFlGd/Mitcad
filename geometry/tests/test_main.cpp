@@ -181,6 +181,8 @@ int main() {
   // Roundings cut by a face of the solid they pass through, with the port's
   // patches 0700 and 0933 (mitcad#343).
   test::fillet_pierced_tests();
+  // Faces moved by a rigid motion, their neighbours following (mitcad#343).
+  test::move_faces_tests();
   for (const std::string& change : mitcad::geometry::input_changes()) {
     std::fprintf(stderr, "%s\n", change.c_str());
   }

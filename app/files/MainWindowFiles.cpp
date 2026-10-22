@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 // The main window's File menu (U6, mitcad#175): New Design (New too,
 // mitcad#145, projects/MainWindowProjectsPanel.cpp), Open (designs, and any
-// file Import takes, as a new document), Open Recent, Open Read-Only, Close,
+// file Import takes, as a new document), Open from Project (mitcad#530,
+// MainWindowProjects.cpp), Open Recent, Open Read-Only, Close,
 // Save, Save As, Save with Description (P12d), Version History (P12e), the
 // Project submenu (mitcad#89, MainWindowProjects.cpp), Import, Export,
 // Recover Documents (P8c, MainWindowAutosave.cpp); the INSERT group's Insert
@@ -229,6 +230,9 @@ void MainWindow::createFileMenu() {
   // one.
   command(file, "file.new_design", tr("&New Design..."));
   add(tr("&Open..."), QKeySequence::Open, &MainWindow::openDocument);
+  // A design of a project, its folders browsed or its name searched
+  // (mitcad#530).
+  command(file, "file.open_from_project", tr("Open &from Project..."));
   m_recentMenu = file->addMenu(tr("Open &Recent"));
   connect(m_recentMenu, &QMenu::aboutToShow, this, &MainWindow::updateRecentMenu);
   updateRecentMenu();

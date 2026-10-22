@@ -90,12 +90,21 @@ void TestSync::installIfRequested() {
 }
 
 void TestSync::watch(QTimer* timer) {
-  if (g_sync == nullptr) {
+  // The in-process test driver's steps (TestDriver, MITCAD_TEST_INPUT) ask
+  // `settling`; without it or the sync nothing is kept.
+  static const bool driven = !qEnvironmentVariable("MITCAD_TEST_INPUT").isEmpty();
+  if (g_sync == nullptr && !driven) {
     return;
   }
   QList<QPointer<QTimer>>& timers = watchedTimers();
   timers.removeIf([](const QPointer<QTimer>& watched) { return watched.isNull(); });
   timers.append(timer);
+}
+
+bool TestSync::settling() {
+  const QList<QPointer<QTimer>>& timers = watchedTimers();
+  return std::any_of(timers.cbegin(), timers.cend(),
+                     [](const QPointer<QTimer>& timer) { return timer && timer->isActive(); });
 }
 
 TestSync::TestSync(unsigned keycode) : QObject(QCoreApplication::instance()), m_keycode(keycode) {

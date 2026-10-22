@@ -3,10 +3,13 @@
 // stars (starred first, starred groups first in Favourites, stable within
 // each class), the stars of configuration rows (mitcad#491), the stars'
 // round trip through the settings (an INI file in a folder of the test's
-// own) and the design's used library parts read from the model's
+// own), the groups' tree of two libraries' parts (mitcad#527: shared
+// groups by name, a part in two groups listed once, a group's star over
+// its subtree) and the design's used library parts read from the model's
 // `library_usage` answer (core/model/src/library_tests.rs and
 // build/source_tests.rs check the model's side).
 #include "library/PartFavourites.hpp"
+#include "library/PartGroups.hpp"
 #include "library/UsedParts.hpp"
 
 #include <cstdio>
@@ -68,20 +71,73 @@ void usedPartsTests() {
                               {QStringLiteral("url"), QStringLiteral("")},
                               {QStringLiteral("component"), QStringLiteral("nut-m6")},
                               {QStringLiteral("count"), 1}},
+                  // A timber family used in two sizes (mitcad#518): the
+                  // component's total and each row's uses; a row with no
+                  // name or no uses is left out.
+                  QJsonObject{{QStringLiteral("library"), QStringLiteral("timber")},
+                              {QStringLiteral("url"), QStringLiteral("")},
+                              {QStringLiteral("component"), QStringLiteral("dimensioned-48")},
+                              {QStringLiteral("count"), 37},
+                              {QStringLiteral("rows"),
+                               QJsonArray{QJsonObject{{QStringLiteral("config"), QStringLiteral("48x98")},
+                                                      {QStringLiteral("count"), 35}},
+                                          QJsonObject{{QStringLiteral("config"), QStringLiteral("48x48")},
+                                                      {QStringLiteral("count"), 2}},
+                                          QJsonObject{{QStringLiteral("config"), QStringLiteral("")},
+                                                      {QStringLiteral("count"), 4}},
+                                          QJsonObject{{QStringLiteral("config"), QStringLiteral("48x198")},
+                                                      {QStringLiteral("count"), 0}}}}},
                   // Not a part: left out.
                   QJsonObject{{QStringLiteral("library"), QStringLiteral("parts")}}}}};
   const QList<UsedPart> parts = usedLibraryParts(model);
   CHECK(model.asked.value(QStringLiteral("query")).toString() == QStringLiteral("library_usage"));
-  CHECK(parts.size() == 2);
-  if (parts.size() == 2) {
+  CHECK(parts.size() == 3);
+  if (parts.size() == 3) {
     CHECK(parts[0].library == QStringLiteral("parts"));
     CHECK(parts[0].url == QStringLiteral("https://example.org/parts.git"));
     CHECK(parts[0].component == QStringLiteral("p30"));
     CHECK(parts[0].count == 4);
+    CHECK(parts[0].rows.isEmpty());
     CHECK(parts[1].component == QStringLiteral("nut-m6"));
     CHECK(parts[1].url.isEmpty());
     CHECK(parts[1].count == 1);
+    CHECK(parts[2].component == QStringLiteral("dimensioned-48"));
+    CHECK(parts[2].count == 37);
+    CHECK(parts[2].rows.size() == 2);
+    if (parts[2].rows.size() == 2) {
+      CHECK(parts[2].rows[0].config == QStringLiteral("48x98"));
+      CHECK(parts[2].rows[0].count == 35);
+      CHECK(parts[2].rows[1].config == QStringLiteral("48x48"));
+      CHECK(parts[2].rows[1].count == 2);
+    }
   }
+  // The tiles' counts per size (mitcad#518): the size's own uses, none for
+  // the sizes the design does not use, the component's total for a part
+  // without rows.
+  UsedCounts counts;
+  counts.set(parts);
+  const QString timber = QStringLiteral("timber");
+  const QString family = QStringLiteral("dimensioned-48");
+  CHECK(counts.of(timber, family, QStringLiteral("48x98")) == 35);
+  CHECK(counts.of(timber, family, QStringLiteral("48x48")) == 2);
+  CHECK(counts.of(timber, family, QStringLiteral("48x198")) == 0);
+  CHECK(counts.of(timber, family) == 37);
+  CHECK(counts.of(QStringLiteral("parts"), QStringLiteral("p30")) == 4);
+  CHECK(counts.of(QStringLiteral("parts"), QStringLiteral("p40")) == 0);
+  // Uses placed without a row are the default row's.
+  CHECK(counts.of(timber, family, QStringLiteral("48x98"), true) == 35);
+  UsedPart mixed;
+  mixed.library = timber;
+  mixed.component = QStringLiteral("batten");
+  mixed.count = 6;
+  mixed.rows.append({QStringLiteral("28x70"), 2});
+  counts.set({mixed});
+  CHECK(counts.of(timber, QStringLiteral("batten"), QStringLiteral("28x70")) == 2);
+  CHECK(counts.of(timber, QStringLiteral("batten"), QStringLiteral("28x95"), true) == 4);
+  CHECK(counts.of(timber, QStringLiteral("batten"), QStringLiteral("28x95"), false) == 0);
+  CHECK(counts.of(timber, QStringLiteral("batten")) == 6);
+  counts.set({});
+  CHECK(counts.of(timber, QStringLiteral("batten")) == 0);
   // A design without library parts, and a model that refuses the query.
   model.answer = QJsonObject{{QStringLiteral("parts"), QJsonArray()}};
   CHECK(usedLibraryParts(model).isEmpty());
@@ -275,6 +331,137 @@ void rowTests() {
   CHECK(favourites.starredParts().isEmpty());
 }
 
+PartGroupPath group(const QString& category, const QStringList& names, const QList<int>& order) {
+  return PartGroupPath{category, names, order};
+}
+
+// The groups' tree from two libraries' parts (mitcad#527), as
+// `library_search` gives their groups: the first library's Wood (a parent
+// by id), a slot screw in two groups (Slot profile and General fasteners),
+// a nut, a category of no name; the second library's "wood" (the same
+// group by its name, any case) with its sheets, and a Workshop of its own.
+void groupTreeTests() {
+  CHECK(groupKey({QStringLiteral(" Wood "), QStringLiteral("Dimensioned  timber")}) ==
+        QStringLiteral("wood/dimensioned timber"));
+  CHECK(groupLabel(QStringLiteral("linear-parts")) == QStringLiteral("Linear parts"));
+  CHECK(groupLabel(QStringLiteral("Sheets")) == QStringLiteral("Sheets"));
+  CHECK(groupLabel(QStringLiteral("M5 nuts")) == QStringLiteral("M5 nuts"));
+
+  // The parts: their groups, the first their home.
+  const QList<QList<PartGroupPath>> parts{
+      // 0: a beam of the first library
+      {group(QStringLiteral("timber"), {QStringLiteral("Wood"), QStringLiteral("Dimensioned timber")}, {0, 1})},
+      // 1: a slot screw in two groups
+      {group(QStringLiteral("slot-screws"), {QStringLiteral("Slot profile"), QStringLiteral("Screws")}, {3, 3}),
+       group(QStringLiteral("general-screws"), {QStringLiteral("General fasteners"), QStringLiteral("Screws")},
+             {4, 4})},
+      // 2: a nut
+      {group(QStringLiteral("nuts"), {QStringLiteral("General fasteners"), QStringLiteral("Nuts")}, {5, 5})},
+      // 3: a category of no name
+      {group(QStringLiteral("linear-parts"), {QStringLiteral("linear-parts")}, {9})},
+      // 4: the second library's sheets in its "wood"
+      {group(QStringLiteral("sheets"), {QStringLiteral("wood"), QStringLiteral("Sheets")}, {0, 1})},
+      // 5: its workshop
+      {group(QStringLiteral("workshop"), {QStringLiteral("Workshop")}, {2})},
+  };
+  PartGroupTree tree;
+  for (const QList<PartGroupPath>& groups : parts) {
+    for (const PartGroupPath& one : groups) {
+      tree.add(one);
+    }
+  }
+  tree.finish();
+  // The top groups by the libraries' order, then by name; one Wood.
+  CHECK(tree.top() == (QStringList{QStringLiteral("wood"), QStringLiteral("workshop"), QStringLiteral("slot profile"),
+                                   QStringLiteral("general fasteners"), QStringLiteral("linear-parts")}));
+  const PartGroupTree::Node* wood = tree.node(QStringLiteral("wood"));
+  CHECK(wood != nullptr);
+  if (wood != nullptr) {
+    CHECK(wood->name == QStringLiteral("Wood"));
+    CHECK(wood->parent.isEmpty());
+    CHECK(wood->children ==
+          (QStringList{QStringLiteral("wood/dimensioned timber"), QStringLiteral("wood/sheets")}));
+  }
+  const PartGroupTree::Node* screws = tree.node(QStringLiteral("general fasteners/screws"));
+  CHECK(screws != nullptr);
+  if (screws != nullptr) {
+    CHECK(screws->name == QStringLiteral("Screws"));
+    CHECK(screws->path == QStringLiteral("General fasteners/Screws"));
+    CHECK(screws->parent == QStringLiteral("general fasteners"));
+    CHECK(screws->categories == QStringList{QStringLiteral("general-screws")});
+    CHECK(screws->group.names == (QStringList{QStringLiteral("General fasteners"), QStringLiteral("Screws")}));
+  }
+  const PartGroupTree::Node* linear = tree.node(QStringLiteral("linear-parts"));
+  CHECK(linear != nullptr && linear->name == QStringLiteral("Linear parts") && linear->children.isEmpty());
+  CHECK(tree.subtree(QStringLiteral("general fasteners")) ==
+        (QStringList{QStringLiteral("general fasteners"), QStringLiteral("general fasteners/screws"),
+                     QStringLiteral("general fasteners/nuts")}));
+  CHECK(tree.subtree(QStringLiteral("no such group")).isEmpty());
+  CHECK(!tree.contains(QStringLiteral("screws")));
+
+  // A group lists its own parts and its subgroups', each part once: the
+  // slot screw in both of its groups and once in General fasteners.
+  const auto members = [&parts](const QString& key) {
+    QList<int> in;
+    for (int i = 0; i < parts.size(); ++i) {
+      if (inGroup(parts.at(i), key)) {
+        in << i;
+      }
+    }
+    return in;
+  };
+  CHECK(members(QStringLiteral("wood")) == (QList<int>{0, 4}));
+  CHECK(members(QStringLiteral("wood/sheets")) == QList<int>{4});
+  CHECK(members(QStringLiteral("slot profile/screws")) == QList<int>{1});
+  CHECK(members(QStringLiteral("general fasteners/screws")) == QList<int>{1});
+  CHECK(members(QStringLiteral("general fasteners")) == (QList<int>{1, 2}));
+  CHECK(members(QStringLiteral("general")).isEmpty());
+  CHECK(members(QString()).isEmpty());
+
+  // Stars: a group's star stars its subtree (one change); in Favourites a
+  // part listed once, first when any of its groups is starred.
+  PartFavourites& favourites = PartFavourites::instance();
+  const QString library = QStringLiteral("parts");
+  QList<OrderedPart> order;
+  QList<QStringList> groups;
+  const QStringList components{QStringLiteral("beam"), QStringLiteral("slot-screw"), QStringLiteral("nut"),
+                               QStringLiteral("rail"), QStringLiteral("plywood"), QStringLiteral("clamp")};
+  for (int i = 0; i < parts.size(); ++i) {
+    QStringList keys;
+    for (const PartGroupPath& one : parts.at(i)) {
+      keys << groupKey(one.names);
+    }
+    order.append({library, components.at(i), keys.first(), QString(), false});
+    groups.append(keys);
+  }
+  favourites.setStarred(library, QStringLiteral("nut"), true);
+  favourites.setStarred(library, QStringLiteral("slot-screw"), true);
+  CHECK(pickerOrder(order, true, groups) == (QList<int>{1, 2, 0, 3, 4, 5}));
+  int changes = 0;
+  const QMetaObject::Connection counting =
+      QObject::connect(&favourites, &PartFavourites::changed, [&changes] { ++changes; });
+  favourites.setGroupsStarred(tree.subtree(QStringLiteral("general fasteners")), true);
+  CHECK(changes == 1);
+  CHECK(favourites.groupStarred(QStringLiteral("general fasteners/nuts")));
+  // The nut's group and the screw's second group are starred: both first,
+  // the screw once, in the given order.
+  CHECK(pickerOrder(order, true, groups) == (QList<int>{1, 2, 0, 3, 4, 5}));
+  // Only by its home group the screw would not be first.
+  CHECK(pickerOrder(order, true) == (QList<int>{2, 1, 0, 3, 4, 5}));
+  favourites.setGroupsStarred(tree.subtree(QStringLiteral("general fasteners")), false);
+  favourites.setGroupsStarred(tree.subtree(QStringLiteral("general fasteners")), false);
+  CHECK(changes == 2);
+  QObject::disconnect(counting);
+  CHECK(!favourites.groupStarred(QStringLiteral("general fasteners")));
+  {
+    const PartFavourites reread;
+    CHECK(!reread.groupStarred(QStringLiteral("general fasteners/screws")));
+  }
+  favourites.setStarred(library, QStringLiteral("nut"), false);
+  favourites.setStarred(library, QStringLiteral("slot-screw"), false);
+  CHECK(favourites.starredParts().isEmpty());
+}
+
 } // namespace
 
 int partPickerDataTests() {
@@ -292,6 +479,7 @@ int partPickerDataTests() {
   CHECK(QSettings().fileName().startsWith(directory.path()));
   orderAndSettingsTests();
   rowTests();
+  groupTreeTests();
   QSettings::setDefaultFormat(format);
   QCoreApplication::setOrganizationName(organization);
   QCoreApplication::setApplicationName(application);

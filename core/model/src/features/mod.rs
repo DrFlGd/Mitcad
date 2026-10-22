@@ -254,6 +254,9 @@ pub mod gear_profile;
 pub use gear::{GearDef, GearKind};
 #[cfg(test)]
 mod gear_tests;
+// Faces moved by a rigid motion (mitcad#343).
+pub mod move_face;
+pub use move_face::MoveFaceDef;
 
 use crate::assembly::Assembly;
 use crate::datum::Datum;
@@ -413,6 +416,8 @@ feature_types! {
     BodyTransfer(BodyTransferDef),
     // Gears: spur, helical, herringbone, ring, rack and bevel (mitcad#472).
     Gear(GearDef),
+    // Faces moved by a rigid motion (mitcad#343).
+    MoveFace(MoveFaceDef),
 }
 
 /// Brings a feature definition in an earlier form up to date before it is

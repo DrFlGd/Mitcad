@@ -7,7 +7,8 @@ library is MIT; the fasteners keep CC0-1.0 as their own licence.
 
     python3 make-parts-library.py --cli build/dev/tools/cli/mitcad-cli \\
         --source <folder of the supplier's files> --out <clone of the parts repository> \\
-        [--groups tools/libraries/profiles] [--version 2.3.0] [--work <folder>] [--no-render] [--commit]
+        [--groups tools/libraries/profiles] [--version 2.3.0] [--work <folder>] [--no-render] [--commit] \\
+        [--render-worker build/dev/app/mitcad-render] [--rerender]
 
 --out is a clone of the parts repository (the fastener library until
 1.0.0), or a new folder. Its earlier versions stay: with --commit the
@@ -136,7 +137,13 @@ def main():
     parser.add_argument("--groups", default=os.path.join(HERE, "profiles"), help="the profile parts' group files")
     parser.add_argument("--version", default="2.3.0", help="the library's version")
     parser.add_argument("--work", help="folder for intermediate files (default: next to --out)")
-    parser.add_argument("--no-render", action="store_true", help="passed to make-profile-library.py")
+    parser.add_argument("--no-render", action="store_true", help="passed to both generators")
+    parser.add_argument("--render-worker", help="mitcad-render for the previews, passed to both generators")
+    parser.add_argument("--rerender", action="store_true",
+                        help="render every fastener's preview, also those whose design did not change")
+    parser.add_argument("--strict", action="store_true",
+                        help="passed to both generators: fail when a fastener's preview, thread or rounding "
+                             "fell back")
     parser.add_argument("--commit", action="store_true",
                         help="record the folder as a git version on top of the clone's and tag it v<version>")
     args = parser.parse_args()
@@ -144,14 +151,18 @@ def main():
     out = os.path.abspath(args.out)
     work = ["--work", os.path.abspath(args.work)] if args.work else []
     python = sys.executable
+    # The previews (mitcad#526): rendered with the worker, or drawn.
+    render = ((["--no-render"] if args.no_render else []) + (["--rerender"] if args.rerender else [])
+              + (["--render-worker", os.path.abspath(args.render_worker)] if args.render_worker else [])
+              + (["--strict"] if args.strict else []))
     # 1. The fasteners, with a manifest of their own.
     run([python, os.path.join(HERE, "make-fastener-library.py"), "--cli", args.cli, "--out", out,
-         "--version", args.version] + work, "make-fastener-library.py")
+         "--version", args.version] + work + render, "make-fastener-library.py")
     fasteners = read(os.path.join(out, "SOURCES.md"))
     # 2. The BUILD parts into the same manifest; this checks the folder.
     run([python, os.path.join(HERE, "make-profile-library.py"), "--cli", args.cli, "--source", args.source,
          "--out", out, "--groups", args.groups, "--version", args.version, "--merge"]
-        + work + (["--no-render"] if args.no_render else []), "make-profile-library.py")
+        + work + render, "make-profile-library.py")
     profiles = read(os.path.join(out, "SOURCES.md"))
     # 3. One licence note, README and sources for both.
     write(os.path.join(out, "LICENSE"), LICENSE_TEXT)

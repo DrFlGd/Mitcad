@@ -79,7 +79,9 @@ class NativeCommandForm;
 class NativeWidgetView;
 #endif
 struct BrowserNode;
+struct JointHighlight;
 struct FileVersion;
+struct MountPart;
 struct RecoverableSession;
 
 namespace sketch {
@@ -183,6 +185,7 @@ public:
   TopoDS_Shape itemShape(const SelectionItem& item) const override;
   TopoDS_Shape analysisShape(const QJsonObject& request) const override;
   double pixelSize(const gp_Pnt& point) const override; // mitcad#417
+  std::optional<gp_Dir> towardViewer(const gp_Pnt& point) const override; // mitcad#525
   QStringList bodyUids() const override;
   std::vector<BodyDisplay> modelBodies() const override;
   void showSection(const QJsonValue& plane) override;
@@ -228,6 +231,7 @@ public:
   void exportSketch(const QString& sketch) override;
   void editAnalysis(const QString& name) override;
   void animateJoint(const QString& uid) override;
+  void previewJoint(const QString& uid, const QString& occurrence) override;
   // Motion studies and contact sets (mitcad#454; MainWindowMotion.cpp).
   void openMotionStudy(const QString& name) override;
   void editContactSet(const QString& name) override;
@@ -453,6 +457,23 @@ private:
   // BUILD parts (components) given, or of their sets, one undo step.
   void deleteBuildParts(const QStringList& components, bool sets);
   bool keepSelected(const SelectionItem& item) const;
+  // The joint highlight (mitcad#523, MainWindowJointHighlight.cpp): the
+  // `joints` query's entry of a joint, as-built joint or constraint set
+  // (empty for other features); the highlights of the selected joints and
+  // of the joint row under the pointer (lighter), logged when they change;
+  // the selection card's text of a selected joint (empty for other items).
+  QJsonObject jointEntry(const QString& uid) const;
+  void addJointHighlights(std::vector<HighlightDisplay>& highlights);
+  QString jointCardBlock(const SelectionItem& item) const;
+  // One joint's highlights (`preview`: the hover's, lighter, nothing it
+  // takes clicks on); its log lines go to `lines`.
+  void appendJointHighlight(const JointHighlight& joint, bool preview, std::vector<HighlightDisplay>& highlights,
+                            QStringList& lines) const;
+  // Move Face in the selection (mitcad#531, MainWindowMoveFace.cpp): the
+  // faces a Move Face moved (null for other features), and the selection
+  // card's block naming it (empty for other items).
+  TopoDS_Shape movedFacesShape(const QString& uid) const;
+  QString moveFaceCard(const SelectionItem& item) const;
 
   // Sketches: Create Sketch picks the plane, then sketch mode until Finish
   // Sketch. Editing a sketch rolls the timeline back to it.
@@ -616,6 +637,12 @@ private:
   void openFromCloud(const OpenFromCloudOptions& options = OpenFromCloudOptions(), bool ask = true);
   // File > Open Read-Only: a design without an edit lock.
   void openReadOnly();
+  // A design opened without its edit lock (the window read-only).
+  void openReadOnlyFile(const QString& path);
+  // File > Open from Project (mitcad#530): a design chosen in the project
+  // browser (projects/ProjectBrowser), opened, or read-only; Another File...
+  // the system's dialog of Open or Open Read-Only.
+  void openFromProject();
   // File > Project Settings.
   void showProjectSettings();
   // File > Save to Project (mitcad#503): the design saved, as Save As does,
@@ -656,6 +683,8 @@ private:
   bool projectsPanelShownAtStart() const;
   // `remember`: the user's choice, kept for the next start.
   void setProjectsPanelShown(bool shown, bool remember);
+  // The Docked panel's width as the user last dragged it (mitcad#529).
+  void restoreProjectsDockWidth();
   // New Project, Open Project, Open from Cloud: the panel shows the project.
   void showProjectInPanel(const QString& root);
   // Its projects read again (after Save, a sync, the focus back).
@@ -801,6 +830,9 @@ private:
   void showLibraryParts();
   void manageLibraries();
   void publishToLibrary();
+  // The part Place Part places (mitcad#525, commands/MountCommands.cpp):
+  // Insert from Library's choice of a part with mount frames.
+  std::shared_ptr<MountPart> m_mountPart;
 
   // Files (U6, MainWindowFiles.cpp): the File menu, import and export.
   void createFileMenu();
@@ -999,6 +1031,12 @@ private:
   std::function<void(bool committed)>& m_commandFinished = m_documentSession->state().commandFinished;
   Selection& m_selection = m_documentSession->state().selection;
   QString m_loggedFeatureFaces = QStringLiteral("none"); // the selected features' faces (UI tests)
+  // The joint row under the pointer (a Feature item; invalid: none) and
+  // the joint highlight's log lines last logged (mitcad#523).
+  SelectionItem m_jointHover;
+  QString m_loggedJointHighlight = QStringLiteral("none");
+  QString m_loggedJointCard;
+  mutable QString m_loggedMoveFaceCard; // the Move Face card's line last logged (mitcad#531)
   bool m_originVisible = false; // an input takes construction geometry
   bool m_constructionHidden = false; // an input hides it (mitcad#394)
   std::vector<SketchEntityDisplay> m_sketchDisplay;

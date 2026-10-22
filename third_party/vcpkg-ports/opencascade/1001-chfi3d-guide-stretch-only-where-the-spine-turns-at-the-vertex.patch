@@ -1,0 +1,77 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: patch 0980's guide built from a stretch of the edge before its
+start (after its end) only where the spine turns at that edge's end
+(mitcad#343).
+
+The case: a bar's outline rounded with 0.3 on both sides (patch 0961's
+case), each side's chain of tangent edges starting at the vertex where its
+blend vanishes; the walked piece of the chain's first edge ends 0.018 past
+the next edge's start, where that edge's analytic piece starts. 0980
+builds such a guide, which ends a hair past the start of an edge, from a
+stretch of that edge as well, so that a turn of the spine at the vertex is
+not made within the hair (a fin's top edges kinked by a degree and a half,
+0980's case). Here the edges go on tangentially (their tangents 2e-6 rad
+apart at the vertex): there is no turn to make, and the guide, an
+approximation across the vertex, passed its end 1e-5 mm and 5e-4 rad off
+the spine's point and tangent, where the analytic piece's section is; the
+walk's first step from that section failed, on all four chains, on the
+replayed and on the stored body. Without the stretch the guide's end is the
+spine's (within 1e-6 mm and 1e-6 rad) and the walk builds as before 0980.
+
+ChFi3d_PerformElSpine now takes the stretch only where the spine's
+tangents just before and after that edge's end vertex lie more than a
+thousandth of a radian apart.
+
+On the design's body before the item: valid, the stored body's 174 faces,
+the change of volume -2.2689 mm3 on the stored body (as with 0961 alone);
+the fin's top edges of 0980's case keep their stretch and build as before.
+
+Upstream: new.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
+index bfc749d9..865a08f3 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
+@@ -7064,7 +7064,22 @@ Standard_EXPORT void ChFi3d_PerformElSpine(occ::handle<ChFiDS_ElSpine>& HES,
+   // beyond its start. The walk's sections there turn with it, the first
+   // section's reframing, which looks a little before the start, finds no
+   // section on its arcs, and the walk fails. The stretch is the guide's
+-  // run on along the spine, where the analytic piece is.
++  // run on along the spine, where the analytic piece is. Only where the
++  // spine turns at that edge's end (by more than a thousandth of a radian):
++  // where its edges go on tangentially there is no turn to make, and the
++  // guide built with the stretch, an approximation across the vertex,
++  // passed its end 1e-5 mm and 5e-4 rad off the spine's point and tangent,
++  // where the analytic piece's section is; the walk's first step from that
++  // section failed (a rounding along a chain of tangent edges whose walked
++  // piece ends a hair past the next edge's start, mitcad#343).
++  const auto turnsAt = [&Spine](const double W) {
++    const double aStep = 1.e-5;
++    gp_Pnt       aP;
++    gp_Vec       aT0, aT1;
++    Spine->D1(W - aStep, aP, aT0);
++    Spine->D1(W + aStep, aP, aT1);
++    return aT0.Magnitude() > gp::Resolution() && aT1.Magnitude() > gp::Resolution() && aT0.Angle(aT1) > 1.e-3;
++  };
+   double aPreDeb = 0., aPreFin = 0.;
+   if (!periodic && !ES.IsPeriodic() && IL > IF)
+   {
+@@ -7073,7 +7088,7 @@ Standard_EXPORT void ChFi3d_PerformElSpine(occ::handle<ChFiDS_ElSpine>& HES,
+     {
+       const double aPiece = Spine->LastParameter(IF) - WF;
+       const double aRoom  = WF - Spine->FirstParameter(IF);
+-      if (aPiece < 0.01 * aGuideLength && aRoom > 10. * aPiece)
++      if (aPiece < 0.01 * aGuideLength && aRoom > 10. * aPiece && turnsAt(Spine->LastParameter(IF)))
+       {
+         aPreDeb = std::min(0.03 * aGuideLength, aRoom);
+       }
+@@ -7082,7 +7097,7 @@ Standard_EXPORT void ChFi3d_PerformElSpine(occ::handle<ChFiDS_ElSpine>& HES,
+     {
+       const double aPiece = WL - Spine->FirstParameter(IL);
+       const double aRoom  = Spine->LastParameter(IL) - WL;
+-      if (aPiece < 0.01 * aGuideLength && aRoom > 10. * aPiece)
++      if (aPiece < 0.01 * aGuideLength && aRoom > 10. * aPiece && turnsAt(Spine->FirstParameter(IL)))
+       {
+         aPreFin = std::min(0.03 * aGuideLength, aRoom);
+       }

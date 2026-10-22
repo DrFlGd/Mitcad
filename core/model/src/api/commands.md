@@ -3529,7 +3529,7 @@ Examples: `tools/cli/tests/f6_*.json`.
 | `copy_occurrence` | `occurrence`, `transform` (optional) | `occurrence`, `name` |
 | `paste_new` | `occurrence`, `transform` (optional) | `component`, `occurrence`, `name` |
 | `delete_occurrence` | `occurrence` | `deleted`: features |
-| `insert_component` | `path` or `library` ([Component libraries](#library-parts)), `link` (default true), `transform`, `name`, `base` (directory of relative paths) | `component`, `occurrence`, `name` |
+| `insert_component` | `path` or `library` ([Component libraries](#library-parts)), `link` (default true), `transform`, `name`, `base` (directory of relative paths), `mount` (placed by a mount frame instead of `transform`, [Mount frames](#mount-frames)) | `component`, `occurrence`, `name`, `bodies` (the new component's), `frames` (its mount frames: `name`, `kind`, `joint`, `pitch`, `cells`, `footprint`, `feature` (the joint origin), `occurrence`), `joint` and `joint_name` (a mount placement's, else null), `mount` (what the placement did, as `mount_preview` answers) |
 | `update_links` | `base` (optional) | `messages` |
 | `reparent_occurrence` | `occurrence` (path from the root), `parent` (path; empty: the root) | see [Moving an occurrence to another parent](#moving-an-occurrence-to-another-parent) |
 
@@ -3696,7 +3696,8 @@ the timeline`).
   then moved by `angle` about and `offset` along its z axis and turned
   over by `flip`. Its datum is a plane with that frame (the `datums`
   query; a sketch can be placed on it); joints use it as `"F9"`. It has a
-  light bulb like construction geometry.
+  light bulb like construction geometry. With `mount` it is a mount frame
+  of the part (mitcad#525, [Mount frames](#mount-frames)).
 - `rigid_group` (`RigidGroup<n>`): two or more occurrences placed in the
   feature's component that move as one from its point of the timeline:
   the joints after it move them together, and a `move_occurrence` of one
@@ -3822,6 +3823,40 @@ feature and moves nothing.
   copy) take their joints along, naming the copies' occurrences.
 - Joint features are saved as features (design file round trip); files
   without them have none.
+
+### What each side is on
+
+The `joints` query says what each side of a joint is built on
+(mitcad#523), so that the application can highlight it (app/COMMANDS.md,
+"Joints", *Joint highlight*) without reading the definitions:
+
+- A `joint`'s `a` and `b`, and each constraint row's `a`, `b` (and `a2`,
+  `b2` when given), have besides `occurrence` and `path`: `geometry`, the
+  reference as the definition stores it (`{"body", "face"}`, `"F9"`,
+  `"xy"`, `{"point": [x, y, z]}`, `{"mount": "F7:mount(end_a)"}`, …);
+  `on`, what it is: `face`, `edge`, `vertex`, `body`, `sketch_curve`,
+  `sketch_point`, `origin` (an origin plane, axis or the origin),
+  `construction` (a construction plane, axis or point), `joint_origin`,
+  `fixed` (a fixed plane, axis or point: in no geometry) or `mount` (a
+  derived part's mount frame, BUILD); `frame_override` when the side has
+  one, as the definition has it; and `component`, the component the path
+  ends in (the feature's own for an empty path; left out when the path
+  leads nowhere).
+- An `as_built_joint`'s `a` and `b` have `on` `occurrence` and their
+  `component`; its motion origin, when it has one, is `origin`, a side as
+  above.
+
+```json
+{"name": "Joint1", "kind": "revolute", "component": "C0",
+ "a": {"occurrence": "Pin:1", "path": ["O2"], "component": "C2", "on": "face",
+       "geometry": {"body": "F4.b0", "face": "F4:start(r{…})"}},
+ "b": {"occurrence": "Plate:1", "path": ["O1"], "component": "C1", "on": "face",
+       "geometry": {"body": "F2.b0", "face": "F2:end(r{…})"},
+       "frame_override": {"origin": [5, 5, 10]}},
+ "frames": {"a": {"origin": [20, 20, 10], …}, "b": {…}}}
+```
+
+Model test: `joint_tests.rs`, `the_joints_query_says_what_each_side_is_on`.
 
 ## Assembly constraints
 
@@ -6591,13 +6626,13 @@ with `error` (`class`, `message`, `detail`, as the remote commands') and
 |---|---|---|
 | `library_fetch` | `url` (https, ssh, a file:// URL or a folder; never with credentials) | `kind` (`library`, `index`), `id`, `name`, `url`, `dir`, `cloned`, `head`, `versions`, `problems` (`errors`, `warnings`), `error`, `log`: a bare clone into the cache (`git clone --bare`), or new branches and tags fetched into it; a repository that is neither, or larger than 200 MB, is refused and leaves nothing |
 | `library_list` | | `root`, `libraries`: `dir`, `url`, `kind`, `versions`, and a library's `id`, `name`, `description`, `license`, `authors`, `components` (count), `problems`, an index's `name`, `entries` |
-| `library_show` | `url` or `id`, `rev` (default: the newest version) | `dir`, `url`, `rev`, `labels`, `versions`; a library's `manifest`, `problems` and `components` (`id`, `name`, `path`, `category`, `standard`, `description`, `keywords`, `license`, `license_note`, `preview`, `designation`, `supplier`, `part_number`, `supplier_url`, `build` (as the manifest has it, or null), `configurations`: `selectors`, `selector_values`, `default`, `rows` with `name`, `select` and, when the row has them, its own `part_number`, `supplier_url` and `designation`); an index's `name`, `description`, `entries` |
-| `library_search` | `text` (words that must all match name, id, standard, description, category, keywords, supplier, part number, the library), `role` and `system` (BUILD parts only, [BUILD parts](../../../../docs/libraries.md#build-parts): the role, and the slot system as `{"type", "slot", "grid"}` or text `B/8/30`, a series left out matching any; a linear part's `kind` and `size`), `supplier` (the same, without case), `part_number` (the component's or a row's own, without case), `licenses` (SPDX ids an item may have; left out: any), `unlicensed` (default false: items without a licence are hidden), `category`, `libraries` (ids or URLs) | `components` (of fetched libraries at their newest versions: as `library_show`'s with `library`, `library_name`, `url`, `rev`, `version`, `authors`), `libraries` (index entries with `index`, `index_url`, `fetched`, `license_note`), `hidden` (left out for their licence) |
+| `library_show` | `url` or `id`, `rev` (default: the newest version) | `dir`, `url`, `rev`, `labels`, `versions`; a library's `manifest`, `problems` and `components` (`id`, `name`, `path`, `category` (its home category), `categories` (every one, the home first), `groups` (per category `{"category", "path", "order"}`: the group's names from the top and each name's place in the manifest's list, [Groups](../../../../docs/libraries.md#groups), mitcad#527), `standard`, `description`, `keywords`, `license`, `license_note`, `preview`, `designation`, `supplier`, `part_number`, `supplier_url`, `build` (as the manifest has it, or null), `mounts` (likewise, mitcad#525), `configurations`: `selectors`, `selector_values`, `default`, `rows` with `name`, `select` and, when the row has them, its own `part_number`, `supplier_url` and `designation`); an index's `name`, `description`, `entries` |
+| `library_search` | `text` (words that must all match name, id, standard, description, categories, keywords, supplier, part number, the library), `role` and `system` (BUILD parts only, [BUILD parts](../../../../docs/libraries.md#build-parts): the role, and the slot system as `{"type", "slot", "grid"}` or text `B/8/30`, a series left out matching any; a linear part's `kind` and `size`), `supplier` (the same, without case), `part_number` (the component's or a row's own, without case), `licenses` (SPDX ids an item may have; left out: any), `unlicensed` (default false: items without a licence are hidden), `category` (any of a component's categories), `libraries` (ids or URLs) | `components` (of fetched libraries at their newest versions: as `library_show`'s with `library`, `library_name`, `url`, `rev`, `version`, `authors`), `libraries` (index entries with `index`, `index_url`, `fetched`, `license_note`), `hidden` (left out for their licence) |
 | `library_preview` | `url` or `id`, `rev`, `component`, `config` (a row: its own preview when it has one, `row_previews`, mitcad#484) | `png` (base64) or null |
 | `library_diff` | `id`, `url`, `from`, `to`, `parts` ([{`component`, `config`}]) | `from`, `to` (commits), `from_labels`, `to_labels`, `library` (licence and version changes), `parts`: `changed`, `missing` (the component or row is not in `to`), `lines` (the row's value changes), `text`, `design` (the comparison of the design without its table) |
-| `library_check` | `dir` (a library folder) | `id`, `components`, `ok`, `errors`, `warnings`: the manifest, the files it names (there, no symbolic links, designs that open and link no other files, PNG previews of at most 512 KB), a licence file; for BUILD parts the block's rules ([BUILD parts](../../../../docs/libraries.md#build-parts)), the design's parameters and `mount:<name>` joint origins, a profile's layout, and library references that resolve (in the folder, else in the fetched libraries; one not fetched is a warning) |
+| `library_check` | `dir` (a library folder) | `id`, `components`, `ok`, `errors`, `warnings`: the manifest, the files it names (there, no symbolic links, designs that open and link no other files, PNG previews of at most 512 KB), a licence file; for BUILD parts the block's rules ([BUILD parts](../../../../docs/libraries.md#build-parts)), the design's parameters and `mount:<name>` joint origins, a profile's layout, and library references that resolve (in the folder, else in the fetched libraries; one not fetched is a warning); a component's `mounts` against its rules and the design's mount frames ([Mount frames](../../../../docs/libraries.md#mount-frames)) |
 | `library_init` | `dir`, `id`, `name`, `description`, `license`, `authors`, `homepage` | `dir`, `id`, `written`: the manifest, a `LICENSE` note naming the licence, a README, and a Mitcad project with a git repository (no version yet) |
-| `library_add` | `dir`, `text` (a single-file design), `id`, `name`, `category`, `category_name`, `standard`, `description`, `keywords`, `license`, `designation`, `preview` (a PNG, base64), `path` (default `<category>/<id>.mitcad`), `supplier`, `part_number`, `supplier_url`, `build` (left out: those of the component it replaces) | `component`, `written`, `errors`, `warnings` (a check of the folder); a component of the same id is replaced |
+| `library_add` | `dir`, `text` (a single-file design), `id`, `name`, `category` (an id, or a list of them, the first its home; `categories` adds more), `category_name` and `category_parent` (a new home category's name, which may be a path, `Wood/Boards`, and its parent's id; the other new categories are named by their ids), `standard`, `description`, `keywords`, `license`, `designation`, `preview` (a PNG, base64), `path` (default `<category>/<id>.mitcad`), `supplier`, `part_number`, `supplier_url`, `build` (left out: those of the component it replaces), `mounts` (left out: the design's mount frames for a part without `build`, [Mount frames](#mount-frames)) | `component`, `written`, `errors`, `warnings` (a check of the folder); a component of the same id is replaced |
 | `index_entry` | `dir`, `url` (where the library is published), `rev` (default HEAD) | `path` (`libraries/<id>.json`), `rev`, `labels`, `entry`, `text` |
 | `licenses` | | `licenses`: the SPDX ids a community index accepts with a `note` for users |
 | `library_build_candidates` | `junction` (one of the `build_junctions` query's: `kind`, `systems` of its profiles, `space`), or `role` with `system` (for Profile, Panel and Linear Part pickers; a part made for no system fits any) with a linear part's `kind` and `size` (a carriage for a rail's size; a part without a size fits any), `text`, `libraries`, `licenses`, `unlicensed` | `components` (as `library_search`'s, with `build`, `supplier`, `part_number`, `supplier_url`, and its `configurations` as `library_show` gives them, each row with `preview: true` when it has a picture of its own: every row a part of the pickers, mitcad#484) that fit, best first: a connector's `junctions`, `systems` and `space` against the junction's ([BUILD](#build-profile-assemblies)); `refused` (those that nearly fit, one thing wrong, for the picker's greyed rows: each `{"id", "name", "library", "reason"}`), `hidden`. A connector fits more closely when it names the profiles' series and goes on one junction kind only; a connector with an `envelope` needs that room in the junction's inner corner |
@@ -8934,6 +8969,20 @@ the model's tolerance (0.001 mm). Then:
 `a` is the part whose end meets; of two ends, and of two sides, the
 newer part.
 
+**Cut ends** (mitcad#521). A part whose metadata gives its section (a
+timber member) has its material as its box on the inner side of its end
+cuts, the planes its derived part cuts them by: an end on a side is in the
+other part's material, not only its box; a cut end whose frame (on its
+axis at the end, beyond the cut) is on no side meets a side with its cut
+face's middle, the junction's frame there with z out of the cut (a
+rafter's plumb cut on a ridge board: a `T`, `L` near the board's end);
+two cut ends are a shared mitre only when their cut planes are one plane;
+and two sides cross only where their materials meet: touching or
+overlapping square to both axes and with an area in common across that
+direction. So the two rafters of a pair, whose plumb cut ends stand on
+the two sides of a ridge board and whose boxes overlap above it, are no
+junction. A part of no such section is found by its box, as before.
+
 A connector fits a junction when its `junctions`, `systems` and `space`
 match the junction. The list of fitting library parts comes from the
 library side (`library_build_candidates` in [Library
@@ -9213,7 +9262,10 @@ cladding (a board row: a gap).
 
 - **Which way.** An end on a side (`T`, and an `L` whose end meets the
   other's side or end face): through the member whose side it is (`b`)
-  into the end of `a`, along `a`'s axis, from `b`'s far face. Two members
+  into the end of `a`, along `a`'s axis, from `b`'s far face; at a cut
+  end met by its cut face (mitcad#521) square to the cut face, the contact
+  the cut face within `b` (a rafter nailed through the ridge board into
+  its plumb cut end, horizontally). Two members
   crossing or lying on each other (`cross`): through the newer (`a`) into
   `b`, square to both axes, from `a`'s far side. Ends meeting on one axis
   (`inline`) are refused (`an inline joint takes a plate`).
@@ -9245,7 +9297,11 @@ cladding (a board row: a gap).
   `build_parts.parts[].seating` gives the measured `head_top_distance`
   from the entry face (negative stands proud, positive is sunk) and
   `tip_distance`, in millimetres; both come from the placed body's bounds
-  for an axis-aligned source (otherwise `seating` is null).
+  for an axis-aligned source (otherwise `seating` is null), whatever way
+  the fastener is driven (a sloped roof's too). With them `members` and
+  `of` (mitcad#521): how many of its junction's members its shaft passes
+  through (its points from the entry face to the tip, every half
+  millimetre, in a member's material) and how many the junction has.
 - **Warnings, not refusals** (in `warnings`, `d` the diameter):
   - the embedment (the length less the thickness gone through) under
     6 × `d`: `screw 1 embeds 22 mm in Beam1: at least 30 mm` (the
@@ -9722,7 +9778,7 @@ each is placed:
 
 | Query | Result |
 |---|---|
-| `library_usage` | `parts`: one per library component, `{"library", "url", "component", "count"}` |
+| `library_usage` | `parts`: one per library component, `{"library", "url", "component", "count", "rows"}` |
 
 - `library` is the library's id and `component` the component's id in
   it, as `library_search` gives them; `url` is where the library was
@@ -9731,7 +9787,16 @@ each is placed:
   [source](#sources) and components inserted from a library
   ([Library parts](#library-parts)), linked or copied.
 - A component's versions and configuration rows are one entry: an M4x16
-  and an M4x20 of the same screw count together.
+  and an M4x20 of the same screw count together in `count`.
+- `rows` (mitcad#518) gives the same count per configuration row, so the
+  part picker can show each size's own use count: `[{"config": "M4x16",
+  "count": 35}, {"config": "M4x20", "count": 2}]`, in the order the rows
+  first appear in the parts list; a row the design does not use is not
+  listed. It is each use's row as the part was placed (a BUILD part's
+  `config`, an insert's `config`). A use placed without a row is in
+  `count` only (it is the component's default row), so `count` is at
+  least the sum of the rows' counts; `rows` is empty for a part without
+  rows.
 - `count` is the parts list's quantity summed: how many times the design
   places the part, through every occurrence of the components it is in.
   A part placed nowhere (its last occurrence deleted) is left out.
@@ -9739,9 +9804,12 @@ each is placed:
   components were made).
 
 Tests: `core/model/src/library_tests.rs`
-(`the_library_usage_counts_each_library_component_once`),
+(`the_library_usage_counts_each_library_component_once`,
+`the_library_usage_counts_each_configuration_row_of_a_component`),
 `core/model/src/build/source_tests.rs`
-(`the_library_usage_counts_build_parts_by_their_source`).
+(`the_library_usage_counts_build_parts_by_their_source`),
+`core/model/src/build/timber_tests.rs`
+(`the_library_usage_counts_build_parts_per_row`).
 
 ## Motion studies and contact sets
 
@@ -10899,7 +10967,7 @@ A wall, floor or roof frame of timber members made from a few values
 (mitcad#479), edited afterwards as one. Its members are ordinary BUILD
 parts (*BUILD: timber construction*): grounded members by two points of
 the library's timber, in the cut list, junctions and lists like any
-other. The app's Timber tool makes them in its Frame mode and Timber
+other. The app's Wall and Floor / Roof (mitcad#520) make them and Timber
 Frame lays them out again (`app/COMMANDS.md`, *Timber*). Code:
 `core/model/src/build/frames.rs`; tests `core/model/src/build/frame_tests.rs`.
 
@@ -10933,7 +11001,9 @@ refused at is left as it is.
   start_on}`: the wall frames (any member of each) its ends butt against,
   `start_on: end` (mitcad#510) when instead that wall's end face butts
   against this wall's side at its start (left out: `side`); `corner`
-  (mitcad#510): how they meet those walls, `butt` or `lapped` (left out:
+  (mitcad#510): how they meet those walls, `butt`, `lapped` or `straight`
+  (mitcad#524: a start on an end face continues in line, its ends
+  otherwise butting) (left out:
   `lapped`, as walls saved before it keep their corners), kept in the
   definition and changed with `build_edit`.
   - The plates lie flat, the studs stand with the larger section size
@@ -10950,6 +11020,18 @@ refused at is left as it is.
     an opening that does not fit between the end studs, openings whose
     studs overlap, a header above the top plate, a sill below the bottom
     plate.
+  - **Load-bearing or not** (`load_bearing`, mitcad#519; kept in the
+    definition and changed with `build_edit`): `true` or left out (as
+    walls saved before keep) frames the openings as above; `false` (a
+    partition, the app's default for a new wall) leaves the trimmer studs
+    out: the king studs stand at the opening's sides (`opening.<n>.king.a`
+    from `offset - thickness`, `.king.b` from `offset + width`), and one
+    header lies flat between them, its wide face down as a plate
+    (`opening.<n>.header`, role `flat header`, the `header` part, from
+    `offset` to `offset + width`); the cripple studs above start at its
+    top, the sill and the cripple studs below are as above. The opening's
+    framing is a stud narrower on each side, so an opening fits nearer the
+    end studs. The preview's `roles` and the cut list follow it.
   - **Butting** (`corner: butt`, mitcad#510): a wall's end in `joins`
     stops at the face of the wall it names (on the side the wall is on),
     its end stud and plates square against it, neither lapped nor notched.
@@ -10987,10 +11069,10 @@ refused at is left as it is.
     point is on its centre line, else its left). With `corner: butt`
     (mitcad#510):
     - **from the side** (`side`): its centre line starts at the point's
-      place along the wall, also right next to an end, but at least half
-      its own depth from the wall's end faces (it never hangs past an end:
-      its outer face at most flush with the end face); it butts against
-      that wall's side, which gets the backing studs;
+      place along the wall (snapped, or From and Offset, below), but at
+      least half its own depth from the wall's end faces (it never hangs
+      past an end: its outer face at most flush with the end face); it
+      butts against that wall's side, which gets the backing studs;
     - **from an end** (`end`): a point on one of the wall's end faces
       (within 0.5 mm of the face and inside its depth, or beyond the end;
       the faces where its plates end now) starts it beyond that end, its
@@ -11007,15 +11089,104 @@ refused at is left as it is.
     - a **T** elsewhere: its centre line starts at the point's place along
       the wall.
 
+    **From and Offset** (mitcad#514): on the side its place along the wall
+    is measured as a side placement's (mitcad#417), between the wall's end
+    faces (where its plates end now): `from` `a` (end A to the new wall's
+    near face), `b` (end B to its far face) or `middle` (the middle to its
+    centre line, positive towards end B), `offset` that distance (a value;
+    0 is flush with that end, or centred). Without either, the point
+    decides, snapped: flush with an end when the new wall's face would be
+    within its depth of that end (butting; lapped: within the L corner's
+    reach above), centred within a quarter of its depth of the middle,
+    else the point's place from the nearer end; `snap` (mm, optional) is
+    the app's least snap distance, as `at.snap`. With either given (end A
+    and 0 when one is left out) they place it, the point only choosing the
+    side (never an end face). It never hangs past an end: a typed offset
+    that would is made flush with that end, with the warning `<name>: flush
+    with Wall 1's end A instead`. Butting, flush with an end is a clean
+    corner: its outer face in the plane of that end face, its end stud and
+    plates against the side, the wall's end stud outside it and a backing
+    stud inside it; lapped, flush with an end is the L corner there, any
+    other place a T.
+
     Its length runs from there: as far as `end` is along it (a second
-    click, anywhere), else `length` (refused without either, and when it
-    would not reach beyond the wall's side; from an end, beyond its other
-    side). The definition keeps the `start` and `end` worked out (not
-    `square`). The answer, and `build_preview`'s with `frame`, add
-    `junction`: `{kind ("side", "end", "L" or "T"), corner ("butt" or
-    "lapped"), wall (its name), frame (its lead), end ("a" or "b" for an
-    end or an L, else null), at (mm along the wall from its start to the
-    new centre line), length (mm)}`; null without `square`.
+    click, anywhere); else, unless `auto_end` is false (mitcad#515), to the
+    first wall frame its run meets: one it crosses (not one parallel to
+    it), its centre line between that wall's end faces (not one it merely
+    touches at a corner), beyond the side it starts from, their heights
+    overlapping; the nearest along the run. It ends there butting against
+    that wall's side as a start on a side does (`joins.end` that wall: its
+    end stud and plates square against the side, a backing stud each side
+    of it in that wall; with `corner: lapped` that wall's corner or T), its
+    length to that wall's face. Else (nothing met, or `auto_end: false`)
+    `length`. Refused without `end` or `length` when nothing is met, and
+    when it would not reach beyond the wall's side (from an end, beyond its
+    other side). The definition keeps the `start`, `end` and `joins`
+    worked out (not `square`, `from`, `offset`, `snap`, `auto_end`). The
+    answer, and `build_preview`'s with `frame`, add `junction`: `{kind
+    ("side", "end", "L" or "T"), corner ("butt" or "lapped"), wall (its
+    name), frame (its lead), end ("a" or "b" for an end or an L, else
+    null), at (mm along the wall from its start to the new centre line),
+    length (mm), from ("a", "b" or "middle"; null at an end), offset (mm;
+    null at an end), to ({wall, frame, auto}: the wall its end butts
+    against, `auto` true when its run met it, false for an end clicked on
+    it; else null), run (mm: the new wall between the faces it butts
+    against, from the wall's side, at an end from its far side)}`; null
+    without `square`.
+
+    **Straight** (`corner: straight`, mitcad#524): a start on one of that
+    wall's end faces continues it in line (`kind: "straight"`, `end` the
+    end clicked): its centre line that wall's, its start on the end face,
+    running away from it; the two walls are not joined (neither changes
+    the other). On the side it starts as `butt` does.
+
+  - **A wall started on another body's face** (case B, mitcad#524): with
+    `square: true`, no `joins.start` and `face` `{body, face, occurrence}`
+    (the body's uid, the face's name and the occurrence that places it, its
+    path from the root; left out: the body's first placement), `start` the
+    click on the face. A Timber wall frame's member is case A above,
+    recognised first (the app sends `joins.start` for it), so its
+    behaviour does not change. The clicked body (an imported wall, a
+    modelled solid, a loose Timber member, a floor frame's member) is not
+    changed and not linked; everything comes from the geometry:
+    - **side**: the face's outward side (its normal out of the body's
+      material, `Kernel::face_plane`), never into or behind it;
+      **direction**: square from it, along its normal; a face that is not
+      vertical (its normal more than 0.001 off the horizontal) is refused
+      (`<name> starts from a vertical face: the face of <body> clicked is
+      not vertical`);
+    - **base**: the floor under the click: the first body a line down from
+      a millimetre in front of the click enters (`Kernel::segment_crossings`,
+      a slab's top), else the face's bottom edge (its box,
+      `Kernel::face_boxes`, else the body's), its bottom plate's underside
+      there, `height` from it;
+    - **along the face**: at the click, or `offset` from `from` (`a`, the
+      face's end A: its left end seen from in front of it, `b` or
+      `middle`), snapped as on a wall frame's side with `corner: butt`
+      (flush with an end within the new wall's depth, centred within a
+      quarter of it, else from the nearer end), never past an end;
+    - **an end face** (narrower than the body is deep behind it: a solid
+      wall's thin end) makes a corner: with `butt` (or `lapped`, which has
+      nothing to lap here) its side against the end face, running to the
+      side of the face's middle the end (else the click) is on, its start
+      flush with the body's far side, longer than the face is wide
+      (`kind: "face_end"`); with `straight` in line beyond it, its centre
+      line the face's middle (`kind: "face_straight"`); a side face
+      (`kind: "face"`) is the same with any corner.
+    - Its length as a start on a wall frame's: `end`, else (unless
+      `auto_end` is false) what its run meets first, else `length`. **The
+      auto end** (mitcad#515, both cases) stops the run at a wall frame
+      (as above) or at **any other body's face** it meets nearer (the
+      bodies shown other than timber frames' members and the body it
+      starts on, along three lines of the run a quarter, half and three
+      quarters of its height up), butting it (no link: `to.frame` null,
+      `to.face` true).
+    - The definition keeps the `start` and `end` worked out (the start at
+      the base's height), not `face`. The junction's `kind` is `face`,
+      `face_end` or `face_straight`, `wall` the body's name, `frame` null,
+      `at` along the face from its end A, and `base` `{z, on ("floor",
+      "face" or "origin"), body}` names what it stands on. Tests:
+      `core/model/src/build/face_start_tests.rs`.
 - **A floor or ceiling** (`kind: floor`): `outline` (a closed outline,
   three points at least, at its first point's height: the joists'
   underside), `spacing` (default 400), `direction` (the joists'; default
@@ -11057,12 +11228,49 @@ refused at is left as it is.
   - Warnings: a ridge board shallower than the rafters' plumb cut, a
     birdsmouth deeper than a third of the rafter, rafters that do not bear
     on a wall.
+  - Its `fastener` goes at the junctions of its own members (mitcad#521):
+    through the ridge board into each rafter's plumb cut end, square to
+    the cut, from the board's far side (*Cut ends* after *How junctions
+    are found*); the two rafters of a pair are no junction, and a
+    mono-pitch roof's rafters have none among them. The rafters are not
+    fastened to the walls' plates (junctions of two frames).
 
-The answer: `component` and `frame` (the lead), `name`, `kind`, `members`
+The answer: `component` and `frame` (the lead), `frame_component` (the
+frame's own component, below), `name`, `kind`, `members`
 (`[{component, member}]`), `count`, `fasteners` (the junctions given
 fasteners), `relaid` (other frames laid out again with it), `warnings`
 (the frame's, the layout's, and the first ten fasteners' warnings);
 undo step `Place wall frame Wall 1`, one step with the fasteners.
+
+**A frame is a component of its own** (mitcad#522). `build_frame` makes
+a component named after the frame (`Wall 1`, `Floor 1`, `Roof 1`; `Wall 1
+(1)` when a component has that name) in the BUILD host, placed at the
+host's origin, and makes the frame's members, their fasteners and the
+fasteners' joints inside it: the host gets one component per frame, not
+its members, and a frame's Joints are only its own. Joints between frames
+(a fastener connected by hand at a junction of two frames' members) stay
+in the host, the common parent. Everything that works on a frame takes
+its component as well as any member: `build_edit` with `frame` (laid out
+again inside the same component, renamed with the frame), `build_preview`
+with `frame` and `component`, `build_remove` with `set` (the members,
+their fasteners and the component when nothing else is left in it; the
+answer's `components` lists the parts as before, not the component),
+`joins` and a roof's `walls`. The definition's points (`start`, `end`,
+`outline`, `direction`) are in the component's coordinates, the host's
+until the component is moved: a frame moved as one (its occurrence
+moved) is laid out again where it is, and the frames around it read it
+there; a frame edit's points are in the component's coordinates too.
+`build_parts` gives each member `frame_component`; the lead's record keeps
+it with the definition (`framing.component`). **Frames saved before**
+keep their members flat in their host and load and edit unchanged: laid
+out again (MODIFY Timber Frame, or as a frame another one depends on)
+they stay in the host, their fasteners there too; nothing is re-parented,
+so paths other parts' joints and bound lengths name stay valid. Only a
+new frame is made as a component. **The cut list** goes by frame: a
+frame's members are grouped only with members of the same frame, each row
+names its frame (`frame`, null for parts in no frame), the rows of parts
+in no frame first, then each frame's by name; the stock is worked out
+over all of them as before. Tests: `core/model/src/build/frame_component_tests.rs`.
 
 **What is kept.** The lead (a wall's top plate, a floor's first rim, a
 gable roof's ridge board, a mono-pitch roof's first rafter) keeps the
@@ -11123,6 +11331,21 @@ every junction gets that size (a nail `3.1x90`); without one each
 junction's are sized from its members, as `build_connect` sizes them. The
 definition keeps both: a frame laid out again drives the same fastener,
 size and count. The warnings are `build_connect`'s (the first ten).
+
+**The default fastener** (mitcad#516). The model takes the fastener it is
+given; without `fastener` a frame has none. The app's Timber tool sends,
+until the user chooses another, the library's default wood fastener:
+the one marked `wood.default` (`docs/libraries.md`, *Timber parts*;
+`library_build_candidates` with `kind: wood` lists it first). Mitcad's
+library marks **Wood screw, countersunk**, seated by its head's top
+(flush with the wood, *Seating* below), not the pan-head **Connector
+screw** (`head_underside`, for a metal connector's plate), which by name
+came first and stood proud of every default frame. Without a mark the
+app takes the first screw seated by its head's top. Tests:
+`core/vcs/src/tests/library_build.rs` (the mark, the picker's order, the
+shipped group file's one default) and `tools/cli/build-timber-test.cmake`
+(the generated library's first wood fastener, a frame with it seated
+flush).
 
 **A spacing set's fasteners.** `build_place` with `spacing` takes
 `spacing.fastener` and `spacing.fastener_count` (as a frame's; none: no
@@ -11418,3 +11641,148 @@ Code: `core/model/src/reorient.rs` (the turn and the rewrite of
 definitions), `core/model/src/document/reorient.rs` (the command and its
 checks). Tests: `core/model/src/reorient_tests.rs` (mock kernel),
 `cli.reorient_design` (`tools/cli/tests/reorient_design.json`, OCCT).
+
+## Mount frames
+
+Any part may say where it mounts (mitcad#525; the library's side in
+[docs/libraries.md](../../../../docs/libraries.md#mount-frames), the
+app's Place Part in [app/COMMANDS.md](../../../../app/COMMANDS.md#component-libraries)):
+a joint origin with a `mount` is a **mount frame** of its design.
+
+```json
+{"type": "joint_origin", "geometry": {"body": "F1.b0", "face": "F1:top"},
+ "mount": {"name": "head", "kind": "shaft", "joint": "cylindrical"}}
+{"type": "joint_origin", "geometry": {"origin": [0, 0, 5], "normal": [0, 0, 1], "x_axis": [1, 0, 0]},
+ "mount": {"name": "grid", "kind": "grid", "pitch": [42, 42], "cells": [3, 2]}}
+{"type": "joint_origin", "geometry": {"origin": [21, 21, 0], "normal": [0, 0, -1], "x_axis": [1, 0, 0]},
+ "mount": {"name": "foot", "kind": "foot", "footprint": [1, 1], "pitch": [42, 42]}}
+```
+
+- `name`: 1 to 64 of letters, digits, `_`, `-`, `+` and `.`.
+- `kind`: `face` (the default), `shaft`, `hole`, `grid` or `foot`; what
+  each frame is and what it goes on is the table of
+  [docs/libraries.md](../../../../docs/libraries.md#mount-frames). Mated
+  frames face each other: the placed frame's z is opposite the target's.
+- `joint`: how the placed part may move, the joint its placement makes:
+  `rigid` (the default; the only one of `grid` and `foot`), `planar` and
+  `revolute` on a face, `revolute`, `cylindrical` and `slider` (along the
+  axis) in a hole or on a shaft.
+- `pitch` (two lengths, mm, along the frame's x and y) of a `grid` and,
+  optionally, of a `foot`; `cells` (two counts) of a `grid`, the cells
+  along +x and +y from the frame's origin; `footprint` (two counts) of a
+  `foot`, the cells it covers along its x and y, the frame in their
+  middle. A check of the feature refuses anything else (`mount: a grid
+  gives its cells`).
+- A joint origin named `mount:<name>` without a `mount` (BUILD's parts,
+  [BUILD](#build-profile-assemblies)) is a `face` frame of that name,
+  fixed. A design's frames are its joint origins before the marker, not
+  suppressed, each name once (the first); a derived part's frames
+  ([derived_part](#derived_part)) are these too.
+
+**Inserted parts keep their frames.** `insert_component` (a file or a
+library part):
+
+- linked: the design's frames become joint origins of the new component
+  on fixed planes where the design has them (in its row), each with its
+  `mount`, named `mount:<name>` (`mount:<name> (2)` when the name is
+  taken); `update_links` and `update_library_parts` move them with a new
+  version or row (one the design no longer has stays where it was);
+- a copy: the copied joint origins are the frames (a `mount:<name>` one
+  gets its `mount` and its name back).
+
+So a part dropped in is joined later with `add_joint` by a frame as by
+any joint origin (`"a": {"occurrence": "Lamp:1", "geometry": "F12"}`).
+Paste New of a linked part copies its bodies only, not its frames.
+
+**Placing by a frame.** `insert_component` with `mount`:
+
+```json
+{"cmd": "insert_component", "library": {"id": "test-mounts", "url": "...", "rev": "v1.0.0", "component": "bin1x1"},
+ "mount": {"frame": "foot",
+           "at": {"occurrence": "Baseplate:1", "geometry": "F9", "point": [68, 21, 5], "toward": [0, 0, 1]},
+           "rotate": "90 deg", "offset": 0, "flip": false}}
+```
+
+- `frame`: the part's frame (its name; the first frame when left out).
+- `at`: what was picked, as a joint's origin from the active component:
+  `occurrence` (a path, uids or names; empty: its own geometry),
+  `geometry`, the click's `point` and the way `toward` the viewer, both in
+  the active component's coordinates.
+- `rotate` (an angle about the frame's z; a number is radians), `offset`
+  (a length along it: a gap) and `flip` (the target turned over: a
+  plane's other side, a hole's other end).
+
+The part goes into the active component as without `mount`, placed where
+its frame meets the target face to face, and a joint of the frame's
+`joint` is made in the active component: `a` the new occurrence's frame,
+`b` the target, `flip` true, `angle` and `offset` the values given, its
+free motions driven at 0 (`position`) there. So the part moves with what
+it stands on (a planar joint does not slide when its face moves) and a
+drag still moves it as the joint lets it (`drag_occurrence` drives the
+new values). One undo step, `Insert <name>`.
+
+| The frame | Takes | Side `b` |
+|---|---|---|
+| `face`, `grid` | a planar face, an origin or construction plane, a joint origin | the plane's frame (a face's: its middle), its `shift` the click's place in the plane |
+| `shaft`, `hole` | a cylindrical or conical face, a circular edge, an axis | a cylindrical face's frame at the end towards `toward` (the other with `flip`), z out of that end (`frame_override` z and `shift`); an edge's or an axis' frame with z towards the viewer |
+| `foot` | a grid of the picked part: its joint origin, else the grid the click is on (any geometry of the part) | the grid's joint origin, its `shift` the middle of the footprint's cells |
+
+On a grid the footprint is turned by `rotate`, which must be quarter
+turns (`on a grid Bin 1x1 turns in quarter turns (0, 90, 180 or 270
+deg)`); its first cell is the one that centres the footprint nearest the
+click, kept within the grid ((0, 0) without a point). The cells another
+foot's joint to the same grid covers (its `shift`, `angle` and footprint)
+are taken: a placement onto one is refused (`the cell (0, 1) of
+Baseplate:1's grid is taken by Bin 2x1:1`; several: `the cells (0, 0)
+and (1, 0) ... are taken by A and B`). A foot whose `pitch` is not the
+grid's (`Bin 1x1 stands on a grid of 40 x 40 mm; Baseplate:1's grid is 42
+x 42 mm`), a footprint larger than the grid, a pick the frame does not
+take (`Lamp lies on a face: pick a flat face or a plane, not a round
+one`, `Screw goes into a hole or onto a shaft: pick its round face or its
+rim`) and a frame the part has not (`Lamp has no mount frame wall (its
+frames: ceiling)`) are refused; the document is as it was.
+
+| Query | Fields | Result |
+|---|---|---|
+| `mount_frames` | `occurrence` (a path from the active component; empty: its own) | `component`, `frames`: the mount frames at the marker of the component the path ends in and of those placed in it, each `name`, `kind`, `joint`, `pitch`, `cells`, `footprint`, `feature`, `occurrence` (its path name), `path`, `frame` (`{origin, x_axis, y_axis, z_axis}` in the design) |
+| `mount_preview` | `insert_component`'s fields (`link`, `name`, `transform` taken, not used) | the part's `name` and `frames` (each `frame` in the part's coordinates); with `mount` what the placement would do: `frame`, `kind`, `joint`, `target` (`occurrence`, `path`, `geometry`, `frame_override` and `name`: side `b`), `at` (where the frame goes, in the design), `placement` (rows, in the active component), `world` (4x4, in the design), `grid` (a foot's: `feature`, `occurrence`, `path`, `pitch`, `cells`, `cell`, `footprint`, `turns`, `covers`: its cells), or `problems` with the refusal; nothing changes |
+
+`analysis_shape` with `{"shape": "mount_preview", ...}` and the same
+fields gives the part's bodies where the placement puts them, in the
+design's coordinates. `mount_frames` is class `model`, `mount_preview`
+`file IO` (it reads the part as `insert_component` does).
+
+Code: `features/joint.rs` (`MountSpec`), `document/mounts.rs` (the frames,
+inserts, the plan, grids), `api/mounts.rs`; the library side
+`core/vcs/src/library/mounts.rs`. Tests: `core/model/src/mount_tests.rs`
+(mock kernel), `core/vcs/src/tests/library_mounts.rs`,
+`tools/ui-mount-test.sh` and `tools/ui-windows-mount-test.ps1` (ctest
+`app.ui-windows-mount`).
+
+## Move face
+
+```json
+{"type": "move_face", "body": "F2.b0", "faces": ["F2:side(c1)"],
+ "transform": {"type": "translate_xyz", "x": -1.856, "y": 0, "z": -0.361}}
+```
+
+Moves faces of one body by a rigid motion (mitcad#343; the `.f3d`
+import's moved faces). `transform` is a move's
+([move, align, scale](#move-align-scale): `free`, `translate_xyz`,
+`translate_along`, `rotate`, `point_to_point`, `point_to_position`); it
+must be a rotation and a translation and must move something. Each face
+keeps its surface, moved; the neighbouring faces stay on their surfaces
+and extend or shorten up to the moved ones: an edge between a moved face
+and one that stays becomes their surfaces' intersection next to where it
+was, and the vertices follow. A rod's side moved square to its axis, its
+ends planes square to it, moves the whole rod. Every face keeps its
+names, and the body keeps its faces, edges and vertices: a motion that
+would make a face vanish or split, or leave an edge's faces apart near
+it, fails ("the neighbouring faces cannot follow the moved faces").
+
+Code: `core/model/src/features/move_face.rs`,
+`geometry/src/move_faces.cpp` (`move_faces_rigidly`: OCCT's
+`BRepTools_Modifier` with the moved surfaces, the new edges and the
+vertices where they meet). Tests: `move_face_moves_faces_by_a_rigid_motion`
+(`core/model/src/features/f2_tests.rs`, mock kernel), `geometry`
+(`geometry/tests/test_move_faces.cpp`, OCCT).

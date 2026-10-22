@@ -2981,6 +2981,34 @@ impl Builder<'_> {
                 }
                 Detail::Other(map)
             }
+            // Moved faces (mitcad#343): the faces by their face inputs, the
+            // motion the rigid 4x4 matrix (row-major, cm) of its transform
+            // input, as a move's ([`classes::MOVE_DATA`]); a transform that
+            // stores no matrix is the identity.
+            Some("MoveFaceFeature") => {
+                let mut x = MoveFaceDetail {
+                    faces: self.face_inputs(it),
+                    ..MoveFaceDetail::default()
+                };
+                let moves: Vec<u64> = self
+                    .item_inputs(it)
+                    .into_iter()
+                    .filter(|&i| seg.guid_of(i) == Some(MOVE_DATA))
+                    .collect();
+                let matrix = moves
+                    .iter()
+                    .find_map(|&i| rigid_matrix(seg.data_of(i)))
+                    .or_else(|| {
+                        moves
+                            .iter()
+                            .any(|&i| identity_move_data(seg, i))
+                            .then_some(IDENTITY_MAT4)
+                    });
+                if let Some(m) = &matrix {
+                    x.other.insert("transform".to_owned(), json_value(m));
+                }
+                Detail::MoveFace(Box::new(x))
+            }
             Some("CutPasteBodiesFeature") => {
                 let mut map = serde_json::Map::new();
                 if let Some(b) = self.body_inputs(it) {

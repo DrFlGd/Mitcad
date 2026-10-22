@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: MIT
 # check-all sources: app/build app/commands/BuildCommands.cpp app/framework app/library app/OcctViewer.cpp tools/cli core/model/src/build core/model/src/api/build.rs
 # check-all sources: app/MainWindowContextMenu.cpp
-# Input-driven Windows UI test of the BUILD tab's Timber tool (mitcad#478,
-# mitcad#485) in the build VM (tools/ui-windows-lib.ps1 says how the input
+# Input-driven Windows UI test of the BUILD tab's TIMBER group: Timber
+# (mitcad#478, mitcad#485), Wall and Floor / Roof (mitcad#520), each section
+# with its own tool, in the build VM (tools/ui-windows-lib.ps1 says how the input
 # is posted). A library of small synthetic parts made here (mitcad-cli; a
 # slot profile, two timber members, one of a less common size, and a wood
 # screw), fetched from a local git repository; skipped where git is not
@@ -11,7 +12,9 @@
 #      size first; Timber's first start (mitcad#485): On a member, a typed
 #      length of the part's default (3000 mm), along X, flat, the
 #      dimensioned 48x98, resting on the XY plane (mitcad#492).
-#   2. On a member: a post standing on the XY plane (Enter at the origin),
+#   2. On a member: a post standing on the XY plane (Enter at the origin;
+#      after Place nothing previewed at the origin on top of it, the panel
+#      waiting for a click on a member, mitcad#513),
 #      then a member on the post's side: the hover names only the face a
 #      click picks, nothing previewed before the click; once picked, the
 #      mouse along the side, off the parts and back previews and inspects
@@ -38,7 +41,11 @@
 #      member's three rows and the 28 one, the families as groups, a row's
 #      own picture; starring 48x148 stars that size only (mitcad#491): it
 #      comes first and Favourites lists it alone; a search by 48x148 finds
-#      its tile, which places that row with its section.
+#      its tile, which places that row with its section. The star changes
+#      only the star: the tiles stay where they are until the list is made
+#      again (mitcad#517). The use count is per size (mitcad#518): only the
+#      48x98 tile counts the design's members; once a 48x148 member is
+#      placed, that tile counts it, and In this design lists the two sizes.
 #   8. A frame of four members with shared mitres (mitcad#485): each on the
 #      end of the one before, turned at a corner, lying flat as it does
 #      (ends of the same width); the last one's auto length bound to the
@@ -46,35 +53,67 @@
 #      one's outer side.
 #   9. The same frame of slot profiles with Profile, the last one's length
 #      through the first: a shared mitre, not into it.
-#  10. Frame mode's walls (mitcad#493, mitcad#510): a wall along X, Corner
-#      Butt (the default); a wall started by a click on its side near its
-#      end A butts from the side there (a backing stud more in the first
-#      wall), one by a click on its end B's face (the view from the right)
+#  10. Wall's walls (the TIMBER group's tool, mitcad#520; mitcad#493,
+#      mitcad#510): a wall along X, Corner
+#      Butt (the default); after Place nothing previewed from the origin
+#      on top of it and Enter places no second wall there, the view asking
+#      where the next wall starts (mitcad#513); a wall started by a click
+#      on its end stud's side, a few centimetres from the corner, comes
+#      flush with end A (mitcad#514; a backing stud more in the first
+#      wall), an Offset typed moving the preview once and 0 bringing it
+#      back; one by a click on its end B's face (the view from the right)
 #      starts from that end (a butt corner). Then, in a new design, Corner
 #      Lapped plates: a click on the side near end B makes an L corner (a
 #      junction stud more in the first wall), one mid-side a T; each with a
 #      typed length, the panel naming where it starts and the corner, each
-#      placed with the members previewed; the next Timber start remembers
-#      Lapped plates.
+#      placed with the members previewed; the next Wall start remembers
+#      Lapped plates. Then, in a new design (mitcad#515), two walls flush
+#      with the first one's ends and a wall started on the first of them
+#      towards the other: no End clicked, it ends butting the other's side.
 #  11. The timber frame again, the last one's length typed to the first's
 #      outer side: it closes the corner with a shared mitre too (mitcad#492).
 #  12. A board along X on the ground rests on it (its axis 24 mm up); a
 #      member standing on its top face from end A at offset 0 lies as it
 #      does: its width along the board's, its sides flush (mitcad#492).
-#  13. Fasteners (mitcad#497; the library adds a wood screw and a ring
-#      nail in two sizes each, with heads to click on): Frame with a chosen
+#  13. Fasteners (mitcad#497; the library adds a wood screw, a ring nail
+#      and a pan-head connector screw in two sizes each, with heads to
+#      click on): the first time the first countersunk wood screw, not the
+#      connector screw whose name comes first (mitcad#516); Wall with a chosen
 #      fastener (the picker's), size 5.0x90 and three at each junction;
-#      Spacing on the wall's top plate with Fasteners on, each member
+#      Timber's Spacing on the wall's top plate with Fasteners on (the
+#      fastener chosen in Wall, shared by the TIMBER group), each member
 #      fastened; two of the wall's screws selected, the context menu's
 #      BUILD > Swap Fastener (chosen with the keys) on them makes them
-#      3.1x90 ring nails, one undo step. The Frame's fastener rows lie
-#      below the dock in session 0's low window: the panel scrolls to them
+#      3.1x90 ring nails, one undo step. Wall's fastener rows lie below
+#      the dock in session 0's low window: the panel scrolls to them
 #      (Ui-PanelReveal).
-#  14. Two points from a stud's side to the next stud's (mitcad#509): the
+#  14. A wall with Wall, then Timber's Two points from a stud's side to
+#      the next stud's (mitcad#509): the
 #      sides are not one plane, so the member is free between the points
 #      (not its end moved onto the start's plane, a member a few
 #      millimetres long), as long as the studs' distance, its end cut back
 #      to the next stud's face.
+#  15. Floor / Roof (mitcad#520): a floor the first time, no wall's
+#      inputs, rim joists all round, placed; Kind Roof waits for its two
+#      walls.
+#  16. The Openings window (mitcad#519): from Wall's Openings tile, Add
+#      window (previewed once, a partition's flat header and no trimmers,
+#      marked), Add door, a row typed outside the wall flagged and put
+#      back, Load-bearing chosen once (trimmers, headers on edge), placed
+#      with both; Timber Frame (MODIFY) on the wall opens the window with
+#      them. Clicks, typing and the wheel go to the window itself.
+#  17. Each frame a component of its own (mitcad#522): three walls (Wall 2
+#      and Wall 3 flush with Wall 1's ends), each logged as a component in
+#      Part1, Part1 holding no joint; Timber Frame on a plate of Wall 1 lays
+#      it out again in the same component; a gable roof on Wall 2 and Wall
+#      3 with ring nails (mitcad#521, the owner's case): two at each
+#      junction, each at its junction's members, its head on the entry
+#      face, their joints in Roof 1; the cut list by frame.
+#  18. A Start on another body's face (mitcad#524, the owner's case): a
+#      design of a slab and a solid wall with a door (mitcad-cli); a click
+#      on the wall's side face starts a wall square from it on the slab's
+#      top; on its end face a corner with Butt, in line with Straight (the
+#      Corner's icon buttons), placed in line.
 #
 # Usage: powershell -ExecutionPolicy Bypass -File tools\ui-windows-timber-test.ps1 [-App build\dev\mitcad.exe] [-Out dir] [-QtBin dir]
 # Usage: powershell -ExecutionPolicy Bypass -File tools\ui-windows-timber-test.ps1 [-App build\dev\mitcad.exe] [-Out dir] [-QtBin dir]
@@ -85,8 +124,9 @@ param(
 
 . (Join-Path $PSScriptRoot 'ui-windows-lib.ps1')
 
-Ui-Init $App $Out $QtBin @{ 'build.profile' = 'F3'; 'build.timber' = 'F4'; 'build.connector' = 'F8';
-                            'build.cut_list' = 'F9'; 'build.spacing' = 'F11' }
+Ui-Init $App $Out $QtBin @{ 'build.profile' = 'F3'; 'build.timber' = 'F4'; 'build.wall' = 'F7';
+                            'build.connector' = 'F8'; 'build.cut_list' = 'F9'; 'build.spacing' = 'F11';
+                            'build.floor_roof' = 'F5'; 'build.frame' = 'F12' }
 
 $git = Get-Command git -ErrorAction SilentlyContinue
 if (-not $git) {
@@ -218,6 +258,9 @@ function Head-Fastener([int]$Size, [string]$Row1, [string]$Row2) {
 }
 Design 'fasteners\wood-screw-head-test.mitcad' ((Head-Fastener 30 '5.0x70' '5.0x90') + $end)
 Design 'fasteners\ring-nail-test.mitcad' ((Head-Fastener 20 '2.8x50' '3.1x90') + $end)
+# A pan-head connector screw (mitcad#516): its name comes first, but it
+# bears on a plate and is no frame's default.
+Design 'fasteners\connector-screw-test.mitcad' ((Head-Fastener 24 '5.0x40' '5.0x60') + $end)
 
 Set-Content -Encoding ascii (Join-Path $library 'mitcad-library.json') @'
 {
@@ -262,6 +305,14 @@ Set-Content -Encoding ascii (Join-Path $library 'mitcad-library.json') @'
                            "nominal": {"width": "148 mm", "height": "48 mm"}},
                 "48x198": {"section": {"width": "198 mm", "height": "48 mm"},
                            "nominal": {"width": "198 mm", "height": "48 mm"}, "availability": "less common"}}}},
+    {"id": "connector-screw-test", "path": "fasteners/connector-screw-test.mitcad", "name": "Connector screw test",
+     "category": "fasteners", "designation": "Connector screw test {config}",
+     "build": {"role": "fastener", "wood": {"kind": "screw", "head": "pan", "seat": "head_underside",
+                                            "diameter": "5 mm", "length": "40 mm"},
+       "material": {"product": "steel", "density": 7850},
+       "frames": [{"name": "axis", "kind": "shaft"}],
+       "rows": {"5.0x40": {"wood": {"diameter": "5 mm", "length": "40 mm"}},
+                "5.0x60": {"wood": {"diameter": "5 mm", "length": "60 mm"}}}}},
     {"id": "wood-screw-test", "path": "fasteners/wood-screw-test.mitcad", "name": "Wood screw test",
      "category": "fasteners", "designation": "Wood screw test 5x70",
      "build": {"role": "fastener", "wood": {"kind": "screw", "head": "countersunk", "diameter": "5 mm", "length": "70 mm"},
@@ -336,6 +387,18 @@ function Picker-Type([string]$Text) {
   if ($picker.Count -eq 0) { Ui-Fail 'no part picker window' }
   [UiInput]::Type($picker[0], $Text, 40)
 }
+# Picker-Keys @(VK, ...) COUNT: each virtual key COUNT times, to the part
+# picker's window (End, BackSpace in its search field).
+function Picker-Keys([int[]]$Keys, [int]$Count) {
+  $picker = Ui-Windows '^Part Picker'
+  if ($picker.Count -eq 0) { Ui-Fail 'no part picker window' }
+  foreach ($vk in $Keys) {
+    for ($i = 0; $i -lt $Count; $i++) {
+      [UiInput]::Key($picker[0], $vk, $false, $false, $false)
+      Start-Sleep -Milliseconds 60
+    }
+  }
+}
 function Place([string]$What) {
   Ui-Mark
   Ui-Step 'Place (Enter)'                { Ui-Key 'Return' }
@@ -392,6 +455,16 @@ function No-Inspect([string]$Cmd, [string]$Description) {
   Start-Sleep -Milliseconds 1500
   Ui-Sync
   $found = @(Ui-LogLines | Select-Object -Skip $script:UiMark | Where-Object { $_.StartsWith("Inspect ${Cmd}: ") })
+  if ($found.Count -gt 0) { Ui-Fail "${Description}: $($found[0])" }
+  Write-Host "ok   $Description"
+}
+# No-Ghost CMD TEXT description: a moment after Place, no "Inspect CMD:
+# TEXT" line since the mark: nothing previewed at the default place on top
+# of what was just placed (mitcad#513).
+function No-Ghost([string]$Cmd, [string]$Text, [string]$Description) {
+  Start-Sleep -Milliseconds 1500
+  Ui-Sync
+  $found = @(Ui-LogLines | Select-Object -Skip $script:UiMark | Where-Object { $_.StartsWith("Inspect ${Cmd}: $Text") })
   if ($found.Count -gt 0) { Ui-Fail "${Description}: $($found[0])" }
   Write-Host "ok   $Description"
 }
@@ -598,6 +671,10 @@ Expect-Inspect 'Timber' @('place grounded, length 600.00 mm (typed)', '; along z
 Place 'Timber 48x98 test'
 $post = Placed-Body
 if (-not $post) { Ui-Fail 'no body of the post' }
+# After Place no ghost (mitcad#513): the next member waits for a click on a
+# member, nothing previewed at the origin on top of the post.
+Expect-Inspect 'Timber' @('failed: Click a member''s side or end.') 'after Place the panel waits for a click on a member'
+No-Ghost 'Timber' 'place grounded' 'no member previewed at the origin on top of the post'
 Refresh-Picks 'at'
 $postSides = @(Faces-Of $post $side)
 if ($postSides.Count -eq 0) { Ui-Fail "no side of the post ($post) to pick" }
@@ -731,7 +808,7 @@ Write-Host '--- 5. Connector at a timber junction'
 Ui-Mark
 Ui-Step 'Connector (F8)'                 { Ui-Key 'F8' }
 Ui-ExpectNew 'Inspect Connector: junction ' 'a junction chosen'
-Ui-ExpectNew 'preview Wood screw head test with 2 fastener(s)' 'two sized wood screws by default'
+Ui-ExpectNew 'preview Wood screw head test with 2 fastener(s)' 'two sized countersunk wood screws by default (mitcad#516)'
 Ui-ExpectNew ', size ' 'sized from the members'
 Ui-Mark
 Ui-Step 'Connect (Enter)'                { Ui-Key 'Return' }
@@ -762,6 +839,18 @@ Ui-Mark
 Ui-Step 'the part picker (the Part tile)' { Ui-ClickLogged 'Panel Timber input part' }
 Ui-ExpectNew 'Part picker opened: 4 parts for build.timber' 'the picker lists every size'
 Ui-ExpectNew 'Part picker group All parts: 4 parts, first test-timber/timber-48-test (48x98)' 'all four sizes, the standard ones first'
+# The use count is per size (mitcad#518): the design's members are all
+# 48x98, so only that tile has a count, not every size of the family.
+$tiles = $null
+for ($i = 0; $i -lt 30 -and "$tiles" -notmatch 'timber-48-test \(48x98\) x\d+'; $i++) {
+  $tiles = Ui-LastMatch '^Part picker tiles: (.*)$'
+  if ("$tiles" -notmatch 'timber-48-test \(48x98\) x\d+') { Start-Sleep -Milliseconds 200 }
+}
+if ("$tiles" -notmatch 'timber-48-test \(48x98\) x\d+') { Ui-Fail "the 48x98 tile has no count: '$tiles'" }
+if ("$tiles" -match '\(48x148\) x|\(48x198\) x|timber-28-test x') {
+  Ui-Fail "a size the design does not use has a count: '$tiles'"
+}
+Write-Host "ok   only the size the design uses has a count: $tiles"
 foreach ($tile in @('test-timber/timber-48-test (48x98)', 'test-timber/timber-48-test (48x148)',
                     'test-timber/timber-48-test (48x198)', 'test-timber/timber-28-test')) {
   Ui-ExpectNew "Part picker tile $tile at " "a tile of $tile"
@@ -775,10 +864,14 @@ Ui-Step 'the 48x148 tile'                { Picker-Click 'Part picker tile test-t
 Ui-ExpectNew 'Part picker chose test-timber/timber-48-test (48x148)' '48x148 chosen'
 # The panel reads a picture once a session: the row's own, now.
 Ui-ExpectNew 'BUILD preview image of test-timber/timber-48-test (48x148): 24x24' "the row's own picture in the tile"
+$tilesBefore = Ui-LastMatch '^Part picker tiles: (.*)$'
 Ui-Mark
 Ui-Step 'star it (Star)'                 { Picker-Click 'Part picker place star' }
 Ui-ExpectNew 'Part picker star timber-48-test (48x148) on' 'the size 48x148 starred'
-Ui-ExpectNew 'Part picker group All parts: 4 parts, first test-timber/timber-48-test (48x148)' 'that size first, not its family'
+# A star changes only the star (mitcad#517): the tiles stay where they are
+# and the selection on the starred one; the size comes first once the list
+# is made again (Favourites, then All parts below).
+Ui-ExpectNew "Part picker tiles kept: $tilesBefore; current test-timber/timber-48-test (48x148)" 'the tiles stay in their places, the selection on the size'
 Ui-Mark
 Ui-Step 'Favourites'                     { Picker-Click 'Part picker group row Favourites' }
 Ui-ExpectNew 'Part picker group Favourites: 1 parts, first test-timber/timber-48-test (48x148)' 'Favourites lists that size alone'
@@ -819,6 +912,34 @@ $volume = [double](Ui-LastMatch '^New body .* \(F[0-9]+\.b[0-9]+\): volume ([0-9
 $wanted = 148 * 48 * $length
 if ([math]::Abs($volume - $wanted) -gt 1) { Ui-Fail "the 48x148 member is $volume mm3, not 148 x 48 x $length = $wanted" }
 Write-Host "ok   placed as 48x148: $volume mm3 (148 x 48 x $length)"
+Ui-Step 'Close (Escape)'                 { Ui-Key 'Escape' }
+# Two sizes of one family in the design: each tile counts its own uses
+# (mitcad#518), the sizes not used have none.
+Ui-Mark
+Ui-Step 'Timber (F4)'                    { Ui-Key 'F4' }
+Ui-ExpectNew 'Command Timber started' 'Timber again'
+Ui-Mark
+Ui-Step 'the part picker (the Part tile)' { Ui-ClickLogged 'Panel Timber input part' }
+Ui-ExpectNew 'Part picker opened: 4 parts for build.timber' 'the picker again'
+# The search 48x148 above stays in the picker (it shows the part chosen):
+# cleared, every size is a tile again.
+Ui-Step 'the search field'               { Picker-Click 'Part picker place search' }
+Ui-Mark
+Ui-Step 'clear the search'               { Picker-Keys @(0x23) 1; Picker-Keys @(0x08) 6 }
+Ui-ExpectNew "Part picker search ''" 'the search cleared'
+Ui-ExpectNew 'Part picker group All parts: 4 parts' 'every size again'
+$tiles = $null
+for ($i = 0; $i -lt 30 -and "$tiles" -notmatch 'timber-48-test \(48x148\) x1'; $i++) {
+  $tiles = Ui-LastMatch '^Part picker tiles: (.*)$'
+  if ("$tiles" -notmatch 'timber-48-test \(48x148\) x1') { Start-Sleep -Milliseconds 200 }
+}
+if ("$tiles" -notmatch 'timber-48-test \(48x148\) x1') { Ui-Fail "the 48x148 tile does not count its one member: '$tiles'" }
+if ("$tiles" -notmatch 'timber-48-test \(48x98\) x\d+') { Ui-Fail "the 48x98 tile lost its count: '$tiles'" }
+if ("$tiles" -match '\(48x198\) x|timber-28-test x') { Ui-Fail "a size the design does not use has a count: '$tiles'" }
+Write-Host "ok   per-size counts: $tiles"
+Ui-Mark
+Ui-Step 'In this design'                 { Picker-Click 'Part picker group row In this design' }
+Ui-ExpectNew 'Part picker group In this design: 2 parts, first test-timber/timber-48-test (48x148)' 'In this design lists only the two sizes the design uses'
 Ui-Step 'Close (Escape)'                 { Ui-Key 'Escape' }
 
 # Frame-Of-Four CMD KEY PART L1 L2 [-Through]: a frame on the XY plane, L1
@@ -923,14 +1044,14 @@ function Wall-From([string]$Name, [int[]]$At, [string]$Length, [string]$Text, [i
                    [string]$Corner = 'butt') {
   Ui-Mark
   Ui-Step "the start on Wall 1"          { Ui-Click $At[0] $At[1] }
-  Ui-ExpectNew 'View hint Timber: Click where the wall ends, or press Enter: Length square to the wall clicked' `
+  Ui-ExpectNew 'View hint Wall: Click where the wall ends, or press Enter: Length square to the wall clicked' `
     'the end next, else Length square to the wall'
   Ui-Mark
-  Ui-Step "$Length mm long"              { Ui-TypeIn 'Panel Timber input frame_length' $Length }
-  Expect-Inspect 'Timber' @("frame wall $Name, wall $Length x 2400 mm", "; $Name`: $Text", "; corner $Corner") `
+  Ui-Step "$Length mm long"              { Ui-TypeIn 'Panel Wall input frame_length' $Length }
+  Expect-Inspect 'Wall' @("frame wall $Name, wall $Length x 2400 mm", "; $Name`: $Text", "; corner $Corner") `
     "$Name previewed: $Text, corner $Corner"
   $line = Ui-LogLines | Select-Object -Skip $script:UiMark |
-    Where-Object { $_.StartsWith('Inspect Timber: ') -and $_.Contains("; $Name`: $Text") } | Select-Object -Last 1
+    Where-Object { $_.StartsWith('Inspect Wall: ') -and $_.Contains("; $Name`: $Text") } | Select-Object -Last 1
   if ("$line" -notmatch ', (\d+) member\(s\) \(') { Ui-Fail "no member count in: $line" }
   $previewed = [int]$Matches[1]
   Ui-Mark
@@ -946,56 +1067,122 @@ function Wall-From([string]$Name, [int[]]$At, [string]$Length, [string]$Text, [i
   Write-Host "ok   $Name`: $placed members, Wall 1 $($made - $placed) body(ies) more"
 }
 
-# First-Wall DESIGN CORNER: in a new design, Timber's Frame mode without
+# First-Wall DESIGN CORNER: in a new design, Wall (mitcad#520) without
 # fasteners, Corner CORNER (butt, the default, or lapped: chosen in the
 # panel), Wall 1 placed from the origin along +X; its bodies in $Wall1.
 function First-Wall([string]$Design, [string]$Corner) {
   Ui-StartApp $Design
   Ui-Step 'the BUILD tab'                { Ui-ClickLogged 'Ribbon tab BUILD' }
+  Ui-ExpectLog 'Ribbon BUILD/TIMBER at' 'its TIMBER group (mitcad#520)'
+  Ui-ExpectLog 'Ribbon button build.wall at' 'the Wall button'
   Ui-Mark
-  Ui-Step 'Timber (F4)'                  { Ui-Key 'F4' }
-  Ui-ExpectNew 'Command Timber started' 'Timber started'
-  Ui-Mark
-  Ui-Step 'Mode: Frame'                  { Ui-ClickLogged 'Panel Timber input how=frame' }
-  Expect-Inspect 'Timber' @('frame wall Wall 1, wall 3600 x 2400 mm', 'fasteners yes', '; corner butt') `
+  Ui-Step 'Wall (F7)'                    { Ui-Key 'F7' }
+  Ui-ExpectNew 'Command Wall started' 'Wall started'
+  Expect-Inspect 'Wall' @('frame wall Wall 1, wall 3600 x 2400 mm', 'fasteners yes', '; corner butt') `
     'a wall from the origin along +X, Corner Butt the first time'
   Ui-Mark
-  Ui-Step 'no fasteners'                 { Ui-ClickLogged 'Panel Timber input frame_fasteners' }
-  Expect-Inspect 'Timber' @('frame wall Wall 1, wall 3600 x 2400 mm', 'fasteners no') 'without fasteners'
+  Ui-Step 'no fasteners'                 { Ui-ClickLogged 'Panel Wall input frame_fasteners' }
+  Expect-Inspect 'Wall' @('frame wall Wall 1, wall 3600 x 2400 mm', 'fasteners no') 'without fasteners'
   if ($Corner -eq 'lapped') {
     Ui-Mark
-    Ui-Step 'Corner: Lapped plates'      { Wheel-Choice 'Timber' 'frame_corner' 1 }
-    Expect-Inspect 'Timber' @('frame wall Wall 1, wall 3600 x 2400 mm', '; corner lapped') 'Corner Lapped plates'
+    Ui-Step 'Corner: Lapped plates'      { Ui-ClickLogged 'Panel Wall input frame_corner=lapped' }
+    Expect-Inspect 'Wall' @('frame wall Wall 1, wall 3600 x 2400 mm', '; corner lapped') 'Corner Lapped plates'
   }
   Ui-Mark
   Ui-Step 'Place (Enter)'                { Ui-Key 'Return' }
   Ui-ExpectNew 'Placed frame Wall 1 (wall, lead ' 'the first wall placed' 60
   $script:Wall1 = @(New-Bodies)
+  $script:Studs1 = @(Stud-Bodies)
   if ($script:Wall1.Count -lt 4) { Ui-Fail "Wall 1 made $($script:Wall1.Count) bodies" }
+}
+# Stud-Bodies: the 2304 mm studs (98 x 48: 10838016 mm3) made since the
+# mark (mitcad#514).
+function Stud-Bodies {
+  return @(Ui-LogLines | Select-Object -Skip $script:UiMark | ForEach-Object {
+      if ($_ -match '^New body .* \((F[0-9]+\.b[0-9]+)\): volume ([0-9.]+) mm3$' -and
+          [Math]::Abs([double]$Matches[2] - 10838016) -lt 1) { $Matches[1] } } | Select-Object -Unique)
+}
+# Stud-Face BODIES WHICH: @(x, y) of a side face of these studs a click on
+# Start picks now (Wall-Sides): WHICH 'first' the leftmost face of all (the
+# leftmost stud's front face), 'last' the leftmost face of the rightmost
+# stud (its front face, not its end's), 'middle' the rightmost face of the
+# middle stud; the studs ordered by their rightmost face (the view from
+# the front right: +X and +Y to the right, a stud's +X face right of its
+# -Y face).
+function Stud-Face([string[]]$Bodies, [string]$Which) {
+  $faces = @(Wall-Sides $Bodies)
+  if ($faces.Count -lt 1) { Ui-Fail 'no side face of the studs to click' }
+  $studs = @($faces | Group-Object { $_[0] } | ForEach-Object {
+      $sorted = @($_.Group | Sort-Object { $_[2] })
+      [pscustomobject]@{ Lo = $sorted[0]; Hi = $sorted[-1] }
+    } | Sort-Object { $_.Hi[2] })
+  switch ($Which) {
+    'first' { $face = $studs[0].Lo }
+    'last' { $face = $studs[-1].Lo }
+    default { $face = $studs[[int][Math]::Floor(($studs.Count - 1) / 2)].Hi }
+  }
+  return @($face[2], $face[3])
 }
 # Start-Picks: the view fitted, the places a click on Start picks logged.
 function Start-Picks {
   Ui-Step 'fit the view (F6)'            { Ui-Key 'F6' }
-  Ui-Step "Timber's Start"               { Ui-ClickLogged 'Panel Timber input start' }
+  Ui-Step "Wall's Start"               { Ui-ClickLogged 'Panel Wall input start' }
 }
 
 Write-Host "--- 10. Walls: butting from a wall's side and its end, Lapped plates an L and a T (mitcad#493, mitcad#510)"
 First-Wall 'timber-walls' 'butt'
 $wall1 = $script:Wall1
-# Its side faces: the one furthest left is near its end A (+X to the right
-# in the view), the one furthest right near its end B; its end B's faces.
+# After Place no ghost (mitcad#513): the panel keeps its values, Start and
+# End are empty, nothing is previewed from the origin on top of Wall 1 and
+# Enter places no second wall there; a click on a start previews the next
+# wall there (Wall-From below).
+Ui-ExpectNew 'View hint Wall: Click where the next wall starts' 'the view asks where the next wall starts'
+Expect-Inspect 'Wall' @('failed: Click where the next wall starts.') 'the panel waits for the next wall''s start'
+No-Ghost 'Wall' 'frame wall ' 'no wall previewed at the origin on top of Wall 1 after Place'
+Ui-Mark
+Ui-Step 'Enter without a click'          { Ui-Key 'Return' }
+Ui-ExpectNew 'Wall: OK refused' 'Enter places no second wall at the origin'
+No-Ghost 'Wall' 'frame wall ' 'still nothing previewed'
+# The owner's case (mitcad#514): a click on its end stud's front face, a
+# few centimetres from the corner (+X to the right in the view), comes
+# flush with end A, butting, no L: its outer face in the plane of the end
+# face. An Offset typed moves the preview once (nothing follows the
+# mouse), 0 brings it back flush; placed, a backing stud more in Wall 1.
 Start-Picks
-$sides = @(Wall-Sides $wall1)
-if ($sides.Count -lt 3) { Ui-Fail "only $($sides.Count) side face(s) of Wall 1 to click" }
-$left = $sides | Sort-Object { $_[2] } | Select-Object -First 1
-# A click on the side near end A: from the side there (its outer face at
-# most flush with the end face), butting, no L; a backing stud more in
-# Wall 1.
-Wall-From 'Wall 2' @($left[2], $left[3]) '3000' "from Wall 1's side at " 1
-$at = Ui-LastMatch "^Frame junction: Wall 2: from Wall 1's side at (\d+) mm \(butt\)$"
-if (-not $at) { Ui-Fail 'Wall 2 placed without its butt from the side' }
-if ([int]$at -gt 600) { Ui-Fail "Wall 2 starts $at mm along Wall 1, not near its end A" }
-Write-Host "ok   Wall 2 butts on Wall 1's side $at mm from its end A"
+$corner = Stud-Face $script:Studs1 'first'
+Ui-Mark
+Ui-Step "the start near Wall 1's corner" { Ui-Click $corner[0] $corner[1] }
+Ui-ExpectNew 'BUILD frame start click: From End A, Offset 0 mm (side)' 'the click fills From and Offset: flush'
+Ui-ExpectNew 'View hint Wall: Click where the wall ends, or press Enter: Length square to the wall clicked' `
+  'the end next, else Length square to the wall'
+Ui-Mark
+Ui-Step '3000 mm long'                   { Ui-TypeIn 'Panel Wall input frame_length' '3000' }
+Expect-Inspect 'Wall' @('frame wall Wall 2, wall 3000 x 2400 mm', "; Wall 2: from Wall 1's side, flush with end A (butt)",
+  '; corner butt', '; length typed') 'Wall 2 previewed flush with end A, the length typed'
+Ui-Mark
+Ui-Step 'Offset 600'                     { Ui-TypeIn 'Panel Wall input frame_offset' '600' }
+Ui-ExpectNew 'BUILD frame offset typed: from End A' 'the offset typed'
+Expect-Inspect 'Wall' @("; Wall 2: from Wall 1's side, 600 mm from end A (butt)") 'the preview 600 mm from end A'
+Ui-Sync
+Ui-Mark
+Ui-Step 'the mouse over the wall'        { [UiInput]::Move($script:UiWindow, ($corner[0] + 40), $corner[1], 0x04) }
+Ui-Step 'the mouse off the parts'        { Off-Parts (View-Area) }
+No-Inspect 'Wall' 'the preview stays where the offset put it while the mouse moves'
+Ui-Mark
+Ui-Step 'Offset 0'                       { Ui-TypeIn 'Panel Wall input frame_offset' '0' }
+Expect-Inspect 'Wall' @("; Wall 2: from Wall 1's side, flush with end A (butt)") 'Offset 0: flush with end A again'
+$line = Ui-LogLines | Select-Object -Skip $script:UiMark |
+  Where-Object { $_.StartsWith('Inspect Wall: ') -and $_.Contains('; Wall 2: ') } | Select-Object -Last 1
+if ("$line" -notmatch ', (\d+) member\(s\) \(') { Ui-Fail "no member count in: $line" }
+$previewed = [int]$Matches[1]
+Ui-Mark
+Ui-Step 'Place (Enter)'                  { Ui-Key 'Return' }
+Ui-ExpectNew 'Placed frame Wall 2 (wall, lead ' 'Wall 2 placed' 60
+Ui-ExpectNew "Frame junction: Wall 2: from Wall 1's side, flush with end A (butt)" 'Wall 2 placed flush with end A'
+$placed = [int](Ui-LastMatch '^Placed frame Wall 2 \(wall, lead [^)]*\): (\d+) member')
+if ($placed -ne $previewed) { Ui-Fail "Wall 2 placed $placed member(s), the preview showed $previewed" }
+if (@(New-Bodies).Count -lt $placed + 1) { Ui-Fail "no backing stud more in Wall 1 after Wall 2" }
+Write-Host "ok   Wall 2 flush with Wall 1's end A: $placed members, a backing stud more in Wall 1"
 # A click on end B's face, seen from the right (+X: only Wall 1's end B
 # shows of it): from that end, a butt corner.
 Ui-Step 'the view from the right'        { Ui-ClickLogged 'Orientation cube right' }
@@ -1022,13 +1209,50 @@ if ($sides.Count -lt 3) { Ui-Fail "only $($sides.Count) side face(s) of Wall 1 t
 $xs = @($sides | ForEach-Object { $_[2] } | Sort-Object)
 $middle = ($xs[0] + $xs[-1]) / 2
 $mid = $sides | Sort-Object { [Math]::Abs($_[2] - $middle) } | Select-Object -First 1
-Wall-From 'Wall 3' @($mid[2], $mid[3]) '2000' 'a T on Wall 1 at ' 1 'lapped'
+Wall-From 'Wall 3' @($mid[2], $mid[3]) '2000' 'a T on Wall 1, ' 1 'lapped'
 Ui-Step 'Close (Escape)'                 { Ui-Key 'Escape' }
-# The next start remembers Lapped plates (and Frame).
+# The next start remembers Lapped plates.
 Ui-Mark
-Ui-Step 'Timber (F4)'                    { Ui-Key 'F4' }
-Ui-ExpectNew 'Command Timber started' 'Timber started again'
-Expect-Inspect 'Timber' @('frame wall Wall 4, ', '; corner lapped') 'Lapped plates remembered'
+Ui-Step 'Wall (F7)'                      { Ui-Key 'F7' }
+Ui-ExpectNew 'Command Wall started' 'Wall started again'
+Expect-Inspect 'Wall' @('frame wall Wall 4, ', '; corner lapped') 'Lapped plates remembered'
+Ui-Step 'Close (Escape)'                 { Ui-Key 'Escape' }
+
+# The owner's case of mitcad#515: Wall 2 and Wall 3 flush with Wall 1's
+# ends, both 3000 mm to -Y (its front side), 3502 mm apart; a click on the
+# +X face of Wall 2's middle stud starts Wall 4 on its side towards Wall
+# 3: no End clicked, Length Auto, it previews and is placed between the
+# two, butting Wall 3's side, 3453 mm from Wall 2's centre line, 3404 mm
+# between the faces.
+First-Wall 'timber-walls-run' 'butt'
+$studs1 = $script:Studs1
+Start-Picks
+Wall-From 'Wall 2' (Stud-Face $studs1 'first') '3000' "from Wall 1's side, flush with end A (butt)" 1
+$studs2 = @(Stud-Bodies)
+Start-Picks
+Wall-From 'Wall 3' (Stud-Face $studs1 'last') '3000' "from Wall 1's side, flush with end B (butt)" 1
+Start-Picks
+$side = Stud-Face $studs2 'middle'
+Ui-Mark
+Ui-Step "the start on Wall 2's side"     { Ui-Click $side[0] $side[1] }
+Ui-ExpectNew 'BUILD frame start click: From ' 'the click fills From and Offset'
+Ui-ExpectNew "View hint Wall: Click where the wall ends, or press Enter: to Wall 3's side" `
+  'the end next, else to the wall the run meets'
+Expect-Inspect 'Wall' @('frame wall Wall 4, wall 3453 x 2400 mm', "; Wall 4: from Wall 2's side, ",
+  ", to Wall 3's side (butt), 3404 mm", '; length auto') 'Wall 4 previewed between Wall 2 and Wall 3, no End clicked'
+$line = Ui-LogLines | Select-Object -Skip $script:UiMark |
+  Where-Object { $_.StartsWith('Inspect Wall: ') -and $_.Contains("to Wall 3's side") } | Select-Object -Last 1
+if ("$line" -notmatch ', (\d+) member\(s\) \(') { Ui-Fail "no member count in: $line" }
+$previewed = [int]$Matches[1]
+Ui-Mark
+Ui-Step 'Place (Enter)'                  { Ui-Key 'Return' }
+Ui-ExpectNew 'Placed frame Wall 4 (wall, lead ' 'Wall 4 placed' 60
+Ui-ExpectNew ", to Wall 3's side (butt), 3404 mm" 'Wall 4 placed butting Wall 3'
+$placed = [int](Ui-LastMatch '^Placed frame Wall 4 \(wall, lead [^)]*\): (\d+) member')
+if ($placed -ne $previewed) { Ui-Fail "Wall 4 placed $placed member(s), the preview showed $previewed" }
+# Backing studs in both walls it meets.
+if (@(New-Bodies).Count -lt $placed + 2) { Ui-Fail "no backing studs in Wall 2 and Wall 3 for Wall 4" }
+Write-Host "ok   Wall 4 between Wall 2 and Wall 3: $placed members, no End clicked"
 Ui-Step 'Close (Escape)'                 { Ui-Key 'Escape' }
 
 Write-Host '--- 11. A frame of four timber members, the last one typed to the first one''s outer side'
@@ -1090,20 +1314,19 @@ function Choose-Fastener([string]$Cmd, [string]$Field, [string]$Part) {
 Ui-StartApp 'timber-fasteners'
 Ui-Step 'the BUILD tab'                  { Ui-ClickLogged 'Ribbon tab BUILD' }
 Ui-Mark
-Ui-Step 'Timber (F4)'                    { Ui-Key 'F4' }
-Ui-ExpectNew 'Command Timber started' 'Timber started'
-Ui-Mark
-Ui-Step 'Mode: Frame'                    { Ui-ClickLogged 'Panel Timber input how=frame' }
-Expect-Inspect 'Timber' @('frame wall Wall 1', 'fastener 2 x Wood screw head test at each junction, sized from the members') `
-  'the first time: two of the library''s first sized wood screw, sized from the members'
+Ui-Step 'Wall (F7)'                      { Ui-Key 'F7' }
+Ui-ExpectNew 'Command Wall started' 'Wall started'
+Expect-Inspect 'Wall' @('frame wall Wall 1', 'fastener 2 x Wood screw head test at each junction, sized from the members') `
+  ('the first time (fresh settings): two of the first countersunk wood screw, sized from the members, not the ' +
+   'pan-head connector screw whose name comes first (mitcad#516)')
 # The frame: three 5.0x90 screws with heads at each junction.
-Choose-Fastener 'Timber' 'fastener' 'test-timber/wood-screw-head-test'
+Choose-Fastener 'Wall' 'fastener' 'test-timber/wood-screw-head-test'
 Ui-Mark
-Ui-Step 'Size 5.0x90'                    { Wheel-Choice 'Timber' 'fastener_size' 2 }
-Ui-Step 'three at each junction'         { Ui-TypeIn 'Panel Timber input fastener_count' '3' }
-Ui-Step '1800 mm long'                   { Ui-TypeIn 'Panel Timber input frame_length' '1800' }
-Ui-Step '600 mm high'                    { Ui-TypeIn 'Panel Timber input frame_height' '600' }
-Expect-Inspect 'Timber' @('frame wall Wall 1, wall 1800 x 600 mm', 'fastener 3 x Wood screw head test 5.0x90 at each junction') `
+Ui-Step 'Size 5.0x90'                    { Wheel-Choice 'Wall' 'fastener_size' 2 }
+Ui-Step 'three at each junction'         { Ui-TypeIn 'Panel Wall input fastener_count' '3' }
+Ui-Step '1800 mm long'                   { Ui-TypeIn 'Panel Wall input frame_length' '1800' }
+Ui-Step '600 mm high'                    { Ui-TypeIn 'Panel Wall input frame_height' '600' }
+Expect-Inspect 'Wall' @('frame wall Wall 1, wall 1800 x 600 mm', 'fastener 3 x Wood screw head test 5.0x90 at each junction') `
   'a chosen fastener and size, three at each junction'
 Ui-Mark
 Ui-Step 'Place (Enter)'                  { Ui-Key 'Return' }
@@ -1121,7 +1344,13 @@ if ($seats.Count -ne $screws.Count -or @($seats | Where-Object { $_ -notmatch 'h
 Write-Host 'ok   every frame screw head is flush within 1e-6 mm'
 $wall = @(New-Bodies | Where-Object { $screws -notcontains $_ })
 
-# A set on the wall's top plate (its highest side face), fastened to it.
+# A set on the wall's top plate (its highest side face), fastened to it:
+# Timber's Spacing, with the fastener chosen in Wall (shared by the TIMBER
+# group's tools, mitcad#520).
+Ui-Step 'Close Wall (Escape)'            { Ui-Key 'Escape' }
+Ui-Mark
+Ui-Step 'Timber (F4)'                    { Ui-Key 'F4' }
+Ui-ExpectNew 'Command Timber started' 'Timber started'
 Ui-Step 'Mode: Spacing'                  { Ui-ClickLogged 'Panel Timber input how=spacing' }
 Ui-Step '300 mm long'                    { Ui-TypeIn 'Panel Timber input length' '300' }
 Ui-Step 'fit the view (F6)'              { Ui-Key 'F6' }
@@ -1207,14 +1436,12 @@ Write-Host '--- 14. Two points from one stud''s side to the next one''s (mitcad#
 Ui-StartApp 'timber-between'
 Ui-Step 'the BUILD tab'                  { Ui-ClickLogged 'Ribbon tab BUILD' }
 Ui-Mark
-Ui-Step 'Timber (F4)'                    { Ui-Key 'F4' }
-Ui-ExpectNew 'Command Timber started' 'Timber started'
+Ui-Step 'Wall (F7)'                      { Ui-Key 'F7' }
+Ui-ExpectNew 'Command Wall started' 'Wall started'
+Expect-Inspect 'Wall' @('frame wall Wall 1, wall 3600 x 2400 mm', 'fasteners yes') 'a wall from the origin along +X'
 Ui-Mark
-Ui-Step 'Mode: Frame'                    { Ui-ClickLogged 'Panel Timber input how=frame' }
-Expect-Inspect 'Timber' @('frame wall Wall 1, wall 3600 x 2400 mm', 'fasteners yes') 'a wall from the origin along +X'
-Ui-Mark
-Ui-Step 'no fasteners'                   { Ui-ClickLogged 'Panel Timber input frame_fasteners' }
-Expect-Inspect 'Timber' @('frame wall Wall 1, wall 3600 x 2400 mm', 'fasteners no') 'without fasteners'
+Ui-Step 'no fasteners'                   { Ui-ClickLogged 'Panel Wall input frame_fasteners' }
+Expect-Inspect 'Wall' @('frame wall Wall 1, wall 3600 x 2400 mm', 'fasteners no') 'without fasteners'
 Ui-Mark
 Ui-Step 'Place (Enter)'                  { Ui-Key 'Return' }
 Ui-ExpectNew 'Placed frame Wall 1 (wall, lead ' 'the wall placed' 60
@@ -1228,6 +1455,10 @@ foreach ($line in @(Ui-LogLines | Select-Object -Skip $script:UiMark)) {
 $studVolume = ($volumes.Values | Group-Object | Sort-Object Count -Descending | Select-Object -First 1).Name
 $studs = @($volumes.Keys | Where-Object { $volumes[$_] -eq $studVolume })
 if ($studs.Count -lt 3) { Ui-Fail "only $($studs.Count) stud(s) of one size in the wall" }
+Ui-Step 'Close Wall (Escape)'            { Ui-Key 'Escape' }
+Ui-Mark
+Ui-Step 'Timber (F4)'                    { Ui-Key 'F4' }
+Ui-ExpectNew 'Command Timber started' 'Timber started'
 Ui-Mark
 Ui-Step 'Mode: Two points'               { Ui-ClickLogged 'Panel Timber input how=points' }
 Ui-ExpectNew 'View hint Timber: Click where the member starts' "the view's hint for the start"
@@ -1267,6 +1498,350 @@ Ui-ExpectNew 'by two points, ' 'a member by two points'
 $placed = [double](Ui-LastMatch '^Placed Timber 48x98 test as .*, length by two points, ([0-9.]+) mm')
 if ([Math]::Abs($placed - $length) -gt 0.1) { Ui-Fail "placed $placed mm long, previewed $length mm" }
 Write-Host "ok   placed $placed mm long, as previewed"
+Ui-Step 'Close (Escape)'                 { Ui-Key 'Escape' }
+
+Write-Host '--- 15. Floor / Roof: a floor (mitcad#520)'
+Ui-StartApp 'timber-floor'
+Ui-Step 'the BUILD tab'                  { Ui-ClickLogged 'Ribbon tab BUILD' }
+Ui-ExpectLog 'Ribbon button build.floor_roof at' 'the Floor / Roof button'
+Ui-Mark
+Ui-Step 'Floor / Roof (F5)'              { Ui-Key 'F5' }
+Ui-ExpectNew 'Command Floor / Roof started' 'Floor / Roof started'
+Ui-ExpectNew 'BUILD floor_roof kind floor' 'a floor the first time'
+Ui-ExpectNew 'Panel Floor / Roof input frame_kind=roof at' 'the Kind''s Roof button'
+$wallInputs = @(Ui-LogLines | Select-Object -Skip $script:UiMark |
+  Where-Object { $_ -match '^Panel Floor / Roof input (frame_height|frame_corner|frame_top) at \d+,\d+$' })
+if ($wallInputs.Count -gt 0) { Ui-Fail "Floor / Roof shows a wall's inputs: $($wallInputs -join ' / ')" }
+Expect-Inspect 'Floor / Roof' @('frame floor Floor 1, floor 4000 x 3000 mm', '4 rim joist') `
+  'a floor from the origin: rim joists all round, joists between them'
+Ui-Mark
+Ui-Step 'Place (Enter)'                  { Ui-Key 'Return' }
+Ui-ExpectNew 'Placed frame Floor 1 (floor, lead ' 'the floor placed' 60
+Ui-Mark
+Ui-Step 'Kind: Roof'                     { Ui-ClickLogged 'Panel Floor / Roof input frame_kind=roof' }
+Ui-ExpectNew 'View hint Floor / Roof: Click a member of each of the two walls the roof stands on' `
+  'a roof waits for its two walls'
+Ui-Step 'Close (Escape)'                 { Ui-Key 'Escape' }
+
+# Largest-Bodies: the bodies of the largest volume made since the mark (a
+# wall's plates).
+function Largest-Bodies {
+  $made = @(Ui-LogLines | Select-Object -Skip $script:UiMark | ForEach-Object {
+      if ($_ -match '^New body .* \((F[0-9]+\.b[0-9]+)\): volume ([0-9.]+) mm3$') {
+        [pscustomobject]@{ Body = $Matches[1]; Volume = [double]$Matches[2] } } })
+  if ($made.Count -eq 0) { return @() }
+  $most = ($made | Measure-Object -Property Volume -Maximum).Maximum
+  return @($made | Where-Object { $_.Volume -eq $most } | ForEach-Object { $_.Body })
+}
+# Pickable BODIES: the first of these bodies a click picks a face of now (a
+# "Pick face" place after the last "Pick places:"); $null for none.
+function Pickable([string[]]$Bodies) {
+  $lines = @(Ui-LogLines)
+  $start = 0
+  for ($i = $lines.Count - 1; $i -ge 0; $i--) { if ($lines[$i].Contains('Pick places:')) { $start = $i; break } }
+  $picks = @($lines[$start..($lines.Count - 1)])
+  foreach ($body in $Bodies) {
+    if (@($picks | Where-Object { $_.StartsWith("Pick face $body/") }).Count -gt 0) { return $body }
+  }
+  return $null
+}
+
+Write-Host '--- 16. The Openings window: a window and a door, load-bearing or not (mitcad#519)'
+# Openings-Place NAME: the place the Openings window logged for NAME, in
+# the window ("Openings place offset.2 at x,y; in the window x,y").
+function Openings-Place([string]$Name) {
+  for ($i = 0; $i -lt 30; $i++) {
+    $line = Ui-LogLines | Where-Object { $_.StartsWith("Openings place $Name at ") } | Select-Object -Last 1
+    $match = [regex]::Match("$line", 'in the window (-?\d+),(-?\d+)$')
+    if ($match.Success) { return @([int]$match.Groups[1].Value, [int]$match.Groups[2].Value) }
+    Start-Sleep -Milliseconds 200
+  }
+  Ui-Fail "no place of the Openings window logged for '$Name'"
+}
+function Openings-Window {
+  $window = Ui-Windows '^Openings$'
+  if ($window.Count -eq 0) { Ui-Fail 'no Openings window' }
+  return $window[0]
+}
+# Openings-Click NAME: a click on that place, posted to the window itself.
+function Openings-Click([string]$Name) {
+  $place = Openings-Place $Name
+  $window = Openings-Window
+  $b = $script:UiButtons[1]
+  [UiInput]::Move($window, $place[0], $place[1], 0)
+  Start-Sleep -Milliseconds 80
+  [UiInput]::Button($window, $b[0], $place[0], $place[1], $b[3])
+  Start-Sleep -Milliseconds 60
+  [UiInput]::Button($window, $b[1], $place[0], $place[1], 0)
+}
+# Openings-Type NAME TEXT: the field's text replaced and committed (Enter);
+# the keys go to the window, then to the main window again.
+function Openings-Type([string]$Name, [string]$Text) {
+  Openings-Click $Name
+  Ui-FocusDialog '^Openings$'
+  Ui-Key 'ctrl+a'
+  Ui-Type $Text
+  Ui-Key 'Return'
+  Ui-FocusMain
+}
+# Openings-Wheel NAME STEPS: a drop-down of the window moved by wheel steps
+# (its list cannot open in session 0): -1 chooses the next entry.
+function Openings-Wheel([string]$Name, [int]$Steps) {
+  $place = Openings-Place $Name
+  $window = Openings-Window
+  [UiInput]::Move($window, $place[0], $place[1], 0)
+  Start-Sleep -Milliseconds 80
+  [UiInput]::Wheel($window, $place[0], $place[1], $Steps)
+}
+Ui-StartApp 'timber-openings'
+Ui-Step 'the BUILD tab'                  { Ui-ClickLogged 'Ribbon tab BUILD' }
+Ui-Mark
+Ui-Step 'Wall (F7)'                      { Ui-Key 'F7' }
+Ui-ExpectNew 'Command Wall started' 'Wall started'
+Ui-Mark
+Ui-Step 'no fasteners'                   { Ui-ClickLogged 'Panel Wall input frame_fasteners' }
+Expect-Inspect 'Wall' @('frame wall Wall 1, wall 3600 x 2400 mm', 'fasteners no') 'a wall from the origin, no fasteners'
+Ui-Mark
+Ui-Step 'Openings (its tile)'            { Ui-ClickLogged 'Panel Wall input frame_openings_window' }
+Ui-ExpectNew 'Openings window opened for build.wall: 0 row(s), non-load-bearing' 'the Openings window, a partition by default'
+Ui-ExpectNew 'Openings place add_window at ' 'its buttons'' places'
+Ui-Mark
+Ui-Step 'Add window'                     { Openings-Click 'add_window' }
+Ui-ExpectNew 'Openings rows: 600 900x1200 900' 'a window written into Wall'
+Expect-Inspect 'Wall' @('frame wall Wall 1, wall 3600 x 2400 mm, 13 member(s)', '1 flat header', '2 king stud',
+  '; openings 1, non-load-bearing, opening 1 marked') 'a partition''s window: one flat header, no trimmers, marked'
+Ui-Sync
+Start-Sleep -Milliseconds 1500
+$previews = @(Ui-LogLines | Select-Object -Skip $script:UiMark |
+  Where-Object { $_.StartsWith('Inspect Wall: ') -and $_.Contains('; openings 1, non-load-bearing') })
+if ($previews.Count -ne 1) { Ui-Fail "the window's change previewed $($previews.Count) times" }
+Write-Host 'ok   one preview for the change'
+Ui-Mark
+Ui-Step 'Add door'                       { Openings-Click 'add_door' }
+Ui-ExpectNew 'Openings rows: 600 900x1200 900; 2100 900x2100' 'a door after the window'
+Expect-Inspect 'Wall' @('16 member(s)', '2 flat header', '4 king stud', '; openings 2, non-load-bearing') `
+  'the door framed too'
+Ui-Mark
+Ui-Step 'row 2 at 4000'                  { Openings-Type 'offset.2' '4000' }
+Ui-ExpectNew 'Openings row 2: outside the wall (3600 mm long)' 'the row outside the wall flagged'
+Ui-Mark
+Ui-Step 'row 2 at 2100 again'            { Openings-Type 'offset.2' '2100' }
+Ui-ExpectNew 'Openings rows ok' 'the row fits again'
+Ui-Mark
+Ui-Step 'Load-bearing'                   { Openings-Wheel 'bearing' -1 }
+Ui-ExpectNew 'Openings bearing: load-bearing' 'the wall made load-bearing'
+Expect-Inspect 'Wall' @('22 member(s)', '4 header', '4 trimmer stud', '; openings 2, load-bearing') `
+  'load-bearing: trimmer studs and headers on edge'
+# The Openings window takes the keyboard when it opens (its Enter commits
+# a field): closed (Close; the openings stay), it gives the main window
+# the activation back (mitcad#532), and Enter places the wall.
+Ui-Mark
+Ui-Step 'close the window (Close)'       { Openings-Click 'close' }
+# (Logged "Openings window hidden: the main window active again" when it
+# still had the activation as it hid.)
+Ui-FocusMain
+Ui-Sync
+Ui-Mark
+Ui-Step 'Place (Enter)'                  { Ui-Key 'Return' }
+Ui-ExpectNew 'Placed frame Wall 1 (wall, lead ' 'the wall placed with both' 60
+$placed = [int](Ui-LastMatch '^Placed frame Wall 1 \(wall, lead [^)]*\): (\d+) member')
+if ($placed -ne 22) { Ui-Fail "Wall 1 placed with $placed member(s), not 22" }
+# Its plates (the largest bodies): one a click picks is chosen below.
+$plates = @(Largest-Bodies)
+# (The window closes with Wall when it is open: the Linux test checks it.)
+Ui-Step 'Close (Escape)'                 { Ui-Key 'Escape' }
+Ui-Mark
+Ui-Step 'Timber Frame (F12)'             { Ui-Key 'F12' }
+Ui-ExpectNew 'Command Timber Frame started' 'Timber Frame started'
+Ui-Step 'fit the view (F6)'              { Ui-Key 'F6' }
+Ui-Step 'its Member'                     { Ui-ClickLogged 'Panel Timber Frame input part' }
+Ui-Sync
+Ui-Mark
+$plate = Pickable $plates
+if (-not $plate) { Ui-Fail "no plate of the wall ($($plates -join ', ')) to pick" }
+Ui-Step 'a member of the wall'           { Ui-ClickPick "$plate/" }
+Expect-Inspect 'Timber Frame' @('frame Wall 1 laid out again: 22 member(s)', '; openings 2, load-bearing') `
+  'the wall''s values, load-bearing as placed'
+Ui-Mark
+Ui-Step 'Openings (its tile)'            { Ui-ClickLogged 'Panel Timber Frame input frame_openings_window' }
+Ui-ExpectNew 'Openings window opened for build.frame: 2 row(s), load-bearing' 'the window with the wall''s window and door'
+# Closed with its Close button first: it has the keyboard (above).
+Ui-Step 'close the window (Close)'       { Openings-Click 'close' }
+Ui-FocusMain
+Ui-Step 'Cancel (Escape)'                { Ui-Key 'Escape' }
+
+Write-Host '--- 17. Each frame a component of its own; a gable roof''s ring nails at its junctions (mitcad#522, mitcad#521)'
+First-Wall 'timber-roof' 'butt'
+$studs1 = $script:Studs1
+Ui-ExpectNew 'Frame component Wall 1 (' 'Wall 1 a component of its own (mitcad#522)'
+$frame1 = Ui-LastMatch '^Frame component Wall 1 \((C\d+)\) in Part1$'
+if (-not $frame1) { Ui-Fail 'Wall 1 is no component of its own in Part1' }
+Ui-ExpectNew 'Joints by component: Part1 0' 'no joint of Wall 1 in Part1'
+$plates1 = @(Largest-Bodies)
+Start-Picks
+Wall-From 'Wall 2' (Stud-Face $studs1 'first') '3000' "from Wall 1's side, flush with end A (butt)" 1
+Ui-ExpectNew 'Frame component Wall 2 (' 'Wall 2 a component of its own'
+$studs2 = @(Stud-Bodies)
+Start-Picks
+Wall-From 'Wall 3' (Stud-Face $studs1 'last') '3000' "from Wall 1's side, flush with end B (butt)" 1
+Ui-ExpectNew 'Frame component Wall 3 (' 'Wall 3 a component of its own'
+$studs3 = @(Stud-Bodies)
+Ui-Step 'Close (Escape)'                 { Ui-Key 'Escape' }
+# Timber Frame (MODIFY) on a plate of Wall 1 lays it out again in place, in
+# the same component.
+Ui-Mark
+Ui-Step 'Timber Frame (F12)'             { Ui-Key 'F12' }
+Ui-ExpectNew 'Command Timber Frame started' 'Timber Frame started'
+Ui-Step 'fit the view (F6)'              { Ui-Key 'F6' }
+Ui-Step 'its Member'                     { Ui-ClickLogged 'Panel Timber Frame input part' }
+Ui-Sync
+Ui-Mark
+# Of Wall 1's plates the one a click picks now (the bottom plate may be out
+# of sight).
+$plate1 = Pickable $plates1
+if (-not $plate1) { Ui-Fail "no plate of Wall 1 ($($plates1 -join ', ')) to pick" }
+Ui-Step 'a plate of Wall 1'              { Ui-ClickPick "$plate1/" }
+Expect-Inspect 'Timber Frame' @('frame Wall 1 laid out again: ') "Wall 1's values in Timber Frame"
+Ui-Mark
+Ui-Step 'Spacing 400'                    { Ui-TypeIn 'Panel Timber Frame input frame_spacing' '400 mm' }
+Expect-Inspect 'Timber Frame' @('frame Wall 1 laid out again: ') 'the studs at 400'
+Ui-Mark
+Ui-Step 'OK (Enter)'                     { Ui-Key 'Return' }
+Ui-ExpectNew 'Timber frame Wall 1: ' 'Wall 1 laid out again' 60
+Ui-ExpectNew "Frame component Wall 1 ($frame1) in Part1" 'in its own component, the same one'
+Ui-ExpectNew 'Joints by component: Part1 0' 'still no joint in Part1'
+Ui-Step 'Close (Escape)'                 { Ui-Key 'Escape' }
+# A gable roof on Wall 2 and Wall 3 with ring nails (the owner's case of
+# mitcad#521), two at each junction.
+Ui-Mark
+Ui-Step 'Floor / Roof (F5)'              { Ui-Key 'F5' }
+Ui-ExpectNew 'Command Floor / Roof started' 'Floor / Roof started'
+Ui-Step 'Kind: Roof'                     { Ui-ClickLogged 'Panel Floor / Roof input frame_kind=roof' }
+Ui-ExpectNew 'View hint Floor / Roof: Click a member of each of the two walls the roof stands on' `
+  'a roof waits for its two walls'
+Ui-Step 'fit the view (F6)'              { Ui-Key 'F6' }
+Ui-Step 'its Walls'                      { Ui-ClickLogged 'Panel Floor / Roof input frame_walls' }
+Ui-Sync
+$at2 = Stud-Face $studs2 'middle'
+$at3 = Stud-Face $studs3 'middle'
+Ui-Mark
+Ui-Step 'a stud of Wall 2'               { Ui-Click $at2[0] $at2[1] }
+Ui-Step 'a stud of Wall 3'               { Ui-Click $at3[0] $at3[1] }
+Expect-Inspect 'Floor / Roof' @('frame roof Roof 1, gable roof', 'rafter', 'ridge board', 'fasteners yes') `
+  'a gable roof on Wall 2 and Wall 3, with fasteners'
+Choose-Fastener 'Floor / Roof' 'fastener' 'test-timber/ring-nail-test'
+Ui-Mark
+Ui-Step 'two at each junction'           { Ui-TypeIn 'Panel Floor / Roof input fastener_count' '2' }
+Expect-Inspect 'Floor / Roof' @('frame roof Roof 1, gable roof', 'fastener 2 x Ring nail test') `
+  'two ring nails at each junction'
+Ui-Mark
+Ui-Step 'Place (Enter)'                  { Ui-Key 'Return' }
+Ui-ExpectNew 'Placed frame Roof 1 (roof, lead ' 'the roof placed' 60
+$fastened = [int](Ui-LastMatch '^Placed frame Roof 1 \(roof, lead [^)]*\): \d+ member\(s\), (\d+) junction')
+if ($fastened -lt 1) { Ui-Fail 'no junction of the roof fastened' }
+Ui-ExpectNew 'Frame component Roof 1 (' 'Roof 1 a component of its own'
+Ui-ExpectNew 'Joints by component: Part1 0, ' 'Part1 holds no joint, the roof its nails'''
+$joints = Ui-LogLines | Select-Object -Skip $script:UiMark | Where-Object { $_.StartsWith('Joints by component: ') } |
+  Select-Object -Last 1
+if (-not "$joints".Contains("Roof 1 $(2 * $fastened)")) { Ui-Fail "the roof's joints not in Roof 1: $joints" }
+Write-Host "ok   $joints"
+# No nail beside the roof: each one at its junction, in its members (the
+# test nails are heads only: through the member entered), its head on the
+# entry face.
+$nails = @(Heads-Since '4000')
+if ($nails.Count -ne 2 * $fastened) { Ui-Fail "$($nails.Count) nail(s) at $fastened junction(s), not two each" }
+Ui-ExpectNew 'Fastener shaft ' 'the nails measured'
+$shafts = @(Ui-LogLines | Select-Object -Skip $script:UiMark | Where-Object { $_.StartsWith('Fastener shaft ') })
+$off = @($shafts | Where-Object { $_ -match ' through 0 of ' })
+if ($shafts.Count -ne $nails.Count -or $off.Count -gt 0) {
+  Ui-Fail "a nail beside its junction's members: $($shafts -join ' / ')"
+}
+$seats = @(Ui-LogLines | Select-Object -Skip $script:UiMark | Where-Object { $_ -match '^Timber fastener .*: head top ' })
+if (@($seats | Where-Object { $_ -notmatch 'head top 0 mm from entry face$' }).Count -gt 0) {
+  Ui-Fail "a nail's head off the entry face: $($seats -join ' / ')"
+}
+Write-Host "ok   $($nails.Count) nails at their junctions, flush"
+Ui-Step 'Close (Escape)'                 { Ui-Key 'Escape' }
+# The cut list by frame (mitcad#522).
+Ui-Mark
+Ui-Step 'Cut List (F9)'                  { Ui-Key 'F9' }
+Ui-FocusDialog '^Cut List$'
+Ui-ExpectNew 'Cut list row: ' "the cut list's rows"
+foreach ($name in @('Wall 1', 'Wall 2', 'Wall 3', 'Roof 1')) {
+  $rows = @(Ui-LogLines | Select-Object -Skip $script:UiMark | Where-Object { $_.StartsWith('Cut list row: ') -and $_.EndsWith(", frame $name") })
+  if ($rows.Count -lt 1) { Ui-Fail "no cut list row of $name" }
+}
+Write-Host 'ok   the cut list by frame: Wall 1, Wall 2, Wall 3, Roof 1'
+Ui-Step 'close (Escape)'                 { Ui-Key 'Escape' }
+Ui-FocusMain
+
+Write-Host '--- 18. A Start on another body''s face (mitcad#524): a solid wall with a door on a slab'
+# A slab 5000 x 4000 x 200 (F1), a solid wall 3000 x 200 x 2700 on it (F2)
+# and a door 900 x 2100 cut through the wall only (F3).
+$solidJson = Join-Path $work 'solid-wall.json'
+$solidFile = Join-Path $work 'solid-wall.mitcad'
+Set-Content -Encoding ascii $solidJson @'
+[
+  {"cmd": "add_feature", "def": {"type": "box", "plane": "xy", "corner": [-1000, -2000],
+    "length": 5000, "width": 4000, "height": 200, "operation": "new_body"}},
+  {"cmd": "add_feature", "def": {"type": "box", "plane": "xy", "corner": [0, 0],
+    "length": 3000, "width": 200, "height": 2700, "operation": "new_body"}},
+  {"cmd": "add_feature", "def": {"type": "box", "plane": "xy", "corner": [1000, -10],
+    "length": 900, "width": 220, "height": 2100, "operation": "cut", "participants": ["F2.b0"]}}
+]
+'@
+Run-Cli 'run solid-wall' @('run', $solidJson, '--save', $solidFile)
+Ui-StartApp 'timber-solid-wall' @('--open', $solidFile)
+Ui-Step 'the BUILD tab'                  { Ui-ClickLogged 'Ribbon tab BUILD' }
+Ui-Mark
+Ui-Step 'Wall (F7)'                      { Ui-Key 'F7' }
+Ui-ExpectNew 'Command Wall started' 'Wall started'
+# Solid-Face TEXT DESCRIPTION: a click on each face of the solid wall
+# (F2.b0) a click on Start picks, Start picked again before each, until the
+# preview's inspection has TEXT.
+function Solid-Face([string]$Text, [string]$Description) {
+  Start-Picks
+  Ui-Sync
+  $lines = @(Ui-LogLines)
+  $start = 0
+  for ($i = $lines.Count - 1; $i -ge 0; $i--) { if ($lines[$i].Contains('Pick places:')) { $start = $i; break } }
+  $places = @($lines[$start..($lines.Count - 1)] | ForEach-Object {
+      if ($_ -match '^Pick face F2\.b0/\S* at (\d+),(\d+)$') { , @([int]$Matches[1], [int]$Matches[2]) } })
+  if ($places.Count -lt 1) { Ui-Fail 'no face of the solid wall to click' }
+  $first = $true
+  foreach ($at in $places) {
+    if (-not $first) { Start-Picks; Ui-Sync }
+    $first = $false
+    Ui-Mark
+    Ui-Step 'a face of the solid wall'   { Ui-Click $at[0] $at[1] }
+    for ($k = 0; $k -lt 15; $k++) {
+      $line = Ui-LogLines | Select-Object -Skip $script:UiMark | Where-Object { $_.StartsWith('Inspect Wall: ') } |
+        Select-Object -Last 1
+      if ("$line".Contains($Text)) { Write-Host "ok   ${Description}: $line"; return }
+      Start-Sleep -Milliseconds 200
+    }
+  }
+  Ui-Fail "${Description}: no face of the solid wall gave '$Text'"
+}
+# A side face: square from it on its outward (visible) side, on the slab.
+Solid-Face 'from a face of ' 'a wall from a face of the solid wall'
+Expect-Inspect 'Wall' @(', base on ', '(z 200 mm)', '; corner butt') 'on the slab''s top, the bottom plate at z 200'
+# Its end face: a corner with Butt, in line with Straight (the Corner's
+# icon buttons).
+Solid-Face 'from the end face of ' 'a corner on the solid wall''s end face'
+Ui-Mark
+Ui-Step 'Corner: Straight'               { Ui-ClickLogged 'Panel Wall input frame_corner=straight' }
+Expect-Inspect 'Wall' @('in line beyond the end face of ', '(straight)', '; corner straight') 'Straight: in line beyond it'
+Ui-Mark
+Ui-Step 'Corner: Butt'                   { Ui-ClickLogged 'Panel Wall input frame_corner=butt' }
+Expect-Inspect 'Wall' @('from the end face of ', '(butt corner)') 'Butt again: the corner'
+Ui-Mark
+Ui-Step 'Corner: Straight again'         { Ui-ClickLogged 'Panel Wall input frame_corner=straight' }
+Expect-Inspect 'Wall' @('in line beyond the end face of ') 'Straight again'
+Ui-Mark
+Ui-Step 'Place (Enter)'                  { Ui-Key 'Return' }
+Ui-ExpectNew 'Placed frame Wall 1 (wall, lead ' 'the wall placed in line with the solid wall' 60
+Ui-ExpectNew 'Frame junction: Wall 1: in line beyond the end face of ' 'placed in line beyond its end face'
 Ui-Step 'Close (Escape)'                 { Ui-Key 'Escape' }
 
 Ui-Finish 'UI Windows timber test'

@@ -1,0 +1,715 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: a rounding along a chain whose faces turn into their neighbours at
+creases of a few degrees, both faces at nearly the same section (mitcad#343).
+
+The case: a fin's top edges rounded with 0.2, the fin's top an arc and a
+straight part, its sides chamfered along the arcs only; slivers join the
+chamfers to the straight part's sides, and every face meets the next at a
+crease of one to five degrees, which OCCT's fillet takes for tangent
+(normals within a tenth of a radian). The selected edges are the arcs' and
+the straight parts' edges; between them short edges of the slivers, the
+chain kinked by about a degree and a half there.
+
+- ChFi3d_Builder::PerformElement, StopChainsAtTurns: a contour does not
+  stop at a turn before an edge not asked for that leads, its faces going
+  on tangentially at its other vertex, to an edge asked for (a short edge
+  between two edges of one tangent chain). Before, each selected edge was
+  its own contour, ending at a vertex of four sharp edges, where the
+  corner failed.
+- ChFi3d_PerformElSpine: the guide of a walk that starts a hair (less
+  than a hundredth of its length) short of the end of its edge after an
+  analytic piece of the stripe (or ends a hair past the start of one) is
+  built from a stretch of that edge before (after) it as well, its own
+  parameters kept: its first span was that hair, the kink of the spine at
+  the edge's end turned within it, and the guide extrapolated past its
+  start left the spine at once. The first section's reframing, which
+  looks a little before the start, found no section on its arcs, and the
+  walk failed.
+- ChFi3d_Builder::ComputeData, KinkIntoEndFace: a face crossed onto at a
+  kink that holds the spine's end vertex is the face at the end only when
+  no edge of the spine lies on it; before, the walk onto the fin's top,
+  whose straight part runs to the end vertex, stopped there.
+- ChFi3d_Builder::PerformSetOfSurfOnElSpine: where the piece before ended
+  with one contact crossing onto a face continuing its own tangentially
+  and the other within ten times the approximation tolerance of an edge
+  of its face, ahead, across which its face goes on tangentially too,
+  that contact changes face as well; BRepBlend_Walking::PerformFirstSection
+  starts such a section on both arcs where the two reach them within ten
+  times the guide's tolerance of each other (at the later section, its
+  other contact a hair past its arc). Before, a walk on one new face and
+  one old was taken between, out of order with its neighbours, and their
+  contact lines overlapped on the slivers.
+- ChFi3d_Builder::StartSol: a face taken for tangent that meets the face
+  before at a concave crease of more than the angular tolerance does not
+  continue it: the ball turns about the crease's edge (a walk rolling on
+  it, from the ball of the piece before) until it touches that face, its
+  reference face, and leaves the edge onto it. The edge is taken on the
+  face whose part beside the piece of the crease stays (the face before
+  where the crease runs away from the spine, else the face beyond).
+  ComputeData does not complete such a walk back forward over the piece
+  before (ChFi3d_SetStartsAtPieceBefore), and ChFi3d_FilDS gives the
+  crease's point where a piece leaves it onto the face it rolled on as
+  that face's only the transition of the piece leaving (with both, the
+  edge was cut twice there). Before, the walk on the next face started
+  some 0.1 mm further on than the one before ended, the gap closed by
+  edge tolerances of 0.1 mm.
+
+On the design's body before the item (its 12 edges, chains kept at turns
+as the import asks): valid, every face on the stored body's within 0.0083
+mm and every face of the stored body on the result's within 0.0024 mm, the
+change of volume -0.2909 against the file's -0.2888 mm3; before, OCCT's
+corners at the four-edge vertices failed. Synthetic: a box's top front
+edges rounded with 1 and 0.5 where the front turns outward by 3 and 5
+degrees about a slanted crease from the top edge, the edges given either
+way: valid, no edge tolerance above 1e-4, the material taken within 0.5 %
+of the two edges' sections along them; before, the fillet failed at a
+vertex.
+
+Upstream: new.
+
+diff --git a/src/ModelingAlgorithms/TKFillet/BRepBlend/BRepBlend_Walking.cxx b/src/ModelingAlgorithms/TKFillet/BRepBlend/BRepBlend_Walking.cxx
+index 5d80857e..589debd1 100644
+--- a/src/ModelingAlgorithms/TKFillet/BRepBlend/BRepBlend_Walking.cxx
++++ b/src/ModelingAlgorithms/TKFillet/BRepBlend/BRepBlend_Walking.cxx
+@@ -496,6 +496,39 @@ bool BRepBlend_Walking::PerformFirstSection(Blend_Function&    Func,
+       ParSol(3) = solrst1(3);
+       ParSol(4) = solrst1(4);
+     }
++    else if (std::abs(w1 - w2) <= 10. * tolgui)
++    {
++      // Both contacts reach their arcs within ten times the guide's
++      // tolerance of each other, as the walk takes them at once (both
++      // faces changing at one section, where they meet the faces before at
++      // slight creases): the walk starts at the later of the two sections,
++      // its other contact a hair past its arc, both ends taken on the arcs.
++      State                                           = Blend_OnRst12;
++      const bool                              aOnFirst = sens * (w2 - w1) < 0.0;
++      const int                               anIndex  = aOnFirst ? Index1 : Index2;
++      const occ::handle<Adaptor3d_TopolTool>& aDomain  = aOnFirst ? recdomain1 : recdomain2;
++      param                                           = aOnFirst ? w1 : w2;
++      aDomain->Init();
++      for (nbarc = 1; nbarc < anIndex; nbarc++)
++      {
++        aDomain->Next();
++      }
++      p2d = BRepBlend_HCurve2dTool::Value(aDomain->Value(), aOnFirst ? solrst1(1) : solrst2(1));
++      if (aOnFirst)
++      {
++        ParSol(1) = p2d.X();
++        ParSol(2) = p2d.Y();
++        ParSol(3) = solrst1(3);
++        ParSol(4) = solrst1(4);
++      }
++      else
++      {
++        ParSol(1) = solrst2(3);
++        ParSol(2) = solrst2(4);
++        ParSol(3) = p2d.X();
++        ParSol(4) = p2d.Y();
++      }
++    }
+     else if (sens * (w2 - w1) < 0.0)
+     { // on garde le plus grand
+       // sol sur 1
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
+index 779eb658..bfc749d9 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
+@@ -3961,6 +3961,54 @@ void ChFi3d_ContactsAlongFaceEdges(TopOpeBRepDS_DataStructure&       DStr,
+   }
+ }
+ 
++//=======================================================================
++// function : ChFi3d_LeavesOwnEdgeOnItsFace
++// purpose  : Where SurfData Fd starts, on side ons, at the point Ipoin of
++//            edge Iarc on which Prev, rolling on that edge as a curve of
++//            the same face, ended (a ball turned over a concave crease
++//            onto the face beside whose part of the crease it rolled): the
++//            contact does not touch the edge and leave it again there,
++//            Prev's piece of the edge ends at the point. The edge's point
++//            takes Fd's start's transition only, in place of Prev's end's
++//            (with both, the edge was cut twice there, leaving a piece of no
++//            length and a face of no area). False where that is not the
++//            case.
++//=======================================================================
++
++static bool ChFi3d_LeavesOwnEdgeOnItsFace(TopOpeBRepDS_DataStructure&         DStr,
++                                          const occ::handle<ChFiDS_SurfData>& Prev,
++                                          const occ::handle<ChFiDS_SurfData>& Fd,
++                                          const int                           ons,
++                                          const int                           Iarc,
++                                          const int                           Ipoin,
++                                          const bool                          IsVertex,
++                                          const ChFiDS_CommonPoint&           CPstart,
++                                          const ChFiDS_CommonPoint&           CPprev)
++{
++  if (Prev.IsNull() || !Prev->IsOnCurve(ons) || Fd->IsOnCurve(ons) || Prev->IndexOfC(ons) != Iarc
++      || Prev->Index(ons) != Fd->Index(ons) || CPstart.TransitionOnArc() == CPprev.TransitionOnArc())
++  {
++    return false;
++  }
++  NCollection_List<occ::handle<TopOpeBRepDS_Interference>>& LI = DStr.ChangeShapeInterferences(Iarc);
++  for (NCollection_List<occ::handle<TopOpeBRepDS_Interference>>::Iterator it(LI); it.More();)
++  {
++    const occ::handle<TopOpeBRepDS_CurvePointInterference> aCPI =
++      occ::down_cast<TopOpeBRepDS_CurvePointInterference>(it.Value());
++    if (!aCPI.IsNull() && aCPI->Geometry() == Ipoin
++        && std::abs(aCPI->Parameter() - CPstart.ParameterOnArc()) < Precision::PConfusion())
++    {
++      LI.Remove(it);
++    }
++    else
++    {
++      it.Next();
++    }
++  }
++  LI.Append(ChFi3d_FilPointInDS(CPstart.TransitionOnArc(), Iarc, Ipoin, CPstart.ParameterOnArc(), IsVertex));
++  return true;
++}
++
+ //=======================================================================
+ // function : RollsOnAcross
+ // purpose  : Whether the blend of SurfData j rolls on an obstacle edge on
+@@ -4317,7 +4365,10 @@ void ChFi3d_FilDS(const int                         SolidIndex,
+         // Iarc1 = DStr.AddShape(V1.Arc());
+         // Ipoin1 is a vertex of the DS when isVertex1 (the previous piece
+         // ended at a vertex), not a point: the interference takes its kind.
+-        if (ChFi3d_Contains(DStr.ShapeInterferences(Iarc1), Iarc1, Ipoin1, isVertex1, true)
++        if (ChFi3d_LeavesOwnEdgeOnItsFace(DStr, SeqFil(j - 1), Fd, 1, Iarc1, Ipoin1, isVertex1, V1, V3))
++        {
++        }
++        else if (ChFi3d_Contains(DStr.ShapeInterferences(Iarc1), Iarc1, Ipoin1, isVertex1, true)
+             && (V1.TransitionOnArc() != V3.TransitionOnArc()))
+         {
+           Interfp1 = ChFi3d_FilPointInDS(V1.TransitionOnArc(),
+@@ -4333,7 +4384,10 @@ void ChFi3d_FilDS(const int                         SolidIndex,
+       {
+         // Iarc2 is initialized
+         // Iarc2 = DStr.AddShape(V2.Arc());
+-        if (ChFi3d_Contains(DStr.ShapeInterferences(Iarc2), Iarc2, Ipoin2, isVertex2, true)
++        if (ChFi3d_LeavesOwnEdgeOnItsFace(DStr, SeqFil(j - 1), Fd, 2, Iarc2, Ipoin2, isVertex2, V2, V4))
++        {
++        }
++        else if (ChFi3d_Contains(DStr.ShapeInterferences(Iarc2), Iarc2, Ipoin2, isVertex2, true)
+             && (V2.TransitionOnArc() != V4.TransitionOnArc()))
+         {
+           Interfp2 = ChFi3d_FilPointInDS(V2.TransitionOnArc(),
+@@ -7001,6 +7055,43 @@ Standard_EXPORT void ChFi3d_PerformElSpine(occ::handle<ChFiDS_ElSpine>& HES,
+     Wrefdeb = std::max(Spine->FirstParameter(IF), WF);
+     Wreffin = std::min(Spine->LastParameter(IL), WL);
+   }
++  // A guide that starts where an analytic piece of the stripe ends a hair
++  // short of the end of its edge (or ends a hair past the start of one) is
++  // built from a stretch of that edge before its start (after its end) as
++  // well, its parameters kept: else its first span is that hair of the
++  // edge, the turn of the spine at the edge's end is made within it, and the
++  // guide turns there as sharply as the spine and leaves the spine at once
++  // beyond its start. The walk's sections there turn with it, the first
++  // section's reframing, which looks a little before the start, finds no
++  // section on its arcs, and the walk fails. The stretch is the guide's
++  // run on along the spine, where the analytic piece is.
++  double aPreDeb = 0., aPreFin = 0.;
++  if (!periodic && !ES.IsPeriodic() && IL > IF)
++  {
++    const double aGuideLength = WL - WF;
++    if (!ES.Previous().IsNull() && Wrefdeb == WF)
++    {
++      const double aPiece = Spine->LastParameter(IF) - WF;
++      const double aRoom  = WF - Spine->FirstParameter(IF);
++      if (aPiece < 0.01 * aGuideLength && aRoom > 10. * aPiece)
++      {
++        aPreDeb = std::min(0.03 * aGuideLength, aRoom);
++      }
++    }
++    if (!ES.Next().IsNull() && Wreffin == WL)
++    {
++      const double aPiece = WL - Spine->FirstParameter(IL);
++      const double aRoom  = Spine->LastParameter(IL) - WL;
++      if (aPiece < 0.01 * aGuideLength && aRoom > 10. * aPiece)
++      {
++        aPreFin = std::min(0.03 * aGuideLength, aRoom);
++      }
++    }
++    nwf -= aPreDeb;
++    nwl += aPreFin;
++    Wrefdeb -= aPreDeb;
++    Wreffin += aPreFin;
++  }
+   //
+   Spine->D1(WF, PDeb, VrefDeb);
+   Spine->D1(WL, PFin, VrefFin);
+@@ -7270,7 +7361,40 @@ Standard_EXPORT void ChFi3d_PerformElSpine(occ::handle<ChFiDS_ElSpine>& HES,
+   BSpline = Concat.BSplineCurve();
+   // There is a reparametrisation to maximally connect the abscissas of edges.
+   NCollection_Array1<double> BSNoeuds(BSpline->Knots());
+-  BSplCLib::Reparametrize(Wrefdeb, Wreffin, BSNoeuds);
++  if (aPreDeb == 0. && aPreFin == 0.)
++  {
++    BSplCLib::Reparametrize(Wrefdeb, Wreffin, BSNoeuds);
++  }
++  else
++  {
++    // (The guide's own ends, where the spine's points there lie on it, at
++    // their parameters on the spine; its stretches before and after them
++    // carried along.)
++    double t0 = BSpline->FirstParameter(), t1 = BSpline->LastParameter();
++    if (aPreDeb > 0.)
++    {
++      GeomAPI_ProjectPointOnCurve aProj(PDeb, BSpline, t0, t1);
++      if (aProj.NbPoints() > 0)
++      {
++        t0 = aProj.LowerDistanceParameter();
++      }
++    }
++    if (aPreFin > 0.)
++    {
++      GeomAPI_ProjectPointOnCurve aProj(PFin, BSpline, t0, t1);
++      if (aProj.NbPoints() > 0)
++      {
++        t1 = aProj.LowerDistanceParameter();
++      }
++    }
++    const double a0     = aPreDeb > 0. ? WF : Wrefdeb;
++    const double a1     = aPreFin > 0. ? WL : Wreffin;
++    const double aScale = (a1 - a0) / (t1 - t0);
++    for (int i = BSNoeuds.Lower(); i <= BSNoeuds.Upper(); i++)
++    {
++      BSNoeuds(i) = a0 + (BSNoeuds(i) - t0) * aScale;
++    }
++  }
+   BSpline->SetKnots(BSNoeuds);
+   //
+   // Traitement des Extremites
+@@ -7284,7 +7408,7 @@ Standard_EXPORT void ChFi3d_PerformElSpine(occ::handle<ChFiDS_ElSpine>& HES,
+   Angle   = M_PI * 0.75;
+   LocalWL = WL;
+   LocalWF = WF;
+-  if (!ES.IsPeriodic() && !PDeb.IsEqual(BSpline->Pole(1), tol))
++  if (!ES.IsPeriodic() && aPreDeb == 0. && !PDeb.IsEqual(BSpline->Pole(1), tol))
+   {
+     // Prolongement C3 au debut
+     // afin d'eviter des pts d'inflexions dans la partie utile de la
+@@ -7379,7 +7503,7 @@ Standard_EXPORT void ChFi3d_PerformElSpine(occ::handle<ChFiDS_ElSpine>& HES,
+     LocalWF = BSpline->FirstParameter();
+   }
+   //
+-  if (!ES.IsPeriodic() && !PFin.IsEqual(BSpline->Pole(BSpline->NbPoles()), tol))
++  if (!ES.IsPeriodic() && aPreFin == 0. && !PFin.IsEqual(BSpline->Pole(BSpline->NbPoles()), tol))
+   {
+     // Prolongement C3 en fin
+     if (BSpline->IsRational())
+@@ -7480,7 +7604,7 @@ Standard_EXPORT void ChFi3d_PerformElSpine(occ::handle<ChFiDS_ElSpine>& HES,
+   //
+   if ((LocalWF < WF) || (LocalWL > WL))
+   { // pour eviter des pb avec segment!
+-    BSpline->Segment(WF, WL);
++    BSpline->Segment(aPreDeb > 0. ? BSpline->FirstParameter() : WF, aPreFin > 0. ? BSpline->LastParameter() : WL);
+     ES.FirstParameter(WF);
+     ES.LastParameter(WL);
+   }
+@@ -7586,7 +7710,7 @@ Standard_EXPORT void ChFi3d_PerformElSpine(occ::handle<ChFiDS_ElSpine>& HES,
+     ES.FirstPointAndTgt(PDeb, VrefDeb);
+     double scaldeb = VrefDeb.Dot(V1);
+     double disdeb  = PDeb.Distance(P1);
+-    if ((std::abs(WF - LocalWF) < 1.e-12) && ((scaldeb <= 0.9999999) || disdeb >= tol))
++    if (aPreDeb == 0. && (std::abs(WF - LocalWF) < 1.e-12) && ((scaldeb <= 0.9999999) || disdeb >= tol))
+     {
+       // Yes if there was no extension and the tangent is not the good one.
+       adjust = adjustDeb = true;
+@@ -7596,7 +7720,7 @@ Standard_EXPORT void ChFi3d_PerformElSpine(occ::handle<ChFiDS_ElSpine>& HES,
+     ES.LastPointAndTgt(PFin, VrefFin);
+     double scalfin = VrefFin.Dot(V2);
+     double disfin  = PFin.Distance(P2);
+-    if ((std::abs(WL - LocalWL) < 1.e-12) && ((scalfin <= 0.9999999) || disfin >= tol))
++    if (aPreFin == 0. && (std::abs(WL - LocalWL) < 1.e-12) && ((scalfin <= 0.9999999) || disfin >= tol))
+     {
+       // the same at the end
+       adjust = adjustFin = true;
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_1.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_1.cxx
+index c57479de..f9f697b6 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_1.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_1.cxx
+@@ -1031,7 +1031,30 @@ bool ChFi3d_Builder::PerformElement(const occ::handle<ChFiDS_Spine>& Spine,
+                                     const double                     Offset,
+                                     const TopoDS_Face&               theFirstFace)
+ {
+-  double                                   ta = angular;
++  double ta = angular;
++  // Whether edge E, not asked for, joins the contour at a turn to an edge
++  // asked for at its other vertex Vfar, their faces going on tangentially
++  // there: a short edge between two edges asked for of one tangent chain (a
++  // sliver of a fin's top between its arc and its straight part, where the
++  // chain kinks by a degree or two). The contour runs on over it to the
++  // edge beyond, which would else end a contour of its own at it, at a
++  // vertex of four sharp edges.
++  const auto BridgesToSelected = [&](const TopoDS_Edge& E, const TopoDS_Vertex& Vfar) {
++    if (!myStopAtTurns || Vfar.IsNull() || !myVEMap.Contains(Vfar))
++    {
++      return false;
++    }
++    for (const TopoDS_Shape& anEdge : myVEMap.FindFromKey(Vfar))
++    {
++      const TopoDS_Edge& Ex = TopoDS::Edge(anEdge);
++      if (!Ex.IsSame(E) && myTurnThrough.Contains(Ex) && !BRep_Tool::Degenerated(Ex)
++          && FaceTangency(E, Ex, Vfar))
++      {
++        return true;
++      }
++    }
++    return false;
++  };
+   NCollection_List<TopoDS_Shape>::Iterator It;
+   int                                      Nbface;
+   NCollection_List<TopoDS_Shape>::Iterator Jt;
+@@ -1188,7 +1211,7 @@ bool ChFi3d_Builder::PerformElement(const occ::handle<ChFiDS_Spine>& Spine,
+             {
+               OnAjoute = false;
+             }
+-            if (OnAjoute && StopsAtTurn(av1v2, rev, Ev))
++            if (OnAjoute && StopsAtTurn(av1v2, rev, Ev) && !BridgesToSelected(Ev, LVEv))
+             {
+               OnAjoute = false;
+               myTurnStops.Add(LVEc);
+@@ -1311,7 +1334,7 @@ bool ChFi3d_Builder::PerformElement(const occ::handle<ChFiDS_Spine>& Spine,
+               {
+                 OnAjoute = false;
+               }
+-              if (OnAjoute && StopsAtTurn(av1v2, rev, Ev))
++              if (OnAjoute && StopsAtTurn(av1v2, rev, Ev) && !BridgesToSelected(Ev, FVEv))
+               {
+                 OnAjoute = false;
+                 myTurnStops.Add(FVEc);
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+index 26cf2314..b22be53d 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+@@ -130,6 +130,11 @@
+ #include <gp_Cylinder.hxx>
+ #include <gp_Lin.hxx>
+ 
++static bool ChFi3d_ConcaveCreaseBeyond(const TopoDS_Edge& E,
++                                       const TopoDS_Face& F1,
++                                       const TopoDS_Face& F2,
++                                       const double       Ang);
++
+ namespace
+ {
+ 
+@@ -975,6 +980,11 @@ static thread_local const NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopToo
+ // (ChamferOverNarrowFace for a fillet): the face beyond may cut the narrow
+ // face's side of the blend away from a crossing on (ChamferCutByFacesBeyond).
+ static thread_local bool ChFi3d_NarrowForward = false;
++// (The sides whose step starts a walk on an edge from the ball of the
++// piece before it, StartSol over a concave crease: ComputeData does not
++// complete such a walk back forward over that piece.)
++static thread_local int ChFi3d_PivotStartSides = 0;
++void                    ChFi3d_SetStartsAtPieceBefore(const bool theValue);
+ 
+ // Face F's unbounded face while ChFi3d_NarrowFaces holds it, in F's
+ // orientation; else null.
+@@ -3144,7 +3154,20 @@ bool ChFi3d_Builder::StartSol(
+       }
+     }
+ 
+-    if (SearchFace(Spine, aCommonPoint, F, Fv))
++    // A face taken for tangent (within a tenth of a radian) that meets F at
++    // a concave crease of more than the angular tolerance is no
++    // continuation for the ball: its contact cannot pass onto that face
++    // across the crease, the ball turns about the crease's edge until it
++    // touches that face (rolling on the edge, as at a sharp one).
++    bool aTangentNext = SearchFace(Spine, aCommonPoint, F, Fv);
++    bool aCreaseTurn  = false;
++    if (aTangentNext && !aCommonPoint.IsVertex() && !Fv.IsNull() && !Fv.IsSame(F)
++        && ChFi3d_ConcaveCreaseBeyond(anArcEdge, F, Fv, angular))
++    {
++      aTangentNext = false;
++      aCreaseTurn  = true;
++    }
++    if (aTangentNext)
+     {
+       if (Fv.IsNull())
+       {
+@@ -3287,6 +3310,65 @@ bool ChFi3d_Builder::StartSol(
+           HC->Initialize(newedge, Fv);
+           pons = HC->Value(W);
+           HCref->Initialize(anArcEdge, F);
++          // Over a concave crease to a face taken for tangent (above): the
++          // ball turns about the crease's edge until it touches Fv, where
++          // it leaves the edge onto Fv (the reference face of its rolling).
++          // The walk on the edge starts with the ball of the blend before,
++          // touching the edge where it left F: no reframing, which would
++          // look for the ball leaving Fv.
++          if (aCreaseTurn)
++          {
++            TopoDS_Edge anOnF;
++            TopoDS_Face aForwardF = F;
++            aForwardF.Orientation(TopAbs_FORWARD);
++            for (TopExp_Explorer ex(aForwardF, TopAbs_EDGE); ex.More(); ex.Next())
++            {
++              if (ex.Current().IsSame(anArcEdge))
++              {
++                anOnF = TopoDS::Edge(ex.Current());
++                break;
++              }
++            }
++            // (The edge is taken as a curve of the face the blend borders
++            // along the piece of the crease the ball turns over, the face
++            // whose part beside that piece stays: F where the crease runs
++            // away from the spine as the walk goes on, Fv where it runs
++            // towards it.)
++            gp_Pnt aPs, aPc;
++            gp_Vec aTs, aTc;
++            Spine->D1(isfirst ? SD->FirstSpineParam() : SD->LastSpineParam(), aPs, aTs);
++            if (isfirst)
++            {
++              aTs.Reverse();
++            }
++            BRepAdaptor_Curve(anArcEdge).D1(W, aPc, aTc);
++            if (aTc.Dot(aTs) < 0.)
++            {
++              aTc.Reverse();
++            }
++            gp_Vec aToSpine(aPc, aPs);
++            if (aTs.Magnitude() > gp::Resolution())
++            {
++              const gp_Vec aTsn = aTs.Normalized();
++              aToSpine -= aTsn * aToSpine.Dot(aTsn);
++            }
++            const bool aOnF = aTc.Dot(aToSpine) < 0.;
++            if (!anOnF.IsNull())
++            {
++              if (aOnF)
++              {
++                HS->Initialize(F);
++                HC->Initialize(anOnF, F);
++              }
++              pons = HC->Value(W);
++              HSref->Initialize(Fv);
++              HCref->Initialize(newedge, Fv);
++              RecP   = false;
++              RecRst = false;
++              ChFi3d_PivotStartSides |= ons;
++              return true;
++            }
++          }
+           if (aCommonPoint.IsVertex())
+           {
+             RecP = true;
+@@ -3337,6 +3419,47 @@ bool ChFi3d_Builder::StartSol(
+ 
+ //=================================================================================================
+ 
++// Whether faces F1 and F2 meet along edge E at a concave crease (inside the
++// material more than a straight angle) whose normals lie farther apart
++// than Ang all along the edge.
++static bool ChFi3d_ConcaveCreaseBeyond(const TopoDS_Edge& E,
++                                       const TopoDS_Face& F1,
++                                       const TopoDS_Face& F2,
++                                       const double       Ang)
++{
++  double                          aFirst = 0., aLast = 0.;
++  const occ::handle<Geom2d_Curve> aC1 = BRep_Tool::CurveOnSurface(E, F1, aFirst, aLast);
++  const occ::handle<Geom2d_Curve> aC2 = BRep_Tool::CurveOnSurface(E, F2, aFirst, aLast);
++  if (aC1.IsNull() || aC2.IsNull())
++  {
++    return false;
++  }
++  BRepAdaptor_Surface aS1(F1, false), aS2(F2, false);
++  for (int i = 0; i < 5; i++)
++  {
++    const double   aT  = aFirst + (aLast - aFirst) * (i + 0.5) / 5.;
++    const gp_Pnt2d aP1 = aC1->Value(aT), aP2 = aC2->Value(aT);
++    gp_Pnt         aP;
++    gp_Vec         aDU, aDV;
++    aS1.D1(aP1.X(), aP1.Y(), aP, aDU, aDV);
++    const gp_Vec aN1 = aDU.Crossed(aDV);
++    aS2.D1(aP2.X(), aP2.Y(), aP, aDU, aDV);
++    const gp_Vec aN2 = aDU.Crossed(aDV);
++    if (aN1.SquareMagnitude() < 1.e-24 || aN2.SquareMagnitude() < 1.e-24)
++    {
++      return false;
++    }
++    const double anAngle = aN1.Angle(aN2);
++    // (The normals as the faces' orientations take them.)
++    const bool aSame = (F1.Orientation() == TopAbs_REVERSED) == (F2.Orientation() == TopAbs_REVERSED);
++    if ((aSame ? anAngle : M_PI - anAngle) <= Ang)
++    {
++      return false;
++    }
++  }
++  return ChFi3d::DefineConnectType(E, F1, F2, 1.e-5, true) == ChFiDS_Concave;
++}
++
+ bool ChFi3d_Builder::SearchFace(const occ::handle<ChFiDS_Spine>& Spine,
+                                 const ChFiDS_CommonPoint&        Pc,
+                                 const TopoDS_Face&               FRef,
+@@ -4933,6 +5056,7 @@ void ChFi3d_Builder::PerformSetOfSurfOnElSpine(const occ::handle<ChFiDS_ElSpine>
+     {
+       Vref = Spine->LastVertex();
+     }
++    ChFi3d_PivotStartSides = 0;
+     if (!ref.IsNull())
+     {
+       Ok1 = StartSol(Spine,
+@@ -5008,6 +5132,69 @@ void ChFi3d_Builder::PerformSetOfSurfOnElSpine(const occ::handle<ChFiDS_ElSpine>
+         aTurnRef  = ref;
+       }
+     }
++    // Both faces changing at once: the piece before ended where one contact
++    // crossed onto a face continuing its own tangentially, and the other
++    // contact lies within a hair of an edge of its face, ahead, across which
++    // its face goes on tangentially too (a fin's top and its chamfer, each
++    // turning by a degree or so into the next face at one section). That
++    // contact changes face as well: where the faces meet at slight creases
++    // the ball's contacts jump by micrometres there, and the walk taken
++    // between, on one new face and one old, starts and ends out of order with
++    // the walks around it, the contact lines of its neighbours overlapping on
++    // the faces.
++    if (!ref.IsNull() && Ok1 && Ok2 && !obstacleon1 && !obstacleon2 && RecS1 != RecS2 && HS3.IsNull()
++        && HS4.IsNull() && !Simul)
++    {
++      const int                 k   = RecS1 ? 2 : 1;
++      const ChFiDS_CommonPoint& CPk = ref->Vertex(!forward, k);
++      const ChFiDS_CommonPoint& CPo = ref->Vertex(!forward, 3 - k);
++      occ::handle<BRepAdaptor_Surface>& HSk = k == 1 ? HS1 : HS2;
++      gp_Pnt2d&                         ppk = k == 1 ? pp1 : pp2;
++      if (!CPk.IsOnArc() && CPo.IsOnArc() && !HSk.IsNull())
++      {
++        const TopoDS_Face Fk    = HSk->Face();
++        const double      aHair = 10. * tolapp3d;
++        gp_Pnt            aPs;
++        gp_Vec            aTs;
++        Spine->D1(forward ? ref->LastSpineParam() : ref->FirstSpineParam(), aPs, aTs);
++        if (!forward)
++        {
++          aTs.Reverse();
++        }
++        for (TopExp_Explorer ex(Fk, TopAbs_EDGE); ex.More(); ex.Next())
++        {
++          const TopoDS_Edge& E = TopoDS::Edge(ex.Current());
++          TopoDS_Face        Fv;
++          if (BRep_Tool::Degenerated(E) || Spine->Index(E) != 0 || !myEFMap.Contains(E)
++              || !IsG1(myEFMap, E, Fk, Fv) || Fv.IsNull() || Fv.IsSame(Fk))
++          {
++            continue;
++          }
++          double                        f = 0., l = 0.;
++          const occ::handle<Geom_Curve> C = BRep_Tool::Curve(E, f, l);
++          if (C.IsNull())
++          {
++            continue;
++          }
++          GeomAPI_ProjectPointOnCurve aProj(CPk.Point(), C, f, l);
++          if (aProj.NbPoints() == 0 || aProj.LowerDistance() > aHair
++              || gp_Vec(CPk.Point(), aProj.NearestPoint()).Dot(aTs) < 0.)
++          {
++            continue;
++          }
++          double                          f2 = 0., l2 = 0.;
++          const occ::handle<Geom2d_Curve> PC = BRep_Tool::CurveOnSurface(E, Fv, f2, l2);
++          if (PC.IsNull())
++          {
++            continue;
++          }
++          HSk->Initialize(Fv);
++          ppk = PC->Value(aProj.LowerDistanceParameter());
++          (k == 1 ? RecS1 : RecS2) = true;
++          break;
++        }
++      }
++    }
+ 
+     // No more connected faces. Construction of the tangent plane to continue the path
+     // till the output on the other face.
+@@ -5189,6 +5376,13 @@ void ChFi3d_Builder::PerformSetOfSurfOnElSpine(const occ::handle<ChFiDS_ElSpine>
+       return true;
+     };
+ 
++    // (A step that starts a walk on an edge from the piece before it, over
++    // a concave crease: no completion of that walk forward, ComputeData.)
++    struct PivotStartGuard
++    {
++      explicit PivotStartGuard(const bool theOn) { ChFi3d_SetStartsAtPieceBefore(theOn); }
++      ~PivotStartGuard() { ChFi3d_SetStartsAtPieceBefore(false); }
++    } aPivotStartGuard(ChFi3d_PivotStartSides != 0);
+     if (!aBridge.IsEmpty())
+     {
+       // (The pieces over the gap, cut by the rim, are this step's.)
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_6.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_6.cxx
+index 8d0f3b99..e4ea0edd 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_6.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_6.cxx
+@@ -1586,6 +1586,16 @@ bool ChFi3d_Builder::StoreData(occ::handle<ChFiDS_SurfData>&         Data,
+   return true;
+ }
+ 
++// (A walk on an edge that starts with the ball of the piece before it, at
++// that piece's end, where the ball turns over a concave crease: walking
++// back from there, it is not completed forward over that piece.)
++static thread_local bool ChFi3d_StartsAtPieceBefore = false;
++
++void ChFi3d_SetStartsAtPieceBefore(const bool theValue)
++{
++  ChFi3d_StartsAtPieceBefore = theValue;
++}
++
+ //=======================================================================
+ // function : ComputeData
+ // purpose  : Head of the path edge/face for the bypass of obstacle.
+@@ -1710,7 +1720,7 @@ bool ChFi3d_Builder::ComputeData(occ::handle<ChFiDS_SurfData>&           Data,
+     // holds the blend past that start already, is not completed forward
+     // where it starts on a vertex the ball turns about: it would walk on
+     // over that piece.)
+-    if (reverse && (Inside || !RecP))
++    if (reverse && (Inside || !RecP) && !ChFi3d_StartsAtPieceBefore)
+     {
+       if (!TheWalk.Complete(Func, FInv, FInvP, FInvC, SpLast))
+       {
+@@ -2314,16 +2324,37 @@ bool ChFi3d_Builder::ComputeData(occ::handle<ChFiDS_SurfData>&           Data,
+                                  const bool                              RecOnS2)
+ {
+   // (A contact that left its face onto a face at that end of the spine
+-  // across a kink of a degree: that face cuts the blend, KinkIntoEndFace.)
++  // across a kink of a degree: that face cuts the blend, KinkIntoEndFace.
++  // Not a face of an edge of the spine: the blend goes on along it, the
++  // spine's end vertex lying on it further on, past more of its edges.)
+   const auto aKinkIntoEndFace =
+     [&](const ChFiDS_CommonPoint& CP, const TopoDS_Face& F, const TopoDS_Face& Fnext, const bool isFirst) {
+-      return !Spine.IsNull()
+-             && KinkIntoEndFace(CP,
+-                                F,
+-                                Fnext,
+-                                isFirst ? Spine->FirstVertex() : Spine->LastVertex(),
+-                                myVFMap,
+-                                angular);
++      if (Spine.IsNull()
++          || !KinkIntoEndFace(CP,
++                              F,
++                              Fnext,
++                              isFirst ? Spine->FirstVertex() : Spine->LastVertex(),
++                              myVFMap,
++                              angular))
++      {
++        return false;
++      }
++      for (int i = 1; i <= Spine->NbEdges(); i++)
++      {
++        const TopoDS_Edge& E = Spine->Edges(i);
++        if (!myEFMap.Contains(E))
++        {
++          continue;
++        }
++        for (const TopoDS_Shape& aFace : myEFMap.FindFromKey(E))
++        {
++          if (aFace.IsSame(Fnext))
++          {
++            return false;
++          }
++        }
++      }
++      return true;
+     };
+   // Get offset guide if exists
+   occ::handle<ChFiDS_ElSpine> OffsetHGuide;

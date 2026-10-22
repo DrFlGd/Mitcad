@@ -1,0 +1,172 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Chamfers and fillets: a closed rim whose analytic blend leaves its face
+over a cut-out along a whole edge of the rim, the gap running from the
+only piece of another edge round to that piece's start (mitcad#343).
+
+The case: a bore's rim of radius 85 in two arcs is chamfered 1 on the top
+and 2 down the wall. A pocket from below, a cylinder whose side breaks
+through the wall, ends 1 below the top, so along the shorter arc the wall
+is a strip only 1 high over the pocket's ceiling; the arcs' vertices lie
+where the pocket's side meets the wall. The chamfer's contact 2 down the
+wall lies in the pocket all along the shorter arc: SplitKPart gives the
+longer arc one piece, its ends on the pocket's side, and the shorter arc
+none. ChFi3d_FillKPartRoundGapsAcrossEdges (the faces round from the
+pocket's side back to it cut the blend over the gap: the side, the
+ceiling, the side) looked for the next edge with pieces only among the
+other edges, never back at the gap's own first edge, so the gap was left
+to the walk that chamfers do not have, and the chamfer failed. The bodies
+stored in the files cut the chamfer's cone lengthwise by the ceiling,
+which keeps its part outside the cone (up to 84.5 from the axis), and near
+the arc's ends by the pocket's side, both growing up to the cut.
+
+- ChFi3d_FillKPartRoundGapsAcrossEdges: on a closed spine whose other
+  edges have no piece, the search for the edge where the contact comes
+  back goes round to the first edge again, a period on (the gap's last
+  edge may be its first; A and C, the pieces before and after the gap,
+  may be one piece). The edges of the gap are told apart by their place
+  in it, not by their numbers: the first one's range starts at A's end,
+  the last one's ends at C's start, and an edge before the first one or
+  the first one again lies a period on.
+
+On the design's body before the item: valid, every face on the stored
+body's within 2e-6 mm both ways, the change of volume -522.6458 against
+the file's -522.6452 mm3; before, the chamfer failed. Synthetic: a disc's
+rim in two arcs, split where a pocket from below breaks through its wall
+1 under the top, chamfered 1 by 2, either arc first, the seam at either
+corner: valid, the material taken within 1e-6 of the section's revolved
+part inside the body, the ceiling cut back to 84.5; before, the chamfer
+failed.
+
+Upstream: new.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+index 2104a91c..bc411e4f 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+@@ -9332,12 +9332,15 @@ static void ChFi3d_FillKPartRoundGapsAcrossEdges(
+         aGivenA = true;
+       }
+       // The next edge with pieces (round a closed spine), the edges between
+-      // with none.
++      // with none. On a closed spine whose other edges have no piece, that is
++      // edge k again, a period on: the gap runs round from A's end to the
++      // first piece of k (a rim whose contact leaves its face along one arc
++      // of it, A and that piece possibly one).
+       NCollection_Sequence<int> anEdges;
+       anEdges.Append(k);
+       int  m     = k;
+       bool found = false;
+-      for (int step = 1; step < nbed; step++)
++      for (int step = 1; step < nbed + (per ? 1 : 0); step++)
+       {
+         m = m % nbed + 1;
+         if (m == 1 && !per)
+@@ -9412,11 +9415,18 @@ static void ChFi3d_FillKPartRoundGapsAcrossEdges(
+         continue;
+       }
+       const int n = aFaces.Length();
+-      // The edges' ranges, on from Wa.
+-      const auto edgeRange = [&](const int e, double& s, double& l) {
+-        s = Spine->FirstParameter(e);
+-        l = Spine->LastParameter(e);
+-        if (per && e < k)
++      // The edges' ranges, on from Wa (the ie-th edge of the gap a period on
++      // past the spine's end: an edge before k, or k itself again).
++      const int  nE      = anEdges.Length();
++      const auto wrapped = [&](const int ie) {
++        const int e = anEdges.Value(ie);
++        return per && (e < k || (e == k && ie > 1));
++      };
++      const auto edgeRange = [&](const int ie, double& s, double& l) {
++        const int e = anEdges.Value(ie);
++        s           = Spine->FirstParameter(e);
++        l           = Spine->LastParameter(e);
++        if (wrapped(ie))
+         {
+           s += T;
+           l += T;
+@@ -9505,19 +9515,19 @@ static void ChFi3d_FillKPartRoundGapsAcrossEdges(
+         {
+           const int e = anEdges.Value(ie);
+           double    s = 0., l = 0.;
+-          edgeRange(e, s, l);
+-          if (e == k)
++          edgeRange(ie, s, l);
++          if (ie == 1)
+           {
+             s = Wa;
+           }
+-          if (e == m)
++          if (ie == nE)
+           {
+             l = Wb;
+           }
+           const double w1 = std::max(W1, s), w2 = std::min(W2, l);
+           // (A piece of no length at an end of the gap is on that end's edge.)
+           const bool aPoint = W2 - W1 <= 10. * Precision::Confusion();
+-          if (w2 < w1 - 10. * Precision::Confusion() || (aPoint && !((f == 1 && e == k) || (f == n && e == m))))
++          if (w2 < w1 - 10. * Precision::Confusion() || (aPoint && !((f == 1 && ie == 1) || (f == n && ie == nE))))
+           {
+             continue;
+           }
+@@ -9526,7 +9536,7 @@ static void ChFi3d_FillKPartRoundGapsAcrossEdges(
+             continue;
+           }
+           const occ::handle<ChFiDS_SurfData>& Full  = aFull(e);
+-          const double                        shift = (per && e < k) ? T : 0.;
++          const double                        shift = wrapped(ie) ? T : 0.;
+           ChFi3d_KPartCutEnd                  aStart, anEnd;
+           const ChFi3d_KPartCutEnd*           aGivenStart = nullptr;
+           const ChFi3d_KPartCutEnd*           aGivenEnd   = nullptr;
+@@ -9541,11 +9551,11 @@ static void ChFi3d_FillKPartRoundGapsAcrossEdges(
+           {
+             ok = crossingEnd(f - 1, Bf, Full, aStart);
+             aGivenStart = &aStart;
+-            if (std::abs(w1 - Wa) <= 10. * Precision::Confusion() && e == k)
++            if (std::abs(w1 - Wa) <= 10. * Precision::Confusion() && ie == 1)
+             {
+               aStart.tO = A->Interference(opp).LastParameter();
+             }
+-            else if (std::abs(w1 - Wb) <= 10. * Precision::Confusion() && e == m)
++            else if (std::abs(w1 - Wb) <= 10. * Precision::Confusion() && ie == nE)
+             {
+               aStart.tO = C->Interference(opp).FirstParameter();
+             }
+@@ -9558,7 +9568,7 @@ static void ChFi3d_FillKPartRoundGapsAcrossEdges(
+           // crossing, or the edge's end.
+           if (std::abs(w2 - Wb) <= 10. * Precision::Confusion() && f == n)
+           {
+-            if (e == m)
++            if (ie == nE)
+             {
+               aNext = C;
+             }
+@@ -9567,11 +9577,11 @@ static void ChFi3d_FillKPartRoundGapsAcrossEdges(
+           {
+             ok = ok && crossingEnd(f, Bf, Full, anEnd);
+             aGivenEnd = &anEnd;
+-            if (std::abs(w2 - Wa) <= 10. * Precision::Confusion() && e == k)
++            if (std::abs(w2 - Wa) <= 10. * Precision::Confusion() && ie == 1)
+             {
+               anEnd.tO = A->Interference(opp).LastParameter();
+             }
+-            else if (std::abs(w2 - Wb) <= 10. * Precision::Confusion() && e == m)
++            else if (std::abs(w2 - Wb) <= 10. * Precision::Confusion() && ie == nE)
+             {
+               anEnd.tO = C->Interference(opp).FirstParameter();
+             }
+@@ -9618,11 +9628,11 @@ static void ChFi3d_FillKPartRoundGapsAcrossEdges(
+         const int e = anEdges.Value(ie);
+         for (int i = 1; i <= aPieces(ie).Length(); i++)
+         {
+-          if (e == k)
++          if (ie == 1)
+           {
+             aLSD(e).Append(aPieces(ie).Value(i));
+           }
+-          else if (e == m)
++          else if (ie == nE)
+           {
+             aLSD(e).InsertBefore(i, aPieces(ie).Value(i));
+           }

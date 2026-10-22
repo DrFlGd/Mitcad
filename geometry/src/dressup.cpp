@@ -304,8 +304,10 @@ ShapePtr healed(const Shape& result, const Shape& body) {
   try {
     OCC_CATCH_SIGNALS
     // Healing adds p-curves to edges and widens tolerances in place, and
-    // the faces the dressup left are the body's (input_check.hpp).
+    // the faces the dressup left are the body's (input_check.hpp); it moves
+    // p-curves in place too (detail::own_pcurves).
     const ShapePtr copy = detail::working_copy(result);
+    detail::own_pcurves(copy->occt());
     const Shape& named = *copy;
     ShapeFix_Shape fix(named.occt());
     detail::interruptible([&](const Message_ProgressRange& range) { fix.Perform(range); });
@@ -2335,11 +2337,14 @@ std::optional<MergedEdges> collapse_strips(const Shape& body, const std::vector<
     reshape->Remove(strip.face);
   }
   // Shape healing puts the creases' curves on the faces' periodic surfaces
-  // in the periods of the faces' other edges.
+  // in the periods of the faces' other edges (in place: the body is a copy
+  // whose p-curves are the input's, detail::own_pcurves).
   ShapeFix_Shape fixer;
   const occ::handle<ShapeBuild_ReShape> fixes = new ShapeBuild_ReShape;
   fixer.SetContext(fixes);
-  fixer.Init(reshape->Apply(body.occt()));
+  const TopoDS_Shape reshaped = reshape->Apply(body.occt());
+  detail::own_pcurves(reshaped);
+  fixer.Init(reshaped);
   fixer.Perform();
   const TopoDS_Shape collapsed = fixer.Shape();
   if (!BRepCheck_Analyzer(collapsed).IsValid()) {

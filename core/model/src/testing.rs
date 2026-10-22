@@ -173,6 +173,14 @@ pub struct MockKernel {
     /// part's end cuts, mitcad#443); the box planes are kept by history.
     pub half_space_cuts: Cell<bool>,
     pub box_planes: RefCell<BTreeMap<String, BoxPlane>>,
+    /// A cut keeps its target's bounds: it takes material from inside the
+    /// box, as a member's plumb cuts and birdsmouth notches do (mitcad#521).
+    pub cuts_keep_bounds: Cell<bool>,
+    /// A box's faces lie on its bounds (mitcad#524): `face_plane` gives
+    /// `bottom` and `top` (-z, +z) and `side0` to `side3` (-y, +x, +y, -x)
+    /// there, `face_boxes` each face's slab of the bounds, and
+    /// `segment_crossings` where a segment enters and leaves the bounds.
+    pub box_faces: Cell<bool>,
     /// A stitch's faces close up into a solid (mitcad#456); a surface body
     /// otherwise.
     pub stitch_closes: Cell<bool>,
@@ -618,6 +626,9 @@ impl Kernel for MockKernel {
                     let mut shape = MockShape::merged(history, &[target, tool], &lost);
                     if let Some((point, normal)) = half_space {
                         shape.bounds = target.bounds.and_then(|b| clipped(&b, point, normal));
+                    }
+                    if op == BooleanOp::Cut && self.cuts_keep_bounds.get() {
+                        shape.bounds = target.bounds;
                     }
                     pieces.push(BooleanPiece {
                         shape,
@@ -1372,6 +1383,20 @@ impl Kernel for MockKernel {
             return Err(KernelError::failed(format!("the body has no face {face}")));
         }
         let bounds = shape.bounds.ok_or(KernelError::failed("no bounds"))?;
+        if self.box_faces.get()
+            && let Some((axis, high)) = box_side(plain_role(face))
+        {
+            let mut origin: [f64; 3] =
+                std::array::from_fn(|i| (bounds.min[i] + bounds.max[i]) / 2.0);
+            origin[axis] = if high {
+                bounds.max[axis]
+            } else {
+                bounds.min[axis]
+            };
+            let mut normal = [0.0; 3];
+            normal[axis] = if high { 1.0 } else { -1.0 };
+            return Ok(Plane { origin, normal });
+        }
         let middle = |z: f64| {
             [
                 (bounds.min[0] + bounds.max[0]) / 2.0,
@@ -1390,6 +1415,72 @@ impl Kernel for MockKernel {
             }),
             _ => Err(KernelError::failed(format!("face {face} is not planar"))),
         }
+    }
+
+    /// With `box_faces` (mitcad#524): each face's slab of the bounds (a
+    /// box's face), else the bounds.
+    fn face_boxes(&self, shape: &MockShape) -> Result<Vec<[[f64; 3]; 2]>, KernelError> {
+        if !self.box_faces.get() {
+            return Err(KernelError::Unsupported("face boxes"));
+        }
+        let bounds = shape.bounds.ok_or(KernelError::failed("no bounds"))?;
+        Ok(shape
+            .faces
+            .iter()
+            .map(|face| {
+                let (mut lo, mut hi) = (bounds.min, bounds.max);
+                if let Some((axis, high)) = box_side(plain_role(face)) {
+                    let at = if high {
+                        bounds.max[axis]
+                    } else {
+                        bounds.min[axis]
+                    };
+                    lo[axis] = at;
+                    hi[axis] = at;
+                }
+                [lo, hi]
+            })
+            .collect())
+    }
+
+    /// With `box_faces` (mitcad#524): where the segment enters and leaves
+    /// the bounds.
+    fn segment_crossings(
+        &self,
+        shape: &MockShape,
+        from: [f64; 3],
+        to: [f64; 3],
+    ) -> Result<Vec<(f64, bool)>, KernelError> {
+        if !self.box_faces.get() {
+            return Err(KernelError::Unsupported("segment crossings"));
+        }
+        let Some(b) = shape.bounds else {
+            return Ok(Vec::new());
+        };
+        let (mut t0, mut t1) = (f64::NEG_INFINITY, f64::INFINITY);
+        for i in 0..3 {
+            let d = to[i] - from[i];
+            if d.abs() < 1e-12 {
+                if from[i] < b.min[i] || from[i] > b.max[i] {
+                    return Ok(Vec::new());
+                }
+                continue;
+            }
+            let (a, c) = ((b.min[i] - from[i]) / d, (b.max[i] - from[i]) / d);
+            t0 = t0.max(a.min(c));
+            t1 = t1.min(a.max(c));
+        }
+        if t0 >= t1 || t1 <= 0.0 || t0 >= 1.0 {
+            return Ok(Vec::new());
+        }
+        let mut out = Vec::new();
+        if t0 > 0.0 {
+            out.push((t0, true));
+        }
+        if t1 < 1.0 {
+            out.push((t1, false));
+        }
+        Ok(out)
     }
 
     /// Side faces of closed curves and hole walls are cylinders along z,
@@ -3463,6 +3554,36 @@ impl Kernel for MockKernel {
         faired.history = format!("faired({})", body.history);
         Ok(faired)
     }
+
+    // Faces moved by a rigid motion (mitcad#343).
+
+    /// The body with its history marked moved by the translation.
+    fn move_faces(
+        &self,
+        _feature: FeatureUid,
+        body: &MockShape,
+        faces: &[FaceName],
+        motion: &Transform,
+    ) -> Result<MockShape, KernelError> {
+        self.call("move_faces")?;
+        for face in faces {
+            if !body.has_face(face) {
+                return Err(KernelError::failed(format!("the body has no face {face}")));
+            }
+        }
+        let [x, y, z] = motion.translation;
+        Ok(MockShape {
+            history: format!(
+                "move_faces({},{} faces,{},{},{})",
+                body.history,
+                faces.len(),
+                number(x),
+                number(y),
+                number(z)
+            ),
+            ..body.clone()
+        })
+    }
 }
 
 /// A chain of a body's edges as `3 edges, 1 openings` (the named edges
@@ -3645,6 +3766,20 @@ fn renamed(
 /// The role a mock face's geometry follows: a derived part's face named
 /// after its source's (`F7:part(F2:end(…))`) is that face's; the end faces
 /// of derived parts are an extrusion's start and end.
+/// A box primitive's face (mitcad#524, `MockKernel::box_faces`): the axis
+/// it lies across and whether on the bounds' high side.
+fn box_side(role: &str) -> Option<(usize, bool)> {
+    match role {
+        "bottom" => Some((2, false)),
+        "top" => Some((2, true)),
+        "side0" => Some((1, false)),
+        "side1" => Some((0, true)),
+        "side2" => Some((1, true)),
+        "side3" => Some((0, false)),
+        _ => None,
+    }
+}
+
 fn plain_role(face: &FaceName) -> &str {
     match (face.role.as_str(), &face.key) {
         ("part", Some(RoleKey::Face(inner))) => plain_role(inner),

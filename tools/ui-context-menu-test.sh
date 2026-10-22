@@ -18,8 +18,9 @@
 #   - An edge of it: Fillet and Chamfer in Solid's first entries.
 #   - A face of the surface body: Untrim, Unstitch and Reverse Normal.
 #   - A face of the lone member: BUILD with Length, Ends, Flip, Rotate,
-#     Timber and Panel first, Profile and Linear Part under More, no
-#     Spacing Set; Delete: Member, Body, Component.
+#     Timber, Wall and Panel first, Profile and Linear Part under More, no
+#     Spacing Set and no Floor / Roof (its roof is offered on wall frames'
+#     members only, mitcad#520); Delete: Member, Body, Component.
 #   - A face of a member of the set: Spacing Set in BUILD, and Delete's
 #     Spacing Set.
 #   - BUILD > Timber on the lone member's face starts with the face as
@@ -208,10 +209,11 @@ ui_step "Escape (clear the selection)"     ui_key Escape
 echo "--- A face of the lone timber member"
 right_click face "$member" O2 "${member%%.*}:part("
 has "" Solid BUILD Construct Delete Hide
-has " BUILD" Length Ends Flip "Rotate 90 deg" Timber Panel More
+has " BUILD" Length Ends Flip "Rotate 90 deg" Timber Wall Panel More
 has " BUILD More" Profile "Linear Part"
 lacks " BUILD" "Spacing Set" Profile "Linear Part"
-lacks " BUILD More" "Spacing Set"
+lacks " BUILD More" "Spacing Set" "Floor / Roof"
+lacks " BUILD" "Floor / Roof"
 [ "$(menu_line " Delete")" = "Delete Member | Delete Body | Delete Component" ] ||
   ui_fail "Delete of a member's face: $(menu_line " Delete")"
 echo "ok   Delete: Member, Body, Component"

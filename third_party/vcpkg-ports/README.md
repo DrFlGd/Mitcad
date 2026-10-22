@@ -305,6 +305,66 @@ ball turning on about its contact's end, closes it, cut by the
 stepped-back wall (a rim's wall stepping back by 4.3 micrometres,
 mitcad#343).
 
+0961 ends a rounding in a point at its spine's end vertex, where its faces
+come tangent, when its walk stopped short of the vertex on the spine's own
+edge (the faces meeting only within that edge's tolerance), its surface
+bent to the vertex with its contact curves (a bar's outline rounded up to
+where an earlier rounding runs tangentially into the bar's side, round 18
+of mitcad#343). 0962 builds 0951's quarter torus whichever side of the
+blend the wall is on, and only where the recess beyond the step ends in a
+strip back to the wall; a later rounding whose recess an earlier rounding
+ends runs on across the step (mitcad#343).
+0970 rounds a chain past a wall's convex corner rounded with less than the
+radius, where no ball rolls round: the chain is split at the corner's arc,
+both roundings end where their axes cross, at the ball touching the face
+of the chain and both walls, and a vertex blend from that ball's centre to
+the corner's arc closes the corner, with a torus where the second wall
+leans over the face (an underside outline rounded with 0.5 past corners
+rounded with 0.3, mitcad#343).
+0980 rounds a chain whose faces turn into their neighbours at creases of a
+few degrees, which the fillet takes for tangent, both faces of the blend
+changing at nearly one section: a contour runs on over a short edge not
+asked for to the next edge asked for, the guide of a walk next to an
+analytic piece is built from a stretch of its edge before it, both faces
+change at once where the contacts reach their arcs within a hair, and the
+ball turns about a concave crease, rolling on its edge, instead of jumping
+across it (a fin's chamfered top edges, mitcad#343).
+0990 ends a rounding rolling on an edge where the faces at its ends cut it
+past the point where its ball comes tangent to that edge's face: the blend
+is walked again with the face of its other contact unbounded up to that
+point, run on along its tangents and cut by the face its other contact runs
+into, the face at the end and the rolled edge's face, which grow up to the
+cut (a groove's rim under a slot's end wall rounded over a strip lower than
+the radius, cut at a notch's walls, mitcad#343).
+1000 lets a chamfer's contact pass a slight concave crease of its face
+(0980's turn about the crease is a rounding's), keeps 0671's cut of an
+analytic chamfer to the spine's end off the unbounded narrow face of
+0531's computation again, and continues the B-spline surface of a face
+that grew past its bounds up to the face's bounds, the edges' curves on it
+kept (a fin's top chains chamfered over slight creases of its top and over
+side strips narrower than the chamfer, mitcad#343). 1001 takes 0980's
+guide stretch only where the spine turns at that vertex: along tangent
+edges the stretched guide's end lay off the spine's where an analytic
+piece's section is, and the walk from it failed (a bar's outline rounded
+up to where its blend vanishes, 0961's case, mitcad#343).
+1010 lets the faces round a cut-out cut a closed rim's analytic blend over
+the gap where the blend's contact leaves its face along a whole edge of the
+rim: the gap runs from the only piece of another edge round to that
+piece's start, which the search for the piece after the gap did not reach
+(a bore's rim in two arcs chamfered past a pocket from below that breaks
+through the wall 1 under the top, mitcad#343).
+1011 takes the ends of a rounding's intersection with a periodic face at
+its end in one period where one end lies past the face's edge across the
+face's parametric seam (a pocket's rim rounded up to an earlier rounding's
+torus whose seam lies at that end, mitcad#343).
+1020 takes a face beyond a contact's kink that goes on smoothly into a
+face at the spine's end vertex for a face at the end, as 0750 takes one
+that holds that vertex, also where the next piece starts from the arc of
+the piece before (a drafted peg's corners rounded down to a block whose
+walls go on from the peg's sides at slight creases and whose corners are
+rounded with less, the walls and corners cutting the rounding at the
+creases instead of 0980's turn about both creases at once, mitcad#343).
+
 - `0006-shapeupgrade-unifysamedomain-seam-search-by-vertex.patch`: the face
   merge after booleans (`ShapeUpgrade_UnifySameDomain`) looks up the edges
   it removed by vertex instead of going through all of them at each step of
@@ -3347,6 +3407,312 @@ differences are identical to the baseline. The watchdog warning is gone.
   lie outside the plane's bounds, instead of demanding a curve point at an
   unrepresentable parameter. A segment with the same knot span near 1 is
   the control.
+The patch 1001 comes from mitcad#343 (round 19): the bar's outline of
+0961's case rounded with 0.3, after 0980 joined the port.
+
+- `1001-chfi3d-guide-stretch-only-where-the-spine-turns-at-the-vertex.patch`:
+  each side's chain of tangent edges starts at the vertex where its blend
+  vanishes, and the walked piece of its first edge ends 0.018 past the
+  next edge's start, where that edge's analytic piece starts. 0980 built
+  that guide from a stretch of the next edge as well (0.136), meant for a
+  spine that turns at the vertex (a fin's top edges kinked by a degree and
+  a half). Here the edges go on tangentially (2e-6 rad): the guide,
+  approximated across the vertex, passed its end 1e-5 mm and 5e-4 rad off
+  the spine's point and tangent, where the analytic piece's section is,
+  and the walk's first step from that section failed on all four chains,
+  on the replayed and on the stored body. `ChFi3d_PerformElSpine` takes
+  the stretch only where the spine's tangents just before and after the
+  vertex lie more than a thousandth of a radian apart. On the design's
+  body before the item: valid, the stored body's 174 faces, -2.2689 mm³,
+  as with 0961 alone; 0980's fin still builds.
+
+The patch 1000 comes from mitcad#343 (round 19): a fin 1 mm thick whose
+top edges, an arc and a profile's spline stretch in turn, meet at vertices
+where the top's faces kink by 1.4 and 2.2 degrees (concave creases), both
+top chains chamfered by 0.263 at 45 degrees, the side strips between the
+top edges and the root's chamfer (a walked B-spline between a plane and a
+torus) narrower than the chamfer along the spline stretches (0531's case).
+The chamfer failed with an exception before any part of it was made.
+
+- `1000-chfi3d-chamfer-across-a-slight-concave-crease-over-a-narrow-face-grown-faces-continued.patch`:
+  0980's crease turn in `StartSol` (a face taken for tangent that meets the
+  face before at a concave crease of more than the angular tolerance is no
+  continuation: the ball turns about the crease's edge, rolling on it) took
+  the chamfer's piece after the arc's analytic one for a blend rolling on
+  that edge, which chamfers do not have ("PerformSurf Not Implemented"),
+  and left no piece for `ChamferOverNarrowFace` to find the narrow face by;
+  a chamfer's contact, at its distance along the face, passes the crease,
+  so the turn is a rounding's only. Computed again over the narrow face's
+  surface unbounded, 0671's `ChFi3d_KPartCutChainToEnd` asked whether the
+  arc's analytic piece takes material off by the spine's edge with its two
+  faces, one of them the unbounded face, which does not hold the edge
+  (`BRepTools::OriEdgeInFace` threw); it now looks only at faces of the
+  spine's edge (`ChFi3d_EdgeOfFaces`), the narrow-face computation cutting
+  the chamfer by the faces beyond itself. The root's chamfer, grown up to
+  the tip chamfer along its sections continued straight
+  (`ChFi3d_WideSurface`), kept its surface, so the face ran past its
+  surface's parameter bounds (17 of 82): its geometry where OCCT evaluates
+  the B-spline past its bounds, but tools that keep to the bounds
+  (`ShapeAnalysis_Surface`'s projections) found its points nowhere on it.
+  `ChFi3d_Builder::Compute` now gives each face of the result running past
+  its non-rational B-spline surface's bounds in a direction of degree 1
+  that surface continued linearly to the face's bounds
+  (`ChFi3d_ContinueGrownFaces`: the end row of poles moved along the end
+  span's lines, the knot with it, the parameters as they were), each edge's
+  curve on the face stored again with the continued surface. On the
+  design's body before the item, replayed and stored: valid, every face of
+  the file's within 3e-4 mm of the result's and the result's on the file's
+  within 1e-3 mm; before, the chamfer failed.
+
+The patch 0990 comes from mitcad#343 (round 18): a groove of radius 5
+under a slot's end wall, whose face is a strip 0.86 high between the groove
+and the slot's concave roundings of 9 and its ceiling, the groove through a
+notch in the wall's 1 mm thickness; the groove's rim on the strip rounded
+with 10 rolls on the strip's top edges, and the notch's walls are the faces
+at the ends.
+
+- `0990-chfi3d-rolled-end-cut-by-the-faces-at-the-end-past-the-balls-tangency.patch`:
+  past the ends the walk went on with the contact on the groove run off
+  across its edge onto the wall beside the notch, and both corners failed
+  ("Corner OnSame : no point on arc", "OneCorner : bouchon non ecrit").
+  `RolledEndCutByEndFace` (tried at each end after `WalkedOnSameToEndFace`)
+  takes an end piece rolling on an edge Er of a face B whose other contact,
+  on N, ends on N's edge A into a face Fa, at a spine's end vertex of N, the
+  face across Er and the face at the end Be: it walks the blend again from
+  the piece's middle with N's surface unbounded, rolling on Er up to its end
+  (again a little short of it where the approximation of the singular last
+  section fails), runs its surface on along its tangents
+  (`GeomLib::ExtendSurfByLength`, C1) and cuts it by Fa from where the
+  contact on N crosses A, by Be, and by B's surface up to the point where
+  that intersection ends on the contact on Er, the ball tangent to B there
+  (the branches of the surfaces' intersection lines through the cut's
+  points). Be grows up to the cut along its edges with the face across Er
+  and with Fa prolonged and its curve with B, which grows up to it as well;
+  Er is cut, and the edge of N and Be and the spine's edge at the vertex go
+  with the blend. The end is put in the data structure with no corner
+  (`PerformFilletOnVertex` makes none at the end of a lone stripe already
+  there). `ChFi3d_ExtendAtSpineEnds` no longer looks up arcs of faces made
+  of surfaces unbounded in the edge/face map. On the design's body before
+  the item: valid, every face on the stored body's within 1.6e-4 mm both
+  ways, the material in a box round the rounding 207.3352 against the
+  stored body's 207.3360 mm³; before, both corners failed.
+
+The patch 1010 comes from mitcad#343 (round 19): a bore's rim of radius 85
+in two arcs chamfered 1 on the top and 2 down the wall, where a pocket from
+below (a cylinder whose side breaks through the wall) ends 1 under the top;
+along the shorter arc the wall is a strip 1 high over the pocket's
+ceiling, the arcs' vertices where the pocket's side meets the wall.
+
+- `1010-chfi3d-kpart-closed-rim-gap-round-to-its-own-first-edge.patch`:
+  the chamfer's contact 2 down the wall lies in the pocket all along the
+  shorter arc, so `SplitKPart` gives the longer arc one piece, its ends on
+  the pocket's side, and the shorter arc none.
+  `ChFi3d_FillKPartRoundGapsAcrossEdges` (the faces round from the
+  pocket's side back to it, the side, the ceiling and the side, cut the
+  blend over the gap) looked for the piece after the gap only on the
+  other edges, never back on the gap's own first edge, and left the gap
+  to the walking chamfers do not have: the chamfer failed. On a closed
+  spine whose other edges have no piece the search now goes round to the
+  first edge again, a period on (the pieces before and after the gap may
+  be one), and the gap's edges are told apart by their place in it, not by
+  their numbers. The ceiling cuts the cone lengthwise and keeps its part
+  outside it, up to 84.5 from the axis, and the pocket's side cuts it near
+  the arc's ends, both growing up to the cut, as the stored bodies have it.
+  On the design's body before the item: valid, every face on the stored
+  body's within 2e-6 mm both ways, the change of volume -522.6458 against
+  the file's -522.6452 mm³; before, the chamfer failed.
+
+The patch 1011 comes from mitcad#343 (round 19), from the same design once
+the chamfer of 1010 is built: the bore's inner rim of radius 82 rounded
+with 0.5 where a pocket of radius 25.5 cuts into it (the rim an arc from
+one side of the pocket round to the other, its torus' parametric seam at
+its start), then the pocket's top rim rounded with 1 up to that torus.
+
+- `1011-chfi3d-intersection-at-end-across-the-end-faces-seam-in-one-period.patch`:
+  at the seam end the rounding's contact on the top runs past the torus'
+  edge (the torus grows up to the cut), and its point on the torus came
+  out at u = 6.263, a period beyond the face's domain [-0.005, 5.692],
+  while the other end lay at u = -0.002 in it. `PerformIntersectionAtEnd`
+  walked the intersection of the blend with the torus between them the
+  long way round: a curve 3.3e6 mm long and a body of 1e12 mm³ that the
+  checker took for valid. On a periodic face at the end, an end of the
+  intersection outside the face's domain and more than half a period from
+  the other end, which lies in it, is now taken in the period next to that
+  end (in u and v) before the intersection is computed. On the design's
+  replayed body and on the stored body before the item: valid, -7.525 and
+  -7.615 mm³ at the seam end (the other side's rounding -7.618 and
+  -7.512); the item's three roundings one after the other give the stored
+  body after it within 9e-4 mm both ways. Before, the rounding gave the
+  1e12 mm³ body, which the import measured as no solid, and the item fell
+  back where its three roundings' first definition had given way at its
+  share of the item's time.
+
+The patch 1020 comes from mitcad#343 (round 20): a square peg whose sides
+are drafted by 3 degrees hangs from a plate and runs, 4 below it, into a
+block whose walls go on straight down from the peg's sides there (concave
+creases of 3 degrees) and whose vertical corners an earlier rounding made
+cylinders of radius 0.4; the peg's sharp corners poke out of those
+cylinders down to 6.2355 below the plate, where its corner edges end on
+them. The four corner edges are rounded with 0.5. In the stored result the
+rounding ends at the creases, and the block's walls and corner cylinders
+grow up to where they meet it (to 3.841 and 3.447 below the plate), the
+corner below them gone.
+
+- `1020-chfi3d-kink-into-a-face-going-on-smoothly-into-the-end-face-also-at-a-pieces-start.patch`:
+  before 0980 the walls were taken for the sides continued (their normals
+  within a tenth of a radian) and the ball rolled on down the block's
+  corners, which it rounded with 0.5 (the material taken 1.127 against the
+  stored 0.932 mm³; the import accepted the 0.04 mm as corner faces). With
+  0980 both contacts reach their creases at one section and the ball
+  turned about both creases' edges at once: the fillet failed. The walls
+  are faces at the end as `KinkIntoEndFace` (0750) has them, but they hold
+  no vertex of the spine: they go on smoothly into the corner's cylinder,
+  which holds the corner edge's end vertex. `KinkIntoEndFace` now also
+  takes a face beyond the kink that goes on smoothly
+  (`ChFi3d_SmoothIntoFace`: the normals within the angular tolerance all
+  along an edge of both) into a face at the end vertex other than the face
+  before. That check, with 0980's rule that a face of an edge of the spine
+  is no face at the end (`ChFi3d_KinkIntoEndFaceOfSpine`), was made only
+  where a walk ends on the arc (`ComputeData`); `StartSol` makes its new
+  kind too (a face beyond that holds no end vertex itself), where the next
+  piece starts from the arc of the piece before: the corner's analytic
+  piece, a cylinder between the planar sides, ends at the creases, and for
+  a corner edge running from the block up the walk from there to its first
+  vertex started over them. That side now returns as at an end before a
+  face at an angle, and the end is built as where a walk ends on the arc.
+  A face beyond that holds the end vertex itself stays the walk's there,
+  which runs on it up to the vertex: taken for a face at the end in
+  `StartSol`, 0980's fin top (`5ef2dbd5` item 87) failed at its corner.
+  On the design's replayed body before the item:
+  valid, the material taken 0.931662 against the stored 0.932227 mm³,
+  every face of the result within 1.4e-4 mm of the stored body after the
+  item and the stored body's within 8.2e-5 mm of the result.
+
+The patches 0961 and 0962 come from mitcad#343 (round 18): the same bar's
+outline rounded with 0.3 on both sides (22 edges, the item before that
+rim's rounding). Each side's chain runs along an earlier concave rounding
+(radius 3) that goes on tangentially into a corner rounding of 0.4, itself
+tangent to the bar's side: the outline edge's two faces come tangent at its
+end vertex V, and the blend vanishes there.
+
+- `0961-chfi3d-rounding-vanishing-where-its-walk-stopped-on-its-own-edge.patch`:
+  the stored faces meet only within the edge's tolerance (1.5e-3). A gap g
+  between faces at an angle a moves the line where they meet sideways by
+  g / a, and the ball's contacts, R a / 2 from that line, reach the edge
+  itself where a² = 2 g / R: the walk's contact on the earlier rounding met
+  the spine's own edge 0.014 to 0.042 short of V (sections 0.004 to 0.011
+  wide) at all four ends, and the walk ended there. The end was not taken
+  as vanishing (0130 takes contacts within a hundredth of the radius), so
+  the corner went to the intersection at the end, whose plate failed at
+  one of them (each tangent chain alone gave an invalid shape). Where a
+  lone stripe's contact ends on the spine's own edge into V, a tangency extremity, its
+  section no wider than sqrt(2 R tol) and both contacts within the radius
+  of V (`ChFi3d_ContactOnOwnEdgeAtEnd`), the end is put at V as 0130 does,
+  without comparing the faces' normals; the blend left between the stop
+  and V is narrower than that section. `ChFi3d_ShrinkVanishingEnd` then
+  bends the blend's surface with its contact curves (its boundary isos):
+  all three cut by a full knot at one parameter, the surface's end row of
+  poles put at V, so that the surface ends in V and the tolerances are the
+  curves' sampled deviation from it and from their faces, not the distance
+  the end moved (as wide as 0.04, which the dressup's check of inflated
+  vertex tolerances took for a corner left open). On the design's body
+  before the item: valid, the file's 174 faces, every face on the stored
+  body's after it within 0.004 mm both ways.
+- `0962-chfi3d-step-end-torus-cut-on-its-direct-frame-and-only-at-a-recess.patch`:
+  with the outline rounded, 0951's rim rounding (the next item) met the
+  step with the wall on the blend's first side. 0951 reverses the torus in
+  u there (the blend's normal asks for it); its cut by the stepped-back
+  face, computed on that reversed torus, whose frame is indirect, failed,
+  the end went to the other corners, and the side plane's wire came out
+  broken (area -642 mm²). The cut is now computed on the torus as built,
+  its end points' u negated, and its p-curve mirrored in u onto the
+  reversed torus: valid, every face on the stored body's within 0.004 mm.
+  With both ends so built, the item after it (radius 0.2 on the walls'
+  edges below the step) built quarter tori at both its ends 0.04 off the
+  file's: the stored bodies run that rounding on across the step, cutting
+  the recess's 4.3 micrometres, until the rim's rounding (whose torus ends
+  the recess at its far side) cuts it. The pivot is now taken only where
+  the stepped-back face's edge with the other face ends at its far end on
+  a strip back to the wall's plane (a recess, 0951's case); elsewhere OCCT
+  runs the blend on as before, and that item has the file's 229 faces,
+  every face of the result on the file's within 4.3e-4 mm.
+The patch 0970 comes from mitcad#343 (round 18): a part's underside (a
+plane) rounded with 0.5 along an outline of a side wall square to it, a
+corner rounded with 0.3, a front wall leaning 15 degrees over it (its
+edge with the underside acute), a second corner and the other side wall.
+The ball cannot roll round a convex corner tighter than itself: its centre
+would turn back about the corner's axis. OCCT walked the chain over the
+corner's arc anyway and threw storing the walk (`StoreData`, the
+approximation of a walk running backwards). The stored bodies end both
+walls' roundings where their axes cross and close the corner with a vertex
+blend (a B-spline patch, its third side the corner's arc turned square to
+the underside, a point at the ball's contact with the underside) and a
+torus about the front rounding's axis (minor radius the corner's, major
+the difference of the radii), which cuts the corner's cylinder.
+
+- `0970-chfi3d-chain-past-a-wall-corner-tighter-than-the-ball-vertex-blend-and-torus.patch`:
+  `SplitAtTightCorners` (new, as `Compute` starts) splits a convex contour
+  of constant radius R at an arc between a plane U and a cylinder K of
+  radius below R, between two lines whose other faces are planes tangent
+  to K, one of them (Wp) square to the other line, the other (Wo) square to
+  U or leaning over it (an obtuse one is left as before): the runs between
+  such arcs become contours whose ends at the arcs have the status
+  `ChFiDS_Tangent`, the arcs left out. `PerformTightCorners` (new, before
+  the corners at vertices) finds the ball's centre C, R inside U, Wp and
+  Wo, and builds the vertex blend C + sin t A(u) + cos t R n (n U's
+  outward normal, A(u) the arc of K's radius about C + rho np + rho ep in
+  the plane through C parallel to U, rho = R - rk, np Wp's outward normal,
+  ep along Wp's rounding towards the corner), an exact rational
+  biquadratic patch tangent to both roundings along their ellipses through
+  the ball's contact with U; where Wo leans, the torus about Wo's rounding
+  axis turns K's section from Wo's normal to ep and meets the vertex blend
+  along its arc, Wo's rounding along an arc of radius R, Wp along an arc of
+  radius rho, and K along K's section. The roundings end on those curves,
+  the vertex blend and the torus are corner stripes on the roundings'
+  surfaces and Wp, and K is cut along its section. `SplitKPart` keeps the
+  pieces at the last end of such a contour, as at its first end (before,
+  it dropped them all and the analytic rounding was walked). On the
+  design's body before the item (the outline's five edges): valid, the
+  file's 197 faces, every face on the stored body's within 0.002 mm both
+  ways, the change of volume -1.5382 against the file's -1.5432 mm³ (the
+  file's vertex blends are cubic B-splines);
+  before, the fillet failed.
+The patch 0980 comes from mitcad#343 (round 18): a fin's top edges rounded
+with 0.2, the top an arc and a straight part, the sides chamfered along the
+arcs only, slivers joining the chamfers to the straight part's sides. Every
+face meets the next at a crease of one to five degrees; the selected edges
+are the arcs' and the straight parts', short sliver edges between them.
+
+- `0980-chfi3d-rounding-across-slight-creases-of-its-faces-at-one-section.patch`:
+  five changes, each needed by the next. A contour stopped at a turn
+  (`StopChainsAtTurns`) runs on over an edge not asked for that leads,
+  tangentially, to an edge asked for: each selected edge was a contour of
+  its own, ending at a vertex of four sharp edges where the corner failed.
+  The guide of a walk that starts a hair short of the end of its edge
+  after an analytic piece (less than a hundredth of the guide's length) is
+  built from a stretch of that edge before it, its parameters kept: its
+  first span was that hair, the spine's kink turned within it, and the
+  first section's reframing, looking a little before the start, met the
+  guide extrapolated off the spine. A kink onto a face holding the spine's
+  end vertex (`KinkIntoEndFace`) ends the blend only where no edge of the
+  spine lies on that face. Where one contact crosses onto a tangent face
+  and the other lies within ten times the approximation tolerance of such
+  an edge ahead, both change faces at once, and the first section starts
+  on both arcs where they are reached within ten times the guide's
+  tolerance of each other: a walk on one new face and one old was taken
+  between, out of order with its neighbours. A face taken for tangent
+  across a concave crease of more than the angular tolerance does not
+  continue the face before: the ball rolls on the crease's edge from the
+  ball of the piece before until it touches that face (its reference face
+  there), the edge taken on the face whose part beside it stays, the walk
+  not completed back over the piece before, and the crease's point where
+  the ball leaves it onto the face it rolled on given that piece's
+  transition only. Before, the walk on the next face started some 0.1 mm
+  further on and the gap was closed by edge tolerances of 0.1 mm. On the
+  design's body before the item (12 edges): valid, every new face on the
+  stored body's within 0.0083 mm and the stored body's on the result's
+  within 0.0024 mm, the change of volume -0.2909 against the file's
+  -0.2888 mm³; before, the corners failed.
 
 The patch 0540 goes on with the corners where a rounding ends (mitcad#236,
 eighth round): a rounding that runs on into an earlier rounding's tube.
@@ -3660,6 +4026,71 @@ wall steps back by 0.0043, the step below and above the edge, one rim and
 both, as built and mirrored, in `geometry/tests/test_fillet_step_end.cpp`
 (valid, a quarter torus at each end, the material taken within 2e-6 mm³
 of the integral; invalid without the patch);
+for 0961, mitcad#343 and a tower on a slab flush with its side, the
+tower's corner rounded with 0.4 and its foot there with 3, the side's edge
+with the foot's torus rounded with 0.3 up to the vertex where the three
+are tangent, the torus moved 0.0002 to 0.001 off the side within its
+edges' tolerance, in `geometry/tests/test_fillet_vanishing_own_edge.cpp`
+(valid, the blend ending in a point at the vertex, the vertices'
+tolerances below 0.01, the material taken within 0.5 % of the exact
+body's; the fillet fails without the patch);
+for 0962, mitcad#343 and 0951's cases with the body's faces in the reverse
+order, and the edge below the step rounded with 0.2 after the edge above
+it with 0.3, in `geometry/tests/test_fillet_step_end.cpp` (the reversed
+cases valid as the others; the second rounding's cylinder runs on past the
+step up to the first's torus, with no torus of its own; the reversed cases
+invalid or failing without the patch);
+for 0970, mitcad#343 and a block's bottom outline rounded with 0.5 past
+front corners rounded with 0.3, the front wall square to the bottom and
+leaning 15 degrees over it, and the whole outline of a block with all four
+corners rounded, in `geometry/tests/test_fillet_tight_corner.cpp` (valid,
+the vertex blends on their exact surface within 1e-6 mm, the tori where
+the wall leans, the material taken within 1e-6 mm³ of the integral where
+the walls are square; without the patch the leaning wall's fillet fails,
+and the square corners come out with other corner patches, 0.0065 mm off
+the vertex blend);
+for 0980, mitcad#343 and a box's top front edges rounded with 1 and 0.5
+where the front turns outward by 3 and 5 degrees about a slanted crease
+from the top edge, its faces B-splines, the edges given either way, in
+`geometry/tests/test_fillet_concave_crease.cpp` (valid, no edge tolerance
+above 1e-4, the material taken within 0.5 % of the two edges' sections
+along them; the fillet fails at a vertex without the patch; the test
+covers the turn over the crease, the other four changes are verified on
+the design's body only, as no synthetic body reproduced the creases'
+micrometre jumps at one section);
+for 0990, mitcad#343 and a block's slot rounded with 9 along its
+ceiling's long edges, a groove of radius 5 under its end wall through a
+notch, the groove's rim on the wall's strip rounded with 10, in
+`geometry/tests/test_fillet_rolled_end_cut.cpp` (valid, both notch walls
+grown up to the cut above the groove's rim, the roundings of 9 grown past
+the slot's wall, no face of no area; the fillet fails without the patch);
+for 1000, mitcad#343 and a fin's tip, a line and a cubic turned up from it
+by 2 and 4 degrees, chamfered 0.4 at 45 degrees along both, with the side
+whole and with its foot chamfered so high that the side strip is narrower
+than the chamfer along the cubic, the foot's face planar and a B-spline of
+degree 1, in `geometry/tests/test_chamfer_crease_strip.cpp` (valid, the
+material taken the section's triangle along both within 1e-4 where the
+side is whole, every face inside its surface's bounds, the B-spline foot's
+result the planar one's; without the patch the chamfer fails, without its
+second change the narrow cases are invalid, without its third the foot's
+face runs past its surface's bounds);
+for 1010, mitcad#343 and a disc's rim of radius 85 in two arcs split where
+a pocket from below breaks through its wall 1 under the top, chamfered 1
+on the top and 2 down the wall, either arc given first and the seam at
+either corner, and the rim as one closed edge, in
+`geometry/tests/test_chamfer_rim_cutout.cpp` (valid, the material taken
+within 1e-6 of the body's part outside the chamfer's revolved section, the
+pocket's ceiling cut back to 84.5 from the axis; the two-arc chamfers fail
+without the patch, the one-edge rim builds without it as well);
+for 1020, mitcad#343 and a square peg drafted by 3, 4 and 5 degrees hanging
+from a plate into a block whose walls go on from its sides at the creases
+and whose vertical corners are rounded with 0.4, the peg's corner edges
+(given either way along the corners) rounded with 0.5, in
+`geometry/tests/test_fillet_crease_into_end_walls.cpp` (valid, the block's
+corner cylinders from its foot up past the creases, the material taken
+within 1e-3 mm³ of the peg rounded alone with the block carried on up into
+it; with 0980 and without the patch the fillet fails, before 0980 it
+rounds the block's corners with 0.5);
 each fails without its patch but 0931's (on that body OCCT's topological
 build closes the rod's face without it as well, so the test checks 0931's
 way only; the design's failure is verified on its replayed body) and
@@ -3674,7 +4105,17 @@ design's replayed body; a bolt's thread cut by a chamfer cone and rounded
 there failed elsewhere first; nor has 0932: its cut needs a contact
 speeding up some twentyfold past the spine's end on a small torus, which
 the synthetic posts of 0933's test did not reach, verified on the design's
-replayed body, where the rounding with the rod's edges fails without it).
+replayed body, where the rounding with the rod's edges fails without it;
+nor has 1001: its stretch needs the next edge's analytic piece to start a
+hair past a vertex of tangent edges, as the design's faces split it, which
+no synthetic body reproduced; verified on the design's replayed and stored
+bodies, where the rounding fails with 0980 and without 1001);
+nor has 1011: bodies with a bore's rim rounded where a pocket or a slot
+cuts into it and the pocket's or slot's rim rounded up to that torus built
+or failed alike with and without it, their contacts not running past the
+torus' edge at its seam; verified on the design's replayed and stored
+bodies, where the seam end's rounding gives a body of 1e12 mm³ without
+it).
 Sending them upstream is the
 maintainers' step. When the
 baseline moves to a newer OCCT, check which of the changes OCCT has made;

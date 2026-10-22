@@ -676,7 +676,8 @@ fn an_l_corner_from_a_click_near_a_walls_end() {
     assert_eq!(
         preview["junction"],
         json!({"kind": "L", "corner": "lapped", "wall": "Wall 1", "frame": lead1, "end": "b",
-               "at": 3600.0, "length": 3000.0}),
+               "at": 3600.0, "length": 3000.0, "from": "b", "offset": 0.0, "to": null,
+               "run": 2951.0}),
         "{preview}"
     );
     // A click on its +Y side 100 mm from its end B, the end clicked: an L
@@ -750,7 +751,8 @@ fn an_l_corner_from_a_click_near_a_walls_end() {
     assert_eq!(
         w3["junction"],
         json!({"kind": "L", "corner": "lapped", "wall": "Wall 1", "frame": lead1, "end": "a",
-               "at": 0.0, "length": 2000.0}),
+               "at": 0.0, "length": 2000.0, "from": "a", "offset": 0.0, "to": null,
+               "run": 1951.0}),
         "{w3}"
     );
     let lead3 = w3["frame"].clone();
@@ -786,7 +788,8 @@ fn a_t_from_a_click_mid_side() {
     assert_eq!(
         w2["junction"],
         json!({"kind": "T", "corner": "lapped", "wall": "Wall 1", "frame": lead1, "end": null,
-               "at": 2000.0, "length": 2500.0}),
+               "at": 2000.0, "length": 2500.0, "from": "b", "offset": 1551.0, "to": null,
+               "run": 2451.0}),
         "{w2}"
     );
     let lead2 = w2["frame"].clone();
@@ -971,7 +974,8 @@ fn a_wall_started_30_mm_from_a_walls_end_butts_square_on_its_side() {
                "square": true, "corner": "butt"}}),
     );
     let junction = json!({"kind": "side", "corner": "butt", "wall": "Wall 1", "frame": lead1,
-                          "end": null, "at": 49.0, "length": 2000.0});
+                          "end": null, "at": 49.0, "length": 2000.0, "from": "a",
+                          "offset": 0.0, "to": null, "run": 1951.0});
     assert_eq!(preview["junction"], junction, "{preview}");
     // A click on its -Y side 30 mm from its end A: no L corner there, no
     // overhang past the end.
@@ -1086,7 +1090,8 @@ fn a_wall_started_on_a_walls_end_face_makes_a_butt_corner() {
     assert_eq!(
         w2["junction"],
         json!({"kind": "end", "corner": "butt", "wall": "Wall 1", "frame": lead1, "end": "b",
-               "at": 3649.0, "length": 2500.0}),
+               "at": 3649.0, "length": 2500.0, "from": null, "offset": null, "to": null,
+               "run": 2500.0}),
         "{w2}"
     );
     // It stays joined to the first, its start on that one's end.
@@ -1205,7 +1210,8 @@ fn lapped_plates_give_the_l_corner_and_an_edit_to_butt_undoes_it() {
     assert_eq!(
         w2["junction"],
         json!({"kind": "L", "corner": "lapped", "wall": "Wall 1", "frame": lead1, "end": "a",
-               "at": 0.0, "length": 2000.0}),
+               "at": 0.0, "length": 2000.0, "from": "a", "offset": 0.0, "to": null,
+               "run": 1951.0}),
         "{w2}"
     );
     let lead2 = w2["frame"].clone();
@@ -1237,4 +1243,285 @@ fn lapped_plates_give_the_l_corner_and_an_edit_to_butt_undoes_it() {
         assert!(close(length(member(&second, key)), 2000.0 - 49.0), "{key}");
         assert!(half_laps(member(&second, key)).is_empty(), "{key}");
     }
+}
+
+// --- From and Offset on a wall's side (mitcad#514), the end at the wall
+// the run meets (mitcad#515).
+
+/// The preview of a wall started square on the wall `on` at `click`, with
+/// the fields of `extra`: its answer.
+fn preview_on(doc: &Document<MockKernel>, on: &Value, click: [f64; 3], extra: Value) -> Value {
+    let mut fields = json!({"kind": "wall", "part": part("rows98"), "start": click,
+                            "joins": {"start": on}, "square": true, "height": 2400,
+                            "spacing": 600});
+    for (k, v) in extra.as_object().unwrap() {
+        fields[k] = v.clone();
+    }
+    query(doc, json!({"query": "build_preview", "frame": fields}))
+}
+
+/// The least and greatest X and Y of a frame's members.
+fn extent(doc: &Document<MockKernel>, lead: &Value) -> [f64; 4] {
+    boxes(doc, lead).iter().fold(
+        [f64::MAX, f64::MIN, f64::MAX, f64::MIN],
+        |e, (_, lo, hi)| {
+            [
+                e[0].min(lo[0]),
+                e[1].max(hi[0]),
+                e[2].min(lo[1]),
+                e[3].max(hi[1]),
+            ]
+        },
+    )
+}
+
+#[test]
+fn a_wall_started_near_a_walls_end_comes_flush_from_end_a_end_b_or_the_middle() {
+    let mut doc = design();
+    let w1 = wall(&mut doc, [0.0, 0.0, 0.0], [3600.0, 0.0, 0.0], json!({}));
+    let lead1 = w1["frame"].clone();
+    let butt = json!({"length": 2000, "corner": "butt"});
+    // A click on its -Y side, the new wall's near face 30 mm from end A:
+    // within its depth of the end, it snaps flush with end A (before
+    // mitcad#514 it stood at the click, a 30 mm gap at the corner).
+    let w2 = wall_on(&mut doc, &lead1, [79.0, -49.0, 1000.0], butt.clone());
+    all_ok(&doc);
+    assert_eq!(
+        w2["junction"],
+        json!({"kind": "side", "corner": "butt", "wall": "Wall 1", "frame": lead1, "end": null,
+               "at": 49.0, "length": 2000.0, "from": "a", "offset": 0.0, "to": null,
+               "run": 1951.0}),
+        "{w2}"
+    );
+    let lead2 = w2["frame"].clone();
+    let (s, e) = ends_of(&doc, &lead2);
+    assert!(close(s[0], 49.0) && close(s[1], 0.0), "{s:?}");
+    assert!(close(e[0], 49.0) && close(e[1], -2000.0), "{e:?}");
+    // The outer faces in one plane: the second's at the first one's end
+    // face, no gap; its start stud and plates against the first one's side.
+    let (one, two) = (extent(&doc, &lead1), extent(&doc, &lead2));
+    assert!(close(one[0], 0.0) && close(two[0], 0.0), "{one:?} {two:?}");
+    assert!(close(two[3], -49.0), "{two:?}");
+    let second = members(&doc, &lead2);
+    let stud = end_a(&doc, member(&second, "stud.start"));
+    assert!(close(stud[0], 49.0) && close(stud[1], -73.0), "{stud:?}");
+    // The corner's studs (mitcad#510): the first one's end stud outside the
+    // second, a backing stud just inside it.
+    let first = members(&doc, &lead1);
+    assert!(close(stud_at(&doc, &first, "stud.start")[0], 24.0));
+    assert!(close(
+        stud_at(&doc, &first, "junction.Wall_2.0.b")[0],
+        98.0 + 24.0
+    ));
+    assert_eq!(
+        overlaps(&doc, &lead1, &lead2),
+        Vec::<(String, String)>::new()
+    );
+
+    // Its +Y side: Middle centres it, typed or snapped by a click within a
+    // quarter of its depth.
+    let typed = preview_on(
+        &doc,
+        &lead1,
+        [1000.0, 49.0, 1000.0],
+        json!({"length": 2000, "corner": "butt", "from": "middle"}),
+    );
+    assert_eq!(typed["junction"]["at"], 1800.0, "{typed}");
+    assert_eq!(typed["junction"]["from"], "middle", "{typed}");
+    assert_eq!(typed["junction"]["offset"], 0.0, "{typed}");
+    let snapped = preview_on(&doc, &lead1, [1815.0, 49.0, 1000.0], butt.clone());
+    assert_eq!(snapped["junction"]["at"], 1800.0, "{snapped}");
+    assert_eq!(snapped["junction"]["from"], "middle", "{snapped}");
+    // Elsewhere the click's place from the nearer end: its near face (from
+    // end B its far face).
+    let free = preview_on(&doc, &lead1, [1000.0, 49.0, 1000.0], butt.clone());
+    assert_eq!(free["junction"]["at"], 1000.0, "{free}");
+    assert_eq!(free["junction"]["from"], "a", "{free}");
+    assert_eq!(free["junction"]["offset"], 951.0, "{free}");
+    let free = preview_on(&doc, &lead1, [2600.0, 49.0, 1000.0], butt.clone());
+    assert_eq!(free["junction"]["from"], "b", "{free}");
+    assert_eq!(free["junction"]["offset"], 951.0, "{free}");
+    // The app's snap distance when larger (a click far from the parts).
+    let wide = preview_on(
+        &doc,
+        &lead1,
+        [3350.0, 49.0, 1000.0],
+        json!({"length": 2000, "corner": "butt", "snap": 250}),
+    );
+    assert_eq!(wide["junction"]["at"], 3551.0, "{wide}");
+    assert_eq!(wide["junction"]["from"], "b", "{wide}");
+    // A typed offset past an end: flush with it, with a warning.
+    let past = preview_on(
+        &doc,
+        &lead1,
+        [1000.0, 49.0, 1000.0],
+        json!({"length": 2000, "corner": "butt", "from": "a", "offset": -40}),
+    );
+    assert_eq!(past["junction"]["at"], 49.0, "{past}");
+    assert!(
+        past["warnings"]
+            .to_string()
+            .contains("flush with Wall 1's end A instead"),
+        "{past}"
+    );
+
+    // Offset 1200 from End B, typed (the click only picks the side): its far
+    // face 1200 mm from end B.
+    let w3 = wall_on(
+        &mut doc,
+        &lead1,
+        [500.0, 49.0, 1000.0],
+        json!({"length": 2000, "corner": "butt", "from": "b", "offset": "1200 mm"}),
+    );
+    all_ok(&doc);
+    assert_eq!(w3["junction"]["at"], 3600.0 - 1200.0 - 49.0, "{w3}");
+    assert_eq!(w3["junction"]["from"], "b", "{w3}");
+    assert_eq!(w3["junction"]["offset"], 1200.0, "{w3}");
+    let lead3 = w3["frame"].clone();
+    let (s, e) = ends_of(&doc, &lead3);
+    assert!(close(s[0], 2351.0) && close(s[1], 0.0), "{s:?}");
+    assert!(close(e[0], 2351.0) && close(e[1], 2000.0), "{e:?}");
+    let def = definition(&doc, &lead3);
+    for field in ["from", "offset", "snap", "auto_end"] {
+        assert!(def.get(field).is_none(), "{field} kept: {def}");
+    }
+    assert!(close(extent(&doc, &lead3)[1], 3600.0 - 1200.0), "{lead3}");
+
+    // Lapped plates take From and Offset too: flush with an end is the L
+    // corner there, elsewhere a T.
+    let lapped = preview_on(
+        &doc,
+        &lead1,
+        [1000.0, 49.0, 1000.0],
+        json!({"length": 2000, "corner": "lapped", "from": "b", "offset": 0}),
+    );
+    assert_eq!(lapped["junction"]["kind"], "L", "{lapped}");
+    assert_eq!(lapped["junction"]["end"], "b", "{lapped}");
+    let lapped = preview_on(
+        &doc,
+        &lead1,
+        [1000.0, 49.0, 1000.0],
+        json!({"length": 2000, "corner": "lapped", "from": "a", "offset": 600}),
+    );
+    assert_eq!(lapped["junction"]["kind"], "T", "{lapped}");
+    assert_eq!(lapped["junction"]["at"], 649.0, "{lapped}");
+}
+
+#[test]
+fn a_wall_whose_run_meets_another_wall_ends_butting_it() {
+    let mut doc = design();
+    // Two parallel walls 3000 mm apart (centre lines), their faces 2902
+    // apart.
+    let w1 = wall(&mut doc, [0.0, 0.0, 0.0], [4000.0, 0.0, 0.0], json!({}));
+    let lead1 = w1["frame"].clone();
+    let w2 = wall(
+        &mut doc,
+        [0.0, 3000.0, 0.0],
+        [4000.0, 3000.0, 0.0],
+        json!({}),
+    );
+    let lead2 = w2["frame"].clone();
+    let butt = json!({"length": 3600, "corner": "butt"});
+    // A typed length (Typed) keeps it, through the other wall.
+    let typed = preview_on(
+        &doc,
+        &lead1,
+        [2000.0, 49.0, 1000.0],
+        json!({"length": 3600, "corner": "butt", "auto_end": false}),
+    );
+    assert_eq!(typed["junction"]["length"], 3600.0, "{typed}");
+    assert_eq!(typed["junction"]["to"], Value::Null, "{typed}");
+    // An end clicked wins.
+    let clicked = preview_on(
+        &doc,
+        &lead1,
+        [2000.0, 49.0, 1000.0],
+        json!({"end": [2100, 1500, 0], "corner": "butt"}),
+    );
+    assert_eq!(clicked["junction"]["length"], 1500.0, "{clicked}");
+    assert_eq!(clicked["junction"]["to"], Value::Null, "{clicked}");
+    // No End: started on the first one's side (at its middle), it ends
+    // butting the second, as long as the faces' distance.
+    let w3 = wall_on(&mut doc, &lead1, [2000.0, 49.0, 1000.0], butt);
+    all_ok(&doc);
+    assert_eq!(
+        w3["junction"],
+        json!({"kind": "side", "corner": "butt", "wall": "Wall 1", "frame": lead1, "end": null,
+               "at": 2000.0, "length": 2951.0, "from": "middle", "offset": 0.0,
+               "to": {"wall": "Wall 2", "frame": lead2, "auto": true}, "run": 2902.0}),
+        "{w3}"
+    );
+    let relaid = w3["relaid"].as_array().unwrap();
+    assert!(relaid.contains(&lead1) && relaid.contains(&lead2), "{w3}");
+    let lead3 = w3["frame"].clone();
+    let def = definition(&doc, &lead3);
+    assert_eq!(def["joins"]["end"], lead2, "{def}");
+    let (s, e) = ends_of(&doc, &lead3);
+    assert!(close(s[1], 0.0) && close(e[1], 2951.0), "{s:?} {e:?}");
+    // Its plates and studs between the faces, square against both.
+    let third = members(&doc, &lead3);
+    for key in ["plate.top.0", "plate.bottom.0"] {
+        let plate = member(&third, key);
+        assert!(close(length(plate), 2902.0), "{key}: {}", length(plate));
+        assert!(close(end_a(&doc, plate)[1], 49.0), "{key}");
+    }
+    assert!(close(stud_at(&doc, &third, "stud.start")[1], 49.0 + 24.0));
+    assert!(close(stud_at(&doc, &third, "stud.end")[1], 2951.0 - 24.0));
+    // Both ends' corner studs: a backing stud each side of it in each wall.
+    for (lead, end) in [(&lead1, 0), (&lead2, 1)] {
+        let list = members(&doc, lead);
+        let a = stud_at(&doc, &list, &format!("junction.Wall_3.{end}.a"));
+        let b = stud_at(&doc, &list, &format!("junction.Wall_3.{end}.b"));
+        assert!(close(a[0], 2000.0 - 49.0 - 24.0), "{lead}: {a:?}");
+        assert!(close(b[0], 2000.0 + 49.0 + 24.0), "{lead}: {b:?}");
+    }
+    for lead in [&lead1, &lead2] {
+        assert_eq!(overlaps(&doc, lead, &lead3), Vec::<(String, String)>::new());
+    }
+    // The nearest wall along the run: a third one between them is met
+    // first; one parallel to the run is not.
+    let w4 = wall(
+        &mut doc,
+        [1000.0, 1500.0, 0.0],
+        [3000.0, 1500.0, 0.0],
+        json!({}),
+    );
+    let w5 = wall(
+        &mut doc,
+        [1200.0, 400.0, 0.0],
+        [1200.0, 1200.0, 0.0],
+        json!({}),
+    );
+    let nearer = preview_on(
+        &doc,
+        &lead1,
+        [2600.0, 49.0, 1000.0],
+        json!({"length": 3600, "corner": "butt"}),
+    );
+    assert_eq!(nearer["junction"]["to"]["frame"], w4["frame"], "{nearer}");
+    assert_eq!(nearer["junction"]["length"], 1500.0 - 49.0, "{nearer}");
+    let parallel = preview_on(
+        &doc,
+        &lead1,
+        [1200.0, 49.0, 1000.0],
+        json!({"length": 3600, "corner": "butt"}),
+    );
+    assert_ne!(
+        parallel["junction"]["to"]["frame"], w5["frame"],
+        "{parallel}"
+    );
+    assert_eq!(
+        parallel["junction"]["to"]["frame"], w4["frame"],
+        "{parallel}"
+    );
+    // One merely touched at its corner is not met: the run's centre line
+    // along the fourth one's end face.
+    let corner = preview_on(
+        &doc,
+        &lead1,
+        [3000.0, 49.0, 1000.0],
+        json!({"length": 3600, "corner": "butt", "from": "b", "offset": 951}),
+    );
+    assert_eq!(corner["junction"]["at"], 3000.0, "{corner}");
+    assert_eq!(corner["junction"]["to"]["frame"], lead2, "{corner}");
 }

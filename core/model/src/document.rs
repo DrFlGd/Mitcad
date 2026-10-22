@@ -90,6 +90,11 @@ pub use properties::PropertyTypeChange;
 // Reorient Design (mitcad#502).
 mod reorient;
 pub use reorient::ReorientReport;
+// Mount frames of any part and placing a part by one (mitcad#525).
+mod mounts;
+pub use mounts::{
+    GridPlace, Inserted, MountAt, MountFrame, MountInput, MountPlan, MountPreview, MountSource,
+};
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
@@ -1243,6 +1248,9 @@ pub struct Document<K: Kernel> {
     /// Policy checks are off even in commands (an importer replaying a
     /// file's design, [`Document::without_policy_checks`]).
     policy_suspended: bool,
+    /// The component BUILD places parts in while a timber frame drives the
+    /// fasteners of its own component (mitcad#522). Runtime context only.
+    build_host_override: Option<ComponentUid>,
 }
 
 impl<K: Kernel> Document<K> {
@@ -1281,7 +1289,23 @@ impl<K: Kernel> Document<K> {
             import_focus: Default::default(),
             policy_checks: false,
             policy_suspended: false,
+            build_host_override: None,
         }
+    }
+
+    /// The component BUILD places parts in instead of the active one's
+    /// host while a timber frame drives its own fasteners (mitcad#522).
+    pub(crate) fn build_host_override(&self) -> Option<ComponentUid> {
+        self.build_host_override
+    }
+
+    /// Sets (or with None ends) the BUILD host override; returns the one
+    /// before, to restore.
+    pub(crate) fn set_build_host_override(
+        &mut self,
+        host: Option<ComponentUid>,
+    ) -> Option<ComponentUid> {
+        std::mem::replace(&mut self.build_host_override, host)
     }
 
     pub(crate) fn with_warnings(mut self, warnings: Vec<String>) -> Self {
@@ -1507,6 +1531,7 @@ impl<K: Kernel> Document<K> {
             import_focus: self.import_focus.clone(),
             policy_checks: false,
             policy_suspended: self.policy_suspended,
+            build_host_override: None,
         })
     }
 

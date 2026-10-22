@@ -9,7 +9,8 @@
 use super::BuildRole;
 use super::System;
 use super::geometry::{
-    V3, angle_between, dot, in_box, inverse, moved_box, norm, parts, scale, sub, z_axis,
+    V3, add, angle_between, cross as cross3, dot, in_box, inverse, moved_box, norm, parts,
+    perpendicular, scale, sub, unit, z_axis,
 };
 use super::parts::PartInfo;
 use crate::document::Document;
@@ -19,6 +20,214 @@ use crate::transform::Transform;
 
 /// Distances within this meet, mm.
 const TOLERANCE: f64 = 1e-3;
+
+/// A cut end's plane in a part's coordinates (mitcad#521): a point on it
+/// and its outward normal, as the derived part cuts it.
+pub(crate) type CutPlane = (V3, V3);
+
+/// Whether a point (in a part's coordinates) is in its material: in its
+/// box and on the inner side of its end cuts, within the tolerance.
+pub(crate) fn holds(bounds: &BoundingBox, cuts: &[Option<CutPlane>; 2], local: V3) -> bool {
+    in_box(local, bounds, TOLERANCE)
+        && cuts
+            .iter()
+            .flatten()
+            .all(|(p, n)| dot(sub(local, *p), *n) <= TOLERANCE)
+}
+
+/// The corners of a part's material (in its coordinates): its box clipped
+/// by its end cuts, each face of the box clipped by the cut planes.
+pub(crate) fn material_corners(bounds: &BoundingBox, cuts: &[Option<CutPlane>; 2]) -> Vec<V3> {
+    let c: Vec<V3> = bounds.corners().collect();
+    // The faces by their corners in turn (bit 0: x, bit 1: y, bit 2: z).
+    const FACES: [[usize; 4]; 6] = [
+        [0, 2, 6, 4],
+        [1, 3, 7, 5],
+        [0, 1, 5, 4],
+        [2, 3, 7, 6],
+        [0, 1, 3, 2],
+        [4, 5, 7, 6],
+    ];
+    let mut out = Vec::new();
+    for face in FACES {
+        let mut polygon: Vec<V3> = face.iter().map(|i| c[*i]).collect();
+        for (p, n) in cuts.iter().flatten() {
+            polygon = clip_polygon(&polygon, *p, *n);
+        }
+        out.extend(polygon);
+    }
+    out
+}
+
+/// What of a polygon lies on the inner side of a plane (Sutherland and
+/// Hodgman).
+fn clip_polygon(polygon: &[V3], point: V3, normal: V3) -> Vec<V3> {
+    let side = |v: V3| dot(sub(v, point), normal);
+    let mut out = Vec::new();
+    for (i, a) in polygon.iter().enumerate() {
+        let b = polygon[(i + 1) % polygon.len()];
+        let (sa, sb) = (side(*a), side(b));
+        if sa <= 0.0 {
+            out.push(*a);
+        }
+        if (sa < 0.0 && sb > 0.0) || (sa > 0.0 && sb < 0.0) {
+            out.push(add(*a, scale(sub(b, *a), sa / (sa - sb))));
+        }
+    }
+    out
+}
+
+/// The convex hull of points in a plane, counter-clockwise.
+fn hull(mut points: Vec<[f64; 2]>) -> Vec<[f64; 2]> {
+    points.sort_by(|a, b| a[0].total_cmp(&b[0]).then(a[1].total_cmp(&b[1])));
+    points.dedup_by(|a, b| (a[0] - b[0]).abs() < 1e-9 && (a[1] - b[1]).abs() < 1e-9);
+    if points.len() < 3 {
+        return points;
+    }
+    let turn = |o: [f64; 2], a: [f64; 2], b: [f64; 2]| {
+        (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+    };
+    let mut lower: Vec<[f64; 2]> = Vec::new();
+    for p in &points {
+        while lower.len() >= 2 && turn(lower[lower.len() - 2], lower[lower.len() - 1], *p) <= 0.0 {
+            lower.pop();
+        }
+        lower.push(*p);
+    }
+    let mut upper: Vec<[f64; 2]> = Vec::new();
+    for p in points.iter().rev() {
+        while upper.len() >= 2 && turn(upper[upper.len() - 2], upper[upper.len() - 1], *p) <= 0.0 {
+            upper.pop();
+        }
+        upper.push(*p);
+    }
+    lower.pop();
+    upper.pop();
+    lower.extend(upper);
+    lower
+}
+
+/// The area two convex polygons (counter-clockwise) have in common.
+fn common_area(a: &[[f64; 2]], b: &[[f64; 2]]) -> f64 {
+    if a.len() < 3 || b.len() < 3 {
+        return 0.0;
+    }
+    let mut out: Vec<[f64; 2]> = a.to_vec();
+    for (i, p) in b.iter().enumerate() {
+        let q = b[(i + 1) % b.len()];
+        // Inside: left of the edge p -> q.
+        let side = |v: [f64; 2]| (q[0] - p[0]) * (v[1] - p[1]) - (q[1] - p[1]) * (v[0] - p[0]);
+        let input = std::mem::take(&mut out);
+        for (k, s) in input.iter().enumerate() {
+            let e = input[(k + 1) % input.len()];
+            let (ss, se) = (side(*s), side(e));
+            if ss >= 0.0 {
+                out.push(*s);
+            }
+            if (ss > 0.0 && se < 0.0) || (ss < 0.0 && se > 0.0) {
+                let t = ss / (ss - se);
+                out.push([s[0] + (e[0] - s[0]) * t, s[1] + (e[1] - s[1]) * t]);
+            }
+        }
+        if out.len() < 3 {
+            return 0.0;
+        }
+    }
+    (0..out.len())
+        .map(|i| {
+            let (s, e) = (out[i], out[(i + 1) % out.len()]);
+            s[0] * e[1] - e[0] * s[1]
+        })
+        .sum::<f64>()
+        / 2.0
+}
+
+impl<K: Kernel> Document<K> {
+    /// A part's end cuts as planes in its coordinates (mitcad#521), as the
+    /// derived part cuts them: from the section its metadata gives (a
+    /// timber member's, centred on its axis) and its length; none for a
+    /// square end or a part of no such section.
+    pub(crate) fn cut_planes(&self, info: &PartInfo, length: f64) -> [Option<CutPlane>; 2] {
+        let (Some([w, t]), Some(ends)) = (info.meta.section_size(), info.ends()) else {
+            return [None, None];
+        };
+        let section = BoundingBox {
+            min: [-w / 2.0, -t / 2.0, 0.0],
+            max: [w / 2.0, t / 2.0, length],
+        };
+        let params = self.parameters();
+        [(&ends.a, false), (&ends.b, true)].map(|(cut, b)| {
+            let cut = cut.as_ref()?;
+            let angle = params.value(cut.angle)?;
+            if angle.abs() <= 1e-12 {
+                return None;
+            }
+            crate::features::derived_part::end_plane(
+                Some(&section),
+                b,
+                length,
+                angle,
+                cut.tilt.unwrap_or_default(),
+            )
+        })
+    }
+
+    /// How many of a junction's members (`build_junctions`' id) a shaft
+    /// passes through, and how many it has (mitcad#521): the shaft from
+    /// `from` to `to` along the unit `axis` from `entry` (in the BUILD
+    /// host), its points every half millimetre (from half a millimetre in)
+    /// in a member's material.
+    pub(crate) fn shaft_members(
+        &self,
+        junction: &str,
+        entry: V3,
+        axis: V3,
+        from: f64,
+        to: f64,
+    ) -> (usize, usize) {
+        let members: Vec<ComponentUid> = junction
+            .split('|')
+            .filter_map(|side| side.split(':').next()?.parse().ok())
+            .collect();
+        let (from, to) = (from.max(0.0) + 0.5, to - 0.5);
+        let steps = ((to - from) / 0.5).ceil().max(1.0) as usize;
+        let met = members
+            .iter()
+            .filter(|c| {
+                let Some(m) = self.member(**c) else {
+                    return false;
+                };
+                let length = m
+                    .info
+                    .length
+                    .map_or(m.bounds.max[2] - m.bounds.min[2], |(_, l)| l);
+                let cuts = self.cut_planes(&m.info, length);
+                let to_local = inverse(&m.placement);
+                (0..=steps).any(|i| {
+                    let s = from + (to - from) * i as f64 / steps as f64;
+                    holds(
+                        &m.bounds,
+                        &cuts,
+                        to_local.apply_point(add(entry, scale(axis, s))),
+                    )
+                })
+            })
+            .count();
+        (met, members.len())
+    }
+}
+
+/// The frame of a cut end's face, in the part's coordinates: where its axis
+/// meets the cut plane, z the plane's outward normal.
+pub(crate) fn cut_face_frame((p, n): CutPlane) -> Option<Transform> {
+    if n[2].abs() < 1e-9 {
+        return None;
+    }
+    let z = p[2] + (p[0] * n[0] + p[1] * n[1]) / n[2];
+    let origin = [0.0, 0.0, z];
+    let x = unit(sub([1.0, 0.0, 0.0], scale(n, n[0]))).unwrap_or_else(|| perpendicular(n));
+    Some(super::geometry::frame(origin, x, n))
+}
 
 /// One part of a junction.
 #[derive(Debug, Clone, PartialEq)]
@@ -60,6 +269,8 @@ struct Placed {
     bounds: BoundingBox,
     world_box: BoundingBox,
     length: f64,
+    /// Its end cuts (mitcad#521): its material is its box on their inner side.
+    cuts: [Option<CutPlane>; 2],
 }
 
 impl Placed {
@@ -89,6 +300,26 @@ impl Placed {
             .is_some_and(|d| d.ends.end(end == "end_b").is_some())
     }
 
+    /// Whether a point (its coordinates) is in its material.
+    fn holds(&self, local: V3) -> bool {
+        holds(&self.bounds, &self.cuts, local)
+    }
+
+    /// Its material's corners in the design.
+    fn material(&self) -> Vec<V3> {
+        material_corners(&self.bounds, &self.cuts)
+            .into_iter()
+            .map(|c| self.world.apply_point(c))
+            .collect()
+    }
+
+    /// A cut end's face (`end_a`, `end_b`) in the design: where its axis
+    /// meets the cut, z out of it (mitcad#521); None for a square end.
+    fn cut_face(&self, end: &str) -> Option<Transform> {
+        let plane = self.cuts[usize::from(end == "end_b")]?;
+        Some(self.world.after(&cut_face_frame(plane)?))
+    }
+
     /// The section's size across the axis.
     fn section(&self) -> f64 {
         let b = &self.bounds;
@@ -112,6 +343,7 @@ impl<K: Kernel> Document<K> {
                 let length = info
                     .length
                     .map_or(bounds.max[2] - bounds.min[2], |(_, l)| l);
+                let cuts = self.cut_planes(&info, length);
                 Some(Placed {
                     world_box: moved_box(&bounds, &world),
                     info,
@@ -119,6 +351,7 @@ impl<K: Kernel> Document<K> {
                     world,
                     bounds,
                     length,
+                    cuts,
                 })
             })
             .collect();
@@ -180,7 +413,8 @@ fn meet(p: &Placed, q: &Placed) -> Option<Junction> {
             let mitred = p.is_cut(e)
                 && q.is_cut(f)
                 && in_box(to_q.apply_point(pe.translation), &q.bounds, TOLERANCE)
-                && in_box(to_p.apply_point(qf.translation), &p.bounds, TOLERANCE);
+                && in_box(to_p.apply_point(qf.translation), &p.bounds, TOLERANCE)
+                && one_cut(p, e, q, f);
             if mitred || norm(sub(pe.translation, qf.translation)) <= TOLERANCE {
                 let angle = angle_between(scale(z_axis(&pe), -1.0), z_axis(&qf));
                 let kind = if dot(z_axis(&pe), z_axis(&qf)) < -1.0 + 1e-6 {
@@ -200,12 +434,15 @@ fn meet(p: &Placed, q: &Placed) -> Option<Junction> {
             }
         }
     }
-    // An end of p on a side of q.
-    for e in ends {
-        let Some(pe) = p.frame(e) else { continue };
+    // An end of p on a side of q: its end frame, else a cut end's face
+    // (mitcad#521: a plumb cut rafter's end frame lies beyond its cut, the
+    // cut face's middle on the ridge board's side), in q's material.
+    let mounts = ends.into_iter().filter_map(|e| Some((e, p.frame(e)?)));
+    let faces = ends.into_iter().filter_map(|e| Some((e, p.cut_face(e)?)));
+    for (e, pe) in mounts.chain(faces) {
         let point = to_q.apply_point(pe.translation);
         let out_of_p = to_q.apply_vector(z_axis(&pe));
-        if !in_box(point, &q.bounds, TOLERANCE) {
+        if !q.holds(point) {
             continue;
         }
         // The side face it stands on: the slot frame whose plane holds the
@@ -260,12 +497,54 @@ fn meet(p: &Placed, q: &Placed) -> Option<Junction> {
     None
 }
 
+/// Whether two cut ends share one cut (a shared mitre, mitcad#443): their
+/// cut planes are one plane, the cuts facing each other. Two rafters' plumb
+/// cuts on each side of a ridge board are not (mitcad#521). True when a
+/// plane is not known (a part whose metadata gives no section).
+fn one_cut(p: &Placed, e: &str, q: &Placed, f: &str) -> bool {
+    let (Some((pp, pn)), Some((qp, qn))) = (
+        p.cuts[usize::from(e == "end_b")],
+        q.cuts[usize::from(f == "end_b")],
+    ) else {
+        return true;
+    };
+    let (pn, qn) = (p.world.apply_vector(pn), q.world.apply_vector(qn));
+    let (po, qo) = (p.world.apply_point(pp), q.world.apply_point(qp));
+    dot(pn, qn) < -1.0 + 1e-6 && dot(sub(qo, po), pn).abs() <= TOLERANCE
+}
+
+/// Whether two members' material meets where they would cross: along
+/// `n` (square to both axes) their extents touch or overlap, and across it
+/// their outlines have an area in common (mitcad#521: the boxes of two
+/// rafters' plumb cut ends overlap above a ridge board where neither has
+/// material).
+fn materials_meet(p: &Placed, q: &Placed, n: V3) -> bool {
+    let (pm, qm) = (p.material(), q.material());
+    let range = |m: &[V3]| {
+        m.iter()
+            .map(|c| dot(*c, n))
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), v| {
+                (a.min(v), b.max(v))
+            })
+    };
+    let ((p0, p1), (q0, q1)) = (range(&pm), range(&qm));
+    if p0 > q1 + TOLERANCE || q0 > p1 + TOLERANCE {
+        return false;
+    }
+    let u = perpendicular(n);
+    let v = cross3(n, u);
+    let flat = |m: &[V3]| hull(m.iter().map(|c| [dot(*c, u), dot(*c, v)]).collect());
+    common_area(&flat(&pm), &flat(&qm)) > TOLERANCE
+}
+
 /// Two sides of `p` (the newer) and `q` crossing.
 fn cross(p: &Placed, q: &Placed) -> Option<Junction> {
     if p.info.component > q.info.component {
         let pa = p.axis();
         let qa = q.axis();
-        if dot(pa, qa).abs() < 1.0 - 1e-6 {
+        if dot(pa, qa).abs() < 1.0 - 1e-6
+            && unit(cross3(pa, qa)).is_some_and(|n| materials_meet(p, q, n))
+        {
             let towards = |from: &Placed, to: &Placed| -> (String, Transform) {
                 let centre = |b: &BoundingBox| -> V3 {
                     std::array::from_fn(|i| (b.min[i] + b.max[i]) / 2.0)

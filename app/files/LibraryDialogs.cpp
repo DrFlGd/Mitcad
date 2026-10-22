@@ -758,6 +758,12 @@ void LibraryBrowser::insert() {
   choice.config = m_size->row();
   choice.license = item.value(QStringLiteral("license")).toString();
   choice.link = m_link->isChecked();
+  // Its mount frames at the version shown (mitcad#525).
+  for (const QJsonValue& value : m_shown.value(QStringLiteral("components")).toArray()) {
+    if (value.toObject().value(QStringLiteral("id")).toString() == choice.component) {
+      choice.mounts = value.toObject().value(QStringLiteral("mounts")).toArray();
+    }
+  }
   m_choice = choice;
   qInfo().noquote() << QStringLiteral("Part picker chose %1/%2").arg(choice.library, choice.component);
   accept();

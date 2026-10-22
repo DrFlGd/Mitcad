@@ -314,6 +314,9 @@ bool CommandSession::start(const Selection& preselection, QString& error) {
         }
         m_markerMoved = true;
         m_host.refreshScene();
+        if (m_def.rolledBack) {
+          m_def.rolledBack(m_state, m_host);
+        }
       }
     }
   } else if (!m_analysis.isEmpty()) {
@@ -348,6 +351,9 @@ bool CommandSession::start(const Selection& preselection, QString& error) {
           break;
         }
       }
+    }
+    if (m_def.preselected) {
+      m_def.preselected(preselection, m_state, m_host);
     }
     if (m_def.init) {
       m_def.init(m_state, m_host);
@@ -482,6 +488,9 @@ void CommandSession::startAsync(const Selection& preselection,
                 return;
               }
               m_host.refreshScene();
+              if (m_def.rolledBack) {
+                m_def.rolledBack(m_state, m_host);
+              }
               completion(true, QString());
             });
       });
@@ -1529,6 +1538,34 @@ void CommandSession::acceptInspection(const Inspection& result) {
   updateManipulators();
   updateCursorBox();
   updateHighlights();
+  if (!m_failed && !result.laterQuery.isEmpty() && result.measured) {
+    measureInspection(result);
+  }
+}
+
+void CommandSession::measureInspection(const Inspection& result) {
+  const quint64 generation = m_generation;
+  const quint64 measurement = ++m_measurements;
+  Inspection shown = result;
+  shown.laterQuery = QJsonObject();
+  m_host.measureLater(result.laterQuery, this,
+                      [this, generation, measurement, shown](const QJsonObject& answer, const QString& error) {
+    if (m_done || !m_presenter || generation != m_generation || measurement != m_measurements) {
+      return; // newer inputs measure again
+    }
+    if (!error.isEmpty()) {
+      m_failed = true;
+      m_presenter->setResult(QString());
+      m_presenter->setMessage(error, true);
+      m_presenter->setOkEnabled(!m_def.apply);
+      qDebug().noquote() << QStringLiteral("Inspect %1: failed: %2").arg(m_def.name, error);
+      return;
+    }
+    Inspection measured = shown;
+    measured.measured(answer, measured);
+    m_presenter->setResult(measured.text);
+    qDebug().noquote() << QStringLiteral("Inspect %1: %2").arg(m_def.name, measured.log);
+  });
 }
 
 void CommandSession::runPreview() {

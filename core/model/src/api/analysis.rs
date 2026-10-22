@@ -607,6 +607,45 @@ impl<K: Kernel> Document<K> {
     }
 
     pub(super) fn section_json(&self, query: &SectionQuery) -> Result<Value, ApiError> {
+        self.prepare_section(query, false)?.run(self.kernel())
+    }
+
+    /// The bodies `section` cuts and their planes, for
+    /// [`PreparedSection::run`] (mitcad#438): here, or with `detach`
+    /// without the document on another thread, the bodies then detached
+    /// ([`Kernel::detach_all`]).
+    fn prepare_section(
+        &self,
+        query: &SectionQuery,
+        detach: bool,
+    ) -> Result<PreparedSection<K>, ApiError> {
+        let mut prepared = self.section_inputs(query)?;
+        if detach {
+            let items: Vec<(&K::Shape, DatumPlane)> = prepared
+                .items
+                .iter()
+                .filter_map(|item| match item {
+                    SectionInput::Cut(shape, plane) => Some((shape, *plane)),
+                    _ => None,
+                })
+                .collect();
+            let detached = self.kernel().detach_all(&items);
+            let planes: Vec<DatumPlane> = items.iter().map(|(_, plane)| *plane).collect();
+            prepared.items = detached
+                .into_iter()
+                .zip(planes)
+                .map(|(detached, plane)| match detached {
+                    Ok(Some(copy)) => SectionInput::Cut(copy, plane),
+                    Ok(None) => SectionInput::Passes,
+                    Err(error) => SectionInput::Failed(error),
+                })
+                .collect();
+        }
+        Ok(prepared)
+    }
+
+    /// The bodies `section` cuts, each with the plane in its coordinates.
+    fn section_inputs(&self, query: &SectionQuery) -> Result<PreparedSection<K>, ApiError> {
         if query.world {
             // Validate explicit body filters even when no occurrence is visible.
             for body in &query.bodies {
@@ -620,52 +659,52 @@ impl<K: Kernel> Document<K> {
             };
             // Each occurrence's body with the plane in its coordinates, all
             // sectioned at once (on all cores in the OCCT kernel, mitcad#438).
-            let mut shown = Vec::new();
+            let mut bodies = Vec::new();
             let mut items = Vec::new();
             for instance in self.instances().into_iter().filter(|i| {
                 i.visible && (query.bodies.is_empty() || query.bodies.contains(&i.body))
             }) {
                 let occurrence = OccurrencePath(instance.path);
                 let local = self.analysis_body_plane(&fixed, instance.body, Some(&occurrence))?;
-                items.push((self.require_body(instance.body)?, local));
-                shown.push((instance.body, instance.name, instance.component, occurrence));
+                items.push(SectionInput::Cut(
+                    self.require_body(instance.body)?.clone(),
+                    local,
+                ));
+                bodies.push((
+                    json!({"uid": instance.body, "name": instance.name,
+                        "occurrence": occurrence, "component": instance.component}),
+                    instance.name,
+                ));
             }
-            let sections = self.kernel().section_all(&items);
-            let (mut length, mut area) = (0.0, 0.0);
-            let mut bodies = Vec::new();
-            for ((uid, name, component, occurrence), section) in shown.into_iter().zip(sections) {
-                let section = section.map_err(kernel_error(&name))?;
-                length += section.length;
-                area += section.area;
-                bodies.push(json!({"uid": uid, "name": name,
-                    "occurrence": occurrence, "component": component,
-                    "edges": section.edge_count, "faces": section.face_count,
-                    "length": section.length, "area": section.area}));
-            }
-            return Ok(
-                json!({"plane": {"origin": plane.origin, "normal": plane.normal()},
-                "bodies": bodies, "length": length, "area": area}),
-            );
+            return Ok(PreparedSection {
+                plane,
+                bodies,
+                items,
+            });
         }
         let plane = self.plane_of(&query.plane)?;
         let mut bodies = Vec::new();
-        let (mut length, mut area) = (0.0, 0.0);
+        let mut items = Vec::new();
         for BodyView { uid, name, shape } in self.chosen_bodies(&query.bodies)? {
-            let section = self
-                .kernel()
-                .section(shape, &plane)
-                .map_err(kernel_error(&name))?;
-            length += section.length;
-            area += section.area;
-            bodies.push(
-                json!({"uid": uid, "name": name, "edges": section.edge_count,
-                "faces": section.face_count, "length": section.length, "area": section.area}),
-            );
+            items.push(SectionInput::Cut(shape.clone(), plane));
+            bodies.push((json!({"uid": uid, "name": name}), name));
         }
-        Ok(
-            json!({"plane": {"origin": plane.origin, "normal": plane.normal()},
-                  "bodies": bodies, "length": length, "area": area}),
-        )
+        Ok(PreparedSection {
+            plane,
+            bodies,
+            items,
+        })
+    }
+
+    /// A query prepared to be answered later without the document, on any
+    /// thread (mitcad#438): `{"query": "section", ...}`, Section Analysis'
+    /// area and length, as [`Document::query`] answers it now. What it
+    /// holds of the bodies stays as it is when the document changes, and
+    /// shares no sub-shape with them ([`Kernel::detach_all`]), so that
+    /// nothing this thread writes into the bodies meanwhile is read there.
+    pub fn prepare_query(&self, json: &str) -> Result<PreparedQuery<K>, ApiError> {
+        let PreparableQuery::Section(query) = parse(read_json(json)?, "prepared query")?;
+        Ok(PreparedQuery(self.prepare_section(&query, true)?))
     }
 
     pub(super) fn compare_step_json(&self, query: &CompareStepQuery) -> Result<Value, ApiError> {
@@ -941,27 +980,207 @@ impl<K: Kernel> Document<K> {
     /// all cores, mitcad#438): one result per body, in the request's order,
     /// each with the error `clip` would give it (see `commands.md`).
     pub fn analysis_clips(&self, json: &str) -> Result<Vec<Result<K::Shape, ApiError>>, ApiError> {
+        Ok(self.clip_inputs(json, false)?.run(self.kernel()))
+    }
+
+    /// [`Document::analysis_clips`] prepared to be worked out later without
+    /// the document, on any thread (Section Analysis off the UI thread,
+    /// mitcad#438): each body detached ([`Kernel::detach_all`]: a copy that
+    /// shares no sub-shape with it, or the body itself when the plane
+    /// passes it, its clip then told from its kept box), with the plane in
+    /// its coordinates, or the error its clip gives. What it holds stays as
+    /// it is when the document changes, and nothing this thread writes into
+    /// the bodies meanwhile (the view's meshes, a model job's) is read
+    /// there. A body the plane cuts comes back as what is left of its copy
+    /// (the copy itself when the clip leaves it whole after all).
+    pub fn prepare_clips(&self, json: &str) -> Result<PreparedClips<K>, ApiError> {
+        self.clip_inputs(json, true)
+    }
+
+    fn clip_inputs(&self, json: &str, detach: bool) -> Result<PreparedClips<K>, ApiError> {
         let request: ClipsRequest = parse(read_json(json)?, "clips request")?;
-        let mut results = Vec::with_capacity(request.bodies.len());
-        let mut items = Vec::new();
-        let mut slots = Vec::new();
-        for target in &request.bodies {
-            let item = self
-                .analysis_body_plane(&request.plane, target.body, target.occurrence.as_ref())
-                .and_then(|plane| self.require_body(target.body).map(|shape| (shape, plane)));
-            match item {
-                Ok(item) => {
-                    slots.push(results.len());
-                    items.push(item);
-                    results.push(Err(ApiError("not clipped".to_owned())));
+        let mut items: Vec<Result<ClipInput<K>, ApiError>> = request
+            .bodies
+            .iter()
+            .map(|target| {
+                self.analysis_body_plane(&request.plane, target.body, target.occurrence.as_ref())
+                    .and_then(|plane| {
+                        self.require_body(target.body).map(|shape| ClipInput {
+                            shape: shape.clone(),
+                            plane,
+                            detached: false,
+                        })
+                    })
+            })
+            .collect();
+        if detach {
+            let bodies: Vec<(&K::Shape, DatumPlane)> = items
+                .iter()
+                .filter_map(|item| item.as_ref().ok().map(|input| (&input.shape, input.plane)))
+                .collect();
+            let detached = self.kernel().detach_all(&bodies);
+            let mut detached = detached.into_iter();
+            for item in &mut items {
+                if item.is_err() {
+                    continue;
                 }
-                Err(error) => results.push(Err(error)),
+                match detached.next() {
+                    Some(Ok(Some(copy))) => {
+                        if let Ok(input) = item {
+                            input.shape = copy;
+                            input.detached = true;
+                        }
+                    }
+                    Some(Ok(None)) => {}
+                    Some(Err(error)) => *item = Err(kernel_error("section")(error)),
+                    None => *item = Err(ApiError("not detached".to_owned())),
+                }
             }
         }
-        for (slot, clipped) in slots.into_iter().zip(self.kernel().clip_all(&items)) {
+        Ok(PreparedClips { items })
+    }
+}
+
+/// A body of [`PreparedClips`]: the shape its clip cuts (a detached copy,
+/// or the body itself) and the plane in its coordinates.
+struct ClipInput<K: Kernel> {
+    shape: K::Shape,
+    plane: DatumPlane,
+    detached: bool,
+}
+
+/// `analysis_clips` prepared from the document ([`Document::prepare_clips`],
+/// mitcad#438): worked out without it, on any thread.
+pub struct PreparedClips<K: Kernel> {
+    items: Vec<Result<ClipInput<K>, ApiError>>,
+}
+
+impl<K: Kernel> PreparedClips<K> {
+    /// How many bodies it clips.
+    pub fn len(&self) -> usize {
+        self.items.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+
+    /// What the clip of body `index` reads: the shape and whether it is a
+    /// detached copy (else the body itself, which the plane passes); none
+    /// for a body with an error.
+    pub fn input(&self, index: usize) -> Option<(&K::Shape, bool)> {
+        match self.items.get(index) {
+            Some(Ok(input)) => Some((&input.shape, input.detached)),
+            _ => None,
+        }
+    }
+
+    /// The clips, one per body in the request's order, each with the error
+    /// `clip` would give it (see `commands.md`).
+    pub fn run(&self, kernel: &K) -> Vec<Result<K::Shape, ApiError>> {
+        let mut results = Vec::with_capacity(self.items.len());
+        let mut items = Vec::new();
+        let mut slots = Vec::new();
+        for item in &self.items {
+            match item {
+                Ok(input) => {
+                    slots.push(results.len());
+                    items.push((&input.shape, input.plane));
+                    results.push(Err(ApiError("not clipped".to_owned())));
+                }
+                Err(error) => results.push(Err(error.clone())),
+            }
+        }
+        for (slot, clipped) in slots.into_iter().zip(kernel.clip_all(&items)) {
             results[slot] = clipped.map_err(kernel_error("section"));
         }
-        Ok(results)
+        results
+    }
+}
+
+/// The queries [`Document::prepare_query`] prepares.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "query", rename_all = "snake_case")]
+enum PreparableQuery {
+    Section(SectionQuery),
+}
+
+/// A query prepared from the document ([`Document::prepare_query`],
+/// mitcad#438): answered without it, on any thread.
+pub struct PreparedQuery<K: Kernel>(PreparedSection<K>);
+
+impl<K: Kernel> PreparedQuery<K> {
+    /// The query's answer, as the document gave it when it was prepared.
+    pub fn run(&self, kernel: &K) -> Result<Value, ApiError> {
+        self.0.run(kernel)
+    }
+}
+
+/// What `section` cuts: the plane (the world's or the bodies'), each body's
+/// own fields of the answer with its name for errors, and each body's
+/// input.
+struct PreparedSection<K: Kernel> {
+    plane: DatumPlane,
+    bodies: Vec<(Value, String)>,
+    items: Vec<SectionInput<K>>,
+}
+
+/// A body of [`PreparedSection`].
+enum SectionInput<K: Kernel> {
+    /// The shape to section (the body, or a detached copy) with the plane
+    /// in its coordinates.
+    Cut(K::Shape, DatumPlane),
+    /// The plane passes the body ([`Kernel::detach_all`]): an empty section.
+    Passes,
+    /// The body could not be detached.
+    Failed(KernelError),
+}
+
+impl<K: Kernel> PreparedSection<K> {
+    /// All the bodies sectioned at once (on all cores in the OCCT kernel,
+    /// mitcad#438); the first body whose section fails is the error.
+    fn run(&self, kernel: &K) -> Result<Value, ApiError> {
+        let cut: Vec<(&K::Shape, DatumPlane)> = self
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                SectionInput::Cut(shape, plane) => Some((shape, *plane)),
+                _ => None,
+            })
+            .collect();
+        let mut sections = kernel.section_all(&cut).into_iter();
+        let (mut length, mut area) = (0.0, 0.0);
+        let mut bodies = Vec::with_capacity(self.bodies.len());
+        for ((fields, name), item) in self.bodies.iter().zip(&self.items) {
+            let (edges, faces, body_length, body_area) = match item {
+                SectionInput::Cut(..) => {
+                    let section = sections
+                        .next()
+                        .unwrap_or(Err(KernelError::Failed("not sectioned".to_owned())))
+                        .map_err(kernel_error(name))?;
+                    (
+                        section.edge_count,
+                        section.face_count,
+                        section.length,
+                        section.area,
+                    )
+                }
+                SectionInput::Passes => (0, 0, 0.0, 0.0),
+                SectionInput::Failed(error) => return Err(kernel_error(name)(error.clone())),
+            };
+            length += body_length;
+            area += body_area;
+            let mut body = fields.clone();
+            body["edges"] = json!(edges);
+            body["faces"] = json!(faces);
+            body["length"] = json!(body_length);
+            body["area"] = json!(body_area);
+            bodies.push(body);
+        }
+        Ok(
+            json!({"plane": {"origin": self.plane.origin, "normal": self.plane.normal()},
+                  "bodies": bodies, "length": length, "area": area}),
+        )
     }
 }
 

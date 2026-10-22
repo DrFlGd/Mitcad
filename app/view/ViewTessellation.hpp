@@ -18,8 +18,12 @@ namespace mitcad {
 // whose 0.01 mm would take more triangles than the bound (a sphere of
 // metres: millions, which froze the window) meshes with a deviation that
 // grows with its size instead (io::face_deviation_floor). Faces smaller
-// than about 6 cm (a sphere up to about 20 mm radius), and planes,
-// cylinders and cones, mesh at 0.01 mm.
+// than about 6 cm (a sphere up to about 20 mm radius), and planes, mesh at
+// 0.01 mm. Cylinders and cones mesh at most as finely as a turn in 500
+// straight pieces (mitcad#438): those of radii over about half a metre,
+// and their edges, with a deviation of 2e-5 of the radius (about 700
+// points round a circle, where 6.8 m took 2 600 at 0.01 mm), smaller ones
+// at 0.01 mm.
 constexpr double kViewDeviation = 0.01;
 constexpr double kViewAngle = 5.0 * 3.14159265358979323846 / 180.0;
 constexpr std::size_t kViewFaceTriangles = 20000;

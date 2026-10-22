@@ -252,4 +252,13 @@ using ShapePtr = std::shared_ptr<Shape>;
 // geometric order.
 std::vector<ShapePtr> solids(const Shape& shape);
 
+// A copy of the shape that shares no sub-shape with it: its faces, edges
+// and vertices in new sub-shapes, in the same order and with the same
+// names, on the same curves and surfaces, without meshes (the copy the
+// operations whose OCCT algorithms write into their inputs work on). For
+// work on another thread whose results are meshed there while the shape's
+// own sub-shapes may be read or meshed elsewhere (Section Analysis' clips
+// off the UI thread, mitcad#438).
+ShapePtr independent_copy(const Shape& shape);
+
 } // namespace mitcad::geometry

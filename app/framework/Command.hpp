@@ -545,6 +545,13 @@ struct Inspection {
   // something there (BUILD's first part: "Click a plane or a face, or
   // press Enter", mitcad#394); none when empty.
   QString viewHint;
+  // A measurement the panel shows once the view shows the inspection
+  // (Section Analysis' area and length, mitcad#438): a model query that the
+  // host answers after the view's update, off the UI thread
+  // (CommandHost::measureLater), whose answer `measured` turns into this
+  // result's text and log line. The panel shows `text` meanwhile.
+  QJsonObject laterQuery;
+  std::function<void(const QJsonObject& answer, Inspection& result)> measured;
 };
 
 struct CommandDef {
@@ -628,6 +635,17 @@ struct CommandDef {
   // stands for its body, an occurrence for the bodies shown in it, nothing
   // for every shown body).
   std::function<void(const Selection&, CommandState&, const CommandContext&)> preselect;
+  // Called with the selection made before the command once its items went
+  // to the inputs that take them (without `preselect`), before `init`
+  // (Extrude: a face its Profiles did not take is refused there instead of
+  // the newest unused profile standing in for it, mitcad#535).
+  std::function<void(const Selection&, CommandState&, const CommandContext&)> preselected;
+  // Editing: called once the timeline is rolled back to the edited feature.
+  // `load` runs before that, on the model as it is at the marker, after the
+  // feature: items that depend on the model are resolved again here
+  // (Extrude's profile face, which its own extrusion took away after it,
+  // mitcad#535).
+  std::function<void(CommandState&, const CommandContext&)> rolledBack;
   // Defaults that depend on the model (the newest profile, ...), after the
   // inputs' own defaults and the selection made before the command.
   std::function<void(CommandState&, const CommandContext&)> init;

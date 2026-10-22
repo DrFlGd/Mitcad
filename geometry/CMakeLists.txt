@@ -241,6 +241,10 @@ target_sources(mitcad_geometry PRIVATE
 target_sources(mitcad_geometry PRIVATE
   src/move_faces.cpp
   include/mitcad/geometry/move_faces.hpp)
+# A planar face of a body extruded as a profile (mitcad#535).
+target_sources(mitcad_geometry PRIVATE
+  src/face_extrude.cpp
+  include/mitcad/geometry/face_extrude.hpp)
 target_include_directories(mitcad_geometry PUBLIC include)
 # Volumes and areas come from the analysis library's integrals, so that
 # every reported volume agrees (query.cpp, brep_import.cpp).
@@ -335,6 +339,8 @@ if(BUILD_TESTING)
   target_sources(test_geometry PRIVATE tests/test_fillet_pierced.cpp)
   # Faces moved by a rigid motion, their neighbours following (mitcad#343).
   target_sources(test_geometry PRIVATE tests/test_move_faces.cpp)
+  # A planar face of a body extruded as a profile (mitcad#535).
+  target_sources(test_geometry PRIVATE tests/test_face_extrude.cpp)
   target_link_libraries(test_geometry PRIVATE mitcad_geometry_analysis)
   target_link_libraries(test_geometry PRIVATE mitcad_geometry mitcad_warnings)
   add_test(NAME geometry COMMAND test_geometry)

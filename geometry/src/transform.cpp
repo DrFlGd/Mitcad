@@ -75,19 +75,6 @@ bool has_mesh_faces(const TopoDS_Shape& shape) {
   return false;
 }
 
-// Whether the shape is valid as OCCT's checker sees it, checked once per
-// shape: a similarity moves its geometry exactly and keeps a valid shape
-// valid, so the copies of a pattern need not be checked one by one (the
-// check was four fifths of their time).
-bool valid_once(const Shape& shape) {
-  if (const std::optional<bool> known = shape.checked_valid()) {
-    return *known;
-  }
-  const bool valid = detail::is_valid(shape.occt());
-  shape.set_checked_valid(valid);
-  return valid;
-}
-
 bool is_identity(const Affine& map) {
   for (std::size_t r = 0; r < 3; ++r) {
     for (std::size_t c = 0; c < 3; ++c) {
@@ -138,8 +125,7 @@ ShapePtr transform_shape(const Shape& shape, const Affine& map, const std::strin
     // (otherwise the face stays where it was). GTransform always copies.
     const bool mesh = has_mesh_faces(shape.occt());
     const bool similarity = is_similarity(map);
-    const bool known_valid = similarity && !mesh && valid_once(shape);
-    if (known_valid && is_identity(map)) {
+    if (similarity && !mesh && is_identity(map)) {
       // Only the names change (a tool a pattern rebuilt in its place): the
       // same B-rep, as results share their unchanged parts with inputs.
       std::vector<Shape::NamedFace> faces;
@@ -178,8 +164,17 @@ ShapePtr transform_shape(const Shape& shape, const Affine& map, const std::strin
       }
     }
     namer.finish();
-    if (!known_valid) {
+    // A similarity moves the geometry exactly and keeps the shape as valid
+    // as it was, so its result is not checked (the copies of a pattern
+    // need not be checked one by one: the check was four fifths of their
+    // time). A shape OCCT's checker finds invalid (an imported body whose
+    // shell is not connected) is moved as it is, not refused (mitcad#537:
+    // Reorient Design's Move of such a body and its occurrences'
+    // placements failed). Only a general affine map can break a shape.
+    if (!similarity) {
       require_valid_brep(namer.result());
+    } else if (const std::optional<bool> valid = shape.checked_valid()) {
+      namer.set_valid(*valid);
     }
     return namer.shape();
   });

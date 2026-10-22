@@ -1,0 +1,34 @@
+// SPDX-License-Identifier: MIT
+//! A planar face of a body extruded as a profile
+//! (`geometry/include/mitcad/geometry/face_extrude.hpp`, mitcad#535).
+
+#[cxx::bridge(namespace = "mitcad::bridge")]
+pub mod ffi {
+    /// How far the face goes (see `FaceExtrudeSpec`): along its outward
+    /// normal, against it with `reversed`, from `start` along the outward
+    /// normal; `side2` against the sweep with `two_sides`.
+    struct FaceExtrusion {
+        reversed: bool,
+        start: f64,
+        side1: f64,
+        two_sides: bool,
+        side2: f64,
+    }
+
+    unsafe extern "C++" {
+        include!("bridge/face_extrude.hpp");
+
+        #[namespace = "mitcad::geometry"]
+        type Shape = crate::kernel::shape::ffi::Shape;
+
+        /// geometry::extrude_face: the face `face` of the body swept, its
+        /// faces named after `feature` and its caps keyed by `key`.
+        fn extrude_face(
+            feature: &str,
+            body: &Shape,
+            face: &str,
+            key: &str,
+            extrusion: &FaceExtrusion,
+        ) -> Result<SharedPtr<Shape>>;
+    }
+}

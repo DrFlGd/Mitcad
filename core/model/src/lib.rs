@@ -278,3 +278,7 @@ pub use document::{
 pub use features::joint::{MountKind, MountSpec};
 #[cfg(test)]
 mod mount_tests;
+// Extrude: a planar body face as the profile (mitcad#535).
+pub use kernel::FaceExtrudeSpec;
+#[cfg(test)]
+mod face_extrude_tests;

@@ -1094,3 +1094,26 @@ if(BUILD_TESTING)
   # The decision: plain C++.
   target_sources(test_app PRIVATE tests/first_bodies_fit.cpp view/FirstBodiesFit.hpp)
 endif()
+# Section Analysis off the UI thread (mitcad#438): the section worker's
+# rounds, and the window's clips, view and measurement through them.
+target_sources(mitcad PRIVATE
+  MainWindowSection.cpp
+  framework/SectionWorker.cpp
+  framework/SectionWorker.hpp)
+if(BUILD_TESTING)
+  # Rounds superseded, waiting, stopped, off the UI thread: plain Qt Core
+  # and the geometry's cancel.
+  target_sources(test_app PRIVATE tests/section_worker.cpp framework/SectionWorker.cpp
+                 framework/SectionWorker.hpp)
+endif()
+# Fillet's and Chamfer's handles (mitcad#534): where the arrows of a
+# rounding's radius and of a bevel's distances stand on an edge.
+target_sources(mitcad PRIVATE
+  commands/ChamferHandles.cpp
+  commands/ChamferHandles.hpp)
+if(BUILD_TESTING)
+  # Convex, concave, obtuse and placed edges, the measured face: plain OCCT
+  # math.
+  target_sources(test_app PRIVATE tests/chamfer_handles.cpp commands/ChamferHandles.cpp
+                 commands/ChamferHandles.hpp)
+endif()

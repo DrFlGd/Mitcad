@@ -135,6 +135,9 @@ bool DocumentSession::runJob(const QString& label, const QString& stage, const J
   if (busy()) {
     throw ModelBusy();
   }
+  if (m_beforeJob) {
+    m_beforeJob();
+  }
   ModelJob state;
   state.setStage(stage);
   if (const int delay = testRecomputeDelay(label); delay > 0) {
@@ -335,6 +338,9 @@ bool DocumentSession::startAsync(const QString& label, const QString& stage, Job
                                  std::shared_ptr<AsyncResult> result, QObject* context, Completion completion) {
   if (busy()) {
     return false;
+  }
+  if (m_beforeJob) {
+    m_beforeJob();
   }
   m_async = std::make_unique<AsyncJob>();
   m_async->label = label;

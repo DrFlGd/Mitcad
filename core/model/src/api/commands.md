@@ -598,6 +598,30 @@ parameters.
   takes profiles and an extent `distance` without a taper, from the
   profile plane, without `thin` or `cut_scope`; the sketch plane is
   parallel to the axis. Faces as an emboss's.
+- `profile_face` (optional, mitcad#535): `{"body": "F2.b0", "face":
+  "F2:end(r{…})"}`, a planar face of a body as the profile instead of
+  `profiles`: its bounded area, holes kept, swept along its outward
+  normal (against it with `flip` or a negative distance) by
+  `Kernel::extrude_face` (`geometry/src/face_extrude.cpp`). The face is a
+  topological name found on its body at the feature's point of the
+  timeline on every recompute (a face a sketch change renamed is found
+  again, with the warning of [renamed faces](#faces-edges-and-vertices-a-sketch-change-renamed)),
+  so an upstream edit moves or resizes the extrusion with the face; the
+  body is read in the feature's component, and the feature depends on it
+  and on the features the name refers to. It takes an extent `distance`,
+  `symmetric` or `two_sides` of distances, without a taper, from the face
+  (`profile_plane`) or an `offset` along its outward normal; no
+  `profiles`, `thin`, `surface`, `curves`, `wrap`, `cut_scope` or start
+  object (refused: `an extrusion of a body face …`). A face that is gone,
+  not planar (`face F3:side0 is not planar: an extrusion takes a planar
+  face`), a mesh body's, or names several faces fails the feature; no
+  other profile is ever taken instead. Operations and participants as
+  above (automatic operation too). Faces: `side(<edge>)` from each edge of
+  the face, by the edge's name in the body (a surface body's free edge,
+  which has none, by its index among the face's edges:
+  `side(2)`), `start(<face>)` and `end(<face>)` keyed by the stored face
+  reference, the caps as for profiles below:
+  `F5:side(E{F2:end(r{…})|F2:side(c1[c4,c2])})`, `F5:end(F2:end(r{…}))`.
 
 Faces: `side(<segment>)`; `outer(<segment>)` and `inner(<segment>)` for
 thin walls (side 1 and side 2); `start(<region>)` and `end(<region>)`.
@@ -3107,6 +3131,35 @@ boolean: its kept bounding box tells the bridge
 or that the plane passes it farther than the body's tolerances, which
 gives an empty section.
 
+### Section Analysis off the UI thread (mitcad#438)
+
+`prepare_clips(request)` (C++ `Document::prepare_clips`) takes the same
+request as `analysis_clips` and `prepare_query(request)` a `section` query
+(`{"query": "section", ...}`, the only query it prepares; another is
+refused as an invalid prepared query): each takes from the document what
+the work needs (each body's shape with the plane in its coordinates, the
+answer's fields, or a body's error) while the document is idle, and its
+`run()` works it out later without the document, on any thread, as the
+document would have answered when it was prepared: what it holds of the
+bodies stays as it was when the document changes. The section worker of
+the application runs them (`app/framework/SectionWorker.hpp`). What they
+hold is detached from the bodies when they are prepared
+(`Kernel::detach_all`, whose default takes the shapes as they are): a
+body the plane may cut or touch as a copy that shares no face, edge or
+vertex with it, with the same face names, its box and its mesh faces'
+triangles; a body the plane passes farther than its tolerances as
+itself, its box measured then, which alone tells its clip (kept or
+removed whole) and its empty section. So `run()` never reads a sub-shape
+the application's view or a model job may write into meanwhile (meshes),
+and what it clips can be meshed on its thread. A clipped body is what is
+left of its copy (the copy itself when the clip leaves it whole after
+all); a body the plane passes and keeps is its own shape, as with
+`analysis_clips`. `input(i)` and `detached(i)` tell what the clip of body
+`i` reads.
+Both stop when the running thread's geometry is told to
+(`geometry/cancel.hpp`): the bodies not started by then fail as
+cancelled.
+
 ## Preview
 
 `preview` takes an `add_feature` or `edit_feature` command and evaluates
@@ -5461,10 +5514,24 @@ tolerances themselves (mitcad#398):
   in about as many triangles as one of centimetres; at an absolute
   0.03 mm, a 9 m dome took 1.5 million triangles and over a minute.
   Faces smaller than about 15 cm (the box's diagonal; a sphere up to
-  about 50 mm radius), and planes, cylinders, cones and extrusions, whose
-  triangle count does not grow with their size, mesh at the preset's
-  deviation as before. Edges keep
-  the deviation, so neighbouring faces still meet without gaps.
+  about 50 mm radius), and planes and extrusions, whose triangle count
+  does not grow with their size, mesh at the preset's deviation as
+  before. Edges keep the deviation, so neighbouring faces still meet
+  without gaps.
+- A cylinder or a cone meshes at most as finely as a turn in
+  `triangles / 40` straight pieces (mitcad#438: 125, 500 and 1 250 for
+  the presets, 500 in the view; BRepMesh cuts an edge at half its
+  deviation, so a circle gets about 1.4 times as many points):
+  where the preset's deviation would cut a turn finer (radii over about
+  0.3 m at `low`, 1.5 m at `medium`, 3 m at `high`, 0.5 m in the view),
+  the face and the
+  edges that bound it mesh with the deviation of such a piece, `R (1 −
+  cos(π / pieces))` (2e-5 of the radius for 500), as their triangles are
+  mostly their edges' points; an edge takes the smallest such floor of the
+  faces it bounds (planes having no say, a doubly curved face its own
+  floor, none when a face needs none) and no more than its own curve's,
+  so it is shared by both faces as before and a small face beside a large
+  cylinder (a bore's wall) meshes as without the bound.
 - `{"deviation": mm, "angle": radians}` holds the deviation on every
   face, however large: the explicit absolute tolerance. `face_triangles`
   added to it bounds the faces as the presets do (`0`, the default when
@@ -5481,10 +5548,13 @@ tolerances themselves (mitcad#398):
 Tests: `geometry.io` (`test_building_scale_sphere`: a 9 m dome's sphere
 faces within the bound, its STL a few megabytes, a 9 cm dome meshed as
 without the bound, meshing in place kept; `test_mesh_all_in_place`:
-bodies meshed together as one by one, shared faces, kept meshes, cancel),
+bodies meshed together as one by one, shared faces, kept meshes, cancel;
+`test_building_scale_round_faces`: a tank's and a cone's floors and
+counts with and without the bound, a small bore through the tank meshed
+as without it, meshing in place kept),
 `core.model` (`exchange_tests`: the presets' tolerances),
 `app.view_tessellation` (the view's meshes of the dome, also meshed with
-another body) and
+another body; `checkTank`: a tank's turn in the view, kept) and
 [tools/ui-large-mesh-test.sh](../../../../tools/ui-large-mesh-test.sh).
 
 ## Files and version history
@@ -11617,7 +11687,14 @@ One undo step, `Reorient Design`:
     turned with the design;
   - an imported body (a base feature) gets a Move right after it that
     turns its bodies about the origin (a base feature that joins, cuts or
-    intersects is refused);
+    intersects is refused); a body the kernel's checker finds invalid (an
+    imported shell that is not connected) turns as it is;
+  - the pieces of split faces (`F2:side(c1[c4,c2])#1`) and the edges
+    numbered between the same two faces (`E{…}#1`) are numbered by the
+    kernel in a geometric order, which the turn changes: references to them
+    (also inside other names, `F5:fillet(E{…#1…})`) are renamed after the
+    turned design's numbers, each piece to the one where the turn takes it
+    (its box; an edge's middle), feature by feature (mitcad#537);
   - occurrences' placements turn in both coordinates they join
     (`R · T · R⁻¹`; an occurrence of a linked component `R · T`), so a
     component placed at the identity stays there; joints, constraints and
@@ -11627,12 +11704,21 @@ One undo step, `Reorient Design`:
     remember of their pieces turns with them.
 - Faces, edges and bodies keep their names; nothing else is renamed.
 - **Checked before it is taken:** the command computes the turned design
-  and refuses it, naming them, when a feature that built would fail, or a
-  body (its bounding box and centre of mass) or an occurrence would not be
-  where the turn takes it; the document is then as it was. Rules of the
-  model axes that a definition cannot carry (a cylinder's axis pointing
-  along its largest component, a joint frame's default x axis) can make a
-  design refuse a turn so.
+  and refuses it, naming them, when a feature that built would fail (a
+  Move it adds too), or a body (its bounding box and centre of mass) or an
+  occurrence would not be where the turn takes it; the document is then as
+  it was. Rules of the model axes that a definition cannot carry (a
+  cylinder's axis pointing along its largest component, a joint frame's
+  default x axis) can make a design refuse a turn so. The refusal says
+  where (mitcad#537):
+  - a feature with its component and error: `Reorient Design cannot turn
+    the design: Fillet3 (in Part) would fail: …`, an added Move after the
+    base feature it turns: `Move1 (after Base1, in leg) would fail: …`;
+  - a body with its component, the first feature after which it is not
+    its old self turned (a Move added after a base feature counts with it)
+    and how far: `Reorient Design cannot turn the design exactly: Body17 of
+    leg (made by Base1) departs from the turn after Extrude2: its centre is
+    412.000 mm and its box up to 500.000 mm from where the turn takes it`.
 - The application previews it on a command checkpoint (`begin_command`,
   `restore_command` for each choice, `discard_command` on OK) and logs
   the bodies' boxes afterwards (`app/COMMANDS.md`, "Reorient Design").
@@ -11640,7 +11726,12 @@ One undo step, `Reorient Design`:
 Code: `core/model/src/reorient.rs` (the turn and the rewrite of
 definitions), `core/model/src/document/reorient.rs` (the command and its
 checks). Tests: `core/model/src/reorient_tests.rs` (mock kernel),
-`cli.reorient_design` (`tools/cli/tests/reorient_design.json`, OCCT).
+`cli.reorient_design` (`tools/cli/tests/reorient_design.json`, OCCT),
+`cli.reorient_pieces` (a split face's pieces renumbered by turns, also of
+a turned design) and `iam.corpus_reorient`
+([tools/cli/reorient-corpus.cmake](../../../../tools/cli/reorient-corpus.cmake):
+the test files' assemblies c71542a1 and 1dc60c2a under
+`MITCAD_IPT_CORPUS`, skipped without them).
 
 ## Mount frames
 

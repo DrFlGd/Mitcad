@@ -191,6 +191,44 @@ void checkDome(const occ::handle<Prs3d_Drawer>& drawer) {
     CHECK(triangulations(body) == made);
   }
 }
+
+// The most points a circle edge has in the triangulations of its faces.
+int circlePoints(const TopoDS_Shape& shape) {
+  int most = 0;
+  for (TopExp_Explorer face(shape, TopAbs_FACE); face.More(); face.Next()) {
+    TopLoc_Location location;
+    const auto mesh = BRep_Tool::Triangulation(TopoDS::Face(face.Current()), location);
+    if (mesh.IsNull()) continue;
+    for (TopExp_Explorer edge(face.Current(), TopAbs_EDGE); edge.More(); edge.Next()) {
+      const TopoDS_Edge& boundary = TopoDS::Edge(edge.Current());
+      if (BRepAdaptor_Curve(boundary).GetType() != GeomAbs_Circle) continue;
+      const auto polygon = BRep_Tool::PolygonOnTriangulation(boundary, mesh, location);
+      if (!polygon.IsNull()) most = std::max(most, polygon->NbNodes());
+    }
+  }
+  return most;
+}
+
+// A tank of 5 m radius in the view (mitcad#438): its circles at the
+// deviation of a turn in 500 pieces (2e-5 of the radius; about 700 points,
+// as BRepMesh cuts edges at half their deviation), not the 2 200 points of
+// an absolute 0.01 mm, for its side and its flat ends alike; meshed on the
+// model's thread first, the view keeps those meshes, the coarser edges
+// included.
+void checkTank(const occ::handle<Prs3d_Drawer>& drawer) {
+  const TopoDS_Shape drawn = BRepPrimAPI_MakeCylinder(5000.0, 20000.0).Shape();
+  CHECK(StdPrs_ToolTriangulatedShape::Tessellate(drawn, drawer));
+  const int points = circlePoints(drawn);
+  std::printf("Tank of 5 m radius in the view: %d points round its circles\n", points);
+  CHECK(points > 400 && points <= 1200);
+
+  const TopoDS_Shape shown = BRepPrimAPI_MakeCylinder(5000.0, 20000.0).Shape();
+  CHECK(mitcad::io::mesh_in_place(shown, mitcad::viewMeshOptions()));
+  const auto before = triangulations(shown);
+  StdPrs_ToolTriangulatedShape::Tessellate(shown, drawer);
+  CHECK(triangulations(shown) == before);
+  CHECK(circlePoints(shown) == points);
+}
 } // namespace
 
 int main(int argc, char** argv) {
@@ -210,6 +248,7 @@ int main(int argc, char** argv) {
     const occ::handle<Prs3d_Drawer> drawer = new Prs3d_Drawer();
     drawer->SetLink(defaults);
     checkDome(drawer);
+    checkTank(drawer);
   } catch (const Standard_Failure& error) {
     std::fprintf(stderr, "OCCT: %s\n", error.what());
     return 1;

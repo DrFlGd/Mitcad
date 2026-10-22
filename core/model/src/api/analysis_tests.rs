@@ -453,3 +453,60 @@ fn section_planes_follow_nested_occurrences_and_flip_only_the_normal() {
         "invalid occurrence edits change nothing"
     );
 }
+
+/// Section Analysis prepared to be worked out without the document, on
+/// another thread (mitcad#438): the clips and the `section` query answer as
+/// the document does, each body with its own error, and only `section` is
+/// prepared. (The mock kernel cuts nothing: its answers are its errors.)
+#[test]
+fn prepared_clips_and_sections_answer_as_the_document() {
+    let doc = block();
+    let plane = json!({"origin": [10, 0, 0], "normal": [1, 0, 0]});
+    let request =
+        json!({"plane": plane, "bodies": [{"body": "F2.b0"}, {"body": "F9.b0"}]}).to_string();
+    let prepared = doc.prepare_clips(&request).unwrap();
+    assert_eq!(prepared.len(), 2);
+    assert!(!prepared.is_empty());
+    let direct: Vec<Option<String>> = doc
+        .analysis_clips(&request)
+        .unwrap()
+        .into_iter()
+        .map(|clip| clip.err().map(|e| e.to_string()))
+        .collect();
+    let later: Vec<Option<String>> = prepared
+        .run(doc.kernel())
+        .into_iter()
+        .map(|clip| clip.err().map(|e| e.to_string()))
+        .collect();
+    assert_eq!(later, direct);
+    // The mock kernel's detach gives each body as it is, as detached.
+    assert!(prepared.input(0).is_some_and(|(_, detached)| detached));
+    assert!(prepared.input(1).is_none());
+    assert!(
+        direct[1].as_deref().is_some_and(|e| e.contains("F9.b0")),
+        "{direct:?}"
+    );
+
+    let query = json!({"query": "section", "world": true, "plane": plane}).to_string();
+    let now = doc.query(&query).map_err(|e| e.to_string());
+    let later = doc
+        .prepare_query(&query)
+        .and_then(|prepared| prepared.run(doc.kernel()))
+        .map(|answer| answer.to_string())
+        .map_err(|e| e.to_string());
+    match (&now, &later) {
+        (Ok(now), Ok(later)) => {
+            let now: Value = serde_json::from_str(now).unwrap();
+            let later: Value = serde_json::from_str(later).unwrap();
+            assert_eq!(later, now);
+        }
+        (Err(now), Err(later)) => assert!(now.contains(later.as_str()), "{now} / {later}"),
+        _ => panic!("now {now:?}, prepared {later:?}"),
+    }
+    let refused = doc
+        .prepare_query(r#"{"query": "properties"}"#)
+        .err()
+        .map(|e| e.to_string())
+        .unwrap_or_default();
+    assert!(refused.contains("prepared query"), "{refused}");
+}

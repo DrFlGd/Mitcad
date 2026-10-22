@@ -46,6 +46,9 @@ mod properties;
 mod reorient;
 // Mount frames of any part and placing a part by one (mitcad#525).
 mod mounts;
+// Section Analysis worked out without the document, off the UI thread
+// (mitcad#438).
+pub use analysis::{PreparedClips, PreparedQuery};
 
 use std::fmt;
 

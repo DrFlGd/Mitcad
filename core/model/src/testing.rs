@@ -184,6 +184,16 @@ pub struct MockKernel {
     /// A stitch's faces close up into a solid (mitcad#456); a surface body
     /// otherwise.
     pub stitch_closes: Cell<bool>,
+    /// Faces (by name) a cut splits in two (mitcad#537): one piece at the
+    /// centre of the tool's bounds, the other at its mirror image through
+    /// the centre of the target's, numbered `#0` and `#1` in the order of
+    /// those points (x, then y, then z) as the OCCT kernel numbers pieces
+    /// in a geometric order; each piece meets the faces the face met.
+    pub split_faces: RefCell<BTreeSet<String>>,
+    /// The pieces' points by the bounds of the cut's result and the
+    /// piece's name: `face_boxes` gives a piece the box of its point (and
+    /// other faces the shape's bounds) when `box_faces` is off.
+    pub piece_points: RefCell<Vec<(BoundingBox, String, [f64; 3])>>,
 }
 
 /// The bounds of what of `b` lies on or below the plane through `point`
@@ -277,6 +287,58 @@ impl MockKernel {
 
     pub fn count(&self, op: &str) -> usize {
         self.calls.borrow().get(op).copied().unwrap_or(0)
+    }
+
+    /// The cut's result with the faces of `split_faces` split in two.
+    fn split_named_faces(&self, shape: &mut MockShape, target: &MockShape, tool: &MockShape) {
+        let split = self.split_faces.borrow();
+        if split.is_empty() {
+            return;
+        }
+        let centre =
+            |b: &BoundingBox| -> [f64; 3] { std::array::from_fn(|i| (b.min[i] + b.max[i]) / 2.0) };
+        let (Some(target_box), Some(tool_box), Some(bounds)) =
+            (target.bounds, tool.bounds, shape.bounds)
+        else {
+            return;
+        };
+        let (c, t) = (centre(&target_box), centre(&tool_box));
+        let mut points = [t, std::array::from_fn(|i| 2.0 * c[i] - t[i])];
+        points.sort_by(|a, b| {
+            a.iter()
+                .zip(b)
+                .map(|(x, y)| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal))
+                .find(|o| o.is_ne())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let faces: Vec<FaceName> = shape
+            .faces
+            .iter()
+            .filter(|f| split.contains(&f.to_string()))
+            .cloned()
+            .collect();
+        for face in faces {
+            let pieces = [face.clone().piece(0), face.clone().piece(1)];
+            shape.faces.retain(|f| *f != face);
+            shape.faces.extend(pieces.iter().cloned());
+            let mut edges = Vec::new();
+            for (a, b) in std::mem::take(&mut shape.edges) {
+                if a == face || b == face {
+                    for piece in &pieces {
+                        let other = if a == face { b.clone() } else { a.clone() };
+                        edges.push((piece.clone(), other));
+                    }
+                } else {
+                    edges.push((a, b));
+                }
+            }
+            shape.edges = edges;
+            for (piece, point) in pieces.iter().zip(points) {
+                self.piece_points
+                    .borrow_mut()
+                    .push((bounds, piece.to_string(), point));
+            }
+        }
     }
 
     fn dress(
@@ -629,6 +691,9 @@ impl Kernel for MockKernel {
                     }
                     if op == BooleanOp::Cut && self.cuts_keep_bounds.get() {
                         shape.bounds = target.bounds;
+                    }
+                    if op == BooleanOp::Cut {
+                        self.split_named_faces(&mut shape, target, tool);
                     }
                     pieces.push(BooleanPiece {
                         shape,
@@ -1421,7 +1486,22 @@ impl Kernel for MockKernel {
     /// box's face), else the bounds.
     fn face_boxes(&self, shape: &MockShape) -> Result<Vec<[[f64; 3]; 2]>, KernelError> {
         if !self.box_faces.get() {
-            return Err(KernelError::Unsupported("face boxes"));
+            let points = self.piece_points.borrow();
+            if points.is_empty() {
+                return Err(KernelError::Unsupported("face boxes"));
+            }
+            let bounds = shape.bounds.ok_or(KernelError::failed("no bounds"))?;
+            return Ok(shape
+                .faces
+                .iter()
+                .map(|face| {
+                    let name = face.to_string();
+                    points
+                        .iter()
+                        .find(|(b, n, _)| *b == bounds && *n == name)
+                        .map_or([bounds.min, bounds.max], |(_, _, p)| [*p, *p])
+                })
+                .collect());
         }
         let bounds = shape.bounds.ok_or(KernelError::failed("no bounds"))?;
         Ok(shape
@@ -3582,6 +3662,107 @@ impl Kernel for MockKernel {
                 number(z)
             ),
             ..body.clone()
+        })
+    }
+
+    // Extrusions of a planar body face (mitcad#535).
+
+    /// A prism of the face, `face_prism(<feature>:<face>:<low>..<high>)`
+    /// along the outward normal (`-` reversed), its sides named after the
+    /// body's edges of the face and its caps after the key. A face with a
+    /// surface other than a plane in `surfaces` is not planar; a mesh body's
+    /// face has no surface.
+    fn extrude_face(
+        &self,
+        spec: &crate::kernel::FaceExtrudeSpec<'_, MockShape>,
+    ) -> Result<MockShape, KernelError> {
+        self.call("extrude_face")?;
+        let body = spec.body;
+        let face = spec.face;
+        let matching: Vec<&FaceName> = body.faces.iter().filter(|f| f.matches(face)).collect();
+        if matching.is_empty() {
+            return Err(KernelError::failed(format!("the body has no face {face}")));
+        }
+        if matching.len() > 1 {
+            return Err(KernelError::failed(format!(
+                "{face} names {} faces; an extrusion takes one face",
+                matching.len()
+            )));
+        }
+        if matches!(self.body_kind(body), Ok(BodyKind::Mesh)) {
+            return Err(KernelError::failed(format!(
+                "face {face} has no surface (a mesh body's triangles)"
+            )));
+        }
+        if let Some(surface) = self.surfaces.borrow().get(&face.to_string())
+            && !matches!(surface, SurfaceGeometry::Plane { .. })
+        {
+            return Err(KernelError::failed(format!(
+                "face {face} is not planar: an extrusion takes a planar face"
+            )));
+        }
+        let (low, high) = match spec.side2 {
+            Some(two) => (-two, spec.side1),
+            None => (0.0, spec.side1),
+        };
+        self.specs.borrow_mut().push(format!(
+            "extrude_face {} {face} key {} {}from {}: {}{}",
+            spec.feature,
+            spec.key,
+            if spec.reversed { "reversed " } else { "" },
+            number(spec.start),
+            number(spec.side1),
+            spec.side2
+                .map(|d| format!("; {}", number(d)))
+                .unwrap_or_default()
+        ));
+        let key = || Some(RoleKey::Face(Box::new(spec.key.clone())));
+        let start = FaceName::new(spec.feature, "start", key());
+        let end = FaceName::new(spec.feature, "end", key());
+        let sides: Vec<FaceName> = body
+            .edges
+            .iter()
+            .filter(|(a, b)| a.matches(face) || b.matches(face))
+            .map(|(a, b)| {
+                let edge = EdgeName::new(a.clone(), b.clone());
+                FaceName::new(spec.feature, "side", Some(RoleKey::Edge(Box::new(edge))))
+            })
+            .collect();
+        let mut edges = Vec::new();
+        for (i, side) in sides.iter().enumerate() {
+            edges.push((side.clone(), sides[(i + 1) % sides.len()].clone()));
+            edges.push((side.clone(), start.clone()));
+            edges.push((side.clone(), end.clone()));
+        }
+        let mut faces = vec![start, end];
+        faces.extend(sides);
+        // The body's bounds, across a face `face_plane` knows (an axis-aligned
+        // plane) from the start to the far end along the sweep.
+        let bounds = match (body.bounds, self.face_plane(body, face)) {
+            (Some(mut b), Ok(plane)) => {
+                if let Some(k) = (0..3).find(|k| plane.normal[*k].abs() > 0.5) {
+                    let along = if spec.reversed { -1.0 } else { 1.0 } * plane.normal[k];
+                    let at = plane.origin[k] + plane.normal[k] * spec.start;
+                    let (p, q) = (at + along * low, at + along * high);
+                    b.min[k] = p.min(q);
+                    b.max[k] = p.max(q);
+                }
+                Some(b)
+            }
+            (bounds, _) => bounds,
+        };
+        Ok(MockShape {
+            history: format!(
+                "face_prism({}:{face}:{}{}..{})",
+                spec.feature,
+                if spec.reversed { "-" } else { "" },
+                number(spec.start + low),
+                number(spec.start + high)
+            ),
+            faces,
+            edges,
+            bounds,
+            parts: Vec::new(),
         })
     }
 }

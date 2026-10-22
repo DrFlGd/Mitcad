@@ -406,16 +406,22 @@ CommandDef sectionCommand() {
     const QJsonObject fixed{{QStringLiteral("origin"), QJsonArray{plane->first.X(), plane->first.Y(), plane->first.Z()}},
                             {QStringLiteral("normal"),
                              QJsonArray{plane->second.X(), plane->second.Y(), plane->second.Z()}}};
-    const QJsonObject answer =
-        context.queryObject({{QStringLiteral("query"), QStringLiteral("section")},
-                             {QStringLiteral("plane"), fixed}, {QStringLiteral("world"), true}});
-    // The totals: of all bodies. The view shows the bodies cut at the plane
-    // with the cut faces as caps (MainWindow::showSectionCaps, U5).
-    const double area = answer.value(QStringLiteral("area")).toDouble();
-    const double length = answer.value(QStringLiteral("length")).toDouble();
-    result.text = QObject::tr("Section area: %1 mm²<br>Outline length: %2 mm").arg(n(area), n(length));
-    result.log = QStringLiteral("area %1, length %2").arg(n(area), n(length));
+    // The view shows the bodies cut at the plane with the cut faces as caps
+    // (MainWindow::showSectionCaps, U5); the panel's totals of all bodies
+    // are measured after the view has its cut bodies, off the UI thread
+    // (mitcad#438: seconds on a large design).
+    result.text = QObject::tr("Section area: …<br>Outline length: …");
+    result.log = QStringLiteral("measuring");
     result.section = fixed;
+    result.laterQuery = {{QStringLiteral("query"), QStringLiteral("section")},
+                         {QStringLiteral("plane"), fixed},
+                         {QStringLiteral("world"), true}};
+    result.measured = [](const QJsonObject& answer, Inspection& shown) {
+      const double area = answer.value(QStringLiteral("area")).toDouble();
+      const double length = answer.value(QStringLiteral("length")).toDouble();
+      shown.text = QObject::tr("Section area: %1 mm²<br>Outline length: %2 mm").arg(n(area), n(length));
+      shown.log = QStringLiteral("area %1, length %2").arg(n(area), n(length));
+    };
     return result;
   };
   // OK keeps it in the document as an analysis (mitcad#41): the plane as

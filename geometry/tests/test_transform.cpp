@@ -4,11 +4,14 @@
 
 #include <cmath>
 
+#include <BRepCheck_Analyzer.hxx>
 #include <BRepGProp.hxx>
 #include <BRep_Builder.hxx>
 #include <GProp_GProps.hxx>
 #include <Poly_Triangulation.hxx>
 #include <TopoDS_Face.hxx>
+#include <TopoDS_Shell.hxx>
+#include <TopoDS_Solid.hxx>
 
 #include "check.hpp"
 #include "mitcad/geometry/contact.hpp"
@@ -191,6 +194,43 @@ void test_mesh_bodies_move() {
   CHECK_NEAR(volume(*far), 2 * 48000.0);
 }
 
+// A body OCCT's checker finds invalid, as some imported bodies are (one
+// solid of two shells' faces in one shell, which is not connected): a
+// rigid motion moves it as it is (mitcad#537: Reorient Design's Move of such
+// a body failed); a general affine map still checks its result.
+void test_invalid_bodies_move() {
+  const ShapePtr first = block();
+  const ShapePtr second = transform_shape(*first, translation(100, 0, 0), "F9:inst1");
+  BRep_Builder builder;
+  TopoDS_Shell shell;
+  builder.MakeShell(shell);
+  std::vector<Shape::NamedFace> faces;
+  for (const ShapePtr& part : {first, second}) {
+    for (int i = 0; i < part->face_count(); ++i) {
+      builder.Add(shell, part->face(i));
+      faces.push_back({part->face(i), part->face_names(i)});
+    }
+  }
+  TopoDS_Solid solid;
+  builder.MakeSolid(solid);
+  builder.Add(solid, shell);
+  const auto invalid = std::make_shared<Shape>(solid, faces);
+  CHECK(!BRepCheck_Analyzer(invalid->occt()).IsValid());
+
+  Affine quarter;
+  quarter.linear = {{{0, -1, 0}, {1, 0, 0}, {0, 0, 1}}};
+  const ShapePtr turned = transform_shape(*invalid, quarter);
+  CHECK(box_is(*turned, -40, 0, 0, 0, 160, 20));
+  CHECK(faces_named(*turned, end_cap("F2", 1)) == 1);
+  CHECK(faces_named(*turned, "F9:inst1(" + end_cap("F2", 1) + ")") == 1);
+  const ShapePtr moved = transform_shape(*invalid, translation(0, 0, 10));
+  CHECK(box_is(*moved, 0, 0, 10, 160, 40, 30));
+
+  Affine uneven;
+  uneven.linear = {{{2, 0, 0}, {0, 1, 0}, {0, 0, 1}}};
+  CHECK(throws_with([&] { transform_shape(*invalid, uneven); }, "the transform produced an invalid shape"));
+}
+
 // A mesh body in the surface operations (mitcad#399): the booleans,
 // unions, dressups and face operations refuse it before OCCT's algorithms
 // get it (their face intersection read its null surface, mitcad#392);
@@ -360,6 +400,7 @@ void transform_tests() {
   test_moves_keep_or_rename_faces();
   test_mirrors_and_scales();
   test_mesh_bodies_move();
+  test_invalid_bodies_move();
   test_mesh_bodies_refused();
   test_unions_keep_names();
   test_tools_of_faces();

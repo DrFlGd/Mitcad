@@ -69,6 +69,7 @@ class SelectionFilterPanel;
 class TitleBar;
 class UpdateController;
 class ReportCenter;
+class SectionWorker;
 class ViewController;
 #ifdef MITCAD_MACOS_NATIVE_UI
 namespace mac {
@@ -190,6 +191,9 @@ public:
   std::vector<BodyDisplay> modelBodies() const override;
   void showSection(const QJsonValue& plane) override;
   QJsonValue section() const override { return m_section; }
+  // After the view shows the section's clipped bodies, off the UI thread
+  // (MainWindowSection.cpp, mitcad#438).
+  void measureLater(const QJsonObject& query, QObject* context, Measured done) override;
   void editInstead(const QString& uid, const QString& input) override;
   QString profileOccurrence(const QString& sketch) const override { return placingOccurrence(sketch); }
   QString bodyOccurrence(const QString& body) const override;
@@ -546,6 +550,60 @@ private:
   QJsonValue cutPlane() const;
   // The faces where the section cuts the shown bodies, for the view.
   void showSectionCaps(const std::vector<BodyDisplay>& bodies);
+  // Section Analysis off the UI thread (mitcad#438; MainWindowSection.cpp).
+  // The bodies a plane cuts, as modelBodies collects them before their
+  // clip: by index into its bodies, each with its target ({body,
+  // occurrence}) and its key in the kept clips (sectionClipKey).
+  struct SectionTargets {
+    QJsonValue plane;
+    std::vector<std::size_t> which;
+    QJsonArray targets;
+    QStringList keys;
+  };
+  // A body clipped at the plane of the kept clips: the body's shape that
+  // was clipped and what is left (null when its clip failed).
+  struct SectionClip {
+    std::shared_ptr<geometry::Shape> source;
+    std::shared_ptr<geometry::Shape> shape;
+  };
+  // The panel's measurement, waiting for the view's clips, then for its
+  // round (posted).
+  struct SectionMeasurement {
+    quint64 id = 0;
+    QJsonObject query;
+    QPointer<QObject> context;
+    Measured done;
+    bool posted = false;
+  };
+  // The clips kept for the plane last clipped (by key), for every way the
+  // bodies are shown at that plane again (visibility, the round's own
+  // display), and the measurement asked for.
+  struct SectionState {
+    QJsonValue plane;
+    QHash<QString, SectionClip> clips;
+    std::optional<SectionMeasurement> measurement;
+    quint64 measurements = 0;
+  };
+  // modelBodies, or with `unclipped`, the bodies before their clip with
+  // what the plane cuts (no face looks).
+  std::vector<BodyDisplay> displayBodies(SectionTargets* unclipped) const;
+  // The cut bodies' shapes from the kept clips, the missing ones clipped
+  // here (on the UI thread, after the worker stopped) and kept.
+  void useClips(const SectionTargets& cut, std::vector<BodyDisplay>& bodies) const;
+  // Starts the round that clips the bodies at m_section and meshes them
+  // for the view, which shows them when it is ready; false when there is
+  // nothing to clip (the kept clips have them) or it cannot start.
+  bool startSectionRound();
+  // A round's clips, on the UI thread once it is done: kept, and shown
+  // while the plane is still the section's.
+  struct SectionRound;
+  void showSectionRound(const SectionRound& round, const QJsonValue& plane, const QString& error);
+  // Posts the waiting measurement once no view round runs or waits.
+  void measureIfWaiting();
+  // Before a model job: the worker's rounds told to stop (not waited for:
+  // they read nothing the job writes into), and done again once the window
+  // is idle, from the document as the job left it.
+  void redoSectionWork();
   // In sketch mode, for UI tests: how far each shown body reaches in front
   // of the sketch plane (at most 0 with Hide Above Sketch).
   void logSketchReach(const std::vector<BodyDisplay>& bodies);
@@ -1005,6 +1063,8 @@ private:
   Selection& m_isolation = m_documentSession->state().isolation;
   bool& m_originShown = m_documentSession->state().originShown;
   QJsonValue& m_section = m_documentSession->state().section;
+  SectionWorker* m_sectionWorker = nullptr; // mitcad#438
+  mutable SectionState m_sectionState;
   QString m_loggedCaps;       // the section caps last logged
   QString m_loggedReach;      // how far the bodies reach in front of the sketch, last logged
   QString m_loggedThreads = QStringLiteral("Cosmetic threads shown: 0"); // as last logged

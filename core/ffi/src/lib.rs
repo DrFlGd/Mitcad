@@ -177,6 +177,30 @@ mod ffi {
         fn shape(self: &ClippedBodies, index: usize) -> SharedPtr<Shape>;
         /// Why its clip failed; empty when it did not.
         fn error(self: &ClippedBodies, index: usize) -> String;
+        // Section Analysis off the UI thread (mitcad#438): prepared from
+        // the document while it is idle, worked out without it on another
+        // thread. What they hold of the bodies is detached from them: a
+        // copy sharing no sub-shape with a body the plane may reach, the
+        // body itself (only its kept box read) for one it passes. The
+        // geometry stops when the running thread's operations are told to
+        // (geometry/cancel.hpp).
+        /// `analysis_clips` prepared (its request).
+        fn prepare_clips(self: &Document, request: &str) -> Result<Box<PreparedClips>>;
+        type PreparedClips;
+        /// The clips: what is left of each detached copy (the copy when
+        /// the clip leaves it whole), the body itself when the plane
+        /// passes it and keeps it.
+        fn run(self: &PreparedClips) -> Box<ClippedBodies>;
+        /// The shape body `index`'s clip reads; null for a body with an
+        /// error.
+        fn input(self: &PreparedClips, index: usize) -> SharedPtr<Shape>;
+        /// Whether that shape is a detached copy (else the body itself).
+        fn detached(self: &PreparedClips, index: usize) -> bool;
+        /// A query prepared (`{"query": "section", ...}`, the only one so
+        /// far): `run` gives the answer `query` gives now.
+        fn prepare_query(self: &Document, request: &str) -> Result<Box<PreparedQuery>>;
+        type PreparedQuery;
+        fn run(self: &PreparedQuery) -> Result<String>;
         // Base features from shapes and .f3d bodies (exchange.rs; files
         // are imported and exported with JSON commands).
 
@@ -756,6 +780,42 @@ impl Document {
 
     fn analysis_clips(&self, request: &str) -> Result<Box<ClippedBodies>, ApiError> {
         Ok(Box::new(ClippedBodies(self.0.analysis_clips(request)?)))
+    }
+
+    fn prepare_clips(&self, request: &str) -> Result<Box<PreparedClips>, ApiError> {
+        Ok(Box::new(PreparedClips(self.0.prepare_clips(request)?)))
+    }
+
+    fn prepare_query(&self, request: &str) -> Result<Box<PreparedQuery>, ApiError> {
+        Ok(Box::new(PreparedQuery(self.0.prepare_query(request)?)))
+    }
+}
+
+/// `Document::prepare_clips` (mitcad#438).
+pub struct PreparedClips(mitcad_model::api::PreparedClips<OcctKernel>);
+
+impl PreparedClips {
+    fn run(&self) -> Box<ClippedBodies> {
+        Box::new(ClippedBodies(self.0.run(&OcctKernel)))
+    }
+
+    fn input(&self, index: usize) -> SharedPtr<Shape> {
+        self.0
+            .input(index)
+            .map_or_else(SharedPtr::null, |(shape, _)| shape.clone())
+    }
+
+    fn detached(&self, index: usize) -> bool {
+        self.0.input(index).is_some_and(|(_, detached)| detached)
+    }
+}
+
+/// `Document::prepare_query` (mitcad#438).
+pub struct PreparedQuery(mitcad_model::api::PreparedQuery<OcctKernel>);
+
+impl PreparedQuery {
+    fn run(&self) -> Result<String, ApiError> {
+        Ok(self.0.run(&OcctKernel)?.to_string())
     }
 }
 

@@ -421,6 +421,7 @@ impl Converter<'_> {
                     surface: false,
                     curves: None,
                     wrap: None,
+                    profile_face: None,
                 })
             }
             FileFeature::Fillet {

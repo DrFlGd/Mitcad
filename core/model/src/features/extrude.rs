@@ -23,8 +23,8 @@ use super::{
 };
 use crate::ids::{BodyUid, FeatureUid};
 use crate::kernel::{
-    BooleanOp, Bound, ExtrudeFeatureSpec, ExtrudeSide, ExtrudeStart, Kernel, SideEnd, ThinWall,
-    WallLocation,
+    BooleanOp, Bound, ExtrudeFeatureSpec, ExtrudeSide, ExtrudeStart, FaceExtrudeSpec, Kernel,
+    SideEnd, ThinWall, WallLocation,
 };
 use crate::links::OccurrenceLink;
 use crate::parameters::ParamId;
@@ -236,6 +236,14 @@ pub struct ExtrudeDef<P = ParamId> {
     /// out of the material, or into it with `flip` or a negative distance.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wrap: Option<super::reference::FaceRef>,
+    /// A planar face of a body as the profile instead of sketch regions
+    /// (mitcad#535): its bounded area, holes kept, swept along its outward
+    /// normal (reversed by `flip` or a negative distance), found by its
+    /// topological name on every recompute. Distances only, without a
+    /// taper; from the face or an offset from it; no thin walls, surface,
+    /// curves, wrap or `cut_scope`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_face: Option<super::reference::FaceRef>,
 }
 
 type Mapper<'a, P, Q, E> = dyn FnMut(&str, &P) -> Result<Q, E> + 'a;
@@ -352,11 +360,12 @@ impl<P> ExtrudeDef<P> {
             surface: self.surface,
             curves: self.curves.clone(),
             wrap: self.wrap.clone(),
+            profile_face: self.profile_face.clone(),
         })
     }
 
     /// The sketch of the profiles (or of the curves thin walls follow or a
-    /// surface extrusion sweeps).
+    /// surface extrusion sweeps); none for a body face's extrusion.
     pub fn sketch(&self) -> Option<FeatureUid> {
         self.profiles
             .first()
@@ -598,10 +607,18 @@ impl FeatureInfo for ExtrudeDef {
         if let Some(face) = &self.wrap {
             face.add_references(&mut references);
         }
+        // A body face as the profile (mitcad#535): its body and the
+        // features its name refers to.
+        if let Some(face) = &self.profile_face {
+            face.add_references(&mut references);
+        }
         references
     }
 
     fn check(&self, ctx: &CheckContext<'_>) -> Result<(), String> {
+        if let Some(face) = &self.profile_face {
+            check_face_profile(self, ctx, face)?;
+        }
         if self.surface {
             if self.thin.is_some() {
                 return Err("a surface extrusion has no thin walls".to_owned());
@@ -631,6 +648,8 @@ impl FeatureInfo for ExtrudeDef {
             face.check(ctx)?;
         }
         match self.wall_curves() {
+            // The face is the profile (checked above).
+            _ if self.profile_face.is_some() => {}
             Some(_) if !self.profiles.is_empty() => {
                 return Err("thin walls along curves take no profiles".to_owned());
             }
@@ -794,6 +813,13 @@ impl<K: Kernel> Evaluate<K> for ExtrudeDef {
         if self.surface {
             return self.surface_output(ctx);
         }
+        if let Some(face) = &self.profile_face {
+            // A body face as the profile (mitcad#535).
+            let participants = participant_bodies(ctx, self.operation, &self.participants)?;
+            let uid = ctx.uid;
+            let tool = self.face_tool(ctx, face, uid)?;
+            return apply_operation(ctx, self.operation, participants, tool, "extrusion");
+        }
         let (sketch, regions) = self.sketch_regions(ctx)?;
         if let (Some(face), Extent::Distance { distance, .. }) = (&self.wrap, &self.extent) {
             // Wrapped onto a cylinder or a cone (mitcad#473), as an emboss.
@@ -858,7 +884,12 @@ impl<K: Kernel> Evaluate<K> for ExtrudeDef {
         feature: FeatureUid,
         placement: &Transform,
     ) -> Option<Result<K::Shape, String>> {
-        if self.surface || self.cut_scope.is_some() || !self.depends_on_bodies() {
+        // A body face's extrusion goes distances only: its tool is moved.
+        if self.surface
+            || self.cut_scope.is_some()
+            || self.profile_face.is_some()
+            || !self.depends_on_bodies()
+        {
             return None;
         }
         let (sketch, regions) = match self.sketch_regions(ctx) {
@@ -1151,6 +1182,146 @@ impl ExtrudeDef {
             )?);
         }
         surface_sweeps::output(ctx, sheets)
+    }
+}
+
+// A planar body face as the profile (mitcad#535).
+
+/// What an extrusion of a body face goes: distances on one side, both
+/// sides alike or two sides, without a taper.
+const FACE_EXTENTS: &str = "an extrusion of a body face goes a distance (one side, symmetric or two sides), without a taper";
+
+/// Checks an extrusion whose profile is a body face: nothing a sketch
+/// profile has besides it, distances only, the face's body and features
+/// before the feature.
+fn check_face_profile(
+    def: &ExtrudeDef,
+    ctx: &CheckContext<'_>,
+    face: &super::reference::FaceRef,
+) -> Result<(), String> {
+    if !def.profiles.is_empty() {
+        return Err("an extrusion of a body face takes no sketch profiles".to_owned());
+    }
+    if def.thin.is_some() || def.surface || def.curves.is_some() || def.wrap.is_some() {
+        return Err(
+            "an extrusion of a body face has no thin walls, surface, curves or wrap".to_owned(),
+        );
+    }
+    if def.cut_scope.is_some() {
+        return Err(
+            "an extrusion of a body face works on the bodies of its own component, without \
+             cut_scope"
+                .to_owned(),
+        );
+    }
+    if matches!(def.start, Start::Object { .. }) {
+        return Err("an extrusion of a body face starts at the face or offset from it".to_owned());
+    }
+    let distance = |side: &Side| matches!(side, Side::Distance { taper: None, .. });
+    let by_distance = match &def.extent {
+        Extent::Distance { taper: None, .. } | Extent::Symmetric { taper: None, .. } => true,
+        Extent::TwoSides { side1, side2 } => distance(side1) && distance(side2),
+        _ => false,
+    };
+    if !by_distance {
+        return Err(FACE_EXTENTS.to_owned());
+    }
+    face.check(ctx)
+}
+
+impl ExtrudeDef {
+    /// The tool of an extrusion whose profile is a body face: the face as
+    /// found on its body now (a face a sketch change renamed is found
+    /// again, with a warning), swept by the kernel along its outward
+    /// normal, its faces named after `feature`. A face that is gone, not
+    /// planar or of a mesh body fails the feature; no other profile is
+    /// taken instead.
+    fn face_tool<K: Kernel>(
+        &self,
+        ctx: &mut EvalContext<'_, K>,
+        face: &super::reference::FaceRef,
+        feature: FeatureUid,
+    ) -> Result<K::Shape, String> {
+        let body = ctx.surface_body(face.body)?;
+        let found = ctx.face_on(face.body, &body, &face.face)?;
+        let start = match &self.start {
+            Start::ProfilePlane => 0.0,
+            Start::Offset { offset } => ctx.param(*offset)?,
+            Start::Object { .. } => {
+                return Err(
+                    "an extrusion of a body face starts at the face or offset from it".to_owned(),
+                );
+            }
+        };
+        let mut reversed = self.flip;
+        let (side1, side2) = match &self.extent {
+            Extent::Distance {
+                distance,
+                taper: None,
+            } => {
+                let d = ctx.param(*distance)?;
+                if d == 0.0 {
+                    return Err(format!("{} must not be zero", ctx.param_name(*distance)));
+                }
+                // A negative distance goes into the material.
+                if d < 0.0 {
+                    reversed = !reversed;
+                }
+                (d.abs(), None)
+            }
+            Extent::Symmetric {
+                distance,
+                full_length,
+                taper: None,
+            } => {
+                let d = ctx.positive(*distance)?;
+                let d = if *full_length { d / 2.0 } else { d };
+                (d, Some(d))
+            }
+            Extent::TwoSides {
+                side1:
+                    Side::Distance {
+                        distance: d1,
+                        taper: None,
+                    },
+                side2:
+                    Side::Distance {
+                        distance: d2,
+                        taper: None,
+                    },
+            } => {
+                // Each side goes its own way by its distance's size, as a
+                // sketch profile's; a side of length zero leaves one side.
+                let (a, b) = (ctx.param(*d1)?.abs(), ctx.param(*d2)?.abs());
+                match (a == 0.0, b == 0.0) {
+                    (false, false) => (a, Some(b)),
+                    (false, true) => (a, None),
+                    (true, false) => {
+                        reversed = !reversed;
+                        (b, None)
+                    }
+                    (true, true) => {
+                        return Err(
+                            "the two extrude distances must add up to more than zero".to_owned()
+                        );
+                    }
+                }
+            }
+            _ => return Err(FACE_EXTENTS.to_owned()),
+        };
+        let spec = FaceExtrudeSpec {
+            feature,
+            body: &body,
+            face: &found,
+            key: &face.face,
+            reversed,
+            start,
+            side1,
+            side2,
+        };
+        ctx.kernel
+            .extrude_face(&spec)
+            .map_err(super::face_refs::kernel_error)
     }
 }
 

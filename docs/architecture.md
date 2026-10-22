@@ -401,6 +401,13 @@ design in a project.
   New Body with the bodies; the app takes the answer into the panel until
   the user picks an operation ([commands.md](../core/model/src/api/commands.md),
   "Extrude's automatic operation").
+- **Extrude of a body face** (mitcad#535, `features/extrude.rs`): an
+  extrusion's profile may be a planar face of a body (`profile_face`)
+  instead of sketch regions: the face is found by its topological name on
+  every recompute and `Kernel::extrude_face` sweeps a copy of it, holes
+  kept, along its outward normal (`geometry/src/face_extrude.cpp`); the
+  side faces are named after the face's edges, the caps after the face
+  ([commands.md](../core/model/src/api/commands.md), "extrude").
 - **BUILD** (mitcad#375, `core/model/src/build/`): the library parts the
   BUILD tab places are kept once as the design's **library sources**
   (`library_sources`: the library record, the design's text, inside a
@@ -719,9 +726,9 @@ the `Shape` type.
 - OCCT crashes become errors where possible (`catch_occt_crashes`; on
   Linux and macOS needs `OCC_CONVERT_SIGNALS`, defined in the root
   `CMakeLists.txt`; on macOS a fault is SIGSEGV or SIGBUS).
-  Handlers are installed on the app's model worker thread, on its UI
-  thread at start (`app/main.cpp`), in `mitcad-cli`'s `main` and on the
-  import's threads. The analyses the app asks for run as operations too
+  Handlers are installed on the app's model worker thread, on its section
+  worker's thread (mitcad#438), on its UI thread at start (`app/main.cpp`),
+  in `mitcad-cli`'s `main` and on the import's threads. The analyses the app asks for run as operations too
   (mitcad#392): the analysis bridge (`core/cpp/bridge/analysis.cpp`) runs
   section, clip, measure, distance, interference and physical properties
   through `geometry::run_operation` (`guard.hpp`, the public form of
@@ -730,7 +737,14 @@ the `Shape` type.
   sections the bodies shown together on OCCT's thread pool, each body its
   own operation there (`analysis_clip_all`, `analysis_section_all`,
   mitcad#438), and skips the booleans of bodies the plane does not reach
-  (from their kept boxes). The crash
+  (from their kept boxes); the calling thread's cancel source
+  (`geometry::cancel_source`) reaches each task, and the tasks not started
+  once it is set fail as cancelled. For Section Analysis off the UI
+  thread, `analysis_detach_all` (`Kernel::detach_all`) detaches the bodies
+  first, on the thread that owns them: a copy that shares no sub-shape
+  with a body the plane may reach (`geometry::independent_copy`, with the
+  same names, its box, its mesh faces' triangles), and of a body the plane
+  passes only its kept box. The crash
   that was reported came from mesh bodies: OCCT's booleans need surfaces
   and read a null handle on a face without one, so the analysis sections
   and clips mesh bodies on their triangles instead
@@ -807,6 +821,7 @@ them through operations and derives edge names.
 |---|---|
 | Extrude, revolve, sweep, loft | `side(<segment>)`, `start(<region>)`, `end(<region>)`; a parallel sweep turning back `turn(<region>)` |
 | Thin extrude | `outer(<segment>)`, `inner(<segment>)`, `mid(<region>)`; along curves (mitcad#463) `outer(<curve>)`, `inner(<curve>)`, `tip0(<curve>)`, `tip1(<curve>)`, caps `start(r{<curves>})`, `end(r{<curves>})` |
+| Extrude of a body face (mitcad#535) | `side(<edge of the face>)`, `start(<face>)`, `end(<face>)` |
 | Fillet, chamfer | `fillet(<edge>)`, `chamfer(<edge>)`, `corner(<vertex>)` |
 | Hole | `hole<i>.wall`, `.tip`, `.cbore_wall`, `.cbore_floor`, `.csink`, `.top`; thread `thread(<face>)` |
 | Shell | `offset(<face>)`, `offset_cap(<removed face>)` |
@@ -1078,6 +1093,32 @@ not recompute.
   at a time, a design of many small bodies used a core or two) and a face
   that bodies share is meshed once; should that throw, the bodies are
   meshed one by one and one OCCT fails on is left to the view.
+- **Section Analysis off the UI thread** (`app/framework/SectionWorker`,
+  `app/MainWindowSection.cpp`, mitcad#438): the clips of the bodies shown,
+  their meshes for the view and the panel's area and length run as rounds
+  on a thread of the section worker's own, not as model jobs: the model
+  prepares what a round needs while the document is idle
+  (`Document::prepare_clips`, `prepare_query`: the bodies' shapes, the
+  planes in their coordinates) and the round works it out without the
+  document, so the window stays responsive (no progress dialog, input
+  taken, the view drawing what it showed) and the result is shown on the
+  UI thread when it is ready. One round runs at a time: a newer plane
+  stops the running round through the geometry's cancel and replaces those
+  waiting, so no stale result is shown and nothing piles up; the
+  measurement waits for the view's round. A round never reads a sub-shape
+  of a body the UI thread draws: what it works on is detached when it is
+  prepared (`Kernel::detach_all`: copies that share no face, edge or
+  vertex with the bodies the plane may reach, and of the others only the
+  box they keep), so the view's meshes, a clip the UI thread makes itself
+  (Hide Above Sketch, a body the kept clips lack) and a model job, which
+  write into the bodies' sub-shapes, may run beside a round. A model job
+  still tells the rounds to stop (`DocumentSession::setBeforeJob`, not
+  waiting), as their result may be stale after it, and they are done
+  again once the window is idle. The clips of the plane last clipped are kept (by
+  body, shape and placement), so the bodies shown again at that plane are
+  not clipped again. The panel's measurement is an inspection's
+  `laterQuery`, answered through `CommandHost::measureLater` (at once, as a
+  query, for other hosts).
 - **Document owner** (`app/framework/DocumentSession`): owns the Rust
   document, model worker, active command, selection, mode and file/recovery
   state. `MainWindow` retains reference aliases for existing workflows.
@@ -1289,6 +1330,14 @@ not recompute.
   (`app/view/ViewTessellation.hpp`, mitcad#398): a face that would take
   more (a sphere of metres took millions) meshes with a deviation that
   grows with its size (`geometry/io` `mesh.hpp`, `face_deviation_floor`).
+  Cylinders and cones mesh at most as finely as a turn in 500 straight
+  pieces (mitcad#438): their triangles are mostly their edges' points (a
+  circle of 6.8 m radius took 2 600 at 0.01 mm), so those of radii over
+  about half a metre, and the edges that bound them (at the smallest floor
+  of their faces, planes having no say, and no more than their own
+  curve's), mesh with a deviation of 2e-5 of the radius (about 700 points
+  a turn, as BRepMesh cuts edges at half their deviation); smaller ones,
+  and edges shared with small faces, at 0.01 mm.
   OCCT's presentations mesh through that algorithm
   (`use_bounded_presentation_meshes`, BRepMesh's default for the process);
   the model's worker makes the same meshes beforehand (`mesh_in_place`,

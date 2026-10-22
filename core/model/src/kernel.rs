@@ -1547,6 +1547,41 @@ pub trait Kernel {
     ) -> Result<Self::Shape, KernelError> {
         Err(KernelError::Unsupported("move faces"))
     }
+
+    // Section Analysis off the UI thread (mitcad#438).
+
+    /// What another thread may read of each shape, at its plane, while this
+    /// thread goes on using the shapes (the view meshes them, a model job
+    /// meshes shapes that share their faces): `Some(copy)`, sharing no
+    /// sub-shape with the shape (the same face names), for a shape the
+    /// plane may cut or touch; `None` for one the plane passes farther than
+    /// its tolerances, whose [`Kernel::clip`] keeps or removes it whole and
+    /// whose [`Kernel::section`] is empty, told from what the shape keeps
+    /// of itself (its box, measured now) without reading its sub-shapes.
+    /// Run on the thread that owns the shapes. The default copies nothing
+    /// (a kernel whose shapes share nothing): every shape as it is.
+    fn detach_all(
+        &self,
+        items: &[(&Self::Shape, DatumPlane)],
+    ) -> Vec<Result<Option<Self::Shape>, KernelError>> {
+        items
+            .iter()
+            .map(|(shape, _)| Ok(Some((*shape).clone())))
+            .collect()
+    }
+
+    // Extrusions of a planar body face (mitcad#535; `features::extrude`).
+
+    /// A planar face of a body swept as an extrusion's profile (see
+    /// [`FaceExtrudeSpec`]); the body is left as it is. A face that is not
+    /// planar, has no surface (a mesh body's) or is not one face is an
+    /// error.
+    fn extrude_face(
+        &self,
+        _spec: &FaceExtrudeSpec<'_, Self::Shape>,
+    ) -> Result<Self::Shape, KernelError> {
+        Err(KernelError::Unsupported("extrusions of body faces"))
+    }
 }
 
 /// A conical face ([`Kernel::face_cone`], mitcad#473).
@@ -2431,4 +2466,30 @@ pub struct GearConeSpec<'a> {
     pub apex: f64,
     pub scale: f64,
     pub blank: &'a [crate::features::gear_profile::NamedSegment],
+}
+
+// Extrusions of a planar body face (mitcad#535).
+
+/// Input of [`Kernel::extrude_face`]: the planar face `face` of `body`, its
+/// bounded area with its holes, swept along its outward normal (against it
+/// with `reversed`) by `side1` from the face moved `start` along its
+/// outward normal, and with `side2` against that direction by `side2` too
+/// (both > 0). Faces are named after `feature` as an extrusion's:
+/// `side(<edge>)` from each edge of the face, by the edge's name in the
+/// body (an edge without one, a surface body's free edge, by its index
+/// among the face's edges), and the caps `start(<key>)` and `end(<key>)`:
+/// with one side the cap at the start and the far one, with two sides the
+/// far caps of side one and of side two.
+#[derive(Debug, Clone)]
+pub struct FaceExtrudeSpec<'a, S> {
+    pub feature: FeatureUid,
+    pub body: &'a S,
+    /// The face's name in the body: the reference as it is found there.
+    pub face: &'a FaceName,
+    /// The name the caps are keyed by: the reference the feature stores.
+    pub key: &'a FaceName,
+    pub reversed: bool,
+    pub start: f64,
+    pub side1: f64,
+    pub side2: Option<f64>,
 }

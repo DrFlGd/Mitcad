@@ -74,6 +74,8 @@ pub mod drawing;
 pub mod gear;
 // Faces moved by a rigid motion (mitcad#343).
 pub mod move_faces;
+// A planar face of a body extruded as a profile (mitcad#535).
+pub mod face_extrude;
 
 use std::sync::Arc;
 
@@ -976,33 +978,32 @@ impl Kernel for OcctKernel {
         &self,
         items: &[(&Self::Shape, DatumPlane)],
     ) -> Vec<Result<Self::Shape, KernelError>> {
+        clip_all_on_cores(self, items)
+    }
+
+    fn detach_all(
+        &self,
+        items: &[(&Self::Shape, DatumPlane)],
+    ) -> Vec<Result<Option<Self::Shape>, KernelError>> {
         let shapes: Vec<&Self::Shape> = items.iter().map(|(shape, _)| *shape).collect();
-        let Ok(list) = shape_list(&shapes) else {
-            return items
-                .iter()
-                .map(|(shape, plane)| self.clip(shape, plane))
-                .collect();
+        let list = match shape_list(&shapes) {
+            Ok(list) => list,
+            Err(error) => return items.iter().map(|_| Err(error.clone())).collect(),
         };
         let planes: Vec<_> = items
             .iter()
             .map(|(_, plane)| analysis_plane(plane))
             .collect();
-        match analysis::ffi::analysis_clip_all(&list, &planes) {
-            Ok(clips) => items
-                .iter()
-                .enumerate()
-                .map(|(i, (shape, _))| {
-                    let error = clips.error(i);
+        match analysis::ffi::analysis_detach_all(&list, &planes) {
+            Ok(detached) => (0..items.len())
+                .map(|i| {
+                    let error = detached.error(i);
                     if !error.is_empty() {
                         return Err(failed_with(&error));
                     }
-                    let clipped = clips.shape(i);
-                    // Null: the body whole, as `clip` gives it.
-                    Ok(if clipped.is_null() {
-                        (*shape).clone()
-                    } else {
-                        clipped
-                    })
+                    let copy = detached.shape(i);
+                    // Null: the plane passes the shape.
+                    Ok(if copy.is_null() { None } else { Some(copy) })
                 })
                 .collect(),
             Err(error) => {
@@ -2330,6 +2331,30 @@ impl Kernel for OcctKernel {
         )
         .map_err(failed)
     }
+
+    // A planar face of a body extruded as a profile (mitcad#535;
+    // face_extrude.rs).
+
+    fn extrude_face(
+        &self,
+        spec: &mitcad_model::FaceExtrudeSpec<'_, Self::Shape>,
+    ) -> Result<Self::Shape, KernelError> {
+        let extrusion = face_extrude::ffi::FaceExtrusion {
+            reversed: spec.reversed,
+            start: spec.start,
+            side1: spec.side1,
+            two_sides: spec.side2.is_some(),
+            side2: spec.side2.unwrap_or(0.0),
+        };
+        face_extrude::ffi::extrude_face(
+            &spec.feature.to_string(),
+            occt(spec.body)?,
+            &spec.face.to_string(),
+            &spec.key.to_string(),
+            &extrusion,
+        )
+        .map_err(failed)
+    }
 }
 
 /// The name of a selection's sub-shape, empty for the whole body.
@@ -2363,5 +2388,47 @@ fn section_of(section: &analysis::ffi::AnalysisSection) -> Section<SharedPtr<Sha
         face_count: section.face_count(),
         length: section.length(),
         area: section.area(),
+    }
+}
+
+/// `clip_all` (mitcad#438): the clips on all cores; one by one when the
+/// shapes cannot be listed.
+fn clip_all_on_cores(
+    kernel: &OcctKernel,
+    items: &[(&SharedPtr<Shape>, DatumPlane)],
+) -> Vec<Result<SharedPtr<Shape>, KernelError>> {
+    let shapes: Vec<&SharedPtr<Shape>> = items.iter().map(|(shape, _)| *shape).collect();
+    let Ok(list) = shape_list(&shapes) else {
+        return items
+            .iter()
+            .map(|(shape, plane)| kernel.clip(shape, plane))
+            .collect();
+    };
+    let planes: Vec<_> = items
+        .iter()
+        .map(|(_, plane)| analysis_plane(plane))
+        .collect();
+    match analysis::ffi::analysis_clip_all(&list, &planes) {
+        Ok(clips) => items
+            .iter()
+            .enumerate()
+            .map(|(i, (shape, _))| {
+                let error = clips.error(i);
+                if !error.is_empty() {
+                    return Err(failed_with(&error));
+                }
+                let clipped = clips.shape(i);
+                // Null: the body whole, as `clip` gives it.
+                Ok(if clipped.is_null() {
+                    (*shape).clone()
+                } else {
+                    clipped
+                })
+            })
+            .collect(),
+        Err(error) => {
+            let error = failed(error);
+            items.iter().map(|_| Err(error.clone())).collect()
+        }
     }
 }

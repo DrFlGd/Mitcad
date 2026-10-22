@@ -522,3 +522,251 @@ fn identity_and_bad_turns_are_refused() {
         assert!(error.contains(expected), "{value}: {error}");
     }
 }
+
+/// A 60 x 40 x 20 block (Sketch1 F1, Extrude1 F2) with a pocket cut into
+/// its front (Sketch2 F3, Extrude2 F4) that splits the front face in two:
+/// `#0` at x 15 and `#1` at x 45, next to the pocket (the mock numbers
+/// pieces by their points as the OCCT kernel does); Fillet1 (F5) on the top
+/// edge of `#1` and Chamfer1 (F6) on an edge of the fillet's face, so that
+/// the piece is named in a key too.
+fn split_front() -> Document<MockKernel> {
+    let kernel = MockKernel::default();
+    kernel
+        .split_faces
+        .borrow_mut()
+        .insert("F2:side(c1[c4,c2])".to_owned());
+    let mut doc = Document::new(kernel);
+    run(&mut doc, json!({"cmd": "sketch.create"}));
+    run(
+        &mut doc,
+        json!({"cmd": "sketch.add_rectangle", "sketch": "F1", "corner": [0, 0], "width": 60, "height": 40}),
+    );
+    run(
+        &mut doc,
+        json!({"cmd": "add_feature", "def": {"type": "extrude",
+            "profiles": [{"sketch": "F1", "region": RECT}],
+            "extent": {"type": "distance", "distance": 20}, "operation": "new_body"}}),
+    );
+    run(&mut doc, json!({"cmd": "sketch.create"}));
+    run(
+        &mut doc,
+        json!({"cmd": "sketch.add_rectangle", "sketch": "F3", "corner": [40, -5], "width": 10, "height": 25}),
+    );
+    run(
+        &mut doc,
+        json!({"cmd": "add_feature", "def": {"type": "extrude",
+            "profiles": [{"sketch": "F3", "region": RECT}],
+            "extent": {"type": "distance", "distance": 20}, "operation": "cut",
+            "participants": ["F2.b0"]}}),
+    );
+    run(
+        &mut doc,
+        json!({"cmd": "add_feature", "def": {"type": "fillet", "body": "F2.b0",
+            "edges": [piece_edges(1).0], "radius": 3}}),
+    );
+    run(
+        &mut doc,
+        json!({"cmd": "add_feature", "def": {"type": "chamfer", "body": "F2.b0",
+            "edges": [piece_edges(1).1], "size": {"type": "equal_distance", "distance": 1}}}),
+    );
+    for f in ["F2", "F4", "F5", "F6"] {
+        assert_eq!(doc.status(uid(f)), Some(&FeatureStatus::Ok), "{f}");
+    }
+    doc
+}
+
+/// The fillet's and the chamfer's edges on front piece `k`.
+fn piece_edges(k: u32) -> (String, String) {
+    let side = format!("F2:side(c1[c4,c2])#{k}");
+    let fillet = format!("E{{F2:end({RECT})|{side}}}");
+    let chamfer = format!("E{{{side}|F5:fillet({fillet})}}");
+    (fillet, chamfer)
+}
+
+#[test]
+fn pieces_of_split_faces_are_renamed_as_the_turned_design_numbers_them() {
+    // The pieces are numbered by their points, x first: turns that change
+    // which piece comes first renumber them, and the fillet and the
+    // chamfer would name the other piece's edges (mitcad#537). They follow
+    // the piece next to the pocket through turn after turn.
+    let mut doc = split_front();
+    // The piece's point (the tool's centre) and the other's.
+    let (pocket, other) = ([45.0, 7.5, 10.0], [15.0, 27.5, 10.0]);
+    let first = |a: [f64; 3], b: [f64; 3]| {
+        a.iter()
+            .zip(&b)
+            .map(|(x, y)| x.total_cmp(y))
+            .find(|o| o.is_ne())
+            .is_some_and(|o| o.is_lt())
+    };
+    let mut total = Turn::IDENTITY;
+    for (axis, degrees, (about, quarters)) in [
+        ("z", 180, (TurnAxis::Z, 2)),
+        ("x", 270, (TurnAxis::X, 3)),
+        ("z", 90, (TurnAxis::Z, 1)),
+        ("z", 270, (TurnAxis::Z, 3)),
+        ("y", 90, (TurnAxis::Y, 1)),
+    ] {
+        run(
+            &mut doc,
+            json!({"cmd": "reorient_design", "axis": axis, "degrees": degrees}),
+        );
+        total = Turn::about(about, quarters).after(&total);
+        let k = if first(total.vector(pocket), total.vector(other)) {
+            0
+        } else {
+            1
+        };
+        let file = doc.to_json();
+        let (fillet, chamfer) = piece_edges(k);
+        let (other_fillet, other_chamfer) = piece_edges(1 - k);
+        assert!(file.contains(&fillet), "{axis} {degrees}: {fillet}");
+        assert!(file.contains(&chamfer), "{axis} {degrees}: {chamfer}");
+        assert!(!file.contains(&other_fillet), "{axis} {degrees}");
+        assert!(!file.contains(&other_chamfer), "{axis} {degrees}");
+        for f in ["F2", "F4", "F5", "F6"] {
+            assert_eq!(doc.status(uid(f)), Some(&FeatureStatus::Ok), "{f}");
+        }
+    }
+    // Z 180 renumbers them: Fillet1 and Chamfer1 are rewritten.
+    let mut again = split_front();
+    let reply = run(
+        &mut again,
+        json!({"cmd": "reorient_design", "axis": "z", "degrees": 180}),
+    );
+    let features: Vec<&str> = reply["features"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(
+        features.contains(&"Fillet1") && features.contains(&"Chamfer1"),
+        "{reply}"
+    );
+}
+
+/// A part as the .iam import brings one in with its history: its stored
+/// body as a base feature (Base1) and a block extruded after it, copied
+/// into the component `leg` of the assembly and placed at (100, 0, 0).
+fn leg_assembly() -> (Document<MockKernel>, crate::ids::ComponentUid) {
+    let mut part = Document::new(MockKernel::default());
+    let brep = serde_json::to_value(crate::features::Brep::new(b"6 box".to_vec())).unwrap();
+    run(
+        &mut part,
+        json!({"cmd": "add_feature", "def": {"type": "base", "bodies": [{"brep": brep, "name": "Leg"}]}}),
+    );
+    run(&mut part, json!({"cmd": "sketch.create"}));
+    run(
+        &mut part,
+        json!({"cmd": "sketch.add_rectangle", "sketch": "F2", "corner": [0, 0], "width": 30, "height": 10}),
+    );
+    run(
+        &mut part,
+        json!({"cmd": "add_feature", "def": {"type": "extrude",
+            "profiles": [{"sketch": "F2", "region": RECT}],
+            "extent": {"type": "distance", "distance": 5}, "operation": "new_body"}}),
+    );
+    let mut doc = Document::new(MockKernel::default());
+    let place = crate::Transform {
+        linear: crate::Transform::IDENTITY.linear,
+        translation: [100.0, 0.0, 0.0],
+    };
+    let (component, _) = doc
+        .add_component_copy(&part, Some("leg"), crate::ids::ComponentUid::ROOT, place)
+        .unwrap();
+    (doc, component)
+}
+
+#[test]
+fn a_part_copied_with_its_imported_body_turns() {
+    // The structure of the bench assembly's figure part (mitcad#537): a
+    // base feature in a copied component with a feature after it.
+    let (mut doc, component) = leg_assembly();
+    let bodies = doc.component_bodies(component);
+    assert_eq!(bodies.len(), 2);
+    let before: Vec<BoundingBox> = bodies
+        .iter()
+        .map(|b| doc.body_shape(*b).unwrap().bounds.unwrap())
+        .collect();
+    let reply = run(
+        &mut doc,
+        json!({"cmd": "reorient_design", "axis": "x", "degrees": 270}),
+    );
+    assert_eq!(reply["moves"], json!(["Move1"]), "{reply}");
+    let turn = Turn::about(TurnAxis::X, 3);
+    for (b, was) in bodies.iter().zip(&before) {
+        assert!(near(
+            &doc.body_shape(*b).unwrap().bounds.unwrap(),
+            &turned_box(turn, was)
+        ));
+    }
+}
+
+#[test]
+fn a_move_that_would_fail_is_named_with_its_place_and_error() {
+    // The kernel cannot move the imported body (as OCCT's transform
+    // refused a body whose shell is not connected): the refusal names the
+    // Move, the base feature it follows, its component and the error.
+    let (mut doc, _) = leg_assembly();
+    doc.kernel().fail.borrow_mut().insert("transform");
+    let file = doc.to_json();
+    let error = command(
+        &mut doc,
+        json!({"cmd": "reorient_design", "axis": "x", "degrees": 270}),
+    )
+    .unwrap_err();
+    assert!(
+        error.contains("Move1 (after Base1, in leg) would fail: transform failed"),
+        "{error}"
+    );
+    assert_eq!(doc.to_json(), file, "nothing changed");
+}
+
+#[test]
+fn a_body_that_departs_names_its_component_the_feature_and_how_far() {
+    // A cut whose piece stays where it was, whatever the turn (the mock's
+    // fixed piece boxes): the block departs from the turn after the cut.
+    let mut doc = Document::new(MockKernel::default());
+    run(&mut doc, json!({"cmd": "create_component", "name": "Box"}));
+    run(&mut doc, json!({"cmd": "sketch.create"}));
+    run(
+        &mut doc,
+        json!({"cmd": "sketch.add_rectangle", "sketch": "F1", "corner": [0, 0], "width": 60, "height": 40}),
+    );
+    run(
+        &mut doc,
+        json!({"cmd": "add_feature", "def": {"type": "extrude",
+            "profiles": [{"sketch": "F1", "region": RECT}],
+            "extent": {"type": "distance", "distance": 20}, "operation": "new_body"}}),
+    );
+    run(&mut doc, json!({"cmd": "sketch.create"}));
+    run(
+        &mut doc,
+        json!({"cmd": "sketch.add_rectangle", "sketch": "F3", "corner": [30, 0], "width": 30, "height": 40}),
+    );
+    *doc.kernel().piece_boxes.borrow_mut() = Some(vec![BoundingBox {
+        min: [0.0, 0.0, 0.0],
+        max: [30.0, 40.0, 20.0],
+    }]);
+    run(
+        &mut doc,
+        json!({"cmd": "add_feature", "def": {"type": "extrude",
+            "profiles": [{"sketch": "F3", "region": RECT}],
+            "extent": {"type": "distance", "distance": 20}, "operation": "cut",
+            "participants": ["F2.b0"]}}),
+    );
+    let error = command(
+        &mut doc,
+        json!({"cmd": "reorient_design", "axis": "z", "degrees": 90}),
+    )
+    .unwrap_err();
+    // Turned 90 about Z the piece would be at x -40..0, y 0..30.
+    assert!(
+        error.contains(
+            "of Box (made by Extrude1) departs from the turn after Extrude2: its box up to \
+             40.000 mm from where the turn takes it"
+        ),
+        "{error}"
+    );
+}

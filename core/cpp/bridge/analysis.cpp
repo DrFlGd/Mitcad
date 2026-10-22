@@ -34,6 +34,7 @@
 #include <gp_Lin.hxx>
 #include <BRepExtrema_DistShapeShape.hxx>
 #include <BRep_Builder.hxx>
+#include <Poly_Triangulation.hxx>
 #include <Bnd_Box.hxx>
 #include <NCollection_IndexedMap.hxx>
 #include <TopExp.hxx>
@@ -60,8 +61,10 @@
 #include "mitcad/analysis/compare.hpp"
 #include "mitcad/analysis/measure.hpp"
 #include "mitcad/analysis/properties.hpp"
+#include "mitcad/geometry/cancel.hpp"
 #include "mitcad/geometry/guard.hpp"
 #include "mitcad/geometry/query.hpp"
+#include "mitcad/geometry/shape.hpp"
 #include "mitcad/io/step.hpp"
 #include "mitcad_bridge/kernel/analysis.h"
 
@@ -642,11 +645,18 @@ double max_tolerance(const TopoDS_Shape& shape) {
 // without a boolean, when the plane passes the body's box farther than its
 // tolerances (mitcad#438: Section Analysis measures every body shown, and
 // most lie on one side of the plane).
+// Whether the plane passes the body's box farther than the body's
+// tolerances: its section is empty, and its clip keeps or removes it whole.
+bool plane_passes(const geometry::Shape& shape, const analysis::Bounds& box, const analysis::Plane& plane) {
+  const analysis::PlaneReach reach = analysis::plane_reach(box, plane);
+  const double gap = std::max(reach.min, -reach.max);
+  return gap > kSectionMargin && gap > max_tolerance(shape.occt()) + kSectionMargin &&
+         analysis::clip_side(box, plane) != analysis::ClipSide::Cut;
+}
+
 analysis::Section section_of(const geometry::Shape& shape, const analysis::Plane& plane) {
   if (const std::optional<analysis::Bounds> box = kept_bounds(shape)) {
-    const analysis::PlaneReach reach = analysis::plane_reach(*box, plane);
-    const double gap = std::max(reach.min, -reach.max);
-    if (gap > kSectionMargin && gap > max_tolerance(shape.occt()) + kSectionMargin) {
+    if (plane_passes(shape, *box, plane)) {
       analysis::Section none;
       BRep_Builder builder;
       TopoDS_Compound curves;
@@ -659,6 +669,41 @@ analysis::Section section_of(const geometry::Shape& shape, const analysis::Plane
     }
   }
   return guarded("section", [&] { return analysis::section(shape.occt(), plane); });
+}
+
+// What Section Analysis' worker may read of a body on another thread
+// (mitcad#438), made on the thread that owns the body: null when the plane
+// passes it (plane_passes), its box now kept with it, so that its clip and
+// section are told from that box alone; else a copy that shares no face,
+// edge or vertex with it (geometry::independent_copy: the same names, the
+// same order), its box set from the body's, and its mesh faces' triangles
+// copied (a mesh body has no surfaces to mesh again). Nothing the view or a
+// model job writes into the body (triangulations, polygons, flags) is then
+// read on the other thread.
+std::shared_ptr<geometry::Shape> detached_of(const geometry::Shape& shape, const analysis::Plane& plane) {
+  const std::optional<analysis::Bounds> box = kept_bounds(shape);
+  if (box && plane_passes(shape, *box, plane)) {
+    return nullptr;
+  }
+  return guarded("copy", [&] {
+    const std::shared_ptr<geometry::Shape> copy = geometry::independent_copy(shape);
+    BRep_Builder builder;
+    for (int i = 0; i < shape.face_count() && i < copy->face_count(); ++i) {
+      TopLoc_Location location;
+      const TopoDS_Face& face = shape.face(i);
+      if (!BRep_Tool::Surface(face, location).IsNull()) {
+        continue;
+      }
+      const occ::handle<Poly_Triangulation>& triangles = BRep_Tool::Triangulation(face, location);
+      if (!triangles.IsNull()) {
+        builder.UpdateFace(copy->face(i), triangles->Copy());
+      }
+    }
+    if (const auto bounds = shape.bounds()) {
+      copy->set_bounds(*bounds);
+    }
+    return copy;
+  });
 }
 
 // What Section Analysis shows of a body cut at the plane: null when the
@@ -706,16 +751,26 @@ std::shared_ptr<geometry::Shape> clip_of(const geometry::Shape& shape, const ana
 // Runs work(i) for each of `count` items on all cores (OCCT's thread
 // pool), each item's work an operation of its own (clip_of, section_of):
 // its error, also a crash inside OCCT, is its own, and the other items go
-// on. Returns the errors, empty for the items that worked.
+// on. What tells the calling thread's operations to stop tells each
+// item's too (mitcad#438: Section Analysis off the UI thread stops for a
+// newer plane), and an item not started by then fails as cancelled.
+// Returns the errors, empty for the items that worked.
 template <class Work>
 std::vector<std::string> each_on_all_cores(std::size_t count, Work&& work) {
   std::vector<std::string> errors(count);
+  const geometry::CancelSource* source = geometry::cancel_source();
   OSD_Parallel::For(
       0, static_cast<int>(count),
       [&](int i) {
         const auto k = static_cast<std::size_t>(i);
         try {
-          work(k);
+          if (source != nullptr) {
+            const geometry::CancelScope scope(*source);
+            geometry::throw_if_cancelled();
+            work(k);
+          } else {
+            work(k);
+          }
         } catch (const std::exception& error) {
           errors[k] = error.what();
           if (errors[k].empty()) {
@@ -885,6 +940,20 @@ std::unique_ptr<AnalysisClips> analysis_clip_all(const ShapeList& shapes,
     clipped[k] = clip_of(*shape, each[k]);
   });
   return std::make_unique<AnalysisClips>(std::move(clipped), std::move(errors));
+}
+
+std::unique_ptr<AnalysisClips> analysis_detach_all(const ShapeList& shapes,
+                                                   rust::Slice<const AnalysisPlane> planes) {
+  const std::vector<analysis::Plane> each = planes_of(shapes, planes);
+  std::vector<std::shared_ptr<geometry::Shape>> detached(each.size());
+  std::vector<std::string> errors = each_on_all_cores(each.size(), [&](std::size_t k) {
+    const std::shared_ptr<geometry::Shape> shape = shapes.at(k);
+    if (!shape) {
+      throw std::invalid_argument("the body has no shape");
+    }
+    detached[k] = detached_of(*shape, each[k]);
+  });
+  return std::make_unique<AnalysisClips>(std::move(detached), std::move(errors));
 }
 
 AnalysisComparison analysis_compare_step(const ShapeList& bodies, rust::Str path,

@@ -23,7 +23,9 @@
 #include <BRepBndLib.hxx>
 #include <BRepFilletAPI_MakeFillet.hxx>
 #include <BRepGProp.hxx>
+#include <BRepAdaptor_Curve.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
+#include <BRepPrimAPI_MakeCone.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
 #include <BRepPrimAPI_MakeSphere.hxx>
 #include <BRep_Builder.hxx>
@@ -42,6 +44,7 @@
 #include <gp_Trsf.hxx>
 #include <gp_Vec.hxx>
 #include <NCollection_IndexedMap.hxx>
+#include <Poly_PolygonOnTriangulation.hxx>
 #include <TopTools_ShapeMapHasher.hxx>
 #include <vector>
 
@@ -73,6 +76,10 @@ bool near(double a, double b, double tolerance) { return std::abs(a - b) <= tole
 bool relative_near(double a, double b, double tolerance) {
   return std::abs(a - b) <= tolerance * std::max(1.0, std::abs(b));
 }
+
+// The deviation per millimetre of radius of a turn in 500 straight pieces:
+// the bound of cylinders and cones for 20 000 triangles a face (mitcad#438).
+const double kTurnDeviation = 1.0 - std::cos(3.14159265358979323846 / 500.0);
 
 using mitcad::io::Body;
 using mitcad::io::Color;
@@ -337,8 +344,9 @@ void test_building_scale_sphere(const std::string& dir) {
   const TopoDS_Shape small = dome(0.01);
   CHECK(count(big, TopAbs_FACE) == 3);
 
-  // The floor: none for the small dome's faces, the ring or a large
-  // cylinder (whose triangles do not grow with its size).
+  // The floor: none for the small dome's faces or the ring; a large
+  // cylinder's side has the turn's (mitcad#438: 2e-5 of its radius), its
+  // flat ends none.
   for (TopExp_Explorer it(small, TopAbs_FACE); it.More(); it.Next()) {
     CHECK(mitcad::io::face_deviation_floor(TopoDS::Face(it.Current()), 0.03, 20000) == 0.0);
   }
@@ -354,7 +362,13 @@ void test_building_scale_sphere(const std::string& dir) {
   }
   const TopoDS_Shape tank = BRepPrimAPI_MakeCylinder(5000.0, 20000.0).Shape();
   for (TopExp_Explorer it(tank, TopAbs_FACE); it.More(); it.Next()) {
-    CHECK(mitcad::io::face_deviation_floor(TopoDS::Face(it.Current()), 0.03, 20000) == 0.0);
+    const TopoDS_Face& face = TopoDS::Face(it.Current());
+    const double floor = mitcad::io::face_deviation_floor(face, 0.03, 20000);
+    if (BRepAdaptor_Surface(face).GetType() == GeomAbs_Cylinder) {
+      CHECK(near(floor, 5000.0 * kTurnDeviation, 1e-6)); // 0.0987 mm
+    } else {
+      CHECK(floor == 0.0);
+    }
   }
 
   // The default export mesh of the big dome: bounded per sphere face.
@@ -489,6 +503,145 @@ void test_mesh_all_in_place() {
   // Nothing to mesh.
   CHECK(mitcad::io::mesh_all_in_place({}, view) == 0);
   CHECK(mitcad::io::mesh_all_in_place({TopoDS_Shape()}, view) == 0);
+}
+
+// The most points a circle edge of the shape's cylinder faces has in their
+// triangulations (0 without one).
+int circle_points(const TopoDS_Shape& meshed) {
+  int most = 0;
+  for (TopExp_Explorer faces(meshed, TopAbs_FACE); faces.More(); faces.Next()) {
+    const TopoDS_Face& face = TopoDS::Face(faces.Current());
+    if (BRepAdaptor_Surface(face).GetType() != GeomAbs_Cylinder) {
+      continue;
+    }
+    TopLoc_Location location;
+    const auto triangulation = BRep_Tool::Triangulation(face, location);
+    if (triangulation.IsNull()) {
+      continue;
+    }
+    for (TopExp_Explorer edges(face, TopAbs_EDGE); edges.More(); edges.Next()) {
+      const TopoDS_Edge& edge = TopoDS::Edge(edges.Current());
+      if (BRepAdaptor_Curve(edge).GetType() != GeomAbs_Circle) {
+        continue;
+      }
+      const auto polygon = BRep_Tool::PolygonOnTriangulation(edge, triangulation, location);
+      if (!polygon.IsNull()) {
+        most = std::max(most, polygon->NbNodes());
+      }
+    }
+  }
+  return most;
+}
+
+// Building-scale cylinders and cones (mitcad#438): at the view's absolute
+// 0.01 mm a turn round a radius of metres took thousands of pieces, which
+// their faces' triangles follow (BRepMesh puts no points inside a
+// cylinder, and a cone's grid steps round it as finely). With the face
+// bound, the deviation of a turn in 500 pieces (2e-5 of the radius; about
+// 700 points on a circle, BRepMesh cutting edges at half their deviation)
+// for the faces and the edges that bound them; a cylinder of centimetres, and
+// a small bore through the large one with its edges, mesh as without the
+// bound. Meshed in place again, the triangulations are kept. Counts, not
+// times.
+void test_building_scale_round_faces() {
+  using mitcad::io::MeshOptions;
+  const MeshOptions view{0.01, 5.0 * std::atan(1.0) / 45.0, false, 20000};
+  MeshOptions unlimited = view;
+  unlimited.face_triangles = 0;
+
+  // The floors: the turn's for the side of a tank of 5 m radius and for a
+  // cone of 6.8 m radius at its base, none for flat ends or a small can.
+  const TopoDS_Shape tank = BRepPrimAPI_MakeCylinder(5000.0, 20000.0).Shape();
+  const TopoDS_Shape roof = BRepPrimAPI_MakeCone(6800.0, 0.0, 5000.0).Shape();
+  const TopoDS_Shape can = BRepPrimAPI_MakeCylinder(50.0, 100.0).Shape();
+  int round = 0;
+  for (const TopoDS_Shape& shape : {tank, roof, can}) {
+    for (TopExp_Explorer it(shape, TopAbs_FACE); it.More(); it.Next()) {
+      const TopoDS_Face& face = TopoDS::Face(it.Current());
+      const double floor = mitcad::io::face_deviation_floor(face, 0.01, 20000);
+      const GeomAbs_SurfaceType type = BRepAdaptor_Surface(face).GetType();
+      if (shape.IsSame(tank) && type == GeomAbs_Cylinder) {
+        CHECK(near(floor, 5000.0 * kTurnDeviation, 1e-6)); // 0.0987 mm
+        ++round;
+      } else if (shape.IsSame(roof) && type == GeomAbs_Cone) {
+        CHECK(near(floor, 6800.0 * kTurnDeviation, 1e-6)); // 0.134 mm
+        ++round;
+      } else {
+        CHECK(floor == 0.0);
+      }
+    }
+  }
+  CHECK(round == 2);
+
+  // The tank and the cone in the view: far fewer triangles on the round
+  // faces and on the flat ends, whose triangles are their edges' too.
+  const auto tank_bounded = face_triangles(mitcad::io::triangulate(tank, view));
+  const auto tank_plain = face_triangles(mitcad::io::triangulate(tank, unlimited));
+  CHECK(tank_bounded.size() == tank_plain.size());
+  for (std::size_t i = 0; i < tank_bounded.size() && i < tank_plain.size(); ++i) {
+    std::printf("Tank face %zu: %d triangles, %d without the bound\n", i, tank_bounded[i].second,
+                tank_plain[i].second);
+    CHECK(tank_bounded[i].second > 0);
+    CHECK(tank_bounded[i].second * 2 < tank_plain[i].second);
+    if (tank_bounded[i].first == GeomAbs_Cylinder) {
+      CHECK(tank_bounded[i].second <= 3000);
+    }
+  }
+  const int tank_turn = circle_points(mitcad::io::triangulate(tank, view));
+  const int tank_plain_turn = circle_points(mitcad::io::triangulate(tank, unlimited));
+  std::printf("Tank's top circle: %d points, %d without the bound\n", tank_turn, tank_plain_turn);
+  CHECK(tank_turn > 400 && tank_turn <= 1200);
+  CHECK(tank_plain_turn >= 1500);
+  const auto roof_bounded = face_triangles(mitcad::io::triangulate(roof, view));
+  const auto roof_plain = face_triangles(mitcad::io::triangulate(roof, unlimited));
+  CHECK(roof_bounded.size() == roof_plain.size());
+  for (std::size_t i = 0; i < roof_bounded.size() && i < roof_plain.size(); ++i) {
+    std::printf("Roof face %zu: %d triangles, %d without the bound\n", i, roof_bounded[i].second,
+                roof_plain[i].second);
+    CHECK(roof_bounded[i].second > 0);
+    if (roof_bounded[i].first == GeomAbs_Cone) {
+      CHECK(roof_bounded[i].second <= 40000);
+      CHECK(roof_bounded[i].second * 3 < roof_plain[i].second);
+    }
+  }
+
+  // Small ones: as without the bound, also a bore of 50 mm through the
+  // tank, whose edges lie on the large cylinder too.
+  CHECK(face_triangles(mitcad::io::triangulate(can, view)) ==
+        face_triangles(mitcad::io::triangulate(can, unlimited)));
+  const TopoDS_Shape bore =
+      BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(-6000.0, 0.0, 10000.0), gp::DX()), 50.0, 12000.0).Shape();
+  const TopoDS_Shape drilled = BRepAlgoAPI_Cut(tank, bore).Shape();
+  const auto bores = [](const TopoDS_Shape& meshed) {
+    std::vector<int> counts;
+    for (TopExp_Explorer it(meshed, TopAbs_FACE); it.More(); it.Next()) {
+      const TopoDS_Face& face = TopoDS::Face(it.Current());
+      const BRepAdaptor_Surface surface(face);
+      if (surface.GetType() == GeomAbs_Cylinder && surface.Cylinder().Radius() < 100.0) {
+        TopLoc_Location location;
+        const auto triangulation = BRep_Tool::Triangulation(face, location);
+        counts.push_back(triangulation.IsNull() ? -1 : triangulation->NbTriangles());
+      }
+    }
+    return counts;
+  };
+  const std::vector<int> bore_bounded = bores(mitcad::io::triangulate(drilled, view));
+  CHECK(!bore_bounded.empty());
+  CHECK(bore_bounded == bores(mitcad::io::triangulate(drilled, unlimited)));
+
+  // Meshed in place twice (the view's meshes on the model's thread, then
+  // the view's own check): the coarser edges meet the bound again, and
+  // every triangulation is kept.
+  const std::vector<TopoDS_Shape> shown{BRepPrimAPI_MakeCylinder(5000.0, 20000.0).Shape(),
+                                        BRepPrimAPI_MakeCone(6800.0, 0.0, 5000.0).Shape(),
+                                        BRepAlgoAPI_Cut(tank, bore).Shape()};
+  for (const TopoDS_Shape& made : shown) {
+    CHECK(mitcad::io::mesh_in_place(made, view));
+    CHECK(mitcad::io::has_triangulation(made));
+    const auto first = triangulation_pointers(made);
+    CHECK(mitcad::io::mesh_in_place(made, view));
+    CHECK(triangulation_pointers(made) == first);
+  }
 }
 
 void test_stl(const std::string& dir) {
@@ -879,6 +1032,7 @@ int main(int argc, char** argv) {
     test_triangulate_keeps_original();
     test_building_scale_sphere(dir);
     test_mesh_all_in_place();
+    test_building_scale_round_faces();
     test_stl(dir);
     test_indexed_mesh(dir);
     test_face_meshes(dir);

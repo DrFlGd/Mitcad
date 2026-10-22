@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
+#include <exception>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -104,6 +105,24 @@ public:
   // or whole (null).
   virtual void showSection(const QJsonValue& plane) = 0;
   virtual QJsonValue section() const = 0;
+  // A measurement for an inspection's panel (Inspection::laterQuery),
+  // answered once the view shows what the inspection showed (Section
+  // Analysis' area and length, mitcad#438): `done` gets the query's answer,
+  // or its error, on the UI thread, unless `context` is gone by then; a
+  // newer request replaces one not answered yet. The default answers at
+  // once, as a query.
+  using Measured = std::function<void(const QJsonObject& answer, const QString& error)>;
+  virtual void measureLater(const QJsonObject& query, QObject* context, Measured done) {
+    Q_UNUSED(context);
+    QJsonObject answer;
+    QString error;
+    try {
+      answer = queryObject(query);
+    } catch (const std::exception& failure) {
+      error = QString::fromUtf8(failure.what());
+    }
+    done(answer, error);
+  }
   // Soon (not inside the running command's call): cancels the command and
   // opens feature `uid` for editing, its input `input` taking the keyboard
   // (P6: a command whose inputs ask for another feature's edit).
@@ -329,6 +348,11 @@ private:
   void showCancelledPreview(const QByteArray& key);
   void runInspection();
   void acceptInspection(const Inspection& result);
+  // The inspection's later measurement (Inspection::laterQuery, mitcad#438),
+  // asked of the host; its answer updates the panel unless the inputs
+  // changed or a newer one was asked for.
+  void measureInspection(const Inspection& result);
+  quint64 m_measurements = 0; // the latest measurement asked for
   void clearPreview();
   void updateHighlights();
   // The occurrences the inputs' items name as ghosts (InputDef::ghosts),

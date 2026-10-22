@@ -37,7 +37,16 @@ struct MeshOptions {
   // the face's size (face_deviation_floor), so that a sphere of metres
   // gets about as many triangles as one of centimetres (mitcad#398). The
   // edges keep `linear_deflection`, so neighbouring faces still share
-  // their nodes. Small faces are meshed as without a limit.
+  // their nodes. Small faces are meshed as without a limit. Cylinders and
+  // cones (whose triangles are mostly their edges' points) mesh at most as
+  // finely as a turn in face_triangles / 40 straight pieces, 500 for the
+  // view's 20 000 (mitcad#438): their faces and the edges that bound them
+  // mesh with that turn's deviation, 2e-5 of the radius for 500, where it
+  // is more than `linear_deflection` (radii over half a metre at 0.01 mm;
+  // BRepMesh cuts an edge at half its deviation, so a circle gets about
+  // 700 points), an edge at the smallest floor of the faces it bounds
+  // (planes having no say) and its own curve's. Smaller cylinders and
+  // cones are meshed as without a limit.
   std::size_t face_triangles = 0;
 
   static MeshOptions from(Refinement refinement);
@@ -46,11 +55,13 @@ struct MeshOptions {
 // The smallest surface deviation (mm) that keeps a face's mesh within
 // about `face_triangles` triangles: proportional to the integral of the
 // square root of the surface's Gaussian curvature over the face (a
-// sphere's or torus's, zero for planes, cylinders, cones and extrusions,
-// whose triangle count does not grow with their size), estimated over
-// the face's parameter range. 0 without a limit or for a face too small
-// to need one (its box's diagonal below the deviation times
-// face_triangles divided by 3.2).
+// sphere's or torus's, zero for planes and extrusions, whose triangle
+// count does not grow with their size), estimated over the face's
+// parameter range. 0 without a limit or for a face too small to need one
+// (its box's diagonal below the deviation times face_triangles divided by
+// 3.2). For a cylinder or a cone, the deviation of a turn round it (at the
+// cone's largest radius on the face) in face_triangles / 40 straight
+// pieces, when that is more than `deviation`, else 0 (mitcad#438).
 double face_deviation_floor(const TopoDS_Face& face, double deviation, std::size_t face_triangles);
 
 // A triangulated copy of the shape; the shape itself is not modified (OCCT

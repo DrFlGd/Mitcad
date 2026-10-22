@@ -183,6 +183,8 @@ int main() {
   test::fillet_pierced_tests();
   // Faces moved by a rigid motion, their neighbours following (mitcad#343).
   test::move_faces_tests();
+  // A planar face of a body extruded as a profile (mitcad#535).
+  test::face_extrude_tests();
   for (const std::string& change : mitcad::geometry::input_changes()) {
     std::fprintf(stderr, "%s\n", change.c_str());
   }

@@ -66,6 +66,12 @@ public:
 // Whether this thread's operations were asked to stop.
 bool cancel_requested() noexcept;
 
+// What tells this thread's operations to stop, null when nothing does: work
+// spread over other threads (OCCT's thread pool) names it there too, with
+// a CancelScope of each task's own (the Section Analysis of many bodies,
+// mitcad#438).
+const CancelSource* cancel_source() noexcept;
+
 // Throws Cancelled when this thread's operations were asked to stop.
 void throw_if_cancelled();
 

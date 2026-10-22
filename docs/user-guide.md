@@ -207,7 +207,7 @@ for one run.
 | Offset, Project, Move/Copy | O, P, M | In a sketch: offset curve, projection (also in the context menu of a face, edge or vertex), move |
 | Construction | X | Selected curves to construction geometry and back |
 | Delete | Delete | Delete the selected sketch geometry, constraints and dimensions |
-| Extrude | E | Profiles (also straight from sketch mode), direction, extent, taper, thin wall (Thin Extrude: walls along the profiles' curves, or along sketch curves picked instead, open chains as well as closed ones), Operation |
+| Extrude | E | Profiles (also straight from sketch mode) or one planar face of a body, direction, extent, taper, thin wall (Thin Extrude: walls along the profiles' curves, or along sketch curves picked instead, open chains as well as closed ones), Operation |
 | Hole | H | Click a face for the hole positions; simple, counterbore, countersink, counterdrill, taper, thread |
 | Fillet | F | Edges or faces, several radius sets |
 | Press Pull | Q | A face is offset, an edge filleted, a profile extruded |
@@ -254,7 +254,20 @@ tab](#build-tab). Other commands of the SOLID tab, in menu order:
   has a *Start* or *End Condition*: Free; for a profile, a Direction (the
   *Takeoff Angle* from the profile's normal, outwards when positive); for
   a face, Tangent or Smooth to the faces next to it; for a point, a sharp
-  or a rounded (tangent) tip. A Thin Extrude also takes sketch curves instead of profiles
+  or a rounded (tangent) tip. Extrude also takes a planar face of a body
+  as its profile, with no sketch: select the face and press **E** (or
+  right-click it, Solid › Extrude), or pick it in Profiles. The face's
+  whole area, holes included, goes along the face's own normal (also on a
+  slanted face): out of the material by a positive distance (Join chosen
+  for you), into it by a negative one or with Flip (Cut), or as a New
+  Body; two sides and symmetric distances, and a start offset from the
+  face, work as for profiles; tapers, To Object and All do not. This
+  works on any body, also a body imported without its history. The
+  extrusion keeps referring to the face, so when an earlier feature moves
+  or resizes the face, the extrusion follows; if the face is gone, the
+  extrusion fails and says so, rather than taking another profile. A
+  selected face that is not planar, or a face of a mesh body, is refused
+  on the panel. A Thin Extrude also takes sketch curves instead of profiles
   (pick them in Profiles once the type is Thin Extrude): an open line,
   arc or chain of them gets a wall along it, square at its ends, Side 1
   on the outside of its bend and Side 2 on the inside (a straight chain:
@@ -312,7 +325,14 @@ tab](#build-tab). Other commands of the SOLID tab, in menu order:
   most). The Radius field holds the first of these values. **Chamfer**
   bevels edges in sets the same way; its Corner Type sets where three
   bevelled edges meet: a small face of its own (Chamfer), the bevels
-  running on until they meet (Miter), or a smooth patch (Blend). Edit Appearances (also Appearance... in a body's context
+  running on until they meet (Miter), or a smooth patch (Blend). Each set
+  has arrows in the view on its first edge, which drag its own values as
+  the fields do: a constant Radius's arrow points into the rounding, an
+  Equal Distance's into the middle of the bevel; with Two Distances or
+  Distance and Angle, Distance's arrow runs along the face it is measured
+  on (the Reference Face, else the edge's first face; Flip takes the
+  other) and Distance 2's
+  along the other face. The angle is typed. Edit Appearances (also Appearance... in a body's context
   menu) shows the appearance library with a preview of each: base colour,
   metalness, roughness, specular, transmission, index of refraction, coat,
   emission and opacity. New copies the selected appearance into the design,

@@ -213,5 +213,7 @@ void section_curve_tests();
 void fillet_pierced_tests();
 // Faces moved by a rigid motion, their neighbours following (mitcad#343).
 void move_faces_tests();
+// A planar face of a body extruded as a profile (mitcad#535).
+void face_extrude_tests();
 
 } // namespace test

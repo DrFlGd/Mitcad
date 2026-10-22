@@ -152,6 +152,8 @@ pub mod ffi {
         fn section(self: &AnalysisSections, index: usize) -> UniquePtr<AnalysisSection>;
         /// Why it failed; empty when it did not.
         fn error(self: &AnalysisSections, index: usize) -> String;
+        /// Items not started when the calling thread's geometry is told to
+        /// stop fail as cancelled.
         fn analysis_clip_all(
             shapes: &ShapeList,
             planes: &[AnalysisPlane],
@@ -162,6 +164,14 @@ pub mod ffi {
         fn shape(self: &AnalysisClips, index: usize) -> SharedPtr<Shape>;
         /// Why the clip failed; empty when it did not.
         fn error(self: &AnalysisClips, index: usize) -> String;
+        /// What another thread may read of each shape (mitcad#438): a copy
+        /// sharing no sub-shape with it (same names), or null when the plane
+        /// passes it (its kept box then tells its clip and section), or null
+        /// with an error.
+        fn analysis_detach_all(
+            shapes: &ShapeList,
+            planes: &[AnalysisPlane],
+        ) -> Result<UniquePtr<AnalysisClips>>;
 
         /// The bodies together against a STEP file's bodies: all of them
         /// with an empty `step_body`, else the one with that name, or that

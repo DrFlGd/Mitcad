@@ -40,10 +40,11 @@ use crate::features::scale::ScaleSpec;
 use crate::features::{
     FeatureDef, FrameDef, HolePlacement, OccurrencePath, SketchDef, SketchPlane,
 };
-use crate::ids::{ComponentUid, FeatureUid};
+use crate::ids::{BodyUid, ComponentUid, FeatureUid};
 use crate::parameters::ParamId;
 use crate::profile::SketchFrame;
 use crate::render_settings::{LightSpace, RenderSettings};
+use crate::topo::{EdgeName, FaceName, RoleKey, TopoName, VertexName};
 use crate::transform::Transform;
 
 /// A rotation by a multiple of 90 degrees about the origin: the turned
@@ -772,6 +773,187 @@ pub(crate) fn origin_plane_facing(normal: Vec3) -> Option<OriginDatum> {
             }
             _ => false,
         })
+}
+
+/// New numbers of the pieces of split faces (`#k`) and of the edges between
+/// the same two faces (`E{…}#k`), which the kernel numbers in a geometric
+/// order: a turn changes it, so references to them name other pieces in the
+/// turned design until they are renamed (mitcad#537). Keyed by the names as
+/// the definitions have them.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct PieceRenames {
+    pub faces: BTreeMap<String, FaceName>,
+    pub edges: BTreeMap<String, EdgeName>,
+}
+
+impl PieceRenames {
+    pub fn is_empty(&self) -> bool {
+        self.faces.is_empty() && self.edges.is_empty()
+    }
+
+    /// The face as it is named after the renames: itself renamed, or the
+    /// names in its key (a fillet's face is named after its edge).
+    pub fn face(&self, face: &FaceName) -> FaceName {
+        if let Some(renamed) = self.faces.get(&face.to_string()) {
+            return renamed.clone();
+        }
+        let key = match &face.key {
+            Some(RoleKey::Edge(edge)) => Some(RoleKey::Edge(Box::new(self.edge(edge)))),
+            Some(RoleKey::Vertex(vertex)) => Some(RoleKey::Vertex(Box::new(self.vertex(vertex)))),
+            // A derived part's face names its source's face, in the source's
+            // own names (mitcad#375).
+            Some(RoleKey::Face(inner)) if face.role != "part" => {
+                Some(RoleKey::Face(Box::new(self.face(inner))))
+            }
+            other => other.clone(),
+        };
+        FaceName {
+            key,
+            ..face.clone()
+        }
+    }
+
+    pub fn edge(&self, edge: &EdgeName) -> EdgeName {
+        if let Some(renamed) = self.edges.get(&edge.to_string()) {
+            return renamed.clone();
+        }
+        let [a, b] = edge.faces();
+        let renamed = EdgeName::new(self.face(a), self.face(b));
+        match edge.index {
+            Some(k) => renamed.with_index(k),
+            None => renamed,
+        }
+    }
+
+    pub fn vertex(&self, vertex: &VertexName) -> VertexName {
+        let faces = vertex.faces().iter().map(|f| self.face(f));
+        match VertexName::new(faces) {
+            Some(renamed) => match vertex.index {
+                Some(k) => renamed.with_index(k),
+                None => renamed,
+            },
+            None => vertex.clone(),
+        }
+    }
+
+    /// The renamed text of a topological name; None for text that is no
+    /// name or a name the renames leave as it is.
+    fn text(&self, text: &str) -> Option<String> {
+        if !text.contains(':') {
+            return None;
+        }
+        let renamed = match text.parse::<TopoName>().ok()? {
+            TopoName::Face(face) => self.face(&face).to_string(),
+            TopoName::Edge(edge) => self.edge(&edge).to_string(),
+            TopoName::Vertex(vertex) => self.vertex(&vertex).to_string(),
+        };
+        (renamed != text).then_some(renamed)
+    }
+}
+
+/// Every string of a definition's JSON form (parameters as markers), for
+/// `visit` to read or change; the definition back when it changed one.
+fn visit_strings(
+    def: &FeatureDef,
+    visit: &mut dyn FnMut(&mut String) -> bool,
+) -> Result<Option<FeatureDef>, String> {
+    // A base feature holds bodies and no references.
+    if matches!(def, FeatureDef::Base(_)) {
+        return Ok(None);
+    }
+    let mut slots = Vec::new();
+    let marked = def
+        .map_params(&mut |_, id: &ParamId| {
+            slots.push(*id);
+            Ok::<_, ()>(format!("{PARAM}{}", slots.len() - 1))
+        })
+        .expect("never fails");
+    let mut value = serde_json::to_value(&marked).map_err(|e| e.to_string())?;
+    fn walk(value: &mut serde_json::Value, visit: &mut dyn FnMut(&mut String) -> bool) -> bool {
+        // Every string is visited, also after one that changed.
+        let mut changed = false;
+        match value {
+            serde_json::Value::String(text) => changed = visit(text),
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    changed |= walk(item, visit);
+                }
+            }
+            serde_json::Value::Object(map) => {
+                for item in map.values_mut() {
+                    changed |= walk(item, visit);
+                }
+            }
+            _ => {}
+        }
+        changed
+    }
+    if !walk(&mut value, visit) {
+        return Ok(None);
+    }
+    let changed: FeatureDef<String> = serde_json::from_value(value).map_err(|e| e.to_string())?;
+    changed
+        .map_params(&mut |slot, marker: &String| {
+            marker
+                .strip_prefix(PARAM)
+                .and_then(|i| i.parse::<usize>().ok())
+                .and_then(|i| slots.get(i).copied())
+                .ok_or_else(|| format!("{slot} lost its parameter"))
+        })
+        .map(Some)
+}
+
+/// The names a definition refers to that a geometric order numbers: faces
+/// that are pieces of split faces, on their own or in edges and vertices,
+/// and edges numbered among those between the same faces; with the bodies
+/// it names.
+pub(crate) fn numbered_names(def: &FeatureDef) -> (Vec<TopoName>, Vec<BodyUid>) {
+    let mut names = Vec::new();
+    let mut bodies = Vec::new();
+    let _ = visit_strings(def, &mut |text| {
+        if let Ok(body) = text.parse::<BodyUid>() {
+            if !bodies.contains(&body) {
+                bodies.push(body);
+            }
+        } else if text.contains('#')
+            && text.contains(':')
+            && let Ok(name) = text.parse::<TopoName>()
+        {
+            let numbered = match &name {
+                TopoName::Face(face) => !face.split.is_empty(),
+                TopoName::Edge(edge) => {
+                    edge.index.is_some() || edge.faces().iter().any(|f| !f.split.is_empty())
+                }
+                TopoName::Vertex(vertex) => vertex.faces().iter().any(|f| !f.split.is_empty()),
+            };
+            if numbered && !names.contains(&name) {
+                names.push(name);
+            }
+        }
+        false
+    });
+    if names.is_empty() {
+        bodies.clear();
+    }
+    (names, bodies)
+}
+
+/// The definition with the renames applied to every name it refers to;
+/// None when it names nothing they rename.
+pub(crate) fn rename_pieces(
+    def: &FeatureDef,
+    renames: &PieceRenames,
+) -> Result<Option<FeatureDef>, String> {
+    if renames.is_empty() {
+        return Ok(None);
+    }
+    visit_strings(def, &mut |text| match renames.text(text) {
+        Some(renamed) => {
+            *text = renamed;
+            true
+        }
+        None => false,
+    })
 }
 
 #[cfg(test)]

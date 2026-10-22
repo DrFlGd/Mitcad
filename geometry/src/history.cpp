@@ -396,3 +396,9 @@ std::vector<FaceNamer::Piece> FaceNamer::pieces() const {
 }
 
 } // namespace mitcad::geometry::detail
+
+namespace mitcad::geometry {
+
+ShapePtr independent_copy(const Shape& shape) { return detail::working_copy(shape); }
+
+} // namespace mitcad::geometry

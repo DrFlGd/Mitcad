@@ -2,7 +2,12 @@
 // Extrude and Revolve with all of the model's options (U4; commands.md,
 // "extrude" and "revolve"), laid out in panel sections: Type, Profiles,
 // Start, Direction, Extent, Taper, Thin walls, Operation and Objects.
+// Extrude's Profiles also take one planar face of a body (mitcad#535).
+#include <algorithm>
 #include <cmath>
+#include <initializer_list>
+#include <optional>
+#include <utility>
 
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -39,10 +44,39 @@ std::function<bool(const CommandState&)> choiceIs(const QString& id, const QStri
 
 // --- Extrude
 
+// A body face as the profile (mitcad#535): the face among the picked
+// profiles, if any.
+const SelectionItem* profileFace(const Selection& items) {
+  for (const SelectionItem& item : items) {
+    if (item.kind == SelectKind::Face) {
+      return &item;
+    }
+  }
+  return nullptr;
+}
+
+bool hasProfileFace(const CommandState& state) {
+  return profileFace(state.items(QStringLiteral("profiles"))) != nullptr;
+}
+
+// The profiles' middle and the way they go: a face's middle and outward
+// normal, or the sketch's normal.
+std::optional<std::pair<gp_Pnt, gp_Dir>> profileBase(const Selection& items, const CommandContext& context) {
+  if (const SelectionItem* face = profileFace(items)) {
+    const auto frame = frameOf(*face, context);
+    const auto center = centerOf({*face}, context);
+    if (frame && center) {
+      return std::make_pair(*center, frame->normal);
+    }
+    return std::nullopt;
+  }
+  return profileNormal(items, context);
+}
+
 // Where the extrusion starts: the profiles' middle, moved by a start offset.
 std::optional<std::pair<gp_Pnt, gp_Dir>> extrudeBase(const CommandState& state,
                                                      const CommandContext& context) {
-  auto base = profileNormal(state.items(QStringLiteral("profiles")), context);
+  auto base = profileBase(state.items(QStringLiteral("profiles")), context);
   if (!base) {
     return std::nullopt;
   }
@@ -148,7 +182,7 @@ CommandDef extrudeCommand(const CommandContext& context) {
   def.id = QStringLiteral("solid.extrude");
   def.name = QObject::tr("Extrude");
   def.icon = QStringLiteral("extrude");
-  def.tooltip = QObject::tr("Pushes sketch profiles into a solid");
+  def.tooltip = QObject::tr("Pushes sketch profiles or a planar face into a solid");
   def.shortcut = QKeySequence(Qt::Key_E);
   def.group = QStringLiteral("CREATE");
   def.pinned = true;
@@ -168,14 +202,17 @@ CommandDef extrudeCommand(const CommandContext& context) {
                   QStringLiteral("solid"))
           .withTooltip(QObject::tr("A solid of the profiles, or walls along their curves")),
       // A thin extrusion also takes sketch curves, open chains as well as
-      // closed loops, instead of profiles (mitcad#463).
+      // closed loops, instead of profiles (mitcad#463); a solid one a
+      // planar face of a body instead (mitcad#535).
       selectionInput(QStringLiteral("profiles"), QObject::tr("Profiles"),
-                     SelectKind::Profile | SelectKind::SketchCurve, 1, 0)
-          .withTooltip(QObject::tr("Profiles; for a thin extrusion, sketch curves instead"))
+                     SelectKind::Profile | SelectKind::SketchCurve | SelectKind::Face, 1, 0)
+          .withTooltip(QObject::tr("Profiles or one planar face; for a thin extrusion, sketch curves instead"))
+          .withAccepts([](const SelectionItem& item) { return item.kind != SelectKind::Face || isPlanar(item); })
+          .withoutMeshes()
           .withPickRule(
               [thin](const CommandState& state) -> SelectFilter {
                 return thin(state) ? SelectKind::Profile | SelectKind::SketchCurve
-                                   : SelectFilter(SelectKind::Profile);
+                                   : SelectKind::Profile | SelectKind::Face;
               },
               [](const SelectionItem&, const CommandState&) { return true; }),
       choiceInput(QStringLiteral("start"), QObject::tr("Start"),
@@ -194,7 +231,7 @@ CommandDef extrudeCommand(const CommandContext& context) {
             if (state.choice(QStringLiteral("start")) != QStringLiteral("offset")) {
               return std::nullopt;
             }
-            const auto base = profileNormal(state.items(QStringLiteral("profiles")), model);
+            const auto base = profileBase(state.items(QStringLiteral("profiles")), model);
             return base ? std::optional<Manipulator>(arrow(base->first, base->second)) : std::nullopt;
           }),
       selectionInput(QStringLiteral("start_object"), QObject::tr("Start Object"), kPlaneKinds, 1, 1)
@@ -210,7 +247,7 @@ CommandDef extrudeCommand(const CommandContext& context) {
           })
           .withoutMeshes()
           .withVisible([thin](const CommandState& s) {
-            return !thin(s) && s.choice(QStringLiteral("direction")) == kOneSide &&
+            return !thin(s) && !hasProfileFace(s) && s.choice(QStringLiteral("direction")) == kOneSide &&
                    s.choice(QStringLiteral("start")) == QStringLiteral("profile_plane");
           }),
   };
@@ -244,9 +281,10 @@ CommandDef extrudeCommand(const CommandContext& context) {
   operations[1].label = QObject::tr("Local bodies");
   operations[1].tooltip = QObject::tr("Bodies in the feature's component. Older cuts retain this local scope.");
   const auto originalVisible = operations[1].visible;
+  // A face's extrusion cuts the bodies of its own component (mitcad#535).
   operations[1].visible = [originalVisible](const CommandState& state) {
     return originalVisible(state) && (state.choice(QStringLiteral("operation")) != QStringLiteral("cut") ||
-                                      state.object(QStringLiteral("cut_scope")).isEmpty());
+                                      state.object(QStringLiteral("cut_scope")).isEmpty() || hasProfileFace(state));
   };
   def.inputs += operations;
   InputDef targets;
@@ -255,9 +293,28 @@ CommandDef extrudeCommand(const CommandContext& context) {
   targets.label = QObject::tr("Affected components");
   targets.visible = [](const CommandState& state) {
     return state.choice(QStringLiteral("operation")) == QStringLiteral("cut") &&
-           !state.object(QStringLiteral("cut_scope")).isEmpty();
+           !state.object(QStringLiteral("cut_scope")).isEmpty() && !hasProfileFace(state);
   };
   def.inputs.append(targets);
+  // A face selected before the command goes to Profiles when it is planar
+  // and not a mesh body's (a cylinder or cone to Wrap Onto). Any other
+  // stays the profile all the same, so that the panel says why it is
+  // refused and no unused profile stands in for it (mitcad#535).
+  def.preselected = [](const Selection& before, CommandState& state, const CommandContext&) {
+    Selection& profiles = state.items(QStringLiteral("profiles"));
+    if (!profiles.isEmpty()) {
+      return;
+    }
+    for (const SelectionItem& item : before) {
+      const bool refused = item.geometry == QStringLiteral("mesh") || !isPlanar(item);
+      if (item.kind == SelectKind::Face && refused && !state.items(QStringLiteral("wrap")).contains(item)) {
+        profiles.append(item);
+        qDebug().noquote() << QStringLiteral("Extrude: %1 is no planar face, refused as the profile")
+                                  .arg(item.describe());
+        return;
+      }
+    }
+  };
   def.init = [](CommandState& state, const CommandContext& model) {
     newestProfile(state, model);
     const QJsonObject components = model.queryObject({{QStringLiteral("query"), QStringLiteral("components")}});
@@ -297,15 +354,46 @@ CommandDef extrudeCommand(const CommandContext& context) {
     return changed;
   };
   // Thin walls follow sketch curves too, so a sketch of open curves is
-  // enough (mitcad#463).
-  def.enabled = [&context] { return hasProfiles(context) || hasSketches(context); };
+  // enough (mitcad#463); a body's planar face is a profile too (mitcad#535).
+  def.enabled = [&context] { return hasProfiles(context) || hasSketches(context) || hasBodies(context); };
+  // The view's context menu (mitcad#494) offers it for profiles and sketch
+  // curves, and for one planar face, which the face alone completes: it is
+  // the profile, not only where the extrusion goes.
+  def.offeredFor = [](const Selection& selection) {
+    const auto faces = std::count_if(selection.begin(), selection.end(),
+                                     [](const SelectionItem& item) { return item.kind == SelectKind::Face; });
+    return faces == 0 || (faces == 1 && selection.size() == 1);
+  };
+  def.completes = [](const Selection&) { return true; };
 
   def.build = [](const CommandState& state, const CommandContext&) {
     Built result;
     const Selection& picked = state.items(QStringLiteral("profiles"));
-    const QString sketch = oneSketch(picked, result, QStringLiteral("profiles"));
-    if (sketch.isEmpty()) {
-      return result;
+    // A planar face of a body as the profile (mitcad#535), alone.
+    const SelectionItem* face = profileFace(picked);
+    QString sketch;
+    if (face != nullptr) {
+      if (picked.size() > 1) {
+        return Built::failure(QObject::tr("Select one planar face, or profiles of one sketch, not both."),
+                              QStringLiteral("profiles"));
+      }
+      if (face->geometry == QStringLiteral("mesh")) {
+        return Built::failure(QObject::tr("Extrude takes a planar face of a solid or surface body; the "
+                                          "selected face is a mesh body's (triangles without surfaces)."),
+                              QStringLiteral("profiles"));
+      }
+      // A face whose kind is unknown (one no longer on its body) is left to
+      // the model, which says whether it is there; an edited extrusion's
+      // face has its kind from where the feature finds it (`rolledBack`).
+      if (!face->geometry.isEmpty() && !isPlanar(*face)) {
+        return Built::failure(QObject::tr("Extrude takes a planar face; the selected face is not planar."),
+                              QStringLiteral("profiles"));
+      }
+    } else {
+      sketch = oneSketch(picked, result, QStringLiteral("profiles"));
+      if (sketch.isEmpty()) {
+        return result;
+      }
     }
     // Sketch curves, for walls along them (mitcad#463), or profiles.
     Selection profiles;
@@ -316,6 +404,10 @@ CommandDef extrudeCommand(const CommandContext& context) {
       }
     }
     const bool thinType = state.choice(QStringLiteral("type")) == QStringLiteral("thin");
+    if (face != nullptr && thinType) {
+      return Built::failure(QObject::tr("Thin Extrude follows sketch profiles or curves, not a face."),
+                            QStringLiteral("profiles"));
+    }
     if (!curves.isEmpty() && !thinType) {
       return Built::failure(QObject::tr("Only a thin extrusion follows sketch curves."),
                             QStringLiteral("profiles"));
@@ -356,11 +448,32 @@ CommandDef extrudeCommand(const CommandContext& context) {
         }
       }
     }
+    const QString start = state.choice(QStringLiteral("start"));
+    if (face != nullptr) {
+      // Distances along the face's normal, from it or an offset from it.
+      const auto plain = [](const QJsonObject& side) {
+        return str(side, "type") == kDistance && !side.contains(QStringLiteral("taper"));
+      };
+      const QString type = str(extent, "type");
+      const bool distances =
+          type == kTwoSides ? plain(extent.value(QStringLiteral("side1")).toObject()) &&
+                                  plain(extent.value(QStringLiteral("side2")).toObject())
+                            : (type == kDistance || type == kSymmetric) && !extent.contains(QStringLiteral("taper"));
+      if (!distances) {
+        return Built::failure(QObject::tr("An extrusion of a face goes a distance, without a taper."),
+                              QStringLiteral("extent"));
+      }
+      if (start == QStringLiteral("object")) {
+        return Built::failure(QObject::tr("An extrusion of a face starts at the face or an offset from it."),
+                              QStringLiteral("start"));
+      }
+    }
     result.def = {{QStringLiteral("type"), QStringLiteral("extrude")}, {QStringLiteral("extent"), extent}};
-    if (curves.isEmpty()) {
+    if (face != nullptr) {
+      result.def.insert(QStringLiteral("profile_face"), face->reference());
+    } else if (curves.isEmpty()) {
       result.def.insert(QStringLiteral("profiles"), refsOf(profiles));
     }
-    const QString start = state.choice(QStringLiteral("start"));
     if (start == QStringLiteral("offset")) {
       result.def.insert(QStringLiteral("start"),
                         QJsonObject{{QStringLiteral("type"), QStringLiteral("offset")},
@@ -402,8 +515,8 @@ CommandDef extrudeCommand(const CommandContext& context) {
     // Wrapped onto a face (mitcad#473): a distance on one side, no taper,
     // in the feature's own component (no assembly cut scope).
     const Selection& wrap = state.items(QStringLiteral("wrap"));
-    const bool wrapped =
-        !wrap.isEmpty() && !thinType && direction == kOneSide && start == QStringLiteral("profile_plane");
+    const bool wrapped = !wrap.isEmpty() && !thinType && face == nullptr && direction == kOneSide &&
+                         start == QStringLiteral("profile_plane");
     if (wrapped) {
       if (str(extent, "type") != kDistance || extent.contains(QStringLiteral("taper"))) {
         return Built::failure(QObject::tr("A wrapped extrusion goes a distance, without a taper."),
@@ -412,7 +525,8 @@ CommandDef extrudeCommand(const CommandContext& context) {
       result.def.insert(QStringLiteral("wrap"), wrap.first().reference());
     }
     addOperation(result.def, state);
-    if (!wrapped && state.choice(QStringLiteral("operation")) == QStringLiteral("cut") &&
+    // A face's extrusion cuts the bodies of its own component (mitcad#535).
+    if (!wrapped && face == nullptr && state.choice(QStringLiteral("operation")) == QStringLiteral("cut") &&
         !state.object(QStringLiteral("cut_scope")).isEmpty()) {
       QJsonObject scope = state.object(QStringLiteral("cut_scope"));
       if (state.checked(QStringLiteral("cut_context_from_profile"))) {
@@ -428,6 +542,11 @@ CommandDef extrudeCommand(const CommandContext& context) {
 
   def.load = [](const QJsonObject& feature, CommandState& state, const CommandContext& context) {
     state.setItems(QStringLiteral("profiles"), profilesOf(feature.value(QStringLiteral("profiles")).toArray()));
+    // A body face as the profile (mitcad#535).
+    const SelectionItem face = itemOf(feature.value(QStringLiteral("profile_face")), context);
+    if (face.isValid()) {
+      state.setItems(QStringLiteral("profiles"), {face});
+    }
     const QJsonObject extent = feature.value(QStringLiteral("extent")).toObject();
     const QString type = str(extent, "type");
     if (type == kTwoSides) {
@@ -483,6 +602,24 @@ CommandDef extrudeCommand(const CommandContext& context) {
     state.setObject(QStringLiteral("cut_scope"), feature.value(QStringLiteral("cut_scope")).toObject());
   };
 
+  // The faces `load` took from the model after the edited extrusion (where
+  // its profile face is joined away, mitcad#535) resolved again where the
+  // feature finds them: their kind for the panel, as the view's arrow and
+  // the preview see them.
+  def.rolledBack = [](CommandState& state, const CommandContext& context) {
+    for (const QString& input : {QStringLiteral("profiles"), QStringLiteral("wrap")}) {
+      for (SelectionItem& item : state.items(input)) {
+        if (item.kind != SelectKind::Face) {
+          continue;
+        }
+        const SelectionItem found = itemOf(item.reference(), context);
+        if (found.isValid() && !found.geometry.isEmpty()) {
+          item.geometry = found.geometry;
+        }
+      }
+    }
+  };
+
   // Everything the model's extrusions have can be shown, but for fixed
   // planes (the importer's) as objects, a flipped two-sided or symmetric
   // extrusion and thin walls of side two of a one-sided one.
@@ -532,6 +669,11 @@ CommandDef extrudeCommand(const CommandContext& context) {
     if (!wrap.isUndefined() && !wrap.isNull()) {
       ok = ok && isShowable(wrap, context);
     }
+    // The face that is the profile (mitcad#535).
+    const QJsonValue face = feature.value(QStringLiteral("profile_face"));
+    if (!face.isUndefined() && !face.isNull()) {
+      ok = ok && isShowable(face, context);
+    }
     return ok;
   };
 
@@ -544,14 +686,15 @@ CommandDef extrudeCommand(const CommandContext& context) {
       extent = QStringLiteral("to object");
     }
     const Selection& wrap = state.items(QStringLiteral("wrap"));
-    const QString wrapped = wrap.isEmpty() ? QString()
+    const QString wrapped = wrap.isEmpty() || hasProfileFace(state) ? QString()
                                            : QStringLiteral(", wrapped onto a %1 face")
                                                  .arg(wrap.first().geometry == QStringLiteral("cone")
                                                           ? QStringLiteral("conical")
                                                           : QStringLiteral("cylindrical"));
-    return QStringLiteral("Added %1extrude (%2), distance %3%4")
+    const QString ofFace = hasProfileFace(state) ? QStringLiteral(", of a face") : QString();
+    return QStringLiteral("Added %1extrude (%2), distance %3%4%5")
         .arg(state.choice(QStringLiteral("type")) == QStringLiteral("thin") ? QStringLiteral("thin ") : QString(),
-             label(kOperations, state.choice(QStringLiteral("operation"))), extent, wrapped);
+             label(kOperations, state.choice(QStringLiteral("operation"))), extent, wrapped, ofFace);
   };
   return def;
 }

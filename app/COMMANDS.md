@@ -293,6 +293,17 @@ becomes the active one (Extrude's To Object).
   the first input that takes it (3D Print: a face stands for its body, an
   occurrence for the bodies shown in it, nothing selected for every shown
   body); `init` follows.
+- `preselected(selection, state, context)`: called with the selection
+  made before the command once its items went to the inputs that take
+  them (without `preselect`), before `init` (Extrude: a selected face that
+  is not planar becomes the profile all the same, so that the panel
+  refuses it and no unused profile stands in for it, mitcad#535).
+- `rolledBack(state, context)`: editing, called once the timeline is
+  rolled back to the edited feature (at once, or after `startAsync`'s
+  deferred rollback). `load` runs before that, on the model after the
+  feature, so items that depend on the model are resolved again here
+  (Extrude: its profile face, which its own extrusion joined away after
+  it, gets its kind where the feature finds it, mitcad#535).
 - `describe(state, context)`: a log line after OK (UI tests read it);
   with `describeBefore` it reads the model as before OK (the edges a
   fillet rounds), else after.
@@ -2717,21 +2728,57 @@ settings in the user's settings (`ViewSettings`, group `view`);
   them); the lines lie off the caps toward the removed side, in the layer of
   the edges in sight, so that they are drawn over the fill. The clip is the
   model's `analysis_clips` (the `clip` shape of every body shown at once,
-  mitcad#438), asked from the UI thread, which waits while the booleans run
-  on all cores (OCCT's thread pool); a body the plane does not reach needs
-  no boolean: one behind it is shown as its own shape, so the view keeps
-  its presentation and meshes (no new presentation, no meshing), one wholly
-  in front shows nothing. The clipped bodies are then meshed together with
-  the view's options (`io::mesh_in_place`, `viewMeshOptions`; faces the cut
-  left as they were keep their meshes) before the view draws them, and
-  `MITCAD_LOG_TIMING` logs `Timing section clips: … ms, <n> bodies, <m>
-  new`. A body whose clip fails is shown whole, also when OCCT crashes in
-  the boolean (OCCT's handlers turn the crash into that body's error,
+  mitcad#438), worked out on all cores (OCCT's thread pool); a body the
+  plane does not reach needs no boolean: one behind it is shown as its own
+  shape, so the view keeps its presentation and meshes (no new
+  presentation, no meshing), one wholly in front shows nothing.
+  Section Analysis' plane, distance and Flip clip **off the UI thread**
+  (mitcad#438, `framework/SectionWorker.hpp`, `MainWindowSection.cpp`):
+  the model prepares the clips while the document is idle
+  (`prepare_clips`), detaching them on the UI thread then: a copy that
+  shares no face, edge or vertex with each body the plane may reach, and
+  of the others only the box they keep (`Kernel::detach_all`). The section
+  worker's thread clips the copies and meshes the new shapes together with
+  the view's options (`io::mesh_all_in_place`, `viewMeshOptions`); it
+  never reads a sub-shape of a body the view draws, so the view's meshes
+  and a model job's may be made meanwhile. The window stays responsive and
+  the view keeps what it showed, and shows the clipped bodies when they
+  are ready. A newer plane, distance or Flip supersedes a round that runs
+  (its result is never shown; at most one round runs and one of each kind
+  waits), the panel's Cancel and OK while one runs drop it, and every
+  model job tells the rounds to stop (without waiting: their result may be
+  stale after it) and they are done again once the window is idle. The
+  clips are kept for the plane last clipped (by body, shape and
+  placement), so showing the bodies again at that plane (OK, a visibility
+  change) clips nothing; a clip the view needs that is not kept (Hide
+  Above Sketch, a body shown since, the refresh after a model command or
+  after OK pressed while a round runs) is made on the UI thread as before
+  and meshed there (faces the cut left as they were keep their meshes). `MITCAD_LOG_TIMING` logs `Timing
+  section clips: … ms, <n> bodies, <m> new` on whichever thread clips. A
+  body whose clip fails is shown whole, also when OCCT crashes in the
+  boolean (OCCT's handlers turn the crash into that body's error,
   mitcad#392). The panel's area and length come from the `section` query
   with `world`, which sections the bodies on all cores too and skips those
-  the plane passes. A crash in the section the panel measures is likewise
-  the panel's error, and the bodies stay whole
-  (`tools/ui-section-crash-test.sh`). What is left of
+  the plane passes; it is measured after the view has its clipped bodies,
+  on the worker too (`prepare_query`, `Inspection::laterQuery`,
+  `CommandHost::measureLater`), and the panel shows `Section area: …`
+  until it arrives. A crash in the section the panel measures is likewise
+  the panel's error, while the view shows the bodies clipped
+  (`tools/ui-section-crash-test.sh`). Log lines of the rounds:
+  `Computing section view started` and `Computing section view done in
+  <n> ms` (`cancelled after <n> ms`), the same for `measure` (the UI tests'
+  idle wait counts them with the model's jobs); `Section clips at
+  {"plane":…} off the UI thread (section worker): <n> bodies, <m> new, <k>
+  meshed in <t> ms` and `Section measured off the UI thread (section
+  worker)` from the worker's thread; `Section view ready at {"plane":…}:
+  <n> bodies from the section worker` before the view shows them;
+  `Section round view superseded` (a running round told to stop by a newer
+  one) and `Section round view replaced` (a waiting one dropped); the
+  panel's `Inspect Section Analysis: measuring`, then `Inspect Section
+  Analysis: area …, length …` (or `failed: …`) after the view's `Section
+  caps: …`. `MITCAD_TEST_SECTION_DELAY_MS=<ms>` makes each view round wait
+  that long before it clips (watching its stop), for tests that change the
+  plane or cancel while one runs. What is left of
   the bodies keeps their names, so its faces, edges and vertices are picked
   as the bodies' own (Project while Hide Above Sketch is on, also the face
   the sketch lies on, which stays whole); the caps cannot be picked
@@ -2739,8 +2786,11 @@ settings in the user's settings (`ViewSettings`, group `view`);
   #4b2d0b at 135 deg, 12 lines; ...] in <style>, bodies in <component|appearance> colours`
   (again when the style or Component Colors change). Tests:
   `tools/ui-section-caps-test.sh` (the colours per component and the
-  hatch from the log), `tools/ui-windows-section-pick-test.ps1` (ctest
-  `app.ui-windows-section-pick`).
+  hatch from the log; the rounds off the UI thread: the panel's numbers
+  after the view's caps, a quick change of the distance superseding the
+  round that runs, Cancel while one runs), `tools/ui-windows-section-pick-test.ps1` (ctest
+  `app.ui-windows-section-pick`; the same rounds), `app.unit`
+  (`tests/section_worker.cpp`: superseded, waiting, stopped rounds).
 
 - **Rendered** (`view.rendered`, in View > Visual Style; only when the
   render worker `mitcad-render`, which every build has, is next to the
@@ -4418,6 +4468,28 @@ SVG at several sizes (`themeIcon`).
   from the model's `thread_sizes`.
 - **Press Pull** on one face of a fillet opens the fillet for the radius
   of the set that rounds its edge (`Built::editing`).
+- **Fillet and Chamfer handles** (`withManipulator`, mitcad#534): each
+  set's handle stands on the set's first edge that can take one (a face
+  picked in Edges gives none), at the edge's middle as the view shows the
+  body, so a placed component's edge carries it too, and dragging it
+  changes that set's value only. The edge's middle, direction, faces'
+  normals and convexity come from the body (`edgeAt` in
+  `FilletCommands.cpp`); where the arrows stand is plain math in
+  `commands/ChamferHandles.hpp` (ctest `app.unit`). Fillet's constant
+  Radius: an arrow along the bisector of the faces' normals (into the
+  material at a convex edge, out of it at a concave one), its knob at the
+  middle of the rounding. Chamfer's **Distance**: for Equal Distance the
+  same arrow, its knob at the middle of the bevel's face (distance ×
+  sin(half the angle between the normals)); for Two Distances and
+  Distance and Angle an arrow along the face the model measures the first
+  distance on (the Reference Face, else the edge's first face; Flip the
+  other: `measuredSide`, as the kernel's `measured_face`), square to the
+  edge, its knob where the bevel meets that face. Chamfer's **Distance 2**
+  (Two Distances): an arrow along the other face. The **Angle** has no
+  handle and is typed. Test: `tools/ui-chamfer-handle-test.sh` (Floating
+  and Docked: a drag, the panel's value, the preview, OK, an edit from the
+  timeline cancelled and accepted, Undo; two sets; Flip; a turned and
+  moved component).
 - **Move Face** (`solid.move_face`, MODIFY, `MoveCommands.cpp`,
   mitcad#531; the model's side in commands.md, "Move face"): Faces (of one
   body, no meshes: `oneBody`) and the motion with Move/Copy's own inputs
@@ -4511,6 +4583,34 @@ SVG at several sizes (`themeIcon`).
   distance, without a taper."), and sends no assembly cut scope. Logged
   `Extrude Wrap Onto: 1 face` and `Added extrude (Join), distance 1,
   wrapped onto a cylindrical face`. Test: `tools/ui-wrap-test.sh`.
+- **Extrude of a body face** (`profile_face`, mitcad#535): Profiles also
+  take one planar face of a body (solid Extrude only: the pick rule offers
+  faces beside profiles, Thin Extrude sketch curves instead; `withAccepts`
+  takes planar faces, `withoutMeshes`), so a body's face extrudes with no
+  sketch, also in a design of an imported body alone (the command is
+  enabled when the design has profiles, sketches or bodies). The face
+  goes in by a pick in the command, by the selection made before it (a
+  planar face selected goes to Profiles, before the newest unused
+  profile, which then does not stand in), and from the view's context
+  menu (Solid › Extrude, among the commands the face alone completes:
+  `completes`; `offeredFor` one face, or profiles and curves). The
+  definition gets `profile_face` instead of `profiles` (commands.md,
+  *extrude*): Direction (one side, two sides, symmetric) with distances,
+  Flip, Start at the face or an offset, Operation and Objects; the arrow
+  runs along the face's outward normal (`frameOf`). Refused on the panel:
+  a face beside profiles ("Select one planar face, or profiles of one
+  sketch, not both."), Thin Extrude of a face, an extent to an object or
+  through all or a taper ("An extrusion of a face goes a distance,
+  without a taper."), a start object. Wrap Onto and Affected components
+  are hidden; a face's Cut works on the bodies of its own component
+  (Objects). A face selected before the command that is not planar (a
+  cylinder or cone goes to Wrap Onto) or a mesh body's goes to Profiles
+  all the same (`preselected`), and the panel says why it is refused
+  ("Extrude takes a planar face; the selected face is not planar.").
+  Logged `Extrude Profiles: 1 face [face F2:end(…) of F2.b0]`, `Extrude:
+  face … is no planar face, refused as the profile` and `Added extrude
+  (Join), distance 5, of a face`. Tests: `tools/ui-extrude-face-test.sh`,
+  `app.ui-windows-extrude-face`.
 - **Plastic Feature** (`solid.plastic`, `PlasticCommands.cpp`,
   mitcad#459): one panel for the model's `boss`, `lip`, `groove`,
   `snap_fit`, `rest` and `plastic_rule` (commands.md, *Plastic part
@@ -4690,7 +4790,8 @@ next screenshot.
 | `Hover chain: 3 edge(s) of F2.b0` (`face(s)`), `Tangent chains of F2.b0 (edges): 2 in 3 ms` | the hover of an input with `withHoverChain` over an edge or face changed how many it shows (the tangent chain with its check on, else 1); a body's chains asked the first time (mitcad#290) |
 | `Manipulator <command> <input> at x,y`, `Manipulator <command> <input> dragged to <value>` | a handle's knob, a drag ended |
 | `Manipulator Circular Pattern suppressed.2 at x,y` (`… (off) at` when suppressed), `Manipulator Circular Pattern suppressed.2 toggled`, `Circular Pattern Suppressed: 2` | a pattern's instance dots |
-| `Inspect <command>: <log>`, `Closed <command>` | an inspection's result (Measure: `area 2400, distance 45, angle 90 deg`, of a circle or arc `length 31.416, radius 5, diameter 10`; Interference: `Body1 x Body2: <volume>` or `none`; Section Analysis: `area …, length …`) |
+| `Inspect <command>: <log>`, `Closed <command>` | an inspection's result (Measure: `area 2400, distance 45, angle 90 deg`, of a circle or arc `length 31.416, radius 5, diameter 10`; Interference: `Body1 x Body2: <volume>` or `none`; Section Analysis: `measuring`, then `area …, length …` once measured after the view's update, mitcad#438) |
+| `Computing section view started`, `Computing section view done in 12 ms` (`cancelled after`; `measure`), `Section clips at {"plane":…} off the UI thread (section worker): 3 bodies, 3 new, 3 meshed in 40 ms`, `Section measured off the UI thread (section worker)`, `Section view ready at {"plane":…}: 3 bodies from the section worker`, `Section round view superseded`, `Section round view replaced` | Section Analysis' rounds off the UI thread (mitcad#438, `framework/SectionWorker.hpp`): started and ended, what the worker's thread clipped and meshed, the view about to show them, a running round stopped by a newer one, a waiting one dropped |
 | `Kept Section Analysis as Section1`, `Edited analysis Section1`, `Deleted analysis Section1`, `Section analysis at {"plane":{"normal":[1,0,0],"origin":[10,0,0]}}`, `Section analysis off` | Section Analysis kept in the document (mitcad#41); the plane the bodies are cut at changed |
 | `Physical properties: Body1 volume … mass … center (…)` | the Properties dialog opened |
 | `Done <command>` | a model command panel's OK |

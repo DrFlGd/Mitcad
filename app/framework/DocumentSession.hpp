@@ -116,6 +116,12 @@ public:
   bool modified() const;
 
   void setWaitHandler(WaitHandler handler) { m_waitHandler = std::move(handler); }
+  // Called on the session's thread before every job starts, while the
+  // document is still the caller's: what reads the bodies on another
+  // thread stops there (Section Analysis' rounds, mitcad#438), as a job
+  // may write into their shapes (the meshes of new bodies that share their
+  // faces).
+  void setBeforeJob(std::function<void()> hook) { m_beforeJob = std::move(hook); }
   bool runJob(const QString& label, const QString& stage, const Job& job, JobLog log = JobLog::Always);
   QJsonObject command(const QJsonObject& request);
   QJsonObject preview(const QByteArray& request, const QString& name);
@@ -163,6 +169,7 @@ private:
   ModelJob* m_job = nullptr;
   std::unique_ptr<AsyncJob> m_async;
   WaitHandler m_waitHandler;
+  std::function<void()> m_beforeJob;
   std::deque<IdleCall> m_idleCalls;
   bool m_idleCallsPosted = false;
   QTimer m_progressTimer;

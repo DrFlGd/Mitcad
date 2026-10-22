@@ -165,8 +165,11 @@ if(BUILD_TESTING)
     PASS_REGULAR_EXPRESSION "F6 Fillet1 \\(fillet\\): ${crash_error}.*Body1 \\(F2\\.b0\\): volume")
   # So is a crash in the section analysis' booleans (mitcad#392): the
   # section query of the analysis script fails with the error.
+  # Since the bodies are clipped in parallel (mitcad#438) Windows names the
+  # body and may gather several threads' crashes ("Body1: Multiple
+  # exceptions: OSD_Exception_ACCESS_VIOLATION: ACCESS VIOLATION ...").
   if(WIN32)
-    set(crash_error "section: ACCESS VIOLATION")
+    set(crash_error "(section|Body[0-9]+): .*ACCESS VIOLATION")
   elseif(APPLE)
     set(crash_error "section: SIG(SEGV|BUS)")
   else()
@@ -498,6 +501,13 @@ if(BUILD_TESTING)
     COMMAND "${CMAKE_COMMAND}" "-DCLI=$<TARGET_FILE:mitcad-cli>" "-DRUNNER=$<TARGET_FILE:mitcad_run_parallel>"
             "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/iam-corpus" -P "${CMAKE_CURRENT_SOURCE_DIR}/iam-corpus.cmake")
   set_tests_properties(iam.corpus PROPERTIES SKIP_REGULAR_EXPRESSION "iam corpus: skipped")
+  # Reorient Design on the test files' bench (c71542a1) and drawer
+  # (1dc60c2a) assemblies, found by content id under MITCAD_IPT_CORPUS
+  # (mitcad#537): every offered turn taken, the drawer also turned twice.
+  add_test(NAME iam.corpus_reorient
+    COMMAND "${CMAKE_COMMAND}" "-DCLI=$<TARGET_FILE:mitcad-cli>"
+            "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/iam-corpus-reorient" -P "${CMAKE_CURRENT_SOURCE_DIR}/reorient-corpus.cmake")
+  set_tests_properties(iam.corpus_reorient PROPERTIES SKIP_REGULAR_EXPRESSION "reorient corpus: skipped" TIMEOUT 3000)
 
   # The IFC import (mitcad#273): the reader's test building (written by
   # mitcad-cli at the test, never kept), every product accounted for: the
@@ -1144,6 +1154,14 @@ if(BUILD_TESTING)
   if(WIN32)
     # Added after the block that gives every earlier cli test Qt's DLLs.
     set_property(TEST cli.reorient_design APPEND PROPERTY ENVIRONMENT_MODIFICATION
+      "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+  endif()
+  # The pieces of a split face renumbered by turns, also of a turned design
+  # (mitcad#537).
+  add_test(NAME cli.reorient_pieces COMMAND mitcad-cli run "${CMAKE_CURRENT_SOURCE_DIR}/tests/reorient_pieces.json")
+  set_tests_properties(cli.reorient_pieces PROPERTIES WORKING_DIRECTORY "${reorient}")
+  if(WIN32)
+    set_property(TEST cli.reorient_pieces APPEND PROPERTY ENVIRONMENT_MODIFICATION
       "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
   endif()
 endif()

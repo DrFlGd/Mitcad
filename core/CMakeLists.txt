@@ -85,7 +85,9 @@ corrosion_add_cxxbridge(mitcad_bridge CRATE mitcad_ffi FILES
   # Surface modelling: Blend, Boundary, Match and Fair Surface (mitcad#455).
   kernel/surface_fills.rs
   # Faces moved by a rigid motion (mitcad#343).
-  kernel/move_faces.rs)
+  kernel/move_faces.rs
+  # A planar face of a body extruded as a profile (mitcad#535).
+  kernel/face_extrude.rs)
 target_sources(mitcad_bridge PRIVATE
   cpp/bridge/boolean.cpp
   cpp/bridge/boolean.hpp
@@ -222,6 +224,11 @@ target_sources(mitcad_bridge PRIVATE
 target_sources(mitcad_bridge PRIVATE
   cpp/bridge/move_faces.cpp
   cpp/bridge/move_faces.hpp)
+
+# A planar face of a body extruded as a profile (mitcad#535).
+target_sources(mitcad_bridge PRIVATE
+  cpp/bridge/face_extrude.cpp
+  cpp/bridge/face_extrude.hpp)
 target_include_directories(mitcad_bridge PUBLIC cpp)
 target_link_libraries(mitcad_bridge PUBLIC mitcad_geometry)
 # The bridge and the Rust library call each other, and a single-pass

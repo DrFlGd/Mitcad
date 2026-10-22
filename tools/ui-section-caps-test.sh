@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 # check-all sources: app/OcctViewer.cpp app/OcctViewer.hpp app/MainWindow.cpp app/MainWindow.hpp app/browser tools/cli
+# check-all sources: app/MainWindowSection.cpp app/framework/SectionWorker.cpp app/framework/SectionWorker.hpp
+# check-all sources: app/framework/CommandSession.cpp app/framework/DocumentSession.cpp app/commands/InspectCommands.cpp
+# check-all sources: core/cpp/bridge/analysis.cpp core/model/src/api/analysis.rs core/ffi/src/lib.rs geometry/io/src/mesh.cpp
 # The caps of Section Analysis through the real UI (mitcad#382), on a design
 # of the root and two components, each with a block:
 #   - Each component's caps take its timeline colour (the band under its
@@ -9,6 +12,13 @@
 #   - The caps keep their colours and their hatch in other visual styles and
 #     with the bodies drawn in component colours.
 #   - Remove Section Analysis takes the caps away.
+#   - The clips off the UI thread (mitcad#438), each view round made to wait
+#     3 s: the window takes a new distance while the round at x = 0 runs,
+#     which is told to stop and shows nothing; the blocks are clipped and
+#     meshed at x = 10 on the section worker's thread, shown, and then the
+#     panel's area and length arrive, measured there too. Cancel while the
+#     round at x = 12 runs: it ends as cancelled, the blocks are whole
+#     again, nothing of it is shown or measured.
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
 # Usage: tools/ui-section-caps-test.sh [screenshot.png]
@@ -101,5 +111,72 @@ echo "--- Remove"
 ui_mark
 ui_step "remove section analysis (search)" ui_command "Remove Section Analysis"
 ui_expect_new "Section caps: none" "the caps are gone"
+
+# line_of "text": the number of the first line since the mark that has the
+# text, 0 when none has.
+line_of() {
+  local n
+  n=$(tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -nF -- "$1" | head -1 | cut -d: -f1)
+  echo "${n:-0}"
+}
+
+# The clips off the UI thread (mitcad#438), each view round made to wait
+# 3 s before it clips (MITCAD_TEST_SECTION_DELAY_MS) so that the panel
+# changes and cancels while one runs; the steps that do so send their keys
+# without waiting for the app to be idle.
+echo "--- Off the UI thread: a newer distance supersedes the round that runs"
+ui_stop_app
+MITCAD_TEST_SECTION_DELAY_MS=3000 ui_start_app --open "$FILE"
+ui_step "fit (F6)"                         ui_key F6
+ui_expect_log "Bodies shown: " "the blocks shown"
+ui_mark
+ui_step "section analysis (search)"        ui_command "Section Analysis"
+ui_step "pick YZ"                          ui_click_logged "Datum yz"
+ui_expect_new "Section Analysis Faces/Plane: 1 plane [plane yz]" "YZ picked"
+ui_expect_new "Computing section view started" "the clips at x = 0 run"
+# While they run: the window takes the distance (the field logs it).
+ui_type_in "Panel Section Analysis input offset" "10"
+echo "ok   the distance typed while a round runs"
+ui_expect_new "Section round view superseded" "the round at x = 0 told to stop"
+ui_expect_new "Computing section view cancelled after" "and ended as cancelled"
+AT10='{"plane":{"normal":[1,0,0],"origin":[10,0,0]}}'
+ui_expect_new "Section clips at $AT10 off the UI thread (section worker): 3 bodies, 3 new, 3 meshed in" \
+  "the blocks clipped at x = 10 and meshed on the section worker's thread" 10
+ui_expect_new "Section view ready at $AT10: 3 bodies from the section worker" "handed to the view"
+ui_expect_new "Section caps: 3 face(s) at" "the view shows them cut"
+ui_expect_new "Inspect Section Analysis: area 600, length 180" "then the panel's numbers" 10
+ui_expect_new "Section measured off the UI thread (section worker)" "measured on the worker's thread"
+since=$(tail -n +$((UI_MARK + 1)) "$UI_LOG")
+echo "$since" | grep -q '"origin":\[0,0,0\]}} off the UI thread' && ui_fail "the superseded round's clips were made"
+echo "$since" | grep -q 'Section view ready at {"plane":{"normal":\[1,0,0\],"origin":\[0,0,0\]}}' &&
+  ui_fail "the superseded round's result was shown"
+[ "$(echo "$since" | grep -c '^Inspect Section Analysis: area ')" = 1 ] ||
+  ui_fail "the panel was measured more than once: $(echo "$since" | grep '^Inspect Section Analysis: ')"
+echo "ok   no result of the superseded round"
+TYPED=$(line_of "Panel field offset: 10")
+READY=$(line_of "Section view ready at $AT10")
+CAPS=$(line_of "Section caps: 3 face(s) at")
+MEASURED=$(line_of "Inspect Section Analysis: area 600, length 180")
+[ "$TYPED" -gt 0 ] && [ "$TYPED" -lt "$READY" ] && [ "$READY" -lt "$CAPS" ] && [ "$CAPS" -lt "$MEASURED" ] ||
+  ui_fail "not typed, clipped, shown and measured in this order: $TYPED, $READY, $CAPS, $MEASURED"
+echo "ok   the window took input while the round ran; the numbers came after the view's update"
+
+echo "--- Cancel while a round runs"
+ui_wait_idle
+ui_mark
+ui_type_in "Panel Section Analysis input offset" "12"
+ui_expect_new "Computing section view started" "the clips at x = 12 run"
+ui_key Escape
+ui_expect_new "Command Section Analysis cancelled" "the panel cancelled while they run"
+ui_expect_new "Computing section view cancelled after" "the round ended as cancelled"
+ui_expect_new "Section caps: none" "the blocks whole again"
+ui_wait_idle
+ui_sync
+ui_crashed && ui_fail "crashed after the cancel"
+tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -q '"origin":\[12,0,0\]}}: 3 bodies from the section worker' &&
+  ui_fail "the cancelled round's clips were shown"
+[ "$(tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -c '^Inspect Section Analysis: area ')" = 0 ] ||
+  ui_fail "the cancelled round's section was measured"
+echo "ok   nothing of the cancelled round shown, the app goes on"
 
 ui_finish "UI section caps test"

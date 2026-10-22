@@ -11,6 +11,8 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -39,6 +41,7 @@
 
 #include "bridge/analysis.hpp"
 #include "bridge/memory.hpp"
+#include "mitcad/geometry/cancel.hpp"
 #include "mitcad/geometry/geometry.hpp"
 #include "mitcad_bridge/lib.h"
 #include "mitcad_bridge/memory.h"
@@ -663,6 +666,152 @@ void test_clips_together() {
   CHECK(at != std::string::npos && near(std::strtod(world.c_str() + at + 7, nullptr), 200.0));
 }
 
+// The first "area" of a section answer: the total (JSON object keys are
+// sorted); -1 without one.
+double total_area(const std::string& answer) {
+  const auto at = answer.find("\"area\":");
+  return at == std::string::npos ? -1.0 : std::strtod(answer.c_str() + at + 7, nullptr);
+}
+
+// The TShapes of a shape's faces, edges and vertices.
+std::set<const void*> sub_shapes(const TopoDS_Shape& shape) {
+  std::set<const void*> found;
+  for (const TopAbs_ShapeEnum type : {TopAbs_FACE, TopAbs_EDGE, TopAbs_VERTEX}) {
+    for (TopExp_Explorer it(shape, type); it.More(); it.Next()) {
+      found.insert(it.Current().TShape().get());
+    }
+  }
+  return found;
+}
+
+// Section Analysis off the UI thread (mitcad#438): clips and the section
+// query prepared from the document and worked out on another thread,
+// without it, give what the document gave when they were prepared, also
+// after it changed. What the other thread reads is detached when they are
+// prepared: a body the plane crosses as a copy that shares no face, edge
+// or vertex with it, with its names (the view may mesh the body meanwhile),
+// one the plane passes as itself with its box kept; a body clipped comes
+// back as what is left of its copy, one left whole as its own shape. A stop
+// asked of the running thread's geometry makes the clips not started by
+// then fail as cancelled.
+void test_prepared_section_analysis() {
+  auto document = mitcad::new_document();
+  // Blocks of 20 x 20 x 10 at x = 0, 30 and 60 (F2.b0, F4.b0, F6.b0).
+  for (int i = 0; i < 3; ++i) {
+    const std::string sketch = "F" + std::to_string(2 * i + 1);
+    run(*document, R"({"cmd":"sketch.create"})");
+    run(*document, R"({"cmd":"sketch.add_rectangle","sketch":")" + sketch + R"(","corner":[)" +
+                       std::to_string(30 * i) + R"(,0],"width":20,"height":20})");
+    run(*document, extrude(sketch, kRectangle, 10, "new_body"));
+  }
+  const auto unnamed = [](const mitcad::geometry::Shape& shape) {
+    int count = 0;
+    for (int i = 0; i < shape.face_count(); ++i) {
+      count += shape.face_names(i).empty() ? 1 : 0;
+    }
+    return count;
+  };
+  const std::string at5 = R"({"origin":[0,5,0],"normal":[0,1,0]})";
+  const std::string at40 = R"({"origin":[40,0,0],"normal":[1,0,0]})";
+  const std::string sectionAt5 = R"({"query":"section","world":true,"plane":)" + at5 + "}";
+  const auto cuts = document->prepare_clips(R"({"plane":)" + at5 +
+                                            R"(,"bodies":[{"body":"F2.b0"},{"body":"F9.b0"},{"body":"F6.b0"}]})");
+  // F2.b0 lies behind x = 40: left whole.
+  const auto whole = document->prepare_clips(R"({"plane":)" + at40 + R"(,"bodies":[{"body":"F2.b0"}]})");
+  const auto section = document->prepare_query(sectionAt5);
+  const double now = total_area(std::string(document->query(sectionAt5)));
+  CHECK(near(now, 600.0));
+  const auto single = document->analysis_shape(R"({"shape":"clip","plane":)" + at5 + R"(,"body":"F6.b0"})");
+  const auto body = document->body_shape("F6.b0");
+
+  // What the other thread reads is detached when it is prepared: the
+  // bodies the plane crosses as copies that share no face, edge or vertex
+  // with them; the one it passes as the body itself, whose kept box alone
+  // its clip reads.
+  const char* crossed[] = {"F2.b0", nullptr, "F6.b0"};
+  for (std::size_t i = 0; i < 3; ++i) {
+    const auto input = cuts->input(i);
+    if (crossed[i] == nullptr) {
+      CHECK(!input && !cuts->detached(i)); // F9.b0: an error
+      continue;
+    }
+    const auto own = document->body_shape(crossed[i]);
+    CHECK(input && own && cuts->detached(i) && input != own);
+    if (input && own) {
+      const std::set<const void*> parts = sub_shapes(own->occt());
+      int shared = 0;
+      for (const void* part : sub_shapes(input->occt())) {
+        shared += parts.count(part) != 0 ? 1 : 0;
+      }
+      CHECK(shared == 0);
+      CHECK(input->face_count() == own->face_count() && unnamed(*input) == unnamed(*own));
+    }
+  }
+  const auto passed = whole->input(0);
+  CHECK(passed && !whole->detached(0) && passed == document->body_shape("F2.b0"));
+  CHECK(passed && passed->bounds().has_value());
+  CHECK(throws_with([&] { document->prepare_query(R"({"query":"properties"})"); }, "prepared query"));
+
+  // The last block is taken back: what was prepared still has it.
+  run(*document, R"({"cmd": "undo"})");
+  CHECK(!document->body_shape("F6.b0"));
+  CHECK(near(total_area(std::string(document->query(sectionAt5))), 400.0));
+
+  std::optional<rust::Box<mitcad::ClippedBodies>> clipped;
+  std::optional<rust::Box<mitcad::ClippedBodies>> kept;
+  std::string answer;
+  std::thread worker([&] {
+    clipped.emplace(cuts->run());
+    kept.emplace(whole->run());
+    try {
+      answer = std::string(section->run());
+    } catch (const rust::Error& error) {
+      answer = error.what();
+    }
+  });
+  worker.join();
+  CHECK(near(total_area(answer), now));
+  CHECK(clipped && (*clipped)->count() == 3);
+  if (clipped && (*clipped)->count() == 3) {
+    CHECK((*clipped)->shape(0) && near(mitcad::geometry::volume(*(*clipped)->shape(0)), 1000.0));
+    CHECK(!(*clipped)->shape(1) && contains(std::string((*clipped)->error(1)), "F9.b0"));
+    const auto last = (*clipped)->shape(2);
+    CHECK(last && single && near(mitcad::geometry::volume(*last), 1000.0));
+    CHECK(last && single && last->face_count() == single->face_count() && unnamed(*last) == unnamed(*single) &&
+          unnamed(*last) == 1);
+    if (last && body) {
+      const std::set<const void*> own = sub_shapes(body->occt());
+      int shared = 0;
+      for (const void* part : sub_shapes(last->occt())) {
+        shared += own.count(part) != 0 ? 1 : 0;
+      }
+      CHECK(shared == 0);
+      // The single clip keeps the faces the cut leaves as they are.
+      int keeps = 0;
+      for (const void* part : sub_shapes(single->occt())) {
+        keeps += own.count(part) != 0 ? 1 : 0;
+      }
+      CHECK(keeps > 0);
+    }
+  }
+  CHECK(kept && (*kept)->count() == 1 && (*kept)->shape(0) == document->body_shape("F2.b0"));
+
+  // Stopped before they start: every clip fails as cancelled.
+  mitcad::geometry::CancelFlag stop;
+  stop.cancel();
+  std::optional<rust::Box<mitcad::ClippedBodies>> stopped;
+  std::thread stopping([&] {
+    const mitcad::geometry::CancelScope scope(stop);
+    stopped.emplace(cuts->run());
+  });
+  stopping.join();
+  CHECK(stopped && (*stopped)->count() == 3);
+  if (stopped && (*stopped)->count() == 3) {
+    CHECK(!(*stopped)->shape(0) && contains(std::string((*stopped)->error(0)), "cancelled"));
+    CHECK(!(*stopped)->shape(2) && contains(std::string((*stopped)->error(2)), "cancelled"));
+  }
+}
+
 // Background computation (P7): a document computed on another thread.
 
 // A thread that runs one job at a time and hands the document back, as the
@@ -1281,6 +1430,7 @@ int main() {
   test_datums_and_analysis_shapes();
   test_section_occurrence_coordinates();
   test_clips_together();
+  test_prepared_section_analysis();
   test_job_cancelled_from_another_thread();
   test_jobs_handed_between_threads();
   test_kernel_operation_cancelled_inside();

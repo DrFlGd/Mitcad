@@ -20,7 +20,8 @@ use crate::ids::{BodyUid, ComponentUid, FeatureUid};
 use crate::kernel::{BoundingBox, Kernel};
 use crate::profile::{SketchFrame, cross, dot};
 use crate::recompute::Recomputed;
-use crate::reorient::{Turn, Turned};
+use crate::reorient::{PieceRenames, Turn, Turned};
+use crate::topo::{EdgeName, FaceName, TopoName};
 
 /// What Reorient Design changed, for the command's reply.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -39,9 +40,74 @@ pub struct ReorientReport {
 
 /// A body as the checks compare it.
 struct BodyFacts {
-    component: ComponentUid,
     bounds: Option<BoundingBox>,
     center: Option<[f64; 3]>,
+}
+
+/// How far a body is from where the turn takes it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Deviation {
+    /// The distance of its centre of mass from the turned one, mm.
+    center: Option<f64>,
+    /// The largest distance of a corner of its box from the turned box's.
+    corners: Option<f64>,
+    /// The body is not there.
+    gone: bool,
+}
+
+impl Deviation {
+    fn describe(&self) -> String {
+        if self.gone {
+            return "the body is not made there".to_owned();
+        }
+        let mut parts = Vec::new();
+        if let Some(c) = self.center {
+            parts.push(format!("its centre is {c:.3} mm"));
+        }
+        if let Some(c) = self.corners {
+            parts.push(format!("its box up to {c:.3} mm"));
+        }
+        if parts.is_empty() {
+            return "its box differs".to_owned();
+        }
+        format!("{} from where the turn takes it", parts.join(" and "))
+    }
+}
+
+/// A turned body compared with its old self turned: None when it is where
+/// the turn takes it (its box within 1e-6 of its size, at least 1e-6 mm,
+/// its centre likewise).
+fn deviation(turn: Turn, old: &BodyFacts, now: Option<&BodyFacts>) -> Option<Deviation> {
+    let Some(now) = now else {
+        return Some(Deviation {
+            center: None,
+            corners: None,
+            gone: true,
+        });
+    };
+    let expected = old.bounds.map(|b| turn_box(turn, &b));
+    let size = expected.as_ref().map_or(1.0, box_size);
+    let center = match (old.center, now.center) {
+        (Some(was), Some(is)) => {
+            let was = turn.vector(was);
+            let off = (0..3).map(|i| (was[i] - is[i]).powi(2)).sum::<f64>().sqrt();
+            ((0..3).any(|i| (was[i] - is[i]).abs() > 1e-6 * size)).then_some(off)
+        }
+        _ => None,
+    };
+    let boxed = same_box(expected.as_ref(), now.bounds.as_ref());
+    let corners = match (&expected, &now.bounds) {
+        (Some(a), Some(b)) if !boxed => Some((0..3).fold(0.0_f64, |m, i| {
+            m.max((a.min[i] - b.min[i]).abs())
+                .max((a.max[i] - b.max[i]).abs())
+        })),
+        _ => None,
+    };
+    (center.is_some() || !boxed).then_some(Deviation {
+        center,
+        corners,
+        gone: false,
+    })
 }
 
 /// A sketch frame compares within this (unit vectors; positions scaled by
@@ -58,17 +124,17 @@ impl<K: Kernel> Document<K> {
             ));
         }
         let all = self.state.features.len();
-        // The bodies at the marker as they are, and every sketch's frame
-        // (the marker at the end, so that sketches after it are known too).
+        // The bodies at the marker as they are, and the whole timeline (the
+        // marker at the end, so that sketches and pieces after it are known
+        // too).
         let old_boxes = self.boxes_of(&self.result)?;
         let old_ok = ok_features(&self.result);
-        let old_frames = if self.state.marker >= all {
-            sketch_frames(&self.result)
-        } else {
+        let old_whole = {
             let mut whole = self.state.clone();
             whole.marker = all;
-            sketch_frames(&self.compute(&whole)?)
+            self.compute(&whole)?
         };
+        let old_frames = sketch_frames(&old_whole);
 
         let mut next = self.state.clone();
         let turned = turned_components(&next);
@@ -78,68 +144,114 @@ impl<K: Kernel> Document<K> {
         // Sketches on faces, on construction planes and on other
         // components' planes: the frame they get from the turned design,
         // corrected where a rule of the model axes gives the plane another
-        // in-plane direction. A corrected sketch can move what is built on
-        // it, so the next round looks again.
+        // in-plane direction. Then the pieces of split faces and the edges
+        // numbered between the same faces, which the kernel numbers in a
+        // geometric order that the turn changes: the references to them
+        // renamed after the turned design's numbers, one feature at a time
+        // (mitcad#537). A corrected sketch or a renamed reference can move
+        // what is built on it, so the next round looks again.
         let sketches = next
             .features
             .iter()
             .filter(|f| matches!(f.def, FeatureDef::Sketch(_)))
             .count();
-        for _ in 0..=sketches {
+        let mut renamed: Vec<PieceRenames> = Vec::new();
+        let mut resume = 0;
+        for _ in 0..=sketches + next.features.len() {
             let mut whole = next.clone();
             whole.marker = all.max(next.features.len());
             let result = self.compute(&whole)?;
             let fixes = frame_fixes(&next, &result, &old_frames, turn, &turned);
-            if fixes.is_empty() {
-                break;
+            if !fixes.is_empty() {
+                for (uid, frame) in fixes {
+                    set_sketch_frame(&mut next, uid, frame);
+                    let name = next.entry(uid).map(|f| f.name.clone()).unwrap_or_default();
+                    if !report.features.contains(&name) {
+                        report.features.push(name);
+                    }
+                }
+                continue;
             }
-            for (uid, frame) in fixes {
-                set_sketch_frame(&mut next, uid, frame);
-                let name = next.entry(uid).map(|f| f.name.clone()).unwrap_or_default();
-                if !report.features.contains(&name) {
-                    report.features.push(name);
+            let Some((index, renames)) =
+                self.piece_renames(&next, &old_whole, &result, turn, &turned, &renamed, resume)
+            else {
+                break;
+            };
+            for i in index..next.features.len() {
+                let entry = &next.features[i];
+                let def = crate::reorient::rename_pieces(&entry.def, &renames).map_err(|e| {
+                    invalid(format!("Reorient Design cannot turn {}: {e}", entry.name))
+                })?;
+                if let Some(def) = def {
+                    let mut changed = (**entry).clone();
+                    changed.def = def;
+                    if !report.features.contains(&changed.name) {
+                        report.features.push(changed.name.clone());
+                    }
+                    next.features[i] = Arc::new(changed);
                 }
             }
+            renamed.push(renames);
+            resume = index;
         }
         sort_by_timeline(&next, &mut report.features);
 
         // The turned design at the marker: the same bodies turned, and
-        // every feature that built still builds.
+        // every feature that built still builds (the Moves added after base
+        // features too).
         let result = self.compute(&next)?;
-        let failed: Vec<String> = next
-            .features
-            .iter()
-            .filter(|f| old_ok.contains(&f.uid))
-            .filter(|f| result.result(f.uid).is_some_and(|r| !r.status.is_ok()))
-            .map(|f| f.name.clone())
-            .collect();
+        let old_uids: BTreeSet<FeatureUid> = self.state.features.iter().map(|f| f.uid).collect();
+        let mut failed = Vec::new();
+        for (i, f) in next.features.iter().enumerate() {
+            let added = !old_uids.contains(&f.uid);
+            if !added && !old_ok.contains(&f.uid) {
+                continue;
+            }
+            let Some(error) = result.result(f.uid).and_then(|r| r.status.error()) else {
+                continue;
+            };
+            let mut place = Vec::new();
+            if added && i > 0 {
+                place.push(format!("after {}", next.features[i - 1].name));
+            }
+            if !f.component.is_root() {
+                place.push(format!("in {}", next.assembly.name(f.component)));
+            }
+            let place = if place.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", place.join(", "))
+            };
+            failed.push(format!("{}{place} would fail: {error}", f.name));
+        }
         if !failed.is_empty() {
             return Err(invalid(format!(
-                "Reorient Design cannot turn the design: {} would fail",
-                failed.join(", ")
+                "Reorient Design cannot turn the design: {}",
+                failed.join("; ")
             )));
         }
         let new_boxes = self.boxes_of(&result)?;
         let mut moved = Vec::new();
-        for (body, old) in &old_boxes {
-            let q = if turned.contains(&old.component) {
+        for (body, (component, old)) in &old_boxes {
+            let q = if turned.contains(component) {
                 turn
             } else {
                 Turn::IDENTITY
             };
-            let expected = old.bounds.map(|b| turn_box(q, &b));
-            let now = new_boxes.get(body);
-            let centred = match (old.center, now.and_then(|n| n.center)) {
-                (Some(was), Some(is)) => {
-                    let size = expected.as_ref().map_or(1.0, box_size);
-                    let was = q.vector(was);
-                    (0..3).all(|i| (was[i] - is[i]).abs() <= 1e-6 * size)
-                }
-                _ => true,
+            let Some(off) = deviation(q, old, new_boxes.get(body).map(|(_, n)| n)) else {
+                continue;
             };
-            if !centred || !same_box(expected.as_ref(), now.and_then(|n| n.bounds).as_ref()) {
-                moved.push(self.body_label(&next, *body));
-            }
+            let label = self.body_label(&next, *body, *component);
+            moved.push(match self.departure(&next, &result, *body, q) {
+                Some((feature, off)) => format!(
+                    "{label} departs from the turn after {feature}: {}",
+                    off.describe()
+                ),
+                None => format!(
+                    "{label} would not be where the turn takes it: {}",
+                    off.describe()
+                ),
+            });
         }
         // Components where their placements take them (joints solve them
         // anew), in the turned coordinates of both sides.
@@ -161,15 +273,16 @@ impl<K: Kernel> Document<K> {
                 })
             });
             if !same {
-                moved.push(next.assembly.occurrence_name(*occurrence));
+                moved.push(format!(
+                    "{} would not be where the turn takes it",
+                    next.assembly.occurrence_name(*occurrence)
+                ));
             }
         }
         if !moved.is_empty() {
             return Err(invalid(format!(
-                "Reorient Design cannot turn the design exactly: {} would not be where the turn \
-                 takes {}",
-                moved.join(", "),
-                if moved.len() == 1 { "it" } else { "them" }
+                "Reorient Design cannot turn the design exactly: {}",
+                moved.join("; ")
             )));
         }
         self.apply(move |state| {
@@ -183,7 +296,7 @@ impl<K: Kernel> Document<K> {
     fn boxes_of(
         &self,
         result: &Recomputed<K::Shape>,
-    ) -> Result<BTreeMap<BodyUid, BodyFacts>, ModelError> {
+    ) -> Result<BTreeMap<BodyUid, (ComponentUid, BodyFacts)>, ModelError> {
         result
             .bodies
             .iter()
@@ -197,35 +310,389 @@ impl<K: Kernel> Document<K> {
                     .kernel
                     .bounding_box(&shape.value)
                     .map_err(|e| invalid(format!("Reorient Design: {uid}: {e}")))?;
-                let center = self
-                    .kernel
-                    .mass_properties(&shape.value)
-                    .ok()
-                    .map(|m| m.center)
-                    .filter(|c| c.iter().all(|v| v.is_finite()));
-                Ok((
-                    *uid,
-                    BodyFacts {
-                        component,
-                        bounds,
-                        center,
-                    },
-                ))
+                Ok((*uid, (component, self.facts(&shape.value, bounds))))
             })
             .collect()
     }
 
-    fn body_label(&self, state: &DocState, body: BodyUid) -> String {
-        let name = state
+    fn facts(&self, shape: &K::Shape, bounds: Option<BoundingBox>) -> BodyFacts {
+        let center = self
+            .kernel
+            .mass_properties(shape)
+            .ok()
+            .map(|m| m.center)
+            .filter(|c| c.iter().all(|v| v.is_finite()));
+        BodyFacts { bounds, center }
+    }
+
+    /// `Body17 of Part (made by Base1)`; the root's bodies without their
+    /// component.
+    fn body_label(&self, state: &DocState, body: BodyUid, component: ComponentUid) -> String {
+        let mut label = state
             .body_names
             .get(&body)
             .cloned()
             .unwrap_or_else(|| body.to_string());
+        if !component.is_root() {
+            label = format!("{label} of {}", state.assembly.name(component));
+        }
         match state.entry(body.feature) {
-            Some(feature) => format!("{name} (made by {})", feature.name),
-            None => name,
+            Some(feature) => format!("{label} (made by {})", feature.name),
+            None => label,
         }
     }
+
+    /// The first feature after which a body of the turned design `new` (at
+    /// the marker) is not its old self (the document's result) turned,
+    /// with how far it is then: the features that made or changed it in
+    /// timeline order, a Move added after a base feature counting with it.
+    fn departure(
+        &self,
+        next: &DocState,
+        new: &Recomputed<K::Shape>,
+        body: BodyUid,
+        turn: Turn,
+    ) -> Option<(String, Deviation)> {
+        let old = &self.result;
+        let old_uids: BTreeSet<FeatureUid> = old.results.iter().map(|r| r.uid).collect();
+        // The body after each old feature in the turned design (None: not
+        // made, or removed), and the name of the feature that made it so.
+        let mut after: BTreeMap<FeatureUid, (String, Option<&K::Shape>)> = BTreeMap::new();
+        let mut last_old = None;
+        let new_results: BTreeMap<FeatureUid, _> = new.results.iter().map(|r| (r.uid, r)).collect();
+        for entry in &next.features {
+            if old_uids.contains(&entry.uid) {
+                last_old = Some(entry.uid);
+            }
+            let (Some(at), Some(r)) = (last_old, new_results.get(&entry.uid)) else {
+                continue;
+            };
+            let Some(output) = &r.output else { continue };
+            for change in &output.changes {
+                match change {
+                    crate::recompute::Change::Set(uid, shape) if *uid == body => {
+                        after.insert(at, (entry.name.clone(), Some(&shape.value)));
+                    }
+                    crate::recompute::Change::Remove(uid) if *uid == body => {
+                        after.insert(at, (entry.name.clone(), None));
+                    }
+                    _ => {}
+                }
+            }
+        }
+        for r in &old.results {
+            let was = r.shape_set(body);
+            let now = after.get(&r.uid);
+            if was.is_none() && now.is_none() {
+                continue;
+            }
+            let name = now.map(|(n, _)| n.clone()).unwrap_or_else(|| {
+                next.entry(r.uid)
+                    .map(|f| f.name.clone())
+                    .unwrap_or_default()
+            });
+            let Some(was) = was else {
+                // Made or changed only in the turned design.
+                continue;
+            };
+            let measure = |shape: &K::Shape| {
+                let bounds = self.kernel.bounding_box(shape).ok().flatten();
+                self.facts(shape, bounds)
+            };
+            let old_facts = measure(was);
+            let now_facts = now.and_then(|(_, s)| s.map(measure));
+            if let Some(off) = deviation(turn, &old_facts, now_facts.as_ref()) {
+                return Some((name, off));
+            }
+        }
+        None
+    }
+
+    /// The renames of the pieces and numbered edges the first feature from
+    /// `resume` on refers to whose numbers the turned design `new` gives
+    /// to other pieces than the old design `old` (both the whole timeline),
+    /// with that feature's index: each piece the one of its family whose
+    /// box (an edge: its middle) is where the turn takes the old piece's.
+    /// `renamed` are the renames so far, which the old design's names are
+    /// read through.
+    #[allow(clippy::too_many_arguments)]
+    fn piece_renames(
+        &self,
+        state: &DocState,
+        old: &Recomputed<K::Shape>,
+        new: &Recomputed<K::Shape>,
+        turn: Turn,
+        turned: &BTreeSet<ComponentUid>,
+        renamed: &[PieceRenames],
+        resume: usize,
+    ) -> Option<(usize, PieceRenames)> {
+        let old_results: BTreeMap<FeatureUid, _> = old.results.iter().map(|r| (r.uid, r)).collect();
+        let new_results: BTreeMap<FeatureUid, _> = new.results.iter().map(|r| (r.uid, r)).collect();
+        // The bodies before each feature, in both designs.
+        let mut old_in: BTreeMap<BodyUid, &K::Shape> = BTreeMap::new();
+        let mut new_in: BTreeMap<BodyUid, &K::Shape> = BTreeMap::new();
+        for (index, entry) in state.features.iter().enumerate() {
+            if index >= resume && turned.contains(&entry.component) {
+                let (names, bodies) = crate::reorient::numbered_names(&entry.def);
+                if !names.is_empty() {
+                    let input = Input {
+                        old: &old_in,
+                        new: &new_in,
+                        bodies: &bodies,
+                        renamed,
+                    };
+                    let renames = self.match_pieces(state, &names, &input, turn, turned);
+                    if !renames.is_empty() {
+                        return Some((index, renames));
+                    }
+                }
+            }
+            take_changes(&mut old_in, old_results.get(&entry.uid).copied());
+            take_changes(&mut new_in, new_results.get(&entry.uid).copied());
+        }
+        None
+    }
+
+    /// The renames that make the numbered names a feature refers to name
+    /// the pieces the turn takes their old pieces onto (see
+    /// [`Document::piece_renames`]). A family whose pieces do not pair up
+    /// one to one is left as it is.
+    fn match_pieces(
+        &self,
+        state: &DocState,
+        names: &[TopoName],
+        input: &Input<'_, K::Shape>,
+        turn: Turn,
+        turned: &BTreeSet<ComponentUid>,
+    ) -> PieceRenames {
+        let mut renames = PieceRenames::default();
+        let turn_of = |body: &BodyUid| {
+            let component = state
+                .entry(body.feature)
+                .map_or(ComponentUid::ROOT, |f| f.component);
+            if turned.contains(&component) {
+                turn
+            } else {
+                Turn::IDENTITY
+            }
+        };
+        // Candidate bodies: those the definition names, else all.
+        let candidates: Vec<BodyUid> = if input.bodies.iter().any(|b| input.old.contains_key(b)) {
+            input.bodies.to_vec()
+        } else {
+            input.old.keys().copied().collect()
+        };
+        let mut old_faces = BTreeMap::new();
+        let mut new_faces = BTreeMap::new();
+        // Faces that are pieces, on their own or in edges and vertices.
+        let mut pieces: Vec<&FaceName> = Vec::new();
+        for name in names {
+            match name {
+                TopoName::Face(face) => pieces.push(face),
+                TopoName::Edge(edge) => pieces.extend(edge.faces()),
+                TopoName::Vertex(vertex) => pieces.extend(vertex.faces()),
+            }
+        }
+        pieces.retain(|f| !f.split.is_empty());
+        let mut families: Vec<&FaceName> = Vec::new();
+        for face in pieces {
+            if families.iter().any(|f| same_family(f, face)) {
+                continue;
+            }
+            families.push(face);
+            for body in &candidates {
+                let (Some(old_shape), Some(new_shape)) = (input.old.get(body), input.new.get(body))
+                else {
+                    continue;
+                };
+                let Some(olds) = old_faces
+                    .entry(*body)
+                    .or_insert_with(|| self.named_face_boxes(old_shape, input.renamed))
+                    .as_ref()
+                else {
+                    continue;
+                };
+                if !olds.iter().any(|(n, _)| n.contains(face)) {
+                    continue;
+                }
+                let Some(news) = new_faces
+                    .entry(*body)
+                    .or_insert_with(|| self.named_face_boxes(new_shape, &[]))
+                    .as_ref()
+                else {
+                    break;
+                };
+                let q = turn_of(body);
+                let family = |faces: &[(Vec<FaceName>, BoundingBox)], turn: Turn| {
+                    faces
+                        .iter()
+                        .filter_map(|(names, b)| {
+                            let name = names.iter().find(|n| same_family(n, face))?;
+                            Some((name.clone(), turn_box(turn, b)))
+                        })
+                        .collect::<Vec<_>>()
+                };
+                let pairs =
+                    pair_nearest(&family(olds, q), &family(news, Turn::IDENTITY), |a, b| {
+                        (0..3).fold(0.0_f64, |m, i| {
+                            m.max((a.min[i] - b.min[i]).abs())
+                                .max((a.max[i] - b.max[i]).abs())
+                        })
+                    });
+                for (was, now) in pairs.into_iter().flatten() {
+                    if was != now {
+                        renames.faces.insert(was.to_string(), now);
+                    }
+                }
+                break;
+            }
+        }
+        // Edges numbered between the same two faces: by their middles.
+        for name in names {
+            let TopoName::Edge(edge) = name else {
+                continue;
+            };
+            if edge.index.is_none() {
+                continue;
+            }
+            let target = renames.edge(edge);
+            for body in &candidates {
+                let (Some(old_shape), Some(new_shape)) = (input.old.get(body), input.new.get(body))
+                else {
+                    continue;
+                };
+                let Ok(old_middles) = self.kernel.edge_middles(old_shape) else {
+                    continue;
+                };
+                let q = turn_of(body);
+                let read = |text: &str, renamed: &[PieceRenames]| {
+                    let parsed = text.parse::<EdgeName>().ok()?;
+                    Some(renamed.iter().fold(parsed, |e, r| r.edge(&e)))
+                };
+                let olds: Vec<(EdgeName, [f64; 3])> = old_middles
+                    .iter()
+                    .filter_map(|m| Some((read(&m.name, input.renamed)?, q.vector(m.point))))
+                    .filter(|(e, _)| e.faces() == edge.faces())
+                    .collect();
+                if !olds.iter().any(|(e, _)| e == edge) {
+                    continue;
+                }
+                let Ok(new_middles) = self.kernel.edge_middles(new_shape) else {
+                    break;
+                };
+                let news: Vec<(EdgeName, [f64; 3])> = new_middles
+                    .iter()
+                    .filter_map(|m| Some((read(&m.name, &[])?, m.point)))
+                    .filter(|(e, _)| e.faces() == target.faces())
+                    .collect();
+                let pairs = pair_nearest(&olds, &news, |a, b| {
+                    (0..3).map(|i| (a[i] - b[i]).powi(2)).sum::<f64>().sqrt()
+                });
+                // The edges keyed by their names with this round's faces.
+                let faces_only = PieceRenames {
+                    faces: renames.faces.clone(),
+                    edges: BTreeMap::new(),
+                };
+                for (was, now) in pairs.into_iter().flatten() {
+                    if faces_only.edge(&was) != now {
+                        renames.edges.insert(was.to_string(), now);
+                    }
+                }
+                break;
+            }
+        }
+        renames
+    }
+
+    /// The faces of a shape with their names (read through `renamed`) and
+    /// boxes; None where the kernel does not list them.
+    fn named_face_boxes(
+        &self,
+        shape: &K::Shape,
+        renamed: &[PieceRenames],
+    ) -> Option<Vec<(Vec<FaceName>, BoundingBox)>> {
+        let faces = self.kernel.faces(shape).ok()?;
+        let boxes = self.kernel.face_boxes(shape).ok()?;
+        if faces.len() != boxes.len() {
+            return None;
+        }
+        Some(
+            faces
+                .into_iter()
+                .zip(boxes)
+                .map(|(face, [min, max])| {
+                    let names = face
+                        .names
+                        .iter()
+                        .filter_map(|n| n.parse::<FaceName>().ok())
+                        .map(|n| renamed.iter().fold(n, |f, r| r.face(&f)))
+                        .collect();
+                    (names, BoundingBox { min, max })
+                })
+                .collect(),
+        )
+    }
+}
+
+/// The bodies before a feature in the old and the turned design, the
+/// bodies its definition names and the renames so far.
+struct Input<'a, S> {
+    old: &'a BTreeMap<BodyUid, &'a S>,
+    new: &'a BTreeMap<BodyUid, &'a S>,
+    bodies: &'a [BodyUid],
+    renamed: &'a [PieceRenames],
+}
+
+/// The bodies after a feature: its result's changes taken.
+fn take_changes<'a, S>(
+    bodies: &mut BTreeMap<BodyUid, &'a S>,
+    result: Option<&'a crate::recompute::FeatureResult<S>>,
+) {
+    let Some(output) = result.and_then(|r| r.output.as_ref()) else {
+        return;
+    };
+    for change in &output.changes {
+        match change {
+            crate::recompute::Change::Set(uid, shape) => {
+                bodies.insert(*uid, &shape.value);
+            }
+            crate::recompute::Change::Remove(uid) => {
+                bodies.remove(uid);
+            }
+        }
+    }
+}
+
+/// Pieces of one split face: the same face, the same number of splits.
+fn same_family(a: &FaceName, b: &FaceName) -> bool {
+    a.feature == b.feature && a.role == b.role && a.key == b.key && a.split.len() == b.split.len()
+}
+
+/// Each old item with the new one nearest to it, when that pairs them one
+/// to one; None otherwise.
+fn pair_nearest<N: Clone, P>(
+    old: &[(N, P)],
+    new: &[(N, P)],
+    distance: impl Fn(&P, &P) -> f64,
+) -> Option<Vec<(N, N)>> {
+    if old.is_empty() || old.len() != new.len() {
+        return None;
+    }
+    let mut used = vec![false; new.len()];
+    let mut pairs = Vec::with_capacity(old.len());
+    for (name, at) in old {
+        let (best, _) = new
+            .iter()
+            .enumerate()
+            .map(|(i, (_, p))| (i, distance(at, p)))
+            .min_by(|a, b| a.1.total_cmp(&b.1))?;
+        if used[best] {
+            return None;
+        }
+        used[best] = true;
+        pairs.push((name.clone(), new[best].0.clone()));
+    }
+    Some(pairs)
 }
 
 /// The components that turn: all but those linked from other files.

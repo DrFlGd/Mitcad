@@ -47,6 +47,8 @@ CancelScope::~CancelScope() { t_source = m_previous; }
 
 bool cancel_requested() noexcept { return t_source != nullptr && t_source->cancel_requested(); }
 
+const CancelSource* cancel_source() noexcept { return t_source; }
+
 void throw_if_cancelled() {
   if (cancel_requested()) {
     throw Cancelled();

@@ -99,6 +99,7 @@
 #include "framework/ResultCache.hpp"
 #include "framework/Restart.hpp"
 #include "framework/Ribbon.hpp"
+#include "framework/SectionWorker.hpp"
 #include "framework/TitleBar.hpp"
 #include "framework/ShortcutDialog.hpp"
 #include "framework/Theme.hpp"
@@ -271,23 +272,27 @@ void meshForView(const std::vector<TopoDS_Shape>& shapes) {
 // The bodies a section's plane cuts (Section Analysis, Hide Above Sketch),
 // `which` of `bodies`, each with its target in `targets` ({body,
 // occurrence}), clipped at `plane` (design coordinates) all at once: the
-// model clips them on all cores (`analysis_clips`, mitcad#438). A body the
-// plane leaves whole comes back as its own shape, which the view keeps
-// drawn as it is; one whose clip failed is shown whole (a crash inside OCCT
-// is its error, mitcad#392).
-void clipBodies(const Document& document, const QJsonValue& plane, const QJsonArray& targets,
-                const std::vector<std::size_t>& which, std::vector<BodyDisplay>& bodies) {
+// model clips them on all cores (`analysis_clips`, mitcad#438). For each of
+// `which`, what is left of it: its own shape when the plane leaves it whole
+// (the view keeps it drawn as it is), null when its clip failed and it is
+// shown whole (logged; a crash inside OCCT is its error, mitcad#392). The
+// new shapes are meshed for the view.
+std::vector<std::shared_ptr<geometry::Shape>> clipBodies(const Document& document, const QJsonValue& plane,
+                                                         const QJsonArray& targets,
+                                                         const std::vector<std::size_t>& which,
+                                                         const std::vector<BodyDisplay>& bodies) {
   ScopedTiming timing("section clips");
   const auto shownWhole = [&](std::size_t body, const QString& error) {
     qWarning().noquote() << QStringLiteral("Section: %1 shown whole: %2")
                                 .arg(QString::fromStdString(bodies[body].uid), error);
   };
+  std::vector<std::shared_ptr<geometry::Shape>> left(which.size());
   std::vector<TopoDS_Shape> clipped;
   try {
     const rust::Box<ClippedBodies> results = document.analysis_clips(
         rustStr(compactJson({{QStringLiteral("plane"), plane}, {QStringLiteral("bodies"), targets}})));
     for (std::size_t i = 0; i < which.size() && i < results->count(); ++i) {
-      BodyDisplay& body = bodies[which[i]];
+      const BodyDisplay& body = bodies[which[i]];
       const std::shared_ptr<geometry::Shape> shape = results->shape(i);
       if (!shape) {
         const rust::String error = results->error(i);
@@ -297,16 +302,24 @@ void clipBodies(const Document& document, const QJsonValue& plane, const QJsonAr
       if (!shape->occt().IsSame(body.shape->occt())) {
         clipped.push_back(shape->occt());
       }
-      body.shape = shape;
+      left[i] = shape;
     }
   } catch (const std::exception& e) {
     for (const std::size_t body : which) {
       shownWhole(body, errorText(e));
     }
-    return;
+    return left;
   }
   timing.setDetail(QStringLiteral("%1 bodies, %2 new").arg(which.size()).arg(clipped.size()));
   meshForView(clipped);
+  return left;
+}
+
+// A body's key in the kept clips (MainWindow::SectionState): its clip
+// depends on its shape (compared apart) and its occurrence's placement.
+QString sectionClipKey(const QString& uid, const QString& occurrence, const QJsonArray& transform) {
+  return uid + QLatin1Char('|') + occurrence + QLatin1Char('|') +
+         QString::fromUtf8(QJsonDocument(transform).toJson(QJsonDocument::Compact));
 }
 
 // The Sketch Palette in a scroll area: it keeps its rows at their size hint
@@ -355,6 +368,12 @@ MainWindow::MainWindow(bool demo, QWidget* parent, bool nativeUi)
       m_rendererLabel(new QLabel(this)) {
   m_documentSession->setWaitHandler([this](const QString& label, ModelJob& job, const QElapsedTimer& clock,
                                           bool& logged) { waitForJob(label, job, clock, logged); });
+  // Section Analysis off the UI thread (mitcad#438): its rounds read only
+  // what was detached from the bodies, so a job may run beside them, but
+  // what they would show may be stale after it: they are told to stop
+  // before every job and done again afterwards.
+  m_sectionWorker = new SectionWorker(this);
+  m_documentSession->setBeforeJob([this] { redoSectionWork(); });
   connect(m_documentSession, &DocumentSession::busyChanged, this, [this](bool busy) {
     m_viewer->setPickingSuspended(busy);
     if (!busy && m_closePending) {
@@ -555,6 +574,11 @@ MainWindow::MainWindow(bool demo, QWidget* parent, bool nativeUi)
 }
 
 MainWindow::~MainWindow() {
+  // The section worker's rounds end first (mitcad#438): their ends call
+  // back into the window.
+  m_documentSession->setBeforeJob({});
+  delete m_sectionWorker;
+  m_sectionWorker = nullptr;
 #ifdef MITCAD_MACOS_NATIVE_UI
   m_nativeForm.reset();
   m_nativeIdleForm.reset();
@@ -1876,7 +1900,19 @@ bool MainWindow::runCommands(const QJsonArray& commands, const QString& label) {
 
 void MainWindow::showSection(const QJsonValue& plane) {
   if (setSection(plane)) {
-    showBodies();
+    // The bodies clipped at the new plane off the UI thread, shown when
+    // they are ready (mitcad#438); at once when nothing needs a clip (the
+    // bodies whole, or the clips kept), and what still works for an older
+    // plane stops.
+    if (!startSectionRound()) {
+      if (m_sectionWorker != nullptr) {
+        const SectionWorker::Stopped stopped = m_sectionWorker->cancel();
+        if (stopped.measure && m_sectionState.measurement) {
+          m_sectionState.measurement->posted = false;
+        }
+      }
+      showBodies();
+    }
     updateActions();
   }
 }
@@ -2498,7 +2534,9 @@ bool MainWindow::keepSelected(const SelectionItem& item) const {
   return !itemShape(item).IsNull();
 }
 
-std::vector<BodyDisplay> MainWindow::modelBodies() const {
+std::vector<BodyDisplay> MainWindow::modelBodies() const { return displayBodies(nullptr); }
+
+std::vector<BodyDisplay> MainWindow::displayBodies(SectionTargets* unclipped) const {
   // Every visible body as its occurrences place it (components, F6), with
   // the occurrence, so that picks name the body's own faces and edges; in
   // its appearance's colour, and cut by a section analysis' plane or the
@@ -2588,9 +2626,9 @@ std::vector<BodyDisplay> MainWindow::modelBodies() const {
   } catch (const std::exception&) {
   }
   std::vector<BodyDisplay> bodies;
-  // The bodies the plane cuts, by index into `bodies`, and their targets.
-  std::vector<std::size_t> cutBodies;
-  QJsonArray cutTargets;
+  // The bodies the plane cuts, by index into `bodies`, with their targets.
+  SectionTargets cutting;
+  cutting.plane = cut;
   for (const QJsonValue& value : queryArray(QStringLiteral("instances"))) {
     const QJsonObject instance = value.toObject();
     const QString uid = instance.value(QStringLiteral("body")).toString();
@@ -2612,13 +2650,14 @@ std::vector<BodyDisplay> MainWindow::modelBodies() const {
         // No valid pattern now: the folded body.
       }
     }
+    const QJsonArray rows = instance.value(QStringLiteral("transform")).toArray();
     if (!cut.isNull() && !flat.contains(uid)) {
       // The cut is in design coordinates. Clip in this occurrence's local
       // coordinates, then retain its normal display placement.
-      cutBodies.push_back(bodies.size());
-      cutTargets.append(QJsonObject{{QStringLiteral("body"), uid}, {QStringLiteral("occurrence"), occurrence}});
+      cutting.which.push_back(bodies.size());
+      cutting.targets.append(QJsonObject{{QStringLiteral("body"), uid}, {QStringLiteral("occurrence"), occurrence}});
+      cutting.keys << sectionClipKey(uid, occurrence, rows);
     }
-    const QJsonArray rows = instance.value(QStringLiteral("transform")).toArray();
     BodyDisplay display;
     display.uid = utf8(uid);
     display.component = utf8(m_snapshot.bodies.value(uid).component);
@@ -2633,8 +2672,16 @@ std::vector<BodyDisplay> MainWindow::modelBodies() const {
     display.occurrence = utf8(occurrence);
     bodies.push_back(display);
   }
-  if (!cutBodies.empty()) {
-    clipBodies(idleDocument(), cut, cutTargets, cutBodies, bodies);
+  if (unclipped != nullptr) {
+    *unclipped = std::move(cutting);
+    return bodies;
+  }
+  if (!cutting.which.empty()) {
+    useClips(cutting, bodies);
+  } else if (cut.isNull() && !m_sectionState.clips.isEmpty()) {
+    // Whole again: what was kept goes.
+    m_sectionState.clips.clear();
+    m_sectionState.plane = QJsonValue();
   }
   for (BodyDisplay& body : bodies) {
     const QString uid = QString::fromStdString(body.uid);
@@ -2643,6 +2690,47 @@ std::vector<BodyDisplay> MainWindow::modelBodies() const {
     }
   }
   return bodies;
+}
+
+void MainWindow::useClips(const SectionTargets& cut, std::vector<BodyDisplay>& bodies) const {
+  SectionState& kept = m_sectionState;
+  if (kept.plane != cut.plane) {
+    kept.clips.clear();
+    kept.plane = cut.plane;
+  }
+  // Those clipped at this plane before (a round's, an earlier call's),
+  // while their shapes and placements are the same.
+  std::vector<std::size_t> missing; // into cut's lists
+  std::vector<std::size_t> which;   // into bodies
+  QJsonArray targets;
+  for (std::size_t i = 0; i < cut.which.size(); ++i) {
+    BodyDisplay& body = bodies[cut.which[i]];
+    const auto found = kept.clips.constFind(cut.keys.value(static_cast<qsizetype>(i)));
+    if (found != kept.clips.cend() && found->source == body.shape) {
+      if (found->shape) {
+        body.shape = found->shape;
+      }
+      continue;
+    }
+    missing.push_back(i);
+    which.push_back(cut.which[i]);
+    targets.append(cut.targets.at(static_cast<qsizetype>(i)));
+  }
+  if (missing.empty()) {
+    return;
+  }
+  // Clipped here, and their new shapes meshed, beside a round that may run:
+  // the section worker reads only what was detached from the bodies
+  // (mitcad#438).
+  const std::vector<std::shared_ptr<geometry::Shape>> left = clipBodies(idleDocument(), cut.plane, targets, which, bodies);
+  for (std::size_t k = 0; k < missing.size(); ++k) {
+    BodyDisplay& body = bodies[which[k]];
+    const std::shared_ptr<geometry::Shape> shape = k < left.size() ? left[k] : nullptr;
+    kept.clips.insert(cut.keys.value(static_cast<qsizetype>(missing[k])), SectionClip{body.shape, shape});
+    if (shape) {
+      body.shape = shape;
+    }
+  }
 }
 
 QString MainWindow::documentFolder() const {
@@ -2696,6 +2784,9 @@ void MainWindow::showBodies() {
   instances.finish();
   m_viewer->setBodies(bodies);
   showSectionCaps(bodies);
+  // The panel's measurement once the view has the section's bodies
+  // (mitcad#438).
+  measureIfWaiting();
   logSketchReach(bodies);
   ScopedTiming threads("bodies threads");
   showThreads(bodies);

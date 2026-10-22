@@ -4,8 +4,13 @@
 // "chamfer"); Press Pull turns into the feature its selection asks for,
 // and on a fillet's face opens the fillet (P6).
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <cstddef>
+#include <memory>
 #include <optional>
+#include <string>
+#include <vector>
 
 #include <QJsonArray>
 #include <QKeySequence>
@@ -18,8 +23,10 @@
 #include <BRep_Tool.hxx>
 #include <Geom2d_Curve.hxx>
 
+#include "ChamferHandles.hpp"
 #include "CommandFactories.hpp"
 #include "CommandSupport.hpp"
+#include "mitcad/geometry/naming.hpp"
 
 namespace mitcad::cmd {
 namespace {
@@ -67,17 +74,17 @@ std::optional<QJsonArray> splineKnots(const QString& typed, int count) {
   return knots;
 }
 
-// Where a fillet rounds an edge: the edge's middle, the way from it to the
-// middle of the rounding (into the material at a convex edge, out of it at
-// a concave one) and the angle between the faces' normals there; placed
-// as the view shows the body.
-struct EdgeBend {
-  gp_Pnt middle;
-  gp_Dir toward;
-  double angle = 0.0;
+// An edge of a body where a fillet or a chamfer takes it (EdgeSides:
+// its middle, direction, faces' normals and convexity there), placed as
+// the view shows the body, with the body and the edge's two faces (the
+// first and second face the model measures on).
+struct EdgeAt {
+  EdgeSides sides;
+  std::shared_ptr<geometry::Shape> body;
+  std::array<int, 2> faces{-1, -1};
 };
 
-std::optional<EdgeBend> edgeBend(const SelectionItem& item, const CommandContext& model) {
+std::optional<EdgeAt> edgeAt(const SelectionItem& item, const CommandContext& model) {
   if (item.kind != SelectKind::Edge) {
     return std::nullopt;
   }
@@ -97,7 +104,12 @@ std::optional<EdgeBend> edgeBend(const SelectionItem& item, const CommandContext
   const TopoDS_Edge& edge = body->edge(index);
   const BRepAdaptor_Curve curve(edge);
   const double t = (curve.FirstParameter() + curve.LastParameter()) / 2;
-  const gp_Pnt middle = curve.Value(t);
+  gp_Pnt middle;
+  gp_Vec tangent;
+  curve.D1(t, middle, tangent);
+  if (tangent.Magnitude() < 1.0e-9) {
+    return std::nullopt;
+  }
   gp_Vec normals[2];
   for (int k = 0; k < 2; ++k) {
     const TopoDS_Face& face = body->face(faces[static_cast<std::size_t>(k)]);
@@ -125,11 +137,57 @@ std::optional<EdgeBend> edgeBend(const SelectionItem& item, const CommandContext
   const gp_Dir bisector(sum);
   // Just off a convex edge along the normals is outside the material.
   BRepClass3d_SolidClassifier inside(body->occt(), middle.Translated(gp_Vec(bisector) * 1.0e-3), 1.0e-7);
-  const bool convex = inside.State() == TopAbs_OUT;
+  EdgeSides sides;
+  sides.middle = middle;
+  sides.tangent = gp_Dir(tangent);
+  sides.normals = {gp_Dir(normals[0]), gp_Dir(normals[1])};
+  sides.convex = inside.State() == TopAbs_OUT;
   const gp_Trsf placement = model.itemShape(item).Location().Transformation();
-  return EdgeBend{middle.Transformed(placement),
-                  (convex ? bisector.Reversed() : bisector).Transformed(placement),
-                  normals[0].Angle(normals[1])};
+  return EdgeAt{placed(sides, placement), body, faces};
+}
+
+// A chamfer set's handle for its Distance (`second` false) or its Distance
+// 2 (mitcad#534), on the set's first edge that can take it: Distance at
+// the middle of the bevel for an equal distance, else along the face the
+// model measures the first distance on (the reference face, Flip);
+// Distance 2 along the other face, for two distances only.
+std::optional<Manipulator> chamferHandle(const CommandState& row, const CommandContext& model, bool second) {
+  const QString type = row.choice(QStringLiteral("type"));
+  if (second && type != QStringLiteral("two_distances")) {
+    return std::nullopt;
+  }
+  const bool equal = type == QStringLiteral("equal_distance");
+  const Selection& reference = row.items(QStringLiteral("reference"));
+  const bool flip = row.checked(QStringLiteral("flip"));
+  for (const SelectionItem& item : row.items(QStringLiteral("edges"))) {
+    const auto at = edgeAt(item, model);
+    if (!at) {
+      continue;
+    }
+    std::optional<EdgeArrow> shown;
+    if (equal) {
+      shown = equalChamferArrow(at->sides);
+    } else {
+      bool on[2] = {false, false};
+      if (!reference.isEmpty() && reference.first().owner == item.owner) {
+        const std::string name = reference.first().name.toStdString();
+        for (std::size_t k = 0; k < 2; ++k) {
+          on[k] = geometry::face_matches(at->body->face_names(at->faces[k]), name);
+        }
+      }
+      const std::optional<int> side = measuredSide(!reference.isEmpty(), on[0], on[1], flip);
+      if (!side) {
+        continue;
+      }
+      shown = faceDistanceArrow(at->sides, second ? 1 - *side : *side);
+    }
+    if (shown) {
+      Manipulator handle = arrow(shown->origin, shown->direction);
+      handle.factor = shown->factor;
+      return handle;
+    }
+  }
+  return std::nullopt;
 }
 
 // Every edge and face of the sets, for the body they must share.
@@ -254,9 +312,13 @@ CommandDef filletCommand(const CommandContext& context) {
                          return std::nullopt;
                        }
                        for (const SelectionItem& item : row.items(QStringLiteral("edges"))) {
-                         if (const auto bend = edgeBend(item, model)) {
-                           Manipulator handle = arrow(bend->middle, bend->toward);
-                           handle.factor = 1.0 / std::cos(bend->angle / 2) - 1.0;
+                         const auto at = edgeAt(item, model);
+                         if (!at) {
+                           continue;
+                         }
+                         if (const std::optional<gp_Dir> toward = bendDirection(at->sides)) {
+                           Manipulator handle = arrow(at->sides.middle, *toward);
+                           handle.factor = 1.0 / std::cos(bendAngle(at->sides) / 2) - 1.0;
                            return handle;
                          }
                        }
@@ -582,13 +644,26 @@ CommandDef chamferCommand(const CommandContext& context) {
                      .withHoverChain(SelectKind::Edge, QStringLiteral("tangent_chain")),
                  choiceInput(QStringLiteral("type"), QObject::tr("Chamfer Type"), kChamferTypes,
                              QStringLiteral("equal_distance")),
+                 // Each distance has an arrow in the view (mitcad#534); the
+                 // angle is typed only.
                  valueInput(QStringLiteral("distance"), QObject::tr("Distance"), ValueKind::Length,
-                            QStringLiteral("1 mm")),
+                            QStringLiteral("1 mm"))
+                     .withTooltip(QObject::tr("From the edge on each face, or on the reference face; "
+                                              "its arrow drags it"))
+                     .withManipulator([](const CommandState& row, const CommandContext& model) {
+                       return chamferHandle(row, model, false);
+                     }),
                  valueInput(QStringLiteral("distance2"), QObject::tr("Distance 2"), ValueKind::Length,
                             QStringLiteral("1 mm"))
-                     .withVisible(typeIs("two_distances")),
+                     .withTooltip(QObject::tr("From the edge on the other face; its arrow along that "
+                                              "face drags it"))
+                     .withVisible(typeIs("two_distances"))
+                     .withManipulator([](const CommandState& row, const CommandContext& model) {
+                       return chamferHandle(row, model, true);
+                     }),
                  valueInput(QStringLiteral("angle"), QObject::tr("Angle"), ValueKind::Angle,
                             QStringLiteral("45 deg"))
+                     .withTooltip(QObject::tr("The bevel's angle from the reference face"))
                      .withVisible(typeIs("distance_angle")),
                  selectionInput(QStringLiteral("reference"), QObject::tr("Reference Face"),
                                 SelectKind::Face, 0, 1)

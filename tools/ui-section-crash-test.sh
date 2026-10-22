@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 # check-all sources: app/main.cpp app/MainWindow.cpp app/commands/InspectCommands.cpp app/framework/CommandSession.cpp core/cpp/bridge/analysis.cpp geometry/src/guard.cpp geometry/analysis/src/section.cpp core/model/src/api/analysis.rs core/ffi/src/kernel/mod.rs tools/cli
+# check-all sources: app/MainWindowSection.cpp app/framework/SectionWorker.cpp core/ffi/src/lib.rs
 # A crash inside OCCT during Section Analysis is an error, not a crash of
-# the application (mitcad#392). Its booleans run while the UI thread waits,
-# each body's on OCCT's thread pool (mitcad#438): the clip of each body
-# shown (MainWindow::showBodies) and, here, the section the panel
-# measures. A test hook makes the boolean crash as an access
-# violation inside OCCT would (MITCAD_TEST_OCCT_CRASH, geometry/src/guard.cpp).
-# On three blocks that cross x = 10:
+# the application (mitcad#392). Its booleans run off the UI thread, each
+# body's on OCCT's thread pool, from the section worker's thread
+# (mitcad#438): the clip of each body shown and, after the view has the
+# clipped bodies, the section the panel measures. A test hook makes the
+# boolean crash as an access violation inside OCCT would
+# (MITCAD_TEST_OCCT_CRASH, geometry/src/guard.cpp). On three blocks that
+# cross x = 10:
 #   1. The clip crashes: the blocks are shown whole (no caps), the panel
 #      still gives the section's area, and the app goes on (OK keeps it).
-#   2. The section crashes: the panel shows the error, the blocks stay
-#      whole (a failed inspection shows no cut), and the app goes on
+#   2. The section crashes: the blocks are shown cut (the clip worked), then
+#      the panel shows the measurement's error, and the app goes on
 #      (Escape closes the panel).
 #
 # Runs headless on Xvfb (see ui-test-lib.sh), without gdb, which would stop
@@ -81,13 +83,16 @@ echo "--- 2. The section crashes inside OCCT"
 : > "$UI_LOG"
 UI_GDB=0 MITCAD_TEST_OCCT_CRASH=section ui_start_app --open "$FILE"
 section_at_x10
-ui_expect_new "Inspect Section Analysis: failed: " "the section's error in the panel"
-FAILED=$(grep "Inspect Section Analysis: failed: " "$UI_LOG" | tail -1)
+# The panel measures after the view has the clipped blocks (mitcad#438).
+# YZ itself (x = 0) is shown and measured first, and its section crashes
+# too: only the lines after x = 10's caps count for x = 10.
+ui_expect_new "Section caps: 3 face(s) at" "the blocks shown cut at x = 10, the clip worked"
+CAPS=$(tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -n "^Section caps: 3 face(s) at" | head -1 | cut -d: -f1)
+UI_MARK=$((UI_MARK + CAPS))
+ui_expect_new "Inspect Section Analysis: failed: " "then the section's error in the panel"
+FAILED=$(tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep "^Inspect Section Analysis: failed: " | head -1)
 echo "$FAILED" | grep -qE "section: SIG(SEGV|BUS)" || ui_fail "the section's error is not the crash: $FAILED"
-echo "ok   the section's error is OCCT's crash"
-tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -q "^Section caps: " &&
-  ui_fail "the blocks were cut although the section failed"
-echo "ok   the blocks stay whole"
+echo "ok   the section's error is OCCT's crash, measured after the view's update"
 ui_step "cancel (Escape)"                  ui_key Escape
 ui_expect_log "Command Section Analysis cancelled" "cancelled, the app still running"
 

@@ -89,8 +89,14 @@ for entry in Fillet Chamfer; do
     ui_fail "no '$entry' in the Solid submenu of a face"
   echo "ok   '$entry' offered for a face"
 done
-grep -E "Context menu( Solid| Solid More)?: " "$UI_LOG" | tail -3 | grep -qE "[:|] (Extrude|Revolve)( \||$)" &&
-  ui_fail "profile commands offered for a face"
+# A planar face is a profile of Extrude (mitcad#535), which the face alone
+# completes: in Solid. Revolve takes sketch profiles only: not offered.
+grep "Context menu Solid: " "$UI_LOG" | tail -1 | grep -qE "[:|] Extrude( \||$)" ||
+  ui_fail "no 'Extrude' in the Solid submenu of a planar face"
+echo "ok   'Extrude' offered for a planar face"
+grep -E "Context menu( Solid| Solid More)?: " "$UI_LOG" | tail -3 | grep -qE "[:|] Revolve( \||$)" &&
+  ui_fail "Revolve offered for a face"
+echo "ok   no 'Revolve' for a face"
 ui_step "choose Solid > Fillet"            ui_menu_choose "Solid" "Fillet"
 ui_expect_log "Command Fillet started" "fillet started from the context menu"
 ui_expect_log "Fillet Edges: 1 face" "the selected face went to the edges input"

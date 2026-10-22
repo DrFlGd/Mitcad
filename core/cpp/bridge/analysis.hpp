@@ -109,11 +109,22 @@ std::unique_ptr<AnalysisSection> analysis_section(const geometry::Shape& shape,
 std::shared_ptr<geometry::Shape> analysis_clip(const geometry::Shape& shape,
                                                const AnalysisPlane& plane);
 // The section and the clip of each shape at its plane (one plane per
-// shape), on all cores.
+// shape), on all cores. They stop when the calling thread's operations are
+// asked to (geometry/cancel.hpp): the items not started then fail as
+// cancelled.
 std::unique_ptr<AnalysisSections> analysis_section_all(const ShapeList& shapes,
                                                        rust::Slice<const AnalysisPlane> planes);
 std::unique_ptr<AnalysisClips> analysis_clip_all(const ShapeList& shapes,
                                                  rust::Slice<const AnalysisPlane> planes);
+// What Section Analysis' worker thread may read of each shape (mitcad#438),
+// made on the thread that owns the shapes: null when the plane passes the
+// shape farther than its tolerances (its box, now kept with it, tells its
+// clip and its empty section), else a copy that shares no face, edge or
+// vertex with it, with the same names, its box and its mesh faces'
+// triangles. The worker then never reads a sub-shape that the view or a
+// model job may write into meanwhile.
+std::unique_ptr<AnalysisClips> analysis_detach_all(const ShapeList& shapes,
+                                                   rust::Slice<const AnalysisPlane> planes);
 AnalysisComparison analysis_compare_step(const ShapeList& bodies, rust::Str path,
                                          rust::Str step_body, std::size_t samples, double fuzzy);
 

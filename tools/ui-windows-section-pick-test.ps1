@@ -2,6 +2,7 @@
 # check-all sources: app/sketch app/view geometry/analysis tools/cli
 # check-all sources: core/cpp/bridge/analysis.cpp core/cpp/bridge/analysis.hpp
 # check-all sources: app/MainWindow.cpp app/OcctViewer.cpp
+# check-all sources: app/MainWindowSection.cpp app/framework/SectionWorker.cpp app/framework/CommandSession.cpp
 # Input-driven Windows UI test of picks on clipped bodies (mitcad#233), on
 # a design mitcad-cli makes: Body1 (F2.b0) 30 x 20 x 10 on XY and Body2
 # (F5.b0) 10 x 10 x 10 on a plane 5 above XY, beside Body1, and an empty
@@ -13,6 +14,11 @@
 #      sketch gets both projections.
 #   2. Section Analysis at x = 15: Fillet picks the top face of what is
 #      left of Body1 by its own name.
+#   3. The clips off the UI thread (mitcad#438), each view round made to
+#      wait 4 s: a new distance typed while the round at x = 0 runs stops
+#      it; the bodies are clipped and meshed at x = 15 on the section
+#      worker's thread, shown, then measured; Cancel while the round at
+#      x = 12 runs shows and measures nothing of it.
 # Mitcad runs with Mesa's software OpenGL (MITCAD_MESA_DIR) in session 0
 # over SSH, as tools/ui-windows-workflow-test.ps1 does.
 #
@@ -126,5 +132,78 @@ Ui-ExpectNew 'Pick face F2.b0/F2:end(' "the cut Body1's top face can be picked b
 Ui-Step "pick the cut Body1's top face"     { Ui-ClickPick 'face F2.b0/F2:end(' }
 Ui-ExpectNew 'Fillet Edges: 1 face' 'the face picked by its own name'
 Ui-Step 'cancel (Esc)'                      { Ui-Key 'Escape' }
+
+# Line-Of "text": the index, among the lines logged since the mark, of the
+# first one that has the text; -1 when none has.
+function Line-Of([string]$Text) {
+  $lines = @(Ui-LogLines | Select-Object -Skip $script:UiMark)
+  for ($i = 0; $i -lt $lines.Count; $i++) { if ($lines[$i].Contains($Text)) { return $i } }
+  return -1
+}
+
+# The clips off the UI thread (mitcad#438), each view round made to wait
+# 4 s before it clips (MITCAD_TEST_SECTION_DELAY_MS), so that the panel
+# changes and cancels while one runs; those steps send their keys without
+# waiting for the app to be idle.
+Write-Host '--- Section Analysis off the UI thread: a newer distance supersedes the round that runs'
+$env:MITCAD_TEST_SECTION_DELAY_MS = '4000'
+Ui-StartApp 'section-rounds' @('--open', $design)
+Remove-Item Env:MITCAD_TEST_SECTION_DELAY_MS
+Ui-ExpectLog "Opened $workLogged/blocks.mitcad" 'the design opened again'
+Ui-Step 'isometric view (Shift+F3)'         { Ui-Key 'shift+F3' }
+Ui-Step 'fit (F6)'                          { Ui-Key 'F6' }
+Ui-Mark
+Ui-Step 'section analysis (Shift+F4)'       { Ui-Key 'shift+F4' }
+Ui-ExpectNew 'Datum yz at' 'the origin planes shown'
+Ui-Step 'pick YZ'                           { Ui-ClickLogged 'Datum yz' }
+Ui-ExpectNew 'Computing section view started' 'the clips at x = 0 run'
+Ui-TypeIn 'Panel Section Analysis input offset' '15'
+Ui-Sync
+Ui-ExpectNew 'Section round view superseded' 'the round at x = 0 told to stop'
+Ui-ExpectNew 'Computing section view cancelled after' 'and ended as cancelled'
+$at15 = '{"plane":{"normal":[1,0,0],"origin":[15,0,0]}}'
+# Body1 cut, Body2 wholly in front (nothing left of it): both new shapes.
+Ui-ExpectNew "Section clips at $at15 off the UI thread (section worker): 2 bodies, 2 new, 2 meshed in" `
+  "the bodies clipped and meshed at x = 15 on the section worker's thread" 12
+Ui-ExpectNew "Section view ready at ${at15}: 2 bodies from the section worker" 'handed to the view'
+Ui-ExpectNew 'Section caps: 1 face(s)' "Body1's cut face as a cap, Body2 cut away"
+Ui-ExpectNew 'Inspect Section Analysis: area 200, length 60' "then the panel's numbers" 12
+Ui-ExpectNew 'Section measured off the UI thread (section worker)' "measured on the worker's thread"
+$since = @(Ui-LogLines | Select-Object -Skip $script:UiMark)
+if ($since | Where-Object { $_.Contains('"origin":[0,0,0]}} off the UI thread') }) {
+  Ui-Fail "the superseded round's clips were made"
+}
+if (@($since | Where-Object { $_.StartsWith('Inspect Section Analysis: area ') }).Count -ne 1) {
+  Ui-Fail 'the panel was measured more than once'
+}
+$ready = Line-Of "Section view ready at $at15"
+$caps = Line-Of 'Section caps: 1 face(s)'
+$measured = Line-Of 'Inspect Section Analysis: area 200, length 60'
+if ($ready -lt 0 -or $ready -gt $caps -or $caps -gt $measured) {
+  Ui-Fail "not shown and then measured in this order: ready $ready, caps $caps, measured $measured"
+}
+Write-Host "ok   nothing of the superseded round; the numbers came after the view's update"
+
+Write-Host '--- Cancel while a round runs'
+Ui-WaitIdle
+Ui-Mark
+Ui-TypeIn 'Panel Section Analysis input offset' '12'
+Ui-Sync
+Ui-ExpectNew 'Computing section view started' 'the clips at x = 12 run'
+Ui-Key 'Escape'
+Ui-ExpectNew 'Command Section Analysis cancelled' 'the panel cancelled while they run'
+Ui-ExpectNew 'Computing section view cancelled after' 'the round ended as cancelled'
+Ui-ExpectNew 'Section caps: none' 'the bodies whole again'
+Ui-WaitIdle
+Ui-Sync
+if (Ui-Crashed) { Ui-Fail 'crashed after the cancel' }
+$since = @(Ui-LogLines | Select-Object -Skip $script:UiMark)
+if ($since | Where-Object { $_.Contains('"origin":[12,0,0]}}: 2 bodies from the section worker') }) {
+  Ui-Fail "the cancelled round's clips were shown"
+}
+if ($since | Where-Object { $_.StartsWith('Inspect Section Analysis: area ') }) {
+  Ui-Fail "the cancelled round's section was measured"
+}
+Write-Host 'ok   nothing of the cancelled round shown, the app goes on'
 
 Ui-Finish 'UI Windows section pick test'

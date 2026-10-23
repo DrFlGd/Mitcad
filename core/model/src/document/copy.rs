@@ -107,7 +107,9 @@ impl DocState {
         self.check_feature(position, &entry)
             .map_err(ModelError::Invalid)?;
         let made = entry.def.info().new_component().then(|| {
-            let made = self.assembly.create(None, Some(entry.uid));
+            // Named after what it makes where the feature says (mitcad#577).
+            let name = self.made_component_name(&entry.def);
+            let made = self.assembly.create(name.as_deref(), Some(entry.uid));
             self.assembly
                 .place(made, entry.component, Transform::IDENTITY);
             made
@@ -634,6 +636,26 @@ impl CopyReferences<'_> {
         ))
     }
 
+    /// A seat's link to another component's shaft (mitcad#578): the copy
+    /// keeps the original shaft unless it is copied too.
+    fn seat(
+        &self,
+        copy: &mut Option<crate::features::Seat>,
+        original: &Option<crate::features::Seat>,
+        component: ComponentUid,
+    ) -> Result<(), ModelError> {
+        if let (Some(copy), Some(original)) = (copy.as_mut(), original.as_ref())
+            && let Some(link) = &original.link
+        {
+            let (link, internal) = self.link(link, component)?;
+            copy.link = Some(link);
+            if !internal {
+                copy.shaft = original.shaft.clone();
+            }
+        }
+        Ok(())
+    }
+
     fn links(
         &self,
         copy: &mut FeatureDef,
@@ -840,6 +862,17 @@ impl CopyReferences<'_> {
                 if internal {
                     copy.bodies = original.bodies.iter().map(|b| self.body(*b)).collect();
                 }
+            }
+            // A seat on another component's shaft (mitcad#578): as a
+            // sketch's plane.
+            (FeatureDef::Pulley(copy), FeatureDef::Pulley(original)) => {
+                self.seat(&mut copy.seat, &original.seat, component)?;
+            }
+            (FeatureDef::Gear(copy), FeatureDef::Gear(original)) => {
+                self.seat(&mut copy.seat, &original.seat, component)?;
+            }
+            (FeatureDef::PrintableBearing(copy), FeatureDef::PrintableBearing(original)) => {
+                self.seat(&mut copy.seat, &original.seat, component)?;
             }
             // A split's tool bodies of other components: as a sweep's.
             (FeatureDef::SplitBody(copy), FeatureDef::SplitBody(original)) => {

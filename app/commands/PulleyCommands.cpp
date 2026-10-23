@@ -4,7 +4,9 @@
 // distance from another pulley that the belt runs round (`belt_with`). The
 // panel shows the derived values (the model's `pulley_values`): the
 // diameters, and with `belt_with` the belt length, the nearest of the
-// catalogue lengths typed in the panel and the teeth in mesh.
+// catalogue lengths typed in the panel and the teeth in mesh. A Shaft
+// places it on a shaft instead of the plane (mitcad#578, SeatInputs.hpp),
+// its bore the shaft's diameter and the bore clearance.
 #include <cmath>
 
 #include <QJsonArray>
@@ -19,6 +21,7 @@
 #include "CommandFactories.hpp"
 #include "CommandSupport.hpp"
 #include "Commands.hpp"
+#include "SeatInputs.hpp"
 
 namespace mitcad::cmd {
 namespace {
@@ -66,6 +69,22 @@ bool belted(const CommandState& state) { return !state.items(QStringLiteral("bel
 bool flangesShown(const CommandState& state) { return state.choice(QStringLiteral("flanges")) != QStringLiteral("none"); }
 
 bool plainBore(const CommandState& state) { return state.choice(QStringLiteral("bore")) == QStringLiteral("plain"); }
+
+// On a shaft (mitcad#578): not while running with another pulley.
+SeatPanel seatPanel() {
+  SeatPanel panel;
+  panel.offered = [](const CommandState& state) { return !belted(state); };
+  return panel;
+}
+bool onShaft(const CommandState& state) { return !belted(state) && seated(state); }
+// Placed by the plane and centre.
+bool onPlane(const CommandState& state) { return !belted(state) && !seated(state); }
+// A plain bore of its own diameter; on a shaft any bore but a thread is
+// the shaft's.
+bool ownPlainBore(const CommandState& state) { return plainBore(state) && !onShaft(state); }
+bool shaftBore(const CommandState& state) {
+  return onShaft(state) && state.choice(QStringLiteral("bore")) != QStringLiteral("thread");
+}
 
 // The type of the feature picked to run the belt with (kept beside the
 // inputs): a pulley's, or empty.
@@ -122,6 +141,8 @@ CommandDef pulleyCommand(const CommandContext& context) {
   def.icon = QStringLiteral("pulley");
   def.tooltip = QObject::tr("A timing belt pulley (GT2, HTD, T5, XL), a smooth idler or a toothed idler");
   def.group = QStringLiteral("CREATE");
+  def.section = QStringLiteral("machine");
+  def.subgroup = QStringLiteral("Machine Elements");
   def.keywords = {QStringLiteral("timing belt"), QStringLiteral("belt"), QStringLiteral("idler"),
                   QStringLiteral("GT2"),         QStringLiteral("HTD"),  QStringLiteral("T5"),
                   QStringLiteral("XL"),          QStringLiteral("sheave")};
@@ -156,11 +177,11 @@ CommandDef pulleyCommand(const CommandContext& context) {
           .withOnPick([](const SelectionItem& item, CommandState& state, const CommandContext& model) {
             placeAt(item, state, model, QStringLiteral("x"), QStringLiteral("y"));
           })
-          .withVisible(unbelted),
+          .withVisible(onPlane),
       valueInput(QStringLiteral("x"), QObject::tr("Center X"), ValueKind::Length, QStringLiteral("0 mm"))
-          .withVisible(unbelted),
+          .withVisible(onPlane),
       valueInput(QStringLiteral("y"), QObject::tr("Center Y"), ValueKind::Length, QStringLiteral("0 mm"))
-          .withVisible(unbelted),
+          .withVisible(onPlane),
       valueInput(QStringLiteral("angle"), QObject::tr("Angle"), ValueKind::Angle, QStringLiteral("0 deg"))
           .withTooltip(QObject::tr("Turns the pulley about its axis"))
           .withVisible(unbelted),
@@ -188,13 +209,13 @@ CommandDef pulleyCommand(const CommandContext& context) {
       choiceInput(QStringLiteral("bore"), QObject::tr("Bore"), kBores, QStringLiteral("plain"))
           .withHeading(QObject::tr("Bore and Hub")),
       valueInput(QStringLiteral("bore_diameter"), QObject::tr("Bore Diameter"), ValueKind::Length, QStringLiteral("5 mm"))
-          .withVisible(plainBore),
+          .withVisible(ownPlainBore),
       textInput(QStringLiteral("thread"), QObject::tr("Thread Size"), QStringLiteral("M5x0.8"))
           .withTooltip(QObject::tr("An ISO metric size: the bore is its tap drill"))
           .withVisible([](const CommandState& s) { return s.choice(QStringLiteral("bore")) == QStringLiteral("thread"); }),
       checkInput(QStringLiteral("keyway"), QObject::tr("Keyway"), false)
           .withTooltip(QObject::tr("DIN 6885 for the bore's diameter"))
-          .withVisible(plainBore),
+          .withVisible([](const CommandState& s) { return plainBore(s) || shaftBore(s); }),
       checkInput(QStringLiteral("hub"), QObject::tr("Hub"), true).withVisible(takesHub),
       valueInput(QStringLiteral("hub_diameter"), QObject::tr("Hub Diameter"), ValueKind::Length, QStringLiteral("16 mm"))
           .withVisible(hubShown),
@@ -217,9 +238,23 @@ CommandDef pulleyCommand(const CommandContext& context) {
           .withHeading(QObject::tr("Belt"))
           .withVisible(belted),
   };
+  // The shaft and its offset, flip and bore clearance (mitcad#578) before
+  // the plane and centre they stand for.
+  const SeatPanel seat = seatPanel();
+  {
+    const QVector<InputDef> seatInputList = seatInputs(seat);
+    qsizetype at = 0;
+    while (at < def.inputs.size() && def.inputs.at(at).id != QStringLiteral("plane")) {
+      ++at;
+    }
+    for (const InputDef& input : seatInputList) {
+      def.inputs.insert(at++, input);
+    }
+  }
   def.inputs += operationInputs();
 
   def.init = [](CommandState& state, const CommandContext& model) {
+    initSeat(state, model);
     // A face selected before the command runs the belt with its pulley;
     // another feature's face is no pulley.
     Selection& belt = state.items(QStringLiteral("belt_with"));
@@ -235,7 +270,7 @@ CommandDef pulleyCommand(const CommandContext& context) {
     }
   };
 
-  const auto buildPulley = [](const CommandState& state, const CommandContext&) {
+  const auto buildPulley = [seat](const CommandState& state, const CommandContext& model) {
     Built result;
     const QString kind = kindOf(state);
     QJsonObject pulley{{QStringLiteral("type"), QStringLiteral("pulley")}, {QStringLiteral("kind"), kind}};
@@ -247,6 +282,11 @@ CommandDef pulleyCommand(const CommandContext& context) {
                     QJsonObject{{QStringLiteral("pulley"), state.items(QStringLiteral("belt_with")).first().owner},
                                 {QStringLiteral("center_distance"), state.expression(QStringLiteral("center_distance"))},
                                 {QStringLiteral("angle"), state.expression(QStringLiteral("belt_angle"))}});
+    } else if (onShaft(state)) {
+      addSeat(pulley, state, model, seat);
+      if (nonZero(state, QStringLiteral("angle"))) {
+        pulley.insert(QStringLiteral("angle"), state.expression(QStringLiteral("angle")));
+      }
     } else {
       const Selection& plane = state.items(QStringLiteral("plane"));
       if (plane.isEmpty()) {
@@ -281,7 +321,12 @@ CommandDef pulleyCommand(const CommandContext& context) {
                                 {QStringLiteral("length"), state.expression(QStringLiteral("hub_length"))}});
     }
     const QString bore = state.choice(QStringLiteral("bore"));
-    if (bore == QStringLiteral("plain")) {
+    if (shaftBore(state)) {
+      // The shaft's diameter and the bore clearance (the seat's).
+      if (state.checked(QStringLiteral("keyway"))) {
+        pulley.insert(QStringLiteral("keyway"), true);
+      }
+    } else if (bore == QStringLiteral("plain")) {
       pulley.insert(QStringLiteral("bore"), QJsonObject{{QStringLiteral("type"), QStringLiteral("plain")},
                                                         {QStringLiteral("diameter"),
                                                          state.expression(QStringLiteral("bore_diameter"))}});
@@ -334,6 +379,11 @@ CommandDef pulleyCommand(const CommandContext& context) {
     add("diameter", QObject::tr("diameter %1"));
     add("pitch_diameter", QObject::tr("pitch diameter %1"));
     add("outside_diameter", QObject::tr("outside %1"));
+    // The bore a shaft gives (mitcad#578).
+    const QString shaft = seatNote(values, model);
+    if (!shaft.isEmpty()) {
+      parts << shaft;
+    }
     add("center_distance", QObject::tr("centre distance %1"));
     add("belt_length", QObject::tr("belt length %1"));
     if (values.contains(QStringLiteral("belt_length")) && values.contains(QStringLiteral("belt_teeth"))) {
@@ -357,7 +407,10 @@ CommandDef pulleyCommand(const CommandContext& context) {
   def.load = [](const QJsonObject& feature, CommandState& state, const CommandContext& context) {
     state.setChoice(QStringLiteral("kind"), feature.value(QStringLiteral("kind")).toString(QStringLiteral("toothed")));
     const QJsonObject belt = feature.value(QStringLiteral("belt_with")).toObject();
-    if (!belt.isEmpty()) {
+    const bool shaft = loadSeat(feature, state, context);
+    if (shaft) {
+      loadValue(state, QStringLiteral("angle"), feature.value(QStringLiteral("angle")), feature, context);
+    } else if (!belt.isEmpty()) {
       const QString mate = belt.value(QStringLiteral("pulley")).toString();
       state.setItems(QStringLiteral("belt_with"), {SelectionItem{SelectKind::Feature, mate, QString(), QString()}});
       setMate(state, mate, context);
@@ -387,7 +440,9 @@ CommandDef pulleyCommand(const CommandContext& context) {
     loadValue(state, QStringLiteral("flange_thickness"), flanges.value(QStringLiteral("thickness")), feature, context);
     const QJsonObject bore = feature.value(QStringLiteral("bore")).toObject();
     const QString boreType = bore.value(QStringLiteral("type")).toString(QStringLiteral("none"));
-    state.setChoice(QStringLiteral("bore"), boreType);
+    // On a shaft without a bore of its own: the shaft's, a plain one.
+    state.setChoice(QStringLiteral("bore"),
+                    shaft && boreType == QStringLiteral("none") ? QStringLiteral("plain") : boreType);
     loadValue(state, QStringLiteral("bore_diameter"), bore.value(QStringLiteral("diameter")), feature, context);
     if (boreType == QStringLiteral("thread")) {
       state.setText(QStringLiteral("thread"),
@@ -428,6 +483,9 @@ CommandDef pulleyCommand(const CommandContext& context) {
     }
     const QJsonValue plane = feature.value(QStringLiteral("plane"));
     if (!plane.isUndefined() && !plane.isNull() && !isShowable(plane, context)) {
+      return false;
+    }
+    if (!seatShowable(feature, context)) {
       return false;
     }
     const bool hub = !feature.value(QStringLiteral("hub")).toObject().isEmpty();

@@ -403,6 +403,31 @@ design in a project.
   value of the `pulley_values` query. Its result keeps its frame as the
   mount `bore` ([commands.md](../core/model/src/api/commands.md),
   "Pulleys").
+- **Printable bearings** (mitcad#577,
+  `core/model/src/features/printable_bearing.rs`): no kernel method of
+  their own. The model works out the bearing's section (one function of
+  the distance from the pitch circle bounds both races, so they mirror
+  each other), builds the races and the first element as regions in code
+  revolved by `Kernel::revolve` (an airsoft ball a sphere of
+  `Kernel::primitive`), places the other elements by `transform_shape`
+  with instance names, and cuts the cage's pockets and a raceway in a
+  picked body with booleans. The printability checks are part of the
+  section's layout, so the panel's `bearing_values` and the evaluation
+  give the same errors. A feature may name the component its
+  new-component operation makes (`FeatureInfo::component_name`, used by
+  the document when it makes the component); an airsoft bearing's balls
+  are purchased rows of `parts_list` (`api/bearings.rs`), not components
+  ([commands.md](../core/model/src/api/commands.md), "Printable
+  bearings"). The seat on a shaft or in a hole is the shared seat
+  resolver's (mitcad#578).
+- **Seats on shafts** (mitcad#578, `core/model/src/features/seat.rs`): a
+  pulley, a gear with a bore and the printable bearing take a `seat`
+  instead of a plane: one resolver turns a circular edge or a cylindrical
+  face (`Kernel::edge_geometry`, `Kernel::face_cylinder`; another
+  component's body read in its component and moved by the seat's
+  occurrence link, as a sweep's `body_links`) into the end measured from,
+  the axis and the diameter, which the part's frame and its plain bore
+  follow. The app's panels share its inputs (`app/commands/SeatInputs.hpp`).
 - **Extrude's automatic operation** (mitcad#289, mitcad#575,
   `core/model/src/document/auto_operation.rs`): a preview asked for it
   evaluates the extrusion as a new body, tries its tool against the

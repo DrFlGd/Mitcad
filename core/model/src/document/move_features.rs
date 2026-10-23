@@ -951,6 +951,10 @@ fn follow_references(
             FeatureDef::ConstructionPlane(p) => !p.links.is_empty(),
             FeatureDef::Derive(d) => !d.links.is_empty(),
             FeatureDef::BodyTransfer(_) => true,
+            // A seat on another component's shaft (mitcad#578).
+            FeatureDef::Pulley(_) | FeatureDef::Gear(_) | FeatureDef::PrintableBearing(_) => {
+                f.def.seat_link().is_some()
+            }
             def => has_origins(def),
         };
         if !changes {
@@ -1007,6 +1011,14 @@ fn follow_references(
             FeatureDef::BodyTransfer(transfer) => {
                 let names = transfer.bodies.iter().map(|b| b.feature).collect();
                 follow(&mut transfer.link, &names, own);
+            }
+            // A seat on another component's shaft (mitcad#578).
+            seated @ (FeatureDef::Pulley(_)
+            | FeatureDef::Gear(_)
+            | FeatureDef::PrintableBearing(_)) => {
+                if let Some((body, link)) = seated.seat_link_mut() {
+                    follow(link, &BTreeSet::from([body.feature]), own);
+                }
             }
             FeatureDef::Joint(joint) => {
                 for origin in [&mut joint.a, &mut joint.b] {

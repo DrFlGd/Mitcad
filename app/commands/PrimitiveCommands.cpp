@@ -68,6 +68,7 @@ CommandDef primitive(const CommandContext& context, Primitive kind) {
   def.id = QStringLiteral("solid.") + type;
   def.icon = type;
   def.group = QStringLiteral("CREATE");
+  def.section = QStringLiteral("primitives");
   def.featureType = type;
   def.keywords = {QStringLiteral("primitive")};
   def.inputs = placementInputs(kind);

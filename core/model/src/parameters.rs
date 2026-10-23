@@ -415,6 +415,8 @@ pub fn slot_unit(slot: &str) -> Unit {
         || field == "profile_shift"
         // A pulley's set screws (mitcad#562).
         || slot == "set_screws.count"
+        // A printable bearing's elements (mitcad#577).
+        || slot == "element_count"
     {
         Unit::NONE
     } else {

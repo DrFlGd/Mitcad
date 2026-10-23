@@ -203,6 +203,7 @@ CommandDef extrudeCommand(const CommandContext& context) {
   def.tooltip = QObject::tr("Pushes sketch profiles or a planar face into a solid");
   def.shortcut = QKeySequence(Qt::Key_E);
   def.group = QStringLiteral("CREATE");
+  def.section = QStringLiteral("profiles");
   def.pinned = true;
   def.keywords = {QStringLiteral("pad"), QStringLiteral("boss"), QStringLiteral("pocket"),
                   QStringLiteral("thin")};
@@ -788,6 +789,7 @@ CommandDef revolveCommand(const CommandContext& context) {
   def.icon = QStringLiteral("revolve");
   def.tooltip = QObject::tr("Turns sketch profiles about an axis into a solid");
   def.group = QStringLiteral("CREATE");
+  def.section = QStringLiteral("profiles");
   def.pinned = true;
   def.keywords = {QStringLiteral("rotate"), QStringLiteral("turn"), QStringLiteral("lathe")};
   def.featureType = QStringLiteral("revolve");

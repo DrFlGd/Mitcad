@@ -294,6 +294,10 @@ fn links(def: &FeatureDef) -> Vec<(LinkKind, &OccurrenceLink)> {
         FeatureDef::ConstructionPlane(p) => p.links.values().collect(),
         FeatureDef::Derive(d) => d.links.values().collect(),
         FeatureDef::BodyTransfer(t) => vec![&t.link],
+        // A pulley's or gear's seat on another component's shaft (mitcad#578).
+        FeatureDef::Pulley(_) | FeatureDef::Gear(_) | FeatureDef::PrintableBearing(_) => {
+            def.seat_link().map(|(_, link)| link).into_iter().collect()
+        }
         _ => Vec::new(),
     };
     let mut out: Vec<(LinkKind, &OccurrenceLink)> = references

@@ -20,6 +20,7 @@ CommandDef chamfer(const CommandContext& context) {
   def.group = "MODIFY";                // see Ribbon::groups()
   def.pinned = true;                   // a button besides the group menu entry
   def.subgroup = "";                   // a submenu of the group's menu, see below
+  def.section = "";                    // a section of the group's menu, see below
   def.keywords = {"bevel"};            // the command search finds it by these too
   def.featureType = "chamfer";         // the definition type it adds and edits
   def.inputs = {
@@ -55,6 +56,37 @@ button; a subgroup of one command is a plain entry. The sketch commands
 give it with the group, `"CREATE/Circles"` (`sketchCommand` in
 `SketchCommands.cpp`). The native macOS frontend mirrors the submenus as
 popup entries of its group menus; the default keeps its plain button there.
+
+**Sections** (mitcad#579): `section` is a short id of a part of the group's
+menu (`"profiles"`). `Ribbon::createGroup` puts a separator between two
+consecutive entries of the menu whose sections differ; a submenu is an
+entry of its first command's section. A separator is never at the top or
+the bottom of the menu, and never two are in a row. In a group whose
+commands have no section, the menu has no separators between them (the
+separator before a group's extras, `addGroupExtras`, stays). The order is
+still the registration order: register a section's commands together. The
+native macOS frontend's group menus have the same separators
+(`NativeMacAction::section`). The command search and the view's context
+menu do not use sections or subgroups.
+
+The SOLID CREATE menu's sections, in this order (`CreateCommands.cpp`,
+then Gear, Pulley and Bearing from `MainWindow::registerCommands`):
+
+| Section | Commands |
+|---|---|
+| `sketch` | Create Sketch |
+| `profiles` | Extrude, Revolve, Sweep, Loft, Rib, Web, Emboss |
+| `faces` | Hole, Thread, Plastic Feature |
+| `primitives` | Box, Cylinder, Sphere, Torus, Coil, Helix, Pipe |
+| `patterns` | the Pattern submenu (`subgroup` `"Pattern"`: Rectangular Pattern, Circular Pattern, Pattern on Path, Pattern at Points), then Mirror |
+| `machine` | the Machine Elements submenu (`subgroup` `"Machine Elements"`: Gear, Pulley, Bearing) |
+
+A new machine element sets `def.group = "CREATE"`, `def.section =
+"machine"` and `def.subgroup = "Machine Elements"`, and is registered
+after Bearing. None of these commands is pinned, so the submenus have no
+split buttons: the group's buttons are Create Sketch, Extrude, Revolve and
+Hole (`tools/ui-sketch-create-menu-test.sh`,
+`tools/ui-windows-pattern-options-test.ps1`).
 
 Checklist for a new command or feature type:
 
@@ -517,7 +549,7 @@ Clear Selection, Undo, Fit, Command Search
   `min` to `max`), every other selection input shown at the start (the
   inputs' defaults, a list's first rows) may stay empty, and it is no
   creation command (group CREATE) given a face or a plane, which would
-  only be where it goes (Box, Cylinder, Hole, Coil, Gear, Pulley, Plastic
+  only be where it goes (Box, Cylinder, Hole, Coil, Gear, Pulley, Bearing, Plastic
   Feature).
   Otherwise, needing further picks, it is under **More**, the submenu's
   last entry. In each, the commands keep the registry's (the ribbon's)
@@ -4075,7 +4107,7 @@ SOLID tab's ASSEMBLE group.
 | `insert.library_component` Insert from Library | `LibraryBrowser`: search (words, a licence filter, items without a licence only when asked), the results as the part picker's grid (`PartGrid`, [Part picker](#part-picker): groups with Favourites and In this design, the libraries' groups as a tree (mitcad#527), stars, the tiles' size, the hover's larger picture; an index's libraries not fetched in "Libraries to get"; a double click or Return inserts), details with the licence and the attribution, the version (newest first) and the size (cascaded combo boxes per selector, `SizeChooser`), linked or a copy; **Update** fetches every enabled source (as Fetch All, one warning for the failures) and searches again, keeping the selected item; while no enabled source is fetched the empty list says to press Update (mitcad#317); a part whose manifest lists mount frames goes on to Place Part (below, mitcad#525), any other is dropped in at the origin as before | `library_search`, `library_show`, `library_preview`, `library_list`, `library_fetch`; then `insert_component` with `library` |
 | `insert.mount_part` Place Part (mitcad#525, `commands/MountCommands.cpp`) | Insert from Library starts it for a part whose manifest lists mount frames (`mounts`, [docs/libraries.md](../docs/libraries.md#mount-frames)); not in the ribbon. Place On (a flat face or a plane for a face or grid frame; for a foot frame any face of the part with the grid, the cell under the click, so that the planes of the frames of the parts already placed, which lie in the cells' faces, take no clicks; a round face, a circular edge or an axis for a shaft or hole frame; none: a drop-in), Mount Frame (the part's frames, the first chosen), Rotate (about the frame's z; on a grid quarter turns), Offset, Flip (a plane's other side, a hole's other end). A click snaps the frame to the pick face to face, its way towards the viewer kept with it (`towardViewer`: a hole's end); the preview shows the part there (`analysis_shape` `mount_preview`) with a marker on its frame, the panel the frame, where it goes (a grid's cells) and how it may move, or why it cannot (a taken cell). **Place** (Enter) places it and the panel stays for the next one; **Shift + click** places at once; Enter without a pick drops it in at the origin as before, to be joined later with Joint, whose origins take its frames (its component's joint origins, the browser's Joints rows); **Close** (Esc) keeps what was placed | `mount_preview` while the inputs change; `insert_component` with `mount` (without: as before) |
 | `tools.library_parts` Library Parts... | `LibraryPartsDialog`: each part's recorded version and size, another version or size, Show Changes, Update; Check for Newer Versions and Get Missing Libraries fetch (the latter after showing the addresses, which come from the design); the Parts List tab (Copy as CSV) | `library_parts`, `parts_list`, `library_show`, `library_diff`, `library_fetch`; then `update_library_parts` |
-| `tools.libraries` Libraries... | `LibrariesDialog`: the sources (settings `libraries/sources`: URL or folder, on or off; the defaults are Mitcad's fastener library and the community index), Add URL, Add Folder, Remove, Fetch Selected, Fetch All | `library_list`, `library_fetch` |
+| `tools.libraries` Libraries... | `LibrariesDialog`: the sources (settings `libraries/sources`: URL or folder, on or off, and Auto-update, mitcad#576; the defaults are Mitcad's fastener library and the community index, both with Auto-update off), the columns On, Auto-update (tooltip "Fetch this library when Mitcad starts"; greyed out, its state kept, while the source is off), Source, Library, Versions, Licence; Add URL, Add Folder, Remove, Fetch Selected, Fetch All | `library_list`, `library_fetch` |
 | `tools.community_library` Community Library... | the browser with the indexes' libraries first; Get Library adds a library an index lists to the sources and fetches it after a question with its address and licence | as Insert from Library |
 | `tools.publish_library` Publish to Library... | `PublishLibraryDialog`: the open design (a single file) added to a library folder of one's own (made when new), an image of the view as its preview, recorded as a version of the folder's project, pushed (`connect` with a remote URL, else `push`), and the index entry (copied) | `library_init`, `library_add`, the project's `commit`, `connect`/`push`, `index_entry` |
 
@@ -4083,16 +4115,42 @@ SOLID tab's ASSEMBLE group.
   `libraries` in the local app data; `configureLibraries()` tells the
   bridge at start (`configure_libraries`).
 - Fetches run as `RemoteTask::library` on a thread of their own with a
-  progress dialog whose Cancel ends git; only when the user asks
-  (nothing checks for newer versions on its own). The other library
+  progress dialog whose Cancel ends git; when the user asks, and at
+  start-up for the sources with Auto-update (below). The other library
   commands are local and run at once.
+- **Auto-update at start-up** (mitcad#576, `files/LibraryAutoUpdate.*`,
+  `files/LibrarySettings.cpp`): `LibrarySource::autoUpdate` (default off;
+  settings without the key read as off) is saved with `url` and
+  `enabled`. About one second after the main window shows,
+  `MainWindow::updateLibrariesAtStart` starts `LibraryAutoUpdate`: it
+  fetches the sources that are on and have Auto-update, one after
+  another, each as a `RemoteTask::library` without a progress dialog.
+  Nothing blocks the window. A failure (offline, server down) is only
+  logged with `qWarning` and counted. When the run ends, the status bar
+  says `Libraries updated: mitcad-parts v2.7.0` for the sources with a
+  version that was not there before (a source fetched the first time
+  counts), and `... could not be fetched` for the failures; it says nothing when
+  nothing is new. The signal `updated()` makes the open library browser
+  (search again, selection kept), the Libraries dialog (table again) and
+  a BUILD part picker that is open (`PickerRequest::role`, the catalog
+  read again, `PartPicker::refreshParts`) list the new versions. Nothing
+  in a design changes: its parts keep their chosen version. A fetch the
+  user asks for (`fetchLibraries`) ends a run that is still going on
+  first. There is no start-up fetch in the CLI, the MCP server, a run of
+  a UI test script (`MITCAD_TEST_INPUT`) or a screenshot run.
 
 Logs: `Library fetched: <kind> <name> (<id>) from <url>; versions ...`,
 `Library fetch failed: <url>: ...`, `Library fetch of <n> source(s): <m>
-failed` (Fetch All, Update), `Library browser update: <n> enabled
+failed` (Fetch All, Update), `Library auto-update: fetching <n>
+source(s) in the background` (only with a source on Auto-update),
+`Library auto-update: <n> source(s) fetched, <m> failed; new: ...`,
+`Library auto-update: Libraries updated: ...`, `Library auto-update ended
+before it was done`, `Library source <url>: auto-update on|off` (the
+check box), `Library browser: libraries updated in the background`,
+`Part picker refreshed: <n> parts for <command>`, `Library browser update: <n> enabled
 source(s)`, `Library browser empty: nothing fetched yet, press Update` (or
 `nothing found`), `Library browser kept the selection <key>`, `Library source <url> (on|off):
-<what>; versions ...`, `Library source added|removed: <url>`, `Library
+<what>; versions ...; auto-update on|off`, `Library source added|removed: <url>`, `Library
 search '<text>': <n> components, <m> libraries, <k> hidden by the
 licence`, `Library browser selected <library>/<component>: version ...,
 size ..., licence ...` (or `selected library <id> (<url>), licence ...,
@@ -4111,7 +4169,10 @@ bodies <uids>` (where the frame went, in the design), `Library
 part <name>: <library> <version>, size <row>, <status>`, `Library changes:
 ...`, `Updated library parts: ...`, `Parts list row: <qty> x <part>
 (...)`, `Publish: ...`. Tests: `tools/ui-library-test.sh`,
-`tools/ui-windows-library-test.ps1` (ctest `app.ui-windows-library`);
+`tools/ui-windows-library-test.ps1` (ctest `app.ui-windows-library`); the
+sources' settings with and without the Auto-update key in
+`tests/library_settings.cpp` (test_app), and `ui-library` checks that no
+start-up fetch runs with the defaults;
 Place Part and Joint Origin's Mount Frame `tools/ui-mount-test.sh` and
 `tools/ui-windows-mount-test.ps1` (ctest `app.ui-windows-mount`: synthetic
 Gridfinity bins on a baseplate's cells, a taken cell refused, a lamp free
@@ -4620,23 +4681,39 @@ SVG at several sizes (`themeIcon`).
   picked in Edges gives none), at the edge's middle as the view shows the
   body, so a placed component's edge carries it too, and dragging it
   changes that set's value only. The edge's middle, direction, faces'
-  normals and convexity come from the body (`edgeAt` in
-  `FilletCommands.cpp`); where the arrows stand is plain math in
-  `commands/ChamferHandles.hpp` (ctest `app.unit`). Fillet's constant
-  Radius: an arrow along the bisector of the faces' normals (into the
-  material at a convex edge, out of it at a concave one), its knob at the
-  middle of the rounding. Chamfer's **Distance**: for Equal Distance the
+  normals and convexity come from the body's solid, in its own
+  coordinates before the placement (`edgeSides` in
+  `commands/ChamferHandles.hpp`, called by `edgeAt` in
+  `FilletCommands.cpp`): convex where a point just off the edge along
+  the first face's normal minus the second's lies outside the solid,
+  concave where it lies inside (mitcad#571: a probe along the normals'
+  bisector is outside at both kinds, took every edge for convex and
+  turned an inside corner's arrows into the body, so its sizes grew when
+  pushed). Where the arrows stand is plain math there too (ctest
+  `app.unit`, also on a real L bracket's edges). Every arrow points the
+  way its value grows: pulled along it the value grows, pushed back it
+  shrinks. Fillet's constant Radius: an arrow along the bisector of the
+  faces' normals (into the material at a convex edge, out of it into the
+  open corner at a concave one), its knob at the middle of the rounding. Chamfer's **Distance**: for Equal Distance the
   same arrow, its knob at the middle of the bevel's face (distance ×
   sin(half the angle between the normals)); for Two Distances and
   Distance and Angle an arrow along the face the model measures the first
   distance on (the Reference Face, else the edge's first face; Flip the
   other: `measuredSide`, as the kernel's `measured_face`), square to the
   edge, its knob where the bevel meets that face. Chamfer's **Distance 2**
-  (Two Distances): an arrow along the other face. The **Angle** has no
-  handle and is typed. Test: `tools/ui-chamfer-handle-test.sh` (Floating
-  and Docked: a drag, the panel's value, the preview, OK, an edit from the
-  timeline cancelled and accepted, Undo; two sets; Flip; a turned and
-  moved component).
+  (Two Distances): an arrow along the other face. A face's arrow points
+  away from the edge along the face, at a concave edge away from the
+  other face too. The **Angle** has no handle and is typed. Tests:
+  `tools/ui-chamfer-handle-test.sh` (convex edges; Floating and Docked: a
+  drag, the panel's value, the preview, OK, an edit from the timeline
+  cancelled and accepted, Undo; two sets; Flip; a turned and moved
+  component) and `tools/ui-fillet-handle-test.sh` (an L bracket's inside
+  corner: in Floating and Docked Fillet's Radius and Equal Distance
+  pulled into the open corner and pushed back, made and edited from the
+  timeline; Two Distances and Distance and Angle with the floor as the
+  Reference Face, with Flip; a convex edge's Radius; each arrow's way
+  checked against the camera, the bracket's volume against the dragged
+  sizes).
 - **Move Face** (`solid.move_face`, MODIFY, `MoveCommands.cpp`,
   mitcad#531; the model's side in commands.md, "Move face"): Faces (of one
   body, no meshes: `oneBody`) and the motion with Move/Copy's own inputs
@@ -4893,8 +4970,13 @@ SVG at several sizes (`themeIcon`).
   logged `Gear F4 linked to its mate's joint` or `Gear F4 not linked:
   <reason>`. A definition on a plane the panel cannot show, or with a
   thread of another standard, is not editable. Logged `Added gear (Spur),
-  20 teeth, module 2`. Test: `app.ui-windows-gear`
-  (`tools/ui-windows-gear-test.ps1`: a spur gear, then a rack meshing it).
+  20 teeth, module 2`. A gear with a bore (not meshed, not a bevel pair)
+  can sit on a shaft instead of the plane: the seat's inputs (*Seats on
+  shafts* below) before Plane; on a shaft Plane, Center X and Y hide, Bore
+  Diameter hides (a Plain bore, or None, is the shaft's) and the note adds
+  `bore 8.2 mm (shaft 8 mm)`. Test: `app.ui-windows-gear`
+  (`tools/ui-windows-gear-test.ps1`: a spur gear, then a rack meshing it,
+  then a spur gear on a shaft's top edge with an offset).
 - **Pulley** (`solid.pulley`, `PulleyCommands.cpp`, mitcad#562; registered
   by `registerPulleyCommands` after Gear, at the end of CREATE): Type
   (`kind`, a row of icon buttons `Panel Pulley input kind=idler`: Toothed,
@@ -4923,11 +5005,67 @@ SVG at several sizes (`themeIcon`).
   flange side the panel does not list, a plane it cannot show, a thread of
   another standard, or a hub or set screws on an idler (or set screws
   without a hub) is not editable. Logged `Added pulley (Toothed), GT2 2
-  mm, 20 teeth` or `Added pulley (Idler), diameter 20 mm`. Tests:
-  `tools/ui-pulley-test.sh` and `app.ui-windows-pulley`
+  mm, 20 teeth` or `Added pulley (Idler), diameter 20 mm`. Without Belt
+  With a pulley can sit on a shaft instead of the plane: the seat's inputs
+  (*Seats on shafts* below) before Plane; on a shaft Plane, Center X and Y
+  hide, Bore Diameter hides (a Plain bore, or None, is the shaft's; a
+  Keyway goes into it) and the note adds `bore 8.2 mm (shaft 8 mm)`.
+  Tests: `tools/ui-pulley-test.sh` and `app.ui-windows-pulley`
   (`tools/ui-windows-pulley-test.ps1`): a GT2 pulley, its teeth and
   flanges changed in the preview, edited, then a second pulley on the belt
-  with its belt length and nearest catalogue length.
+  with its belt length and nearest catalogue length, then a pulley on a
+  shaft's top edge with an offset and a bore clearance.
+- **Bearing** (`solid.bearing`, `BearingCommands.cpp`, mitcad#577;
+  registered by `registerBearingCommands` after Pulley, in Machine
+  Elements): a printable bearing (commands.md, *Printable bearings*).
+  Element (Dumbbell, Roller, Ball, Airsoft), Groove Into (a round face of
+  a body, a cylinder: the model's `groove`, with Offset; the bearing then
+  takes no plane and is made as new bodies), Plane (XY at the start,
+  `init`), Center X and Y and Angle (without Groove Into), Size (the
+  model's `bearing_sizes`, read once, `608 (8 x 22 x 7)`, then Custom
+  with Bore, Outside Diameter and Width), Flange with its diameter and
+  thickness, then Printing: Radial Clearance, Axial Clearance, Chamfer,
+  Smallest Wall and Flank Angle (always given), Element Gap, Elements and
+  Element Diameter (0: left out, the model's default, the most that fit,
+  the largest that leaves the walls), and Operation (New Component, the
+  default, or New Body). Every value is an expression the model keeps as
+  the feature's parameter. `CommandDef::note` (logged `Panel Bearing
+  note: ...`) shows the model's `bearing_values` of the definition:
+  `Pitch diameter 15 mm, 10 elements of 3.8 mm, walls 1.2 mm and 1.2 mm,
+  least gap 0.2828 mm` (airsoft balls also `buy 8 x Airsoft ball 6 mm`),
+  or the model's `error` (a printability check), capitalized. A
+  definition with a size the panel does not list or a plane or face it
+  cannot show is not editable. Logged `Added bearing (Dumbbell), 608`,
+  `Added bearing (Roller), 10 mm x 30 mm x 9 mm`, `Added bearing
+  (Dumbbell), 608, groove into a face`, `Added bearing (Dumbbell), 608, on
+  a shaft or in a hole`. On a shaft or in a hole (mitcad#578): the seat's
+  inputs (`seatInputs`, without Bore Clearance, offered without Groove
+  Into) before Plane, and Fit Clearance (0.5 mm); a picked shaft or hole
+  also sets Size to the one that fits it (the model's `seat_frame`, then
+  `bearing_sizes` by the bore on a shaft, by the outside diameter in a
+  hole, the nearest), which the user may change; the definition always
+  has the size, so the component is named after it. The note adds `on a
+  8 mm shaft` or `in a 22 mm hole`, and `no standard size fits it` when
+  none does. Tests: `tools/ui-bearing-test.sh` and `app.ui-windows-bearing`
+  (`tools/ui-windows-bearing-test.ps1`): on XY with too many elements and
+  an edit, Groove Into a shaft, on a cylinder's top edge with an offset,
+  in a hole's top rim.
+- **Seats on shafts** (`SeatInputs.hpp`, mitcad#578; commands.md, *Seats
+  on shafts*): the inputs every part that sits on a shaft shares (Pulley,
+  Gear, the printable bearing): `seatInputs(SeatPanel)` gives Shaft (a
+  circular edge or a cylindrical face, `withAccepts`; a click on a face
+  keeps where it hit, the `seat`'s `near`, which end the offset is
+  measured from), Offset, Flip and Bore Clearance (shown once a shaft is
+  picked; `SeatPanel::offered` says when the part can sit on one,
+  `clearance` whether it has Bore Clearance); `initSeat` in `init` notes
+  where the active component is seen; `addSeat` puts `seat` (with
+  `link` `{"source": <the pick's occurrence>, "target": <where the
+  feature's component is seen>}` for another component's shaft, a BUILD
+  shaft or a library part) and `bore_clearance` into the definition;
+  `loadSeat` fills them from one, `seatShowable` in `canEdit`, `seatNote`
+  the note's words from the values query. A shaft cleared again puts
+  Plane (an origin plane square to the shaft when there is one) and
+  Center X and Y where the seat had the part (the model's `seat_frame`).
 - **Expression fields' parameters** (mitcad#567, mitcad#568;
   `framework/ParameterField.*` for the list, the fx button and Create
   User Parameter, `framework/ParameterSuggest.*` for the text rules). One
@@ -5054,7 +5192,7 @@ next screenshot.
 | `Ribbon SOLID/CREATE at x,y`, `Ribbon tab BUILD at x,y` | group menus and the workspace tabs (wherever the tab bar is: the ribbon's, the title bar's), when the ribbon or its tab bar is shown, moves or is resized (`PlaceWatcher`, when the places changed), and when another tab is shown (`ui_click_logged`) |
 | `Window layout: window 1280x800, minimum 484x315; menu 6,0 1268x22; central 252,126 716x593; QStatusBar 6,771 1268x29; browserDock 6,126 240x593; commandDock 974,126 300x593; ribbonToolbar 6,22 1268x104; timelineDock 6,725 1268x46` | the main window's size and minimum size and the geometry of its menu bar, central widget (the 3D view) and visible docks, toolbars and status bar (by object name, else class), once the window shows and again whenever its size changes after that (mitcad#560: the docks' content never makes the window grow; `tools/ui-docked-height-test.sh`, `app.ui-windows-docked-height`; not with the native UI); `tools/ui-layout.sh` prints it and `tools/check-all.sh` reruns every UI test when it changes (mitcad#412) |
 | `Ribbon split SKETCH/CREATE/Circles at x,y`, `Ribbon split SKETCH/CREATE/Circles arrow at x,y` | a subgroup's split button: the part that starts its default, the arrow that opens the submenu (mitcad#222; logged with the group menus) |
-| `Ribbon menu SKETCH/CREATE: Line \| Rectangles > [2-Point Rectangle \| …] \| … \| Sketch Dimension`, `Ribbon menu SKETCH/CREATE/Circles: Center Diameter Circle \| …` | a group menu or a subgroup's submenu as it opens (`-` a separator, a submenu as `Name > [its entries]`) |
+| `Ribbon menu SKETCH/CREATE: Line \| Rectangles > [2-Point Rectangle \| …] \| … \| Sketch Dimension`, `Ribbon menu SKETCH/CREATE/Circles: Center Diameter Circle \| …` | a group menu or a subgroup's submenu as it opens (`-` a separator, a submenu as `Name > [its entries]`; the SOLID CREATE menu: `Create Sketch \| - \| Extrude \| … \| - \| Pattern > [Rectangular Pattern \| …] \| Mirror \| - \| Machine Elements > [Gear | Pulley | Bearing]`, mitcad#579)\| Pulley]`, mitcad#579) |
 | `Panel <command> input <id> at x,y [(hidden)]`, `Panel <command> OK at x,y` | a panel opened; again whenever its places move (mitcad#528: the panel, a row's field or a widget it is in moved or was resized, a tile's picture read, the dock laid out again: 50 ms after it settles, a timer the sync waits for, only when a place differs from those logged last), so the last line logged is where the input is; the part picker's places likewise when its window moves or is resized; the in-process test driver's `click-logged` (macOS) waits for these timers (`TestSync::settling`, up to 5 s) before it reads a place |
 | `Panel <command> view y 160 to 668, scrolled 0 of 297, bar at 1015,414` | with a panel's places: the part of the window its page shows, how far it is scrolled, and its scroll bar while it scrolls (a long panel in a low window); the places are logged again when it scrolls (`Ui-PanelReveal` in `tools/ui-windows-lib.ps1`) |
 | `Datum xy at x,y`, `Sketch entity F1/c4 at x,y` | an input that takes them became active |

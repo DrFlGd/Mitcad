@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MIT
 # check-all sources: app/commands/GearCommands.cpp app/framework/CommandSession.cpp
 # check-all sources: core/model/src/features/gear.rs core/model/src/features/gear_profile.rs geometry/src/gear.cpp
+# check-all sources: app/commands/SeatInputs.cpp core/model/src/features/seat.rs core/model/src/api/seats.rs tools/cli
 # Input-driven Windows UI test of Gear (mitcad#472) in the build VM
 # (tools/ui-windows-lib.ps1 says how the input is posted):
 #   1. Gear in an empty design: the panel starts on XY with a spur gear of
@@ -11,6 +12,12 @@
 #      teeth, 12 high: the note shows its pitch line (20 pi = 62.8319 mm) and
 #      the centre distance (20 mm); OK makes the rack below the gear
 #      (F2.b0, its section's area times the width: 6218.320 mm3).
+#   3. On a shaft (mitcad#578), in a design mitcad-cli makes (an 8 mm
+#      cylinder 30 high, Cylinder1, F1.b0): Gear (Spur, 20 teeth) with
+#      Shaft the cylinder's top edge: the note shows the bore the shaft
+#      gives (8 mm); an offset of 5 mm; OK makes the gear on the shaft
+#      (F2.b0: Gear1's volume less the 8 mm bore through its 10 mm,
+#      12371.968 - 502.655 = 11869.314 mm3).
 #
 # Usage: powershell -ExecutionPolicy Bypass -File tools\ui-windows-gear-test.ps1 [-App build\dev\mitcad.exe] [-Out dir] [-QtBin dir]
 param(
@@ -21,6 +28,24 @@ param(
 . (Join-Path $PSScriptRoot 'ui-windows-lib.ps1')
 
 Ui-Init $App $Out $QtBin @{ 'solid.gear' = 'F7' }
+
+# The shaft of part 3, made by mitcad-cli.
+$cli = @('mitcad-cli.exe', '..\tools\cli\mitcad-cli.exe', 'tools\cli\mitcad-cli.exe') |
+  ForEach-Object { Join-Path (Split-Path $script:UiApp) $_ } | Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $cli) { Ui-Fail "no mitcad-cli.exe beside $($script:UiApp)" }
+$work = Join-Path $script:UiOut 'files'
+Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Force $work | Out-Null
+$shaftJson = Join-Path $work 'shaft.json'
+Set-Content -Encoding ascii $shaftJson @'
+[
+  {"cmd": "add_feature", "def": {"type": "cylinder", "plane": "xy", "center": [0, 0],
+    "diameter": 8, "height": 30, "operation": "new_body"}}
+]
+'@
+$shaft = Join-Path $work 'shaft.mitcad'
+$output = & $cli run $shaftJson --save $shaft 2>&1
+if ($LASTEXITCODE -ne 0) { Ui-Fail "mitcad-cli: $($output -join ' / ')" }
 
 Ui-StartApp 'gear'
 Start-Sleep -Milliseconds 800
@@ -54,5 +79,32 @@ Ui-Mark
 Ui-Step 'OK (Enter)'                     { Ui-Key 'Return' }
 Ui-ExpectNew 'Added gear (Rack), 10 teeth, module 2' 'the rack added' 30
 Ui-ExpectVolume 'New body \S+ \(F2\.b0\): volume ([0-9.]+) mm3' 6218.320 'the rack' 1e-5
+
+Write-Host '--- A spur gear on a shaft (mitcad#578)'
+Ui-StartApp 'gear-shaft' @('--open', $shaft)
+Ui-Step 'fit (F6)'                       { Ui-Key 'F6' }
+Ui-ExpectLog 'Bodies shown: F1.b0' 'the shaft shown'
+Ui-Mark
+Ui-Step 'gear (F7)'                      { Ui-Key 'F7' }
+Ui-ExpectNew 'Preview Gear: ok' 'the panel open' 30
+# The panel may keep the rack of part 2: a spur gear of 20 teeth again.
+Ui-Step 'Spur'                           { Ui-ClickLogged 'Panel Gear input kind=spur' }
+Ui-Step 'teeth 20'                       { Ui-TypeIn 'Panel Gear input teeth' '20' }
+Ui-Mark
+Ui-Step 'Shaft'                          { Ui-ClickLogged 'Panel Gear input shaft' }
+Ui-ExpectNew 'Pick places:' 'the picks are logged'
+Ui-ExpectNew 'Pick edge F1.b0/E{F1:side0|F1:top} at' "the shaft's top edge can be picked"
+Ui-Mark
+Ui-Step "click the shaft's top edge"     { Ui-ClickPick 'edge F1.b0/E{F1:side0|F1:top} at' }
+Ui-ExpectNew 'bore 8 mm (shaft 8 mm)' 'the bore the shaft gives' 30
+Ui-Mark
+Ui-Step 'offset 5'                       { Ui-TypeIn 'Panel Gear input seat_offset' '5' }
+Ui-ExpectNew 'Preview Gear: ok' '5 mm down the shaft previewed' 30
+$note = Ui-LastMatch '(Panel Gear note: .*)'
+Write-Host "     $note"
+Ui-Mark
+Ui-Step 'OK (Enter)'                     { Ui-Key 'Return' }
+Ui-ExpectNew 'Added gear (Spur), 20 teeth, module 2' 'the gear on the shaft added' 30
+Ui-ExpectVolume 'New body \S+ \(F2\.b0\): volume ([0-9.]+) mm3' 11869.314 'the gear with the shaft''s bore' 1e-5
 
 Ui-Finish 'UI Windows gear test'

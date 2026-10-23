@@ -112,6 +112,9 @@ qt_add_executable(mitcad
   commands/Commands.hpp
   commands/CommandSupport.cpp
   commands/CommandSupport.hpp
+  # Seats on shafts: the panels' shared inputs (mitcad#578).
+  commands/SeatInputs.cpp
+  commands/SeatInputs.hpp
   commands/ConstructCommands.cpp
   commands/CreateCommands.cpp
   commands/ExtrudeCommands.cpp
@@ -139,6 +142,8 @@ qt_add_executable(mitcad
   commands/GearCommands.cpp
   # Pulley (mitcad#562).
   commands/PulleyCommands.cpp
+  # Bearing (mitcad#577).
+  commands/BearingCommands.cpp
   # Equal spacing in sketches (mitcad#221).
   commands/EqualSpacingCommands.cpp
   # Surface modelling: the SURFACE group (mitcad#455).
@@ -1174,7 +1179,7 @@ target_sources(mitcad PRIVATE
   commands/ChamferHandles.hpp)
 if(BUILD_TESTING)
   # Convex, concave, obtuse and placed edges, the measured face: plain OCCT
-  # math.
+  # math; an L bracket's edges read from its solid (mitcad#571).
   target_sources(test_app PRIVATE tests/chamfer_handles.cpp commands/ChamferHandles.cpp
                  commands/ChamferHandles.hpp)
 endif()
@@ -1236,4 +1241,16 @@ endif()
 target_sources(mitcad PRIVATE framework/AutoOperationPolicy.hpp)
 if(BUILD_TESTING)
   target_sources(test_app PRIVATE tests/auto_operation_policy.cpp framework/AutoOperationPolicy.hpp)
+endif()
+
+# Auto-update of the library sources (mitcad#576, app/COMMANDS.md "Component
+# libraries"): the sources' settings (plain Qt Core) and the background fetch
+# at start-up.
+target_sources(mitcad PRIVATE
+  files/LibraryAutoUpdate.cpp
+  files/LibraryAutoUpdate.hpp
+  files/LibrarySettings.cpp)
+if(BUILD_TESTING)
+  # The settings' round trip, with and without the key: plain Qt Core.
+  target_sources(test_app PRIVATE tests/library_settings.cpp files/LibrarySettings.cpp files/Libraries.hpp)
 endif()

@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MIT
 # check-all sources: app/commands/PulleyCommands.cpp app/framework/CommandSession.cpp
 # check-all sources: core/model/src/features/pulley.rs core/model/src/features/pulley_profile.rs core/model/src/api/pulleys.rs
+# check-all sources: app/commands/SeatInputs.cpp core/model/src/features/seat.rs core/model/src/api/seats.rs tools/cli
 # Input-driven Windows UI test of Pulley (mitcad#562) in the build VM
 # (tools/ui-windows-lib.ps1 says how the input is posted); the Linux
 # counterpart is tools/ui-pulley-test.sh:
@@ -15,6 +16,11 @@
 #      the note shows the belt round both (two equal pulleys: 2 x 80 +
 #      20 x 2 = 200 mm, 100 teeth); the catalogue lengths 188, 202 and 210
 #      give the nearest one (202 mm). OK makes F2.b0.
+#   4. On a shaft (mitcad#578), in a design mitcad-cli makes (an 8 mm
+#      cylinder 30 high, Cylinder1, F1.b0): Pulley with Shaft the
+#      cylinder's top edge: the note shows the bore the shaft gives (8 mm);
+#      an offset of 2 mm and a bore clearance of 0.2 mm make it 8.2 mm; OK
+#      makes the pulley on the shaft (F2.b0).
 #
 # Usage: powershell -ExecutionPolicy Bypass -File tools\ui-windows-pulley-test.ps1 [-App build\dev\mitcad.exe] [-Out dir] [-QtBin dir]
 param(
@@ -25,6 +31,24 @@ param(
 . (Join-Path $PSScriptRoot 'ui-windows-lib.ps1')
 
 Ui-Init $App $Out $QtBin @{ 'solid.pulley' = 'F7' }
+
+# The shaft of part 4, made by mitcad-cli.
+$cli = @('mitcad-cli.exe', '..\tools\cli\mitcad-cli.exe', 'tools\cli\mitcad-cli.exe') |
+  ForEach-Object { Join-Path (Split-Path $script:UiApp) $_ } | Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $cli) { Ui-Fail "no mitcad-cli.exe beside $($script:UiApp)" }
+$work = Join-Path $script:UiOut 'files'
+Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Force $work | Out-Null
+$shaftJson = Join-Path $work 'shaft.json'
+Set-Content -Encoding ascii $shaftJson @'
+[
+  {"cmd": "add_feature", "def": {"type": "cylinder", "plane": "xy", "center": [0, 0],
+    "diameter": 8, "height": 30, "operation": "new_body"}}
+]
+'@
+$shaft = Join-Path $work 'shaft.mitcad'
+$output = & $cli run $shaftJson --save $shaft 2>&1
+if ($LASTEXITCODE -ne 0) { Ui-Fail "mitcad-cli: $($output -join ' / ')" }
 
 Ui-StartApp 'pulley'
 Start-Sleep -Milliseconds 800
@@ -86,6 +110,34 @@ Write-Host "     $note"
 Ui-Mark
 Ui-Step 'OK (Enter)'                     { Ui-Key 'Return' }
 Ui-ExpectNew 'Added pulley (Toothed), GT2 2 mm, 20 teeth' 'the second pulley added' 30
+Ui-ExpectNew '(F2.b0): volume ' 'its body made' 30
+
+Write-Host '--- A pulley on a shaft (mitcad#578)'
+Ui-StartApp 'pulley-shaft' @('--open', $shaft)
+Ui-Step 'fit (F6)'                       { Ui-Key 'F6' }
+Ui-ExpectLog 'Bodies shown: F1.b0' 'the shaft shown'
+Ui-Mark
+Ui-Step 'pulley (F7)'                    { Ui-Key 'F7' }
+Ui-ExpectNew 'Preview Pulley: ok' 'the panel open on XY' 30
+Ui-Step 'teeth 20'                       { Ui-TypeIn 'Panel Pulley input teeth' '20' }
+Ui-Mark
+Ui-Step 'Shaft'                          { Ui-ClickLogged 'Panel Pulley input shaft' }
+Ui-ExpectNew 'Pick places:' 'the picks are logged'
+Ui-ExpectNew 'Pick edge F1.b0/E{F1:side0|F1:top} at' "the shaft's top edge can be picked"
+Ui-Mark
+Ui-Step "click the shaft's top edge"     { Ui-ClickPick 'edge F1.b0/E{F1:side0|F1:top} at' }
+Ui-ExpectNew 'bore 8 mm (shaft 8 mm)' 'the bore the shaft gives' 30
+Ui-Mark
+Ui-Step 'offset 2'                       { Ui-TypeIn 'Panel Pulley input seat_offset' '2' }
+Ui-ExpectNew 'Preview Pulley: ok' '2 mm down the shaft previewed' 30
+Ui-Mark
+Ui-Step 'bore clearance 0.2'             { Ui-TypeIn 'Panel Pulley input bore_clearance' '0.2' }
+Ui-ExpectNew 'bore 8.2 mm (shaft 8 mm)' 'the clearance widens the bore' 30
+$note = Ui-LastMatch '(Panel Pulley note: .*)'
+Write-Host "     $note"
+Ui-Mark
+Ui-Step 'OK (Enter)'                     { Ui-Key 'Return' }
+Ui-ExpectNew 'Added pulley (Toothed), GT2 2 mm, 20 teeth' 'the pulley on the shaft added' 30
 Ui-ExpectNew '(F2.b0): volume ' 'its body made' 30
 
 Ui-Finish 'UI Windows pulley test'

@@ -73,6 +73,10 @@ void registerGearCommands(CommandRegistry& registry, const CommandContext& conte
 // SOLID tab's CREATE group.
 void registerPulleyCommands(CommandRegistry& registry, const CommandContext& context);
 
+// Bearing (mitcad#577, BearingCommands.cpp): printable bearings, after
+// Pulley in the CREATE group's Machine Elements.
+void registerBearingCommands(CommandRegistry& registry, const CommandContext& context);
+
 // Equal spacing in sketches (mitcad#221, EqualSpacingCommands.cpp): Equal
 // Spacing, Equal Spacing Dimension and Edit Equal Spacing. Sketch Dimension
 // with three or more points, circles, arcs or lines selected opens Equal

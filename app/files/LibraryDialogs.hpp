@@ -3,7 +3,8 @@
 
 // The dialogs of component libraries (mitcad#64, mitcad#63):
 // - LibrariesDialog: the sources (libraries and community indexes, on or
-//   off), added by URL or folder, fetched only when asked.
+//   off, and Auto-update: fetched in the background at start-up,
+//   mitcad#576), added by URL or folder, fetched when asked.
 // - LibraryBrowser: Insert from Library and the community library: search
 //   with a licence filter, the results as the part picker's grid of previews
 //   (PartGrid, mitcad#418: groups, favourites, In this design), details
@@ -87,6 +88,8 @@ private:
   void addUrl(const QString& url);
   void fetch(bool all);
   void save();
+  // The row's Auto-update greyed out while its source is off (mitcad#576).
+  void greyAutoUpdate(int row);
 
   QTableWidget* m_table = nullptr;
 };

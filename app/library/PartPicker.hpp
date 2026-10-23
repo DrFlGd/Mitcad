@@ -311,6 +311,10 @@ struct PickerRequest {
   // The command's input the choice goes into, when not its part (a Timber
   // frame's fastener, mitcad#497); empty for the part.
   QString input;
+  // The BUILD role the parts are of ("profile", "timber", ...), when the
+  // caller can list them again (mitcad#576: new library versions that came
+  // in the background); empty when it cannot.
+  QString role;
 };
 
 class PartPicker : public QDialog {
@@ -327,6 +331,11 @@ public:
   void ask(const PickerRequest& request);
   // New parts for the same command (after a placement, another system).
   void setParts(const QList<PickerPart>& parts, const QString& current = QString());
+  // The same parts read again (a library was updated): the part chosen,
+  // the group and the filters stay.
+  void refreshParts(const QList<PickerPart>& parts);
+  // The BUILD role of the parts asked for (PickerRequest::role).
+  QString role() const { return m_request.role; }
   // The part chosen in the command changed elsewhere (its panel).
   void setCurrent(const QString& key);
   // The command ended: the picker closes unless it is pinned.

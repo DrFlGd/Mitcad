@@ -1471,12 +1471,18 @@ Mitcad's one library of parts. Mitcad fetches it when you ask.
 Fetched libraries are bare clones in your local data folder
 (`libraries`). `MITCAD_LIBRARIES_DIR` replaces that folder. There is
 one clone for each URL. Mitcad makes and updates the clones with the
-system's git only when you ask. These commands ask for it:
+system's git only when you ask, or at start-up for a source with
+Auto-update (the check box in Libraries). These commands ask for it:
 
 - Libraries › Fetch
 - Update in the library browser
 - Library Parts › Check for Newer Versions
 - Get Library
+
+A source with Auto-update is fetched in the background when Mitcad
+starts, without a dialog. The setting `autoUpdate` is kept with the
+source's `url` and `enabled` (`libraries/sources`) and is off when it is
+missing. The CLI and the MCP server do not fetch at start-up.
 
 Updates add branches and tags. They remove nothing. Git's automatic
 garbage collection is off there. Thus the versions that designs use

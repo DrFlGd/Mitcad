@@ -744,7 +744,8 @@ impl DocState {
         let made = self.assembly.created_by(uid);
         match (made, entry.def.info().new_component()) {
             (None, true) => {
-                let made = self.assembly.create(None, Some(uid));
+                let name = self.made_component_name(&entry.def);
+                let made = self.assembly.create(name.as_deref(), Some(uid));
                 self.assembly
                     .place(made, entry.component, crate::transform::Transform::IDENTITY);
             }

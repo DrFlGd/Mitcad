@@ -613,7 +613,18 @@ QWidget* Ribbon::createGroup(const QString& tab, const QString& group, GroupInfo
     }
   }
   int pinnedCount = 0;
+  bool firstEntry = true;
+  QString section;
   for (const Entry& entry : entries) {
+    // A separator where the section changes (CommandDef::section,
+    // mitcad#579), only between entries: never at the top or the bottom,
+    // never two in a row. A submenu is in its first command's section.
+    const QString entrySection = entry.defs.first()->section;
+    if (!firstEntry && entrySection != section) {
+      menu->addSeparator();
+    }
+    firstEntry = false;
+    section = entrySection;
     if (entry.defs.size() == 1) {
       // A command of its own, also a subgroup of one (Line, Text, Project).
       const CommandDef* def = entry.defs.first();

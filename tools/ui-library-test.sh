@@ -8,7 +8,8 @@
 #      its entry for a community index.
 #   2. Libraries: the default sources removed (they are not fetched), a
 #      parts library's fasteners made by the generator (v1.0.0, then v1.1.0 with
-#      wider M5 heads) and a community index added by URL, not fetched.
+#      wider M5 heads) and a community index added by URL, not fetched;
+#      Auto-update is off and the start-up fetches nothing (mitcad#576).
 #   2b. Insert from Library (mitcad#317): empty, its text says to press
 #      Update; Update fetches both sources and lists the parts.
 #   3. Insert from Library: a search for 4762, the older version v1.0.0,
@@ -116,6 +117,8 @@ ui_mark
 ui_step "Libraries (command search)"       ui_command "Libraries..."
 ui_focus_dialog '^Libraries$'
 ui_expect_new "Library source https://github.com/mitcad/parts.git (on): not fetched" "the default sources listed"
+ui_expect_new "Library source https://github.com/mitcad/parts.git (on): not fetched; versions ; auto-update off" \
+  "Auto-update is off for the defaults (mitcad#576)"
 ui_step "remove the defaults (Alt+R twice)" eval 'ui_key alt+r; ui_sync; ui_key alt+r'
 ui_expect_new "Library source removed: https://github.com/mitcad/community-index.git" "the defaults removed"
 for url in "$LIB" "$INDEX"; do
@@ -127,6 +130,9 @@ done
 ui_expect_new "Library source added: $INDEX" "the sources added"
 ui_step "close (Alt+C)"                    ui_key alt+c
 ui_focus_main
+# No source has Auto-update: the start-up did no fetch (mitcad#576).
+grep -qF "Library auto-update" "$UI_LOG" && ui_fail "a start-up fetch ran although no source has Auto-update"
+echo "ok   no start-up fetch without Auto-update"
 
 echo "--- 2b. Insert from Library: empty until Update (mitcad#317)"
 ui_mark

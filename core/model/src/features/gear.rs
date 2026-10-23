@@ -15,6 +15,12 @@
 //! teeth engage. Bores (plain with an optional DIN 6885 keyway, or a thread
 //! size's tap drill) and hubs go through or on spur, helical, herringbone
 //! and bevel gears. A bevel gear's `pair` also makes its mate.
+//!
+//! `seat` places a gear with a bore (spur, helical, herringbone, a single
+//! bevel gear) on a shaft instead of `plane` and `center` (mitcad#578,
+//! `seat.rs`): its plane at the seat's offset along the shaft, its axis
+//! the shaft's; without a `bore` its bore is plain, the shaft's diameter
+//! plus `bore_clearance`, and follows the shaft.
 
 use std::f64::consts::{PI, TAU};
 
@@ -25,6 +31,7 @@ use super::gear_profile::{
     self, Bevel, NamedSegment, Rack, Tooth, bore_outline, circle, mesh_distance,
 };
 use super::geom_ref::{GeomRef, Want};
+use super::seat::Seat;
 use super::thread::ThreadSize;
 use super::{
     CheckContext, EvalContext, Evaluate, FeatureDef, FeatureInfo, FeatureOutput, References,
@@ -163,6 +170,13 @@ pub struct GearDef<P = ParamId> {
     pub hub: Option<Hub<P>>,
     #[serde(default = "none", skip_serializing_if = "Option::is_none")]
     pub mesh_with: Option<MeshWith<P>>,
+    /// On a shaft instead of `plane` and `center` (mitcad#578).
+    #[serde(default = "none", skip_serializing_if = "Option::is_none")]
+    pub seat: Option<Seat<P>>,
+    /// Added to the shaft's diameter: the plain bore of a seated gear (0
+    /// without it).
+    #[serde(default = "none", skip_serializing_if = "Option::is_none")]
+    pub bore_clearance: Option<P>,
     pub operation: Operation,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub participants: Vec<BodyUid>,
@@ -192,6 +206,11 @@ impl<P> GearDef<P> {
         let backlash = option("backlash", &self.backlash)?;
         let profile_shift = option("profile_shift", &self.profile_shift)?;
         let angle = option("angle", &self.angle)?;
+        let bore_clearance = option("bore_clearance", &self.bore_clearance)?;
+        let seat = match &self.seat {
+            None => None,
+            Some(seat) => Some(seat.map_params("seat.", &mut *f)?),
+        };
         Ok(GearDef {
             kind: self.kind,
             plane: self.plane.clone(),
@@ -245,6 +264,8 @@ impl<P> GearDef<P> {
                         .transpose()?,
                 }),
             },
+            seat,
+            bore_clearance,
             operation: self.operation,
             participants: self.participants.clone(),
         })
@@ -306,6 +327,22 @@ impl GearDef<f64> {
             Some(Bore::Plain { diameter }) => Some(*diameter),
             Some(Bore::Thread { thread }) => Some(thread.data()?.minor),
         })
+    }
+
+    /// A seated gear without a bore gets the plain bore of its shaft of
+    /// diameter `shaft`: the shaft's diameter and the bore clearance.
+    pub fn seat_bore(&mut self, shaft: f64) {
+        if self.seat.is_some() && self.bore.is_none() {
+            self.bore = Some(Bore::Plain {
+                diameter: shaft + self.bore_clearance.unwrap_or(0.0),
+            });
+        }
+    }
+
+    /// Whether the bore is plain: given so, or a seat's.
+    fn plain_bore(&self) -> bool {
+        matches!(self.bore, Some(Bore::Plain { .. }))
+            || (self.seat.is_some() && self.bore.is_none())
     }
 
     /// The radius a bore and a hub must stay inside: the roots less a
@@ -409,8 +446,14 @@ impl GearDef<f64> {
                 "a bevel pair takes no bore or hub (make the two gears one by one)".to_owned(),
             );
         }
-        if self.keyway && !matches!(self.bore, Some(Bore::Plain { .. })) {
+        if self.keyway && !self.plain_bore() {
             return Err("a keyway needs a plain bore".to_owned());
+        }
+        if let Some(seat) = &self.seat {
+            seat.check_values()?;
+        }
+        if self.bore_clearance.is_some_and(|c| !c.is_finite()) {
+            return Err(format!("the {name}'s bore clearance must be a number"));
         }
         // The teeth.
         match kind {
@@ -575,12 +618,20 @@ pub(crate) fn placement<K: Kernel>(
             .find(|(p, _)| *p == id)
             .map_or(f64::NAN, |(_, v)| *v)
     };
-    let gear = evaluated(def, &value);
-    let Some(mesh) = &gear.mesh_with else {
+    let mut gear = evaluated(def, &value);
+    let Some(mesh) = gear.mesh_with.clone() else {
+        // On a shaft (mitcad#578): its bore follows the shaft.
+        if let Some(seat) = gear.seat.clone() {
+            let seat = ctx.seat(&seat).map_err(|e| format!("seat: {e}"))?;
+            gear.seat_bore(seat.diameter);
+            let phase = gear.angle.unwrap_or(0.0);
+            let frame = seat.sketch_frame();
+            return Ok((gear, Placement { frame, phase }));
+        }
         let plane = def
             .plane
             .as_ref()
-            .ok_or("a gear needs a plane, or a gear to mesh with")?;
+            .ok_or("a gear needs a plane, a shaft, or a gear to mesh with")?;
         let plane = ctx.plane(plane)?.frame();
         let turn = gear.angle.unwrap_or(0.0);
         let frame = SketchFrame {
@@ -1032,6 +1083,9 @@ impl FeatureInfo for GearDef {
         if let Some(mesh) = &self.mesh_with {
             references.features.insert(mesh.gear);
         }
+        if let Some(seat) = &self.seat {
+            seat.add_to(&mut references);
+        }
         for body in &self.participants {
             references.body(*body);
         }
@@ -1040,8 +1094,45 @@ impl FeatureInfo for GearDef {
 
     fn check(&self, ctx: &CheckContext<'_>) -> Result<(), String> {
         check_participants(ctx, self.operation, &self.participants)?;
+        // On a shaft (mitcad#578): the kinds with a bore.
+        if let Some(seat) = &self.seat {
+            let name = self.kind.name();
+            if matches!(self.kind, GearKind::Ring | GearKind::Rack) {
+                return Err(format!(
+                    "a {name} has no bore: it is placed by a plane, not on a shaft"
+                ));
+            }
+            if self.pair {
+                return Err(
+                    "a bevel pair is not placed on a shaft (make the two gears one by one)"
+                        .to_owned(),
+                );
+            }
+            if self.plane.is_some() || !is_origin(&self.center) {
+                return Err(format!(
+                    "a {name} on a shaft takes its plane and centre from the shaft"
+                ));
+            }
+            if self.mesh_with.is_some() {
+                return Err(format!(
+                    "a {name} on a shaft is not placed by a mesh too (seat the first gear of the mesh)"
+                ));
+            }
+            if matches!(self.bore, Some(Bore::Plain { .. })) {
+                return Err(format!(
+                    "a {name} on a shaft takes its plain bore from the shaft: leave out the bore (bore_clearance widens it)"
+                ));
+            }
+            if self.bore_clearance.is_some() && self.bore.is_some() {
+                return Err("a threaded bore takes no bore clearance".to_owned());
+            }
+            return seat.check(ctx);
+        }
+        if self.bore_clearance.is_some() {
+            return Err("a bore clearance needs a seat on a shaft".to_owned());
+        }
         match (&self.plane, &self.mesh_with) {
-            (None, None) => Err("a gear needs a plane, or a gear to mesh with".to_owned()),
+            (None, None) => Err("a gear needs a plane, a shaft, or a gear to mesh with".to_owned()),
             (Some(_), Some(_)) => {
                 Err("a gear meshed with another takes its plane from it".to_owned())
             }
@@ -1114,6 +1205,10 @@ pub fn derived_values(gear: &GearDef<f64>) -> serde_json::Value {
         "circular_pitch": tooth.pitch(),
     });
     let map = values.as_object_mut().expect("an object");
+    // The bore: given, or a seat's (mitcad#578).
+    if let Ok(Some(d)) = gear.bore_diameter() {
+        map.insert("bore_diameter".into(), json!(d));
+    }
     match gear.kind {
         GearKind::Rack => {
             let rack = gear.rack();

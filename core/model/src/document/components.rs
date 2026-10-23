@@ -148,6 +148,14 @@ impl DocState {
             .expect("a free name exists")
     }
 
+    /// The free name a feature gives the component its new-component
+    /// operation makes (mitcad#577), or None for `Component<n>`.
+    pub(crate) fn made_component_name(&self, def: &crate::features::FeatureDef) -> Option<String> {
+        def.info()
+            .component_name(&|id| self.parameters.value(id).unwrap_or(f64::NAN))
+            .map(|name| self.free_component_name(&name))
+    }
+
     pub(crate) fn check_component_name(
         &self,
         name: &str,

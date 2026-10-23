@@ -155,6 +155,12 @@ public:
   // start-up comes in first.
   void recoverAtStart();
 
+  // Fetches the library sources with Auto-update in the background, one
+  // after another, without a dialog (mitcad#576; MainWindowLibraries.cpp):
+  // the status bar says what is new. Called once by main() after the window
+  // shows, never in the CLI, the MCP server or a UI test script's run.
+  void updateLibrariesAtStart();
+
   // A job computes the model on the worker thread (P7); the document is
   // the worker's until it is done. (CommandHost and DocumentHost.)
   bool modelBusy() const override { return m_documentSession->busy(); }

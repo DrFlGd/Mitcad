@@ -1717,6 +1717,13 @@ void PartPicker::setParts(const QList<PickerPart>& parts, const QString& current
   }
 }
 
+void PartPicker::refreshParts(const QList<PickerPart>& parts) {
+  setParts(parts, m_request.current);
+  qInfo().noquote() << QStringLiteral("Part picker refreshed: %1 parts for %2")
+                           .arg(parts.size())
+                           .arg(m_request.command);
+}
+
 void PartPicker::setCurrent(const QString& key) {
   m_request.current = key;
   m_grid->setCurrent(key);

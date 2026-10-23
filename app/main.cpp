@@ -411,6 +411,15 @@ int main(int argc, char* argv[]) {
     QTimer::singleShot(0, &window, [&window] { window.recoverAtStart(); });
   }
 
+  // The library sources with Auto-update are fetched in the background a
+  // moment after the window shows (mitcad#576): no dialog, nothing waits
+  // for it. Not in a run of a UI test script (MITCAD_TEST_INPUT) nor a
+  // screenshot run, so that no test touches the network; the CLI and the
+  // MCP server have no such start.
+  if (!testDriver.active() && !parser.isSet(screenshotOption)) {
+    QTimer::singleShot(1000, &window, [&window] { window.updateLibrariesAtStart(); });
+  }
+
   // After the recovery question (queued above): a file the system opens
   // waits for it, like for any other dialog.
   fileOpenFilter.setHandler([&window](const QString& path) { window.openExternalFile(path); });

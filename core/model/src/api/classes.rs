@@ -320,6 +320,11 @@ const QUERIES: &[(&str, ApiClass)] = &[
     ("mount_preview", FileIo),
     // Pulleys: derived values and belts (mitcad#562).
     ("pulley_values", Model),
+    // Printable bearings: derived values and sizes (mitcad#577).
+    ("bearing_values", Model),
+    ("bearing_sizes", Model),
+    // Seats on shafts (mitcad#578).
+    ("seat_frame", Model),
 ];
 
 fn class_in(table: &[(&str, ApiClass)], name: &str) -> Option<ApiClass> {

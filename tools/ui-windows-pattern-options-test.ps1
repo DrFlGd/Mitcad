@@ -2,10 +2,15 @@
 # check-all sources: app/commands/PatternCommands.cpp app/commands/PatternOptions.cpp
 # check-all sources: app/framework/CommandPanel.cpp app/framework/CommandSession.cpp
 # check-all sources: core/model/src/features/pattern.rs tools/cli
+# check-all sources: app/framework/Ribbon.cpp app/commands/CreateCommands.cpp
 # Input-driven Windows UI test of the patterns' Direction Type and Distance
 # Type (mitcad#545) in the build VM (tools/ui-windows-lib.ps1 says how the
 # input is posted), on a design mitcad-cli makes: a 10 mm cube with its
 # corner at (20, 20, 0) (Body1, F2.b0; its centre (25, 25, 5)).
+#   0. The SOLID CREATE menu (mitcad#579) as it opens: its sections with
+#      separators, the Pattern submenu with Mirror after it, the Machine
+#      Elements submenu last; the ribbon's buttons as before (Create
+#      Sketch, Extrude, Revolve, Hole), no split buttons for the submenus.
 #   1. Rectangular Pattern starts with the defaults (spacing, one
 #      direction). Distance Type Extent relabels the length rows Extent;
 #      direction 1 along X Symmetric hides its Flip, 3 over 40 mm (20 mm
@@ -97,6 +102,36 @@ function Show-Axes([string]$Description) {
 Ui-StartApp 'pattern-options' @('--open', $design)
 Ui-ExpectLog 'pattern-options.mitcad' 'the design opened'
 Ui-ExpectLog 'Bodies shown: F2.b0' 'the cube shown'
+
+Write-Host '--- 0. The SOLID CREATE menu (mitcad#579)'
+# Its sections with separators, the patterns in the Pattern submenu with
+# Mirror after it, the machine elements in theirs (later ones may follow
+# Bearing there). Session 0 closes the popup at once (ui-windows-lib.ps1),
+# after it logged its entries.
+$solidCreate = 'Create Sketch | - | Extrude | Revolve | Sweep | Loft | Rib | Web | Emboss' +
+  ' | - | Hole | Thread | Plastic Feature' +
+  ' | - | Box | Cylinder | Sphere | Torus | Coil | Helix | Pipe' +
+  ' | - | Pattern > [Rectangular Pattern | Circular Pattern | Pattern on Path | Pattern at Points] | Mirror' +
+  ' | - | Machine Elements > [Gear | Pulley | Bearing'
+Ui-Mark
+Ui-Step 'the CREATE menu'                { Ui-ClickLogged 'Ribbon SOLID/CREATE' }
+Ui-ExpectNew 'Ribbon menu SOLID/CREATE: ' 'the CREATE menu opened'
+$menu = "$(Ui-LastMatch 'Ribbon menu SOLID/CREATE: (.*)$')"
+if ($menu -ne "$solidCreate]" -and -not ($menu.StartsWith("$solidCreate | ") -and $menu.EndsWith(']'))) {
+  Ui-Fail "the SOLID CREATE menu: '$menu'"
+}
+Write-Host 'ok   the SOLID CREATE menu in its sections and submenus'
+foreach ($id in @('sketch.create', 'solid.extrude', 'solid.revolve', 'solid.hole')) {
+  Ui-ExpectLog "Ribbon button $id at " "the $id button"
+}
+if (Ui-LogLines | Where-Object { $_.Contains('Ribbon split SOLID/CREATE/') }) {
+  Ui-Fail 'a split button for a SOLID CREATE submenu'
+}
+Write-Host 'ok   no split buttons for the Pattern and Machine Elements submenus'
+# The menu stays open in session 0 and takes the keys: closed before F7
+# (with it open, F7 started nothing).
+Ui-Step 'close the menu (Esc)'           { Ui-Key 'Escape' }
+Ui-Sync
 
 Write-Host '--- 1. A rectangular pattern: symmetric along X, by extent'
 Ui-Mark

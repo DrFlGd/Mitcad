@@ -29,7 +29,8 @@ class CommandRegistry;
 // The toolbar: workspace tabs (SOLID, BUILD, and SKETCH while sketching),
 // each with groups (CREATE, MODIFY, ...) of command buttons; the group's
 // name opens a menu of all its commands, a subgroup's (CommandDef::subgroup)
-// as a submenu whose pinned command is a split button (mitcad#222).
+// as a submenu whose pinned command is a split button (mitcad#222), with
+// separators between its sections (CommandDef::section, mitcad#579).
 //
 // Presentation::Mac is the Floating chrome's: the tabs are a segmented control
 // that the title bar hosts (tabBar()), the groups are rounded capsules and the

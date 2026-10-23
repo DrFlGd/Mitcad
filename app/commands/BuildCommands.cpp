@@ -64,6 +64,7 @@
 #include "../build/OpeningsWindow.hpp"
 #include "../build/TimberOpenings.hpp"
 #include "../files/Libraries.hpp"
+#include "../files/LibraryAutoUpdate.hpp"
 #include "../framework/CommandRegistry.hpp"
 #include "../framework/Dialogs.hpp"
 #include "../framework/Json.hpp"
@@ -497,6 +498,23 @@ PartPicker* partPicker(Shared& shared, bool create) {
     shared.picker = picker;
     DocumentHost* host = shared.host;
     picker->setDesignParts([host] { return usedLibraryParts(host->model()); });
+    // Libraries updated in the background at start-up (mitcad#576): an open
+    // picker of a role lists the new versions. A closed one reads the
+    // catalog when its command starts. `shared` lives as long as the
+    // commands do, which outlive the picker (a child of the window).
+    QObject::connect(&LibraryAutoUpdate::instance(), &LibraryAutoUpdate::updated, picker, [&shared, picker, host] {
+      if (!picker->isVisible() || !picker->input().isEmpty() || picker->role().isEmpty()) {
+        return;
+      }
+      host->whenIdle(picker, [&shared, picker, host] {
+        const QString role = picker->role();
+        if (!picker->isVisible() || role.isEmpty()) {
+          return;
+        }
+        shared.catalog.refresh(role, host->model());
+        picker->refreshParts(pickerParts(shared.catalog.parts(role)));
+      });
+    });
     QObject::connect(picker, &PartPicker::chosen, picker, [host, picker](const PickerPart& part, const QString& command) {
       if (!command.startsWith(QStringLiteral("build."))) {
         return; // another caller's
@@ -536,6 +554,7 @@ PickerRequest roleRequest(const Shared& shared, const QString& role, const Comma
   request.parts = pickerParts(shared.catalog.parts(role));
   request.current = state.choice(kPart);
   request.system = state.choice(kSystem);
+  request.role = role;
   return request;
 }
 

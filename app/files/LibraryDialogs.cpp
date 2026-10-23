@@ -29,6 +29,7 @@
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QRadioButton>
+#include <QSignalBlocker>
 #include <QSplitter>
 #include <QTabWidget>
 #include <QTableWidget>
@@ -39,6 +40,7 @@
 #include "../framework/Json.hpp"
 #include "../library/PartPicker.hpp"
 #include "Libraries.hpp"
+#include "LibraryAutoUpdate.hpp"
 #include "RemoteTask.hpp"
 #include "mitcad_bridge/lib.h"
 
@@ -72,6 +74,17 @@ QJsonObject command(const char* name, QJsonObject fields = {}) {
   fields.insert(QStringLiteral("cmd"), QLatin1String(name));
   return libraryCommand(fields);
 }
+
+// The columns of Libraries...: On, Auto-update (mitcad#576), the source's
+// URL, what was fetched from it.
+constexpr int kOnColumn = 0;
+constexpr int kAutoColumn = 1;
+constexpr int kSourceColumn = 2;
+constexpr int kLibraryColumn = 3;
+constexpr int kVersionsColumn = 4;
+constexpr int kLicenceColumn = 5;
+
+QString autoUpdateTip() { return QObject::tr("Fetch this library when Mitcad starts"); }
 
 // Fetches the sources one after another (Fetch All in Libraries..., Update in
 // the library browser, mitcad#317), then refreshes the dialog, and reports
@@ -229,13 +242,16 @@ LibrariesDialog::LibrariesDialog(QWidget* parent) : QDialog(parent) {
   auto* layout = new QVBoxLayout(this);
   auto* intro = new QLabel(tr("Component libraries and community indexes are git repositories. The parts a design "
                               "uses keep the version chosen for them; fetching only brings newer versions to "
-                              "choose from. Libraries are fetched only when you ask."));
+                              "choose from. Libraries are fetched when you ask. A source with Auto-update on is "
+                              "also fetched in the background when Mitcad starts."));
   intro->setWordWrap(true);
   layout->addWidget(intro);
-  m_table = new QTableWidget(0, 5);
+  m_table = new QTableWidget(0, 6);
   m_table->setObjectName(QStringLiteral("librarySources"));
-  m_table->setHorizontalHeaderLabels({tr("On"), tr("Source"), tr("Library"), tr("Versions"), tr("Licence")});
-  m_table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+  m_table->setHorizontalHeaderLabels(
+      {tr("On"), tr("Auto-update"), tr("Source"), tr("Library"), tr("Versions"), tr("Licence")});
+  m_table->horizontalHeaderItem(kAutoColumn)->setToolTip(autoUpdateTip());
+  m_table->horizontalHeader()->setSectionResizeMode(kSourceColumn, QHeaderView::Stretch);
   m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
   m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
   layout->addWidget(m_table, 1);
@@ -280,18 +296,40 @@ LibrariesDialog::LibrariesDialog(QWidget* parent) : QDialog(parent) {
     }
     reload();
     if (m_table->rowCount() > 0) {
-      m_table->setCurrentCell(std::min(row, m_table->rowCount() - 1), 1);
+      m_table->setCurrentCell(std::min(row, m_table->rowCount() - 1), kSourceColumn);
     }
   });
   connect(fetchSelected, &QPushButton::clicked, this, [this] { fetch(false); });
   connect(fetchAll, &QPushButton::clicked, this, [this] { fetch(true); });
   connect(close, &QPushButton::clicked, this, &QDialog::accept);
   connect(m_table, &QTableWidget::itemChanged, this, [this](QTableWidgetItem* item) {
-    if (item->column() == 0) {
+    if (item->column() == kOnColumn) {
+      // A source that is off cannot be fetched at start-up: its
+      // Auto-update is greyed out (and kept).
+      greyAutoUpdate(item->row());
+      save();
+    } else if (item->column() == kAutoColumn) {
       save();
     }
   });
+  // A background fetch that brought something new while the dialog is open.
+  connect(&LibraryAutoUpdate::instance(), &LibraryAutoUpdate::updated, this, [this] { reload(); });
   reload();
+}
+
+void LibrariesDialog::greyAutoUpdate(int row) {
+  QTableWidgetItem* on = m_table->item(row, kOnColumn);
+  QTableWidgetItem* autoUpdate = m_table->item(row, kAutoColumn);
+  if (on == nullptr || autoUpdate == nullptr) {
+    return;
+  }
+  const bool sourceOn = on->checkState() == Qt::Checked;
+  const Qt::ItemFlags flags = sourceOn ? (Qt::ItemIsUserCheckable | Qt::ItemIsEnabled | Qt::ItemIsSelectable)
+                                       : Qt::ItemFlags(Qt::ItemIsUserCheckable);
+  if (autoUpdate->flags() != flags) {
+    const QSignalBlocker blocker(m_table); // the flags are no change to save
+    autoUpdate->setFlags(flags);
+  }
 }
 
 void LibrariesDialog::reload() {
@@ -310,8 +348,16 @@ void LibrariesDialog::reload() {
     auto* on = new QTableWidgetItem;
     on->setFlags(Qt::ItemIsUserCheckable | Qt::ItemIsEnabled | Qt::ItemIsSelectable);
     on->setCheckState(source.enabled ? Qt::Checked : Qt::Unchecked);
-    m_table->setItem(row, 0, on);
-    m_table->setItem(row, 1, new QTableWidgetItem(source.url));
+    m_table->setItem(row, kOnColumn, on);
+    // Auto-update (mitcad#576): greyed out while the source is off, its
+    // state kept.
+    auto* autoUpdate = new QTableWidgetItem;
+    autoUpdate->setFlags(source.enabled ? (Qt::ItemIsUserCheckable | Qt::ItemIsEnabled | Qt::ItemIsSelectable)
+                                        : Qt::ItemFlags(Qt::ItemIsUserCheckable));
+    autoUpdate->setCheckState(source.autoUpdate ? Qt::Checked : Qt::Unchecked);
+    autoUpdate->setToolTip(autoUpdateTip());
+    m_table->setItem(row, kAutoColumn, autoUpdate);
+    m_table->setItem(row, kSourceColumn, new QTableWidgetItem(source.url));
     QString what = tr("not fetched");
     QStringList versions;
     if (!info.isEmpty()) {
@@ -322,18 +368,20 @@ void LibrariesDialog::reload() {
         versions << versionText(version.toObject());
       }
     }
-    m_table->setItem(row, 2, new QTableWidgetItem(what));
-    m_table->setItem(row, 3, new QTableWidgetItem(versions.join(QStringLiteral(", "))));
-    m_table->setItem(row, 4, new QTableWidgetItem(info.value(QStringLiteral("license")).toString()));
-    qInfo().noquote() << QStringLiteral("Library source %1 (%2): %3; versions %4")
+    m_table->setItem(row, kLibraryColumn, new QTableWidgetItem(what));
+    m_table->setItem(row, kVersionsColumn, new QTableWidgetItem(versions.join(QStringLiteral(", "))));
+    m_table->setItem(row, kLicenceColumn, new QTableWidgetItem(info.value(QStringLiteral("license")).toString()));
+    qInfo().noquote() << QStringLiteral("Library source %1 (%2): %3; versions %4; auto-update %5")
                              .arg(source.url, source.enabled ? QStringLiteral("on") : QStringLiteral("off"), what,
-                                  versions.join(QStringLiteral(", ")));
+                                  versions.join(QStringLiteral(", ")),
+                                  source.autoUpdate ? QStringLiteral("on") : QStringLiteral("off"));
   }
   m_table->blockSignals(false);
-  m_table->resizeColumnToContents(0);
-  m_table->resizeColumnToContents(2);
+  m_table->resizeColumnToContents(kOnColumn);
+  m_table->resizeColumnToContents(kAutoColumn);
+  m_table->resizeColumnToContents(kLibraryColumn);
   if (m_table->rowCount() > 0 && m_table->currentRow() < 0) {
-    m_table->setCurrentCell(0, 1);
+    m_table->setCurrentCell(0, kSourceColumn);
   }
 }
 
@@ -344,13 +392,20 @@ void LibrariesDialog::addUrl(const QString& url) {
     qInfo().noquote() << QStringLiteral("Library source added: %1").arg(url.trimmed());
   }
   reload();
-  m_table->setCurrentCell(m_table->rowCount() - 1, 1);
+  m_table->setCurrentCell(m_table->rowCount() - 1, kSourceColumn);
 }
 
 void LibrariesDialog::save() {
   LibrarySettings settings = LibrarySettings::load();
   for (int row = 0; row < settings.sources.size() && row < m_table->rowCount(); ++row) {
-    settings.sources[row].enabled = m_table->item(row, 0)->checkState() == Qt::Checked;
+    settings.sources[row].enabled = m_table->item(row, kOnColumn)->checkState() == Qt::Checked;
+    const bool autoUpdate = m_table->item(row, kAutoColumn)->checkState() == Qt::Checked;
+    if (autoUpdate != settings.sources[row].autoUpdate) {
+      qInfo().noquote() << QStringLiteral("Library source %1: auto-update %2")
+                               .arg(settings.sources[row].url,
+                                    autoUpdate ? QStringLiteral("on") : QStringLiteral("off"));
+    }
+    settings.sources[row].autoUpdate = autoUpdate;
   }
   settings.save();
 }
@@ -471,6 +526,12 @@ LibraryBrowser::LibraryBrowser(bool community, QWidget* parent) : QDialog(parent
     if (!row.isEmpty()) {
       qInfo().noquote() << QStringLiteral("Library browser size %1").arg(row);
     }
+  });
+  // A background fetch at start-up that brought something new while the
+  // browser is open (mitcad#576): listed, the selection kept.
+  connect(&LibraryAutoUpdate::instance(), &LibraryAutoUpdate::updated, this, [this] {
+    qInfo().noquote() << QStringLiteral("Library browser: libraries updated in the background");
+    refresh();
   });
   // Up and Down in the search field move through the results (the grid's).
   search();

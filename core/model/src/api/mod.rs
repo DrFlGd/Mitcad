@@ -48,6 +48,10 @@ mod reorient;
 mod mounts;
 // Timing belt pulleys (mitcad#562).
 mod pulleys;
+// Printable bearings (mitcad#577).
+mod bearings;
+// Seats on shafts (mitcad#578).
+mod seats;
 // Section Analysis worked out without the document, off the UI thread
 // (mitcad#438).
 pub use analysis::{PreparedClips, PreparedQuery};
@@ -604,6 +608,11 @@ enum Query {
     MountPreview(Box<mounts::MountPreviewQuery>),
     // Pulleys: derived values and belts (mitcad#562, `pulleys.rs`).
     PulleyValues(pulleys::PulleyValuesQuery),
+    // Printable bearings: derived values and sizes (mitcad#577, `bearings.rs`).
+    BearingValues(bearings::BearingValuesQuery),
+    BearingSizes(bearings::BearingSizesQuery),
+    // Seats on shafts (mitcad#578, `seats.rs`).
+    SeatFrame(seats::SeatFrameQuery),
 }
 
 fn names(names: &[String]) -> Value {
@@ -1472,6 +1481,11 @@ impl<K: Kernel> Document<K> {
             Query::MountPreview(query) => self.mount_preview_json(*query)?,
             // Pulleys (mitcad#562).
             Query::PulleyValues(query) => self.pulley_values_json(&query)?,
+            // Printable bearings (mitcad#577).
+            Query::BearingValues(query) => self.bearing_values_json(&query)?,
+            Query::BearingSizes(query) => self.bearing_sizes_json(&query)?,
+            // Seats on shafts (mitcad#578).
+            Query::SeatFrame(query) => self.seat_frame_json(&query)?,
         };
         Ok(result.to_string())
     }

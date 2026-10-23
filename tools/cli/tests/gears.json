@@ -102,5 +102,25 @@
   {"cmd": "add_feature", "def": {"type": "gear", "kind": "bevel", "plane": "xy", "center": [-200, 200], "module": 2,
     "teeth": 18, "mate_teeth": 27, "face_width": 8, "backlash": 0.1, "pair": true, "operation": "new_body"}},
   {"expect": {"feature": "Gear19", "status": "ok"}},
-  {"expect": {"query": {"query": "interference", "bodies": ["F19.b0", "F19.b1"]}, "result": {"bodies": 2, "pairs": []}}}
+  {"expect": {"query": {"query": "interference", "bodies": ["F19.b0", "F19.b1"]}, "result": {"bodies": 2, "pairs": []}}},
+
+  {"comment": "Seats on shafts (mitcad#578). A shaft: a 10 mm circle at (600, 0) (Sketch1 F20) extruded 40 up z (Extrude1 F21). Gear20 F22: Gear1's gear on the shaft's side face picked near its top, 5 mm down from the top end, facing down the shaft (z = 25 to 35); its bore the shaft's 10 mm and a 0.2 mm clearance. Volume: Gear1's less pi 5.1^2 x 10 (817.128249) = 11554.840213. Gear21 F23 meshes with it in its plane, 40 mm along x."},
+  {"cmd": "sketch.create"},
+  {"cmd": "sketch.add_circle", "sketch": "F20", "center": [600, 0], "diameter": 10},
+  {"cmd": "add_feature", "def": {"type": "extrude", "profiles": [{"sketch": "F20", "region": "r{c1}"}],
+    "extent": {"type": "distance", "distance": 40}, "operation": "new_body"}},
+  {"expect": {"feature": "Extrude1", "status": "ok", "body": "F21.b0", "has_face": "F21:side(c1)"}},
+  {"cmd": "add_feature", "def": {"type": "gear", "kind": "spur", "module": 2, "teeth": 20, "face_width": 10,
+    "seat": {"shaft": {"body": "F21.b0", "face": "F21:side(c1)"}, "offset": 5, "near": [605, 0, 39]},
+    "bore_clearance": 0.2, "operation": "new_body"}},
+  {"expect": {"feature": "Gear20", "status": "ok", "body": "F22.b0", "has_face": "F22:bore"}},
+  {"expect": {"body": "F22.b0", "bbox": {"min": [578, -22, 25], "max": [622, 22, 35]}, "tolerance": 1e-3}},
+  {"expect": {"body": "F22.b0", "volume": 11554.840213, "tolerance": 1e-5}},
+  {"expect": {"query": {"query": "gear_values", "uid": "F22"},
+    "result": {"bore_diameter": 10.2, "shaft_diameter": 10,
+               "seat": {"origin": [600, 0, 35], "axis": [0, 0, -1], "end": [600, 0, 40]}}, "tolerance": 1e-6}},
+  {"cmd": "add_feature", "def": {"type": "gear", "kind": "spur", "module": 2, "teeth": 20, "face_width": 10,
+    "backlash": 0.1, "mesh_with": {"gear": "F22"}, "operation": "new_body"}},
+  {"expect": {"feature": "Gear21", "status": "ok", "body": "F23.b0"}},
+  {"expect": {"query": {"query": "gear_values", "uid": "F23"}, "result": {"centre_distance": 40, "mate": "F22"}}}
 ]

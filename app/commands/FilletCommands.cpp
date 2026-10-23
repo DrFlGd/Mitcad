@@ -16,13 +16,6 @@
 #include <QKeySequence>
 #include <QRegularExpression>
 
-#include <BRepAdaptor_Curve.hxx>
-#include <BRepAdaptor_Surface.hxx>
-#include <BRepClass3d_SolidClassifier.hxx>
-#include <BRepLProp_SLProps.hxx>
-#include <BRep_Tool.hxx>
-#include <Geom2d_Curve.hxx>
-
 #include "ChamferHandles.hpp"
 #include "CommandFactories.hpp"
 #include "CommandSupport.hpp"
@@ -101,49 +94,15 @@ std::optional<EdgeAt> edgeAt(const SelectionItem& item, const CommandContext& mo
   if (faces[0] < 0 || faces[1] < 0 || faces[0] == faces[1]) {
     return std::nullopt;
   }
-  const TopoDS_Edge& edge = body->edge(index);
-  const BRepAdaptor_Curve curve(edge);
-  const double t = (curve.FirstParameter() + curve.LastParameter()) / 2;
-  gp_Pnt middle;
-  gp_Vec tangent;
-  curve.D1(t, middle, tangent);
-  if (tangent.Magnitude() < 1.0e-9) {
+  // Read in the body's own coordinates, where its solid classifies the
+  // edge as convex or concave; then placed as the view shows the body.
+  const std::optional<EdgeSides> sides =
+      edgeSides(body->occt(), body->edge(index), body->face(faces[0]), body->face(faces[1]));
+  if (!sides) {
     return std::nullopt;
   }
-  gp_Vec normals[2];
-  for (int k = 0; k < 2; ++k) {
-    const TopoDS_Face& face = body->face(faces[static_cast<std::size_t>(k)]);
-    double first = 0.0;
-    double last = 0.0;
-    const occ::handle<Geom2d_Curve> pcurve = BRep_Tool::CurveOnSurface(edge, face, first, last);
-    if (pcurve.IsNull()) {
-      return std::nullopt;
-    }
-    const gp_Pnt2d uv = pcurve->Value(t);
-    const BRepAdaptor_Surface surface(face);
-    BRepLProp_SLProps props(surface, uv.X(), uv.Y(), 1, 1.0e-9);
-    if (!props.IsNormalDefined()) {
-      return std::nullopt;
-    }
-    normals[k] = gp_Vec(props.Normal());
-    if (face.Orientation() == TopAbs_REVERSED) {
-      normals[k].Reverse();
-    }
-  }
-  const gp_Vec sum = normals[0] + normals[1];
-  if (sum.Magnitude() < 1.0e-9) {
-    return std::nullopt;
-  }
-  const gp_Dir bisector(sum);
-  // Just off a convex edge along the normals is outside the material.
-  BRepClass3d_SolidClassifier inside(body->occt(), middle.Translated(gp_Vec(bisector) * 1.0e-3), 1.0e-7);
-  EdgeSides sides;
-  sides.middle = middle;
-  sides.tangent = gp_Dir(tangent);
-  sides.normals = {gp_Dir(normals[0]), gp_Dir(normals[1])};
-  sides.convex = inside.State() == TopAbs_OUT;
   const gp_Trsf placement = model.itemShape(item).Location().Transformation();
-  return EdgeAt{placed(sides, placement), body, faces};
+  return EdgeAt{placed(*sides, placement), body, faces};
 }
 
 // A chamfer set's handle for its Distance (`second` false) or its Distance
@@ -316,9 +275,9 @@ CommandDef filletCommand(const CommandContext& context) {
                          if (!at) {
                            continue;
                          }
-                         if (const std::optional<gp_Dir> toward = bendDirection(at->sides)) {
-                           Manipulator handle = arrow(at->sides.middle, *toward);
-                           handle.factor = 1.0 / std::cos(bendAngle(at->sides) / 2) - 1.0;
+                         if (const std::optional<EdgeArrow> shown = filletArrow(at->sides)) {
+                           Manipulator handle = arrow(shown->origin, shown->direction);
+                           handle.factor = shown->factor;
                            return handle;
                          }
                        }

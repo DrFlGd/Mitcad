@@ -1489,8 +1489,15 @@ struct NativeMacWindowState {
 
   NSMenu* groupMenu(const QString& group) {
     NSMenu* menu = [[NSMenu alloc] initWithTitle:ns(group)];
+    bool firstEntry = true;
+    QString section;
     for (const NativeMacAction* item : groupActions(group)) {
       if (item->toolbarOnly) continue; // listed in its subgroup's popup (mitcad#222)
+      // A separator where the section changes, as the ribbon's group menu
+      // has it (Ribbon::createGroup, mitcad#579): only between entries.
+      if (!firstEntry && item->section != section) [menu addItem:NSMenuItem.separatorItem];
+      firstEntry = false;
+      section = item->section;
       NSMenuItem* entry = menuAction(*item, true);
       if (!item->submenu.isEmpty()) {
         NSMenu* children = [[NSMenu alloc] initWithTitle:ns(item->label)];
@@ -1838,7 +1845,8 @@ struct NativeMacWindowState {
         const auto& a = snapshot[index]; const auto& b = actions[index];
         if (a.id != b.id || a.label != b.label || a.menu != b.menu || a.group != b.group ||
             a.workspace != b.workspace || a.shortcut != b.shortcut || a.shortcuts != b.shortcuts || a.submenu != b.submenu ||
-            a.separator != b.separator || a.toolbarPinned != b.toolbarPinned || a.toolbarOnly != b.toolbarOnly || a.toolbarOrder != b.toolbarOrder) {
+            a.separator != b.separator || a.toolbarPinned != b.toolbarPinned || a.toolbarOnly != b.toolbarOnly || a.toolbarOrder != b.toolbarOrder ||
+            a.section != b.section) {
           structureChanged = true;
           break;
         }

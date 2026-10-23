@@ -7,7 +7,8 @@
 // the library commands (core/model/src/api/commands.md, "Component
 // libraries"). Local commands (list, show, search, preview, diff) run at
 // once; fetches run on a thread of their own with progress and Cancel, and
-// only when the user asks.
+// when the user asks, or at start-up for the sources with Auto-update on
+// (mitcad#576, LibraryAutoUpdate.hpp).
 
 #include <QJsonObject>
 #include <QList>
@@ -21,6 +22,9 @@ namespace mitcad {
 struct LibrarySource {
   QString url; // a git URL or a folder
   bool enabled = true;
+  // Fetched in the background when Mitcad starts (mitcad#576); only while
+  // the source is enabled. Off by default; settings without the key are off.
+  bool autoUpdate = false;
 };
 
 // The settings libraries/sources: the sources in the order the user added
@@ -32,12 +36,20 @@ struct LibrarySettings {
   void save() const;
   // The enabled sources' URLs.
   QStringList enabledUrls() const;
-  // Adds a source (enabled) unless it is listed; true when added.
+  // The URLs of the sources that are enabled and have Auto-update on, in
+  // order: the ones fetched at start-up.
+  QStringList autoUpdateUrls() const;
+  // Adds a source (enabled, Auto-update off) unless it is listed; true when
+  // added.
   bool add(const QString& url);
 };
 
 // The default sources: Mitcad's parts library and the community index.
 QList<LibrarySource> defaultLibrarySources();
+
+// A source's URL compared as written, without a trailing slash, the
+// separators of a folder as '/'.
+QString normalLibraryUrl(const QString& url);
 
 // Where fetched libraries are kept: MITCAD_LIBRARIES_DIR, else
 // "libraries" in the application's local data folder.
@@ -50,8 +62,13 @@ void configureLibraries();
 QJsonObject libraryCommand(const QJsonObject& command);
 
 // Fetches the URLs one after another with a progress dialog (Cancel ends
-// git); the answers in order (a failed one has "error"). Logs each.
+// git); the answers in order (a failed one has "error"). Logs each. A
+// background fetch at start-up that is still running is ended first.
 QList<QJsonObject> fetchLibraries(QWidget* parent, const QStringList& urls);
+
+// Logs a fetch's answer: "Library fetched: ..." or "Library fetch failed:
+// ...".
+void logLibraryFetch(const QString& url, const QJsonObject& answer);
 
 // A licence's note for users ("Credit the authors ..."), empty when the
 // licence is not one of the accepted ones.

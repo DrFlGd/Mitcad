@@ -16,6 +16,7 @@
 #include "../library/MountFrames.hpp"
 #include "../library/UsedParts.hpp"
 #include "Libraries.hpp"
+#include "LibraryAutoUpdate.hpp"
 #include "LibraryDialogs.hpp"
 
 namespace mitcad {
@@ -72,6 +73,19 @@ void MainWindow::registerLibraryCommands() {
   publish.keywords = {QStringLiteral("share"), QStringLiteral("publish"), QStringLiteral("library"),
                       QStringLiteral("community")};
   m_registry->add(publish);
+}
+
+void MainWindow::updateLibrariesAtStart() {
+  LibraryAutoUpdate& update = LibraryAutoUpdate::instance();
+  // Only a short note in the status bar: a failure was logged by the fetch,
+  // and none of this opens a dialog.
+  connect(&update, &LibraryAutoUpdate::finished, this, [this](const QString& message) {
+    if (!message.isEmpty()) {
+      qInfo().noquote() << QStringLiteral("Library auto-update: %1").arg(message);
+      showHint(message);
+    }
+  });
+  update.start();
 }
 
 void MainWindow::createLibraryMenu(QMenu* tools) {

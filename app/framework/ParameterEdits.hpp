@@ -43,7 +43,7 @@ struct ParameterEditScope {
   // deletes or sets the expression, unit or value of a parameter that the
   // open panel holds (`owner`: the owner of the parameter the command
   // names, empty for a user parameter). `reason` (when given) says why.
-  bool refuses(const QJsonObject& command, const QString& owner, QString* reason = nullptr) const;
+  bool refuses(const QJsonObject& modelCommand, const QString& owner, QString* reason = nullptr) const;
 };
 
 // Whether a command of the parameter table can change values that an open

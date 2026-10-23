@@ -704,6 +704,7 @@ void MainWindow::registerCommands() {
   sketch.tooltip = tr("Starts a sketch on a plane or a planar face: pick it, or select it first");
   sketch.tab = QStringLiteral("SOLID");
   sketch.group = QStringLiteral("CREATE");
+  sketch.section = QStringLiteral("sketch"); // a section of its own (mitcad#579)
   sketch.pinned = true;
   sketch.keywords = {QStringLiteral("new sketch"), QStringLiteral("draw")};
   // Alt+S, Option+S on macOS (mitcad#267): no menu has S as its mnemonic,
@@ -713,10 +714,13 @@ void MainWindow::registerCommands() {
   // The SOLID tab's families (U4), in menu order: Create Sketch goes
   // into CREATE after New Component.
   registerCreateCommands(*m_registry, *this, sketch);
-  // Gear (mitcad#472) ends the CREATE group.
+  // Gear (mitcad#472) ends the CREATE group, in its Machine Elements
+  // submenu (mitcad#579).
   registerGearCommands(*m_registry, *this, *this);
   // Pulley (mitcad#562) after it.
   registerPulleyCommands(*m_registry, *this);
+  // Bearing (mitcad#577) after Pulley.
+  registerBearingCommands(*m_registry, *this);
   registerModifyCommands(*m_registry, *this);
   // SHEET METAL (mitcad#210): its features, then the main window's actions.
   registerSheetMetalCommands(*m_registry, *this);

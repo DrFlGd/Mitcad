@@ -42,6 +42,10 @@ struct NativeMacAction {
   // group, whose menu lists it under the subgroup's popup entry instead.
   bool toolbarOnly = false;
   bool separator = false;
+  // The section of its group's menu (CommandDef::section, mitcad#579; a
+  // subgroup's popup entry: its first command's): the group menu has a
+  // separator between consecutive entries of different sections.
+  QString section;
 };
 
 struct NativeMacTreeItem {

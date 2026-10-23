@@ -199,8 +199,10 @@ impl<K: Kernel> Document<K> {
     /// each row's `properties` has the text of each key (`Key` or
     /// `Set/Key`) the component has, stored, from its library or computed.
     pub(crate) fn parts_list_with(&self, keys: &[String]) -> Value {
-        let rows: Vec<Value> = self
-            .parts_list()
+        let list = self.parts_list();
+        // The parts to buy for printable bearings (mitcad#577) follow.
+        let purchased = self.purchased_rows(&list);
+        let mut rows: Vec<Value> = list
             .into_iter()
             .map(|row| {
                 let library = row.library.as_ref();
@@ -231,6 +233,14 @@ impl<K: Kernel> Document<K> {
                 value
             })
             .collect();
+        for mut row in purchased {
+            if !keys.is_empty() {
+                let none: serde_json::Map<String, Value> =
+                    keys.iter().map(|k| (k.clone(), Value::Null)).collect();
+                row["properties"] = Value::Object(none);
+            }
+            rows.push(row);
+        }
         json!({"rows": rows})
     }
 }

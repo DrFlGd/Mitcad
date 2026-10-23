@@ -100,6 +100,7 @@ CommandDef plasticCommand(const CommandContext& context) {
   def.icon = QStringLiteral("plastic");
   def.tooltip = QObject::tr("A boss, lip, groove, snap fit or rest on a face, or a plastic rule");
   def.group = QStringLiteral("CREATE");
+  def.section = QStringLiteral("faces");
   def.keywords = {QStringLiteral("boss"),     QStringLiteral("lip"),  QStringLiteral("groove"),
                   QStringLiteral("snap fit"), QStringLiteral("rest"), QStringLiteral("molded"),
                   QStringLiteral("plastic rule")};

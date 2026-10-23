@@ -396,26 +396,38 @@ commands of the BUILD tab (frames of slot profiles) are in [BUILD
 tab](#build-tab). The other commands of the SOLID tab are listed below,
 in menu order.
 
-**CREATE:**
+**CREATE:** the menu has sections with lines between them, and two
+submenus.
 
 - Create Sketch
-- Extrude ([Extrude](#extrude), [Thin Extrude](#thin-extrude))
-- Revolve
-- Sweep ([Sweep](#sweep))
-- Loft ([Loft](#loft))
-- Rib
-- Web
-- Emboss ([Emboss and Wrap Onto](#emboss-and-wrap-onto))
-- Hole ([Hole](#hole))
-- Thread ([Thread](#thread))
-- Box, Cylinder, Sphere, Torus, Coil
-- Helix ([Helix](#helix))
-- Pipe
-- Rectangular Pattern, Circular Pattern, Pattern on Path, Pattern at
-  Points, Mirror ([Patterns](#patterns))
-- Plastic Feature ([Plastic part features](#plastic-part-features))
-- Gear ([Gears](#gears))
-- Pulley ([Pulleys](#pulleys))
+- From profiles:
+  - Extrude ([Extrude](#extrude), [Thin Extrude](#thin-extrude))
+  - Revolve
+  - Sweep ([Sweep](#sweep))
+  - Loft ([Loft](#loft))
+  - Rib
+  - Web
+  - Emboss ([Emboss and Wrap Onto](#emboss-and-wrap-onto))
+- On the faces of a body:
+  - Hole ([Hole](#hole))
+  - Thread ([Thread](#thread))
+  - Plastic Feature ([Plastic part features](#plastic-part-features))
+- Primitives:
+  - Box, Cylinder, Sphere, Torus, Coil
+  - Helix ([Helix](#helix))
+  - Pipe
+- Patterns ([Patterns](#patterns)):
+  - Pattern › Rectangular Pattern, Circular Pattern, Pattern on Path,
+    Pattern at Points
+  - Mirror
+- Machine Elements ›
+  - Gear ([Gears](#gears))
+  - Pulley ([Pulleys](#pulleys))
+  - Bearing ([Printable bearings](#printable-bearings))
+
+The ribbon has buttons for Create Sketch, Extrude, Revolve and Hole. The
+command search finds every command by its name, also the commands in the
+submenus.
 
 **MODIFY:**
 
@@ -665,7 +677,8 @@ other part.
 ### Patterns
 
 The pattern commands are Rectangular Pattern, Circular Pattern, Pattern
-on Path, Pattern at Points and Mirror.
+on Path, Pattern at Points (SOLID tab, CREATE › Pattern) and Mirror
+(CREATE, after the Pattern submenu).
 
 **Rectangular Pattern** and **Pattern on Path** have a Distance Type
 and a Direction Type:
@@ -3102,7 +3115,7 @@ model's definitions are in
 
 ### Gears
 
-**Gear** (SOLID tab, CREATE group, at its end) makes a gear with
+**Gear** (SOLID tab, CREATE › Machine Elements) makes a gear with
 involute teeth from the values you give. Its **Type** selects the gear:
 
 - **Spur:** straight teeth.
@@ -3153,6 +3166,15 @@ of the **Mesh Angle** around the selected gear. Along a rack, the new
 gear lies at its **Position** from the middle of the rack's teeth.
 Mitcad turns the new gear so that the teeth engage.
 
+**Shaft** puts a spur, helical, herringbone or bevel gear on a shaft
+instead of the plane, as for a pulley (see
+[A pulley on a shaft](#a-pulley-on-a-shaft)): select the end edge or
+the side face of the shaft, and set the **Offset** along the shaft and
+**Flip**. The plain bore then has the diameter of the shaft plus the
+**Bore Clearance**, and it follows the shaft. A gear can mesh with a
+gear on a shaft. Ring gears and racks have no bore, and they stay on
+their plane.
+
 Gears that mesh share the module and the pressure angle. External
 helical gears that mesh have opposite hands. A ring and its pinion have
 the same hand. A rack and its pinion have the same hand.
@@ -3188,8 +3210,9 @@ definition of the gear. The model's definition is in
 
 ### Pulleys
 
-**Pulley** (SOLID tab, CREATE group, beside Gear) makes a timing belt
-pulley from the values you give. Its **Type** selects the pulley:
+**Pulley** (SOLID tab, CREATE › Machine Elements, after Gear) makes a
+timing belt pulley from the values you give. Its **Type** selects the
+pulley:
 
 - **Toothed:** a pulley with teeth for a timing belt.
 - **Idler:** a smooth wheel of a **Diameter**. The back of the belt runs
@@ -3235,9 +3258,36 @@ timeline. The new pulley then lies in the plane of that pulley, at the
 **Centre Distance**, in the **Direction** around the selected pulley.
 The two pulleys must have the same belt profile.
 
+#### A pulley on a shaft
+
+**Shaft** puts the pulley on a shaft instead of the plane. Select the
+end edge of the shaft (a round edge) or its side face. The shaft can be
+a body of another component, for example a shaft from BUILD or a part
+from the library: select it where you see it. Then:
+
+- **Offset** is the distance along the shaft from its end to where the
+  pulley starts (its first flange). The pulley runs along the shaft from
+  there. When you select the side face, the offset is measured from the
+  end of the shaft nearer to your click.
+- **Flip** measures from the other end of the shaft, and turns the
+  pulley to face back along the shaft.
+- The plain bore has the diameter of the shaft plus the **Bore
+  Clearance** (0 mm unless you type one, for example 0.2 mm for a
+  printed fit). The panel shows the bore, and the bore follows when the
+  shaft becomes thicker or thinner. A **Keyway** goes into this bore. A
+  thread size gives the tap drill of the thread as before.
+
+The pulley follows the shaft when the shaft or its component moves. If
+the shaft is too thick for the teeth (the bore must stay 0.5 mm inside
+the grooves), the pulley fails with that message. A pulley on a shaft
+can be the first pulley for **Belt With**. When you clear the Shaft
+again, the pulley goes back to a plane and a centre where it was. The
+same **Shaft** inputs place gears on shafts.
+
 The panel shows the results of the values:
 
 - The pitch diameter and the outside diameter
+- The bore from the shaft, on a shaft
 - The length of the belt round the two pulleys, at its pitch line
 - The number of teeth of the belt
 - The nearest belt length from your **Catalogue Lengths**, if you type
@@ -3249,6 +3299,99 @@ pulley from the library has. Joints can use this frame. Mitcad makes no
 belt body. A pulley exports as any body (STL, 3MF, STEP). The model's
 definition is in
 [commands.md](../core/model/src/api/commands.md#pulleys).
+
+### Printable bearings
+
+**Bearing** (SOLID tab, CREATE group, Machine Elements, after Pulley)
+makes a ball bearing that you print on a 3D printer. The printer makes
+the bearing in one piece: the inner race, the outer race and the
+rolling elements come off the printer together, and they turn at once.
+Each of them is a body of its own, and there is a clearance between
+them, so they do not touch. For a bearing that you buy, use a part from
+a library instead.
+
+The **Element** selects the rolling elements:
+
+- **Dumbbell** (the default): a roller with a narrow waist. Each race
+  has a ridge that goes into the waist. The roller touches each race
+  on two sloped faces, so it centres itself and does not jam. This
+  element prints well.
+- **Roller:** a cylinder with chamfered ends. The races have lips over
+  the chamfers.
+- **Ball:** a printed ball. Its top and bottom are cones, so that it
+  stands on the print bed and prints without supports. Small balls
+  stick to the races or rattle: below 3 mm the panel shows an error.
+- **Airsoft:** bought plastic airsoft balls of 6 mm (5.95 mm as the
+  default diameter, which you can change). A printed cage holds the
+  balls apart. You put the balls in by hand: push the inner race to one
+  side against the outer race, put the balls into the wide gap, move
+  them round evenly, and press the cage in from the top face. The cage
+  is a body of its own; print it on its flat ring.
+
+The **Size** is a standard size: the 60, 62, 63, 68, 69 and 160 series,
+the miniature MR sizes, the inch R sizes, and the flanged F and MF
+sizes. A size sets the **Bore**, the **Outside Diameter** and the
+**Width**. With *Custom* you type these values. A **Flange** on the outer
+race is optional; a flanged size has its own flange.
+
+The print values have defaults for FDM printers:
+
+| Value | Meaning |
+| --- | --- |
+| **Radial Clearance** | The gap across the round faces between the elements and the races (0.4 mm) |
+| **Axial Clearance** | The gap along the axis at the sloped faces (0.4 mm) |
+| **Element Gap** | The smallest gap between two elements (0.6 mm) |
+| **Elements** | The number of elements. With 0, the most that fit |
+| **Element Diameter** | The elements' diameter. With 0, the largest that leaves the races their walls |
+| **Chamfer** | The chamfers at the bore and the outside (0.4 mm) |
+| **Smallest Wall** | The thinnest wall of a race, an element or the cage (1.2 mm) |
+| **Flank Angle** | The slope of the sloped faces from the axis (45 degrees). It is also their overhang when you print with the axis vertical |
+
+The panel shows the result of the values: the pitch diameter, the
+elements, the walls and the smallest gap. If the values do not print,
+the panel shows an error and Mitcad changes nothing by itself. For
+example: too many elements for the pitch circle, a wall thinner than
+the smallest wall, a clearance below 0.2 mm, an overhang steeper than
+45 degrees, a ball that is too small, or airsoft balls that do not fit
+the section.
+
+The bearing starts on its **Plane** at **Center X** and **Center Y**, with
+its axis along the normal of the plane.
+
+**Shaft** puts the bearing on a shaft or into a hole. Select the end
+edge or the round side face of a shaft, or the rim or the wall of a
+hole. On a shaft, Mitcad selects the standard size whose bore fits the
+shaft; in a hole, the size whose outside diameter fits the hole. The
+size fits when its diameter is within the **Fit Clearance** (0.5 mm) of
+the shaft or the hole. You can select another size after that. On a
+shaft, the **Offset** is the distance from the end of the shaft; in a
+hole, it is the depth (with 0, the bearing is flush with the face).
+**Flip** measures from the other end. On a side face or a wall, the
+end nearer to your click counts. When the shaft or the hole changes,
+the bearing follows it.
+
+**Groove Into** cuts the
+raceway into a round face of a body instead, for example the bore of a
+pulley or a wheel, or the outside of a shaft. That body is then one race.
+Mitcad makes the other race as a new body, in the same component, and
+fills the gap with the elements. **Offset** is the distance along the
+face from its end; with 0, the bearing is in the middle of the face.
+
+With **New Component** (the default) the bearing is a component of its
+own, named after its size, for example `Bearing 608 (8x22x7)`. With **New
+Body** the bodies go into the active component. The result has the
+mount frames `bore` (the axis), `face_a` and `face_b` (the two faces)
+for joints.
+
+**Print a bearing with 3MF.** In **3D Print**, select the bodies of the
+bearing and set **Format** to *3MF, one object with parts*: the slicer
+then gets one object in one piece. STL writes one file for each body,
+and the slicer must put the parts back together. With airsoft balls,
+leave the balls out: you buy them. The **Parts List** shows the balls to
+buy, `Airsoft ball 6 mm`, with the number for all the bearings.
+
+The model's definition is in
+[commands.md](../core/model/src/api/commands.md#printable-bearings).
 
 ### Boundary Fill
 
@@ -4028,7 +4171,8 @@ them, and `mitcad-cli lock release --force` removes them.
 
 Libraries give you standard parts and the designs that other people
 share. Component libraries and community indexes are git repositories.
-Mitcad fetches them with the git program, but only when you ask. This
+Mitcad fetches them with the git program, when you ask or, for the
+sources that you choose, when Mitcad starts. This
 chapter describes the component libraries, the part picker that shows
 their parts, and the community library.
 
@@ -4059,8 +4203,22 @@ parts library and the community index. In **Libraries...** you can:
 - Add a library by its URL or by a folder
 - Disable a library
 - Select **Fetch** to get a library or its newer versions
+- Select **Auto-update** for a library that Mitcad must fetch when it
+  starts
 
-Mitcad fetches nothing unless you ask for it.
+**Auto-update** is off at first. When it is on, Mitcad fetches the
+library in the background when it starts. No dialog opens, and you can
+work at once. The status bar shows the new versions, for example
+`Libraries updated: mitcad-parts v2.7.0`. If Mitcad cannot reach a
+library, it writes a short note in the status bar and goes on. The
+library browser and the part picker show new versions when they are
+open. The parts in your designs keep their version. You choose a newer
+version yourself.
+
+**Auto-update** has an effect only while the library is on. When you
+switch the library off, the check box is grey. Mitcad keeps its state.
+Without **Auto-update**, Mitcad fetches a library only when you ask for
+it.
 
 **Insert from Library** is in the ASSEMBLE group and in **Tools ›
 Libraries**. It shows the parts as pictures in the grid of the part

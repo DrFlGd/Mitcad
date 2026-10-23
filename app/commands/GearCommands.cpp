@@ -4,7 +4,9 @@
 // meshed with another gear. The panel shows the derived values (the
 // model's `gear_values`); OK on a gear that meshes with another links
 // their joints (`gear_link`, `add_motion_link`) when both gears' components
-// have one.
+// have one. A Shaft places a gear with a bore on a shaft instead of the
+// plane (mitcad#578, SeatInputs.hpp), its bore the shaft's diameter and the
+// bore clearance.
 #include <cmath>
 #include <memory>
 
@@ -17,6 +19,7 @@
 #include "CommandFactories.hpp"
 #include "CommandSupport.hpp"
 #include "Commands.hpp"
+#include "SeatInputs.hpp"
 
 namespace mitcad::cmd {
 namespace {
@@ -54,6 +57,27 @@ bool meshes(const CommandState& state) { return !state.items(QStringLiteral("mes
 QString mateKind(const CommandState& state) { return state.object(QStringLiteral("mate")).value(QStringLiteral("kind")).toString(); }
 
 bool takesBore(const CommandState& state) { return isOneOf(state, {"spur", "helical", "herringbone", "bevel"}); }
+
+// On a shaft (mitcad#578): a gear with a bore, not placed by a mesh, not a
+// bevel pair.
+bool seatOffered(const CommandState& state) {
+  const bool bevel = kindOf(state) == QStringLiteral("bevel");
+  return takesBore(state) && !(meshes(state) && !bevel) && !(bevel && state.checked(QStringLiteral("pair")));
+}
+SeatPanel seatPanel() {
+  SeatPanel panel;
+  panel.offered = seatOffered;
+  return panel;
+}
+bool onShaft(const CommandState& state) { return seatOffered(state) && seated(state); }
+// A plain bore of its own diameter; on a shaft any bore but a thread is
+// the shaft's.
+bool ownPlainBore(const CommandState& state) {
+  return takesBore(state) && state.choice(QStringLiteral("bore")) == QStringLiteral("plain") && !onShaft(state);
+}
+bool shaftBore(const CommandState& state) {
+  return onShaft(state) && state.choice(QStringLiteral("bore")) != QStringLiteral("thread");
+}
 
 bool helixShown(const CommandState& state) {
   return isOneOf(state, {"helical", "herringbone"}) ||
@@ -118,6 +142,8 @@ CommandDef gearCommand(const CommandContext& context, DocumentHost& host) {
   def.icon = QStringLiteral("gear");
   def.tooltip = QObject::tr("A spur, helical, herringbone, ring, rack or bevel gear with involute teeth");
   def.group = QStringLiteral("CREATE");
+  def.section = QStringLiteral("machine");
+  def.subgroup = QStringLiteral("Machine Elements");
   def.keywords = {QStringLiteral("spur"),        QStringLiteral("helical"), QStringLiteral("herringbone"),
                   QStringLiteral("rack"),        QStringLiteral("pinion"),  QStringLiteral("bevel"),
                   QStringLiteral("ring"),        QStringLiteral("internal"), QStringLiteral("involute"),
@@ -125,6 +151,7 @@ CommandDef gearCommand(const CommandContext& context, DocumentHost& host) {
   def.featureType = QStringLiteral("gear");
   const auto shared = std::make_shared<GearShared>();
   const auto shownUnmeshed = [](const CommandState& state) { return !meshes(state) || kindOf(state) == QStringLiteral("bevel"); };
+  const auto onPlane = [shownUnmeshed](const CommandState& state) { return shownUnmeshed(state) && !onShaft(state); };
   def.inputs = {
       choiceInput(QStringLiteral("kind"), QObject::tr("Type"), kKinds, QStringLiteral("spur"))
           .withChoiceIcons({{QStringLiteral("spur"), QStringLiteral("gear-spur")},
@@ -157,11 +184,11 @@ CommandDef gearCommand(const CommandContext& context, DocumentHost& host) {
           .withOnPick([](const SelectionItem& item, CommandState& state, const CommandContext& model) {
             placeAt(item, state, model, QStringLiteral("x"), QStringLiteral("y"));
           })
-          .withVisible(shownUnmeshed),
+          .withVisible(onPlane),
       valueInput(QStringLiteral("x"), QObject::tr("Center X"), ValueKind::Length, QStringLiteral("0 mm"))
-          .withVisible(shownUnmeshed),
+          .withVisible(onPlane),
       valueInput(QStringLiteral("y"), QObject::tr("Center Y"), ValueKind::Length, QStringLiteral("0 mm"))
-          .withVisible(shownUnmeshed),
+          .withVisible(onPlane),
       valueInput(QStringLiteral("angle"), QObject::tr("Angle"), ValueKind::Angle, QStringLiteral("0 deg"))
           .withTooltip(QObject::tr("Turns the gear about its axis (a rack about its start)"))
           .withVisible(shownUnmeshed),
@@ -202,23 +229,39 @@ CommandDef gearCommand(const CommandContext& context, DocumentHost& host) {
           .withHeading(QObject::tr("Bore and Hub"))
           .withVisible(takesBore),
       valueInput(QStringLiteral("bore_diameter"), QObject::tr("Bore Diameter"), ValueKind::Length, QStringLiteral("8 mm"))
-          .withVisible([](const CommandState& s) { return takesBore(s) && s.choice(QStringLiteral("bore")) == QStringLiteral("plain"); }),
+          .withVisible(ownPlainBore),
       textInput(QStringLiteral("thread"), QObject::tr("Thread Size"), QStringLiteral("M8x1.25"))
           .withTooltip(QObject::tr("An ISO metric size: the bore is its tap drill"))
           .withVisible([](const CommandState& s) { return takesBore(s) && s.choice(QStringLiteral("bore")) == QStringLiteral("thread"); }),
       checkInput(QStringLiteral("keyway"), QObject::tr("Keyway"), false)
           .withTooltip(QObject::tr("DIN 6885 for the bore's diameter"))
-          .withVisible([](const CommandState& s) { return takesBore(s) && s.choice(QStringLiteral("bore")) == QStringLiteral("plain"); }),
+          .withVisible([](const CommandState& s) {
+            return (takesBore(s) && s.choice(QStringLiteral("bore")) == QStringLiteral("plain")) || shaftBore(s);
+          }),
       checkInput(QStringLiteral("hub"), QObject::tr("Hub"), false).withVisible(takesBore),
       valueInput(QStringLiteral("hub_diameter"), QObject::tr("Hub Diameter"), ValueKind::Length, QStringLiteral("20 mm"))
           .withVisible([](const CommandState& s) { return takesBore(s) && s.checked(QStringLiteral("hub")); }),
       valueInput(QStringLiteral("hub_length"), QObject::tr("Hub Length"), ValueKind::Length, QStringLiteral("8 mm"))
           .withVisible([](const CommandState& s) { return takesBore(s) && s.checked(QStringLiteral("hub")); }),
   };
+  // The shaft and its offset, flip and bore clearance (mitcad#578) before
+  // the plane and centre they stand for.
+  const SeatPanel seat = seatPanel();
+  {
+    const QVector<InputDef> seatInputList = seatInputs(seat);
+    qsizetype at = 0;
+    while (at < def.inputs.size() && def.inputs.at(at).id != QStringLiteral("plane")) {
+      ++at;
+    }
+    for (const InputDef& input : seatInputList) {
+      def.inputs.insert(at++, input);
+    }
+  }
   def.inputs += operationInputs();
 
   def.init = [shared](CommandState& state, const CommandContext& model) {
     shared->editing.clear();
+    initSeat(state, model);
     // A face selected before the command meshes with its gear; another
     // feature's face is no gear to mesh with.
     Selection& mesh = state.items(QStringLiteral("mesh_with"));
@@ -234,7 +277,7 @@ CommandDef gearCommand(const CommandContext& context, DocumentHost& host) {
     }
   };
 
-  const auto buildGear = [](const CommandState& state, const CommandContext&) {
+  const auto buildGear = [seat](const CommandState& state, const CommandContext& model) {
     Built result;
     const QString kind = kindOf(state);
     const bool meshed = meshes(state) && kind != QStringLiteral("bevel");
@@ -253,6 +296,11 @@ CommandDef gearCommand(const CommandContext& context, DocumentHost& host) {
         mesh.insert(QStringLiteral("angle"), state.expression(QStringLiteral("mesh_angle")));
       }
       gear.insert(QStringLiteral("mesh_with"), mesh);
+    } else if (onShaft(state)) {
+      addSeat(gear, state, model, seat);
+      if (nonZero(state, QStringLiteral("angle"))) {
+        gear.insert(QStringLiteral("angle"), state.expression(QStringLiteral("angle")));
+      }
     } else {
       const Selection& plane = state.items(QStringLiteral("plane"));
       if (plane.isEmpty()) {
@@ -303,7 +351,12 @@ CommandDef gearCommand(const CommandContext& context, DocumentHost& host) {
     const bool pair = kind == QStringLiteral("bevel") && state.checked(QStringLiteral("pair"));
     if (takesBore(state) && !pair) {
       const QString bore = state.choice(QStringLiteral("bore"));
-      if (bore == QStringLiteral("plain")) {
+      if (shaftBore(state)) {
+        // The shaft's diameter and the bore clearance (the seat's).
+        if (state.checked(QStringLiteral("keyway"))) {
+          gear.insert(QStringLiteral("keyway"), true);
+        }
+      } else if (bore == QStringLiteral("plain")) {
         gear.insert(QStringLiteral("bore"), QJsonObject{{QStringLiteral("type"), QStringLiteral("plain")},
                                                         {QStringLiteral("diameter"),
                                                          state.expression(QStringLiteral("bore_diameter"))}});
@@ -358,6 +411,11 @@ CommandDef gearCommand(const CommandContext& context, DocumentHost& host) {
       parts << QObject::tr("pitch angle %1").arg(degrees(values.value(QStringLiteral("pitch_angle")).toDouble()));
     }
     add("centre_distance", QObject::tr("centre distance %1"));
+    // The bore a shaft gives (mitcad#578).
+    const QString shaft = seatNote(values, model);
+    if (!shaft.isEmpty()) {
+      parts << shaft;
+    }
     if (values.value(QStringLiteral("undercut")).toBool()) {
       parts << QObject::tr("undercut");
     }
@@ -373,7 +431,10 @@ CommandDef gearCommand(const CommandContext& context, DocumentHost& host) {
     const QString kind = feature.value(QStringLiteral("kind")).toString(QStringLiteral("spur"));
     state.setChoice(QStringLiteral("kind"), kind);
     const QJsonObject mesh = feature.value(QStringLiteral("mesh_with")).toObject();
-    if (!mesh.isEmpty()) {
+    const bool shaft = loadSeat(feature, state, context);
+    if (shaft) {
+      loadValue(state, QStringLiteral("angle"), feature.value(QStringLiteral("angle")), feature, context);
+    } else if (!mesh.isEmpty()) {
       const QString mate = mesh.value(QStringLiteral("gear")).toString();
       state.setItems(QStringLiteral("mesh_with"), {SelectionItem{SelectKind::Feature, mate, QString(), QString()}});
       setMate(state, mate, context);
@@ -418,7 +479,9 @@ CommandDef gearCommand(const CommandContext& context, DocumentHost& host) {
     loadCount(state, QStringLiteral("profile_shift"), feature.value(QStringLiteral("profile_shift")), feature, context);
     const QJsonObject bore = feature.value(QStringLiteral("bore")).toObject();
     const QString boreType = bore.value(QStringLiteral("type")).toString(QStringLiteral("none"));
-    state.setChoice(QStringLiteral("bore"), boreType);
+    // On a shaft without a bore of its own: the shaft's, a plain one.
+    state.setChoice(QStringLiteral("bore"),
+                    shaft && boreType == QStringLiteral("none") ? QStringLiteral("plain") : boreType);
     loadValue(state, QStringLiteral("bore_diameter"), bore.value(QStringLiteral("diameter")), feature, context);
     if (boreType == QStringLiteral("thread")) {
       state.setText(QStringLiteral("thread"),
@@ -437,6 +500,9 @@ CommandDef gearCommand(const CommandContext& context, DocumentHost& host) {
   def.canEdit = [&context](const QJsonObject& feature) {
     const QJsonValue plane = feature.value(QStringLiteral("plane"));
     if (!plane.isUndefined() && !plane.isNull() && !isShowable(plane, context)) {
+      return false;
+    }
+    if (!seatShowable(feature, context)) {
       return false;
     }
     const QJsonObject thread = feature.value(QStringLiteral("bore")).toObject().value(QStringLiteral("thread")).toObject();

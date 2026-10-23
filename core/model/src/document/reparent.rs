@@ -299,6 +299,14 @@ impl Rewrite<'_> {
                     changed |= self.link(link)?;
                 }
             }
+            // A seat on another component's shaft (mitcad#578).
+            seated @ (FeatureDef::Pulley(_)
+            | FeatureDef::Gear(_)
+            | FeatureDef::PrintableBearing(_)) => {
+                if let Some((_, link)) = seated.seat_link_mut() {
+                    changed |= self.link(link)?;
+                }
+            }
             FeatureDef::Extrude(x) => {
                 for link in x.object_links.values_mut() {
                     changed |= self.link(link)?;

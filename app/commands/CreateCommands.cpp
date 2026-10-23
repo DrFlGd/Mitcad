@@ -12,6 +12,7 @@ void registerCreateCommands(CommandRegistry& registry, const CommandContext& con
   using namespace cmd;
   registry.add(newComponentCommand(context));
   registry.add(createSketch);
+  // The menu's sections (CommandDef::section, mitcad#579): from profiles,
   registry.add(extrudeCommand(context));
   registry.add(revolveCommand(context));
   registry.add(sweepCommand(context));
@@ -19,8 +20,11 @@ void registerCreateCommands(CommandRegistry& registry, const CommandContext& con
   registry.add(ribCommand(context));
   registry.add(webCommand(context));
   registry.add(embossCommand(context));
+  // on a body's faces (Plastic Feature: mitcad#459),
   registry.add(holeCommand(context));
   registry.add(threadCommand(context));
+  registry.add(plasticCommand(context));
+  // the primitives,
   registry.add(boxCommand(context));
   registry.add(cylinderCommand(context));
   registry.add(sphereCommand(context));
@@ -28,13 +32,13 @@ void registerCreateCommands(CommandRegistry& registry, const CommandContext& con
   registry.add(coilCommand(context));
   registry.add(helixCommand(context));
   registry.add(pipeCommand(context));
+  // the Pattern submenu and Mirror; the Machine Elements submenu (Gear,
+  // Pulley) follows from MainWindow::registerCommands.
   registry.add(rectangularPatternCommand(context));
   registry.add(circularPatternCommand(context));
   registry.add(pathPatternCommand(context));
   registry.add(pointPatternCommand(context));
   registry.add(mirrorCommand(context));
-  // Plastic part features (mitcad#459).
-  registry.add(plasticCommand(context));
 }
 
 } // namespace mitcad

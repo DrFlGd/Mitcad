@@ -92,6 +92,7 @@ CommandDef sweepCommand(const CommandContext& context) {
   def.icon = QStringLiteral("sweep");
   def.tooltip = QObject::tr("Sweeps profiles along a path, optionally guided by a rail or a surface");
   def.group = QStringLiteral("CREATE");
+  def.section = QStringLiteral("profiles");
   def.keywords = {QStringLiteral("path"), QStringLiteral("rail"), QStringLiteral("guide surface")};
   def.featureType = QStringLiteral("sweep");
   const auto rail = choiceIs(QStringLiteral("type"), QStringLiteral("rail"));
@@ -408,6 +409,7 @@ CommandDef loftCommand(const CommandContext& context) {
   def.tooltip = QObject::tr("A solid through sections in order: profiles, faces, and points at "
                             "the ends");
   def.group = QStringLiteral("CREATE");
+  def.section = QStringLiteral("profiles");
   def.keywords = {QStringLiteral("blend"), QStringLiteral("sections"), QStringLiteral("transition")};
   def.featureType = QStringLiteral("loft");
   const auto guide = [](const char* type) { return choiceIs(QStringLiteral("guide"), QString::fromLatin1(type)); };
@@ -630,6 +632,7 @@ CommandDef ribOrWeb(const CommandContext& context, bool web) {
   def.tooltip = web ? QObject::tr("Thin walls along open sketch curves, grown along the sketch normal")
                     : QObject::tr("A thin wall from an open sketch curve to the faces it reaches");
   def.group = QStringLiteral("CREATE");
+  def.section = QStringLiteral("profiles");
   def.keywords = {QStringLiteral("stiffener"), QStringLiteral("wall"), QStringLiteral("gusset")};
   def.featureType = web ? QStringLiteral("web") : QStringLiteral("rib");
   def.inputs = {
@@ -722,6 +725,7 @@ CommandDef coilCommand(const CommandContext& context) {
   def.icon = QStringLiteral("coil");
   def.tooltip = QObject::tr("A helical or spiral coil on a plane");
   def.group = QStringLiteral("CREATE");
+  def.section = QStringLiteral("primitives");
   def.keywords = {QStringLiteral("spring"), QStringLiteral("helix"), QStringLiteral("spiral")};
   def.featureType = QStringLiteral("coil");
   const auto typeHas = [](const char* field) {
@@ -860,6 +864,7 @@ CommandDef pipeCommand(const CommandContext& context) {
   def.icon = QStringLiteral("pipe");
   def.tooltip = QObject::tr("A round, square or triangular section swept along a path, solid or hollow");
   def.group = QStringLiteral("CREATE");
+  def.section = QStringLiteral("primitives");
   def.keywords = {QStringLiteral("tube"), QStringLiteral("wire")};
   def.featureType = QStringLiteral("pipe");
   def.inputs = pathInputs(QStringLiteral("path"), QObject::tr("Path"));
@@ -1028,6 +1033,7 @@ CommandDef helixCommand(const CommandContext& context) {
   def.icon = QStringLiteral("helix");
   def.tooltip = QObject::tr("Turns sketch profiles about an axis while they rise along it, as a screw moves");
   def.group = QStringLiteral("CREATE");
+  def.section = QStringLiteral("primitives");
   def.keywords = {QStringLiteral("screw"), QStringLiteral("thread"), QStringLiteral("spiral"),
                   QStringLiteral("twist")};
   def.featureType = QStringLiteral("helix");

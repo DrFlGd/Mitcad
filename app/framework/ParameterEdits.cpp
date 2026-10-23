@@ -70,18 +70,18 @@ QString ParameterEditScope::holdReason(const QString& name) const {
       .arg(name, editedName.isEmpty() ? editedFeature : editedName);
 }
 
-bool ParameterEditScope::refuses(const QJsonObject& command, const QString& owner, QString* reason) const {
+bool ParameterEditScope::refuses(const QJsonObject& modelCommand, const QString& owner, QString* reason) const {
   if (editedFeature.isEmpty() || owner != editedFeature) {
     return false;
   }
-  const QString cmd = commandOf(command);
+  const QString cmd = commandOf(modelCommand);
   bool refused = cmd == QStringLiteral("rename_parameter") || cmd == QStringLiteral("delete_parameter");
   if (cmd == QStringLiteral("set_parameter")) {
-    refused = command.contains(QStringLiteral("expression")) || command.contains(QStringLiteral("unit")) ||
-              command.contains(QStringLiteral("value"));
+    refused = modelCommand.contains(QStringLiteral("expression")) || modelCommand.contains(QStringLiteral("unit")) ||
+              modelCommand.contains(QStringLiteral("value"));
   }
   if (refused && reason != nullptr) {
-    *reason = holdReason(command.value(QStringLiteral("name")).toString());
+    *reason = holdReason(modelCommand.value(QStringLiteral("name")).toString());
   }
   return refused;
 }

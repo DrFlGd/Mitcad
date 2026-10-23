@@ -7173,7 +7173,9 @@ The `sketch` query shows `plane_link`. A combine's tools may be bodies of
 another component the same way (tools in occurrences or `tool_links`,
 [combine](#combine), mitcad#104, mitcad#544), an extrusion's objects
 (`object_links`, [extrude](#extrude)) and a sweep's path and guide
-surfaces (`body_links`, [sweep](#sweep), mitcad#161). Tests: `core/model/src/link_tests.rs`,
+surfaces (`body_links`, [sweep](#sweep), mitcad#161), and a pulley's or
+gear's shaft (a seat's `link`, [Seats on shafts](#seats-on-shafts),
+mitcad#578). Tests: `core/model/src/link_tests.rs`,
 `core/model/src/links.rs`.
 
 ### derive
@@ -11231,8 +11233,8 @@ the solids, `api/gears.rs` the query and the command) makes a gear with
 involute teeth from parameters. The application's Gear panel makes them
 ([app/COMMANDS.md](../../../../app/COMMANDS.md#notes-on-particular-commands)).
 Tests: `features::gear_profile` and `features::gear_tests`,
-`tools/cli/tests/gears.json`, `tools/cli/tests/gears_link.json`,
-`tools/ui-windows-gear-test.ps1`.
+`features::seat_tests` (seated on shafts), `tools/cli/tests/gears.json`,
+`tools/cli/tests/gears_link.json`, `tools/ui-windows-gear-test.ps1`.
 
 ```json
 {"type": "gear", "kind": "helical", "plane": "xy", "center": [0, 0], "module": 2, "teeth": 20,
@@ -11260,6 +11262,8 @@ Tests: `features::gear_profile` and `features::gear_tests`,
 | `keyway` | a DIN 6885-1 (form A) keyway in a plain bore of 6 to 230 mm: the hub's width and depth for the bore's diameter, at the gear's `angle` |
 | `hub` | `diameter`, `length`: on the end face (a bevel gear's back) |
 | `mesh_with` | `{"gear": "F3", "angle": <angle>, "position": <length>}`: in the plane of an earlier gear feature of the same component, at their mesh's centre distance in the direction `angle` from its centre (from its plane's x axis), or `position` along a rack from the middle of its teeth, turned so that the teeth engage |
+| `seat` | on a shaft instead of `plane` and `center` ([Seats on shafts](#seats-on-shafts), mitcad#578): spur, helical, herringbone and single bevel gears, not with `mesh_with`; a gear meshing with a seated one lies in its plane. Without `bore` the bore is plain, the shaft's diameter plus `bore_clearance`, and follows the shaft; a `thread` bore stays the thread's; a plain `bore` of its own is refused |
+| `bore_clearance` | mm added to the shaft's diameter for a seated gear's plain bore (0 without it; a printed fit 0.2, say); only with `seat` and without `bore` |
 | `operation`, `participants` | as an extrusion's |
 
 - **Teeth:** the ISO 53 basic rack (profile A): addendum 1 m, dedendum
@@ -11299,7 +11303,7 @@ Tests: `features::gear_profile` and `features::gear_tests`,
 
 | Query | Fields | Result |
 |---|---|---|
-| `gear_values` | `uid` (a gear feature) or `def` (a definition as `add_feature` takes it, without `type`) | `kind`, `module`, `teeth`, `transverse_module`, `pressure_angle`, `circular_pitch`; `pitch_diameter`, `base_diameter`, `outside_diameter`, `root_diameter`, `tooth_thickness` (at the pitch circle), `undercut`, `form_diameter` (where the involute starts), `helix_angle`, `lead` (external gears); a ring's `inside_diameter`, `space_width`; a rack's `pitch_line_length`, `length`; a bevel gear's `pitch_angle`, `cone_distance`, `virtual_teeth`, `mate_teeth`, `mate_pitch_angle`, `shaft_angle`; `section_area` (the transverse section's, without bore and hub); with `mesh_with` `centre_distance`, `mate`, `ratio`, `pitch_radii`; `error` when the values make no gear |
+| `gear_values` | `uid` (a gear feature) or `def` (a definition as `add_feature` takes it, without `type`) | `kind`, `module`, `teeth`, `transverse_module`, `pressure_angle`, `circular_pitch`; `bore_diameter` (given, or a seated gear's from its shaft at the timeline marker, with `shaft_diameter` and the `seat` as `seat_frame` gives it); `pitch_diameter`, `base_diameter`, `outside_diameter`, `root_diameter`, `tooth_thickness` (at the pitch circle), `undercut`, `form_diameter` (where the involute starts), `helix_angle`, `lead` (external gears); a ring's `inside_diameter`, `space_width`; a rack's `pitch_line_length`, `length`; a bevel gear's `pitch_angle`, `cone_distance`, `virtual_teeth`, `mate_teeth`, `mate_pitch_angle`, `shaft_angle`; `section_area` (the transverse section's, without bore and hub); with `mesh_with` `centre_distance`, `mate`, `ratio`, `pitch_radii`; `error` when the values make no gear |
 | `gear_link` | `gear` | `command`: the `add_motion_link` `link_gears` would run, or `reason` why it cannot |
 
 | Command | Fields | Result |
@@ -11318,7 +11322,8 @@ timing belt pulley, a smooth idler or a toothed idler from parameters.
 The application's Pulley panel makes them
 ([app/COMMANDS.md](../../../../app/COMMANDS.md#notes-on-particular-commands)).
 Tests: `features::pulley_profile` and `features::pulley_tests`,
-`tools/cli/tests/pulleys.json`.
+`features::seat_tests` (seated on shafts), `tools/cli/tests/pulleys.json`,
+`tools/ui-pulley-test.sh`, `tools/ui-windows-pulley-test.ps1`.
 
 ```json
 {"type": "pulley", "kind": "toothed", "profile": "gt2_2mm", "plane": "xy", "center": [0, 0],
@@ -11346,6 +11351,8 @@ Tests: `features::pulley_profile` and `features::pulley_tests`,
 | `keyway` | a DIN 6885-1 (form A) keyway in a plain bore of 6 to 230 mm, at the pulley's `angle` |
 | `set_screws` | `count` (1 to 4, 90 degrees apart from `angle`), `thread` (a tap drill of that size, radial from the axis through the hub; listed as cosmetic threads by `threads`), `position` (mm from the hub's outer end along the axis; the hub's middle without it). Needs a hub |
 | `belt_with` | `{"pulley": "F3", "center_distance": 80, "angle": <angle>}`: in the plane of an earlier pulley feature of the same component, at `center_distance` from its centre in the direction `angle` (from its plane's x axis; 0 without it), for one belt round both. The two share the belt profile (an idler without one takes the other's); their pitch circles must not overlap |
+| `seat` | on a shaft instead of `plane` and `center` ([Seats on shafts](#seats-on-shafts), mitcad#578): the pulley's plane (where its first flange starts) at the seat's offset along the shaft, running along the shaft from it; not with `belt_with` (a pulley running with a seated one lies in its plane). Without `bore` the bore is plain, the shaft's diameter plus `bore_clearance`, and follows the shaft (a `keyway` in it too); a `thread` bore stays the thread's; a plain `bore` of its own is refused |
+| `bore_clearance` | mm added to the shaft's diameter for a seated pulley's plain bore (0 without it; a printed fit 0.2, say); only with `seat` and without `bore` |
 | `operation`, `participants` | as an extrusion's |
 
 Values are parameters: numbers in mm (radians for angles; `teeth` and
@@ -11395,7 +11402,7 @@ Values are parameters: numbers in mm (radians for angles; `teeth` and
 
 | Query | Fields | Result |
 |---|---|---|
-| `pulley_values` | `uid` (a pulley feature) or `def` (a definition as `add_feature` takes it, without `type`); `belt_lengths` (optional: catalogue belt lengths in mm) | `kind`, `tooth_width` (the toothed width), `length` (along the axis); with a profile `profile`, `pitch`, `pitch_line_offset`, `min_teeth`; the toothed kinds' `teeth`, `pitch_diameter`, `outside_diameter`, `root_diameter`; an idler's `diameter` (and `outside_diameter`); `section_area` (the toothed or running section's, without bore and flanges); with `belt_with` `center_distance`, `mate` (the other pulley's uid), `belt_length` (the belt's pitch length), `wrap_angles` (on the smaller and the larger pulley), `belt_teeth` (belt_length / pitch, with a profile), `teeth_in_mesh` (whole teeth on the smaller toothed pulley), `catalogue_length` (the nearest of `belt_lengths`, only when given); `error` when the values make no pulley or no belt |
+| `pulley_values` | `uid` (a pulley feature) or `def` (a definition as `add_feature` takes it, without `type`); `belt_lengths` (optional: catalogue belt lengths in mm) | `kind`, `tooth_width` (the toothed width), `length` (along the axis); `bore_diameter` (given, or a seated pulley's from its shaft at the timeline marker, with `shaft_diameter` and the `seat` as `seat_frame` gives it); with a profile `profile`, `pitch`, `pitch_line_offset`, `min_teeth`; the toothed kinds' `teeth`, `pitch_diameter`, `outside_diameter`, `root_diameter`; an idler's `diameter` (and `outside_diameter`); `section_area` (the toothed or running section's, without bore and flanges); with `belt_with` `center_distance`, `mate` (the other pulley's uid), `belt_length` (the belt's pitch length), `wrap_angles` (on the smaller and the larger pulley), `belt_teeth` (belt_length / pitch, with a profile), `teeth_in_mesh` (whole teeth on the smaller toothed pulley), `catalogue_length` (the nearest of `belt_lengths`, only when given); `error` when the values make no pulley or no belt |
 
 ## BUILD: timber frames
 
@@ -12332,3 +12339,216 @@ Code: `core/model/src/features/scale_pattern.rs`, the scaling in
 `several_scales_multiply_and_a_scale_centre_is_carried`,
 `skipped_copies_are_not_made_but_patterns_of_the_pattern_place_them`; OCCT:
 `tools/cli/tests/f4_pattern_scaled.json` (`cli.f4_pattern_scaled`).
+
+## Printable bearings
+
+A `printable_bearing` feature (mitcad#577;
+`core/model/src/features/printable_bearing.rs` the definition, its
+section, placement and checks, `bearing_sizes.rs` the standard sizes,
+`api/bearings.rs` the queries and the parts list's purchased rows) makes
+a deep groove bearing that a 3D printer prints in one piece: an inner
+race, an outer race and the rolling elements, each a body of its own,
+with clearances between them so that nothing touches; or a variant that
+takes bought 6 mm airsoft balls in a snap-in cage. It is a bearing to
+print, not a bought one (bought bearings are library parts). The
+application's Bearing panel makes them
+([app/COMMANDS.md](../../../../app/COMMANDS.md#notes-on-particular-commands)).
+Tests: `features::printable_bearing_tests`, `tools/cli/tests/bearings.json`
+(`cli.bearings`, and `cli.bearings_3mf`: the 608's bodies as the parts of
+one 3MF object).
+
+```json
+{"type": "printable_bearing", "element": "dumbbell", "size": "608", "plane": "xy", "center": [0, 0],
+ "radial_clearance": 0.4, "axial_clearance": 0.4, "element_gap": 0.6, "chamfer": 0.4, "min_wall": 1.2,
+ "operation": "new_component"}
+{"type": "printable_bearing", "element": "airsoft", "bore": 15, "outside_diameter": 35, "width": 11,
+ "flange": {"diameter": 39, "thickness": 1.5}, "plane": "xy", "operation": "new_body"}
+{"type": "printable_bearing", "size": "608", "groove": {"body": "F6.b0", "face": "F8:side(c1)"},
+ "offset": 2, "operation": "new_body"}
+{"type": "printable_bearing", "seat": {"shaft": {"body": "F11.b0", "edge": "E{F11:end(r{c1})|F11:side(c1)}"},
+ "offset": 5}, "fit_clearance": 0.5}
+```
+
+| Field | Value |
+|---|---|
+| `element` | `dumbbell` (the default): a waisted roller touching each raceway on two flanks, centring itself; `roller`: a cylinder with chamfered ends, line contact; `ball`: a printed ball (with conical caps, see below); `airsoft`: bought airsoft balls in a printed snap-in cage |
+| `size` | a standard size: `60x`/`60xx`, `62x`/`62xx`, `63x`/`63xx`, `68x`/`68xx`, `69x`/`69xx`, `160xx`, `MR..` (miniature), `R..` (inch), `F..` and `MF..` (flanged; their flange comes with them). Case and spaces do not matter. Not with `bore`, `outside_diameter` and `width` |
+| `bore`, `outside_diameter`, `width` | custom dimensions (mm), without `size` |
+| `flange` | `diameter`, `thickness`: a flange on the outer race at the face on the plane (an F size's own without it) |
+| `element_diameter` | the elements' largest diameter (an airsoft ball's, 5.95 mm without it); without it the largest that leaves the races made walls of `min_wall`, or of a sixth of the section (a quarter of the room with `groove`) when that is more |
+| `element_count` | how many elements, at least 3; the most that fit without it |
+| `radial_clearance` | the gap across the cylindrical faces between elements and races (0.4 mm) |
+| `axial_clearance` | the gap along the axis at the flanks (0.4 mm); a flank's normal gap is `ca sin(a)`, 0.2828 mm at 45 degrees |
+| `element_gap` | the least gap between neighbouring elements (0.6 mm; airsoft balls `2 radial_clearance + min_wall`, room for the cage's fingers) |
+| `chamfer` | the races' 45-degree chamfers at the bore and the outside (0.4 mm) |
+| `min_wall` | the thinnest wall a race, an element's waist or ends and a cage may have (1.2 mm) |
+| `flank_angle` | the flanks' angle from the axis, 10 to 80 degrees (45 degrees): their overhang printed with the axis vertical |
+| `plane`, `center`, `angle` | where the axis meets its plane (the plane's normal), in the plane's coordinates, the bearing running along the normal from the plane; `angle` turns the elements (element 1 on the plane's x axis without it). Not with `groove` |
+| `groove`, `offset` | a cylindrical face of a body (`{"body": ..., "face": ...}`): the raceway is cut into it, the body becoming one race (a bore's body the outer race, a shaft's the inner race), `offset` from the face's low end along its axis (the middle of the face without it); `new_body` only: the bodies stay in the body's component. The groove runs `axial_clearance` past the bearing's faces (at the raceway's radius there), so the elements' ends keep that gap from its end walls where the body goes on past them. With a bore the inner race's `bore` (or a size's) is used, with a shaft the outer race's `outside_diameter` |
+| `seat`, `fit_clearance` | on a shaft or in a hole (below): `{"shaft": {"body": ..., "edge": ...}, "offset": 5, "flip": false, "near": [x, y, z], "link": {...}}` as [Seats on shafts](#seats-on-shafts) takes it; `fit_clearance` (0.5 mm) for the size that fits. Not with `plane` or `groove` |
+| `operation` | `new_component` (the default: the component named after the size, `Bearing 608 (8x22x7)`, or its dimensions, `Bearing 10x30x9`) or `new_body` |
+
+Values are parameters: numbers in mm (radians for angles; `element_count`
+unitless) or names and expressions.
+
+- **The section.** `R` the distance from the axis, `z` along it from the
+  face on the plane (the print bed: the bearing prints with its axis
+  vertical) to the far face at the width `W`. The elements turn about
+  axes parallel to the bearing's on the pitch circle (radius `Rp`); each
+  race is bounded by one function `race(z)` of the distance from the
+  pitch circle, the inner race at `Rp - race(z)`, the outer at
+  `Rp + race(z)`, so the two mirror each other. With `t` the flanks'
+  slope (`tan(flank_angle)`), `D` and `r` the elements' largest diameter
+  and radius, `cr` and `ca` the clearances:
+  - `dumbbell`: from face to face, a V waist `h = min(D/4, 0.8 t W/2)`
+    deep in the middle; the races' V ridge reaches into the waist,
+    `race(z) = min(r + cr, r - h + t ca + t |z - W/2|)`;
+  - `roller`: from face to face, its ends chamfered by `k = min(D/4,
+    t W/4)` at the flank angle; the races' lips over the chamfers,
+    `race(z) = min(r + cr, r - k + t ca + t z, r - k + t ca + t (W - z))`;
+  - `ball`: a sphere centred at `W/2` with conical caps tangent to it at
+    the flank angle's latitude, cut by the faces: it stands on the bed and
+    overhangs by the flank angle at most; `race(z) = max(cr, min(r + cr,
+    r / cos(a) + t ca - t |z - W/2|))`: a flat `cr` from the equator and
+    flanks along the caps;
+  - `airsoft`: spheres (bought) in the same grooves, the lands `0.55 r`
+    from the pitch circle instead of `cr`; the cage a ring above the
+    balls to the far face with fingers between them down past their
+    equators, its pockets spheres `r + cr` round the balls whose openings
+    at the fingers' tips are 0.2 mm narrower than a ball (they snap in).
+    The races print in place without balls: the balls go in by hand
+    through the crescent with the inner race pushed against the outer
+    one, then they are spread out and the cage, printed on its ring,
+    snaps in from the far face.
+
+  The races' edges at the bore and the outside have 45-degree chamfers;
+  a flange lies on the outer race at the face on the plane.
+- **Count.** The most elements that fit round the pitch circle with
+  `element_gap` between the widest parts of neighbours; airsoft balls at
+  most those that go into the crescent: where the groove bottoms' gap
+  `2 (r + cr) - 2 land cos(phi)` holds a ball, an arc of
+  `2 (pi - acos(cr / land))`, touching (one more than the arc over the
+  angle between touching balls).
+- **Checks** (an error, nothing resized): too many elements for the pitch
+  circle (or fewer than 3), a wall of a race, an element or the cage
+  below `min_wall`, a clearance or gap below 0.2 mm, an element not held
+  (it must reach 0.2 mm past the ridge, the lips or the lands), an
+  overhang steeper than 45 degrees printed with the axis vertical (a
+  flank angle above 45 degrees), a printed ball below 3 mm (it sticks or
+  rattles) or one that does not reach the bed (`D >= W sin(a)`), airsoft
+  balls that do not fit the section (the walls, the cage's ring above
+  them, its width, its fingers), a chamfer not smaller than the walls,
+  a flange not larger than the outside or as thick as the width.
+- **Faces:** the inner race's `side(c1…)` (its section's lines from the
+  bore's lower chamfer round), the outer race's `side(c101…)`, the first
+  element's `side(c201…)` and the others' `inst<k>(…)` (copies turned
+  about the axis), an airsoft ball's `side0`, the cage's `side(c301…)`,
+  the raceway cut into a body `side(c401…)`.
+- **Bodies,** in order: the inner race (not with a groove in a shaft),
+  the outer race (not with a groove in a bore), the elements from
+  element 1 counter-clockwise, the cage.
+- **Mount frames:** `bore` (on the axis at the face on the plane, z the
+  axis), `face_a` (that face, z out of the bearing), `face_b` (the far
+  face, z out of it), taken as `{"mount": "F3:mount(bore)"}` as a
+  pulley's ([Mount frames](#mount-frames)).
+- **Printing:** the 3MF export writes the bodies as the parts of one
+  object in their places, so a slicer prints the bearing in one piece;
+  an STL file holds one body. The airsoft balls are bodies too, to see
+  and check the bearing; leave them out of the print.
+- **Parts list:** an airsoft bearing's balls are a purchased row of
+  `parts_list` after the components' rows: `name` and `designation`
+  `Airsoft ball 6 mm` (the bought diameter rounded), `quantity` the balls
+  per bearing times the placements of the component they are in (its
+  row's quantity; the root's once), `component` that component,
+  `purchased` true, `features` the bearings; rows of the same designation
+  in one component add up.
+- **On a shaft or in a hole** (`seat`, mitcad#578, [Seats on
+  shafts](#seats-on-shafts)): a shaft's circular end edge or side face,
+  or a hole's rim or wall, followed through its topological name. The
+  bearing lies on the plane through the seat's origin normal to its axis
+  and runs along the axis into the shaft or the hole: on a shaft
+  `seat.offset` is how far from the shaft's end, in a hole how deep (0:
+  flush with the face); `seat.flip` measures from the other end. Without
+  `size` or custom dimensions the bearing takes the standard size whose
+  bore fits the shaft (in a hole: whose outside diameter fits the hole)
+  within `fit_clearance` (0.5 mm), the nearest, the table's order among
+  sizes as near; none within it is an error (`no standard bearing's bore
+  is within 0.5 mm of the 11 mm shaft: choose a size or give custom
+  dimensions`). A size given is used as it is. Not with `plane`, `center`,
+  `groove` or `offset`. A new component without a size is named `Bearing`
+  (the panel gives the size it fitted, so its component is named after
+  it).
+
+| Query | Fields | Result |
+|---|---|---|
+| `bearing_values` | `uid` (a bearing feature) or `def` (a definition as `add_feature` takes it, without `type`) | `element`, `designation`, `bore`, `outside_diameter`, `width`, `flange`, `element_diameter`, `element_count`, `max_elements`, `pitch_diameter`, `radial_clearance`, `axial_clearance`, `element_gap`, `chamfer`, `min_wall`, `flank_angle`, `min_gap` (the least normal gap between an element and a race), `inner_wall`, `outer_wall` (null for a body's own race), `element_wall` (an element's thinnest), `hold` (how far an element reaches past its ridge, lips or lands), `max_overhang`, `raceway_depth`; a dumbbell's `waist_diameter`; airsoft `cage` (`ring`, `width`, `pocket_diameter`) and `purchased` (`designation`, `quantity`); with `groove` `groove` (`diameter`, `race`: `outer` or `inner`); with `seat` `seat` (as the `seat_frame` query gives it), `shaft_diameter` (the shaft's or the hole's) and `fits` (the designations within `fit_clearance`, the nearest first); `component_name` with `new_component`; `error` when the values make no printable bearing (then only `element` beside it) |
+| `bearing_sizes` | `fit` (`bore` for a shaft, `outside` for a hole) with `diameter` and `clearance` (0.5 mm), or neither; `series` (optional) | `sizes`: `designation`, `series`, `bore`, `outside_diameter`, `width`, `flange` (`diameter`, `thickness`, or null); with `fit` those within `clearance` of `diameter`, the nearest first |
+
+The sizes are our own compilation of the standards' boundary dimensions:
+ISO 15 for the metric series (the dimension series 18, 19, 00, 10, 02
+and 03 of the deep groove type, and the miniature sizes under their
+common MR designations), ISO 8443 for the flanges of the F and MF sizes,
+ANSI/ABMA 12.2 for the inch R series (converted at 25.4 mm to the inch);
+the widths are the open bearings'.
+
+## Seats on shafts
+
+A part that sits on a round shaft or in a round hole is placed by it
+instead of by a plane and a centre (mitcad#578;
+`core/model/src/features/seat.rs` the definition and its one resolver,
+`api/seats.rs` the query): a [pulley](#pulleys), a [gear](#gears) with a
+bore, and a [printable bearing](#printable-bearings) (mitcad#577) take a
+`seat`, and the application's panels take it with the same inputs
+(Shaft, Offset, Flip, Bore Clearance; `app/commands/SeatInputs.hpp`).
+
+```json
+{"type": "pulley", "kind": "toothed", "profile": "gt2_2mm", "teeth": 20, "belt_width": 6,
+ "seat": {"shaft": {"body": "F2.b0", "face": "F2:side(c1)"}, "offset": 3, "flip": false,
+          "near": [4, 0, 28], "link": {"source": "O1", "target": ""}},
+ "bore_clearance": 0.2, "operation": "new_body"}
+```
+
+| Field | Value |
+|---|---|
+| `shaft` | a circular edge (a shaft's end edge, a hole's rim) or a cylindrical face (a shaft's side, a hole's wall) of a body. An edge must end a cylindrical face of its radius on its axis; anything else is refused with its name |
+| `link` | the shaft's body is another component's (a BUILD shaft, a library part): the occurrence link `{"source": <path to the shaft's component>, "target": <path the feature's component is seen at>}` as a sweep's `body_links` take it ([Geometry of other components](#geometry-of-other-components)); the shaft is read in its component and moved by the placements at the feature's point of the timeline, so the part follows when the shaft's occurrence moves |
+| `offset` | mm along the axis from the end measured from; 0 without it. A parameter |
+| `flip` | measured from the shaft's other end, the part facing back along the shaft |
+| `near` | where a face was picked (mm, in the coordinates of the shaft's component, as a pick gives it): the end of the face nearer it is the end measured from, wherever the shaft's occurrence moves; the face's low end along its axis without it. An edge is its own end |
+
+- **The seat:** the end measured from (the picked edge, or the face's end
+  nearer `near`; `flip` the other end of the cylindrical face), the axis
+  from that end into the shaft (into the hole), the origin `offset` along
+  it and the shaft's (hole's) diameter. The part's plane goes through the
+  origin normal to the axis (its x axis as a plane's without one:
+  [References to geometry](#references-to-geometry)) and the part runs
+  along the axis from it: a pulley at offset 0 starts at the shaft's end
+  and runs along the shaft; flipped it starts at the other end and runs
+  back. A hole picked at its rim gives the axis into the hole: a part at
+  offset `depth` sits `depth` below the face, flush at 0.
+- **Bores:** a seated pulley or gear without `bore` has a plain bore of
+  the shaft's diameter plus `bore_clearance` (a keyway goes into it); it
+  follows the shaft's diameter. The wall rules of a too large bore apply
+  to it (a pulley's 0.5 mm to the groove bottoms, a gear's module to its
+  roots). A threaded bore stays its thread's tap drill.
+- **Belts and meshes:** a pulley or gear on a shaft can be the first of a
+  belt pair (`belt_with`) or a mesh (`mesh_with`): the second lies in its
+  plane. The second is not seated itself.
+- **Recompute:** the seat reads the shaft's body (and, with `link`, the
+  occurrences' placements); a shaft made thicker, longer or moved
+  rebuilds the part, and a shaft face or edge that no longer resolves
+  fails it with the reason (`seat: …`).
+- **Copies, moves and reparents** carry the seat's link like a sweep's
+  `body_links`; the occurrences a feature refers to and the design policy
+  see it.
+
+| Query | Fields | Result |
+|---|---|---|
+| `seat_frame` | `seat` (as a feature takes it), `component` (the seated feature's; the active one without it) | where the seat puts a part at the timeline marker, in that component's coordinates: `origin`, `axis` (unit, into the shaft or hole), `end` (the end measured from), `diameter`, `length` (the cylindrical face's along the axis), `hole` (a hole's wall); an error when the shaft is not round or does not resolve |
+
+`pulley_values` and `gear_values` resolve a definition's seat the same way
+(`bore_diameter`, `shaft_diameter`, `seat`). Tests: `features::seat`
+(the frame), `features::seat_tests` (pulleys and gears on the mock
+kernel), `tools/cli/tests/pulleys.json`, `tools/cli/tests/gears.json`,
+`tools/ui-pulley-test.sh`, `tools/ui-windows-pulley-test.ps1`,
+`tools/ui-windows-gear-test.ps1`.

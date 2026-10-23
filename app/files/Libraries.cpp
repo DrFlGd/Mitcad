@@ -7,19 +7,17 @@
 #include <QJsonArray>
 #include <QProgressDialog>
 #include <QPointer>
-#include <QSettings>
 #include <QStandardPaths>
 #include <QtLogging>
 
 #include "../framework/Dialogs.hpp"
 #include "../framework/Json.hpp"
+#include "LibraryAutoUpdate.hpp"
 #include "RemoteTask.hpp"
 #include "mitcad_bridge/lib.h"
 
 namespace mitcad {
 namespace {
-
-const QString kSourcesKey = QStringLiteral("libraries/sources");
 
 QJsonObject failed(const QString& message) {
   return {{QStringLiteral("error"), QJsonObject{{QStringLiteral("class"), QStringLiteral("other")},
@@ -28,59 +26,7 @@ QJsonObject failed(const QString& message) {
 
 } // namespace
 
-QList<LibrarySource> defaultLibrarySources() {
-  // Where Mitcad's own repositories are published; fetched only when the
-  // user asks.
-  return {{QStringLiteral("https://github.com/mitcad/parts.git"), true},
-          {QStringLiteral("https://github.com/mitcad/community-index.git"), true}};
-}
-
-LibrarySettings LibrarySettings::load() {
-  LibrarySettings settings;
-  QSettings store;
-  if (!store.contains(kSourcesKey)) {
-    settings.sources = defaultLibrarySources();
-    return settings;
-  }
-  const QJsonArray list = QJsonDocument::fromJson(store.value(kSourcesKey).toByteArray()).array();
-  for (const QJsonValue& value : list) {
-    const QJsonObject source = value.toObject();
-    const QString url = source.value(QStringLiteral("url")).toString().trimmed();
-    if (!url.isEmpty()) {
-      settings.sources.append({url, source.value(QStringLiteral("enabled")).toBool(true)});
-    }
-  }
-  return settings;
-}
-
-void LibrarySettings::save() const {
-  QJsonArray list;
-  for (const LibrarySource& source : sources) {
-    list.append(QJsonObject{{QStringLiteral("url"), source.url}, {QStringLiteral("enabled"), source.enabled}});
-  }
-  QSettings().setValue(kSourcesKey, QJsonDocument(list).toJson(QJsonDocument::Compact));
-}
-
-QStringList LibrarySettings::enabledUrls() const {
-  QStringList urls;
-  for (const LibrarySource& source : sources) {
-    if (source.enabled) {
-      urls << source.url;
-    }
-  }
-  return urls;
-}
-
-bool LibrarySettings::add(const QString& url) {
-  const QString trimmed = url.trimmed();
-  for (const LibrarySource& source : sources) {
-    if (source.url == trimmed) {
-      return false;
-    }
-  }
-  sources.append({trimmed, true});
-  return true;
-}
+// The settings (LibrarySettings, the defaults) are in LibrarySettings.cpp.
 
 QString librariesDirectory() {
   const QString dir = qEnvironmentVariable("MITCAD_LIBRARIES_DIR");
@@ -109,7 +55,28 @@ QJsonObject libraryCommand(const QJsonObject& command) {
   }
 }
 
+void logLibraryFetch(const QString& url, const QJsonObject& answer) {
+  const QJsonObject error = answer.value(QStringLiteral("error")).toObject();
+  if (error.isEmpty()) {
+    QStringList labels;
+    for (const QJsonValue& version : answer.value(QStringLiteral("versions")).toArray()) {
+      labels << version.toObject().value(QStringLiteral("text")).toString();
+    }
+    qInfo().noquote() << QStringLiteral("Library fetched: %1 %2 (%3) from %4; versions %5")
+                             .arg(answer.value(QStringLiteral("kind")).toString(),
+                                  answer.value(QStringLiteral("name")).toString(),
+                                  answer.value(QStringLiteral("id")).toString(), url,
+                                  labels.join(QStringLiteral(", ")));
+  } else {
+    qWarning().noquote() << QStringLiteral("Library fetch failed: %1: %2")
+                                .arg(url, error.value(QStringLiteral("message")).toString());
+  }
+}
+
 QList<QJsonObject> fetchLibraries(QWidget* parent, const QStringList& urls) {
+  // A fetch the user asks for takes over from the one at start-up: two
+  // fetches into one cache at once are not wanted.
+  LibraryAutoUpdate::instance().cancel();
   QList<QJsonObject> answers;
   QProgressDialog progress(QObject::tr("Fetching libraries..."), QObject::tr("Cancel"), 0, int(urls.size()), parent);
   progress.setWindowTitle(QObject::tr("Fetch Libraries"));
@@ -142,21 +109,7 @@ QList<QJsonObject> fetchLibraries(QWidget* parent, const QStringList& urls) {
     if (pending == nullptr) { cancelled = true; break; }
     const QJsonObject answer = task->answer();
     delete task;
-    const QJsonObject error = answer.value(QStringLiteral("error")).toObject();
-    if (error.isEmpty()) {
-      QStringList labels;
-      for (const QJsonValue& version : answer.value(QStringLiteral("versions")).toArray()) {
-        labels << version.toObject().value(QStringLiteral("text")).toString();
-      }
-      qInfo().noquote() << QStringLiteral("Library fetched: %1 %2 (%3) from %4; versions %5")
-                               .arg(answer.value(QStringLiteral("kind")).toString(),
-                                    answer.value(QStringLiteral("name")).toString(),
-                                    answer.value(QStringLiteral("id")).toString(), url,
-                                    labels.join(QStringLiteral(", ")));
-    } else {
-      qWarning().noquote() << QStringLiteral("Library fetch failed: %1: %2")
-                                  .arg(url, error.value(QStringLiteral("message")).toString());
-    }
+    logLibraryFetch(url, answer);
     answers.append(answer);
   }
   progress.setValue(int(urls.size()));

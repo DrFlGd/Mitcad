@@ -93,6 +93,19 @@ if(BUILD_TESTING)
   endforeach()
   # Timing belt pulleys (mitcad#562).
   add_test(NAME cli.pulleys COMMAND mitcad-cli run "${scripts}/pulleys.json")
+  # Printable bearings (mitcad#577): the bodies solids that do not touch and
+  # keep their clearances; the 608's bodies written as the parts of one
+  # 3MF object.
+  set(bearings "${CMAKE_CURRENT_BINARY_DIR}/bearings")
+  file(MAKE_DIRECTORY "${bearings}")
+  add_test(NAME cli.bearings
+    COMMAND mitcad-cli run "${scripts}/bearings.json" --save "${bearings}/bearings.mitcad")
+  set_tests_properties(cli.bearings PROPERTIES FIXTURES_SETUP cli_bearings)
+  add_test(NAME cli.bearings_3mf
+    COMMAND mitcad-cli export "${bearings}/bearings.mitcad" "${bearings}/bearing.3mf"
+            --bodies F1.b0,F1.b1,F1.b2,F1.b3,F1.b4,F1.b5,F1.b6,F1.b7,F1.b8,F1.b9,F1.b10,F1.b11)
+  set_tests_properties(cli.bearings_3mf PROPERTIES FIXTURES_REQUIRED cli_bearings PASS_REGULAR_EXPRESSION
+    "\"format\":\"3mf\",\"meshes\":\\[{\"body\":\"F1\\.b0\"[^]]*\"body\":\"F1\\.b1\"[^]]*\"body\":\"F1\\.b11\"[^]]*\\]")
 
   # Components and occurrences (F6): placements, subassemblies, timeline
   # moves, components made by features and copies, with world-space

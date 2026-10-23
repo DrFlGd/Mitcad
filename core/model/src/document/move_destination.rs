@@ -491,6 +491,14 @@ fn relocate_links(
                 let names = transfer.bodies.iter().map(|b| b.feature).collect();
                 follow(&mut transfer.link, &names, own);
             }
+            // A seat on another component's shaft (mitcad#578).
+            seated @ (FeatureDef::Pulley(_)
+            | FeatureDef::Gear(_)
+            | FeatureDef::PrintableBearing(_)) => {
+                if let Some((body, link)) = seated.seat_link_mut() {
+                    follow(link, &BTreeSet::from([body.feature]), own);
+                }
+            }
             _ => {}
         }
         if def != entry.def {

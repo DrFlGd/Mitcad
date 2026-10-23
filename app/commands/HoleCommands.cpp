@@ -412,6 +412,7 @@ CommandDef holeCommand(const CommandContext& context) {
   def.tooltip = QObject::tr("Drilled holes: simple, counterbore, countersink or counterdrill, tapped or not");
   def.shortcut = QKeySequence(Qt::Key_H);
   def.group = QStringLiteral("CREATE");
+  def.section = QStringLiteral("faces");
   def.pinned = true;
   def.keywords = {QStringLiteral("drill"), QStringLiteral("tap"), QStringLiteral("counterbore"),
                   QStringLiteral("countersink"), QStringLiteral("counterdrill"), QStringLiteral("taper")};
@@ -751,6 +752,7 @@ CommandDef threadCommand(const CommandContext& context) {
   def.icon = QStringLiteral("thread");
   def.tooltip = QObject::tr("Threads on cylindrical faces: cosmetic, or modelled into the geometry");
   def.group = QStringLiteral("CREATE");
+  def.section = QStringLiteral("faces");
   def.keywords = {QStringLiteral("tap"), QStringLiteral("screw"), QStringLiteral("bolt")};
   def.featureType = QStringLiteral("thread");
   // The faces are what it threads, not where it goes: the view's context

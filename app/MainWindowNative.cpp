@@ -430,6 +430,7 @@ void MainWindow::refreshNativeActions() {
       item.keywords = def->keywords;
       item.toolbarPinned = def->pinned;
       item.toolbarOrder = commandOrder.value(def->id);
+      item.section = def->section;
       if (!item.workspace.isEmpty()) {
         item.symbol.clear(); // Keep the familiar CAD command drawing.
       }
@@ -488,13 +489,17 @@ void MainWindow::refreshNativeActions() {
       const QString top = workspace == QStringLiteral("SKETCH") ? QStringLiteral("Sketch") : displayName(groupName);
       const QString path = top + QLatin1Char('/') + menuLabel(entry->text());
       int first = -1;
+      QString firstSection; // the popup's section: its first command's (mitcad#579)
       for (QAction* child : submenu->actions()) {
         const QString id = child->objectName().mid(8); // "command_<id>"
         for (mac::NativeMacAction& item : actions) {
           if (item.id != id || item.separator) {
             continue;
           }
-          first = first < 0 ? item.toolbarOrder : std::min(first, item.toolbarOrder);
+          if (first < 0 || item.toolbarOrder < first) {
+            first = item.toolbarOrder;
+            firstSection = item.section;
+          }
           item.menu = path;
           if (item.toolbarPinned) {
             item.toolbarOnly = true; // its button stays, its menu entry is the popup's
@@ -513,6 +518,7 @@ void MainWindow::refreshNativeActions() {
       popup.workspace = workspace;
       popup.submenu = path;
       popup.toolbarOrder = first;
+      popup.section = firstSection;
     }
   }
   // SELECT uses shared actions added to the ribbon rather than registry

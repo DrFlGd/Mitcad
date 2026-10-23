@@ -743,6 +743,16 @@ impl GeomRef {
                         "a pulley has one mount frame, '{}'",
                         super::pulley::MOUNT
                     )),
+                    // A printable bearing's bore axis and faces (mitcad#577).
+                    super::FeatureDef::PrintableBearing(_)
+                        if super::printable_bearing::MOUNTS.contains(&name.as_str()) =>
+                    {
+                        Ok(())
+                    }
+                    super::FeatureDef::PrintableBearing(_) => Err(format!(
+                        "a bearing's mount frames are {}",
+                        super::printable_bearing::MOUNTS.join(", ")
+                    )),
                     _ => Err(format!(
                         "{} ({feature}) is not a derived part: it has no mount frames",
                         entry.name

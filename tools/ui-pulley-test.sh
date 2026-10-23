@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: MIT
 # check-all sources: app/commands/PulleyCommands.cpp app/framework/CommandSession.cpp
 # check-all sources: core/model/src/features/pulley.rs core/model/src/features/pulley_profile.rs core/model/src/api/pulleys.rs
+# check-all sources: app/commands/SeatInputs.cpp core/model/src/features/seat.rs core/model/src/api/seats.rs tools/cli
 # Pulley (mitcad#562) through the real UI; the Windows counterpart is
 # tools/ui-windows-pulley-test.ps1 (ctest app.ui-windows-pulley):
 #   1. Pulley in an empty design: the panel starts on XY with a GT2 2 mm
@@ -15,6 +16,11 @@
 #      the note shows the belt round both (two equal pulleys: 2 x 80 +
 #      20 x 2 = 200 mm, 100 teeth); the catalogue lengths 188, 202 and 210
 #      give the nearest one (202 mm). OK makes F2.b0.
+#   4. On a shaft (mitcad#578), in a design mitcad-cli makes (an 8 mm
+#      cylinder 30 high, Cylinder1, F1.b0): Pulley with Shaft the
+#      cylinder's top edge: the note shows the bore the shaft gives (8 mm);
+#      an offset of 2 mm and a bore clearance of 0.2 mm make it 8.2 mm; OK
+#      makes the pulley on the shaft (F2.b0).
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
 # Usage: tools/ui-pulley-test.sh [screenshot.png]
@@ -22,6 +28,17 @@
 source "$(dirname "$0")/ui-test-lib.sh"
 
 SHOT=${1:-}
+CLI=${UI_CLI:-$(cd "$(dirname "$UI_APP")/.." && pwd)/tools/cli/mitcad-cli}
+WORK=$(mktemp -d /tmp/mitcad-ui-pulley.XXXXXX)
+trap 'ui_cleanup; rm -rf "$WORK"' EXIT
+
+cat > "$WORK/shaft.json" << 'EOF'
+[
+  {"cmd": "add_feature", "def": {"type": "cylinder", "plane": "xy", "center": [0, 0],
+    "diameter": 8, "height": 30, "operation": "new_body"}}
+]
+EOF
+"$CLI" run "$WORK/shaft.json" --save "$WORK/shaft.mitcad" > "$WORK/cli.log" 2>&1 || { cat "$WORK/cli.log"; ui_fail "mitcad-cli"; }
 
 ui_start_display
 ui_start_app
@@ -84,6 +101,35 @@ grep "^Panel Pulley note: " "$UI_LOG" | tail -1 | sed 's/^/     /'
 ui_mark
 ui_step "OK (Enter)"                       ui_key Return
 ui_expect_new "Added pulley (Toothed), GT2 2 mm, 20 teeth" "the second pulley added" 30
+ui_expect_new "(F2.b0): volume " "its body made" 30
+grep -q "Recompute failed" "$UI_LOG" && ui_fail "a recompute failed"
+
+echo "--- A pulley on a shaft (mitcad#578)"
+ui_stop_app
+ui_start_app --open "$WORK/shaft.mitcad"
+ui_step "fit (F6)"                         ui_key F6
+ui_expect_log "Bodies shown: F1.b0" "the shaft shown"
+ui_mark
+ui_step "Pulley"                           ui_command "Pulley"
+ui_expect_new "Preview Pulley: ok" "the panel open on XY" 30
+ui_step "teeth 20"                         ui_type_in "Panel Pulley input teeth" "20"
+ui_mark
+ui_step "Shaft"                            ui_click_logged "Panel Pulley input shaft"
+ui_expect_new "Pick places:" "the picks are logged"
+ui_expect_new "Pick edge F1.b0/E{F1:side0|F1:top} at" "the shaft's top edge can be picked"
+ui_mark
+ui_step "click the shaft's top edge"       ui_click_pick "edge F1.b0/E{F1:side0|F1:top} at"
+ui_expect_new "bore 8 mm (shaft 8 mm)" "the bore the shaft gives" 30
+ui_mark
+ui_step "offset 2"                         ui_type_in "Panel Pulley input seat_offset" "2"
+ui_expect_new "Preview Pulley: ok" "2 mm down the shaft previewed" 30
+ui_mark
+ui_step "bore clearance 0.2"               ui_type_in "Panel Pulley input bore_clearance" "0.2"
+ui_expect_new "bore 8.2 mm (shaft 8 mm)" "the clearance widens the bore" 30
+grep "^Panel Pulley note: " "$UI_LOG" | tail -1 | sed 's/^/     /'
+ui_mark
+ui_step "OK (Enter)"                       ui_key Return
+ui_expect_new "Added pulley (Toothed), GT2 2 mm, 20 teeth" "the pulley on the shaft added" 30
 ui_expect_new "(F2.b0): volume " "its body made" 30
 grep -q "Recompute failed" "$UI_LOG" && ui_fail "a recompute failed"
 

@@ -74,18 +74,38 @@ impl<K: Kernel> Document<K> {
     }
 
     pub(super) fn pulley_values_json(&self, query: &PulleyValuesQuery) -> Result<Value, ApiError> {
-        let values = match (&query.uid, &query.def) {
-            (Some(uid), None) => self.pulley_values_of(*uid)?,
-            (None, Some(def)) => self.pulley_values_in(def)?,
+        let (mut values, component) = match (&query.uid, &query.def) {
+            (Some(uid), None) => (
+                self.pulley_values_of(*uid)?,
+                self.feature(*uid)
+                    .map_or(self.active_component(), |f| f.component),
+            ),
+            (None, Some(def)) => (self.pulley_values_in(def)?, self.active_component()),
             _ => {
                 return Err(ApiError(
                     "pulley_values takes a pulley feature's uid or a definition".to_owned(),
                 ));
             }
         };
+        // On a shaft (mitcad#578): the bore the shaft gives at the marker.
+        let seat = values
+            .seat
+            .as_ref()
+            .map(|seat| self.seat_frame(seat, component));
+        if let Some(Ok(frame)) = &seat {
+            values.seat_bore(frame.diameter);
+        }
         let mut result = pulley::derived_values(&values);
         if let Err(error) = values.check() {
             result["error"] = json!(error);
+        }
+        match seat {
+            Some(Ok(frame)) => {
+                result["shaft_diameter"] = json!(frame.diameter);
+                result["seat"] = frame.to_json();
+            }
+            Some(Err(error)) => result["error"] = json!(format!("seat: {error}")),
+            None => {}
         }
         if let Some(belt) = &values.belt_with {
             let mate = self.pulley_values_of(belt.pulley)?;

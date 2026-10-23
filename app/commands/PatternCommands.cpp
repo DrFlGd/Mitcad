@@ -249,6 +249,8 @@ CommandDef rectangularPatternCommand(const CommandContext& context) {
   def.icon = QStringLiteral("rectangular-pattern");
   def.tooltip = QObject::tr("Copies in rows and columns along one or two directions");
   def.group = QStringLiteral("CREATE");
+  def.section = QStringLiteral("patterns");
+  def.subgroup = QStringLiteral("Pattern");
   def.keywords = {QStringLiteral("array"), QStringLiteral("linear pattern"), QStringLiteral("copy")};
   def.featureType = QStringLiteral("rectangular_pattern");
   const auto second = [](const CommandState& s) { return !s.items(QStringLiteral("direction2")).isEmpty(); };
@@ -367,6 +369,8 @@ CommandDef circularPatternCommand(const CommandContext& context) {
   def.icon = QStringLiteral("circular-pattern");
   def.tooltip = QObject::tr("Copies about an axis");
   def.group = QStringLiteral("CREATE");
+  def.section = QStringLiteral("patterns");
+  def.subgroup = QStringLiteral("Pattern");
   def.keywords = {QStringLiteral("array"), QStringLiteral("polar pattern"), QStringLiteral("radial")};
   def.featureType = QStringLiteral("circular_pattern");
   def.inputs = patternObjects();
@@ -452,6 +456,8 @@ CommandDef pathPatternCommand(const CommandContext& context) {
   def.icon = QStringLiteral("path-pattern");
   def.tooltip = QObject::tr("Copies along a sketch line, arc or circle, or a chain of lines and arcs");
   def.group = QStringLiteral("CREATE");
+  def.section = QStringLiteral("patterns");
+  def.subgroup = QStringLiteral("Pattern");
   def.keywords = {QStringLiteral("array"), QStringLiteral("path pattern"), QStringLiteral("curve")};
   def.featureType = QStringLiteral("path_pattern");
   def.inputs = patternObjects();
@@ -552,6 +558,8 @@ CommandDef mirrorCommand(const CommandContext& context) {
   def.icon = QStringLiteral("mirror");
   def.tooltip = QObject::tr("A mirror image about a plane");
   def.group = QStringLiteral("CREATE");
+  // A plain entry after the Pattern submenu, in its section (mitcad#579).
+  def.section = QStringLiteral("patterns");
   def.keywords = {QStringLiteral("reflect"), QStringLiteral("symmetry")};
   def.featureType = QStringLiteral("mirror");
   def.inputs = patternObjects();

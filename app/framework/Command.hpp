@@ -610,6 +610,12 @@ struct CommandDef {
   // whose arrow opens the submenu; a subgroup of one command is a plain
   // entry.
   QString subgroup;
+  // The section of the group's menu (mitcad#579: the SOLID CREATE menu's
+  // "profiles", "faces", "primitives", ...): a separator stands between two
+  // consecutive entries of different sections (a submenu counts as its
+  // first command's). Commands without one, in a group without sections,
+  // have no separators between them.
+  QString section;
   QStringList keywords; // other words the command search finds it by
   Kind kind = Kind::Feature;
   Mode mode = Mode::Model;

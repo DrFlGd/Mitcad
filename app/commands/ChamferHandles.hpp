@@ -3,12 +3,16 @@
 
 // Where the handles of Fillet and Chamfer stand on an edge (mitcad#534;
 // app/COMMANDS.md, "Fillet and Chamfer handles"): from the edge's middle,
-// its direction there and the outward normals of its two faces. Plain
-// OCCT math (gp); FilletCommands.cpp reads these from the body.
+// its direction there and the outward normals of its two faces. The edge
+// is read from the solid once (`edgeSides`); the rest is plain OCCT math
+// (gp).
 
 #include <array>
 #include <optional>
 
+#include <TopoDS_Edge.hxx>
+#include <TopoDS_Face.hxx>
+#include <TopoDS_Shape.hxx>
 #include <gp_Dir.hxx>
 #include <gp_Pnt.hxx>
 #include <gp_Trsf.hxx>
@@ -25,6 +29,15 @@ struct EdgeSides {
   std::array<gp_Dir, 2> normals{gp_Dir(0, 0, 1), gp_Dir(0, 0, 1)};
   bool convex = true;
 };
+
+// The edge `edge` of `solid` between its faces `first` and `second`, at the
+// middle of the edge's curve. Convex where a point just off the edge
+// along first normal - second normal is outside the solid: that way leaves
+// a convex edge's wedge of material and enters a concave edge's material
+// (mitcad#571; along the normals' bisector it is outside at both). None
+// where a face has no normal there or the edge no direction.
+std::optional<EdgeSides> edgeSides(const TopoDS_Shape& solid, const TopoDS_Edge& edge, const TopoDS_Face& first,
+                                   const TopoDS_Face& second);
 
 // The edge as a placement shows it (a component's occurrence).
 EdgeSides placed(const EdgeSides& sides, const gp_Trsf& placement);
@@ -44,6 +57,11 @@ struct EdgeArrow {
   gp_Dir direction;
   double factor = 1.0;
 };
+
+// A constant radius fillet's arrow: along bendDirection, its knob at the
+// middle of the rounding, radius * (1 / cos(bendAngle / 2) - 1) from the
+// edge. None where the normals are opposite.
+std::optional<EdgeArrow> filletArrow(const EdgeSides& sides);
 
 // An equal distance chamfer's arrow: from the edge's middle to the middle
 // of the bevel's face, distance * sin(bendAngle / 2) along bendDirection.

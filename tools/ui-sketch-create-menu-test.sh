@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 # check-all sources: app/framework/Ribbon.cpp app/framework/Ribbon.hpp app/framework/Command.hpp
-# check-all sources: app/commands/SketchCommands.cpp
+# check-all sources: app/commands/SketchCommands.cpp app/commands/CreateCommands.cpp
+# check-all sources: app/commands/PatternCommands.cpp app/commands/PointPatternCommands.cpp
+# check-all sources: app/commands/GearCommands.cpp app/commands/PulleyCommands.cpp app/commands/BearingCommands.cpp
 # The sketch CREATE group in submenus (mitcad#222), through the real UI, in
 # the Docked and the Floating layout:
 #   - the CREATE menu: Line, Rectangles, Circles, Arcs, Other Geometry,
@@ -15,7 +17,10 @@
 #   - the keyboard: the CREATE menu's Circles submenu with the arrow keys,
 #     the shortcut C and the command search;
 #   - in a narrow window the groups stay within it;
-#   - the SOLID CREATE menu has no submenus.
+#   - the SOLID CREATE menu in its sections with separators (mitcad#579):
+#     Create Sketch; from profiles; on a body's faces; the primitives; the
+#     Pattern submenu and Mirror; the Machine Elements submenu (Gear,
+#     Pulley, Bearing), from which Gear starts by the keyboard.
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
 # Usage: tools/ui-sketch-create-menu-test.sh
@@ -32,6 +37,14 @@ PATTERNS="Rectangular Pattern | Circular Pattern | Mirror"
 REFERENCES="Project | Clean Up Projections | Clean Up Stale Projections"
 CREATE="Line | Rectangles > [$RECTANGLES] | Circles > [$CIRCLES] | Arcs > [$ARCS] | Other Geometry > [$OTHER]"
 CREATE="$CREATE | Text > [Text | QR Code] | Patterns > [$PATTERNS] | References > [$REFERENCES] | Sketch Dimension"
+# The SOLID CREATE menu (mitcad#579), up to the Machine Elements submenu's
+# Bearing: later machine elements may follow it in the submenu.
+SOLID_PATTERNS="Rectangular Pattern | Circular Pattern | Pattern on Path | Pattern at Points"
+SOLID_CREATE="Create Sketch | - | Extrude | Revolve | Sweep | Loft | Rib | Web | Emboss"
+SOLID_CREATE="$SOLID_CREATE | - | Hole | Thread | Plastic Feature"
+SOLID_CREATE="$SOLID_CREATE | - | Box | Cylinder | Sphere | Torus | Coil | Helix | Pipe"
+SOLID_CREATE="$SOLID_CREATE | - | Pattern > [$SOLID_PATTERNS] | Mirror"
+SOLID_CREATE="$SOLID_CREATE | - | Machine Elements > [Gear | Pulley | Bearing"
 
 # last_line "prefix": the last log line starting with the prefix, without it.
 last_line() {
@@ -156,12 +169,28 @@ echo "--- The SOLID CREATE menu"
 ui_mark
 ui_step "open the SOLID CREATE menu"       ui_click_logged "Ribbon SOLID/CREATE"
 ui_expect_new "Ribbon menu SOLID/CREATE: " "the SOLID CREATE menu opened"
-ui_step "close it (Esc)"                   ui_key Escape
 case "$(last_line "Ribbon menu SOLID/CREATE: ")" in
-*" > ["*) ui_fail "the SOLID CREATE menu has submenus" ;;
-*"Create Sketch | Extrude"*) echo "ok   the SOLID CREATE menu as before" ;;
+"$SOLID_CREATE]" | "$SOLID_CREATE | "*"]") echo "ok   the SOLID CREATE menu in its sections and submenus" ;;
 *) ui_fail "the SOLID CREATE menu: '$(last_line "Ribbon menu SOLID/CREATE: ")'" ;;
 esac
+# The keyboard: Up from the top is the last entry (Machine Elements), its
+# submenu's first entry Gear.
+ui_mark
+ui_step "Machine Elements > Gear"          ui_key Up Right Return
+ui_expect_new "Ribbon menu SOLID/CREATE/Machine Elements: Gear | Pulley | Bearing" "the Machine Elements submenu opened"
+ui_expect_new "Command Gear started" "Gear from the Machine Elements submenu"
+ui_step "cancel (Esc)"                     ui_key Escape
+ui_expect_new "Command Gear cancelled" "Gear cancelled"
+# None of their commands is pinned: no split buttons, the buttons as before.
+grep -qF "Ribbon split SOLID/CREATE/" "$UI_LOG" && ui_fail "a split button for a SOLID CREATE submenu"
+echo "ok   no split buttons for the Pattern and Machine Elements submenus"
+for id in sketch.create solid.extrude solid.revolve solid.hole; do
+  ui_expect_log "Ribbon button $id at " "the $id button"
+done
+for id in solid.rectangular_pattern solid.mirror solid.gear solid.pulley solid.bearing solid.plastic; do
+  grep -qF "Ribbon button $id at " "$UI_LOG" && ui_fail "a button for $id"
+done
+echo "ok   no buttons for the patterns, Mirror, Plastic Feature and the machine elements"
 
 check_layout "Docked"
 ui_stop_app

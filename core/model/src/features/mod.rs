@@ -266,6 +266,17 @@ pub mod pulley_profile;
 pub use pulley::{PulleyDef, PulleyKind};
 #[cfg(test)]
 mod pulley_tests;
+// Printable bearings: print-in-place and airsoft-ball bearings (mitcad#577).
+pub mod bearing_sizes;
+pub mod printable_bearing;
+pub use printable_bearing::{Element, PrintableBearingDef};
+#[cfg(test)]
+mod printable_bearing_tests;
+// Seats on shafts and in holes: pulleys and gears placed by a shaft (mitcad#578).
+pub mod seat;
+pub use seat::{Seat, SeatFrame};
+#[cfg(test)]
+mod seat_tests;
 
 use crate::assembly::Assembly;
 use crate::datum::Datum;
@@ -431,6 +442,8 @@ feature_types! {
     ScalePattern(ScalePatternDef),
     // Timing belt pulleys and idlers (mitcad#562).
     Pulley(PulleyDef),
+    // Printable bearings (mitcad#577).
+    PrintableBearing(PrintableBearingDef),
 }
 
 /// Brings a feature definition in an earlier form up to date before it is
@@ -527,6 +540,13 @@ pub trait FeatureInfo {
     /// feature's own component.
     fn new_component(&self) -> bool {
         false
+    }
+
+    /// The name of the component a new-component operation makes, from
+    /// the definition and its values (mitcad#577: `Bearing 608 (8x22x7)`);
+    /// None: `Component<n>`.
+    fn component_name(&self, _value: &dyn Fn(ParamId) -> f64) -> Option<String> {
+        None
     }
     /// How the tool body the feature leaves in [`FeatureOutput::tool`]
     /// combines with bodies, so that patterns and mirrors of the feature can

@@ -94,4 +94,7 @@ CommandDef moveFaceCommand(const CommandContext& context);
 // PulleyCommands.cpp (mitcad#562): timing belt pulleys and idlers.
 CommandDef pulleyCommand(const CommandContext& context);
 
+// BearingCommands.cpp (mitcad#577): printable bearings.
+CommandDef bearingCommand(const CommandContext& context);
+
 } // namespace mitcad::cmd

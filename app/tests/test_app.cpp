@@ -2022,6 +2022,7 @@ int commandSketchesTests();
 int parameterEditsTests();
 int decimalAlignTests();
 int parameterSuggestTests();
+int librarySettingsTests();
 
 int main(int argc, char* argv[]) {
   QApplication app(argc, argv);
@@ -2092,6 +2093,7 @@ int main(int argc, char* argv[]) {
     failures += parameterEditsTests();
     failures += decimalAlignTests();
     failures += parameterSuggestTests();
+    failures += librarySettingsTests();
   }
   if (failures != 0) {
     std::fprintf(stderr, "%d check(s) failed\n", failures);

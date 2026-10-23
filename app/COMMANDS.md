@@ -517,7 +517,8 @@ Clear Selection, Undo, Fit, Command Search
   `min` to `max`), every other selection input shown at the start (the
   inputs' defaults, a list's first rows) may stay empty, and it is no
   creation command (group CREATE) given a face or a plane, which would
-  only be where it goes (Box, Cylinder, Hole, Coil, Gear, Plastic Feature).
+  only be where it goes (Box, Cylinder, Hole, Coil, Gear, Pulley, Plastic
+  Feature).
   Otherwise, needing further picks, it is under **More**, the submenu's
   last entry. In each, the commands keep the registry's (the ribbon's)
   order. A definition says what its inputs cannot:
@@ -4789,6 +4790,39 @@ SVG at several sizes (`themeIcon`).
   thread of another standard, is not editable. Logged `Added gear (Spur),
   20 teeth, module 2`. Test: `app.ui-windows-gear`
   (`tools/ui-windows-gear-test.ps1`: a spur gear, then a rack meshing it).
+- **Pulley** (`solid.pulley`, `PulleyCommands.cpp`, mitcad#562; registered
+  by `registerPulleyCommands` after Gear, at the end of CREATE): Type
+  (`kind`, a row of icon buttons `Panel Pulley input kind=idler`: Toothed,
+  Idler, Toothed Idler), Belt With (a pulley: a face it made or its
+  feature, `withConvert`; `onPick` reads the feature, refuses another
+  type in `build` and takes its belt profile), Centre Distance and
+  Direction (with Belt With: the model's `belt_with` `center_distance`
+  and `angle`), Plane (XY at the start, `init`), Center X and Y and Angle
+  (without Belt With), then Belt Profile (GT2 2 mm, GT2 3 mm, HTD 3M,
+  HTD 5M, T5, XL) and Teeth for the toothed kinds or Diameter for an
+  idler, Belt Width, Clearance (always given), Pitch Correction, Flanges
+  (None, One, Both; None leaves `flanges` out) with Flange Diameter and
+  Thickness, Bore (None, Plain, Thread with Thread Size), Keyway, and for
+  a toothed pulley only Hub with its diameter and length and Set Screws
+  with their count, size (a thread designation) and position (0: left
+  out, the middle of the hub), then Catalogue Lengths (with Belt With: belt
+  lengths in the document's unit, separated by commas; only for the note,
+  not stored) and the operation (commands.md, *Pulleys*). Values left at
+  0 are left out (`nonZero`); every value is an expression the model keeps
+  as the feature's parameter. `CommandDef::note` (logged `Panel Pulley
+  note: ...`) shows the model's `pulley_values` of the definition (with
+  `belt_lengths`): `Pitch diameter 12.7324 mm, outside 12.2244 mm`, an
+  idler's diameter, and with Belt With `centre distance 80 mm, belt length
+  200 mm (100 teeth), nearest catalogue length 202 mm, 10 teeth in mesh`,
+  or the model's `error`. A definition with a kind, belt profile or
+  flange side the panel does not list, a plane it cannot show, a thread of
+  another standard, or a hub or set screws on an idler (or set screws
+  without a hub) is not editable. Logged `Added pulley (Toothed), GT2 2
+  mm, 20 teeth` or `Added pulley (Idler), diameter 20 mm`. Tests:
+  `tools/ui-pulley-test.sh` and `app.ui-windows-pulley`
+  (`tools/ui-windows-pulley-test.ps1`): a GT2 pulley, its teeth and
+  flanges changed in the preview, edited, then a second pulley on the belt
+  with its belt length and nearest catalogue length.
 
 ## Known limitations
 

@@ -69,6 +69,10 @@ void registerBuildCommands(CommandRegistry& registry, const CommandContext& cont
 // group: `host` links the joints of gears it meshes.
 void registerGearCommands(CommandRegistry& registry, const CommandContext& context, DocumentHost& host);
 
+// Pulley (mitcad#562, PulleyCommands.cpp), after Gear at the end of the
+// SOLID tab's CREATE group.
+void registerPulleyCommands(CommandRegistry& registry, const CommandContext& context);
+
 // Equal spacing in sketches (mitcad#221, EqualSpacingCommands.cpp): Equal
 // Spacing, Equal Spacing Dimension and Edit Equal Spacing. Sketch Dimension
 // with three or more points, circles, arcs or lines selected opens Equal

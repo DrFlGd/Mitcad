@@ -91,6 +91,8 @@ if(BUILD_TESTING)
   foreach(script gears gears_link)
     add_test(NAME cli.${script} COMMAND mitcad-cli run "${scripts}/${script}.json")
   endforeach()
+  # Timing belt pulleys (mitcad#562).
+  add_test(NAME cli.pulleys COMMAND mitcad-cli run "${scripts}/pulleys.json")
 
   # Components and occurrences (F6): placements, subassemblies, timeline
   # moves, components made by features and copies, with world-space

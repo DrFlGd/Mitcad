@@ -1,0 +1,22 @@
+<!-- SPDX-License-Identifier: MIT -->
+<!-- Mitcad icon: 24 x 24, dark outline, blue solids, orange actions. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#2b3a4a" stroke-width="1.3" stroke-linejoin="round" stroke-linecap="round">
+  <circle cx="12" cy="12" r="10.5" fill="#c9ddf6"/>
+  <circle cx="12" cy="12" r="8" fill="#9cc0ec"/>
+  <g fill="#c9ddf6" stroke="none">
+    <rect x="11.3" y="3.6" width="1.4" height="1.7"/>
+    <rect x="11.3" y="3.6" width="1.4" height="1.7" transform="rotate(30 12 12)"/>
+    <rect x="11.3" y="3.6" width="1.4" height="1.7" transform="rotate(60 12 12)"/>
+    <rect x="11.3" y="3.6" width="1.4" height="1.7" transform="rotate(90 12 12)"/>
+    <rect x="11.3" y="3.6" width="1.4" height="1.7" transform="rotate(120 12 12)"/>
+    <rect x="11.3" y="3.6" width="1.4" height="1.7" transform="rotate(150 12 12)"/>
+    <rect x="11.3" y="3.6" width="1.4" height="1.7" transform="rotate(180 12 12)"/>
+    <rect x="11.3" y="3.6" width="1.4" height="1.7" transform="rotate(210 12 12)"/>
+    <rect x="11.3" y="3.6" width="1.4" height="1.7" transform="rotate(240 12 12)"/>
+    <rect x="11.3" y="3.6" width="1.4" height="1.7" transform="rotate(270 12 12)"/>
+    <rect x="11.3" y="3.6" width="1.4" height="1.7" transform="rotate(300 12 12)"/>
+    <rect x="11.3" y="3.6" width="1.4" height="1.7" transform="rotate(330 12 12)"/>
+  </g>
+  <circle cx="12" cy="12" r="5.2" fill="#c9ddf6"/>
+  <circle cx="12" cy="12" r="3" fill="#ffffff"/>
+</svg>

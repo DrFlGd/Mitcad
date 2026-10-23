@@ -393,6 +393,16 @@ design in a project.
   mount `gear`, which `link_gears` reads to couple the gears' joints with
   a motion link ([commands.md](../core/model/src/api/commands.md),
   "Gears").
+- **Pulleys** (mitcad#562, `core/model/src/features/pulley.rs`): the
+  grooves of the timing belt profiles are worked out in the model
+  (`pulley_profile.rs`: lines and arcs of a fixed groove per profile) and
+  swept by `Kernel::gear_sweep` as a gear's teeth are; flanges, hub, bore
+  and set screws are further sweeps joined or cut. A pulley with
+  `belt_with` reads the other pulley's definition and parameters (and its
+  result, `Read::Output`) to place itself; the belt's length is a derived
+  value of the `pulley_values` query. Its result keeps its frame as the
+  mount `bore` ([commands.md](../core/model/src/api/commands.md),
+  "Pulleys").
 - **Extrude's automatic operation** (mitcad#289,
   `core/model/src/document/auto_operation.rs`): a preview asked for it
   evaluates the extrusion as a new body, tries its tool against the

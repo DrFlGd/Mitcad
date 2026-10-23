@@ -11277,6 +11277,94 @@ Tests: `features::gear_profile` and `features::gear_tests`,
 The `.f3d` and `.solidcraft` imports can map their files' gears onto the
 definition later; it is kept in the design file as it is.
 
+## Pulleys
+
+A `pulley` feature (mitcad#562; `core/model/src/features/pulley.rs` the
+definition, its placement and the belt, `pulley_profile.rs` the grooves,
+the kernel's `gear_sweep` the solids, `api/pulleys.rs` the query) makes a
+timing belt pulley, a smooth idler or a toothed idler from parameters.
+The application's Pulley panel makes them
+([app/COMMANDS.md](../../../../app/COMMANDS.md#notes-on-particular-commands)).
+Tests: `features::pulley_profile` and `features::pulley_tests`,
+`tools/cli/tests/pulleys.json`.
+
+```json
+{"type": "pulley", "kind": "toothed", "profile": "gt2_2mm", "plane": "xy", "center": [0, 0],
+ "angle": 0, "teeth": 20, "belt_width": 6, "clearance": 1, "pitch_correction": 0,
+ "flanges": {"sides": "both", "diameter": 18, "thickness": 1},
+ "hub": {"diameter": 16, "length": 7},
+ "bore": {"type": "plain", "diameter": 5}, "keyway": false,
+ "set_screws": {"count": 2, "thread": {"designation": "M3x0.5"}, "position": 3.5},
+ "operation": "new_component"}
+```
+
+| Field | Value |
+|---|---|
+| `kind` | `toothed` (a pulley), `idler` (smooth, for the belt's back or as a tensioner), `toothed_idler` (teeth on a bearing bore) |
+| `profile` | `gt2_2mm`, `gt2_3mm`, `htd_3m`, `htd_5m`, `t5`, `xl`: needed with teeth; optional for an `idler` (the belt's pitch, and the check that two pulleys share a belt) |
+| `plane`, `center` | where the axis meets its plane (the plane's normal), in the plane's coordinates. Not with `belt_with` |
+| `angle` | turns the pulley about its axis: tooth 1 is centred on the plane's x axis without it; the keyway and the first set screw lie in this direction. Not with `belt_with` (refused: `belt_with.angle` places the pulley, its teeth then start on that plane's x axis) |
+| `teeth` | the toothed kinds' number of teeth: whole, from the profile's minimum (12 for HTD 5M, 10 for the others) to 1000 |
+| `diameter` | an `idler`'s running diameter (instead of `teeth`) |
+| `belt_width`, `clearance` | mm; the toothed (running) width is `belt_width + clearance`, the clearance 1 mm without it |
+| `pitch_correction` | mm added to the outside diameter (a pitch-diameter correction, e.g. for backlash), at most a quarter of the pitch either way; 0 without it. The belt's values keep the nominal pitch diameter |
+| `flanges` | `sides` (`none`, `one`, `both`; `both` without it), `diameter` (more than the outside diameter), `thickness`. One flange lies on the plane's side, away from the hub |
+| `hub` | `diameter`, `length`: after the toothed part and the second flange, away from the plane |
+| `bore` | `{"type": "plain", "diameter": d}` or `{"type": "thread", "thread": {"designation": "M8x1.25"}}` (the size's minor diameter, its tap drill), through the whole pulley; it stays 0.5 mm inside the groove bottoms (an idler's running face) with its keyway |
+| `keyway` | a DIN 6885-1 (form A) keyway in a plain bore of 6 to 230 mm, at the pulley's `angle` |
+| `set_screws` | `count` (1 to 4, 90 degrees apart from `angle`), `thread` (a tap drill of that size, radial from the axis through the hub; listed as cosmetic threads by `threads`), `position` (mm from the hub's outer end along the axis; the hub's middle without it). Needs a hub |
+| `belt_with` | `{"pulley": "F3", "center_distance": 80, "angle": <angle>}`: in the plane of an earlier pulley feature of the same component, at `center_distance` from its centre in the direction `angle` (from its plane's x axis; 0 without it), for one belt round both. The two share the belt profile (an idler without one takes the other's); their pitch circles must not overlap |
+| `operation`, `participants` | as an extrusion's |
+
+Values are parameters: numbers in mm (radians for angles; `teeth` and
+`set_screws.count` unitless) or names and expressions, as for gears.
+
+- **Diameters:** the pitch diameter is z p / pi (the belt's pitch line);
+  the outside diameter is the pitch diameter less twice the profile's
+  pitch line offset (PLD), plus `pitch_correction`; the root diameter is
+  the outside diameter less twice the groove's depth.
+
+  | Profile | Pitch | PLD | Groove |
+  |---|---|---|---|
+  | `gt2_2mm` | 2 mm | 0.254 | round: 0.764 deep, 1.494 wide, bottom radius 0.555, tip radius 0.15 |
+  | `gt2_3mm` | 3 mm | 0.381 | round: 1.169 deep, 2.31 wide, bottom radius 0.85, tip radius 0.25 |
+  | `htd_3m` | 3 mm | 0.381 | round: 1.289 deep, 2.27 wide, bottom radius 0.86, tip radius 0.3 |
+  | `htd_5m` | 5 mm | 0.5715 | round: 2.199 deep, 3.781 wide, bottom radius 1.49, tip radius 0.43 |
+  | `t5` | 5 mm | 0.425 | straight-sided: 1.75 at the bottom, 1.25 deep, 50 degrees, bottom radius 0.4, tip radius 0.6 |
+  | `xl` | 5.08 mm | 0.254 | straight-sided: 1.32 at the bottom, 1.65 deep, 50 degrees, bottom radius 0.41, tip radius 0.64 |
+
+- **Grooves:** our own construction around the published belt
+  dimensions (the sources per profile are in `pulley_profile.rs`); one
+  fixed groove per profile, not generated by the belt's motion. A round
+  groove has a bottom arc centred on its axis and straight flanks tangent
+  to it through the corners its width and depth give; a straight-sided
+  groove a flat bottom with fillets and flanks at half its included
+  angle; both have tip fillets tangent to the flanks and the outside
+  circle. Too few teeth for a groove's width leave no land and are
+  refused.
+- **Faces:** tooth k (from 1, counter-clockwise about the axis) has
+  `tip(k)` (its land on the outside circle), `tip_fillet_a(k)`,
+  `flank_a(k)` and `root_fillet_a(k)` (straight-sided grooves) on its
+  clockwise side, `tip_fillet_b(k)`, `flank_b(k)`, `root_fillet_b(k)` on
+  the other, `root(k)` the groove bottom after it; an idler's `running`;
+  the caps `start`, `end`; `flange_a`, `flange_a_end`, `flange_a_inner`,
+  `flange_b`, `flange_b_inner`, `flange_b_end`; `hub`, `hub_start`,
+  `hub_end`; `bore`, `keyway_a`, `keyway_top`, `keyway_b`; `set_screw(k)`.
+- **Mount frame:** the result keeps its frame as the mount `bore` (x, y
+  and the axis as columns, the origin on the axis on its plane), as a
+  library pulley's: joints and joint origins take it as
+  `{"mount": "F3:mount(bore)"}` (a plane, the axis or its origin); a
+  joint origin there with a `mount` (kind `hole`) is a mount frame of the
+  design for Place Part ([Mount frames](#mount-frames)).
+- **Belts:** the open belt round two pulleys of pitch radii R and r (an
+  idler's running radius), C apart: L = 2 C cos(t) + pi (R + r) +
+  2 t (R - r), sin(t) = (R - r) / C. It wraps pi - 2 t of the smaller
+  pulley and pi + 2 t of the larger. A belt body is not made.
+
+| Query | Fields | Result |
+|---|---|---|
+| `pulley_values` | `uid` (a pulley feature) or `def` (a definition as `add_feature` takes it, without `type`); `belt_lengths` (optional: catalogue belt lengths in mm) | `kind`, `tooth_width` (the toothed width), `length` (along the axis); with a profile `profile`, `pitch`, `pitch_line_offset`, `min_teeth`; the toothed kinds' `teeth`, `pitch_diameter`, `outside_diameter`, `root_diameter`; an idler's `diameter` (and `outside_diameter`); `section_area` (the toothed or running section's, without bore and flanges); with `belt_with` `center_distance`, `mate` (the other pulley's uid), `belt_length` (the belt's pitch length), `wrap_angles` (on the smaller and the larger pulley), `belt_teeth` (belt_length / pitch, with a profile), `teeth_in_mesh` (whole teeth on the smaller toothed pulley), `catalogue_length` (the nearest of `belt_lengths`, only when given); `error` when the values make no pulley or no belt |
+
 ## BUILD: timber frames
 
 A wall, floor or roof frame of timber members made from a few values

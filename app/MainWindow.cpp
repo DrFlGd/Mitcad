@@ -690,6 +690,8 @@ void MainWindow::registerCommands() {
   registerCreateCommands(*m_registry, *this, sketch);
   // Gear (mitcad#472) ends the CREATE group.
   registerGearCommands(*m_registry, *this, *this);
+  // Pulley (mitcad#562) after it.
+  registerPulleyCommands(*m_registry, *this);
   registerModifyCommands(*m_registry, *this);
   // SHEET METAL (mitcad#210): its features, then the main window's actions.
   registerSheetMetalCommands(*m_registry, *this);

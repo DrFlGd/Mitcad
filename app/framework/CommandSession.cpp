@@ -1700,6 +1700,11 @@ void CommandSession::runPreview() {
     // metadata from the accepted result on this delayed preview turn.
     m_presenter->setPreviewReport(cached.value().report);
     m_presenter->setOkEnabled(m_previewOk);
+    // An input only the note reads changes no definition (mitcad#562: a
+    // pulley's catalogue belt lengths): the note again when it differs.
+    if (m_previewOk && m_def.note && m_def.note(m_state, m_host) != m_shownNote) {
+      m_presenter->setMessage(okMessage(cached.value().report), false);
+    }
     return; // already shown
   }
   m_previewCancelled = false;
@@ -1805,6 +1810,21 @@ CommandSession::Preview CommandSession::previewFromReport(
   return preview;
 }
 
+QString CommandSession::okMessage(const QJsonObject& report) {
+  // A feature that succeeds with a caveat says so (P9), not in red.
+  QStringList message = report.value(QStringLiteral("warnings")).toVariant().toStringList();
+  m_shownNote.clear();
+  if (m_def.note) {
+    // The command's own note first (mitcad#472: a gear's derived values).
+    m_shownNote = m_def.note(m_state, m_host);
+    if (!m_shownNote.isEmpty()) {
+      message.prepend(m_shownNote);
+      qDebug().noquote() << QStringLiteral("Panel %1 note: %2").arg(m_def.name, m_shownNote);
+    }
+  }
+  return message.join(QLatin1Char('\n'));
+}
+
 void CommandSession::acceptFeaturePreview(const QByteArray& key, const Built& built,
                                          const Preview& preview, bool cache) {
   if (m_done || !m_presenter) { return; }
@@ -1840,16 +1860,7 @@ void CommandSession::acceptFeaturePreview(const QByteArray& key, const Built& bu
     showPreview(preview, built.def.value(QStringLiteral("operation")).toString());
     // A feature that succeeds with a caveat says so (P9), not in red.
     const QStringList warnings = preview.report.value(QStringLiteral("warnings")).toVariant().toStringList();
-    QStringList message = warnings;
-    if (m_def.note) {
-      // The command's own note first (mitcad#472: a gear's derived values).
-      const QString note = m_def.note(m_state, m_host);
-      if (!note.isEmpty()) {
-        message.prepend(note);
-        qDebug().noquote() << QStringLiteral("Panel %1 note: %2").arg(m_def.name, note);
-      }
-    }
-    m_presenter->setMessage(message.join(QLatin1Char('\n')), false);
+    m_presenter->setMessage(okMessage(preview.report), false);
     m_host.showHint(tr("%1: Enter to confirm, Esc to cancel.").arg(m_def.name));
     qDebug().noquote() << QStringLiteral("Preview %1: ok%2")
                               .arg(m_def.name, warnings.isEmpty()

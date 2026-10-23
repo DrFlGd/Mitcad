@@ -14,7 +14,7 @@
 //! | `{"origin": [x, y, z], "normal": [...], "x_axis": [...]}` | a fixed plane (`x_axis` optional) |
 //! | `{"origin": [x, y, z], "direction": [...]}` | a fixed axis |
 //! | `{"point": [x, y, z]}` | a fixed point |
-//! | `{"mount": "F7:mount(slot_x+_1)"}` | a derived part's mount frame (mitcad#375): a plane, an axis (its z) or a point (its origin) |
+//! | `{"mount": "F7:mount(slot_x+_1)"}` | a derived part's mount frame (mitcad#375), or a pulley's `F3:mount(bore)` (mitcad#562): a plane, an axis (its z) or a point (its origin) |
 //!
 //! A path is `{"body": "F2.b0", "edges": [...]}` (connected edges in
 //! order), `{"sketch": "F1", "curve": "c4"}` (a line, arc or circle in its
@@ -737,6 +737,12 @@ impl GeomRef {
                     super::FeatureDef::DerivedPart(_) => {
                         Err(format!("'{name}' is no name of a mount frame"))
                     }
+                    // A pulley's frame on its axis (mitcad#562).
+                    super::FeatureDef::Pulley(_) if name == super::pulley::MOUNT => Ok(()),
+                    super::FeatureDef::Pulley(_) => Err(format!(
+                        "a pulley has one mount frame, '{}'",
+                        super::pulley::MOUNT
+                    )),
                     _ => Err(format!(
                         "{} ({feature}) is not a derived part: it has no mount frames",
                         entry.name

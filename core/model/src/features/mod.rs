@@ -260,6 +260,12 @@ pub use move_face::MoveFaceDef;
 // Scale patterns: copies scaled where they are (mitcad#539).
 pub mod scale_pattern;
 pub use scale_pattern::ScalePatternDef;
+// Timing belt pulleys and idlers (mitcad#562).
+pub mod pulley;
+pub mod pulley_profile;
+pub use pulley::{PulleyDef, PulleyKind};
+#[cfg(test)]
+mod pulley_tests;
 
 use crate::assembly::Assembly;
 use crate::datum::Datum;
@@ -423,6 +429,8 @@ feature_types! {
     MoveFace(MoveFaceDef),
     // Scale patterns: copies scaled where they are (mitcad#539).
     ScalePattern(ScalePatternDef),
+    // Timing belt pulleys and idlers (mitcad#562).
+    Pulley(PulleyDef),
 }
 
 /// Brings a feature definition in an earlier form up to date before it is

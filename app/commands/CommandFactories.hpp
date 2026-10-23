@@ -91,4 +91,7 @@ CommandDef gearCommand(const CommandContext& context, DocumentHost& host);
 // MoveCommands.cpp (mitcad#531): Move Face, faces of a body moved rigidly.
 CommandDef moveFaceCommand(const CommandContext& context);
 
+// PulleyCommands.cpp (mitcad#562): timing belt pulleys and idlers.
+CommandDef pulleyCommand(const CommandContext& context);
+
 } // namespace mitcad::cmd

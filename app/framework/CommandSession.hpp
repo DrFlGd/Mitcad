@@ -330,6 +330,8 @@ private:
   Preview previewFromReport(const QJsonObject& report,
                             const std::function<std::shared_ptr<geometry::Shape>(const std::string&)>& shapeOf = {});
   void acceptFeaturePreview(const QByteArray& key, const Built& built, const Preview& preview, bool cache);
+  // A good preview's message: the command's note, then the report's warnings.
+  QString okMessage(const QJsonObject& report);
   void commandSequenceAsync(const QJsonArray& commands, CommandHost::AsyncCompletion completion,
                             int index = 0, std::function<bool()> aborted = {});
   void undoToDepthAsync(int depth, CommandHost::AsyncCompletion completion, int guard = -1);
@@ -455,6 +457,7 @@ private:
   bool m_toolOverlaysShown = false; // drawn with the active input's tool overlays (mitcad#561)
   bool m_failed = false; // the model could not compute the preview
   QByteArray m_shownKey; // the command whose preview is shown
+  QString m_shownNote;   // the command's note shown with it
   bool m_previewCancelled = false; // ... or whose preview was cancelled
   QHash<QByteArray, Preview> m_cache;
   QList<QByteArray> m_cacheOrder;

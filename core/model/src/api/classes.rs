@@ -318,6 +318,8 @@ const QUERIES: &[(&str, ApiClass)] = &[
     // insert_component does: from a library or a file.
     ("mount_frames", Model),
     ("mount_preview", FileIo),
+    // Pulleys: derived values and belts (mitcad#562).
+    ("pulley_values", Model),
 ];
 
 fn class_in(table: &[(&str, ApiClass)], name: &str) -> Option<ApiClass> {

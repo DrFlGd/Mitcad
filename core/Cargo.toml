@@ -4,7 +4,7 @@ resolver = "3"
 members = ["model", "ffi", "solver", "f3d", "dxf", "import", "vcs", "zip", "freecad", "3mf", "update", "ipt", "mcp", "usdz", "ifc", "cfb", "rvt", "solidcraft", "dwg"]
 
 [workspace.package]
-version = "0.22.0"
+version = "0.23.0"
 edition = "2024"
 license = "MIT"
 rust-version = "1.88"

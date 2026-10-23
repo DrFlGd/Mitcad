@@ -1,0 +1,117 @@
+// SPDX-License-Identifier: MIT
+//! Pulleys (mitcad#562): the `pulley_values` query, the derived values a
+//! Pulley panel shows (diameters, and with `belt_with` the belt's length,
+//! its nearest catalogue length and the teeth in mesh). See `commands.md`,
+//! "Pulleys".
+
+use serde::Deserialize;
+use serde_json::{Value, json};
+
+use super::ApiError;
+use crate::document::Document;
+use crate::expr::Expr;
+use crate::features::pulley::{self, PulleyDef};
+use crate::features::{FeatureDef, ValueInput};
+use crate::ids::FeatureUid;
+use crate::kernel::Kernel;
+use crate::parameters::{slot_unit, unit_for};
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct PulleyValuesQuery {
+    /// A pulley feature of the timeline.
+    #[serde(default)]
+    uid: Option<FeatureUid>,
+    /// Or a definition as `add_feature` takes it (a panel's).
+    #[serde(default)]
+    def: Option<Box<PulleyDef<ValueInput>>>,
+    /// Catalogue belt lengths (mm): the nearest to the belt's is given.
+    #[serde(default)]
+    belt_lengths: Option<Vec<f64>>,
+}
+
+/// The length of `lengths` nearest to `length`.
+pub(crate) fn nearest_length(lengths: &[f64], length: f64) -> Option<f64> {
+    lengths
+        .iter()
+        .copied()
+        .filter(|l| l.is_finite())
+        .min_by(|a, b| (a - length).abs().total_cmp(&(b - length).abs()))
+}
+
+impl<K: Kernel> Document<K> {
+    /// A pulley feature's definition with the document's values.
+    pub(crate) fn pulley_values_of(&self, uid: FeatureUid) -> Result<PulleyDef<f64>, ApiError> {
+        let entry = self
+            .feature(uid)
+            .ok_or_else(|| ApiError(format!("feature {uid} does not exist")))?;
+        let FeatureDef::Pulley(def) = &entry.def else {
+            return Err(ApiError(format!("{} is not a pulley", entry.name)));
+        };
+        let params = self.parameters();
+        Ok(pulley::evaluated(def, &|id| {
+            params.value(id).unwrap_or(f64::NAN)
+        }))
+    }
+
+    /// A definition's values: numbers as they are (mm, radians), names and
+    /// expressions evaluated in the slot's unit.
+    fn pulley_values_in(&self, def: &PulleyDef<ValueInput>) -> Result<PulleyDef<f64>, ApiError> {
+        let params = self.parameters();
+        let context = params.context();
+        def.map_params(&mut |slot, value| match value {
+            ValueInput::Number(n) => Ok(*n),
+            ValueInput::Name(text) => {
+                let unit =
+                    unit_for(slot_unit(slot).dims(), &context).unwrap_or(crate::expr::Unit::NONE);
+                let parsed = Expr::parse(text).map_err(|e| ApiError(format!("{slot}: {e}")))?;
+                parsed
+                    .eval_as(params.table(), &context, unit)
+                    .map(|v| v.value)
+                    .map_err(|e| ApiError(format!("{slot}: {e}")))
+            }
+        })
+    }
+
+    pub(super) fn pulley_values_json(&self, query: &PulleyValuesQuery) -> Result<Value, ApiError> {
+        let values = match (&query.uid, &query.def) {
+            (Some(uid), None) => self.pulley_values_of(*uid)?,
+            (None, Some(def)) => self.pulley_values_in(def)?,
+            _ => {
+                return Err(ApiError(
+                    "pulley_values takes a pulley feature's uid or a definition".to_owned(),
+                ));
+            }
+        };
+        let mut result = pulley::derived_values(&values);
+        if let Err(error) = values.check() {
+            result["error"] = json!(error);
+        }
+        if let Some(belt) = &values.belt_with {
+            let mate = self.pulley_values_of(belt.pulley)?;
+            match pulley::belt_drive(&values, &mate, belt.center_distance) {
+                Ok(drive) => {
+                    result["center_distance"] = json!(drive.center_distance);
+                    result["mate"] = json!(belt.pulley);
+                    result["belt_length"] = json!(drive.belt_length);
+                    result["wrap_angles"] = json!([drive.wrap.0, drive.wrap.1]);
+                    if let Some(teeth) = drive.belt_teeth {
+                        result["belt_teeth"] = json!(teeth);
+                    }
+                    if let Some(teeth) = drive.teeth_in_mesh {
+                        result["teeth_in_mesh"] = json!(teeth);
+                    }
+                    if let Some(length) = query
+                        .belt_lengths
+                        .as_deref()
+                        .and_then(|lengths| nearest_length(lengths, drive.belt_length))
+                    {
+                        result["catalogue_length"] = json!(length);
+                    }
+                }
+                Err(error) => result["error"] = json!(error),
+            }
+        }
+        Ok(result)
+    }
+}

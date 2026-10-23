@@ -126,6 +126,37 @@ impl<K: Kernel> Document<K> {
                         threads.extend(self.thread_json(&of, body.uid, &bore));
                     }
                 }
+                // A pulley's threaded bore and its set screws' tap drills,
+                // cosmetic (mitcad#562).
+                FeatureDef::Pulley(def) => {
+                    let mut faces: Vec<(ThreadSize, FaceName)> = Vec::new();
+                    if let Some(crate::features::gear::Bore::Thread { thread }) = &def.bore {
+                        faces.push((thread.clone(), FaceName::new(entry.uid, "bore", None)));
+                    }
+                    if let Some(screws) = &def.set_screws {
+                        let count = value(Some(screws.count)).unwrap_or(0.0).round() as u32;
+                        for k in 1..=count {
+                            faces.push((
+                                screws.thread.clone(),
+                                FaceName::new(entry.uid, "set_screw", Some(RoleKey::Index(k))),
+                            ));
+                        }
+                    }
+                    for (size, face) in faces {
+                        let of = ThreadOf {
+                            entry,
+                            size,
+                            modeled: false,
+                            part: None,
+                            chamfer: None,
+                            profile: (None, 0.0),
+                            on_input: false,
+                        };
+                        for body in self.bodies() {
+                            threads.extend(self.thread_json(&of, body.uid, &face));
+                        }
+                    }
+                }
                 _ => {}
             }
         }

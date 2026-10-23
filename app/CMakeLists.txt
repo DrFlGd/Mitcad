@@ -137,6 +137,8 @@ qt_add_executable(mitcad
   commands/EmbossCommands.cpp
   # Gear (mitcad#472).
   commands/GearCommands.cpp
+  # Pulley (mitcad#562).
+  commands/PulleyCommands.cpp
   # Equal spacing in sketches (mitcad#221).
   commands/EqualSpacingCommands.cpp
   # Surface modelling: the SURFACE group (mitcad#455).

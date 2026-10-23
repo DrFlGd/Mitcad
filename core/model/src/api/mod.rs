@@ -46,6 +46,8 @@ mod properties;
 mod reorient;
 // Mount frames of any part and placing a part by one (mitcad#525).
 mod mounts;
+// Timing belt pulleys (mitcad#562).
+mod pulleys;
 // Section Analysis worked out without the document, off the UI thread
 // (mitcad#438).
 pub use analysis::{PreparedClips, PreparedQuery};
@@ -597,6 +599,8 @@ enum Query {
     // Mount frames and placing a part by one (mitcad#525, `mounts.rs`).
     MountFrames(mounts::MountFramesQuery),
     MountPreview(Box<mounts::MountPreviewQuery>),
+    // Pulleys: derived values and belts (mitcad#562, `pulleys.rs`).
+    PulleyValues(pulleys::PulleyValuesQuery),
 }
 
 fn names(names: &[String]) -> Value {
@@ -1454,6 +1458,8 @@ impl<K: Kernel> Document<K> {
             // Mount frames (mitcad#525).
             Query::MountFrames(query) => self.mount_frames_json(&query)?,
             Query::MountPreview(query) => self.mount_preview_json(*query)?,
+            // Pulleys (mitcad#562).
+            Query::PulleyValues(query) => self.pulley_values_json(&query)?,
         };
         Ok(result.to_string())
     }

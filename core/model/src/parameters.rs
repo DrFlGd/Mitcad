@@ -413,6 +413,8 @@ pub fn slot_unit(slot: &str) -> Unit {
         // A gear's teeth and profile shift (mitcad#472).
         || field.ends_with("teeth")
         || field == "profile_shift"
+        // A pulley's set screws (mitcad#562).
+        || slot == "set_screws.count"
     {
         Unit::NONE
     } else {

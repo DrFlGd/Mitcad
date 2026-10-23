@@ -415,6 +415,7 @@ in menu order.
   Points, Mirror ([Patterns](#patterns))
 - Plastic Feature ([Plastic part features](#plastic-part-features))
 - Gear ([Gears](#gears))
+- Pulley ([Pulleys](#pulleys))
 
 **MODIFY:**
 
@@ -3129,6 +3130,70 @@ To let meshed gears turn together, do these steps:
 A gear exports as any body (STL, 3MF, STEP). The design keeps the
 definition of the gear. The model's definition is in
 [commands.md](../core/model/src/api/commands.md#gears).
+
+### Pulleys
+
+**Pulley** (SOLID tab, CREATE group, beside Gear) makes a timing belt
+pulley from the values you give. Its **Type** selects the pulley:
+
+- **Toothed:** a pulley with teeth for a timing belt.
+- **Idler:** a smooth wheel of a **Diameter**. The back of the belt runs
+  on it.
+- **Toothed Idler:** teeth on a bearing bore.
+
+The **Belt Profile** is GT2 2 mm, GT2 3 mm, HTD 3M, HTD 5M, T5 or XL.
+Mitcad makes the grooves of the profile from its published dimensions.
+The pitch diameter is the number of teeth times the pitch, divided by
+pi. The belt's pitch line runs on this diameter. The outside diameter
+is smaller by twice the pitch line offset of the profile. HTD 5M needs
+at least 12 teeth. The other profiles need at least 10 teeth.
+
+Every pulley has these values:
+
+| Value | Meaning |
+| --- | --- |
+| **Teeth** | The number of teeth (not for an idler) |
+| **Belt Width** | The width of the belt |
+| **Clearance** | Added to the belt width. The toothed part is this much wider than the belt (1 mm) |
+| **Pitch Correction** | Added to the diameter of the teeth. A negative value gives a looser fit of the belt |
+| **Flanges** | None, One or Both, with their **Flange Diameter** and **Flange Thickness**. One flange is on the side away from the hub. The flanges are larger than the outside diameter |
+
+The values of a pulley are parameters. You can type expressions, and
+you can change the values later in the parameters.
+
+A pulley can have a **Bore** and a **Hub**. The bore is plain, or it has
+an optional **Keyway** of DIN 6885 for its diameter, or it has a thread
+size. For a thread size, the bore is the tap drill of the thread, shown
+as a cosmetic thread. The bore goes through the whole pulley. The hub is
+on the side away from the plane. **Set Screws** are 1 to 4 tap drills
+through the hub, 90 degrees apart. Their **Set Screw Position** is the
+distance from the outer end of the hub. With 0, they are in the middle
+of the hub.
+
+The pulley starts on its **Plane** at **Center X** and **Center Y**,
+turned by its **Angle**. Its axis is the normal of the plane. The
+keyway and the first set screw are in the direction of the Angle.
+
+**Belt With** puts the pulley in position for one belt round two
+pulleys. Select a pulley: one of its faces, or the feature in the
+timeline. The new pulley then lies in the plane of that pulley, at the
+**Centre Distance**, in the **Direction** around the selected pulley.
+The two pulleys must have the same belt profile.
+
+The panel shows the results of the values:
+
+- The pitch diameter and the outside diameter
+- The length of the belt round the two pulleys, at its pitch line
+- The number of teeth of the belt
+- The nearest belt length from your **Catalogue Lengths**, if you type
+  them
+- The number of teeth in mesh on the smaller pulley.
+
+The result of a pulley keeps a mount frame `bore` on its axis, as a
+pulley from the library has. Joints can use this frame. Mitcad makes no
+belt body. A pulley exports as any body (STL, 3MF, STEP). The model's
+definition is in
+[commands.md](../core/model/src/api/commands.md#pulleys).
 
 ### Boundary Fill
 

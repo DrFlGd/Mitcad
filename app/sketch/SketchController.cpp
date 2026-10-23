@@ -26,6 +26,7 @@
 #include "../framework/Json.hpp"
 #include "../framework/ModelShapes.hpp"
 #include "../framework/Numbers.hpp"
+#include "../framework/ParameterField.hpp"
 #include "../framework/TestSync.hpp"
 #include "SketchOverlay.hpp"
 #include "SketchTool.hpp"
@@ -2098,11 +2099,21 @@ void SketchController::setFields(const QVector<FieldSpec>& fields) {
     auto* edit = new QLineEdit(&m_viewer);
     edit->setObjectName(QStringLiteral("sketchField_") + spec.id);
     edit->setStyleSheet(kFieldStyle);
-    edit->setFixedWidth(spec.kind == FieldSpec::Kind::Text ? 140 : 84);
+    edit->setFixedWidth(spec.kind == FieldSpec::Kind::Text ? 140 : 104); // with the fx button (mitcad#567)
     edit->setToolTip(tr("%1: type a value or an expression; Tab moves on, Enter accepts")
                          .arg(spec.label));
     edit->setPlaceholderText(spec.label);
     edit->installEventFilter(this);
+    if (spec.kind != FieldSpec::Kind::Text) {
+      // Parameter suggestions and the fx browser (mitcad#567).
+      ParameterFieldOptions suggest;
+      suggest.kind = spec.kind == FieldSpec::Kind::Angle   ? ParameterKind::Angle
+                     : spec.kind == FieldSpec::Kind::Count ? ParameterKind::Unitless
+                                                           : ParameterKind::Length;
+      suggest.sketch = m_uid;
+      suggest.label = QStringLiteral("sketch %1").arg(spec.id);
+      ParameterField::attach(edit, suggest);
+    }
     const int index = static_cast<int>(m_fields.size());
     connect(edit, &QLineEdit::textEdited, this, [this, index] { fieldEdited(index); });
     field.edit = edit;
@@ -2286,8 +2297,22 @@ void SketchController::openValueEditor(const QPointF& at, const QString& text, F
     // the name itself (mitcad#250).
     edit->setProperty("nativeInlineName", label->text());
   }
-  edit->setFixedWidth(width);
   edit->setToolTip(tr("A value or an expression, such as 20, 2 in or d1 * 2; name = value renames"));
+  if (kind != FieldSpec::Kind::Text) {
+    // Parameter suggestions, the fx browser, name = value and Create User
+    // Parameter (mitcad#567, mitcad#568).
+    ParameterFieldOptions suggest;
+    suggest.kind = kind == FieldSpec::Kind::Angle   ? ParameterKind::Angle
+                   : kind == FieldSpec::Kind::Count ? ParameterKind::Unitless
+                                                    : ParameterKind::Length;
+    suggest.own = name;
+    suggest.sketch = m_uid;
+    suggest.label = name.isEmpty() ? QStringLiteral("sketch dimension") : QStringLiteral("dimension %1").arg(name);
+    suggest.naming = true;
+    ParameterField::attach(edit, suggest);
+    width += 20; // the fx button
+  }
+  edit->setFixedWidth(width);
   const QSize size = edit->sizeHint();
   if (m_editorLabel) {
     m_editorLabel->setFixedHeight(size.height());

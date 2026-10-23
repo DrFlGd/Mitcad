@@ -16,6 +16,7 @@
 #include "render/FrameMemory.hpp"
 #include "render/RenderBatch.hpp"
 #include "render/RenderDevice.hpp"
+#include "framework/Diagnostics.hpp"
 
 namespace mitcad::render {
 
@@ -228,14 +229,28 @@ bool RenderClient::takeFrame(Frame& frame) {
   }
   frame.info = header->frames[slot];
   const std::size_t count = std::size_t(frame.info.width) * frame.info.height * 4;
+  QString detail;
+  if (timingLogged()) {
+    detail = QStringLiteral("view %1 samples %2 %3x%4 denoised %5 planes %6 bytes %7")
+                 .arg(frame.info.view).arg(frame.info.samples).arg(frame.info.width).arg(frame.info.height)
+                 .arg(frame.info.denoised).arg(frame.info.catcher != 0 ? 2 : 1)
+                 .arg(static_cast<qulonglong>(count * sizeof(std::uint16_t) * (frame.info.catcher != 0 ? 2 : 1)));
+  }
+  ScopedTiming allocation("render allocate");
   frame.pixels.resize(count);
-  std::memcpy(frame.pixels.data(), slotPixels(header, slot), count * sizeof(std::uint16_t));
   frame.catcher.clear();
   if (frame.info.catcher != 0) {
     frame.catcher.resize(count);
+  }
+  allocation.setDetail(detail);
+  allocation.finish();
+  ScopedTiming copy("render copy");
+  std::memcpy(frame.pixels.data(), slotPixels(header, slot), count * sizeof(std::uint16_t));
+  if (frame.info.catcher != 0) {
     std::memcpy(frame.catcher.data(), slotPixels(header, slot, 1), count * sizeof(std::uint16_t));
   }
   header->reading.store(kNoSlot);
+  copy.setDetail(detail);
   return frame.info.width > 0 && frame.info.height > 0;
 }
 

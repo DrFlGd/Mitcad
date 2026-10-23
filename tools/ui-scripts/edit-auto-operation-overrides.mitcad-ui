@@ -1,0 +1,40 @@
+# SPDX-License-Identifier: MIT
+wait-idle
+window-resize 1400 990
+command view.fit
+# Explicit Operation wins for the remainder of this edit.
+mark
+dblclick-logged '^Timeline Extrude1 at '
+expect-log 'Extrude: stored operation matches automatic choice; editing follows geometry'
+mark
+click-logged '^Panel Extrude input operation at '
+key Home Return
+expect-log 'Extrude: operation chosen by hand'
+mark
+focus-widget input_distance
+key ctrl+a
+type -15
+expect-log 'Preview Extrude: ok'
+expect-no-log 'Extrude: automatic Operation'
+focus-main
+key Escape
+expect-log 'Command Extrude cancelled'
+# The real Local bodies selector's adjacent clear button changes Objects.
+mark
+dblclick-logged '^Timeline Extrude1 at '
+expect-log 'Extrude: stored operation matches automatic choice; editing follows geometry'
+mark
+button '^✕$' clear_objects
+expect-log 'Extrude: operation chosen by hand'
+expect-log '^Extrude Local bodies: nothing$'
+mark
+focus-widget input_distance
+key ctrl+a
+type -15
+expect-log 'Preview Extrude: ok'
+expect-no-log 'Extrude: automatic Operation'
+focus-main
+key Escape
+expect-log 'Command Extrude cancelled'
+expect-model-bodies 2 27000
+expect-never 'The document was read while a job computes it|OCCT view event failed|Recompute failed'

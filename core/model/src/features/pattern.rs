@@ -55,12 +55,13 @@ use super::dressup_copies::{copied_features, is_dressup, repeat_dressup};
 use super::face_refs::UNSUPPORTED;
 use super::geom_ref::{GeomRef, PathChain, PathCurve, PathRef, Want, path_curve};
 use super::{
-    BodyChange, CheckContext, EvalContext, Evaluate, FeatureDef, FeatureInfo, FeatureOutput,
-    Operation, References, is_false,
+    BodyChange, CheckContext, EvalContext, Evaluate, FeatureDef, FeatureEntry, FeatureInfo,
+    FeatureOutput, Operation, References, ToolUse, is_false,
 };
 use crate::ids::{BodyUid, FeatureUid};
 use crate::kernel::{BooleanOp, BooleanOutput, BoundingBox, Kernel, KernelError};
 use crate::parameters::ParamId;
+use crate::recompute::Read;
 use crate::topo::FaceName;
 use crate::transform::{Instance, Transform, add, cross, dot, scaled, sub};
 
@@ -538,7 +539,7 @@ impl PatternObjects {
                         }
                         None => {}
                     }
-                    if entry.def.info().tool_use().is_none()
+                    if replay_tool_definition(entry)?.is_none()
                         && !is_dressup(&entry.def)
                         && !changes_sheet(&entry.def)
                         && !makes_sheets(&entry.def)
@@ -569,6 +570,69 @@ impl PatternObjects {
     pub(crate) fn creates_bodies(&self) -> bool {
         true
     }
+}
+
+/// Scoped cuts need document-aware target resolution, which the ordinary
+/// FeatureInfo::tool_use contract deliberately cannot provide (mitcad#569).
+fn replay_tool_definition(entry: &FeatureEntry) -> Result<Option<ToolUse>, String> {
+    if let FeatureDef::Extrude(extrude) = &entry.def
+        && let Some(scope) = extrude.active_cut_scope()
+    {
+        scope.check_local_replay()?;
+        return Ok(Some(ToolUse {
+            operation: Operation::Cut,
+            participants: Vec::new(),
+        }));
+    }
+    Ok(entry.def.info().tool_use())
+}
+
+fn replay_tool<K: Kernel>(
+    ctx: &mut EvalContext<'_, K>,
+    uid: FeatureUid,
+    set: Option<&BodySet<K::Shape>>,
+) -> Result<Option<ToolUse>, String> {
+    let entry = ctx.feature_entry(uid)?;
+    if matches!(&entry.def, FeatureDef::Extrude(extrude) if extrude.active_cut_scope().is_some()) {
+        // Read the source before classification can fail. An edit of its
+        // selection must invalidate a failed replay even when the local
+        // body's geometry is unchanged by that edit.
+        let output = ctx
+            .env
+            .history
+            .iter()
+            .find(|result| result.uid == uid)
+            .and_then(|result| result.output.as_ref());
+        ctx.reads
+            .push(Read::Output(uid, output.map(|output| output.version)));
+    }
+    let mut tool = replay_tool_definition(&entry)?;
+    if let FeatureDef::Extrude(extrude) = &entry.def
+        && let Some(scope) = extrude.active_cut_scope()
+        && let Some(tool) = &mut tool
+    {
+        tool.participants = scope.local_replay_bodies(ctx)?;
+        if let Some(set) = set {
+            // Each copy may split a selected body. Its new pieces remain
+            // targets of the component selection for subsequent copies.
+            tool.participants = set
+                .uids()
+                .into_iter()
+                .filter(|body| {
+                    !set.get(*body).is_some_and(|shape| ctx.is_mesh(shape))
+                        && !scope.excluded_bodies().iter().any(|excluded| {
+                            excluded.body == *body
+                                && excluded.component == scope.context.component
+                                && excluded.occurrence == scope.context.occurrence
+                        })
+                })
+                .collect();
+            if tool.participants.is_empty() {
+                return Err("no eligible local bodies selected for cut feature replay".to_owned());
+            }
+        }
+    }
+    Ok(tool)
 }
 
 pub(super) fn check_suppressed(suppressed: &[u32]) -> Result<(), String> {
@@ -826,7 +890,7 @@ fn originals<K: Kernel>(
     depth: usize,
 ) -> Result<Vec<Placed>, String> {
     let entry = ctx.feature_entry(uid)?;
-    if entry.def.info().tool_use().is_some()
+    if replay_tool(ctx, uid, None)?.is_some()
         || is_dressup(&entry.def)
         || changes_sheet(&entry.def)
         || makes_sheets(&entry.def)
@@ -1964,8 +2028,7 @@ impl Copying<'_> {
         set: &BodySet<K::Shape>,
         place: &Placed,
     ) -> Result<Option<Vec<BodyUid>>, String> {
-        let entry = ctx.feature_entry(place.feature)?;
-        let Some(tool_use) = entry.def.info().tool_use() else {
+        let Some(tool_use) = replay_tool(ctx, place.feature, Some(set))? else {
             return Ok(None);
         };
         if tool_use.operation != Operation::Cut {
@@ -2100,10 +2163,7 @@ impl Copying<'_> {
         if changes_sheet(&entry.def) {
             return repeat_sheet_change(ctx, set, place, elements);
         }
-        let tool_use = entry
-            .def
-            .info()
-            .tool_use()
+        let tool_use = replay_tool(ctx, *uid, Some(set))?
             .ok_or_else(|| format!("{} cannot be patterned or mirrored", entry.name))?;
         let stored = ctx.feature_tool(*uid)?;
         let participants = if self.original_bodies && tool_use.participants.is_empty() {

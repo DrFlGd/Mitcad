@@ -564,6 +564,13 @@ if(APPLE)
   qt_add_resources(mitcad macos_updater PREFIX /update BASE update FILES update/UpdaterMacos.sh)
 endif()
 
+# The parameter table's numbers on a shared decimal axis (mitcad#566).
+target_sources(mitcad PRIVATE
+  browser/DecimalAlign.cpp
+  browser/DecimalAlign.hpp
+  browser/DecimalAlignDelegate.cpp
+  browser/DecimalAlignDelegate.hpp)
+
 if(BUILD_TESTING)
   # Unit tests of the application's own helpers, on Qt's offscreen platform
   # (no window); Qt's DLLs are not next to the test on Windows.
@@ -656,6 +663,11 @@ if(BUILD_TESTING)
   # A renamed command's former id and saved shortcut (mitcad#503): the
   # registry with the command definitions it keeps.
   target_sources(test_app PRIVATE tests/command_alias.cpp framework/CommandRegistry.cpp framework/Command.cpp)
+  # The parameter table's numbers on a shared decimal axis (mitcad#566):
+  # the number split, the column layout and the delegate's placement; plain
+  # Qt Core and Widgets.
+  target_sources(test_app PRIVATE tests/decimal_align.cpp browser/DecimalAlign.cpp browser/DecimalAlign.hpp
+                 browser/DecimalAlignDelegate.cpp browser/DecimalAlignDelegate.hpp)
   target_link_libraries(test_app PRIVATE mitcad_geometry)
   target_include_directories(test_app PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
   target_link_libraries(test_app PRIVATE Qt6::Widgets Qt6::Svg mitcad_warnings)
@@ -1185,4 +1197,43 @@ if(BUILD_TESTING)
   # Which sketches, which only for the command, what each goes back to:
   # plain Qt Core.
   target_sources(test_app PRIVATE tests/command_sketches.cpp view/CommandSketches.hpp)
+endif()
+
+# Change Parameters while a sketch or a feature is being created or edited
+# (mitcad#564): SKETCH > MODIFY's entry, the parameter table's commands
+# through an open panel's session, the panel's title row button.
+target_sources(mitcad PRIVATE
+  MainWindowParameterEdits.cpp
+  framework/CommandPanelHeader.cpp
+  framework/CommandSessionParameters.cpp
+  framework/ParameterEdits.cpp
+  framework/ParameterEdits.hpp)
+if(BUILD_TESTING)
+  # What the table leaves to an open panel, which of its changes the panel
+  # follows, a rename in the panel's expressions: plain Qt Core.
+  target_sources(test_app PRIVATE tests/parameter_edits.cpp framework/ParameterEdits.cpp
+                 framework/ParameterEdits.hpp)
+endif()
+
+# Expression fields' parameter suggestions while typing, the fx browser,
+# name = value and Create User Parameter (mitcad#567, mitcad#568): feature
+# panels, sketch dimensions and tool values, the parameter table.
+target_sources(mitcad PRIVATE
+  framework/ParameterSuggest.cpp
+  framework/ParameterSuggest.hpp
+  framework/ParameterField.cpp
+  framework/ParameterField.hpp)
+if(BUILD_TESTING)
+  # The name at the caret, matching, insertion, refused choices, new names;
+  # the list's keys on a plain field: Qt Widgets on the offscreen platform.
+  target_sources(test_app PRIVATE tests/parameter_suggest.cpp
+                 framework/ParameterSuggest.cpp framework/ParameterSuggest.hpp
+                 framework/ParameterField.cpp framework/ParameterField.hpp)
+endif()
+
+# Immutable edit-operation policy and manual override of delayed replies
+# (mitcad#575): plain Qt Core, shared with the command session.
+target_sources(mitcad PRIVATE framework/AutoOperationPolicy.hpp)
+if(BUILD_TESTING)
+  target_sources(test_app PRIVATE tests/auto_operation_policy.cpp framework/AutoOperationPolicy.hpp)
 endif()

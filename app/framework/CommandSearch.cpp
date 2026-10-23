@@ -14,6 +14,7 @@
 #include <QtLogging>
 
 #include "CommandRegistry.hpp"
+#include "../platform/MacCommandSearch.hpp"
 
 namespace mitcad {
 namespace {
@@ -66,14 +67,19 @@ int score(const CommandDef& def, const QString& text) {
 CommandSearch::CommandSearch(CommandRegistry& registry, QWidget* parent)
     : QFrame(parent, Qt::Popup), m_registry(registry) {
   setObjectName(QStringLiteral("commandSearch"));
+  setAccessibleName(tr("Search Commands"));
   setFrameShape(QFrame::StyledPanel);
   auto* layout = new QVBoxLayout(this);
   layout->setContentsMargins(6, 6, 6, 6);
   m_edit = new QLineEdit;
+  m_edit->setObjectName(QStringLiteral("commandSearchInput"));
+  m_edit->setAccessibleName(tr("Search commands"));
   m_edit->setPlaceholderText(tr("Search commands"));
   m_edit->setClearButtonEnabled(true);
   m_edit->installEventFilter(this);
   m_list = new QTreeWidget;
+  m_list->setObjectName(QStringLiteral("commandSearchResults"));
+  m_list->setAccessibleName(tr("Commands"));
   m_list->setColumnCount(2);
   m_list->setHeaderHidden(true);
   m_list->setRootIsDecorated(false);
@@ -84,6 +90,7 @@ CommandSearch::CommandSearch(CommandRegistry& registry, QWidget* parent)
   layout->addWidget(m_edit);
   layout->addWidget(m_list);
   resize(360, 300);
+  mac::styleCommandSearch(this, m_edit, m_list, layout);
   connect(m_edit, &QLineEdit::textChanged, this, &CommandSearch::fill);
   connect(m_list, &QTreeWidget::itemActivated, this, &CommandSearch::choose);
   connect(m_list, &QTreeWidget::itemClicked, this, &CommandSearch::choose);
@@ -98,6 +105,12 @@ void CommandSearch::popup(const QPoint& globalCenter) {
   activateWindow();
   m_edit->setFocus();
   qDebug() << "Command search opened";
+}
+
+void CommandSearch::paintEvent(QPaintEvent* event) {
+  if (!mac::paintCommandSearch(this)) {
+    QFrame::paintEvent(event);
+  }
 }
 
 void CommandSearch::fill(const QString& rawText) {

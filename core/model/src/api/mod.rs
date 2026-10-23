@@ -387,6 +387,9 @@ enum PreviewCommand {
     EditFeature {
         uid: FeatureUid,
         def: FeatureDef<ValueInput>,
+        /// Suggest an extrusion operation from the bodies before the edit.
+        #[serde(default)]
+        auto_operation: bool,
     },
 }
 
@@ -1148,7 +1151,16 @@ impl<K: Kernel> Document<K> {
                     auto = choice;
                     report
                 }
-                PreviewCommand::EditFeature { uid, def } => self.preview_edit(uid, &def)?,
+                PreviewCommand::EditFeature {
+                    uid,
+                    def,
+                    auto_operation: false,
+                } => self.preview_edit(uid, &def)?,
+                PreviewCommand::EditFeature { uid, def, .. } => {
+                    let (report, choice) = self.preview_edit_auto(uid, &def)?;
+                    auto = choice;
+                    report
+                }
             }
         };
         let mut value = preview_json(&report);

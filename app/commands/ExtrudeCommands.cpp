@@ -59,6 +59,24 @@ bool hasProfileFace(const CommandState& state) {
   return profileFace(state.items(QStringLiteral("profiles"))) != nullptr;
 }
 
+void initializeCutScope(CommandState& state, const CommandContext& model) {
+  const QJsonObject components = model.queryObject({{QStringLiteral("query"), QStringLiteral("components")}});
+  QJsonValue component = state.object(QStringLiteral("cut_owner")).value(QStringLiteral("component"));
+  if (component.isUndefined()) {
+    component = components.value(QStringLiteral("active"));
+  }
+  state.setObject(QStringLiteral("cut_scope"),
+                  {{QStringLiteral("context"), QJsonObject{{QStringLiteral("component"), component},
+                                                            {QStringLiteral("occurrence"), QString()}}},
+                   {QStringLiteral("targets"), QJsonObject{{QStringLiteral("type"), QStringLiteral("automatic")},
+                                                            {QStringLiteral("excluded"), QJsonArray()},
+                                                            {QStringLiteral("excluded_bodies"), QJsonArray()}}}});
+  state.setChecked(QStringLiteral("cut_context_from_profile"), true);
+  const QJsonObject document = model.queryObject({{QStringLiteral("query"), QStringLiteral("document")}});
+  state.setObject(QStringLiteral("cut_view"),
+                  cutTargetVisibility(components, model.queryArray(QStringLiteral("bodies")), document));
+}
+
 // The profiles' middle and the way they go: a face's middle and outward
 // normal, or the sketch's normal.
 std::optional<std::pair<gp_Pnt, gp_Dir>> profileBase(const Selection& items, const CommandContext& context) {
@@ -192,6 +210,15 @@ CommandDef extrudeCommand(const CommandContext& context) {
   // Join where the tool touches a body, Cut where it goes into one, New
   // Body otherwise, until the user picks the operation (mitcad#289).
   def.autoOperation = true;
+  def.autoOperationApplied = [](CommandState& state, const CommandContext& model) {
+    if (state.choice(QStringLiteral("operation")) == QStringLiteral("cut") &&
+        !state.checked(QStringLiteral("cut_scope_legacy")) &&
+        !state.checked(QStringLiteral("cut_scope_chosen"))) {
+      // Automatic transitions use the same conversion-time visibility as a
+      // first deliberate Cut, without freezing a transient choice as saved.
+      initializeCutScope(state, model);
+    }
+  };
   const auto always = [](const CommandState&) { return true; };
   const auto thin = choiceIs(QStringLiteral("type"), QStringLiteral("thin"));
   const auto twoSides = choiceIs(QStringLiteral("direction"), kTwoSides);
@@ -278,13 +305,34 @@ CommandDef extrudeCommand(const CommandContext& context) {
                                ValueKind::Length, QStringLiteral("1 mm"))
                         .withVisible(thinTwo));
   auto operations = operationInputs();
+  operations[0].onChange = [](CommandState& state, const CommandContext& model) {
+    if (state.choice(QStringLiteral("operation")) == QStringLiteral("cut") &&
+        !state.checked(QStringLiteral("cut_scope_legacy"))) {
+      if (!state.checked(QStringLiteral("cut_scope_chosen")) ||
+          state.object(QStringLiteral("cut_scope")).isEmpty() ||
+          state.object(QStringLiteral("cut_scope")).value(QStringLiteral("initialize_on_cut")).toBool()) {
+        // Conversion is a new cutting operation: sample visibility now,
+        // never just because the feature's editor was opened.
+        initializeCutScope(state, model);
+      }
+      state.setChecked(QStringLiteral("cut_scope_chosen"), true);
+    }
+  };
   operations[1].label = QObject::tr("Local bodies");
   operations[1].tooltip = QObject::tr("Bodies in the feature's component. Older cuts retain this local scope.");
+  operations[1].onChange = [](CommandState& state, const CommandContext&) {
+    if (state.choice(QStringLiteral("operation")) != QStringLiteral("cut")) {
+      // Automatic Join participants are bookkeeping; a body selection by
+      // the user is a deliberate local target choice and must stay local.
+      state.setChecked(QStringLiteral("cut_scope_legacy"), !state.items(QStringLiteral("objects")).isEmpty());
+    }
+  };
   const auto originalVisible = operations[1].visible;
   // A face's extrusion cuts the bodies of its own component (mitcad#535).
   operations[1].visible = [originalVisible](const CommandState& state) {
     return originalVisible(state) && (state.choice(QStringLiteral("operation")) != QStringLiteral("cut") ||
-                                      state.object(QStringLiteral("cut_scope")).isEmpty() || hasProfileFace(state));
+                                      state.object(QStringLiteral("cut_scope")).isEmpty() ||
+                                      state.checked(QStringLiteral("cut_scope_legacy")) || hasProfileFace(state));
   };
   def.inputs += operations;
   InputDef targets;
@@ -293,7 +341,11 @@ CommandDef extrudeCommand(const CommandContext& context) {
   targets.label = QObject::tr("Affected components");
   targets.visible = [](const CommandState& state) {
     return state.choice(QStringLiteral("operation")) == QStringLiteral("cut") &&
-           !state.object(QStringLiteral("cut_scope")).isEmpty() && !hasProfileFace(state);
+           !state.object(QStringLiteral("cut_scope")).isEmpty() &&
+           !state.checked(QStringLiteral("cut_scope_legacy")) && !hasProfileFace(state);
+  };
+  targets.onChange = [](CommandState& state, const CommandContext&) {
+    state.setChecked(QStringLiteral("cut_scope_chosen"), true);
   };
   def.inputs.append(targets);
   // A face selected before the command goes to Profiles when it is planar
@@ -317,23 +369,15 @@ CommandDef extrudeCommand(const CommandContext& context) {
   };
   def.init = [](CommandState& state, const CommandContext& model) {
     newestProfile(state, model);
-    const QJsonObject components = model.queryObject({{QStringLiteral("query"), QStringLiteral("components")}});
-    state.setObject(QStringLiteral("cut_scope"),
-                    {{QStringLiteral("context"), QJsonObject{{QStringLiteral("component"), components.value(QStringLiteral("active"))},
-                                                              {QStringLiteral("occurrence"), QString()}}},
-                     {QStringLiteral("targets"), QJsonObject{{QStringLiteral("type"), QStringLiteral("automatic")},
-                                                              {QStringLiteral("excluded"), QJsonArray()},
-                                                              {QStringLiteral("excluded_bodies"), QJsonArray()}}}});
-    state.setChecked(QStringLiteral("cut_context_from_profile"), true);
     // What the view hides now (mitcad#475): targets hidden there start
     // unchecked when the previews find them. Editing a cut keeps its stored
     // scope (no snapshot there), and the model's discovery never depends on
     // the light bulbs.
-    const QJsonObject document = model.queryObject({{QStringLiteral("query"), QStringLiteral("document")}});
-    state.setObject(QStringLiteral("cut_view"),
-                    cutTargetVisibility(components, model.queryArray(QStringLiteral("bodies")), document));
+    initializeCutScope(state, model);
   };
   def.previewReported = [](QJsonObject& report, CommandState& state) {
+    // An automatic Cut preview alone chooses no lasting targets for a
+    // feature ultimately accepted as Join; deliberate choices do above.
     QJsonObject view = state.object(QStringLiteral("cut_view"));
     QJsonObject scope = state.object(QStringLiteral("cut_scope"));
     if (view.isEmpty() || scope.isEmpty() || state.choice(QStringLiteral("operation")) != QStringLiteral("cut") ||
@@ -530,7 +574,8 @@ CommandDef extrudeCommand(const CommandContext& context) {
     }
     addOperation(result.def, state);
     // A face's extrusion cuts the bodies of its own component (mitcad#535).
-    if (!wrapped && face == nullptr && state.choice(QStringLiteral("operation")) == QStringLiteral("cut") &&
+    const bool cutting = state.choice(QStringLiteral("operation")) == QStringLiteral("cut");
+    if (!wrapped && face == nullptr && !state.checked(QStringLiteral("cut_scope_legacy")) &&
         !state.object(QStringLiteral("cut_scope")).isEmpty()) {
       QJsonObject scope = state.object(QStringLiteral("cut_scope"));
       if (state.checked(QStringLiteral("cut_context_from_profile"))) {
@@ -538,7 +583,12 @@ CommandDef extrudeCommand(const CommandContext& context) {
         context.insert(QStringLiteral("occurrence"), picked.first().occurrence);
         scope.insert(QStringLiteral("context"), context);
       }
-      result.def.remove(QStringLiteral("participants"));
+      if (cutting) {
+        scope.remove(QStringLiteral("initialize_on_cut"));
+        result.def.remove(QStringLiteral("participants"));
+      } else if (!state.checked(QStringLiteral("cut_scope_chosen"))) {
+        scope.insert(QStringLiteral("initialize_on_cut"), true);
+      }
       result.def.insert(QStringLiteral("cut_scope"), scope);
     }
     return result;
@@ -604,6 +654,22 @@ CommandDef extrudeCommand(const CommandContext& context) {
     }
     loadOperation(feature, state);
     state.setObject(QStringLiteral("cut_scope"), feature.value(QStringLiteral("cut_scope")).toObject());
+    state.setObject(QStringLiteral("cut_view"), {});
+    state.setChecked(QStringLiteral("cut_scope_chosen"),
+                     !state.object(QStringLiteral("cut_scope")).isEmpty() &&
+                     !state.object(QStringLiteral("cut_scope")).value(QStringLiteral("initialize_on_cut")).toBool());
+    state.setChecked(QStringLiteral("cut_scope_legacy"),
+                     (state.choice(QStringLiteral("operation")) == QStringLiteral("cut") &&
+                      state.object(QStringLiteral("cut_scope")).isEmpty()) ||
+                     (state.object(QStringLiteral("cut_scope")).isEmpty() &&
+                      !state.items(QStringLiteral("objects")).isEmpty()));
+    if (feature.contains(QStringLiteral("uid"))) {
+      const QJsonObject stored = context.queryObject(
+          {{QStringLiteral("query"), QStringLiteral("feature")},
+           {QStringLiteral("uid"), feature.value(QStringLiteral("uid"))}});
+      state.setObject(QStringLiteral("cut_owner"),
+                      {{QStringLiteral("component"), stored.value(QStringLiteral("component")).toString(QStringLiteral("C0"))}});
+    }
     // The extrusion's own direction, kept for `build` (mitcad#543).
     QJsonObject kept;
     if (feature.contains(QStringLiteral("direction"))) {

@@ -742,6 +742,32 @@ bool moveDocument(int x, int y, QString& error) {
   return true;
 }
 
+QString documentState() {
+  NSWindow* window = documentWindow();
+  if (!window) return {};
+  if (window.miniaturized) return QStringLiteral("minimized");
+  return (window.styleMask & NSWindowStyleMaskFullScreen) ? QStringLiteral("fullscreen") : QStringLiteral("normal");
+}
+
+bool setDocumentState(const QString& state, QString& error) {
+  NSWindow* window = documentWindow();
+  if (!window || (state != QStringLiteral("normal") && state != QStringLiteral("minimized") &&
+                  state != QStringLiteral("fullscreen"))) {
+    error = QStringLiteral("window-state requires a document and normal|minimized|fullscreen");
+    return false;
+  }
+  if (state == documentState()) return true;
+  if (state == QStringLiteral("minimized")) {
+    [window miniaturize:nil];
+    return true;
+  }
+  if (window.miniaturized) [window deminiaturize:nil];
+  if ((state == QStringLiteral("fullscreen")) != bool(window.styleMask & NSWindowStyleMaskFullScreen)) {
+    [window toggleFullScreen:nil];
+  }
+  return true;
+}
+
 bool pinch(QOpenGLWidget* viewport, const QPointF& position, double magnification, QString& error) {
   NSWindow* window = documentWindow();
   if (!active() || !viewport || !std::isfinite(magnification)) {
@@ -1870,18 +1896,41 @@ void focusMain() {
 
 void requestKeyEventFocus() {
   keyEventWindow = nil;
-  if (!active()) return;
+  if (!active()) {
+    qInfo().noquote() << QStringLiteral("Native application key focus requested: %1").arg(keyEventFocusDiagnostic());
+    return;
+  }
   // Whole-event checks require actual AppKit activation, not just the Qt
   // state exercised by applicationDelegate(). Only activate our test app;
   // do not alter other applications or synthesize activation notifications.
   keyEventWindow = targetWindow();
   [NSApp activateIgnoringOtherApps:YES];
   [keyEventWindow makeKeyAndOrderFront:nil];
+  qInfo().noquote() << QStringLiteral("Native application key focus requested: %1").arg(keyEventFocusDiagnostic());
 }
 
 bool keyEventFocusReady() {
   return active() && keyEventWindow != nil && NSApp.active &&
          NSApp.keyWindow == keyEventWindow && targetWindow() == keyEventWindow;
+}
+
+QString keyEventFocusDiagnostic() {
+  const auto windowDetails = [](NSWindow* window) {
+    if (!window) return QStringLiteral("nil");
+    return QStringLiteral("%1#%2[id=%3 visible=%4 keyCapable=%5 minimized=%6 sheetParent=%7 responder=%8]")
+        .arg(qt(NSStringFromClass(window.class))).arg(qlonglong(window.windowNumber)).arg(qt(window.identifier))
+        .arg(bool(window.visible)).arg(bool(window.canBecomeKeyWindow)).arg(bool(window.miniaturized))
+        .arg(window.sheetParent ? qlonglong(window.sheetParent.windowNumber) : -1)
+        .arg(qt(NSStringFromClass(window.firstResponder.class)));
+  };
+  NSRunningApplication* front = NSWorkspace.sharedWorkspace.frontmostApplication;
+  NSWindow* document = documentWindow();
+  return QStringLiteral("native=%1 appActive=%2 qtState=%3 policy=%4 selfPid=%5 frontPid=%6 frontBundle=%7 "
+                        "requested=%8 key=%9 current=%10 document=%11 modal=%12 attachedSheet=%13")
+      .arg(active()).arg(bool(NSApp.active)).arg(int(qApp->applicationState())).arg(int(NSApp.activationPolicy))
+      .arg(qlonglong(getpid())).arg(front ? qlonglong(front.processIdentifier) : -1).arg(qt(front.bundleIdentifier))
+      .arg(windowDetails(keyEventWindow)).arg(windowDetails(NSApp.keyWindow)).arg(windowDetails(targetWindow()))
+      .arg(windowDetails(document)).arg(windowDetails(NSApp.modalWindow)).arg(windowDetails(document.attachedSheet));
 }
 
 namespace {

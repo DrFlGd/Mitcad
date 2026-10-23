@@ -1,0 +1,168 @@
+// SPDX-License-Identifier: MIT
+#pragma once
+
+#include <functional>
+#include <vector>
+
+#include <QJsonArray>
+#include <QJsonObject>
+#include <QObject>
+#include <QPointer>
+#include <QString>
+
+#include "ParameterSuggest.hpp"
+
+class QAction;
+class QEvent;
+class QLabel;
+class QLineEdit;
+class QPoint;
+class QTreeWidget;
+class QTreeWidgetItem;
+class QWidget;
+
+namespace mitcad {
+
+// What expression fields ask of the window whose design they edit
+// (mitcad#567, mitcad#568): its parameters now, and a new user parameter.
+// The main window gives one (setParameterSource); a field asks the one of
+// its window, or of the window its dialog belongs to, each time, so that
+// what it offers follows the design and the document shown.
+struct ParameterSource {
+  // The `parameters` query's answer; throws when the model cannot answer
+  // now (a job computes it).
+  std::function<QJsonArray()> parameters;
+  // Runs an `add_parameter` command as the parameter table does in the
+  // window's mode (its own undo step; outside an open panel's undo range);
+  // false with the model's reason in `error` when the model refuses it.
+  std::function<bool(const QJsonObject& command, QString* error)> addParameter;
+  // The document's length unit ("mm"), for a new length parameter.
+  std::function<QString()> lengthUnit;
+};
+
+void setParameterSource(QWidget* window, ParameterSource source);
+// The source of the window the widget is in, or of the window that window
+// belongs to; null when none has one.
+const ParameterSource* parameterSourceOf(const QWidget* widget);
+
+// What a field is, for its suggestions.
+struct ParameterFieldOptions {
+  ParameterKind kind = ParameterKind::Length;
+  bool anyKind = false; // a parameter table's expression: any kind
+  QString own;          // the field's own parameter, if it has one
+  QString sketch;       // the sketch the field is in
+  // What the field sets, for the log and Create User Parameter's editor
+  // ("Extrude distance", "sketch dimension").
+  QString label;
+  // The field takes `name = expression` for its own parameter
+  // (mitcad#231): the list offers it and says how (mitcad#568).
+  bool naming = false;
+  // The list offers Create User Parameter... (not where a dialog would end
+  // the editing, as in a table's cell).
+  bool create = true;
+};
+
+// The parameter suggestions of an expression field (mitcad#567): typing
+// part of a name lists the parameters that match it (user parameters
+// first, then the model's, each with its value in its unit and its
+// comment); the fx button in the field lists them all, to be searched by
+// name or comment by typing on. Up and Down move in the list, Enter or a
+// click puts the reference in place of the name typed (or at the cursor),
+// never the value, and does not confirm the command; Esc closes the list
+// and only the list. A choice the field cannot take (a parameter of
+// another kind as the whole expression, one that would make a cycle)
+// says why instead. With the list closed the field's keys are its own.
+//
+// The list also offers what mitcad#568 asks for: `name = …` names the
+// field's own parameter (a hint and an action that writes the form), and
+// Create User Parameter... makes an independent user parameter in a
+// small editor (its name prefilled with the name typed) and puts its
+// reference in. The field's right-click menu has the same actions.
+//
+// The list is a child of the field's window, takes no keyboard focus and
+// leaves the field's focus where it is (a table cell's editor stays open,
+// a panel's field is not committed). Logged for UI tests (app/COMMANDS.md).
+class ParameterField : public QObject {
+  Q_OBJECT
+
+public:
+  // Suggestions for the field, which owns them.
+  static ParameterField* attach(QLineEdit* edit, ParameterFieldOptions options);
+  // The suggestions of a field, if it has them.
+  static ParameterField* of(const QLineEdit* edit);
+  ~ParameterField() override;
+
+  void setOwnParameter(const QString& name);
+  void setLabel(const QString& label);
+  bool isOpen() const;
+  // The fx button: every parameter, to be searched.
+  void openBrowser();
+  void openCreateEditor();
+  void startNaming();
+  void close(const QString& why = QString());
+
+protected:
+  bool eventFilter(QObject* watched, QEvent* event) override;
+
+private:
+  enum class Mode { Closed, Typing, Browsing };
+
+  // The text, caret and selection a choice goes into.
+  struct Anchor {
+    QString text;
+    int caret = 0;
+    int selection = -1; // none
+    int selectionLength = 0;
+  };
+
+  ParameterField(QLineEdit* edit, ParameterFieldOptions options);
+
+  // The parameters as the window's design has them now (the last ones
+  // when it cannot answer).
+  void fetch();
+  void textEdited();
+  void caretMoved();
+  void open(Mode mode);
+  // Fills the list for the filter; false when there is nothing worth
+  // showing while typing (no match and nothing to offer, or exactly the
+  // one name typed).
+  bool fill();
+  void place();
+  void logPlaces();
+  void move(int step);
+  void activate(QTreeWidgetItem* item);
+  void showProblem(QTreeWidgetItem* item);
+  void insert(const QString& name, const QString& how, const Anchor& where);
+  void showMenu(const QPoint& at);
+  void updateIcon();
+  void logFx();
+  SuggestContext context() const;
+  // As the field is now while typing; as it was when the browser opened
+  // while it is open.
+  Anchor anchor() const;
+  // The name typed at the caret that no parameter has and that can name
+  // one, for Create User Parameter... and `name = …`; empty otherwise.
+  QString typedName(const Anchor& where) const;
+  // Whether the typed name is the field's leading word, before any `=`:
+  // what `name = …` would name.
+  bool leadingName(const Anchor& where) const;
+  QWidget* topWindow() const;
+
+  QLineEdit* m_edit;
+  ParameterFieldOptions m_options;
+  QAction* m_fx = nullptr;
+  QPointer<QWidget> m_popup;
+  QTreeWidget* m_list = nullptr;
+  QLabel* m_search = nullptr;
+  QLabel* m_footer = nullptr;
+  Mode m_mode = Mode::Closed;
+  QString m_filter;  // typing: the name before the caret; browsing: the search
+  Anchor m_anchor;   // where the browser opened
+  std::vector<SuggestedParameter> m_parameters;
+  bool m_inserting = false;
+  QString m_logged;
+  QString m_loggedPlaces;
+  QString m_loggedFx;
+};
+
+} // namespace mitcad

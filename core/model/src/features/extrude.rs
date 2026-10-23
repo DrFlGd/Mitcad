@@ -214,6 +214,7 @@ pub struct ExtrudeDef<P = ParamId> {
     /// The bodies a Join, Cut or Intersect works on; empty for all bodies.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub participants: Vec<BodyUid>,
+    /// Cut targets; retained as dormant editor choices for other operations.
     /// None preserves the legacy component-local participant behavior exactly.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cut_scope: Option<super::extrude_scope::CutScope>,
@@ -292,6 +293,13 @@ impl<P> Side<P> {
 impl<P> ExtrudeDef<P> {
     pub const TYPE: &'static str = "extrude";
     pub const BASE_NAME: &'static str = "Extrude";
+
+    /// Saved targets have no effect until the operation is Cut again.
+    pub(crate) fn active_cut_scope(&self) -> Option<&super::extrude_scope::CutScope> {
+        (self.operation == Operation::Cut)
+            .then_some(self.cut_scope.as_ref())
+            .flatten()
+    }
 
     pub fn map_params<Q, E>(
         &self,
@@ -611,7 +619,7 @@ impl FeatureInfo for ExtrudeDef {
         for object in self.objects() {
             object.add_references(&mut references);
         }
-        if let Some(scope) = &self.cut_scope {
+        if let Some(scope) = self.active_cut_scope() {
             scope.add_references(&mut references);
         }
         if let Some(face) = &self.wrap {
@@ -673,9 +681,9 @@ impl FeatureInfo for ExtrudeDef {
                 "extrusion",
             )?,
         }
-        if let Some(scope) = &self.cut_scope {
-            if self.operation != Operation::Cut || !self.participants.is_empty() {
-                return Err("cut_scope requires Cut with no legacy participant list".to_owned());
+        if let Some(scope) = self.active_cut_scope() {
+            if !self.participants.is_empty() {
+                return Err("cut_scope requires no legacy participant list".to_owned());
             }
             scope.check(ctx)?;
         }
@@ -792,7 +800,7 @@ impl FeatureInfo for ExtrudeDef {
 
     fn tool_use(&self) -> Option<ToolUse> {
         // A pattern must not silently replay an assembly cut only locally.
-        if self.cut_scope.is_some() {
+        if self.active_cut_scope().is_some() {
             return None;
         }
         Some(ToolUse {
@@ -863,8 +871,7 @@ impl<K: Kernel> Evaluate<K> for ExtrudeDef {
             return apply_operation(ctx, self.operation, participants, tool, "extrusion");
         }
         let discovery = self
-            .cut_scope
-            .as_ref()
+            .active_cut_scope()
             .map(|scope| scope.discover(ctx))
             .transpose()?;
         let through_all = matches!(
@@ -893,7 +900,7 @@ impl<K: Kernel> Evaluate<K> for ExtrudeDef {
             &Transform::IDENTITY,
             uid,
         )?;
-        match (&self.cut_scope, discovery) {
+        match (self.active_cut_scope(), discovery) {
             (Some(scope), Some(discovery)) => scope.apply(ctx, discovery, tool),
             _ => apply_operation(ctx, self.operation, participants, tool, "extrusion"),
         }
@@ -911,18 +918,25 @@ impl<K: Kernel> Evaluate<K> for ExtrudeDef {
         placement: &Transform,
     ) -> Option<Result<K::Shape, String>> {
         // A body face's extrusion goes distances only: its tool is moved.
-        if self.surface
-            || self.cut_scope.is_some()
-            || self.profile_face.is_some()
-            || !self.depends_on_bodies()
-        {
+        if self.surface || self.profile_face.is_some() || !self.depends_on_bodies() {
             return None;
         }
         let (sketch, regions) = match self.sketch_regions(ctx) {
             Ok(p) => p,
             Err(e) => return Some(Err(e)),
         };
-        let participants = if self.operation.makes_bodies() || self.participants.is_empty() {
+        let participants = if let Some(scope) = self.active_cut_scope() {
+            // Preserve Through All's assembly bounds, including excluded
+            // candidates, while replay applies the tool only to the checked
+            // local bodies. The pattern has already checked that boundary.
+            match scope
+                .discover(ctx)
+                .and_then(|discovery| discovery.in_source_frame(ctx))
+            {
+                Ok(bodies) => bodies,
+                Err(e) => return Some(Err(e)),
+            }
+        } else if self.operation.makes_bodies() || self.participants.is_empty() {
             match participant_bodies(ctx, self.operation, &self.participants) {
                 Ok(p) => p,
                 Err(e) => return Some(Err(e)),
@@ -1124,7 +1138,7 @@ impl ExtrudeDef {
                     })
                 }
                 SideView::ThroughAll => {
-                    let bodies = if participants.is_empty() && self.cut_scope.is_none() {
+                    let bodies = if participants.is_empty() && self.active_cut_scope().is_none() {
                         ctx.bodies()
                     } else {
                         participants.to_vec()

@@ -286,3 +286,6 @@ mod face_extrude_tests;
 pub use kernel::FaceRevolveSpec;
 #[cfg(test)]
 mod face_revolve_tests;
+// Local replay of modern scoped Extrude Cuts (mitcad#569).
+#[cfg(test)]
+mod scoped_cut_replay_tests;

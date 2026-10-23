@@ -57,9 +57,10 @@ ui_step "double-click Extrude2"            ui_double_click_logged "Timeline Extr
 ui_expect_new "Editing F4 with Extrude" "editing Extrude2"
 ui_expect_new "Extrude Wrap Onto: 1 face" "the face loaded"
 ui_step "flip"                             ui_click_logged "Panel Extrude input flip"
+# The stored Join was the automatic choice, so the edit follows the
+# geometry: flipped into the rod, it cuts (779aed86).
+ui_expect_new "Extrude: automatic Operation = Cut" "Cut chosen automatically"
 ui_expect_new "Preview Extrude: ok" "previewed"
-ui_step "Cut (one down from Join)"         ui_choose "Panel Extrude input operation" 1
-ui_expect_new "Extrude: Operation = Cut" "Cut chosen"
 ui_step "OK (Enter)"                       ui_key Return
 ui_expect_new "Edited F4" "Extrude2 edited"
 # Sunk to radius 9: 36 * 19 / 20 less than the rod.

@@ -402,7 +402,7 @@ public:
   // image's. The image is of the camera and size of the view when it is
   // set: once either changes, the view draws the bodies again before its
   // next frame (no image of an old camera over a moved view, mitcad#214).
-  void setRenderedImage(const QImage& image);
+  void setRenderedImage(const QImage& image, const QString& timingDetail = QString());
   void setRenderedMode(bool on);
   bool showsRenderedImage() const { return !m_renderedImage.isNull(); }
   // The camera the view draws with, for the renderer to follow.

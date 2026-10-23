@@ -5,10 +5,12 @@
 #include <cmath>
 #include <functional>
 #include <iterator>
+#include <optional>
 #include <utility>
 
 #include <QComboBox>
 #include <QDialogButtonBox>
+#include <QEvent>
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -26,8 +28,11 @@
 #include "../framework/Dialogs.hpp"
 #include "../framework/Icons.hpp"
 #include "../framework/Numbers.hpp"
+#include "../framework/ParameterField.hpp"
 #include "../framework/Theme.hpp"
+#include "../platform/MacParameters.hpp"
 #include "../platform/NativeDialogs.hpp"
+#include "DecimalAlignDelegate.hpp"
 #include "DocumentHost.hpp"
 
 namespace mitcad {
@@ -37,6 +42,9 @@ const QColor kRefusedText(0xb0, 0x00, 0x20);
 const QColor kRefusedFill(0xfb, 0xe3, 0xe3);
 constexpr int kNameRole = Qt::UserRole;     // the parameter's name (rows of parameters)
 constexpr int kKindRole = Qt::UserRole + 1; // user, model or reference
+// The open panel's own parameter (mitcad#564): its name and expression are
+// changed in the panel.
+constexpr int kHeldRole = Qt::UserRole + 64;
 
 QString refusedKey(const QString& name, int column) {
   return QStringLiteral("%1|%2").arg(name).arg(column);
@@ -58,6 +66,7 @@ QString withUnit(const QString& expression, const QString& unit) {
 class AddParameterDialog : public QDialog {
 public:
   AddParameterDialog(DocumentHost& host, QWidget* parent) : QDialog(parent), m_host(host) {
+    setObjectName(QStringLiteral("addParameterDialog"));
     setWindowTitle(tr("Add User Parameter"));
     auto* form = new QFormLayout(this);
     m_name = new QLineEdit;
@@ -71,6 +80,11 @@ public:
     m_expression = new QLineEdit;
     m_comment = new QLineEdit;
     m_error = new QLabel;
+    m_name->setObjectName(QStringLiteral("parameterName"));
+    m_unit->setObjectName(QStringLiteral("parameterUnit"));
+    m_expression->setObjectName(QStringLiteral("parameterExpression"));
+    m_comment->setObjectName(QStringLiteral("parameterComment"));
+    m_error->setObjectName(QStringLiteral("parameterError"));
     m_error->setWordWrap(true);
     setErrorStyleSheet(m_error);
     form->addRow(tr("Name"), m_name);
@@ -82,6 +96,7 @@ public:
     form->addRow(buttons);
     connect(buttons, &QDialogButtonBox::accepted, this, &AddParameterDialog::add);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
+    mac::styleParameterForm(this, form);
     m_name->setFocus();
   }
 
@@ -100,7 +115,7 @@ private:
     QString problem;
     if (name.isEmpty() || expression.isEmpty()) {
       problem = tr("Give a name and an expression.");
-    } else if (m_host.runModelCommand(command)) {
+    } else if (m_host.runParameterCommand(command)) {
       qDebug().noquote() << QStringLiteral("Added parameter %1 = %2%3")
                                 .arg(name, expression,
                                      unit.isEmpty() ? QString() : QStringLiteral(" (%1)").arg(unit));
@@ -144,6 +159,7 @@ private:
 
 ParametersDialog::ParametersDialog(DocumentHost& host, QWidget* parent)
     : QDialog(parent), m_host(host) {
+  setObjectName(QStringLiteral("parametersDialog"));
   setWindowTitle(tr("Parameters"));
   setWindowIcon(themeIcon(QStringLiteral("parameters")));
   resize(760, 440);
@@ -155,6 +171,10 @@ ParametersDialog::ParametersDialog(DocumentHost& host, QWidget* parent)
   m_delete = new QPushButton(themeIcon(QStringLiteral("delete")), tr("Delete"));
   m_delete->setToolTip(tr("Delete the selected user parameter (when nothing uses it)"));
   m_filter = new QLineEdit;
+  m_add->setObjectName(QStringLiteral("parametersAdd"));
+  m_delete->setObjectName(QStringLiteral("parametersDelete"));
+  m_filter->setObjectName(QStringLiteral("parametersFilter"));
+  m_filter->setAccessibleName(tr("Search parameters"));
   m_filter->setPlaceholderText(tr("Search"));
   m_filter->setClearButtonEnabled(true);
   top->addWidget(m_add);
@@ -164,6 +184,7 @@ ParametersDialog::ParametersDialog(DocumentHost& host, QWidget* parent)
   layout->addLayout(top);
 
   m_table = new ParameterTable([this](QTreeWidgetItem* item, int column) { edit(item, column); });
+  m_table->setObjectName(QStringLiteral("parametersTable"));
   m_table->setColumnCount(6);
   m_table->setHeaderLabels({tr("Name"), tr("Unit"), tr("Expression"), tr("Value"), tr("Comment"), QStringLiteral("★")});
   m_table->headerItem()->setToolTip(kFavorite, tr("Favorites: listed first"));
@@ -175,12 +196,17 @@ ParametersDialog::ParametersDialog(DocumentHost& host, QWidget* parent)
   m_table->header()->resizeSection(kName, 170);
   m_table->header()->resizeSection(kUnit, 60);
   m_table->header()->resizeSection(kExpression, 190);
-  m_table->header()->resizeSection(kValue, 110);
+  m_table->header()->resizeSection(kValue, 130); // room for an aligned number with its unit (mitcad#566)
   m_table->header()->setSectionResizeMode(kComment, QHeaderView::Stretch);
   m_table->header()->resizeSection(kFavorite, 32);
+  // The numbers of Expression and Value on one decimal axis each (mitcad#566).
+  m_align = new DecimalAlignDelegate(m_table, {kExpression, kValue});
+  m_table->setItemDelegateForColumn(kExpression, m_align);
+  m_table->setItemDelegateForColumn(kValue, m_align);
   layout->addWidget(m_table, 1);
 
   m_message = new QLabel;
+  m_message->setObjectName(QStringLiteral("parametersMessage"));
   m_message->setWordWrap(true);
   setErrorStyleSheet(m_message);
   layout->addWidget(m_message);
@@ -188,11 +214,13 @@ ParametersDialog::ParametersDialog(DocumentHost& host, QWidget* parent)
   auto* buttons = new QHBoxLayout;
   buttons->addStretch(1);
   m_ok = new QPushButton(tr("OK"));
+  m_ok->setObjectName(QStringLiteral("parametersOK"));
   m_ok->setAutoDefault(false);
   m_add->setAutoDefault(false);
   m_delete->setAutoDefault(false);
   buttons->addWidget(m_ok);
   layout->addLayout(buttons);
+  mac::styleParametersDialog(this, m_table, m_filter, m_add, m_delete, m_ok);
 
   connect(m_ok, &QPushButton::clicked, this, &QDialog::accept);
   connect(m_add, &QPushButton::clicked, this, &ParametersDialog::addParameter);
@@ -237,15 +265,26 @@ QTreeWidgetItem* ParametersDialog::addRow(QTreeWidgetItem* parent, const QJsonOb
     const auto refused = m_refused.constFind(refusedKey(name, column));
     if (refused != m_refused.cend()) {
       row->setText(column, refused.value().first);
-      row->setForeground(column, kRefusedText);
-      row->setBackground(column, kRefusedFill);
+      if (!mac::styleRefusedParameter(row, column)) {
+        row->setForeground(column, kRefusedText);
+        row->setBackground(column, kRefusedFill);
+      }
       row->setToolTip(column, refused.value().second);
+    }
+  }
+  if (m_scope.holds(parameter)) {
+    // The open panel's own value (mitcad#564).
+    row->setData(kName, kHeldRole, true);
+    for (const int column : {kName, kExpression}) {
+      row->setData(column, NativeEditableRole, false);
+      row->setToolTip(column, m_scope.holdReason(name));
     }
   }
   return row;
 }
 
 void ParametersDialog::refresh() {
+  updateScope(); // what is edited now (mitcad#564)
   QString current;
   if (QTreeWidgetItem* item = m_table->currentItem()) {
     current = item->data(kName, kNameRole).toString();
@@ -325,6 +364,7 @@ void ParametersDialog::refresh() {
     group->setFirstColumnSpanned(true);
   }
   m_building = false;
+  m_align->invalidate();
   applyFilter();
   updateButtons();
   const QString logged = rows.join(QStringLiteral("; "));
@@ -346,6 +386,14 @@ void ParametersDialog::edit(QTreeWidgetItem* item, int column) {
       column == kFavorite) {
     return;
   }
+  if ((column == kName || column == kExpression) && item->data(kName, kHeldRole).toBool()) {
+    // The open panel's own value (mitcad#564).
+    const QString name = item->data(kName, kNameRole).toString();
+    m_message->setText(m_scope.holdReason(name));
+    qDebug().noquote() << QStringLiteral("Parameter %1 is held by the open panel of %2")
+                              .arg(name, m_scope.editedName.isEmpty() ? m_scope.editedFeature : m_scope.editedName);
+    return;
+  }
   // A model parameter's unit is its feature's.
   if (column == kUnit && item->data(kName, kKindRole).toString() != QStringLiteral("user")) {
     return;
@@ -355,6 +403,18 @@ void ParametersDialog::edit(QTreeWidgetItem* item, int column) {
     return;
   }
   m_table->editItem(item, column);
+  if (column == kExpression) {
+    // Parameter suggestions and the fx browser in the expression's editor
+    // (mitcad#567); no dialog from it, which would end the cell's editing.
+    if (auto* editor = qobject_cast<QLineEdit*>(m_table->itemWidget(item, column))) {
+      ParameterFieldOptions suggest;
+      suggest.kind = kindOfUnit(item->text(kUnit));
+      suggest.own = item->data(kName, kNameRole).toString();
+      suggest.label = QStringLiteral("%1 expression").arg(suggest.own);
+      suggest.create = false;
+      ParameterField::attach(editor, suggest);
+    }
+  }
   qDebug().noquote() << QStringLiteral("Editing parameter %1 %2")
                             .arg(item->data(kName, kNameRole).toString(),
                                  m_table->headerItem()->text(column).toLower());
@@ -405,7 +465,7 @@ void ParametersDialog::cellEdited(QTreeWidgetItem* item, int column) {
   QTimer::singleShot(0, this, [this, name, column, text, what, command] {
     const CommandContext& model = m_host.model();
     // The window logs what the change did to the bodies.
-    if (m_host.runModelCommand(command)) {
+    if (m_host.runParameterCommand(command)) {
       m_refused.remove(refusedKey(name, column));
       m_message->clear();
       QString value;
@@ -447,8 +507,8 @@ void ParametersDialog::deleteParameter() {
     return;
   }
   const QString name = item->data(kName, kNameRole).toString();
-  if (m_host.runModelCommand({{QStringLiteral("cmd"), QStringLiteral("delete_parameter")},
-                              {QStringLiteral("name"), name}})) {
+  if (m_host.runParameterCommand({{QStringLiteral("cmd"), QStringLiteral("delete_parameter")},
+                                  {QStringLiteral("name"), name}})) {
     m_message->clear();
     qDebug().noquote() << QStringLiteral("Deleted parameter %1").arg(name);
   } else {
@@ -507,6 +567,31 @@ void ParametersDialog::logLayout() {
                         at(m_table->viewport(), point));
     }
   }
+  // Where each aligned number's decimal separator and unit are (mitcad#566);
+  // a text that is no number, or a column too narrow for its numbers, has none.
+  for (QTreeWidgetItemIterator it(m_table); *it != nullptr; ++it) {
+    QTreeWidgetItem* item = *it;
+    const QString name = item->data(kName, kNameRole).toString();
+    if (name.isEmpty() || item->isHidden()) {
+      continue;
+    }
+    const QRect rect = m_table->visualItemRect(item);
+    for (const int column : {kExpression, kValue}) {
+      const int left = m_table->header()->sectionViewportPosition(column);
+      const std::optional<DecimalAlignDelegate::Placement> place = m_align->placement(
+          item->text(column), column, m_table->font(), m_table->header()->sectionSize(column));
+      if (!place) {
+        continue;
+      }
+      const QString what = m_table->headerItem()->text(column).toLower();
+      lines << QStringLiteral("Parameters %1 %2 decimal at %3")
+                   .arg(name, what, at(m_table->viewport(), QPoint(left + place->axisX, rect.center().y())));
+      if (place->unitX >= 0) {
+        lines << QStringLiteral("Parameters %1 %2 unit at %3")
+                     .arg(name, what, at(m_table->viewport(), QPoint(left + place->unitX, rect.center().y())));
+      }
+    }
+  }
   lines << QStringLiteral("Parameters add at %1").arg(at(m_add, m_add->rect().center()));
   lines << QStringLiteral("Parameters delete at %1").arg(at(m_delete, m_delete->rect().center()));
   lines << QStringLiteral("Parameters OK at %1").arg(at(m_ok, m_ok->rect().center()));
@@ -517,6 +602,41 @@ void ParametersDialog::logLayout() {
       qDebug().noquote() << line;
     }
   }
+}
+
+// While a sketch or a feature is edited (mitcad#564).
+void ParametersDialog::updateScope() {
+  m_scope = m_host.parameterScope();
+  if (m_scopeNote == nullptr) {
+    // Above the rows, below the buttons and the search.
+    m_scopeNote = new QLabel(this);
+    m_scopeNote->setObjectName(QStringLiteral("parametersScope"));
+    m_scopeNote->setWordWrap(true);
+    if (auto* box = qobject_cast<QVBoxLayout*>(layout())) {
+      box->insertWidget(1, m_scopeNote);
+    }
+  }
+  const QString note = m_scope.note();
+  m_scopeNote->setText(note);
+  m_scopeNote->setVisible(!note.isEmpty());
+  const QString logged = QStringLiteral("Parameters during %1").arg(m_scope.describe());
+  if (isVisible() && logged != m_loggedScope) {
+    m_loggedScope = logged;
+    qDebug().noquote() << logged;
+  }
+}
+
+bool ParametersDialog::event(QEvent* event) {
+  // Activated in another edit than the one it shows (a panel opened or
+  // closed meanwhile): the open panel's own parameters change (a cell
+  // editor left open goes with the rows).
+  if (event->type() == QEvent::WindowActivate && m_host.parameterScope() != m_scope) {
+    refresh();
+  }
+  if (event->type() == QEvent::Hide) {
+    m_loggedScope.clear(); // told again when it opens again
+  }
+  return QDialog::event(event);
 }
 
 } // namespace mitcad

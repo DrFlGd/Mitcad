@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: MIT
+wait-idle
+window-resize 1400 990
+command view.fit
+expect-model-bodies 2 8640
+mark
+dblclick-logged '^Timeline Extrude1 at '
+expect-log 'Editing F4 with Extrude'
+expect-no-log 'Extrude: hidden targets start unchecked'
+click-logged '^Panel Extrude input operation at '
+key Home Down Down Return
+expect-log 'Cut target C0@: eligible, checked, intersects'
+expect-log 'Cut target C1@O1: eligible, unchecked, intersects'
+expect-no-log 'Extrude: hidden targets start unchecked'
+expect-shown-body F1.b0 - 3840
+screenshot '${MITCAD_TEST_WORK}/cut-conversion-${MITCAD_CONVERSION_START_LABEL}.png'
+button '^OK$'
+expect-log 'Edited F4' 30
+expect-model-bodies 2 7840
+menu 'File/Save'
+expect-log 'Saved .*cut-conversion\.mitcad'
+expect-never 'The document was read while a job computes it|OCCT view event failed'

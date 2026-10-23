@@ -376,8 +376,14 @@ fn rewrite_references(
     let mut updates = Vec::new();
     let mut blockers = Vec::new();
     for (i, entry) in state.features.iter().enumerate() {
+        // Dormant cut choices are editor metadata, not active occurrence
+        // references, but their saved paths must follow an assembly move.
+        let saved_cut_path = matches!(&entry.def, FeatureDef::Extrude(extrude)
+            if extrude.cut_scope.as_ref().is_some_and(|scope|
+                scope.paths().iter().any(|path| path.0.contains(&o))));
         // The placing features go with it ([`Carry`]).
-        if carriers.contains(&i) || !crate::joints::referenced_occurrences(&entry.def).contains(&o)
+        if carriers.contains(&i)
+            || (!saved_cut_path && !crate::joints::referenced_occurrences(&entry.def).contains(&o))
         {
             continue;
         }

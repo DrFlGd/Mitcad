@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: MIT
+# Existing local Cuts and explicit participants keep local target controls.
+wait-idle
+window-resize 1400 990
+command view.fit
+mark
+dblclick-logged '^Timeline Extrude1 at '
+expect-log 'Editing F4 with Extrude'
+expect-no-log 'Cut target C1@O1:'
+expect-no-log 'Extrude: hidden targets start unchecked'
+click-logged '^Panel Extrude input operation at '
+key Home Down Return
+click-logged '^Panel Extrude input operation at '
+key Home Down Down Return
+expect-no-log 'Cut target C1@O1:'
+expect-no-log 'Extrude: hidden targets start unchecked'
+expect-shown-body F1.b0 - 3840
+expect-shown-body F2.b0 O1 4000
+button '^OK$'
+expect-log 'Edited F4' 30
+expect-model-bodies 2 7840

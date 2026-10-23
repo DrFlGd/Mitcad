@@ -1697,6 +1697,31 @@ unit. The refused change stays in the cell in red with the reason.
 When you rename a parameter, Mitcad updates the expressions that use
 it.
 
+**Change Parameters while you edit.** You do not have to finish a
+sketch or close a feature panel to change the parameters. In a sketch,
+open **Change Parameters** from SKETCH > MODIFY or from the command
+search. The sketch stays open, and its dimensions and geometry follow
+each change at once. Undo in the sketch takes a change back. In a
+feature panel, click the **Change Parameters** button at the right of
+the panel title, or use the command search. The panel stays open
+with your values, expressions and selections. Mitcad calculates the
+values in the panel and the preview again after each change. If you
+rename a parameter, the expressions in the panel use the new name. A
+change stays when you cancel the panel. When you click OK in the panel,
+the change and the feature are two separate undo steps. You cannot
+change the name or the expression of a value of the feature that you
+edit in the parameter table. Change it in the panel. Click OK in the
+parameter table to go back to the sketch or the panel.
+
+**Aligned numbers.** In the **Expression** and **Value** columns, the
+decimal separators of the numbers are on one vertical line. A whole
+number such as `3 mm` has its separator after the last digit. The units
+are in a column of their own, so a unit of another length does not move
+the numbers. A formula such as `d1 * 2` stays a text. Mitcad does not
+change the value or the expression for this: when you edit a cell, you
+see and change the whole text. If a column is too narrow for its
+numbers, make it wider.
+
 **Expressions with units.** A value field takes an expression with
 units, for example `20`, `2 in` or `d1 * 2`. The value or an error
 shows below the field. An expression can use the parameters of the
@@ -1739,6 +1764,36 @@ for example `depth = 12 mm`. A label is where the handle of its feature
 would be. The values of the sets of a fillet or a chamfer are on the
 faces that they made. A click on a label inserts the name of the label
 at the cursor of the field.
+
+**Parameter suggestions.** When you type part of a parameter name into
+a value field, a list shows the parameters that match. This applies to
+feature panels, sketch dimensions, the value fields of sketch tools and
+the expression cells of Change Parameters. The list shows the user
+parameters first, then the model parameters. Each row shows the name,
+the value with its unit and the comment. Use Up and Down to move in the
+list. Enter or a click puts the name into the field in place of what you
+typed. The rest of the expression stays. Enter in the list does not
+click OK. Esc closes only the list. If the field cannot use a
+parameter, for example an angle as a length, the row is dimmed and the
+list tells you why.
+
+**The fx button.** Click **fx** at the right of a value field to see all
+the parameters, also when the field is empty. Type to search the names
+and the comments. The text in the field does not change until you choose
+a parameter.
+
+**Name a value or make a parameter.** Type `name = value` to give the
+field's own parameter a name, for example `width = 30 mm`. When you type
+a name that no parameter has, the list offers this form. The list also
+offers **Create User Parameter**. It makes a new user parameter that is
+independent of the field's own parameter. Give its value or expression
+and its unit. Mitcad refuses a name that exists already, an invalid
+name, a wrong unit or an expression that the model refuses. The editor
+then stays open with the reason. When the parameter is made, Mitcad puts
+its name into the field where you typed it. The new parameter is in
+Change Parameters and in the lists at once. In a sketch, Undo takes it
+back. In a feature panel it stays when you cancel the panel. The
+right-click menu of a value field has the same actions.
 
 ## Appearances and rendering
 

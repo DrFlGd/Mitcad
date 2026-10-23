@@ -1,0 +1,9 @@
+[
+  {"comment":"SPDX-License-Identifier: MIT. Reopening keeps the modern scope, original body identity, and reflected cut."},
+  {"expect":{"feature":"F3","status":"ok"}},
+  {"expect":{"feature":"F4","status":"ok","bodies":1,"body":"F1.b0","volume":49057.52220392307,"has_face":"F4:inst1(F3:side(c1))"}},
+  {"cmd":"set_parameter","name":"d5","value":8},
+  {"expect":{"feature":"F4","status":"ok","body":"F1.b0","volume":48743.36293856408}},
+  {"cmd":"undo"},
+  {"expect":{"feature":"F4","status":"ok","body":"F1.b0","volume":49057.52220392307}}
+]

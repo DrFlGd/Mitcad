@@ -114,6 +114,116 @@ alone do not establish AppKit keyboard focus (mitcad#559). This scoped run
 does not complete the full keyboard matrix. Outstanding manual scenarios
 remain in [the macOS checklist](macos-trackpad-checklist.md).
 
+## Viewport anti-aliasing measurements
+
+The normal shaded viewport retains four MSAA samples on every backing
+scale. `MITCAD_VIEWPORT_AA=msaa4|msaa2|off|ray-aa` is an opt-in diagnostic
+override, shared by the Qt and native frontends. It changes neither the
+rendered view's resolution nor the user's saved settings. Invalid values
+warn and retain four samples. No scale-dependent or navigation-dependent
+policy is selected without physical-display measurements (mitcad#552).
+
+`MITCAD_LOG_TIMING=1` reports the GL renderer/version, screen refresh rate,
+logical and backing dimensions, backing scale, `GL_MAX_SAMPLES` and the
+configured OCCT sample count. Each `Timing frame` line also includes its
+current backing dimensions and scale, including after a display move.
+The configured sample count is a request: the driver or OCCT may reduce it;
+`GL_MAX_SAMPLES` alone does not prove the internal framebuffer's allocation.
+
+`Timing frame` measures CPU time inside `paintGL`, including any driver
+waits. `Timing frame swap` is the interval between Qt's `frameSwapped`
+signals, after composition; it includes input scheduling and is not a GPU
+timestamp or a measurement of physical scanout. Optional
+`MITCAD_VIEWPORT_SYNC=1` finishes this context's GL work before ending the
+paint timer, adding GPU completion waits while excluding Qt composition
+and presentation. That diagnostic fence changes pipelining; keep fenced
+and unfenced results separate and retain the normal unfenced comparison.
+
+Run the bounded synthetic dome and pointer navigation harness serially on
+the physical Mac, using the application's companion CLI:
+
+```sh
+bash tools/measure-viewport-aa-macos.sh "$APP" "$CLI" "$OUT/aa-submit"
+MITCAD_VIEWPORT_SYNC=1 bash tools/measure-viewport-aa-macos.sh "$APP" "$CLI" "$OUT/aa-sync"
+```
+
+The harness starts fresh isolated settings for each mode, fixes the window
+at 1280 × 820 logical pixels, fits the same synthetic dome, warms up with
+30 pointer moves and measures 60 further moves on the same circular orbit.
+The in-process driver sends real viewer pointer events without external
+input permissions. It checks that all 90 moves ran, that the camera changed
+during the orbit and that the release cleared held buttons. Results include
+raw logs, frame/swap samples, median and maximum milliseconds, resting
+screenshots, and OS/display metadata. Review the images for line quality
+and frame sample counts before interpreting a comparison. Keep identifying
+display metadata outside published reports.
+
+The fourth `ray-aa` mode explicitly tests the issue's suggested
+`IsAntialiasingEnabled` flag with MSAA disabled. In the pinned OCCT 8.0.1
+source that flag controls adaptive FSAA in `OpenGl_View_Raytrace.cxx`;
+it does not enable FXAA for this raster shaded viewport. Its result must
+be described as a ray-tracer flag control, not evidence for raster FXAA.
+Implementing a separate raster postprocess is outside this measurement.
+
+A genuine 1× comparison requires verifying the actual display's backing
+scale using its display mode and runtime log. The harness rejects Qt scale
+overrides: software scaling does not establish a physical 1× display.
+When only 2× hardware is available, record that limitation and leave the
+1× acceptance item open.
+
+### Physical 2× result, 2026-10-23
+
+The synthetic fixture was the fully revolved dome shell with 4.45 and
+4.55 m radii from `tools/ui-fixtures/viewport-dome.json`, with the half-dome
+feature suppressed. The controlled comparison ran on a physical Apple M1 Max
+(32 GPU cores), macOS 27.0.1 build 26A434, with OpenGL reporting
+`4.1 Metal - 91.7`. The built-in display reported 120 Hz and a 2× backing
+scale. After the harness resize, the measured viewport was 2560 × 1380
+backing pixels; its initial environment line reported 2560 × 1340 before
+that resize. `GL_MAX_SAMPLES` was four. Each mode completed all 30 warmup
+and 60 measured pointer moves, with 60 measured paint and swap samples.
+
+Unfenced results, in milliseconds (median / maximum):
+
+| Configured mode | Paint | Qt frame-swap interval |
+| --- | ---: | ---: |
+| MSAA 4 | 1.37 / 4.44 | 19.73 / 28.39 |
+| MSAA 2 | 1.25 / 4.15 | 19.55 / 30.16 |
+| MSAA off | 0.80 / 3.26 | 20.24 / 32.47 |
+| Ray-tracer AA flag, MSAA off | 2.12 / 3.44 | 19.69 / 32.18 |
+
+The input driver paced these swap intervals; they do not establish
+sustained 120 Hz navigation. The ray-tracer flag control also varied from
+the equivalent raster MSAA-off configuration, so differences between these
+single runs must not be treated as a repeatability estimate.
+
+The separate diagnostic run with `MITCAD_VIEWPORT_SYNC=1` also completed
+all 60 measured paint and swap samples per mode. GPU-completion-inclusive
+paint durations and Qt swap intervals, in milliseconds (median / maximum):
+
+| Configured mode | Paint with GL completion wait | Qt frame-swap interval |
+| --- | ---: | ---: |
+| MSAA 4 | 4.43 / 6.42 | 19.66 / 30.87 |
+| MSAA 2 | 3.05 / 6.52 | 19.52 / 30.98 |
+| MSAA off | 2.87 / 7.32 | 19.32 / 32.92 |
+| Ray-tracer AA flag, MSAA off | 2.59 / 4.44 | 19.16 / 31.23 |
+
+Retain MSAA 4. MSAA 2 reduced median completion-inclusive paint duration
+by 1.38 ms (31%) in this bounded workload, but its maximum did not improve
+and the input-paced swap intervals showed no established cadence gain.
+MSAA 4's largest completion-inclusive paint duration was below the
+display's nominal 8.33 ms period in this run; that excludes Qt composition
+and is not evidence of sustained 120 Hz output or a guarantee for other
+designs. These results do not justify lowering resting line quality or
+adding a navigation-dependent policy.
+
+No actual 1× display/mode was available. The corresponding comparison and
+the issue's complete measurement acceptance remain open; no Qt scale
+override was used as a substitute. Raster FXAA is unavailable through the
+suggested OCCT flag, as described above. Moving between physical 1× and 2×
+displays remains a hardware validation gap, with the existing four-sample
+policy unchanged at either scale.
+
 ## Validation
 
 `app.ui-macos-native` starts and cancels Offset Plane through its familiar
@@ -317,27 +427,124 @@ The context-menu regression also passed against the signed Release app
 included in the DMG.
 Windows and Linux tests were not run on this machine, per user request.
 
-The VM can validate software OpenGL and native control behavior. Before
-release, verify these on supported physical Macs and the oldest supported
-macOS installation:
+### Physical Mac checklist (mitcad#558)
 
-- Canvas rendering and picking after resize, repeated minimize/restore,
-  fullscreen transitions, window movement and sleep/wake.
-- Floating model, inspector and history card visibility and pointer input;
-  CAD ribbon groups, menus and icon legibility at compact window sizes.
-- Retina/non-Retina display moves, backing-scale changes and multiple
-  display arrangements; input coordinates and orientation cube scaling.
-- Trackpad pan, zoom, orbit and selection; focus traversal between canvas,
-  fields, sidebar, history and sheets; Return, Escape and saved shortcuts.
-- Light/dark appearance, increased contrast, reduced transparency and
-  reduced motion; VoiceOver labels, selection and navigation order.
-- File panel acceptance, filename extensions, overwrite prompts and native
-  colour acceptance/cancellation; Finder open requests; save/discard/cancel
-  on window close and Quit; recovery, imports, exports, version history
-  and remote work.
-- Long commands: cancel while previewing, cancel during commit, changing
-  inputs while previewing and closing during edit-marker restoration.
+Qt remains the primary/default macOS build and release frontend; AppKit is
+an optional, separately configured test build. The physical acceptance
+matrix below records the 2026-10-23 physical run separately from historical
+VM results. The normal Qt build has `MITCAD_MACOS_NATIVE_UI=OFF`; the
+optional AppKit build enables it in a separate build directory.
 
-Do not infer hardware GL or macOS 14.4 runtime coverage from an SDK 27 build
-with deployment target 14.4. Retain the Qt frontend while completing those
-checks.
+The available configuration for the 2026-10-23 run is an Apple M1 Max
+(32 GPU cores), 32 GiB memory, macOS 27.0.1 (26A434), with the built-in
+Retina display (3456 × 2234 backing pixels, 1728 × 1117 logical points).
+The runtime `expect-viewport` output records actual backing scale, screen
+size, reported refresh rate and OpenGL version. Both frontends reported
+scale 2, 120 Hz, `OpenGL renderer: Apple M1 Max` and OpenGL
+`4.1 Metal - 91.7` while the built-in display was awake.
+An older virtual-display configuration is not evidence for this panel.
+`NSSupportsAutomaticGraphicsSwitching` has no GPU-switching effect on this
+single-GPU Apple Silicon configuration.
+
+| Checklist item | Qt evidence | AppKit evidence | Physical result |
+| --- | --- | --- | --- |
+| Render and face pick after resize, window move, two minimize/restore cycles, fullscreen and return | `app.ui-macos-physical` | `app.ui-macos-native-physical` | Passed in light/dark: twelve real framebuffer/face-selection checkpoints per frontend; actual selected face identity is read back |
+| Actual 2x backing, framebuffer dimensions and input coordinates | Physical test with `MITCAD_UI_REQUIRE_RETINA=1`; `app.ui-macos-dialogs` | Native physical test and `app.ui-macos-native-context-menus` | Passed without scale overrides; Qt resized from 1280x690/2560x1380 to 1000x520/2000x1040, AppKit fullscreen reached 1728x968/3456x1936 |
+| Synthetic pixel-scroll pan/orbit/zoom, pinch and selection | Physical test reads real camera target, orientation, height and selection | Same plus `app.ui-macos-native-gestures` for AppKit gesture routing, alternate scheme and sketch input | Passed; actual camera and released-button state checked; synthetic input does not establish sensor latency |
+| Floating browser/command/history cards, compact ribbon, pointer hit testing and menus | Own-window captures and Qt workflow | Physical layout assertions, native history and context-menu tests | Passed; inspected actual light/dark own-window captures including glass; widget-only composites omit platform glass backgrounds |
+| Light/dark appearance, native shortcut names, Tab/Return/Escape, editable fields | Physical test in both appearances, dialogs and Qt workflow | Physical test in both appearances, native main/sketch/secondary/gesture tests | Passed; parameter dialogs also passed 119 driver steps per appearance; requests are confined to the test process |
+| File browsing, initial folder/name/filter, cancellation and frame restoration | Qt workflow uses shared file helpers and Qt choosers | Native panels test checks real AppKit panels from document and secondary windows | Passed programmatic configuration/cancellation and saved-frame restoration; native panel acceptance remains manual |
+| Save/open, recovery, import/export, version history and local remote fixture | Qt workflow with fixture output outside Git | Native main, secondary and replacement workflows | Passed, including independent Git/history checks and recovery/import assertions; secondary/replacement fixtures also ran outside Git |
+| Busy previews, latest edited input, cancel during commit and edit restoration on close | Qt command-cancel test | Native cancel test | Passed real progress/form cancellation, actual body volumes and unchanged undo depth; Qt checks actual window close and Cancel at its save question |
+| Hardware Metal rendered-view navigation, resizing and worker shutdown | Dedicated render-metal test | Dedicated native-render-metal test | Not rerun here: rendered-view GPU acceptance belongs to #185 and is outside #558 |
+| ProMotion orbit pacing | Opt-in physical-test timing sample | Same optional sample | Both reported 120 Hz and about 121 swap callbacks/s in the unlocked session; see samples below; physical presentation/input latency remains unmeasured |
+| Sleep/wake, physical trackpad/Magic Mouse input, Natural scrolling and momentum | Untested | Untested | Requires manual hardware interaction; no system sleep or input preference changes performed |
+| Real 1x display, display moves, backing-scale changes and multiple-display arrangements | Untested | Untested | No external non-Retina display attached; forcing a Qt scale is not a display transition |
+| Increased contrast, reduced transparency/motion and VoiceOver navigation | Untested | Untested | Global accessibility preferences are not changed by the unattended harness |
+| Native chooser acceptance, overwrite prompts, native colour acceptance/cancellation, Finder dispatch and Quit variants | Untested where not exercised by the workflows | Untested where not exercised by the workflows | Native save acceptance is in a separate system process; no permission-dependent input injection |
+| Oldest supported macOS runtime | Untested | Untested | macOS 14.4 runtime unavailable; SDK/deployment target 14.4 does not provide that coverage |
+
+The Qt command path waits synchronously for its worker while a nested
+event loop presents `ComputeProgress`. Its busy-command test cancels
+through that real modal dialog, then closes the idle command form with
+Escape and checks body volumes and undo depth. AppKit uses asynchronous
+command continuations; its existing native test can cancel the command
+form at the actual job-start signal. Injecting a Qt form click synchronously
+inside that signal would reenter a worker-start stack before work is posted,
+which is not an ordinary user-input path. The Qt test's synthetic field
+replacement and pending Return additionally stress retention of the latest
+requested value; they do not measure physical typing responsiveness.
+For a genuine slow Qt commit, the test first cancels the edited value's
+preview and then accepts the unchanged value: a cancelled preview is not
+cached, so OK computes the command itself. Accepting a successful small
+Box preview instead adopts its cached result and does not demonstrate
+busy commit cancellation.
+Each physical run retains `windowed-ui-light.png` and
+`windowed-ui-dark.png` as framebuffer/widget composites, and
+`windowed-screen-light.png` and `windowed-screen-dark.png` from the
+existing own-window capture API. The latter captures only this process's
+on-screen windows and includes the platform glass; use it for inspecting
+the floating cards, ribbon and Retina appearance rather than inferring
+contrast from a widget grab without its native backdrop.
+
+Use an unlocked console session. Initially the frontmost process was
+`com.apple.loginwindow`, AppKit was inactive and its key window was nil.
+Native whole-key tests, sketch Tab entry and fullscreen could not establish
+their targets. After the owner unlocked the console, the same activation,
+focus and fullscreen assertions passed without changing product behavior
+or weakening guards. The suspected findings #573 and #574 were closed as
+environment preconditions, with locked/unlocked diagnostics retained.
+Hardware framebuffer/picking evidence alone does not establish active
+AppKit keyboard routing or panel presentation.
+
+The final warmed Alt+pixel-scroll observation ran with no concurrent build
+or test load, after unlocking the console. Each frontend retained 180
+measured callback intervals after 30 warm-up input events:
+
+| Frontend | Median interval (ms) | Mean interval (ms) | Observed swap callbacks/s |
+| --- | --- | --- | --- |
+| Qt | 8.11 | 8.27 | 120.97 |
+| AppKit | 8.11 | 8.26 | 121.06 |
+
+These callbacks are consistent with the screen's reported 120 Hz pacing;
+they are not scanout/presentation timestamps or physical trackpad latency.
+An earlier locked-console sample was excluded from the physical pacing
+result. The initial synthetic right-button sampler released at a different
+point from its last move, opening a context menu; the corrected sample uses
+the already-validated pixel-scroll orbit path and waits for its end timer.
+The failed harness logs are retained; no product navigation or graphics
+policy was changed to obtain the final result.
+
+The physical tests are registered serial CTests and return 77 when no
+physical Metal device is available. `MITCAD_UI_REQUIRE_HARDWARE=1` makes
+that absence fail; `MITCAD_UI_REQUIRE_GUI=1` similarly requires a live
+window server and GL context. Software or paravirtual viewport renderers
+are rejected after startup. Settings and model fixtures are private to
+each run, and the native test restores its own saved-frame preference.
+No global display, appearance or accessibility settings are changed.
+The no-device guard was also exercised with a synthetic empty worker
+enumeration: both frontend invocations returned 77 with hardware optional
+and 1 with hardware required, before launching any GUI. The real physical
+runs required GUI, hardware and Retina and had no skips.
+
+Run only the selected checks in the appropriate configured build:
+
+```bash
+MITCAD_UI_REQUIRE_GUI=1 MITCAD_UI_REQUIRE_HARDWARE=1 \
+MITCAD_UI_REQUIRE_RETINA=1 \
+ctest --test-dir <qt-build> -j1 --output-on-failure -R '^app\.ui-macos-physical$'
+MITCAD_UI_REQUIRE_GUI=1 MITCAD_UI_REQUIRE_HARDWARE=1 \
+MITCAD_UI_REQUIRE_RETINA=1 \
+ctest --test-dir <native-build> -j1 --output-on-failure -R '^app\.ui-macos-native-physical$'
+```
+
+For the checklist's explicitly authorized frame-time observation, append
+`MITCAD_PHYSICAL_MEASURE_FRAMES=1` to one physical test invocation per
+frontend. It performs one warmed synthetic orbit with a 1 ms driver tick
+(two ticks per Alt+pixel-scroll event), logs `MITCAD_LOG_TIMING=1` frame
+swaps and retains raw samples plus `orbit-summary.tsv`. This avoids a
+20 ms input pacing cap;
+reported display refresh, actual observed swaps, hardware presentation and
+physical trackpad latency remain different quantities. No 120 Hz success
+is inferred from the panel specification or from input cadence alone.
+Log failures and link their follow-up tickets alongside the result cells.

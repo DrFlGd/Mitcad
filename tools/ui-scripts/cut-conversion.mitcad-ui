@@ -1,0 +1,65 @@
+# SPDX-License-Identifier: MIT
+# The same real Qt workflow starts as Join or New Body in separate runs.
+wait-idle
+window-resize 1400 990
+command view.fit
+expect-model-bodies 2 8000
+command solid.extrude
+expect-log 'Command Extrude started'
+focus-widget input_distance
+key ctrl+a
+type 50
+expect-log '^Extrude Distance: 50( mm)? = 50 mm$'
+click-logged '^Panel Extrude input operation at '
+key Home ${MITCAD_CONVERSION_START_KEY} Return
+button '^OK$'
+expect-log 'Added extrude \(${MITCAD_CONVERSION_START_LABEL}\)' 30
+expect-model-bodies ${MITCAD_CONVERSION_START_COUNT} ${MITCAD_CONVERSION_START_VOLUME}
+
+# Hiding the target after the boss was committed must be sampled when Cut
+# is chosen, not when the original Join/New Body command started.
+click-logged '^Browser eye Root/Part B:1 at '
+expect-log 'Visibility Root/Part B:1: hidden'
+mark
+dblclick-logged '^Timeline Extrude1 at '
+expect-log 'Editing F4 with Extrude'
+expect-no-log 'Extrude: hidden targets start unchecked'
+click-logged '^Panel Extrude input operation at '
+key Home Down Down Return
+expect-log 'Extrude: Operation = Cut'
+expect-log 'Cut target C0@: eligible, checked, intersects'
+expect-log 'Cut target C1@O1: eligible, unchecked, intersects, hidden'
+expect-shown-body F1.b0 - 3840
+# Restore the hidden target, then explicitly exclude it through real Qt
+# checklist input. Both rows start collapsed: End selects Part B's row.
+# Subsequent previews must keep that choice. Keyboard focus also avoids
+# using panel-local row coordinates as main-window click coordinates.
+focus-main
+focus-widget cut_targets_list
+key End
+key Space
+expect-log 'Cut target C1@O1: eligible, checked, intersects, hidden'
+mark
+focus-main
+focus-widget cut_targets_list
+key End
+key Space
+expect-log 'Cut target C1@O1: eligible, unchecked, intersects, hidden'
+button '^OK$'
+expect-log 'Edited F4' 30
+expect-model-bodies 2 7840
+command edit.undo
+expect-model-bodies ${MITCAD_CONVERSION_START_COUNT} ${MITCAD_CONVERSION_START_VOLUME}
+command edit.redo
+expect-model-bodies 2 7840
+
+# A committed Cut->Join must retain its dormant scope and exclusions.
+dblclick-logged '^Timeline Extrude1 at '
+click-logged '^Panel Extrude input operation at '
+key Home Down Return
+button '^OK$'
+expect-log 'Edited F4' 30
+expect-model-bodies 2 8640
+menu 'File/Save'
+expect-log 'Saved .*cut-conversion\.mitcad'
+expect-never 'The document was read while a job computes it|OCCT view event failed'

@@ -1,0 +1,135 @@
+# SPDX-License-Identifier: MIT
+# Real Qt controls, native shortcut strings and focused dialog captures.
+# The runner launches a fresh process for each requested system appearance.
+wait-idle
+command tools.search
+focus-widget commandSearchInput
+expect-dialog-appearance '${MITCAD_TEST_COLOR_SCHEME}'
+expect-command-search '' '*' shortcuts
+screenshot-dialog '${MITCAD_DIALOG_SHOTS}/search-${MITCAD_TEST_COLOR_SCHEME}.png'
+
+# Exact and fuzzy matches remain navigable in their displayed order.
+type fit
+expect-command-search fit view.fit disabled
+key Down
+expect-command-search fit construct.axis_normal_face disabled
+key Up
+expect-command-search fit view.fit disabled
+mark
+key Return
+expect-log '^Command search chose view.fit$'
+focus-main
+command tools.search
+focus-widget commandSearchInput
+# An all-disabled result cannot become selected or activate on Return.
+type 'Finish Sketch'
+expect-command-search 'Finish Sketch' - disabled
+key Down Up
+expect-command-search 'Finish Sketch' - disabled
+mark
+key Return
+expect-command-search 'Finish Sketch' - disabled
+expect-no-log '^Command search chose '
+key Escape
+focus-main
+command tools.search
+focus-widget commandSearchInput
+type 'noMatchingCommandForThisFixture'
+expect-command-search noMatchingCommandForThisFixture -
+mark
+key Escape
+focus-main
+expect-no-log '^Command search chose '
+
+# Open Change Parameters by searching and accepting the selected result.
+command tools.search
+focus-widget commandSearchInput
+type 'Change Parameters'
+expect-command-search 'Change Parameters' solid.parameters
+key Return
+focus-dialog '^Parameters$'
+expect-dialog-appearance '${MITCAD_TEST_COLOR_SCHEME}'
+expect-parameter-cell d1 2 '^60 mm$' visible
+button '^User Parameter$'
+focus-dialog '^Add User Parameter$'
+focus-widget parameterName
+type width
+key Tab Tab
+type 30
+screenshot-dialog '${MITCAD_DIALOG_SHOTS}/parameters-add-${MITCAD_TEST_COLOR_SCHEME}.png'
+key Return
+expect-log '^Added parameter width = 30 mm'
+focus-dialog '^Parameters$'
+expect-parameter-cell width 2 '^30 mm$' visible
+
+# F2 starts the real cell editor; Return commits and Escape discards.
+click-parameter width 2
+key F2
+expect-log '^Editing parameter width expression$'
+key ctrl+a
+type 35
+key Return
+expect-log '^Parameter width expression: 35 = 35 mm$'
+expect-parameter-cell width 2 '^35 mm$' visible
+click-parameter width 2
+key F2
+key ctrl+a
+type 99
+screenshot-dialog '${MITCAD_DIALOG_SHOTS}/parameters-editor-${MITCAD_TEST_COLOR_SCHEME}.png'
+mark
+key Escape
+expect-no-log '^Parameter width expression:'
+expect-parameter-cell width 2 '^35 mm$' visible
+
+# A length refuses an angle and retains both the attempted expression and reason.
+click-parameter d3 2
+key F2
+key ctrl+a
+type '30 deg'
+key Return
+expect-log '^Parameter d3 expression: 30 deg refused: '
+expect-parameter-cell d3 2 '^30 deg$' refused
+expect-parameter-cell d3 3 '^20 mm$' visible
+screenshot-dialog '${MITCAD_DIALOG_SHOTS}/parameters-error-selected-${MITCAD_TEST_COLOR_SCHEME}.png'
+click-parameter width 0
+screenshot-dialog '${MITCAD_DIALOG_SHOTS}/parameters-${MITCAD_TEST_COLOR_SCHEME}.png'
+dialog-resize 760 440
+expect-dialog-appearance '${MITCAD_TEST_COLOR_SCHEME}'
+screenshot-dialog '${MITCAD_DIALOG_SHOTS}/parameters-compact-${MITCAD_TEST_COLOR_SCHEME}.png'
+
+# Filtering matches both names and comments; d1's comment contains width.
+focus-widget parametersFilter
+type width
+expect-parameter-cell width 2 '^35 mm$' visible
+expect-parameter-cell d1 2 '^60 mm$' visible
+expect-parameter-cell d2 2 '^40 mm$' hidden
+key ctrl+a
+key Backspace
+expect-parameter-cell d2 2 '^40 mm$' visible
+
+# Expressions recompute the real model; a dependency prevents deletion.
+click-parameter d1 2
+key F2
+key ctrl+a
+type 'width + 5 mm'
+key Return
+expect-log '^Parameter d1 expression: width \+ 5 mm = 40 mm$'
+expect-model-bodies 1 32000
+click-parameter width 0
+button '^Delete$'
+expect-log '^Delete parameter width refused: '
+expect-parameter-cell width 2 '^35 mm$' visible
+click-parameter d1 2
+key F2
+key ctrl+a
+type '60 mm'
+key Return
+expect-log '^Parameter d1 expression: 60 mm = 60 mm$'
+expect-model-bodies 1 48000
+click-parameter width 0
+button '^Delete$'
+expect-log '^Deleted parameter width$'
+expect-parameter-cell width 0 '.*' absent
+button '^OK$'
+focus-main
+expect-never 'Recompute failed'

@@ -1,0 +1,105 @@
+# SPDX-License-Identifier: MIT
+# Real Qt fields and buttons on the synchronous Qt command-session path.
+# The harness delays only preview/add/edit jobs and uses a synthetic box.
+expect-ever 'View area'
+window-resize 1280 820
+sleep 600
+# The synthetic persisted baseline avoids selecting an origin plane whose
+# logged pick can lie beneath the floating command card. This test targets
+# command races; all edited values and confirmation/cancellation still go
+# through the real Qt form controls.
+expect-model-bodies 1 10000
+capture-undo-depth initial_depth
+
+# Replace the value while its preceding preview is genuinely busy. Return
+# requests acceptance of the newest input before the replacement preview
+# completes. The stale 11 mm result must never become the committed body.
+mark
+dblclick-logged '^Timeline Box1 at'
+expect-log 'Editing F1 with Box'
+wait-idle 30
+mark
+qt-type-now input_height '11 mm'
+wait-log 'Computing preview started' 30
+expect-model-busy true
+qt-type-now input_height '12 mm'
+wait-log 'Box Height: 12 mm' 30
+key-now Return
+expect-log 'Edited F1' 30
+expect-model-bodies 1 12000
+expect-undo-depth ${initial_depth} 1
+expect-no-log 'Body .*volume .* -> 11000\.000 mm3'
+capture-undo-depth committed_depth
+
+# Qt waits for worker jobs in a nested event loop; its modal progress dialog
+# is the user-accessible cancellation target while a job runs. Cancel the
+# preview first: successful previews are cached, so accepting one would not
+# perform another slow evaluation. OK after a cancelled preview computes
+# the real edit_feature, which can then be cancelled through its own modal
+# progress dialog. Volume and undo depth must remain at the 12 mm edit.
+mark
+dblclick-logged '^Timeline Box1 at'
+expect-log 'Editing F1 with Box'
+wait-idle 30
+mark
+qt-type-now input_height '14 mm'
+qt-cancel-progress preview
+wait-log 'Computing preview cancelled after ' 30
+expect-log 'Preview Box: cancelled' 30
+focus-main
+mark
+button '^OK$'
+qt-cancel-progress edit_feature
+wait-log 'Computing edit_feature cancelled after ' 30
+expect-log 'Box: OK cancelled' 30
+focus-main
+key Escape
+expect-log 'Command Box cancelled' 30
+expect-model-bodies 1 12000
+expect-undo-depth ${committed_depth} 0
+expect-no-log 'Edited F1|Body .*volume .* -> 14000\.000 mm3'
+
+# Cancel a still-running preview through the real modal progress control,
+# then cancel its idle form and start a different command. This catches
+# stale form/session state and accidental undo-stack mutation.
+mark
+dblclick-logged '^Timeline Box1 at'
+expect-log 'Editing F1 with Box'
+wait-idle 30
+mark
+qt-type-now input_height '99 mm'
+wait-log 'Computing preview started' 30
+expect-model-busy true
+qt-cancel-progress preview
+wait-log 'Computing preview cancelled after ' 30
+focus-main
+key Escape
+expect-log 'Command Box cancelled' 30
+command solid.sphere
+expect-log 'Command Sphere started'
+key Escape
+expect-log 'Command Sphere cancelled' 30
+expect-model-bodies 1 12000
+expect-undo-depth ${committed_depth} 0
+expect-no-log 'Edited F1|Body .*volume .* -> 99000\.000 mm3'
+
+# Exit requests the actual main-window close. Its closeEvent cancels an
+# edit and restores the marker before asking about the earlier unsaved
+# change. Cancel that Quit/save question, retain the live document with
+# its prior body/undo history, and verify another command still works.
+mark
+dblclick-logged '^Timeline Box1 at'
+expect-log 'Editing F1 with Box'
+qt-type-now input_height '15 mm'
+menu 'File/Exit'
+focus-dialog '^Mitcad$|^Save changes'
+button '^Cancel$'
+focus-main
+expect-log 'Command Box cancelled' 30
+expect-model-bodies 1 12000
+expect-undo-depth ${committed_depth} 0
+command solid.sphere
+expect-log 'Command Sphere started'
+key Escape
+expect-log 'Command Sphere cancelled' 30
+expect-never 'The document was read while a job computes it|OCCT view event failed'

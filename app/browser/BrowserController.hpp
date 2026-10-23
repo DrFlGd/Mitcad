@@ -61,6 +61,9 @@ public:
   bool cancelEditing();
   // Change Parameters.
   void openParameters();
+  // Its window once opened, else null (mitcad#564: back to the edit when
+  // it closes).
+  ParametersDialog* parametersDialog() const;
   // Edit Appearances (mitcad#46); Assign gives the targets (bodies, and
   // faces: mitcad#53) the selected appearance.
   void openAppearances(const Selection& targets);

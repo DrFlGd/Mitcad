@@ -36,6 +36,7 @@
 #include "CutTargetsPanel.hpp"
 #include "GlassCard.hpp"
 #include "Icons.hpp"
+#include "ParameterField.hpp"
 #include "TestSync.hpp"
 #include "Theme.hpp"
 
@@ -489,6 +490,7 @@ CommandPanel::Row* CommandPanel::createRow(const InputDef& input, const QString&
     row.select->setToolTip(input.tooltip.isEmpty() ? tr("Click to pick %1").arg(input.label)
                                                    : input.tooltip);
     row.clear = smallButton(QStringLiteral("✕"), tr("Clear the selection"));
+    row.clear->setObjectName(QStringLiteral("clear_") + key);
     connect(row.select, &QPushButton::clicked, this, [this, key] { emit selectionActivated(key); });
     connect(row.clear, &QToolButton::clicked, this, [this, key] { emit selectionCleared(key); });
     box->addWidget(row.select, 1);
@@ -554,6 +556,16 @@ CommandPanel::Row* CommandPanel::createRow(const InputDef& input, const QString&
     if (input.type == InputDef::Type::Value) {
       connect(row.edit, &QLineEdit::editingFinished, this, [this, key] { emit valueCommitted(key); });
       row.edit->installEventFilter(this); // its keyboard focus (mitcad#250)
+      // Parameter suggestions while typing, the fx browser, name = value and
+      // Create User Parameter (mitcad#567, mitcad#568).
+      ParameterFieldOptions suggest;
+      suggest.kind = input.valueKind == ValueKind::Angle      ? ParameterKind::Angle
+                     : input.valueKind == ValueKind::Unitless ? ParameterKind::Unitless
+                                                              : ParameterKind::Length;
+      suggest.own = scope.parameterName(input.id);
+      suggest.label = QStringLiteral("%1 %2").arg(m_def.name, input.label);
+      suggest.naming = true;
+      ParameterField::attach(row.edit, suggest);
     }
     field = row.edit;
     break;
@@ -937,6 +949,10 @@ void CommandPanel::refreshRow(Row& row, const CommandState& scope, const Command
   case InputDef::Type::Text:
     if (row.edit->text() != scope.text(id)) {
       row.edit->setText(scope.text(id));
+    }
+    // Its own parameter is not offered to it (mitcad#567).
+    if (ParameterField* suggest = ParameterField::of(row.edit)) {
+      suggest->setOwnParameter(scope.parameterName(id));
     }
     // The parameter the field edits, after its label: "Distance (d5)"
     // (mitcad#231).

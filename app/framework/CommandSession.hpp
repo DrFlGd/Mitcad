@@ -23,6 +23,7 @@
 #include <gp_Trsf.hxx>
 
 #include "../OcctViewer.hpp"
+#include "AutoOperationPolicy.hpp"
 #include "Command.hpp"
 #include "CommandPanel.hpp"
 #include "mitcad_bridge/lib.h"
@@ -240,6 +241,18 @@ public:
   // was not drawn). False when the model refuses them, or while an
   // asynchronous command computes.
   bool runVisibility(const QJsonArray& commands, const QString& label);
+  // Change Parameters while the panel is open (mitcad#564;
+  // CommandSessionParameters.cpp): a command of the parameter table runs
+  // as a light bulb's does, as its own undo step outside the command's
+  // undo range (kept by Cancel, before the feature's step on OK). After a
+  // change of values every value input is evaluated again (a rename first
+  // goes into the expressions that use the old name), the selections are
+  // resolved again and the preview is computed again; what the user typed
+  // and picked stays. False when the model refused it (lastError()) or,
+  // with `refusal` set, when the session cannot take it now.
+  bool runParameter(const QJsonObject& command, QString& refusal);
+  // The feature the session edits (its uid), empty for a new one.
+  const QString& editUid() const { return m_editUid; }
 
   // Live MCP (mitcad#265, CommandSessionScript.cpp): an agent fills the
   // inputs by their keys through the panel's own actions, as typing,
@@ -521,7 +534,17 @@ private:
   struct VisibilityChange {
     QJsonArray commands;
     QString label;
+    bool parameter = false; // a parameter table's change (mitcad#564)
   };
+  // A light bulb's change or a parameter table's (`parameter`) outside the
+  // command's undo range; `refusal` (when given) gets why the session
+  // could not run it now.
+  bool runOutsideRange(const QJsonArray& commands, const QString& label, bool parameter, QString* refusal);
+  // After a parameter table's command (`done`: the model took it): the
+  // values, selections and preview as runParameter says.
+  void parametersChanged(const QJsonObject& command, bool done, bool sketchPreviewTakenBack);
+  // The log lines of the changes kept where the range was taken back.
+  void logKeptChanges() const;
   QVector<VisibilityChange> m_visibility;
   int m_startDepth = -1; // the undo depth before an edit's roll-back (synchronous)
   // The bodies the view shows ("F2.b0@O1"), read after a change; none read
@@ -544,18 +567,21 @@ private:
   void runVisibilityAsync(const QJsonArray& commands, const QString& label,
                           CommandHost::AsyncCompletion completion);
 
-  // A new feature's operation chosen by the model (CommandDef::
+  // A feature's operation chosen by the model (CommandDef::
   // autoOperation, mitcad#289; CommandSessionAuto.cpp): while it is on,
   // each preview asks for the choice ("auto_operation", commands.md) and
   // its answer sets the inputs "operation" and "objects"; the user's own
-  // change of either turns it off for the rest of the command.
-  void startAutoOperation();
+  // change of either or Cut targets turns it off for the rest of the command.
+  // Edits first probe their immutable stored definition, not changed inputs.
+  void startAutoOperation(const QJsonObject& storedDefinition);
+  bool probeAutoOperation();
+  void resolveAutoOperationProbe(const QJsonObject& report);
   void addAutoOperation(QJsonObject& command) const;
   // True when the answer changed the inputs: their own preview follows
   // instead of the answer's.
   bool takeAutoOperation(const QJsonObject& report);
   void autoOperationOverruled(const QString& key);
-  bool m_autoOperation = false;
+  AutoOperationPolicy m_autoOperation;
 };
 
 } // namespace mitcad

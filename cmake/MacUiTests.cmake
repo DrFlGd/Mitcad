@@ -103,7 +103,39 @@ if(APPLE AND BUILD_TESTING AND MITCAD_MACOS_UI_TESTS AND TARGET mitcad)
               "$<TARGET_FILE:mitcad>" "${CMAKE_BINARY_DIR}/ui-macos-render-metal")
     set_tests_properties(app.ui-macos-render-metal PROPERTIES
       TIMEOUT 480 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+    add_test(NAME app.ui-macos-dialogs
+      COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-dialogs-test.sh"
+              "$<TARGET_FILE:mitcad>" "${CMAKE_BINARY_DIR}/ui-macos-dialogs")
+    set_tests_properties(app.ui-macos-dialogs PROPERTIES
+      TIMEOUT 420 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+    add_test(NAME app.ui-macos-physical
+      COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-physical-test.sh"
+              "$<TARGET_FILE:mitcad>" "${CMAKE_BINARY_DIR}/ui-macos-physical" qt)
+    set_tests_properties(app.ui-macos-physical PROPERTIES
+      TIMEOUT 420 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+    add_test(NAME app.ui-macos-cut-conversion
+      COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-cut-conversion-test.sh"
+              "$<TARGET_FILE:mitcad>" "${CMAKE_BINARY_DIR}/ui-macos-cut-conversion")
+    set_tests_properties(app.ui-macos-cut-conversion PROPERTIES
+      TIMEOUT 600 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+    if(TARGET mitcad-cli AND Python3_Interpreter_FOUND)
+      add_test(NAME app.ui-macos-edit-auto-operation
+        COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-edit-auto-operation-test.sh"
+                "$<TARGET_FILE:mitcad>" "${CMAKE_BINARY_DIR}/ui-macos-edit-auto-operation")
+      set_tests_properties(app.ui-macos-edit-auto-operation PROPERTIES
+        TIMEOUT 960 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+    endif()
+    add_test(NAME app.ui-macos-command-cancel
+      COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-command-cancel-test.sh"
+              "$<TARGET_FILE:mitcad>" "${CMAKE_BINARY_DIR}/ui-macos-command-cancel")
+    set_tests_properties(app.ui-macos-command-cancel PROPERTIES
+      TIMEOUT 240 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
     if(MITCAD_MACOS_NATIVE_UI)
+      add_test(NAME app.ui-macos-native-physical
+        COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-physical-test.sh"
+                "$<TARGET_FILE:mitcad>" "${CMAKE_BINARY_DIR}/ui-macos-native-physical" native)
+      set_tests_properties(app.ui-macos-native-physical PROPERTIES
+        TIMEOUT 420 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
       add_test(NAME app.ui-macos-native-render-metal
         COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-render-metal-test.sh"
                 "$<TARGET_FILE:mitcad>" "${CMAKE_BINARY_DIR}/ui-macos-native-render-metal" native)

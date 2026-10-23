@@ -61,6 +61,10 @@ pub enum TargetScope {
 pub struct CutScope {
     pub context: ComponentTarget,
     pub targets: TargetScope,
+    /// A modern boss has not chosen Cut targets yet; the editor samples
+    /// visibility on conversion instead of freezing it at boss creation.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub initialize_on_cut: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -94,6 +98,67 @@ pub struct CutTargets {
 }
 
 impl CutScope {
+    /// Feature replay currently applies tools in their owning component.
+    /// Preserve that boundary rather than localizing an assembly selection.
+    pub(crate) fn check_local_replay(&self) -> Result<(), String> {
+        if matches!(&self.targets, TargetScope::Explicit { included, .. }
+            if included.iter().any(|target| target != &self.context))
+        {
+            return Err(
+                "unsupported cut scope for feature replay: cross-component or occurrence targets"
+                    .to_owned(),
+            );
+        }
+        Ok(())
+    }
+
+    /// Resolve an ordinary local cut's selection at the replay point. An
+    /// automatic scope is local only while all selected body definitions
+    /// belong to its unique context. These assembly and body reads also
+    /// invalidate a cached replay when another target becomes available.
+    pub(crate) fn local_replay_bodies<K: Kernel>(
+        &self,
+        ctx: &mut EvalContext<'_, K>,
+    ) -> Result<Vec<BodyUid>, String> {
+        self.check_local_replay()?;
+        let discovery = self.discover(ctx)?;
+        let mut bodies = Vec::new();
+        for candidate in discovery.candidates {
+            if !self.checked(&candidate.target) {
+                continue;
+            }
+            if candidate.target == self.context {
+                if let Some(reason) = candidate.row.reason {
+                    return Err(format!(
+                        "unsupported cut scope for feature replay: {reason}"
+                    ));
+                }
+                bodies.extend(candidate.shapes.into_iter().filter_map(|(body, shape)| {
+                    (!ctx.is_mesh(&shape)
+                        && !self.excluded_bodies().iter().any(|excluded| {
+                            excluded.body == body && excluded.target() == self.context
+                        }))
+                    .then_some(body)
+                }));
+            } else if candidate.row.eligible
+                && candidate.shapes.iter().any(|(body, shape)| {
+                    !ctx.is_mesh(shape)
+                        && !self.excluded_bodies().iter().any(|excluded| {
+                            excluded.body == *body && excluded.target() == candidate.target
+                        })
+                })
+            {
+                return Err("unsupported cut scope for feature replay: automatic scope includes another component or occurrence".to_owned());
+            }
+        }
+        // The shared tool application treats an empty list as all bodies.
+        // A deliberate empty selection must therefore fail before it.
+        if bodies.is_empty() {
+            return Err("no eligible local bodies selected for cut feature replay".to_owned());
+        }
+        Ok(bodies)
+    }
+
     pub(crate) fn stored_targets(&self) -> &[ComponentTarget] {
         match &self.targets {
             TargetScope::Automatic { excluded, .. } => excluded,
@@ -126,6 +191,9 @@ impl CutScope {
     }
 
     pub(crate) fn check(&self, ctx: &CheckContext<'_>) -> Result<(), String> {
+        if self.initialize_on_cut {
+            return Err("cut_scope.initialize_on_cut must be resolved before Cut".to_owned());
+        }
         let targets = self.stored_targets();
         for (i, target) in targets.iter().enumerate() {
             if targets[..i].contains(target) {

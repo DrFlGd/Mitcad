@@ -78,6 +78,9 @@
 //   dblclick-logged <regex>
 //   click-pick <regex>      like click-logged, among the "Pick <kind> <name>
 //                           at x,y" lines after the last "Pick places:"
+//   click-visible-face      probe fresh visible OCCT face points, click one
+//                           through the viewport input path, then verify the
+//                           actual shared selection contains that exact face
 //   drag-logged <from regex> <to regex> [dx]    left drag between two logged
 //                           places; dx pixels right of the end
 //   drag-from <regex> <dx> <dy>         left drag from a logged place by
@@ -97,8 +100,9 @@
 //                           ('&' and "..." in the names are ignored)
 //   popup <entry>           choose an entry of the open popup menu (a
 //                           context menu), by its text
-//   button <regex>          click the visible button of the target window
-//                           whose text (without '&') matches
+//   button <regex> [objectName] click a visible button whose text (without
+//                           '&') matches; optional Qt objectName selects an
+//                           exact control in the target window
 //   native-action <id>      dispatch the native AppKit menu command
 //   native-click <id>       click a native control by accessibilityIdentifier
 //   native-hover <id> enter|leave send an AppKit tracking event through the
@@ -135,6 +139,12 @@
 //   native-type-now <id> <text> native edit without waiting for idleness;
 //                           these exercise preview cancellation and races
 //   native-key-now <key>... key input without waiting for model idleness
+//   key-now <key>...       shared key input without the model-idle gate
+//   qt-type-now <id> <text> replace a visible Qt editor through actual key
+//                           events without waiting for model idleness
+//   qt-cancel-progress <job> await the actual modal Qt ComputeProgress for
+//                           the newest started job and click its real Cancel
+//                           button, requiring modelBusy and cancelling state
 //   native-key-event <key>... await actual AppKit activation/key focus, then
 //                            send key down/up through NSApp's event dispatch
 //   expect-native-application-delegate check Qt activation signals, deactivate
@@ -146,6 +156,16 @@
 //                           separate-process chooser; no accept verb exists.
 //   native-resize <w> <h>   resize the native document content in points
 //   window-resize <w> <h>   resize this test's Qt or native main window
+//   window-move <x> <y>     move only this test's Qt/native document relative
+//                           to its screen's visible origin
+//   window-state normal|minimized|fullscreen change the document state
+//   expect-window-state normal|minimized|fullscreen await its actual state
+//   expect-viewport         check the real framebuffer dimensions against
+//                           the viewport's backing scale; log GL version,
+//                           logical screen size and reported refresh rate
+//                           MITCAD_UI_REQUIRE_RETINA=1 additionally requires 2x
+//   capture-view-target <var> record actual OCCT camera target
+//   expect-view-pan <before> changed|unchanged compare target in mm
 //   native-move <x> <y>     frame origin relative to the main screen's visible
 //                           origin; native.window.origin and native.window.size
 //                           expose the frame origin and content size as text
@@ -212,6 +232,18 @@
 //                           gives both: '^Restore Version$|^Restore v1 ')
 //   focus-main              give them to the main window again (a dialog
 //                           that closed is replaced by the main window too)
+//   focus-widget <objectName> focus a visible Qt widget in the target window
+//                           or active popup; it becomes screenshot-dialog's target
+//   dialog-resize <w> <h>   resize the focused Qt dialog in logical pixels
+//   expect-dialog-appearance light|dark inspect its actual palette and scale;
+//                           MITCAD_UI_REQUIRE_RETINA=1 additionally requires 2x
+//   expect-command-search <filter> <current-id|*|-> [disabled|shortcuts]
+//                           check real search rows, enabled selection and native
+//                           shortcut text; * any selected, - none; optional flag
+//                           requires disabled rows or the macOS Command glyph
+//   click-parameter <name> <column> click the real visible Qt table cell (0..5)
+//   expect-parameter-cell <name> <column> <regex> visible|hidden|refused|absent
+//                           check its actual text, filter visibility and error
 //
 // The log (lines are numbered; `mark` remembers where the log is):
 //   mark

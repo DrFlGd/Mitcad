@@ -14,6 +14,7 @@
 #include "CommandPresenter.hpp"
 
 class QAbstractButton;
+class QAction;
 class QComboBox;
 class QEvent;
 class QFormLayout;
@@ -71,6 +72,11 @@ public:
   QJsonObject shownState() const override;
   // Logs where the inputs are, for UI tests.
   void logLayout() const override;
+  // A button for `action` at the end of the title row, its place logged as
+  // "Panel <command> <id> at x,y" with the action's command id's last part
+  // (mitcad#564: Change Parameters while the panel stays open;
+  // CommandPanelHeader.cpp).
+  void addHeaderAction(QAction* action);
 
 signals:
   void textEdited(const QString& key, const QString& text);

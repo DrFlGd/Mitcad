@@ -593,9 +593,9 @@ pub(crate) fn footprint<K: crate::kernel::Kernel>(
             Some(&d.objects)
         }
         F::PatternAtPoints(d) => Some(&d.objects),
-        F::Extrude(d) if d.cut_scope.is_some() => {
+        F::Extrude(d) if d.active_cut_scope().is_some() => {
             all = false;
-            let scope = d.cut_scope.as_ref().expect("checked");
+            let scope = d.active_cut_scope().expect("checked");
             ctx.reads.push(crate::recompute::Read::Assembly(
                 crate::features::extrude_scope::assembly_key(&ctx.env),
             ));

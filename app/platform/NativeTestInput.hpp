@@ -45,6 +45,8 @@ bool toolbarItemPresent(const QString& identifier, bool expected);
 bool configureToolbarItem(const QString& identifier, const QString& operation, QString& error);
 bool resizeDocument(int width, int height, QString& error);
 bool moveDocument(int x, int y, QString& error);
+bool setDocumentState(const QString& state, QString& error);
+QString documentState();
 bool setAppearance(const QString& name, QString& error);
 bool floatingLayout(QString& error);
 bool historyLayout(const QJsonObject& timeline, const QSet<QString>& filtered, const QStringList& selected,
@@ -63,6 +65,7 @@ bool cancelFilePanel(QString& error);
 void focusMain();
 void requestKeyEventFocus();
 bool keyEventFocusReady();
+QString keyEventFocusDiagnostic();
 bool sendKey(int key, Qt::KeyboardModifiers modifiers, const QString& text);
 bool sendKeyEvent(int key, Qt::KeyboardModifiers modifiers, const QString& text);
 bool sendText(const QString& text);
@@ -94,6 +97,8 @@ inline bool toolbarItemPresent(const QString&, bool) { return false; }
 inline bool configureToolbarItem(const QString&, const QString&, QString&) { return false; }
 inline bool resizeDocument(int, int, QString&) { return false; }
 inline bool moveDocument(int, int, QString&) { return false; }
+inline bool setDocumentState(const QString&, QString&) { return false; }
+inline QString documentState() { return {}; }
 inline bool setAppearance(const QString&, QString&) { return false; }
 inline bool floatingLayout(QString&) { return false; }
 inline bool historyLayout(const QJsonObject&, const QSet<QString>&, const QStringList&, bool, QString&) { return false; }
@@ -111,6 +116,7 @@ inline bool cancelFilePanel(QString&) { return false; }
 inline void focusMain() {}
 inline void requestKeyEventFocus() {}
 inline bool keyEventFocusReady() { return false; }
+inline QString keyEventFocusDiagnostic() { return {}; }
 inline bool sendKey(int, Qt::KeyboardModifiers, const QString&) { return false; }
 inline bool sendKeyEvent(int, Qt::KeyboardModifiers, const QString&) { return false; }
 inline bool sendText(const QString&) { return false; }

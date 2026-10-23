@@ -1985,6 +1985,7 @@ int commandMessageTests();
 int moveToComponentTests();
 int autoselectTests();
 int cutTargetsTests();
+int autoOperationPolicyTests();
 int eventFilterGuardTests();
 int moveOccurrenceTests();
 int selectionScopeTests();
@@ -2018,6 +2019,9 @@ int sectionWorkerTests();
 int chamferHandleTests();
 int patternOptionsTests();
 int commandSketchesTests();
+int parameterEditsTests();
+int decimalAlignTests();
+int parameterSuggestTests();
 
 int main(int argc, char* argv[]) {
   QApplication app(argc, argv);
@@ -2051,6 +2055,7 @@ int main(int argc, char* argv[]) {
     failures += moveToComponentTests();
     failures += autoselectTests();
     failures += cutTargetsTests();
+    failures += autoOperationPolicyTests();
     failures += eventFilterGuardTests();
     failures += moveOccurrenceTests();
     failures += selectionScopeTests();
@@ -2084,6 +2089,9 @@ int main(int argc, char* argv[]) {
     failures += chamferHandleTests();
     failures += patternOptionsTests();
     failures += commandSketchesTests();
+    failures += parameterEditsTests();
+    failures += decimalAlignTests();
+    failures += parameterSuggestTests();
   }
   if (failures != 0) {
     std::fprintf(stderr, "%d check(s) failed\n", failures);

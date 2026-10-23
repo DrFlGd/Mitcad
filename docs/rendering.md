@@ -25,6 +25,211 @@ installation whose worker is missing (or `MITCAD_RENDER_WORKER` naming no
 file) simply has no rendered view (the log says `No render worker
 (mitcad-render) next to the application`).
 
+## macOS viewport composition research
+
+Research for mitcad#553, 2026-10-23. Recommendation: retain the current
+Qt/OCCT OpenGL viewport for now. An IOSurface bridge is a feasible way to
+move the containing Qt window's composition to Metal while preserving
+OCCT's desktop GL renderer, but it adds explicit resource ownership,
+synchronization and a presentation pass. ANGLE is a larger dependency and
+platform integration change. Neither alternative has demonstrated an
+application-level performance advantage. Qt remains the default frontend;
+this investigation does not change the renderer or enable AppKit by default.
+
+### What the pinned application actually uses
+
+The pins are Qt 6.12.0 (`tools/dev-env/versions.sh`) and OCCT 8.0.1 with
+Mitcad's overlay patches (`vcpkg.json`, `third_party/vcpkg-ports`).
+`OcctViewer` derives from `QOpenGLWidget`; `initializeGL()` attaches OCCT to
+Qt's current context and `paintGL()` wraps the currently bound Qt FBO.
+`macSurfaceFormat()` currently lives in `app/OcctViewer.cpp`, and
+`app/main.cpp` installs its 4.1 core profile before `QApplication`.
+The inspected native OCCT configuration has `USE_OPENGL=ON`,
+`USE_GLES2=OFF` and links Apple's OpenGL framework.
+
+Qt 6.12's `QOpenGLWidgetPrivate::ensureRhiDependentResources()` only wraps
+the GL texture for an OpenGL RHI. `QRhiWidgetPrivate::init()` instead
+requests Metal on Darwin. Thus replacing the host can change composition,
+but adding a Metal `QRhiWidget` alongside the existing `QOpenGLWidget` in
+one top-level widget window cannot: their backends disagree.
+This is a per-window restriction, not a claim that every application
+window uses OpenGL. In particular, macOS glass cards are separate child
+windows, and AppKit controls have their own presentation path.
+See the [Qt 6.12 QOpenGLWidget implementation](https://github.com/qt/qtbase/blob/v6.12.0/src/openglwidgets/qopenglwidget.cpp)
+and [QRhiWidget implementation](https://github.com/qt/qtbase/blob/v6.12.0/src/widgets/kernel/qrhiwidget.cpp).
+
+Apple [deprecated OpenGL in macOS 10.14](https://developer.apple.com/library/archive/documentation/GraphicsImaging/Conceptual/OpenGL-MacProgGuide/opengl_pg_concepts/opengl_pg_concepts.html).
+That does not establish an implementation architecture or a removal date.
+This research found no primary Apple evidence supporting the issue body's
+unqualified statement that Apple's OpenGL is implemented over Metal.
+The application still requests Apple's GL API regardless of the driver's
+internal implementation. Qt 6.12 lists [macOS 14.4 and newer as supported](https://doc.qt.io/qt-6.12/macos.html);
+the current application's deployment target remains 14.4. A deployment
+target and successful execution on a newer OS do not prove execution on 14.4.
+
+### QRhiWidget and an IOSurface image
+
+A narrow bridge would keep an independent CGL/NSOpenGL context for OCCT,
+render/resolve into an IOSurface-backed GL color attachment, create an
+`MTLTexture` over the same IOSurface using the Metal device owned by the
+window's QRhi (Apple documents
+[IOSurface-backed Metal textures](https://developer.apple.com/documentation/metal/mtltexture?language=objc)),
+and import that texture with
+`QRhiTexture::createFrom()`. A textured presentation pass writes the
+QRhiWidget color texture, which Qt then composites with the raster widgets.
+The import is non-owning and requires matching device, size, format and
+sample metadata. QRhi belongs to `GuiPrivate` and has no source/binary
+compatibility guarantee across minor Qt versions; retain the exact Qt pin.
+See [QRhiTexture import](https://doc.qt.io/qt-6.12/qrhitexture.html#createFrom)
+and [QRhiWidget's API and compatibility rules](https://doc.qt.io/qt-6.12/qrhiwidget.html).
+
+This shares storage between APIs without a CPU readback/upload. It does
+not eliminate the GL resolve, texture sampling or Qt's final composition.
+If OCCT cannot draw its resolved image directly into that attachment, a
+GL blit into it is additional work. An RGBA8/BGRA8 image requires
+`width * height * 4` payload bytes: 2048 x 1280 is 10 MiB, and 2304 x 1440
+is 12.66 MiB per image, before row alignment and depth/MSAA attachments.
+Triple buffering triples that color storage. These are calculated sizes,
+not measured allocation or bandwidth peaks.
+
+The two APIs must never write/read a reused image concurrently. The
+throwaway probe uses `glFinish()` before Metal reads and waits for the
+previous Metal command buffer before GL rewrites it. This deliberately
+serializes execution; a production ring needs explicit completion and
+backpressure. IOSurface locking alone is not a GPU completion protocol.
+Native Metal commands must be recorded within Qt's declared external
+content block; see [QRhiCommandBuffer::beginExternal](https://doc.qt.io/qt-6.12/qrhicommandbuffer.html#beginExternal).
+
+OCCT's orientation cube, scene overlays and selection highlighting would
+remain in the GL image. Picking remains OCCT/AIS selection, provided mouse
+coordinates use the current backing size and camera. QWidget cube buttons
+and ordinary cards can remain siblings above the QRhiWidget; the glass
+child-window arrangement is unchanged by this research. A host conversion
+must preserve covered rectangles, focus, cursor/gesture routing and the
+existing screenshot path. The embedded AppKit viewport needs its own
+attachment checks; changing the outer UI alone leaves OCCT on GL.
+
+On resize or display/backing-scale change, replace the IOSurface and both
+API views at the new pixel size, update OCCT's neutral window/camera and
+pick scaling, reject stale-size frames and retire the old images only after
+both consumers finish. Reparenting or QRhi device loss also invalidates
+imports. Check orientation, color transfer/alpha, screen changes and
+fullscreen separately; a same-display resize cannot prove a 1x/2x move.
+
+### ANGLE and the OCCT GLES path
+
+ANGLE supplies EGL and GLES libraries and an explicit Metal backend.
+Select Metal through EGL platform attributes and verify the runtime
+renderer/version/extensions rather than relying on a default. Its current
+Metal implementation gates its maximum GLES version by GPU capability,
+caps conformant GLES at 3.0, and exposes IOSurface and native Metal texture
+interoperability. This is upstream capability evidence, not a validated
+Mitcad dependency pin. See [ANGLE Metal implementation](https://github.com/google/angle/blob/main/src/libANGLE/renderer/metal/DisplayMtl.mm)
+and [ANGLE development and backend selection](https://chromium.googlesource.com/angle/angle/+/main/doc/DevSetup.md).
+The pinned vcpkg baseline does offer an `angle[metal]` port at commit
+`d9fc4a372074b1079c193c422fc4a180e79b6636` (chromium/7258); Mitcad does not
+depend on it. Any experiment should select and validate that exact build
+or explicitly review another pin rather than treating upstream `main`
+as a reproducible dependency.
+
+The installed desktop `TKOpenGl` cannot consume an EGL context by changing
+a Qt format. A separate GLES/EGL build is necessary, including a macOS
+window/context adapter: pinned `OpenGl_Window.cxx` excludes its generic
+EGL window implementation on Apple without Xlib, while
+`OpenGl_Window_1.mm` uses NSOpenGLContext on desktop macOS. The context's
+function loader also needs the EGL route rather than the system framework.
+Enabling `USE_GLES2` alone is not a completed macOS ANGLE port. No ANGLE
+dylibs or GLES OCCT toolkit are present in the inspected build, so there
+is no runnable ANGLE/OCCT comparison or measured package-size delta here.
+
+Inspection of the pinned, locally patched OCCT implementation gives the
+following feature limits; these still require runtime image validation:
+
+| Feature | GLES path and consequence |
+|---|---|
+| MSAA into FBOs | `OpenGl_View::prepareFrameBuffers()` clamps to runtime sample limits and distinguishes MSAA textures from renderbuffers. GLES 3.0 can resolve a multisample renderbuffer into a single-sample immediate FBO; do not assume desktop texture-MSAA behavior or the same memory use. |
+| Polygon offsets | `OpenGl_Context::SetPolygonOffset()` supports fill offset but skips line/point offset enables for GLES. Current Mitcad offsets use `Aspect_POM_Fill`; future desktop-only line/point assumptions would need repair. |
+| Z-layer depth | `OpenGl_LayerList` applies depth test/write settings through GLES-compatible depth state. The rendered-image layer, grid, hidden geometry and selection layers still need visual checks for ordering. |
+| FXAA | No FXAA implementation or control was found in the pinned OCCT visualization sources or Mitcad. OCCT's `IsAntialiasingEnabled` is used by its ray-tracing path; it is not evidence of a raster FXAA pass. |
+
+These checks correspond to the pinned [OCCT context](https://github.com/Open-Cascade-SAS/OCCT/blob/V8_0_1/src/Visualization/TKOpenGl/OpenGl/OpenGl_Context.cxx)
+and [view implementation](https://github.com/Open-Cascade-SAS/OCCT/blob/V8_0_1/src/Visualization/TKOpenGl/OpenGl/OpenGl_View.cxx),
+plus the local overlay patches. The separate Cycles path tracer and its
+Metal device are unaffected by a GLES host choice.
+
+Shipping ANGLE means pinned native-architecture `libEGL`/`libGLESv2`
+dylibs and their actual transitive dependencies, relative install names
+and rpaths, deployment-target checks and relocated-bundle execution.
+Add them to bundle dependency/signature checks; sign nested code before
+the enclosing app with the distribution identity, preserving library
+validation. See [Apple's distribution-signing guidance](https://developer.apple.com/documentation/xcode/creating-distribution-signed-code-for-the-mac/).
+ANGLE's [BSD-style licence](https://chromium.googlesource.com/angle/angle/+/main/LICENSE)
+requires its notice and disclaimer with binary distributions. Include
+the selected build's third-party notices too; the top-level licence alone
+does not inventory bundled dependencies. No distribution or signing policy
+change is needed for the current IOSurface/OpenGL option.
+
+### Evidence and decision boundary
+
+The existing physical M1 Max/macOS 27.0.1 checks documented below already
+exercise the OpenGL viewport with Metal path tracing, navigation and
+same-display resize in both frontends. They establish continued function
+on that machine, not a macOS 14.4 runtime result, future OS guarantee,
+display-transition result or Metal-composition speedup.
+
+The temporary probe isolates CGL image sharing and Metal composition from
+OCCT. It compares a Metal clear with the IOSurface presentation path,
+checks a known colored quadrant by readback outside the timing region,
+and resizes twice. Its synthetic QWidget action verifies dispatch only;
+it does not test pointer hit-testing, CAD picking, glass or AppKit. The
+probe is intentionally outside production source and does not replace a
+renderer.
+
+Both probe modes passed on the physical M1 Max (32 GPU cores), macOS
+27.0.1 (26A434), Qt 6.12.0, with Metal composition and the built-in 2x
+display reporting 120 Hz. The CGL renderer was `Apple M1 Max`; its
+`GL_VERSION` string was `4.1 Metal - 91.7`. That is an observed driver
+string on this configuration, not an Apple implementation guarantee for
+all supported Macs. Each mode submitted 200 frames, changing framebuffer
+size from 2048 x 1280 to 2304 x 1440 and back. Both completed one synthetic
+button action. Final pixel readback checked background RGB (32, 64, 128);
+the bridge additionally reproduced the GL-written lower-left red quadrant
+(255, 0, 0), within the unchanged three-level channel tolerance.
+
+| CPU phase, milliseconds, p50 / p95 | Metal clear | CGL / IOSurface / Metal |
+|---|---:|---:|
+| Wait for previous Metal command buffer completion | 0.0001 / 0.0001 | 0.0001 / 0.0003 |
+| GL clear, `glFinish()` and context handoff | 0.0000 / 0.0000 | 0.5035 / 0.6989 |
+| Record Metal presentation pass | 0.0071 / 0.0097 | 0.0179 / 0.0400 |
+
+The standalone probe used native arm64 with no compiler optimization flag;
+Qt was the installed release build. The table pools 180 frames after the
+initial 20, over both pixel sizes.
+Initialization and runtime Metal shader compilation are outside these
+phase timers; the final correctness readback is excluded. The bridge
+records one full-screen texture-sampling pass; the baseline only clears.
+The final probe build was warning-free after fixing its initial Objective-C
+protocol casts and the CGL profile enum. These results demonstrate the
+working bridge and the conservative GL completion cost on this machine.
+They are CPU phase timings, not isolated GPU pass durations, complete
+CAD frame latency, throughput, total memory peaks or a comparison with
+OCCT's current presentation. The tiny previous-buffer wait does not mean
+the GPU did no work. No ANGLE/OCCT timing is reported because that path
+requires the separate macOS adapter/build described above. The companion
+Retina investigation (mitcad#552) measures the existing viewport using a
+Debug C++ build; those application measurements and this synthetic bridge
+have different workloads and must not be subtracted as a before/after gain.
+
+Retaining GL incurs continued dependence on a deprecated system API and
+the current GL window-composition constraint, with no migration cost
+today. Keep existing hardware regression coverage. A future bridge ticket
+is justified by a concrete composition defect or a measured application
+benefit, with OCCT offscreen rendering, actual picking/overlays, resource
+retirement, display changes and both frontend attachments as acceptance.
+ANGLE needs a separate feasibility/port decision before product work;
+neither unmeasured speed nor a presumed GL-removal date justifies it.
+No new implementation follow-up is selected by this recommendation.
+
 ## Design
 
 ```
@@ -109,6 +314,26 @@ file) simply has no rendered view (the log says `No render worker
   (atomics in the header); the application marks the published slot as
   being read and checks it is still published before copying it out. No
   locks across processes.
+- **Display copies and timing** (mitcad#551): `RenderClient::takeFrame`
+  allocates the destination vectors and copies each present half-float plane
+  while holding the slot's reading marker. `RenderMode::displayFrame` then
+  composites, applies exposure/view transform and encodes sRGB into an RGB32
+  `QImage`. `OcctViewer::setRenderedImage` keeps that image and wraps its
+  pixels for OCCT; requesting writable `bits()` can detach Qt's shared image
+  storage. A new texture is uploaded lazily when OCCT draws the quad. At
+  2560 x 1600, each half-float plane is 32,768,000 bytes and the RGB32 image
+  is 16,384,000 bytes; the catcher doubles the half-float copy volume. The
+  existing diagnostic coverage/brightness scans also read every delivered
+  frame on the UI thread and are measured separately.
+  `MITCAD_LOG_TIMING=1` logs allocation, copy, conversion, texture preparation,
+  diagnostic scans and total synchronous delivery by view, samples and actual
+  pixel dimensions. The delivery total includes those CPU stages and their
+  logging, but ends before the queued paint/upload. The draw-time
+  `render upload submit` probe measures OCCT's first texture creation,
+  upload and binding call, including driver work on the CPU; it is not
+  GPU completion time. A timing-only OpenGL element invokes the same lazy
+  aspect application immediately before the quad's primitive and records it
+  once per new quad/texture. No element is inserted with timing disabled.
 - **Renderer interface** (`app/render/Renderer.hpp`): scene updates
   (`SceneUpdate`: new triangle meshes by key, `MeshData`, with their
   faces' triangle counts; the bodies, `BodyData`, each a mesh key, a
@@ -1323,6 +1548,139 @@ are 133 MB and take 380 MB unpacked in the prefix (about 4.8 GB in all).
 The installer grew from 112 MB to 142 MB.
 
 ### macOS
+
+Frames currently use the unlinked POSIX shared-memory transport described
+in [Design](#design), with the same three-slot ownership handshake as Linux.
+Apple Silicon's shared CPU/GPU memory does not remove the application's
+linear-light compositing, view transform, sRGB encoding or Qt detachment.
+An IOSurface carrying the worker's raw half-float plane would still require
+equivalent colour/ground processing in a display shader before it could
+replace the RGB32 quad; merely binding that plane would change the image.
+
+Use the narrow synthetic scene harness for a measurement that includes the
+real application's conversion and OCCT upload, instead of the worker-only
+`--bench` path. It uses the existing macOS UI isolation/driver helpers,
+renders one stable view with production scheduling, and checks an actual
+Retina screenshot of at least 2560 x 1600 pixels, the selected device,
+absence of rendering fallback and all final-frame timing stages. Run CPU
+and Metal serially in a physical Mac's logged-in window-server session:
+
+```sh
+MITCAD_UI_REQUIRE_GUI=1 MITCAD_RENDER_TEST_SYNC_UPLOAD=1 \
+  bash tools/ui-macos-render-transport-measure.sh \
+  build/dev/app/mitcad.app/Contents/MacOS/mitcad build/transport-cpu cpu
+MITCAD_UI_REQUIRE_GUI=1 MITCAD_RENDER_TEST_SYNC_UPLOAD=1 \
+  bash tools/ui-macos-render-transport-measure.sh \
+  build/dev/app/mitcad.app/Contents/MacOS/mitcad build/transport-metal metal
+```
+
+`MITCAD_RENDER_TEST_SYNC_UPLOAD=1` is an opt-in measurement aid, effective
+only with `MITCAD_LOG_TIMING`. It calls `glFinish` before the first texture
+upload, logging the prior queue drain separately, then logs a second
+`glFinish` as `render upload completion wait`. Submission plus that wait
+bounds completed texture creation/upload/binding; the prior drain is not
+part of the upload. Synchronization perturbs normal GPU overlap, so keep
+that bound distinct from production asynchronous submission cost, and do
+not export the switch into ordinary tests or settings. Unset it (or use 0)
+when measuring normal UI-thread submission. No synchronization or upload
+probe runs with timing disabled. Record build type, hardware/OS, actual
+frame dimensions, denoiser, cache state and this switch with the results.
+
+Compare matched full-resolution frames by view/sample/denoised status;
+low-resolution initial previews are separate observations. Compare copy
+plus allocation and upload submission/completion with conversion,
+diagnostics, the synchronous delivery total and the renderer's reported
+frame/view time. IOSurface work is justified when avoidable transfer cost
+is material to the UI's frame budget or delivered-frame cadence. A large
+conversion or diagnostic cost alone does not establish a transfer
+bottleneck. Preserve shared-memory transport until that evidence supports
+the replacement; an eventual implementation must also preserve ground,
+exposure/view-transform/background changes and slot lifetime through
+worker exit, with the existing CLI/non-macOS paths unchanged.
+
+#### Physical frame-transport measurement (2026-10-23)
+
+The CPU and Metal harness runs passed on an Apple M1 Max (10 CPU cores,
+32 GPU cores, 32 GiB RAM), macOS 27.0.1 (26A434), with Qt primary and
+hardware OpenGL `4.1 Metal - 91.7`. The built-in display reported 120 Hz,
+2x scale; after the harness resized its own window the measured viewport
+was 2880 x 1780 backing pixels. MSAA remained 4. The fixed synthetic
+block/ground scene used 16 samples and full-resolution denoised previews
+at 4/16 samples. Both half-float planes were present: 82,022,400 bytes
+copied per full-size frame, followed by a 20,505,600-byte RGB32 image.
+Diagnostics confirmed actual CPU tracing/CPU OIDN in the CPU run and
+Metal tracing/Metal OIDN in the Metal run, with automatic MetalRT off.
+There was no rendering fallback. Existing caches were retained; these
+were not cold-start measurements.
+
+The measurement build was **Debug with the measured C++ path optimized
+at `-O2`**, not a full Release build. Only `OcctViewer.cpp`,
+`render/RenderClient.cpp`, `render/RenderMode.cpp` and `render/RenderImage.cpp`
+received a temporary source compile option through an external deferred
+CMake project include. The effective flags retained `-g`, C++17, arm64
+and the macOS 14.4 deployment target, with `-O2` appended and no added
+`NDEBUG`. The source option also applied to `RenderImage.cpp` in the
+worker. Rust dev artifacts, the remaining worker sources, Cycles, Qt and
+OCCT were unchanged. CMake/Ninja tracked the flags normally; no source,
+build preset or generated build rule was manually edited for this profile.
+The normal configuration was restored after measuring. Both runs used `MITCAD_LOG_TIMING=1` and
+`MITCAD_RENDER_TEST_SYNC_UPLOAD=1`; the UI remained on its normal scheduling
+and the single-sample Cycles test hook was unset.
+
+Each entry below is the one delivered final frame of view 1, 16 samples,
+denoised, at 2880 x 1780. These are individual observations, not medians,
+percentiles or a repeated-run population. Times are milliseconds.
+
+| Stage | CPU render | Metal render |
+|---|---:|---:|
+| Destination allocation/value initialization | 0.77 | 4.70 |
+| Shared-memory plane copies | 1.95 | 1.84 |
+| Compositing/view transform/sRGB conversion | 40.57 | 40.14 |
+| Qt/OCCT texture preparation | 0.50 | 0.50 |
+| Coverage/brightness diagnostics | 10.93 | 10.98 |
+| Total synchronous frame delivery | 54.89 | 58.33 |
+| Prior GL queue drain, excluded from upload | 5.64 | 5.69 |
+| Texture creation/upload/binding submission | 13.43 | 16.53 |
+| Subsequent completion wait | 0.39 | 0.37 |
+| Submission plus completion wait | 13.82 | 16.90 |
+
+The worker reported 27.50 s for the CPU view and 9.79 s for the Metal
+view. Those include tracing/denoising and progressive delivery; they are
+not the cost or cadence of each delivered frame. Earlier raw observations
+from those same runs show why resolution, refinement and first-allocation
+state must stay attached to each measurement:
+
+| Device, frame | Size | Allocate | Copy | Convert | Delivery | Upload submit | Completion wait |
+|---|---|---:|---:|---:|---:|---:|---:|
+| CPU, sample 1 denoised | 360 x 222 | 0.12 | 0.12 | 0.97 | 1.73 | 2.15 | 0.25 |
+| Metal, sample 1 denoised | 360 x 222 | 0.12 | 0.12 | 0.91 | 1.62 | 2.10 | 0.23 |
+| CPU, sample 1 noisy | 2880 x 1780 | 5.06 | 7.11 | 44.19 | 69.73 | 14.18 | 0.33 |
+| Metal, sample 1 noisy | 2880 x 1780 | 6.34 | 8.60 | 41.67 | 69.93 | 19.13 | 1.62 |
+| CPU, sample 4 denoised | 2880 x 1780 | 0.74 | 1.76 | 42.58 | 57.31 | 13.34 | 0.32 |
+| Metal, sample 4 denoised | 2880 x 1780 | 4.80 | 1.76 | 41.52 | 61.13 | 25.91 | 3.41 |
+
+An initial unoptimized Debug CPU run measured the same final frame at
+140.78 ms allocation, 1.92 ms copy, 300.75 ms conversion and 611.91 ms
+total delivery. That is a build-mode caution, not the performance outcome:
+the SDK's libc++ vector initialization and trivial destruction use
+per-element loops without optimization. Two full-resolution planes have
+41,011,200 scalar elements; replacing the previous vectors also happens
+inside total delivery. The bounded `-O2` profile removes that distortion
+without rebuilding unrelated Rust/dependency code. It still does not
+establish full-Release or other-hardware performance.
+
+**Decision:** the measured transfer cost warrants IOSurface implementation
+and validation in mitcad#551. Even the final upload submission alone took
+13.43/16.53 ms on the UI thread, exceeding this display's 8.33 ms refresh
+budget, with additional shared-memory allocation/copy cost. The much larger
+conversion cost also remains visible. This diagnostic change does not
+implement IOSurface and does not complete #551. The synchronized upload
+bound is evidence for proceeding, not a prediction of an IOSurface speedup.
+The next implementation must move or reproduce the colour/ground processing
+correctly, preserve exposure/background/view-transform updates, protect
+surface ownership while either process uses a frame, release surfaces on
+worker exit/crash, and retain the CLI/Linux/Windows transport. Validate those
+properties and measure the actual replacement before claiming the benefit.
 
 In the isolated Apple Silicon build guest (mitcad#51),
 `tools/dev-env/setup-macos.sh` runs `build-cycles-macos.sh` once; then:

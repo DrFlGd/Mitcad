@@ -624,7 +624,7 @@ pub(crate) fn occurrences_used(def: &FeatureDef) -> Vec<OccurrenceUid> {
             .into_iter()
             .flat_map(|p| p.0.iter().copied())
             .collect(),
-        FeatureDef::Extrude(e) => e.cut_scope.as_ref().map_or_else(Vec::new, |scope| {
+        FeatureDef::Extrude(e) => e.active_cut_scope().map_or_else(Vec::new, |scope| {
             scope
                 .paths()
                 .into_iter()
@@ -2115,7 +2115,7 @@ pub(crate) fn orphaned(state: &DocState) -> BTreeSet<FeatureUid> {
             }
             // Missing occurrence paths stay repairable failures. Deleting a
             // component definition still uses normal dependent-feature removal.
-            if matches!(&f.def, FeatureDef::Extrude(e) if e.cut_scope.is_some()) {
+            if matches!(&f.def, FeatureDef::Extrude(e) if e.active_cut_scope().is_some()) {
                 return false;
             }
             occurrences_used(&f.def)

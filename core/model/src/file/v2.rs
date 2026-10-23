@@ -1072,7 +1072,7 @@ pub(super) fn load(value: Value) -> Result<(DocState, Vec<String>), FileError> {
             .and_then(|()| crate::joints::check_generated_references(&assembly, &ctx, &entry.def))
             .and_then(|()| match &entry.def {
                 FeatureDef::Extrude(extrude) => {
-                    extrude.cut_scope.as_ref().map_or(Ok(()), |scope| {
+                    extrude.active_cut_scope().map_or(Ok(()), |scope| {
                         scope.check_components(&assembly, &ctx, entry.component)
                     })
                 }

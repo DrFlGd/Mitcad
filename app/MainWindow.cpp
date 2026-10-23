@@ -97,6 +97,7 @@
 #include "framework/Json.hpp"
 #include "framework/CacheDiagnostics.hpp"
 #include "framework/ModelShapes.hpp"
+#include "framework/ParameterField.hpp"
 #include "framework/ResultCache.hpp"
 #include "framework/Restart.hpp"
 #include "framework/Ribbon.hpp"
@@ -482,6 +483,30 @@ MainWindow::MainWindow(bool demo, QWidget* parent, bool nativeUi)
   connect(m_cancelAction, &QAction::triggered, this, &MainWindow::cancel);
   addAction(m_cancelAction);
 
+  // What expression fields offer while they are typed in, and their Create
+  // User Parameter (mitcad#567, mitcad#568; framework/ParameterField.hpp):
+  // the design's parameters now, and a user parameter as the parameter
+  // table adds one in the window's mode (runParameterCommand, mitcad#564:
+  // a panel's session runs it outside its undo range and previews again; in
+  // a sketch it is an undo step of the sketch).
+  setParameterSource(this, {[this] { return queryArray(QStringLiteral("parameters")); },
+                            [this](const QJsonObject& command, QString* error) {
+                              if (runParameterCommand(command)) {
+                                return true;
+                              }
+                              if (error != nullptr) {
+                                *error = lastCancelled() ? tr("The computation was cancelled.") : lastError();
+                              }
+                              return false;
+                            },
+                            [this] {
+                              return queryObject({{QStringLiteral("query"), QStringLiteral("document")}})
+                                  .value(QStringLiteral("units"))
+                                  .toObject()
+                                  .value(QStringLiteral("length"))
+                                  .toString();
+                            }});
+
   if (m_nativeUi) {
     menuBar()->setNativeMenuBar(false);
     menuBar()->hide();
@@ -815,6 +840,9 @@ void MainWindow::registerCommands() {
                              [this] { openCommandSearch(); });
   search.shortcut = QKeySequence(Qt::Key_S);
   search.tooltip = tr("Find a command by name");
+  // While a panel is open too: what runs beside it (mitcad#564: Change
+  // Parameters), the rest shown disabled.
+  search.duringCommands = true;
   m_registry->add(search);
   // The timeline's search (mitcad#179); Ctrl+F (Cmd+F) where the timeline
   // or the browser has the keys, so no shortcut of its own.
@@ -877,13 +905,19 @@ void MainWindow::registerCommands() {
 
   // The browser and the timeline (U3).
   CommandDef parameters = action("solid.parameters", tr("Change Parameters"), "parameters",
-                                 CommandDef::Mode::Model, [this] { m_controller->openParameters(); });
+                                 CommandDef::Mode::Model, [this] { openParameterTable(); });
   parameters.tooltip = tr("User and model parameters: names, expressions, units and comments");
   parameters.tab = QStringLiteral("SOLID");
   parameters.group = QStringLiteral("MODIFY");
   parameters.keywords = {QStringLiteral("parameters"), QStringLiteral("user parameter"),
                          QStringLiteral("expression"), QStringLiteral("fx")};
+  // Also while a panel is open, which stays open (mitcad#564); not in a
+  // read-only window (duringCommands alone would let it in).
+  parameters.duringCommands = true;
+  parameters.enabled = [this] { return !windowReadOnly(); };
   m_registry->add(parameters);
+  // SKETCH > MODIFY > Change Parameters (mitcad#564; MainWindowParameterEdits.cpp).
+  registerParameterEditCommands();
   // The active component's design policy (mitcad#220); the browser's
   // Design Policy... opens it for any component.
   CommandDef policy = action("assembly.policy", tr("Design Policy..."), "component", CommandDef::Mode::Model,
@@ -1613,6 +1647,7 @@ void MainWindow::startFeatureCommand(const CommandDef& def, const QString& editU
   scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
   CommandPanel* panel = session->createPanel(scroll);
   scroll->setWidget(panel);
+  addParametersButton(*panel, def); // mitcad#564
   if (m_floating != nullptr) {
     // The card's material shows through; a changed panel resizes the card.
     scroll->viewport()->setAutoFillBackground(false);
@@ -1828,9 +1863,8 @@ void MainWindow::cancel() {
 }
 
 void MainWindow::openCommandSearch() {
-  if (m_mode == Mode::Command) {
-    return;
-  }
+  // Also while a panel is open (mitcad#564): its commands that run beside
+  // the panel are enabled (CommandDef::duringCommands).
 #ifdef MITCAD_MACOS_NATIVE_UI
   if (m_nativeWindow) {
     m_nativeWindow->showCommandSearch();

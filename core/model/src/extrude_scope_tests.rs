@@ -515,3 +515,172 @@ fn cut_scope_paste_new_remaps_internal_target_and_source_context() {
     assert!(is_cut(&doc, bodies[0]));
     assert!(is_cut(&doc, original));
 }
+
+#[test]
+fn dormant_cut_scope_does_not_change_boss_geometry_references_or_replay() {
+    for operation in ["join", "new_body", "intersect", "new_component"] {
+        let mut f = fixture();
+        // Intersect needs a local participant; the other operations work
+        // without one. A dormant scope must never read foreign targets.
+        f.doc.activate_component(ComponentUid(1)).unwrap();
+        let sketch = f.doc.add_sketch(SketchPlane::Xy).unwrap().uid;
+        let region = f
+            .doc
+            .add_rectangle(sketch, [2.0, 2.0], &num(4.0), &num(4.0))
+            .unwrap()
+            .region;
+        f.cut["profiles"] = json!([{"sketch":sketch,"region":region}]);
+        f.cut["operation"] = json!(operation);
+        f.cut["cut_scope"]["context"]["component"] = json!("C1");
+        f.cut["cut_scope"]["context"]["occurrence"] = json!("O1");
+        let with_scope = cut_definition(&f.cut);
+        let mut plain = f.cut.clone();
+        plain.as_object_mut().unwrap().remove("cut_scope");
+        let without_scope = cut_definition(&plain);
+        let before = f.doc.to_json();
+        let mut control = Document::from_json(&before, MockKernel::default()).unwrap();
+        control.recompute();
+        let uid = f.doc.add_feature(&with_scope, None).unwrap().uid;
+        control.add_feature(&without_scope, None).unwrap();
+        let stored = &f
+            .doc
+            .features()
+            .find(|feature| feature.uid == uid)
+            .unwrap()
+            .def;
+        let plain_stored = &control
+            .features()
+            .find(|feature| feature.uid == uid)
+            .unwrap()
+            .def;
+        assert_eq!(stored.references(), plain_stored.references());
+        assert_eq!(stored.info().tool_use(), plain_stored.info().tool_use());
+        assert_eq!(f.doc.status(uid), Some(&FeatureStatus::Ok));
+        for body in &f.bodies {
+            assert_eq!(f.doc.body_shape(*body), control.body_shape(*body));
+        }
+        let saved = f.doc.to_json();
+        let mut reopened = Document::from_json(&saved, MockKernel::default()).unwrap();
+        reopened.recompute();
+        assert_eq!(reopened.to_json(), saved);
+        assert_eq!(reopened.status(uid), Some(&FeatureStatus::Ok));
+    }
+}
+
+#[test]
+fn scoped_cut_join_cut_restores_exclusions_through_undo_and_reopen() {
+    let mut f = fixture();
+    let uid = f
+        .doc
+        .add_feature(&cut_definition(&f.cut), None)
+        .unwrap()
+        .uid;
+    let mut boss = f.cut.clone();
+    boss["operation"] = json!("new_body");
+    f.doc.edit_feature(uid, &cut_definition(&boss)).unwrap();
+    assert!(f.bodies.iter().all(|body| !is_cut(&f.doc, *body)));
+    let saved = f.doc.to_json();
+    let mut reopened = Document::from_json(&saved, MockKernel::default()).unwrap();
+    reopened.recompute();
+    reopened.edit_feature(uid, &cut_definition(&f.cut)).unwrap();
+    assert_eq!(reopened.status(uid), Some(&FeatureStatus::Ok));
+    for (i, body) in f.bodies.iter().enumerate() {
+        assert_eq!(is_cut(&reopened, *body), i != 1);
+    }
+    let cut_saved = reopened.to_json();
+    reopened.undo();
+    assert!(f.bodies.iter().all(|body| !is_cut(&reopened, *body)));
+    reopened.redo();
+    assert_eq!(reopened.to_json(), cut_saved);
+}
+
+#[test]
+fn unresolved_modern_cut_scope_is_dormant_until_editor_conversion() {
+    let mut f = fixture();
+    f.cut["cut_scope"]["initialize_on_cut"] = json!(true);
+    // Resolving visibility is an editor action; an API Cut must not silently
+    // activate an unresolved boss's automatic target scope.
+    let error = f
+        .doc
+        .add_feature(&cut_definition(&f.cut), None)
+        .unwrap_err();
+    assert!(error.to_string().contains("initialize_on_cut"));
+    f.cut["operation"] = json!("new_body");
+    let uid = f
+        .doc
+        .add_feature(&cut_definition(&f.cut), None)
+        .unwrap()
+        .uid;
+    assert_eq!(f.doc.status(uid), Some(&FeatureStatus::Ok));
+    assert!(f.bodies.iter().all(|body| !is_cut(&f.doc, *body)));
+    let saved = f.doc.to_json();
+    let mut reopened = Document::from_json(&saved, MockKernel::default()).unwrap();
+    reopened.recompute();
+    assert_eq!(reopened.to_json(), saved);
+    f.cut["operation"] = json!("cut");
+    f.cut["cut_scope"]
+        .as_object_mut()
+        .unwrap()
+        .remove("initialize_on_cut");
+    reopened.edit_feature(uid, &cut_definition(&f.cut)).unwrap();
+    assert!(is_cut(&reopened, f.bodies[0]));
+    assert!(!is_cut(&reopened, f.bodies[1]));
+    assert!(is_cut(&reopened, f.bodies[2]));
+}
+
+#[test]
+fn dormant_cut_choices_follow_reparent_without_active_geometry_references() {
+    let mut f = fixture();
+    f.doc.activate_component(ComponentUid(1)).unwrap();
+    let excluded_body = box_body(&mut f.doc);
+    let sketch = f.doc.add_sketch(SketchPlane::Xy).unwrap().uid;
+    let region = f
+        .doc
+        .add_rectangle(sketch, [2.0, 2.0], &num(4.0), &num(4.0))
+        .unwrap()
+        .region;
+    f.cut["profiles"] = json!([{"sketch":sketch,"region":region}]);
+    f.cut["cut_scope"] = json!({"context":{"component":"C1","occurrence":"O1"},
+        "targets":{"type":"automatic",
+            "excluded":[{"component":"C2","occurrence":"O2"},{"component":"C3","occurrence":"O3"}],
+            "excluded_bodies":[{"component":"C1","occurrence":"O1","body":excluded_body}]}});
+    let uid = f
+        .doc
+        .add_feature(&cut_definition(&f.cut), None)
+        .unwrap()
+        .uid;
+    assert!(is_cut(&f.doc, f.bodies[0]));
+    assert!(!is_cut(&f.doc, excluded_body));
+    let mut join = f.cut.clone();
+    join["operation"] = json!("join");
+    f.doc.edit_feature(uid, &cut_definition(&join)).unwrap();
+    let entry = f.doc.features().find(|feature| feature.uid == uid).unwrap();
+    assert!(crate::joints::referenced_occurrences(&entry.def).is_empty());
+    f.doc.activate_component(ComponentUid::ROOT).unwrap();
+    f.doc
+        .command(&json!({"cmd":"reparent_occurrence","occurrence":"O1","parent":"O2"}).to_string())
+        .unwrap();
+    let entry = f.doc.features().find(|feature| feature.uid == uid).unwrap();
+    let FeatureDef::Extrude(extrude) = &entry.def else {
+        panic!("expected extrusion")
+    };
+    let scope = extrude.cut_scope.as_ref().unwrap();
+    assert_eq!(scope.context.occurrence.to_string(), "O2/O1");
+    assert_eq!(scope.excluded_bodies()[0].occurrence.to_string(), "O2/O1");
+    assert!(crate::joints::referenced_occurrences(&entry.def).is_empty());
+    assert_eq!(f.doc.status(uid), Some(&FeatureStatus::Ok));
+    let saved = f.doc.to_json();
+    f.doc.undo();
+    f.doc.redo();
+    assert_eq!(f.doc.to_json(), saved);
+    let mut reopened = Document::from_json(&saved, MockKernel::default()).unwrap();
+    reopened.recompute();
+    f.cut["cut_scope"]["context"]["occurrence"] = json!("O2/O1");
+    f.cut["cut_scope"]["targets"]["excluded_bodies"][0]["occurrence"] = json!("O2/O1");
+    reopened.edit_feature(uid, &cut_definition(&f.cut)).unwrap();
+    assert_eq!(reopened.status(uid), Some(&FeatureStatus::Ok));
+    assert!(is_cut(&reopened, f.bodies[0]));
+    assert!(!is_cut(&reopened, excluded_body));
+    assert!(!is_cut(&reopened, f.bodies[1]));
+    assert!(!is_cut(&reopened, f.bodies[2]));
+}

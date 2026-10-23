@@ -66,41 +66,44 @@ fn rs_code(data: &[u8], k: usize, interleaved: bool) -> Vec<u8> {
 }
 
 /// The order a literal run's bytes are written in: for a run of 1 to 32
-/// bytes, (count, source index) pieces copied one after another.
+/// bytes, (count, source index) pieces copied one after another. Within a
+/// run, pieces of 2 and 3 bytes are reversed and the halves of a 16-byte
+/// piece swapped (mitcad#563: they were copied as stored, which garbled
+/// runs of 7, 11, 15 and 18 to 32 bytes).
 fn literal_pieces(n: usize) -> &'static [(usize, usize)] {
     match n {
         1 => &[(1, 0)],
         2 => &[(1, 1), (1, 0)],
         3 => &[(1, 2), (1, 1), (1, 0)],
-        4 => &[(1, 0), (1, 1), (1, 2), (1, 3)],
+        4 => &[(4, 0)],
         5 => &[(1, 4), (4, 0)],
         6 => &[(1, 5), (4, 1), (1, 0)],
-        7 => &[(2, 5), (4, 1), (1, 0)],
-        8 => &[(4, 0), (4, 4)],
+        7 => &[(1, 6), (1, 5), (4, 1), (1, 0)],
+        8 => &[(8, 0)],
         9 => &[(1, 8), (8, 0)],
         10 => &[(1, 9), (8, 1), (1, 0)],
-        11 => &[(2, 9), (8, 1), (1, 0)],
+        11 => &[(1, 10), (1, 9), (8, 1), (1, 0)],
         12 => &[(4, 8), (8, 0)],
         13 => &[(1, 12), (4, 8), (8, 0)],
         14 => &[(1, 13), (4, 9), (8, 1), (1, 0)],
-        15 => &[(2, 13), (4, 9), (8, 1), (1, 0)],
+        15 => &[(1, 14), (1, 13), (4, 9), (8, 1), (1, 0)],
         16 => &[(8, 8), (8, 0)],
         17 => &[(8, 9), (1, 8), (8, 0)],
-        18 => &[(1, 17), (16, 1), (1, 0)],
-        19 => &[(3, 16), (16, 0)],
-        20 => &[(4, 16), (16, 0)],
-        21 => &[(1, 20), (4, 16), (16, 0)],
-        22 => &[(2, 20), (4, 16), (16, 0)],
-        23 => &[(3, 20), (4, 16), (16, 0)],
-        24 => &[(8, 16), (16, 0)],
-        25 => &[(8, 17), (1, 16), (16, 0)],
-        26 => &[(1, 25), (8, 17), (1, 16), (16, 0)],
-        27 => &[(2, 25), (8, 17), (1, 16), (16, 0)],
-        28 => &[(4, 24), (8, 16), (16, 0)],
-        29 => &[(1, 28), (4, 24), (8, 16), (16, 0)],
-        30 => &[(2, 28), (4, 24), (8, 16), (16, 0)],
-        31 => &[(1, 30), (4, 26), (8, 18), (16, 2), (2, 0)],
-        _ => &[(16, 16), (16, 0)],
+        18 => &[(1, 17), (8, 9), (8, 1), (1, 0)],
+        19 => &[(1, 18), (1, 17), (1, 16), (8, 8), (8, 0)],
+        20 => &[(4, 16), (8, 8), (8, 0)],
+        21 => &[(1, 20), (4, 16), (8, 8), (8, 0)],
+        22 => &[(1, 21), (1, 20), (4, 16), (8, 8), (8, 0)],
+        23 => &[(1, 22), (1, 21), (1, 20), (4, 16), (8, 8), (8, 0)],
+        24 => &[(8, 16), (8, 8), (8, 0)],
+        25 => &[(8, 17), (1, 16), (8, 8), (8, 0)],
+        26 => &[(1, 25), (8, 17), (1, 16), (8, 8), (8, 0)],
+        27 => &[(1, 26), (1, 25), (8, 17), (1, 16), (8, 8), (8, 0)],
+        28 => &[(4, 24), (8, 16), (8, 8), (8, 0)],
+        29 => &[(1, 28), (4, 24), (8, 16), (8, 8), (8, 0)],
+        30 => &[(1, 29), (1, 28), (4, 24), (8, 16), (8, 8), (8, 0)],
+        31 => &[(1, 30), (4, 26), (8, 18), (8, 10), (8, 2), (1, 1), (1, 0)],
+        _ => &[(8, 24), (8, 16), (8, 8), (8, 0)],
     }
 }
 
@@ -216,10 +219,13 @@ pub fn decompress(src: &[u8], size: usize) -> Result<Vec<u8>, DwgError> {
     let mut out: Vec<u8> = Vec::with_capacity(size);
     let mut input = Input { src, i: 0 };
     let mut length = 0;
+    // An opcode 0x2X first: two bytes after it, then the byte whose low
+    // three bits count the first literals (mitcad#563: read from the byte
+    // before it, a stream that starts so went wrong at its first copy).
     if src.first().is_some_and(|op| op & 0xf0 == 0x20) {
-        input.i = 3;
+        input.i = 4;
         length = usize::from(
-            *src.get(2)
+            *src.get(3)
                 .ok_or_else(|| corrupt("compressed data ends early"))?
                 & 7,
         );
@@ -429,12 +435,15 @@ pub fn read(file: &[u8]) -> Result<Sections, DwgError> {
         let name_length = u64_at(&map, at + 0x20)? as usize;
         let encoding = u64_at(&map, at + 0x30)?;
         let count = u64_at(&map, at + 0x38)? as usize;
-        if name_length > 256 || count > 1 << 20 {
+        if name_length > 512 || count > 1 << 20 {
             return Err(corrupt("a section map entry out of range"));
         }
+        // The name in UTF-16, its length in bytes with the terminating zero
+        // (mitcad#563: it was read as a count of characters); the pages
+        // follow it.
         let name_at = at + 0x40;
         let units: Vec<u16> = map
-            .get(name_at..name_at + 2 * name_length)
+            .get(name_at..name_at + name_length)
             .ok_or_else(|| corrupt("a section name past the map's end"))?
             .as_chunks::<2>()
             .0
@@ -443,13 +452,7 @@ pub fn read(file: &[u8]) -> Result<Sections, DwgError> {
             .take_while(|&u| u != 0)
             .collect();
         let name = String::from_utf16_lossy(&units);
-        // The name, then two zero bytes when it has one.
-        let mut entries = name_at + 2 * name_length + if name_length > 0 { 2 } else { 0 };
-        // A name length that counts the terminating zero already: the
-        // pages start right after the name.
-        if units.len() < name_length {
-            entries = name_at + 2 * name_length;
-        }
+        let entries = name_at + name_length;
         let mut list = Vec::with_capacity(count);
         for k in 0..count {
             let e = entries + 56 * k;
@@ -573,7 +576,8 @@ pub fn write(d: &TestDrawing, classes: &[Class], objects: &BTreeMap<u64, Vec<u8>
             *max as u64,
             0,
             0,
-            units.len() as u64,
+            // In bytes, with the terminating zero.
+            2 * (units.len() as u64 + 1),
             0,
             4,
             list.len() as u64,
@@ -710,5 +714,41 @@ mod tests {
         // = 34 back, no literals after.
         let mut input = Input { src: &[0x10], i: 0 };
         assert_eq!(input.instruction(0x31).unwrap(), (34, 3, 0x10));
+    }
+
+    #[test]
+    fn literal_runs_in_the_order_of_the_specification() {
+        // Pieces of 2 and 3 bytes reversed, a 16-byte piece's halves
+        // swapped (mitcad#563).
+        let run = |n: usize| {
+            let src: Vec<u8> = (0..n as u8).collect();
+            let mut out = Vec::new();
+            copy_literals(&src, &mut out, n);
+            out
+        };
+        assert_eq!(run(7), [6, 5, 1, 2, 3, 4, 0]);
+        assert_eq!(run(19)[..3], [18, 17, 16]);
+        assert_eq!(run(19)[3..], (8..16).chain(0..8).collect::<Vec<u8>>()[..]);
+        let mut whole: Vec<u8> = (24..32).collect();
+        whole.extend(16..24);
+        whole.extend(8..16);
+        whole.extend(0..8);
+        assert_eq!(run(32), whole);
+        // Every run takes each of its bytes once.
+        for n in 1..=32 {
+            let mut sorted = run(n);
+            sorted.sort_unstable();
+            assert_eq!(sorted, (0..n as u8).collect::<Vec<u8>>(), "{n}");
+        }
+    }
+
+    #[test]
+    fn a_stream_that_starts_with_an_opcode_2x() {
+        // The start of a file header as saved (mitcad#563): 0x20, two
+        // bytes, 0x02 (two literals), 00 70 (stored in reverse), then 0x70
+        // 0x00: 7 bytes from 1 back. Its first field, 0x70, as 8 bytes.
+        let src = [0x20, 0x00, 0x00, 0x02, 0x00, 0x70, 0x70, 0x00];
+        let out = decompress(&src, 9).unwrap();
+        assert_eq!(out, [0x70, 0, 0, 0, 0, 0, 0, 0, 0]);
     }
 }

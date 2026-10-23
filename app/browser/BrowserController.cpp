@@ -1872,6 +1872,8 @@ void BrowserController::openParameters() {
   m_parameters->refresh();
 }
 
+ParametersDialog* BrowserController::parametersDialog() const { return m_parameters.data(); }
+
 void BrowserController::openAppearances(const Selection& targets) {
   if (!m_appearances) {
     m_appearances = new AppearanceDialog(m_host, m_window);

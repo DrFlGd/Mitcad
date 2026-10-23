@@ -259,6 +259,7 @@ void CommandSession::setRowDefaults() {
 }
 
 bool CommandSession::start(const Selection& preselection, QString& error) {
+  QJsonObject storedDefinition;
   for (const InputDef& input : m_def.inputs) {
     setDefaults(input, input.id);
   }
@@ -289,6 +290,8 @@ bool CommandSession::start(const Selection& preselection, QString& error) {
       return false;
     }
     m_def.load(def, m_state, m_host);
+    storedDefinition = def;
+    storedDefinition.remove(QStringLiteral("uid"));
     setRowDefaults();
     int position = -1;
     for (int i = 0; i < timeline.size(); ++i) {
@@ -361,7 +364,7 @@ bool CommandSession::start(const Selection& preselection, QString& error) {
     setRowDefaults();
   }
   canonicalizeSelections();
-  startAutoOperation();
+  startAutoOperation(storedDefinition);
   return true;
 }
 
@@ -586,7 +589,11 @@ void CommandSession::setPresenter(CommandPresenter& presenter) {
     inputsChanged();
   };
   actions.objectChanged = [this](const QString& key, const QJsonObject& value) {
+    autoOperationOverruled(key);
     m_state.setObject(key, value);
+    if (const auto slot = slotOf(key); slot && slot->def->onChange) {
+      slot->def->onChange(m_state, m_host);
+    }
     inputsChanged();
   };
   actions.highlightRequested = [this](const Selection& items) {
@@ -1109,6 +1116,9 @@ void CommandSession::advanceIfFull() {
 
 void CommandSession::selectionChanged(const QString& key) {
   autoOperationOverruled(key);
+  if (const auto slot = slotOf(key); slot && slot->def->onChange) {
+    slot->def->onChange(m_state, m_host);
+  }
   logSelection(key);
   listItems();
   updateHighlights();
@@ -1627,6 +1637,9 @@ void CommandSession::runPreview() {
     // The timer ran out while a job computes the model (the caller of the
     // job waits in an event loop): after it.
     m_previewTimer.start(kPreviewDelayMs);
+    return;
+  }
+  if (probeAutoOperation()) {
     return;
   }
   if (m_def.inspect) {

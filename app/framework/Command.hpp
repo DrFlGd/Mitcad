@@ -229,7 +229,7 @@ struct InputDef {
   // Choice: options that follow other inputs (a thread's sizes follow its
   // standard, P9); `choices` when unset.
   std::function<QVector<QPair<QString, QString>>(const CommandState&)> choicesFor;
-  // Called after the user changed a choice, a value (typed, or dragged by
+  // Called after the user changed an object, a selection, a choice, a value (typed, or dragged by
   // its handle) or a text: sets the inputs that follow it (a new thread
   // size takes its coarse designation; a length typed in BUILD detaches it
   // from its auto length, a search text narrows its picker).
@@ -617,11 +617,16 @@ struct CommandDef {
   // Feature commands.
   QString featureType; // the type of definition it adds and edits
   QStringList editsAlso; // other types it edits (Move/Copy: moves of occurrences)
-  // A new feature's inputs "operation" and "objects" (operationInputs)
+  // A feature's inputs "operation" and "objects" (operationInputs)
   // follow what the model chooses from each preview's tool until the user
   // changes either (mitcad#289: Extrude joins the bodies its tool touches
-  // and cuts those it goes into); editing keeps the stored operation.
+  // and cuts those it goes into). An edit opts in only when a separate
+  // preview of its stored geometry matches its stored operation and targets.
+  // Manual operation, objects or cut-target choices end automatic mode.
   bool autoOperation = false;
+  // An automatic operation transition may initialize command-specific
+  // state (Extrude's Cut scope), without recording a deliberate user choice.
+  std::function<void(CommandState&, const CommandContext&)> autoOperationApplied;
   // Sketch commands (U2): `build` gives a `sketch.*` command (or
   // {"commands": [...]}) instead of a feature definition; the preview runs
   // it and takes it back, OK keeps it as one undo step.

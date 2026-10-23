@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: MIT
+# A changed distance while the immutable stored-geometry probe is busy
+# must not make a deliberately saved New Body eligible for automatic mode.
+wait-idle
+window-resize 1400 990
+mark
+dblclick-logged '^Timeline Extrude1 at '
+wait-log 'Computing preview started' 30
+expect-model-busy true
+qt-type-now input_distance '5 mm'
+wait-log '^Extrude Distance: 5 mm' 30
+expect-log 'Extrude: stored operation differs from automatic choice; editing keeps it' 30
+wait-idle 30
+expect-no-log 'Extrude: automatic Operation'
+focus-main
+key Escape
+expect-log 'Command Extrude cancelled'
+expect-model-bodies 4 39000
+expect-never 'The document was read while a job computes it|OCCT view event failed|Recompute failed'

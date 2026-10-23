@@ -1,0 +1,40 @@
+# SPDX-License-Identifier: MIT
+# A saved modern Cut gets automatic edits when its checked target set
+# matches the baseline suggestion. A real checklist override disables it.
+wait-idle
+window-resize 1400 990
+command view.fit
+expect-model-bodies 3 34000
+mark
+dblclick-logged '^Timeline Extrude1 at '
+expect-log 'Extrude: stored operation matches automatic choice; editing follows geometry'
+expect-log 'Cut target C0@: eligible, checked, intersects'
+mark
+focus-main
+focus-widget cut_targets_list
+key Home Right Down Down Space
+expect-log 'Extrude: operation chosen by hand'
+expect-log 'Cut target C0@: eligible, partial, intersects'
+mark
+focus-widget input_distance
+key ctrl+a
+type 5
+expect-log 'Preview Extrude: failed'
+expect-log 'Cut target C0@: eligible, unchecked, outside'
+expect-no-log 'Extrude: automatic Operation'
+expect-no-log 'Extrude Local bodies: .*body F4.b0|Extrude Local bodies: .*body F5.b0'
+mark
+focus-widget input_distance
+key ctrl+a
+type -15
+expect-log 'Preview Extrude: ok'
+expect-log 'Cut target C0@: eligible, partial, intersects'
+expect-no-log 'Extrude: automatic Operation'
+expect-shown-body F1.b0 - 16000
+expect-shown-body F2.b0 - 18000
+button '^OK$'
+expect-log 'Edited F4' 30
+expect-model-bodies 3 36000
+menu 'File/Save'
+expect-log 'Saved .*edit-auto\.mitcad'
+expect-never 'The document was read while a job computes it|OCCT view event failed|Recompute failed'

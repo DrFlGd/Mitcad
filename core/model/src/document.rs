@@ -344,7 +344,7 @@ impl DocState {
         entry.def.info().check(&ctx)?;
         crate::joints::check_generated_references(&self.assembly, &ctx, &entry.def)?;
         if let FeatureDef::Extrude(extrude) = &entry.def
-            && let Some(scope) = &extrude.cut_scope
+            && let Some(scope) = extrude.active_cut_scope()
         {
             scope.check_components(&self.assembly, &ctx, entry.component)?;
         }
@@ -478,7 +478,7 @@ impl DocState {
                             .and_then(|o| o.pattern.as_ref())
                             .is_some_and(|p| affected.contains(&p.feature))
                     })
-                || matches!(&entry.def, FeatureDef::Extrude(extrude) if extrude.cut_scope.as_ref().is_some_and(|scope|
+                || matches!(&entry.def, FeatureDef::Extrude(extrude) if extrude.active_cut_scope().is_some_and(|scope|
                     self.features.iter().take_while(|f| f.uid != entry.uid).any(|f| affected.contains(&f.uid)
                         && scope.depends_on(&self.assembly, f))))
             {

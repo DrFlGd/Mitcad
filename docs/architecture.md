@@ -403,14 +403,28 @@ design in a project.
   value of the `pulley_values` query. Its result keeps its frame as the
   mount `bore` ([commands.md](../core/model/src/api/commands.md),
   "Pulleys").
-- **Extrude's automatic operation** (mitcad#289,
+- **Extrude's automatic operation** (mitcad#289, mitcad#575,
   `core/model/src/document/auto_operation.rs`): a preview asked for it
   evaluates the extrusion as a new body, tries its tool against the
-  visible bodies of its component (boxes first, then
+  visible bodies of its owning component (boxes first, then
   `Kernel::tool_contacts`, Join's contact test) and reports Join, Cut or
-  New Body with the bodies; the app takes the answer into the panel until
-  the user picks an operation ([commands.md](../core/model/src/api/commands.md),
+  New Body with the bodies. Added previews consider bodies at the marker;
+  edited previews compute a temporary state strictly before the edited
+  feature, excluding its result and all later geometry regardless of the
+  marker. The report and retained geometry remain the supplied definition's
+  ordinary preview, including any Cut scope, without changing the document
+  or its undo history. The app decides when to take the answer into the
+  panel ([commands.md](../core/model/src/api/commands.md),
   "Extrude's automatic operation").
+- **Extrude target conversion** (mitcad#570): only Cut activates its
+  `cut_scope`; other solid operations may retain that scope as dormant
+  editor data, with no geometry or dependency effect. A new boss stores
+  `initialize_on_cut: true` in that scope to distinguish automatic Join
+  participants from explicit local body choices. Its editor initializes
+  targets and snapshots visibility when the user chooses Cut. Previously
+  chosen scopes retain exclusions through operation changes and file
+  round trips. Legacy Cuts and explicit local participants remain local;
+  opening an editor never expands targets.
 - **Extrude of a body face** (mitcad#535, `features/extrude.rs`): an
   extrusion's profile may be a planar face of a body (`profile_face`)
   instead of sketch regions: the face is found by its topological name on
@@ -1076,7 +1090,12 @@ not recompute.
   construction geometry, components and their folders work in every mode;
   during a command they run outside its undo range (a cancelled command
   leaves them, a committed one is an undo step of its own after them;
-  `CommandSession::runVisibility`, mitcad#295). Create Sketch shows the
+  `CommandSession::runVisibility`, mitcad#295). Change Parameters works
+  the same way while a panel is open (`CommandSession::runParameter`,
+  mitcad#564): the panel's values are evaluated again and its preview
+  computed again, and an edited feature's own parameters stay the
+  panel's; in sketch mode a change is a sketch action's undo step and the
+  sketch is read again. Create Sketch shows the
   origin planes for its pick only while the design has no component but
   the active one and a root without bodies (mitcad#294). A command shows
   the sketches it uses for its time, as if their light bulbs were on (an
@@ -1570,6 +1589,14 @@ Dialogs modal to the main window are sheets on macOS (`app/framework/Dialogs`:
 `prepareModal`, `sheetWarning`, `sheetInformation`, `sheetQuestion`). On
 macOS Preferences is `SettingsWindow`, a pane per Preferences page whose
 changes apply as they are made, and About is the standard About panel.
+
+The default Qt frontend also uses macOS presentation for Command Search
+and Change Parameters. Their platform helpers use the system font, SF
+Symbols, native search fields and buttons, and palette-derived table and
+selection colours. Layout dimensions are logical pixels, so the controls
+and their icons follow the display's backing scale. Parameter editing and
+command dispatch stay in the shared widgets; the appearance does not
+change which frontend is selected.
 
 **The platform layer.** `app/platform/MacChrome.hpp` declares the
 AppKit-only functions in `mitcad::mac`: SF Symbols as icons in the palette's

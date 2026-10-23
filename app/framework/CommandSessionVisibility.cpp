@@ -9,7 +9,9 @@
 // synchronously) and the asynchronous checkpoint (restored on Cancel and on
 // a failed OK). A change runs after a sketch preview is taken back, so the
 // preview applied again comes after it; a roll-back or a checkpoint taken
-// back runs the recorded changes again.
+// back runs the recorded changes again. The parameter table's changes
+// (mitcad#564, CommandSessionParameters.cpp) are recorded and run again
+// with them, in their order.
 #include "CommandSession.hpp"
 
 #include <utility>
@@ -26,9 +28,26 @@ QString bodyKey(const QString& uid, const QString& occurrence) { return uid + QL
 } // namespace
 
 bool CommandSession::runVisibility(const QJsonArray& commands, const QString& label) {
+  return runOutsideRange(commands, label, false, nullptr);
+}
+
+// A parameter table's change (mitcad#564) goes the same way: outside the
+// range, run again where the range is taken back.
+bool CommandSession::runOutsideRange(const QJsonArray& commands, const QString& label, bool parameter,
+                                     QString* refusal) {
   if (m_done || commands.isEmpty()) {
+    if (refusal != nullptr) {
+      *refusal = tr("%1 has ended.").arg(m_def.name);
+    }
     return false;
   }
+  const auto changed = [this, commands, parameter](bool done, bool sketchPreview) {
+    if (parameter) {
+      parametersChanged(commands.first().toObject(), done, sketchPreview);
+    } else {
+      visibilityChanged(sketchPreview);
+    }
+  };
   if (!m_host.asynchronousCommands()) {
     const bool sketchPreview = m_appliedDepth >= 0;
     if (sketchPreview) {
@@ -37,25 +56,32 @@ bool CommandSession::runVisibility(const QJsonArray& commands, const QString& la
     const bool done =
         commands.size() == 1 ? m_host.runCommand(commands.first().toObject()) : m_host.runCommands(commands, label);
     if (done) {
-      m_visibility.append(VisibilityChange{commands, label});
+      m_visibility.append(VisibilityChange{commands, label, parameter});
     }
     if (commands.size() == 1) {
       m_host.refreshScene(); // runCommands shows the model itself
     }
-    visibilityChanged(sketchPreview);
+    changed(done, sketchPreview);
     return done;
   }
   // Asynchronous: between the steps of the command's own jobs a change
   // would land inside what they take back.
   if (m_asyncPending || m_committing || m_finalizing || m_cancelRequested || m_host.modelBusy()) {
-    m_host.showHint(tr("%1 is computing: change the visibility when it is done.").arg(m_def.name));
-    qDebug().noquote() << QStringLiteral("Visibility during %1 refused: it is computing").arg(m_def.name);
+    const QString why = parameter ? tr("%1 is computing: change the parameter when it is done.").arg(m_def.name)
+                                  : tr("%1 is computing: change the visibility when it is done.").arg(m_def.name);
+    m_host.showHint(why);
+    qDebug().noquote() << QStringLiteral("%1 during %2 refused: it is computing")
+                              .arg(parameter ? QStringLiteral("Parameter change") : QStringLiteral("Visibility"),
+                                   m_def.name);
+    if (refusal != nullptr) {
+      *refusal = why;
+    }
     return false;
   }
   const int appliedDepth = m_appliedDepth;
   const bool sketchPreview = appliedDepth >= 0;
   m_asyncPending = true;
-  const auto run = [this, commands, label, sketchPreview](const CommandHost::AsyncResult& undone) {
+  const auto run = [this, commands, label, sketchPreview, parameter, changed](const CommandHost::AsyncResult& undone) {
     if (!undone.succeeded()) {
       m_asyncPending = false;
       if (!undone.error.isEmpty() && m_presenter) {
@@ -66,15 +92,16 @@ bool CommandSession::runVisibility(const QJsonArray& commands, const QString& la
       else { resumePendingCommit(); }
       return;
     }
-    runVisibilityAsync(commands, label, [this, commands, label, sketchPreview](const CommandHost::AsyncResult& result) {
+    runVisibilityAsync(commands, label, [this, commands, label, sketchPreview, parameter,
+                                         changed](const CommandHost::AsyncResult& result) {
       m_asyncPending = false;
       if (result.succeeded()) {
-        m_visibility.append(VisibilityChange{commands, label});
+        m_visibility.append(VisibilityChange{commands, label, parameter});
       } else if (!result.error.isEmpty()) {
         m_host.showHint(result.error);
       }
       m_host.refreshScene();
-      visibilityChanged(sketchPreview);
+      changed(result.succeeded(), sketchPreview);
       if (m_cancelRequested) { finishAsyncCancel(); }
       else { resumePendingCommit(); }
     });
@@ -119,9 +146,7 @@ void CommandSession::runVisibilityAsync(const QJsonArray& commands, const QStrin
 
 void CommandSession::reapplyVisibilityAsync(int index, CommandHost::AsyncCompletion completion) {
   if (index >= m_visibility.size()) {
-    qDebug().noquote() << QStringLiteral("Command %1: %2 visibility change(s) kept")
-                              .arg(m_def.name)
-                              .arg(m_visibility.size());
+    logKeptChanges();
     m_host.refreshScene();
     completion({});
     return;
@@ -156,9 +181,21 @@ void CommandSession::settleVisibility() {
     }
   }
   m_host.refreshScene();
-  qDebug().noquote() << QStringLiteral("Command %1: %2 visibility change(s) kept")
-                            .arg(m_def.name)
-                            .arg(m_visibility.size());
+  logKeptChanges();
+}
+
+void CommandSession::logKeptChanges() const {
+  qsizetype parameters = 0;
+  for (const VisibilityChange& change : m_visibility) {
+    parameters += change.parameter ? 1 : 0;
+  }
+  const qsizetype visibility = m_visibility.size() - parameters;
+  if (visibility > 0 || parameters == 0) {
+    qDebug().noquote() << QStringLiteral("Command %1: %2 visibility change(s) kept").arg(m_def.name).arg(visibility);
+  }
+  if (parameters > 0) {
+    qDebug().noquote() << QStringLiteral("Command %1: %2 parameter change(s) kept").arg(m_def.name).arg(parameters);
+  }
 }
 
 void CommandSession::visibilityChanged(bool sketchPreviewTakenBack) {

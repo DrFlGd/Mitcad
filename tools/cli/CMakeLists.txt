@@ -1173,3 +1173,18 @@ if(BUILD_TESTING)
       "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
   endif()
 endif()
+
+# Modern scoped Cut tools replay in their owning component (mitcad#569).
+if(BUILD_TESTING)
+  set(scoped_cut_replay "${CMAKE_CURRENT_BINARY_DIR}/scoped-cut-replay.mitcad")
+  add_test(NAME cli.scoped_cut_replay
+    COMMAND mitcad-cli run "${CMAKE_CURRENT_SOURCE_DIR}/tests/scoped_cut_replay.json" --save "${scoped_cut_replay}")
+  set_tests_properties(cli.scoped_cut_replay PROPERTIES FIXTURES_SETUP cli_scoped_cut_replay)
+  add_test(NAME cli.scoped_cut_replay_reopened
+    COMMAND mitcad-cli run "${CMAKE_CURRENT_SOURCE_DIR}/tests/scoped_cut_replay_reopened.json" --open "${scoped_cut_replay}")
+  set_tests_properties(cli.scoped_cut_replay_reopened PROPERTIES FIXTURES_REQUIRED cli_scoped_cut_replay)
+  if(WIN32)
+    set_property(TEST cli.scoped_cut_replay cli.scoped_cut_replay_reopened APPEND PROPERTY ENVIRONMENT_MODIFICATION
+      "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+  endif()
+endif()

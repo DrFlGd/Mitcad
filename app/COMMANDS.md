@@ -1037,6 +1037,61 @@ checkpoint was taken back), `Visibility during <command> refused: it is
 computing`. Tests: `tools/ui-visibility-test.sh`,
 `tools/ui-windows-visibility-test.ps1` (ctest `app.ui-windows-visibility`).
 
+Change Parameters works while a sketch or a feature is created or edited
+(mitcad#564; `MainWindowParameterEdits.cpp`,
+`framework/CommandSessionParameters.cpp`, `framework/ParameterEdits.*`).
+SKETCH > MODIFY has its own entry (`sketch.parameters`, sketch mode only);
+`solid.parameters` (SOLID > MODIFY, Edit menu) is `duringCommands`, so
+it, the command search (now also open during commands, listing what runs
+beside the panel) and a button at the end of the title row of every panel
+with a value field (`CommandPanel::addHeaderAction`, logged as `Panel
+<command> parameters at x,y`) open the table while the panel stays open.
+At most one of the two entries is enabled at a time. The table runs its
+commands through `DocumentHost::runParameterCommand`, and shows what is
+open in a line above its rows (`ParameterEditScope::note`); closing it
+gives the keys back to the window.
+
+- **Sketch mode:** a change is a model command and an undo step like any
+  sketch action. The sketch is read again, so its dimensions and geometry
+  follow at once; Undo and Redo in the sketch take it back and again. A
+  new sketch keeps it as its own step; the edit of an existing sketch
+  merges it into its one `Edit <sketch>` step at Finish Sketch (as it
+  merges everything done in the sketch). A tool's half-drawn input stays.
+- **A panel open:** `CommandSession::runParameter` runs the change as the
+  light bulbs' changes are run (the same recorded list, in order): an
+  applied sketch preview is taken back first, an edit's roll-back and the
+  asynchronous checkpoint run it again where they are taken back. So
+  **Cancel keeps the change**, and OK adds or edits the feature as one
+  undo step after the change's own (`Change <name>`, `Rename <a> to <b>`,
+  `Add Parameter <name>`). Undo and Redo stay unavailable while the panel
+  is open. After a change of values (an expression, unit, value, name, a
+  parameter added or deleted; not a comment or the star) every value input
+  is evaluated again (the values and the hints under the fields), a rename
+  first goes into the panel's expressions that use the old name as a whole
+  name (`renameParameterIn`), the selections are resolved again, the
+  cached previews are dropped and the preview is computed again; what the
+  user typed, chose and picked stays. An asynchronous command refuses a
+  change while it computes.
+- **The edited feature's own parameters** (owner = the feature edited:
+  an extrusion's distance) are the panel's, which OK writes: the table
+  does not edit their names and expressions (`ParameterEditScope::holds`;
+  tooltip and message "<name> is a value of <feature>, whose panel is open:
+  change it there."), and the window refuses such a command
+  (`ParameterEditScope::refuses`). Their comments and stars stay editable.
+- **Refusals** stay in the cell in red with the model's reason, as outside
+  edits; the model, the panel and the sketch keep the last valid value.
+
+Logs: `Parameters during sketch Sketch1` (`command Extrude`, `command
+Extrude editing Extrude1`, `command Sketch Fillet in sketch Sketch1`, `no
+edit`), `Parameters closed: back to Extrude`, `Sketch Sketch1 dimensions
+after the parameter change: width 50.000, d2 40.000`, `Extrude: parameter
+depth changed; the preview follows`, `Extrude distance: depth becomes dp
+(depth renamed)`, `Parameter d3 is held by the open panel of Extrude1`,
+`Parameter change refused during <scope>: <reason>`, `Command Extrude: 1
+parameter change(s) kept`, `Parameter change during Extrude refused: it is
+computing`. Tests: `tools/ui-parameters-edit-test.sh`, the unit test
+`app/tests/parameter_edits.cpp`.
+
 - **Rows:** a row's `SelectionItem` (`BrowserNode::item`) carries the
   occurrence path. Light bulbs: `set_body_visible`,
   `set_occurrence_visible`, `set_feature_visible`, `set_origin_visible`
@@ -1428,10 +1483,29 @@ computing`. Tests: `tools/ui-visibility-test.sh`,
   in the browser and leave the other sources working.
   `MITCAD_TEXTURE_FIXTURES` answers the requests from files
   (`<folder>/<host>/<path>`) for UI tests.
-- **Change Parameters** (`solid.parameters`): each cell change is one
+- **Change Parameters** (`solid.parameters`; `sketch.parameters` in
+  SKETCH > MODIFY): each cell change is one
   model command and undo step; a bare number gets the parameter's unit;
-  refusals stay in the cell in red with the reason. Favourites are
+  refusals stay in the cell in red with the reason. While a sketch or a
+  feature is edited, see the paragraph after the light bulbs above
+  (mitcad#564). Favourites are
   `set_parameter` `favorite`. `--set name=value` sets a value the same way.
+- **Change Parameters, aligned numbers** (mitcad#566): the Expression and
+  Value columns paint a cell whose whole text is one number with an
+  optional unit (`3 mm`, `-2.75 mm`, `0.5 in`, `30 deg`, `2,5`) with
+  `DecimalAlignDelegate`: the integer part ends at one decimal axis per
+  column (an integer has its implied separator there), the separator and
+  fraction follow, and the units start on a line of their own after the
+  longest fraction, in tabular digits (`tnum`). The layout is measured over
+  all rows, hidden ones too, so that the axis stays when the filter
+  changes. The cell's text is not changed: selection, the focus frame, the
+  tool tip and the in-place editor are the standard ones, and the editor
+  shows the whole text. Formulas, names and refused entries are painted as
+  text at the block's left edge; a column narrower than its block is
+  painted as standard text, with an ellipsis. `DecimalAlign` (the split of a
+  text, the column layout) is plain Qt Core; the window logs
+  `Parameters <name> value|expression decimal at x,y` and `... unit at x,y`
+  for the UI test.
 - **Property Sets** (mitcad#496): `view.property_sets` (the command
   search: the selected body or component, else the root), the browser's
   menus of a body (after Appearance...) and of a component (after Design
@@ -3088,6 +3162,7 @@ UI thread.
 | `browser/TimelineWidget.*` | the timeline with the marker and playback buttons |
 | `browser/TimelineSearch.*` | the timeline search's words and filters (mitcad#179) |
 | `browser/ParametersDialog.*` | Change Parameters |
+| `browser/DecimalAlign.*`, `browser/DecimalAlignDelegate.*` | numbers on a shared decimal axis in the parameter table (mitcad#566): the split of a number text, the column layout, the table delegate |
 | `browser/PropertySetsDialog.*` | Property Sets (mitcad#496): a body's, an occurrence's and a component's property sets, in-place editing, Add, Remove, Property Types |
 | `browser/AppearanceDialog.*` | Edit Appearances |
 | `browser/BrowserController.*` | what the browser, timeline, parameters dialog and failed-features summary do |
@@ -4660,10 +4735,22 @@ SVG at several sizes (`themeIcon`).
   a profile on a face), New Body when it touches none. The answer sets
   Operation and Objects (logged `Extrude: automatic Operation = Cut`) and
   their own preview follows, so the view never shows the old operation on
-  the new inputs. A change of Operation or Objects by the user (the
-  panel, a pick, live MCP) turns it off for the rest of the command;
-  editing an Extrude never changes its stored operation. Tests:
-  `tools/ui-auto-operation-test.sh`, `app.ui-windows-auto-operation`.
+  the new inputs. An edit first previews its immutable stored definition:
+  only a matching operation and target body set enable automatic changes
+  (mitcad#575). A modern Cut compares the baseline report's checked bodies,
+  including scope exclusions, rather than its hidden Objects input. A
+  deliberate touching New Body, different explicit bodies, or a selected
+  foreign body that the local suggestion does not include keeps its stored
+  operation. The probe retries the same baseline after input cancellation;
+  early changed geometry cannot become a replacement baseline. Logs explain
+  whether editing follows geometry or keeps the stored policy. A change of
+  Operation, Objects or Affected components by the user (the panel, a pick,
+  live MCP) turns automatic mode off for the rest of the command, including
+  while the initial probe is pending. Automatic transitions into Cut use the
+  same conversion-time visibility as a deliberate first Cut; previously
+  chosen scopes and exclusions stay stored through automatic Join/Cut
+  changes. Tests: `app.unit`, `tools/ui-auto-operation-test.sh`,
+  `app.ui-windows-auto-operation`.
 - **Extrude, Affected components** (an assembly cut's `cut_scope`,
   mitcad#200; `framework/CutTargetsPanel`): for a new cut, the targets the
   view hides start unchecked (mitcad#475). `def.init` takes a snapshot of
@@ -4685,6 +4772,24 @@ SVG at several sizes (`themeIcon`).
   excluded [...], excluded bodies [...]`, `Cut target C2@O2: eligible,
   unchecked, intersects, hidden`, `Cut target row C2@O2 at x,y` (a row's
   place once laid out). Test: `tools/ui-cut-hidden-targets-test.sh`.
+- **Extrude operation conversion** (mitcad#570): editing a Join or New Body
+  without a saved scope initializes Affected components when the user changes
+  Operation to Cut. Visibility is sampled at that conversion, not when the
+  original boss was created or when its editor opened. A modern boss stores
+  a dormant scope with `initialize_on_cut: true` until that first choice;
+  this distinguishes automatic Join participants from explicit local picks.
+  An automatic Cut preview before Join is chosen does not count as a saved
+  target choice. Changing the target checklist itself does.
+  Explicit local body
+  participants and existing legacy Cuts keep their local behavior. A scoped
+  Cut changed to another solid operation retains its choices as dormant
+  `cut_scope` data, including through save/reopen; changing back to Cut
+  restores them without sampling visibility again. Merely reopening any Cut
+  never initializes or resamples scope. An older unscoped non-Cut uses the
+  same deliberate conversion policy; no file migration is needed. A legacy
+  Cut toggled to Join and back within one editor session stays local; if
+  committed as Join and later converted in another session it follows the
+  non-Cut policy. Test: `app.ui-macos-cut-conversion` (primary Qt).
 - **Emboss** (`solid.emboss`, `EmbossCommands.cpp`, mitcad#458): Profiles
   (the newest unused one at start; a text's letters are profiles), Face
   (one planar, cylindrical or conical face, `withAccepts`; none: the sketch
@@ -4823,6 +4928,76 @@ SVG at several sizes (`themeIcon`).
   (`tools/ui-windows-pulley-test.ps1`): a GT2 pulley, its teeth and
   flanges changed in the preview, edited, then a second pulley on the belt
   with its belt length and nearest catalogue length.
+- **Expression fields' parameters** (mitcad#567, mitcad#568;
+  `framework/ParameterField.*` for the list, the fx button and Create
+  User Parameter, `framework/ParameterSuggest.*` for the text rules). One
+  implementation serves every field that takes expressions: a panel's
+  value inputs (`CommandPanel::createRow`, its own parameter set again in
+  `refreshRow`), the sketch dimension editor and the sketch tools' value
+  fields (`SketchController::openValueEditor`, `setFields`) and the
+  parameter table's expression editor (`ParametersDialog::edit`; ordinary
+  text inputs have none). `ParameterField::attach(edit, options)` gives the
+  field an fx button (a trailing action), a list and a right-click menu;
+  options say the field's kind (length, angle, number), its own parameter,
+  its sketch, its log label, whether it takes `name = …` and whether it
+  offers Create User Parameter. The window gives the parameters and the
+  command (`setParameterSource`, MainWindow's constructor: the
+  `parameters` query, `DocumentHost::runParameterCommand`, the document's
+  length unit); a field asks the source of its window (or of the window
+  its dialog belongs to) each time the list opens, so the list follows
+  additions, renames and the document shown.
+  - **Typing:** the identifier at the caret opens the list
+    (`nameFragmentAt`): not a number, not a unit (a word right after a
+    number, a name or `)`), not a function (before `(`), not the name of a
+    leading `name =`. Matches are case-insensitive: names that start with
+    the text, then names that contain it; user parameters, then model
+    parameters (with their reference parameters, "driven"), each with its
+    value in its unit and its comment, in natural order. The field's own
+    parameter is left out. A choice that uses it (a cycle), a reference of
+    the field's own sketch, or one of another kind where it would be the
+    whole expression (an angle as a length; a unitless parameter goes
+    anywhere) is shown dimmed and says why instead of being put in. A
+    choice replaces the whole identifier the caret is in, never the rest
+    of the expression, with the name (not its value), with the field's
+    undo kept, and the field reacts as to typing (`textEdited`). Exactly
+    the one name typed, or a unit or function name, opens no list.
+  - **Keys:** while the list is open, Up, Down, Page Up and Page Down move
+    in it, Enter (or a click) takes the highlighted row and Esc closes the
+    list; the field accepts their shortcut override, so the window's Enter
+    (OK, the sketch's accept) and Esc (Cancel) do not fire and a table
+    cell's editor stays open. Tab closes the list and moves on. With the
+    list closed the keys are the field's. The list is a child of the
+    field's window and takes no focus: the field keeps the keyboard (a
+    panel's field is not committed, a cell's editor stays open).
+  - **fx:** the browser lists every parameter; what is typed then
+    searches names and comments without changing the field; a choice goes
+    in where the caret was when it opened (in place of a selection, so a
+    sketch value not edited yet is replaced). fx again closes it.
+  - **`name = …` (mitcad#568):** in panels and the dimension editor the
+    list offers `Name this value: width = …` for an unknown name typed
+    first (the field then reads `width = `) and `Name this value` in the
+    browser (the own parameter's name before the value, selected to type
+    over). This is the existing rename (mitcad#231, commands.md *Values*),
+    not a user parameter.
+  - **Create User Parameter... (mitcad#568):** offered for an unknown,
+    valid name typed (and always in the browser and the right-click
+    menu), not in the table's cell editor (a dialog would end the cell's
+    editing). The editor proposes the name, the field's kind's unit (the
+    document's length unit, deg, none) and says what the field is. It
+    refuses an empty, invalid or reserved name, a taken one (with a "Use
+    <name>" button: never overwritten), a unit of another kind when the
+    name would be the field's whole expression, and what the model refuses
+    (a cycle, an unknown name, a unit mismatch), all in the editor, which
+    stays open; Cancel changes nothing. Created, the reference goes in
+    where the name was typed and the field has the keyboard again. The
+    command runs as Change Parameters runs it (mitcad#564): in a sketch an
+    undo step of the sketch (merged into an existing sketch's `Edit
+    <sketch>` at Finish Sketch), while a panel is open outside its undo
+    range (Cancel keeps the parameter; OK's step comes after `Add
+    Parameter <name>`).
+  Tests: `tools/ui-parameter-suggest-test.sh`,
+  `tools/ui-parameter-create-test.sh`, the unit test
+  `app/tests/parameter_suggest.cpp`.
 
 ## Known limitations
 
@@ -4953,6 +5128,7 @@ next screenshot.
 | `Drag of Pin:1 started at (x, y, z)`, `Dragged Pin:1 to (x, y, z): Joint1 rz 63.2 deg`, `Drag of Pin:1 cancelled`, `Animating Joint1 rz: 36 frames from 45 deg to 45 deg`, `Animated Joint1: 36 frames`, `Animation of Joint1 stopped: <why>` | dragging a component the joints move (points in its parent's coordinates) and Animate Joint |
 | `Parameters favorites: width` / `none`, `Parameters width favorite at x,y`, `Parameter width favorite: on = 30 mm` | favourites |
 | `Parameters dialog opened`, `Parameters: d1 = width + 5 mm (35 mm); …`, `Parameters d1 expression at x,y` (name, unit, expression, comment), `Parameters add/delete/OK at x,y`, `Added parameter width = 30 mm`, `Parameter d1 expression: width + 5 mm = 35 mm`, `Parameter width expression: d2 / 2 refused: <reason>`, `Delete parameter w refused: <reason>` | Change Parameters (places in the main window's coordinates) |
+| `Parameters during command Extrude editing Extrude1`, `Parameters closed: back to Extrude`, `Panel Extrude parameters at x,y`, `Sketch Sketch1 dimensions after the parameter change: width 50.000, d2 40.000`, `Extrude: parameter depth changed; the preview follows`, `Command Extrude: 1 parameter change(s) kept`, `Parameter d3 is held by the open panel of Extrude1` | Change Parameters while a sketch or a feature is edited (mitcad#564, [Browser, timeline and parameters](#browser-timeline-and-parameters)) |
 | `Property Sets opened for F2.b0, O1`, `Property sets of Body Panel, Occurrence Wall:1, Component Wall: N properties`, `Property sets row: component Identity/Mark = W-12 (user)` (`(user, inherited)`, `(ifc, edited)`, `(computed)`), `Property sets <level> <set>/<key> value at x,y`, `Property sets add\|remove\|types\|computed\|close at x,y`, `Editing property <level> <set>/<key>` (`as a choice: EI30 \| EI60 \| EI90`), `Property sets choice at x,y`, `Property <level> <set>/<key> set: W-20`, `… chosen: EI60`, `…: <text> refused: <reason>`, `Added property <set>/<key> (<type>)`, `Removed property …`, `Property type defined: <name> (<base>)`, `Property type removed: <name>`, `Find in Design property search: <reason>` | Property Sets and its property search (mitcad#496; places in the main window's coordinates); `tools/ui-property-sets-test.sh`, `tools/ui-windows-property-sets-test.ps1` |
 | `Build parts list columns: Mark, FireRating`, `Build parts list row: Wall: W-20 \| EI60`, `Parts list columns at x,y` | the Parts List's property columns (mitcad#496): the keys and each row's values; the field's place |
 | `Panel Fillet input sets.1.radius at x,y`, `Panel Fillet input add sets at x,y`, `… input remove sets.1 at x,y`, `… input up_sections.2 at x,y`, `… input down_sections.0 at x,y` | a list's rows and buttons, an ordered selection's buttons |
@@ -5038,6 +5214,7 @@ next screenshot.
 | `Drawing dialog opened: format pdf, sheet A4, scale fit`, `Drawing dialog file\|format\|sheet\|scale\|OK at x,y` (in the dialog's own window), `Drawing dialog: format = svg`, `Drawing dialog: sheet = A3`, `Drawing dialog: svg A3 to <path>`, `Exported <path>: drawing, 3 views, 2 bodies, A3, 1:1`, `Export drawing: <warning>` | File › Export Drawing (mitcad#471, [Drawing](#drawing)) |
 | `Dialog folder import: <folder>`, `Dialog folder import remembered: <folder>` (`open`, `export`, `import`, `texture`, `program`) | where a file dialog of the group starts, and the folder it remembers when accepted ([File dialogs' folders](#file-dialogs-folders), mitcad#498) |
 | `Typed name kept in Open: deselected <folder>` | Qt's own file dialog had other entries selected than the typed name (a folder the typed path passed through); they are deselected so that Enter or Open takes the typed name (`framework/Dialogs.cpp`) |
+| `Parameter suggestions for Extrude Distance "thi": thickness, thickness2 (A length: …); actions: name, create` (`none` when nothing matches), `Parameter suggestion thickness at x,y`, `Parameter suggestion action create at x,y` (`action name`), `Parameter suggestion highlighted: thickness2`, `Parameter suggestion inserted thickness into Extrude Distance: width / 2 + thickness` (`browser`, `created`, `existing` instead of `suggestion`), `Parameter suggestion tilt refused: <why>`, `Parameter suggestions closed for Extrude Distance (Esc)`, `Parameter fx Extrude Distance at x,y`, `Parameter browser opened for Extrude Distance`, `Parameter naming for dimension d1: width = `, `Create User Parameter opened for dimension d2: name gap, unit mm`, `Create User Parameter gap refused: <why>`, `Created user parameter gap = 12 mm (mm) for dimension d2`, `Create User Parameter cancelled for dimension d2: <the field's text>` | expression fields' suggestions, fx browser, `name = …` and Create User Parameter (mitcad#567, mitcad#568, [Notes](#notes-on-particular-commands)); the field is named `<command> <input label>`, `dimension <its parameter>`, `sketch dimension` (a new one), `sketch <tool value>` or `<parameter> expression` (the table); places in the main window's coordinates |
 
 Test logs are switched on by environment variables
 (`framework/Diagnostics.hpp`): `MITCAD_LOG_PICKS`, `MITCAD_LOG_VOLUMES`

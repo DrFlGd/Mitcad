@@ -10,6 +10,9 @@
 #include <OpenGl_Context.hxx>
 #include <OpenGl_FrameBuffer.hxx>
 #include <OpenGl_GraphicDriver.hxx>
+#include <OpenGl_GlCore11.hxx>
+#include <OpenGl_Group.hxx>
+#include <OpenGl_Workspace.hxx>
 #include <OpenGl_View.hxx>
 #include <OpenGl_Window.hxx>
 
@@ -35,6 +38,7 @@
 #include <limits>
 #include <map>
 #include <tuple>
+#include <utility>
 
 #include <QGuiApplication>
 #include <QKeyEvent>
@@ -43,6 +47,7 @@
 #include <QOpenGLContext>
 #include <QOpenGLFunctions>
 #include <QPainter>
+#include <QScreen>
 #include <QSurfaceFormat>
 #include <QTimer>
 #include <QToolButton>
@@ -614,6 +619,43 @@ occ::handle<AIS_Shape> makeBody(const geometry::Shape& named, BodyDisplay::Style
 // The rendered view's image as a rectangle over the whole view (2D
 // persistence, in device pixels from the lower left corner), unlit and
 // textured with the image.
+// Installed only for timing runs, before the quad's first primitive. OCCT
+// creates and uploads the texture lazily in ApplyAspects(), on this context.
+class RenderedUploadTiming final : public OpenGl_Element {
+public:
+  explicit RenderedUploadTiming(QString detail) : m_detail(std::move(detail)) {}
+
+  void Render(const occ::handle<OpenGl_Workspace>& workspace) const override {
+    if (m_measured) {
+      return;
+    }
+    m_measured = true;
+    static const bool synchronize = qEnvironmentVariableIntValue("MITCAD_RENDER_TEST_SYNC_UPLOAD") == 1;
+    const auto& gl = workspace->GetGlContext();
+    if (synchronize) {
+      ScopedTiming drain("render upload prior drain");
+      drain.setDetail(m_detail);
+      gl->core11fwd->glFinish();
+    }
+    ScopedTiming upload("render upload submit");
+    workspace->ApplyAspects();
+    upload.setDetail(m_detail);
+    upload.finish();
+    if (synchronize) {
+      ScopedTiming wait("render upload completion wait");
+      wait.setDetail(m_detail);
+      gl->core11fwd->glFinish();
+    }
+  }
+
+  void Release(OpenGl_Context*) override {}
+  bool IsFillDrawMode() const override { return true; }
+
+private:
+  QString m_detail;
+  mutable bool m_measured = false;
+};
+
 class OcctViewer::RenderedImageQuad : public AIS_InteractiveObject {
 public:
   RenderedImageQuad() {
@@ -622,11 +664,13 @@ public:
   }
 
   // True when the size changed (the rectangle must be computed again).
-  bool setImage(const occ::handle<Graphic3d_Texture2D>& texture, int width, int height) {
+  bool setImage(const occ::handle<Graphic3d_Texture2D>& texture, int width, int height,
+                const QString& timingDetail) {
     const bool resized = width != m_width || height != m_height || texture != m_texture;
     m_texture = texture;
     m_width = width;
     m_height = height;
+    m_timingDetail = timingDetail;
     return resized;
   }
 
@@ -656,6 +700,12 @@ protected:
     aspect->SetTextureMapOn();
     const occ::handle<Graphic3d_Group> group = presentation->NewGroup();
     group->SetGroupPrimitivesAspect(aspect);
+    if (timingLogged()) {
+      const auto glGroup = occ::handle<OpenGl_Group>::DownCast(group);
+      if (!glGroup.IsNull()) {
+        glGroup->AddElement(new RenderedUploadTiming(m_timingDetail));
+      }
+    }
     group->AddPrimitiveArray(quad);
   }
   void ComputeSelection(const occ::handle<SelectMgr_Selection>&, const int) override {}
@@ -664,6 +714,7 @@ private:
   occ::handle<Graphic3d_Texture2D> m_texture;
   int m_width = 0;
   int m_height = 0;
+  QString m_timingDetail;
 };
 
 namespace {
@@ -1039,6 +1090,27 @@ OcctViewer::OcctViewer(QWidget* parent) : QOpenGLWidget(parent) {
   m_view = m_viewer->CreateView();
   m_view->SetImmediateUpdate(false);
   m_view->ChangeRenderingParams().NbMsaaSamples = 4;
+  // Diagnostic overrides only: retain the normal four-sample policy until
+  // physical-display measurements justify changing it (mitcad#552).
+  const QString aa = qEnvironmentVariable("MITCAD_VIEWPORT_AA");
+  if (aa == QLatin1String("msaa2")) {
+    m_view->ChangeRenderingParams().NbMsaaSamples = 2;
+  } else if (aa == QLatin1String("off") || aa == QLatin1String("ray-aa")) {
+    m_view->ChangeRenderingParams().NbMsaaSamples = 0;
+    // OCCT 8's flag affects its ray tracer, not this raster viewport.
+    m_view->ChangeRenderingParams().IsAntialiasingEnabled = aa == QLatin1String("ray-aa");
+  } else if (!aa.isEmpty() && aa != QLatin1String("msaa4")) {
+    qWarning() << "Unknown MITCAD_VIEWPORT_AA; keeping MSAA 4:" << aa;
+  }
+  if (timingLogged()) {
+    connect(this, &QOpenGLWidget::frameSwapped, this, [clock = QElapsedTimer()]() mutable {
+      if (clock.isValid()) {
+        qDebug().noquote() << QStringLiteral("Timing frame swap: %1 ms")
+                                  .arg(static_cast<double>(clock.nsecsElapsed()) / 1.0e6, 0, 'f', 2);
+      }
+      clock.start();
+    });
+  }
   m_view->SetBgGradientColors(Quantity_Color(0.93, 0.94, 0.96, Quantity_TOC_RGB),
                               Quantity_Color(0.74, 0.77, 0.82, Quantity_TOC_RGB),
                               Aspect_GradientFillMethod_Vertical);
@@ -1532,7 +1604,7 @@ void OcctViewer::setRenderedMode(bool on) {
   requestFrame();
 }
 
-void OcctViewer::setRenderedImage(const QImage& image) {
+void OcctViewer::setRenderedImage(const QImage& image, const QString& timingDetail) {
   const bool was = !m_renderedImage.isNull();
   if (image.isNull()) {
     if (!was) {
@@ -1543,6 +1615,8 @@ void OcctViewer::setRenderedImage(const QImage& image) {
     m_renderedTexture.Nullify();
     m_renderedPixels.Nullify();
   } else {
+    ScopedTiming prepare("render texture prepare");
+    prepare.setDetail(timingDetail);
     // What the image shows: the camera and size of now.
     m_renderedPose = viewPose();
     // OCCT reads the pixels when it draws: the image stays here meanwhile.
@@ -1564,7 +1638,7 @@ void OcctViewer::setRenderedImage(const QImage& image) {
     int width = 0;
     int height = 0;
     m_view->Window()->Size(width, height);
-    if (m_renderedQuad->setImage(m_renderedTexture, width, height) || !was) {
+    if (m_renderedQuad->setImage(m_renderedTexture, width, height, timingDetail) || !was) {
       m_context->Redisplay(m_renderedQuad, false);
     }
     if (!was) {
@@ -3804,6 +3878,19 @@ void OcctViewer::initializeGL() {
     // The driver's version, for error reports (mitcad#61).
     const auto* version = reinterpret_cast<const char*>(context()->functions()->glGetString(GL_VERSION));
     m_glVersion = QString::fromLatin1(version != nullptr ? version : "");
+    if (timingLogged()) {
+      GLint maxSamples = 0;
+      context()->functions()->glGetIntegerv(GL_MAX_SAMPLES, &maxSamples);
+      const QScreen* display = screen();
+      qDebug().noquote() << QStringLiteral("Viewport timing environment: renderer=%1; GL=%2; "
+                                          "scale=%3; logical=%4x%5; backing=%6x%7; refresh=%8 Hz; "
+                                          "GL_MAX_SAMPLES=%9; configured-msaa=%10; ray-aa=%11")
+                                .arg(QString::fromLatin1(renderer != nullptr ? renderer : "unknown"), m_glVersion)
+                                .arg(ratio).arg(width()).arg(height()).arg(viewWidth).arg(viewHeight)
+                                .arg(display ? display->refreshRate() : 0).arg(maxSamples)
+                                .arg(m_view->RenderingParams().NbMsaaSamples)
+                                .arg(m_view->RenderingParams().IsAntialiasingEnabled ? 1 : 0);
+    }
     emit glInitialized(QString::fromLatin1(renderer != nullptr ? renderer : "unknown"));
   }
 }
@@ -3892,6 +3979,13 @@ void OcctViewer::paintGL() {
   NCollection_Vec2<int> oldSize;
   window->Size(oldSize.x(), oldSize.y());
   const NCollection_Vec2<int> newSize = framebuffer->GetVPSize();
+  if (timingLogged()) {
+    timing.setDetail(QStringLiteral("configured-msaa=%1; ray-aa=%2; scale=%3; backing=%4x%5; gpu-sync=%6")
+                         .arg(m_view->RenderingParams().NbMsaaSamples)
+                         .arg(m_view->RenderingParams().IsAntialiasingEnabled ? 1 : 0)
+                         .arg(devicePixelRatioF()).arg(newSize.x()).arg(newSize.y())
+                         .arg(qEnvironmentVariableIntValue("MITCAD_VIEWPORT_SYNC") != 0 ? 1 : 0));
+  }
   if (newSize != oldSize) {
     window->SetSize(newSize.x(), newSize.y());
     m_view->MustBeResized();
@@ -3951,6 +4045,11 @@ void OcctViewer::paintGL() {
   // quiet time ends it (navigationFinished).
   updateNavigation();
   emit viewChanged();
+  // Optional diagnostic fence: include completion of this context's GPU
+  // work in paint duration, excluding Qt composition and presentation.
+  if (timingLogged() && qEnvironmentVariableIntValue("MITCAD_VIEWPORT_SYNC") != 0) {
+    context()->functions()->glFinish();
+  }
 }
 
 void OcctViewer::updateNavigation() {

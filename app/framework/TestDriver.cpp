@@ -15,10 +15,12 @@
 #include <QEvent>
 #include <QFile>
 #include <QFileInfo>
+#include <QHeaderView>
 #include <QImage>
 #include <QKeyEvent>
 #include <QKeySequence>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
@@ -30,8 +32,11 @@
 #include <QPointingDevice>
 #include <QRegion>
 #include <QRegularExpression>
+#include <QScreen>
 #include <QShortcut>
 #include <QTimer>
+#include <QTreeWidget>
+#include <QTreeWidgetItemIterator>
 #include <QTextDocument>
 #include <QWheelEvent>
 #include <QWidget>
@@ -46,6 +51,8 @@
 #include "GlassCard.hpp"
 #include "TestSync.hpp"
 #include "Dialogs.hpp"
+#include "ComputeProgress.hpp"
+#include "Theme.hpp"
 #include "mitcad/geometry/geometry.hpp"
 
 namespace mitcad {
@@ -90,6 +97,9 @@ struct StepSpec {
 
 const StepSpec kSpecs[] = {
     {"key", 1, -1, kInputOfTarget},
+    {"key-now", 1, -1, kPlain},
+    {"qt-type-now", 2, 2, kPlain},
+    {"qt-cancel-progress", 1, 1, kPlain},
     {"type", 1, -1, kInputOfTarget},
     {"click", 2, 4, kInputOfMain},
     {"dblclick", 2, 4, kInputOfMain},
@@ -100,6 +110,7 @@ const StepSpec kSpecs[] = {
     {"click-logged", 1, 3, kInputOfMain},
     {"dblclick-logged", 1, 2, kInputOfMain},
     {"click-pick", 1, 2, kInputOfMain},
+    {"click-visible-face", 0, 0, kInputOfMain},
     {"drag-logged", 2, 3, kInputOfMain},
     {"drag-from", 3, 3, kInputOfMain},
     {"sketch-click", 2, 4, kInputOfMain},
@@ -110,7 +121,7 @@ const StepSpec kSpecs[] = {
     {"file-dialog", 2, 4, kInputOfMain},
     {"menu", 1, 1, kInputOfMain},
     {"popup", 1, 1, kInputOfTarget},
-    {"button", 1, 1, kInputOfTarget},
+    {"button", 1, 2, kInputOfTarget},
     {"native-click", 1, 1, kInputOfTarget},
     {"native-hover", 2, 2, kInputOfTarget},
     {"native-type", 2, 2, kInputOfTarget},
@@ -149,6 +160,12 @@ const StepSpec kSpecs[] = {
     {"qt-pinch", 3, 3, kInputOfMain},
     {"capture-view-height", 1, 1, kIdle},
     {"expect-view-zoom", 2, 4, kIdle},
+    {"capture-view-target", 1, 1, kIdle},
+    {"expect-view-pan", 2, 2, kIdle},
+    {"expect-viewport", 0, 0, kIdle},
+    {"window-state", 1, 1, kIdle},
+    {"expect-window-state", 1, 1, kIdle},
+    {"window-move", 2, 2, kIdle},
     {"capture-view-orientation", 1, 1, kIdle},
     {"expect-view-orientation", 2, 2, kIdle},
     {"expect-view-buttons", 1, 1, kIdle},
@@ -170,6 +187,12 @@ const StepSpec kSpecs[] = {
     {"expect-native-dialog-gone", 1, 2, kPlain},
     {"focus-dialog", 1, 2, kPlain},
     {"focus-main", 0, 0, kPlain},
+    {"focus-widget", 1, 1, kInputOfTarget},
+    {"dialog-resize", 2, 2, kInputOfTarget},
+    {"expect-dialog-appearance", 1, 1, kIdle},
+    {"expect-command-search", 2, 3, kIdle},
+    {"click-parameter", 2, 2, kInputOfTarget},
+    {"expect-parameter-cell", 4, 4, kIdle},
     {"mark", 0, 0, kPlain},
     {"wait-log", 1, 2, kPlain},
     {"expect-log", 1, 2, kPlain},
@@ -757,7 +780,7 @@ void TestDriver::finish() {
     return;
   }
   if (!m_nativeJobClickLabel.isEmpty()) {
-    fail(m_nativeJobClickLine, QStringLiteral("the armed native click's job '%1' never started").arg(m_nativeJobClickLabel));
+      fail(m_nativeJobClickLine, QStringLiteral("the armed button's job '%1' never started").arg(m_nativeJobClickLabel));
     return;
   }
   if (!m_nativeJobHistoryDragLabel.isEmpty()) {
@@ -1251,6 +1274,75 @@ void TestDriver::run(const Step& step) {
           }
           qInfo().noquote() << QStringLiteral("Picking suspended during %1 (busy)").arg(label);
         });
+  } else if (name == QLatin1String("qt-cancel-progress")) {
+    if (mac::test::active() || a.at(0).isEmpty()) {
+      fail(line, QStringLiteral("qt-cancel-progress requires the Qt frontend and a job label")); return;
+    }
+    const QString label = a.at(0);
+    const auto ownsProgress = [](const MainWindow* window, const ComputeProgress* progress) {
+      if (!window || !progress) return false;
+      // A window-modal QDialog is a top-level widget. QWidget ancestry
+      // stops at that window boundary, but QObject ownership retains the
+      // document that constructed this particular progress dialog.
+      for (const QObject* owner = progress->parent(); owner; owner = owner->parent()) {
+        if (owner == window) return true;
+      }
+      return false;
+    };
+    whenReady([this, label, ownsProgress] {
+      auto* window = qobject_cast<MainWindow*>(m_main.data());
+      QWidget* modal = QApplication::activeModalWidget();
+      auto* progress = qobject_cast<ComputeProgress*>(modal);
+      // The synchronous Qt wait logs its current job before showing this
+      // modal dialog. Match the newest start, so a preceding preview cannot
+      // satisfy an edit_feature cancellation request.
+      static const QRegularExpression started(QStringLiteral("^Computing (\\S+) started$"));
+      QRegularExpressionMatch match;
+      const int newest = findLastLine(started, m_mark, nullptr, &match);
+      QStringList candidates;
+      if (window) {
+        for (const auto* candidate : window->findChildren<ComputeProgress*>()) {
+          candidates << QStringLiteral("%1:visible=%2,modal=%3,owned=%4")
+              .arg(candidate->objectName()).arg(candidate->isVisible()).arg(int(candidate->windowModality()))
+              .arg(ownsProgress(window, candidate));
+        }
+      }
+      const QString detail = QStringLiteral("busy=%1, appState=%2, activeModal=%3/%4, visible=%5, progress=%6, "
+          "cancelling=%7, owned=%8, newestJob=%9, candidates=[%10]")
+          .arg(window && window->modelBusy()).arg(int(QGuiApplication::applicationState()))
+          .arg(modal ? QString::fromLatin1(modal->metaObject()->className()) : QStringLiteral("none"))
+          .arg(modal ? modal->objectName() : QStringLiteral("none")).arg(modal && modal->isVisible())
+          .arg(progress != nullptr).arg(progress && progress->isCancelling())
+          .arg(ownsProgress(window, progress))
+          .arg(newest >= 0 ? match.captured(1) : QStringLiteral("none")).arg(candidates.join(QStringLiteral("; ")));
+      if (detail != m_waitDetail && window && window->modelBusy()) {
+        qInfo().noquote() << QStringLiteral("TestDriver: Qt progress readiness: %1").arg(detail);
+      }
+      m_waitDetail = detail;
+      if (!window || !window->modelBusy() || !progress || !progress->isVisible() || progress->isCancelling() ||
+          !ownsProgress(window, progress) || newest < 0 || match.captured(1) != label) return false;
+      m_found = progress;
+      return true;
+    }, 10, QStringLiteral("no live Qt progress dialog for '%1'").arg(label), [this, label, line, ownsProgress] {
+      auto* window = qobject_cast<MainWindow*>(m_main.data());
+      auto* progress = qobject_cast<ComputeProgress*>(m_found.data());
+      if (!window || !window->modelBusy() || !progress || QApplication::activeModalWidget() != progress ||
+          !progress->isVisible() || progress->isCancelling() || !ownsProgress(window, progress)) {
+        fail(line, QStringLiteral("the Qt progress dialog lost its live job before cancellation")); return;
+      }
+      const auto buttons = progress->findChildren<QAbstractButton*>();
+      for (QAbstractButton* button : buttons) {
+        if (plainText(button->text()) == QStringLiteral("Cancel") && button->isVisible() && button->isEnabled()) {
+          button->click();
+          if (!progress->isCancelling()) {
+            fail(line, QStringLiteral("the real Qt progress Cancel button did not request cancellation")); return;
+          }
+          qInfo().noquote() << QStringLiteral("Qt test: clicked progress Cancel during %1 (busy)").arg(label);
+          return;
+        }
+      }
+      fail(line, QStringLiteral("the live Qt progress dialog has no enabled Cancel button"));
+    });
   } else if (name == QLatin1String("native-click-on-job")) {
     if (!mac::test::active()) { fail(line, QStringLiteral("native-click-on-job requires the native macOS UI")); return; }
     auto* window = qobject_cast<MainWindow*>(mainWindow);
@@ -1269,7 +1361,7 @@ void TestDriver::run(const Step& step) {
           QObject::disconnect(m_nativeJobClickConnection);
           m_nativeJobClickLabel.clear();
           if (!guard || !guard->modelBusy()) {
-            fail(line, QStringLiteral("the armed native click did not observe an actual busy '%1' job").arg(label)); return;
+            fail(line, QStringLiteral("the armed click did not observe an actual busy '%1' job").arg(label)); return;
           }
           QString error;
           if (!mac::test::clickImmediately(identifier, error)) { fail(line, error); return; }
@@ -1613,6 +1705,82 @@ void TestDriver::run(const Step& step) {
       sendMouse(type, at, phase == QStringLiteral("move") ? Qt::NoButton : button,
                 phase == QStringLiteral("release") ? Qt::NoButton : button, modifiers);
     });
+  } else if (name == QLatin1String("expect-viewport")) {
+    whenReady([this] {
+      auto* view = qobject_cast<OcctViewer*>(viewer());
+      if (!view || !view->isValid() || view->glVersion().isEmpty()) return false;
+      const QImage image = view->grabFramebuffer();
+      const qreal scale = view->devicePixelRatioF();
+      const bool retina = qEnvironmentVariableIntValue("MITCAD_UI_REQUIRE_RETINA") != 0;
+      m_waitDetail = QStringLiteral("viewport logical %1x%2, framebuffer %3x%4, scale %5")
+          .arg(view->width()).arg(view->height()).arg(image.width()).arg(image.height()).arg(scale);
+      if (image.isNull() || image.width() < 300 || image.height() < 200 ||
+          std::abs(image.width() - view->width() * scale) > 1 ||
+          std::abs(image.height() - view->height() * scale) > 1 || (retina && scale < 1.9)) return false;
+      const QScreen* screen = view->screen();
+      qDebug().noquote() << QStringLiteral("TestDriver: %1; screen %2x%3 points, refresh %4 Hz; OpenGL %5")
+          .arg(m_waitDetail).arg(screen ? screen->geometry().width() : 0)
+          .arg(screen ? screen->geometry().height() : 0).arg(screen ? screen->refreshRate() : 0)
+          .arg(view->glVersion());
+      return true;
+    }, 10, QStringLiteral("the viewport framebuffer does not match its actual backing scale"));
+  } else if (name == QLatin1String("capture-view-target")) {
+    auto* view = qobject_cast<OcctViewer*>(viewer());
+    if (!view || !view->isValid()) { fail(line, QStringLiteral("capture-view-target requires an initialized viewport")); return; }
+    const gp_Pnt target = view->camera().target;
+    m_vars[a.at(0)] = QStringLiteral("%1,%2,%3").arg(target.X(), 0, 'g', 17)
+        .arg(target.Y(), 0, 'g', 17).arg(target.Z(), 0, 'g', 17);
+  } else if (name == QLatin1String("expect-view-pan")) {
+    const QStringList coordinates = a.at(0).split(QLatin1Char(','));
+    double x = 0, y = 0, z = 0;
+    if (coordinates.size() != 3 || !toNumber(coordinates.at(0), x) || !toNumber(coordinates.at(1), y) ||
+        !toNumber(coordinates.at(2), z) || (a.at(1) != QLatin1String("changed") && a.at(1) != QLatin1String("unchanged"))) {
+      fail(line, QStringLiteral("expect-view-pan <captured-target> changed|unchanged")); return;
+    }
+    const bool changed = a.at(1) == QLatin1String("changed");
+    whenReady([this, x, y, z, changed] {
+      auto* view = qobject_cast<OcctViewer*>(viewer());
+      if (!view) return false;
+      const double distance = view->camera().target.Distance(gp_Pnt(x, y, z));
+      m_waitDetail = QStringLiteral("camera target moved %1 mm").arg(distance, 0, 'g', 12);
+      return std::isfinite(distance) && (changed ? distance > 1e-6 : distance <= 1e-6);
+    }, 6, QStringLiteral("the camera pan did not remain %1").arg(a.at(1)));
+  } else if (name == QLatin1String("window-state") || name == QLatin1String("expect-window-state")) {
+    const QString state = a.at(0);
+    if (state != QLatin1String("normal") && state != QLatin1String("minimized") && state != QLatin1String("fullscreen")) {
+      fail(line, QStringLiteral("%1 normal|minimized|fullscreen").arg(name)); return;
+    }
+    if (name == QLatin1String("window-state")) {
+      queue([this, state, line] {
+        if (mac::test::active()) {
+          QString error;
+          if (!mac::test::setDocumentState(state, error)) fail(line, error);
+        } else if (m_main) {
+          if (state == QLatin1String("minimized")) m_main->showMinimized();
+          else if (state == QLatin1String("fullscreen")) m_main->showFullScreen();
+          else m_main->showNormal();
+        } else fail(line, QStringLiteral("window-state requires a main window"));
+      });
+    } else {
+      whenReady([this, state] {
+        if (mac::test::active()) return mac::test::documentState() == state;
+        return m_main && (m_main->isMinimized() ? QStringLiteral("minimized") :
+                         m_main->isFullScreen() ? QStringLiteral("fullscreen") : QStringLiteral("normal")) == state;
+      }, 10, QStringLiteral("the document did not become %1").arg(state));
+    }
+  } else if (name == QLatin1String("window-move")) {
+    double x = 0, y = 0;
+    if (!toNumber(a.at(0), x) || !toNumber(a.at(1), y) || std::abs(x) > 10000 || std::abs(y) > 10000) {
+      fail(line, QStringLiteral("window-move expects screen-relative offsets -10000..10000")); return;
+    }
+    queue([this, x, y, line] {
+      if (mac::test::active()) {
+        QString error;
+        if (!mac::test::moveDocument(qRound(x), qRound(y), error)) fail(line, error);
+      } else if (m_main && m_main->screen()) {
+        m_main->move(m_main->screen()->availableGeometry().topLeft() + QPoint(qRound(x), qRound(y)));
+      } else fail(line, QStringLiteral("window-move requires a main window and screen"));
+    });
   } else if (name == QLatin1String("capture-view-height")) {
     auto* view = qobject_cast<OcctViewer*>(viewer());
     if (!view || !std::isfinite(view->camera().height) || view->camera().height <= 0) {
@@ -1825,9 +1993,25 @@ void TestDriver::run(const Step& step) {
     if (name == QLatin1String("native-action")) queue(perform);
     else whenReady([identifier] { return mac::test::controlExists(identifier); }, 6,
                    QStringLiteral("no native control '%1'").arg(identifier), [this, perform] { queue(perform); });
-  } else if (name == QLatin1String("key") || name == QLatin1String("native-key-now") ||
+  } else if (name == QLatin1String("qt-type-now")) {
+    const QPointer<QLineEdit> edit(m_main ? m_main->findChild<QLineEdit*>(a.at(0)) : nullptr);
+    if (mac::test::active() || !edit || !edit->isVisible() || !edit->isEnabled()) {
+      fail(line, QStringLiteral("qt-type-now requires a visible, enabled Qt text field")); return;
+    }
+    // Real editor events, deliberately without the driver's idle gate.
+    // Delivering a whole text replacement as one event avoids intermediate
+    // numeric prefixes starting extra previews unrelated to this race.
+    edit->setFocus(Qt::OtherFocusReason);
+    edit->selectAll();
+    QKeyEvent down(QEvent::KeyPress, Qt::Key_unknown, Qt::NoModifier, a.at(1));
+    QCoreApplication::sendEvent(edit.data(), &down);
+    if (!edit) { fail(line, QStringLiteral("the Qt text field was destroyed during input")); return; }
+    QKeyEvent up(QEvent::KeyRelease, Qt::Key_unknown, Qt::NoModifier, a.at(1));
+    QCoreApplication::sendEvent(edit.data(), &up);
+    if (edit->text() != a.at(1)) fail(line, QStringLiteral("the Qt field did not retain the requested text"));
+  } else if (name == QLatin1String("key") || name == QLatin1String("key-now") || name == QLatin1String("native-key-now") ||
              name == QLatin1String("native-key-event")) {
-    if (name != QLatin1String("key") && !mac::test::active()) {
+    if (name.startsWith(QLatin1String("native-")) && !mac::test::active()) {
       fail(line, QStringLiteral("%1 requires the native macOS UI").arg(name));
       return;
     }
@@ -1845,13 +2029,18 @@ void TestDriver::run(const Step& step) {
       mac::test::requestKeyEventFocus();
       // AppKit activation is asynchronous. Posting while inactive can use
       // menu fallback instead of the document's guarded shortcut dispatch.
-      whenReady([] { return mac::test::keyEventFocusReady(); }, 6,
+      whenReady([this] {
+        if (mac::test::keyEventFocusReady()) return true;
+        m_waitDetail = mac::test::keyEventFocusDiagnostic();
+        return false;
+      }, 6,
                 QStringLiteral("native application did not activate its key-event target"),
                 [this, presses, line] {
         for (const KeyPress& press : presses) {
           queue([this, press, line] {
             if (!mac::test::sendKeyEvent(press.key, press.modifiers, press.text)) {
-              fail(line, QStringLiteral("native application key event lost its active target"));
+              fail(line, QStringLiteral("native application key event lost its active target (%1)")
+                             .arg(mac::test::keyEventFocusDiagnostic()));
             }
           });
         }
@@ -1971,6 +2160,45 @@ void TestDriver::run(const Step& step) {
     }
 
     // --- The mouse where the application logged a place
+  } else if (name == QLatin1String("click-visible-face")) {
+    const auto point = std::make_shared<QPoint>();
+    const auto expected = std::make_shared<SelectionItem>();
+    whenReady([this, point, expected] {
+      auto* view = qobject_cast<OcctViewer*>(viewer());
+      if (!view || !m_main || !view->isValid()) return false;
+      // Ask the current OCCT selector after this lifecycle transition;
+      // idle views do not emit the command-only "Pick places" log.
+      const auto candidates = view->pickPoints(SelectKind::Face);
+      for (const auto& candidate : candidates) {
+        const auto actual = view->itemAt(candidate.second);
+        if (!actual || actual->kind != SelectKind::Face || *actual != candidate.first) continue;
+        *point = view->mapTo(m_main.data(), candidate.second);
+        *expected = *actual;
+        return true;
+      }
+      m_waitDetail = QStringLiteral("OCCT found %1 face candidates").arg(candidates.size());
+      return false;
+    }, 6, QStringLiteral("no visible selectable face in the current viewport"), [this, point, expected, line] {
+      queueClick(*point, Qt::LeftButton, Qt::NoModifier, 1);
+      queue([this, expected, line] {
+        auto* window = qobject_cast<MainWindow*>(m_main.data());
+        if (!window) { fail(line, QStringLiteral("the document vanished after the face click")); return; }
+        window->deliverPendingPicks();
+        whenReady([this, expected] {
+          const auto* current = qobject_cast<MainWindow*>(m_main.data());
+          if (!current || current->modelBusy()) return false;
+          const Selection& selected = current->selection();
+          if (selected.size() != 1 || selected.first().kind != SelectKind::Face || selected.first() != *expected) {
+            m_waitDetail = QStringLiteral("actual selection has %1 items; expected %2")
+                .arg(selected.size()).arg(expected->describe());
+            return false;
+          }
+          qInfo().noquote() << QStringLiteral("TestDriver: actual face selected after viewport click: %1")
+              .arg(selected.first().describe());
+          return true;
+        }, 6, QStringLiteral("the actual viewport click did not select the probed face"));
+      });
+    }, mainWindow);
   } else if (name == QLatin1String("click-logged") || name == QLatin1String("dblclick-logged") ||
              name == QLatin1String("click-pick")) {
     const bool pick = name == QLatin1String("click-pick");
@@ -2250,6 +2478,10 @@ void TestDriver::run(const Step& step) {
       return;
     }
     if (mac::test::active()) {
+      if (a.size() > 1) {
+        fail(line, QStringLiteral("button objectName filtering requires Qt controls"));
+        return;
+      }
       whenReady([re] { return mac::test::buttonExists(re); }, 6,
                 QStringLiteral("no native button matching '%1'").arg(a.at(0)), [this, re, line] {
         QString error;
@@ -2258,14 +2490,16 @@ void TestDriver::run(const Step& step) {
       return;
     }
     const QPointer<QWidget> window = targetWindow();
+    const QString identifier = a.size() > 1 ? a.at(1) : QString();
     whenReady(
-        [this, re, window] {
+        [this, re, window, identifier] {
           if (window.isNull()) {
             return false;
           }
           const QList<QAbstractButton*> buttons = window->findChildren<QAbstractButton*>();
           for (QAbstractButton* button : buttons) {
             if (button->isVisibleTo(window.data()) && button->isEnabled() &&
+                (identifier.isEmpty() || button->objectName() == identifier) &&
                 re.match(plainText(button->text())).hasMatch()) {
               m_found = button;
               return true;
@@ -2322,6 +2556,146 @@ void TestDriver::run(const Step& step) {
           }
           m_notBefore = std::max(m_notBefore, m_clock.elapsed() + 300);
         });
+  } else if (name == QLatin1String("focus-widget")) {
+    QWidget* window = QApplication::activePopupWidget();
+    if (!window) window = targetWindow();
+    QWidget* widget = window ? window->findChild<QWidget*>(a.at(0)) : nullptr;
+    if (!widget || !widget->isVisible() || !widget->isEnabled()) {
+      fail(line, QStringLiteral("no visible enabled widget '%1'").arg(a.at(0))); return;
+    }
+    m_dialog = widget->window();
+    widget->setFocus(Qt::TabFocusReason);
+  } else if (name == QLatin1String("dialog-resize")) {
+    double width = 0;
+    double height = 0;
+    QWidget* window = targetWindow();
+    if (!window || window == m_main.data() || !toNumber(a.at(0), width) || !toNumber(a.at(1), height) ||
+        width < 300 || height < 200 || width > 3000 || height > 2000) {
+      fail(line, QStringLiteral("dialog-resize requires a focused dialog and width 300..3000, height 200..2000"));
+      return;
+    }
+    window->resize(qRound(width), qRound(height));
+    m_notBefore = std::max(m_notBefore, m_clock.elapsed() + 300);
+  } else if (name == QLatin1String("expect-dialog-appearance")) {
+    const bool dark = a.at(0) == QStringLiteral("dark");
+    if (!dark && a.at(0) != QStringLiteral("light")) {
+      fail(line, QStringLiteral("expect-dialog-appearance light|dark")); return;
+    }
+    whenReady([this, dark] {
+      QWidget* window = targetWindow();
+      if (!window || !window->isVisible()) return false;
+      const QPalette palette = window->palette();
+      const QColor background = palette.color(QPalette::Window);
+      const QColor text = palette.color(QPalette::WindowText);
+      const double ratio = window->devicePixelRatioF();
+      m_waitDetail = QStringLiteral("actual dialog palette window %1, text %2, device scale %3")
+                         .arg(background.name(), text.name()).arg(ratio);
+      const double minimumScale = qEnvironmentVariableIntValue("MITCAD_UI_REQUIRE_RETINA") == 1 ? 2 : 1;
+      const bool matches = isDarkPalette(palette) == dark &&
+          (dark ? text.lightness() > background.lightness() : text.lightness() < background.lightness()) &&
+          ratio >= minimumScale;
+      if (matches) qDebug().noquote() << "TestDriver:" << m_waitDetail;
+      return matches;
+    }, 6, QStringLiteral("dialog did not adopt the %1 appearance at the required scale").arg(a.at(0)));
+  } else if (name == QLatin1String("expect-command-search")) {
+    if (a.size() == 3 && a.at(2) != QStringLiteral("disabled") && a.at(2) != QStringLiteral("shortcuts")) {
+      fail(line, QStringLiteral("expect-command-search <filter> <current-id|*|-> [disabled|shortcuts]")); return;
+    }
+    QWidget* popup = m_main ? m_main->findChild<QWidget*>(QStringLiteral("commandSearch")) : nullptr;
+    auto* input = popup ? popup->findChild<QLineEdit*>() : nullptr;
+    auto* list = popup ? popup->findChild<QTreeWidget*>() : nullptr;
+    if (!popup || !popup->isVisible() || !input || !list || input->text() != a.at(0)) {
+      fail(line, QStringLiteral("command search is not visible with filter '%1'").arg(a.at(0))); return;
+    }
+    const auto* selected = list->currentItem();
+    const QString current = selected ? selected->data(0, Qt::UserRole).toString() : QStringLiteral("-");
+    int enabled = 0;
+    int disabled = 0;
+    int shortcuts = 0;
+    for (int row = 0; row < list->topLevelItemCount(); ++row) {
+      const auto* item = list->topLevelItem(row);
+      (item->flags() & Qt::ItemIsEnabled) ? ++enabled : ++disabled;
+      const QString id = item->data(0, Qt::UserRole).toString();
+      const auto* action = m_main->findChild<QAction*>(QStringLiteral("command_") + id);
+      if (!action || item->text(1) != action->shortcut().toString(QKeySequence::NativeText)) {
+        fail(line, QStringLiteral("search shortcut differs from the native shortcut for %1").arg(id)); return;
+      }
+      if (item->text(1).contains(QChar(0x2318))) ++shortcuts;
+    }
+    const bool needDisabled = a.size() == 3 && a.at(2) == QStringLiteral("disabled");
+    const bool needShortcuts = a.size() == 3 && a.at(2) == QStringLiteral("shortcuts");
+    if ((a.at(1) != QStringLiteral("*") && current != a.at(1)) ||
+        (a.at(1) == QStringLiteral("*") && !selected) || (selected && !(selected->flags() & Qt::ItemIsEnabled)) ||
+        (needDisabled && disabled == 0) || (needShortcuts && shortcuts == 0)) {
+      fail(line, QStringLiteral("search current %1, enabled %2, disabled %3, Command glyphs %4")
+                     .arg(current).arg(enabled).arg(disabled).arg(shortcuts));
+    }
+  } else if (name == QLatin1String("click-parameter") || name == QLatin1String("expect-parameter-cell")) {
+    QWidget* window = targetWindow();
+    auto* table = window ? window->findChild<QTreeWidget*>(QStringLiteral("parametersTable")) : nullptr;
+    bool validColumn = false;
+    const int column = a.at(1).toInt(&validColumn);
+    if (!table || !validColumn || column < 0 || column >= table->columnCount()) {
+      fail(line, QStringLiteral("parameter cell requires the parameter table and a valid column")); return;
+    }
+    QTreeWidgetItem* row = nullptr;
+    for (QTreeWidgetItemIterator it(table); *it; ++it) {
+      if ((*it)->data(0, Qt::UserRole).toString() == a.at(0)) { row = *it; break; }
+    }
+    if (name == QLatin1String("expect-parameter-cell")) {
+      const QString state = a.at(3);
+      if (state == QStringLiteral("absent") && !row) return;
+      QRegularExpression re;
+      if (!regex(a.at(2), re)) return;
+      const bool visible = row && !row->isHidden();
+      const auto* message = window->findChild<QLabel*>(QStringLiteral("parametersMessage"));
+      const bool refused = row && !row->toolTip(column).isEmpty() && message && message->isVisible() &&
+          message->text() == a.at(0) + QStringLiteral(": ") + row->toolTip(column);
+      if (!row || !re.match(row->text(column)).hasMatch() ||
+          (state == QStringLiteral("hidden") ? visible : !visible) ||
+          (state == QStringLiteral("refused") && !refused) || state == QStringLiteral("absent") ||
+          (state != QStringLiteral("visible") && state != QStringLiteral("hidden") && state != QStringLiteral("refused"))) {
+        fail(line, QStringLiteral("parameter %1 column %2 did not match '%3' (%4)")
+                       .arg(a.at(0)).arg(column).arg(a.at(2), state));
+      }
+      return;
+    }
+    if (!row || row->isHidden()) {
+      fail(line, QStringLiteral("parameter %1 is not visible").arg(a.at(0))); return;
+    }
+    const QRect rect = table->visualItemRect(row);
+    const QPoint local(table->header()->sectionViewportPosition(column) + table->columnWidth(column) / 2,
+                       rect.center().y());
+    if (!table->viewport()->rect().contains(local)) {
+      fail(line, QStringLiteral("parameter %1 cell is outside the visible table").arg(a.at(0))); return;
+    }
+    window->raise();
+    window->activateWindow();
+    // As sendKey does for shell-launched windows, establish Qt activation
+    // before the click. Direct sendEvent does not supply platform click focus.
+    if (QApplication::activeWindow() != window) {
+      QT_WARNING_PUSH
+      QT_WARNING_DISABLE_DEPRECATED
+      QApplication::setActiveWindow(window);
+      QT_WARNING_POP
+    }
+    table->setFocus(Qt::MouseFocusReason);
+    const QPointer<QTreeWidget> guardedTable(table);
+    whenReady([guardedTable] { return guardedTable && guardedTable->hasFocus() &&
+                                     guardedTable->window()->isActiveWindow(); }, 6,
+              QStringLiteral("parameter table did not receive mouse focus"), [this, guardedTable, local] {
+      const QPointer<QWidget> viewport(guardedTable->viewport());
+      for (const auto kind : {QEvent::MouseButtonPress, QEvent::MouseButtonRelease}) {
+        queue([viewport, local, kind] {
+          if (!viewport) return;
+          const QPoint global = viewport->mapToGlobal(local);
+          QMouseEvent event(kind, QPointF(local), QPointF(viewport->window()->mapFromGlobal(global)),
+                            QPointF(global), Qt::LeftButton,
+                            kind == QEvent::MouseButtonPress ? Qt::LeftButton : Qt::NoButton, Qt::NoModifier);
+          QCoreApplication::sendEvent(viewport, &event);
+        });
+      }
+    });
   } else if (name == QLatin1String("focus-main")) {
     m_dialog = nullptr;
     if (mac::test::active()) mac::test::focusMain();

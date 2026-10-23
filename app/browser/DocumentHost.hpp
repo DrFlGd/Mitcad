@@ -9,6 +9,7 @@
 #include <QString>
 
 #include "../framework/Command.hpp"
+#include "../framework/ParameterEdits.hpp"
 #include "../framework/Selection.hpp"
 
 namespace mitcad {
@@ -131,6 +132,15 @@ public:
   // Sheet metal (mitcad#210): the Flat Pattern of a sheet-metal body to a
   // DXF file the user chooses.
   virtual void exportFlatPattern(const QString& body) = 0;
+
+  // Change Parameters while a sketch or a feature is edited (mitcad#564):
+  // runs a command of the parameter table as the window's mode needs it
+  // (an open panel runs it outside its undo range and previews again; one
+  // that changes what the panel holds is refused); false with lastError()
+  // and lastCancelled(), as runModelCommand.
+  virtual bool runParameterCommand(const QJsonObject& command) { return runModelCommand(command); }
+  // What is being edited now; empty outside sketches and panels.
+  virtual ParameterEditScope parameterScope() const { return {}; }
 };
 
 } // namespace mitcad

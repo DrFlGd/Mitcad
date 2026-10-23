@@ -1,10 +1,11 @@
 # SPDX-License-Identifier: MIT
 # check-all sources: app/commands/ExtrudeCommands.cpp app/commands/CommandSupport.cpp
 # check-all sources: app/framework/CommandSession.cpp app/framework/CommandSessionAuto.cpp
+# check-all sources: app/framework/AutoOperationPolicy.hpp app/framework/Command.hpp
 # check-all sources: core/model/src/document/auto_operation.rs core/model/src/api/mod.rs
 # check-all sources: geometry/src/contact.cpp geometry/src/boolean.cpp tools/cli
 # Input-driven Windows UI test of Extrude's automatic operation
-# (mitcad#289) in the build VM (tools/ui-windows-lib.ps1 says how the input
+# (mitcad#289, mitcad#575) in the build VM (tools/ui-windows-lib.ps1 says how the input
 # is posted), on a design mitcad-cli makes, as tools/ui-auto-operation-test.sh
 # does on Linux: a 40 x 30 block 20 deep under the XY plane (Body1, F2.b0;
 # its top face lies in XY), a square on XY over the block (Sketch2, F3) and
@@ -15,7 +16,9 @@
 #   3. Undone; Extrude of the same square with New Body chosen by hand (the
 #      drop-down's wheel: its list cannot open in session 0): the choice
 #      stays when the distance goes into the block; OK adds a new body.
-#   4. Editing that Extrude into the block keeps its New Body.
+#   2a. Editing the committed Join follows Cut/Join until Operation is chosen.
+#   2b. A new edit follows geometry until Objects is chosen.
+#   4. Editing the deliberate touching New Body keeps its stored choice.
 #
 # Usage: powershell -ExecutionPolicy Bypass -File tools\ui-windows-auto-operation-test.ps1 [-App build\dev\mitcad.exe] [-Out dir] [-QtBin dir]
 param(
@@ -96,6 +99,54 @@ Ui-Mark
 Ui-Step 'OK (Enter)'                     { Ui-Key 'Return' }
 Ui-ExpectNew 'Added extrude (Join), distance 5' 'joined' 30
 Ui-ExpectVolume 'Body Body1 \(F2\.b0\): volume 24000\.000 -> ([0-9.]+) mm3' 24500 'the block grew by the square''s 500 mm3'
+Write-Host '--- 2a. Editing an automatic Join follows geometry until Operation is chosen'
+Ui-Mark
+Ui-Step 'edit automatic Extrude3'         { Ui-DoubleClickLogged 'Timeline Extrude3' }
+Ui-ExpectNew 'stored operation matches automatic choice; editing follows geometry' 'the stored Join matches the initial probe' 30
+Ui-ExpectNew 'Preview Extrude: ok' 'the stored Join previewed' 30
+Ui-Mark
+Ui-Step 'edited distance -5'              { Ui-TypeIn 'Panel Extrude input distance' '-5' }
+Ui-ExpectNew 'Extrude: automatic Operation = Cut' 'the edit cuts going into the block' 30
+Ui-ExpectNew 'Preview Extrude: ok' 'the edited Cut previewed' 30
+Ui-Mark
+Ui-Step 'edited distance 5'               { Ui-TypeIn 'Panel Extrude input distance' '5' }
+Ui-ExpectNew 'Extrude: automatic Operation = Join' 'the edit joins coming out again' 30
+Ui-ExpectNew 'Preview Extrude: ok' 'the edited Join previewed' 30
+Ui-Mark
+Ui-Step 'manual New Body in edit (wheel)' { Ui-WheelLogged 'Panel Extrude input operation' 1 }
+Ui-ExpectNew 'Extrude: Operation = New Body' 'New Body explicitly chosen in the edit'
+Ui-ExpectNew 'Extrude: operation chosen by hand' 'Operation stopped edit automation'
+Ui-Mark
+Ui-Step 'distance -6 after override'      { Ui-TypeIn 'Panel Extrude input distance' '-6' }
+Ui-ExpectNew 'Extrude Distance: -6 = -6 mm' 'the manual edit goes into the block'
+Ui-ExpectNew 'Preview Extrude: ok' 'the manual New Body previewed' 30
+Ui-WaitIdle
+Start-Sleep -Milliseconds 500
+Expect-NoNew 'Extrude: automatic Operation' 'manual Operation stays chosen for the rest of the edit'
+Ui-Step 'cancel manual edit'              { Ui-Key 'Escape' }
+Ui-ExpectNew 'Command Extrude cancelled' 'the original stored Join retained' 30
+
+Write-Host '--- 2b. Editing Objects also stops automatic operation'
+Ui-Mark
+Ui-Step 'edit automatic Extrude3 again'   { Ui-DoubleClickLogged 'Timeline Extrude3' }
+Ui-ExpectNew 'stored operation matches automatic choice; editing follows geometry' 'a fresh edit probes the stored Join' 30
+Ui-ExpectNew 'Preview Extrude: ok' 'the Join previewed before the body pick' 30
+Ui-Mark
+Ui-Step 'activate Local bodies'           { Ui-ClickLogged 'Panel Extrude input objects' }
+Ui-Step 'toggle the selected block out'   { Ui-ClickLogged 'Browser Root/Bodies/Body1' }
+Ui-ExpectNew 'Extrude Local bodies: nothing' 'the real body pick cleared Objects'
+Ui-ExpectNew 'Extrude: operation chosen by hand' 'Objects stopped edit automation'
+Ui-Mark
+Ui-Step 'distance -7 after Objects edit'  { Ui-TypeIn 'Panel Extrude input distance' '-7' }
+Ui-ExpectNew 'Extrude Distance: -7 = -7 mm' 'changed geometry after the explicit target pick'
+Ui-ExpectNew 'Preview Extrude: ok' 'the fixed Join operation previewed' 30
+Ui-WaitIdle
+Start-Sleep -Milliseconds 500
+Expect-NoNew 'Extrude: automatic Operation' 'Objects keeps the operation fixed for the rest of the edit'
+Ui-Step 'cancel Objects edit'             { Ui-Key 'Escape' }
+Ui-ExpectNew 'Command Extrude cancelled' 'the original stored targets retained' 30
+Ui-FocusMain
+
 Ui-Mark
 Ui-Step 'undo (Ctrl+Z)'                  { Ui-Key 'ctrl+z' }
 Ui-ExpectNew 'Undo: ' 'the join undone' 30
@@ -125,17 +176,18 @@ Ui-Mark
 Ui-Step 'OK (Enter)'                     { Ui-Key 'Return' }
 Ui-ExpectNew 'Added extrude (New Body), distance -5' 'a new body in the block' 30
 
-Write-Host '--- 4. Editing keeps the stored operation'
+Write-Host '--- 4. Editing a deliberate touching New Body keeps its stored operation'
 Ui-Mark
 Ui-Step 'edit Extrude3 (double-click)'   { Ui-DoubleClickLogged 'Timeline Extrude3' }
 Ui-ExpectNew ' with Extrude' 'editing Extrude3' 30
 Ui-ExpectNew 'operation=new_body' 'it opens with its New Body'
+Ui-ExpectNew 'stored operation differs from automatic choice; editing keeps it' 'the deliberate New Body fails the automatic-policy match' 30
 Ui-Mark
 Ui-Step 'distance -8'                    { Ui-TypeIn 'Panel Extrude input distance' '-8' }
 Ui-ExpectNew 'Preview Extrude: ok' 'the edit previewed' 30
 Ui-WaitIdle
 Start-Sleep -Milliseconds 500
-Expect-NoNew 'Extrude: automatic Operation' 'editing chooses nothing'
+Expect-NoNew 'Extrude: automatic Operation' 'editing preserves the deliberate New Body'
 Ui-Mark
 Ui-Step 'OK (Enter)'                     { Ui-Key 'Return' }
 Ui-ExpectNew 'Edited F' 'Extrude3 edited' 30

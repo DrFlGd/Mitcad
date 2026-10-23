@@ -251,6 +251,10 @@ public:
   bool runVisibilityCommands(const QJsonArray& commands, const QString& label) override;
   QString activeCommandName() const override;
   bool chooseInCommand(const QString& command, const QString& input, const QString& value) override;
+  // Change Parameters while a sketch or a feature is edited (mitcad#564;
+  // MainWindowParameterEdits.cpp).
+  bool runParameterCommand(const QJsonObject& command) override;
+  ParameterEditScope parameterScope() const override;
 
 protected:
   void closeEvent(QCloseEvent* event) override;
@@ -1228,6 +1232,16 @@ private:
   void debugLogChanged(bool running);
   void openLogFolder();
   QAction* m_debugLogOff = nullptr;
+
+  // Change Parameters while a sketch or a feature is edited (mitcad#564,
+  // MainWindowParameterEdits.cpp): SKETCH > MODIFY's entry, the table
+  // opened beside the edit (its close goes back to it), the panel's title
+  // row button, the sketch's dimensions logged after a change.
+  void registerParameterEditCommands();
+  void openParameterTable();
+  void parameterTableClosed();
+  void addParametersButton(CommandPanel& panel, const CommandDef& def);
+  void logSketchDimensions(const QString& why);
 
   // The wait cursor (mitcad#268, MainWindowJobs.cpp): its idle recovery
   // after each job and every second; with MITCAD_TEST_WAIT_CURSOR the test

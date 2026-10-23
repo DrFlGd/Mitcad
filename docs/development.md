@@ -590,6 +590,14 @@ through the in-process test driver (`MITCAD_TEST_INPUT`), so it works over
 SSH. Helpers: [tools/ui-macos-lib.sh](../tools/ui-macos-lib.sh) (bash 3.2,
 BSD userland).
 
+`app.ui-macos-dialogs` checks the default Qt command search and parameter
+sheet with real keyboard input in both light and dark appearance. It saves
+focused captures, checks filtering and native shortcut text, and exercises
+parameter creation, inline editing, validation and deletion. The colour
+scheme request applies only to the test process. Set
+`MITCAD_UI_REQUIRE_RETINA=1` to require a backing scale of at least 2 for
+Retina acceptance; ordinary runs also support a 1x display.
+
 ### .f3d corpus tests
 
 Real `.f3d` designs are never committed. These tests read local data and

@@ -7,6 +7,9 @@
 #include <QPair>
 #include <QString>
 
+#include "../framework/ParameterEdits.hpp"
+
+class QEvent;
 class QLabel;
 class QLineEdit;
 class QPushButton;
@@ -15,6 +18,7 @@ class QTreeWidgetItem;
 
 namespace mitcad {
 
+class DecimalAlignDelegate;
 class DocumentHost;
 
 // Change Parameters: the user parameters and the model's (the
@@ -59,6 +63,17 @@ private:
   QString m_logged;     // the cells' places
   QString m_loggedRows; // the parameters as shown
   QString m_loggedFavorites;
+
+  // While a sketch or a feature is edited (mitcad#564): what stays open
+  // (a line above the rows), the open panel's own parameters left to it,
+  // and the table read again when it is activated in another edit.
+  void updateScope();
+  bool event(QEvent* event) override;
+  ParameterEditScope m_scope;
+  QLabel* m_scopeNote = nullptr;
+  QString m_loggedScope;
+  // Expression's and Value's numbers on one decimal axis each (mitcad#566).
+  DecimalAlignDelegate* m_align = nullptr;
 };
 
 } // namespace mitcad

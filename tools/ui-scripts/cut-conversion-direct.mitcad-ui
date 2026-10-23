@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: MIT
+# Equivalent direct Cut: the same checklist, preview and committed result.
+wait-idle
+window-resize 1400 990
+command view.fit
+click-logged '^Browser eye Root/Part B:1 at '
+command solid.extrude
+focus-widget input_distance
+key ctrl+a
+type 50
+expect-log '^Extrude Distance: 50( mm)? = 50 mm$'
+click-logged '^Panel Extrude input operation at '
+key Home Down Down Return
+expect-log 'Cut target C0@: eligible, checked, intersects'
+expect-log 'Cut target C1@O1: eligible, unchecked, intersects, hidden'
+expect-shown-body F1.b0 - 3840
+button '^OK$'
+expect-log 'Added extrude \(Cut\)' 30
+expect-model-bodies 2 7840

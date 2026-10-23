@@ -559,6 +559,7 @@ void RenderMode::sendView() {
 }
 
 void RenderMode::showFrame() {
+  ScopedTiming delivery("render delivery");
   render::Frame frame;
   if (!m_enabled || !m_client->takeFrame(frame)) {
     return;
@@ -569,6 +570,11 @@ void RenderMode::showFrame() {
   }
   const auto width = static_cast<int>(frame.info.width);
   const auto height = static_cast<int>(frame.info.height);
+  if (timingLogged()) {
+    delivery.setDetail(QStringLiteral("view %1 samples %2 %3x%4 denoised %5")
+                           .arg(frame.info.view).arg(frame.info.samples).arg(width).arg(height)
+                           .arg(frame.info.denoised));
+  }
   if (frame.info.denoised != 0 && !m_firstDenoisedLogged) {
     m_firstDenoisedLogged = true;
     qInfo().noquote() << QStringLiteral("Render view %1: first denoised frame (%2 x %3, %4 samples) after %5 ms")
@@ -592,6 +598,7 @@ void RenderMode::showFrame() {
   }
   // What the frame covers, in the view's logical pixels (UI tests compare
   // it with the shaded view).
+  ScopedTiming diagnostics("render diagnostics");
   const QRect covered = render::coverage(m_frame.pixels.data(), width, height);
   const double scaleX = static_cast<double>(m_viewer.width()) / width;
   const double scaleY = static_cast<double>(m_viewer.height()) / height;
@@ -614,6 +621,11 @@ void RenderMode::showFrame() {
                             .arg(m_frame.info.samples)
                             .arg(brightness, 0, 'f', 3)
                             .arg(opaque);
+  if (timingLogged()) {
+    diagnostics.setDetail(QStringLiteral("view %1 samples %2 %3x%4 denoised %5")
+                              .arg(m_frame.info.view).arg(m_frame.info.samples).arg(width).arg(height)
+                              .arg(m_frame.info.denoised));
+  }
 }
 
 bool RenderMode::displayFrame() {
@@ -635,9 +647,19 @@ bool RenderMode::displayFrame() {
   } else {
     m_viewer.backgroundColors(top, bottom);
   }
-  m_viewer.setRenderedImage(render::displayImage(m_frame.pixels.data(), static_cast<int>(m_frame.info.width),
+  QString detail;
+  if (timingLogged()) {
+    detail = QStringLiteral("view %1 samples %2 %3x%4 denoised %5")
+                 .arg(m_frame.info.view).arg(m_frame.info.samples).arg(m_frame.info.width)
+                 .arg(m_frame.info.height).arg(m_frame.info.denoised);
+  }
+  ScopedTiming conversion("render convert");
+  const QImage image = render::displayImage(m_frame.pixels.data(), static_cast<int>(m_frame.info.width),
                                                  static_cast<int>(m_frame.info.height), top, bottom, m_look,
-                                                 m_frame.catcher.empty() ? nullptr : m_frame.catcher.data()));
+                                                 m_frame.catcher.empty() ? nullptr : m_frame.catcher.data());
+  conversion.setDetail(detail);
+  conversion.finish();
+  m_viewer.setRenderedImage(image, detail);
   return true;
 }
 

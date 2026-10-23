@@ -685,8 +685,19 @@ Deleting a component definition follows normal dependent-feature deletion,
 including cuts that explicitly include or exclude it; Undo restores the cut and
 its scope. Missing occurrence paths after other edits remain repairable failures.
 
-Only Cut accepts `cut_scope`, and it cannot be combined with nonempty legacy
-`participants`. Omitting `cut_scope` preserves existing local-component behavior
+Only Cut activates `cut_scope`, and an active scope cannot be combined with
+nonempty legacy `participants`. Other solid operations may retain a dormant
+scope so that changing back to Cut restores the chosen targets and exclusions.
+For a modern non-Cut that has never chosen targets, the scope may contain
+`"initialize_on_cut": true` (default false, omitted when false). The editor
+then initializes automatic targets and samples current visibility when Cut
+is chosen, removing this flag before submission. Cut rejects a scope whose
+flag is still true. Automatic Join participants remain Join bookkeeping;
+explicitly selected local participants keep local behavior without a scope.
+A dormant scope affects no geometry, references, target discovery or feature
+replay; it is checked when Cut activates it again. Surface, face-profile and
+wrapped extrusions continue to reject scopes.
+Omitting `cut_scope` preserves existing local-component behavior
 and the meaning of an empty `participants` list. Through All uses all discovered
 bodies, including excluded or disabled ones, to define the tool length; toggling
 a target does not shorten the tool. Every Boolean uses the target's local frame.
@@ -8672,9 +8683,10 @@ Two more repairs of the geometry kernel's results apply to every design
 
 ## Extrude's automatic operation
 
-A new Extrude takes its operation from where its tool lies until the user
-picks one (mitcad#289; the app: `app/COMMANDS.md`, *Extrude*). The
-`preview` of an `add_feature` asks for it with `"auto_operation": true`:
+Extrude previews can suggest an operation from where the tool lies
+(mitcad#289, mitcad#575; the app: `app/COMMANDS.md`, *Extrude*). The
+`preview` of an `add_feature` or `edit_feature` asks for it with
+`"auto_operation": true` (optional, false by default):
 
 ```json
 {"cmd": "add_feature", "auto_operation": true,
@@ -8682,10 +8694,18 @@ picks one (mitcad#289; the app: `app/COMMANDS.md`, *Extrude*). The
          "operation": "new_body"}}
 ```
 
+An edit uses the same response field:
+
+```json
+{"cmd": "edit_feature", "uid": "F4", "auto_operation": true,
+ "def": {"type": "extrude", "profiles": [...], "extent": {"type": "distance", "distance": -5},
+         "operation": "join"}}
+```
+
 The model evaluates the extrusion as a new body first (its tool does not
 depend on the operation, and a Cut that reaches nothing makes none), tries
-the tool against the visible bodies of the feature's component at the
-marker, and then evaluates `def` as it is; the report is `def`'s, with
+the tool against the visible bodies of the feature's owning component,
+and then evaluates `def` as it is; the report is `def`'s, with
 
 ```json
 "auto_operation": {"operation": "cut", "objects": ["F2.b0"]}
@@ -8698,14 +8718,26 @@ marker, and then evaluates `def` as it is; the report is `def`'s, with
 - else `new_body` with no objects (nothing near, an empty design, hidden
   bodies, other components' bodies).
 
+An addition considers bodies at the current marker. An edit considers the
+bodies strictly before the edited feature's timeline position, regardless
+of the current marker: its own result and later features' geometry and
+bodies never count. Visibility is the document's current body visibility;
+the active component does not change the edited feature's ownership.
+The returned geometry and retained preview are the ordinary `def` preview,
+including its stored participants or assembly Cut scope, even when the
+suggestion differs. Computing that suggestion changes no stored definition,
+marker, body result, revision or undo/redo step. A cancelled computation
+clears the preview and leaves the document unchanged.
+
 The test is cheap enough to follow a dragged distance: bodies whose
 bounding boxes the tool's does not reach are apart without more
 (`Kernel::enclosing_box`); the others get `Kernel::tool_contacts`, the
 contact test Join uses (`geometry/include/mitcad/geometry/contact.hpp`)
 and a point inside each solid of the tool classified against the body.
-Only `add_feature` previews of extrusions answer it (other features and
-`edit_feature` have no `auto_operation`); the stored definition is always
-the one committed, so editing an Extrude never changes its operation.
+Only extrusion previews answer it; other feature types return their normal
+preview without `auto_operation`. The suggestion is optional report data:
+the application decides whether to follow it, and the stored definition is
+always the one explicitly committed.
 
 ## BUILD: profile assemblies
 

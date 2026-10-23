@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: MIT
+# A new Join panel must sample visibility at its first deliberate Cut,
+# including when the user changes a browser light bulb while it stays open.
+wait-idle
+window-resize 1400 990
+command view.fit
+command solid.extrude
+focus-widget input_distance
+key ctrl+a
+type 50
+expect-log '^Extrude Distance: 50( mm)? = 50 mm$'
+click-logged '^Panel Extrude input operation at '
+key Home Down Return
+expect-log 'Extrude: Operation = Join'
+click-logged '^Browser eye Root/Part B:1 at '
+expect-log 'Visibility Root/Part B:1: hidden'
+mark
+click-logged '^Panel Extrude input operation at '
+key Home Down Down Return
+expect-log 'Extrude: Operation = Cut'
+expect-log 'Cut target C0@: eligible, checked, intersects'
+expect-log 'Cut target C1@O1: eligible, unchecked, intersects, hidden'
+expect-shown-body F1.b0 - 3840
+button '^OK$'
+expect-log 'Added extrude \(Cut\)' 30
+expect-model-bodies 2 7840
